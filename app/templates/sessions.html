@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+
+{% block title %}Active Sessions | O$P$ Bank{% endblock %}
+
+{% block content %}
+<section class="panel section-stack">
+  <div class="section-header">
+    <div class="page-heading">
+      <p class="eyebrow">Security management</p>
+      <h1>Active Sessions</h1>
+      <p class="muted">Review current access and terminate sessions you do not recognize. Only public session references are shown.</p>
+    </div>
+    <a class="button secondary" href="{{ url_for('web.dashboard') }}">Back to dashboard</a>
+  </div>
+
+  <div class="action-panel">
+    <div class="action-header">
+      <div>
+        <h2>Terminate all other sessions</h2>
+        <p class="muted">Use this if you suspect another device should no longer have access.</p>
+      </div>
+    </div>
+    {% if g.high_risk_ready %}
+      <form method="post" action="{{ url_for('web.revoke_other_sessions') }}" data-webauthn-step-up-form data-step-up-action="session_revoke_others">
+        {{ revoke_others_form.hidden_tag() }}
+        <div class="form-group">
+          <label for="{{ revoke_others_form.totp_code.id }}">Authenticator code</label>
+          {{ revoke_others_form.totp_code(inputmode="numeric", autocomplete="one-time-code", maxlength="6", placeholder="6-digit MFA code") }}
+        </div>
+        <p class="hint">If you just used a code, wait for the next one.</p>
+        <p class="field-error" data-webauthn-step-up-error hidden></p>
+        <button class="button danger-button" type="submit">Terminate all other sessions</button>
+      </form>
+    {% elif g.current_user.mfa_enabled %}
+      <div class="notice warning">
+        <span class="notice-icon" aria-hidden="true">
+          <svg class="icon" focusable="false"><use href="#icon-shield-check"></use></svg>
+        </span>
+        <div>
+          <h3>Security keys required</h3>
+          <p class="muted">Terminating all other sessions requires two approved hardware security keys. Individual session termination remains available below.</p>
+          <div class="actions">
+            <a class="button secondary" href="{{ url_for('web.security_keys') }}">Manage security keys</a>
+          </div>
+        </div>
+      </div>
+    {% else %}
+      <a class="button secondary" href="{{ url_for('web.mfa_setup') }}">Enable MFA before revoking all other sessions</a>
+    {% endif %}
+  </div>
+
+  {% if sessions %}
+    <div class="table-wrap">
+      <table aria-label="Active sessions">
+        <thead>
+          <tr>
+            <th>Reference</th>
+            <th>IP address</th>
+            <th>User agent</th>
+            <th>Login time</th>
+            <th>Last activity</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in sessions %}
+            <tr>
+              <td data-label="Reference">
+                <div class="session-ref">
+                  <code>{{ item.session_ref }}</code>
+                  {% if item.current %}<span class="badge">Current</span>{% endif %}
+                </div>
+              </td>
+              <td data-label="IP address">{{ item.ip_address }}</td>
+              <td data-label="Device">{{ item.user_agent }}</td>
+              <td data-label="Login time"><time datetime="{{ item.login_time }}">{{ item.login_time_display }}</time></td>
+              <td data-label="Last activity"><time datetime="{{ item.last_activity }}">{{ item.last_activity_display }}</time></td>
+              <td data-label="Action">
+                <form method="post" action="{{ url_for('web.terminate_session', session_id=item.session_ref) }}">
+                  {{ terminate_form.hidden_tag() }}
+                  <button class="link-button danger" type="submit">Terminate</button>
+                </form>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="empty-state">
+      <h2>No active sessions found</h2>
+      <p class="muted">There are no active sessions available for this account right now.</p>
+    </div>
+  {% endif %}
+</section>
+{% endblock %}

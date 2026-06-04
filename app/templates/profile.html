@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+
+{% block title %}Edit Profile | O$P$ Bank{% endblock %}
+
+{% block content %}
+<section class="security-page profile-page">
+  <div class="dashboard-header">
+    <div class="page-heading">
+      <p class="eyebrow">Account management</p>
+      <h1>Edit profile</h1>
+      <p class="muted">Update the supported account details for your signed-in profile.</p>
+    </div>
+    <div class="button-row">
+      <a class="button secondary" href="{{ url_for('web.dashboard') }}">Back to dashboard</a>
+    </div>
+  </div>
+
+  <div class="profile-grid">
+    <article class="profile-panel profile-summary">
+      <div class="profile-panel-header">
+        <span class="card-icon" aria-hidden="true">
+          <svg class="icon" focusable="false"><use href="#icon-user"></use></svg>
+        </span>
+        <div class="profile-panel-title">
+          <p class="eyebrow">Account record</p>
+          <h2>Profile details</h2>
+        </div>
+      </div>
+      <dl class="detail-list">
+        <div>
+          <dt>Username</dt>
+          <dd>{{ user.username }}</dd>
+        </div>
+        <div>
+          <dt>Email</dt>
+          <dd>{{ user.email }}</dd>
+        </div>
+        <div class="profile-status-row">
+          <dt>Password</dt>
+          <dd class="profile-status-copy">
+            {% if not user.mfa_enabled %}
+              <strong class="profile-status-title">Setup MFA first</strong>
+              <span class="compact">Enable authenticator MFA before changing your password.</span>
+              <a class="button button-small secondary is-disabled" aria-disabled="true">Change password</a>
+            {% elif not g.high_risk_ready %}
+              <strong class="profile-status-title">Security keys required</strong>
+              <span class="compact">Password changes require two approved hardware security keys plus authenticator verification.</span>
+              <a class="button button-small secondary" href="{{ url_for('web.security_keys') }}">Manage keys</a>
+              <a class="button button-small secondary is-disabled" aria-disabled="true">Change password</a>
+            {% else %}
+              <strong class="profile-status-title">Change available</strong>
+              <span class="compact">Password changes require your current password, authenticator verification, and security-key step-up.</span>
+              <a class="button button-small secondary" href="{{ url_for('web.password_change') }}">Change password</a>
+            {% endif %}
+          </dd>
+        </div>
+        <div class="profile-status-row">
+          <dt>Authenticator MFA</dt>
+          <dd class="profile-status-copy">
+            <strong class="profile-status-title">{{ "Enabled" if user.mfa_enabled else "Setup needed" }}</strong>
+            <span class="compact">Use an authenticator app for normal login MFA.</span>
+            <a class="button button-small secondary" href="{{ url_for('web.mfa_setup') }}">Manage MFA</a>
+          </dd>
+        </div>
+        <div class="profile-status-row">
+          <dt>Security keys</dt>
+          <dd class="profile-status-copy">
+            <strong class="profile-status-title">Transaction step-up</strong>
+            <span class="compact">Hardware keys are used for future high-risk transaction approval.</span>
+            <a class="button button-small secondary" href="{{ url_for('web.security_keys') }}">Manage keys</a>
+          </dd>
+        </div>
+      </dl>
+    </article>
+
+    <article class="profile-panel profile-card">
+      <div class="profile-panel-title">
+        <p class="eyebrow">Editable field</p>
+        <h2>Update profile details</h2>
+      </div>
+      <p class="muted">Changes to your sign-in details are securely recorded and require authenticator plus security-key verification.</p>
+      {% if g.high_risk_ready %}
+        <form method="post" action="{{ url_for('web.profile_submit') }}" data-webauthn-step-up-form data-step-up-action="profile_update" novalidate>
+          {{ form.hidden_tag() }}
+          <div class="form-group">
+            <label for="{{ form.username.id }}">Username</label>
+            {{ form.username(autocomplete="username", maxlength="64") }}
+            {% for error in form.username.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+          </div>
+          <div class="form-group">
+            <label for="{{ form.email.id }}">Email address</label>
+            {{ form.email(autocomplete="email", maxlength="255") }}
+            {% for error in form.email.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+          </div>
+          <div class="form-group">
+            <label for="{{ form.totp_code.id }}">Authenticator code</label>
+            {{ form.totp_code(inputmode="numeric", autocomplete="one-time-code", maxlength="6", placeholder="6-digit MFA code") }}
+            {% for error in form.totp_code.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+          </div>
+          <p class="field-error" data-webauthn-step-up-error hidden></p>
+          <button class="button full" type="submit">Save profile</button>
+        </form>
+      {% else %}
+        <div class="notice warning">
+          <span class="notice-icon" aria-hidden="true">
+            <svg class="icon" focusable="false"><use href="#icon-shield-check"></use></svg>
+          </span>
+          <div>
+            <h3>Security keys required</h3>
+            <p class="muted">Profile updates stay locked until two approved hardware security keys are enrolled.</p>
+          </div>
+        </div>
+        <a class="button secondary" href="{{ url_for('web.security_keys') }}">Manage security keys</a>
+      {% endif %}
+    </article>
+  </div>
+</section>
+{% endblock %}

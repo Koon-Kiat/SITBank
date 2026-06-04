@@ -1,0 +1,203 @@
+{% extends "base.html" %}
+
+{% block title %}Authenticator MFA | O$P$ Bank{% endblock %}
+
+{% block content %}
+<section class="security-page mfa-page">
+  <div class="dashboard-header">
+    <div class="page-heading">
+      <p class="eyebrow">Authenticator protection</p>
+      <h1>Authenticator MFA</h1>
+      <p class="muted">Use one active authenticator app for normal sign-in and protected account actions.</p>
+    </div>
+    <div class="button-row">
+      <a class="button secondary" href="{{ url_for('web.dashboard') }}">Back to dashboard</a>
+    </div>
+  </div>
+
+  {% if user.mfa_enabled %}
+    <div class="notice">
+      <span class="notice-icon" aria-hidden="true">
+        <svg class="icon" focusable="false"><use href="#icon-check-circle"></use></svg>
+      </span>
+      <div>
+        <h2>Authenticator MFA is enabled</h2>
+        <p class="muted">Your account is protected with one active authenticator. Replacement keeps the current code valid until the new code is verified.</p>
+      </div>
+    </div>
+
+    <div class="mfa-steps">
+      <article class="mfa-step is-complete">
+        <div class="mfa-step-header">
+          <span class="step-number">1</span>
+          <div>
+            <p class="eyebrow">Status</p>
+            <h2>Current authenticator active</h2>
+          </div>
+        </div>
+        <div class="mfa-step-body">
+          <p class="muted">Do not remove this authenticator from your app until replacement has been verified.</p>
+        </div>
+      </article>
+
+      <article class="mfa-step{% if replacement %} is-complete{% endif %}">
+        <div class="mfa-step-header">
+          <span class="step-number">2</span>
+          <div>
+            <p class="eyebrow">Replacement</p>
+            <h2>Replace authenticator</h2>
+          </div>
+        </div>
+        <div class="mfa-step-body">
+          <p class="muted">Generate a new QR setup code when you are ready to move to a different authenticator app or device.</p>
+          <form method="post" action="{{ url_for('web.mfa_setup_submit') }}" data-webauthn-step-up-form data-step-up-action="mfa_replace_start" novalidate>
+            {{ replace_start_form.hidden_tag() }}
+            <input type="hidden" name="action" value="replace_start">
+            <div class="form-group">
+              <label for="replace-start-totp-code">Current authenticator code</label>
+              {{ replace_start_form.totp_code(id="replace-start-totp-code", inputmode="numeric", autocomplete="one-time-code", maxlength="6") }}
+              {% for error in replace_start_form.totp_code.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+            </div>
+            <p class="field-error" data-webauthn-step-up-error hidden></p>
+            <button class="button full" type="submit">{% if replacement %}Generate New Replacement Code{% else %}Replace Authenticator{% endif %}</button>
+          </form>
+        </div>
+      </article>
+
+      <article class="mfa-step{% if not replacement %} is-muted{% endif %}">
+        <div class="mfa-step-header">
+          <span class="step-number">3</span>
+          <div>
+            <p class="eyebrow">New authenticator</p>
+            <h2>Scan QR or enter key</h2>
+          </div>
+        </div>
+        <div class="mfa-step-body">
+          {% if replacement %}
+            <p class="muted">Add this replacement account in your authenticator app. Your current authenticator remains active until Step 4 succeeds.</p>
+            <div class="qr-wrap">
+              <img class="qr" src="{{ replacement.qr_code_data_uri }}" alt="Replacement authenticator setup QR code">
+            </div>
+            <div class="manual-key">
+              <label for="replacement-manual-entry-secret">Manual setup key</label>
+              <input id="replacement-manual-entry-secret" class="manual-key-input" type="text" value="{{ replacement.manual_entry_secret }}" readonly autocomplete="off" spellcheck="false">
+              <p class="hint">Use this key only if your authenticator app cannot scan the QR code.</p>
+            </div>
+          {% else %}
+            <p class="muted">Start replacement first. The replacement QR code and manual setup key will appear here.</p>
+          {% endif %}
+        </div>
+      </article>
+
+      <article class="mfa-step{% if not replacement %} is-muted{% endif %}">
+        <div class="mfa-step-header">
+          <span class="step-number">4</span>
+          <div>
+            <p class="eyebrow">Confirm</p>
+            <h2>Verify replacement</h2>
+          </div>
+        </div>
+        <div class="mfa-step-body">
+          {% if replacement %}
+            <p class="muted">Enter the current code from the replacement authenticator. After this succeeds, other sessions are revoked.</p>
+            <form method="post" action="{{ url_for('web.mfa_setup_submit') }}" novalidate>
+              {{ replace_verify_form.hidden_tag() }}
+              <input type="hidden" name="action" value="replace_verify">
+              <div class="form-group">
+                <label for="replace-verify-totp-code">Replacement authenticator code</label>
+                {{ replace_verify_form.totp_code(id="replace-verify-totp-code", inputmode="numeric", autocomplete="one-time-code", maxlength="6") }}
+                {% for error in replace_verify_form.totp_code.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+              </div>
+              <button class="button full" type="submit">Confirm Replacement</button>
+            </form>
+          {% else %}
+            <p class="muted">After scanning the replacement QR code, this step will accept the new 6-digit authenticator code.</p>
+          {% endif %}
+        </div>
+      </article>
+    </div>
+  {% else %}
+    <div class="mfa-steps">
+      <article class="mfa-step{% if setup %} is-complete{% endif %}">
+        <div class="mfa-step-header">
+          <span class="step-number">1</span>
+          <div>
+            <p class="eyebrow">Step 1</p>
+            <h2>{% if setup %}Setup code generated{% else %}Generate setup code{% endif %}</h2>
+          </div>
+        </div>
+        <div class="mfa-step-body">
+          {% if setup %}
+            <p class="muted">A one-time QR setup code is ready for this account. Restart only if you need to generate a fresh setup code.</p>
+            <form method="post" action="{{ url_for('web.mfa_setup_submit') }}">
+              {{ start_form.hidden_tag() }}
+              <input type="hidden" name="action" value="start">
+              <button class="button full" type="submit">Restart Setup</button>
+            </form>
+          {% else %}
+            <p class="muted">Create a one-time QR setup code for your authenticator app.</p>
+            <form method="post" action="{{ url_for('web.mfa_setup_submit') }}">
+              {{ start_form.hidden_tag() }}
+              <input type="hidden" name="action" value="start">
+              <button class="button full" type="submit">Generate MFA setup</button>
+            </form>
+          {% endif %}
+        </div>
+      </article>
+
+      <article class="mfa-step{% if not setup %} is-muted{% endif %}">
+        <div class="mfa-step-header">
+          <span class="step-number">2</span>
+          <div>
+            <p class="eyebrow">Step 2</p>
+            <h2>Scan QR or enter key</h2>
+          </div>
+        </div>
+        <div class="mfa-step-body">
+          {% if setup %}
+            <p class="muted">Open your authenticator app and add a new account using the QR code below, or enter the setup key manually.</p>
+            <div class="qr-wrap">
+              <img class="qr" src="{{ setup.qr_code_data_uri }}" alt="Authenticator setup QR code">
+            </div>
+            <div class="manual-key">
+              <label for="manual-entry-secret">Manual setup key</label>
+              <input id="manual-entry-secret" class="manual-key-input" type="text" value="{{ setup.manual_entry_secret }}" readonly autocomplete="off" spellcheck="false">
+              <p class="hint">Use this key only if your authenticator app cannot scan the QR code.</p>
+            </div>
+            <p class="hint">After scanning, enter the current 6-digit code in Step 3.</p>
+          {% else %}
+            <p class="muted">Generate a setup code first. The QR code and manual setup key will appear here after Step 1 is complete.</p>
+          {% endif %}
+        </div>
+      </article>
+
+      <article class="mfa-step{% if not setup %} is-muted{% endif %}">
+        <div class="mfa-step-header">
+          <span class="step-number">3</span>
+          <div>
+            <p class="eyebrow">Step 3</p>
+            <h2>Verify setup</h2>
+          </div>
+        </div>
+        <div class="mfa-step-body">
+          {% if setup %}
+            <p class="muted">Enter the current code from your authenticator app to finish setup.</p>
+            <form method="post" action="{{ url_for('web.mfa_setup_submit') }}" novalidate>
+              {{ verify_form.hidden_tag() }}
+              <input type="hidden" name="action" value="verify">
+              <div class="form-group">
+                <label for="{{ verify_form.totp_code.id }}">Authenticator code</label>
+                {{ verify_form.totp_code(inputmode="numeric", autocomplete="one-time-code", maxlength="6") }}
+                {% for error in verify_form.totp_code.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+              </div>
+              <button class="button full" type="submit">Enable MFA</button>
+            </form>
+          {% else %}
+            <p class="muted">After scanning the QR code, this step will accept your 6-digit authenticator code.</p>
+          {% endif %}
+        </div>
+      </article>
+    </div>
+  {% endif %}
+</section>
+{% endblock %}

@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+
+{% block title %}{{ status_code }} | O$P$ Bank{% endblock %}
+
+{% block content %}
+<section class="panel narrow empty-state">
+  <p class="eyebrow">Request status</p>
+  <h1>{{ status_code }}</h1>
+  <p class="muted">{{ message }}</p>
+  <div class="button-row">
+    <a class="button secondary" href="{{ url_for('main.index') }}">Back home</a>
+    {% if g.current_user %}
+      <a class="button" href="{{ url_for('web.dashboard') }}">Open dashboard</a>
+    {% else %}
+      <a class="button" href="{{ url_for('web.login') }}">Log in</a>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

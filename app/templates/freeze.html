@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+
+{% block title %}Freeze Account | O$P$ Bank{% endblock %}
+
+{% block content %}
+<section class="security-page freeze-page">
+  <div class="dashboard-header">
+    <div class="page-heading">
+      <p class="eyebrow">High-risk security action</p>
+      <h1>Freeze Account</h1>
+      <p class="muted">Use this only if you believe your account access or activity may be at risk.</p>
+    </div>
+    <div class="button-row">
+      <a class="button secondary" href="{{ url_for('web.dashboard') }}">Back to dashboard</a>
+    </div>
+  </div>
+
+  {% if user.is_frozen %}
+    <div class="freeze-grid">
+      <article class="freeze-panel danger-panel">
+        <div class="notice danger">
+          <span class="notice-icon" aria-hidden="true">
+            <svg class="icon" focusable="false"><use href="#icon-freeze"></use></svg>
+          </span>
+          <div>
+            <h2>This account is already frozen</h2>
+            <p class="muted">Unfreeze is manual and cannot be performed from this website.</p>
+          </div>
+        </div>
+      </article>
+      <article class="freeze-panel">
+        <h2>Current protection state</h2>
+        <p class="muted">Sensitive account activity remains blocked while the account is frozen.</p>
+        <ul class="freeze-list">
+          <li>Outbound transfers are blocked.</li>
+          <li>Scheduled transfer execution is blocked.</li>
+          <li>Sensitive profile changes are blocked.</li>
+        </ul>
+      </article>
+    </div>
+  {% elif not user.mfa_enabled %}
+    <div class="freeze-grid">
+      <article class="freeze-panel">
+        <div class="notice warning">
+          <span class="notice-icon" aria-hidden="true">
+            <svg class="icon" focusable="false"><use href="#icon-shield-check"></use></svg>
+          </span>
+          <div>
+            <h2>MFA is required</h2>
+            <p class="muted">Account freeze requires an authenticator code before it can be used.</p>
+          </div>
+        </div>
+        <div class="freeze-actions">
+          <a class="button" href="{{ url_for('web.mfa_setup') }}">Set up MFA</a>
+          <a class="button secondary" href="{{ url_for('web.dashboard') }}">Back to dashboard</a>
+        </div>
+      </article>
+      <article class="freeze-panel">
+        <h2>Freeze readiness</h2>
+        <p class="muted">MFA protects this high-risk workflow by confirming the signed-in user with a current authenticator code.</p>
+        <ul class="freeze-list">
+          <li>Enable MFA before attempting an emergency freeze.</li>
+          <li>Review active sessions if you suspect unusual access.</li>
+          <li>Use only your own sample account.</li>
+        </ul>
+      </article>
+    </div>
+  {% elif not g.high_risk_ready %}
+    <div class="freeze-grid">
+      <article class="freeze-panel">
+        <div class="notice warning">
+          <span class="notice-icon" aria-hidden="true">
+            <svg class="icon" focusable="false"><use href="#icon-shield-check"></use></svg>
+          </span>
+          <div>
+            <h2>Security keys required</h2>
+            <p class="muted">Account freeze requires two approved hardware security keys plus a current authenticator code.</p>
+          </div>
+        </div>
+        <div class="freeze-actions">
+          <a class="button" href="{{ url_for('web.security_keys') }}">Manage security keys</a>
+          <a class="button secondary" href="{{ url_for('web.dashboard') }}">Back to dashboard</a>
+        </div>
+      </article>
+      <article class="freeze-panel">
+        <h2>Freeze readiness</h2>
+        <p class="muted">You can keep using the portal after TOTP setup, but emergency freeze and other high-risk account actions stay locked until hardware-key enrollment is complete.</p>
+        <ul class="freeze-list">
+          <li>Add a primary approved hardware security key.</li>
+          <li>Add a backup approved hardware security key.</li>
+          <li>Use the current authenticator code during final confirmation.</li>
+        </ul>
+      </article>
+    </div>
+  {% else %}
+    <div class="freeze-grid">
+      <article class="freeze-panel danger-panel">
+        <h2>Confirm account freeze</h2>
+        <p class="muted">Enter a current authenticator code and verify an approved hardware security key to confirm this protective lock.</p>
+        <form method="post" action="{{ url_for('web.freeze_account_submit') }}" data-webauthn-step-up-form data-step-up-action="account_freeze" novalidate>
+          {{ form.hidden_tag() }}
+          <div class="form-group">
+            <label for="{{ form.totp_code.id }}">Authenticator code</label>
+            {{ form.totp_code(inputmode="numeric", autocomplete="one-time-code", maxlength="6") }}
+            {% for error in form.totp_code.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+          </div>
+          <p class="field-error" data-webauthn-step-up-error hidden></p>
+          <button class="button danger-button full" type="submit">Freeze account</button>
+        </form>
+        <a class="button secondary" href="{{ url_for('web.dashboard') }}">Cancel and return to dashboard</a>
+      </article>
+      <article class="freeze-panel">
+        <div class="notice danger">
+          <span class="notice-icon" aria-hidden="true">
+            <svg class="icon" focusable="false"><use href="#icon-alert"></use></svg>
+          </span>
+          <div>
+            <h2>Freezing is a protective lock</h2>
+            <p class="muted">Freezing blocks outbound transfers, scheduled transfer execution, and sensitive profile changes. Unfreeze requires manual support review.</p>
+          </div>
+        </div>
+        <ul class="freeze-list">
+          <li>Use this when account activity appears suspicious.</li>
+          <li>Your current session remains available for this confirmation flow.</li>
+          <li>Other active sessions are revoked after a successful freeze.</li>
+        </ul>
+      </article>
+    </div>
+  {% endif %}
+</section>
+{% endblock %}

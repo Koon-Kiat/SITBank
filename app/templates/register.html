@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+
+{% block title %}Register | O$P$ Bank{% endblock %}
+
+{% block content %}
+<section class="auth-shell">
+  <div class="auth-intro">
+    <p class="eyebrow">New customer profile</p>
+    <h1>Create your online banking profile</h1>
+    <p class="lede">Register for the secure banking portal with a password that meets the account protection policy.</p>
+    <div class="notice">
+      <span class="notice-icon" aria-hidden="true">
+        <svg class="icon" focusable="false"><use href="#icon-info"></use></svg>
+      </span>
+      <p class="muted">This registration creates access to a simulated banking portal only. Do not use real banking credentials.</p>
+    </div>
+  </div>
+
+  <div class="auth-card">
+    <div class="page-heading">
+      <p class="eyebrow">Account registration</p>
+      <h2>Create account</h2>
+    </div>
+    <form method="post" action="{{ url_for('web.register_submit') }}" novalidate>
+      {{ form.hidden_tag() }}
+
+      <div class="form-group">
+        <label for="{{ form.username.id }}">Username</label>
+        {{ form.username(autocomplete="username", maxlength="64") }}
+        {% for error in form.username.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+      </div>
+
+      <div class="form-group">
+        <label for="{{ form.email.id }}">Email</label>
+        {{ form.email(autocomplete="email", maxlength="255") }}
+        {% for error in form.email.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+      </div>
+
+      <div class="form-group">
+        <label for="{{ form.password.id }}">Password</label>
+        <div class="password-input-wrap">
+          {{ form.password(autocomplete="new-password", minlength="15", data_password_strength_input="registration-password") }}
+          <button class="password-toggle" type="button" data-password-toggle="{{ form.password.id }}" aria-label="Show password">Show</button>
+        </div>
+        {% for error in form.password.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+        <p class="strength-meter" data-password-strength="registration-password">Password strength: not entered</p>
+      </div>
+
+      <div class="form-group">
+        <label for="{{ form.confirm_password.id }}">Confirm password</label>
+        <div class="password-input-wrap">
+          {{ form.confirm_password(autocomplete="new-password", minlength="15") }}
+          <button class="password-toggle" type="button" data-password-toggle="{{ form.confirm_password.id }}" aria-label="Show password">Show</button>
+        </div>
+        {% for error in form.confirm_password.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+      </div>
+
+      <p class="hint">Use at least 15 characters. Common breached passwords are rejected server-side.</p>
+      <button class="button full" type="submit">Register account</button>
+    </form>
+    <p class="switch-link">Already registered? <a href="{{ url_for('web.login') }}">Login</a>.</p>
+  </div>
+</section>
+{% endblock %}

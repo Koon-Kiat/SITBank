@@ -1,0 +1,19 @@
+{
+  "nextUpdate": "2099-01-01",
+  "entries": [
+    {
+      "aaguid": "11111111-1111-1111-1111-111111111111",
+      "statusReports": [
+        {
+          "status": "FIDO_CERTIFIED_L2"
+        }
+      ],
+      "metadataStatement": {
+        "description": "Test hardware security key",
+        "attestationRootCertificates": [
+          "MIIB"
+        ]
+      }
+    }
+  ]
+}

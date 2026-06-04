@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard | O$P$ Bank{% endblock %}
+
+{% block content %}
+<section class="dashboard">
+  <div class="dashboard-header">
+    <div class="account-identity">
+      <p class="eyebrow">Security dashboard</p>
+      <h1>Welcome back, {{ user.username }}</h1>
+      <p class="muted">{{ user.email }}</p>
+    </div>
+    <div class="button-row" aria-label="Primary security actions">
+      <a class="button secondary" href="{{ url_for('web.sessions_dashboard') }}">Manage sessions</a>
+      {% if not user.is_frozen %}
+        {% if g.high_risk_ready %}
+          <a class="button secondary" href="{{ url_for('web.freeze_account') }}">Freeze account</a>
+        {% else %}
+          <a class="button secondary is-disabled" aria-disabled="true">Freeze account</a>
+        {% endif %}
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="status-grid">
+    <article class="status-card">
+      <span class="card-icon" aria-hidden="true">
+        <svg class="icon" focusable="false"><use href="#icon-lock"></use></svg>
+      </span>
+      <h2>Authenticator MFA</h2>
+      <div class="status-card-body">
+        {% if user.mfa_enabled %}
+          <p class="badge">Enabled</p>
+          <p class="muted">Password login is protected with a time-based authenticator code.</p>
+        {% else %}
+          <p class="badge warning">Setup needed</p>
+          <p class="muted">Add an authenticator app so normal login uses password plus MFA.</p>
+        {% endif %}
+      </div>
+      <div class="status-card-actions">
+        <a class="button secondary" href="{{ url_for('web.mfa_setup') }}">Manage MFA</a>
+      </div>
+    </article>
+    <article class="status-card">
+      <span class="card-icon" aria-hidden="true">
+        <svg class="icon" focusable="false"><use href="#icon-shield-check"></use></svg>
+      </span>
+      <h2>Hardware security keys</h2>
+      <div class="status-card-body">
+        {% if credential_count >= required_count %}
+          <p class="badge">Transaction-ready</p>
+          <p class="muted">{{ credential_count }} approved FIDO2 hardware keys are enrolled for future high-risk transaction approval.</p>
+        {% elif credential_count > 0 %}
+          <p class="badge warning">Backup needed</p>
+          <p class="muted">{{ credential_count }} of {{ required_count }} hardware keys enrolled. Add a backup key before high-risk transaction approval.</p>
+        {% else %}
+          <p class="badge warning">Setup needed</p>
+          <p class="muted">No hardware security keys are enrolled yet. Set up authenticator MFA first, then add keys for future transaction approval.</p>
+        {% endif %}
+      </div>
+      <div class="status-card-actions">
+        <a class="button secondary" href="{{ url_for('web.security_keys') }}">Manage keys</a>
+      </div>
+    </article>
+    <article class="status-card">
+      <span class="card-icon" aria-hidden="true">
+        <svg class="icon" focusable="false"><use href="#icon-freeze"></use></svg>
+      </span>
+      <h2>Account Freeze</h2>
+      <div class="status-card-body">
+        {% if user.is_frozen %}
+          <p class="badge danger">Frozen</p>
+          <p class="muted">Unfreeze requires manual support review.</p>
+        {% elif not g.high_risk_ready %}
+          <p class="badge warning">Keys required</p>
+          <p class="muted">Emergency freeze is locked until two approved hardware security keys are enrolled.</p>
+        {% else %}
+          <p class="badge">Ready</p>
+          <p class="muted">Emergency freeze is available after authenticator and security-key verification.</p>
+        {% endif %}
+      </div>
+      <div class="status-card-actions">
+        {% if not user.is_frozen %}
+          {% if g.high_risk_ready %}
+            <a class="button secondary" href="{{ url_for('web.freeze_account') }}">Freeze account</a>
+          {% else %}
+            <a class="button secondary is-disabled" aria-disabled="true">Freeze account</a>
+          {% endif %}
+        {% endif %}
+      </div>
+    </article>
+    <article class="status-card">
+      <span class="card-icon" aria-hidden="true">
+        <svg class="icon" focusable="false"><use href="#icon-session"></use></svg>
+      </span>
+      <h2>Active sessions</h2>
+      <div class="status-card-body">
+        <p class="badge neutral">Session controls</p>
+        <p class="muted">View current access and terminate sessions you do not recognise.</p>
+      </div>
+      <div class="status-card-actions">
+        <a class="button secondary" href="{{ url_for('web.sessions_dashboard') }}">Manage sessions</a>
+      </div>
+    </article>
+  </div>
+
+  <section class="quick-grid" aria-label="Security shortcuts">
+    <article class="card quick-card">
+      <h2>Account protection</h2>
+      <p class="muted">Review authenticator MFA, transaction key status, session controls, and freeze readiness from one place.</p>
+    </article>
+    <article class="card quick-card">
+      <h2>Account scope</h2>
+      <p class="muted">This portal currently shows account access and security controls. Balances, account numbers, and transactions are not available.</p>
+    </article>
+  </section>
+</section>
+{% endblock %}
