@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+
+{% block title %}O$P$ Bank Secure Banking{% endblock %}
+
+{% block content %}
+<div class="section-stack">
+  <section class="hero">
+    <div class="hero-content">
+      <p class="eyebrow">Secure Internet Banking</p>
+      <h1>O$P$ Bank</h1>
+      <p class="lede">A simulated online banking portal focused on secure account access, MFA protection, session visibility, and emergency account freeze controls.</p>
+      <div class="actions">
+        {% if g.current_user %}
+          <a class="button" href="{{ url_for('web.dashboard') }}">Open dashboard</a>
+          <a class="button secondary" href="{{ url_for('web.sessions_dashboard') }}">Manage sessions</a>
+        {% else %}
+          <a class="button" href="{{ url_for('web.login') }}">Log in securely</a>
+          <a class="button secondary" href="{{ url_for('web.register_form') }}">Create account</a>
+        {% endif %}
+      </div>
+    </div>
+    <aside class="hero-panel" aria-label="Security capabilities">
+      <div class="hero-metric">
+        <span class="metric-icon" aria-hidden="true">
+          <svg class="icon" focusable="false"><use href="#icon-shield-check"></use></svg>
+        </span>
+        <div>
+          <h2>Layered sign-in</h2>
+          <p class="muted">Authenticator-code verification is available for higher-risk account actions.</p>
+        </div>
+      </div>
+      <div class="hero-metric">
+        <span class="metric-icon" aria-hidden="true">
+          <svg class="icon" focusable="false"><use href="#icon-reference"></use></svg>
+        </span>
+        <div>
+          <h2>Public session references</h2>
+          <p class="muted">Session management uses safe references instead of exposing raw session identifiers.</p>
+        </div>
+      </div>
+      <div class="hero-metric">
+        <span class="metric-icon" aria-hidden="true">
+          <svg class="icon" focusable="false"><use href="#icon-education"></use></svg>
+        </span>
+        <div>
+          <h2>Security-focused access</h2>
+          <p class="muted">Designed to practise secure online banking workflows without real financial services.</p>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <section class="feature-grid" aria-label="Portal security features">
+    <article class="feature-card">
+      <span class="card-icon" aria-hidden="true">
+        <svg class="icon" focusable="false"><use href="#icon-shield-check"></use></svg>
+      </span>
+      <h2>MFA Protection</h2>
+      <p class="muted">Set up a time-based authenticator code and use it for sensitive account workflows.</p>
+    </article>
+    <article class="feature-card">
+      <span class="card-icon" aria-hidden="true">
+        <svg class="icon" focusable="false"><use href="#icon-session"></use></svg>
+      </span>
+      <h2>Active Session Control</h2>
+      <p class="muted">Review signed-in sessions and terminate access you do not recognise.</p>
+    </article>
+    <article class="feature-card">
+      <span class="card-icon" aria-hidden="true">
+        <svg class="icon" focusable="false"><use href="#icon-freeze"></use></svg>
+      </span>
+      <h2>Account Freeze</h2>
+      <p class="muted">Use an MFA-confirmed freeze action to block sensitive account activity.</p>
+    </article>
+    <article class="feature-card">
+      <span class="card-icon" aria-hidden="true">
+        <svg class="icon" focusable="false"><use href="#icon-lock"></use></svg>
+      </span>
+      <h2>Secure Controls</h2>
+      <p class="muted">CSRF-protected forms and strict local assets keep the interface aligned with the security model.</p>
+    </article>
+  </section>
+
+  <section class="notice" aria-label="Simulation disclaimer">
+    <span class="notice-icon" aria-hidden="true">
+      <svg class="icon" focusable="false"><use href="#icon-alert"></use></svg>
+    </span>
+    <div>
+      <h2>Simulation notice</h2>
+      <p class="muted">O$P$ Bank / ScamCentre is a simulated banking portal. It is not a real bank, does not provide financial services, and must not be used with real banking credentials or financial data.</p>
+    </div>
+  </section>
+</div>
+{% endblock %}

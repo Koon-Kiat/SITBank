@@ -1,0 +1,1598 @@
+from __future__ import annotations
+
+import re
+import json
+import secrets
+import time
+
+import pytest
+import pyotp
+from flask import current_app
+from pathlib import Path
+from webauthn.helpers.structs import CredentialDeviceType
+
+from app.extensions import db
+from app.models import SecurityAuditEvent, User, WebAuthnCredential
+from app.security.passwords import PBKDF2_PREFIX, hash_password, verify_password
+
+
+def register(client, username="alice01", email="alice@example.com", password="correct horse battery staple"):
+    return client.post(
+        "/register",
+        data={"username": username, "email": email, "password": password, "confirm_password": password},
+        follow_redirects=False,
+    )
+
+
+def login(client, identifier="alice01", password="correct horse battery staple"):
+    return client.post(
+        "/login",
+        data={"identifier": identifier, "password": password},
+        follow_redirects=False,
+    )
+
+
+def mark_recent_mfa(client, user):
+    user.mfa_enabled = True
+    db.session.commit()
+    now = int(time.time())
+    with client.session_transaction() as sess:
+        sess["auth_context"] = "password+mfa_bootstrap"
+        sess["mfa_verified_at"] = now
+        sess["fresh_mfa_verified_at"] = now
+        sess.pop("risk_fingerprint", None)
+
+
+def decrypt_test_mfa_secret(user):
+    from app.security.crypto import decrypt_mfa_secret
+
+    return decrypt_mfa_secret(user.mfa_secret_nonce, user.mfa_secret_ciphertext, user.id)
+
+
+def enable_mfa_for_user(username="alice01"):
+    from app.security.crypto import encrypt_mfa_secret
+
+    user = db.session.execute(db.select(User).where(User.username == username)).scalar_one()
+    secret = pyotp.random_base32(length=32)
+    user.mfa_secret_nonce, user.mfa_secret_ciphertext = encrypt_mfa_secret(secret, user.id)
+    user.mfa_enabled = True
+    db.session.commit()
+    return user, secret
+
+
+def add_security_keys_for_user(user, count=2):
+    for index in range(count):
+        credential_id = f"credential-{user.id}-{index}".encode("utf-8")
+        db.session.add(
+            WebAuthnCredential(
+                user_id=user.id,
+                credential_id=credential_id,
+                credential_public_key=b"public-key",
+                sign_count=10 + index,
+                label=f"Security Key {index + 1}",
+                aaguid="11111111-1111-1111-1111-111111111111",
+                attestation_format="packed",
+                transports=["usb"],
+                credential_device_type=CredentialDeviceType.SINGLE_DEVICE.value,
+                credential_backed_up=False,
+            )
+        )
+    db.session.commit()
+
+
+def mint_stepup_token(client, user, action):
+    from app.auth.webauthn_services import _step_up_token_cache_key
+
+    with client.session_transaction() as sess:
+        session_id = sess.sid
+    token = secrets.token_urlsafe(32)
+    current_app.extensions["redis"].setex(
+        _step_up_token_cache_key(token),
+        current_app.config["WEBAUTHN_STEP_UP_TTL_SECONDS"],
+        json.dumps(
+            {
+                "user_id": user.id,
+                "session_id": session_id,
+                "action": action,
+                "credential_id": f"credential-{user.id}-0",
+                "issued_at": int(time.time()),
+            }
+        ),
+    )
+    return token
+
+
+def test_registration_rejects_common_password(client):
+    response = register(client, password="password")
+
+    assert response.status_code == 400
+    assert db.session.query(User).count() == 0
+
+
+def test_registration_rejects_when_live_password_check_is_unavailable(client, monkeypatch):
+    from app.security.passwords import HIBP_UNAVAILABLE_ERROR, LivePasswordCheckUnavailable
+
+    def unavailable(_password):
+        raise LivePasswordCheckUnavailable("offline")
+
+    monkeypatch.setattr("app.security.passwords._is_password_pwned_by_hibp", unavailable)
+
+    response = register(client)
+
+    assert response.status_code == 400
+    assert db.session.query(User).count() == 0
+    assert HIBP_UNAVAILABLE_ERROR.encode("utf-8") in response.data
+    assert b"local blocklist only" not in response.data
+
+
+def test_registration_rejects_live_breached_password(client, monkeypatch):
+    monkeypatch.setattr("app.security.passwords._is_password_pwned_by_hibp", lambda _password: True)
+
+    response = register(client)
+
+    assert response.status_code == 400
+    assert db.session.query(User).count() == 0
+    assert b"Password is too common or has appeared in breach lists" in response.data
+
+
+def test_registration_hashes_password_with_pbkdf2(client):
+    response = register(client)
+
+    assert response.status_code == 302
+    user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
+    assert not user.password_hash.endswith("correct horse battery staple")
+    assert user.password_hash.startswith(f"{PBKDF2_PREFIX}$v1$i=600000$")
+
+
+def test_short_password_registration_retry_can_login(client):
+    rejected = register(client, username="retry01", email="retry@example.com", password="short")
+    created = register(client, username="retry01", email="retry@example.com")
+    login_response = login(client, identifier="retry01")
+    dashboard_response = client.get("/dashboard")
+
+    assert rejected.status_code == 400
+    assert created.status_code == 302
+    assert created.headers["Location"].endswith("/login")
+    assert login_response.status_code == 302
+    assert login_response.headers["Location"].endswith("/mfa/setup")
+    assert dashboard_response.status_code == 302
+    assert dashboard_response.headers["Location"].endswith("/mfa/setup")
+
+
+def test_long_unicode_password_can_register_login_and_change(client, monkeypatch):
+    long_password = "correct horse battery staple " + ("安全な合言葉" * 12)
+    new_password = long_password + " updated"
+
+    response = register(client, password=long_password)
+    login_response = login(client, password=long_password)
+    user, secret = enable_mfa_for_user()
+    add_security_keys_for_user(user)
+    stepup_token = mint_stepup_token(client, user, "password_change")
+    old_hash = user.password_hash
+    change_time = int(time.time())
+    monkeypatch.setattr("app.auth.services.time.time", lambda: change_time)
+
+    change_response = client.post(
+        "/password/change",
+        data={
+            "current_password": long_password,
+            "new_password": new_password,
+            "confirm_new_password": new_password,
+            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(change_time),
+            "stepup_token": stepup_token,
+        },
+    )
+    db.session.refresh(user)
+
+    assert response.status_code == 302
+    assert login_response.status_code == 302
+    assert change_response.status_code == 302
+    assert user.password_hash != old_hash
+    assert verify_password(new_password, user.password_hash)
+
+
+def test_registration_requires_matching_confirm_password(client):
+    response = client.post(
+        "/register",
+        data={
+            "username": "alice01",
+            "email": "alice@example.com",
+            "password": "correct horse battery staple",
+            "confirm_password": "different horse battery staple",
+        },
+    )
+
+    assert response.status_code == 400
+    assert db.session.query(User).count() == 0
+
+
+def test_login_errors_are_generic_for_unknown_and_wrong_password(client):
+    register(client)
+
+    wrong_password = client.post(
+        "/login",
+        data={"identifier": "alice01", "password": "wrong-password"},
+    )
+    unknown_user = client.post(
+        "/login",
+        data={"identifier": "missing-user", "password": "wrong-password"},
+    )
+
+    assert wrong_password.status_code == 401
+    assert unknown_user.status_code == 401
+    assert b"Invalid username or password" in wrong_password.data
+    assert b"Invalid username or password" in unknown_user.data
+
+
+def test_mfa_pending_api_response_does_not_leak_user_id(client):
+    register(client)
+    user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
+    enable_mfa_for_user()
+
+    response = client.post(
+        "/auth/login",
+        json={"identifier": "alice01", "password": "correct horse battery staple"},
+    )
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload == {"message": "MFA verification required", "mfa_required": True}
+    assert "user_id" not in payload
+
+
+def test_login_backoff_starts_after_three_failures(client):
+    register(client)
+
+    failures = [
+        client.post(
+            "/auth/login",
+            json={"identifier": "alice01", "password": "wrong-password"},
+        )
+        for _attempt in range(3)
+    ]
+    blocked = client.post("/auth/login", json={"identifier": "alice01", "password": "wrong-password"})
+
+    assert [response.status_code for response in failures] == [401, 401, 401]
+    assert blocked.status_code == 429
+    assert blocked.get_json()["error"] == "Too many attempts. Please try again later."
+    assert blocked.headers["X-Auth-Retry-After"] == "1"
+
+
+def test_login_rate_limits_include_per_minute_and_daily_limits(client):
+    auth_routes = Path("app/auth/routes.py").read_text(encoding="utf-8")
+    web_routes = Path("app/web/routes.py").read_text(encoding="utf-8")
+
+    for route_source in (auth_routes, web_routes):
+        assert '@limiter.limit("50 per day", key_func=get_remote_address)' in route_source
+        assert '@limiter.limit("50 per day", key_func=request_principal)' in route_source
+        assert '@limiter.limit("5 per minute", key_func=get_remote_address)' in route_source
+        assert '@limiter.limit("5 per minute", key_func=request_principal)' in route_source
+
+    for attempt in range(5):
+        response = client.post(
+            "/auth/login",
+            json={"identifier": f"missing{attempt}", "password": "wrong-password"},
+        )
+        assert response.status_code == 401
+
+    limited = client.post(
+        "/auth/login",
+        json={"identifier": "missing-final", "password": "wrong-password"},
+    )
+
+    assert limited.status_code == 429
+
+
+def test_repeated_password_failures_freeze_account(app, client):
+    from app.auth.services import AuthError, authenticate_primary
+
+    register(client)
+    user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
+
+    for _attempt in range(10):
+        with app.test_request_context("/auth/login", method="POST"):
+            try:
+                authenticate_primary("alice01", "wrong-password")
+            except AuthError:
+                pass
+
+    db.session.refresh(user)
+
+    assert user.is_frozen is True
+    assert user.security_locked_at is not None
+    assert user.security_lock_reason == "password_failed_attempts"
+    assert db.session.query(SecurityAuditEvent).filter_by(event_type="account_lock", outcome="locked").count() == 1
+
+
+def test_repeated_mfa_failures_freeze_account(app, client):
+    from flask import session
+    from app.auth.services import AuthError, complete_pending_mfa
+
+    register(client)
+    user, _secret = enable_mfa_for_user()
+
+    for _attempt in range(10):
+        with app.test_request_context("/auth/mfa/verify", method="POST"):
+            session["pending_mfa_user_id"] = user.id
+            try:
+                complete_pending_mfa("000000")
+            except AuthError:
+                pass
+
+    db.session.refresh(user)
+
+    assert user.is_frozen is True
+    assert user.security_locked_at is not None
+    assert user.security_lock_reason == "mfa_failed_attempts"
+
+
+def test_api_validation_errors_do_not_expose_schema_details(client):
+    response = client.post("/auth/login", json={})
+    payload = response.get_json()
+
+    assert response.status_code == 400
+    assert payload == {"error": "Invalid request"}
+
+
+def test_login_sets_secure_session_cookie_and_hides_raw_session_id(client):
+    register(client)
+
+    response = login(client)
+    user, _secret = enable_mfa_for_user()
+    mark_recent_mfa(client, user)
+    sessions_response = client.get("/auth/sessions")
+
+    assert response.status_code == 302
+    assert "__Host-osp_session=" in response.headers["Set-Cookie"]
+    assert "Secure" in response.headers["Set-Cookie"]
+    assert "HttpOnly" in response.headers["Set-Cookie"]
+    assert "SameSite=Strict" in response.headers["Set-Cookie"]
+    assert sessions_response.status_code == 200
+    session_item = sessions_response.get_json()["sessions"][0]
+    assert "session_ref" in session_item
+    assert len(session_item["session_ref"]) == 32
+    assert "session_id" not in session_item
+    assert session_item["ip_address"] == "127.0.0.1"
+    assert "login_time_display" in session_item
+    assert "last_activity_display" in session_item
+
+
+def test_logout_invalidates_current_session(client):
+    register(client)
+    login(client)
+
+    logout_response = client.post("/logout")
+    sessions_response = client.get("/auth/sessions")
+
+    assert logout_response.status_code == 302
+    assert sessions_response.status_code == 401
+
+
+def test_mfa_setup_stores_encrypted_secret_and_rejects_replay(client):
+    register(client)
+    login(client)
+
+    setup_response = client.post("/mfa/setup", data={"action": "start"})
+    assert setup_response.status_code == 200
+
+    user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
+    assert user.mfa_secret_ciphertext is not None
+    assert user.mfa_secret_nonce is not None
+
+    from app.security.crypto import decrypt_mfa_secret
+
+    secret = decrypt_mfa_secret(user.mfa_secret_nonce, user.mfa_secret_ciphertext, user.id)
+    setup_page = client.get("/mfa/setup")
+    setup_markup = setup_page.data.decode("utf-8")
+    code = pyotp.TOTP(secret, digits=6, interval=30).now()
+
+    verify_response = client.post("/mfa/setup", data={"action": "verify", "totp_code": code})
+    replay_response = client.post("/mfa/setup", data={"action": "verify", "totp_code": code})
+
+    assert setup_page.status_code == 200
+    assert "Manual setup key" in setup_markup
+    assert 'id="manual-entry-secret"' in setup_markup
+    assert f'value="{secret}"' in setup_markup
+    assert verify_response.status_code == 302
+    assert replay_response.status_code == 401
+
+
+def test_mfa_setup_generates_independent_user_secrets(app, client):
+    second_client = app.test_client()
+    register(client)
+    register(second_client, username="bob02", email="bob@example.com")
+    login(client)
+    login(second_client, identifier="bob02")
+
+    alice_setup = client.post("/mfa/setup", data={"action": "start"})
+    bob_setup = second_client.post("/mfa/setup", data={"action": "start"})
+    alice = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
+    bob = db.session.execute(db.select(User).where(User.username == "bob02")).scalar_one()
+
+    alice_secret = decrypt_test_mfa_secret(alice)
+    bob_secret = decrypt_test_mfa_secret(bob)
+
+    assert alice_setup.status_code == 200
+    assert bob_setup.status_code == 200
+    assert alice.mfa_secret_ciphertext != bob.mfa_secret_ciphertext
+    assert alice_secret != bob_secret
+
+
+def test_mfa_code_verifies_only_for_own_enrolled_secret(app, client, monkeypatch):
+    from app.security.rate_limits import clear_failures
+
+    second_client = app.test_client()
+    register(client)
+    register(second_client, username="bob02", email="bob@example.com")
+    login(client)
+    login(second_client, identifier="bob02")
+
+    client.post("/mfa/setup", data={"action": "start"})
+    second_client.post("/mfa/setup", data={"action": "start"})
+    alice = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
+    bob = db.session.execute(db.select(User).where(User.username == "bob02")).scalar_one()
+    alice_secret = decrypt_test_mfa_secret(alice)
+    bob_secret = decrypt_test_mfa_secret(bob)
+    now = int(time.time())
+    check_time = next(
+        timestamp
+        for timestamp in range(now, now + 600, 30)
+        if pyotp.TOTP(alice_secret, digits=6, interval=30).at(timestamp)
+        != pyotp.TOTP(bob_secret, digits=6, interval=30).at(timestamp)
+    )
+    monkeypatch.setattr("app.auth.services.time.time", lambda: check_time)
+
+    alice_code = pyotp.TOTP(alice_secret, digits=6, interval=30).at(check_time)
+    bob_code = pyotp.TOTP(bob_secret, digits=6, interval=30).at(check_time)
+    wrong_user_response = second_client.post("/mfa/setup", data={"action": "verify", "totp_code": alice_code})
+    clear_failures("mfa_setup", str(bob.id))
+    own_user_response = second_client.post("/mfa/setup", data={"action": "verify", "totp_code": bob_code})
+
+    assert wrong_user_response.status_code == 401
+    assert own_user_response.status_code == 302
+
+
+def test_pending_mfa_restart_replaces_previous_setup_secret(client, monkeypatch):
+    from app.security.rate_limits import clear_failures
+
+    register(client)
+    login(client)
+
+    first_setup = client.post("/mfa/setup", data={"action": "start"})
+    first_page = client.get("/mfa/setup")
+    first_page_markup = first_page.data.decode("utf-8")
+    user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
+    first_secret = decrypt_test_mfa_secret(user)
+
+    second_setup = client.post("/mfa/setup", data={"action": "start"})
+    db.session.refresh(user)
+    second_secret = decrypt_test_mfa_secret(user)
+    now = int(time.time())
+    check_time = next(
+        timestamp
+        for timestamp in range(now, now + 600, 30)
+        if pyotp.TOTP(first_secret, digits=6, interval=30).at(timestamp)
+        != pyotp.TOTP(second_secret, digits=6, interval=30).at(timestamp)
+    )
+    monkeypatch.setattr("app.auth.services.time.time", lambda: check_time)
+
+    first_code = pyotp.TOTP(first_secret, digits=6, interval=30).at(check_time)
+    second_code = pyotp.TOTP(second_secret, digits=6, interval=30).at(check_time)
+    old_secret_response = client.post("/mfa/setup", data={"action": "verify", "totp_code": first_code})
+    clear_failures("mfa_setup", str(user.id))
+    new_secret_response = client.post("/mfa/setup", data={"action": "verify", "totp_code": second_code})
+
+    assert first_setup.status_code == 200
+    assert first_page.status_code == 200
+    assert b"Restart Setup" in first_page.data
+    assert 'class="button full" type="submit">Restart Setup' in first_page_markup
+    assert second_setup.status_code == 200
+    assert first_secret != second_secret
+    assert old_secret_response.status_code == 401
+    assert new_secret_response.status_code == 302
+
+
+def test_mfa_management_page_shows_replacement_controls_when_enabled(client):
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    mark_recent_mfa(client, user)
+
+    response = client.get("/mfa/setup")
+    markup = response.data.decode("utf-8")
+
+    assert response.status_code == 200
+    assert "Authenticator MFA" in markup
+    assert "Authenticator MFA is enabled" in markup
+    assert "Replace authenticator" in markup
+    assert "Replace Authenticator" in markup
+    assert "Disable MFA" not in markup
+    assert "Remove MFA" not in markup
+
+
+def test_mfa_replacement_start_rejects_recent_mfa_without_new_totp(client):
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    mark_recent_mfa(client, user)
+
+    response = client.post("/mfa/setup", data={"action": "replace_start"})
+    db.session.refresh(user)
+
+    assert response.status_code == 400
+    assert "replacement-manual-entry-secret" not in response.data.decode("utf-8")
+
+
+def test_mfa_replacement_keeps_old_secret_until_new_code_is_verified(client, monkeypatch):
+    from app.security.rate_limits import clear_failures
+
+    register(client)
+    login(client)
+    user, old_secret = enable_mfa_for_user()
+    add_security_keys_for_user(user)
+    mark_recent_mfa(client, user)
+
+    start_time = int(time.time())
+    monkeypatch.setattr("app.auth.services.time.time", lambda: start_time)
+    start_response = client.post(
+        "/mfa/setup",
+        data={
+            "action": "replace_start",
+            "totp_code": pyotp.TOTP(old_secret, digits=6, interval=30).at(start_time),
+            "stepup_token": mint_stepup_token(client, user, "mfa_replace_start"),
+        },
+    )
+    db.session.refresh(user)
+    markup = start_response.data.decode("utf-8")
+    match = re.search(r'id="replacement-manual-entry-secret"[^>]*value="([^"]+)"', markup)
+    assert match is not None
+    replacement_secret = match.group(1)
+    replacement_time = start_time + 30
+    monkeypatch.setattr("app.auth.services.time.time", lambda: replacement_time)
+    replacement_code = pyotp.TOTP(replacement_secret, digits=6, interval=30).at(replacement_time)
+    wrong_code = "000000" if replacement_code != "000000" else "000001"
+
+    wrong_response = client.post("/mfa/setup", data={"action": "replace_verify", "totp_code": wrong_code})
+    db.session.refresh(user)
+    active_secret_after_wrong_code = decrypt_test_mfa_secret(user)
+    clear_failures("mfa_replace_verify", str(user.id))
+    correct_response = client.post("/mfa/setup", data={"action": "replace_verify", "totp_code": replacement_code})
+    db.session.refresh(user)
+
+    assert start_response.status_code == 200
+    assert replacement_secret != old_secret
+    assert active_secret_after_wrong_code == old_secret
+    assert decrypt_test_mfa_secret(user) == replacement_secret
+    assert wrong_response.status_code == 401
+    assert correct_response.status_code == 302
+    assert db.session.query(SecurityAuditEvent).filter_by(event_type="mfa_replace_verify", outcome="success").count() == 1
+
+    client.post("/logout")
+    login_response = login(client)
+
+    assert login_response.status_code == 403
+    assert b"Security key sign-in required for this account" in login_response.data
+
+
+def test_unauthenticated_users_cannot_access_mfa_setup_material(client):
+    page_response = client.get("/mfa/setup")
+    web_post_response = client.post("/mfa/setup", data={"action": "start"})
+    api_post_response = client.post("/auth/mfa/setup")
+
+    assert page_response.status_code == 302
+    assert page_response.headers["Location"].endswith("/login")
+    assert web_post_response.status_code == 302
+    assert web_post_response.headers["Location"].endswith("/login")
+    assert api_post_response.status_code == 401
+
+
+def test_mfa_verify_rejects_invalid_code(client):
+    register(client)
+    login(client)
+    client.post("/mfa/setup", data={"action": "start"})
+
+    response = client.post("/mfa/setup", data={"action": "verify", "totp_code": "000000"})
+
+    assert response.status_code == 401
+
+
+def test_revoke_other_sessions_requires_mfa(client):
+    register(client)
+    login(client)
+
+    response = client.post("/sessions/revoke-others", data={"totp_code": "123456"})
+
+    assert response.status_code == 302
+    assert db.session.query(SecurityAuditEvent).filter_by(event_type="session_revoke_others").count() == 0
+
+
+def test_terminate_other_session_by_public_reference_revokes_it(app, client):
+    second_client = app.test_client()
+    register(client)
+    login(client)
+    login(second_client)
+    user, _secret = enable_mfa_for_user()
+    mark_recent_mfa(client, user)
+
+    sessions = client.get("/auth/sessions").get_json()["sessions"]
+    other_session = next(item for item in sessions if not item["current"])
+    response = client.delete(f"/auth/sessions/{other_session['session_ref']}")
+    revoked_response = second_client.get("/auth/sessions")
+
+    assert response.status_code == 200
+    assert revoked_response.status_code == 401
+    assert revoked_response.get_json()["error"] in {"Session revoked", "Authentication required"}
+
+
+def test_revoke_other_sessions_requires_fresh_totp_and_rotates_session(app, client, monkeypatch):
+    second_client = app.test_client()
+    register(client)
+    login(client)
+    login(second_client)
+
+    client.post("/mfa/setup", data={"action": "start"})
+    user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
+
+    from app.security.crypto import decrypt_mfa_secret
+
+    secret = decrypt_mfa_secret(user.mfa_secret_nonce, user.mfa_secret_ciphertext, user.id)
+    setup_time = int(time.time())
+    monkeypatch.setattr("app.auth.services.time.time", lambda: setup_time)
+    code = pyotp.TOTP(secret, digits=6, interval=30).at(setup_time)
+
+    setup_verify = client.post("/mfa/setup", data={"action": "verify", "totp_code": code})
+    add_security_keys_for_user(user)
+    with client.session_transaction() as sess:
+        session_after_setup = sess.sid
+
+    revoke_without_totp = client.post("/sessions/revoke-others")
+    api_without_totp = client.post("/auth/sessions/revoke-others", json={})
+    other_session_before_revoke = second_client.get("/auth/sessions")
+
+    revoke_time = setup_time + 30
+    monkeypatch.setattr("app.auth.services.time.time", lambda: revoke_time)
+    api_revoke_response = client.post(
+        "/auth/sessions/revoke-others",
+        json={
+            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(revoke_time),
+            "stepup_token": mint_stepup_token(client, user, "session_revoke_others"),
+        },
+    )
+    with client.session_transaction() as sess:
+        session_after_revoke = sess.sid
+    revoked_response = second_client.get("/auth/sessions")
+
+    assert setup_verify.status_code == 302
+    assert revoke_without_totp.status_code == 302
+    assert api_without_totp.status_code == 400
+    assert other_session_before_revoke.status_code == 200
+    assert api_revoke_response.status_code == 200
+    assert session_after_revoke != session_after_setup
+    assert revoked_response.status_code == 401
+
+
+def test_session_termination_rejects_unowned_session_id(client):
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    mark_recent_mfa(client, user)
+
+    response = client.post("/sessions/00000000000000000000000000000000/terminate")
+
+    assert response.status_code == 302
+    assert db.session.query(SecurityAuditEvent).filter_by(event_type="session_terminate", outcome="failure").count() == 1
+
+
+def test_session_termination_rejects_raw_internal_session_id(client):
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    mark_recent_mfa(client, user)
+
+    with client.session_transaction() as sess:
+        raw_session_id = sess.sid
+
+    response = client.delete(f"/auth/sessions/{raw_session_id}")
+    public_sessions = client.get("/auth/sessions")
+
+    assert response.status_code == 400
+    assert public_sessions.status_code == 200
+
+
+def test_web_terminating_current_session_redirects_to_login_page(client):
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    mark_recent_mfa(client, user)
+
+    sessions_page = client.get("/sessions")
+    current_ref = client.get("/auth/sessions").get_json()["sessions"][0]["session_ref"]
+    response = client.post(f"/sessions/{current_ref}/terminate")
+    login_page = client.get(response.headers["Location"])
+
+    assert sessions_page.status_code == 200
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/login")
+    assert login_page.status_code == 200
+    assert b"Log in to O$P$ Bank" in login_page.data
+    assert b"Session revoked" not in login_page.data
+
+
+def test_session_inactivity_expiry_revokes_session(client):
+    register(client)
+    login(client)
+
+    with client.session_transaction() as sess:
+        sess["last_activity_at"] = 1
+
+    response = client.get("/auth/sessions")
+
+    assert response.status_code == 401
+    assert response.get_json()["error"] == "Session expired"
+
+
+def test_pending_mfa_session_expires_by_absolute_age(app, client):
+    register(client)
+    login(client)
+    _user, secret = enable_mfa_for_user()
+    client.post("/logout")
+
+    pending_response = login(client)
+    assert pending_response.status_code == 302
+
+    with client.session_transaction() as sess:
+        assert sess["pending_mfa_user_id"]
+        sess["last_activity_at"] = int(time.time())
+        sess["password_authenticated_at"] = int(time.time()) - app.config["PENDING_MFA_MAX_AGE_SECONDS"] - 1
+
+    response = client.post(
+        "/auth/mfa/verify",
+        json={"totp_code": pyotp.TOTP(secret, digits=6, interval=30).now()},
+    )
+
+    assert response.status_code == 401
+    assert response.get_json()["error"] == "MFA challenge expired. Please log in again."
+
+
+def test_account_freeze_is_durable_and_blocks_group_a_sensitive_actions(client):
+    from app.auth.services import FrozenAccountError
+    from app.banking.services import ensure_outbound_transfer_allowed
+    from app.security.crypto import encrypt_mfa_secret
+
+    register(client)
+    login(client)
+    user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
+    secret = pyotp.random_base32(length=32)
+    user.mfa_secret_nonce, user.mfa_secret_ciphertext = encrypt_mfa_secret(secret, user.id)
+    user.mfa_enabled = True
+    db.session.commit()
+    add_security_keys_for_user(user)
+
+    response = client.post(
+        "/account/freeze",
+        data={
+            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).now(),
+            "stepup_token": mint_stepup_token(client, user, "account_freeze"),
+        },
+    )
+    db.session.refresh(user)
+
+    assert response.status_code == 302
+    assert user.is_frozen is True
+    with pytest.raises(FrozenAccountError):
+        ensure_outbound_transfer_allowed(user)
+
+
+def test_frozen_account_cannot_create_new_login_session(client):
+    register(client)
+    user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
+    user.is_frozen = True
+    user.security_locked_at = user.created_at
+    user.security_lock_reason = "manual_review"
+    db.session.commit()
+
+    response = client.post(
+        "/auth/login",
+        json={"identifier": "alice01", "password": "correct horse battery staple"},
+    )
+
+    assert response.status_code == 403
+    assert response.get_json()["error"] == "Authentication unavailable for this account"
+
+
+def test_frozen_session_can_view_dashboard_and_sessions_but_not_sensitive_actions(client):
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    user.is_frozen = True
+    user.security_locked_at = user.created_at
+    user.security_lock_reason = "manual_review"
+    db.session.commit()
+
+    dashboard_response = client.get("/dashboard")
+    sessions_response = client.get("/sessions")
+    profile_response = client.get("/profile")
+    mfa_response = client.get("/mfa/setup")
+    keys_response = client.get("/security-keys")
+    freeze_response = client.get("/account/freeze")
+
+    assert dashboard_response.status_code == 200
+    assert sessions_response.status_code == 200
+    assert profile_response.status_code == 302
+    assert mfa_response.status_code == 302
+    assert keys_response.status_code == 302
+    assert freeze_response.status_code == 302
+
+
+def test_templates_do_not_mark_user_controlled_data_safe():
+    templates = Path("app/templates").glob("*.html")
+
+    assert all("|safe" not in template.read_text(encoding="utf-8") for template in templates)
+
+
+def test_theme_assets_are_csp_compatible_and_store_only_theme_preference(client):
+    response = client.get("/")
+    script = Path("app/static/js/theme.js").read_text(encoding="utf-8")
+    stylesheet = Path("app/static/css/app.css").read_text(encoding="utf-8")
+    logo = Path("app/static/img/osp-bank-mark.svg").read_text(encoding="utf-8")
+
+    assert response.status_code == 200
+    assert b'/static/js/theme.js' in response.data
+    assert b"<script>" not in response.data
+    assert b"data-theme-toggle" in response.data
+    assert b"data-theme-toggle-icon" in response.data
+    assert b'aria-label="Switch to dark mode"' in response.data
+    assert b'title="Switch to dark mode"' in response.data
+    assert "Switch to light mode" in script
+    assert "Switch to dark mode" in script
+    assert 'setAttribute("title", actionLabel)' in script
+    assert 'data-icon", isDark ? "sun" : "moon"' in script
+    assert "localStorage" in script
+    assert "osp-theme" in script
+    assert "token" not in script.casefold()
+    assert "session" not in script.casefold()
+    assert "username" not in script.casefold()
+    assert "--security: #143f66;" in stylesheet
+    assert "--security: #86b9ec;" in stylesheet
+    assert ".nav a.button" in stylesheet
+    assert "--button-primary-text: #071421;" in stylesheet
+    assert ".quick-card" in stylesheet
+    assert ".profile-status-copy" in stylesheet
+    assert ".alert {" in stylesheet
+    assert "display: flex;" in stylesheet
+    assert "flex: 0 0 14px;" in stylesheet
+    assert ".mfa-step.is-complete .step-number" in stylesheet
+    assert "background: var(--success);" not in stylesheet
+    assert "#0f766e" not in logo
+    assert 'fill="#143f66"' in logo
+    assert 'fill="#28628f"' in logo
+
+
+def test_authenticated_layout_contains_working_profile_menu_destinations(client):
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    mark_recent_mfa(client, user)
+
+    response = client.get("/dashboard")
+    markup = response.data.decode("utf-8")
+
+    assert response.status_code == 200
+    assert 'data-account-menu' in markup
+    assert 'aria-expanded="false"' in markup
+    assert 'href="/profile"' in markup
+    assert "Edit Profile" in markup
+    assert "Change Password" in markup
+    assert 'aria-disabled="true">Change Password' in markup
+    assert 'href="/password/change"' not in markup
+    assert "Authenticator MFA" in markup
+    assert "Active Sessions" in markup
+    assert "Security Keys" in markup
+    assert "Freeze Account" in markup
+    assert "Log Out" in markup
+    assert markup.index('href="/mfa/setup"') < markup.index('href="/security-keys"') < markup.index('href="/sessions"')
+    assert "No hardware security keys are enrolled yet" in markup
+    assert "Transaction-ready" not in markup
+
+
+def test_security_key_setup_prompts_for_authenticator_mfa_first(client):
+    register(client)
+    login(client)
+
+    response = client.get("/security-keys")
+
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/mfa/setup")
+
+
+def test_public_layout_does_not_expose_authenticated_account_actions(client):
+    response = client.get("/login")
+    markup = response.data.decode("utf-8")
+
+    assert response.status_code == 200
+    assert "data-account-menu" not in markup
+    assert "Edit Profile" not in markup
+    assert "data-webauthn-login-form" in markup
+    assert "Available after two approved hardware security keys are registered." in markup
+    assert 'href="/profile"' not in markup
+    assert 'action="/logout"' not in markup
+
+
+def test_authentication_pages_have_password_helpers_and_mfa_back_link(client):
+    register_page = client.get("/register")
+    login_page = client.get("/login")
+    register(client)
+    user, secret = enable_mfa_for_user()
+    client.post("/logout")
+    login(client)
+    mfa_page = client.get("/mfa/verify")
+
+    assert register_page.status_code == 200
+    assert login_page.status_code == 200
+    assert mfa_page.status_code == 200
+    assert "data-password-toggle" in register_page.data.decode("utf-8")
+    assert "data-password-strength" in register_page.data.decode("utf-8")
+    assert "data-password-toggle" in login_page.data.decode("utf-8")
+    assert "Back to login" in mfa_page.data.decode("utf-8")
+
+
+def test_flash_messages_are_dismissible(client):
+    response = client.post(
+        "/register",
+        data={
+            "username": "flash01",
+            "email": "flash@example.com",
+            "password": "correct horse battery staple",
+            "confirm_password": "correct horse battery staple",
+        },
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert "data-alert-dismiss" in response.data.decode("utf-8")
+
+
+def test_landing_route_public_for_anonymous_and_dashboard_for_authenticated(client):
+    public_response = client.get("/")
+
+    register(client)
+    login(client)
+    authenticated_response = client.get("/")
+
+    assert public_response.status_code == 200
+    assert b"Log in securely" in public_response.data
+    assert authenticated_response.status_code == 302
+    assert authenticated_response.headers["Location"].endswith("/dashboard")
+
+
+def test_authenticated_brand_link_targets_dashboard(client):
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    mark_recent_mfa(client, user)
+
+    response = client.get("/dashboard")
+    markup = response.data.decode("utf-8")
+
+    assert response.status_code == 200
+    assert '<a class="brand" href="/dashboard"' in markup
+
+
+def test_profile_requires_authentication(client):
+    response = client.get("/profile")
+
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/login")
+
+
+def test_authenticated_user_can_open_own_edit_profile_page(client):
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    mark_recent_mfa(client, user)
+
+    response = client.get("/profile")
+    markup = response.data.decode("utf-8")
+
+    assert response.status_code == 200
+    assert b"Edit profile" in response.data
+    assert b"alice01" in response.data
+    assert b"alice@example.com" in response.data
+    assert 'name="username"' not in markup
+    assert 'name="email"' not in markup
+    assert "Update profile details" in markup
+    assert "Save profile" not in markup
+    assert "Security keys required" in markup
+    assert "Manage keys" in markup
+    assert "Manage MFA" in markup
+    assert "Change password" in markup
+    assert 'aria-disabled="true">Change password' in markup
+    assert 'href="/password/change"' not in markup
+    assert "profile-status-copy" in markup
+    assert "Hardware keys are used for future high-risk transaction approval." in markup
+    assert 'href="/security-keys"' in markup
+    assert 'class="badge warning"' not in markup
+
+
+def test_profile_enables_change_password_action_after_mfa_setup(client):
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    add_security_keys_for_user(user)
+
+    response = client.get("/profile")
+    markup = response.data.decode("utf-8")
+
+    assert response.status_code == 200
+    assert "Change available" in markup
+    assert 'href="/password/change"' in markup
+    assert 'aria-disabled="true">Change password' not in markup
+
+
+def test_password_change_page_requires_mfa_setup(client):
+    register(client)
+    login(client)
+
+    response = client.get("/password/change")
+
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/mfa/setup")
+
+
+def test_password_change_succeeds_with_recent_mfa_and_revokes_other_sessions(app, client, monkeypatch):
+    from app.security.rate_limits import clear_failures
+
+    second_client = app.test_client()
+    register(client)
+    login(client)
+    login(second_client)
+    user, secret = enable_mfa_for_user()
+    add_security_keys_for_user(user)
+    mark_recent_mfa(client, user)
+    stepup_token = mint_stepup_token(client, user, "password_change")
+    old_hash = user.password_hash
+    change_time = int(time.time())
+    monkeypatch.setattr("app.auth.services.time.time", lambda: change_time)
+    with client.session_transaction() as sess:
+        session_before_change = sess.sid
+
+    response = client.post(
+        "/password/change",
+        data={
+            "current_password": "correct horse battery staple",
+            "new_password": "new correct horse battery staple",
+            "confirm_new_password": "new correct horse battery staple",
+            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(change_time),
+            "stepup_token": stepup_token,
+        },
+    )
+    db.session.refresh(user)
+    with client.session_transaction() as sess:
+        session_after_change = sess.sid
+    client.post("/logout")
+    old_login = login(client)
+    clear_failures("login", "127.0.0.1:alice01")
+    new_login = login(client, password="new correct horse battery staple")
+    revoked_response = second_client.get("/auth/sessions")
+
+    assert response.status_code == 302
+    assert session_after_change != session_before_change
+    assert user.password_hash != old_hash
+    assert old_login.status_code == 401
+    assert new_login.status_code == 403
+    assert b"Security key sign-in required for this account" in new_login.data
+    assert revoked_response.status_code == 401
+    assert db.session.query(SecurityAuditEvent).filter_by(event_type="password_change", outcome="success").count() == 1
+
+
+def test_password_change_rejects_recent_mfa_without_new_totp(client):
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    add_security_keys_for_user(user)
+    mark_recent_mfa(client, user)
+    old_hash = user.password_hash
+
+    response = client.post(
+        "/password/change",
+        data={
+            "current_password": "correct horse battery staple",
+            "new_password": "new correct horse battery staple",
+            "confirm_new_password": "new correct horse battery staple",
+            "stepup_token": mint_stepup_token(client, user, "password_change"),
+        },
+    )
+    db.session.refresh(user)
+
+    assert response.status_code == 401
+    assert user.password_hash == old_hash
+
+
+def test_password_change_rejects_common_or_reused_password(client):
+    register(client)
+    login(client)
+    user, secret = enable_mfa_for_user()
+    add_security_keys_for_user(user)
+    mark_recent_mfa(client, user)
+
+    reused_response = client.post(
+        "/password/change",
+        data={
+            "current_password": "correct horse battery staple",
+            "new_password": "correct horse battery staple",
+            "confirm_new_password": "correct horse battery staple",
+        },
+    )
+    common_response = client.post(
+        "/password/change",
+        data={
+            "current_password": "correct horse battery staple",
+            "new_password": "password",
+            "confirm_new_password": "password",
+            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).now(),
+            "stepup_token": mint_stepup_token(client, user, "password_change"),
+        },
+    )
+
+    assert reused_response.status_code == 400
+    assert common_response.status_code == 400
+
+
+def test_profile_details_update_succeeds_for_authenticated_user(client):
+    register(client)
+    login(client)
+    user, secret = enable_mfa_for_user()
+    add_security_keys_for_user(user)
+
+    response = client.post(
+        "/profile",
+        data={
+            "username": "alice02",
+            "email": "alice.new@example.com",
+            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).now(),
+            "stepup_token": mint_stepup_token(client, user, "profile_update"),
+        },
+    )
+    db.session.refresh(user)
+    client.post("/logout")
+    new_username_login = login(client, identifier="alice02")
+
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/profile")
+    assert user.username == "alice02"
+    assert user.email == "alice.new@example.com"
+    assert new_username_login.status_code == 403
+    assert b"Security key sign-in required for this account" in new_username_login.data
+    assert db.session.query(SecurityAuditEvent).filter_by(event_type="profile_update", outcome="success").count() == 1
+
+
+def test_profile_email_update_requires_current_totp_and_rotates_session(client):
+    register(client)
+    login(client)
+    user, secret = enable_mfa_for_user()
+    add_security_keys_for_user(user)
+    mark_recent_mfa(client, user)
+    with client.session_transaction() as sess:
+        session_before_update = sess.sid
+
+    response = client.post(
+        "/profile",
+        data={
+            "username": "alice01",
+            "email": "alice.mfa@example.com",
+            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).now(),
+            "stepup_token": mint_stepup_token(client, user, "profile_update"),
+        },
+    )
+    db.session.refresh(user)
+    with client.session_transaction() as sess:
+        session_after_update = sess.sid
+
+    assert response.status_code == 302
+    assert session_after_update != session_before_update
+    assert user.email == "alice.mfa@example.com"
+
+
+def test_profile_email_update_rejects_recent_mfa_without_new_totp(client):
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    add_security_keys_for_user(user)
+    mark_recent_mfa(client, user)
+
+    response = client.post(
+        "/profile",
+        data={
+            "username": "alice01",
+            "email": "alice.mfa@example.com",
+            "stepup_token": mint_stepup_token(client, user, "profile_update"),
+        },
+    )
+    db.session.refresh(user)
+
+    assert response.status_code == 401
+    assert user.email == "alice@example.com"
+
+
+def test_profile_update_rejects_invalid_email(client):
+    register(client)
+    login(client)
+    user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
+    mark_recent_mfa(client, user)
+
+    response = client.post("/profile", data={"username": "alice01", "email": "not-an-email"})
+    db.session.refresh(user)
+
+    assert response.status_code == 400
+    assert user.email == "alice@example.com"
+
+
+def test_profile_update_rejects_invalid_username(client):
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+
+    response = client.post("/profile", data={"username": "bad user", "email": "alice@example.com"})
+    db.session.refresh(user)
+
+    assert response.status_code == 400
+    assert user.username == "alice01"
+
+
+def test_profile_update_rejects_duplicate_username(client):
+    register(client)
+    register(client, username="bob02", email="bob@example.com")
+    login(client)
+    user, _secret = enable_mfa_for_user()
+
+    response = client.post("/profile", data={"username": "BOB02", "email": "alice@example.com"})
+    db.session.refresh(user)
+
+    assert response.status_code == 400
+    assert user.username == "alice01"
+    assert db.session.query(SecurityAuditEvent).filter_by(event_type="profile_update", outcome="failure").count() == 1
+
+
+def test_profile_update_rejects_duplicate_email(client):
+    register(client)
+    register(client, username="bob02", email="bob@example.com")
+    login(client)
+    user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
+    mark_recent_mfa(client, user)
+
+    response = client.post("/profile", data={"username": "alice01", "email": "bob@example.com"})
+    db.session.refresh(user)
+
+    assert response.status_code == 400
+    assert user.email == "alice@example.com"
+    assert db.session.query(SecurityAuditEvent).filter_by(event_type="profile_update", outcome="failure").count() == 1
+
+
+def test_profile_post_requires_csrf_when_enabled(app, client):
+    register(client)
+    login(client)
+    original = app.config["WTF_CSRF_ENABLED"]
+    app.config["WTF_CSRF_ENABLED"] = True
+
+    try:
+        response = client.post("/profile", data={"username": "alice02", "email": "alice.new@example.com"})
+    finally:
+        app.config["WTF_CSRF_ENABLED"] = original
+
+    assert response.status_code == 400
+
+
+def test_profile_submission_cannot_modify_privileged_fields(client):
+    register(client)
+    register(client, username="bob02", email="bob@example.com")
+    login(client)
+    user, secret = enable_mfa_for_user()
+    add_security_keys_for_user(user)
+    other_user = db.session.execute(db.select(User).where(User.username == "bob02")).scalar_one()
+    original_password_hash = user.password_hash
+
+    response = client.post(
+        "/profile",
+        data={
+            "username": "alice02",
+            "email": "alice.new@example.com",
+            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).now(),
+            "stepup_token": mint_stepup_token(client, user, "profile_update"),
+            "user_id": str(other_user.id),
+            "mfa_enabled": "true",
+            "is_frozen": "true",
+            "password_hash": "not-a-real-hash",
+            "role": "admin",
+        },
+    )
+    db.session.refresh(user)
+    db.session.refresh(other_user)
+
+    assert response.status_code == 302
+    assert user.username == "alice02"
+    assert user.email == "alice.new@example.com"
+    assert user.mfa_enabled is True
+    assert user.is_frozen is False
+    assert user.password_hash == original_password_hash
+    assert other_user.username == "bob02"
+    assert other_user.email == "bob@example.com"
+
+
+def test_hash_password_uses_configured_pbkdf2_iterations(app):
+    with app.app_context():
+        password_hash = hash_password("correct horse battery staple")
+
+    assert password_hash.startswith(f"{PBKDF2_PREFIX}$v1$i=600000$")
+
+
+def test_pending_web_mfa_expiry_redirects_to_login_and_audits(app, client):
+    register(client)
+    _user, _secret = enable_mfa_for_user()
+    login(client)
+
+    with client.session_transaction() as sess:
+        sess["password_authenticated_at"] = int(time.time()) - app.config["PENDING_MFA_MAX_AGE_SECONDS"] - 1
+
+    response = client.get("/mfa/verify", follow_redirects=True)
+
+    assert response.status_code == 200
+    assert b"MFA challenge expired. Please log in again." in response.data
+    assert db.session.query(SecurityAuditEvent).filter_by(event_type="mfa_login_expired", outcome="expired").count() == 1
+
+
+def test_pending_api_mfa_expiry_returns_stable_error_code(app, client):
+    register(client)
+    _user, secret = enable_mfa_for_user()
+    login(client)
+
+    with client.session_transaction() as sess:
+        sess["password_authenticated_at"] = int(time.time()) - app.config["PENDING_MFA_MAX_AGE_SECONDS"] - 1
+
+    response = client.post(
+        "/auth/mfa/verify",
+        json={"totp_code": pyotp.TOTP(secret, digits=6, interval=30).now()},
+    )
+
+    assert response.status_code == 401
+    assert response.get_json() == {
+        "error": "MFA challenge expired. Please log in again.",
+        "code": "mfa_challenge_expired",
+    }
+
+
+def test_high_risk_stepup_token_is_scoped_one_time_and_expirable(app, client):
+    from app.auth.webauthn_services import _step_up_token_cache_key
+
+    second_client = app.test_client()
+    register(client)
+    login(client)
+    user, secret = enable_mfa_for_user()
+    add_security_keys_for_user(user)
+    totp = pyotp.TOTP(secret, digits=6, interval=30)
+
+    wrong_action_token = mint_stepup_token(client, user, "password_change")
+    wrong_action_response = client.post(
+        "/profile",
+        data={
+            "username": "alice01",
+            "email": "wrong-action@example.com",
+            "totp_code": totp.now(),
+            "stepup_token": wrong_action_token,
+        },
+    )
+    db.session.refresh(user)
+
+    session_scoped_token = mint_stepup_token(client, user, "profile_update")
+    now = int(time.time())
+    with second_client.session_transaction() as sess:
+        sess["user_id"] = user.id
+        sess["auth_context"] = "password+mfa_bootstrap"
+        sess["login_at"] = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(now))
+        sess["last_activity_at"] = now
+    wrong_session_response = second_client.post(
+        "/profile",
+        data={
+            "username": "alice01",
+            "email": "wrong-session@example.com",
+            "totp_code": totp.now(),
+            "stepup_token": session_scoped_token,
+        },
+    )
+    db.session.refresh(user)
+
+    valid_token = mint_stepup_token(client, user, "profile_update")
+    success_response = client.post(
+        "/profile",
+        data={
+            "username": "alice01",
+            "email": "alice.stepup@example.com",
+            "totp_code": totp.now(),
+            "stepup_token": valid_token,
+        },
+    )
+    db.session.refresh(user)
+    reuse_response = client.post(
+        "/profile",
+        data={
+            "username": "alice01",
+            "email": "reuse-token@example.com",
+            "totp_code": totp.now(),
+            "stepup_token": valid_token,
+        },
+    )
+    db.session.refresh(user)
+
+    expired_token = mint_stepup_token(client, user, "profile_update")
+    current_app.extensions["redis"].delete(_step_up_token_cache_key(expired_token))
+    expired_response = client.post(
+        "/profile",
+        data={
+            "username": "alice01",
+            "email": "expired-token@example.com",
+            "totp_code": totp.now(),
+            "stepup_token": expired_token,
+        },
+    )
+    db.session.refresh(user)
+
+    assert wrong_action_response.status_code == 403
+    assert wrong_session_response.status_code == 403
+    assert success_response.status_code == 302
+    assert user.email == "alice.stepup@example.com"
+    assert reuse_response.status_code == 403
+    assert expired_response.status_code == 403
+    assert db.session.query(SecurityAuditEvent).filter_by(event_type="webauthn_step_up_consume", outcome="expired").count() >= 1
+
+
+def test_high_risk_action_without_two_keys_returns_enrollment_error(client):
+    register(client)
+    login(client)
+    user, secret = enable_mfa_for_user()
+
+    response = client.post(
+        "/profile",
+        data={
+            "username": "alice01",
+            "email": "alice.needs-keys@example.com",
+            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).now(),
+        },
+    )
+    db.session.refresh(user)
+
+    assert response.status_code == 403
+    assert b"Two registered security keys are required for this action" in response.data
+    assert user.email == "alice@example.com"
+
+
+def test_api_onboarding_requires_totp_before_authenticated_endpoints(client):
+    register(client)
+    login(client)
+
+    sessions_response = client.get("/auth/sessions")
+    csrf_response = client.get("/auth/csrf-token")
+
+    assert sessions_response.status_code == 403
+    assert sessions_response.get_json() == {
+        "error": "Authenticator MFA setup required",
+        "code": "mfa_setup_required",
+    }
+    assert csrf_response.status_code == 200
+
+
+def test_totp_user_without_security_keys_can_navigate_but_high_risk_actions_are_locked(client):
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    mark_recent_mfa(client, user)
+
+    dashboard_response = client.get("/dashboard")
+    profile_response = client.get("/profile")
+    sessions_response = client.get("/sessions")
+    keys_response = client.get("/security-keys")
+    password_response = client.get("/password/change")
+    freeze_response = client.get("/account/freeze")
+
+    assert dashboard_response.status_code == 200
+    assert profile_response.status_code == 200
+    assert sessions_response.status_code == 200
+    assert keys_response.status_code == 200
+    assert password_response.status_code == 302
+    assert password_response.headers["Location"].endswith("/security-keys")
+    assert freeze_response.status_code == 200
+    assert b"Security keys required" in profile_response.data
+    assert b"Security keys required" in sessions_response.data
+    assert b"Security keys required" in freeze_response.data
+
+
+def test_session_risk_drift_requires_reauth_before_sensitive_action(client):
+    register(client)
+    login(client)
+    user, secret = enable_mfa_for_user()
+    add_security_keys_for_user(user)
+    mark_recent_mfa(client, user)
+    token = mint_stepup_token(client, user, "profile_update")
+    with client.session_transaction() as sess:
+        sess["risk_fingerprint"] = "tampered"
+
+    response = client.post(
+        "/profile",
+        data={
+            "username": "alice01",
+            "email": "alice.drift@example.com",
+            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).now(),
+            "stepup_token": token,
+        },
+    )
+    db.session.refresh(user)
+
+    assert response.status_code == 401
+    assert b"Session verification required. Please sign in again." in response.data
+    assert user.email == "alice@example.com"
+    assert db.session.query(SecurityAuditEvent).filter_by(event_type="session_risk", outcome="step_up_required").count() == 1
+
+
+def test_audit_metadata_strips_control_characters_and_redacts_secrets(app):
+    from app.security.audit import audit_event
+
+    with app.test_request_context("/"):
+        audit_event(
+            "audit_hygiene",
+            "success",
+            metadata={
+                "note": "line1\r\nline2\tend",
+                "password\nfield": "secret-value",
+                "amount": "10.00",
+            },
+        )
+
+    event = db.session.query(SecurityAuditEvent).filter_by(event_type="audit_hygiene").one()
+
+    assert event.event_metadata["note"] == "line1 line2 end"
+    assert event.event_metadata["password field"] == "[redacted]"
+    assert event.event_metadata["amount"] == "10.00"
+
+
+def test_production_env_docs_require_pbkdf2_pepper_not_bcrypt():
+    required = Path("ops/production-env.required").read_text(encoding="utf-8")
+    readme = Path("README.md").read_text(encoding="utf-8")
+
+    for setting in (
+        "PASSWORD_PEPPER_B64",
+        "PASSWORD_PBKDF2_ITERATIONS",
+        "WEBAUTHN_APPROVED_AAGUIDS_PATH",
+        "WEBAUTHN_MDS_CACHE_PATH",
+    ):
+        assert setting in required
+        assert setting in readme
+    assert "BCRYPT_ROUNDS" not in required
+    assert "BCRYPT_ROUNDS" not in readme
+
+
+def test_checked_in_fido_allowlist_is_not_empty_or_test_placeholder():
+    approved = json.loads(Path("ops/fido-approved-aaguids.json").read_text(encoding="utf-8"))
+    cache = json.loads(Path("ops/fido-mds-cache.json").read_text(encoding="utf-8"))
+    approved_aaguids = approved["approved_aaguids"]
+    cache_aaguids = {entry["aaguid"] for entry in cache["entries"]}
+
+    assert len(approved_aaguids) >= 1
+    assert "11111111-1111-1111-1111-111111111111" not in approved_aaguids
+    assert set(approved_aaguids).issubset(cache_aaguids)
+
+
+def test_future_transaction_payload_guardrails_reject_server_controlled_fields():
+    from app.auth.services import AuthError
+    from app.banking.services import validate_public_transaction_payload
+
+    with pytest.raises(AuthError):
+        validate_public_transaction_payload({"idempotency_key": "txn-1", "amount": "10.00", "account_id": "acct-1"})
+    with pytest.raises(AuthError):
+        validate_public_transaction_payload({"amount": "10.00", "currency": "SGD"})
+
+    validate_public_transaction_payload(
+        {
+            "idempotency_key": "txn-2",
+            "amount": "10.00",
+            "currency": "SGD",
+            "payee": "PAYEE-001",
+        }
+    )

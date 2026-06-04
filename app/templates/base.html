@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}O$P$ Bank{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+    <script src="{{ url_for('static', filename='js/theme.js') }}" defer></script>
+    <script src="{{ url_for('static', filename='js/webauthn.js') }}" defer></script>
+    <script src="{{ url_for('static', filename='js/account.js') }}" defer></script>
+  </head>
+  <body>
+    <svg class="icon-sprite" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
+      <symbol id="icon-theme-sun" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="4"></circle>
+        <path d="M12 2v2"></path>
+        <path d="M12 20v2"></path>
+        <path d="m4.93 4.93 1.41 1.41"></path>
+        <path d="m17.66 17.66 1.41 1.41"></path>
+        <path d="M2 12h2"></path>
+        <path d="M20 12h2"></path>
+        <path d="m6.34 17.66-1.41 1.41"></path>
+        <path d="m19.07 4.93-1.41 1.41"></path>
+      </symbol>
+      <symbol id="icon-theme-moon" viewBox="0 0 24 24">
+        <path d="M21 12.8A8.5 8.5 0 1 1 11.2 3a6.8 6.8 0 0 0 9.8 9.8Z"></path>
+      </symbol>
+      <symbol id="icon-shield-check" viewBox="0 0 24 24">
+        <path d="M12 3 19 6v5c0 5-3 8.5-7 10-4-1.5-7-5-7-10V6l7-3Z"></path>
+        <path d="m9 12 2 2 4-5"></path>
+      </symbol>
+      <symbol id="icon-freeze" viewBox="0 0 24 24">
+        <path d="M12 3v18"></path>
+        <path d="m8 5 4 4 4-4"></path>
+        <path d="m8 19 4-4 4 4"></path>
+        <path d="M3 12h18"></path>
+        <path d="m5 8 4 4-4 4"></path>
+        <path d="m19 8-4 4 4 4"></path>
+      </symbol>
+      <symbol id="icon-session" viewBox="0 0 24 24">
+        <rect x="3" y="4" width="18" height="13" rx="2"></rect>
+        <path d="M8 21h8"></path>
+        <path d="M12 17v4"></path>
+        <path d="m9 10 2 2 4-4"></path>
+      </symbol>
+      <symbol id="icon-reference" viewBox="0 0 24 24">
+        <path d="M10 13a5 5 0 0 0 7.1 0l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1"></path>
+        <path d="M14 11a5 5 0 0 0-7.1 0l-2 2a5 5 0 0 0 7.1 7.1l1.1-1.1"></path>
+      </symbol>
+      <symbol id="icon-education" viewBox="0 0 24 24">
+        <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v17H6.5A2.5 2.5 0 0 1 4 17.5Z"></path>
+        <path d="M4 17.5A2.5 2.5 0 0 0 6.5 20"></path>
+        <path d="M8 7h8"></path>
+        <path d="M8 11h6"></path>
+      </symbol>
+      <symbol id="icon-lock" viewBox="0 0 24 24">
+        <rect x="5" y="11" width="14" height="10" rx="2"></rect>
+        <path d="M8 11V8a4 4 0 0 1 8 0v3"></path>
+        <path d="M12 15v2"></path>
+      </symbol>
+      <symbol id="icon-controls" viewBox="0 0 24 24">
+        <path d="M4 6h9"></path>
+        <path d="M17 6h3"></path>
+        <circle cx="15" cy="6" r="2"></circle>
+        <path d="M4 12h3"></path>
+        <path d="M11 12h9"></path>
+        <circle cx="9" cy="12" r="2"></circle>
+        <path d="M4 18h11"></path>
+        <path d="M19 18h1"></path>
+        <circle cx="17" cy="18" r="2"></circle>
+      </symbol>
+      <symbol id="icon-alert" viewBox="0 0 24 24">
+        <path d="m12 3 10 18H2L12 3Z"></path>
+        <path d="M12 9v5"></path>
+        <path d="M12 17h.01"></path>
+      </symbol>
+      <symbol id="icon-info" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="9"></circle>
+        <path d="M12 11v5"></path>
+        <path d="M12 8h.01"></path>
+      </symbol>
+      <symbol id="icon-check-circle" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="9"></circle>
+        <path d="m8.5 12.5 2.5 2.5 5.5-6"></path>
+      </symbol>
+      <symbol id="icon-refresh" viewBox="0 0 24 24">
+        <path d="M4 12a8 8 0 0 1 13.7-5.7"></path>
+        <path d="M18 3v5h-5"></path>
+        <path d="M20 12a8 8 0 0 1-13.7 5.7"></path>
+        <path d="M6 21v-5h5"></path>
+      </symbol>
+      <symbol id="icon-user" viewBox="0 0 24 24">
+        <circle cx="12" cy="8" r="4"></circle>
+        <path d="M4.5 21a7.5 7.5 0 0 1 15 0"></path>
+      </symbol>
+    </svg>
+    <a class="skip-link" href="#main-content">Skip to main content</a>
+    <header class="site-header">
+      <div class="header-inner">
+        <a class="brand" href="{{ url_for('web.dashboard') if g.current_user else url_for('main.index') }}" aria-label="O$P$ Bank home">
+          <img class="brand-mark" src="{{ url_for('static', filename='img/osp-bank-mark.svg') }}" alt="" aria-hidden="true">
+          <span class="brand-copy">
+            <span class="brand-name">O$P$ Bank</span>
+            <span class="brand-subtitle">ScamCentre</span>
+          </span>
+        </a>
+
+        <button class="nav-toggle" type="button" data-nav-toggle aria-expanded="false" aria-controls="primary-nav">
+          <span class="nav-toggle-bars" aria-hidden="true"></span>
+          <span class="sr-only">Menu</span>
+        </button>
+
+        <nav class="nav" id="primary-nav" aria-label="Primary navigation" data-nav-menu>
+          <div class="nav-links">
+            {% if g.current_user %}
+              {% if g.current_user.mfa_enabled %}
+                <a href="{{ url_for('web.dashboard') }}"{% if request.endpoint == "web.dashboard" %} aria-current="page"{% endif %}>Dashboard</a>
+                <a href="{{ url_for('web.profile') }}"{% if request.endpoint in ("web.profile", "web.profile_submit") %} aria-current="page"{% endif %}>Profile</a>
+              {% endif %}
+              <a href="{{ url_for('web.mfa_setup') }}"{% if request.endpoint in ("web.mfa_setup", "web.mfa_setup_submit") %} aria-current="page"{% endif %}>MFA</a>
+              {% if g.current_user.mfa_enabled %}
+                <a href="{{ url_for('web.security_keys') }}"{% if request.endpoint in ("web.security_keys", "web.security_key_revoke") %} aria-current="page"{% endif %}>Security Keys</a>
+                <a href="{{ url_for('web.sessions_dashboard') }}"{% if request.endpoint == "web.sessions_dashboard" %} aria-current="page"{% endif %}>Sessions</a>
+                {% if g.high_risk_ready %}
+                  <a href="{{ url_for('web.freeze_account') }}"{% if request.endpoint == "web.freeze_account" %} aria-current="page"{% endif %}>Freeze</a>
+                {% else %}
+                  <a class="is-disabled" aria-disabled="true">Freeze</a>
+                {% endif %}
+              {% endif %}
+            {% else %}
+              <a href="{{ url_for('web.login') }}"{% if request.endpoint == "web.login" %} aria-current="page"{% endif %}>Login</a>
+              <a class="button button-small" href="{{ url_for('web.register_form') }}">Register</a>
+            {% endif %}
+          </div>
+          <div class="nav-actions">
+            <button class="theme-toggle icon-button" type="button" data-theme-toggle aria-pressed="false" aria-label="Switch to dark mode" title="Switch to dark mode">
+              <span class="theme-icon" aria-hidden="true" data-theme-toggle-icon>
+                <svg class="icon" focusable="false"><use href="#icon-theme-moon"></use></svg>
+              </span>
+              <span class="sr-only" data-theme-toggle-label>Switch to dark mode</span>
+            </button>
+            {% if g.current_user %}
+              <div class="account-menu" data-account-menu>
+                <button class="account-trigger" type="button" id="account-menu-button" aria-haspopup="menu" aria-expanded="false" aria-controls="account-menu-panel" data-account-trigger>
+                  <span class="account-avatar" aria-hidden="true">
+                    <svg class="icon" focusable="false"><use href="#icon-user"></use></svg>
+                  </span>
+                  <span class="account-trigger-copy">
+                    <span class="sr-only">Account</span>
+                    <span class="account-trigger-name">{{ g.current_user.username }}</span>
+                  </span>
+                </button>
+                <div class="account-panel" id="account-menu-panel" role="menu" aria-labelledby="account-menu-button" data-account-panel hidden>
+                  {% if g.current_user.mfa_enabled %}
+                    <a role="menuitem" href="{{ url_for('web.dashboard') }}">Dashboard</a>
+                    <a role="menuitem" href="{{ url_for('web.profile') }}">Edit Profile</a>
+                    {% if g.high_risk_ready %}
+                      <a role="menuitem" href="{{ url_for('web.password_change') }}">Change Password</a>
+                    {% else %}
+                      <a role="menuitem" class="is-disabled" aria-disabled="true">Change Password</a>
+                    {% endif %}
+                  {% else %}
+                    <a role="menuitem" class="is-disabled" aria-disabled="true">Change Password</a>
+                  {% endif %}
+                  <a role="menuitem" href="{{ url_for('web.mfa_setup') }}">Authenticator MFA</a>
+                  {% if g.current_user.mfa_enabled %}
+                    <a role="menuitem" href="{{ url_for('web.security_keys') }}">Security Keys</a>
+                    <a role="menuitem" href="{{ url_for('web.sessions_dashboard') }}">Active Sessions</a>
+                    {% if g.high_risk_ready %}
+                      <a role="menuitem" href="{{ url_for('web.freeze_account') }}">Freeze Account</a>
+                    {% else %}
+                      <a role="menuitem" class="is-disabled" aria-disabled="true">Freeze Account</a>
+                    {% endif %}
+                  {% endif %}
+                  <form class="account-menu-form" method="post" action="{{ url_for('web.logout') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button role="menuitem" type="submit">Log Out</button>
+                  </form>
+                </div>
+              </div>
+            {% endif %}
+          </div>
+        </nav>
+      </div>
+    </header>
+
+    <main class="page" id="main-content">
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          <section class="alerts" aria-label="Status messages">
+            {% for category, message in messages %}
+              <div class="alert alert-{{ category }}">
+                <span>{{ message }}</span>
+                <button class="alert-dismiss" type="button" data-alert-dismiss aria-label="Dismiss message">Dismiss</button>
+              </div>
+            {% endfor %}
+          </section>
+        {% endif %}
+      {% endwith %}
+
+      {% block content %}{% endblock %}
+    </main>
+
+    <footer class="site-footer">
+      <div class="footer-inner">
+        <section class="footer-brand" aria-label="Service information">
+          <h2 class="footer-heading">O$P$ Bank / ScamCentre</h2>
+          <p>Simulated online banking portal for secure account-access practice. This is not a real bank, payment service, or licensed financial institution.</p>
+          <p>Use only self-created sample accounts. Do not enter real banking credentials or financial data.</p>
+        </section>
+
+        <section class="footer-column" aria-label="Sitemap">
+          <h2 class="footer-heading">Sitemap</h2>
+          <ul class="footer-links">
+            {% if g.current_user %}
+              {% if g.current_user.mfa_enabled %}
+                <li><a href="{{ url_for('web.dashboard') }}">Dashboard</a></li>
+                <li><a href="{{ url_for('web.profile') }}">Profile</a></li>
+                {% if g.high_risk_ready %}
+                  <li><a href="{{ url_for('web.password_change') }}">Password</a></li>
+                {% else %}
+                  <li><a class="is-disabled" aria-disabled="true">Password</a></li>
+                {% endif %}
+              {% endif %}
+              <li><a href="{{ url_for('web.mfa_setup') }}">MFA</a></li>
+              {% if g.current_user.mfa_enabled %}
+                <li><a href="{{ url_for('web.security_keys') }}">Security Keys</a></li>
+                <li><a href="{{ url_for('web.sessions_dashboard') }}">Sessions</a></li>
+                {% if g.high_risk_ready %}
+                  <li><a href="{{ url_for('web.freeze_account') }}">Freeze</a></li>
+                {% else %}
+                  <li><a class="is-disabled" aria-disabled="true">Freeze</a></li>
+                {% endif %}
+              {% endif %}
+            {% else %}
+              <li><a href="{{ url_for('main.index') }}">Home</a></li>
+              <li><a href="{{ url_for('web.login') }}">Login</a></li>
+              <li><a href="{{ url_for('web.register_form') }}">Register</a></li>
+            {% endif %}
+          </ul>
+        </section>
+
+        <section class="footer-column" aria-label="Account security">
+          <h2 class="footer-heading">Account Security</h2>
+          <ul class="footer-links">
+            {% if g.current_user %}
+              {% if g.current_user.mfa_enabled and g.high_risk_ready %}
+                <li><a href="{{ url_for('web.password_change') }}">Change password</a></li>
+              {% else %}
+                <li><a class="is-disabled" aria-disabled="true">Change password</a></li>
+              {% endif %}
+              <li><a href="{{ url_for('web.mfa_setup') }}">Manage authenticator MFA</a></li>
+              {% if g.current_user.mfa_enabled %}
+                <li><a href="{{ url_for('web.security_keys') }}">Manage security keys</a></li>
+                <li><a href="{{ url_for('web.sessions_dashboard') }}">Review active sessions</a></li>
+                {% if g.high_risk_ready %}
+                  <li><a href="{{ url_for('web.freeze_account') }}">Freeze account</a></li>
+                {% else %}
+                  <li><a class="is-disabled" aria-disabled="true">Freeze account</a></li>
+                {% endif %}
+              {% endif %}
+            {% else %}
+              <li><a href="{{ url_for('web.login') }}">Secure login</a></li>
+              <li><a href="{{ url_for('web.register_form') }}">Create account</a></li>
+            {% endif %}
+          </ul>
+        </section>
+
+        <section class="footer-column" aria-label="Security posture">
+          <h2 class="footer-heading">Security Posture</h2>
+          <p>Hardware security keys, CSRF-protected forms, safe session references, and session revocation are used to protect portal activity.</p>
+        </section>
+      </div>
+    </footer>
+  </body>
+</html>

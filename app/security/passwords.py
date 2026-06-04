@@ -1,0 +1,222 @@
+from __future__ import annotations
+
+import base64
+import binascii
+import hashlib
+import hmac
+import os
+import unicodedata
+from functools import lru_cache
+from pathlib import Path
+from urllib.error import URLError
+from urllib.request import Request, urlopen
+
+from flask import current_app
+
+
+HIBP_RANGE_API_URL = "https://api.pwnedpasswords.com/range"
+HIBP_MAX_RESPONSE_BYTES = 256 * 1024
+HIBP_UNAVAILABLE_ERROR = (
+    "Live breached-password screening is temporarily unavailable. "
+    "Please try again later."
+)
+PASSWORD_MIN_LENGTH = 15
+PBKDF2_PREFIX = "osp-pbkdf2-sha256"
+PBKDF2_VERSION = "v1"
+PBKDF2_SALT_BYTES = 32
+PBKDF2_DERIVED_KEY_BYTES = 32
+
+
+class PasswordPolicyError(ValueError):
+    pass
+
+
+class LivePasswordCheckUnavailable(RuntimeError):
+    pass
+
+
+@lru_cache(maxsize=4)
+def _load_common_passwords(path: str) -> frozenset[str]:
+    password_file = Path(path)
+    if not password_file.exists():
+        raise RuntimeError(f"Common password dictionary does not exist: {path}")
+    with password_file.open("r", encoding="utf-8", errors="ignore") as handle:
+        passwords = frozenset(
+            _normalize_password(line.strip()).casefold()
+            for line in handle
+            if line.strip() and not line.startswith("#")
+        )
+    minimum_entries = int(current_app.config["COMMON_PASSWORDS_MIN_ENTRIES"])
+    if len(passwords) < minimum_entries:
+        raise RuntimeError(
+            "Common password dictionary is too small: "
+            f"{len(passwords)} entries loaded, {minimum_entries} required"
+        )
+    return passwords
+
+
+def validate_password_policy(password: str) -> list[str]:
+    if not isinstance(password, str):
+        raise PasswordPolicyError("Password is required")
+
+    normalized_password = _normalize_password(password)
+    if len(normalized_password) < PASSWORD_MIN_LENGTH:
+        raise PasswordPolicyError(f"Password must be at least {PASSWORD_MIN_LENGTH} characters")
+
+    common_passwords = _load_common_passwords(current_app.config["COMMON_PASSWORDS_PATH"])
+    if normalized_password.casefold() in common_passwords:
+        raise PasswordPolicyError("Password is too common or has appeared in breach lists")
+
+    try:
+        if _is_password_pwned_by_hibp(normalized_password):
+            raise PasswordPolicyError("Password is too common or has appeared in breach lists")
+    except LivePasswordCheckUnavailable as exc:
+        current_app.logger.warning(
+            "hibp_password_check_unavailable error=%s",
+            type(exc).__name__,
+        )
+        raise PasswordPolicyError(HIBP_UNAVAILABLE_ERROR) from exc
+
+    return []
+
+
+def _is_password_pwned_by_hibp(password: str) -> bool:
+    # SHA-1 is required by the HIBP range API and is only used as a lookup key.
+    password_hash = hashlib.sha1(
+        password.encode("utf-8"),
+        usedforsecurity=False,
+    ).hexdigest().upper()
+    hash_prefix = password_hash[:5]
+    hash_suffix = password_hash[5:]
+    request = Request(
+        f"{HIBP_RANGE_API_URL}/{hash_prefix}",
+        headers={
+            "Add-Padding": "true",
+            "User-Agent": "osp-bank-password-screening",
+        },
+    )
+    timeout = float(current_app.config.get("HIBP_PASSWORD_CHECK_TIMEOUT_SECONDS", 2.0))
+
+    try:
+        with urlopen(request, timeout=timeout) as response:  # nosec B310
+            status = getattr(response, "status", 200)
+            if status != 200:
+                raise LivePasswordCheckUnavailable(f"HIBP returned HTTP {status}")
+            payload = response.read(HIBP_MAX_RESPONSE_BYTES + 1)
+    except (OSError, TimeoutError, URLError) as exc:
+        raise LivePasswordCheckUnavailable("HIBP request failed") from exc
+
+    if len(payload) > HIBP_MAX_RESPONSE_BYTES:
+        raise LivePasswordCheckUnavailable("HIBP response exceeded size limit")
+
+    try:
+        for line in payload.decode("ascii").splitlines():
+            candidate_suffix, separator, count_text = line.partition(":")
+            if not separator:
+                raise ValueError("Malformed HIBP response line")
+            count = int(count_text.strip())
+            if hmac.compare_digest(candidate_suffix.strip().upper(), hash_suffix) and count > 0:
+                return True
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise LivePasswordCheckUnavailable("HIBP response could not be parsed") from exc
+
+    return False
+
+
+def validate_common_password_dictionary() -> int:
+    common_passwords = _load_common_passwords(current_app.config["COMMON_PASSWORDS_PATH"])
+    return len(common_passwords)
+
+
+def hash_password(password: str) -> str:
+    iterations = _pbkdf2_iterations()
+    salt = os.urandom(PBKDF2_SALT_BYTES)
+    digest = _pbkdf2_digest(password, salt, iterations)
+    return (
+        f"{PBKDF2_PREFIX}${PBKDF2_VERSION}$i={iterations}"
+        f"$s={_b64encode(salt)}$h={_b64encode(digest)}"
+    )
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    try:
+        parts = password_hash.split("$")
+        if len(parts) != 5 or parts[0] != PBKDF2_PREFIX or parts[1] != PBKDF2_VERSION:
+            return False
+        iterations = _parse_iterations(parts[2])
+        salt = _parse_b64_part(parts[3], "s")
+        expected = _parse_b64_part(parts[4], "h")
+        candidate = _pbkdf2_digest(password, salt, iterations)
+        return hmac.compare_digest(candidate, expected)
+    except (AttributeError, TypeError, ValueError, binascii.Error):
+        return False
+
+
+def validate_password_hash_config() -> None:
+    _password_pepper()
+    _pbkdf2_iterations()
+
+
+def _pbkdf2_digest(password: str, salt: bytes, iterations: int) -> bytes:
+    peppered = hmac.new(
+        _password_pepper(),
+        _normalize_password(password).encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        peppered,
+        salt,
+        iterations,
+        dklen=PBKDF2_DERIVED_KEY_BYTES,
+    )
+
+
+def _pbkdf2_iterations() -> int:
+    iterations = int(current_app.config.get("PASSWORD_PBKDF2_ITERATIONS", 600_000))
+    if iterations < 600_000:
+        raise RuntimeError("PASSWORD_PBKDF2_ITERATIONS must be 600000 or higher")
+    return iterations
+
+
+def _password_pepper() -> bytes:
+    value = current_app.config.get("PASSWORD_PEPPER_B64")
+    if not value:
+        raise RuntimeError("PASSWORD_PEPPER_B64 is required")
+    try:
+        decoded = base64.b64decode(str(value), validate=True)
+    except binascii.Error as exc:
+        raise RuntimeError("PASSWORD_PEPPER_B64 must be valid base64") from exc
+    if len(decoded) != 32:
+        raise RuntimeError("PASSWORD_PEPPER_B64 must decode to exactly 32 bytes")
+    return decoded
+
+
+def _parse_iterations(value: str) -> int:
+    label, separator, text = value.partition("=")
+    if label != "i" or separator != "=":
+        raise ValueError("Invalid PBKDF2 iteration field")
+    iterations = int(text)
+    if iterations < 600_000:
+        raise ValueError("PBKDF2 iteration count is too low")
+    return iterations
+
+
+def _parse_b64_part(value: str, label: str) -> bytes:
+    actual_label, separator, text = value.partition("=")
+    if actual_label != label or separator != "=":
+        raise ValueError("Invalid PBKDF2 field")
+    return _b64decode(text)
+
+
+def _b64encode(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+
+def _b64decode(value: str) -> bytes:
+    padded = value + ("=" * (-len(value) % 4))
+    return base64.urlsafe_b64decode(padded.encode("ascii"))
+
+
+def _normalize_password(password: str) -> str:
+    return unicodedata.normalize("NFC", password)

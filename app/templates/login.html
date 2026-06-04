@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+
+{% block title %}Login | O$P$ Bank{% endblock %}
+
+{% block content %}
+<section class="auth-shell">
+  <div class="auth-intro">
+    <p class="eyebrow">Secure access</p>
+    <h1>Welcome back</h1>
+    <p class="lede">Sign in to view your security dashboard and manage account protection settings.</p>
+    <div class="notice">
+      <span class="notice-icon" aria-hidden="true">
+        <svg class="icon" focusable="false"><use href="#icon-info"></use></svg>
+      </span>
+      <p class="muted">Use your registered username or email address. Additional verification may be required for protected accounts.</p>
+    </div>
+  </div>
+
+  <div class="auth-card">
+    <div class="page-heading">
+      <p class="eyebrow">Account login</p>
+      <h2>Log in to O$P$ Bank</h2>
+    </div>
+    <form method="post" action="{{ url_for('web.login_submit') }}" novalidate>
+      {{ form.hidden_tag() }}
+
+      <div class="form-group">
+        <label for="{{ form.identifier.id }}">Username or email</label>
+        {{ form.identifier(autocomplete="username", maxlength="255") }}
+        {% for error in form.identifier.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+      </div>
+
+      <div class="form-group">
+        <label for="{{ form.password.id }}">Password</label>
+        <div class="password-input-wrap">
+          {{ form.password(autocomplete="current-password") }}
+          <button class="password-toggle" type="button" data-password-toggle="{{ form.password.id }}" aria-label="Show password">Show</button>
+        </div>
+        {% for error in form.password.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+      </div>
+
+      <button class="button full" type="submit">Log in securely</button>
+    </form>
+
+    <div class="form-divider" aria-hidden="true"></div>
+
+    <form method="post" action="{{ url_for('auth.webauthn_authenticate_options') }}" data-webauthn-login-form novalidate>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+      <div class="form-group">
+        <label for="security-key-identifier">Username or email for security-key login</label>
+        <input id="security-key-identifier" name="identifier" type="text" autocomplete="username" maxlength="255">
+        <p class="hint">Available after two approved hardware security keys are registered.</p>
+      </div>
+
+      <button class="button secondary full" type="submit">Sign In With Security Key</button>
+      <p class="field-error" data-webauthn-login-error hidden></p>
+    </form>
+    <p class="switch-link">Need an account? <a href="{{ url_for('web.register_form') }}">Register</a>.</p>
+  </div>
+</section>
+{% endblock %}
