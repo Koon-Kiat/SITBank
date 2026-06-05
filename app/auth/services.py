@@ -33,6 +33,7 @@ from app.security.sessions import (
     current_session_id,
     establish_authenticated_session,
     list_active_sessions,
+    list_past_sessions,
     mark_fresh_mfa,
     public_session_reference,
     require_stable_session_for_sensitive_action,
@@ -413,7 +414,7 @@ def freeze_own_account(user: User, code: str, stepup_token: str | None = None) -
 def logout_current_session() -> None:
     user_id = session.get("user_id") or session.get("pending_mfa_user_id")
     session_id = current_session_id()
-    revoke_current_session()
+    revoke_current_session(ended_reason="logout")
     audit_event(
         "logout",
         "success",
@@ -424,6 +425,10 @@ def logout_current_session() -> None:
 
 def active_sessions_for_user(user: User) -> list[dict[str, Any]]:
     return list_active_sessions(user.id)
+
+
+def past_sessions_for_user(user: User) -> list[dict[str, Any]]:
+    return list_past_sessions(user.id)
 
 
 def update_profile_details(
@@ -539,14 +544,14 @@ def terminate_session_for_user(user: User, session_reference: str) -> None:
             metadata={"reason": "not_owned_or_not_found"},
         )
         raise AuthError("Session not found", 404)
-    revoke_session(resolved_session_id, user.id)
+    revoke_session(resolved_session_id, user.id, ended_reason="terminated")
     audit_event("session_terminate", "success", user=user, session_id=resolved_session_id)
     if session.get("user_id") == user.id and getattr(session, "sid", None) == resolved_session_id:
         session.clear()
 
 
 def terminate_other_sessions_for_user(user: User) -> int:
-    revoked = revoke_other_sessions(user.id)
+    revoked = revoke_other_sessions(user.id, ended_reason="revoked")
     audit_event(
         "session_revoke_others",
         "success",

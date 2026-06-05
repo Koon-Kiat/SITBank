@@ -30,6 +30,7 @@ from .services import (
     generate_mfa_replacement,
     generate_mfa_setup,
     logout_current_session,
+    past_sessions_for_user,
     register_user,
     terminate_other_sessions_for_user,
     terminate_session_for_user,
@@ -285,7 +286,12 @@ def mfa_verify():
 @auth_bp.get("/sessions")
 @login_required
 def sessions_dashboard():
-    return jsonify({"sessions": active_sessions_for_user(g.current_user)})
+    return jsonify(
+        {
+            "sessions": active_sessions_for_user(g.current_user),
+            "past_sessions": past_sessions_for_user(g.current_user),
+        }
+    )
 
 
 @auth_bp.delete("/sessions/<session_id>")

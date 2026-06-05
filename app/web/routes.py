@@ -28,6 +28,7 @@ from app.auth.services import (
     generate_mfa_replacement,
     generate_mfa_setup,
     logout_current_session,
+    past_sessions_for_user,
     pending_mfa_replacement,
     pending_mfa_setup,
     register_user,
@@ -524,6 +525,7 @@ def sessions_dashboard():
     return render_template(
         "sessions.html",
         sessions=active_sessions_for_user(g.current_user),
+        past_sessions=past_sessions_for_user(g.current_user),
         recent_mfa=has_recent_fresh_mfa(),
         revoke_others_csrf_form=CsrfOnlyForm(),
         revoke_others_form=StepUpTokenForm(),

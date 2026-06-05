@@ -102,6 +102,15 @@ def mint_stepup_token(client, user, action):
     return token
 
 
+def complete_mfa_login(client, secret):
+    login_response = login(client)
+    mfa_response = client.post(
+        "/auth/mfa/verify",
+        json={"totp_code": pyotp.TOTP(secret, digits=6, interval=30).now()},
+    )
+    return login_response, mfa_response
+
+
 def test_registration_rejects_common_password(client):
     response = register(client, password="password")
 
@@ -367,6 +376,39 @@ def test_logout_invalidates_current_session(client):
     assert sessions_response.status_code == 401
 
 
+def test_logout_records_session_as_past_session_on_management_page(client):
+    register(client)
+    login(client)
+    user, secret = enable_mfa_for_user()
+    mark_recent_mfa(client, user)
+    original_sessions = client.get("/auth/sessions").get_json()["sessions"]
+    original_ref = next(item["session_ref"] for item in original_sessions if item["current"])
+
+    logout_response = client.post("/logout")
+    login_response, mfa_response = complete_mfa_login(client, secret)
+    sessions_payload = client.get("/auth/sessions").get_json()
+    sessions_page = client.get("/sessions")
+    markup = sessions_page.data.decode("utf-8")
+    current_ref = next(item["session_ref"] for item in sessions_payload["sessions"] if item["current"])
+    past = next(item for item in sessions_payload["past_sessions"] if item["session_ref"] == original_ref)
+
+    assert logout_response.status_code == 302
+    assert login_response.status_code == 302
+    assert mfa_response.status_code == 200
+    assert past["ended_reason"] == "logout"
+    assert past["ended_reason_display"] == "Logged out"
+    assert past["ended_at_display"] != "Unknown"
+    assert past["ip_address"] == "127.0.0.1"
+    assert "session_id" not in past
+    assert sessions_page.status_code == 200
+    assert "Active Sessions" in markup
+    assert "Past Sessions" in markup
+    assert original_ref in markup
+    assert f"/sessions/{original_ref}/terminate" not in markup
+    assert f"/sessions/{current_ref}/terminate" in markup
+    assert "Current" in markup
+
+
 def test_mfa_setup_stores_encrypted_secret_and_rejects_replay(client):
     register(client)
     login(client)
@@ -620,6 +662,60 @@ def test_terminate_other_session_by_public_reference_revokes_it(app, client):
     assert response.status_code == 200
     assert revoked_response.status_code == 401
     assert revoked_response.get_json()["error"] in {"Session revoked", "Authentication required"}
+
+
+def test_terminating_other_session_moves_it_to_past_sessions(app, client):
+    second_client = app.test_client()
+    register(client)
+    login(client)
+    login(second_client)
+    user, _secret = enable_mfa_for_user()
+    mark_recent_mfa(client, user)
+
+    sessions = client.get("/auth/sessions").get_json()["sessions"]
+    other_session = next(item for item in sessions if not item["current"])
+    response = client.delete(f"/auth/sessions/{other_session['session_ref']}")
+    sessions_payload = client.get("/auth/sessions").get_json()
+    sessions_page = client.get("/sessions")
+    markup = sessions_page.data.decode("utf-8")
+
+    active_refs = {item["session_ref"] for item in sessions_payload["sessions"]}
+    past = next(
+        item
+        for item in sessions_payload["past_sessions"]
+        if item["session_ref"] == other_session["session_ref"]
+    )
+
+    assert response.status_code == 200
+    assert other_session["session_ref"] not in active_refs
+    assert past["ended_reason"] == "terminated"
+    assert past["ended_reason_display"] == "Terminated"
+    assert other_session["session_ref"] in markup
+    assert f"/sessions/{other_session['session_ref']}/terminate" not in markup
+
+
+def test_past_sessions_are_scoped_to_current_user(app, client):
+    second_client = app.test_client()
+    register(client)
+    login(client)
+    alice, _alice_secret = enable_mfa_for_user()
+    mark_recent_mfa(client, alice)
+
+    register(second_client, username="bob02", email="bob@example.com")
+    login(second_client, identifier="bob02")
+    bob, _bob_secret = enable_mfa_for_user("bob02")
+    mark_recent_mfa(second_client, bob)
+    bob_ref = second_client.get("/auth/sessions").get_json()["sessions"][0]["session_ref"]
+
+    logout_response = second_client.post("/logout")
+    alice_payload = client.get("/auth/sessions").get_json()
+    sessions_page = client.get("/sessions")
+    markup = sessions_page.data.decode("utf-8")
+
+    assert logout_response.status_code == 302
+    assert bob_ref not in {item["session_ref"] for item in alice_payload["sessions"]}
+    assert bob_ref not in {item["session_ref"] for item in alice_payload["past_sessions"]}
+    assert bob_ref not in markup
 
 
 def test_revoke_other_sessions_requires_security_key_stepup_and_rotates_session(app, client, monkeypatch):
