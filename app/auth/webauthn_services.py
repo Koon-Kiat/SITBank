@@ -1143,8 +1143,17 @@ def _public_credential(item: WebAuthnCredential) -> dict[str, Any]:
         "credential_backed_up": item.credential_backed_up,
         "created_at": item.created_at.isoformat() if item.created_at else None,
         "last_used_at": item.last_used_at.isoformat() if item.last_used_at else None,
+        "last_used_at_display": _format_credential_time(item.last_used_at),
         "current": current_webauthn_credential_reference() == bytes_to_base64url(item.credential_id),
     }
+
+
+def _format_credential_time(value: datetime | None) -> str:
+    if value is None:
+        return "Never used"
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).strftime("%d %b %Y %H:%M UTC")
 
 
 def _public_user(user: User) -> dict[str, Any]:

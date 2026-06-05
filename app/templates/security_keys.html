@@ -48,7 +48,7 @@
       <div>
         <h2>Recent MFA required</h2>
         <p class="muted">Security-key registration and revocation require a recent MFA check. Enter your authenticator code to continue.</p>
-        <form method="post" action="{{ url_for('web.security_keys_mfa_refresh') }}">
+        <form class="compact-verification-form" method="post" action="{{ url_for('web.security_keys_mfa_refresh') }}">
           {{ refresh_mfa_form.hidden_tag() }}
           <div class="form-group compact">
             <label for="security-keys-refresh-totp">Authenticator code</label>
@@ -95,14 +95,16 @@
             <article class="key-item">
               <div>
                 <h3>{{ item.label }}</h3>
-                <p class="muted compact">AAGUID {{ item.aaguid }}</p>
-                <p class="hint">Last used: {{ item.last_used_at or "Never" }}</p>
+                <p class="hint">Last used: {{ item.last_used_at_display }}</p>
                 {% if item.current %}<p class="badge">Current session key</p>{% endif %}
               </div>
               <form method="post" action="{{ url_for('web.security_key_revoke', credential_id=item.credential_id) }}" data-webauthn-step-up-form data-step-up-action="webauthn_revoke">
                 {{ revoke_form.hidden_tag() }}
                 <p class="field-error" data-webauthn-step-up-error hidden></p>
-                <button class="link-button danger" type="submit"{% if credential_count <= required_count %} disabled{% endif %}>Verify with key and revoke</button>
+                <button class="button danger-button button-small key-revoke-button" type="submit"{% if credential_count <= required_count %} disabled aria-describedby="revoke-disabled-{{ loop.index }}"{% endif %}>Verify with security key and revoke</button>
+                {% if credential_count <= required_count %}
+                  <p class="hint key-revoke-disabled-reason" id="revoke-disabled-{{ loop.index }}">Revoke is disabled because at least two approved security keys must stay registered. Add another backup key before revoking.</p>
+                {% endif %}
               </form>
             </article>
           {% endfor %}

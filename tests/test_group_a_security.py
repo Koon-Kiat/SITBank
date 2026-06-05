@@ -4,6 +4,7 @@ import re
 import json
 import secrets
 import time
+from datetime import datetime, timezone
 
 import pytest
 import pyotp
@@ -409,6 +410,57 @@ def test_logout_records_session_as_past_session_on_management_page(client):
     assert "Current" in markup
 
 
+def test_incognito_logout_appears_in_past_sessions_for_existing_browser(app, client, monkeypatch):
+    incognito_client = app.test_client()
+    register(client)
+    login(client)
+    user, secret = enable_mfa_for_user()
+    mark_recent_mfa(client, user)
+    normal_ref = next(
+        item["session_ref"]
+        for item in client.get("/auth/sessions").get_json()["sessions"]
+        if item["current"]
+    )
+
+    incognito_login = login(incognito_client)
+    totp = pyotp.TOTP(secret, digits=6, interval=30)
+    now = int(time.time())
+    incognito_mfa_time = next(
+        timestamp
+        for timestamp in range(now + 30, now + 600, 30)
+        if totp.at(timestamp) != totp.at(now)
+    )
+    monkeypatch.setattr("app.auth.services.time.time", lambda: incognito_mfa_time)
+    incognito_mfa = incognito_client.post(
+        "/auth/mfa/verify",
+        json={"totp_code": totp.at(incognito_mfa_time)},
+    )
+    active_after_incognito_login = client.get("/auth/sessions").get_json()["sessions"]
+    incognito_ref = next(
+        item["session_ref"]
+        for item in active_after_incognito_login
+        if item["session_ref"] != normal_ref
+    )
+
+    incognito_logout = incognito_client.post("/logout")
+    sessions_payload = client.get("/auth/sessions").get_json()
+    sessions_page = client.get("/sessions")
+    markup = sessions_page.data.decode("utf-8")
+    past_incognito = next(
+        item
+        for item in sessions_payload["past_sessions"]
+        if item["session_ref"] == incognito_ref
+    )
+
+    assert incognito_login.status_code == 302
+    assert incognito_mfa.status_code == 200
+    assert incognito_logout.status_code == 302
+    assert past_incognito["ended_reason"] == "logout"
+    assert past_incognito["ended_reason_display"] == "Logged out"
+    assert incognito_ref in markup
+    assert f"/sessions/{incognito_ref}/terminate" not in markup
+
+
 def test_mfa_setup_stores_encrypted_secret_and_rejects_replay(client):
     register(client)
     login(client)
@@ -549,6 +601,51 @@ def test_mfa_management_page_shows_replacement_controls_when_enabled(client):
     assert "Verify with security key" in markup
     assert "Disable MFA" not in markup
     assert "Remove MFA" not in markup
+
+
+def test_security_management_pages_use_polished_stepup_ui(client):
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    add_security_keys_for_user(user)
+    first_key = db.session.execute(
+        db.select(WebAuthnCredential)
+        .where(WebAuthnCredential.user_id == user.id)
+        .order_by(WebAuthnCredential.id.asc())
+    ).scalars().first()
+    first_key.last_used_at = datetime(2026, 6, 5, 15, 11, tzinfo=timezone.utc)
+    db.session.commit()
+
+    mfa_page = client.get("/mfa/setup")
+    keys_page = client.get("/security-keys")
+    sessions_page = client.get("/sessions")
+    freeze_page = client.get("/account/freeze")
+    css = Path("app/static/css/app.css").read_text(encoding="utf-8")
+    mfa_markup = mfa_page.data.decode("utf-8")
+    keys_markup = keys_page.data.decode("utf-8")
+    sessions_markup = sessions_page.data.decode("utf-8")
+    freeze_markup = freeze_page.data.decode("utf-8")
+
+    assert mfa_page.status_code == 200
+    assert keys_page.status_code == 200
+    assert sessions_page.status_code == 200
+    assert freeze_page.status_code == 200
+    assert 'class="mfa-step is-muted"' in mfa_markup
+    assert ".mfa-step.is-muted .step-number" in css
+    assert "background: var(--primary);" in css
+    assert 'class="compact-verification-form"' in keys_markup
+    assert "AAGUID" not in keys_markup
+    assert "11111111-1111-1111-1111-111111111111" not in keys_markup
+    assert "Last used: 05 Jun 2026 15:11 UTC" in keys_markup
+    assert "Verify with security key and revoke" in keys_markup
+    assert 'class="button danger-button button-small key-revoke-button"' in keys_markup
+    assert "Revoke is disabled because at least two approved security keys must stay registered" in keys_markup
+    assert 'class="button danger-button"' in sessions_markup
+    assert "Verify with security key and terminate other sessions" in sessions_markup
+    assert 'class="button danger-button full"' in freeze_markup
+    assert "Verify with security key and freeze account" in freeze_markup
+    assert "color: var(--button-primary-text);" in css
+    assert "text-align: left;" in css
 
 
 def test_mfa_replacement_start_requires_security_key_stepup(client):
