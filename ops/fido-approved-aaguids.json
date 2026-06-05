@@ -72,5 +72,9 @@
     "6ec5cff2-a0f9-4169-945b-f33b563f7b99",
     "97e6a830-c952-4740-95fc-7c78dc97ce47",
     "58276709-bb4b-4bb3-baf1-60eea99282a7"
+  ],
+  "legacy_level1_policy": "Explicit lab/demo exception for YubiKey 5 NFC firmware 5.2/5.4. This AAGUID is not part of the L2+ banking-approved set.",
+  "legacy_level1_approved_aaguids": [
+    "2fc0579f-8113-47ea-b116-bb5a8db9202a"
   ]
 }

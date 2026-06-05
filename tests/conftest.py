@@ -25,6 +25,8 @@ os.environ.setdefault(
 os.environ.setdefault("COMMON_PASSWORDS_PATH", str(Path(__file__).parent / "fixtures" / "common_passwords.txt"))
 os.environ.setdefault("COMMON_PASSWORDS_MIN_ENTRIES", "100000")
 os.environ.setdefault("PASSWORD_PBKDF2_ITERATIONS", "600000")
+os.environ.setdefault("WEBAUTHN_RP_ID", "sitbank.duckdns.org")
+os.environ.setdefault("WEBAUTHN_RP_ORIGIN", "https://sitbank.duckdns.org")
 
 
 class TestConfig:
@@ -37,8 +39,8 @@ class TestConfig:
     PASSWORD_PEPPER_B64 = os.environ["PASSWORD_PEPPER_B64"]
     PASSWORD_PBKDF2_ITERATIONS = int(os.environ["PASSWORD_PBKDF2_ITERATIONS"])
     MFA_ISSUER_NAME = "O$P$ Bank Test"
-    WEBAUTHN_RP_ID = "scamcentre.duckdns.org"
-    WEBAUTHN_RP_ORIGIN = "https://scamcentre.duckdns.org"
+    WEBAUTHN_RP_ID = os.environ["WEBAUTHN_RP_ID"]
+    WEBAUTHN_RP_ORIGIN = os.environ["WEBAUTHN_RP_ORIGIN"]
     WEBAUTHN_RP_NAME = "O$P$ Bank Test"
     WEBAUTHN_TIMEOUT_MS = 60_000
     WEBAUTHN_REQUIRED_CREDENTIALS = 2
@@ -56,6 +58,7 @@ class TestConfig:
     SESSION_COOKIE_SAMESITE = "Strict"
     SESSION_PERMANENT = True
     SESSION_INACTIVITY_SECONDS = 15 * 60
+    SESSION_HISTORY_LIMIT = 20
     PENDING_MFA_MAX_AGE_SECONDS = 5 * 60
     WTF_CSRF_ENABLED = False
     WTF_CSRF_TIME_LIMIT = 15 * 60

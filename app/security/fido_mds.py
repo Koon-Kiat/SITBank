@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import json
 from datetime import date
 from pathlib import Path
@@ -70,7 +71,9 @@ def pem_root_certs_by_fmt() -> dict[AttestationFormat, list[bytes]]:
 
 def validate_aaguid_policy(aaguid: str, attestation_format: AttestationFormat | str) -> None:
     normalized = normalize_aaguid(aaguid)
-    if normalized not in _approved_aaguids():
+    approved, legacy_level1 = _approved_aaguid_policy()
+    is_legacy_level1 = normalized in legacy_level1
+    if normalized not in approved and not is_legacy_level1:
         raise FidoMetadataError("Authenticator AAGUID is not approved")
 
     cache = _mds_cache()
@@ -79,12 +82,16 @@ def validate_aaguid_policy(aaguid: str, attestation_format: AttestationFormat | 
 
     entry = _entry_for_aaguid(cache, normalized)
     if entry is None:
+        if is_legacy_level1:
+            return
         raise FidoMetadataError("Authenticator AAGUID is not present in FIDO metadata cache")
 
     statuses = _entry_statuses(entry)
     if statuses & DANGEROUS_STATUSES:
         raise FidoMetadataError("Authenticator metadata reports a compromised or revoked status")
-    if not statuses & TRUSTED_CERTIFICATION_STATUSES:
+    if not statuses & TRUSTED_CERTIFICATION_STATUSES and not (
+        is_legacy_level1 and "FIDO_CERTIFIED" in statuses
+    ):
         raise FidoMetadataError("Authenticator does not meet the required FIDO certification level")
 
     fmt = attestation_format
@@ -95,8 +102,9 @@ def validate_aaguid_policy(aaguid: str, attestation_format: AttestationFormat | 
 
 
 def validate_fido_metadata_config() -> int:
-    approved = _approved_aaguids()
-    if not approved:
+    approved, legacy_level1 = _approved_aaguid_policy()
+    configured = approved | legacy_level1
+    if not configured:
         raise FidoMetadataError(
             "At least one approved authenticator AAGUID is required in "
             "WEBAUTHN_APPROVED_AAGUIDS_PATH"
@@ -106,16 +114,30 @@ def validate_fido_metadata_config() -> int:
     if _cache_is_stale(cache):
         raise FidoMetadataError("FIDO metadata cache is stale in WEBAUTHN_MDS_CACHE_PATH")
 
-    for aaguid in approved:
+    for aaguid in configured:
         validate_aaguid_policy(aaguid, AttestationFormat.PACKED)
-    return len(approved)
+    return len(configured)
 
 
 def _approved_aaguids() -> set[str]:
+    approved, legacy_level1 = _approved_aaguid_policy()
+    return approved | legacy_level1
+
+
+def _approved_aaguid_policy() -> tuple[set[str], set[str]]:
     path = Path(current_app.config["WEBAUTHN_APPROVED_AAGUIDS_PATH"])
     data = _read_json(path)
-    values = data if isinstance(data, list) else data.get("approved_aaguids", [])
-    return {normalize_aaguid(str(value)) for value in values}
+    if isinstance(data, list):
+        values = data
+        legacy_values: list[str] = []
+    elif isinstance(data, dict):
+        values = data.get("approved_aaguids", [])
+        legacy_values = data.get("legacy_level1_approved_aaguids", [])
+    else:
+        raise FidoMetadataError("FIDO approved AAGUID policy must be a JSON object or list")
+    approved = {normalize_aaguid(str(value)) for value in values}
+    legacy_level1 = {normalize_aaguid(str(value)) for value in legacy_values}
+    return approved, legacy_level1
 
 
 def _mds_cache() -> dict[str, Any]:
@@ -127,6 +149,10 @@ def _read_json(path: Path) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
         raise FidoMetadataError(f"FIDO metadata file not found: {path}") from exc
+    except PermissionError as exc:
+        raise FidoMetadataError(f"FIDO metadata file is not readable: {path}") from exc
+    except OSError as exc:
+        raise FidoMetadataError(f"FIDO metadata file could not be read: {path}") from exc
     except json.JSONDecodeError as exc:
         raise FidoMetadataError(f"FIDO metadata file is invalid JSON: {path}") from exc
 
@@ -176,7 +202,10 @@ def _entry_root_certificates(entry: dict[str, Any]) -> list[bytes]:
 
 
 def _base64_der_to_pem(value: str) -> bytes:
-    der = base64.b64decode(value, validate=True)
+    try:
+        der = base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise FidoMetadataError("Authenticator metadata contains an invalid attestation root certificate") from exc
     encoded = base64.b64encode(der).decode("ascii")
     lines = [encoded[index : index + 64] for index in range(0, len(encoded), 64)]
     return ("-----BEGIN CERTIFICATE-----\n" + "\n".join(lines) + "\n-----END CERTIFICATE-----\n").encode(

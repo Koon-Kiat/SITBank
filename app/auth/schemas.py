@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from marshmallow import Schema, ValidationError, fields, validate, validates_schema
+from marshmallow import EXCLUDE, Schema, ValidationError, fields, validate, validates_schema
 
 from app.security.passwords import PASSWORD_MIN_LENGTH
 
@@ -120,6 +120,17 @@ class WebAuthnStepUpVerifySchema(Schema):
 
 
 class HighRiskTotpSchema(TotpSchema):
+    stepup_token = fields.Str(
+        required=False,
+        load_only=True,
+        validate=validate.Regexp(STEP_UP_TOKEN_RE, error="Invalid security key step-up token"),
+    )
+
+
+class StepUpTokenSchema(Schema):
+    class Meta:
+        unknown = EXCLUDE
+
     stepup_token = fields.Str(
         required=False,
         load_only=True,
