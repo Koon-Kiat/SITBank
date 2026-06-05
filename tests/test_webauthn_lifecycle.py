@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pyotp
+import pytest
 from flask import current_app, session
 from webauthn.helpers import bytes_to_base64url
 from webauthn.helpers.structs import AttestationFormat, CredentialDeviceType
@@ -18,7 +19,8 @@ from app.security.passwords import hash_password
 
 
 APPROVED_AAGUID = "11111111-1111-1111-1111-111111111111"
-ORIGIN = {"Origin": "https://scamcentre.duckdns.org"}
+LEGACY_LEVEL1_AAGUID = "2fc0579f-8113-47ea-b116-bb5a8db9202a"
+ORIGIN = {"Origin": "https://sitbank.duckdns.org"}
 
 
 def register(client, username="alice01", email="alice@example.com", password="correct horse battery staple"):
@@ -130,11 +132,18 @@ def test_webauthn_options_fail_closed_without_exact_origin(client):
         json={"label": "Primary YubiKey"},
         headers={"Origin": "https://evil.example"},
     )
+    old_origin = client.post(
+        "/auth/webauthn/register/options",
+        json={"label": "Primary YubiKey"},
+        headers={"Origin": "https://scamcentre.duckdns.org"},
+    )
 
     assert missing_origin.status_code == 403
     assert wrong_origin.status_code == 403
+    assert old_origin.status_code == 403
     assert missing_origin.get_json()["error"] == "Invalid request origin"
     assert wrong_origin.get_json()["error"] == "Invalid request origin"
+    assert old_origin.get_json()["error"] == "Invalid request origin"
 
 
 def test_registration_options_enforce_direct_cross_platform_uv_policy(client):
@@ -146,7 +155,7 @@ def test_registration_options_enforce_direct_cross_platform_uv_policy(client):
     payload = response.get_json()
 
     assert response.status_code == 200
-    assert payload["rp"]["id"] == "scamcentre.duckdns.org"
+    assert payload["rp"]["id"] == "sitbank.duckdns.org"
     assert payload["attestation"] == "direct"
     assert payload["authenticatorSelection"]["authenticatorAttachment"] == "cross-platform"
     assert payload["authenticatorSelection"]["userVerification"] == "required"
@@ -195,6 +204,135 @@ def test_registration_rejects_unknown_mds_aaguid(client, monkeypatch):
 
     assert response.status_code == 401
     assert db.session.query(WebAuthnCredential).count() == 0
+    event = (
+        db.session.query(SecurityAuditEvent)
+        .filter_by(event_type="webauthn_register", outcome="failure")
+        .order_by(SecurityAuditEvent.id.desc())
+        .first()
+    )
+    assert event is not None
+    assert event.event_metadata["failure_stage"] == "metadata_policy"
+    assert event.event_metadata["reason"] == "FidoMetadataError"
+    assert event.event_metadata["failure_detail"] == "Authenticator AAGUID is not approved"
+    assert event.event_metadata["aaguid"] == "22222222-2222-2222-2222-222222222222"
+    assert event.event_metadata["attestation_format"] == "packed"
+    assert event.event_metadata["credential_device_type"] == "single_device"
+
+
+def test_registration_allows_explicit_legacy_level1_aaguid_missing_from_mds(app, client, monkeypatch, tmp_path):
+    policy_path = tmp_path / "fido-approved-aaguids.json"
+    policy_path.write_text(
+        json.dumps(
+            {
+                "approved_aaguids": [],
+                "legacy_level1_approved_aaguids": [LEGACY_LEVEL1_AAGUID],
+            }
+        ),
+        encoding="utf-8",
+    )
+    app.config["WEBAUTHN_APPROVED_AAGUIDS_PATH"] = str(policy_path)
+    register(client)
+    login(client)
+    mark_recent_mfa_session(client, user_by_name())
+    client.post("/auth/webauthn/register/options", json={"label": "Primary YubiKey"}, headers=ORIGIN)
+
+    def fake_verify_registration_response(**_kwargs):
+        return SimpleNamespace(
+            credential_id=b"legacy-yubikey",
+            credential_public_key=b"public-key",
+            sign_count=1,
+            aaguid=LEGACY_LEVEL1_AAGUID,
+            fmt="packed",
+            credential_device_type="single_device",
+            credential_backed_up=False,
+        )
+
+    monkeypatch.setattr(
+        "app.auth.webauthn_services.verify_registration_response",
+        fake_verify_registration_response,
+    )
+
+    response = client.post(
+        "/auth/webauthn/register/verify",
+        json={
+            "credential": {
+                "id": bytes_to_base64url(b"legacy-yubikey"),
+                "rawId": bytes_to_base64url(b"legacy-yubikey"),
+                "type": "public-key",
+                "authenticatorAttachment": "cross-platform",
+                "response": {
+                    "attestationObject": "AA",
+                    "clientDataJSON": "AA",
+                    "transports": ["usb"],
+                },
+            }
+        },
+        headers=ORIGIN,
+    )
+
+    assert response.status_code == 200
+    item = db.session.query(WebAuthnCredential).one()
+    assert item.attestation_format == "packed"
+    assert item.credential_device_type == "single_device"
+    assert response.get_json()["credential"]["aaguid"] == LEGACY_LEVEL1_AAGUID
+
+
+def test_registration_verify_unexpected_error_returns_json(app, client, monkeypatch):
+    register(client)
+    login(client)
+    mark_recent_mfa_session(client, user_by_name())
+    client.post("/auth/webauthn/register/options", json={"label": "Primary YubiKey"}, headers=ORIGIN)
+    app.config["PROPAGATE_EXCEPTIONS"] = False
+
+    def fail_verify_registration(*_args, **_kwargs):
+        raise RuntimeError("unexpected attestation parser failure")
+
+    monkeypatch.setattr("app.auth.routes.verify_registration", fail_verify_registration)
+
+    response = client.post(
+        "/auth/webauthn/register/verify",
+        json={
+            "credential": {
+                "id": bytes_to_base64url(b"credential-one"),
+                "rawId": bytes_to_base64url(b"credential-one"),
+                "type": "public-key",
+                "authenticatorAttachment": "cross-platform",
+                "response": {
+                    "attestationObject": "AA",
+                    "clientDataJSON": "AA",
+                    "transports": ["usb"],
+                },
+            }
+        },
+        headers=ORIGIN,
+    )
+
+    assert response.status_code == 500
+    assert response.content_type.startswith("application/json")
+    assert response.get_json() == {"error": "Server error. Please try again later."}
+
+
+def test_unreadable_fido_metadata_file_is_controlled_error(app, monkeypatch):
+    from pathlib import Path
+
+    from app.security.fido_mds import FidoMetadataError, _read_json
+
+    def deny_read_text(self, *_args, **_kwargs):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(Path, "read_text", deny_read_text)
+
+    with app.app_context():
+        with pytest.raises(FidoMetadataError, match="not readable"):
+            _read_json(Path("/etc/scamcentre/fido-mds-cache.json"))
+
+
+def test_invalid_fido_metadata_root_certificate_is_controlled_error(app):
+    from app.security.fido_mds import FidoMetadataError, _base64_der_to_pem
+
+    with app.app_context():
+        with pytest.raises(FidoMetadataError, match="invalid attestation root certificate"):
+            _base64_der_to_pem("<base64 DER attestation root certificate>")
 
 
 def test_password_login_allowed_after_security_key_enrollment(client):
@@ -262,7 +400,7 @@ def test_authentication_updates_specific_credential_counter_and_last_used(client
         return SimpleNamespace(
             credential_id=item.credential_id,
             new_sign_count=11,
-            credential_device_type=CredentialDeviceType.SINGLE_DEVICE,
+            credential_device_type="single_device",
             credential_backed_up=False,
             user_verified=True,
         )
@@ -293,6 +431,7 @@ def test_authentication_updates_specific_credential_counter_and_last_used(client
     assert options_response.status_code == 200
     assert response.status_code == 200
     assert item.sign_count == 11
+    assert item.credential_device_type == "single_device"
     assert item.last_used_at is not None
     assert response.get_json()["requires_backup_key"] is False
 
@@ -444,7 +583,7 @@ def test_transaction_security_key_challenge_binds_context(app):
     db.session.commit()
     add_credential(user)
 
-    with app.test_request_context("/", headers={"Origin": "https://scamcentre.duckdns.org"}):
+    with app.test_request_context("/", headers={"Origin": "https://sitbank.duckdns.org"}):
         session["user_id"] = user.id
         reference = stage_transaction_security_key_context(
             user,
@@ -458,7 +597,7 @@ def test_transaction_security_key_challenge_binds_context(app):
         )
         payload = begin_transaction_security_key_challenge(user, reference)
 
-        assert payload["rpId"] == "scamcentre.duckdns.org"
+        assert payload["rpId"] == "sitbank.duckdns.org"
         assert payload["userVerification"] == "required"
         assert payload["transaction_reference"] == "TXN-001"
         assert "transaction" not in payload

@@ -689,14 +689,14 @@ button.full {
 .button-danger {
   border-color: var(--danger);
   background: var(--danger);
-  color: #ffffff;
+  color: var(--button-primary-text);
 }
 
 .danger-button:hover,
 .button-danger:hover {
   border-color: var(--danger-hover);
   background: var(--danger-hover);
-  color: #ffffff;
+  color: var(--button-primary-text);
 }
 
 .inline-form {
@@ -1202,8 +1202,8 @@ input:focus {
 }
 
 .mfa-step.is-muted .step-number {
-  background: var(--surface-strong);
-  color: var(--muted-strong);
+  background: var(--primary);
+  color: var(--primary-contrast);
 }
 
 .mfa-step.is-complete .step-number {
@@ -1357,6 +1357,10 @@ input:focus {
 .warning-panel {
   border-color: color-mix(in srgb, var(--danger) 35%, var(--line));
   background: var(--danger-soft);
+}
+
+.compact-verification-form {
+  width: min(420px, 100%);
 }
 
 .mfa-grid {
@@ -1539,7 +1543,18 @@ th {
 }
 
 .key-item form {
-  flex: 0 0 auto;
+  display: grid;
+  justify-items: start;
+  flex: 0 0 min(260px, 100%);
+}
+
+.key-revoke-button {
+  width: fit-content;
+}
+
+.key-revoke-disabled-reason {
+  max-width: 36ch;
+  text-align: left;
 }
 
 .link-button:disabled {
@@ -1713,6 +1728,20 @@ th {
   .key-item {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .key-item form {
+    justify-items: stretch;
+    width: 100%;
+  }
+
+  .key-revoke-button {
+    width: 100%;
+  }
+
+  .key-revoke-disabled-reason {
+    max-width: none;
+    text-align: left;
   }
 
   .table-wrap {

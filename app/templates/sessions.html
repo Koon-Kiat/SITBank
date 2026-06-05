@@ -1,14 +1,14 @@
 {% extends "base.html" %}
 
-{% block title %}Active Sessions | O$P$ Bank{% endblock %}
+{% block title %}Session Management | O$P$ Bank{% endblock %}
 
 {% block content %}
 <section class="panel section-stack">
   <div class="section-header">
     <div class="page-heading">
       <p class="eyebrow">Security management</p>
-      <h1>Active Sessions</h1>
-      <p class="muted">Review current access and terminate sessions you do not recognize. Only public session references are shown.</p>
+      <h1>Session Management</h1>
+      <p class="muted">Review current and recently ended access. Only public session references are shown.</p>
     </div>
     <a class="button secondary" href="{{ url_for('web.dashboard') }}">Back to dashboard</a>
   </div>
@@ -23,13 +23,8 @@
     {% if g.high_risk_ready %}
       <form method="post" action="{{ url_for('web.revoke_other_sessions') }}" data-webauthn-step-up-form data-step-up-action="session_revoke_others">
         {{ revoke_others_form.hidden_tag() }}
-        <div class="form-group">
-          <label for="{{ revoke_others_form.totp_code.id }}">Authenticator code</label>
-          {{ revoke_others_form.totp_code(inputmode="numeric", autocomplete="one-time-code", maxlength="6", placeholder="6-digit MFA code") }}
-        </div>
-        <p class="hint">If you just used a code, wait for the next one.</p>
         <p class="field-error" data-webauthn-step-up-error hidden></p>
-        <button class="button danger-button" type="submit">Terminate all other sessions</button>
+        <button class="button danger-button" type="submit">Verify with security key and terminate other sessions</button>
       </form>
     {% elif g.current_user.mfa_enabled %}
       <div class="notice warning">
@@ -47,6 +42,11 @@
     {% else %}
       <a class="button secondary" href="{{ url_for('web.mfa_setup') }}">Enable MFA before revoking all other sessions</a>
     {% endif %}
+  </div>
+
+  <div class="section-heading">
+    <h2>Active Sessions</h2>
+    <p class="muted">Signed-in sessions that can still access this account.</p>
   </div>
 
   {% if sessions %}
@@ -90,6 +90,50 @@
     <div class="empty-state">
       <h2>No active sessions found</h2>
       <p class="muted">There are no active sessions available for this account right now.</p>
+    </div>
+  {% endif %}
+
+  <div class="section-heading">
+    <h2>Past Sessions</h2>
+    <p class="muted">Recently logged-out, terminated, or expired sessions are shown for review only.</p>
+  </div>
+
+  {% if past_sessions %}
+    <div class="table-wrap">
+      <table aria-label="Past sessions">
+        <thead>
+          <tr>
+            <th>Reference</th>
+            <th>IP address</th>
+            <th>User agent</th>
+            <th>Login time</th>
+            <th>Last activity</th>
+            <th>Ended</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in past_sessions %}
+            <tr>
+              <td data-label="Reference">
+                <div class="session-ref">
+                  <code>{{ item.session_ref }}</code>
+                  <span class="badge neutral">{{ item.ended_reason_display }}</span>
+                </div>
+              </td>
+              <td data-label="IP address">{{ item.ip_address }}</td>
+              <td data-label="Device">{{ item.user_agent }}</td>
+              <td data-label="Login time"><time datetime="{{ item.login_time }}">{{ item.login_time_display }}</time></td>
+              <td data-label="Last activity"><time datetime="{{ item.last_activity }}">{{ item.last_activity_display }}</time></td>
+              <td data-label="Ended"><time datetime="{{ item.ended_at }}">{{ item.ended_at_display }}</time></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="empty-state">
+      <h2>No past sessions found</h2>
+      <p class="muted">Logged-out and terminated sessions will appear here after they end.</p>
     </div>
   {% endif %}
 </section>

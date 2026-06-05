@@ -75,6 +75,15 @@ class TotpForm(FlaskForm):
     )
 
 
+class StepUpTokenForm(FlaskForm):
+    stepup_token = HiddenField(
+        validators=[
+            Optional(),
+            Regexp(STEP_UP_TOKEN_RE, message="Invalid security key step-up token"),
+        ],
+    )
+
+
 class PasswordChangeForm(FlaskForm):
     current_password = PasswordField("Current password", validators=[InputRequired()])
     new_password = PasswordField("New password", validators=[InputRequired(), Length(min=PASSWORD_MIN_LENGTH)])

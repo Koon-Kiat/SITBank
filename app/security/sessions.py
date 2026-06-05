@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import ipaddress
+import json
 import time
 import uuid
 from datetime import datetime, timezone
@@ -20,9 +21,19 @@ except ImportError:  # Flask-Session keeps compatibility import paths across rel
 
 SESSION_META_PREFIX = "ospbank:session_meta:"
 USER_SESSIONS_PREFIX = "ospbank:user_sessions:"
+PAST_SESSIONS_PREFIX = "ospbank:past_sessions:"
 REVOKED_SESSION_PREFIX = "ospbank:revoked_session:"
 SESSION_RISK_REAUTH_REQUIRED_KEY = "risk_reauth_required"
 SESSION_RISK_FINGERPRINT_KEY = "risk_fingerprint"
+SESSION_HISTORY_LIMIT_DEFAULT = 20
+SESSION_END_REASON_LABELS = {
+    "logout": "Logged out",
+    "terminated": "Terminated",
+    "revoked": "Revoked",
+    "expired": "Expired",
+    "rotated": "Session refreshed",
+    "ended": "Ended",
+}
 
 
 class UuidRedisSessionInterface(RedisSessionInterface):
@@ -84,6 +95,10 @@ def _session_meta_key(session_id: str) -> str:
 
 def _user_sessions_key(user_id: int) -> str:
     return f"{USER_SESSIONS_PREFIX}{user_id}"
+
+
+def _past_sessions_key(user_id: int) -> str:
+    return f"{PAST_SESSIONS_PREFIX}{user_id}"
 
 
 def _revoked_key(session_id: str) -> str:
@@ -150,6 +165,15 @@ def rotate_authenticated_session_after_mfa(user_id: int) -> str:
     new_session_id = current_session_id()
     if old_session_id and old_session_id != new_session_id:
         redis_client = _redis()
+        metadata = redis_client.hgetall(_session_meta_key(old_session_id))
+        if metadata:
+            _record_past_session(
+                redis_client,
+                session_id=old_session_id,
+                user_id=user_id,
+                metadata=metadata,
+                ended_reason="rotated",
+            )
         redis_client.delete(_session_meta_key(old_session_id))
         redis_client.srem(_user_sessions_key(user_id), old_session_id)
         redis_client.setex(
@@ -260,6 +284,15 @@ def _active_session_records(user_id: int) -> Iterator[tuple[str, dict[str, str]]
     redis_client = _redis()
     for session_id in redis_client.smembers(_user_sessions_key(user_id)):
         if not _redis_session().exists(_session_storage_key(session_id)):
+            metadata = redis_client.hgetall(_session_meta_key(session_id))
+            if metadata:
+                _record_past_session(
+                    redis_client,
+                    session_id=session_id,
+                    user_id=user_id,
+                    metadata=metadata,
+                    ended_reason="expired",
+                )
             redis_client.srem(_user_sessions_key(user_id), session_id)
             redis_client.delete(_session_meta_key(session_id))
             continue
@@ -287,11 +320,86 @@ def list_active_sessions(user_id: int) -> list[dict[str, Any]]:
     return sorted(sessions, key=lambda item: item.get("login_time", ""), reverse=True)
 
 
+def list_past_sessions(user_id: int, limit: int | None = None) -> list[dict[str, Any]]:
+    count = _session_history_limit(limit)
+    if count <= 0:
+        return []
+
+    sessions: list[dict[str, Any]] = []
+    for payload in _redis().lrange(_past_sessions_key(user_id), 0, count - 1):
+        try:
+            record = json.loads(payload)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+
+        ended_reason = _normalize_session_end_reason(str(record.get("ended_reason", "")))
+        public_metadata = {
+            "session_ref": str(record.get("session_ref", "")),
+            "ip_address": _display_ip_address(str(record.get("ip_address", ""))),
+            "user_agent": _summarize_user_agent(str(record.get("user_agent", ""))),
+            "login_time": str(record.get("login_time", "")),
+            "last_activity": str(record.get("last_activity", "")),
+            "ended_at": str(record.get("ended_at", "")),
+            "ended_reason": ended_reason,
+            "login_time_display": _format_session_time(str(record.get("login_time", ""))),
+            "last_activity_display": _format_session_time(str(record.get("last_activity", ""))),
+            "ended_at_display": _format_session_time(str(record.get("ended_at", ""))),
+            "ended_reason_display": SESSION_END_REASON_LABELS[ended_reason],
+        }
+        sessions.append(public_metadata)
+    return sessions
+
+
 def resolve_session_reference_for_user(user_id: int, session_reference: str) -> str | None:
     for session_id, _metadata in _active_session_records(user_id):
         if session_reference == public_session_reference(session_id):
             return session_id
     return None
+
+
+def _session_history_limit(limit: int | None = None) -> int:
+    configured_limit = limit if limit is not None else current_app.config.get(
+        "SESSION_HISTORY_LIMIT",
+        SESSION_HISTORY_LIMIT_DEFAULT,
+    )
+    try:
+        value = int(configured_limit)
+    except (TypeError, ValueError):
+        return SESSION_HISTORY_LIMIT_DEFAULT
+    return max(0, min(value, 100))
+
+
+def _normalize_session_end_reason(value: str) -> str:
+    return value if value in SESSION_END_REASON_LABELS else "ended"
+
+
+def _record_past_session(
+    redis_client: Redis,
+    *,
+    session_id: str,
+    user_id: int,
+    metadata: dict[str, str],
+    ended_reason: str,
+) -> None:
+    limit = _session_history_limit()
+    if limit <= 0:
+        return
+
+    reason = _normalize_session_end_reason(ended_reason)
+    record = {
+        "session_ref": public_session_reference(session_id),
+        "ip_address": metadata.get("ip_address", ""),
+        "user_agent": metadata.get("user_agent", ""),
+        "login_time": metadata.get("login_time", ""),
+        "last_activity": metadata.get("last_activity", ""),
+        "ended_at": utc_now_iso(),
+        "ended_reason": reason,
+    }
+    key = _past_sessions_key(user_id)
+    pipeline = redis_client.pipeline()
+    pipeline.lpush(key, json.dumps(record, separators=(",", ":"), sort_keys=True))
+    pipeline.ltrim(key, 0, limit - 1)
+    pipeline.execute()
 
 
 def _display_ip_address(value: str) -> str:
@@ -324,10 +432,24 @@ def _format_session_time(value: str) -> str:
     return local_time.strftime("%d %b %Y %H:%M")
 
 
-def revoke_session(session_id: str, user_id: int | None = None) -> None:
+def revoke_session(session_id: str, user_id: int | None = None, *, ended_reason: str = "revoked") -> None:
     redis_client = _redis()
     metadata = redis_client.hgetall(_session_meta_key(session_id))
-    owner = user_id or int(metadata.get("user_id") or 0) or None
+    owner = user_id
+    if owner is None:
+        try:
+            owner = int(metadata.get("user_id") or 0) or None
+        except ValueError:
+            owner = None
+
+    if owner is not None and metadata:
+        _record_past_session(
+            redis_client,
+            session_id=session_id,
+            user_id=owner,
+            metadata=metadata,
+            ended_reason=ended_reason,
+        )
 
     _redis_session().delete(_session_storage_key(session_id))
     redis_client.delete(_session_meta_key(session_id))
@@ -336,29 +458,29 @@ def revoke_session(session_id: str, user_id: int | None = None) -> None:
         redis_client.srem(_user_sessions_key(owner), session_id)
 
 
-def revoke_current_session() -> None:
+def revoke_current_session(*, ended_reason: str = "revoked") -> None:
     session_id = current_session_id()
     user_id = session.get("user_id") or session.get("pending_mfa_user_id")
     if session_id:
-        revoke_session(session_id, int(user_id) if user_id else None)
+        revoke_session(session_id, int(user_id) if user_id else None, ended_reason=ended_reason)
     session.clear()
 
 
-def revoke_other_sessions(user_id: int) -> int:
+def revoke_other_sessions(user_id: int, *, ended_reason: str = "revoked") -> int:
     current_sid = current_session_id()
     revoked = 0
     for session_id, _metadata in _active_session_records(user_id):
         if session_id == current_sid:
             continue
-        revoke_session(session_id, user_id)
+        revoke_session(session_id, user_id, ended_reason=ended_reason)
         revoked += 1
     return revoked
 
 
-def revoke_all_sessions(user_id: int) -> int:
+def revoke_all_sessions(user_id: int, *, ended_reason: str = "revoked") -> int:
     revoked = 0
     for session_id, _metadata in list(_active_session_records(user_id)):
-        revoke_session(session_id, user_id)
+        revoke_session(session_id, user_id, ended_reason=ended_reason)
         revoked += 1
     return revoked
 
@@ -392,7 +514,7 @@ def register_session_hooks(app: Flask) -> None:
             max_age = current_app.config["PENDING_MFA_MAX_AGE_SECONDS"]
             if not authenticated_at or now - authenticated_at > max_age:
                 session_id = current_session_id()
-                revoke_current_session()
+                revoke_current_session(ended_reason="expired")
                 from app.security.audit import audit_event
 
                 audit_event(
@@ -414,7 +536,7 @@ def register_session_hooks(app: Flask) -> None:
 
         last_activity = int(session.get("last_activity_at") or now)
         if now - last_activity > current_app.config["SESSION_INACTIVITY_SECONDS"]:
-            revoke_current_session()
+            revoke_current_session(ended_reason="expired")
             return jsonify({"error": "Session expired"}), 401
 
         session["last_activity_at"] = now

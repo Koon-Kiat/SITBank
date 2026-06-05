@@ -129,6 +129,10 @@ def register_error_handlers(app: Flask) -> None:
         audit_event("rate_limit", "blocked", metadata={"path": request.path})
         return respond("Too many attempts. Please try again later.", 429)
 
+    @app.errorhandler(500)
+    def internal_error(error):
+        return respond("Server error. Please try again later.", 500)
+
 
 def register_no_store_headers(app: Flask) -> None:
     @app.after_request
