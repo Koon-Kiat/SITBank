@@ -23,13 +23,8 @@
     {% if g.high_risk_ready %}
       <form method="post" action="{{ url_for('web.revoke_other_sessions') }}" data-webauthn-step-up-form data-step-up-action="session_revoke_others">
         {{ revoke_others_form.hidden_tag() }}
-        <div class="form-group">
-          <label for="{{ revoke_others_form.totp_code.id }}">Authenticator code</label>
-          {{ revoke_others_form.totp_code(inputmode="numeric", autocomplete="one-time-code", maxlength="6", placeholder="6-digit MFA code") }}
-        </div>
-        <p class="hint">If you just used a code, wait for the next one.</p>
         <p class="field-error" data-webauthn-step-up-error hidden></p>
-        <button class="button danger-button" type="submit">Terminate all other sessions</button>
+        <button class="button danger-button" type="submit">Verify with security key and terminate other sessions</button>
       </form>
     {% elif g.current_user.mfa_enabled %}
       <div class="notice warning">

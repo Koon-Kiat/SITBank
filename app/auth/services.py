@@ -593,12 +593,9 @@ def verify_high_risk_authorization(
         audit_event(action, "failure", user=user, metadata={"reason": "mfa_not_enabled"})
         raise AuthError("MFA is required for this action", 403)
     consume_step_up_token(user, action, stepup_token)
-    verify_fresh_mfa_for_action(
-        user,
-        code,
-        action,
-        rotate_session_on_success=rotate_session_on_success,
-    )
+    if rotate_session_on_success and session.get("user_id") == user.id:
+        rotate_authenticated_session_after_mfa(user.id)
+    audit_event(action, "security_key_success", user=user)
 
 
 def _requires_security_key_login(user: User) -> bool:

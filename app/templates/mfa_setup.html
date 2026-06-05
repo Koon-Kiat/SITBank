@@ -49,17 +49,12 @@
           </div>
         </div>
         <div class="mfa-step-body">
-          <p class="muted">Generate a new QR setup code when you are ready to move to a different authenticator app or device.</p>
+          <p class="muted">Verify with a security key before generating a replacement QR setup code.</p>
           <form method="post" action="{{ url_for('web.mfa_setup_submit') }}" data-webauthn-step-up-form data-step-up-action="mfa_replace_start" novalidate>
             {{ replace_start_form.hidden_tag() }}
             <input type="hidden" name="action" value="replace_start">
-            <div class="form-group">
-              <label for="replace-start-totp-code">Current authenticator code</label>
-              {{ replace_start_form.totp_code(id="replace-start-totp-code", inputmode="numeric", autocomplete="one-time-code", maxlength="6") }}
-              {% for error in replace_start_form.totp_code.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
-            </div>
             <p class="field-error" data-webauthn-step-up-error hidden></p>
-            <button class="button full" type="submit">{% if replacement %}Generate New Replacement Code{% else %}Replace Authenticator{% endif %}</button>
+            <button class="button full" type="submit">{% if replacement %}Verify with security key and generate new code{% else %}Verify with security key{% endif %}</button>
           </form>
         </div>
       </article>

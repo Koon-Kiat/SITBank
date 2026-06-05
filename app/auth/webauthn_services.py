@@ -158,6 +158,8 @@ def verify_registration(user: User, credential: dict[str, Any]) -> dict[str, Any
     _ensure_label_available(user, label)
     _enforce_cross_platform_attachment(credential)
 
+    verification = None
+    failure_stage = "attestation_verification"
     try:
         # Direct attestation is verified before the AAGUID is accepted against local MDS policy.
         verification = verify_registration_response(
@@ -168,7 +170,9 @@ def verify_registration(user: User, credential: dict[str, Any]) -> dict[str, Any
             require_user_verification=True,
             pem_root_certs_bytes_by_fmt=pem_root_certs_by_fmt(),
         )
+        failure_stage = "single_device_policy"
         _enforce_single_device_credential(verification.credential_device_type, verification.credential_backed_up)
+        failure_stage = "metadata_policy"
         validate_aaguid_policy(verification.aaguid, verification.fmt)
     except AuthError:
         raise
@@ -178,7 +182,7 @@ def verify_registration(user: User, credential: dict[str, Any]) -> dict[str, Any
             "failure",
             user=user,
             label=label,
-            metadata={"reason": type(exc).__name__},
+            metadata=_registration_failure_metadata(exc, verification, failure_stage),
         )
         raise AuthError(GENERIC_WEBAUTHN_ERROR, 401) from exc
 
@@ -190,9 +194,9 @@ def verify_registration(user: User, credential: dict[str, Any]) -> dict[str, Any
         sign_count=verification.sign_count,
         label=label,
         aaguid=verification.aaguid,
-        attestation_format=verification.fmt.value,
+        attestation_format=_enum_value(verification.fmt),
         transports=transports,
-        credential_device_type=verification.credential_device_type.value,
+        credential_device_type=_enum_value(verification.credential_device_type),
         credential_backed_up=verification.credential_backed_up,
     )
     db.session.add(item)
@@ -388,7 +392,7 @@ def verify_authentication(credential: dict[str, Any]) -> dict[str, Any]:
 
     item.sign_count = verification.new_sign_count
     item.last_used_at = datetime.now(timezone.utc)
-    item.credential_device_type = verification.credential_device_type.value
+    item.credential_device_type = _enum_value(verification.credential_device_type)
     item.credential_backed_up = verification.credential_backed_up
     user.failed_login_count = 0
     user.last_login_at = datetime.now(timezone.utc)
@@ -483,7 +487,7 @@ def verify_step_up(user: User, action: str, credential: dict[str, Any]) -> dict[
     verification = _verify_assertion_response(user, item, credential, str(challenge), "step_up_verify")
     item.sign_count = verification.new_sign_count
     item.last_used_at = datetime.now(timezone.utc)
-    item.credential_device_type = verification.credential_device_type.value
+    item.credential_device_type = _enum_value(verification.credential_device_type)
     item.credential_backed_up = verification.credential_backed_up
     db.session.commit()
 
@@ -745,7 +749,7 @@ def verify_transaction_security_key_challenge(user: User, credential: dict[str, 
 
     item.sign_count = verification.new_sign_count
     item.last_used_at = datetime.now(timezone.utc)
-    item.credential_device_type = verification.credential_device_type.value
+    item.credential_device_type = _enum_value(verification.credential_device_type)
     item.credential_backed_up = verification.credential_backed_up
     db.session.commit()
 
@@ -783,6 +787,29 @@ def _find_user_by_identifier(identifier: str) -> User | None:
             )
         )
     ).scalar_one_or_none()
+
+
+def _registration_failure_metadata(exc: Exception, verification, failure_stage: str) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "reason": type(exc).__name__,
+        "failure_stage": failure_stage,
+        "failure_detail": str(exc)[:240],
+    }
+    if verification is not None:
+        metadata.update(
+            {
+                "aaguid": str(getattr(verification, "aaguid", "") or ""),
+                "attestation_format": _enum_value(getattr(verification, "fmt", "")),
+                "credential_device_type": _enum_value(getattr(verification, "credential_device_type", "")),
+                "credential_backed_up": bool(getattr(verification, "credential_backed_up", False)),
+            }
+        )
+    return metadata
+
+
+def _enum_value(value: Any) -> str:
+    enum_value = getattr(value, "value", None)
+    return str(enum_value if enum_value is not None else value)
 
 
 def _validate_step_up_action(action: str) -> str:

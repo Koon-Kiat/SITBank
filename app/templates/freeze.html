@@ -74,7 +74,7 @@
           </span>
           <div>
             <h2>Security keys required</h2>
-            <p class="muted">Account freeze requires two approved hardware security keys plus a current authenticator code.</p>
+            <p class="muted">Account freeze requires two approved hardware security keys.</p>
           </div>
         </div>
         <div class="freeze-actions">
@@ -88,7 +88,7 @@
         <ul class="freeze-list">
           <li>Add a primary approved hardware security key.</li>
           <li>Add a backup approved hardware security key.</li>
-          <li>Use the current authenticator code during final confirmation.</li>
+          <li>Use your security key during final confirmation.</li>
         </ul>
       </article>
     </div>
@@ -96,16 +96,11 @@
     <div class="freeze-grid">
       <article class="freeze-panel danger-panel">
         <h2>Confirm account freeze</h2>
-        <p class="muted">Enter a current authenticator code and verify an approved hardware security key to confirm this protective lock.</p>
+        <p class="muted">Verify an approved hardware security key to confirm this protective lock.</p>
         <form method="post" action="{{ url_for('web.freeze_account_submit') }}" data-webauthn-step-up-form data-step-up-action="account_freeze" novalidate>
           {{ form.hidden_tag() }}
-          <div class="form-group">
-            <label for="{{ form.totp_code.id }}">Authenticator code</label>
-            {{ form.totp_code(inputmode="numeric", autocomplete="one-time-code", maxlength="6") }}
-            {% for error in form.totp_code.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
-          </div>
           <p class="field-error" data-webauthn-step-up-error hidden></p>
-          <button class="button danger-button full" type="submit">Freeze account</button>
+          <button class="button danger-button full" type="submit">Verify with security key and freeze account</button>
         </form>
         <a class="button secondary" href="{{ url_for('web.dashboard') }}">Cancel and return to dashboard</a>
       </article>

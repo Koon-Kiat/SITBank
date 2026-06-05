@@ -1,6 +1,31 @@
 (function () {
   "use strict";
 
+  var SECURITY_KEY_INCOMPLETE_MESSAGE = "Security key verification was not completed. Try again.";
+  var WEBAUTHN_BROWSER_ERROR_NAMES = [
+    "AbortError",
+    "ConstraintError",
+    "InvalidStateError",
+    "NotAllowedError",
+    "NotSupportedError",
+    "SecurityError",
+    "UnknownError"
+  ];
+
+  function webAuthnErrorMessage(error) {
+    var name = error && error.name ? String(error.name) : "";
+    var message = error && error.message ? String(error.message) : "";
+    var normalized = message.toLowerCase();
+    if (
+      WEBAUTHN_BROWSER_ERROR_NAMES.indexOf(name) !== -1 ||
+      normalized.indexOf("operation either timed out") !== -1 ||
+      normalized.indexOf("not allowed") !== -1
+    ) {
+      return SECURITY_KEY_INCOMPLETE_MESSAGE;
+    }
+    return message || "Security key request failed. Please try again.";
+  }
+
   function base64urlToBuffer(value) {
     var base64 = value.replace(/-/g, "+").replace(/_/g, "/");
     while (base64.length % 4) {
@@ -49,11 +74,24 @@
       method: "POST",
       credentials: "same-origin",
       headers: {
+        "Accept": "application/json",
         "Content-Type": "application/json",
         "X-CSRFToken": csrf
       },
       body: JSON.stringify(payload)
     }).then(function (response) {
+      var contentType = response.headers.get("Content-Type") || "";
+      if (contentType.indexOf("application/json") === -1) {
+        return response.text().then(function () {
+          if (response.status === 401) {
+            throw new Error("Your session expired. Please sign in again.");
+          }
+          if (response.status === 413) {
+            throw new Error("Security key response was too large for the server.");
+          }
+          throw new Error("Security key request failed with HTTP " + response.status + ".");
+        });
+      }
       return response.json().then(function (body) {
         if (!response.ok) {
           throw new Error(body.error || "Security key request failed");
@@ -145,7 +183,7 @@
             window.location.assign("/security-keys");
           })
           .catch(function (error) {
-            showError(errorNode, error.message);
+            showError(errorNode, webAuthnErrorMessage(error));
           });
       });
     }
@@ -171,7 +209,7 @@
             window.location.assign("/dashboard");
           })
           .catch(function (error) {
-            showError(errorNode, error.message);
+            showError(errorNode, webAuthnErrorMessage(error));
           });
       });
     }
@@ -213,7 +251,7 @@
             form.submit();
           })
           .catch(function (error) {
-            showError(errorNode, error.message);
+            showError(errorNode, webAuthnErrorMessage(error));
           });
       });
     });
