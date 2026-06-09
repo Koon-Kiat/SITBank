@@ -26,15 +26,16 @@ def _safe_identifier(value: str) -> str:
 
 def request_principal() -> str:
     payload = request.get_json(silent=True) or request.form or {}
+    remote_addr = get_remote_address() or "unknown"
     value = (
         payload.get("username")
         or payload.get("email")
         or payload.get("identifier")
         or session.get("pending_mfa_user_id")
         or getattr(getattr(g, "current_user", None), "id", None)
-        or get_remote_address()
+        or remote_addr
     )
-    principal = "principal:" + _safe_identifier(str(value))
+    principal = "principal:" + _safe_identifier(f"{remote_addr}:{str(value).strip().casefold()}")
     # Flask-Limiter consumes this key server-side; it is not an HTTP response.
     return principal  # nosemgrep
 
