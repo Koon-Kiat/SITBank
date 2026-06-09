@@ -24,6 +24,7 @@ from app.security.crypto import decrypt_mfa_secret, encrypt_mfa_secret
 from app.security.passwords import (
     PasswordPolicyError,
     hash_password,
+    is_password_raw_length_safe,
     validate_password_policy,
     verify_password,
 )
@@ -182,12 +183,12 @@ def authenticate_primary(identifier: str, password: str) -> dict[str, Any]:
     try:
         _enforce_auth_backoff("login", principal)
     except AuthError:
-        if user is not None:
-            _record_user_security_failure(user, "password", "password_failed_attempts")
         raise
 
-    candidate_hash = user.password_hash if user else _dummy_password_hash()
-    password_ok = verify_password(password, candidate_hash)
+    password_ok = False
+    if is_password_raw_length_safe(password):
+        candidate_hash = user.password_hash if user else _dummy_password_hash()
+        password_ok = verify_password(password, candidate_hash)
 
     if user is None or not password_ok:
         if user is not None:
@@ -200,8 +201,6 @@ def authenticate_primary(identifier: str, password: str) -> dict[str, Any]:
             metadata={"known_user": user is not None},
         )
         record_failure("login", principal)
-        if user is not None:
-            _record_user_security_failure(user, "password", "password_failed_attempts")
         raise AuthError(GENERIC_LOGIN_ERROR, 401)
 
     ensure_account_can_authenticate(user)

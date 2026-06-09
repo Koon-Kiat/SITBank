@@ -21,6 +21,7 @@ HIBP_UNAVAILABLE_ERROR = (
     "Please try again later."
 )
 PASSWORD_MIN_LENGTH = 15
+PASSWORD_MAX_CHARS = 256
 PBKDF2_PREFIX = "osp-pbkdf2-sha256"
 PBKDF2_VERSION = "v1"
 PBKDF2_SALT_BYTES = 32
@@ -59,7 +60,9 @@ def validate_password_policy(password: str) -> list[str]:
     if not isinstance(password, str):
         raise PasswordPolicyError("Password is required")
 
+    _ensure_raw_password_length(password)
     normalized_password = _normalize_password(password)
+    _ensure_normalized_password_length(normalized_password)
     if len(normalized_password) < PASSWORD_MIN_LENGTH:
         raise PasswordPolicyError(f"Password must be at least {PASSWORD_MIN_LENGTH} characters")
 
@@ -140,6 +143,8 @@ def hash_password(password: str) -> str:
 
 def verify_password(password: str, password_hash: str) -> bool:
     try:
+        if not is_password_raw_length_safe(password):
+            return False
         parts = password_hash.split("$")
         if len(parts) != 5 or parts[0] != PBKDF2_PREFIX or parts[1] != PBKDF2_VERSION:
             return False
@@ -158,9 +163,10 @@ def validate_password_hash_config() -> None:
 
 
 def _pbkdf2_digest(password: str, salt: bytes, iterations: int) -> bytes:
+    normalized_password = _safe_normalized_password(password)
     peppered = hmac.new(
         _password_pepper(),
-        _normalize_password(password).encode("utf-8"),
+        normalized_password.encode("utf-8"),
         hashlib.sha256,
     ).digest()
     return hashlib.pbkdf2_hmac(
@@ -190,6 +196,38 @@ def _password_pepper() -> bytes:
     if len(decoded) != 32:
         raise RuntimeError("PASSWORD_PEPPER_B64 must decode to exactly 32 bytes")
     return decoded
+
+
+def password_max_chars() -> int:
+    configured = int(current_app.config.get("PASSWORD_MAX_CHARS", PASSWORD_MAX_CHARS))
+    if configured < PASSWORD_MIN_LENGTH or configured > 1024:
+        raise RuntimeError("PASSWORD_MAX_CHARS must be between PASSWORD_MIN_LENGTH and 1024")
+    return configured
+
+
+def is_password_raw_length_safe(password: str) -> bool:
+    return isinstance(password, str) and len(password) <= password_max_chars()
+
+
+def _ensure_raw_password_length(password: str) -> None:
+    if not is_password_raw_length_safe(password):
+        raise PasswordPolicyError(f"Password must be at most {password_max_chars()} characters")
+
+
+def _ensure_normalized_password_length(password: str) -> None:
+    if len(password) > password_max_chars():
+        raise PasswordPolicyError(f"Password must be at most {password_max_chars()} characters")
+
+
+def _safe_normalized_password(password: str) -> str:
+    if not isinstance(password, str):
+        raise ValueError("Password is required")
+    if len(password) > password_max_chars():
+        raise ValueError("Password exceeds maximum length")
+    normalized = _normalize_password(password)
+    if len(normalized) > password_max_chars():
+        raise ValueError("Password exceeds maximum length after normalization")
+    return normalized
 
 
 def _parse_iterations(value: str) -> int:

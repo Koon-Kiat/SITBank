@@ -11,6 +11,7 @@ from flask import Flask
 
 from app.security.passwords import (
     HIBP_UNAVAILABLE_ERROR,
+    PASSWORD_MAX_CHARS,
     PBKDF2_PREFIX,
     PasswordPolicyError,
     hash_password,
@@ -81,6 +82,23 @@ class PasswordPolicyTests(unittest.TestCase):
 
         with self.assertRaisesRegex(PasswordPolicyError, HIBP_UNAVAILABLE_ERROR):
             validate_password_policy("not-in-local-list")
+
+    @patch("app.security.passwords._normalize_password")
+    def test_rejects_oversized_password_before_normalization(self, normalize_password) -> None:
+        normalize_password.side_effect = AssertionError("normalization should not run")
+
+        with self.assertRaisesRegex(PasswordPolicyError, "at most"):
+            validate_password_policy("A" * 300)
+
+    def test_rejects_300_character_password_directly(self) -> None:
+        with self.assertRaisesRegex(PasswordPolicyError, "at most 256 characters"):
+            validate_password_policy("A" * 300)
+
+    @patch("app.security.passwords.urlopen")
+    def test_allows_256_character_password_length(self, urlopen) -> None:
+        urlopen.return_value = FakeResponse(b"00000000000000000000000000000000000:0\r\n")
+
+        self.assertEqual(validate_password_policy("A" * PASSWORD_MAX_CHARS), [])
 
     @patch("app.security.passwords.urlopen")
     def test_sends_only_hash_prefix_with_padding_and_short_timeout(self, urlopen) -> None:

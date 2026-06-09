@@ -2,11 +2,23 @@ from __future__ import annotations
 
 from flask_wtf import FlaskForm
 from wtforms import HiddenField, PasswordField, StringField
-from wtforms.validators import Email, EqualTo, InputRequired, Length, Optional, Regexp
+from wtforms.validators import Email, EqualTo, InputRequired, Length, Optional, Regexp, ValidationError
 
-from app.security.passwords import PASSWORD_MIN_LENGTH
+from app.security.passwords import PASSWORD_MIN_LENGTH, password_max_chars
 
 from .schemas import STEP_UP_TOKEN_RE, TOTP_RE, USERNAME_RE
+
+
+def password_length(*, minimum: int | None = None):
+    def validate_password_length(_form, field) -> None:
+        value = field.data or ""
+        if minimum is not None and len(value) < minimum:
+            raise ValidationError(f"Field must be at least {minimum} characters long.")
+        max_chars = password_max_chars()
+        if len(value) > max_chars:
+            raise ValidationError(f"Field cannot be longer than {max_chars} characters.")
+
+    return validate_password_length
 
 
 class RegisterForm(FlaskForm):
@@ -19,11 +31,12 @@ class RegisterForm(FlaskForm):
         ],
     )
     email = StringField("Email", validators=[InputRequired(), Email(), Length(max=255)])
-    password = PasswordField("Password", validators=[InputRequired(), Length(min=PASSWORD_MIN_LENGTH)])
+    password = PasswordField("Password", validators=[InputRequired(), password_length(minimum=PASSWORD_MIN_LENGTH)])
     confirm_password = PasswordField(
         "Confirm password",
         validators=[
             InputRequired(),
+            password_length(),
             EqualTo("password", message="Passwords must match"),
         ],
     )
@@ -85,12 +98,13 @@ class StepUpTokenForm(FlaskForm):
 
 
 class PasswordChangeForm(FlaskForm):
-    current_password = PasswordField("Current password", validators=[InputRequired()])
-    new_password = PasswordField("New password", validators=[InputRequired(), Length(min=PASSWORD_MIN_LENGTH)])
+    current_password = PasswordField("Current password", validators=[InputRequired(), password_length()])
+    new_password = PasswordField("New password", validators=[InputRequired(), password_length(minimum=PASSWORD_MIN_LENGTH)])
     confirm_new_password = PasswordField(
         "Confirm new password",
         validators=[
             InputRequired(),
+            password_length(),
             EqualTo("new_password", message="Passwords must match"),
         ],
     )
