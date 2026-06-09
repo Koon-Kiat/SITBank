@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from marshmallow import EXCLUDE, Schema, ValidationError, fields, validate, validates_schema
 
-from app.security.passwords import PASSWORD_MIN_LENGTH
+from app.security.passwords import PASSWORD_MAX_CHARS, PASSWORD_MIN_LENGTH
 
 
 USERNAME_RE = r"^[A-Za-z0-9_.-]{3,64}$"
@@ -23,8 +23,16 @@ class RegisterSchema(Schema):
         ],
     )
     email = fields.Email(required=True, validate=validate.Length(max=255))
-    password = fields.Str(required=True, load_only=True, validate=validate.Length(min=PASSWORD_MIN_LENGTH))
-    confirm_password = fields.Str(required=True, load_only=True, validate=validate.Length(min=PASSWORD_MIN_LENGTH))
+    password = fields.Str(
+        required=True,
+        load_only=True,
+        validate=validate.Length(min=PASSWORD_MIN_LENGTH, max=PASSWORD_MAX_CHARS),
+    )
+    confirm_password = fields.Str(
+        required=True,
+        load_only=True,
+        validate=validate.Length(min=PASSWORD_MIN_LENGTH, max=PASSWORD_MAX_CHARS),
+    )
 
     @validates_schema
     def validate_password_match(self, data, **_kwargs):
@@ -34,7 +42,7 @@ class RegisterSchema(Schema):
 
 class LoginSchema(Schema):
     identifier = fields.Str(required=True, validate=validate.Length(min=1, max=255))
-    password = fields.Str(required=True, load_only=True, validate=validate.Length(min=1))
+    password = fields.Str(required=True, load_only=True, validate=validate.Length(min=1, max=PASSWORD_MAX_CHARS))
 
 
 class TotpSchema(Schema):
@@ -56,9 +64,17 @@ class TerminateSessionSchema(Schema):
 
 
 class PasswordChangeSchema(Schema):
-    current_password = fields.Str(required=True, load_only=True, validate=validate.Length(min=1))
-    new_password = fields.Str(required=True, load_only=True, validate=validate.Length(min=PASSWORD_MIN_LENGTH))
-    confirm_new_password = fields.Str(required=True, load_only=True, validate=validate.Length(min=PASSWORD_MIN_LENGTH))
+    current_password = fields.Str(required=True, load_only=True, validate=validate.Length(min=1, max=PASSWORD_MAX_CHARS))
+    new_password = fields.Str(
+        required=True,
+        load_only=True,
+        validate=validate.Length(min=PASSWORD_MIN_LENGTH, max=PASSWORD_MAX_CHARS),
+    )
+    confirm_new_password = fields.Str(
+        required=True,
+        load_only=True,
+        validate=validate.Length(min=PASSWORD_MIN_LENGTH, max=PASSWORD_MAX_CHARS),
+    )
     totp_code = fields.Str(
         required=False,
         load_only=True,

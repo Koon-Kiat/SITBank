@@ -4,7 +4,7 @@ from flask_wtf import FlaskForm
 from wtforms import HiddenField, PasswordField, StringField
 from wtforms.validators import Email, EqualTo, InputRequired, Length, Optional, Regexp
 
-from app.security.passwords import PASSWORD_MIN_LENGTH
+from app.security.passwords import PASSWORD_MAX_CHARS, PASSWORD_MIN_LENGTH
 
 from .schemas import STEP_UP_TOKEN_RE, TOTP_RE, USERNAME_RE
 
@@ -19,11 +19,12 @@ class RegisterForm(FlaskForm):
         ],
     )
     email = StringField("Email", validators=[InputRequired(), Email(), Length(max=255)])
-    password = PasswordField("Password", validators=[InputRequired(), Length(min=PASSWORD_MIN_LENGTH)])
+    password = PasswordField("Password", validators=[InputRequired(), Length(min=PASSWORD_MIN_LENGTH, max=PASSWORD_MAX_CHARS)])
     confirm_password = PasswordField(
         "Confirm password",
         validators=[
             InputRequired(),
+            Length(max=PASSWORD_MAX_CHARS),
             EqualTo("password", message="Passwords must match"),
         ],
     )
@@ -31,7 +32,7 @@ class RegisterForm(FlaskForm):
 
 class LoginForm(FlaskForm):
     identifier = StringField("Username or email", validators=[InputRequired(), Length(max=255)])
-    password = PasswordField("Password", validators=[InputRequired()])
+    password = PasswordField("Password", validators=[InputRequired(), Length(max=PASSWORD_MAX_CHARS)])
 
 
 class ProfileForm(FlaskForm):
@@ -85,12 +86,13 @@ class StepUpTokenForm(FlaskForm):
 
 
 class PasswordChangeForm(FlaskForm):
-    current_password = PasswordField("Current password", validators=[InputRequired()])
-    new_password = PasswordField("New password", validators=[InputRequired(), Length(min=PASSWORD_MIN_LENGTH)])
+    current_password = PasswordField("Current password", validators=[InputRequired(), Length(max=PASSWORD_MAX_CHARS)])
+    new_password = PasswordField("New password", validators=[InputRequired(), Length(min=PASSWORD_MIN_LENGTH, max=PASSWORD_MAX_CHARS)])
     confirm_new_password = PasswordField(
         "Confirm new password",
         validators=[
             InputRequired(),
+            Length(max=PASSWORD_MAX_CHARS),
             EqualTo("new_password", message="Passwords must match"),
         ],
     )

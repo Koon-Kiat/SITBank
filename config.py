@@ -109,6 +109,9 @@ class Config:
     PASSWORD_PBKDF2_ITERATIONS = int(os.getenv("PASSWORD_PBKDF2_ITERATIONS", "600000"))
     if PASSWORD_PBKDF2_ITERATIONS < 600000:
         raise RuntimeError("PASSWORD_PBKDF2_ITERATIONS must be 600000 or higher")
+    PASSWORD_MAX_CHARS = int(os.getenv("PASSWORD_MAX_CHARS", "256"))
+    if PASSWORD_MAX_CHARS < 64 or PASSWORD_MAX_CHARS > 1024:
+        raise RuntimeError("PASSWORD_MAX_CHARS must be between 64 and 1024")
     MFA_ISSUER_NAME = os.getenv("MFA_ISSUER_NAME", "O$P$ Bank")
 
     WEBAUTHN_RP_ID = _required_webauthn_rp_id("WEBAUTHN_RP_ID")
@@ -155,6 +158,9 @@ class Config:
 
     WTF_CSRF_TIME_LIMIT = 15 * 60
     WTF_CSRF_SSL_STRICT = True
+    MAX_CONTENT_LENGTH = int(os.getenv("MAX_CONTENT_LENGTH", str(1024 * 1024)))
+    if MAX_CONTENT_LENGTH < 64 * 1024 or MAX_CONTENT_LENGTH > 5 * 1024 * 1024:
+        raise RuntimeError("MAX_CONTENT_LENGTH must be between 64 KiB and 5 MiB")
 
     RATELIMIT_STORAGE_URI = REDIS_URL
     RATELIMIT_HEADERS_ENABLED = True
