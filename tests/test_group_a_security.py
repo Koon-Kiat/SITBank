@@ -33,6 +33,10 @@ def login(client, identifier="alice01", password="correct horse battery staple")
     )
 
 
+def password_inputs(response):
+    return re.findall(rb"<input(?=[^>]*type=\"password\")[^>]*>", response.data)
+
+
 def api_login_from_ip(client, remote_addr, identifier="alice01", password="correct horse battery staple"):
     return client.post(
         "/auth/login",
@@ -208,15 +212,52 @@ def test_long_unicode_password_can_register_login_and_change(client, monkeypatch
     assert verify_password(new_password, user.password_hash)
 
 
+def test_password_templates_do_not_truncate_and_show_max_length_guidance(client):
+    register_response = client.get("/register")
+    login_response = client.get("/login")
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    add_security_keys_for_user(user)
+    change_response = client.get("/password/change")
+
+    assert register_response.status_code == 200
+    assert login_response.status_code == 200
+    assert change_response.status_code == 200
+    assert len(password_inputs(register_response)) == 2
+    assert len(password_inputs(login_response)) == 1
+    assert len(password_inputs(change_response)) == 3
+    assert all(b"maxlength" not in field for field in password_inputs(register_response))
+    assert all(b"maxlength" not in field for field in password_inputs(login_response))
+    assert all(b"maxlength" not in field for field in password_inputs(change_response))
+    assert b"Use 15 to 256 characters." in register_response.data
+    assert b"Maximum password length is 256 characters." in login_response.data
+    assert b"Use 15 to 256 characters." in change_response.data
+    assert b"Maximum password length is 256 characters." in change_response.data
+
+
+def test_password_at_configured_max_length_can_register_and_login(client):
+    password = "A" * PASSWORD_MAX_CHARS
+
+    response = register(client, password=password)
+    login_response = login(client, password=password)
+
+    assert response.status_code == 302
+    assert login_response.status_code == 302
+    assert db.session.query(User).count() == 1
+
+
 def test_oversized_registration_password_rejected_before_policy_processing(client, monkeypatch):
     def fail_policy(_password):
         pytest.fail("oversized password reached password policy processing")
 
     monkeypatch.setattr("app.auth.services.validate_password_policy", fail_policy)
 
-    response = register(client, password="A" * (PASSWORD_MAX_CHARS + 1))
+    response = register(client, password="A" * 300)
 
     assert response.status_code == 400
+    assert response.status_code != 500
+    assert b"longer than 256 characters" in response.data
     assert db.session.query(User).count() == 0
 
 
@@ -225,7 +266,7 @@ def test_oversized_api_registration_password_rejected_cleanly(client, monkeypatc
         pytest.fail("oversized password reached password policy processing")
 
     monkeypatch.setattr("app.auth.services.validate_password_policy", fail_policy)
-    password = "安全" * (PASSWORD_MAX_CHARS + 1)
+    password = "A" * 300
 
     response = client.post(
         "/auth/register",
@@ -238,6 +279,7 @@ def test_oversized_api_registration_password_rejected_cleanly(client, monkeypatc
     )
 
     assert response.status_code == 400
+    assert response.status_code != 500
     assert response.get_json() == {"error": "Invalid request"}
     assert db.session.query(User).count() == 0
 
@@ -258,13 +300,37 @@ def test_oversized_login_password_uses_generic_failure_without_hashing(app, clie
         environ_overrides={"REMOTE_ADDR": "127.0.0.1"},
     ):
         with pytest.raises(AuthError) as exc_info:
-            authenticate_primary("alice01", "A" * (PASSWORD_MAX_CHARS + 1))
+            authenticate_primary("alice01", "A" * 300)
 
     user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
     assert exc_info.value.message == "Invalid username or password"
     assert exc_info.value.status_code == 401
     assert user.is_frozen is False
     assert user.security_locked_at is None
+
+
+def test_oversized_web_login_password_fails_generically(client):
+    register(client)
+
+    response = login(client, password="A" * 300)
+
+    assert response.status_code == 401
+    assert response.status_code != 500
+    assert b"Invalid username or password" in response.data
+    assert b"longer than 256 characters" not in response.data
+
+
+def test_oversized_api_login_password_fails_generically(client):
+    register(client)
+
+    response = client.post(
+        "/auth/login",
+        json={"identifier": "alice01", "password": "A" * 300},
+    )
+
+    assert response.status_code == 401
+    assert response.status_code != 500
+    assert response.get_json() == {"error": "Invalid username or password"}
 
 
 def test_registration_requires_matching_confirm_password(client):
@@ -1416,6 +1482,40 @@ def test_password_change_rejects_totp_only_without_security_key_stepup(client):
     db.session.refresh(user)
 
     assert response.status_code == 403
+    assert user.password_hash == old_hash
+
+
+def test_password_change_rejects_over_limit_current_and_new_passwords(client):
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    add_security_keys_for_user(user)
+    old_hash = user.password_hash
+
+    oversized_current = client.post(
+        "/password/change",
+        data={
+            "current_password": "A" * 300,
+            "new_password": "new correct horse battery staple",
+            "confirm_new_password": "new correct horse battery staple",
+        },
+    )
+    oversized_new = client.post(
+        "/password/change",
+        data={
+            "current_password": "correct horse battery staple",
+            "new_password": "B" * 300,
+            "confirm_new_password": "B" * 300,
+        },
+    )
+    db.session.refresh(user)
+
+    assert oversized_current.status_code == 400
+    assert oversized_current.status_code != 500
+    assert b"longer than 256 characters" in oversized_current.data
+    assert oversized_new.status_code == 400
+    assert oversized_new.status_code != 500
+    assert b"longer than 256 characters" in oversized_new.data
     assert user.password_hash == old_hash
 
 

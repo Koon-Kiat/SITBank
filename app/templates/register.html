@@ -43,6 +43,7 @@
           <button class="password-toggle" type="button" data-password-toggle="{{ form.password.id }}" aria-label="Show password">Show</button>
         </div>
         {% for error in form.password.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+        <p class="hint">Use 15 to {{ config["PASSWORD_MAX_CHARS"] }} characters.</p>
         <p class="strength-meter" data-password-strength="registration-password">Password strength: not entered</p>
       </div>
 
@@ -55,7 +56,7 @@
         {% for error in form.confirm_password.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
       </div>
 
-      <p class="hint">Use at least 15 characters. Common breached passwords are rejected server-side.</p>
+      <p class="hint">Common breached passwords are rejected server-side.</p>
       <button class="button full" type="submit">Register account</button>
     </form>
     <p class="switch-link">Already registered? <a href="{{ url_for('web.login') }}">Login</a>.</p>
