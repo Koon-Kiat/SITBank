@@ -6,7 +6,7 @@ readonly POSTGRES_IMAGE="postgres:16.9-alpine@sha256:7c688148e5e156d0e86df7ba8ae
 readonly REDIS_IMAGE="redis:7.4.5-alpine@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08"
 
 work_dir="$(mktemp -d)"
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317
 cleanup() {
     docker rm -f sitbank-smoke smoke-postgres smoke-redis >/dev/null 2>&1 || true
     rm -rf -- "${work_dir}"
