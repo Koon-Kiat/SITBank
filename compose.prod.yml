@@ -97,16 +97,16 @@ services:
 
 secrets:
   secret_key:
-    environment: SITBANK_SECRET_KEY
+    file: /etc/sitbank/secrets/secret_key
   wtf_csrf_secret_key:
-    environment: SITBANK_WTF_CSRF_SECRET_KEY
+    file: /etc/sitbank/secrets/wtf_csrf_secret_key
   session_hmac_keys_json:
-    environment: SITBANK_SESSION_HMAC_KEYS_JSON
+    file: /etc/sitbank/secrets/session_hmac_keys_json
   database_url:
-    environment: SITBANK_DATABASE_URL
+    file: /etc/sitbank/secrets/database_url
   redis_url:
-    environment: SITBANK_REDIS_URL
+    file: /etc/sitbank/secrets/redis_url
   mfa_aes256_gcm_key_b64:
-    environment: SITBANK_MFA_AES256_GCM_KEY_B64
+    file: /etc/sitbank/secrets/mfa_aes256_gcm_key_b64
   password_pepper_b64:
-    environment: SITBANK_PASSWORD_PEPPER_B64
+    file: /etc/sitbank/secrets/password_pepper_b64
