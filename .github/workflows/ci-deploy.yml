@@ -62,22 +62,22 @@ jobs:
           online-audits: true
           persona: pedantic
 
-#  dependency-review:
-#    if: github.event_name == 'pull_request'
-#    runs-on: ubuntu-latest
-#    timeout-minutes: 10
-#    permissions:
-#      contents: read
-#    steps:
-#      - name: Check out repository
-#        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
-#        with:
-#          persist-credentials: false
-#
-#      - name: Review dependency changes
-#        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48
-#        with:
-#          fail-on-severity: high
+  dependency-review:
+    if: github.event_name == 'pull_request' && github.event.repository.private == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
+
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48
+        with:
+          fail-on-severity: high
 
   test:
     runs-on: ubuntu-latest
@@ -175,8 +175,8 @@ jobs:
       - name: Validate the production Compose model
         run: bash ops/container/validate-compose.sh sitbank:pr
 
+      # zizmor: ignore[unpinned-tools] Trivy action is SHA-pinned; the action installs a pinned Trivy tool version.
       - name: Block all critical vulnerabilities
-      # zizmor: ignore[unpinned-tools]
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
         with:
           image-ref: sitbank:pr
@@ -184,9 +184,10 @@ jobs:
           exit-code: "1"
           ignore-unfixed: false
           severity: CRITICAL
+          version: v0.71.0
 
+      # zizmor: ignore[unpinned-tools] Trivy action is SHA-pinned; the action installs a pinned Trivy tool version.
       - name: Block fixable high and critical vulnerabilities
-      # zizmor: ignore[unpinned-tools]
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
         with:
           image-ref: sitbank:pr
@@ -194,6 +195,7 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
           severity: HIGH,CRITICAL
+          version: v0.71.0
 
   publish:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
@@ -293,8 +295,8 @@ jobs:
           RUN_ZAP_DAST: "true"
         run: bash ops/container/smoke-test.sh "${IMAGE}"
 
+      # zizmor: ignore[unpinned-tools] Trivy action is SHA-pinned; the action installs a pinned Trivy tool version.
       - name: Block all critical vulnerabilities in the published digest
-      # zizmor: ignore[unpinned-tools]
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
         with:
           image-ref: ${{ needs.publish.outputs.repository }}@${{ needs.publish.outputs.digest }}
@@ -302,9 +304,10 @@ jobs:
           exit-code: "1"
           ignore-unfixed: false
           severity: CRITICAL
+          version: v0.71.0
 
+      # zizmor: ignore[unpinned-tools] Trivy action is SHA-pinned; the action installs a pinned Trivy tool version.
       - name: Block fixable high and critical vulnerabilities in the published digest
-      # zizmor: ignore[unpinned-tools]
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
         with:
           image-ref: ${{ needs.publish.outputs.repository }}@${{ needs.publish.outputs.digest }}
@@ -312,6 +315,7 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
           severity: HIGH,CRITICAL
+          version: v0.71.0
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6

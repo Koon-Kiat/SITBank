@@ -16,6 +16,7 @@ concurrency:
 
 jobs:
   analyze-python:
+    if: github.event.repository.private == false
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
