@@ -138,6 +138,7 @@ def test_legacy_environment_import_seeds_root_runtime_without_printing_values(
 def test_dockerfile_and_compose_enforce_hardened_runtime():
     dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
     compose_text = Path("compose.prod.yml").read_text(encoding="utf-8")
+    smoke_test = Path("ops/container/smoke-test.sh").read_text(encoding="utf-8")
     compose = yaml.safe_load(compose_text)
     app = compose["services"]["app"]
 
@@ -164,6 +165,12 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
         for name, value in app["environment"].items()
         if name.endswith("_FILE")
     )
+    assert (
+        "/app/redis_compatibility_check.py:ro"
+        in smoke_test
+    )
+    assert "python /app/redis_compatibility_check.py" in smoke_test
+    assert "/redis-check.py" not in smoke_test
 
 
 def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():

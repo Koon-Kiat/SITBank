@@ -94,8 +94,8 @@ docker run --rm "${docker_args[@]}" "${IMAGE}" \
 docker run --rm "${docker_args[@]}" "${IMAGE}" \
     python -m flask --app wsgi:app production-check
 docker run --rm "${docker_args[@]}" \
-    --volume "${repo_root}/ops/container/redis_compatibility_check.py:/redis-check.py:ro" \
-    "${IMAGE}" python /redis-check.py
+    --volume "${repo_root}/ops/container/redis_compatibility_check.py:/app/redis_compatibility_check.py:ro" \
+    "${IMAGE}" python /app/redis_compatibility_check.py
 
 docker run --detach --name sitbank-smoke \
     "${docker_args[@]}" "${IMAGE}" >/dev/null
