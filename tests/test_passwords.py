@@ -7,10 +7,13 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.error import URLError
 
+import fakeredis
 from flask import Flask
 
 from app.security.passwords import (
-    HIBP_UNAVAILABLE_ERROR,
+    HIBP_CIRCUIT_OPEN_KEY,
+    HIBP_FAILURE_KEY,
+    HIBP_FALLBACK_WARNING,
     PASSWORD_MAX_CHARS,
     PBKDF2_PREFIX,
     PasswordPolicyError,
@@ -47,9 +50,12 @@ class PasswordPolicyTests(unittest.TestCase):
             COMMON_PASSWORDS_PATH=str(self.password_file),
             COMMON_PASSWORDS_MIN_ENTRIES=1,
             HIBP_PASSWORD_CHECK_TIMEOUT_SECONDS=0.25,
+            HIBP_CIRCUIT_FAILURE_THRESHOLD=3,
+            HIBP_CIRCUIT_OPEN_SECONDS=300,
             PASSWORD_PEPPER_B64="MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE=",
             PASSWORD_PBKDF2_ITERATIONS=600000,
         )
+        self.app.extensions["redis"] = fakeredis.FakeRedis(decode_responses=True)
         self.context = self.app.app_context()
         self.context.push()
 
@@ -77,11 +83,36 @@ class PasswordPolicyTests(unittest.TestCase):
             validate_password_policy(password)
 
     @patch("app.security.passwords.urlopen")
-    def test_rejects_registration_when_hibp_is_unavailable(self, urlopen) -> None:
+    def test_falls_back_to_local_blocklist_when_hibp_is_unavailable(self, urlopen) -> None:
         urlopen.side_effect = URLError("offline")
 
-        with self.assertRaisesRegex(PasswordPolicyError, HIBP_UNAVAILABLE_ERROR):
-            validate_password_policy("not-in-local-list")
+        self.assertEqual(
+            validate_password_policy("not-in-local-list"),
+            [HIBP_FALLBACK_WARNING],
+        )
+
+    @patch("app.security.passwords.urlopen")
+    def test_opens_circuit_after_repeated_hibp_failures(self, urlopen) -> None:
+        urlopen.side_effect = URLError("offline")
+
+        for _attempt in range(4):
+            self.assertEqual(
+                validate_password_policy("not-in-local-list"),
+                [HIBP_FALLBACK_WARNING],
+            )
+
+        self.assertEqual(urlopen.call_count, 3)
+        self.assertTrue(self.app.extensions["redis"].exists(HIBP_CIRCUIT_OPEN_KEY))
+
+    @patch("app.security.passwords.urlopen")
+    def test_successful_hibp_check_closes_failure_state(self, urlopen) -> None:
+        redis_client = self.app.extensions["redis"]
+        redis_client.set(HIBP_FAILURE_KEY, "2")
+        urlopen.return_value = FakeResponse(b"00000000000000000000000000000000000:0\r\n")
+
+        self.assertEqual(validate_password_policy("not-in-local-list"), [])
+        self.assertFalse(redis_client.exists(HIBP_FAILURE_KEY))
+        self.assertFalse(redis_client.exists(HIBP_CIRCUIT_OPEN_KEY))
 
     @patch("app.security.passwords._normalize_password")
     def test_rejects_oversized_password_before_normalization(self, normalize_password) -> None:

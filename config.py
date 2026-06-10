@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import re
 from datetime import timedelta
 from pathlib import Path
 from urllib.parse import urlparse
@@ -8,7 +10,9 @@ from urllib.parse import urlparse
 from dotenv import load_dotenv
 
 
-load_dotenv()
+APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
+if APP_ENV != "production":
+    load_dotenv()
 
 
 PLACEHOLDER_TOKENS = {
@@ -94,8 +98,44 @@ def _required_b64_32_bytes(name: str) -> str:
     return value
 
 
+def _required_session_hmac_keys(name: str, *, active_key_id: str) -> dict[str, bytes]:
+    import base64
+
+    raw_value = _required_env(name)
+    try:
+        payload = json.loads(raw_value)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"{name} must be a JSON object") from exc
+    if not isinstance(payload, dict) or not payload:
+        raise RuntimeError(f"{name} must contain at least one key")
+
+    keys: dict[str, bytes] = {}
+    for key_id, encoded_key in payload.items():
+        normalized_key_id = str(key_id).strip()
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,32}", normalized_key_id):
+            raise RuntimeError(f"{name} contains an invalid key identifier")
+        try:
+            decoded_key = base64.b64decode(str(encoded_key), validate=True)
+        except Exception as exc:
+            raise RuntimeError(f"{name} key {normalized_key_id} must be valid base64") from exc
+        if len(decoded_key) != 32:
+            raise RuntimeError(f"{name} key {normalized_key_id} must decode to exactly 32 bytes")
+        keys[normalized_key_id] = decoded_key
+
+    if active_key_id not in keys:
+        raise RuntimeError("SESSION_HMAC_ACTIVE_KEY_ID must identify a configured session HMAC key")
+    return keys
+
+
 class Config:
+    APP_ENV = APP_ENV
     SECRET_KEY = _required_secret("SECRET_KEY", min_length=32)
+    WTF_CSRF_SECRET_KEY = _required_secret("WTF_CSRF_SECRET_KEY", min_length=32)
+    SESSION_HMAC_ACTIVE_KEY_ID = _required_env("SESSION_HMAC_ACTIVE_KEY_ID")
+    SESSION_HMAC_KEYS = _required_session_hmac_keys(
+        "SESSION_HMAC_KEYS_JSON",
+        active_key_id=SESSION_HMAC_ACTIVE_KEY_ID,
+    )
     SQLALCHEMY_DATABASE_URI = _required_url(
         "DATABASE_URL",
         schemes={"postgresql", "postgresql+psycopg2"},
@@ -139,6 +179,12 @@ class Config:
     )
     if HIBP_PASSWORD_CHECK_TIMEOUT_SECONDS <= 0 or HIBP_PASSWORD_CHECK_TIMEOUT_SECONDS > 5:
         raise RuntimeError("HIBP_PASSWORD_CHECK_TIMEOUT_SECONDS must be between 0 and 5")
+    HIBP_CIRCUIT_FAILURE_THRESHOLD = int(os.getenv("HIBP_CIRCUIT_FAILURE_THRESHOLD", "3"))
+    if HIBP_CIRCUIT_FAILURE_THRESHOLD < 1 or HIBP_CIRCUIT_FAILURE_THRESHOLD > 10:
+        raise RuntimeError("HIBP_CIRCUIT_FAILURE_THRESHOLD must be between 1 and 10")
+    HIBP_CIRCUIT_OPEN_SECONDS = int(os.getenv("HIBP_CIRCUIT_OPEN_SECONDS", "300"))
+    if HIBP_CIRCUIT_OPEN_SECONDS < 30 or HIBP_CIRCUIT_OPEN_SECONDS > 3600:
+        raise RuntimeError("HIBP_CIRCUIT_OPEN_SECONDS must be between 30 and 3600")
 
     SESSION_TYPE = "redis"
     SESSION_KEY_PREFIX = "session:"
@@ -158,6 +204,8 @@ class Config:
 
     WTF_CSRF_TIME_LIMIT = 15 * 60
     WTF_CSRF_SSL_STRICT = True
+    WTF_CSRF_CHECK_DEFAULT = True
+    WTF_CSRF_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
     MAX_CONTENT_LENGTH = int(os.getenv("MAX_CONTENT_LENGTH", str(1024 * 1024)))
     if MAX_CONTENT_LENGTH < 64 * 1024 or MAX_CONTENT_LENGTH > 5 * 1024 * 1024:
         raise RuntimeError("MAX_CONTENT_LENGTH must be between 64 KiB and 5 MiB")

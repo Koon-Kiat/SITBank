@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import hmac
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -10,6 +8,7 @@ from flask import current_app, g, has_request_context, request, session
 
 from app.extensions import db
 from app.models import SecurityAuditEvent, User
+from app.security.session_hmac import active_hmac_hex
 
 try:
     from webauthn.helpers import bytes_to_base64url
@@ -41,12 +40,7 @@ def register_correlation_id(app) -> None:
 def session_fingerprint(session_id: str | None) -> str | None:
     if not session_id:
         return None
-    digest = hmac.new(
-        current_app.config["SECRET_KEY"].encode("utf-8"),
-        session_id.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
-    return digest[:16]
+    return active_hmac_hex(session_id, length=16)
 
 
 def audit_event(

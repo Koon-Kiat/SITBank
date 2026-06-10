@@ -1,0 +1,13 @@
+Database schema changes are managed with Flask-Migrate/Alembic.
+
+For a new database:
+
+    flask --app wsgi:app db upgrade
+
+For a pre-existing deployment that already matches the baseline schema, verify
+the tables and indexes first, back up PostgreSQL, then mark the baseline once:
+
+    flask --app wsgi:app db stamp 20260610_0001
+
+Do not stamp a database whose schema has not been independently verified.
+

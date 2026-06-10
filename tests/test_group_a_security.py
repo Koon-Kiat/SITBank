@@ -131,20 +131,28 @@ def test_registration_rejects_common_password(client):
     assert db.session.query(User).count() == 0
 
 
-def test_registration_rejects_when_live_password_check_is_unavailable(client, monkeypatch):
-    from app.security.passwords import HIBP_UNAVAILABLE_ERROR, LivePasswordCheckUnavailable
+def test_registration_uses_local_fallback_when_live_password_check_is_unavailable(client, monkeypatch):
+    from app.security.passwords import HIBP_FALLBACK_WARNING, LivePasswordCheckUnavailable
 
     def unavailable(_password):
         raise LivePasswordCheckUnavailable("offline")
 
     monkeypatch.setattr("app.security.passwords._is_password_pwned_by_hibp", unavailable)
 
-    response = register(client)
+    response = client.post(
+        "/register",
+        data={
+            "username": "alice01",
+            "email": "alice@example.com",
+            "password": "correct horse battery staple",
+            "confirm_password": "correct horse battery staple",
+        },
+        follow_redirects=True,
+    )
 
-    assert response.status_code == 400
-    assert db.session.query(User).count() == 0
-    assert HIBP_UNAVAILABLE_ERROR.encode("utf-8") in response.data
-    assert b"local blocklist only" not in response.data
+    assert response.status_code == 200
+    assert db.session.query(User).count() == 1
+    assert HIBP_FALLBACK_WARNING.encode("utf-8") in response.data
 
 
 def test_registration_rejects_live_breached_password(client, monkeypatch):
@@ -647,6 +655,65 @@ def test_incognito_logout_appears_in_past_sessions_for_existing_browser(app, cli
     assert past_incognito["ended_reason_display"] == "Logged out"
     assert incognito_ref in markup
     assert f"/sessions/{incognito_ref}/terminate" not in markup
+
+
+def test_session_references_survive_hmac_key_rotation(app, client):
+    from app.security.sessions import (
+        public_session_reference,
+        resolve_session_reference_for_user,
+    )
+
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    with client.session_transaction() as sess:
+        session_id = sess.sid
+    old_reference = public_session_reference(session_id)
+
+    app.config["SESSION_HMAC_ACTIVE_KEY_ID"] = "test-previous"
+    new_reference = public_session_reference(session_id)
+
+    assert new_reference != old_reference
+    assert resolve_session_reference_for_user(user.id, old_reference) == session_id
+    assert resolve_session_reference_for_user(user.id, new_reference) == session_id
+
+
+def test_dummy_password_hash_tracks_current_pbkdf2_configuration(app):
+    from app.auth.services import _dummy_password_hash
+
+    original_iterations = app.config["PASSWORD_PBKDF2_ITERATIONS"]
+    original_hash = _dummy_password_hash()
+
+    try:
+        app.config["PASSWORD_PBKDF2_ITERATIONS"] = original_iterations + 1
+        updated_hash = _dummy_password_hash()
+    finally:
+        app.config["PASSWORD_PBKDF2_ITERATIONS"] = original_iterations
+        app.config.pop("_DUMMY_PASSWORD_HASH", None)
+        app.config.pop("_DUMMY_PASSWORD_HASH_CONFIG", None)
+
+    assert updated_hash != original_hash
+    assert f"$i={original_iterations + 1}$" in updated_hash
+
+
+def test_unknown_and_known_login_failures_use_same_backoff_path(client):
+    register(client)
+    user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
+
+    known_response = client.post(
+        "/auth/login",
+        json={"identifier": "alice01", "password": "wrong-password-value"},
+    )
+    unknown_response = client.post(
+        "/auth/login",
+        json={"identifier": "missing-user", "password": "wrong-password-value"},
+    )
+    db.session.refresh(user)
+
+    assert known_response.status_code == 401
+    assert unknown_response.status_code == 401
+    assert known_response.get_json() == unknown_response.get_json()
+    assert user.failed_login_count == 0
 
 
 def test_mfa_setup_stores_encrypted_secret_and_rejects_replay(client):
@@ -1690,6 +1757,32 @@ def test_profile_post_requires_csrf_when_enabled(app, client):
     assert response.status_code == 400
 
 
+def test_json_auth_post_requires_global_csrf_header_when_enabled(app, client):
+    original = app.config["WTF_CSRF_ENABLED"]
+    app.config["WTF_CSRF_ENABLED"] = True
+
+    try:
+        token = client.get("/auth/csrf-token").get_json()["csrf_token"]
+        missing_token = client.post(
+            "/auth/login",
+            json={"identifier": "missing-user", "password": "wrong-password-value"},
+        )
+        valid_token = client.post(
+            "/auth/login",
+            json={"identifier": "missing-user", "password": "wrong-password-value"},
+            headers={"X-CSRFToken": token},
+        )
+    finally:
+        app.config["WTF_CSRF_ENABLED"] = original
+
+    assert missing_token.status_code == 400
+    assert missing_token.get_json() == {
+        "error": "Security token expired or invalid. Please try again."
+    }
+    assert valid_token.status_code == 401
+    assert valid_token.get_json() == {"error": "Invalid username or password"}
+
+
 def test_profile_submission_cannot_modify_privileged_fields(client):
     register(client)
     register(client, username="bob02", email="bob@example.com")
@@ -2023,8 +2116,14 @@ def test_production_env_docs_require_pbkdf2_pepper_not_bcrypt():
     readme = Path("README.md").read_text(encoding="utf-8")
 
     for setting in (
+        "APP_ENV",
+        "WTF_CSRF_SECRET_KEY",
+        "SESSION_HMAC_ACTIVE_KEY_ID",
+        "SESSION_HMAC_KEYS_JSON",
         "PASSWORD_PEPPER_B64",
         "PASSWORD_PBKDF2_ITERATIONS",
+        "HIBP_CIRCUIT_FAILURE_THRESHOLD",
+        "HIBP_CIRCUIT_OPEN_SECONDS",
         "WEBAUTHN_APPROVED_AAGUIDS_PATH",
         "WEBAUTHN_MDS_CACHE_PATH",
     ):
@@ -2056,12 +2155,46 @@ def test_future_transaction_payload_guardrails_reject_server_controlled_fields()
         validate_public_transaction_payload({"idempotency_key": "txn-1", "amount": "10.00", "account_id": "acct-1"})
     with pytest.raises(AuthError):
         validate_public_transaction_payload({"amount": "10.00", "currency": "SGD"})
+    with pytest.raises(AuthError):
+        validate_public_transaction_payload(
+            {
+                "idempotency_key": "txn-2",
+                "amount": "10.00",
+                "currency": "SGD",
+                "payee": "PAYEE-001",
+                "memo": "unexpected public field",
+            }
+        )
 
-    validate_public_transaction_payload(
+    normalized = validate_public_transaction_payload(
         {
-            "idempotency_key": "txn-2",
+            "idempotency_key": " txn-3 ",
             "amount": "10.00",
-            "currency": "SGD",
-            "payee": "PAYEE-001",
+            "currency": "sgd",
+            "payee": " PAYEE-001 ",
         }
     )
+
+    assert normalized["idempotency_key"] == "txn-3"
+    assert normalized["currency"] == "SGD"
+    assert normalized["payee"] == "PAYEE-001"
+
+
+def test_health_endpoints_report_liveness_and_dependency_readiness(app, client, monkeypatch):
+    live = client.get("/health/live")
+    ready = client.get("/health/ready")
+
+    assert live.status_code == 200
+    assert live.get_json() == {"status": "ok"}
+    assert ready.status_code == 200
+    assert ready.get_json() == {"status": "ready"}
+
+    monkeypatch.setattr(
+        app.extensions["redis"],
+        "ping",
+        lambda: (_ for _ in ()).throw(ConnectionError("offline")),
+    )
+    unavailable = client.get("/health/ready")
+
+    assert unavailable.status_code == 503
+    assert unavailable.get_json() == {"status": "unavailable"}

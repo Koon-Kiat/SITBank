@@ -2,28 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from marshmallow import ValidationError
+
 from app.auth.services import AuthError, ensure_account_not_frozen
+from app.banking.schemas import PublicTransactionSchema
 from app.models import User
-
-
-FORBIDDEN_CLIENT_TRANSACTION_FIELDS = frozenset(
-    {
-        "account_id",
-        "account_number",
-        "approval_state",
-        "approved_by",
-        "credit_limit",
-        "currency_normalized",
-        "kyc_state",
-        "limit",
-        "maker_user_id",
-        "risk_score",
-        "status",
-        "transaction_id",
-        "transaction_status",
-        "user_id",
-    }
-)
 
 
 def ensure_outbound_transfer_allowed(user: User) -> None:
@@ -50,9 +33,8 @@ def before_sensitive_profile_change(user: User) -> None:
     ensure_sensitive_profile_change_allowed(user)
 
 
-def validate_public_transaction_payload(payload: Mapping[str, object]) -> None:
-    supplied_fields = {str(key).strip().casefold() for key in payload}
-    if supplied_fields & FORBIDDEN_CLIENT_TRANSACTION_FIELDS:
-        raise AuthError("Transaction request contains server-controlled fields", 400)
-    if not str(payload.get("idempotency_key") or "").strip():
-        raise AuthError("Idempotency key is required", 400)
+def validate_public_transaction_payload(payload: Mapping[str, object]) -> dict[str, object]:
+    try:
+        return PublicTransactionSchema().load(dict(payload))
+    except ValidationError as exc:
+        raise AuthError("Invalid transaction request", 400) from exc
