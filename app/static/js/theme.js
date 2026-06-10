@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  var storageKey = "osp-theme";
+  var storageKey = "sitbank-theme";
   var root = document.documentElement;
 
   function preferredTheme() {

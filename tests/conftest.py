@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 from pathlib import Path
 
@@ -9,9 +10,17 @@ import pytest
 
 
 os.environ.setdefault("SECRET_KEY", "test-secret-key-that-is-long-enough-for-config")
+os.environ.setdefault("WTF_CSRF_SECRET_KEY", "test-csrf-secret-that-is-long-enough-for-config")
+os.environ["SESSION_HMAC_ACTIVE_KEY_ID"] = "test-current"
+os.environ["SESSION_HMAC_KEYS_JSON"] = json.dumps(
+    {
+        "test-current": base64.b64encode(b"2" * 32).decode("ascii"),
+        "test-previous": base64.b64encode(b"3" * 32).decode("ascii"),
+    }
+)
 os.environ.setdefault(
     "DATABASE_URL",
-    "postgresql+psycopg2://user:pass@127.0.0.1:5432/scamcentre_test",
+    "postgresql+psycopg2://user:pass@127.0.0.1:5432/sitbank_test",
 )
 os.environ.setdefault("REDIS_URL", "redis://:pass@127.0.0.1:6379/15")
 os.environ.setdefault(
@@ -32,6 +41,12 @@ os.environ.setdefault("WEBAUTHN_RP_ORIGIN", "https://sitbank.duckdns.org")
 class TestConfig:
     TESTING = True
     SECRET_KEY = os.environ["SECRET_KEY"]
+    WTF_CSRF_SECRET_KEY = os.environ["WTF_CSRF_SECRET_KEY"]
+    SESSION_HMAC_ACTIVE_KEY_ID = os.environ["SESSION_HMAC_ACTIVE_KEY_ID"]
+    SESSION_HMAC_KEYS = {
+        "test-current": b"2" * 32,
+        "test-previous": b"3" * 32,
+    }
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     REDIS_URL = os.environ["REDIS_URL"]
@@ -39,10 +54,10 @@ class TestConfig:
     PASSWORD_PEPPER_B64 = os.environ["PASSWORD_PEPPER_B64"]
     PASSWORD_PBKDF2_ITERATIONS = int(os.environ["PASSWORD_PBKDF2_ITERATIONS"])
     PASSWORD_MAX_CHARS = 256
-    MFA_ISSUER_NAME = "O$P$ Bank Test"
+    MFA_ISSUER_NAME = "SITBank Test"
     WEBAUTHN_RP_ID = os.environ["WEBAUTHN_RP_ID"]
     WEBAUTHN_RP_ORIGIN = os.environ["WEBAUTHN_RP_ORIGIN"]
-    WEBAUTHN_RP_NAME = "O$P$ Bank Test"
+    WEBAUTHN_RP_NAME = "SITBank Test"
     WEBAUTHN_TIMEOUT_MS = 60_000
     WEBAUTHN_REQUIRED_CREDENTIALS = 2
     WEBAUTHN_ENFORCE_KEY_SETUP = False
@@ -51,9 +66,11 @@ class TestConfig:
     COMMON_PASSWORDS_PATH = os.environ["COMMON_PASSWORDS_PATH"]
     COMMON_PASSWORDS_MIN_ENTRIES = 1
     HIBP_PASSWORD_CHECK_TIMEOUT_SECONDS = 0.25
+    HIBP_CIRCUIT_FAILURE_THRESHOLD = 3
+    HIBP_CIRCUIT_OPEN_SECONDS = 300
     SESSION_TYPE = "redis"
     SESSION_KEY_PREFIX = "session:"
-    SESSION_COOKIE_NAME = "__Host-osp_session"
+    SESSION_COOKIE_NAME = "__Host-sitbank_session"
     SESSION_COOKIE_SECURE = True
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Strict"
@@ -64,6 +81,8 @@ class TestConfig:
     WTF_CSRF_ENABLED = False
     WTF_CSRF_TIME_LIMIT = 15 * 60
     WTF_CSRF_SSL_STRICT = False
+    WTF_CSRF_CHECK_DEFAULT = True
+    WTF_CSRF_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
     MAX_CONTENT_LENGTH = 1024 * 1024
     RATELIMIT_STORAGE_URI = "memory://"
     RATELIMIT_HEADERS_ENABLED = True

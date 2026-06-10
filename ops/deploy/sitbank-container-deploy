@@ -1,0 +1,429 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+readonly DEPLOY_CONFIG="/etc/sitbank/deploy.conf"
+readonly COMPOSE_FILE="/opt/sitbank/compose.yml"
+readonly SECRET_DIR="/etc/sitbank/secrets"
+readonly CONTAINER_ENV="/etc/sitbank/container.env"
+readonly STATE_DIR="/var/lib/sitbank-container"
+readonly STATE_FILE="${STATE_DIR}/current"
+readonly DEPLOY_USER="sitbank-deploy"
+readonly INCOMING_DIR="/home/${DEPLOY_USER}/incoming"
+
+if [[ "${EUID}" -ne 0 ]]; then
+    echo "Deployment wrapper must run as root" >&2
+    exit 1
+fi
+if [[ ! -r "${DEPLOY_CONFIG}" ]]; then
+    echo "Missing root-owned deployment configuration" >&2
+    exit 1
+fi
+
+# shellcheck disable=SC1090
+source "${DEPLOY_CONFIG}"
+
+if [[ "$#" -ne 2 ]]; then
+    echo "Usage: sitbank-container-deploy COMMIT_SHA SHA256_DIGEST" >&2
+    exit 2
+fi
+release_sha="${1:-}"
+image_digest="${2:-}"
+if [[ ! "${release_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "Invalid release SHA" >&2
+    exit 2
+fi
+if [[ ! "${image_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "Invalid image digest" >&2
+    exit 2
+fi
+if [[ ! "${GHCR_REPOSITORY}" =~ ^ghcr\.io/[a-z0-9._-]+/[a-z0-9._-]+$ ]]; then
+    echo "Invalid configured GHCR repository" >&2
+    exit 1
+fi
+if [[ ! "${PUBLIC_HOST}" =~ ^[A-Za-z0-9.-]+$ ]]; then
+    echo "Invalid configured public host" >&2
+    exit 1
+fi
+
+readonly image="${GHCR_REPOSITORY}@${image_digest}"
+readonly credential_path="${INCOMING_DIR}/registry-${release_sha}.credentials"
+readonly bundle_path="${INCOMING_DIR}/runtime-${release_sha}.tar"
+readonly checksum_path="${INCOMING_DIR}/runtime-${release_sha}.sha256"
+
+exec 9>/var/lock/sitbank-container-deploy.lock
+if ! flock -n 9; then
+    echo "Another deployment is already running" >&2
+    exit 1
+fi
+
+docker_config="$(mktemp -d)"
+staging_dir="$(mktemp -d "${STATE_DIR}/runtime-staging.XXXXXX")"
+runtime_backup="$(mktemp -d "${STATE_DIR}/runtime-backup.XXXXXX")"
+runtime_replaced=0
+service_switched=0
+legacy_was_active=0
+previous_image=""
+if [[ -r "${STATE_FILE}" ]]; then
+    previous_image="$(awk -F= '$1 == "IMAGE" { print $2 }' "${STATE_FILE}")"
+fi
+
+cleanup() {
+    rm -rf -- "${docker_config}" "${staging_dir}" "${runtime_backup}"
+    rm -f -- "${credential_path}" "${bundle_path}" "${checksum_path}"
+}
+
+validate_input_file() {
+    local path="$1"
+    if [[ ! -f "${path}" || -L "${path}" ]]; then
+        echo "Deployment input must be a regular non-symlink file: ${path}" >&2
+        exit 2
+    fi
+    if [[ "$(stat -c '%U' -- "${path}")" != "${DEPLOY_USER}" ]]; then
+        echo "Deployment input must be owned by ${DEPLOY_USER}: ${path}" >&2
+        exit 2
+    fi
+}
+
+backup_runtime() {
+    if [[ -f "${CONTAINER_ENV}" ]]; then
+        install -m 0600 "${CONTAINER_ENV}" "${runtime_backup}/container.env"
+    fi
+    if [[ -d "${SECRET_DIR}" ]]; then
+        cp -a -- "${SECRET_DIR}" "${runtime_backup}/secrets"
+    fi
+}
+
+restore_runtime() {
+    rm -f -- "${CONTAINER_ENV}"
+    rm -rf -- "${SECRET_DIR}"
+    if [[ -f "${runtime_backup}/container.env" ]]; then
+        install -o root -g root -m 0600 \
+            "${runtime_backup}/container.env" "${CONTAINER_ENV}"
+    fi
+    if [[ -d "${runtime_backup}/secrets" ]]; then
+        cp -a -- "${runtime_backup}/secrets" "${SECRET_DIR}"
+    else
+        install -d -o root -g root -m 0700 "${SECRET_DIR}"
+    fi
+}
+
+install_runtime_bundle() {
+    if [[ ! -e "${bundle_path}" && ! -e "${checksum_path}" ]]; then
+        return
+    fi
+    validate_input_file "${bundle_path}"
+    validate_input_file "${checksum_path}"
+    if [[ "$(wc -l < "${checksum_path}")" -ne 1 ]]; then
+        echo "Runtime checksum file must contain exactly one line" >&2
+        exit 1
+    fi
+    expected_checksum="$(awk 'NR == 1 { print $1 }' "${checksum_path}")"
+    expected_filename="$(awk 'NR == 1 { print $2 }' "${checksum_path}")"
+    actual_checksum="$(sha256sum "${bundle_path}" | awk '{ print $1 }')"
+    if [[ ! "${expected_checksum}" =~ ^[0-9a-f]{64}$ \
+        || "${expected_filename}" != "$(basename "${bundle_path}")" \
+        || "${actual_checksum}" != "${expected_checksum}" ]]; then
+        echo "Runtime bundle checksum verification failed" >&2
+        exit 1
+    fi
+    while IFS= read -r member; do
+        case "${member}" in
+            /*|..|../*|*/../*|*/..)
+                echo "Unsafe runtime bundle member: ${member}" >&2
+                exit 1
+                ;;
+        esac
+    done < <(tar -tf "${bundle_path}")
+    tar --extract --file "${bundle_path}" --directory "${staging_dir}" \
+        --no-same-owner --no-same-permissions
+    if find "${staging_dir}" -type l -print -quit | grep -q .; then
+        echo "Runtime bundle must not contain symlinks" >&2
+        exit 1
+    fi
+
+    local required=(
+        container.env
+        secrets/database_url
+        secrets/mfa_aes256_gcm_key_b64
+        secrets/password_pepper_b64
+        secrets/redis_url
+        secrets/secret_key
+        secrets/session_hmac_keys_json
+        secrets/wtf_csrf_secret_key
+    )
+    local relative_path
+    for relative_path in "${required[@]}"; do
+        if [[ ! -s "${staging_dir}/${relative_path}" ]]; then
+            echo "Runtime bundle is missing ${relative_path}" >&2
+            exit 1
+        fi
+    done
+    local allowed_environment=(
+        APP_ENV
+        COMMON_PASSWORDS_MIN_ENTRIES
+        COMMON_PASSWORDS_PATH
+        HIBP_CIRCUIT_FAILURE_THRESHOLD
+        HIBP_CIRCUIT_OPEN_SECONDS
+        HIBP_PASSWORD_CHECK_TIMEOUT_SECONDS
+        MFA_ISSUER_NAME
+        PASSWORD_PBKDF2_ITERATIONS
+        SESSION_HMAC_ACTIVE_KEY_ID
+        TRUSTED_PROXY_COUNT
+        WEBAUTHN_APPROVED_AAGUIDS_PATH
+        WEBAUTHN_MDS_CACHE_PATH
+        WEBAUTHN_RP_ID
+        WEBAUTHN_RP_ORIGIN
+    )
+    if grep -Evq "^[A-Z][A-Z0-9_]*='[^']+'\$" \
+        "${staging_dir}/container.env"; then
+        echo "Runtime environment file has an invalid line" >&2
+        exit 1
+    fi
+    mapfile -t supplied_environment < <(
+        cut -d= -f1 "${staging_dir}/container.env" | sort
+    )
+    mapfile -t expected_environment < <(
+        printf '%s\n' "${allowed_environment[@]}" | sort
+    )
+    if [[ "${supplied_environment[*]}" != "${expected_environment[*]}" ]]; then
+        echo "Runtime environment contains missing or unsupported settings" >&2
+        exit 1
+    fi
+
+    backup_runtime
+    install -o root -g root -m 0600 \
+        "${staging_dir}/container.env" "${CONTAINER_ENV}"
+    install -d -o root -g root -m 0700 "${SECRET_DIR}"
+    for relative_path in "${required[@]:1}"; do
+        install -o root -g root -m 0400 \
+            "${staging_dir}/${relative_path}" \
+            "${SECRET_DIR}/$(basename "${relative_path}")"
+    done
+    runtime_replaced=1
+}
+
+read_secret() {
+    local path="${SECRET_DIR}/$1"
+    if [[ ! -f "${path}" || -L "${path}" ]]; then
+        echo "Missing protected secret file: ${path}" >&2
+        exit 1
+    fi
+    cat -- "${path}"
+}
+
+load_runtime_secrets() {
+    export SITBANK_SECRET_KEY
+    export SITBANK_WTF_CSRF_SECRET_KEY
+    export SITBANK_SESSION_HMAC_KEYS_JSON
+    export SITBANK_DATABASE_URL
+    export SITBANK_REDIS_URL
+    export SITBANK_MFA_AES256_GCM_KEY_B64
+    export SITBANK_PASSWORD_PEPPER_B64
+    SITBANK_SECRET_KEY="$(read_secret secret_key)"
+    SITBANK_WTF_CSRF_SECRET_KEY="$(read_secret wtf_csrf_secret_key)"
+    SITBANK_SESSION_HMAC_KEYS_JSON="$(read_secret session_hmac_keys_json)"
+    SITBANK_DATABASE_URL="$(read_secret database_url)"
+    SITBANK_REDIS_URL="$(read_secret redis_url)"
+    SITBANK_MFA_AES256_GCM_KEY_B64="$(read_secret mfa_aes256_gcm_key_b64)"
+    SITBANK_PASSWORD_PEPPER_B64="$(read_secret password_pepper_b64)"
+}
+
+compose() {
+    local selected_image="$1"
+    shift
+    SITBANK_IMAGE="${selected_image}" docker compose \
+        --project-name sitbank --file "${COMPOSE_FILE}" "$@"
+}
+
+validate_legacy_configuration() {
+    if [[ "${LEGACY_SERVICE:-"-"}" != "-" \
+        && ! "${LEGACY_SERVICE}" =~ ^[A-Za-z0-9_.@-]+\.service$ ]]; then
+        echo "Configured legacy service name is invalid" >&2
+        exit 1
+    fi
+    if [[ "${LEGACY_APP_ROOT:-"-"}" != "-" ]]; then
+        if [[ ! "${LEGACY_APP_ROOT}" =~ ^/var/www/[A-Za-z0-9._-]+$ \
+            || "${LEGACY_APP_ROOT}" == "/var/www" \
+            || -L "${LEGACY_APP_ROOT}" ]]; then
+            echo "Configured legacy application path is invalid" >&2
+            exit 1
+        fi
+    fi
+}
+
+remove_legacy_runtime() {
+    local fragment_path=""
+    local resolved_root=""
+
+    if [[ "${LEGACY_SERVICE:-"-"}" != "-" ]]; then
+        systemctl disable --now "${LEGACY_SERVICE}" >/dev/null 2>&1 || true
+        fragment_path="$(
+            systemctl show --property=FragmentPath --value \
+                "${LEGACY_SERVICE}" 2>/dev/null || true
+        )"
+        if [[ "${fragment_path}" == "/etc/systemd/system/${LEGACY_SERVICE}" \
+            && -f "${fragment_path}" && ! -L "${fragment_path}" ]]; then
+            rm -f -- "${fragment_path}"
+            systemctl daemon-reload
+        fi
+    fi
+
+    if [[ "${LEGACY_APP_ROOT:-"-"}" != "-" && -d "${LEGACY_APP_ROOT}" ]]; then
+        resolved_root="$(readlink -e -- "${LEGACY_APP_ROOT}")"
+        if [[ ! "${resolved_root}" =~ ^/var/www/[A-Za-z0-9._-]+$ \
+            || "${resolved_root}" == "/var/www" ]]; then
+            echo "Refusing to remove unsafe legacy path: ${resolved_root}" >&2
+            return 1
+        fi
+        rm -rf --one-file-system -- "${resolved_root}"
+    fi
+}
+
+wait_until_ready() {
+    curl --fail --silent --show-error \
+        --retry 15 --retry-delay 2 --retry-connrefused \
+        --header "X-Forwarded-Proto: https" \
+        "http://127.0.0.1:5000/health/ready" >/dev/null
+    curl --fail --silent --show-error \
+        --retry 8 --retry-delay 2 --retry-connrefused \
+        --resolve "${PUBLIC_HOST}:443:127.0.0.1" \
+        "https://${PUBLIC_HOST}/health/ready" >/dev/null
+}
+
+rollback() {
+    local exit_code=$?
+    local database_rollback_ok=1
+    trap - ERR
+    set +e
+    if [[ "${service_switched}" -eq 1 ]]; then
+        compose "${image}" down --remove-orphans
+    fi
+    if [[ "${runtime_replaced}" -eq 1 ]]; then
+        restore_runtime
+        load_runtime_secrets
+    fi
+    if [[ -r "${STATE_DIR}/database-cutover/state" ]]; then
+        if ! /usr/local/sbin/sitbank-database-cutover rollback; then
+            database_rollback_ok=0
+            echo "Database rollback requires administrator intervention" >&2
+        fi
+    fi
+    if [[ -n "${previous_image}" ]]; then
+        compose "${previous_image}" up --detach --no-build --pull never --remove-orphans
+        wait_until_ready
+    elif [[ "${database_rollback_ok}" -eq 1 \
+        && "${legacy_was_active}" -eq 1 \
+        && "${LEGACY_SERVICE:-"-"}" != "-" ]]; then
+        systemctl enable "${LEGACY_SERVICE}" >/dev/null 2>&1
+        systemctl start "${LEGACY_SERVICE}"
+    fi
+    echo "Deployment failed; the previous application runtime was restored" >&2
+    exit "${exit_code}"
+}
+
+trap cleanup EXIT
+trap rollback ERR
+
+validate_legacy_configuration
+if ss -lnt | grep -Eq ':(2375|2376)\b'; then
+    echo "Docker API must not be exposed over TCP" >&2
+    exit 1
+fi
+validate_input_file "${credential_path}"
+mapfile -t registry_credentials < "${credential_path}"
+if [[ "${#registry_credentials[@]}" -ne 2 ]]; then
+    echo "Registry credential file must contain username and token" >&2
+    exit 2
+fi
+registry_user="${registry_credentials[0]}"
+registry_token="${registry_credentials[1]}"
+if [[ ! "${registry_user}" =~ ^[A-Za-z0-9-]+$ \
+    || ! "${registry_token}" =~ ^[A-Za-z0-9_]{20,}$ ]]; then
+    echo "Registry credentials are malformed" >&2
+    exit 2
+fi
+
+install_runtime_bundle
+load_runtime_secrets
+
+export DOCKER_CONFIG="${docker_config}"
+printf '%s' "${registry_token}" | docker login ghcr.io \
+    --username "${registry_user}" --password-stdin >/dev/null
+unset registry_token
+
+cosign verify \
+    --certificate-identity "${COSIGN_CERTIFICATE_IDENTITY}" \
+    --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+    "${image}" >/dev/null
+docker pull "${image}" >/dev/null
+
+image_revision="$(
+    docker image inspect \
+        --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
+        "${image}"
+)"
+if [[ "${image_revision}" != "${release_sha}" ]]; then
+    echo "Image revision label does not match the requested commit" >&2
+    exit 1
+fi
+
+for host_file in \
+    /etc/sitbank/common-passwords.txt \
+    /etc/sitbank/fido-approved-aaguids.json \
+    /etc/sitbank/fido-mds-cache.json; do
+    if [[ ! -r "${host_file}" || -L "${host_file}" ]]; then
+        echo "Missing required root-managed policy file: ${host_file}" >&2
+        exit 1
+    fi
+done
+
+compose "${image}" run --rm --no-deps app \
+    python -m flask --app wsgi:app production-check
+compose "${image}" run --rm --no-deps app \
+    python -m flask --app wsgi:app db upgrade
+
+if [[ "${LEGACY_SERVICE:-"-"}" != "-" ]] \
+    && systemctl is-active --quiet "${LEGACY_SERVICE}"; then
+    legacy_was_active=1
+fi
+if [[ -n "${previous_image}" ]]; then
+    compose "${image}" down --remove-orphans
+elif [[ "${legacy_was_active}" -eq 1 ]]; then
+    systemctl disable --now "${LEGACY_SERVICE}"
+fi
+service_switched=1
+
+compose "${image}" up --detach --no-build --pull never --remove-orphans
+wait_until_ready
+
+install -d -o root -g root -m 0700 "${STATE_DIR}"
+if [[ -n "${previous_image}" ]]; then
+    printf 'IMAGE=%s\n' "${previous_image}" > "${STATE_DIR}/previous"
+    chmod 0600 "${STATE_DIR}/previous"
+fi
+if [[ "${runtime_replaced}" -eq 1 ]]; then
+    rm -rf -- "${STATE_DIR}/previous-runtime"
+    if [[ -n "$(find "${runtime_backup}" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+        cp -a -- "${runtime_backup}" "${STATE_DIR}/previous-runtime"
+    fi
+fi
+printf 'IMAGE=%s\nREVISION=%s\nDEPLOYED_AT=%s\n' \
+    "${image}" "${release_sha}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    > "${STATE_FILE}"
+chmod 0600 "${STATE_FILE}"
+
+systemctl enable sitbank-container.service >/dev/null
+systemctl start sitbank-container.service
+service_switched=0
+runtime_replaced=0
+trap - ERR
+if ! remove_legacy_runtime; then
+    echo "Warning: SITBank is healthy, but the former application files require manual cleanup" >&2
+fi
+if [[ -r "${STATE_DIR}/database-cutover/state" ]]; then
+    if ! /usr/local/sbin/sitbank-database-cutover finalize; then
+        echo "Warning: SITBank is healthy, but the former database role still requires manual cleanup" >&2
+    fi
+fi
+
+echo "Deployed ${release_sha} as ${image}"

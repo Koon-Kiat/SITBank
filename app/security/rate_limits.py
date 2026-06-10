@@ -70,7 +70,7 @@ def apply_exponential_backoff(scope: str, principal: str) -> None:
     raise AuthBackoffRequired(retry_after)
 
 
-def record_failure(scope: str, principal: str) -> None:
+def record_failure(scope: str, principal: str) -> int:
     key = _failure_key(scope, principal)
     attempts = _redis().incr(key)
     _redis().expire(key, 5 * 60)
@@ -84,6 +84,7 @@ def record_failure(scope: str, principal: str) -> None:
             "applied",
             metadata={"scope": scope, "attempts": int(attempts)},
         )
+    return int(attempts)
 
 
 def clear_failures(scope: str, principal: str) -> None:
