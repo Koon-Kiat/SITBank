@@ -108,6 +108,34 @@ jobs:
           ignore-unfixed: true
           severity: HIGH,CRITICAL
 
+      - name: Create CI Compose smoke environment file
+        run: |
+          sudo install -d -m 0755 /etc/sitbank
+          sudo tee /etc/sitbank/container.env > /dev/null <<'EOF'
+          APP_ENV=production
+          COMMON_PASSWORDS_MIN_ENTRIES=100000
+          COMMON_PASSWORDS_PATH=/run/config/common-passwords.txt
+          HIBP_CIRCUIT_FAILURE_THRESHOLD=3
+          HIBP_CIRCUIT_OPEN_SECONDS=300
+          HIBP_PASSWORD_CHECK_TIMEOUT_SECONDS=2.0
+          MFA_ISSUER_NAME=SITBank
+          PASSWORD_PBKDF2_ITERATIONS=600000
+          SESSION_HMAC_ACTIVE_KEY_ID=smoke
+          TRUSTED_PROXY_COUNT=1
+          WEBAUTHN_APPROVED_AAGUIDS_PATH=/run/config/fido-approved-aaguids.json
+          WEBAUTHN_MDS_CACHE_PATH=/run/config/fido-mds-cache.json
+          WEBAUTHN_RP_ID=sitbank.duckdns.org
+          WEBAUTHN_RP_ORIGIN=https://sitbank.duckdns.org
+          SITBANK_IMAGE=sitbank:smoke
+          SITBANK_SECRET_KEY=smoke
+          SITBANK_WTF_CSRF_SECRET_KEY=smoke
+          SITBANK_SESSION_HMAC_KEYS_JSON=smoke
+          SITBANK_DATABASE_URL=smoke
+          SITBANK_REDIS_URL=smoke
+          SITBANK_MFA_AES256_GCM_KEY_B64=smoke
+          SITBANK_PASSWORD_PEPPER_B64=smoke
+          EOF
+
       - name: Validate the production Compose model
         env:
           SITBANK_IMAGE: sitbank:smoke
