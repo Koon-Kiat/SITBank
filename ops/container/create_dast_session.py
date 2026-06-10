@@ -26,9 +26,9 @@ class DastClient:
             raise ValueError("DAST base URL must be loopback HTTP")
         self.base_url = base_url.rstrip("/")
         self.csrf_referrer = urllib.parse.urlunsplit(
-        # The smoke test connects over loopback HTTP but sets X-Forwarded-Proto=https
-        # to exercise production proxy behavior. Flask-WTF SSL-strict CSRF checks
-        # therefore require a same-origin HTTPS Referer.
+            # The smoke test connects over loopback HTTP but sets X-Forwarded-Proto=https
+            # to exercise production proxy behavior. Flask-WTF SSL-strict CSRF checks
+            # therefore require a same-origin HTTPS Referer.
             ("https", parsed.netloc, "/", "", "")
         )
         self.cookies: dict[str, str] = {}
@@ -111,7 +111,7 @@ def create_authenticated_cookie(base_url: str) -> str:
              "username": username,
              "email": f"{username}@example.test",
              "password": password,
-+            "confirm_password": password,
+             "confirm_password": password,
          },
         csrf_token=csrf_token,
         expected_status=201,
