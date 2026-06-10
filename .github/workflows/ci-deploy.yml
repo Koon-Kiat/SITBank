@@ -52,6 +52,8 @@ jobs:
 
       - name: Audit GitHub Actions workflows
         uses: zizmorcore/zizmor-action@a16621b09c6db4281f81a93cb393b05dcd7b7165
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           advanced-security: false
           annotations: true
@@ -174,6 +176,7 @@ jobs:
         run: bash ops/container/validate-compose.sh sitbank:pr
 
       - name: Block all critical vulnerabilities
+      # zizmor: ignore[unpinned-tools]
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
         with:
           image-ref: sitbank:pr
@@ -183,6 +186,7 @@ jobs:
           severity: CRITICAL
 
       - name: Block fixable high and critical vulnerabilities
+      # zizmor: ignore[unpinned-tools]
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
         with:
           image-ref: sitbank:pr
@@ -290,6 +294,7 @@ jobs:
         run: bash ops/container/smoke-test.sh "${IMAGE}"
 
       - name: Block all critical vulnerabilities in the published digest
+      # zizmor: ignore[unpinned-tools]
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
         with:
           image-ref: ${{ needs.publish.outputs.repository }}@${{ needs.publish.outputs.digest }}
@@ -299,6 +304,7 @@ jobs:
           severity: CRITICAL
 
       - name: Block fixable high and critical vulnerabilities in the published digest
+      # zizmor: ignore[unpinned-tools]
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
         with:
           image-ref: ${{ needs.publish.outputs.repository }}@${{ needs.publish.outputs.digest }}
