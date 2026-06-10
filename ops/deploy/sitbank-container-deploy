@@ -195,7 +195,7 @@ install_runtime_bundle() {
         "${staging_dir}/container.env" "${CONTAINER_ENV}"
     install -d -o root -g root -m 0700 "${SECRET_DIR}"
     for relative_path in "${required[@]:1}"; do
-        install -o root -g root -m 0400 \
+        install -o root -g 10001 -m 0440 \
             "${staging_dir}/${relative_path}" \
             "${SECRET_DIR}/$(basename "${relative_path}")"
     done
