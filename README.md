@@ -1,6 +1,6 @@
 # SITBank
 
-Secure Internet Banking Application for O$P$ Bank.
+Secure Internet Banking Application for SITBank.
 
 Production runs Flask and Gunicorn in a hardened Docker container. Nginx,
 Certbot, PostgreSQL, Redis, backups, and FIDO policy files remain on the EC2
@@ -158,7 +158,7 @@ Add these environment variables:
 - `PROD_SESSION_HMAC_ACTIVE_KEY_ID`
 - `PROD_SESSION_HMAC_PREVIOUS_KEY_ID` during a rotation only
 - `PROD_PASSWORD_PBKDF2_ITERATIONS`, normally `600000`
-- `PROD_MFA_ISSUER_NAME`, normally `O$P$ Bank`
+- `PROD_MFA_ISSUER_NAME`, normally `SITBank`
 
 Set the repository Actions variable `PROD_DEPLOY_ENABLED=false` during
 bootstrap. Set it to the exact value `true` only after EC2 is ready.

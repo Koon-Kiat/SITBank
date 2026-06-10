@@ -71,7 +71,7 @@ def import_legacy_environment(source: Path, destination: Path, public_host: str)
             "HIBP_PASSWORD_CHECK_TIMEOUT_SECONDS",
             "2.0",
         ),
-        "MFA_ISSUER_NAME": _required(values, "MFA_ISSUER_NAME", "O$P$ Bank"),
+        "MFA_ISSUER_NAME": _required(values, "MFA_ISSUER_NAME", "SITBank"),
         "PASSWORD_PBKDF2_ITERATIONS": _required(
             values,
             "PASSWORD_PBKDF2_ITERATIONS",

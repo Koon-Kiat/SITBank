@@ -548,7 +548,7 @@ def test_login_sets_secure_session_cookie_and_hides_raw_session_id(client):
     sessions_response = client.get("/auth/sessions")
 
     assert response.status_code == 302
-    assert "__Host-osp_session=" in response.headers["Set-Cookie"]
+    assert "__Host-sitbank_session=" in response.headers["Set-Cookie"]
     assert "Secure" in response.headers["Set-Cookie"]
     assert "HttpOnly" in response.headers["Set-Cookie"]
     assert "SameSite=Strict" in response.headers["Set-Cookie"]
@@ -1159,7 +1159,7 @@ def test_web_terminating_current_session_redirects_to_login_page(client):
     assert response.status_code == 302
     assert response.headers["Location"].endswith("/login")
     assert login_page.status_code == 200
-    assert b"Log in to O$P$ Bank" in login_page.data
+    assert b"Log in to SITBank" in login_page.data
     assert b"Session revoked" not in login_page.data
 
 
@@ -1279,7 +1279,7 @@ def test_theme_assets_are_csp_compatible_and_store_only_theme_preference(client)
     response = client.get("/")
     script = Path("app/static/js/theme.js").read_text(encoding="utf-8")
     stylesheet = Path("app/static/css/app.css").read_text(encoding="utf-8")
-    logo = Path("app/static/img/osp-bank-mark.svg").read_text(encoding="utf-8")
+    logo = Path("app/static/img/sitbank-mark.svg").read_text(encoding="utf-8")
 
     assert response.status_code == 200
     assert b'/static/js/theme.js' in response.data
@@ -1293,7 +1293,7 @@ def test_theme_assets_are_csp_compatible_and_store_only_theme_preference(client)
     assert 'setAttribute("title", actionLabel)' in script
     assert 'data-icon", isDark ? "sun" : "moon"' in script
     assert "localStorage" in script
-    assert "osp-theme" in script
+    assert "sitbank-theme" in script
     assert "token" not in script.casefold()
     assert "session" not in script.casefold()
     assert "username" not in script.casefold()

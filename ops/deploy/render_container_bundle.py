@@ -106,7 +106,7 @@ def build_container_bundle() -> tuple[dict[str, str], dict[str, str]]:
     environment = {
         "APP_ENV": "production",
         "COMMON_PASSWORDS_PATH": "/run/config/common-passwords.txt",
-        "MFA_ISSUER_NAME": _value("PROD_MFA_ISSUER_NAME", default="O$P$ Bank"),
+        "MFA_ISSUER_NAME": _value("PROD_MFA_ISSUER_NAME", default="SITBank"),
         "SESSION_HMAC_ACTIVE_KEY_ID": active_key_id,
         "WEBAUTHN_APPROVED_AAGUIDS_PATH": "/run/config/fido-approved-aaguids.json",
         "WEBAUTHN_MDS_CACHE_PATH": "/run/config/fido-mds-cache.json",
