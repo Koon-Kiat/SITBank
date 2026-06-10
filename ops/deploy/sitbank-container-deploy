@@ -337,8 +337,9 @@ if [[ "${#registry_credentials[@]}" -ne 2 ]]; then
 fi
 registry_user="${registry_credentials[0]}"
 registry_token="${registry_credentials[1]}"
-if [[ ! "${registry_user}" =~ ^[A-Za-z0-9-]+$ \
-    || ! "${registry_token}" =~ ^[A-Za-z0-9_]{20,}$ ]]; then
+if [[ -z "${registry_user}" || -z "${registry_token}" \
+    || "${registry_user}" == *$'\0'* || "${registry_token}" == *$'\0'* \
+    || "${registry_user}" == *$'\r'* || "${registry_token}" == *$'\r'* ]]; then
     echo "Registry credentials are malformed" >&2
     exit 2
 fi
