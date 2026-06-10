@@ -11,15 +11,12 @@ import pytest
 
 os.environ.setdefault("SECRET_KEY", "test-secret-key-that-is-long-enough-for-config")
 os.environ.setdefault("WTF_CSRF_SECRET_KEY", "test-csrf-secret-that-is-long-enough-for-config")
-os.environ.setdefault("SESSION_HMAC_ACTIVE_KEY_ID", "test-current")
-os.environ.setdefault(
-    "SESSION_HMAC_KEYS_JSON",
-    json.dumps(
-        {
-            "test-current": base64.b64encode(b"2" * 32).decode("ascii"),
-            "test-previous": base64.b64encode(b"3" * 32).decode("ascii"),
-        }
-    ),
+os.environ["SESSION_HMAC_ACTIVE_KEY_ID"] = "test-current"
+os.environ["SESSION_HMAC_KEYS_JSON"] = json.dumps(
+    {
+        "test-current": base64.b64encode(b"2" * 32).decode("ascii"),
+        "test-previous": base64.b64encode(b"3" * 32).decode("ascii"),
+    }
 )
 os.environ.setdefault(
     "DATABASE_URL",

@@ -457,7 +457,7 @@ Then run the same root wrapper:
 ```bash
 sudo /usr/local/sbin/sitbank-container-deploy \
   COMMIT_SHA \
-  sha256:IMAGE_DIGEST
+  ghcr.io/wenjiangg/sitbank@sha256:<digest>
 ```
 
 The wrapper removes the credential file and applies the same signature,
