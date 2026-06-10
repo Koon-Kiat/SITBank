@@ -16,4 +16,4 @@ marshmallow==4.3.0
 email-validator==2.3.0
 cryptography==46.0.7
 python-dotenv==1.2.2
-webauthn==2.7.0
+webauthn==2.7.1
