@@ -1,0 +1,7 @@
+*.sh text eol=lf
+Dockerfile text eol=lf
+compose.prod.yml text eol=lf
+.github/workflows/*.yml text eol=lf
+ops/deploy/* text eol=lf
+ops/sudoers/* text eol=lf
+ops/systemd/* text eol=lf

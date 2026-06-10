@@ -11,6 +11,9 @@ instance/
 *.sqlite
 *.db
 *.tar.gz
+*.tar
+runtime-*
+registry-*.credentials
 SERVER_SETUP_LOG*.md
 security-data/
 *.key

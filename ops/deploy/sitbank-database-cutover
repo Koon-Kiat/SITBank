@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+readonly DEPLOY_CONFIG="/etc/sitbank/deploy.conf"
+readonly STATE_DIR="/var/lib/sitbank-container/database-cutover"
+readonly STATE_FILE="${STATE_DIR}/state"
+readonly BACKUP_DIR="/var/backups/sitbank"
+readonly TARGET_DATABASE="sitbank_db"
+readonly TARGET_ROLE="sitbank_user"
+
+if [[ "${EUID}" -ne 0 ]]; then
+    echo "Database cutover helper must run as root" >&2
+    exit 1
+fi
+if [[ ! -r "${DEPLOY_CONFIG}" ]]; then
+    echo "Missing SITBank deployment configuration" >&2
+    exit 1
+fi
+
+# shellcheck disable=SC1090
+source "${DEPLOY_CONFIG}"
+
+validate_identifier() {
+    if [[ ! "$1" =~ ^[a-z_][a-z0-9_]{0,62}$ ]]; then
+        echo "Invalid PostgreSQL identifier: $1" >&2
+        exit 2
+    fi
+}
+
+role_exists() {
+    sudo -u postgres psql --no-psqlrc --tuples-only --no-align \
+        --command "SELECT 1 FROM pg_roles WHERE rolname = '$1'" \
+        | grep -qx 1
+}
+
+database_exists() {
+    sudo -u postgres psql --no-psqlrc --tuples-only --no-align \
+        --command "SELECT 1 FROM pg_database WHERE datname = '$1'" \
+        | grep -qx 1
+}
+
+terminate_database_connections() {
+    sudo -u postgres psql --no-psqlrc --set ON_ERROR_STOP=1 \
+        --command "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$1' AND pid <> pg_backend_pid();" \
+        >/dev/null
+}
+
+restart_legacy_service() {
+    if [[ "${LEGACY_WAS_ACTIVE:-0}" == "1" && "${LEGACY_SERVICE:-"-"}" != "-" ]]; then
+        systemctl start "${LEGACY_SERVICE}"
+    fi
+}
+
+prepare_failure() {
+    local exit_code=$?
+    trap - ERR EXIT
+    set +e
+    rm -f -- "${temporary_backup:-}" "${password_file:-}"
+    rollback_cutover
+    exit "${exit_code}"
+}
+
+rollback_cutover() {
+    if [[ ! -r "${STATE_FILE}" ]]; then
+        echo "No database cutover state exists" >&2
+        return 1
+    fi
+    # shellcheck disable=SC1090
+    source "${STATE_FILE}"
+    validate_identifier "${SOURCE_DATABASE}"
+    validate_identifier "${SOURCE_ROLE}"
+
+    if database_exists "${TARGET_DATABASE}" && ! database_exists "${SOURCE_DATABASE}"; then
+        terminate_database_connections "${TARGET_DATABASE}"
+        if role_exists "${SOURCE_ROLE}"; then
+            sudo -u postgres psql --no-psqlrc --set ON_ERROR_STOP=1 \
+                --dbname "${TARGET_DATABASE}" <<SQL
+REASSIGN OWNED BY "${TARGET_ROLE}" TO "${SOURCE_ROLE}";
+ALTER SCHEMA public OWNER TO "${SOURCE_ROLE}";
+SQL
+            sudo -u postgres psql --no-psqlrc --set ON_ERROR_STOP=1 <<SQL
+ALTER DATABASE "${TARGET_DATABASE}" OWNER TO "${SOURCE_ROLE}";
+ALTER DATABASE "${TARGET_DATABASE}" RENAME TO "${SOURCE_DATABASE}";
+SQL
+        fi
+    fi
+    if role_exists "${TARGET_ROLE}"; then
+        sudo -u postgres psql --no-psqlrc --set ON_ERROR_STOP=1 \
+            --command "DROP ROLE \"${TARGET_ROLE}\";" >/dev/null
+    fi
+    if ! database_exists "${SOURCE_DATABASE}" \
+        || database_exists "${TARGET_DATABASE}" \
+        || role_exists "${TARGET_ROLE}"; then
+        echo "Database rollback is incomplete; preserving cutover state" >&2
+        return 1
+    fi
+    restart_legacy_service
+    if [[ "${LEGACY_WAS_ACTIVE:-0}" == "1" \
+        && "${LEGACY_SERVICE:-"-"}" != "-" ]] \
+        && ! systemctl is-active --quiet "${LEGACY_SERVICE}"; then
+        echo "Database was restored but the legacy service did not restart" >&2
+        return 1
+    fi
+    rm -rf -- "${STATE_DIR}"
+    echo "Restored database ${SOURCE_DATABASE} and role ${SOURCE_ROLE}"
+}
+
+case "${1:-}" in
+    prepare)
+        if [[ "$#" -ne 4 ]]; then
+            echo "Usage: sitbank-database-cutover prepare SOURCE_DATABASE SOURCE_ROLE PASSWORD_FILE" >&2
+            exit 2
+        fi
+        source_database="$2"
+        source_role="$3"
+        password_file="$4"
+        validate_identifier "${source_database}"
+        validate_identifier "${source_role}"
+        if [[ "${source_database}" == "${TARGET_DATABASE}" \
+            || "${source_role}" == "${TARGET_ROLE}" ]]; then
+            echo "Source database and role must differ from SITBank targets" >&2
+            exit 2
+        fi
+        if [[ -e "${STATE_FILE}" ]]; then
+            echo "A database cutover is already pending" >&2
+            exit 1
+        fi
+        if [[ ! -f "${password_file}" || -L "${password_file}" \
+            || "$(stat -c '%U:%G' -- "${password_file}")" != "root:root" \
+            || "$(stat -c '%a' -- "${password_file}")" != "600" ]]; then
+            echo "PASSWORD_FILE must be a root-owned, mode-0600 regular file" >&2
+            exit 2
+        fi
+        if [[ "$(wc -l < "${password_file}")" -gt 1 ]]; then
+            echo "PASSWORD_FILE must contain one password without line breaks" >&2
+            exit 2
+        fi
+        database_password="$(cat -- "${password_file}")"
+        if [[ ! "${database_password}" =~ ^[A-Za-z0-9._~-]{32,128}$ ]]; then
+            echo "Database password must be 32-128 URL-safe characters" >&2
+            exit 2
+        fi
+        if ! database_exists "${source_database}" || ! role_exists "${source_role}"; then
+            echo "Source database or role does not exist" >&2
+            exit 1
+        fi
+        if database_exists "${TARGET_DATABASE}" || role_exists "${TARGET_ROLE}"; then
+            echo "SITBank target database or role already exists" >&2
+            exit 1
+        fi
+
+        install -d -o root -g root -m 0700 "${STATE_DIR}" "${BACKUP_DIR}"
+        legacy_was_active=0
+        if [[ "${LEGACY_SERVICE:-"-"}" != "-" ]] \
+            && systemctl is-active --quiet "${LEGACY_SERVICE}"; then
+            legacy_was_active=1
+        fi
+        cat > "${STATE_FILE}" <<EOF
+SOURCE_DATABASE=${source_database}
+SOURCE_ROLE=${source_role}
+LEGACY_WAS_ACTIVE=${legacy_was_active}
+EOF
+        chmod 0600 "${STATE_FILE}"
+
+        timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+        temporary_backup="$(
+            sudo -u postgres mktemp /tmp/sitbank-db.XXXXXX.dump
+        )"
+        trap prepare_failure ERR
+        trap 'rm -f -- "${temporary_backup}" "${password_file}"' EXIT
+        sudo -u postgres pg_dump --format=custom \
+            --file "${temporary_backup}" "${source_database}"
+        install -o root -g root -m 0600 "${temporary_backup}" \
+            "${BACKUP_DIR}/database-${timestamp}.dump"
+
+        if [[ "${legacy_was_active}" -eq 1 ]]; then
+            systemctl stop "${LEGACY_SERVICE}"
+        fi
+        terminate_database_connections "${source_database}"
+        sudo -u postgres psql --no-psqlrc --set ON_ERROR_STOP=1 <<SQL
+CREATE ROLE "${TARGET_ROLE}" LOGIN PASSWORD '${database_password}';
+ALTER DATABASE "${source_database}" RENAME TO "${TARGET_DATABASE}";
+SQL
+        sudo -u postgres psql --no-psqlrc --set ON_ERROR_STOP=1 \
+            --dbname "${TARGET_DATABASE}" <<SQL
+REASSIGN OWNED BY "${source_role}" TO "${TARGET_ROLE}";
+ALTER SCHEMA public OWNER TO "${TARGET_ROLE}";
+SQL
+        sudo -u postgres psql --no-psqlrc --set ON_ERROR_STOP=1 <<SQL
+ALTER DATABASE "${TARGET_DATABASE}" OWNER TO "${TARGET_ROLE}";
+SQL
+        rm -f -- "${password_file}"
+        trap - ERR EXIT
+        rm -f -- "${temporary_backup}"
+        echo "Database cutover prepared; deploy the SITBank container now"
+        ;;
+    rollback)
+        rollback_cutover
+        ;;
+    finalize)
+        if [[ ! -r "${STATE_FILE}" ]]; then
+            echo "No database cutover state exists"
+            exit 0
+        fi
+        # shellcheck disable=SC1090
+        source "${STATE_FILE}"
+        validate_identifier "${SOURCE_ROLE}"
+        if role_exists "${SOURCE_ROLE}"; then
+            sudo -u postgres psql --no-psqlrc --set ON_ERROR_STOP=1 \
+                --command "DROP ROLE \"${SOURCE_ROLE}\";" >/dev/null
+        fi
+        rm -rf -- "${STATE_DIR}"
+        echo "Database cutover finalized"
+        ;;
+    *)
+        echo "Usage: sitbank-database-cutover prepare SOURCE_DATABASE SOURCE_ROLE PASSWORD_FILE | rollback | finalize" >&2
+        exit 2
+        ;;
+esac

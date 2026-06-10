@@ -32,6 +32,58 @@ def _looks_placeholder(value: str) -> bool:
     return normalized in PLACEHOLDER_TOKENS or "replace_me" in normalized
 
 
+def _read_secret_file(name: str, path_value: str) -> str:
+    path = Path(path_value)
+    if not path.is_absolute():
+        raise RuntimeError(f"{name}_FILE must be an absolute path")
+    if path.is_symlink():
+        raise RuntimeError(f"{name}_FILE must not be a symlink")
+
+    try:
+        resolved = path.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise RuntimeError(f"{name}_FILE could not be read") from exc
+    if not resolved.is_file():
+        raise RuntimeError(f"{name}_FILE must identify a regular file")
+
+    if APP_ENV == "production":
+        secret_root = Path("/run/secrets").resolve()
+        try:
+            resolved.relative_to(secret_root)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"{name}_FILE must resolve beneath /run/secrets in production"
+            ) from exc
+
+    try:
+        value = resolved.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise RuntimeError(f"{name}_FILE could not be read as UTF-8") from exc
+    if value.endswith("\n"):
+        value = value[:-1]
+    if not value:
+        raise RuntimeError(f"{name}_FILE is empty")
+    if "\x00" in value or "\n" in value or "\r" in value:
+        raise RuntimeError(f"{name}_FILE contains unsupported control characters")
+    return value
+
+
+def _required_env_or_file(name: str) -> str:
+    direct_value = os.getenv(name)
+    file_value = os.getenv(f"{name}_FILE")
+    if direct_value and file_value:
+        raise RuntimeError(f"Configure either {name} or {name}_FILE, not both")
+    if file_value:
+        value = _read_secret_file(name, file_value)
+    else:
+        value = direct_value
+    if not value:
+        raise RuntimeError(f"Missing required configuration: {name} or {name}_FILE")
+    if _looks_placeholder(value):
+        raise RuntimeError(f"{name} contains a placeholder value")
+    return value
+
+
 def _required_env(name: str) -> str:
     value = os.getenv(name)
     if not value:
@@ -42,14 +94,14 @@ def _required_env(name: str) -> str:
 
 
 def _required_secret(name: str, *, min_length: int) -> str:
-    value = _required_env(name)
+    value = _required_env_or_file(name)
     if len(value) < min_length:
         raise RuntimeError(f"{name} must be at least {min_length} characters")
     return value
 
 
 def _required_url(name: str, *, schemes: set[str], require_password: bool) -> str:
-    value = _required_env(name)
+    value = _required_env_or_file(name)
     parsed = urlparse(value)
     if parsed.scheme not in schemes:
         allowed = ", ".join(sorted(schemes))
@@ -88,7 +140,7 @@ def _required_webauthn_origin(name: str, *, rp_id: str) -> str:
 def _required_b64_32_bytes(name: str) -> str:
     import base64
 
-    value = _required_env(name)
+    value = _required_env_or_file(name)
     try:
         decoded = base64.b64decode(value, validate=True)
     except Exception as exc:
@@ -101,7 +153,7 @@ def _required_b64_32_bytes(name: str) -> str:
 def _required_session_hmac_keys(name: str, *, active_key_id: str) -> dict[str, bytes]:
     import base64
 
-    raw_value = _required_env(name)
+    raw_value = _required_env_or_file(name)
     try:
         payload = json.loads(raw_value)
     except json.JSONDecodeError as exc:

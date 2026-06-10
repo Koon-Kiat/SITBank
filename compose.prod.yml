@@ -1,0 +1,112 @@
+name: sitbank
+
+services:
+  app:
+    image: ${SITBANK_IMAGE:?SITBANK_IMAGE must be an immutable digest reference}
+    container_name: sitbank-app
+    network_mode: host
+    user: "10001:10001"
+    read_only: true
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 35s
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 768m
+    mem_reservation: 256m
+    cpus: 1.5
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 8192
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=1770
+    env_file:
+      - /etc/sitbank/container.env
+    environment:
+      SECRET_KEY_FILE: /run/secrets/secret_key
+      WTF_CSRF_SECRET_KEY_FILE: /run/secrets/wtf_csrf_secret_key
+      SESSION_HMAC_KEYS_JSON_FILE: /run/secrets/session_hmac_keys_json
+      DATABASE_URL_FILE: /run/secrets/database_url
+      REDIS_URL_FILE: /run/secrets/redis_url
+      MFA_AES256_GCM_KEY_B64_FILE: /run/secrets/mfa_aes256_gcm_key_b64
+      PASSWORD_PEPPER_B64_FILE: /run/secrets/password_pepper_b64
+    secrets:
+      - source: secret_key
+        target: secret_key
+        uid: "10001"
+        gid: "10001"
+        mode: 0400
+      - source: wtf_csrf_secret_key
+        target: wtf_csrf_secret_key
+        uid: "10001"
+        gid: "10001"
+        mode: 0400
+      - source: session_hmac_keys_json
+        target: session_hmac_keys_json
+        uid: "10001"
+        gid: "10001"
+        mode: 0400
+      - source: database_url
+        target: database_url
+        uid: "10001"
+        gid: "10001"
+        mode: 0400
+      - source: redis_url
+        target: redis_url
+        uid: "10001"
+        gid: "10001"
+        mode: 0400
+      - source: mfa_aes256_gcm_key_b64
+        target: mfa_aes256_gcm_key_b64
+        uid: "10001"
+        gid: "10001"
+        mode: 0400
+      - source: password_pepper_b64
+        target: password_pepper_b64
+        uid: "10001"
+        gid: "10001"
+        mode: 0400
+    volumes:
+      - type: bind
+        source: /etc/sitbank/common-passwords.txt
+        target: /run/config/common-passwords.txt
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /etc/sitbank/fido-approved-aaguids.json
+        target: /run/config/fido-approved-aaguids.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /etc/sitbank/fido-mds-cache.json
+        target: /run/config/fido-mds-cache.json
+        read_only: true
+        bind:
+          create_host_path: false
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "5"
+
+secrets:
+  secret_key:
+    environment: SITBANK_SECRET_KEY
+  wtf_csrf_secret_key:
+    environment: SITBANK_WTF_CSRF_SECRET_KEY
+  session_hmac_keys_json:
+    environment: SITBANK_SESSION_HMAC_KEYS_JSON
+  database_url:
+    environment: SITBANK_DATABASE_URL
+  redis_url:
+    environment: SITBANK_REDIS_URL
+  mfa_aes256_gcm_key_b64:
+    environment: SITBANK_MFA_AES256_GCM_KEY_B64
+  password_pepper_b64:
+    environment: SITBANK_PASSWORD_PEPPER_B64
