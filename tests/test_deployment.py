@@ -143,12 +143,20 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     app = compose["services"]["app"]
 
     assert compose["name"] == "sitbank"
-    assert "python:3.12.11-slim-bookworm@sha256:" in dockerfile
+    assert (
+        "python:3.12.13-slim-bookworm@"
+        "sha256:93ab4b7fa528b25124c97bcc755415e60eb671a86b4dbe0328df2fe2d1c1193d"
+        in dockerfile
+    )
+    assert dockerfile.count("python:3.12.13-slim-bookworm@sha256:") == 2
     assert 'org.opencontainers.image.title="SITBank banking application"' in dockerfile
     assert "USER 10001:10001" in dockerfile
     assert "--require-hashes" in dockerfile
     assert "/health/ready" in dockerfile
     assert "apt-get upgrade" not in dockerfile
+    assert "--only-upgrade" in dockerfile
+    for security_package in ("gpgv", "libgnutls30", "libssl3", "openssl"):
+        assert security_package in dockerfile
     assert app["network_mode"] == "host"
     assert app["read_only"] is True
     assert app["user"] == "10001:10001"
