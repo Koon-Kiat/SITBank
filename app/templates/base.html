@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{% block title %}O$P$ Bank{% endblock %}</title>
+    <title>{% block title %}SITBank{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
     <script src="{{ url_for('static', filename='js/theme.js') }}" defer></script>
     <script src="{{ url_for('static', filename='js/webauthn.js') }}" defer></script>
@@ -97,11 +97,11 @@
     <a class="skip-link" href="#main-content">Skip to main content</a>
     <header class="site-header">
       <div class="header-inner">
-        <a class="brand" href="{{ url_for('web.dashboard') if g.current_user else url_for('main.index') }}" aria-label="O$P$ Bank home">
-          <img class="brand-mark" src="{{ url_for('static', filename='img/osp-bank-mark.svg') }}" alt="" aria-hidden="true">
+        <a class="brand" href="{{ url_for('web.dashboard') if g.current_user else url_for('main.index') }}" aria-label="SITBank home">
+          <img class="brand-mark" src="{{ url_for('static', filename='img/sitbank-mark.svg') }}" alt="" aria-hidden="true">
           <span class="brand-copy">
-            <span class="brand-name">O$P$ Bank</span>
-            <span class="brand-subtitle">SITBank</span>
+            <span class="brand-name">SITBank</span>
+            <span class="brand-subtitle">Secure Internet Banking</span>
           </span>
         </a>
 
@@ -204,7 +204,7 @@
     <footer class="site-footer">
       <div class="footer-inner">
         <section class="footer-brand" aria-label="Service information">
-          <h2 class="footer-heading">O$P$ Bank / SITBank</h2>
+          <h2 class="footer-heading">SITBank</h2>
           <p>Simulated online banking portal for secure account-access practice. This is not a real bank, payment service, or licensed financial institution.</p>
           <p>Use only self-created sample accounts. Do not enter real banking credentials or financial data.</p>
         </section>

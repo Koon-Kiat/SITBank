@@ -204,11 +204,11 @@ class Config:
     PASSWORD_MAX_CHARS = int(os.getenv("PASSWORD_MAX_CHARS", "256"))
     if PASSWORD_MAX_CHARS < 64 or PASSWORD_MAX_CHARS > 1024:
         raise RuntimeError("PASSWORD_MAX_CHARS must be between 64 and 1024")
-    MFA_ISSUER_NAME = os.getenv("MFA_ISSUER_NAME", "O$P$ Bank")
+    MFA_ISSUER_NAME = os.getenv("MFA_ISSUER_NAME", "SITBank")
 
     WEBAUTHN_RP_ID = _required_webauthn_rp_id("WEBAUTHN_RP_ID")
     WEBAUTHN_RP_ORIGIN = _required_webauthn_origin("WEBAUTHN_RP_ORIGIN", rp_id=WEBAUTHN_RP_ID)
-    WEBAUTHN_RP_NAME = "O$P$ Bank"
+    WEBAUTHN_RP_NAME = "SITBank"
     WEBAUTHN_TIMEOUT_MS = 60_000
     WEBAUTHN_REQUIRED_CREDENTIALS = 2
     WEBAUTHN_ENFORCE_KEY_SETUP = False
@@ -240,7 +240,7 @@ class Config:
 
     SESSION_TYPE = "redis"
     SESSION_KEY_PREFIX = "session:"
-    SESSION_COOKIE_NAME = "__Host-osp_session"
+    SESSION_COOKIE_NAME = "__Host-sitbank_session"
     SESSION_COOKIE_SECURE = True
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Strict"

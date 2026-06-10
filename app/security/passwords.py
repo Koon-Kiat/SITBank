@@ -107,7 +107,7 @@ def _is_password_pwned_by_hibp(password: str) -> bool:
         f"{HIBP_RANGE_API_URL}/{hash_prefix}",
         headers={
             "Add-Padding": "true",
-            "User-Agent": "osp-bank-password-screening",
+            "User-Agent": "sitbank-password-screening",
         },
     )
     timeout = float(current_app.config.get("HIBP_PASSWORD_CHECK_TIMEOUT_SECONDS", 2.0))

@@ -111,7 +111,7 @@ def _dummy_password_hash() -> str:
     cached_fingerprint = current_app.config.get("_DUMMY_PASSWORD_HASH_CONFIG")
     if cached and hmac.compare_digest(str(cached_fingerprint), config_fingerprint):
         return str(cached)
-    dummy = hash_password("not-a-real-osp-bank-password")
+    dummy = hash_password("not-a-real-sitbank-password")
     current_app.config["_DUMMY_PASSWORD_HASH"] = dummy
     current_app.config["_DUMMY_PASSWORD_HASH_CONFIG"] = config_fingerprint
     return dummy

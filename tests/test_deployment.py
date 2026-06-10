@@ -90,7 +90,7 @@ def test_container_bundle_writer_quotes_dollar_values_and_separates_files(
     write_container_bundle(output)
 
     environment = (output / "container.env").read_text(encoding="utf-8")
-    assert "MFA_ISSUER_NAME='O$P$ Bank'" in environment
+    assert "MFA_ISSUER_NAME='SITBank'" in environment
     assert "PROD_SECRET_KEY" not in environment
     assert (output / "secrets" / "secret_key").read_text(encoding="utf-8") == (
         DEPLOYMENT_VALUES["PROD_SECRET_KEY"]
@@ -112,7 +112,7 @@ def test_legacy_environment_import_seeds_root_runtime_without_printing_values(
                 f"REDIS_URL={DEPLOYMENT_VALUES['PROD_REDIS_URL']}",
                 f"MFA_AES256_GCM_KEY_B64={DEPLOYMENT_VALUES['PROD_MFA_AES256_GCM_KEY_B64']}",
                 f"PASSWORD_PEPPER_B64={DEPLOYMENT_VALUES['PROD_PASSWORD_PEPPER_B64']}",
-                "MFA_ISSUER_NAME=O$P$ Bank",
+                "MFA_ISSUER_NAME=SITBank",
             ]
         )
         + "\n",
@@ -127,7 +127,7 @@ def test_legacy_environment_import_seeds_root_runtime_without_printing_values(
     )
 
     environment = (destination / "container.env").read_text(encoding="utf-8")
-    assert "MFA_ISSUER_NAME='O$P$ Bank'" in environment
+    assert "MFA_ISSUER_NAME='SITBank'" in environment
     assert "DATABASE_URL" not in environment
     assert (destination / "secrets" / "database_url").read_text(
         encoding="utf-8"
