@@ -171,6 +171,14 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     )
     assert "python /app/redis_compatibility_check.py" in smoke_test
     assert "/redis-check.py" not in smoke_test
+    assert "--publish 127.0.0.1::5432" in smoke_test
+    assert "--publish 127.0.0.1::6379" in smoke_test
+    assert "wait_for_healthy smoke-postgres" in smoke_test
+    assert "wait_for_healthy smoke-redis" in smoke_test
+    assert "dump_container_diagnostics" in smoke_test
+    assert "docker port" in smoke_test
+    assert "55432" not in smoke_test
+    assert "56379" not in smoke_test
 
 
 def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
