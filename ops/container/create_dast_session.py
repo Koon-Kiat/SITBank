@@ -161,7 +161,7 @@ def main() -> None:
 
     cookie = create_authenticated_cookie(args.base_url)
     args.output.write_text(cookie, encoding="utf-8", newline="")
-    args.output.chmod(0o600)
+    args.output.chmod(0o644)
 
 
 if __name__ == "__main__":
