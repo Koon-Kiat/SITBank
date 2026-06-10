@@ -721,7 +721,7 @@ def _verify_totp_secret_for_user(
         record_failure(scope, str(user.id))
         return False
 
-    _redis().setex(replay_key, replay_ttl, "used")
+    _redis().set(replay_key, "used", ex=replay_ttl)
     clear_failures(scope, str(user.id))
     _clear_user_security_failures(user, "mfa")
     mark_fresh_mfa()

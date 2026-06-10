@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -146,6 +147,7 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "USER 10001:10001" in dockerfile
     assert "--require-hashes" in dockerfile
     assert "/health/ready" in dockerfile
+    assert "apt-get upgrade" not in dockerfile
     assert app["network_mode"] == "host"
     assert app["read_only"] is True
     assert app["user"] == "10001:10001"
@@ -170,6 +172,9 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     deploy_script = Path(
         "ops/deploy/sitbank-container-deploy"
     ).read_text(encoding="utf-8")
+    runtime_script = Path(
+        "ops/deploy/sitbank-container-runtime"
+    ).read_text(encoding="utf-8")
     bootstrap = Path(
         "ops/deploy/bootstrap-container-ec2"
     ).read_text(encoding="utf-8")
@@ -178,7 +183,12 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert workflow["permissions"] == {}
     assert workflow["jobs"]["publish"]["permissions"]["packages"] == "write"
     assert workflow["jobs"]["publish"]["permissions"]["id-token"] == "write"
+    assert "attestations" not in workflow["jobs"]["publish"]["permissions"]
     assert workflow["jobs"]["deploy"]["permissions"]["packages"] == "read"
+    assert all(
+        job["timeout-minutes"] > 0
+        for job in workflow["jobs"].values()
+    )
     assert "vars.PROD_DEPLOY_ENABLED == 'true'" in workflow_text
     assert "provenance: mode=max" in workflow_text
     assert "sbom: true" in workflow_text
@@ -186,10 +196,23 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "cosign sign --yes" in workflow_text
     assert "shellcheck" in workflow_text
     assert "scan_repository_secrets.py" in workflow_text
+    assert "check_dependency_locks.py" in workflow_text
     assert "IMAGE_DIGEST" in workflow_text
     assert "StrictHostKeyChecking=no" not in workflow_text
+    assert workflow_text.count("persist-credentials: false") == 4
+    assert (
+        workflow_text.count(
+            "actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10"
+        )
+        == 4
+    )
+    assert (
+        "actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405"
+        in workflow_text
+    )
     assert "sitbank:smoke" in workflow_text
     assert "SITBANK_IMAGE" in workflow_text
+    assert "SITBANK_SECRET_KEY" not in workflow_text
     assert "sitbank-container-deploy" in workflow_text
     assert "sha256:[0-9a-f]{64}" in deploy_script
     assert "COSIGN_CERTIFICATE_IDENTITY" in deploy_script
@@ -198,6 +221,9 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "db upgrade" in deploy_script
     assert "previous_image" in deploy_script
     assert "restore_runtime" in deploy_script
+    assert "load_runtime_secrets" not in deploy_script
+    assert "SITBANK_SECRET_KEY" not in deploy_script
+    assert "SITBANK_SECRET_KEY" not in runtime_script
     assert "gpasswd --delete" in bootstrap
     assert "docker.sock" in bootstrap
     assert "COSIGN_SHA256" in bootstrap
@@ -215,6 +241,27 @@ def test_only_sitbank_container_deployment_units_are_active():
     assert Path("ops/deploy/sitbank-database-cutover").exists()
     assert Path("ops/systemd/sitbank-container.service").exists()
     assert Path("ops/sudoers/sitbank-container-deploy").exists()
+
+
+def test_dependency_manifests_have_one_hashed_lockfile_source_of_truth():
+    assert Path("requirements.in").exists()
+    assert Path("requirements-dev.in").exists()
+    assert Path("requirements.lock").exists()
+    assert Path("requirements-dev.lock").exists()
+    assert not Path("requirements.txt").exists()
+    assert not Path("requirements-dev.txt").exists()
+    assert "-r requirements.in" in Path("requirements-dev.in").read_text(
+        encoding="utf-8"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "ops/security/check_dependency_locks.py"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_tracked_files_do_not_contain_the_retired_project_name():
@@ -254,8 +301,8 @@ def test_migration_baseline_and_existing_database_runbook_are_present():
     assert "verify-migration-baseline" in readme
     assert "db stamp 20260610_0001" in readme
     assert "Do not run `db.create_all()`" in readme
-    assert "WenJiangg/SITBank" in readme
-    assert "ghcr.io/wenjiangg/sitbank@sha256:<digest>" in readme
+    assert "WenJiangggg/SITBank" in readme
+    assert "ghcr.io/wenjiangggg/sitbank@sha256:<digest>" in readme
     assert "sitbank_db" in readme
     assert "sitbank_user" in readme
     assert "sitbank-database-cutover prepare" in readme

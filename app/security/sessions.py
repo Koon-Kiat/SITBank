@@ -173,10 +173,10 @@ def rotate_authenticated_session_after_mfa(user_id: int) -> str:
             )
         redis_client.delete(_session_meta_key(old_session_id))
         redis_client.srem(_user_sessions_key(user_id), old_session_id)
-        redis_client.setex(
+        redis_client.set(
             _revoked_key(old_session_id),
-            current_app.config["SESSION_INACTIVITY_SECONDS"],
             "1",
+            ex=current_app.config["SESSION_INACTIVITY_SECONDS"],
         )
     refresh_session_risk_fingerprint()
     register_session_metadata(user_id=user_id, login_time=login_time)
@@ -506,7 +506,11 @@ def revoke_session(session_id: str, user_id: int | None = None, *, ended_reason:
 
     _redis_session().delete(_session_storage_key(session_id))
     redis_client.delete(_session_meta_key(session_id))
-    redis_client.setex(_revoked_key(session_id), current_app.config["SESSION_INACTIVITY_SECONDS"], "1")
+    redis_client.set(
+        _revoked_key(session_id),
+        "1",
+        ex=current_app.config["SESSION_INACTIVITY_SECONDS"],
+    )
     if owner is not None:
         redis_client.srem(_user_sessions_key(owner), session_id)
 

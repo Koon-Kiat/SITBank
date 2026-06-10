@@ -14,7 +14,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe -m compileall app config.py wsgi.py
 .\.venv\Scripts\python.exe -m pip check
-.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements.lock
+.\.venv\Scripts\python.exe -m pip_audit --disable-pip --require-hashes -r requirements.lock
 .\.venv\Scripts\python.exe -m bandit -q -ll -r app config.py wsgi.py
 ```
 
@@ -22,8 +22,25 @@ Refresh lock files only after reviewing dependency changes:
 
 ```powershell
 .\.venv\Scripts\python.exe -m piptools compile --generate-hashes --output-file requirements.lock requirements.in
-.\.venv\Scripts\python.exe -m piptools compile --generate-hashes --output-file requirements-dev.lock requirements-dev.txt
+.\.venv\Scripts\python.exe -m piptools compile --allow-unsafe --generate-hashes --output-file requirements-dev.lock requirements-dev.in
+.\.venv\Scripts\python.exe ops/security/check_dependency_locks.py
 ```
+
+`requirements.in` and `requirements-dev.in` are the reviewed manifests.
+`requirements.lock` and `requirements-dev.lock` are the only files installed
+by CI and the production image. Every dependency change must regenerate and
+commit both affected hashed lockfiles.
+
+Dependabot updates are review-only. Do not auto-merge them. Rebase or recreate
+stale dependency branches before review, and reject any PR that changes a
+manifest without updating the corresponding hashed lockfiles. The production
+image remains on Python 3.12; Docker updates to Python 3.13 or newer are
+ignored until a deliberate runtime migration is approved.
+
+Docker Desktop is optional for ordinary Python development. Install it with
+the WSL2 Linux-container backend when changing the Dockerfile, Compose model,
+or container deployment scripts. GitHub Actions remains the authoritative
+`linux/amd64` build and security test environment.
 
 ## Production Architecture
 
@@ -72,11 +89,11 @@ secret files must resolve beneath `/run/secrets`, must not be symlinks, and
 must contain one non-empty UTF-8 line without NUL, CR, or embedded LF
 characters.
 
-Root-owned host copies live under `/etc/sitbank/secrets`. The deployment
-wrapper reads them into its private process environment only long enough for
-Compose to create service secrets owned by UID/GID `10001` with mode `0400`.
-Non-secret settings live in `/etc/sitbank/container.env`. The container does
-not load a production `.env` file.
+Root-owned host copies live under `/etc/sitbank/secrets`. Compose mounts those
+files directly beneath `/run/secrets`; the deployment and runtime helpers do
+not copy their values into process environment variables. Non-secret settings
+live in `/etc/sitbank/container.env`. The container does not load a production
+`.env` file.
 
 The complete production configuration surface is:
 
@@ -233,7 +250,7 @@ sudo install -d -m 0755 /opt/sitbank-bootstrap
 sudo tar -xzf /tmp/sitbank-bootstrap.tar.gz -C /opt/sitbank-bootstrap
 cd /opt/sitbank-bootstrap
 sudo bash ops/deploy/bootstrap-container-ec2 \
-  WenJiangg/SITBank \
+  WenJiangggg/SITBank \
   sitbank.duckdns.org \
   <current-service> \
   <current-app-root>
@@ -246,6 +263,17 @@ configuration. It does not add `sitbank-deploy` to the Docker group.
 
 Review `/etc/sitbank/deploy.conf`. It must contain the expected GHCR repository,
 workflow identity, public host, and exact legacy service/path supplied above.
+If the server was bootstrapped before the GitHub repository rename, update the
+three repository identity lines to:
+
+```text
+GITHUB_REPOSITORY=WenJiangggg/SITBank
+GHCR_REPOSITORY=ghcr.io/wenjiangggg/sitbank
+COSIGN_CERTIFICATE_IDENTITY=https://github.com/WenJiangggg/SITBank/.github/workflows/ci-deploy.yml@refs/heads/main
+```
+
+The private GHCR package must grant Actions access to `WenJiangggg/SITBank`
+before enabling production deployment.
 
 ### 4. Prepare Host Policy Files
 
@@ -457,7 +485,7 @@ Then run the same root wrapper:
 ```bash
 sudo /usr/local/sbin/sitbank-container-deploy \
   COMMIT_SHA \
-  ghcr.io/wenjiangg/sitbank@sha256:<digest>
+  ghcr.io/wenjiangggg/sitbank@sha256:<digest>
 ```
 
 The wrapper removes the credential file and applies the same signature,

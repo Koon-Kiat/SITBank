@@ -493,9 +493,8 @@ def verify_step_up(user: User, action: str, credential: dict[str, Any]) -> dict[
 
     token = secrets.token_urlsafe(32)
     ttl = int(current_app.config["WEBAUTHN_STEP_UP_TTL_SECONDS"])
-    _redis().setex(
+    _redis().set(
         _step_up_token_cache_key(token),
-        ttl,
         json.dumps(
             {
                 "user_id": user.id,
@@ -505,6 +504,7 @@ def verify_step_up(user: User, action: str, credential: dict[str, Any]) -> dict[
                 "issued_at": _now_timestamp(),
             }
         ),
+        ex=ttl,
     )
     session.pop(STEP_UP_CHALLENGE_KEY, None)
     session.pop(STEP_UP_ACTION_KEY, None)
@@ -667,7 +667,11 @@ def stage_transaction_security_key_context(user: User, transaction_context: dict
     context = _validate_transaction_context(transaction_context)
     expiry = _parse_transaction_expiry(context["expiry"])
     ttl = max(1, min(int((expiry - datetime.now(timezone.utc)).total_seconds()), current_app.config["WEBAUTHN_TIMEOUT_MS"] // 1000))
-    _redis().setex(_transaction_context_cache_key(user.id, context["transaction_reference"]), ttl, json.dumps(context))
+    _redis().set(
+        _transaction_context_cache_key(user.id, context["transaction_reference"]),
+        json.dumps(context),
+        ex=ttl,
+    )
     audit_webauthn_event(
         "transaction_stage",
         "success",

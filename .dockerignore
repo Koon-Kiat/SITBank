@@ -30,4 +30,4 @@ instance
 SERVER_SETUP_LOG*.md
 README.md
 requirements-dev.lock
-requirements-dev.txt
+requirements-dev.in

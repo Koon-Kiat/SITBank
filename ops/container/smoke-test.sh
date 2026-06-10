@@ -5,6 +5,7 @@ readonly IMAGE="${1:-sitbank:smoke}"
 readonly POSTGRES_IMAGE="postgres:16.9-alpine@sha256:7c688148e5e156d0e86df7ba8ae5a05a2386aaec1e2ad8e6d11bdf10504b1fb7"
 readonly REDIS_IMAGE="redis:7.4.5-alpine@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08"
 
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 work_dir="$(mktemp -d)"
 # shellcheck disable=SC2317
 cleanup() {
@@ -92,6 +93,9 @@ docker run --rm "${docker_args[@]}" "${IMAGE}" \
     python -m flask --app wsgi:app db upgrade
 docker run --rm "${docker_args[@]}" "${IMAGE}" \
     python -m flask --app wsgi:app production-check
+docker run --rm "${docker_args[@]}" \
+    --volume "${repo_root}/ops/container/redis_compatibility_check.py:/redis-check.py:ro" \
+    "${IMAGE}" python /redis-check.py
 
 docker run --detach --name sitbank-smoke \
     "${docker_args[@]}" "${IMAGE}" >/dev/null

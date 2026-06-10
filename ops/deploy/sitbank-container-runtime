@@ -4,7 +4,6 @@ set -Eeuo pipefail
 readonly DEPLOY_CONFIG="/etc/sitbank/deploy.conf"
 readonly COMPOSE_FILE="/opt/sitbank/compose.yml"
 readonly STATE_FILE="/var/lib/sitbank-container/current"
-readonly SECRET_DIR="/etc/sitbank/secrets"
 
 if [[ "${EUID}" -ne 0 ]]; then
     echo "Container runtime helper must run as root" >&2
@@ -27,29 +26,6 @@ if [[ "${image}" != "${GHCR_REPOSITORY}@sha256:"* ]]; then
     exit 1
 fi
 
-read_secret() {
-    local path="${SECRET_DIR}/$1"
-    if [[ ! -f "${path}" || -L "${path}" ]]; then
-        echo "Missing protected secret file: ${path}" >&2
-        exit 1
-    fi
-    cat -- "${path}"
-}
-
-export SITBANK_SECRET_KEY
-export SITBANK_WTF_CSRF_SECRET_KEY
-export SITBANK_SESSION_HMAC_KEYS_JSON
-export SITBANK_DATABASE_URL
-export SITBANK_REDIS_URL
-export SITBANK_MFA_AES256_GCM_KEY_B64
-export SITBANK_PASSWORD_PEPPER_B64
-SITBANK_SECRET_KEY="$(read_secret secret_key)"
-SITBANK_WTF_CSRF_SECRET_KEY="$(read_secret wtf_csrf_secret_key)"
-SITBANK_SESSION_HMAC_KEYS_JSON="$(read_secret session_hmac_keys_json)"
-SITBANK_DATABASE_URL="$(read_secret database_url)"
-SITBANK_REDIS_URL="$(read_secret redis_url)"
-SITBANK_MFA_AES256_GCM_KEY_B64="$(read_secret mfa_aes256_gcm_key_b64)"
-SITBANK_PASSWORD_PEPPER_B64="$(read_secret password_pepper_b64)"
 export SITBANK_IMAGE="${image}"
 
 case "${1:-}" in

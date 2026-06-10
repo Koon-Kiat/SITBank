@@ -4,10 +4,6 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-RUN apt-get update \
-    && DEBIAN_FRONTEND=noninteractive apt-get upgrade --yes --no-install-recommends \
-    && rm -rf /var/lib/apt/lists/*
-
 RUN python -m venv /opt/venv
 COPY requirements.lock /tmp/requirements.lock
 RUN /opt/venv/bin/python -m pip install \
@@ -29,10 +25,7 @@ ENV PATH="/opt/venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \
     HOME=/tmp
 
-RUN apt-get update \
-    && DEBIAN_FRONTEND=noninteractive apt-get upgrade --yes --no-install-recommends \
-    && rm -rf /var/lib/apt/lists/* \
-    && groupadd --gid 10001 sitbank \
+RUN groupadd --gid 10001 sitbank \
     && useradd --uid 10001 --gid 10001 --no-create-home \
         --home-dir /nonexistent --shell /usr/sbin/nologin sitbank \
     && install -d -o 10001 -g 10001 -m 0750 /app
