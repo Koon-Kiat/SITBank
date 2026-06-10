@@ -129,7 +129,7 @@ jobs:
 
   image-test:
     if: github.event_name == 'pull_request'
-    needs: [test, workflow-security, dependency-review]
+    needs: [test, workflow-security]
     runs-on: ubuntu-latest
     timeout-minutes: 35
     permissions:
