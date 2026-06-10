@@ -20,6 +20,12 @@ HIBP_UNAVAILABLE_ERROR = (
     "Live breached-password screening is temporarily unavailable. "
     "Please try again later."
 )
+HIBP_FALLBACK_WARNING = (
+    "Live breached-password screening was unavailable; "
+    "the local password blocklist was applied."
+)
+HIBP_FAILURE_KEY = "ospbank:hibp:failures"
+HIBP_CIRCUIT_OPEN_KEY = "ospbank:hibp:circuit_open"
 PASSWORD_MIN_LENGTH = 15
 PASSWORD_MAX_CHARS = 256
 PBKDF2_PREFIX = "osp-pbkdf2-sha256"
@@ -70,16 +76,22 @@ def validate_password_policy(password: str) -> list[str]:
     if normalized_password.casefold() in common_passwords:
         raise PasswordPolicyError("Password is too common or has appeared in breach lists")
 
+    if _hibp_circuit_is_open():
+        return [HIBP_FALLBACK_WARNING]
+
     try:
-        if _is_password_pwned_by_hibp(normalized_password):
-            raise PasswordPolicyError("Password is too common or has appeared in breach lists")
+        is_pwned = _is_password_pwned_by_hibp(normalized_password)
     except LivePasswordCheckUnavailable as exc:
+        _record_hibp_failure()
         current_app.logger.warning(
             "hibp_password_check_unavailable error=%s",
             type(exc).__name__,
         )
-        raise PasswordPolicyError(HIBP_UNAVAILABLE_ERROR) from exc
+        return [HIBP_FALLBACK_WARNING]
 
+    _clear_hibp_failures()
+    if is_pwned:
+        raise PasswordPolicyError("Password is too common or has appeared in breach lists")
     return []
 
 
@@ -131,6 +143,31 @@ def validate_common_password_dictionary() -> int:
     return len(common_passwords)
 
 
+def _hibp_circuit_is_open() -> bool:
+    redis_client = current_app.extensions.get("redis")
+    return bool(redis_client and redis_client.exists(HIBP_CIRCUIT_OPEN_KEY))
+
+
+def _record_hibp_failure() -> None:
+    redis_client = current_app.extensions.get("redis")
+    if redis_client is None:
+        return
+    open_seconds = int(current_app.config.get("HIBP_CIRCUIT_OPEN_SECONDS", 300))
+    pipeline = redis_client.pipeline()
+    pipeline.incr(HIBP_FAILURE_KEY)
+    pipeline.expire(HIBP_FAILURE_KEY, open_seconds)
+    attempts, _expiry_set = pipeline.execute()
+    threshold = int(current_app.config.get("HIBP_CIRCUIT_FAILURE_THRESHOLD", 3))
+    if int(attempts) >= threshold:
+        redis_client.setex(HIBP_CIRCUIT_OPEN_KEY, open_seconds, "1")
+
+
+def _clear_hibp_failures() -> None:
+    redis_client = current_app.extensions.get("redis")
+    if redis_client is not None:
+        redis_client.delete(HIBP_FAILURE_KEY, HIBP_CIRCUIT_OPEN_KEY)
+
+
 def hash_password(password: str) -> str:
     iterations = _pbkdf2_iterations()
     salt = os.urandom(PBKDF2_SALT_BYTES)
@@ -155,6 +192,16 @@ def verify_password(password: str, password_hash: str) -> bool:
         return hmac.compare_digest(candidate, expected)
     except (AttributeError, TypeError, ValueError, binascii.Error):
         return False
+
+
+def password_hash_needs_rehash(password_hash: str) -> bool:
+    try:
+        parts = password_hash.split("$")
+        if len(parts) != 5 or parts[0] != PBKDF2_PREFIX or parts[1] != PBKDF2_VERSION:
+            return True
+        return _parse_iterations(parts[2]) < _pbkdf2_iterations()
+    except (AttributeError, TypeError, ValueError):
+        return True
 
 
 def validate_password_hash_config() -> None:

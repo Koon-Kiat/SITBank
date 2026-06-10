@@ -515,6 +515,8 @@ def password_change_submit():
         flash(exc.message, "error")
         return render_template("password_change.html", form=form, recent_mfa=recent_mfa), exc.status_code
 
+    for warning in result.get("warnings", []):
+        flash(warning, "warning")
     flash(f"Password changed. Terminated {result['revoked_other_sessions']} other session(s).", "success")
     return redirect(url_for("web.profile"))
 

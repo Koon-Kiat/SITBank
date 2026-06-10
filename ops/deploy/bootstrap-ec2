@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+readonly APP_ROOT="/var/www/scamcentre"
+readonly RELEASES_DIR="${APP_ROOT}/releases"
+readonly CURRENT_LINK="${APP_ROOT}/current"
+readonly RUNTIME_ENV="/etc/scamcentre/runtime.env"
+readonly SERVICE_USER="scamcentre"
+readonly SERVICE_GROUP="scamcentre"
+
+if [[ "${EUID}" -ne 0 ]]; then
+    echo "Run this bootstrap script as root" >&2
+    exit 1
+fi
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+
+if ! id "${SERVICE_USER}" >/dev/null 2>&1; then
+    useradd --system --home-dir "/var/lib/${SERVICE_USER}" --create-home \
+        --shell /usr/sbin/nologin "${SERVICE_USER}"
+fi
+if ! id scamcentre-deploy >/dev/null 2>&1; then
+    useradd --create-home --shell /bin/bash scamcentre-deploy
+fi
+
+install -d -m 0700 -o scamcentre-deploy -g scamcentre-deploy \
+    /home/scamcentre-deploy/.ssh \
+    /home/scamcentre-deploy/incoming
+touch /home/scamcentre-deploy/.ssh/authorized_keys
+chown scamcentre-deploy:scamcentre-deploy \
+    /home/scamcentre-deploy/.ssh/authorized_keys
+chmod 0600 /home/scamcentre-deploy/.ssh/authorized_keys
+
+install -d -m 0750 -o root -g "${SERVICE_GROUP}" /etc/scamcentre
+install -d -m 0750 -o root -g "${SERVICE_GROUP}" "${RELEASES_DIR}"
+
+if [[ -f "${APP_ROOT}/wsgi.py" && ! -L "${CURRENT_LINK}" ]]; then
+    legacy_name="legacy-${timestamp}"
+    legacy_tmp="/var/www/.scamcentre-${legacy_name}"
+    legacy_release="${RELEASES_DIR}/${legacy_name}"
+    rm -rf -- "${legacy_tmp}"
+    install -d -m 0750 -o root -g "${SERVICE_GROUP}" "${legacy_tmp}"
+
+    (
+        cd "${APP_ROOT}"
+        tar \
+            --exclude='./.env' \
+            --exclude='./.git' \
+            --exclude='./current' \
+            --exclude='./releases' \
+            --exclude='./__pycache__' \
+            --exclude='./.pytest_cache' \
+            --exclude='*.pyc' \
+            --exclude='*.tar.gz' \
+            -cpf - .
+    ) | tar -xpf - -C "${legacy_tmp}"
+
+    if [[ -d "${legacy_tmp}/venv" && ! -e "${legacy_tmp}/.venv" ]]; then
+        ln -s venv "${legacy_tmp}/.venv"
+    fi
+    if [[ ! -x "${legacy_tmp}/.venv/bin/python" ]]; then
+        echo "The existing deployment has no usable Python virtual environment" >&2
+        rm -rf -- "${legacy_tmp}"
+        exit 1
+    fi
+    if [[ ! -f "${RUNTIME_ENV}" ]]; then
+        if [[ ! -f "${APP_ROOT}/.env" ]]; then
+            echo "Existing deployment has no .env to preserve for rollback" >&2
+            rm -rf -- "${legacy_tmp}"
+            exit 1
+        fi
+        install -o root -g "${SERVICE_GROUP}" -m 0640 \
+            "${APP_ROOT}/.env" "${RUNTIME_ENV}"
+    fi
+
+    find "${legacy_tmp}" -type d -exec chmod 0750 {} +
+    find "${legacy_tmp}" -type f -exec chmod 0640 {} +
+    if [[ -d "${legacy_tmp}/venv/bin" ]]; then
+        find "${legacy_tmp}/venv/bin" -type f -exec chmod 0750 {} +
+    fi
+    chown -R root:"${SERVICE_GROUP}" "${legacy_tmp}"
+    mv "${legacy_tmp}" "${legacy_release}"
+    ln -sfn "${legacy_release}" "${CURRENT_LINK}"
+    echo "Preserved the current flat deployment as ${legacy_release}"
+fi
+
+if [[ -f /etc/systemd/system/scamcentre.service ]]; then
+    cp -a /etc/systemd/system/scamcentre.service \
+        "/etc/systemd/system/scamcentre.service.pre-actions-${timestamp}"
+fi
+
+install -o root -g root -m 0755 \
+    "${repo_root}/ops/deploy/scamcentre-deploy" \
+    /usr/local/sbin/scamcentre-deploy
+install -o root -g root -m 0644 \
+    "${repo_root}/ops/systemd/scamcentre.service" \
+    /etc/systemd/system/scamcentre.service
+install -o root -g root -m 0644 \
+    "${repo_root}/ops/systemd/scamcentre-check@.service" \
+    /etc/systemd/system/scamcentre-check@.service
+install -o root -g root -m 0644 \
+    "${repo_root}/ops/systemd/scamcentre-migrate@.service" \
+    /etc/systemd/system/scamcentre-migrate@.service
+install -o root -g root -m 0440 \
+    "${repo_root}/ops/sudoers/scamcentre-deploy" \
+    /etc/sudoers.d/scamcentre-deploy
+
+visudo -cf /etc/sudoers.d/scamcentre-deploy
+systemctl daemon-reload
+systemctl enable scamcentre.service
+
+echo "Bootstrap complete."
+echo "Add the GitHub deployment public key to /home/scamcentre-deploy/.ssh/authorized_keys."
+echo "Install production password and FIDO data under /etc/scamcentre before the first deploy."
+echo "Verify the preserved release with: systemctl restart scamcentre"

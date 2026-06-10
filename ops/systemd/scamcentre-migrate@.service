@@ -1,0 +1,24 @@
+[Unit]
+Description=Apply ScamCentre database migrations for release %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=scamcentre
+Group=scamcentre
+WorkingDirectory=/var/www/scamcentre/releases/%i
+EnvironmentFile=/etc/scamcentre/runtime.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/var/www/scamcentre/releases/%i/.venv/bin/python -m flask --app wsgi:app db upgrade
+UMask=0027
+
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+RestrictSUIDSGID=true

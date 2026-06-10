@@ -25,6 +25,7 @@ from app.security.passwords import (
     PasswordPolicyError,
     hash_password,
     is_password_raw_length_safe,
+    password_hash_needs_rehash,
     validate_password_policy,
     verify_password,
 )
@@ -100,11 +101,19 @@ def _enforce_auth_backoff(scope: str, principal: str) -> None:
 
 
 def _dummy_password_hash() -> str:
+    config_fingerprint = hashlib.sha256(
+        (
+            f"{current_app.config['PASSWORD_PBKDF2_ITERATIONS']}:"
+            f"{current_app.config['PASSWORD_PEPPER_B64']}"
+        ).encode("utf-8")
+    ).hexdigest()
     cached = current_app.config.get("_DUMMY_PASSWORD_HASH")
-    if cached:
+    cached_fingerprint = current_app.config.get("_DUMMY_PASSWORD_HASH_CONFIG")
+    if cached and hmac.compare_digest(str(cached_fingerprint), config_fingerprint):
         return str(cached)
     dummy = hash_password("not-a-real-osp-bank-password")
     current_app.config["_DUMMY_PASSWORD_HASH"] = dummy
+    current_app.config["_DUMMY_PASSWORD_HASH_CONFIG"] = config_fingerprint
     return dummy
 
 
@@ -191,9 +200,6 @@ def authenticate_primary(identifier: str, password: str) -> dict[str, Any]:
         password_ok = verify_password(password, candidate_hash)
 
     if user is None or not password_ok:
-        if user is not None:
-            user.failed_login_count += 1
-            db.session.commit()
         audit_event(
             "login",
             "failure",
@@ -217,6 +223,8 @@ def authenticate_primary(identifier: str, password: str) -> dict[str, Any]:
 
     user.failed_login_count = 0
     user.last_login_at = datetime.now(timezone.utc)
+    if password_hash_needs_rehash(user.password_hash):
+        user.password_hash = hash_password(password)
     db.session.commit()
     clear_failures("login", principal)
     _clear_user_security_failures(user, "password")
@@ -506,7 +514,7 @@ def change_password(
     )
 
     try:
-        validate_password_policy(new_password)
+        password_policy_warnings = validate_password_policy(new_password)
     except PasswordPolicyError as exc:
         audit_event("password_change", "failure", user=user, metadata={"reason": "password_policy"})
         raise AuthError(str(exc), 400) from exc
@@ -524,12 +532,18 @@ def change_password(
         "success",
         user=user,
         session_id=session_id,
-        metadata={"revoked_other_sessions": revoked},
+        metadata={
+            "revoked_other_sessions": revoked,
+            "password_screening": (
+                "local_only_fallback" if password_policy_warnings else "local_and_live"
+            ),
+        },
     )
     return {
         "message": "Password changed",
         "session_ref": public_session_reference(session_id),
         "revoked_other_sessions": revoked,
+        "warnings": password_policy_warnings,
     }
 
 
