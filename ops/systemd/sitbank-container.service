@@ -1,0 +1,24 @@
+[Unit]
+Description=SITBank Docker Compose application
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+ConditionPathExists=/var/lib/sitbank-container/current
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=HOME=/tmp
+ExecStart=/usr/local/sbin/sitbank-container-runtime up
+ExecStop=/usr/local/sbin/sitbank-container-runtime down
+TimeoutStartSec=120
+TimeoutStopSec=60
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/run/docker.sock
+
+[Install]
+WantedBy=multi-user.target

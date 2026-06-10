@@ -13,6 +13,8 @@ from typing import Any
 from flask import Flask, current_app, flash, jsonify, redirect, request, session, url_for
 from redis import Redis
 
+from app.security.session_hmac import active_hmac_hex, matches_hmac
+
 try:
     from flask_session.redis import RedisSessionInterface
 except ImportError:  # Flask-Session keeps compatibility import paths across releases.
@@ -77,12 +79,7 @@ def current_session_id() -> str | None:
 def public_session_reference(session_id: str | None) -> str:
     if not session_id:
         return ""
-    digest = hmac.new(
-        current_app.config["SECRET_KEY"].encode("utf-8"),
-        f"session-reference:{session_id}".encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
-    return digest[:32]
+    return active_hmac_hex(f"session-reference:{session_id}", length=32)
 
 
 def _session_storage_key(session_id: str) -> str:
@@ -199,17 +196,17 @@ def refresh_session_risk_fingerprint() -> None:
 
 
 def current_session_risk_fingerprint() -> str:
+    return active_hmac_hex(_current_session_risk_message(), length=32)
+
+
+def _current_session_risk_message() -> str:
     parts = [
         _normalized_ip_context(request.remote_addr or ""),
         _user_agent_fingerprint(request.user_agent.string or "unknown"),
         str(session.get("auth_context") or ""),
         str(session.get("webauthn_credential_id") or ""),
     ]
-    return hmac.new(
-        current_app.config["SECRET_KEY"].encode("utf-8"),
-        "|".join(parts).encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()[:32]
+    return "|".join(parts)
 
 
 def require_stable_session_for_sensitive_action(action: str) -> None:
@@ -221,6 +218,9 @@ def require_stable_session_for_sensitive_action(action: str) -> None:
         refresh_session_risk_fingerprint()
         return
     if hmac.compare_digest(str(stored), current):
+        return
+    if matches_hmac(str(stored), _current_session_risk_message(), length=32):
+        refresh_session_risk_fingerprint()
         return
 
     session[SESSION_RISK_REAUTH_REQUIRED_KEY] = True
@@ -282,24 +282,52 @@ def update_session_activity() -> None:
 
 def _active_session_records(user_id: int) -> Iterator[tuple[str, dict[str, str]]]:
     redis_client = _redis()
-    for session_id in redis_client.smembers(_user_sessions_key(user_id)):
-        if not _redis_session().exists(_session_storage_key(session_id)):
-            metadata = redis_client.hgetall(_session_meta_key(session_id))
+    session_ids = list(redis_client.smembers(_user_sessions_key(user_id)))
+    if not session_ids:
+        return
+
+    storage_pipeline = _redis_session().pipeline()
+    metadata_pipeline = redis_client.pipeline()
+    for session_id in session_ids:
+        storage_pipeline.exists(_session_storage_key(session_id))
+        metadata_pipeline.hgetall(_session_meta_key(session_id))
+
+    storage_exists = storage_pipeline.execute()
+    metadata_records = metadata_pipeline.execute()
+    cleanup_pipeline = redis_client.pipeline()
+    cleanup_required = False
+    active_records: list[tuple[str, dict[str, str]]] = []
+
+    for session_id, session_exists, metadata in zip(
+        session_ids,
+        storage_exists,
+        metadata_records,
+        strict=True,
+    ):
+        if not session_exists:
             if metadata:
-                _record_past_session(
-                    redis_client,
+                key, payload = _past_session_record(
                     session_id=session_id,
                     user_id=user_id,
                     metadata=metadata,
                     ended_reason="expired",
                 )
-            redis_client.srem(_user_sessions_key(user_id), session_id)
-            redis_client.delete(_session_meta_key(session_id))
+                if key and payload:
+                    cleanup_pipeline.lpush(key, payload)
+                    cleanup_pipeline.ltrim(key, 0, _session_history_limit() - 1)
+            cleanup_pipeline.srem(_user_sessions_key(user_id), session_id)
+            cleanup_pipeline.delete(_session_meta_key(session_id))
+            cleanup_required = True
             continue
-        metadata = redis_client.hgetall(_session_meta_key(session_id))
         if not metadata:
+            cleanup_pipeline.srem(_user_sessions_key(user_id), session_id)
+            cleanup_required = True
             continue
-        yield session_id, metadata
+        active_records.append((session_id, metadata))
+
+    if cleanup_required:
+        cleanup_pipeline.execute()
+    yield from active_records
 
 
 def list_active_sessions(user_id: int) -> list[dict[str, Any]]:
@@ -352,7 +380,11 @@ def list_past_sessions(user_id: int, limit: int | None = None) -> list[dict[str,
 
 def resolve_session_reference_for_user(user_id: int, session_reference: str) -> str | None:
     for session_id, _metadata in _active_session_records(user_id):
-        if session_reference == public_session_reference(session_id):
+        if matches_hmac(
+            session_reference,
+            f"session-reference:{session_id}",
+            length=32,
+        ):
             return session_id
     return None
 
@@ -381,9 +413,32 @@ def _record_past_session(
     metadata: dict[str, str],
     ended_reason: str,
 ) -> None:
+    key, payload = _past_session_record(
+        session_id=session_id,
+        user_id=user_id,
+        metadata=metadata,
+        ended_reason=ended_reason,
+    )
+    if not key or not payload:
+        return
+
+    limit = _session_history_limit()
+    pipeline = redis_client.pipeline()
+    pipeline.lpush(key, payload)
+    pipeline.ltrim(key, 0, limit - 1)
+    pipeline.execute()
+
+
+def _past_session_record(
+    *,
+    session_id: str,
+    user_id: int,
+    metadata: dict[str, str],
+    ended_reason: str,
+) -> tuple[str, str]:
     limit = _session_history_limit()
     if limit <= 0:
-        return
+        return "", ""
 
     reason = _normalize_session_end_reason(ended_reason)
     record = {
@@ -396,10 +451,8 @@ def _record_past_session(
         "ended_reason": reason,
     }
     key = _past_sessions_key(user_id)
-    pipeline = redis_client.pipeline()
-    pipeline.lpush(key, json.dumps(record, separators=(",", ":"), sort_keys=True))
-    pipeline.ltrim(key, 0, limit - 1)
-    pipeline.execute()
+    payload = json.dumps(record, separators=(",", ":"), sort_keys=True)
+    return key, payload
 
 
 def _display_ip_address(value: str) -> str:

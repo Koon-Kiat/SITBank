@@ -1,92 +1,100 @@
-# ScamCentre
+# SITBank
 
-Secure Internet Banking Application for O$P$ Bank.
+Secure Internet Banking Application for SITBank.
 
-## Local virtual environment
+Production runs Flask and Gunicorn in a hardened Docker container. Nginx,
+Certbot, PostgreSQL, Redis, backups, and FIDO policy files remain on the EC2
+host.
+
+## Local Development
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
-.\.venv\Scripts\python.exe -m compileall app config.py wsgi.py
-```
-
-The EC2 target runtime is Python 3.12. This workstation currently created the
-local `.venv` with the default registered Python runtime.
-
-## Local security checks
-
-Run these before packaging a release:
-
-```powershell
+.\.venv\Scripts\python.exe -m pip install --require-hashes -r requirements-dev.lock
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe -m compileall app config.py wsgi.py
 .\.venv\Scripts\python.exe -m pip check
-.\.venv\Scripts\python.exe -m pip_audit -r requirements.txt
-.\.venv\Scripts\python.exe -m bandit -q -r app config.py wsgi.py
+.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements.lock
+.\.venv\Scripts\python.exe -m bandit -q -ll -r app config.py wsgi.py
 ```
 
-To refresh a hash-locked runtime dependency file after changing
-`requirements.in`, run:
+Refresh lock files only after reviewing dependency changes:
 
 ```powershell
 .\.venv\Scripts\python.exe -m piptools compile --generate-hashes --output-file requirements.lock requirements.in
+.\.venv\Scripts\python.exe -m piptools compile --generate-hashes --output-file requirements-dev.lock requirements-dev.txt
 ```
 
-Install from the hash-locked file on systems that support strict hash checking:
+## Production Architecture
 
-```powershell
-.\.venv\Scripts\python.exe -m pip install --require-hashes -r requirements.lock
-```
+- Nginx terminates TLS and proxies to `127.0.0.1:5000`.
+- The application container uses host networking to reach the existing
+  localhost-only PostgreSQL and Redis services.
+- Gunicorn binds only to `127.0.0.1:5000`; Compose publishes no ports.
+- The application runs as UID/GID `10001`, with a read-only root filesystem,
+  a size-limited `/tmp`, all Linux capabilities dropped, and
+  `no-new-privileges`.
+- Production images are private GHCR images addressed by immutable digest.
+- Images are scanned, receive SBOM and provenance attestations, and are signed
+  with GitHub OIDC through Cosign.
+- Secrets are mounted under `/run/secrets`; they are not stored in image
+  layers, labels, or the container environment.
+- The SSH deployment user is not a member of the `docker` group and can run
+  only the validated root deployment wrapper.
 
-## Copy this project to EC2
+The active deployment uses:
 
-From Windows PowerShell in this project folder, create a deployment archive
-without local virtual environments, git metadata, caches, or old archives:
+- `/opt/sitbank` for the root-owned Compose definition and import helper.
+- `/etc/sitbank` for non-secret configuration, policy files, and protected
+  secret sources.
+- `/var/lib/sitbank-container` for deployment and rollback state.
+- `/var/backups/sitbank` for protected database and transition backups.
 
-```powershell
-tar.exe -czf ".\scamcentre-app.tar.gz" --exclude=.git --exclude=.venv --exclude=.env --exclude=__pycache__ --exclude=.pytest_cache --exclude=*.pyc --exclude=*.tar.gz -C . .
-```
+Docker does not need an application directory under `/var/www`. A pre-container
+installation may be supplied to the bootstrap as a temporary legacy path. It
+is removed only after the first SITBank container passes direct and public
+readiness checks.
 
-Upload the archive with PuTTY `pscp`. Replace the key path with your real
-`.ppk` file path:
+## Secret Configuration
 
-```powershell
-& "C:\Program Files\PuTTY\pscp.exe" -i "C:\Path\To\your-key.ppk" ".\scamcentre-app.tar.gz" student12@sitbank.duckdns.org:/tmp/scamcentre-app.tar.gz
-```
+Sensitive settings accept either `NAME` or `NAME_FILE`, never both:
 
-On the EC2 server:
+- `SECRET_KEY_FILE`
+- `WTF_CSRF_SECRET_KEY_FILE`
+- `SESSION_HMAC_KEYS_JSON_FILE`
+- `DATABASE_URL_FILE`
+- `REDIS_URL_FILE`
+- `MFA_AES256_GCM_KEY_B64_FILE`
+- `PASSWORD_PEPPER_B64_FILE`
 
-```bash
-cd /var/www/scamcentre
-tar -xzf /tmp/scamcentre-app.tar.gz
-source venv/bin/activate
-pip install --require-hashes -r requirements.lock
-if grep -q '^TRUSTED_PROXY_COUNT=' .env; then sed -i 's/^TRUSTED_PROXY_COUNT=.*/TRUSTED_PROXY_COUNT=1/' .env; else echo 'TRUSTED_PROXY_COUNT=1' >> .env; fi
-chmod 600 .env
-python3.12 -c "from app import create_app; from app.extensions import db; app=create_app(); app.app_context().push(); db.create_all()"
-python3.12 -c "from pathlib import Path; from app import create_app; from app.extensions import db; app=create_app(); app.app_context().push(); conn=db.engine.raw_connection(); cur=conn.cursor(); cur.execute(Path('ops/20260603_webauthn_credentials.sql').read_text()); conn.commit(); cur.close(); conn.close()"
-flask --app wsgi:app production-check
-sudo systemctl restart scamcentre
-```
+Direct values remain supported for local development and tests. In production,
+secret files must resolve beneath `/run/secrets`, must not be symlinks, and
+must contain one non-empty UTF-8 line without NUL, CR, or embedded LF
+characters.
 
-## Required production environment
+Root-owned host copies live under `/etc/sitbank/secrets`. The deployment
+wrapper reads them into its private process environment only long enough for
+Compose to create service secrets owned by UID/GID `10001` with mode `0400`.
+Non-secret settings live in `/etc/sitbank/container.env`. The container does
+not load a production `.env` file.
 
-This app is configured to fail closed. It does not include placeholder
-connection strings, sample secrets, or fallback databases. Set the real
-deployment values through the process environment or a server-local `.env`
-file with `0600` permissions.
+The complete production configuration surface is:
 
-Required variables are listed in `ops/production-env.required`:
-
-- `SECRET_KEY`
-- `DATABASE_URL`
-- `REDIS_URL`
-- `MFA_AES256_GCM_KEY_B64`
+- `APP_ENV`
+- `SECRET_KEY_FILE`
+- `WTF_CSRF_SECRET_KEY_FILE`
+- `SESSION_HMAC_ACTIVE_KEY_ID`
+- `SESSION_HMAC_KEYS_JSON_FILE`
+- `DATABASE_URL_FILE`
+- `REDIS_URL_FILE`
+- `MFA_AES256_GCM_KEY_B64_FILE`
+- `PASSWORD_PEPPER_B64_FILE`
+- `PASSWORD_PBKDF2_ITERATIONS`
 - `COMMON_PASSWORDS_PATH`
 - `COMMON_PASSWORDS_MIN_ENTRIES`
-- `PASSWORD_PEPPER_B64`
-- `PASSWORD_PBKDF2_ITERATIONS`
+- `HIBP_PASSWORD_CHECK_TIMEOUT_SECONDS`
+- `HIBP_CIRCUIT_FAILURE_THRESHOLD`
+- `HIBP_CIRCUIT_OPEN_SECONDS`
 - `MFA_ISSUER_NAME`
 - `TRUSTED_PROXY_COUNT`
 - `WEBAUTHN_RP_ID`
@@ -94,198 +102,388 @@ Required variables are listed in `ops/production-env.required`:
 - `WEBAUTHN_APPROVED_AAGUIDS_PATH`
 - `WEBAUTHN_MDS_CACHE_PATH`
 
-Optional hardening variables:
+The direct names `SECRET_KEY`, `WTF_CSRF_SECRET_KEY`,
+`SESSION_HMAC_KEYS_JSON`, `DATABASE_URL`, `REDIS_URL`,
+`MFA_AES256_GCM_KEY_B64`, and `PASSWORD_PEPPER_B64` remain available for local
+development, tests, and the one-time protected legacy import only.
 
-- `PENDING_MFA_MAX_AGE_SECONDS` defaults to `300` and must be between `60` and
-  `SESSION_INACTIVITY_SECONDS`.
-- `HIBP_PASSWORD_CHECK_TIMEOUT_SECONDS` defaults to `2.0` and must be greater
-  than `0` and no more than `5`. Registration falls back to the local
-  blocklist with a user-visible warning when the live check is unavailable.
+## GitHub Actions Pipeline
 
-Generate the AES and password pepper keys with:
+`.github/workflows/ci-deploy.yml`:
+
+1. Runs pytest, compilation, package checks, Bandit, dependency auditing, and
+   repository secret scanning.
+2. Builds a `linux/amd64` image from hash-locked dependencies.
+3. Runs migrations, `production-check`, and `/health/ready` against temporary
+   PostgreSQL and Redis containers.
+4. Scans fixable high and critical image vulnerabilities with Trivy.
+5. Pushes the private GHCR image using the job-scoped `GITHUB_TOKEN`.
+6. Generates SBOM and provenance attestations.
+7. Signs the immutable digest with Cosign keyless GitHub OIDC.
+8. Passes only the commit SHA and `sha256:` digest to the protected deployment
+   job.
+
+Every third-party action is pinned to a full commit SHA. Publishing remains
+available while production deployment is disabled, allowing an administrator
+to deploy the same signed digest manually.
+
+### Production Environment
+
+Ask a repository administrator to create the `production` environment:
+
+- Restrict deployment branches to `main`.
+- Add required reviewers and prevent self-review where supported.
+- Protect `main` with pull-request approval, required CI checks, and disabled
+  force pushes.
+
+Add these environment secrets:
+
+- `EC2_SSH_PRIVATE_KEY`
+- `EC2_KNOWN_HOSTS`
+- `PROD_SECRET_KEY`
+- `PROD_WTF_CSRF_SECRET_KEY`
+- `PROD_SESSION_HMAC_ACTIVE_KEY_B64`
+- `PROD_SESSION_HMAC_PREVIOUS_KEY_B64` during a rotation only
+- `PROD_DATABASE_URL`
+- `PROD_REDIS_URL`
+- `PROD_MFA_AES256_GCM_KEY_B64`
+- `PROD_PASSWORD_PEPPER_B64`
+
+Add these environment variables:
+
+- `EC2_HOST`
+- `EC2_PORT`, normally `22`
+- `EC2_DEPLOY_USER`, normally `sitbank-deploy`
+- `PROD_PUBLIC_HOST`, currently `sitbank.duckdns.org`
+- `PROD_SESSION_HMAC_ACTIVE_KEY_ID`
+- `PROD_SESSION_HMAC_PREVIOUS_KEY_ID` during a rotation only
+- `PROD_PASSWORD_PBKDF2_ITERATIONS`, normally `600000`
+- `PROD_MFA_ISSUER_NAME`, normally `SITBank`
+
+Set the repository Actions variable `PROD_DEPLOY_ENABLED=false` during
+bootstrap. Set it to the exact value `true` only after EC2 is ready.
+
+Configuration names and non-secret defaults are safe to document. Their values
+must never be committed. Verify `EC2_KNOWN_HOSTS` through a trusted channel;
+never accept an unexpected SSH host-key change merely to make deployment pass.
+
+The production database and Redis URLs must use `127.0.0.1`, because both
+services remain bound to EC2 loopback and the app uses host networking.
+
+## One-Time EC2 Transition
+
+Use a maintenance window. Replace the angle-bracket placeholders with the
+existing server values without committing them to the repository.
+
+### 1. Back Up the Existing Database and Application
+
+```bash
+sudo install -d -o root -g root -m 0700 /var/backups/sitbank
+timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+sudo -u postgres pg_dump -Fc \
+  -f "/tmp/legacy-${timestamp}.dump" <current-database>
+sudo install -o root -g root -m 0600 \
+  "/tmp/legacy-${timestamp}.dump" \
+  "/var/backups/sitbank/database-${timestamp}.dump"
+sudo rm -f "/tmp/legacy-${timestamp}.dump"
+sudo tar -C "$(dirname <current-app-root>)" -czf \
+  "/var/backups/sitbank/application-${timestamp}.tar.gz" \
+  "$(basename <current-app-root>)"
+sudo cp -a "/etc/systemd/system/<current-service>" \
+  "/var/backups/sitbank/service-${timestamp}"
+```
+
+### 2. Verify the Existing Migration Baseline
+
+Run these commands from the existing application installation:
+
+```bash
+cd <current-app-root>
+source venv/bin/activate
+python -m dotenv run -- python -m flask --app wsgi:app verify-migration-baseline
+python -m dotenv run -- python -m flask --app wsgi:app db stamp 20260610_0001
+python -m dotenv run -- python -m flask --app wsgi:app db current
+```
+
+Stamp only when the verifier reports:
+
+```text
+Database schema matches migration baseline 20260610_0001
+```
+
+For an empty database, use `db upgrade` instead. Do not run `db.create_all()`
+or a standalone WebAuthn SQL script in production.
+
+### 3. Upload and Run the Bootstrap
+
+This archive installs root-owned deployment assets. It is not an application
+release:
 
 ```powershell
-.\.venv\Scripts\python.exe -c "import base64, os; print(base64.b64encode(os.urandom(32)).decode())"
+git archive --format=tar.gz --output=".\sitbank-bootstrap.tar.gz" HEAD
+scp -i "C:\path\to\existing-ec2-key.pem" `
+  ".\sitbank-bootstrap.tar.gz" `
+  "student12@sitbank.duckdns.org:/tmp/"
 ```
 
-Run the production dependency check on the server after the real environment is
-present:
+On EC2:
+
+```bash
+sudo install -d -m 0755 /opt/sitbank-bootstrap
+sudo tar -xzf /tmp/sitbank-bootstrap.tar.gz -C /opt/sitbank-bootstrap
+cd /opt/sitbank-bootstrap
+sudo bash ops/deploy/bootstrap-container-ec2 \
+  WenJiangg/SITBank \
+  sitbank.duckdns.org \
+  <current-service> \
+  <current-app-root>
+```
+
+Use `-` for either legacy argument when no old service or directory exists.
+The bootstrap installs Docker Engine and Compose, checksum-verified Cosign,
+the SITBank service and restricted wrappers, and the root-owned deployment
+configuration. It does not add `sitbank-deploy` to the Docker group.
+
+Review `/etc/sitbank/deploy.conf`. It must contain the expected GHCR repository,
+workflow identity, public host, and exact legacy service/path supplied above.
+
+### 4. Prepare Host Policy Files
+
+Keep reviewed production copies outside the image:
+
+```bash
+sudo install -o root -g 10001 -m 0640 \
+  <current-common-passwords-path> \
+  /etc/sitbank/common-passwords.txt
+sudo install -o root -g 10001 -m 0640 \
+  <current-approved-aaguids-path> \
+  /etc/sitbank/fido-approved-aaguids.json
+sudo install -o root -g 10001 -m 0640 \
+  <current-mds-cache-path> \
+  /etc/sitbank/fido-mds-cache.json
+sudo -u sitbank-container test -r /etc/sitbank/common-passwords.txt
+sudo -u sitbank-container test -r /etc/sitbank/fido-approved-aaguids.json
+sudo -u sitbank-container test -r /etc/sitbank/fido-mds-cache.json
+```
+
+Do not replace production FIDO policy files with checked-in fail-closed
+placeholders.
+
+### 5. Configure the Restricted Deployment Key
+
+Generate a dedicated Ed25519 key. Do not reuse a personal EC2 key:
 
 ```powershell
-.\.venv\Scripts\python.exe -m flask --app wsgi:app production-check
+ssh-keygen -t ed25519 -a 100 `
+  -f "$HOME\.ssh\sitbank_github_actions" `
+  -C "github-actions-sitbank"
 ```
 
-The check connects to the configured PostgreSQL and Redis services and verifies
-that the common-password dictionary has at least 100,000 entries, the FIDO
-metadata cache is fresh, approved AAGUIDs are present, and WebAuthn origin
-settings match the public HTTPS host.
+Add the public key to `/home/sitbank-deploy/.ssh/authorized_keys`, prefixed
+with:
 
-For the `sitbank.duckdns.org` deployment, `.env` must include:
-
-```dotenv
-WEBAUTHN_RP_ID=sitbank.duckdns.org
-WEBAUTHN_RP_ORIGIN=https://sitbank.duckdns.org
+```text
+restrict ssh-ed25519 AAAA... github-actions-sitbank
 ```
 
-## Domain changes and WebAuthn credentials
-
-WebAuthn credentials are bound to the relying-party ID and HTTPS origin. A key
-registered under `scamcentre.duckdns.org` cannot authenticate under
-`sitbank.duckdns.org`.
-
-When changing the public domain, update DuckDNS, Nginx `server_name`, the TLS
-certificate, and the `.env` WebAuthn values together. The FIDO AAGUID allow-list
-and MDS cache do not change because of the domain rename.
-
-After backing up the production database, reset existing security-key
-credentials so users can sign in with password plus TOTP and re-enroll keys on
-the new domain:
+Store the private key only as `EC2_SSH_PRIVATE_KEY`. Verify the server host-key
+fingerprint through the EC2 console or another trusted channel:
 
 ```bash
-python3.12 -c "from app import create_app; from app.extensions import db; from app.models import WebAuthnCredential; app=create_app(); app.app_context().push(); db.session.query(WebAuthnCredential).delete(); db.session.commit()"
+sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256
 ```
 
-Then run `flask --app wsgi:app production-check` and restart the app.
+Store the verified complete `ssh-keyscan -H -t ed25519
+sitbank.duckdns.org` result as `EC2_KNOWN_HOSTS`.
 
-## FIDO metadata allow-list
+### 6. Seed Container Secrets for a Manual First Deployment
 
-Production requires a non-empty hardware-security-key allow-list and matching
-FIDO metadata. The checked-in `ops/fido-approved-aaguids.json` and
-`ops/fido-mds-cache.json` files are a curated starter snapshot from the FIDO
-MDS3 blob. The list includes common Yubico/YubiKey, YubiKey FIPS, Feitian,
-Thales, and TOKEN2 hardware authenticators that already meet this app's L2+
-certification and attestation-root policy. Preview devices, not-certified
-devices, and L1-only devices are intentionally excluded.
-
-The checked-in policy contains one explicit legacy Level 1 lab exception for
-YubiKey 5 NFC firmware 5.2/5.4
-(`2fc0579f-8113-47ea-b116-bb5a8db9202a`) because this deployment's test
-hardware uses that model. Remove this exception for stricter production or
-banking deployments and use an L2+/FIPS key instead.
-
-Review the checked-in list against the actual hardware you intend to support,
-then store production copies outside the release archive.
-
-Store production copies outside the release archive, for example:
+Skip this when GitHub will provide the first protected runtime bundle.
 
 ```bash
-# Use the group of the Unix user that runs Flask/Gunicorn. On the EC2 lab
-# deployment this is usually student12; if systemd uses a different user/group,
-# check it with: systemctl show -p User -p Group scamcentre
-APP_GROUP=student12
-sudo install -d -m 0750 -o root -g "$APP_GROUP" /etc/scamcentre
-sudo nano /etc/scamcentre/fido-approved-aaguids.json
-sudo nano /etc/scamcentre/fido-mds-cache.json
-sudo chown root:"$APP_GROUP" /etc/scamcentre/fido-approved-aaguids.json /etc/scamcentre/fido-mds-cache.json
-sudo chmod 0640 /etc/scamcentre/fido-approved-aaguids.json /etc/scamcentre/fido-mds-cache.json
+sudo install -d -o root -g root -m 0700 /etc/sitbank/runtime-import
+sudo <current-app-root>/venv/bin/python \
+  /opt/sitbank/import_legacy_env.py \
+  --source <current-app-root>/.env \
+  --destination /etc/sitbank/runtime-import \
+  --public-host sitbank.duckdns.org
+sudo install -o root -g root -m 0600 \
+  /etc/sitbank/runtime-import/container.env \
+  /etc/sitbank/container.env
+sudo cp -a /etc/sitbank/runtime-import/secrets/. /etc/sitbank/secrets/
+sudo chown -R root:root /etc/sitbank/secrets
+sudo chmod 0700 /etc/sitbank/secrets
+sudo chmod 0400 /etc/sitbank/secrets/*
+sudo rm -rf /etc/sitbank/runtime-import
 ```
 
-Point `.env` at those files:
+The importer refuses symlinked sources, multiline values, missing secrets, and
+non-empty output directories.
 
-```dotenv
-WEBAUTHN_APPROVED_AAGUIDS_PATH=/etc/scamcentre/fido-approved-aaguids.json
-WEBAUTHN_MDS_CACHE_PATH=/etc/scamcentre/fido-mds-cache.json
+### 7. Rename the PostgreSQL Database and Role
+
+Generate a new URL-safe password on an administrator workstation, write the
+complete URL to the GitHub environment secret through standard input, and send
+the same password to a root-only EC2 file without placing it on a command
+line:
+
+```powershell
+$bytes = [System.Security.Cryptography.RandomNumberGenerator]::GetBytes(36)
+$dbPassword = [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+$dbUrl = "postgresql+psycopg2://sitbank_user:$dbPassword@127.0.0.1:5432/sitbank_db"
+$dbUrl | gh secret set PROD_DATABASE_URL --env production
+$dbPassword | ssh -i "C:\path\to\existing-ec2-key.pem" `
+  "student12@sitbank.duckdns.org" `
+  "sudo install -o root -g root -m 0600 /dev/stdin /root/sitbank-db-password"
+Remove-Variable dbPassword, dbUrl, bytes
 ```
 
-The approved AAGUID file must contain at least one real hardware-key AAGUID:
+The resulting `PROD_DATABASE_URL` is:
 
-```json
-{
-  "approved_aaguids": [
-    "00000000-0000-0000-0000-000000000000"
-  ]
-}
+```text
+postgresql+psycopg2://sitbank_user:<new-password>@127.0.0.1:5432/sitbank_db
 ```
 
-The MDS cache must include a fresh `nextUpdate` and one entry for each approved
-AAGUID with a trusted FIDO certification status and attestation root
-certificate. Refresh this from FIDO MDS3 before `nextUpdate`; stale metadata
-intentionally fails `flask --app wsgi:app production-check`.
+For a manual deployment without GitHub environment access, also pipe `$dbUrl`
+to `/etc/sitbank/secrets/database_url` using the same `ssh` and
+`sudo install ... /dev/stdin` pattern before removing the PowerShell
+variables.
 
-```json
-{
-  "nextUpdate": "2026-12-31",
-  "entries": [
-    {
-      "aaguid": "00000000-0000-0000-0000-000000000000",
-      "statusReports": [
-        {"status": "FIDO_CERTIFIED_L2"}
-      ],
-      "metadataStatement": {
-        "attestationRootCertificates": [
-          "<base64 DER attestation root certificate>"
-        ]
-      }
-    }
-  ]
-}
-```
-
-## Banking API guardrails
-
-The current banking blueprint intentionally exposes no transfer, payment, or
-open-banking aggregation endpoints. Before any such endpoint is added, the
-server must create the transaction record and bind all high-risk fields
-server-side. Public request payloads must not accept account ownership,
-approval state, KYC state, credit limits, risk scores, transaction status, or
-other privileged fields, and every mutation must require an idempotency key.
-
-## Proxy Boundary
-
-Gunicorn should stay bound to `127.0.0.1`, with Nginx as the single trusted proxy.
-Set `TRUSTED_PROXY_COUNT=1` and make sure Nginx overwrites forwarded headers
-using the example in `ops/nginx-proxy-headers.conf`. The app uses
-`request.remote_addr` only after Werkzeug `ProxyFix` normalizes the request.
-
-To apply the Nginx proxy-header rule on EC2, first find the active Nginx site
-file if you are not sure where it is:
+Prepare the cutover:
 
 ```bash
-sudo nginx -T | grep -n "server_name\|proxy_pass\|sitbank\|scamcentre"
+sudo /usr/local/sbin/sitbank-database-cutover prepare \
+  <current-database> \
+  <current-role> \
+  /root/sitbank-db-password
 ```
 
-Open the site file that contains the `proxy_pass http://127.0.0.1:5000;` rule,
-usually one of these:
+The helper:
+
+- creates a fresh protected PostgreSQL backup;
+- stops the configured legacy service;
+- creates `sitbank_user`;
+- renames the database to `sitbank_db`;
+- transfers database, schema, and object ownership;
+- records rollback state without storing the password;
+- deletes the temporary password file.
+
+If deployment fails before readiness, the deploy wrapper calls:
 
 ```bash
-sudo nano /etc/nginx/sites-available/scamcentre
-sudo nano /etc/nginx/sites-available/default
+sudo /usr/local/sbin/sitbank-database-cutover rollback
 ```
 
-Inside the `location / { ... }` block that forwards traffic to Gunicorn, make
-sure the block contains these exact headers:
-
-```nginx
-proxy_pass http://127.0.0.1:5000;
-proxy_set_header Host $host;
-proxy_set_header X-Real-IP $remote_addr;
-proxy_set_header X-Forwarded-For $remote_addr;
-proxy_set_header X-Forwarded-Proto $scheme;
-```
-
-Then validate and reload Nginx:
+After successful readiness it removes the former role with:
 
 ```bash
-sudo nginx -t
-sudo systemctl reload nginx
-sudo systemctl restart scamcentre
+sudo /usr/local/sbin/sitbank-database-cutover finalize
 ```
 
-## MFA Key Rotation
+### 8. Deploy and Verify
 
-If `MFA_AES256_GCM_KEY_B64` is exposed, existing encrypted TOTP seeds cannot be
-decrypted after simply replacing the key. The safe recovery flow is:
+Set all GitHub production secrets and variables, then set
+`PROD_DEPLOY_ENABLED=true` and run the workflow from `main`.
 
-1. Freeze or otherwise protect affected accounts.
-2. Generate a new 32-byte AES-GCM key.
-3. Clear existing MFA seeds for affected users.
-4. Require those users to re-enroll MFA after password login.
-5. Record the incident and re-enrollment in security audit logs.
+The deployment wrapper verifies the private input bundle, Cosign identity,
+immutable digest, image revision label, production configuration, migrations,
+direct readiness, and Nginx/TLS readiness. On first-cutover failure it restores
+the database identity and restarts the configured legacy service.
 
-## Implemented security modules
+After readiness succeeds, it disables and removes the configured legacy unit
+and application directory. There is no new active `/var/www` application
+directory.
 
-- Registration/login with NIST-length password policy, local common-password rejection, PBKDF2-HMAC-SHA256 password hashing with a deployment pepper, generic login errors, and Redis-backed non-blocking failure throttling.
-- TOTP MFA setup/verification with encrypted AES-256-GCM secret storage and Redis anti-replay cache for the exact current 30-second window.
-- Redis-backed server-side sessions with UUIDv4 session IDs, session rotation, 15-minute inactivity expiry, 5-minute pending-MFA absolute expiry, secure cookie flags, active-session listing, and explicit revocation.
-- Self-service account freeze protected by CSRF and security-key step-up; unfreeze is intentionally not exposed.
-- Reusable frozen-account guards for outbound transfers, scheduled transfer execution, and sensitive profile changes.
+Validate:
+
+```bash
+sudo systemctl --no-pager --full status sitbank-container
+sudo docker inspect --format '{{.Config.User}} {{.HostConfig.ReadonlyRootfs}}' \
+  sitbank-app
+sudo docker inspect --format '{{json .Config.Env}}' sitbank-app
+sudo -u postgres psql -tAc \
+  "SELECT datname, pg_get_userbyid(datdba) FROM pg_database WHERE datname = 'sitbank_db';"
+curl --fail https://sitbank.duckdns.org/health/ready
+```
+
+The container user must be `10001:10001`, the root filesystem must be
+read-only, `sitbank_db` must be owned by `sitbank_user`, and container
+environment output must contain only non-secret settings and `_FILE` paths.
+
+## Later Deployments and Rollback
+
+Later deployments preserve the current digest and runtime bundle before
+replacement. Failed direct or public readiness restores the previous secrets
+and image automatically.
+
+Database migrations are not reversed during application rollback. Every
+migration must remain backward-compatible with the previously deployed image.
+
+Useful commands:
+
+```bash
+sudo systemctl status sitbank-container
+sudo docker logs --tail 200 sitbank-app
+sudo docker inspect --format '{{.State.Health.Status}}' sitbank-app
+sudo cat /var/lib/sitbank-container/current
+curl --fail -H 'X-Forwarded-Proto: https' \
+  http://127.0.0.1:5000/health/ready
+curl --fail https://sitbank.duckdns.org/health/ready
+```
+
+## Secure Manual Deployment
+
+When GitHub environment deployment is unavailable, leave
+`PROD_DEPLOY_ENABLED=false`. The `publish` job still builds, scans, signs, and
+publishes the private immutable digest.
+
+Obtain the successful workflow commit SHA and digest. Use a temporary GHCR
+token with read-only package access:
+
+```bash
+sudo -iu sitbank-deploy
+umask 077
+read -r -p "GHCR username: " ghcr_user
+read -r -s -p "Temporary GHCR read token: " ghcr_token
+printf '\n'
+printf '%s\n%s\n' "$ghcr_user" "$ghcr_token" \
+  > "incoming/registry-COMMIT_SHA.credentials"
+unset ghcr_token
+exit
+```
+
+Then run the same root wrapper:
+
+```bash
+sudo /usr/local/sbin/sitbank-container-deploy \
+  COMMIT_SHA \
+  ghcr.io/wenjiangg/sitbank@sha256:<digest>
+```
+
+The wrapper removes the credential file and applies the same signature,
+revision, migration, readiness, cleanup, and rollback checks as GitHub
+Actions. Do not deploy unsigned locally built production images.
+
+## Security-Sensitive Files
+
+Treat changes to these paths as production-security changes:
+
+- `.github/workflows/`
+- `Dockerfile`
+- `compose.prod.yml`
+- `ops/container/`
+- `ops/deploy/`
+- `ops/systemd/`
+- `ops/sudoers/`
+- `config.py`
+
+Never commit `.env` files, private keys, GHCR tokens, database or Redis
+credentials, password peppers, MFA encryption keys, session HMAC keys, FIDO
+private material, database dumps, cookies, CSRF tokens, or session IDs.
+
+## References
+
+- [Docker Compose secrets](https://docs.docker.com/compose/how-tos/use-secrets/)
+- [GitHub container publishing](https://docs.github.com/en/actions/tutorials/publish-packages/publish-docker-images)
+- [Sigstore keyless signing](https://docs.sigstore.dev/cosign/signing/signing_with_containers/)
+- [Docker Engine security](https://docs.docker.com/engine/security/)

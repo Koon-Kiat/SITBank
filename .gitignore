@@ -1,4 +1,6 @@
 .env
+.env.*
+!.env.example
 .venv/
 venv/
 __pycache__/
@@ -9,9 +11,15 @@ instance/
 *.sqlite
 *.db
 *.tar.gz
-SERVER_SETUP_LOG.md
+*.tar
+runtime-*
+registry-*.credentials
+SERVER_SETUP_LOG*.md
 security-data/
 *.key
+*.ppk
+id_rsa*
+id_ed25519*
 *private*.pem
 *privkey*.pem
 *key*.pem
@@ -30,5 +38,4 @@ appendonly.aof*
 *scan-report*
 *.pem
 *.pdf
-SERVER_SETUP_LOG.md
 .vscode/

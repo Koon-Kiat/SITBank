@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+readonly DEPLOY_USER="sitbank-deploy"
+readonly CONTAINER_GID="10001"
+readonly CONTAINER_ACCOUNT="sitbank-container"
+readonly COSIGN_VERSION="3.0.5"
+readonly COSIGN_SHA256="db15cc99e6e4837daabab023742aaddc3841ce57f193d11b7c3e06c8003642b2"
+
+if [[ "${EUID}" -ne 0 ]]; then
+    echo "Run this bootstrap script as root" >&2
+    exit 1
+fi
+
+github_repository="${1:-}"
+public_host="${2:-sitbank.duckdns.org}"
+legacy_service="${3:--}"
+legacy_app_root="${4:--}"
+if [[ ! "${github_repository}" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+    echo "Usage: bootstrap-container-ec2 OWNER/REPOSITORY [PUBLIC_HOST] [LEGACY_SERVICE|-] [LEGACY_APP_ROOT|-]" >&2
+    exit 2
+fi
+if [[ ! "${public_host}" =~ ^[A-Za-z0-9.-]+$ ]]; then
+    echo "PUBLIC_HOST must be a bare hostname" >&2
+    exit 2
+fi
+if [[ "${legacy_service}" != "-" \
+    && ! "${legacy_service}" =~ ^[A-Za-z0-9_.@-]+\.service$ ]]; then
+    echo "LEGACY_SERVICE must be a systemd service name or '-'" >&2
+    exit 2
+fi
+if [[ "${legacy_app_root}" != "-" ]]; then
+    if [[ ! "${legacy_app_root}" =~ ^/var/www/[A-Za-z0-9._-]+$ \
+        || "${legacy_app_root}" == "/var/www" \
+        || -L "${legacy_app_root}" ]]; then
+        echo "LEGACY_APP_ROOT must be a non-symlink directory directly beneath /var/www or '-'" >&2
+        exit 2
+    fi
+fi
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+repository_lower="${github_repository,,}"
+
+if [[ "$(dpkg --print-architecture)" != "amd64" ]]; then
+    echo "This deployment is pinned to linux/amd64" >&2
+    exit 1
+fi
+
+apt-get update
+apt-get install -y ca-certificates curl gnupg
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+    | gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg
+chmod a+r /etc/apt/keyrings/docker.gpg
+# shellcheck disable=SC1091
+. /etc/os-release
+printf '%s\n' \
+    "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu ${VERSION_CODENAME} stable" \
+    > /etc/apt/sources.list.d/docker.list
+apt-get update
+apt-get install -y docker-ce docker-ce-cli containerd.io \
+    docker-buildx-plugin docker-compose-plugin
+systemctl enable --now docker.service
+
+cosign_tmp="$(mktemp)"
+trap 'rm -f -- "${cosign_tmp}"' EXIT
+curl -fsSL \
+    "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-amd64" \
+    -o "${cosign_tmp}"
+printf '%s  %s\n' "${COSIGN_SHA256}" "${cosign_tmp}" | sha256sum --check --status
+install -o root -g root -m 0755 "${cosign_tmp}" /usr/local/bin/cosign
+
+existing_group="$(getent group "${CONTAINER_GID}" | cut -d: -f1 || true)"
+if [[ -n "${existing_group}" && "${existing_group}" != "${CONTAINER_ACCOUNT}" ]]; then
+    existing_group_members="$(
+        getent group "${CONTAINER_GID}" | cut -d: -f4
+    )"
+    if [[ -n "${existing_group_members}" ]]; then
+        echo "GID ${CONTAINER_GID} has supplementary members; refusing to rename it" >&2
+        exit 1
+    fi
+    groupmod --new-name "${CONTAINER_ACCOUNT}" "${existing_group}"
+fi
+if [[ -z "${existing_group}" ]]; then
+    groupadd --system --gid "${CONTAINER_GID}" "${CONTAINER_ACCOUNT}"
+fi
+existing_user="$(getent passwd 10001 | cut -d: -f1 || true)"
+if [[ -n "${existing_user}" && "${existing_user}" != "${CONTAINER_ACCOUNT}" ]]; then
+    existing_home="$(getent passwd 10001 | cut -d: -f6)"
+    existing_shell="$(getent passwd 10001 | cut -d: -f7)"
+    if [[ "${existing_home}" != "/nonexistent" \
+        || "${existing_shell}" != "/usr/sbin/nologin" ]]; then
+        echo "UID 10001 is not a locked container account; refusing to rename it" >&2
+        exit 1
+    fi
+    usermod --login "${CONTAINER_ACCOUNT}" "${existing_user}"
+fi
+if [[ -z "${existing_user}" ]]; then
+    useradd --system --uid 10001 --gid "${CONTAINER_GID}" \
+        --home-dir /nonexistent --shell /usr/sbin/nologin \
+        "${CONTAINER_ACCOUNT}"
+fi
+if ! id "${DEPLOY_USER}" >/dev/null 2>&1; then
+    useradd --create-home --shell /bin/bash "${DEPLOY_USER}"
+fi
+gpasswd --delete "${DEPLOY_USER}" docker >/dev/null 2>&1 || true
+
+install -d -o "${DEPLOY_USER}" -g "${DEPLOY_USER}" -m 0700 \
+    "/home/${DEPLOY_USER}/.ssh" "/home/${DEPLOY_USER}/incoming"
+touch "/home/${DEPLOY_USER}/.ssh/authorized_keys"
+chown "${DEPLOY_USER}:${DEPLOY_USER}" \
+    "/home/${DEPLOY_USER}/.ssh/authorized_keys"
+chmod 0600 "/home/${DEPLOY_USER}/.ssh/authorized_keys"
+
+install -d -o root -g root -m 0755 /opt/sitbank
+install -d -o root -g "${CONTAINER_GID}" -m 0750 /etc/sitbank
+install -d -o root -g root -m 0700 \
+    /etc/sitbank/secrets /var/lib/sitbank-container /var/backups/sitbank
+
+install -o root -g root -m 0644 \
+    "${repo_root}/compose.prod.yml" /opt/sitbank/compose.yml
+install -o root -g root -m 0755 \
+    "${repo_root}/ops/deploy/sitbank-container-deploy" \
+    /usr/local/sbin/sitbank-container-deploy
+install -o root -g root -m 0755 \
+    "${repo_root}/ops/deploy/sitbank-container-runtime" \
+    /usr/local/sbin/sitbank-container-runtime
+install -o root -g root -m 0755 \
+    "${repo_root}/ops/deploy/sitbank-database-cutover" \
+    /usr/local/sbin/sitbank-database-cutover
+install -o root -g root -m 0600 \
+    "${repo_root}/ops/deploy/import_legacy_env.py" \
+    /opt/sitbank/import_legacy_env.py
+install -o root -g root -m 0644 \
+    "${repo_root}/ops/systemd/sitbank-container.service" \
+    /etc/systemd/system/sitbank-container.service
+install -o root -g root -m 0440 \
+    "${repo_root}/ops/sudoers/sitbank-container-deploy" \
+    /etc/sudoers.d/sitbank-container-deploy
+
+cat > /etc/sitbank/deploy.conf <<EOF
+GITHUB_REPOSITORY=${github_repository}
+GHCR_REPOSITORY=ghcr.io/${repository_lower}
+COSIGN_CERTIFICATE_IDENTITY=https://github.com/${github_repository}/.github/workflows/ci-deploy.yml@refs/heads/main
+PUBLIC_HOST=${public_host}
+LEGACY_SERVICE=${legacy_service}
+LEGACY_APP_ROOT=${legacy_app_root}
+EOF
+chown root:root /etc/sitbank/deploy.conf
+chmod 0644 /etc/sitbank/deploy.conf
+
+for policy_file in \
+    common-passwords.txt \
+    fido-approved-aaguids.json \
+    fido-mds-cache.json; do
+    if [[ -f "/etc/sitbank/${policy_file}" ]]; then
+        chown root:"${CONTAINER_GID}" "/etc/sitbank/${policy_file}"
+        chmod 0640 "/etc/sitbank/${policy_file}"
+    fi
+done
+
+if [[ -S /var/run/docker.sock ]]; then
+    chmod 0660 /var/run/docker.sock
+fi
+if ss -lnt | grep -Eq ':(2375|2376)\b'; then
+    echo "Docker API must not be exposed over TCP" >&2
+    exit 1
+fi
+
+visudo -cf /etc/sudoers.d/sitbank-container-deploy
+systemctl daemon-reload
+systemctl enable sitbank-container.service
+
+echo "Docker bootstrap complete; the existing Gunicorn service was not changed."
+echo "Add a restricted SSH key for ${DEPLOY_USER}, then deploy a signed digest."
