@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -11,6 +12,7 @@ from flask import request
 from ops.deploy.import_legacy_env import import_legacy_environment
 from ops.deploy.render_container_bundle import (
     build_container_bundle,
+    build_container_environment,
     write_container_bundle,
 )
 
@@ -81,6 +83,31 @@ def test_container_bundle_builds_two_key_rotation_ring(monkeypatch):
     assert '"2026-06":"MjIy' in secrets["session_hmac_keys_json"]
 
 
+def test_environment_only_bundle_does_not_export_long_lived_secrets(
+    monkeypatch,
+    tmp_path,
+):
+    _set_deployment_values(monkeypatch)
+    for name in (
+        "PROD_DATABASE_URL",
+        "PROD_MFA_AES256_GCM_KEY_B64",
+        "PROD_PASSWORD_PEPPER_B64",
+        "PROD_REDIS_URL",
+        "PROD_SECRET_KEY",
+        "PROD_SESSION_HMAC_ACTIVE_KEY_B64",
+        "PROD_WTF_CSRF_SECRET_KEY",
+    ):
+        monkeypatch.delenv(name)
+
+    environment = build_container_environment()
+    output = tmp_path / "runtime"
+    write_container_bundle(output, include_secrets=False)
+
+    assert environment["SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06"
+    assert (output / "container.env").is_file()
+    assert not (output / "secrets").exists()
+
+
 def test_container_bundle_writer_quotes_dollar_values_and_separates_files(
     monkeypatch,
     tmp_path,
@@ -139,6 +166,9 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
     compose_text = Path("compose.prod.yml").read_text(encoding="utf-8")
     smoke_test = Path("ops/container/smoke-test.sh").read_text(encoding="utf-8")
+    compose_validation = Path(
+        "ops/container/validate-compose.sh"
+    ).read_text(encoding="utf-8")
     compose = yaml.safe_load(compose_text)
     app = compose["services"]["app"]
 
@@ -184,6 +214,11 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "wait_for_healthy smoke-postgres" in smoke_test
     assert "wait_for_healthy smoke-redis" in smoke_test
     assert "dump_container_diagnostics" in smoke_test
+    assert "RUN_ZAP_DAST" in smoke_test
+    assert "zaproxy/zap-stable:2.17.0@sha256:" in smoke_test
+    assert "create_dast_session.py" in smoke_test
+    assert "docker compose" in compose_validation
+    assert "SITBANK_IMAGE" in compose_validation
     assert "docker port" in smoke_test
     assert "55432" not in smoke_test
     assert "56379" not in smoke_test
@@ -202,12 +237,22 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         "ops/deploy/bootstrap-container-ec2"
     ).read_text(encoding="utf-8")
 
-    assert set(workflow["jobs"]) == {"test", "image-test", "publish", "deploy"}
+    assert set(workflow["jobs"]) == {
+        "workflow-security",
+        "dependency-review",
+        "test",
+        "image-test",
+        "publish",
+        "release-verify",
+        "deploy",
+    }
     assert workflow["permissions"] == {}
     assert workflow["jobs"]["publish"]["permissions"]["packages"] == "write"
-    assert workflow["jobs"]["publish"]["permissions"]["id-token"] == "write"
+    assert "id-token" not in workflow["jobs"]["publish"]["permissions"]
+    assert workflow["jobs"]["release-verify"]["permissions"]["id-token"] == "write"
     assert "attestations" not in workflow["jobs"]["publish"]["permissions"]
     assert workflow["jobs"]["deploy"]["permissions"]["packages"] == "read"
+    assert workflow["jobs"]["deploy"]["permissions"]["id-token"] == "write"
     assert all(
         job["timeout-minutes"] > 0
         for job in workflow["jobs"].values()
@@ -215,27 +260,40 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "vars.PROD_DEPLOY_ENABLED == 'true'" in workflow_text
     assert "provenance: mode=max" in workflow_text
     assert "sbom: true" in workflow_text
+    assert "ignore-unfixed: false" in workflow_text
     assert "ignore-unfixed: true" in workflow_text
     assert "cosign sign --yes" in workflow_text
+    assert "cosign sign-blob --yes" in workflow_text
+    assert "cosign verify-blob" in deploy_script
+    assert "runtime-${RELEASE_SHA}.sigstore.json" in workflow_text
+    assert "RUN_ZAP_DAST" in workflow_text
+    assert "dependency-review-action@" in workflow_text
+    assert "zizmorcore/zizmor-action@" in workflow_text
+    assert "actionlint" in workflow_text
     assert "shellcheck" in workflow_text
+    assert "ops/container/validate-compose.sh" in workflow_text
     assert "scan_repository_secrets.py" in workflow_text
+    assert "scan_repository_secrets.py --history" in workflow_text
     assert "check_dependency_locks.py" in workflow_text
     assert "IMAGE_DIGEST" in workflow_text
     assert "StrictHostKeyChecking=no" not in workflow_text
-    assert workflow_text.count("persist-credentials: false") == 4
+    assert workflow_text.count("persist-credentials: false") == 7
     assert (
         workflow_text.count(
             "actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10"
         )
-        == 4
+        == 7
     )
     assert (
         "actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405"
         in workflow_text
     )
-    assert "sitbank:smoke" in workflow_text
+    assert "sitbank:pr" in workflow_text
     assert "SITBANK_IMAGE" in workflow_text
     assert "SITBANK_SECRET_KEY" not in workflow_text
+    assert "PROD_SECRET_KEY" not in workflow_text
+    assert "PROD_DATABASE_URL" not in workflow_text
+    assert "--environment-only" in workflow_text
     assert "sitbank-container-deploy" in workflow_text
     assert "sha256:[0-9a-f]{64}" in deploy_script
     assert "COSIGN_CERTIFICATE_IDENTITY" in deploy_script
@@ -244,6 +302,8 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "db upgrade" in deploy_script
     assert "previous_image" in deploy_script
     assert "restore_runtime" in deploy_script
+    assert "secrets/database_url" not in deploy_script
+    assert "audit_log" in deploy_script
     assert "load_runtime_secrets" not in deploy_script
     assert "SITBANK_SECRET_KEY" not in deploy_script
     assert "SITBANK_SECRET_KEY" not in runtime_script
@@ -255,6 +315,38 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "/var/lib/sitbank-container" in bootstrap
     assert "sitbank-deploy" in bootstrap
     assert "sitbank-container.service" in bootstrap
+
+
+def test_codeowners_and_codeql_cover_security_sensitive_changes():
+    codeowners = Path(".github/CODEOWNERS").read_text(encoding="utf-8")
+    codeql = Path(".github/workflows/codeql.yml").read_text(encoding="utf-8")
+
+    for protected_path in (
+        "/.github/workflows/",
+        "/Dockerfile",
+        "/compose.prod.yml",
+        "/requirements.lock",
+        "/requirements-dev.lock",
+        "/ops/deploy/",
+        "/ops/security/",
+    ):
+        assert protected_path in codeowners
+    assert "github/codeql-action/init@411bbbe57033eedfc1a82d68c01345aa96c737d7" in codeql
+    assert "github/codeql-action/analyze@411bbbe57033eedfc1a82d68c01345aa96c737d7" in codeql
+    assert "languages: python" in codeql
+
+
+def test_every_github_action_is_pinned_to_a_full_commit_sha():
+    workflow_text = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in Path(".github/workflows").glob("*.yml")
+    )
+    uses = re.findall(r"^\s*uses:\s*([^\s#]+)", workflow_text, flags=re.MULTILINE)
+
+    assert uses
+    for action in uses:
+        assert re.fullmatch(r"[^@]+@[0-9a-f]{40}", action), action
+    assert "pull_request_target:" not in workflow_text
 
 
 def test_only_sitbank_container_deployment_units_are_active():

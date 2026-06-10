@@ -49,6 +49,7 @@ readonly image="${GHCR_REPOSITORY}@${image_digest}"
 readonly credential_path="${INCOMING_DIR}/registry-${release_sha}.credentials"
 readonly bundle_path="${INCOMING_DIR}/runtime-${release_sha}.tar"
 readonly checksum_path="${INCOMING_DIR}/runtime-${release_sha}.sha256"
+readonly signature_path="${INCOMING_DIR}/runtime-${release_sha}.sigstore.json"
 
 exec 9>/var/lock/sitbank-container-deploy.lock
 if ! flock -n 9; then
@@ -69,7 +70,15 @@ fi
 
 cleanup() {
     rm -rf -- "${docker_config}" "${staging_dir}" "${runtime_backup}"
-    rm -f -- "${credential_path}" "${bundle_path}" "${checksum_path}"
+    rm -f -- \
+        "${credential_path}" \
+        "${bundle_path}" \
+        "${checksum_path}" \
+        "${signature_path}"
+}
+
+audit_log() {
+    logger --tag sitbank-deploy -- "$1" || true
 }
 
 validate_input_file() {
@@ -88,31 +97,30 @@ backup_runtime() {
     if [[ -f "${CONTAINER_ENV}" ]]; then
         install -m 0600 "${CONTAINER_ENV}" "${runtime_backup}/container.env"
     fi
-    if [[ -d "${SECRET_DIR}" ]]; then
-        cp -a -- "${SECRET_DIR}" "${runtime_backup}/secrets"
-    fi
 }
 
 restore_runtime() {
     rm -f -- "${CONTAINER_ENV}"
-    rm -rf -- "${SECRET_DIR}"
     if [[ -f "${runtime_backup}/container.env" ]]; then
         install -o root -g root -m 0600 \
             "${runtime_backup}/container.env" "${CONTAINER_ENV}"
     fi
-    if [[ -d "${runtime_backup}/secrets" ]]; then
-        cp -a -- "${runtime_backup}/secrets" "${SECRET_DIR}"
-    else
-        install -d -o root -g root -m 0700 "${SECRET_DIR}"
-    fi
 }
 
 install_runtime_bundle() {
-    if [[ ! -e "${bundle_path}" && ! -e "${checksum_path}" ]]; then
+    if [[ ! -e "${bundle_path}" \
+        && ! -e "${checksum_path}" \
+        && ! -e "${signature_path}" ]]; then
         return
     fi
     validate_input_file "${bundle_path}"
     validate_input_file "${checksum_path}"
+    validate_input_file "${signature_path}"
+    cosign verify-blob \
+        --bundle "${signature_path}" \
+        --certificate-identity "${COSIGN_CERTIFICATE_IDENTITY}" \
+        --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+        "${bundle_path}" >/dev/null
     if [[ "$(wc -l < "${checksum_path}")" -ne 1 ]]; then
         echo "Runtime checksum file must contain exactly one line" >&2
         exit 1
@@ -141,16 +149,7 @@ install_runtime_bundle() {
         exit 1
     fi
 
-    local required=(
-        container.env
-        secrets/database_url
-        secrets/mfa_aes256_gcm_key_b64
-        secrets/password_pepper_b64
-        secrets/redis_url
-        secrets/secret_key
-        secrets/session_hmac_keys_json
-        secrets/wtf_csrf_secret_key
-    )
+    local required=(container.env)
     local relative_path
     for relative_path in "${required[@]}"; do
         if [[ ! -s "${staging_dir}/${relative_path}" ]]; then
@@ -193,12 +192,6 @@ install_runtime_bundle() {
     backup_runtime
     install -o root -g root -m 0600 \
         "${staging_dir}/container.env" "${CONTAINER_ENV}"
-    install -d -o root -g root -m 0700 "${SECRET_DIR}"
-    for relative_path in "${required[@]:1}"; do
-        install -o root -g 10001 -m 0440 \
-            "${staging_dir}/${relative_path}" \
-            "${SECRET_DIR}/$(basename "${relative_path}")"
-    done
     runtime_replaced=1
 }
 
@@ -290,6 +283,7 @@ rollback() {
         systemctl enable "${LEGACY_SERVICE}" >/dev/null 2>&1
         systemctl start "${LEGACY_SERVICE}"
     fi
+    audit_log "result=failure revision=${release_sha} digest=${image_digest}"
     echo "Deployment failed; the previous application runtime was restored" >&2
     exit "${exit_code}"
 }
@@ -297,6 +291,7 @@ rollback() {
 trap cleanup EXIT
 trap rollback ERR
 
+audit_log "result=started revision=${release_sha} digest=${image_digest}"
 validate_legacy_configuration
 if ss -lnt | grep -Eq ':(2375|2376)\b'; then
     echo "Docker API must not be exposed over TCP" >&2
@@ -345,6 +340,20 @@ for host_file in \
     /etc/sitbank/fido-mds-cache.json; do
     if [[ ! -r "${host_file}" || -L "${host_file}" ]]; then
         echo "Missing required root-managed policy file: ${host_file}" >&2
+        exit 1
+    fi
+done
+for secret_file in \
+    secret_key \
+    wtf_csrf_secret_key \
+    session_hmac_keys_json \
+    database_url \
+    redis_url \
+    mfa_aes256_gcm_key_b64 \
+    password_pepper_b64; do
+    if [[ ! -r "${SECRET_DIR}/${secret_file}" \
+        || -L "${SECRET_DIR}/${secret_file}" ]]; then
+        echo "Missing required root-managed secret file: ${secret_file}" >&2
         exit 1
     fi
 done
@@ -398,4 +407,5 @@ if [[ -r "${STATE_DIR}/database-cutover/state" ]]; then
     fi
 fi
 
+audit_log "result=success revision=${release_sha} digest=${image_digest}"
 echo "Deployed ${release_sha} as ${image}"

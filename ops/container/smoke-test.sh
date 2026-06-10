@@ -4,6 +4,7 @@ set -Eeuo pipefail
 readonly IMAGE="${1:-sitbank:smoke}"
 readonly POSTGRES_IMAGE="postgres:16.9-alpine@sha256:7c688148e5e156d0e86df7ba8ae5a05a2386aaec1e2ad8e6d11bdf10504b1fb7"
 readonly REDIS_IMAGE="redis:7.4.5-alpine@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08"
+readonly ZAP_IMAGE="zaproxy/zap-stable:2.17.0@sha256:2ec1d5d5b44d55cfd02ba9b89cd26852f06d92b7fc0ce9f064b9463babc73074"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 work_dir="$(mktemp -d)"
@@ -166,14 +167,53 @@ docker run --rm "${docker_args[@]}" \
 
 docker run --detach --name sitbank-smoke \
     "${docker_args[@]}" "${IMAGE}" >/dev/null
+ready=0
 for _ in $(seq 1 20); do
     if curl --fail --silent \
         --header "X-Forwarded-Proto: https" \
         http://127.0.0.1:5000/health/ready >/dev/null; then
-        exit 0
+        ready=1
+        break
     fi
     sleep 1
 done
+if [[ "${ready}" -ne 1 ]]; then
+    echo "SITBank application did not become ready within 20 seconds" >&2
+    false
+fi
 
-echo "SITBank application did not become ready within 20 seconds" >&2
-false
+if [[ "${RUN_ZAP_DAST:-false}" == "true" ]]; then
+    install -d -m 0777 "${work_dir}/dast"
+    docker run --rm "${docker_args[@]}" \
+        --volume "${repo_root}/ops/container/create_dast_session.py:/app/create_dast_session.py:ro" \
+        --volume "${work_dir}/dast:/run/dast:rw" \
+        "${IMAGE}" \
+        python /app/create_dast_session.py \
+            --output /run/dast/auth-cookie
+    dast_cookie="$(cat "${work_dir}/dast/auth-cookie")"
+    if [[ ! "${dast_cookie}" =~ ^__Host-sitbank_session=[A-Za-z0-9._~-]+$ ]]; then
+        echo "Authenticated DAST session cookie is malformed" >&2
+        exit 1
+    fi
+    install -d -m 0777 "${work_dir}/zap"
+    docker run --rm --network host \
+        --volume "${work_dir}/zap:/zap/wrk:rw" \
+        "${ZAP_IMAGE}" \
+        zap-full-scan.py \
+            -t http://127.0.0.1:5000/dashboard \
+            -I \
+            -m 2 \
+            -r zap-report.html \
+            -J zap-report.json \
+            -z "-config replacer.full_list(0).description=authenticated-session \
+-config replacer.full_list(0).enabled=true \
+-config replacer.full_list(0).matchtype=REQ_HEADER \
+-config replacer.full_list(0).matchstr=Cookie \
+-config replacer.full_list(0).replacement=${dast_cookie} \
+-config replacer.full_list(1).description=trusted-https-proxy \
+-config replacer.full_list(1).enabled=true \
+-config replacer.full_list(1).matchtype=REQ_HEADER \
+-config replacer.full_list(1).matchstr=X-Forwarded-Proto \
+-config replacer.full_list(1).replacement=https"
+    unset dast_cookie
+fi

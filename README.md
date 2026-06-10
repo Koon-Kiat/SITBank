@@ -15,7 +15,9 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m compileall app config.py wsgi.py
 .\.venv\Scripts\python.exe -m pip check
 .\.venv\Scripts\python.exe -m pip_audit --disable-pip --require-hashes -r requirements.lock
-.\.venv\Scripts\python.exe -m bandit -q -ll -r app config.py wsgi.py
+.\.venv\Scripts\python.exe -m pip_audit --disable-pip --require-hashes -r requirements-dev.lock
+.\.venv\Scripts\python.exe -m bandit -q -ll -r app ops config.py wsgi.py
+.\.venv\Scripts\python.exe ops/security/scan_repository_secrets.py --history
 ```
 
 Refresh lock files only after reviewing dependency changes:
@@ -52,6 +54,8 @@ or container deployment scripts. GitHub Actions remains the authoritative
   a size-limited `/tmp`, all Linux capabilities dropped, and
   `no-new-privileges`.
 - Production images are private GHCR images addressed by immutable digest.
+- The production image reference is
+  `ghcr.io/wenjiangggg/sitbank@sha256:<digest>`.
 - Images are scanned, receive SBOM and provenance attestations, and are signed
   with GitHub OIDC through Cosign.
 - Secrets are mounted under `/run/secrets`; they are not stored in image
@@ -128,17 +132,21 @@ development, tests, and the one-time protected legacy import only.
 
 `.github/workflows/ci-deploy.yml`:
 
-1. Runs pytest, compilation, package checks, Bandit, dependency auditing, and
-   repository secret scanning.
-2. Builds a `linux/amd64` image from hash-locked dependencies.
-3. Runs migrations, `production-check`, and `/health/ready` against temporary
-   PostgreSQL and Redis containers.
-4. Scans fixable high and critical image vulnerabilities with Trivy.
-5. Pushes the private GHCR image using the job-scoped `GITHUB_TOKEN`.
-6. Generates SBOM and provenance attestations.
-7. Signs the immutable digest with Cosign keyless GitHub OIDC.
-8. Passes only the commit SHA and `sha256:` digest to the protected deployment
-   job.
+1. Runs pytest, compilation, package checks, Bandit, both dependency-lock
+   audits, dependency review, current-tree and Git-history secret scanning,
+   actionlint, and zizmor.
+2. Builds a pull-request image for container smoke tests and authenticated
+   OWASP ZAP DAST.
+3. Builds and pushes the `main` release image exactly once with SBOM and
+   provenance attestations.
+4. Pulls that immutable registry digest and checks its commit label.
+5. Runs migrations, `production-check`, Redis compatibility checks,
+   `/health/ready`, authenticated ZAP DAST, and Trivy against that exact digest.
+6. Blocks every Critical image vulnerability, including unfixed findings, and
+   separately blocks fixable High findings.
+7. Signs the tested digest with Cosign keyless GitHub OIDC.
+8. Signs the non-secret runtime configuration bundle separately and passes
+   only the commit SHA and verified `sha256:` image digest to deployment.
 
 Every third-party action is pinned to a full commit SHA. Publishing remains
 available while production deployment is disabled, allowing an administrator
@@ -150,21 +158,16 @@ Ask a repository administrator to create the `production` environment:
 
 - Restrict deployment branches to `main`.
 - Add required reviewers and prevent self-review where supported.
-- Protect `main` with pull-request approval, required CI checks, and disabled
-  force pushes.
+- Protect `main` with pull-request approval, required CI and CodeQL checks,
+  required CODEOWNERS review for security-sensitive paths, stale-review
+  dismissal, and disabled force pushes.
+- Enable the dependency graph, Dependabot alerts, secret scanning, and push
+  protection. CodeQL on a private repository requires GitHub Code Security.
 
 Add these environment secrets:
 
 - `EC2_SSH_PRIVATE_KEY`
 - `EC2_KNOWN_HOSTS`
-- `PROD_SECRET_KEY`
-- `PROD_WTF_CSRF_SECRET_KEY`
-- `PROD_SESSION_HMAC_ACTIVE_KEY_B64`
-- `PROD_SESSION_HMAC_PREVIOUS_KEY_B64` during a rotation only
-- `PROD_DATABASE_URL`
-- `PROD_REDIS_URL`
-- `PROD_MFA_AES256_GCM_KEY_B64`
-- `PROD_PASSWORD_PEPPER_B64`
 
 Add these environment variables:
 
@@ -173,7 +176,6 @@ Add these environment variables:
 - `EC2_DEPLOY_USER`, normally `sitbank-deploy`
 - `PROD_PUBLIC_HOST`, currently `sitbank.duckdns.org`
 - `PROD_SESSION_HMAC_ACTIVE_KEY_ID`
-- `PROD_SESSION_HMAC_PREVIOUS_KEY_ID` during a rotation only
 - `PROD_PASSWORD_PBKDF2_ITERATIONS`, normally `600000`
 - `PROD_MFA_ISSUER_NAME`, normally `SITBank`
 
@@ -261,6 +263,13 @@ The bootstrap installs Docker Engine and Compose, checksum-verified Cosign,
 the SITBank service and restricted wrappers, and the root-owned deployment
 configuration. It does not add `sitbank-deploy` to the Docker group.
 
+The workflow intentionally cannot update its own privileged EC2 validator.
+Whenever `ops/deploy/sitbank-container-deploy`, the Compose file, sudoers
+policy, or systemd unit changes, upload a reviewed bootstrap archive and
+reinstall those root-owned assets before enabling the next automated
+deployment. This hardening change must be installed before the first workflow
+that sends `.sigstore.json` runtime bundles.
+
 Review `/etc/sitbank/deploy.conf`. It must contain the expected GHCR repository,
 workflow identity, public host, and exact legacy service/path supplied above.
 If the server was bootstrapped before the GitHub repository rename, update the
@@ -324,9 +333,12 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256
 Store the verified complete `ssh-keyscan -H -t ed25519
 sitbank.duckdns.org` result as `EC2_KNOWN_HOSTS`.
 
-### 6. Seed Container Secrets for a Manual First Deployment
+### 6. Seed Root-Managed Container Secrets
 
-Skip this when GitHub will provide the first protected runtime bundle.
+This step is mandatory. Automated deployments do not transmit long-lived
+application secrets. Keep the root-owned files under `/etc/sitbank/secrets`
+and rotate them through an administrator-controlled maintenance procedure or
+AWS Secrets Manager.
 
 ```bash
 sudo install -d -o root -g root -m 0700 /etc/sitbank/runtime-import
@@ -339,43 +351,41 @@ sudo install -o root -g root -m 0600 \
   /etc/sitbank/runtime-import/container.env \
   /etc/sitbank/container.env
 sudo cp -a /etc/sitbank/runtime-import/secrets/. /etc/sitbank/secrets/
-sudo chown -R root:root /etc/sitbank/secrets
+sudo chown -R root:10001 /etc/sitbank/secrets
 sudo chmod 0700 /etc/sitbank/secrets
-sudo chmod 0400 /etc/sitbank/secrets/*
+sudo chmod 0440 /etc/sitbank/secrets/*
 sudo rm -rf /etc/sitbank/runtime-import
 ```
 
 The importer refuses symlinked sources, multiline values, missing secrets, and
-non-empty output directories.
+non-empty output directories. After import, confirm that every file is
+root-owned, unreadable by the SSH deploy user, and readable by container UID
+`10001` only through the Compose secret mount.
 
 ### 7. Rename the PostgreSQL Database and Role
 
-Generate a new URL-safe password on an administrator workstation, write the
-complete URL to the GitHub environment secret through standard input, and send
-the same password to a root-only EC2 file without placing it on a command
-line:
+Generate a new URL-safe password on an administrator workstation and send the
+password and complete database URL directly to root-only EC2 files without
+placing either value on a command line:
 
 ```powershell
 $bytes = [System.Security.Cryptography.RandomNumberGenerator]::GetBytes(36)
 $dbPassword = [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
 $dbUrl = "postgresql+psycopg2://sitbank_user:$dbPassword@127.0.0.1:5432/sitbank_db"
-$dbUrl | gh secret set PROD_DATABASE_URL --env production
 $dbPassword | ssh -i "C:\path\to\existing-ec2-key.pem" `
   "student12@sitbank.duckdns.org" `
   "sudo install -o root -g root -m 0600 /dev/stdin /root/sitbank-db-password"
+$dbUrl | ssh -i "C:\path\to\existing-ec2-key.pem" `
+  "student12@sitbank.duckdns.org" `
+  "sudo install -o root -g 10001 -m 0440 /dev/stdin /etc/sitbank/secrets/database_url"
 Remove-Variable dbPassword, dbUrl, bytes
 ```
 
-The resulting `PROD_DATABASE_URL` is:
+The resulting root-managed `database_url` secret value is:
 
 ```text
 postgresql+psycopg2://sitbank_user:<new-password>@127.0.0.1:5432/sitbank_db
 ```
-
-For a manual deployment without GitHub environment access, also pipe `$dbUrl`
-to `/etc/sitbank/secrets/database_url` using the same `ssh` and
-`sudo install ... /dev/stdin` pattern before removing the PowerShell
-variables.
 
 Prepare the cutover:
 
@@ -410,13 +420,15 @@ sudo /usr/local/sbin/sitbank-database-cutover finalize
 
 ### 8. Deploy and Verify
 
-Set all GitHub production secrets and variables, then set
-`PROD_DEPLOY_ENABLED=true` and run the workflow from `main`.
+Set the two SSH environment secrets and documented non-secret variables, then
+set `PROD_DEPLOY_ENABLED=true` and run the workflow from `main`.
 
-The deployment wrapper verifies the private input bundle, Cosign identity,
-immutable digest, image revision label, production configuration, migrations,
-direct readiness, and Nginx/TLS readiness. On first-cutover failure it restores
-the database identity and restarts the configured legacy service.
+The deployment wrapper verifies the Sigstore-signed non-secret configuration
+bundle, its checksum, Cosign workflow identity, immutable image digest, image
+revision label, production configuration, migrations, direct readiness, and
+Nginx/TLS readiness. Application secrets never pass through GitHub Actions.
+On first-cutover failure it restores the database identity and restarts the
+configured legacy service.
 
 After readiness succeeds, it disables and removes the configured legacy unit
 and application directory. There is no new active `/var/www` application
@@ -440,9 +452,10 @@ environment output must contain only non-secret settings and `_FILE` paths.
 
 ## Later Deployments and Rollback
 
-Later deployments preserve the current digest and runtime bundle before
-replacement. Failed direct or public readiness restores the previous secrets
-and image automatically.
+Later deployments preserve the current digest and non-secret runtime
+configuration before replacement. Failed direct or public readiness restores
+the previous configuration and image automatically. Root-managed application
+secrets are not replaced by ordinary deployments.
 
 Database migrations are not reversed during application rollback. Every
 migration must remain backward-compatible with the previously deployed image.
@@ -462,11 +475,11 @@ curl --fail https://sitbank.duckdns.org/health/ready
 ## Secure Manual Deployment
 
 When GitHub environment deployment is unavailable, leave
-`PROD_DEPLOY_ENABLED=false`. The `publish` job still builds, scans, signs, and
-publishes the private immutable digest.
+`PROD_DEPLOY_ENABLED=false`. The release pipeline still builds, scans, signs,
+and publishes the private immutable digest.
 
-Obtain the successful workflow commit SHA and digest. Use a temporary GHCR
-token with read-only package access:
+Obtain the successful `release-verify` workflow commit SHA and signed digest.
+Use a temporary GHCR token with read-only package access:
 
 ```bash
 sudo -iu sitbank-deploy
@@ -485,12 +498,33 @@ Then run the same root wrapper:
 ```bash
 sudo /usr/local/sbin/sitbank-container-deploy \
   COMMIT_SHA \
-  ghcr.io/wenjiangggg/sitbank@sha256:<digest>
+  sha256:<digest>
 ```
 
 The wrapper removes the credential file and applies the same signature,
 revision, migration, readiness, cleanup, and rollback checks as GitHub
 Actions. Do not deploy unsigned locally built production images.
+
+## Security Operations
+
+The pipeline reduces supply-chain and common OWASP risk; it does not prove
+that the application has no business-logic or authorization vulnerabilities.
+Maintain a threat model and perform manual access-control and transaction-flow
+testing before production use.
+
+Operational requirements and response procedures are documented in
+[`SECURITY.md`](SECURITY.md). In particular:
+
+- Rotate any exposed credential immediately; deleting it from the latest
+  commit is not sufficient.
+- Review Dependabot PRs individually and regenerate both hashed lockfiles.
+- Allow vulnerability exceptions only when they are documented, owned, and
+  expire on a fixed date.
+- Forward `sitbank-deploy` journald events, Docker logs, Nginx authentication
+  events, and application audit events to centralized monitoring.
+- Prefer GitHub OIDC with AWS Systems Manager over the long-lived SSH key when
+  the AWS account owner can create the required IAM role and managed-instance
+  permissions.
 
 ## Security-Sensitive Files
 

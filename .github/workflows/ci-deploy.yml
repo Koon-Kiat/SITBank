@@ -19,6 +19,65 @@ env:
   PYTHONDONTWRITEBYTECODE: "1"
 
 jobs:
+  workflow-security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
+
+      - name: Install verified actionlint
+        shell: bash
+        run: |
+          readonly version="1.7.12"
+          readonly archive="actionlint_${version}_linux_amd64.tar.gz"
+          readonly expected="8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --output "/tmp/${archive}" \
+            "https://github.com/rhysd/actionlint/releases/download/v${version}/${archive}"
+          printf '%s  %s\n' "${expected}" "/tmp/${archive}" \
+            | sha256sum --check --strict
+          tar --extract --gzip --file "/tmp/${archive}" \
+            --directory /tmp actionlint
+          sudo install -o root -g root -m 0755 \
+            /tmp/actionlint /usr/local/bin/actionlint
+
+      - name: Lint GitHub Actions workflows
+        run: actionlint -color
+
+      - name: Audit GitHub Actions workflows
+        uses: zizmorcore/zizmor-action@a16621b09c6db4281f81a93cb393b05dcd7b7165
+        with:
+          advanced-security: false
+          annotations: true
+          min-confidence: high
+          min-severity: medium
+          online-audits: true
+          persona: pedantic
+          version: 1.25.2
+
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
+
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48
+        with:
+          fail-on-severity: high
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -43,6 +102,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Python
@@ -62,15 +122,17 @@ jobs:
           python -m pytest -q
           python -m compileall app config.py wsgi.py
           python -m pip check
-          python -m bandit -q -ll -r app config.py wsgi.py
+          python -m bandit -q -ll -r app ops config.py wsgi.py
           python -m pip_audit --disable-pip --require-hashes -r requirements.lock
+          python -m pip_audit --disable-pip --require-hashes -r requirements-dev.lock
           python ops/security/check_dependency_locks.py
-          python ops/security/scan_repository_secrets.py
+          python ops/security/scan_repository_secrets.py --history
 
   image-test:
-    needs: test
+    if: github.event_name == 'pull_request'
+    needs: [test, workflow-security, dependency-review]
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     permissions:
       contents: read
     steps:
@@ -83,6 +145,7 @@ jobs:
         run: |
           shellcheck \
             ops/container/smoke-test.sh \
+            ops/container/validate-compose.sh \
             ops/deploy/bootstrap-container-ec2 \
             ops/deploy/sitbank-container-deploy \
             ops/deploy/sitbank-container-runtime \
@@ -91,80 +154,52 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5
 
-      - name: Build local smoke-test image
+      - name: Build local pull-request image
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf
         with:
           context: .
           load: true
-          tags: sitbank:smoke
+          tags: sitbank:pr
           build-args: |
             VCS_REF=${{ github.sha }}
             SOURCE_URL=${{ github.server_url }}/${{ github.repository }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Run PostgreSQL and Redis container smoke test
-        run: bash ops/container/smoke-test.sh sitbank:smoke
+      - name: Run container smoke and authenticated DAST tests
+        env:
+          RUN_ZAP_DAST: "true"
+        run: bash ops/container/smoke-test.sh sitbank:pr
 
-      - name: Scan fixable high and critical vulnerabilities
+      - name: Validate the production Compose model
+        run: bash ops/container/validate-compose.sh sitbank:pr
+
+      - name: Block all critical vulnerabilities
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
         with:
-          image-ref: sitbank:smoke
+          image-ref: sitbank:pr
+          format: table
+          exit-code: "1"
+          ignore-unfixed: false
+          severity: CRITICAL
+
+      - name: Block fixable high and critical vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: sitbank:pr
           format: table
           exit-code: "1"
           ignore-unfixed: true
           severity: HIGH,CRITICAL
 
-      - name: Create CI Compose smoke environment file
-        run: |
-          sudo install -d -m 0755 /etc/sitbank
-          sudo install -d -m 0700 /etc/sitbank/secrets
-          sudo tee /etc/sitbank/container.env > /dev/null <<'EOF'
-          APP_ENV=production
-          COMMON_PASSWORDS_MIN_ENTRIES=100000
-          COMMON_PASSWORDS_PATH=/run/config/common-passwords.txt
-          HIBP_CIRCUIT_FAILURE_THRESHOLD=3
-          HIBP_CIRCUIT_OPEN_SECONDS=300
-          HIBP_PASSWORD_CHECK_TIMEOUT_SECONDS=2.0
-          MFA_ISSUER_NAME=SITBank
-          PASSWORD_PBKDF2_ITERATIONS=600000
-          SESSION_HMAC_ACTIVE_KEY_ID=smoke
-          TRUSTED_PROXY_COUNT=1
-          WEBAUTHN_APPROVED_AAGUIDS_PATH=/run/config/fido-approved-aaguids.json
-          WEBAUTHN_MDS_CACHE_PATH=/run/config/fido-mds-cache.json
-          WEBAUTHN_RP_ID=sitbank.duckdns.org
-          WEBAUTHN_RP_ORIGIN=https://sitbank.duckdns.org
-          EOF
-          for name in \
-            secret_key \
-            wtf_csrf_secret_key \
-            session_hmac_keys_json \
-            database_url \
-            redis_url \
-            mfa_aes256_gcm_key_b64 \
-            password_pepper_b64; do
-            printf '%s' 'compose-validation-placeholder' \
-              | sudo tee "/etc/sitbank/secrets/${name}" > /dev/null
-            sudo chmod 0400 "/etc/sitbank/secrets/${name}"
-          done
-          sudo chmod 0600 /etc/sitbank/container.env
-
-      - name: Validate the production Compose model
-        env:
-          SITBANK_IMAGE: sitbank:smoke
-        run: >-
-          sudo env SITBANK_IMAGE="${SITBANK_IMAGE}"
-          docker compose --file compose.prod.yml config --quiet
-
   publish:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    needs: image-test
+    needs: [test, workflow-security]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
       packages: write
-      id-token: write
     outputs:
       digest: ${{ steps.push.outputs.digest }}
       repository: ${{ steps.image.outputs.repository }}
@@ -191,7 +226,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      - name: Build and push signed release candidate
+      - name: Build and push the release candidate once
         id: push
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf
         with:
@@ -207,12 +242,78 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  release-verify:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      id-token: write
+      packages: read
+    outputs:
+      digest: ${{ needs.publish.outputs.digest }}
+      repository: ${{ needs.publish.outputs.repository }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
+
+      - name: Log in to GHCR
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Pull and verify release identity
+        env:
+          IMAGE: ${{ needs.publish.outputs.repository }}@${{ needs.publish.outputs.digest }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          docker pull "${IMAGE}"
+          revision="$(
+            docker image inspect \
+              --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
+              "${IMAGE}"
+          )"
+          test "${revision}" = "${RELEASE_SHA}"
+
+      - name: Validate the production Compose model for the exact digest
+        env:
+          SITBANK_IMAGE: ${{ needs.publish.outputs.repository }}@${{ needs.publish.outputs.digest }}
+        run: bash ops/container/validate-compose.sh "${SITBANK_IMAGE}"
+
+      - name: Smoke-test and DAST-scan the exact published digest
+        env:
+          IMAGE: ${{ needs.publish.outputs.repository }}@${{ needs.publish.outputs.digest }}
+          RUN_ZAP_DAST: "true"
+        run: bash ops/container/smoke-test.sh "${IMAGE}"
+
+      - name: Block all critical vulnerabilities in the published digest
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: ${{ needs.publish.outputs.repository }}@${{ needs.publish.outputs.digest }}
+          format: table
+          exit-code: "1"
+          ignore-unfixed: false
+          severity: CRITICAL
+
+      - name: Block fixable high and critical vulnerabilities in the published digest
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: ${{ needs.publish.outputs.repository }}@${{ needs.publish.outputs.digest }}
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+
       - name: Install Cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
 
-      - name: Sign and verify the immutable digest
+      - name: Sign and verify the tested immutable digest
         env:
-          IMAGE: ${{ steps.image.outputs.repository }}@${{ steps.push.outputs.digest }}
+          IMAGE: ${{ needs.publish.outputs.repository }}@${{ needs.publish.outputs.digest }}
         run: |
           cosign sign --yes "${IMAGE}"
           cosign verify \
@@ -225,24 +326,24 @@ jobs:
       github.event_name != 'pull_request' &&
       github.ref == 'refs/heads/main' &&
       vars.PROD_DEPLOY_ENABLED == 'true'
-    needs: publish
+    needs: release-verify
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: read
+      id-token: write
       packages: read
     environment:
       name: production
       url: https://${{ vars.PROD_PUBLIC_HOST }}
     env:
       RELEASE_SHA: ${{ github.sha }}
-      IMAGE_DIGEST: ${{ needs.publish.outputs.digest }}
+      IMAGE_DIGEST: ${{ needs.release-verify.outputs.digest }}
       EC2_HOST: ${{ vars.EC2_HOST }}
       EC2_PORT: ${{ vars.EC2_PORT || '22' }}
       EC2_DEPLOY_USER: ${{ vars.EC2_DEPLOY_USER || 'sitbank-deploy' }}
       PROD_PUBLIC_HOST: ${{ vars.PROD_PUBLIC_HOST }}
       PROD_SESSION_HMAC_ACTIVE_KEY_ID: ${{ vars.PROD_SESSION_HMAC_ACTIVE_KEY_ID }}
-      PROD_SESSION_HMAC_PREVIOUS_KEY_ID: ${{ vars.PROD_SESSION_HMAC_PREVIOUS_KEY_ID }}
       PROD_PASSWORD_PBKDF2_ITERATIONS: ${{ vars.PROD_PASSWORD_PBKDF2_ITERATIONS || '600000' }}
       PROD_MFA_ISSUER_NAME: ${{ vars.PROD_MFA_ISSUER_NAME || 'SITBank' }}
     steps:
@@ -251,27 +352,26 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Render protected Compose runtime bundle
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+
+      - name: Render and sign non-secret runtime configuration
         run: |
           umask 077
           python ops/deploy/render_container_bundle.py \
+            --environment-only \
             --output "runtime-${RELEASE_SHA}"
           tar --create --file "runtime-${RELEASE_SHA}.tar" \
             --directory "runtime-${RELEASE_SHA}" .
           sha256sum "runtime-${RELEASE_SHA}.tar" \
             > "runtime-${RELEASE_SHA}.sha256"
+          cosign sign-blob --yes \
+            --bundle "runtime-${RELEASE_SHA}.sigstore.json" \
+            "runtime-${RELEASE_SHA}.tar"
           printf '%s\n%s\n' "${GITHUB_ACTOR}" "${GITHUB_TOKEN}" \
             > "registry-${RELEASE_SHA}.credentials"
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          PROD_SECRET_KEY: ${{ secrets.PROD_SECRET_KEY }}
-          PROD_WTF_CSRF_SECRET_KEY: ${{ secrets.PROD_WTF_CSRF_SECRET_KEY }}
-          PROD_SESSION_HMAC_ACTIVE_KEY_B64: ${{ secrets.PROD_SESSION_HMAC_ACTIVE_KEY_B64 }}
-          PROD_SESSION_HMAC_PREVIOUS_KEY_B64: ${{ secrets.PROD_SESSION_HMAC_PREVIOUS_KEY_B64 }}
-          PROD_DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
-          PROD_REDIS_URL: ${{ secrets.PROD_REDIS_URL }}
-          PROD_MFA_AES256_GCM_KEY_B64: ${{ secrets.PROD_MFA_AES256_GCM_KEY_B64 }}
-          PROD_PASSWORD_PEPPER_B64: ${{ secrets.PROD_PASSWORD_PEPPER_B64 }}
 
       - name: Configure verified SSH
         env:
@@ -284,13 +384,14 @@ jobs:
           printf '%s\n' "${EC2_KNOWN_HOSTS}" > ~/.ssh/known_hosts
           chmod 0600 ~/.ssh/known_hosts
 
-      - name: Upload private deployment inputs
+      - name: Upload authenticated deployment inputs
         run: |
           scp -P "${EC2_PORT}" -i ~/.ssh/id_ed25519 \
             -o BatchMode=yes -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
             "runtime-${RELEASE_SHA}.tar" \
             "runtime-${RELEASE_SHA}.sha256" \
+            "runtime-${RELEASE_SHA}.sigstore.json" \
             "registry-${RELEASE_SHA}.credentials" \
             "${EC2_DEPLOY_USER}@${EC2_HOST}:incoming/"
 
@@ -309,4 +410,5 @@ jobs:
             "runtime-${RELEASE_SHA}" \
             "runtime-${RELEASE_SHA}.tar" \
             "runtime-${RELEASE_SHA}.sha256" \
+            "runtime-${RELEASE_SHA}.sigstore.json" \
             "registry-${RELEASE_SHA}.credentials"

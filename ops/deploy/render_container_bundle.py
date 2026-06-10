@@ -54,10 +54,15 @@ def _quote_environment_value(name: str, value: str) -> str:
     return f"'{value}'"
 
 
-def _session_keyring() -> tuple[str, str]:
+def _active_key_id() -> str:
     active_id = _value("PROD_SESSION_HMAC_ACTIVE_KEY_ID")
     if not re.fullmatch(r"[A-Za-z0-9._-]{1,32}", active_id):
         raise RuntimeError("PROD_SESSION_HMAC_ACTIVE_KEY_ID is invalid")
+    return active_id
+
+
+def _session_keyring() -> tuple[str, str]:
+    active_id = _active_key_id()
     active_key = _validate_b64_key(
         "PROD_SESSION_HMAC_ACTIVE_KEY_B64",
         _value("PROD_SESSION_HMAC_ACTIVE_KEY_B64"),
@@ -83,11 +88,30 @@ def _session_keyring() -> tuple[str, str]:
     return active_id, json.dumps(keyring, separators=(",", ":"), sort_keys=True)
 
 
-def build_container_bundle() -> tuple[dict[str, str], dict[str, str]]:
+def build_container_environment() -> dict[str, str]:
     public_host = _value("PROD_PUBLIC_HOST")
     if not re.fullmatch(r"[A-Za-z0-9.-]+", public_host):
         raise RuntimeError("PROD_PUBLIC_HOST must be a bare hostname")
+    environment = {
+        "APP_ENV": "production",
+        "COMMON_PASSWORDS_PATH": "/run/config/common-passwords.txt",
+        "MFA_ISSUER_NAME": _value("PROD_MFA_ISSUER_NAME", default="SITBank"),
+        "SESSION_HMAC_ACTIVE_KEY_ID": _active_key_id(),
+        "WEBAUTHN_APPROVED_AAGUIDS_PATH": "/run/config/fido-approved-aaguids.json",
+        "WEBAUTHN_MDS_CACHE_PATH": "/run/config/fido-mds-cache.json",
+        "WEBAUTHN_RP_ID": public_host,
+        "WEBAUTHN_RP_ORIGIN": f"https://{public_host}",
+    }
+    for name, default in NON_SECRET_DEFAULTS.items():
+        environment[name] = _value(f"PROD_{name}", default=default)
+    return environment
+
+
+def build_container_bundle() -> tuple[dict[str, str], dict[str, str]]:
+    environment = build_container_environment()
     active_key_id, keyring = _session_keyring()
+    if environment["SESSION_HMAC_ACTIVE_KEY_ID"] != active_key_id:
+        raise RuntimeError("Session HMAC active key identifiers do not match")
 
     secrets = {
         target: _value(source)
@@ -102,27 +126,20 @@ def build_container_bundle() -> tuple[dict[str, str], dict[str, str]]:
         secrets["password_pepper_b64"],
     )
     secrets["session_hmac_keys_json"] = keyring
-
-    environment = {
-        "APP_ENV": "production",
-        "COMMON_PASSWORDS_PATH": "/run/config/common-passwords.txt",
-        "MFA_ISSUER_NAME": _value("PROD_MFA_ISSUER_NAME", default="SITBank"),
-        "SESSION_HMAC_ACTIVE_KEY_ID": active_key_id,
-        "WEBAUTHN_APPROVED_AAGUIDS_PATH": "/run/config/fido-approved-aaguids.json",
-        "WEBAUTHN_MDS_CACHE_PATH": "/run/config/fido-mds-cache.json",
-        "WEBAUTHN_RP_ID": public_host,
-        "WEBAUTHN_RP_ORIGIN": f"https://{public_host}",
-    }
-    for name, default in NON_SECRET_DEFAULTS.items():
-        environment[name] = _value(f"PROD_{name}", default=default)
     return environment, secrets
 
 
-def write_container_bundle(output_dir: Path) -> None:
-    environment, secrets = build_container_bundle()
+def write_container_bundle(
+    output_dir: Path,
+    *,
+    include_secrets: bool = True,
+) -> None:
+    if include_secrets:
+        environment, secrets = build_container_bundle()
+    else:
+        environment = build_container_environment()
+        secrets = {}
     output_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
-    secret_dir = output_dir / "secrets"
-    secret_dir.mkdir(mode=0o700)
 
     environment_text = "".join(
         f"{name}={_quote_environment_value(name, value)}\n"
@@ -132,17 +149,28 @@ def write_container_bundle(output_dir: Path) -> None:
     environment_path.write_text(environment_text, encoding="utf-8", newline="\n")
     environment_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
 
-    for name, value in secrets.items():
-        path = secret_dir / name
-        path.write_text(value, encoding="utf-8", newline="")
-        path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    if secrets:
+        secret_dir = output_dir / "secrets"
+        secret_dir.mkdir(mode=0o700)
+        for name, value in secrets.items():
+            path = secret_dir / name
+            path.write_text(value, encoding="utf-8", newline="")
+            path.chmod(stat.S_IRUSR | stat.S_IWUSR)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--environment-only",
+        action="store_true",
+        help="write only non-secret container configuration",
+    )
     args = parser.parse_args()
-    write_container_bundle(args.output)
+    write_container_bundle(
+        args.output,
+        include_secrets=not args.environment_only,
+    )
 
 
 if __name__ == "__main__":
