@@ -11,7 +11,7 @@ import pytest
 os.environ.setdefault("SECRET_KEY", "test-secret-key-that-is-long-enough-for-config")
 os.environ.setdefault(
     "DATABASE_URL",
-    "postgresql+psycopg2://user:pass@127.0.0.1:5432/scamcentre_test",
+    "postgresql+psycopg2://user:pass@127.0.0.1:5432/sitbank_test",
 )
 os.environ.setdefault("REDIS_URL", "redis://:pass@127.0.0.1:6379/15")
 os.environ.setdefault(
@@ -39,10 +39,10 @@ class TestConfig:
     PASSWORD_PEPPER_B64 = os.environ["PASSWORD_PEPPER_B64"]
     PASSWORD_PBKDF2_ITERATIONS = int(os.environ["PASSWORD_PBKDF2_ITERATIONS"])
     PASSWORD_MAX_CHARS = 256
-    MFA_ISSUER_NAME = "O$P$ Bank Test"
+    MFA_ISSUER_NAME = "SITBank Test"
     WEBAUTHN_RP_ID = os.environ["WEBAUTHN_RP_ID"]
     WEBAUTHN_RP_ORIGIN = os.environ["WEBAUTHN_RP_ORIGIN"]
-    WEBAUTHN_RP_NAME = "O$P$ Bank Test"
+    WEBAUTHN_RP_NAME = "SITBank Test"
     WEBAUTHN_TIMEOUT_MS = 60_000
     WEBAUTHN_REQUIRED_CREDENTIALS = 2
     WEBAUTHN_ENFORCE_KEY_SETUP = False

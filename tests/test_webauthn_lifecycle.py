@@ -135,7 +135,7 @@ def test_webauthn_options_fail_closed_without_exact_origin(client):
     old_origin = client.post(
         "/auth/webauthn/register/options",
         json={"label": "Primary YubiKey"},
-        headers={"Origin": "https://scamcentre.duckdns.org"},
+        headers={"Origin": "https://sitbank.duckdns.org"},
     )
 
     assert missing_origin.status_code == 403
@@ -324,7 +324,7 @@ def test_unreadable_fido_metadata_file_is_controlled_error(app, monkeypatch):
 
     with app.app_context():
         with pytest.raises(FidoMetadataError, match="not readable"):
-            _read_json(Path("/etc/scamcentre/fido-mds-cache.json"))
+            _read_json(Path("/etc/sitbank/fido-mds-cache.json"))
 
 
 def test_invalid_fido_metadata_root_certificate_is_controlled_error(app):

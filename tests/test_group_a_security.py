@@ -1092,7 +1092,7 @@ def test_web_terminating_current_session_redirects_to_login_page(client):
     assert response.status_code == 302
     assert response.headers["Location"].endswith("/login")
     assert login_page.status_code == 200
-    assert b"Log in to O$P$ Bank" in login_page.data
+    assert b"Log in to SITBank" in login_page.data
     assert b"Session revoked" not in login_page.data
 
 

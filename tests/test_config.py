@@ -29,7 +29,7 @@ def test_webauthn_origin_must_be_https_and_match_rp_id(monkeypatch):
     with pytest.raises(RuntimeError, match="HTTPS"):
         _required_webauthn_origin("WEBAUTHN_RP_ORIGIN", rp_id="sitbank.duckdns.org")
 
-    monkeypatch.setenv("WEBAUTHN_RP_ORIGIN", "https://scamcentre.duckdns.org")
+    monkeypatch.setenv("WEBAUTHN_RP_ORIGIN", "https://sitbank.duckdns.org")
 
     with pytest.raises(RuntimeError, match="hostname must match"):
         _required_webauthn_origin("WEBAUTHN_RP_ORIGIN", rp_id="sitbank.duckdns.org")
