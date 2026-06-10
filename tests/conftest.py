@@ -23,7 +23,7 @@ os.environ.setdefault(
 )
 os.environ.setdefault(
     "DATABASE_URL",
-    "postgresql+psycopg2://user:pass@127.0.0.1:5432/scamcentre_test",
+    "postgresql+psycopg2://user:pass@127.0.0.1:5432/sitbank_test",
 )
 os.environ.setdefault("REDIS_URL", "redis://:pass@127.0.0.1:6379/15")
 os.environ.setdefault(
