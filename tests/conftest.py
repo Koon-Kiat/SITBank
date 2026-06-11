@@ -50,6 +50,12 @@ class TestConfig:
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     REDIS_URL = os.environ["REDIS_URL"]
+    REDIS_PROTOCOL = 2
+    REDIS_LEGACY_RESPONSES = True
+    REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS = 2.0
+    REDIS_SOCKET_TIMEOUT_SECONDS = 5.0
+    REDIS_HEALTH_CHECK_INTERVAL_SECONDS = 30
+    REDIS_MAX_CONNECTIONS = 100
     MFA_AES256_GCM_KEY_B64 = os.environ["MFA_AES256_GCM_KEY_B64"]
     PASSWORD_PEPPER_B64 = os.environ["PASSWORD_PEPPER_B64"]
     PASSWORD_PBKDF2_ITERATIONS = int(os.environ["PASSWORD_PBKDF2_ITERATIONS"])
@@ -112,7 +118,7 @@ def app(monkeypatch):
     fake_redis = fakeredis.FakeRedis(decode_responses=True)
     fake_session_redis = fakeredis.FakeRedis(decode_responses=False)
 
-    def fake_from_url(url, decode_responses=False):
+    def fake_from_url(url, decode_responses=False, **_options):
         return fake_redis if decode_responses else fake_session_redis
 
     monkeypatch.setattr(app_module, "Redis", type("FakeRedisFactory", (), {"from_url": staticmethod(fake_from_url)}))

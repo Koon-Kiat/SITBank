@@ -159,7 +159,7 @@ def _record_hibp_failure() -> None:
     attempts, _expiry_set = pipeline.execute()
     threshold = int(current_app.config.get("HIBP_CIRCUIT_FAILURE_THRESHOLD", 3))
     if int(attempts) >= threshold:
-        redis_client.setex(HIBP_CIRCUIT_OPEN_KEY, open_seconds, "1")
+        redis_client.set(HIBP_CIRCUIT_OPEN_KEY, "1", ex=open_seconds)
 
 
 def _clear_hibp_failures() -> None:

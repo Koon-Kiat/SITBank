@@ -10,6 +10,7 @@ import config
 from config import (
     _required_b64_32_bytes,
     _required_env_or_file,
+    _required_url,
     _required_session_hmac_keys,
     _required_webauthn_origin,
     _required_webauthn_rp_id,
@@ -44,6 +45,45 @@ def test_webauthn_origin_must_be_https_and_match_rp_id(monkeypatch):
 
     with pytest.raises(RuntimeError, match="hostname must match"):
         _required_webauthn_origin("WEBAUTHN_RP_ORIGIN", rp_id="sitbank.duckdns.org")
+
+
+def test_redis_url_cannot_override_application_connection_policy(monkeypatch):
+    monkeypatch.setenv(
+        "REDIS_URL",
+        "redis://:secret@127.0.0.1:6379/0?protocol=3",
+    )
+
+    with pytest.raises(RuntimeError, match="must not include query parameters"):
+        _required_url(
+            "REDIS_URL",
+            schemes={"redis", "rediss"},
+            require_password=True,
+        )
+
+
+def test_redis_connection_options_preserve_redis7_compatible_behavior():
+    from app import redis_connection_options
+
+    options = redis_connection_options(
+        {
+            "REDIS_PROTOCOL": 2,
+            "REDIS_LEGACY_RESPONSES": True,
+            "REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS": 2.0,
+            "REDIS_SOCKET_TIMEOUT_SECONDS": 5.0,
+            "REDIS_HEALTH_CHECK_INTERVAL_SECONDS": 30,
+            "REDIS_MAX_CONNECTIONS": 100,
+        }
+    )
+
+    assert options["protocol"] == 2
+    assert options["legacy_responses"] is True
+    assert options["socket_connect_timeout"] == 2.0
+    assert options["socket_timeout"] == 5.0
+    assert options["socket_keepalive"] is True
+    assert options["health_check_interval"] == 30
+    assert options["max_connections"] == 100
+    assert options["retry_on_timeout"] is False
+    assert options["retry"].get_retries() == 0
 
 
 def test_session_hmac_keyring_requires_active_32_byte_key(monkeypatch):
