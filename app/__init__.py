@@ -173,6 +173,8 @@ def register_no_store_headers(app: Flask) -> None:
     def no_store_authenticated_responses(response):
         from flask import session
 
+        response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
+
         if session.get("user_id") or session.get("pending_mfa_user_id"):
             response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
             response.headers["Pragma"] = "no-cache"

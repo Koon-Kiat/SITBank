@@ -292,9 +292,18 @@ class Config:
     TALISMAN_FORCE_HTTPS = True
     TALISMAN_CONTENT_SECURITY_POLICY = {
         "default-src": "'self'",
+        "base-uri": "'self'",
+        "object-src": "'none'",
+        "frame-ancestors": "'none'",
+        "form-action": "'self'",
         "img-src": ["'self'", "data:"],
         "script-src": "'self'",
+        "script-src-attr": "'none'",
         "style-src": "'self'",
+        "style-src-attr": "'none'",
+        "connect-src": "'self'",
+        "font-src": "'self'",
+        "manifest-src": "'self'",
     }
 
     TRUSTED_PROXY_COUNT = int(os.getenv("TRUSTED_PROXY_COUNT", "1"))
