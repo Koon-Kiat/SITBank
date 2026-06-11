@@ -575,16 +575,16 @@ jobs:
           python ops/deploy/render_container_bundle.py \
             --prefix STAGING \
             --environment-only \
-            --output "runtime-${RELEASE_SHA}"
-          tar --create --file "runtime-${RELEASE_SHA}.tar" \
-            --directory "runtime-${RELEASE_SHA}" .
-          sha256sum "runtime-${RELEASE_SHA}.tar" \
-            > "runtime-${RELEASE_SHA}.sha256"
+            --output "runtime-staging-${RELEASE_SHA}"
+          tar --create --file "runtime-staging-${RELEASE_SHA}.tar" \
+            --directory "runtime-staging-${RELEASE_SHA}" .
+          sha256sum "runtime-staging-${RELEASE_SHA}.tar" \
+            > "runtime-staging-${RELEASE_SHA}.sha256"
           cosign sign-blob --yes \
-            --bundle "runtime-${RELEASE_SHA}.sigstore.json" \
-            "runtime-${RELEASE_SHA}.tar"
+            --bundle "runtime-staging-${RELEASE_SHA}.sigstore.json" \
+            "runtime-staging-${RELEASE_SHA}.tar"
           printf '%s\n%s\n' "${GITHUB_ACTOR}" "${GITHUB_TOKEN}" \
-            > "registry-${RELEASE_SHA}.credentials"
+            > "registry-staging-${RELEASE_SHA}.credentials"
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
@@ -604,10 +604,10 @@ jobs:
           scp -P "${REMOTE_PORT}" -i ~/.ssh/id_ed25519 \
             -o BatchMode=yes -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
-            "runtime-${RELEASE_SHA}.tar" \
-            "runtime-${RELEASE_SHA}.sha256" \
-            "runtime-${RELEASE_SHA}.sigstore.json" \
-            "registry-${RELEASE_SHA}.credentials" \
+            "runtime-staging-${RELEASE_SHA}.tar" \
+            "runtime-staging-${RELEASE_SHA}.sha256" \
+            "runtime-staging-${RELEASE_SHA}.sigstore.json" \
+            "registry-staging-${RELEASE_SHA}.credentials" \
             "${REMOTE_USER}@${REMOTE_HOST}:incoming/"
 
       - name: Deploy verified image digest
@@ -616,17 +616,17 @@ jobs:
             -o BatchMode=yes -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
             "${REMOTE_USER}@${REMOTE_HOST}" \
-            "sudo /usr/local/sbin/sitbank-container-deploy '${RELEASE_SHA}' '${IMAGE_DIGEST}'"
+            "sudo /usr/local/sbin/sitbank-container-deploy staging '${RELEASE_SHA}' '${IMAGE_DIGEST}'"
 
       - name: Remove deployment credentials and bundles
         if: always()
         run: |
           rm -rf ~/.ssh/id_ed25519 \
-            "runtime-${RELEASE_SHA}" \
-            "runtime-${RELEASE_SHA}.tar" \
-            "runtime-${RELEASE_SHA}.sha256" \
-            "runtime-${RELEASE_SHA}.sigstore.json" \
-            "registry-${RELEASE_SHA}.credentials"
+            "runtime-staging-${RELEASE_SHA}" \
+            "runtime-staging-${RELEASE_SHA}.tar" \
+            "runtime-staging-${RELEASE_SHA}.sha256" \
+            "runtime-staging-${RELEASE_SHA}.sigstore.json" \
+            "registry-staging-${RELEASE_SHA}.credentials"
 
   deploy-production:
     if: >-

@@ -30,6 +30,43 @@ NON_SECRET_DEFAULTS = {
 
 DEPLOYMENT_PREFIXES = {"PROD", "STAGING"}
 
+DEPLOYMENT_PROFILES = {
+    "PROD": {
+        "APP_BIND_HOST": "127.0.0.1",
+        "APP_BIND_PORT": "5000",
+        "APP_CONTAINER_NAME": "sitbank-app",
+        "COMPOSE_DIR": "/opt/sitbank",
+        "COMPOSE_FILE": "/opt/sitbank/compose.yml",
+        "COMPOSE_PROJECT_NAME": "sitbank",
+        "CONFIG_ROOT": "/etc/sitbank",
+        "DEPLOYMENT_TARGET": "production",
+        "POSTGRES_CONTAINER_NAME": "none",
+        "POSTGRES_VOLUME_NAME": "none",
+        "REDIS_CONTAINER_NAME": "none",
+        "REDIS_VOLUME_NAME": "none",
+        "SECRET_ROOT": "/etc/sitbank/secrets",
+        "STATE_DIR": "/var/lib/sitbank-container",
+        "SYSTEMD_SERVICE": "sitbank-container.service",
+    },
+    "STAGING": {
+        "APP_BIND_HOST": "127.0.0.1",
+        "APP_BIND_PORT": "5001",
+        "APP_CONTAINER_NAME": "sitbank-staging-app",
+        "COMPOSE_DIR": "/opt/sitbank-staging",
+        "COMPOSE_FILE": "/opt/sitbank-staging/compose.yml",
+        "COMPOSE_PROJECT_NAME": "sitbank-staging",
+        "CONFIG_ROOT": "/etc/sitbank-staging",
+        "DEPLOYMENT_TARGET": "staging",
+        "POSTGRES_CONTAINER_NAME": "sitbank-staging-postgres",
+        "POSTGRES_VOLUME_NAME": "sitbank-staging-postgres-data",
+        "REDIS_CONTAINER_NAME": "sitbank-staging-redis",
+        "REDIS_VOLUME_NAME": "sitbank-staging-redis-data",
+        "SECRET_ROOT": "/etc/sitbank-staging/secrets",
+        "STATE_DIR": "/var/lib/sitbank-staging-container",
+        "SYSTEMD_SERVICE": "sitbank-staging-container.service",
+    },
+}
+
 
 def _value(name: str, *, default: str | None = None) -> str:
     value = os.environ.get(name, default or "")
@@ -124,6 +161,13 @@ def build_container_environment(prefix: str = "PROD") -> dict[str, str]:
     return environment
 
 
+def build_deployment_environment(prefix: str = "PROD") -> dict[str, str]:
+    _validate_prefix(prefix)
+    environment = dict(DEPLOYMENT_PROFILES[prefix])
+    environment["PUBLIC_HOST"] = _value(_prefixed(prefix, "PUBLIC_HOST"))
+    return environment
+
+
 def build_container_bundle(
     prefix: str = "PROD",
 ) -> tuple[dict[str, str], dict[str, str]]:
@@ -169,6 +213,14 @@ def write_container_bundle(
     environment_path = output_dir / "container.env"
     environment_path.write_text(environment_text, encoding="utf-8", newline="\n")
     environment_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
+    deployment_text = "".join(
+        f"{name}={_quote_environment_value(name, value)}\n"
+        for name, value in sorted(build_deployment_environment(prefix).items())
+    )
+    deployment_path = output_dir / "deployment.env"
+    deployment_path.write_text(deployment_text, encoding="utf-8", newline="\n")
+    deployment_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
 
     if secrets:
         secret_dir = output_dir / "secrets"

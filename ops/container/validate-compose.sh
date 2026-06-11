@@ -1,40 +1,31 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-readonly IMAGE="${1:?Usage: validate-compose.sh IMAGE}"
+readonly IMAGE="${1:?Usage: validate-compose.sh IMAGE [production|staging|all]}"
+readonly TARGET="${2:-all}"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-sudo install -d -m 0755 /etc/sitbank
-sudo install -d -m 0700 /etc/sitbank/secrets
-sudo tee /etc/sitbank/container.env > /dev/null <<'EOF'
-APP_ENV=production
-COMMON_PASSWORDS_MIN_ENTRIES=100000
-COMMON_PASSWORDS_PATH=/run/config/common-passwords.txt
-HIBP_CIRCUIT_FAILURE_THRESHOLD=3
-HIBP_CIRCUIT_OPEN_SECONDS=300
-HIBP_PASSWORD_CHECK_TIMEOUT_SECONDS=2.0
-MFA_ISSUER_NAME=SITBank
-PASSWORD_PBKDF2_ITERATIONS=600000
-SESSION_HMAC_ACTIVE_KEY_ID=smoke
-TRUSTED_PROXY_COUNT=1
-WEBAUTHN_APPROVED_AAGUIDS_PATH=/run/config/fido-approved-aaguids.json
-WEBAUTHN_MDS_CACHE_PATH=/run/config/fido-mds-cache.json
-WEBAUTHN_RP_ID=sitbank.duckdns.org
-WEBAUTHN_RP_ORIGIN=https://sitbank.duckdns.org
-EOF
-for name in \
-    secret_key \
-    wtf_csrf_secret_key \
-    session_hmac_keys_json \
-    database_url \
-    redis_url \
-    mfa_aes256_gcm_key_b64 \
-    password_pepper_b64; do
-    printf '%s' 'compose-validation-placeholder' \
-        | sudo tee "/etc/sitbank/secrets/${name}" > /dev/null
-    sudo chmod 0400 "/etc/sitbank/secrets/${name}"
-done
-sudo chmod 0600 /etc/sitbank/container.env
+case "${TARGET}" in
+    production|staging|all)
+        ;;
+    *)
+        echo "Compose validation target must be production, staging, or all" >&2
+        exit 2
+        ;;
+esac
 
-sudo env SITBANK_IMAGE="${IMAGE}" \
-    docker compose --file "${repo_root}/compose.prod.yml" config --quiet
+validate_model() {
+    local project_name="$1"
+    local compose_file="$2"
+    SITBANK_IMAGE="${IMAGE}" docker compose \
+        --project-name "${project_name}" \
+        --file "${compose_file}" \
+        config --quiet --no-env-resolution --no-path-resolution
+}
+
+if [[ "${TARGET}" == "production" || "${TARGET}" == "all" ]]; then
+    validate_model sitbank "${repo_root}/compose.prod.yml"
+fi
+if [[ "${TARGET}" == "staging" || "${TARGET}" == "all" ]]; then
+    validate_model sitbank-staging "${repo_root}/compose.staging.yml"
+fi

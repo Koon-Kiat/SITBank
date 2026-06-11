@@ -13,6 +13,7 @@ from ops.deploy.import_legacy_env import import_legacy_environment
 from ops.deploy.render_container_bundle import (
     build_container_bundle,
     build_container_environment,
+    build_deployment_environment,
     write_container_bundle,
 )
 
@@ -76,6 +77,53 @@ def test_container_bundle_accepts_staging_prefix(monkeypatch):
     assert secrets["database_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_URL"]
 
 
+def test_deployment_profiles_keep_production_and_staging_isolated(monkeypatch):
+    _set_deployment_values(monkeypatch)
+    _set_prefixed_deployment_values(
+        monkeypatch,
+        "STAGING",
+        "staging-sitbank.duckdns.org",
+    )
+
+    production = build_deployment_environment("PROD")
+    staging = build_deployment_environment("STAGING")
+
+    assert production["DEPLOYMENT_TARGET"] == "production"
+    assert production["CONFIG_ROOT"] == "/etc/sitbank"
+    assert production["COMPOSE_DIR"] == "/opt/sitbank"
+    assert production["SYSTEMD_SERVICE"] == "sitbank-container.service"
+    assert production["COMPOSE_PROJECT_NAME"] == "sitbank"
+    assert production["APP_CONTAINER_NAME"] == "sitbank-app"
+    assert production["APP_BIND_PORT"] == "5000"
+    assert production["POSTGRES_VOLUME_NAME"] == "none"
+    assert production["REDIS_VOLUME_NAME"] == "none"
+
+    assert staging["DEPLOYMENT_TARGET"] == "staging"
+    assert staging["CONFIG_ROOT"] == "/etc/sitbank-staging"
+    assert staging["SECRET_ROOT"] == "/etc/sitbank-staging/secrets"
+    assert staging["COMPOSE_DIR"] == "/opt/sitbank-staging"
+    assert staging["SYSTEMD_SERVICE"] == "sitbank-staging-container.service"
+    assert staging["COMPOSE_PROJECT_NAME"] == "sitbank-staging"
+    assert staging["APP_CONTAINER_NAME"] == "sitbank-staging-app"
+    assert staging["APP_BIND_PORT"] == "5001"
+    assert staging["POSTGRES_CONTAINER_NAME"] == "sitbank-staging-postgres"
+    assert staging["REDIS_CONTAINER_NAME"] == "sitbank-staging-redis"
+    assert staging["POSTGRES_VOLUME_NAME"] == "sitbank-staging-postgres-data"
+    assert staging["REDIS_VOLUME_NAME"] == "sitbank-staging-redis-data"
+    assert staging["PUBLIC_HOST"] == "staging-sitbank.duckdns.org"
+
+    for key in (
+        "CONFIG_ROOT",
+        "SECRET_ROOT",
+        "COMPOSE_DIR",
+        "SYSTEMD_SERVICE",
+        "COMPOSE_PROJECT_NAME",
+        "APP_CONTAINER_NAME",
+        "APP_BIND_PORT",
+    ):
+        assert production[key] != staging[key]
+
+
 def test_container_bundle_rejects_unknown_prefix(monkeypatch):
     _set_deployment_values(monkeypatch)
 
@@ -137,6 +185,7 @@ def test_environment_only_bundle_does_not_export_long_lived_secrets(
 
     assert environment["SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06"
     assert (output / "container.env").is_file()
+    assert (output / "deployment.env").is_file()
     assert not (output / "secrets").exists()
 
 
@@ -161,7 +210,11 @@ def test_environment_only_bundle_accepts_staging_prefix(monkeypatch, tmp_path):
     write_container_bundle(output, "STAGING", include_secrets=False)
 
     environment = (output / "container.env").read_text(encoding="utf-8")
+    deployment = (output / "deployment.env").read_text(encoding="utf-8")
     assert "WEBAUTHN_RP_ID='staging.sitbank.example'" in environment
+    assert "APP_BIND_PORT='5001'" in deployment
+    assert "COMPOSE_PROJECT_NAME='sitbank-staging'" in deployment
+    assert "CONFIG_ROOT='/etc/sitbank-staging'" in deployment
     assert not (output / "secrets").exists()
 
 
@@ -222,12 +275,16 @@ def test_legacy_environment_import_seeds_root_runtime_without_printing_values(
 def test_dockerfile_and_compose_enforce_hardened_runtime():
     dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
     compose_text = Path("compose.prod.yml").read_text(encoding="utf-8")
+    staging_compose_text = Path("compose.staging.yml").read_text(encoding="utf-8")
     smoke_test = Path("ops/container/smoke-test.sh").read_text(encoding="utf-8")
     compose_validation = Path(
         "ops/container/validate-compose.sh"
     ).read_text(encoding="utf-8")
     compose = yaml.safe_load(compose_text)
     app = compose["services"]["app"]
+    staging_compose = yaml.safe_load(staging_compose_text)
+    staging_services = staging_compose["services"]
+    staging_app = staging_services["app"]
 
     assert compose["name"] == "sitbank"
     assert (
@@ -273,9 +330,51 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "create_dast_session.py" in smoke_test
     assert "docker compose" in compose_validation
     assert "SITBANK_IMAGE" in compose_validation
+    assert "compose.prod.yml" in compose_validation
+    assert "compose.staging.yml" in compose_validation
+    assert "production|staging|all" in compose_validation
+    assert "--no-env-resolution" in compose_validation
+    assert "--no-path-resolution" in compose_validation
+    assert "sudo" not in compose_validation
+    assert "/etc/sitbank" not in compose_validation
     assert "docker port" in smoke_test
     assert "55432" not in smoke_test
     assert "56379" not in smoke_test
+
+    assert staging_compose["name"] == "sitbank-staging"
+    assert set(staging_services) == {"app", "postgres", "redis"}
+    assert staging_app["container_name"] == "sitbank-staging-app"
+    assert staging_app["ports"] == ["127.0.0.1:5001:5000"]
+    assert "network_mode" not in staging_app
+    assert staging_app["read_only"] is True
+    assert staging_app["user"] == "10001:10001"
+    assert staging_app["cap_drop"] == ["ALL"]
+    assert "no-new-privileges:true" in staging_app["security_opt"]
+    assert staging_app["env_file"] == ["/etc/sitbank-staging/container.env"]
+    assert all(
+        volume["source"].startswith("/etc/sitbank-staging/")
+        for volume in staging_app["volumes"]
+    )
+    assert all(
+        secret["file"].startswith("/etc/sitbank-staging/secrets/")
+        for secret in staging_compose["secrets"].values()
+    )
+    assert staging_services["postgres"]["container_name"] == (
+        "sitbank-staging-postgres"
+    )
+    assert staging_services["redis"]["container_name"] == "sitbank-staging-redis"
+    assert "ports" not in staging_services["postgres"]
+    assert "ports" not in staging_services["redis"]
+    assert staging_compose["volumes"]["sitbank-staging-postgres-data"]["name"] == (
+        "sitbank-staging-postgres-data"
+    )
+    assert staging_compose["volumes"]["sitbank-staging-redis-data"]["name"] == (
+        "sitbank-staging-redis-data"
+    )
+    assert "/etc/sitbank-staging" not in compose_text
+    assert "/etc/sitbank/" not in staging_compose_text
+    assert "sitbank-staging-postgres-data" not in compose_text
+    assert "sitbank-staging-redis-data" not in compose_text
 
     app_python = "\n".join(
         path.read_text(encoding="utf-8")
@@ -412,6 +511,16 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "--prefix STAGING" in workflow_text
     assert "--prefix PROD" in workflow_text
     assert "sitbank-container-deploy" in workflow_text
+    assert "runtime-staging-${RELEASE_SHA}" in workflow_text
+    assert "registry-staging-${RELEASE_SHA}.credentials" in workflow_text
+    assert (
+        "sitbank-container-deploy staging '${RELEASE_SHA}' '${IMAGE_DIGEST}'"
+        in workflow_text
+    )
+    assert (
+        "sitbank-container-deploy '${RELEASE_SHA}' '${IMAGE_DIGEST}'"
+        in workflow_text
+    )
     assert "sha256:[0-9a-f]{64}" in deploy_script
     assert "COSIGN_CERTIFICATE_IDENTITY" in deploy_script
     assert "org.opencontainers.image.revision" in deploy_script
@@ -424,14 +533,31 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "load_runtime_secrets" not in deploy_script
     assert "SITBANK_SECRET_KEY" not in deploy_script
     assert "SITBANK_SECRET_KEY" not in runtime_script
+    assert "/etc/sitbank-staging/deploy.conf" in deploy_script
+    assert "/opt/sitbank-staging/compose.yml" in deploy_script
+    assert "/var/lib/sitbank-staging-container" in deploy_script
+    assert "sitbank-staging-container.service" in deploy_script
+    assert "sitbank-staging-postgres-data" in deploy_script
+    assert "sitbank-staging-redis-data" in deploy_script
+    assert "Staging secret must not reuse the production" in deploy_script
+    assert "hostname != \"postgres\"" in deploy_script
+    assert "hostname != \"redis\"" in deploy_script
+    assert "sitbank-container-runtime staging up" in Path(
+        "ops/systemd/sitbank-staging-container.service"
+    ).read_text(encoding="utf-8")
+    assert "--project-name \"${COMPOSE_PROJECT}\"" in runtime_script
     assert "gpasswd --delete" in bootstrap
     assert "docker.sock" in bootstrap
     assert "COSIGN_SHA256" in bootstrap
     assert "/opt/sitbank" in bootstrap
     assert "/etc/sitbank" in bootstrap
     assert "/var/lib/sitbank-container" in bootstrap
+    assert "/opt/sitbank-staging" in bootstrap
+    assert "/etc/sitbank-staging" in bootstrap
+    assert "/var/lib/sitbank-staging-container" in bootstrap
     assert "sitbank-deploy" in bootstrap
     assert "sitbank-container.service" in bootstrap
+    assert "sitbank-staging-container.service" in bootstrap
 
 
 def test_trivy_exception_is_narrow_documented_and_temporary():
@@ -493,9 +619,12 @@ def test_codeowners_and_codeql_cover_security_sensitive_changes():
         "/.github/workflows/",
         "/Dockerfile",
         "/compose.prod.yml",
+        "/compose.staging.yml",
         "/requirements.lock",
         "/requirements-dev.lock",
         "/ops/deploy/",
+        "/ops/nginx/",
+        "/ops/nginx-proxy-headers.conf",
         "/ops/security/",
     ):
         assert protected_path in codeowners
@@ -523,7 +652,17 @@ def test_only_sitbank_container_deployment_units_are_active():
     assert Path("ops/deploy/sitbank-container-runtime").exists()
     assert Path("ops/deploy/sitbank-database-cutover").exists()
     assert Path("ops/systemd/sitbank-container.service").exists()
+    assert Path("ops/systemd/sitbank-staging-container.service").exists()
     assert Path("ops/sudoers/sitbank-container-deploy").exists()
+
+
+def test_staging_nginx_routes_only_to_the_staging_loopback_port():
+    nginx = Path("ops/nginx/sitbank-staging.conf").read_text(encoding="utf-8")
+
+    assert "server_name staging-sitbank.duckdns.org;" in nginx
+    assert "proxy_pass http://127.0.0.1:5001;" in nginx
+    assert "127.0.0.1:5000" not in nginx
+    assert "server_name sitbank.duckdns.org;" not in nginx
 
 
 def test_dependency_manifests_have_one_hashed_lockfile_source_of_truth():

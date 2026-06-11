@@ -1,12 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-readonly DEPLOY_CONFIG="/etc/sitbank/deploy.conf"
-readonly COMPOSE_FILE="/opt/sitbank/compose.yml"
-readonly SECRET_DIR="/etc/sitbank/secrets"
-readonly CONTAINER_ENV="/etc/sitbank/container.env"
-readonly STATE_DIR="/var/lib/sitbank-container"
-readonly STATE_FILE="${STATE_DIR}/current"
 readonly DEPLOY_USER="sitbank-deploy"
 readonly INCOMING_DIR="/home/${DEPLOY_USER}/incoming"
 
@@ -14,18 +8,78 @@ if [[ "${EUID}" -ne 0 ]]; then
     echo "Deployment wrapper must run as root" >&2
     exit 1
 fi
-if [[ ! -r "${DEPLOY_CONFIG}" ]]; then
-    echo "Missing root-owned deployment configuration" >&2
+
+target="production"
+if [[ "$#" -eq 3 ]]; then
+    target="${1:-}"
+    shift
+elif [[ "$#" -ne 2 ]]; then
+    echo "Usage: sitbank-container-deploy [staging|production] COMMIT_SHA SHA256_DIGEST" >&2
+    exit 2
+fi
+
+case "${target}" in
+    production)
+        readonly DEPLOY_CONFIG="/etc/sitbank/deploy.conf"
+        readonly CONFIG_ROOT="/etc/sitbank"
+        readonly COMPOSE_DIR="/opt/sitbank"
+        readonly COMPOSE_FILE="/opt/sitbank/compose.yml"
+        readonly SECRET_DIR="/etc/sitbank/secrets"
+        readonly CONTAINER_ENV="/etc/sitbank/container.env"
+        readonly STATE_DIR="/var/lib/sitbank-container"
+        readonly STATE_FILE="${STATE_DIR}/current"
+        readonly SYSTEMD_SERVICE="sitbank-container.service"
+        readonly COMPOSE_PROJECT="sitbank"
+        readonly APP_CONTAINER="sitbank-app"
+        readonly APP_BIND_HOST="127.0.0.1"
+        readonly APP_BIND_PORT="5000"
+        readonly POSTGRES_CONTAINER="none"
+        readonly POSTGRES_VOLUME="none"
+        readonly REDIS_CONTAINER="none"
+        readonly REDIS_VOLUME="none"
+        readonly LOCK_FILE="/var/lock/sitbank-container-deploy.lock"
+        readonly INPUT_PREFIX=""
+        readonly AUDIT_TAG="sitbank-deploy"
+        readonly DATABASE_CUTOVER="/var/lib/sitbank-container/database-cutover/state"
+        ;;
+    staging)
+        readonly DEPLOY_CONFIG="/etc/sitbank-staging/deploy.conf"
+        readonly CONFIG_ROOT="/etc/sitbank-staging"
+        readonly COMPOSE_DIR="/opt/sitbank-staging"
+        readonly COMPOSE_FILE="/opt/sitbank-staging/compose.yml"
+        readonly SECRET_DIR="/etc/sitbank-staging/secrets"
+        readonly CONTAINER_ENV="/etc/sitbank-staging/container.env"
+        readonly STATE_DIR="/var/lib/sitbank-staging-container"
+        readonly STATE_FILE="${STATE_DIR}/current"
+        readonly SYSTEMD_SERVICE="sitbank-staging-container.service"
+        readonly COMPOSE_PROJECT="sitbank-staging"
+        readonly APP_CONTAINER="sitbank-staging-app"
+        readonly APP_BIND_HOST="127.0.0.1"
+        readonly APP_BIND_PORT="5001"
+        readonly POSTGRES_CONTAINER="sitbank-staging-postgres"
+        readonly POSTGRES_VOLUME="sitbank-staging-postgres-data"
+        readonly REDIS_CONTAINER="sitbank-staging-redis"
+        readonly REDIS_VOLUME="sitbank-staging-redis-data"
+        readonly LOCK_FILE="/var/lock/sitbank-staging-container-deploy.lock"
+        readonly INPUT_PREFIX="staging-"
+        readonly AUDIT_TAG="sitbank-staging-deploy"
+        readonly DATABASE_CUTOVER=""
+        ;;
+    *)
+        echo "Deployment target must be staging or production" >&2
+        exit 2
+        ;;
+esac
+
+if [[ ! -f "${DEPLOY_CONFIG}" || -L "${DEPLOY_CONFIG}" \
+    || "$(stat -c '%U' -- "${DEPLOY_CONFIG}")" != "root" ]]; then
+    echo "Missing trusted root-owned deployment configuration" >&2
     exit 1
 fi
 
 # shellcheck disable=SC1090
 source "${DEPLOY_CONFIG}"
 
-if [[ "$#" -ne 2 ]]; then
-    echo "Usage: sitbank-container-deploy COMMIT_SHA SHA256_DIGEST" >&2
-    exit 2
-fi
 release_sha="${1:-}"
 image_digest="${2:-}"
 if [[ ! "${release_sha}" =~ ^[0-9a-f]{40}$ ]]; then
@@ -46,14 +100,15 @@ if [[ ! "${PUBLIC_HOST}" =~ ^[A-Za-z0-9.-]+$ ]]; then
 fi
 
 readonly image="${GHCR_REPOSITORY}@${image_digest}"
-readonly credential_path="${INCOMING_DIR}/registry-${release_sha}.credentials"
-readonly bundle_path="${INCOMING_DIR}/runtime-${release_sha}.tar"
-readonly checksum_path="${INCOMING_DIR}/runtime-${release_sha}.sha256"
-readonly signature_path="${INCOMING_DIR}/runtime-${release_sha}.sigstore.json"
+readonly input_stem="${INPUT_PREFIX}${release_sha}"
+readonly credential_path="${INCOMING_DIR}/registry-${input_stem}.credentials"
+readonly bundle_path="${INCOMING_DIR}/runtime-${input_stem}.tar"
+readonly checksum_path="${INCOMING_DIR}/runtime-${input_stem}.sha256"
+readonly signature_path="${INCOMING_DIR}/runtime-${input_stem}.sigstore.json"
 
-exec 9>/var/lock/sitbank-container-deploy.lock
+exec 9>"${LOCK_FILE}"
 if ! flock -n 9; then
-    echo "Another deployment is already running" >&2
+    echo "Another ${target} deployment is already running" >&2
     exit 1
 fi
 
@@ -63,6 +118,7 @@ runtime_backup="$(mktemp -d "${STATE_DIR}/runtime-backup.XXXXXX")"
 runtime_replaced=0
 service_switched=0
 legacy_was_active=0
+dependencies_prepared=0
 previous_image=""
 if [[ -r "${STATE_FILE}" ]]; then
     previous_image="$(awk -F= '$1 == "IMAGE" { print $2 }' "${STATE_FILE}")"
@@ -78,7 +134,7 @@ cleanup() {
 }
 
 audit_log() {
-    logger --tag sitbank-deploy -- "$1" || true
+    logger --tag "${AUDIT_TAG}" -- "$1" || true
 }
 
 validate_input_file() {
@@ -107,6 +163,37 @@ restore_runtime() {
     fi
 }
 
+validate_deployment_profile() {
+    local deployment_file="$1"
+    local expected
+    expected="$(
+        cat <<EOF
+APP_BIND_HOST='${APP_BIND_HOST}'
+APP_BIND_PORT='${APP_BIND_PORT}'
+APP_CONTAINER_NAME='${APP_CONTAINER}'
+COMPOSE_DIR='${COMPOSE_DIR}'
+COMPOSE_FILE='${COMPOSE_FILE}'
+COMPOSE_PROJECT_NAME='${COMPOSE_PROJECT}'
+CONFIG_ROOT='${CONFIG_ROOT}'
+DEPLOYMENT_TARGET='${target}'
+POSTGRES_CONTAINER_NAME='${POSTGRES_CONTAINER}'
+POSTGRES_VOLUME_NAME='${POSTGRES_VOLUME}'
+PUBLIC_HOST='${PUBLIC_HOST}'
+REDIS_CONTAINER_NAME='${REDIS_CONTAINER}'
+REDIS_VOLUME_NAME='${REDIS_VOLUME}'
+SECRET_ROOT='${SECRET_DIR}'
+STATE_DIR='${STATE_DIR}'
+SYSTEMD_SERVICE='${SYSTEMD_SERVICE}'
+EOF
+    )"
+    if ! diff -u \
+        <(printf '%s\n' "${expected}" | sort) \
+        <(sort "${deployment_file}") >/dev/null; then
+        echo "Signed runtime deployment profile does not match ${target}" >&2
+        exit 1
+    fi
+}
+
 install_runtime_bundle() {
     if [[ ! -e "${bundle_path}" \
         && ! -e "${checksum_path}" \
@@ -127,7 +214,7 @@ install_runtime_bundle() {
     fi
     expected_checksum="$(awk 'NR == 1 { print $1 }' "${checksum_path}")"
     expected_filename="$(awk 'NR == 1 { print $2 }' "${checksum_path}")"
-    actual_checksum="$(sha256sum "${bundle_path}" | awk '{ print $1 }')"
+    actual_checksum="$(sha256sum "${bundle_path}" | awk '{ print $1}')"
     if [[ ! "${expected_checksum}" =~ ^[0-9a-f]{64}$ \
         || "${expected_filename}" != "$(basename "${bundle_path}")" \
         || "${actual_checksum}" != "${expected_checksum}" ]]; then
@@ -149,7 +236,7 @@ install_runtime_bundle() {
         exit 1
     fi
 
-    local required=(container.env)
+    local required=(container.env deployment.env)
     local relative_path
     for relative_path in "${required[@]}"; do
         if [[ ! -s "${staging_dir}/${relative_path}" ]]; then
@@ -188,6 +275,14 @@ install_runtime_bundle() {
         echo "Runtime environment contains missing or unsupported settings" >&2
         exit 1
     fi
+    if ! grep -Fqx "WEBAUTHN_RP_ID='${PUBLIC_HOST}'" \
+        "${staging_dir}/container.env" \
+        || ! grep -Fqx "WEBAUTHN_RP_ORIGIN='https://${PUBLIC_HOST}'" \
+            "${staging_dir}/container.env"; then
+        echo "Runtime WebAuthn host does not match the deployment target" >&2
+        exit 1
+    fi
+    validate_deployment_profile "${staging_dir}/deployment.env"
 
     backup_runtime
     install -o root -g root -m 0600 \
@@ -199,10 +294,13 @@ compose() {
     local selected_image="$1"
     shift
     SITBANK_IMAGE="${selected_image}" docker compose \
-        --project-name sitbank --file "${COMPOSE_FILE}" "$@"
+        --project-name "${COMPOSE_PROJECT}" --file "${COMPOSE_FILE}" "$@"
 }
 
 validate_legacy_configuration() {
+    if [[ "${target}" != "production" ]]; then
+        return
+    fi
     if [[ "${LEGACY_SERVICE:-"-"}" != "-" \
         && ! "${LEGACY_SERVICE}" =~ ^[A-Za-z0-9_.@-]+\.service$ ]]; then
         echo "Configured legacy service name is invalid" >&2
@@ -222,6 +320,9 @@ remove_legacy_runtime() {
     local fragment_path=""
     local resolved_root=""
 
+    if [[ "${target}" != "production" ]]; then
+        return
+    fi
     if [[ "${LEGACY_SERVICE:-"-"}" != "-" ]]; then
         systemctl disable --now "${LEGACY_SERVICE}" >/dev/null 2>&1 || true
         fragment_path="$(
@@ -246,11 +347,86 @@ remove_legacy_runtime() {
     fi
 }
 
+validate_staging_isolation() {
+    local secret_file
+    local production_secret
+    if [[ "${target}" != "staging" ]]; then
+        return
+    fi
+    for secret_file in \
+        secret_key \
+        wtf_csrf_secret_key \
+        session_hmac_keys_json \
+        database_url \
+        redis_url \
+        mfa_aes256_gcm_key_b64 \
+        password_pepper_b64; do
+        production_secret="/etc/sitbank/secrets/${secret_file}"
+        if [[ -r "${production_secret}" ]] \
+            && cmp -s "${SECRET_DIR}/${secret_file}" "${production_secret}"; then
+            echo "Staging secret must not reuse the production ${secret_file}" >&2
+            exit 1
+        fi
+    done
+
+    python3 - \
+        "${SECRET_DIR}/database_url" \
+        "${SECRET_DIR}/postgres_password" \
+        "${SECRET_DIR}/redis_url" \
+        "${SECRET_DIR}/redis.conf" <<'PY'
+from pathlib import Path
+from urllib.parse import unquote, urlsplit
+import sys
+
+database_url = Path(sys.argv[1]).read_text(encoding="utf-8")
+postgres_password = Path(sys.argv[2]).read_text(encoding="utf-8")
+redis_url = Path(sys.argv[3]).read_text(encoding="utf-8")
+redis_config = Path(sys.argv[4]).read_text(encoding="utf-8")
+
+database = urlsplit(database_url)
+if (
+    database.scheme != "postgresql+psycopg2"
+    or database.hostname != "postgres"
+    or database.port != 5432
+    or unquote(database.username or "") != "sitbank_staging"
+    or database.path != "/sitbank_staging"
+    or unquote(database.password or "") != postgres_password
+):
+    raise SystemExit("Staging database URL must target only the staging PostgreSQL service")
+
+redis = urlsplit(redis_url)
+if (
+    redis.scheme != "redis"
+    or redis.hostname != "redis"
+    or redis.port != 6379
+    or redis.path not in {"", "/", "/0"}
+):
+    raise SystemExit("Staging Redis URL must target only the staging Redis service")
+
+password_lines = [
+    line.split(None, 1)[1]
+    for line in redis_config.splitlines()
+    if line.strip() and not line.lstrip().startswith("#")
+    and line.split(None, 1)[0].casefold() == "requirepass"
+]
+if len(password_lines) != 1 or unquote(redis.password or "") != password_lines[0]:
+    raise SystemExit("Staging Redis URL and protected Redis configuration do not match")
+PY
+}
+
+prepare_dependencies() {
+    if [[ "${target}" == "staging" ]]; then
+        compose "${image}" up --detach --pull always --wait postgres redis
+        dependencies_prepared=1
+    fi
+}
+
 wait_until_ready() {
     curl --fail --silent --show-error \
         --retry 15 --retry-delay 2 --retry-connrefused \
+        --header "Host: ${PUBLIC_HOST}" \
         --header "X-Forwarded-Proto: https" \
-        "http://127.0.0.1:5000/health/ready" >/dev/null
+        "http://${APP_BIND_HOST}:${APP_BIND_PORT}/health/ready" >/dev/null
     curl --fail --silent --show-error \
         --retry 8 --retry-delay 2 --retry-connrefused \
         --resolve "${PUBLIC_HOST}:443:127.0.0.1" \
@@ -264,11 +440,15 @@ rollback() {
     set +e
     if [[ "${service_switched}" -eq 1 ]]; then
         compose "${image}" down --remove-orphans
+    elif [[ "${target}" == "staging" \
+        && "${dependencies_prepared}" -eq 1 \
+        && -z "${previous_image}" ]]; then
+        compose "${image}" down --remove-orphans
     fi
     if [[ "${runtime_replaced}" -eq 1 ]]; then
         restore_runtime
     fi
-    if [[ -r "${STATE_DIR}/database-cutover/state" ]]; then
+    if [[ -n "${DATABASE_CUTOVER}" && -r "${DATABASE_CUTOVER}" ]]; then
         if ! /usr/local/sbin/sitbank-database-cutover rollback; then
             database_rollback_ok=0
             echo "Database rollback requires administrator intervention" >&2
@@ -283,15 +463,15 @@ rollback() {
         systemctl enable "${LEGACY_SERVICE}" >/dev/null 2>&1
         systemctl start "${LEGACY_SERVICE}"
     fi
-    audit_log "result=failure revision=${release_sha} digest=${image_digest}"
-    echo "Deployment failed; the previous application runtime was restored" >&2
+    audit_log "environment=${target} result=failure revision=${release_sha} digest=${image_digest}"
+    echo "Deployment failed; the previous ${target} runtime was restored" >&2
     exit "${exit_code}"
 }
 
 trap cleanup EXIT
 trap rollback ERR
 
-audit_log "result=started revision=${release_sha} digest=${image_digest}"
+audit_log "environment=${target} result=started revision=${release_sha} digest=${image_digest}"
 validate_legacy_configuration
 if ss -lnt | grep -Eq ':(2375|2376)\b'; then
     echo "Docker API must not be exposed over TCP" >&2
@@ -335,35 +515,43 @@ if [[ "${image_revision}" != "${release_sha}" ]]; then
 fi
 
 for host_file in \
-    /etc/sitbank/common-passwords.txt \
-    /etc/sitbank/fido-approved-aaguids.json \
-    /etc/sitbank/fido-mds-cache.json; do
+    "${CONFIG_ROOT}/common-passwords.txt" \
+    "${CONFIG_ROOT}/fido-approved-aaguids.json" \
+    "${CONFIG_ROOT}/fido-mds-cache.json"; do
     if [[ ! -r "${host_file}" || -L "${host_file}" ]]; then
         echo "Missing required root-managed policy file: ${host_file}" >&2
         exit 1
     fi
 done
-for secret_file in \
-    secret_key \
-    wtf_csrf_secret_key \
-    session_hmac_keys_json \
-    database_url \
-    redis_url \
-    mfa_aes256_gcm_key_b64 \
-    password_pepper_b64; do
+required_secrets=(
+    secret_key
+    wtf_csrf_secret_key
+    session_hmac_keys_json
+    database_url
+    redis_url
+    mfa_aes256_gcm_key_b64
+    password_pepper_b64
+)
+if [[ "${target}" == "staging" ]]; then
+    required_secrets+=(postgres_password redis.conf)
+fi
+for secret_file in "${required_secrets[@]}"; do
     if [[ ! -r "${SECRET_DIR}/${secret_file}" \
         || -L "${SECRET_DIR}/${secret_file}" ]]; then
         echo "Missing required root-managed secret file: ${secret_file}" >&2
         exit 1
     fi
 done
+validate_staging_isolation
+prepare_dependencies
 
 compose "${image}" run --rm --no-deps app \
     python -m flask --app wsgi:app production-check
 compose "${image}" run --rm --no-deps app \
     python -m flask --app wsgi:app db upgrade
 
-if [[ "${LEGACY_SERVICE:-"-"}" != "-" ]] \
+if [[ "${target}" == "production" \
+    && "${LEGACY_SERVICE:-"-"}" != "-" ]] \
     && systemctl is-active --quiet "${LEGACY_SERVICE}"; then
     legacy_was_active=1
 fi
@@ -393,19 +581,19 @@ printf 'IMAGE=%s\nREVISION=%s\nDEPLOYED_AT=%s\n' \
     > "${STATE_FILE}"
 chmod 0600 "${STATE_FILE}"
 
-systemctl enable sitbank-container.service >/dev/null
-systemctl start sitbank-container.service
+systemctl enable "${SYSTEMD_SERVICE}" >/dev/null
+systemctl start "${SYSTEMD_SERVICE}"
 service_switched=0
 runtime_replaced=0
 trap - ERR
 if ! remove_legacy_runtime; then
     echo "Warning: SITBank is healthy, but the former application files require manual cleanup" >&2
 fi
-if [[ -r "${STATE_DIR}/database-cutover/state" ]]; then
+if [[ -n "${DATABASE_CUTOVER}" && -r "${DATABASE_CUTOVER}" ]]; then
     if ! /usr/local/sbin/sitbank-database-cutover finalize; then
         echo "Warning: SITBank is healthy, but the former database role still requires manual cleanup" >&2
     fi
 fi
 
-audit_log "result=success revision=${release_sha} digest=${image_digest}"
-echo "Deployed ${release_sha} as ${image}"
+audit_log "environment=${target} result=success revision=${release_sha} digest=${image_digest}"
+echo "Deployed ${release_sha} to ${target} as ${image}"

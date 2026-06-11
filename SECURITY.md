@@ -12,8 +12,9 @@ log.
 
 1. Revoke the exposed credential at its source.
 2. Create a replacement using a cryptographically secure generator.
-3. Install it into the appropriate root-owned file under
-   `/etc/sitbank/secrets`.
+3. Install it into the appropriate root-owned environment directory:
+   `/etc/sitbank/secrets` for production or
+   `/etc/sitbank-staging/secrets` for staging.
 4. Restart through the restricted deployment/runtime command and run
    `production-check`.
 5. Revoke active sessions when rotating session-signing, Flask, CSRF, MFA
@@ -25,6 +26,11 @@ Session HMAC rotation must keep the old key in
 `session_hmac_keys_json` only for the approved overlap period, set the new
 `SESSION_HMAC_ACTIVE_KEY_ID`, then remove the previous key after all sessions
 signed by it have expired.
+
+Staging secrets must never be copied from production. The staging deployment
+wrapper rejects identical application secret files when production secrets are
+present and requires database and Redis URLs to resolve only to the staging
+Compose service names.
 
 ## Dependency Response
 
