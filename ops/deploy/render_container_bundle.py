@@ -11,12 +11,12 @@ from pathlib import Path
 
 
 SECRET_INPUTS = {
-    "PROD_DATABASE_URL": "database_url",
-    "PROD_MFA_AES256_GCM_KEY_B64": "mfa_aes256_gcm_key_b64",
-    "PROD_PASSWORD_PEPPER_B64": "password_pepper_b64",
-    "PROD_REDIS_URL": "redis_url",
-    "PROD_SECRET_KEY": "secret_key",
-    "PROD_WTF_CSRF_SECRET_KEY": "wtf_csrf_secret_key",
+    "DATABASE_URL": "database_url",
+    "MFA_AES256_GCM_KEY_B64": "mfa_aes256_gcm_key_b64",
+    "PASSWORD_PEPPER_B64": "password_pepper_b64",
+    "REDIS_URL": "redis_url",
+    "SECRET_KEY": "secret_key",
+    "WTF_CSRF_SECRET_KEY": "wtf_csrf_secret_key",
 }
 
 NON_SECRET_DEFAULTS = {
@@ -54,51 +54,62 @@ def _quote_environment_value(name: str, value: str) -> str:
     return f"'{value}'"
 
 
-def _session_keyring() -> tuple[str, str]:
-    active_id = _value("PROD_SESSION_HMAC_ACTIVE_KEY_ID")
+def _prefixed(prefix: str, name: str) -> str:
+    return f"{prefix}_{name}"
+
+
+def _session_keyring(prefix: str) -> tuple[str, str]:
+    active_id_name = _prefixed(prefix, "SESSION_HMAC_ACTIVE_KEY_ID")
+    active_id = _value(active_id_name)
     if not re.fullmatch(r"[A-Za-z0-9._-]{1,32}", active_id):
-        raise RuntimeError("PROD_SESSION_HMAC_ACTIVE_KEY_ID is invalid")
+        raise RuntimeError(f"{active_id_name} is invalid")
+    active_key_name = _prefixed(prefix, "SESSION_HMAC_ACTIVE_KEY_B64")
     active_key = _validate_b64_key(
-        "PROD_SESSION_HMAC_ACTIVE_KEY_B64",
-        _value("PROD_SESSION_HMAC_ACTIVE_KEY_B64"),
+        active_key_name,
+        _value(active_key_name),
     )
     keyring = {active_id: active_key}
 
-    previous_id = os.environ.get("PROD_SESSION_HMAC_PREVIOUS_KEY_ID", "").strip()
-    previous_key = os.environ.get("PROD_SESSION_HMAC_PREVIOUS_KEY_B64", "").strip()
+    previous_id_name = _prefixed(prefix, "SESSION_HMAC_PREVIOUS_KEY_ID")
+    previous_key_name = _prefixed(prefix, "SESSION_HMAC_PREVIOUS_KEY_B64")
+    previous_id = os.environ.get(previous_id_name, "").strip()
+    previous_key = os.environ.get(previous_key_name, "").strip()
     if bool(previous_id) != bool(previous_key):
         raise RuntimeError(
-            "PROD_SESSION_HMAC_PREVIOUS_KEY_ID and "
-            "PROD_SESSION_HMAC_PREVIOUS_KEY_B64 must be configured together"
+            f"{previous_id_name} and {previous_key_name} must be configured together"
         )
     if previous_id:
         if not re.fullmatch(r"[A-Za-z0-9._-]{1,32}", previous_id):
-            raise RuntimeError("PROD_SESSION_HMAC_PREVIOUS_KEY_ID is invalid")
+            raise RuntimeError(f"{previous_id_name} is invalid")
         if previous_id == active_id:
             raise RuntimeError("Session HMAC key identifiers must be unique")
         keyring[previous_id] = _validate_b64_key(
-            "PROD_SESSION_HMAC_PREVIOUS_KEY_B64",
+            previous_key_name,
             previous_key,
         )
     return active_id, json.dumps(keyring, separators=(",", ":"), sort_keys=True)
 
 
-def build_container_bundle() -> tuple[dict[str, str], dict[str, str]]:
-    public_host = _value("PROD_PUBLIC_HOST")
+def build_container_bundle(prefix: str = "PROD") -> tuple[dict[str, str], dict[str, str]]:
+    if prefix not in {"PROD", "STAGING"}:
+        raise RuntimeError("Deployment prefix must be PROD or STAGING")
+
+    public_host_name = _prefixed(prefix, "PUBLIC_HOST")
+    public_host = _value(public_host_name)
     if not re.fullmatch(r"[A-Za-z0-9.-]+", public_host):
-        raise RuntimeError("PROD_PUBLIC_HOST must be a bare hostname")
-    active_key_id, keyring = _session_keyring()
+        raise RuntimeError(f"{public_host_name} must be a bare hostname")
+    active_key_id, keyring = _session_keyring(prefix)
 
     secrets = {
-        target: _value(source)
+        target: _value(_prefixed(prefix, source))
         for source, target in SECRET_INPUTS.items()
     }
     _validate_b64_key(
-        "PROD_MFA_AES256_GCM_KEY_B64",
+        _prefixed(prefix, "MFA_AES256_GCM_KEY_B64"),
         secrets["mfa_aes256_gcm_key_b64"],
     )
     _validate_b64_key(
-        "PROD_PASSWORD_PEPPER_B64",
+        _prefixed(prefix, "PASSWORD_PEPPER_B64"),
         secrets["password_pepper_b64"],
     )
     secrets["session_hmac_keys_json"] = keyring
@@ -106,7 +117,7 @@ def build_container_bundle() -> tuple[dict[str, str], dict[str, str]]:
     environment = {
         "APP_ENV": "production",
         "COMMON_PASSWORDS_PATH": "/run/config/common-passwords.txt",
-        "MFA_ISSUER_NAME": _value("PROD_MFA_ISSUER_NAME", default="SITBank"),
+        "MFA_ISSUER_NAME": _value(_prefixed(prefix, "MFA_ISSUER_NAME"), default="SITBank"),
         "SESSION_HMAC_ACTIVE_KEY_ID": active_key_id,
         "WEBAUTHN_APPROVED_AAGUIDS_PATH": "/run/config/fido-approved-aaguids.json",
         "WEBAUTHN_MDS_CACHE_PATH": "/run/config/fido-mds-cache.json",
@@ -114,12 +125,12 @@ def build_container_bundle() -> tuple[dict[str, str], dict[str, str]]:
         "WEBAUTHN_RP_ORIGIN": f"https://{public_host}",
     }
     for name, default in NON_SECRET_DEFAULTS.items():
-        environment[name] = _value(f"PROD_{name}", default=default)
+        environment[name] = _value(_prefixed(prefix, name), default=default)
     return environment, secrets
 
 
-def write_container_bundle(output_dir: Path) -> None:
-    environment, secrets = build_container_bundle()
+def write_container_bundle(output_dir: Path, prefix: str = "PROD") -> None:
+    environment, secrets = build_container_bundle(prefix)
     output_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
     secret_dir = output_dir / "secrets"
     secret_dir.mkdir(mode=0o700)
@@ -141,8 +152,9 @@ def write_container_bundle(output_dir: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--prefix", choices=("PROD", "STAGING"), default="PROD")
     args = parser.parse_args()
-    write_container_bundle(args.output)
+    write_container_bundle(args.output, args.prefix)
 
 
 if __name__ == "__main__":

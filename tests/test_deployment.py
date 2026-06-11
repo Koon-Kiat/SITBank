@@ -32,6 +32,14 @@ def _set_deployment_values(monkeypatch):
         monkeypatch.setenv(name, value)
 
 
+def _set_prefixed_deployment_values(monkeypatch, prefix: str, public_host: str):
+    for name, value in DEPLOYMENT_VALUES.items():
+        target_name = name.replace("PROD_", f"{prefix}_", 1)
+        if name == "PROD_PUBLIC_HOST":
+            value = public_host
+        monkeypatch.setenv(target_name, value)
+
+
 def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypatch):
     _set_deployment_values(monkeypatch)
 
@@ -46,6 +54,23 @@ def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypa
     assert secrets["secret_key"] == DEPLOYMENT_VALUES["PROD_SECRET_KEY"]
     assert secrets["database_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_URL"]
     assert '"2026-06":"MjIy' in secrets["session_hmac_keys_json"]
+
+
+def test_container_bundle_accepts_staging_prefix(monkeypatch):
+    _set_prefixed_deployment_values(
+        monkeypatch,
+        "STAGING",
+        "staging.sitbank.example",
+    )
+
+    environment, secrets = build_container_bundle("STAGING")
+
+    assert environment["APP_ENV"] == "production"
+    assert environment["WEBAUTHN_RP_ID"] == "staging.sitbank.example"
+    assert environment["WEBAUTHN_RP_ORIGIN"] == "https://staging.sitbank.example"
+    assert environment["SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06"
+    assert secrets["secret_key"] == DEPLOYMENT_VALUES["PROD_SECRET_KEY"]
+    assert secrets["database_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_URL"]
 
 
 def test_container_bundle_rejects_missing_multiline_and_partial_rotation(monkeypatch):
@@ -174,17 +199,44 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         "ops/deploy/bootstrap-container-ec2"
     ).read_text(encoding="utf-8")
 
-    assert set(workflow["jobs"]) == {"test", "image-test", "publish", "deploy"}
+    assert set(workflow["jobs"]) == {
+        "workflow-security",
+        "dependency-review",
+        "test",
+        "image-test",
+        "deployment-preflight",
+        "publish",
+        "release-verify",
+        "deploy-staging",
+        "deploy-production",
+    }
     assert workflow["permissions"] == {}
+    assert workflow["jobs"]["workflow-security"]["permissions"]["contents"] == "read"
     assert workflow["jobs"]["publish"]["permissions"]["packages"] == "write"
-    assert workflow["jobs"]["publish"]["permissions"]["id-token"] == "write"
-    assert workflow["jobs"]["deploy"]["permissions"]["packages"] == "read"
+    assert workflow["jobs"]["release-verify"]["permissions"]["id-token"] == "write"
+    assert workflow["jobs"]["deploy-staging"]["permissions"]["packages"] == "read"
+    assert workflow["jobs"]["deploy-production"]["permissions"]["packages"] == "read"
     assert "vars.PROD_DEPLOY_ENABLED == 'true'" in workflow_text
+    assert "vars.STAGING_DEPLOY_ENABLED == 'true'" in workflow_text
+    assert "workflow_dispatch" in workflow_text
+    assert "target_environment" in workflow_text
+    assert "deploy-staging" in workflow_text
+    assert "deploy-production" in workflow_text
+    assert "PROD_EC2_HOST" in workflow_text
+    assert "PROD_EC2_SSH_PRIVATE_KEY" in workflow_text
+    assert "STAGING_EC2_HOST" in workflow_text
+    assert "STAGING_EC2_SSH_PRIVATE_KEY" in workflow_text
+    assert "vars.EC2_" not in workflow_text
+    assert "secrets.EC2_" not in workflow_text
     assert "provenance: mode=max" in workflow_text
     assert "sbom: true" in workflow_text
+    assert "ignore-unfixed: false" in workflow_text
     assert "ignore-unfixed: true" in workflow_text
     assert "cosign sign --yes" in workflow_text
+    assert "zizmor==1.25.2" in workflow_text
+    assert "actionlint" in workflow_text
     assert "shellcheck" in workflow_text
+    assert "dast-smoke.sh" in workflow_text
     assert "scan_repository_secrets.py" in workflow_text
     assert "IMAGE_DIGEST" in workflow_text
     assert "StrictHostKeyChecking=no" not in workflow_text

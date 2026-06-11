@@ -6,12 +6,28 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      target_environment:
+        description: Deployment target for manual release runs.
+        type: choice
+        options:
+          - staging
+          - production
+        default: staging
+      deploy:
+        description: Deploy the verified digest after release verification.
+        type: boolean
+        default: false
+      run_dast:
+        description: Run the authenticated DAST smoke crawl during release verification.
+        type: boolean
+        default: true
 
 permissions: {}
 
 concurrency:
-  group: production-${{ github.ref }}
-  cancel-in-progress: false
+  group: ${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('release-{0}', github.ref) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   PYTHON_VERSION: "3.12"
@@ -19,7 +35,48 @@ env:
   PYTHONDONTWRITEBYTECODE: "1"
 
 jobs:
+  workflow-security:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Install workflow security tools
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+          python -m pip install --user zizmor==1.25.2
+          echo "${HOME}/go/bin" >> "${GITHUB_PATH}"
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
+      - name: Validate GitHub Actions workflows
+        run: |
+          actionlint
+          zizmor .github/workflows/ci-deploy.yml
+
+  dependency-review:
+    if: >-
+      github.event_name == 'pull_request' &&
+      (github.event.repository.visibility == 'public' ||
+        vars.ENABLE_GITHUB_CODE_SECURITY == 'true')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48
+
   test:
+    needs: workflow-security
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -41,6 +98,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
@@ -71,11 +130,14 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
 
       - name: Validate deployment shell scripts
         run: |
           shellcheck \
             ops/container/smoke-test.sh \
+            ops/container/dast-smoke.sh \
             ops/deploy/bootstrap-container-ec2 \
             ops/deploy/sitbank-container-deploy \
             ops/deploy/sitbank-container-runtime \
@@ -98,6 +160,18 @@ jobs:
 
       - name: Run PostgreSQL and Redis container smoke test
         run: bash ops/container/smoke-test.sh sitbank:smoke
+
+      - name: Run authenticated DAST smoke crawl
+        run: bash ops/container/dast-smoke.sh sitbank:smoke
+
+      - name: Scan all critical vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: sitbank:smoke
+          format: table
+          exit-code: "1"
+          ignore-unfixed: false
+          severity: CRITICAL
 
       - name: Scan fixable high and critical vulnerabilities
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
@@ -148,14 +222,69 @@ jobs:
           SITBANK_PASSWORD_PEPPER_B64: smoke
         run: docker compose --file compose.prod.yml config --quiet
 
+  deployment-preflight:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      TARGET_ENVIRONMENT: ${{ inputs.target_environment || 'staging' }}
+      DEPLOY_REQUESTED: ${{ inputs.deploy || false }}
+      STAGING_DEPLOY_ENABLED: ${{ vars.STAGING_DEPLOY_ENABLED }}
+      PROD_DEPLOY_ENABLED: ${{ vars.PROD_DEPLOY_ENABLED }}
+    steps:
+      - name: Validate release request
+        shell: bash
+        run: |
+          case "${TARGET_ENVIRONMENT}" in
+            staging|production) ;;
+            *)
+              echo "::error::Invalid target_environment '${TARGET_ENVIRONMENT}'."
+              exit 1
+              ;;
+          esac
+
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            echo "::error::Pull request events must never reach deployment preflight."
+            exit 1
+          fi
+
+          if [[ "${TARGET_ENVIRONMENT}" == "production" \
+              && "${GITHUB_REF}" != "refs/heads/main" ]]; then
+            echo "::error::Manual production deployment is allowed only from refs/heads/main."
+            exit 1
+          fi
+
+          if [[ "${DEPLOY_REQUESTED}" == "true" \
+              && "${TARGET_ENVIRONMENT}" == "staging" \
+              && "${STAGING_DEPLOY_ENABLED}" != "true" ]]; then
+            echo "::notice::Staging deployment requested, but STAGING_DEPLOY_ENABLED is not true. The digest will be verified and deployment will be skipped."
+          fi
+
+          if [[ "${DEPLOY_REQUESTED}" == "true" \
+              && "${TARGET_ENVIRONMENT}" == "production" \
+              && "${PROD_DEPLOY_ENABLED}" != "true" ]]; then
+            echo "::notice::Production deployment requested, but PROD_DEPLOY_ENABLED is not true. The digest will be verified and deployment will be skipped."
+          fi
+
+          if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            if [[ "${STAGING_DEPLOY_ENABLED}" != "true" ]]; then
+              echo "::notice::STAGING_DEPLOY_ENABLED is not true. Automatic staging deployment will be skipped."
+            fi
+            if [[ "${PROD_DEPLOY_ENABLED}" != "true" ]]; then
+              echo "::notice::PROD_DEPLOY_ENABLED is not true. Automatic production deployment will be skipped."
+            fi
+          fi
+
   publish:
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    needs: image-test
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
+    needs:
+      - image-test
+      - deployment-preflight
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-      id-token: write
       attestations: write
     outputs:
       digest: ${{ steps.push.outputs.digest }}
@@ -163,6 +292,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
 
       - name: Resolve lowercase GHCR repository
         id: image
@@ -170,6 +301,24 @@ jobs:
         run: |
           repository="ghcr.io/${GITHUB_REPOSITORY,,}"
           echo "repository=${repository}" >> "${GITHUB_OUTPUT}"
+
+      - name: Resolve immutable image tags
+        id: tags
+        shell: bash
+        env:
+          REPOSITORY: ${{ steps.image.outputs.repository }}
+          TARGET_ENVIRONMENT: ${{ inputs.target_environment || 'staging' }}
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            {
+              echo "tags<<EOF"
+              printf '%s\n' "${REPOSITORY}:manual-${GITHUB_RUN_ID}"
+              printf '%s\n' "${REPOSITORY}:${TARGET_ENVIRONMENT}-${GITHUB_RUN_ID}"
+              echo "EOF"
+            } >> "${GITHUB_OUTPUT}"
+          else
+            echo "tags=${REPOSITORY}:${GITHUB_SHA}" >> "${GITHUB_OUTPUT}"
+          fi
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5
@@ -181,14 +330,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      - name: Build and push signed release candidate
+      - name: Build and push release candidate
         id: push
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf
         with:
           context: .
           platforms: linux/amd64
           push: true
-          tags: ${{ steps.image.outputs.repository }}:${{ github.sha }}
+          tags: ${{ steps.tags.outputs.tags }}
           build-args: |
             VCS_REF=${{ github.sha }}
             SOURCE_URL=${{ github.server_url }}/${{ github.repository }}
@@ -197,25 +346,289 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  release-verify:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+      id-token: write
+    outputs:
+      digest: ${{ steps.image.outputs.digest }}
+      repository: ${{ steps.image.outputs.repository }}
+      image: ${{ steps.image.outputs.image }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Resolve verified image reference
+        id: image
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ needs.publish.outputs.digest }}
+          IMAGE_REPOSITORY: ${{ needs.publish.outputs.repository }}
+        run: |
+          if [[ ! "${IMAGE_REPOSITORY}" =~ ^ghcr\.io/[a-z0-9._-]+/[a-z0-9._-]+$ ]]; then
+            echo "::error::Publish emitted an invalid GHCR repository."
+            exit 1
+          fi
+          if [[ ! "${IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Publish emitted an invalid image digest."
+            exit 1
+          fi
+          image="${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
+          echo "repository=${IMAGE_REPOSITORY}" >> "${GITHUB_OUTPUT}"
+          echo "digest=${IMAGE_DIGEST}" >> "${GITHUB_OUTPUT}"
+          echo "image=${image}" >> "${GITHUB_OUTPUT}"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Pull and verify image revision label
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+        run: |
+          docker pull "${IMAGE}"
+          revision="$(
+            docker image inspect \
+              --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
+              "${IMAGE}"
+          )"
+          if [[ "${revision}" != "${GITHUB_SHA}" ]]; then
+            echo "::error::Image revision label does not match the workflow commit."
+            exit 1
+          fi
+
+      - name: Validate Compose model for exact digest
+        env:
+          SITBANK_IMAGE: ${{ steps.image.outputs.image }}
+        run: |
+          docker compose --file compose.prod.yml config --quiet
+          docker compose --file compose.prod.yml config \
+            | grep -F "${SITBANK_IMAGE}" >/dev/null
+
+      - name: Run release smoke test against exact digest
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+        run: bash ops/container/smoke-test.sh "${IMAGE}"
+
+      - name: Run authenticated DAST smoke crawl
+        if: github.event_name != 'workflow_dispatch' || inputs.run_dast == true
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+        run: bash ops/container/dast-smoke.sh "${IMAGE}"
+
+      - name: Scan all critical vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: ${{ steps.image.outputs.image }}
+          format: table
+          exit-code: "1"
+          ignore-unfixed: false
+          severity: CRITICAL
+
+      - name: Scan fixable high and critical vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: ${{ steps.image.outputs.image }}
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+
       - name: Install Cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
 
-      - name: Sign and verify the immutable digest
+      - name: Sign and verify immutable digest
         env:
-          IMAGE: ${{ steps.image.outputs.repository }}@${{ steps.push.outputs.digest }}
+          IMAGE: ${{ steps.image.outputs.image }}
         run: |
           cosign sign --yes "${IMAGE}"
           cosign verify \
-            --certificate-identity "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/.github/workflows/ci-deploy.yml@refs/heads/main" \
+            --certificate-identity "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/.github/workflows/ci-deploy.yml@${GITHUB_REF}" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             "${IMAGE}" >/dev/null
 
-  deploy:
+  deploy-staging:
     if: >-
+      needs.release-verify.result == 'success' &&
+      (
+        (
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/main' &&
+          vars.STAGING_DEPLOY_ENABLED == 'true'
+        ) ||
+        (
+          github.event_name == 'workflow_dispatch' &&
+          inputs.target_environment == 'staging' &&
+          inputs.deploy == true &&
+          vars.STAGING_DEPLOY_ENABLED == 'true'
+        )
+      )
+    needs: release-verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    environment:
+      name: staging
+      url: https://${{ vars.STAGING_PUBLIC_HOST }}
+    env:
+      RELEASE_SHA: ${{ github.sha }}
+      IMAGE_DIGEST: ${{ needs.release-verify.outputs.digest }}
+      REMOTE_HOST: ${{ vars.STAGING_EC2_HOST }}
+      REMOTE_PORT: ${{ vars.STAGING_EC2_PORT }}
+      REMOTE_USER: ${{ vars.STAGING_EC2_DEPLOY_USER }}
+      STAGING_PUBLIC_HOST: ${{ vars.STAGING_PUBLIC_HOST }}
+      STAGING_SESSION_HMAC_ACTIVE_KEY_ID: ${{ vars.STAGING_SESSION_HMAC_ACTIVE_KEY_ID }}
+      STAGING_SESSION_HMAC_PREVIOUS_KEY_ID: ${{ vars.STAGING_SESSION_HMAC_PREVIOUS_KEY_ID }}
+      STAGING_PASSWORD_PBKDF2_ITERATIONS: ${{ vars.STAGING_PASSWORD_PBKDF2_ITERATIONS }}
+      STAGING_MFA_ISSUER_NAME: ${{ vars.STAGING_MFA_ISSUER_NAME }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Verify staging deployment configuration
+        env:
+          STAGING_EC2_KNOWN_HOSTS: ${{ secrets.STAGING_EC2_KNOWN_HOSTS }}
+          STAGING_EC2_SSH_PRIVATE_KEY: ${{ secrets.STAGING_EC2_SSH_PRIVATE_KEY }}
+          STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          STAGING_MFA_AES256_GCM_KEY_B64: ${{ secrets.STAGING_MFA_AES256_GCM_KEY_B64 }}
+          STAGING_PASSWORD_PEPPER_B64: ${{ secrets.STAGING_PASSWORD_PEPPER_B64 }}
+          STAGING_REDIS_URL: ${{ secrets.STAGING_REDIS_URL }}
+          STAGING_SECRET_KEY: ${{ secrets.STAGING_SECRET_KEY }}
+          STAGING_SESSION_HMAC_ACTIVE_KEY_B64: ${{ secrets.STAGING_SESSION_HMAC_ACTIVE_KEY_B64 }}
+          STAGING_WTF_CSRF_SECRET_KEY: ${{ secrets.STAGING_WTF_CSRF_SECRET_KEY }}
+        run: |
+          required=(
+            IMAGE_DIGEST
+            REMOTE_HOST
+            REMOTE_PORT
+            REMOTE_USER
+            STAGING_PUBLIC_HOST
+            STAGING_SESSION_HMAC_ACTIVE_KEY_ID
+            STAGING_PASSWORD_PBKDF2_ITERATIONS
+            STAGING_MFA_ISSUER_NAME
+            STAGING_EC2_KNOWN_HOSTS
+            STAGING_EC2_SSH_PRIVATE_KEY
+            STAGING_DATABASE_URL
+            STAGING_MFA_AES256_GCM_KEY_B64
+            STAGING_PASSWORD_PEPPER_B64
+            STAGING_REDIS_URL
+            STAGING_SECRET_KEY
+            STAGING_SESSION_HMAC_ACTIVE_KEY_B64
+            STAGING_WTF_CSRF_SECRET_KEY
+          )
+          missing=0
+          for name in "${required[@]}"; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Missing required staging deployment setting: ${name}"
+              missing=1
+            fi
+          done
+          if [[ ! "${IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Verified image digest is invalid."
+            missing=1
+          fi
+          if [[ ! "${REMOTE_PORT}" =~ ^[0-9]+$ ]]; then
+            echo "::error::STAGING_EC2_PORT must be numeric."
+            missing=1
+          fi
+          exit "${missing}"
+
+      - name: Render protected Compose runtime bundle
+        run: |
+          umask 077
+          python ops/deploy/render_container_bundle.py \
+            --prefix STAGING \
+            --output "runtime-${RELEASE_SHA}"
+          tar --create --file "runtime-${RELEASE_SHA}.tar" \
+            --directory "runtime-${RELEASE_SHA}" .
+          sha256sum "runtime-${RELEASE_SHA}.tar" \
+            > "runtime-${RELEASE_SHA}.sha256"
+          printf '%s\n%s\n' "${GITHUB_ACTOR}" "${GITHUB_TOKEN}" \
+            > "registry-${RELEASE_SHA}.credentials"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          STAGING_SECRET_KEY: ${{ secrets.STAGING_SECRET_KEY }}
+          STAGING_WTF_CSRF_SECRET_KEY: ${{ secrets.STAGING_WTF_CSRF_SECRET_KEY }}
+          STAGING_SESSION_HMAC_ACTIVE_KEY_B64: ${{ secrets.STAGING_SESSION_HMAC_ACTIVE_KEY_B64 }}
+          STAGING_SESSION_HMAC_PREVIOUS_KEY_B64: ${{ secrets.STAGING_SESSION_HMAC_PREVIOUS_KEY_B64 }}
+          STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          STAGING_REDIS_URL: ${{ secrets.STAGING_REDIS_URL }}
+          STAGING_MFA_AES256_GCM_KEY_B64: ${{ secrets.STAGING_MFA_AES256_GCM_KEY_B64 }}
+          STAGING_PASSWORD_PEPPER_B64: ${{ secrets.STAGING_PASSWORD_PEPPER_B64 }}
+
+      - name: Configure verified SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.STAGING_EC2_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.STAGING_EC2_KNOWN_HOSTS }}
+        run: |
+          install -d -m 0700 ~/.ssh
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > ~/.ssh/id_ed25519
+          chmod 0600 ~/.ssh/id_ed25519
+          printf '%s\n' "${SSH_KNOWN_HOSTS}" > ~/.ssh/known_hosts
+          chmod 0600 ~/.ssh/known_hosts
+
+      - name: Upload private deployment inputs
+        run: |
+          scp -P "${REMOTE_PORT}" -i ~/.ssh/id_ed25519 \
+            -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+            "runtime-${RELEASE_SHA}.tar" \
+            "runtime-${RELEASE_SHA}.sha256" \
+            "registry-${RELEASE_SHA}.credentials" \
+            "${REMOTE_USER}@${REMOTE_HOST}:incoming/"
+
+      - name: Deploy verified image digest
+        run: |
+          ssh -p "${REMOTE_PORT}" -i ~/.ssh/id_ed25519 \
+            -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+            "${REMOTE_USER}@${REMOTE_HOST}" \
+            "sudo /usr/local/sbin/sitbank-container-deploy '${RELEASE_SHA}' '${IMAGE_DIGEST}'"
+
+      - name: Remove deployment credentials and bundles
+        if: always()
+        run: |
+          rm -rf ~/.ssh/id_ed25519 \
+            "runtime-${RELEASE_SHA}" \
+            "runtime-${RELEASE_SHA}.tar" \
+            "runtime-${RELEASE_SHA}.sha256" \
+            "registry-${RELEASE_SHA}.credentials"
+
+  deploy-production:
+    if: >-
+      always() &&
+      needs.release-verify.result == 'success' &&
       github.event_name != 'pull_request' &&
       github.ref == 'refs/heads/main' &&
-      vars.PROD_DEPLOY_ENABLED == 'true'
-    needs: publish
+      vars.PROD_DEPLOY_ENABLED == 'true' &&
+      (
+        (
+          github.event_name == 'push' &&
+          (
+            vars.STAGING_DEPLOY_ENABLED != 'true' ||
+            needs.deploy-staging.result == 'success'
+          )
+        ) ||
+        (
+          github.event_name == 'workflow_dispatch' &&
+          inputs.target_environment == 'production' &&
+          inputs.deploy == true
+        )
+      )
+    needs:
+      - release-verify
+      - deploy-staging
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -225,23 +638,74 @@ jobs:
       url: https://${{ vars.PROD_PUBLIC_HOST }}
     env:
       RELEASE_SHA: ${{ github.sha }}
-      IMAGE_DIGEST: ${{ needs.publish.outputs.digest }}
-      EC2_HOST: ${{ vars.EC2_HOST }}
-      EC2_PORT: ${{ vars.EC2_PORT || '22' }}
-      EC2_DEPLOY_USER: ${{ vars.EC2_DEPLOY_USER || 'sitbank-deploy' }}
+      IMAGE_DIGEST: ${{ needs.release-verify.outputs.digest }}
+      REMOTE_HOST: ${{ vars.PROD_EC2_HOST }}
+      REMOTE_PORT: ${{ vars.PROD_EC2_PORT }}
+      REMOTE_USER: ${{ vars.PROD_EC2_DEPLOY_USER }}
       PROD_PUBLIC_HOST: ${{ vars.PROD_PUBLIC_HOST }}
       PROD_SESSION_HMAC_ACTIVE_KEY_ID: ${{ vars.PROD_SESSION_HMAC_ACTIVE_KEY_ID }}
       PROD_SESSION_HMAC_PREVIOUS_KEY_ID: ${{ vars.PROD_SESSION_HMAC_PREVIOUS_KEY_ID }}
-      PROD_PASSWORD_PBKDF2_ITERATIONS: ${{ vars.PROD_PASSWORD_PBKDF2_ITERATIONS || '600000' }}
-      PROD_MFA_ISSUER_NAME: ${{ vars.PROD_MFA_ISSUER_NAME || 'SITBank' }}
+      PROD_PASSWORD_PBKDF2_ITERATIONS: ${{ vars.PROD_PASSWORD_PBKDF2_ITERATIONS }}
+      PROD_MFA_ISSUER_NAME: ${{ vars.PROD_MFA_ISSUER_NAME }}
     steps:
       - name: Check out repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Verify production deployment configuration
+        env:
+          PROD_EC2_KNOWN_HOSTS: ${{ secrets.PROD_EC2_KNOWN_HOSTS }}
+          PROD_EC2_SSH_PRIVATE_KEY: ${{ secrets.PROD_EC2_SSH_PRIVATE_KEY }}
+          PROD_DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+          PROD_MFA_AES256_GCM_KEY_B64: ${{ secrets.PROD_MFA_AES256_GCM_KEY_B64 }}
+          PROD_PASSWORD_PEPPER_B64: ${{ secrets.PROD_PASSWORD_PEPPER_B64 }}
+          PROD_REDIS_URL: ${{ secrets.PROD_REDIS_URL }}
+          PROD_SECRET_KEY: ${{ secrets.PROD_SECRET_KEY }}
+          PROD_SESSION_HMAC_ACTIVE_KEY_B64: ${{ secrets.PROD_SESSION_HMAC_ACTIVE_KEY_B64 }}
+          PROD_WTF_CSRF_SECRET_KEY: ${{ secrets.PROD_WTF_CSRF_SECRET_KEY }}
+        run: |
+          required=(
+            IMAGE_DIGEST
+            REMOTE_HOST
+            REMOTE_PORT
+            REMOTE_USER
+            PROD_PUBLIC_HOST
+            PROD_SESSION_HMAC_ACTIVE_KEY_ID
+            PROD_PASSWORD_PBKDF2_ITERATIONS
+            PROD_MFA_ISSUER_NAME
+            PROD_EC2_KNOWN_HOSTS
+            PROD_EC2_SSH_PRIVATE_KEY
+            PROD_DATABASE_URL
+            PROD_MFA_AES256_GCM_KEY_B64
+            PROD_PASSWORD_PEPPER_B64
+            PROD_REDIS_URL
+            PROD_SECRET_KEY
+            PROD_SESSION_HMAC_ACTIVE_KEY_B64
+            PROD_WTF_CSRF_SECRET_KEY
+          )
+          missing=0
+          for name in "${required[@]}"; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Missing required production deployment setting: ${name}"
+              missing=1
+            fi
+          done
+          if [[ ! "${IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Verified image digest is invalid."
+            missing=1
+          fi
+          if [[ ! "${REMOTE_PORT}" =~ ^[0-9]+$ ]]; then
+            echo "::error::PROD_EC2_PORT must be numeric."
+            missing=1
+          fi
+          exit "${missing}"
 
       - name: Render protected Compose runtime bundle
         run: |
           umask 077
           python ops/deploy/render_container_bundle.py \
+            --prefix PROD \
             --output "runtime-${RELEASE_SHA}"
           tar --create --file "runtime-${RELEASE_SHA}.tar" \
             --directory "runtime-${RELEASE_SHA}" .
@@ -262,31 +726,31 @@ jobs:
 
       - name: Configure verified SSH
         env:
-          EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
-          EC2_KNOWN_HOSTS: ${{ secrets.EC2_KNOWN_HOSTS }}
+          SSH_PRIVATE_KEY: ${{ secrets.PROD_EC2_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.PROD_EC2_KNOWN_HOSTS }}
         run: |
           install -d -m 0700 ~/.ssh
-          printf '%s\n' "${EC2_SSH_PRIVATE_KEY}" > ~/.ssh/id_ed25519
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > ~/.ssh/id_ed25519
           chmod 0600 ~/.ssh/id_ed25519
-          printf '%s\n' "${EC2_KNOWN_HOSTS}" > ~/.ssh/known_hosts
+          printf '%s\n' "${SSH_KNOWN_HOSTS}" > ~/.ssh/known_hosts
           chmod 0600 ~/.ssh/known_hosts
 
       - name: Upload private deployment inputs
         run: |
-          scp -P "${EC2_PORT}" -i ~/.ssh/id_ed25519 \
+          scp -P "${REMOTE_PORT}" -i ~/.ssh/id_ed25519 \
             -o BatchMode=yes -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
             "runtime-${RELEASE_SHA}.tar" \
             "runtime-${RELEASE_SHA}.sha256" \
             "registry-${RELEASE_SHA}.credentials" \
-            "${EC2_DEPLOY_USER}@${EC2_HOST}:incoming/"
+            "${REMOTE_USER}@${REMOTE_HOST}:incoming/"
 
       - name: Deploy verified image digest
         run: |
-          ssh -p "${EC2_PORT}" -i ~/.ssh/id_ed25519 \
+          ssh -p "${REMOTE_PORT}" -i ~/.ssh/id_ed25519 \
             -o BatchMode=yes -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
-            "${EC2_DEPLOY_USER}@${EC2_HOST}" \
+            "${REMOTE_USER}@${REMOTE_HOST}" \
             "sudo /usr/local/sbin/sitbank-container-deploy '${RELEASE_SHA}' '${IMAGE_DIGEST}'"
 
       - name: Remove deployment credentials and bundles
