@@ -4,11 +4,55 @@ updates:
     directory: /
     schedule:
       interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Singapore
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - docker
+    ignore:
+      - dependency-name: python
+        versions:
+          - ">=3.13"
+
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+      day: monday
+      time: "09:15"
+      timezone: Asia/Singapore
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+
   - package-ecosystem: pip
     directory: /
     schedule:
       interval: weekly
+      day: monday
+      time: "09:30"
+      timezone: Asia/Singapore
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 3
+    versioning-strategy: increase
+    open-pull-requests-limit: 8
+    labels:
+      - dependencies
+      - python
+    groups:
+      python-patch-and-minor:
+        patterns:
+          - "*"
+        update-types:
+          - patch
+          - minor

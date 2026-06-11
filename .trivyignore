@@ -1,0 +1,9 @@
+# Temporary exception for inherited Debian Trixie perl-base CVEs.
+# Inherited from official python:3.12.13-slim-trixie / Debian Trixie.
+# SITBank does not install Perl directly.
+# Debian perl-base is Essential: yes and must not be removed.
+# SITBank does not invoke Perl.
+# SITBank does not process attacker-controlled tar archives with Perl.
+# This exception is temporary; review/remove-by date: 2026-06-26.
+CVE-2026-42496
+CVE-2026-8376

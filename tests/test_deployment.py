@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -10,6 +12,7 @@ from flask import request
 from ops.deploy.import_legacy_env import import_legacy_environment
 from ops.deploy.render_container_bundle import (
     build_container_bundle,
+    build_container_environment,
     write_container_bundle,
 )
 
@@ -32,6 +35,14 @@ def _set_deployment_values(monkeypatch):
         monkeypatch.setenv(name, value)
 
 
+def _set_prefixed_deployment_values(monkeypatch, prefix: str, public_host: str):
+    for name, value in DEPLOYMENT_VALUES.items():
+        target_name = name.replace("PROD_", f"{prefix}_", 1)
+        if name == "PROD_PUBLIC_HOST":
+            value = public_host
+        monkeypatch.setenv(target_name, value)
+
+
 def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypatch):
     _set_deployment_values(monkeypatch)
 
@@ -46,6 +57,30 @@ def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypa
     assert secrets["secret_key"] == DEPLOYMENT_VALUES["PROD_SECRET_KEY"]
     assert secrets["database_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_URL"]
     assert '"2026-06":"MjIy' in secrets["session_hmac_keys_json"]
+
+
+def test_container_bundle_accepts_staging_prefix(monkeypatch):
+    _set_prefixed_deployment_values(
+        monkeypatch,
+        "STAGING",
+        "staging.sitbank.example",
+    )
+
+    environment, secrets = build_container_bundle("STAGING")
+
+    assert environment["APP_ENV"] == "production"
+    assert environment["WEBAUTHN_RP_ID"] == "staging.sitbank.example"
+    assert environment["WEBAUTHN_RP_ORIGIN"] == "https://staging.sitbank.example"
+    assert environment["SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06"
+    assert secrets["secret_key"] == DEPLOYMENT_VALUES["PROD_SECRET_KEY"]
+    assert secrets["database_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_URL"]
+
+
+def test_container_bundle_rejects_unknown_prefix(monkeypatch):
+    _set_deployment_values(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="Deployment prefix"):
+        build_container_bundle("DEV")
 
 
 def test_container_bundle_rejects_missing_multiline_and_partial_rotation(monkeypatch):
@@ -78,6 +113,56 @@ def test_container_bundle_builds_two_key_rotation_ring(monkeypatch):
 
     assert '"2026-03":"MzMz' in secrets["session_hmac_keys_json"]
     assert '"2026-06":"MjIy' in secrets["session_hmac_keys_json"]
+
+
+def test_environment_only_bundle_does_not_export_long_lived_secrets(
+    monkeypatch,
+    tmp_path,
+):
+    _set_deployment_values(monkeypatch)
+    for name in (
+        "PROD_DATABASE_URL",
+        "PROD_MFA_AES256_GCM_KEY_B64",
+        "PROD_PASSWORD_PEPPER_B64",
+        "PROD_REDIS_URL",
+        "PROD_SECRET_KEY",
+        "PROD_SESSION_HMAC_ACTIVE_KEY_B64",
+        "PROD_WTF_CSRF_SECRET_KEY",
+    ):
+        monkeypatch.delenv(name)
+
+    environment = build_container_environment()
+    output = tmp_path / "runtime"
+    write_container_bundle(output, include_secrets=False)
+
+    assert environment["SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06"
+    assert (output / "container.env").is_file()
+    assert not (output / "secrets").exists()
+
+
+def test_environment_only_bundle_accepts_staging_prefix(monkeypatch, tmp_path):
+    _set_prefixed_deployment_values(
+        monkeypatch,
+        "STAGING",
+        "staging.sitbank.example",
+    )
+    for name in (
+        "STAGING_DATABASE_URL",
+        "STAGING_MFA_AES256_GCM_KEY_B64",
+        "STAGING_PASSWORD_PEPPER_B64",
+        "STAGING_REDIS_URL",
+        "STAGING_SECRET_KEY",
+        "STAGING_SESSION_HMAC_ACTIVE_KEY_B64",
+        "STAGING_WTF_CSRF_SECRET_KEY",
+    ):
+        monkeypatch.delenv(name)
+
+    output = tmp_path / "runtime"
+    write_container_bundle(output, "STAGING", include_secrets=False)
+
+    environment = (output / "container.env").read_text(encoding="utf-8")
+    assert "WEBAUTHN_RP_ID='staging.sitbank.example'" in environment
+    assert not (output / "secrets").exists()
 
 
 def test_container_bundle_writer_quotes_dollar_values_and_separates_files(
@@ -137,15 +222,28 @@ def test_legacy_environment_import_seeds_root_runtime_without_printing_values(
 def test_dockerfile_and_compose_enforce_hardened_runtime():
     dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
     compose_text = Path("compose.prod.yml").read_text(encoding="utf-8")
+    smoke_test = Path("ops/container/smoke-test.sh").read_text(encoding="utf-8")
+    compose_validation = Path(
+        "ops/container/validate-compose.sh"
+    ).read_text(encoding="utf-8")
     compose = yaml.safe_load(compose_text)
     app = compose["services"]["app"]
 
     assert compose["name"] == "sitbank"
-    assert "python:3.12.11-slim-bookworm@sha256:" in dockerfile
+    assert (
+        "python:3.12.13-slim-trixie@"
+        "sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203"
+        in dockerfile
+    )
+    assert dockerfile.count("python:3.12.13-slim-trixie@sha256:") == 2
     assert 'org.opencontainers.image.title="SITBank banking application"' in dockerfile
     assert "USER 10001:10001" in dockerfile
     assert "--require-hashes" in dockerfile
     assert "/health/ready" in dockerfile
+    assert "apt-get upgrade" not in dockerfile
+    assert "--only-upgrade" in dockerfile
+    for security_package in ("gpgv", "libgnutls30", "libssl3", "openssl", "perl-base"):
+        assert security_package in dockerfile
     assert app["network_mode"] == "host"
     assert app["read_only"] is True
     assert app["user"] == "10001:10001"
@@ -162,6 +260,33 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
         for name, value in app["environment"].items()
         if name.endswith("_FILE")
     )
+    assert "/app/redis_compatibility_check.py:ro" in smoke_test
+    assert "python /app/redis_compatibility_check.py" in smoke_test
+    assert "/redis-check.py" not in smoke_test
+    assert "--publish 127.0.0.1::5432" in smoke_test
+    assert "--publish 127.0.0.1::6379" in smoke_test
+    assert "wait_for_healthy smoke-postgres" in smoke_test
+    assert "wait_for_healthy smoke-redis" in smoke_test
+    assert "dump_container_diagnostics" in smoke_test
+    assert "RUN_ZAP_DAST" in smoke_test
+    assert "zaproxy/zap-stable:2.17.0@sha256:" in smoke_test
+    assert "create_dast_session.py" in smoke_test
+    assert "docker compose" in compose_validation
+    assert "SITBANK_IMAGE" in compose_validation
+    assert "docker port" in smoke_test
+    assert "55432" not in smoke_test
+    assert "56379" not in smoke_test
+
+    app_python = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in Path("app").rglob("*.py")
+    )
+    assert not re.search(r"\bperl\b", app_python, flags=re.IGNORECASE)
+    assert not re.search(
+        r"\b(tarfile|zipfile|unpack_archive)\b",
+        app_python,
+        flags=re.IGNORECASE,
+    )
 
 
 def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
@@ -170,26 +295,108 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     deploy_script = Path(
         "ops/deploy/sitbank-container-deploy"
     ).read_text(encoding="utf-8")
+    runtime_script = Path(
+        "ops/deploy/sitbank-container-runtime"
+    ).read_text(encoding="utf-8")
     bootstrap = Path(
         "ops/deploy/bootstrap-container-ec2"
     ).read_text(encoding="utf-8")
 
-    assert set(workflow["jobs"]) == {"test", "image-test", "publish", "deploy"}
+    assert set(workflow["jobs"]) == {
+        "workflow-security",
+        "dependency-review",
+        "test",
+        "image-test",
+        "deployment-preflight",
+        "publish",
+        "release-verify",
+        "deploy-staging",
+        "deploy-production",
+    }
     assert workflow["permissions"] == {}
+    assert workflow["jobs"]["workflow-security"]["permissions"]["contents"] == "read"
     assert workflow["jobs"]["publish"]["permissions"]["packages"] == "write"
-    assert workflow["jobs"]["publish"]["permissions"]["id-token"] == "write"
-    assert workflow["jobs"]["deploy"]["permissions"]["packages"] == "read"
+    assert "id-token" not in workflow["jobs"]["publish"]["permissions"]
+    assert "attestations" not in workflow["jobs"]["publish"]["permissions"]
+    assert workflow["jobs"]["release-verify"]["permissions"]["id-token"] == "write"
+    assert workflow["jobs"]["deploy-staging"]["permissions"]["packages"] == "read"
+    assert workflow["jobs"]["deploy-staging"]["permissions"]["id-token"] == "write"
+    assert workflow["jobs"]["deploy-production"]["permissions"]["packages"] == "read"
+    assert workflow["jobs"]["deploy-production"]["permissions"]["id-token"] == "write"
+    assert workflow["jobs"]["publish"]["needs"] == [
+        "test",
+        "workflow-security",
+        "deployment-preflight",
+    ]
+    assert (
+        workflow["jobs"]["image-test"]["if"]
+        == "github.event_name == 'pull_request' || github.event_name == 'schedule'"
+    )
+    assert "schedule" in workflow[True]
+    assert "github.event_name == 'schedule'" not in workflow["jobs"]["publish"]["if"]
+    assert all(job["timeout-minutes"] > 0 for job in workflow["jobs"].values())
     assert "vars.PROD_DEPLOY_ENABLED == 'true'" in workflow_text
+    assert "vars.STAGING_DEPLOY_ENABLED == 'true'" in workflow_text
+    assert "workflow_dispatch" in workflow_text
+    assert "target_environment" in workflow_text
+    assert "run_dast" in workflow_text
+    assert "deploy-staging" in workflow_text
+    assert "deploy-production" in workflow_text
+    assert "PROD_EC2_HOST" in workflow_text
+    assert "PROD_EC2_SSH_PRIVATE_KEY" in workflow_text
+    assert "STAGING_EC2_HOST" in workflow_text
+    assert "STAGING_EC2_SSH_PRIVATE_KEY" in workflow_text
+    assert "vars.EC2_" not in workflow_text
+    assert "secrets.EC2_" not in workflow_text
     assert "provenance: mode=max" in workflow_text
     assert "sbom: true" in workflow_text
+    assert "ignore-unfixed: false" in workflow_text
     assert "ignore-unfixed: true" in workflow_text
+    assert workflow_text.count("Report all critical vulnerabilities") == 2
+    assert workflow_text.count("Block unexpected critical vulnerabilities") == 2
+    assert workflow_text.count('exit-code: "0"') == 2
+    assert workflow_text.count('exit-code: "1"') == 4
+    assert workflow_text.count("trivyignores: .trivyignore") == 2
+    assert workflow_text.count("TRIVY_IGNOREFILE: /dev/null") == 4
+    assert "pull: ${{ github.event_name == 'schedule' }}" in workflow_text
+    assert "no-cache: ${{ github.event_name == 'schedule' }}" in workflow_text
     assert "cosign sign --yes" in workflow_text
+    assert "cosign sign-blob --yes" in workflow_text
+    assert "cosign verify-blob" in deploy_script
+    assert "runtime-${RELEASE_SHA}.sigstore.json" in workflow_text
+    assert "RUN_ZAP_DAST" in workflow_text
+    assert "dependency-review-action@" in workflow_text
+    assert "zizmorcore/zizmor-action@" in workflow_text
+    assert "actionlint" in workflow_text
     assert "shellcheck" in workflow_text
+    assert "ops/container/validate-compose.sh" in workflow_text
+    assert "ops/container/dast-smoke.sh" in workflow_text
     assert "scan_repository_secrets.py" in workflow_text
+    assert "scan_repository_secrets.py --history" in workflow_text
+    assert "check_dependency_locks.py" in workflow_text
     assert "IMAGE_DIGEST" in workflow_text
     assert "StrictHostKeyChecking=no" not in workflow_text
-    assert "sitbank:smoke" in workflow_text
+    assert workflow_text.count("persist-credentials: false") == 8
+    assert (
+        workflow_text.count(
+            "actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10"
+        )
+        == 8
+    )
+    assert (
+        "actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405"
+        in workflow_text
+    )
+    assert "sitbank:pr" in workflow_text
     assert "SITBANK_IMAGE" in workflow_text
+    assert "SITBANK_SECRET_KEY" not in workflow_text
+    assert "STAGING_SECRET_KEY" not in workflow_text
+    assert "STAGING_DATABASE_URL" not in workflow_text
+    assert "PROD_SECRET_KEY" not in workflow_text
+    assert "PROD_DATABASE_URL" not in workflow_text
+    assert "--environment-only" in workflow_text
+    assert "--prefix STAGING" in workflow_text
+    assert "--prefix PROD" in workflow_text
     assert "sitbank-container-deploy" in workflow_text
     assert "sha256:[0-9a-f]{64}" in deploy_script
     assert "COSIGN_CERTIFICATE_IDENTITY" in deploy_script
@@ -198,6 +405,11 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "db upgrade" in deploy_script
     assert "previous_image" in deploy_script
     assert "restore_runtime" in deploy_script
+    assert "secrets/database_url" not in deploy_script
+    assert "audit_log" in deploy_script
+    assert "load_runtime_secrets" not in deploy_script
+    assert "SITBANK_SECRET_KEY" not in deploy_script
+    assert "SITBANK_SECRET_KEY" not in runtime_script
     assert "gpasswd --delete" in bootstrap
     assert "docker.sock" in bootstrap
     assert "COSIGN_SHA256" in bootstrap
@@ -208,6 +420,89 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "sitbank-container.service" in bootstrap
 
 
+def test_trivy_exception_is_narrow_documented_and_temporary():
+    trivyignore = Path(".trivyignore").read_text(encoding="utf-8")
+    readme = Path("README.md").read_text(encoding="utf-8")
+    security = Path("SECURITY.md").read_text(encoding="utf-8")
+    active_ignores = [
+        line.strip()
+        for line in trivyignore.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+    assert active_ignores == ["CVE-2026-42496", "CVE-2026-8376"]
+    for required in (
+        "official python:3.12.13-slim-trixie / Debian Trixie",
+        "does not install Perl directly",
+        "Essential: yes",
+        "must not be removed",
+        "does not invoke Perl",
+        "does not process attacker-controlled tar archives with Perl",
+        "temporary",
+        "review/remove-by date: 2026-06-26",
+    ):
+        assert required in trivyignore
+    assert "CVE-2026-42496" in readme
+    assert "CVE-2026-8376" in readme
+    assert "2026-06-26" in readme
+    assert "mixing Debian sid packages into Trixie is riskier" in readme
+    assert "full Critical Trivy report with no ignore file" in readme
+    assert "fixable High/Critical gate must continue to run without" in security
+
+
+def test_dependabot_tracks_docker_base_images_without_automerge():
+    dependabot = yaml.safe_load(Path(".github/dependabot.yml").read_text(encoding="utf-8"))
+    readme = Path("README.md").read_text(encoding="utf-8")
+    docker_updates = [
+        update
+        for update in dependabot["updates"]
+        if update["package-ecosystem"] == "docker"
+    ]
+
+    assert len(docker_updates) == 1
+    docker_update = docker_updates[0]
+    assert docker_update["directory"] == "/"
+    assert docker_update["schedule"]["interval"] == "weekly"
+    assert docker_update["ignore"] == [
+        {"dependency-name": "python", "versions": [">=3.13"]}
+    ]
+    assert "Dependabot updates are review-only" in readme
+    assert "Base-image updates must not be auto-merged" in readme
+    assert "tests, Trivy scans, smoke test, authenticated DAST" in readme
+
+
+def test_codeowners_and_codeql_cover_security_sensitive_changes():
+    codeowners = Path(".github/CODEOWNERS").read_text(encoding="utf-8")
+    codeql = Path(".github/workflows/codeql.yml").read_text(encoding="utf-8")
+
+    for protected_path in (
+        "/.github/workflows/",
+        "/Dockerfile",
+        "/compose.prod.yml",
+        "/requirements.lock",
+        "/requirements-dev.lock",
+        "/ops/deploy/",
+        "/ops/security/",
+    ):
+        assert protected_path in codeowners
+    assert "github/codeql-action/init@411bbbe57033eedfc1a82d68c01345aa96c737d7" in codeql
+    assert "github/codeql-action/analyze@411bbbe57033eedfc1a82d68c01345aa96c737d7" in codeql
+    assert "languages: python" in codeql
+
+
+def test_every_github_action_is_pinned_to_a_full_commit_sha():
+    workflow_text = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in Path(".github/workflows").glob("*.yml")
+    )
+    uses = re.findall(r"^\s*uses:\s*([^\s#]+)", workflow_text, flags=re.MULTILINE)
+
+    assert uses
+    for action in uses:
+        assert re.fullmatch(r"[^@]+@[0-9a-f]{40}", action), action
+    assert "pull_request_target:" not in workflow_text
+
+
 def test_only_sitbank_container_deployment_units_are_active():
     assert not Path("ops/deploy/bootstrap-ec2").exists()
     assert Path("ops/deploy/sitbank-container-deploy").exists()
@@ -215,6 +510,27 @@ def test_only_sitbank_container_deployment_units_are_active():
     assert Path("ops/deploy/sitbank-database-cutover").exists()
     assert Path("ops/systemd/sitbank-container.service").exists()
     assert Path("ops/sudoers/sitbank-container-deploy").exists()
+
+
+def test_dependency_manifests_have_one_hashed_lockfile_source_of_truth():
+    assert Path("requirements.in").exists()
+    assert Path("requirements-dev.in").exists()
+    assert Path("requirements.lock").exists()
+    assert Path("requirements-dev.lock").exists()
+    assert not Path("requirements.txt").exists()
+    assert not Path("requirements-dev.txt").exists()
+    assert "-r requirements.in" in Path("requirements-dev.in").read_text(
+        encoding="utf-8"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "ops/security/check_dependency_locks.py"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_tracked_files_do_not_contain_the_retired_project_name():
@@ -254,8 +570,8 @@ def test_migration_baseline_and_existing_database_runbook_are_present():
     assert "verify-migration-baseline" in readme
     assert "db stamp 20260610_0001" in readme
     assert "Do not run `db.create_all()`" in readme
-    assert "WenJiangg/SITBank" in readme
-    assert "ghcr.io/wenjiangg/sitbank@sha256:<digest>" in readme
+    assert "WenJiangggg/SITBank" in readme
+    assert "ghcr.io/wenjiangggg/sitbank@sha256:<digest>" in readme
     assert "sitbank_db" in readme
     assert "sitbank_user" in readme
     assert "sitbank-database-cutover prepare" in readme

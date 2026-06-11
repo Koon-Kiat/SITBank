@@ -112,6 +112,11 @@ def _required_url(name: str, *, schemes: set[str], require_password: bool) -> st
         raise RuntimeError(f"{name} must include credentials")
     if name == "DATABASE_URL" and (not parsed.username or parsed.path in {"", "/"}):
         raise RuntimeError("DATABASE_URL must include username and database name")
+    if name == "REDIS_URL" and (parsed.query or parsed.fragment):
+        raise RuntimeError(
+            "REDIS_URL must not include query parameters or a fragment; "
+            "connection behavior is configured by the application"
+        )
     return value
 
 
@@ -196,6 +201,12 @@ class Config:
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
     REDIS_URL = _required_url("REDIS_URL", schemes={"redis", "rediss"}, require_password=True)
+    REDIS_PROTOCOL = 2
+    REDIS_LEGACY_RESPONSES = True
+    REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS = 2.0
+    REDIS_SOCKET_TIMEOUT_SECONDS = 5.0
+    REDIS_HEALTH_CHECK_INTERVAL_SECONDS = 30
+    REDIS_MAX_CONNECTIONS = 100
     MFA_AES256_GCM_KEY_B64 = _required_b64_32_bytes("MFA_AES256_GCM_KEY_B64")
     PASSWORD_PEPPER_B64 = _required_b64_32_bytes("PASSWORD_PEPPER_B64")
     PASSWORD_PBKDF2_ITERATIONS = int(os.getenv("PASSWORD_PBKDF2_ITERATIONS", "600000"))
@@ -281,9 +292,18 @@ class Config:
     TALISMAN_FORCE_HTTPS = True
     TALISMAN_CONTENT_SECURITY_POLICY = {
         "default-src": "'self'",
+        "base-uri": "'self'",
+        "object-src": "'none'",
+        "frame-ancestors": "'none'",
+        "form-action": "'self'",
         "img-src": ["'self'", "data:"],
         "script-src": "'self'",
+        "script-src-attr": "'none'",
         "style-src": "'self'",
+        "style-src-attr": "'none'",
+        "connect-src": "'self'",
+        "font-src": "'self'",
+        "manifest-src": "'self'",
     }
 
     TRUSTED_PROXY_COUNT = int(os.getenv("TRUSTED_PROXY_COUNT", "1"))

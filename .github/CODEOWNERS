@@ -1,0 +1,18 @@
+# Default owner for application and documentation changes.
+* @WenJiangggg
+
+# Production supply-chain and deployment controls require explicit ownership.
+/.github/workflows/ @WenJiangggg
+/.github/dependabot.yml @WenJiangggg
+/Dockerfile @WenJiangggg
+/compose.prod.yml @WenJiangggg
+/requirements.in @WenJiangggg
+/requirements-dev.in @WenJiangggg
+/requirements.lock @WenJiangggg
+/requirements-dev.lock @WenJiangggg
+/ops/container/ @WenJiangggg
+/ops/deploy/ @WenJiangggg
+/ops/security/ @WenJiangggg
+/ops/sudoers/ @WenJiangggg
+/ops/systemd/ @WenJiangggg
+/migrations/ @WenJiangggg

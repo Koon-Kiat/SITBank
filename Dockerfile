@@ -1,12 +1,8 @@
-FROM python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7 AS builder
+FROM python:3.12.13-slim-trixie@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203 AS builder
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
     PYTHONDONTWRITEBYTECODE=1
-
-RUN apt-get update \
-    && DEBIAN_FRONTEND=noninteractive apt-get upgrade --yes --no-install-recommends \
-    && rm -rf /var/lib/apt/lists/*
 
 RUN python -m venv /opt/venv
 COPY requirements.lock /tmp/requirements.lock
@@ -14,7 +10,7 @@ RUN /opt/venv/bin/python -m pip install \
     --require-hashes \
     --requirement /tmp/requirements.lock
 
-FROM python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7 AS runtime
+FROM python:3.12.13-slim-trixie@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203 AS runtime
 
 ARG VCS_REF=unknown
 ARG SOURCE_URL=unknown
@@ -30,7 +26,12 @@ ENV PATH="/opt/venv/bin:${PATH}" \
     HOME=/tmp
 
 RUN apt-get update \
-    && DEBIAN_FRONTEND=noninteractive apt-get upgrade --yes --no-install-recommends \
+    && apt-get install --yes --no-install-recommends --only-upgrade \
+        gpgv \
+        libgnutls30 \
+        libssl3 \
+        openssl \
+        perl-base \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 sitbank \
     && useradd --uid 10001 --gid 10001 --no-create-home \

@@ -99,9 +99,8 @@ def mint_stepup_token(client, user, action):
     with client.session_transaction() as sess:
         session_id = sess.sid
     token = secrets.token_urlsafe(32)
-    current_app.extensions["redis"].setex(
+    current_app.extensions["redis"].set(
         _step_up_token_cache_key(token),
-        current_app.config["WEBAUTHN_STEP_UP_TTL_SECONDS"],
         json.dumps(
             {
                 "user_id": user.id,
@@ -111,6 +110,7 @@ def mint_stepup_token(client, user, action):
                 "issued_at": int(time.time()),
             }
         ),
+        ex=current_app.config["WEBAUTHN_STEP_UP_TTL_SECONDS"],
     )
     return token
 
