@@ -161,17 +161,20 @@ development, tests, and the one-time protected legacy import only.
    and a blocking fixable High/Critical Trivy gate. Pull requests do not
    publish, sign, or deploy release images, and they do not reference staging
    or production secrets.
-2. Manual `workflow_dispatch` runs can publish and verify an immutable release
-   candidate digest. Use `target_environment=staging` and `deploy=false` for a
-   staging release verification only run.
-3. Manual staging deployment requires `target_environment=staging`,
-   `deploy=true`, and `STAGING_DEPLOY_ENABLED=true`.
+2. Manual `workflow_dispatch` runs from a trusted feature branch may publish,
+   scan, sign, and verify one immutable staging candidate. Use
+   `target_environment=staging` and `deploy=false` for verification only.
+3. Manual pre-merge staging deployment requires
+   `target_environment=staging`, `deploy=true`, and
+   `STAGING_DEPLOY_ENABLED=true`. It deploys only the exact digest emitted by
+   `publish`; it cannot trigger production.
 4. Pushes to `main` publish one immutable GHCR image with SBOM and provenance
    attestations, verify the exact digest, and deploy to staging only when
    `STAGING_DEPLOY_ENABLED=true`.
 5. Production deployment is restricted to `main`, uses the `production`
-   environment, and runs only when `PROD_DEPLOY_ENABLED=true`. On automatic
-   `main` runs, production waits for staging when staging deployment is enabled.
+   environment, and runs automatically only on a push when
+   `PROD_DEPLOY_ENABLED=true` and staging succeeded in the same workflow.
+   Production never skips disabled, skipped, or failed staging.
 6. Release verification validates the exact digest from `publish`, checks the
    image revision label, validates the Compose model against that digest, runs
    migrations, `production-check`, Redis compatibility checks, `/health/ready`,
@@ -192,6 +195,24 @@ packages visible without permitting scheduled publish or deployment.
 Every third-party action is pinned to a full commit SHA. Publishing remains
 available while deployment is disabled, allowing the same signed digest to be
 verified without changing EC2.
+
+The release flows are:
+
+```text
+Pull request:
+  tests and validation only
+
+Manual pre-merge staging:
+  trusted branch -> workflow_dispatch -> publish -> release-verify -> staging
+  -> manual verification -> merge pull request
+
+Automatic main release:
+  main push -> publish -> release-verify -> staging -> production
+```
+
+Manual production deployment is disabled. A production deployment requires
+the protected `main` push path and a successful staging deployment in that
+same workflow run.
 
 ### Temporary Trivy Exception
 
@@ -511,6 +532,16 @@ GITHUB_REPOSITORY=WenJiangggg/SITBank
 GHCR_REPOSITORY=ghcr.io/wenjiangggg/sitbank
 COSIGN_CERTIFICATE_IDENTITY=https://github.com/WenJiangggg/SITBank/.github/workflows/ci-deploy.yml@refs/heads/main
 ```
+
+Staging uses a separate, repository-scoped branch identity regular expression
+in `/etc/sitbank-staging/deploy.conf`:
+
+```text
+COSIGN_CERTIFICATE_IDENTITY_REGEXP=^https://github[.]com/WenJiangggg/SITBank/[.]github/workflows/ci-deploy[.]yml@refs/heads/[A-Za-z0-9._/-]+$
+```
+
+Production must retain the exact `main` identity. Do not replace its
+`COSIGN_CERTIFICATE_IDENTITY` with the staging regular expression.
 
 The private GHCR package must grant Actions access to `WenJiangggg/SITBank`
 before enabling production deployment.

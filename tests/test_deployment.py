@@ -441,7 +441,9 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     for condition in (publish_condition, release_verify_condition):
         assert "github.event_name != 'pull_request'" in condition
         assert "github.ref == 'refs/heads/main'" in condition
-    assert "github.event_name == 'workflow_dispatch'" in publish_condition
+        assert "github.event_name == 'push'" in condition
+        assert "github.event_name == 'workflow_dispatch'" in condition
+        assert "inputs.target_environment == 'staging'" in condition
     assert workflow["jobs"]["release-verify"]["needs"] == "publish"
     release_verify_steps = [
         step["name"] for step in workflow["jobs"]["release-verify"]["steps"]
@@ -449,10 +451,56 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert release_verify_steps.index("Log in to GHCR") < release_verify_steps.index(
         "Sign and verify the tested immutable digest"
     )
+    release_image_step = next(
+        step
+        for step in workflow["jobs"]["release-verify"]["steps"]
+        if step["name"] == "Resolve verified image reference"
+    )
+    assert (
+        release_image_step["env"]["IMAGE_DIGEST"]
+        == "${{ needs.publish.outputs.digest }}"
+    )
+    release_smoke_step = next(
+        step
+        for step in workflow["jobs"]["release-verify"]["steps"]
+        if step["name"] == "Smoke-test and DAST-scan the exact published digest"
+    )
+    assert release_smoke_step["env"]["RUN_ZAP_DAST"] == (
+        "${{ github.event_name != 'workflow_dispatch' || inputs.run_dast == true }}"
+    )
     assert workflow["jobs"]["deploy-staging"]["permissions"]["packages"] == "read"
     assert workflow["jobs"]["deploy-staging"]["permissions"]["id-token"] == "write"
     assert workflow["jobs"]["deploy-production"]["permissions"]["packages"] == "read"
     assert workflow["jobs"]["deploy-production"]["permissions"]["id-token"] == "write"
+    staging_condition = workflow["jobs"]["deploy-staging"]["if"]
+    production_condition = workflow["jobs"]["deploy-production"]["if"]
+    assert "github.event_name != 'pull_request'" in staging_condition
+    assert "needs.release-verify.result == 'success'" in staging_condition
+    assert "github.event_name == 'push'" in staging_condition
+    assert "github.ref == 'refs/heads/main'" in staging_condition
+    assert "github.event_name == 'workflow_dispatch'" in staging_condition
+    assert "inputs.target_environment == 'staging'" in staging_condition
+    assert "inputs.deploy == true" in staging_condition
+    assert "vars.STAGING_DEPLOY_ENABLED == 'true'" in staging_condition
+    assert "always()" in production_condition
+    assert "github.event_name == 'push'" in production_condition
+    assert "github.event_name == 'workflow_dispatch'" not in production_condition
+    assert "github.ref == 'refs/heads/main'" in production_condition
+    assert "vars.PROD_DEPLOY_ENABLED == 'true'" in production_condition
+    assert "needs.release-verify.result == 'success'" in production_condition
+    assert "needs.deploy-staging.result == 'success'" in production_condition
+    assert "vars.STAGING_DEPLOY_ENABLED != 'true'" not in production_condition
+    assert "inputs.deploy == true" not in production_condition
+    dispatch_inputs = workflow[True]["workflow_dispatch"]["inputs"]
+    assert dispatch_inputs["target_environment"]["options"] == ["staging"]
+    assert (
+        workflow["jobs"]["deploy-staging"]["env"]["IMAGE_DIGEST"]
+        == "${{ needs.release-verify.outputs.digest }}"
+    )
+    assert (
+        workflow["jobs"]["deploy-production"]["env"]["IMAGE_DIGEST"]
+        == "${{ needs.release-verify.outputs.digest }}"
+    )
     assert workflow["jobs"]["publish"]["needs"] == [
         "test",
         "workflow-security",
@@ -492,6 +540,8 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "no-cache: ${{ github.event_name == 'schedule' }}" in workflow_text
     assert "cosign sign --yes" in workflow_text
     assert "cosign sign-blob --yes" in workflow_text
+    assert workflow_text.count("Build and push the release candidate once") == 1
+    assert ":latest" not in workflow_text
     assert "cosign verify-blob" in deploy_script
     assert "runtime-${RELEASE_SHA}.sigstore.json" in workflow_text
     assert "RUN_ZAP_DAST" in workflow_text
@@ -540,6 +590,16 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     )
     assert "sha256:[0-9a-f]{64}" in deploy_script
     assert "COSIGN_CERTIFICATE_IDENTITY" in deploy_script
+    assert "COSIGN_CERTIFICATE_IDENTITY_REGEXP" in deploy_script
+    assert "--certificate-identity-regexp" in deploy_script
+    assert (
+        "ci-deploy[.]yml@refs/heads/[A-Za-z0-9._/-]+$"
+        in deploy_script
+    )
+    assert (
+        "ci-deploy.yml@refs/heads/main"
+        in deploy_script
+    )
     assert "org.opencontainers.image.revision" in deploy_script
     assert "production-check" in deploy_script
     assert "db upgrade" in deploy_script
@@ -566,6 +626,12 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "gpasswd --delete" in bootstrap
     assert "docker.sock" in bootstrap
     assert "COSIGN_SHA256" in bootstrap
+    assert "COSIGN_CERTIFICATE_IDENTITY_REGEXP" in bootstrap
+    assert (
+        "ci-deploy[.]yml@refs/heads/[A-Za-z0-9._/-]+$"
+        in bootstrap
+    )
+    assert "ci-deploy.yml@refs/heads/main" in bootstrap
     assert "/opt/sitbank" in bootstrap
     assert "/etc/sitbank" in bootstrap
     assert "/var/lib/sitbank-container" in bootstrap
@@ -575,6 +641,13 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "sitbank-deploy" in bootstrap
     assert "sitbank-container.service" in bootstrap
     assert "sitbank-staging-container.service" in bootstrap
+
+    readme = Path("README.md").read_text(encoding="utf-8")
+    assert "Manual pre-merge staging:" in readme
+    assert "trusted branch -> workflow_dispatch -> publish -> release-verify -> staging" in readme
+    assert "main push -> publish -> release-verify -> staging -> production" in readme
+    assert "Manual production deployment is disabled." in readme
+    assert "Production never skips disabled, skipped, or failed staging." in readme
 
 
 def test_trivy_exception_is_narrow_documented_and_temporary():

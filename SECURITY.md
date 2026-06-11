@@ -70,9 +70,16 @@ that ignore file.
 ## Deployment and Rollback
 
 Only a protected `main` workflow may produce a trusted production signature.
-The tested, scanned, signed, and deployed image digest must be identical.
-Deployment accepts only the configured GHCR repository, the protected
-workflow identity, a 40-character commit SHA, and an immutable SHA-256 digest.
+Staging may trust this repository's release workflow on a selected
+`refs/heads/*` branch, but production trusts only the exact
+`refs/heads/main` workflow identity. The tested, scanned, signed, and deployed
+image digest must be identical. Deployment accepts only the configured GHCR
+repository, environment-specific workflow identity policy, a 40-character
+commit SHA, and an immutable SHA-256 digest.
+
+Production deployment is automatic on a protected `main` push only. It must
+not run unless staging succeeded in the same workflow; disabled, skipped, or
+failed staging blocks production.
 
 Migrations must remain backward-compatible with the previous image. If
 readiness fails, the wrapper restores the previous digest and non-secret

@@ -14,7 +14,6 @@ on:
         type: choice
         options:
           - staging
-          - production
         default: staging
       deploy:
         description: Deploy the verified digest after release verification.
@@ -255,7 +254,7 @@ jobs:
         shell: bash
         run: |
           case "${TARGET_ENVIRONMENT}" in
-            staging|production) ;;
+            staging) ;;
             *)
               echo "::error::Invalid target_environment '${TARGET_ENVIRONMENT}'."
               exit 1
@@ -267,22 +266,10 @@ jobs:
             exit 1
           fi
 
-          if [[ "${TARGET_ENVIRONMENT}" == "production" \
-              && "${GITHUB_REF}" != "refs/heads/main" ]]; then
-            echo "::error::Manual production deployment is allowed only from refs/heads/main."
-            exit 1
-          fi
-
           if [[ "${DEPLOY_REQUESTED}" == "true" \
               && "${TARGET_ENVIRONMENT}" == "staging" \
               && "${STAGING_DEPLOY_ENABLED}" != "true" ]]; then
             echo "::notice::Staging deployment requested, but STAGING_DEPLOY_ENABLED is not true. The digest will be verified and deployment will be skipped."
-          fi
-
-          if [[ "${DEPLOY_REQUESTED}" == "true" \
-              && "${TARGET_ENVIRONMENT}" == "production" \
-              && "${PROD_DEPLOY_ENABLED}" != "true" ]]; then
-            echo "::notice::Production deployment requested, but PROD_DEPLOY_ENABLED is not true. The digest will be verified and deployment will be skipped."
           fi
 
           if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF}" == "refs/heads/main" ]]; then
@@ -297,8 +284,16 @@ jobs:
   publish:
     if: >-
       github.event_name != 'pull_request' &&
-      github.ref == 'refs/heads/main' &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      (
+        (
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/main'
+        ) ||
+        (
+          github.event_name == 'workflow_dispatch' &&
+          inputs.target_environment == 'staging'
+        )
+      )
     needs: [test, workflow-security, deployment-preflight]
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -368,7 +363,16 @@ jobs:
   release-verify:
     if: >-
       github.event_name != 'pull_request' &&
-      github.ref == 'refs/heads/main'
+      (
+        (
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/main'
+        ) ||
+        (
+          github.event_name == 'workflow_dispatch' &&
+          inputs.target_environment == 'staging'
+        )
+      )
     needs: publish
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -492,6 +496,7 @@ jobs:
 
   deploy-staging:
     if: >-
+      github.event_name != 'pull_request' &&
       needs.release-verify.result == 'success' &&
       (
         (
@@ -632,23 +637,10 @@ jobs:
     if: >-
       always() &&
       needs.release-verify.result == 'success' &&
-      github.event_name != 'pull_request' &&
+      needs.deploy-staging.result == 'success' &&
+      github.event_name == 'push' &&
       github.ref == 'refs/heads/main' &&
-      vars.PROD_DEPLOY_ENABLED == 'true' &&
-      (
-        (
-          github.event_name == 'push' &&
-          (
-            vars.STAGING_DEPLOY_ENABLED != 'true' ||
-            needs.deploy-staging.result == 'success'
-          )
-        ) ||
-        (
-          github.event_name == 'workflow_dispatch' &&
-          inputs.target_environment == 'production' &&
-          inputs.deploy == true
-        )
-      )
+      vars.PROD_DEPLOY_ENABLED == 'true'
     needs:
       - release-verify
       - deploy-staging
