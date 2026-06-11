@@ -35,6 +35,14 @@ def _set_deployment_values(monkeypatch):
         monkeypatch.setenv(name, value)
 
 
+def _set_prefixed_deployment_values(monkeypatch, prefix: str, public_host: str):
+    for name, value in DEPLOYMENT_VALUES.items():
+        target_name = name.replace("PROD_", f"{prefix}_", 1)
+        if name == "PROD_PUBLIC_HOST":
+            value = public_host
+        monkeypatch.setenv(target_name, value)
+
+
 def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypatch):
     _set_deployment_values(monkeypatch)
 
@@ -49,6 +57,30 @@ def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypa
     assert secrets["secret_key"] == DEPLOYMENT_VALUES["PROD_SECRET_KEY"]
     assert secrets["database_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_URL"]
     assert '"2026-06":"MjIy' in secrets["session_hmac_keys_json"]
+
+
+def test_container_bundle_accepts_staging_prefix(monkeypatch):
+    _set_prefixed_deployment_values(
+        monkeypatch,
+        "STAGING",
+        "staging.sitbank.example",
+    )
+
+    environment, secrets = build_container_bundle("STAGING")
+
+    assert environment["APP_ENV"] == "production"
+    assert environment["WEBAUTHN_RP_ID"] == "staging.sitbank.example"
+    assert environment["WEBAUTHN_RP_ORIGIN"] == "https://staging.sitbank.example"
+    assert environment["SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06"
+    assert secrets["secret_key"] == DEPLOYMENT_VALUES["PROD_SECRET_KEY"]
+    assert secrets["database_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_URL"]
+
+
+def test_container_bundle_rejects_unknown_prefix(monkeypatch):
+    _set_deployment_values(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="Deployment prefix"):
+        build_container_bundle("DEV")
 
 
 def test_container_bundle_rejects_missing_multiline_and_partial_rotation(monkeypatch):
@@ -105,6 +137,31 @@ def test_environment_only_bundle_does_not_export_long_lived_secrets(
 
     assert environment["SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06"
     assert (output / "container.env").is_file()
+    assert not (output / "secrets").exists()
+
+
+def test_environment_only_bundle_accepts_staging_prefix(monkeypatch, tmp_path):
+    _set_prefixed_deployment_values(
+        monkeypatch,
+        "STAGING",
+        "staging.sitbank.example",
+    )
+    for name in (
+        "STAGING_DATABASE_URL",
+        "STAGING_MFA_AES256_GCM_KEY_B64",
+        "STAGING_PASSWORD_PEPPER_B64",
+        "STAGING_REDIS_URL",
+        "STAGING_SECRET_KEY",
+        "STAGING_SESSION_HMAC_ACTIVE_KEY_B64",
+        "STAGING_WTF_CSRF_SECRET_KEY",
+    ):
+        monkeypatch.delenv(name)
+
+    output = tmp_path / "runtime"
+    write_container_bundle(output, "STAGING", include_secrets=False)
+
+    environment = (output / "container.env").read_text(encoding="utf-8")
+    assert "WEBAUTHN_RP_ID='staging.sitbank.example'" in environment
     assert not (output / "secrets").exists()
 
 
@@ -174,11 +231,11 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
 
     assert compose["name"] == "sitbank"
     assert (
-        "python:3.12.13-slim-bookworm@"
-        "sha256:93ab4b7fa528b25124c97bcc755415e60eb671a86b4dbe0328df2fe2d1c1193d"
+        "python:3.12.13-slim-trixie@"
+        "sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203"
         in dockerfile
     )
-    assert dockerfile.count("python:3.12.13-slim-bookworm@sha256:") == 2
+    assert dockerfile.count("python:3.12.13-slim-trixie@sha256:") == 2
     assert 'org.opencontainers.image.title="SITBank banking application"' in dockerfile
     assert "USER 10001:10001" in dockerfile
     assert "--require-hashes" in dockerfile
@@ -203,10 +260,7 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
         for name, value in app["environment"].items()
         if name.endswith("_FILE")
     )
-    assert (
-        "/app/redis_compatibility_check.py:ro"
-        in smoke_test
-    )
+    assert "/app/redis_compatibility_check.py:ro" in smoke_test
     assert "python /app/redis_compatibility_check.py" in smoke_test
     assert "/redis-check.py" not in smoke_test
     assert "--publish 127.0.0.1::5432" in smoke_test
@@ -242,22 +296,42 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         "dependency-review",
         "test",
         "image-test",
+        "deployment-preflight",
         "publish",
         "release-verify",
-        "deploy",
+        "deploy-staging",
+        "deploy-production",
     }
     assert workflow["permissions"] == {}
+    assert workflow["jobs"]["workflow-security"]["permissions"]["contents"] == "read"
     assert workflow["jobs"]["publish"]["permissions"]["packages"] == "write"
     assert "id-token" not in workflow["jobs"]["publish"]["permissions"]
-    assert workflow["jobs"]["release-verify"]["permissions"]["id-token"] == "write"
     assert "attestations" not in workflow["jobs"]["publish"]["permissions"]
-    assert workflow["jobs"]["deploy"]["permissions"]["packages"] == "read"
-    assert workflow["jobs"]["deploy"]["permissions"]["id-token"] == "write"
-    assert all(
-        job["timeout-minutes"] > 0
-        for job in workflow["jobs"].values()
-    )
+    assert workflow["jobs"]["release-verify"]["permissions"]["id-token"] == "write"
+    assert workflow["jobs"]["deploy-staging"]["permissions"]["packages"] == "read"
+    assert workflow["jobs"]["deploy-staging"]["permissions"]["id-token"] == "write"
+    assert workflow["jobs"]["deploy-production"]["permissions"]["packages"] == "read"
+    assert workflow["jobs"]["deploy-production"]["permissions"]["id-token"] == "write"
+    assert workflow["jobs"]["publish"]["needs"] == [
+        "test",
+        "workflow-security",
+        "deployment-preflight",
+    ]
+    assert workflow["jobs"]["image-test"]["if"] == "github.event_name == 'pull_request'"
+    assert all(job["timeout-minutes"] > 0 for job in workflow["jobs"].values())
     assert "vars.PROD_DEPLOY_ENABLED == 'true'" in workflow_text
+    assert "vars.STAGING_DEPLOY_ENABLED == 'true'" in workflow_text
+    assert "workflow_dispatch" in workflow_text
+    assert "target_environment" in workflow_text
+    assert "run_dast" in workflow_text
+    assert "deploy-staging" in workflow_text
+    assert "deploy-production" in workflow_text
+    assert "PROD_EC2_HOST" in workflow_text
+    assert "PROD_EC2_SSH_PRIVATE_KEY" in workflow_text
+    assert "STAGING_EC2_HOST" in workflow_text
+    assert "STAGING_EC2_SSH_PRIVATE_KEY" in workflow_text
+    assert "vars.EC2_" not in workflow_text
+    assert "secrets.EC2_" not in workflow_text
     assert "provenance: mode=max" in workflow_text
     assert "sbom: true" in workflow_text
     assert "ignore-unfixed: false" in workflow_text
@@ -272,17 +346,18 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "actionlint" in workflow_text
     assert "shellcheck" in workflow_text
     assert "ops/container/validate-compose.sh" in workflow_text
+    assert "ops/container/dast-smoke.sh" in workflow_text
     assert "scan_repository_secrets.py" in workflow_text
     assert "scan_repository_secrets.py --history" in workflow_text
     assert "check_dependency_locks.py" in workflow_text
     assert "IMAGE_DIGEST" in workflow_text
     assert "StrictHostKeyChecking=no" not in workflow_text
-    assert workflow_text.count("persist-credentials: false") == 7
+    assert workflow_text.count("persist-credentials: false") == 8
     assert (
         workflow_text.count(
             "actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10"
         )
-        == 7
+        == 8
     )
     assert (
         "actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405"
@@ -291,9 +366,13 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "sitbank:pr" in workflow_text
     assert "SITBANK_IMAGE" in workflow_text
     assert "SITBANK_SECRET_KEY" not in workflow_text
+    assert "STAGING_SECRET_KEY" not in workflow_text
+    assert "STAGING_DATABASE_URL" not in workflow_text
     assert "PROD_SECRET_KEY" not in workflow_text
     assert "PROD_DATABASE_URL" not in workflow_text
     assert "--environment-only" in workflow_text
+    assert "--prefix STAGING" in workflow_text
+    assert "--prefix PROD" in workflow_text
     assert "sitbank-container-deploy" in workflow_text
     assert "sha256:[0-9a-f]{64}" in deploy_script
     assert "COSIGN_CERTIFICATE_IDENTITY" in deploy_script

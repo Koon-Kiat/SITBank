@@ -132,62 +132,133 @@ development, tests, and the one-time protected legacy import only.
 
 `.github/workflows/ci-deploy.yml`:
 
-1. Runs pytest, compilation, package checks, Bandit, both dependency-lock
-   audits, dependency review, current-tree and Git-history secret scanning,
-   actionlint, and zizmor.
-2. Builds a pull-request image for container smoke tests and authenticated
-   OWASP ZAP DAST.
-3. Builds and pushes the `main` release image exactly once with SBOM and
-   provenance attestations.
-4. Pulls that immutable registry digest and checks its commit label.
-5. Runs migrations, `production-check`, Redis compatibility checks,
-   `/health/ready`, authenticated ZAP DAST, and Trivy against that exact digest.
-6. Blocks every Critical image vulnerability, including unfixed findings, and
-   separately blocks fixable High findings.
-7. Signs the tested digest with Cosign keyless GitHub OIDC.
-8. Signs the non-secret runtime configuration bundle separately and passes
-   only the commit SHA and verified `sha256:` image digest to deployment.
+1. Pull requests run workflow security checks, pytest, compilation, package
+   checks, Bandit, both dependency-lock audits, dependency review, current-tree
+   and Git-history secret scanning, actionlint, zizmor, local image build,
+   smoke tests, authenticated OWASP ZAP DAST, Compose validation, and both
+   Trivy gates. Pull requests do not publish, sign, or deploy release images,
+   and they do not reference staging or production secrets.
+2. Manual `workflow_dispatch` runs can publish and verify an immutable release
+   candidate digest. Use `target_environment=staging` and `deploy=false` for a
+   staging release verification only run.
+3. Manual staging deployment requires `target_environment=staging`,
+   `deploy=true`, and `STAGING_DEPLOY_ENABLED=true`.
+4. Pushes to `main` publish one immutable GHCR image with SBOM and provenance
+   attestations, verify the exact digest, and deploy to staging only when
+   `STAGING_DEPLOY_ENABLED=true`.
+5. Production deployment is restricted to `main`, uses the `production`
+   environment, and runs only when `PROD_DEPLOY_ENABLED=true`. On automatic
+   `main` runs, production waits for staging when staging deployment is enabled.
+6. Release verification validates the exact digest from `publish`, checks the
+   image revision label, validates the Compose model against that digest, runs
+   migrations, `production-check`, Redis compatibility checks, `/health/ready`,
+   authenticated ZAP DAST unless a manual run disables it, and both Trivy
+   gates.
+7. The tested digest is signed and verified with Cosign keyless GitHub OIDC.
+   Each deployment also signs the non-secret runtime configuration bundle.
+8. Deployment passes only the commit SHA and verified `sha256:` image digest to
+   the protected EC2 wrapper. It never deploys `latest` and never rebuilds for
+   staging or production.
 
 Every third-party action is pinned to a full commit SHA. Publishing remains
-available while production deployment is disabled, allowing an administrator
-to deploy the same signed digest manually.
+available while deployment is disabled, allowing the same signed digest to be
+verified without changing EC2.
 
-### Production Environment
+### GitHub Environments
 
-Ask a repository administrator to create the `production` environment:
+Create separate `staging` and `production` environments. Restrict production
+deployment branches to `main`, add required reviewers, prevent self-review
+where supported, and protect `main` with pull-request approval, required CI
+checks, and disabled force pushes.
 
-- Restrict deployment branches to `main`.
-- Add required reviewers and prevent self-review where supported.
+Set these repository Actions variables before the first merge:
+
+- Restrict production deployment branches to `main`.
+- Add required production reviewers and prevent self-review where supported.
 - Protect `main` with pull-request approval, required CI and CodeQL checks,
   required CODEOWNERS review for security-sensitive paths, stale-review
   dismissal, and disabled force pushes.
 - Enable the dependency graph, Dependabot alerts, secret scanning, and push
   protection. CodeQL on a private repository requires GitHub Code Security.
 
-Add these environment secrets:
+Set these repository Actions variables before the first merge:
 
-- `EC2_SSH_PRIVATE_KEY`
-- `EC2_KNOWN_HOSTS`
+- `STAGING_DEPLOY_ENABLED=false`
+- `PROD_DEPLOY_ENABLED=false`
 
-Add these environment variables:
+The enable flags are repository variables because the workflow evaluates them
+before environment-scoped variables are loaded. With both disabled, a `main`
+run still builds, scans, signs, and release-verifies the digest, then skips
+deployment clearly.
 
-- `EC2_HOST`
-- `EC2_PORT`, normally `22`
-- `EC2_DEPLOY_USER`, normally `sitbank-deploy`
+#### Staging Environment
+
+Add these staging environment secrets:
+
+- `STAGING_EC2_KNOWN_HOSTS`
+- `STAGING_EC2_SSH_PRIVATE_KEY`
+
+Add these staging environment variables:
+
+- `STAGING_EC2_DEPLOY_USER`
+- `STAGING_EC2_HOST`
+- `STAGING_EC2_PORT`
+- `STAGING_MFA_ISSUER_NAME`
+- `STAGING_PASSWORD_PBKDF2_ITERATIONS`
+- `STAGING_PUBLIC_HOST`
+- `STAGING_SESSION_HMAC_ACTIVE_KEY_ID`
+
+Staging application runtime secrets remain root-managed on the staging host
+under `/etc/sitbank/secrets`. Do not copy database URLs, Redis URLs, Flask
+keys, password peppers, MFA encryption keys, or session HMAC key material into
+GitHub Actions secrets.
+
+#### Production Environment
+
+Add these production environment secrets:
+
+- `PROD_EC2_KNOWN_HOSTS`
+- `PROD_EC2_SSH_PRIVATE_KEY`
+
+Add these production environment variables:
+
+- `PROD_EC2_DEPLOY_USER`
+- `PROD_EC2_HOST`
+- `PROD_EC2_PORT`
+- `PROD_MFA_ISSUER_NAME`
+- `PROD_PASSWORD_PBKDF2_ITERATIONS`
 - `PROD_PUBLIC_HOST`, currently `sitbank.duckdns.org`
 - `PROD_SESSION_HMAC_ACTIVE_KEY_ID`
-- `PROD_PASSWORD_PBKDF2_ITERATIONS`, normally `600000`
-- `PROD_MFA_ISSUER_NAME`, normally `SITBank`
 
-Set the repository Actions variable `PROD_DEPLOY_ENABLED=false` during
-bootstrap. Set it to the exact value `true` only after EC2 is ready.
+Production application runtime secrets remain root-managed on the production
+host under `/etc/sitbank/secrets`. Session HMAC keyring rotation is performed
+by updating the protected host secret file and the non-secret active key ID
+together during a controlled maintenance procedure.
+
+#### Production EC2 Name Migration
+
+Existing unprefixed production deployment names are deprecated and are not used
+by the workflow. Rename them before enabling production deployment:
+
+| Old name | New canonical name |
+| --- | --- |
+| `EC2_KNOWN_HOSTS` | `PROD_EC2_KNOWN_HOSTS` |
+| `EC2_SSH_PRIVATE_KEY` | `PROD_EC2_SSH_PRIVATE_KEY` |
+| `EC2_DEPLOY_USER` | `PROD_EC2_DEPLOY_USER` |
+| `EC2_HOST` | `PROD_EC2_HOST` |
+| `EC2_PORT` | `PROD_EC2_PORT` |
 
 Configuration names and non-secret defaults are safe to document. Their values
-must never be committed. Verify `EC2_KNOWN_HOSTS` through a trusted channel;
-never accept an unexpected SSH host-key change merely to make deployment pass.
+must never be committed. Verify known hosts through a trusted channel; never
+accept an unexpected SSH host-key change merely to make deployment pass.
 
 The production database and Redis URLs must use `127.0.0.1`, because both
 services remain bound to EC2 loopback and the app uses host networking.
+
+The active production runtime is Docker Compose under
+`sitbank-container.service`, using `/opt/sitbank/compose.yml`. The legacy
+`sitbank.service`, old service names, and `/var/www` application directories
+are not the active runtime.
 
 ## One-Time EC2 Transition
 
@@ -323,15 +394,16 @@ with:
 restrict ssh-ed25519 AAAA... github-actions-sitbank
 ```
 
-Store the private key only as `EC2_SSH_PRIVATE_KEY`. Verify the server host-key
-fingerprint through the EC2 console or another trusted channel:
+Store the private key only as `PROD_EC2_SSH_PRIVATE_KEY` in the `production`
+environment. Verify the server host-key fingerprint through the EC2 console or
+another trusted channel:
 
 ```bash
 sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256
 ```
 
 Store the verified complete `ssh-keyscan -H -t ed25519
-sitbank.duckdns.org` result as `EC2_KNOWN_HOSTS`.
+sitbank.duckdns.org` result as `PROD_EC2_KNOWN_HOSTS`.
 
 ### 6. Seed Root-Managed Container Secrets
 
