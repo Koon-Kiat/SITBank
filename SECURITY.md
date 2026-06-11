@@ -50,6 +50,17 @@ An exception must be approved in the pull request and record:
 Expired exceptions block release. Critical image vulnerabilities are not
 ignored by default, including vulnerabilities without a vendor fix.
 
+The temporary `.trivyignore` exception for `CVE-2026-42496` and
+`CVE-2026-8376` applies only to inherited Debian Trixie `perl-base` findings
+from the official `python:3.12.13-slim-trixie` base image. The application does
+not install or invoke Perl and does not process attacker-controlled tar
+archives with Perl. `perl-base` is an essential Debian package, so removal or
+mixing sid packages into Trixie is not an approved mitigation. Review and
+remove this exception by 2026-06-26, or sooner when Debian or the official
+Python image publishes a fixed package or fixed digest. The full Critical
+Trivy report and the fixable High/Critical gate must continue to run without
+that ignore file.
+
 ## Deployment and Rollback
 
 Only a protected `main` workflow may produce a trusted production signature.

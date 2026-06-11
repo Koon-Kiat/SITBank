@@ -39,6 +39,12 @@ manifest without updating the corresponding hashed lockfiles. The production
 image remains on Python 3.12; Docker updates to Python 3.13 or newer are
 ignored until a deliberate runtime migration is approved.
 
+Docker base images remain pinned by digest in the Dockerfile. Dependabot is
+configured to propose Dockerfile base-image updates as pull requests, and those
+PRs must run the same tests, Trivy scans, smoke test, authenticated DAST,
+actionlint, zizmor, and shellcheck checks as application changes.
+Base-image updates must not be auto-merged.
+
 Docker Desktop is optional for ordinary Python development. Install it with
 the WSL2 Linux-container backend when changing the Dockerfile, Compose model,
 or container deployment scripts. GitHub Actions remains the authoritative
@@ -135,9 +141,11 @@ development, tests, and the one-time protected legacy import only.
 1. Pull requests run workflow security checks, pytest, compilation, package
    checks, Bandit, both dependency-lock audits, dependency review, current-tree
    and Git-history secret scanning, actionlint, zizmor, local image build,
-   smoke tests, authenticated OWASP ZAP DAST, Compose validation, and both
-   Trivy gates. Pull requests do not publish, sign, or deploy release images,
-   and they do not reference staging or production secrets.
+   smoke tests, authenticated OWASP ZAP DAST, Compose validation, a visible
+   non-blocking Critical Trivy report, a strict unexpected-Critical Trivy gate,
+   and a blocking fixable High/Critical Trivy gate. Pull requests do not
+   publish, sign, or deploy release images, and they do not reference staging
+   or production secrets.
 2. Manual `workflow_dispatch` runs can publish and verify an immutable release
    candidate digest. Use `target_environment=staging` and `deploy=false` for a
    staging release verification only run.
@@ -160,9 +168,32 @@ development, tests, and the one-time protected legacy import only.
    the protected EC2 wrapper. It never deploys `latest` and never rebuilds for
    staging or production.
 
+Scheduled CI runs weekly on `main` and rebuilds the local image with `--pull`
+and no cache before running the same smoke, authenticated DAST, Compose
+validation, and Trivy checks. This keeps the pinned Debian/Python base image
+under regular review and makes fixed upstream base digests or fixed Debian
+packages visible without permitting scheduled publish or deployment.
+
 Every third-party action is pinned to a full commit SHA. Publishing remains
 available while deployment is disabled, allowing the same signed digest to be
 verified without changing EC2.
+
+### Temporary Trivy Exception
+
+`.trivyignore` contains a narrow temporary exception for only
+`CVE-2026-42496` and `CVE-2026-8376`. Both findings are inherited from the
+official `python:3.12.13-slim-trixie` Debian Trixie base image through
+`perl-base`; the Dockerfile does not install Perl directly. Debian marks
+`perl-base` as an essential package. Removing `perl-base` or mixing Debian sid packages into Trixie is riskier
+than a narrow, documented exception while no safe Trixie fix exists.
+
+The SITBank application does not invoke Perl and does not process
+attacker-controlled tar archives with Perl. The exception does not apply to
+application dependency vulnerabilities and must be reviewed and removed by
+2026-06-26, or sooner when Debian or the official Python image publishes a
+fixed package or fixed digest. Until removal, CI still prints the full Critical Trivy report with no ignore file,
+blocks any new unexpected Critical finding through the strict `.trivyignore`
+gate, and blocks fixable High/Critical findings with no ignore file.
 
 ### GitHub Environments
 

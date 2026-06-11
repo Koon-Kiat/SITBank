@@ -242,7 +242,7 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "/health/ready" in dockerfile
     assert "apt-get upgrade" not in dockerfile
     assert "--only-upgrade" in dockerfile
-    for security_package in ("gpgv", "libgnutls30", "libssl3", "openssl"):
+    for security_package in ("gpgv", "libgnutls30", "libssl3", "openssl", "perl-base"):
         assert security_package in dockerfile
     assert app["network_mode"] == "host"
     assert app["read_only"] is True
@@ -276,6 +276,17 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "docker port" in smoke_test
     assert "55432" not in smoke_test
     assert "56379" not in smoke_test
+
+    app_python = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in Path("app").rglob("*.py")
+    )
+    assert not re.search(r"\bperl\b", app_python, flags=re.IGNORECASE)
+    assert not re.search(
+        r"\b(tarfile|zipfile|unpack_archive)\b",
+        app_python,
+        flags=re.IGNORECASE,
+    )
 
 
 def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
@@ -317,7 +328,12 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         "workflow-security",
         "deployment-preflight",
     ]
-    assert workflow["jobs"]["image-test"]["if"] == "github.event_name == 'pull_request'"
+    assert (
+        workflow["jobs"]["image-test"]["if"]
+        == "github.event_name == 'pull_request' || github.event_name == 'schedule'"
+    )
+    assert "schedule" in workflow[True]
+    assert "github.event_name == 'schedule'" not in workflow["jobs"]["publish"]["if"]
     assert all(job["timeout-minutes"] > 0 for job in workflow["jobs"].values())
     assert "vars.PROD_DEPLOY_ENABLED == 'true'" in workflow_text
     assert "vars.STAGING_DEPLOY_ENABLED == 'true'" in workflow_text
@@ -336,6 +352,14 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "sbom: true" in workflow_text
     assert "ignore-unfixed: false" in workflow_text
     assert "ignore-unfixed: true" in workflow_text
+    assert workflow_text.count("Report all critical vulnerabilities") == 2
+    assert workflow_text.count("Block unexpected critical vulnerabilities") == 2
+    assert workflow_text.count('exit-code: "0"') == 2
+    assert workflow_text.count('exit-code: "1"') == 4
+    assert workflow_text.count("trivyignores: .trivyignore") == 2
+    assert workflow_text.count("TRIVY_IGNOREFILE: /dev/null") == 4
+    assert "pull: ${{ github.event_name == 'schedule' }}" in workflow_text
+    assert "no-cache: ${{ github.event_name == 'schedule' }}" in workflow_text
     assert "cosign sign --yes" in workflow_text
     assert "cosign sign-blob --yes" in workflow_text
     assert "cosign verify-blob" in deploy_script
@@ -394,6 +418,57 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "/var/lib/sitbank-container" in bootstrap
     assert "sitbank-deploy" in bootstrap
     assert "sitbank-container.service" in bootstrap
+
+
+def test_trivy_exception_is_narrow_documented_and_temporary():
+    trivyignore = Path(".trivyignore").read_text(encoding="utf-8")
+    readme = Path("README.md").read_text(encoding="utf-8")
+    security = Path("SECURITY.md").read_text(encoding="utf-8")
+    active_ignores = [
+        line.strip()
+        for line in trivyignore.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+    assert active_ignores == ["CVE-2026-42496", "CVE-2026-8376"]
+    for required in (
+        "official python:3.12.13-slim-trixie / Debian Trixie",
+        "does not install Perl directly",
+        "Essential: yes",
+        "must not be removed",
+        "does not invoke Perl",
+        "does not process attacker-controlled tar archives with Perl",
+        "temporary",
+        "review/remove-by date: 2026-06-26",
+    ):
+        assert required in trivyignore
+    assert "CVE-2026-42496" in readme
+    assert "CVE-2026-8376" in readme
+    assert "2026-06-26" in readme
+    assert "mixing Debian sid packages into Trixie is riskier" in readme
+    assert "full Critical Trivy report with no ignore file" in readme
+    assert "fixable High/Critical gate must continue to run without" in security
+
+
+def test_dependabot_tracks_docker_base_images_without_automerge():
+    dependabot = yaml.safe_load(Path(".github/dependabot.yml").read_text(encoding="utf-8"))
+    readme = Path("README.md").read_text(encoding="utf-8")
+    docker_updates = [
+        update
+        for update in dependabot["updates"]
+        if update["package-ecosystem"] == "docker"
+    ]
+
+    assert len(docker_updates) == 1
+    docker_update = docker_updates[0]
+    assert docker_update["directory"] == "/"
+    assert docker_update["schedule"]["interval"] == "weekly"
+    assert docker_update["ignore"] == [
+        {"dependency-name": "python", "versions": [">=3.13"]}
+    ]
+    assert "Dependabot updates are review-only" in readme
+    assert "Base-image updates must not be auto-merged" in readme
+    assert "tests, Trivy scans, smoke test, authenticated DAST" in readme
 
 
 def test_codeowners_and_codeql_cover_security_sensitive_changes():

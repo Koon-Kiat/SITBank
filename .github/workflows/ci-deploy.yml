@@ -5,6 +5,8 @@ on:
     branches: [main]
   push:
     branches: [main]
+  schedule:
+    - cron: "17 18 * * 1"
   workflow_dispatch:
     inputs:
       target_environment:
@@ -151,7 +153,7 @@ jobs:
           python ops/security/scan_repository_secrets.py --history
 
   image-test:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.event_name == 'schedule'
     needs: [test, workflow-security]
     runs-on: ubuntu-latest
     timeout-minutes: 35
@@ -183,6 +185,8 @@ jobs:
           context: .
           load: true
           tags: sitbank:pr
+          pull: ${{ github.event_name == 'schedule' }}
+          no-cache: ${{ github.event_name == 'schedule' }}
           build-args: |
             VCS_REF=${{ github.sha }}
             SOURCE_URL=${{ github.server_url }}/${{ github.repository }}
@@ -198,7 +202,20 @@ jobs:
         run: bash ops/container/validate-compose.sh sitbank:pr
 
       # zizmor: ignore[unpinned-tools] Trivy action is SHA-pinned; the action installs a pinned Trivy tool version.
-      - name: Block all critical vulnerabilities
+      - name: Report all critical vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        env:
+          TRIVY_IGNOREFILE: /dev/null
+        with:
+          image-ref: sitbank:pr
+          format: table
+          exit-code: "0"
+          ignore-unfixed: false
+          severity: CRITICAL
+          version: v0.71.0
+
+      # zizmor: ignore[unpinned-tools] Trivy action is SHA-pinned; the action installs a pinned Trivy tool version.
+      - name: Block unexpected critical vulnerabilities
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
         with:
           image-ref: sitbank:pr
@@ -206,11 +223,14 @@ jobs:
           exit-code: "1"
           ignore-unfixed: false
           severity: CRITICAL
+          trivyignores: .trivyignore
           version: v0.71.0
 
       # zizmor: ignore[unpinned-tools] Trivy action is SHA-pinned; the action installs a pinned Trivy tool version.
       - name: Block fixable high and critical vulnerabilities
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        env:
+          TRIVY_IGNOREFILE: /dev/null
         with:
           image-ref: sitbank:pr
           format: table
@@ -275,7 +295,7 @@ jobs:
           fi
 
   publish:
-    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
     needs: [test, workflow-security, deployment-preflight]
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -414,7 +434,20 @@ jobs:
         run: bash ops/container/smoke-test.sh "${IMAGE}"
 
       # zizmor: ignore[unpinned-tools] Trivy action is SHA-pinned; the action installs a pinned Trivy tool version.
-      - name: Block all critical vulnerabilities in the published digest
+      - name: Report all critical vulnerabilities in the published digest
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        env:
+          TRIVY_IGNOREFILE: /dev/null
+        with:
+          image-ref: ${{ steps.image.outputs.image }}
+          format: table
+          exit-code: "0"
+          ignore-unfixed: false
+          severity: CRITICAL
+          version: v0.71.0
+
+      # zizmor: ignore[unpinned-tools] Trivy action is SHA-pinned; the action installs a pinned Trivy tool version.
+      - name: Block unexpected critical vulnerabilities in the published digest
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
         with:
           image-ref: ${{ steps.image.outputs.image }}
@@ -422,11 +455,14 @@ jobs:
           exit-code: "1"
           ignore-unfixed: false
           severity: CRITICAL
+          trivyignores: .trivyignore
           version: v0.71.0
 
       # zizmor: ignore[unpinned-tools] Trivy action is SHA-pinned; the action installs a pinned Trivy tool version.
       - name: Block fixable high and critical vulnerabilities in the published digest
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        env:
+          TRIVY_IGNOREFILE: /dev/null
         with:
           image-ref: ${{ steps.image.outputs.image }}
           format: table

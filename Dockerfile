@@ -31,6 +31,7 @@ RUN apt-get update \
         libgnutls30 \
         libssl3 \
         openssl \
+        perl-base \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 sitbank \
     && useradd --uid 10001 --gid 10001 --no-create-home \
