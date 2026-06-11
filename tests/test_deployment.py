@@ -280,6 +280,18 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     compose_validation = Path(
         "ops/container/validate-compose.sh"
     ).read_text(encoding="utf-8")
+    compose_validation_override = Path(
+        "ops/container/compose-validation.override.yml"
+    ).read_text(encoding="utf-8")
+    bootstrap = Path("ops/deploy/bootstrap-container-ec2").read_text(
+        encoding="utf-8"
+    )
+    deploy_script = Path("ops/deploy/sitbank-container-deploy").read_text(
+        encoding="utf-8"
+    )
+    runtime_script = Path("ops/deploy/sitbank-container-runtime").read_text(
+        encoding="utf-8"
+    )
     compose = yaml.safe_load(compose_text)
     app = compose["services"]["app"]
     staging_compose = yaml.safe_load(staging_compose_text)
@@ -335,6 +347,11 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "production|staging|all" in compose_validation
     assert "--no-env-resolution" in compose_validation
     assert "--no-path-resolution" in compose_validation
+    assert "compose-validation.override.yml" in compose_validation
+    assert "env_file: !reset []" in compose_validation_override
+    assert "compose-validation.override.yml" not in bootstrap
+    assert "compose-validation.override.yml" not in deploy_script
+    assert "compose-validation.override.yml" not in runtime_script
     assert "sudo" not in compose_validation
     assert "/etc/sitbank" not in compose_validation
     assert "docker port" in smoke_test

@@ -198,7 +198,7 @@ jobs:
           RUN_ZAP_DAST: "true"
         run: bash ops/container/smoke-test.sh sitbank:pr
 
-      - name: Validate the production Compose model
+      - name: Validate production and staging Compose models
         run: bash ops/container/validate-compose.sh sitbank:pr
 
       # zizmor: ignore[unpinned-tools] Trivy action is SHA-pinned; the action installs a pinned Trivy tool version.
@@ -428,7 +428,7 @@ jobs:
           )"
           test "${revision}" = "${RELEASE_SHA}"
 
-      - name: Validate the production Compose model for the exact digest
+      - name: Validate production and staging Compose models for the exact digest
         env:
           SITBANK_IMAGE: ${{ steps.image.outputs.image }}
         run: bash ops/container/validate-compose.sh "${SITBANK_IMAGE}"

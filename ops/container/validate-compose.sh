@@ -4,6 +4,7 @@ set -Eeuo pipefail
 readonly IMAGE="${1:?Usage: validate-compose.sh IMAGE [production|staging|all]}"
 readonly TARGET="${2:-all}"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+readonly VALIDATION_OVERRIDE="${repo_root}/ops/container/compose-validation.override.yml"
 
 case "${TARGET}" in
     production|staging|all)
@@ -20,6 +21,7 @@ validate_model() {
     SITBANK_IMAGE="${IMAGE}" docker compose \
         --project-name "${project_name}" \
         --file "${compose_file}" \
+        --file "${VALIDATION_OVERRIDE}" \
         config --quiet --no-env-resolution --no-path-resolution
 }
 
