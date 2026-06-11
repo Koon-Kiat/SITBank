@@ -319,6 +319,20 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "id-token" not in workflow["jobs"]["publish"]["permissions"]
     assert "attestations" not in workflow["jobs"]["publish"]["permissions"]
     assert workflow["jobs"]["release-verify"]["permissions"]["id-token"] == "write"
+    assert workflow["jobs"]["release-verify"]["permissions"]["packages"] == "write"
+    publish_condition = workflow["jobs"]["publish"]["if"]
+    release_verify_condition = workflow["jobs"]["release-verify"]["if"]
+    for condition in (publish_condition, release_verify_condition):
+        assert "github.event_name != 'pull_request'" in condition
+        assert "github.ref == 'refs/heads/main'" in condition
+    assert "github.event_name == 'workflow_dispatch'" in publish_condition
+    assert workflow["jobs"]["release-verify"]["needs"] == "publish"
+    release_verify_steps = [
+        step["name"] for step in workflow["jobs"]["release-verify"]["steps"]
+    ]
+    assert release_verify_steps.index("Log in to GHCR") < release_verify_steps.index(
+        "Sign and verify the tested immutable digest"
+    )
     assert workflow["jobs"]["deploy-staging"]["permissions"]["packages"] == "read"
     assert workflow["jobs"]["deploy-staging"]["permissions"]["id-token"] == "write"
     assert workflow["jobs"]["deploy-production"]["permissions"]["packages"] == "read"
