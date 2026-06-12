@@ -404,6 +404,9 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "show_app_diagnostics" in deploy_script
     assert "logs --no-color --tail 80 app" in deploy_script
     assert "runuser -u sitbank-container" in deploy_script
+    assert "cannot traverse secret directory" in deploy_script
+    assert '"${config_root}/secrets"' in bootstrap
+    assert '-g "${CONTAINER_GID}" -m 0750' in bootstrap
 
     app_python = "\n".join(
         path.read_text(encoding="utf-8")

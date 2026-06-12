@@ -554,6 +554,10 @@ required_secrets=(
 if [[ "${target}" == "staging" ]]; then
     required_secrets+=(postgres_password redis.conf)
 fi
+if ! runuser -u sitbank-container -- test -x "${SECRET_DIR}"; then
+    echo "Container account cannot traverse secret directory: ${SECRET_DIR}" >&2
+    exit 1
+fi
 for secret_file in "${required_secrets[@]}"; do
     if [[ ! -r "${SECRET_DIR}/${secret_file}" \
         || -L "${SECRET_DIR}/${secret_file}" ]]; then
