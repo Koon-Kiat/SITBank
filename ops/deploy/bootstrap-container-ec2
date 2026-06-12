@@ -178,8 +178,9 @@ chmod 0600 "/home/${DEPLOY_USER}/.ssh/authorized_keys"
 
 install -d -o root -g root -m 0755 "${compose_dir}"
 install -d -o root -g "${CONTAINER_GID}" -m 0750 "${config_root}"
-install -d -o root -g root -m 0700 \
-    "${config_root}/secrets" "${state_dir}" "${backup_dir}"
+install -d -o root -g "${CONTAINER_GID}" -m 0750 \
+    "${config_root}/secrets"
+install -d -o root -g root -m 0700 "${state_dir}" "${backup_dir}"
 
 install -o root -g root -m 0644 \
     "${repo_root}/${compose_source}" "${compose_dir}/compose.yml"
