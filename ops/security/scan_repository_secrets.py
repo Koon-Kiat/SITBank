@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import re
 import subprocess
 from pathlib import Path
@@ -20,10 +22,15 @@ FORBIDDEN_SUFFIXES = {
     ".pfx",
     ".ppk",
 }
+PRIVATE_KEY_BLOCK_PATTERN = re.compile(
+    rb"-----BEGIN "
+    rb"(?P<label>(?:RSA |OPENSSH |EC |DSA |ENCRYPTED )?PRIVATE KEY)"
+    rb"-----(?P<body>.*?)-----END (?P=label)-----",
+    re.DOTALL,
+)
+MIN_PRIVATE_KEY_PAYLOAD_BYTES = 48
+
 SECRET_PATTERNS = {
-    "private key": re.compile(
-        rb"-----BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----"
-    ),
     "GitHub token": re.compile(rb"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}\b"),
     "GitHub fine-grained token": re.compile(rb"\bgithub_pat_[A-Za-z0-9_]{40,}\b"),
     "AWS access key": re.compile(rb"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
@@ -31,6 +38,20 @@ SECRET_PATTERNS = {
     "Google API key": re.compile(rb"\bAIza[0-9A-Za-z_-]{35}\b"),
     "Stripe secret key": re.compile(rb"\bsk_(?:live|test)_[0-9A-Za-z]{16,}\b"),
 }
+
+
+def contains_private_key(content: bytes) -> bool:
+    for match in PRIVATE_KEY_BLOCK_PATTERN.finditer(content):
+        encoded_payload = re.sub(rb"\s+", b"", match.group("body"))
+        if not re.fullmatch(rb"[A-Za-z0-9+/]+={0,2}", encoded_payload):
+            continue
+        try:
+            decoded_payload = base64.b64decode(encoded_payload, validate=True)
+        except (binascii.Error, ValueError):
+            continue
+        if len(decoded_payload) >= MIN_PRIVATE_KEY_PAYLOAD_BYTES:
+            return True
+    return False
 
 
 def tracked_files() -> list[Path]:
@@ -81,6 +102,8 @@ def historical_blobs() -> list[tuple[str, str]]:
 
 
 def scan_content(label: str, content: bytes, findings: list[str]) -> None:
+    if contains_private_key(content):
+        findings.append(f"private key pattern: {label}")
     for pattern_label, pattern in SECRET_PATTERNS.items():
         if pattern.search(content):
             findings.append(f"{pattern_label} pattern: {label}")

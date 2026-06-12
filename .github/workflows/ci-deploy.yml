@@ -705,15 +705,44 @@ jobs:
           SSH_PRIVATE_KEY: ${{ secrets.STAGING_EC2_SSH_PRIVATE_KEY }}
           SSH_KNOWN_HOSTS: ${{ secrets.STAGING_EC2_KNOWN_HOSTS }}
         run: |
+          umask 077
           install -d -m 0700 ~/.ssh
-          printf '%s\n' "${SSH_PRIVATE_KEY}" > ~/.ssh/id_ed25519
-          chmod 0600 ~/.ssh/id_ed25519
-          printf '%s\n' "${SSH_KNOWN_HOSTS}" > ~/.ssh/known_hosts
+
+          if [[ "${SSH_PRIVATE_KEY}" == *'\n'* ]]; then
+            printf '%s\n' \
+              '::error::STAGING_EC2_SSH_PRIVATE_KEY contains literal \n text. Store the raw multiline private key instead.'
+            exit 1
+          fi
+          printf '%s\n' "${SSH_PRIVATE_KEY}" \
+            | tr -d '\r' > ~/.ssh/deploy_key
+          chmod 0600 ~/.ssh/deploy_key
+          case "$(head -n 1 ~/.ssh/deploy_key)" in
+            "-----BEGIN OPENSSH PRIVATE KEY-----" | \
+            "-----BEGIN PRIVATE KEY-----" | \
+            "-----BEGIN RSA PRIVATE KEY-----" | \
+            "-----BEGIN EC PRIVATE KEY-----")
+              ;;
+            *)
+              echo "::error::STAGING_EC2_SSH_PRIVATE_KEY is not a supported raw private key."
+              exit 1
+              ;;
+          esac
+          if ! ssh-keygen -y -P "" -f ~/.ssh/deploy_key >/dev/null 2>&1; then
+            echo "::error::STAGING_EC2_SSH_PRIVATE_KEY could not be parsed. Use an unencrypted OpenSSH private key and preserve its multiline formatting."
+            exit 1
+          fi
+
+          printf '%s\n' "${SSH_KNOWN_HOSTS}" \
+            | tr -d '\r' > ~/.ssh/known_hosts
           chmod 0600 ~/.ssh/known_hosts
+          if [[ ! -s ~/.ssh/known_hosts ]]; then
+            echo "::error::STAGING_EC2_KNOWN_HOSTS is empty."
+            exit 1
+          fi
 
       - name: Upload authenticated deployment inputs
         run: |
-          scp -P "${REMOTE_PORT}" -i ~/.ssh/id_ed25519 \
+          scp -P "${REMOTE_PORT}" -i ~/.ssh/deploy_key \
             -o BatchMode=yes -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
             "runtime-staging-${RELEASE_SHA}.tar" \
@@ -724,7 +753,7 @@ jobs:
 
       - name: Deploy verified image digest
         run: |
-          ssh -p "${REMOTE_PORT}" -i ~/.ssh/id_ed25519 \
+          ssh -p "${REMOTE_PORT}" -i ~/.ssh/deploy_key \
             -o BatchMode=yes -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
             "${REMOTE_USER}@${REMOTE_HOST}" \
@@ -733,7 +762,7 @@ jobs:
       - name: Remove deployment credentials and bundles
         if: always()
         run: |
-          rm -rf ~/.ssh/id_ed25519 \
+          rm -rf ~/.ssh/deploy_key \
             "runtime-staging-${RELEASE_SHA}" \
             "runtime-staging-${RELEASE_SHA}.tar" \
             "runtime-staging-${RELEASE_SHA}.sha256" \
@@ -838,15 +867,44 @@ jobs:
           SSH_PRIVATE_KEY: ${{ secrets.PROD_EC2_SSH_PRIVATE_KEY }}
           SSH_KNOWN_HOSTS: ${{ secrets.PROD_EC2_KNOWN_HOSTS }}
         run: |
+          umask 077
           install -d -m 0700 ~/.ssh
-          printf '%s\n' "${SSH_PRIVATE_KEY}" > ~/.ssh/id_ed25519
-          chmod 0600 ~/.ssh/id_ed25519
-          printf '%s\n' "${SSH_KNOWN_HOSTS}" > ~/.ssh/known_hosts
+
+          if [[ "${SSH_PRIVATE_KEY}" == *'\n'* ]]; then
+            printf '%s\n' \
+              '::error::PROD_EC2_SSH_PRIVATE_KEY contains literal \n text. Store the raw multiline private key instead.'
+            exit 1
+          fi
+          printf '%s\n' "${SSH_PRIVATE_KEY}" \
+            | tr -d '\r' > ~/.ssh/deploy_key
+          chmod 0600 ~/.ssh/deploy_key
+          case "$(head -n 1 ~/.ssh/deploy_key)" in
+            "-----BEGIN OPENSSH PRIVATE KEY-----" | \
+            "-----BEGIN PRIVATE KEY-----" | \
+            "-----BEGIN RSA PRIVATE KEY-----" | \
+            "-----BEGIN EC PRIVATE KEY-----")
+              ;;
+            *)
+              echo "::error::PROD_EC2_SSH_PRIVATE_KEY is not a supported raw private key."
+              exit 1
+              ;;
+          esac
+          if ! ssh-keygen -y -P "" -f ~/.ssh/deploy_key >/dev/null 2>&1; then
+            echo "::error::PROD_EC2_SSH_PRIVATE_KEY could not be parsed. Use an unencrypted OpenSSH private key and preserve its multiline formatting."
+            exit 1
+          fi
+
+          printf '%s\n' "${SSH_KNOWN_HOSTS}" \
+            | tr -d '\r' > ~/.ssh/known_hosts
           chmod 0600 ~/.ssh/known_hosts
+          if [[ ! -s ~/.ssh/known_hosts ]]; then
+            echo "::error::PROD_EC2_KNOWN_HOSTS is empty."
+            exit 1
+          fi
 
       - name: Upload authenticated deployment inputs
         run: |
-          scp -P "${REMOTE_PORT}" -i ~/.ssh/id_ed25519 \
+          scp -P "${REMOTE_PORT}" -i ~/.ssh/deploy_key \
             -o BatchMode=yes -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
             "runtime-${RELEASE_SHA}.tar" \
@@ -857,7 +915,7 @@ jobs:
 
       - name: Deploy verified image digest
         run: |
-          ssh -p "${REMOTE_PORT}" -i ~/.ssh/id_ed25519 \
+          ssh -p "${REMOTE_PORT}" -i ~/.ssh/deploy_key \
             -o BatchMode=yes -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
             "${REMOTE_USER}@${REMOTE_HOST}" \
@@ -866,7 +924,7 @@ jobs:
       - name: Remove deployment credentials and bundles
         if: always()
         run: |
-          rm -rf ~/.ssh/id_ed25519 \
+          rm -rf ~/.ssh/deploy_key \
             "runtime-${RELEASE_SHA}" \
             "runtime-${RELEASE_SHA}.tar" \
             "runtime-${RELEASE_SHA}.sha256" \
