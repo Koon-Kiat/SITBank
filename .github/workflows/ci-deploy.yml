@@ -295,9 +295,9 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Run container smoke and authenticated DAST tests
+      - name: Run container smoke test and scheduled authenticated DAST
         env:
-          RUN_ZAP_DAST: "true"
+          RUN_ZAP_DAST: ${{ github.event_name == 'schedule' && 'true' || 'false' }}
         run: bash ops/container/smoke-test.sh sitbank:pr
 
       - name: Validate production and staging Compose models

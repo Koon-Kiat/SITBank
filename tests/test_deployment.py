@@ -465,6 +465,9 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert dispatch_inputs["source_ref"]["required"] is True
     assert dispatch_inputs["source_ref"]["type"] == "string"
     assert dispatch_inputs["target_environment"]["options"] == ["staging"]
+    assert dispatch_inputs["run_dast"]["required"] is True
+    assert dispatch_inputs["run_dast"]["type"] == "boolean"
+    assert dispatch_inputs["run_dast"]["default"] is True
     candidate_jobs = ("test", "publish")
     for job_name in candidate_jobs:
         checkout = next(
@@ -504,9 +507,27 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         for step in workflow["jobs"]["release-verify"]["steps"]
         if step["name"] == "Smoke-test and DAST-scan the exact published digest"
     )
-    assert release_smoke_step["env"]["RUN_ZAP_DAST"] == (
+    release_dast_policy = (
         "${{ github.event_name != 'workflow_dispatch' || inputs.run_dast == true }}"
     )
+    assert release_smoke_step["env"]["RUN_ZAP_DAST"] == release_dast_policy
+    assert "github.event_name != 'workflow_dispatch'" in release_dast_policy
+    assert "inputs.run_dast == true" in release_dast_policy
+    image_smoke_step = next(
+        step
+        for step in workflow["jobs"]["image-test"]["steps"]
+        if step["name"] == "Run container smoke test and scheduled authenticated DAST"
+    )
+    assert image_smoke_step["run"] == (
+        "bash ops/container/smoke-test.sh sitbank:pr"
+    )
+    assert image_smoke_step["env"]["RUN_ZAP_DAST"] == (
+        "${{ github.event_name == 'schedule' && 'true' || 'false' }}"
+    )
+    assert image_smoke_step["env"]["RUN_ZAP_DAST"] != "true"
+    assert 'if [[ "${RUN_ZAP_DAST:-false}" == "true" ]]' in Path(
+        "ops/container/smoke-test.sh"
+    ).read_text(encoding="utf-8")
     assert (
         release_image_step["env"]["RELEASE_SHA"]
         == "${{ needs.publish.outputs.revision }}"
@@ -750,7 +771,10 @@ def test_dependabot_tracks_docker_base_images_without_automerge():
     ]
     assert "Dependabot updates are review-only" in readme
     assert "Base-image updates must not be auto-merged" in readme
-    assert "tests, Trivy scans, smoke test, authenticated DAST" in readme
+    assert "container smoke test, Compose" in readme
+    assert "Ordinary pull requests skip the full authenticated DAST crawl" in readme
+    assert "scheduled scans" in readme
+    assert "release verification retain that coverage" in readme
 
 
 def test_codeowners_and_codeql_cover_security_sensitive_changes():

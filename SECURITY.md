@@ -37,7 +37,10 @@ Compose service names.
 Dependabot pull requests are never auto-merged. Review release notes and
 transitive changes, update the reviewed manifest, regenerate the applicable
 hash-locked files, and require the full test, SAST, dependency review,
-container, DAST, and image scan checks.
+container smoke, Compose validation, and image scan checks. Full authenticated
+DAST is intentionally reserved for scheduled scans and release verification;
+ordinary pull requests skip it to keep feedback timely without weakening the
+release gate.
 
 Critical advisories require immediate triage. High advisories require an owner
 and target date. A runtime upgrade is kept separate from ordinary package
