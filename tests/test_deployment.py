@@ -593,7 +593,31 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert workflow_text.count("^[A-Za-z0-9+/]+={0,2}$") == 2
     assert "STAGING_EC2_SSH_PRIVATE_KEY:" not in workflow_text
     assert "PROD_EC2_SSH_PRIVATE_KEY:" not in workflow_text
-    assert workflow_text.count("-i ~/.ssh/deploy_key") == 4
+    assert workflow_text.count("-i ~/.ssh/deploy_key") == 6
+    assert workflow_text.count(
+        "sha256sum ops/deploy/sitbank-container-deploy"
+    ) == 2
+    assert workflow_text.count(
+        "sha256sum /usr/local/sbin/sitbank-container-deploy"
+    ) == 2
+    assert "EC2 staging deployment wrapper is missing or stale" in workflow_text
+    assert "EC2 production deployment wrapper is missing or stale" in workflow_text
+    for job_name, wrapper_step_name, upload_step_name in (
+        (
+            "deploy-staging",
+            "Verify trusted staging deployment wrapper",
+            "Upload authenticated deployment inputs",
+        ),
+        (
+            "deploy-production",
+            "Verify trusted production deployment wrapper",
+            "Upload authenticated deployment inputs",
+        ),
+    ):
+        step_names = [
+            step["name"] for step in workflow["jobs"][job_name]["steps"]
+        ]
+        assert step_names.index(wrapper_step_name) < step_names.index(upload_step_name)
     assert "~/.ssh/id_ed25519" not in workflow_text
     assert "vars.EC2_" not in workflow_text
     assert "secrets.EC2_" not in workflow_text
@@ -822,13 +846,51 @@ def test_only_sitbank_container_deployment_units_are_active():
     assert Path("ops/sudoers/sitbank-container-deploy").exists()
 
 
+def test_linux_deployment_artifacts_are_forced_to_lf_and_reject_crlf():
+    attributes = Path(".gitattributes").read_text(encoding="utf-8")
+    bootstrap = Path("ops/deploy/bootstrap-container-ec2").read_text(
+        encoding="utf-8"
+    )
+    linux_files = (
+        Path("Dockerfile"),
+        Path("compose.prod.yml"),
+        Path("compose.staging.yml"),
+        Path("ops/deploy/bootstrap-container-ec2"),
+        Path("ops/deploy/sitbank-container-deploy"),
+        Path("ops/deploy/sitbank-container-runtime"),
+        Path("ops/deploy/sitbank-database-cutover"),
+        Path("ops/nginx-proxy-headers.conf"),
+        Path("ops/nginx/sitbank-staging.conf"),
+        Path("ops/sudoers/sitbank-container-deploy"),
+        Path("ops/systemd/sitbank-container.service"),
+        Path("ops/systemd/sitbank-staging-container.service"),
+    )
+
+    assert "*.sh text eol=lf" in attributes
+    assert "*.yml text eol=lf" in attributes
+    assert "*.conf text eol=lf" in attributes
+    assert "*.service text eol=lf" in attributes
+    assert "ops/deploy/bootstrap-container-ec2 text eol=lf" in attributes
+    assert "ops/sudoers/* text eol=lf" in attributes
+    for path in linux_files:
+        assert b"\r\n" not in path.read_bytes(), f"{path} must use LF line endings"
+
+    assert "Refusing to install CRLF-formatted Linux file" in bootstrap
+    assert "grep -q $'\\r$'" in bootstrap
+
+
 def test_staging_nginx_routes_only_to_the_staging_loopback_port():
     nginx = Path("ops/nginx/sitbank-staging.conf").read_text(encoding="utf-8")
+    bootstrap = Path("ops/deploy/bootstrap-container-ec2").read_text(
+        encoding="utf-8"
+    )
 
     assert "server_name staging-sitbank.duckdns.org;" in nginx
     assert "proxy_pass http://127.0.0.1:5001;" in nginx
     assert "127.0.0.1:5000" not in nginx
     assert "server_name sitbank.duckdns.org;" not in nginx
+    assert "Conflicting Nginx staging site is already enabled" in bootstrap
+    assert "Disable the duplicate staging server block" in bootstrap
 
 
 def test_dependency_manifests_have_one_hashed_lockfile_source_of_truth():
