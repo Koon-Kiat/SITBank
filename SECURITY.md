@@ -116,5 +116,5 @@ Manager Run Command:
 - retain the same root deployment wrapper, Cosign checks, and environment
   approval.
 
-Remove `EC2_SSH_PRIVATE_KEY` only after the OIDC/SSM path has passed rollback
-and incident-response testing.
+Remove the Base64-encoded EC2 SSH private-key secrets only after the OIDC/SSM
+path has passed rollback and incident-response testing.

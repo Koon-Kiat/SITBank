@@ -282,7 +282,7 @@ deployment clearly.
 Add these staging environment secrets:
 
 - `STAGING_EC2_KNOWN_HOSTS`
-- `STAGING_EC2_SSH_PRIVATE_KEY`
+- `STAGING_EC2_SSH_PRIVATE_KEY_B64`
 
 Add these staging environment variables:
 
@@ -316,7 +316,7 @@ run_dast: true
 Add these production environment secrets:
 
 - `PROD_EC2_KNOWN_HOSTS`
-- `PROD_EC2_SSH_PRIVATE_KEY`
+- `PROD_EC2_SSH_PRIVATE_KEY_B64`
 
 Add these production environment variables:
 
@@ -341,7 +341,7 @@ by the workflow. Rename them before enabling production deployment:
 | Old name | New canonical name |
 | --- | --- |
 | `EC2_KNOWN_HOSTS` | `PROD_EC2_KNOWN_HOSTS` |
-| `EC2_SSH_PRIVATE_KEY` | `PROD_EC2_SSH_PRIVATE_KEY` |
+| `EC2_SSH_PRIVATE_KEY` | `PROD_EC2_SSH_PRIVATE_KEY_B64` |
 | `EC2_DEPLOY_USER` | `PROD_EC2_DEPLOY_USER` |
 | `EC2_HOST` | `PROD_EC2_HOST` |
 | `EC2_PORT` | `PROD_EC2_PORT` |
@@ -617,19 +617,25 @@ with `restrict`. The staging entry, for example, is:
 restrict ssh-ed25519 AAAA... github-actions-sitbank-staging
 ```
 
-Store the complete raw private-key contents as:
+Encode each private key as single-line Base64 and store the result as:
 
-- `STAGING_EC2_SSH_PRIVATE_KEY` in the `staging` environment.
-- `PROD_EC2_SSH_PRIVATE_KEY` in the `production` environment.
+- `STAGING_EC2_SSH_PRIVATE_KEY_B64` in the `staging` environment.
+- `PROD_EC2_SSH_PRIVATE_KEY_B64` in the `production` environment.
 
-The secret must start with `-----BEGIN OPENSSH PRIVATE KEY-----` and end with
-`-----END OPENSSH PRIVATE KEY-----`. Paste the multiline contents, not the
-`.pub` key, a filesystem path, a PuTTY `.ppk`, or text containing literal
-`\n` sequences. On Windows, copy it without changing its formatting:
+Base64 is transport encoding, not encryption; confidentiality still comes from
+the GitHub environment secret. Encode the private file bytes directly. Do not
+encode the `.pub` key, a filesystem path, or a PuTTY `.ppk`:
 
 ```powershell
-Get-Content -Raw "$HOME\.ssh\sitbank_github_actions_staging" | Set-Clipboard
+$keyBytes = [System.IO.File]::ReadAllBytes(
+  "$HOME\.ssh\sitbank_github_actions_staging"
+)
+[Convert]::ToBase64String($keyBytes) | Set-Clipboard
 ```
+
+The copied value must be one uninterrupted line. Delete the obsolete raw
+`STAGING_EC2_SSH_PRIVATE_KEY` or `PROD_EC2_SSH_PRIVATE_KEY` secret after the
+corresponding Base64 deployment succeeds.
 
 Verify that the corresponding public key is the one installed for
 `sitbank-deploy`:
