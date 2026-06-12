@@ -12,8 +12,9 @@ log.
 
 1. Revoke the exposed credential at its source.
 2. Create a replacement using a cryptographically secure generator.
-3. Install it into the appropriate root-owned file under
-   `/etc/sitbank/secrets`.
+3. Install it into the appropriate root-owned environment directory:
+   `/etc/sitbank/secrets` for production or
+   `/etc/sitbank-staging/secrets` for staging.
 4. Restart through the restricted deployment/runtime command and run
    `production-check`.
 5. Revoke active sessions when rotating session-signing, Flask, CSRF, MFA
@@ -25,6 +26,11 @@ Session HMAC rotation must keep the old key in
 `session_hmac_keys_json` only for the approved overlap period, set the new
 `SESSION_HMAC_ACTIVE_KEY_ID`, then remove the previous key after all sessions
 signed by it have expired.
+
+Staging secrets must never be copied from production. The staging deployment
+wrapper rejects identical application secret files when production secrets are
+present and requires database and Redis URLs to resolve only to the staging
+Compose service names.
 
 ## Dependency Response
 
@@ -64,9 +70,18 @@ that ignore file.
 ## Deployment and Rollback
 
 Only a protected `main` workflow may produce a trusted production signature.
-The tested, scanned, signed, and deployed image digest must be identical.
-Deployment accepts only the configured GHCR repository, the protected
-workflow identity, a 40-character commit SHA, and an immutable SHA-256 digest.
+Manual staging also runs the trusted workflow from `main`; its `source_ref`
+input is resolved to an immutable candidate commit without executing
+feature-branch workflow or deployment scripts with environment secrets.
+Staging and production both trust only the exact `refs/heads/main` workflow
+identity. The tested, scanned, signed, and deployed image digest must be
+identical. Deployment accepts only the configured GHCR repository, exact
+workflow identity, a 40-character candidate commit SHA, and an immutable
+SHA-256 digest.
+
+Production deployment is automatic on a protected `main` push only. It must
+not run unless staging succeeded in the same workflow; disabled, skipped, or
+failed staging blocks production.
 
 Migrations must remain backward-compatible with the previous image. If
 readiness fails, the wrapper restores the previous digest and non-secret

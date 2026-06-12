@@ -12,16 +12,34 @@ if [[ "${EUID}" -ne 0 ]]; then
     exit 1
 fi
 
+target="production"
+if [[ "${1:-}" == "production" || "${1:-}" == "staging" ]]; then
+    target="$1"
+    shift
+fi
+
 github_repository="${1:-}"
-public_host="${2:-sitbank.duckdns.org}"
+public_host="${2:-}"
 legacy_service="${3:--}"
 legacy_app_root="${4:--}"
 if [[ ! "${github_repository}" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
-    echo "Usage: bootstrap-container-ec2 OWNER/REPOSITORY [PUBLIC_HOST] [LEGACY_SERVICE|-] [LEGACY_APP_ROOT|-]" >&2
+    echo "Usage: bootstrap-container-ec2 [production|staging] OWNER/REPOSITORY PUBLIC_HOST [LEGACY_SERVICE|-] [LEGACY_APP_ROOT|-]" >&2
     exit 2
+fi
+if [[ -z "${public_host}" ]]; then
+    if [[ "${target}" == "production" ]]; then
+        public_host="sitbank.duckdns.org"
+    else
+        public_host="staging-sitbank.duckdns.org"
+    fi
 fi
 if [[ ! "${public_host}" =~ ^[A-Za-z0-9.-]+$ ]]; then
     echo "PUBLIC_HOST must be a bare hostname" >&2
+    exit 2
+fi
+if [[ "${target}" == "staging" \
+    && ( "${legacy_service}" != "-" || "${legacy_app_root}" != "-" ) ]]; then
+    echo "Staging bootstrap does not accept legacy production migration inputs" >&2
     exit 2
 fi
 if [[ "${legacy_service}" != "-" \
@@ -38,6 +56,27 @@ if [[ "${legacy_app_root}" != "-" ]]; then
     fi
 fi
 
+case "${target}" in
+    production)
+        config_root="/etc/sitbank"
+        compose_dir="/opt/sitbank"
+        state_dir="/var/lib/sitbank-container"
+        backup_dir="/var/backups/sitbank"
+        compose_source="compose.prod.yml"
+        systemd_source="ops/systemd/sitbank-container.service"
+        systemd_service="sitbank-container.service"
+        ;;
+    staging)
+        config_root="/etc/sitbank-staging"
+        compose_dir="/opt/sitbank-staging"
+        state_dir="/var/lib/sitbank-staging-container"
+        backup_dir="/var/backups/sitbank-staging"
+        compose_source="compose.staging.yml"
+        systemd_source="ops/systemd/sitbank-staging-container.service"
+        systemd_service="sitbank-staging-container.service"
+        ;;
+esac
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 repository_lower="${github_repository,,}"
 
@@ -48,18 +87,21 @@ fi
 
 apt-get update
 apt-get install -y ca-certificates curl gnupg
-install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-    | gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg
-chmod a+r /etc/apt/keyrings/docker.gpg
-# shellcheck disable=SC1091
-. /etc/os-release
-printf '%s\n' \
-    "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu ${VERSION_CODENAME} stable" \
-    > /etc/apt/sources.list.d/docker.list
-apt-get update
-apt-get install -y docker-ce docker-ce-cli containerd.io \
-    docker-buildx-plugin docker-compose-plugin
+if ! command -v docker >/dev/null 2>&1 \
+    || ! docker compose version >/dev/null 2>&1; then
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+        | gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg
+    chmod a+r /etc/apt/keyrings/docker.gpg
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    printf '%s\n' \
+        "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu ${VERSION_CODENAME} stable" \
+        > /etc/apt/sources.list.d/docker.list
+    apt-get update
+    apt-get install -y docker-ce docker-ce-cli containerd.io \
+        docker-buildx-plugin docker-compose-plugin
+fi
 systemctl enable --now docker.service
 
 cosign_tmp="$(mktemp)"
@@ -112,13 +154,13 @@ chown "${DEPLOY_USER}:${DEPLOY_USER}" \
     "/home/${DEPLOY_USER}/.ssh/authorized_keys"
 chmod 0600 "/home/${DEPLOY_USER}/.ssh/authorized_keys"
 
-install -d -o root -g root -m 0755 /opt/sitbank
-install -d -o root -g "${CONTAINER_GID}" -m 0750 /etc/sitbank
+install -d -o root -g root -m 0755 "${compose_dir}"
+install -d -o root -g "${CONTAINER_GID}" -m 0750 "${config_root}"
 install -d -o root -g root -m 0700 \
-    /etc/sitbank/secrets /var/lib/sitbank-container /var/backups/sitbank
+    "${config_root}/secrets" "${state_dir}" "${backup_dir}"
 
 install -o root -g root -m 0644 \
-    "${repo_root}/compose.prod.yml" /opt/sitbank/compose.yml
+    "${repo_root}/${compose_source}" "${compose_dir}/compose.yml"
 install -o root -g root -m 0755 \
     "${repo_root}/ops/deploy/sitbank-container-deploy" \
     /usr/local/sbin/sitbank-container-deploy
@@ -128,17 +170,19 @@ install -o root -g root -m 0755 \
 install -o root -g root -m 0755 \
     "${repo_root}/ops/deploy/sitbank-database-cutover" \
     /usr/local/sbin/sitbank-database-cutover
-install -o root -g root -m 0600 \
-    "${repo_root}/ops/deploy/import_legacy_env.py" \
-    /opt/sitbank/import_legacy_env.py
+if [[ "${target}" == "production" ]]; then
+    install -o root -g root -m 0600 \
+        "${repo_root}/ops/deploy/import_legacy_env.py" \
+        /opt/sitbank/import_legacy_env.py
+fi
 install -o root -g root -m 0644 \
-    "${repo_root}/ops/systemd/sitbank-container.service" \
-    /etc/systemd/system/sitbank-container.service
+    "${repo_root}/${systemd_source}" \
+    "/etc/systemd/system/${systemd_service}"
 install -o root -g root -m 0440 \
     "${repo_root}/ops/sudoers/sitbank-container-deploy" \
     /etc/sudoers.d/sitbank-container-deploy
 
-cat > /etc/sitbank/deploy.conf <<EOF
+cat > "${config_root}/deploy.conf" <<EOF
 GITHUB_REPOSITORY=${github_repository}
 GHCR_REPOSITORY=ghcr.io/${repository_lower}
 COSIGN_CERTIFICATE_IDENTITY=https://github.com/${github_repository}/.github/workflows/ci-deploy.yml@refs/heads/main
@@ -146,18 +190,34 @@ PUBLIC_HOST=${public_host}
 LEGACY_SERVICE=${legacy_service}
 LEGACY_APP_ROOT=${legacy_app_root}
 EOF
-chown root:root /etc/sitbank/deploy.conf
-chmod 0644 /etc/sitbank/deploy.conf
+chown root:root "${config_root}/deploy.conf"
+chmod 0644 "${config_root}/deploy.conf"
 
 for policy_file in \
     common-passwords.txt \
     fido-approved-aaguids.json \
     fido-mds-cache.json; do
-    if [[ -f "/etc/sitbank/${policy_file}" ]]; then
-        chown root:"${CONTAINER_GID}" "/etc/sitbank/${policy_file}"
-        chmod 0640 "/etc/sitbank/${policy_file}"
+    if [[ -f "${config_root}/${policy_file}" ]]; then
+        chown root:"${CONTAINER_GID}" "${config_root}/${policy_file}"
+        chmod 0640 "${config_root}/${policy_file}"
     fi
 done
+
+if [[ "${target}" == "staging" ]]; then
+    install -d -o root -g root -m 0755 /etc/nginx/snippets
+    install -o root -g root -m 0644 \
+        "${repo_root}/ops/nginx-proxy-headers.conf" \
+        /etc/nginx/snippets/sitbank-proxy-headers.conf
+    if [[ ! -e /etc/nginx/sites-available/sitbank-staging ]]; then
+        install -o root -g root -m 0644 \
+            "${repo_root}/ops/nginx/sitbank-staging.conf" \
+            /etc/nginx/sites-available/sitbank-staging
+    fi
+    ln -sfn /etc/nginx/sites-available/sitbank-staging \
+        /etc/nginx/sites-enabled/sitbank-staging
+    nginx -t
+    systemctl reload nginx
+fi
 
 if [[ -S /var/run/docker.sock ]]; then
     chmod 0660 /var/run/docker.sock
@@ -169,7 +229,7 @@ fi
 
 visudo -cf /etc/sudoers.d/sitbank-container-deploy
 systemctl daemon-reload
-systemctl enable sitbank-container.service
+systemctl enable "${systemd_service}"
 
-echo "Docker bootstrap complete; the existing Gunicorn service was not changed."
-echo "Add a restricted SSH key for ${DEPLOY_USER}, then deploy a signed digest."
+echo "${target^} container bootstrap complete; existing production containers were not restarted."
+echo "Seed ${config_root} with unique runtime secrets and policy files before deployment."

@@ -1,20 +1,41 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-readonly DEPLOY_CONFIG="/etc/sitbank/deploy.conf"
-readonly COMPOSE_FILE="/opt/sitbank/compose.yml"
-readonly STATE_FILE="/var/lib/sitbank-container/current"
-
 if [[ "${EUID}" -ne 0 ]]; then
     echo "Container runtime helper must run as root" >&2
     exit 1
 fi
-if [[ "$#" -ne 1 ]]; then
-    echo "Usage: sitbank-container-runtime up|down" >&2
+
+target="production"
+if [[ "$#" -eq 2 ]]; then
+    target="${1:-}"
+    shift
+elif [[ "$#" -ne 1 ]]; then
+    echo "Usage: sitbank-container-runtime [staging|production] up|down" >&2
     exit 2
 fi
+
+case "${target}" in
+    production)
+        readonly DEPLOY_CONFIG="/etc/sitbank/deploy.conf"
+        readonly COMPOSE_FILE="/opt/sitbank/compose.yml"
+        readonly STATE_FILE="/var/lib/sitbank-container/current"
+        readonly COMPOSE_PROJECT="sitbank"
+        ;;
+    staging)
+        readonly DEPLOY_CONFIG="/etc/sitbank-staging/deploy.conf"
+        readonly COMPOSE_FILE="/opt/sitbank-staging/compose.yml"
+        readonly STATE_FILE="/var/lib/sitbank-staging-container/current"
+        readonly COMPOSE_PROJECT="sitbank-staging"
+        ;;
+    *)
+        echo "Runtime target must be staging or production" >&2
+        exit 2
+        ;;
+esac
+
 if [[ ! -r "${DEPLOY_CONFIG}" || ! -r "${STATE_FILE}" ]]; then
-    echo "Container deployment state is not initialized" >&2
+    echo "${target} container deployment state is not initialized" >&2
     exit 1
 fi
 
@@ -30,15 +51,16 @@ export SITBANK_IMAGE="${image}"
 
 case "${1:-}" in
     up)
-        exec docker compose --project-name sitbank --file "${COMPOSE_FILE}" \
+        exec docker compose --project-name "${COMPOSE_PROJECT}" \
+            --file "${COMPOSE_FILE}" \
             up --detach --no-build --pull never --remove-orphans
         ;;
     down)
-        exec docker compose --project-name sitbank --file "${COMPOSE_FILE}" \
-            down --remove-orphans
+        exec docker compose --project-name "${COMPOSE_PROJECT}" \
+            --file "${COMPOSE_FILE}" down --remove-orphans
         ;;
     *)
-        echo "Usage: sitbank-container-runtime up|down" >&2
+        echo "Usage: sitbank-container-runtime [staging|production] up|down" >&2
         exit 2
         ;;
 esac

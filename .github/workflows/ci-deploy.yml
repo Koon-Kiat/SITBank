@@ -9,19 +9,25 @@ on:
     - cron: "17 18 * * 1"
   workflow_dispatch:
     inputs:
+      source_ref:
+        description: Branch, tag, or commit SHA to build and deploy to staging.
+        required: true
+        type: string
       target_environment:
-        description: Deployment target for manual release runs.
+        description: Deployment target.
+        required: true
         type: choice
         options:
           - staging
-          - production
         default: staging
       deploy:
         description: Deploy the verified digest after release verification.
+        required: true
         type: boolean
         default: false
       run_dast:
-        description: Run the authenticated DAST smoke crawl during release verification.
+        description: Run authenticated DAST smoke crawl during release verification.
+        required: true
         type: boolean
         default: true
 
@@ -37,6 +43,101 @@ env:
   PYTHONDONTWRITEBYTECODE: "1"
 
 jobs:
+  resolve-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      source_ref_display: ${{ steps.resolve.outputs.source_ref_display }}
+      source_sha: ${{ steps.resolve.outputs.source_sha }}
+    steps:
+      - name: Check out trusted workflow repository state
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.workflow_sha }}
+
+      - name: Resolve candidate source to an immutable commit
+        id: resolve
+        shell: bash
+        env:
+          SOURCE_REF_INPUT: ${{ inputs.source_ref }}
+          SOURCE_REF_HINT: ${{ github.head_ref || github.ref }}
+          SOURCE_SHA_HINT: ${{ github.sha }}
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+              echo "::error::Manual staging must be dispatched from refs/heads/main."
+              exit 1
+            fi
+            source_ref="${SOURCE_REF_INPUT}"
+            if [[ -z "${source_ref}" || "${#source_ref}" -gt 255 \
+                || "${source_ref}" == -* \
+                || "${source_ref}" =~ [[:cntrl:]] ]]; then
+              echo "::error::source_ref is empty or invalid."
+              exit 1
+            fi
+
+            resolved=""
+            if [[ "${source_ref}" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+              resolved="${source_ref}"
+            elif [[ "${source_ref}" == refs/heads/* ]]; then
+              branch="${source_ref#refs/heads/}"
+              git check-ref-format --branch "${branch}" >/dev/null
+              resolved="refs/remotes/origin/${branch}"
+            elif [[ "${source_ref}" == refs/tags/* ]]; then
+              tag="${source_ref#refs/tags/}"
+              git check-ref-format "refs/tags/${tag}"
+              resolved="refs/tags/${tag}"
+            else
+              branch_exists=0
+              tag_exists=0
+              if git check-ref-format --branch "${source_ref}" >/dev/null 2>&1 \
+                  && git show-ref --verify --quiet \
+                    "refs/remotes/origin/${source_ref}"; then
+                branch_exists=1
+              fi
+              if git check-ref-format "refs/tags/${source_ref}" >/dev/null 2>&1 \
+                  && git show-ref --verify --quiet "refs/tags/${source_ref}"; then
+                tag_exists=1
+              fi
+              if [[ "${branch_exists}" -eq 1 && "${tag_exists}" -eq 1 ]]; then
+                echo "::error::source_ref is ambiguous; use refs/heads/ or refs/tags/."
+                exit 1
+              elif [[ "${branch_exists}" -eq 1 ]]; then
+                resolved="refs/remotes/origin/${source_ref}"
+              elif [[ "${tag_exists}" -eq 1 ]]; then
+                resolved="refs/tags/${source_ref}"
+              else
+                echo "::error::source_ref does not identify a repository branch, tag, or commit."
+                exit 1
+              fi
+            fi
+
+            if ! source_sha="$(git rev-parse --verify "${resolved}^{commit}")" \
+                || [[ ! "${source_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::source_ref did not resolve to an immutable commit."
+              exit 1
+            fi
+          else
+            source_ref="${SOURCE_REF_HINT}"
+            source_sha="${SOURCE_SHA_HINT}"
+            if [[ ! "${source_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::GitHub did not provide a valid source commit."
+              exit 1
+            fi
+          fi
+
+          source_ref_display="$(
+            printf '%s' "${source_ref}" | tr -c 'A-Za-z0-9._/@+-' '_'
+          )"
+          {
+            echo "source_ref_display=${source_ref_display}"
+            echo "source_sha=${source_sha}"
+          } >> "${GITHUB_OUTPUT}"
+
   workflow-security:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -102,7 +203,7 @@ jobs:
           fail-on-severity: high
 
   test:
-    needs: workflow-security
+    needs: [workflow-security, resolve-source]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -128,6 +229,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+          ref: ${{ needs.resolve-source.outputs.source_sha }}
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
@@ -198,7 +300,7 @@ jobs:
           RUN_ZAP_DAST: "true"
         run: bash ops/container/smoke-test.sh sitbank:pr
 
-      - name: Validate the production Compose model
+      - name: Validate production and staging Compose models
         run: bash ops/container/validate-compose.sh sitbank:pr
 
       # zizmor: ignore[unpinned-tools] Trivy action is SHA-pinned; the action installs a pinned Trivy tool version.
@@ -255,7 +357,7 @@ jobs:
         shell: bash
         run: |
           case "${TARGET_ENVIRONMENT}" in
-            staging|production) ;;
+            staging) ;;
             *)
               echo "::error::Invalid target_environment '${TARGET_ENVIRONMENT}'."
               exit 1
@@ -267,22 +369,10 @@ jobs:
             exit 1
           fi
 
-          if [[ "${TARGET_ENVIRONMENT}" == "production" \
-              && "${GITHUB_REF}" != "refs/heads/main" ]]; then
-            echo "::error::Manual production deployment is allowed only from refs/heads/main."
-            exit 1
-          fi
-
           if [[ "${DEPLOY_REQUESTED}" == "true" \
               && "${TARGET_ENVIRONMENT}" == "staging" \
               && "${STAGING_DEPLOY_ENABLED}" != "true" ]]; then
             echo "::notice::Staging deployment requested, but STAGING_DEPLOY_ENABLED is not true. The digest will be verified and deployment will be skipped."
-          fi
-
-          if [[ "${DEPLOY_REQUESTED}" == "true" \
-              && "${TARGET_ENVIRONMENT}" == "production" \
-              && "${PROD_DEPLOY_ENABLED}" != "true" ]]; then
-            echo "::notice::Production deployment requested, but PROD_DEPLOY_ENABLED is not true. The digest will be verified and deployment will be skipped."
           fi
 
           if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF}" == "refs/heads/main" ]]; then
@@ -295,8 +385,17 @@ jobs:
           fi
 
   publish:
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
-    needs: [test, workflow-security, deployment-preflight]
+    if: >-
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/main' &&
+      (
+        github.event_name == 'push' ||
+        (
+          github.event_name == 'workflow_dispatch' &&
+          inputs.target_environment == 'staging'
+        )
+      )
+    needs: [test, workflow-security, deployment-preflight, resolve-source]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -305,11 +404,13 @@ jobs:
     outputs:
       digest: ${{ steps.push.outputs.digest }}
       repository: ${{ steps.image.outputs.repository }}
+      revision: ${{ needs.resolve-source.outputs.source_sha }}
     steps:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
           persist-credentials: false
+          ref: ${{ needs.resolve-source.outputs.source_sha }}
 
       - name: Resolve lowercase GHCR repository
         id: image
@@ -355,7 +456,7 @@ jobs:
           push: true
           tags: ${{ steps.tags.outputs.tags }}
           build-args: |
-            VCS_REF=${{ github.sha }}
+            VCS_REF=${{ needs.resolve-source.outputs.source_sha }}
             SOURCE_URL=${{ github.server_url }}/${{ github.repository }}
           provenance: mode=max
           sbom: true
@@ -363,22 +464,34 @@ jobs:
           cache-to: type=gha,mode=max
 
   release-verify:
+    if: >-
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/main' &&
+      (
+        github.event_name == 'push' ||
+        (
+          github.event_name == 'workflow_dispatch' &&
+          inputs.target_environment == 'staging'
+        )
+      )
     needs: publish
     runs-on: ubuntu-latest
     timeout-minutes: 40
     permissions:
       contents: read
       id-token: write
-      packages: read
+      packages: write
     outputs:
       digest: ${{ steps.image.outputs.digest }}
       repository: ${{ steps.image.outputs.repository }}
       image: ${{ steps.image.outputs.image }}
+      revision: ${{ steps.image.outputs.revision }}
     steps:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
           persist-credentials: false
+          ref: ${{ github.workflow_sha }}
 
       - name: Resolve verified image reference
         id: image
@@ -386,6 +499,7 @@ jobs:
         env:
           IMAGE_DIGEST: ${{ needs.publish.outputs.digest }}
           IMAGE_REPOSITORY: ${{ needs.publish.outputs.repository }}
+          RELEASE_SHA: ${{ needs.publish.outputs.revision }}
         run: |
           if [[ ! "${IMAGE_REPOSITORY}" =~ ^ghcr\.io/[a-z0-9._-]+/[a-z0-9._-]+$ ]]; then
             echo "::error::Publish emitted an invalid GHCR repository."
@@ -400,6 +514,7 @@ jobs:
             echo "repository=${IMAGE_REPOSITORY}"
             echo "digest=${IMAGE_DIGEST}"
             echo "image=${image}"
+            echo "revision=${RELEASE_SHA}"
           } >> "${GITHUB_OUTPUT}"
 
       - name: Log in to GHCR
@@ -412,7 +527,7 @@ jobs:
       - name: Pull and verify release identity
         env:
           IMAGE: ${{ steps.image.outputs.image }}
-          RELEASE_SHA: ${{ github.sha }}
+          RELEASE_SHA: ${{ steps.image.outputs.revision }}
         run: |
           docker pull "${IMAGE}"
           revision="$(
@@ -422,7 +537,7 @@ jobs:
           )"
           test "${revision}" = "${RELEASE_SHA}"
 
-      - name: Validate the production Compose model for the exact digest
+      - name: Validate production and staging Compose models for the exact digest
         env:
           SITBANK_IMAGE: ${{ steps.image.outputs.image }}
         run: bash ops/container/validate-compose.sh "${SITBANK_IMAGE}"
@@ -486,6 +601,7 @@ jobs:
 
   deploy-staging:
     if: >-
+      github.event_name != 'pull_request' &&
       needs.release-verify.result == 'success' &&
       (
         (
@@ -495,6 +611,7 @@ jobs:
         ) ||
         (
           github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/main' &&
           inputs.target_environment == 'staging' &&
           inputs.deploy == true &&
           vars.STAGING_DEPLOY_ENABLED == 'true'
@@ -511,7 +628,7 @@ jobs:
       name: staging
       url: https://${{ vars.STAGING_PUBLIC_HOST }}
     env:
-      RELEASE_SHA: ${{ github.sha }}
+      RELEASE_SHA: ${{ needs.release-verify.outputs.revision }}
       IMAGE_DIGEST: ${{ needs.release-verify.outputs.digest }}
       REMOTE_HOST: ${{ vars.STAGING_EC2_HOST }}
       REMOTE_PORT: ${{ vars.STAGING_EC2_PORT }}
@@ -525,6 +642,7 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
           persist-credentials: false
+          ref: ${{ github.workflow_sha }}
 
       - name: Verify staging deployment configuration
         env:
@@ -569,16 +687,16 @@ jobs:
           python ops/deploy/render_container_bundle.py \
             --prefix STAGING \
             --environment-only \
-            --output "runtime-${RELEASE_SHA}"
-          tar --create --file "runtime-${RELEASE_SHA}.tar" \
-            --directory "runtime-${RELEASE_SHA}" .
-          sha256sum "runtime-${RELEASE_SHA}.tar" \
-            > "runtime-${RELEASE_SHA}.sha256"
+            --output "runtime-staging-${RELEASE_SHA}"
+          tar --create --file "runtime-staging-${RELEASE_SHA}.tar" \
+            --directory "runtime-staging-${RELEASE_SHA}" .
+          sha256sum "runtime-staging-${RELEASE_SHA}.tar" \
+            > "runtime-staging-${RELEASE_SHA}.sha256"
           cosign sign-blob --yes \
-            --bundle "runtime-${RELEASE_SHA}.sigstore.json" \
-            "runtime-${RELEASE_SHA}.tar"
+            --bundle "runtime-staging-${RELEASE_SHA}.sigstore.json" \
+            "runtime-staging-${RELEASE_SHA}.tar"
           printf '%s\n%s\n' "${GITHUB_ACTOR}" "${GITHUB_TOKEN}" \
-            > "registry-${RELEASE_SHA}.credentials"
+            > "registry-staging-${RELEASE_SHA}.credentials"
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
@@ -598,10 +716,10 @@ jobs:
           scp -P "${REMOTE_PORT}" -i ~/.ssh/id_ed25519 \
             -o BatchMode=yes -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
-            "runtime-${RELEASE_SHA}.tar" \
-            "runtime-${RELEASE_SHA}.sha256" \
-            "runtime-${RELEASE_SHA}.sigstore.json" \
-            "registry-${RELEASE_SHA}.credentials" \
+            "runtime-staging-${RELEASE_SHA}.tar" \
+            "runtime-staging-${RELEASE_SHA}.sha256" \
+            "runtime-staging-${RELEASE_SHA}.sigstore.json" \
+            "registry-staging-${RELEASE_SHA}.credentials" \
             "${REMOTE_USER}@${REMOTE_HOST}:incoming/"
 
       - name: Deploy verified image digest
@@ -610,39 +728,26 @@ jobs:
             -o BatchMode=yes -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
             "${REMOTE_USER}@${REMOTE_HOST}" \
-            "sudo /usr/local/sbin/sitbank-container-deploy '${RELEASE_SHA}' '${IMAGE_DIGEST}'"
+            "sudo /usr/local/sbin/sitbank-container-deploy staging '${RELEASE_SHA}' '${IMAGE_DIGEST}'"
 
       - name: Remove deployment credentials and bundles
         if: always()
         run: |
           rm -rf ~/.ssh/id_ed25519 \
-            "runtime-${RELEASE_SHA}" \
-            "runtime-${RELEASE_SHA}.tar" \
-            "runtime-${RELEASE_SHA}.sha256" \
-            "runtime-${RELEASE_SHA}.sigstore.json" \
-            "registry-${RELEASE_SHA}.credentials"
+            "runtime-staging-${RELEASE_SHA}" \
+            "runtime-staging-${RELEASE_SHA}.tar" \
+            "runtime-staging-${RELEASE_SHA}.sha256" \
+            "runtime-staging-${RELEASE_SHA}.sigstore.json" \
+            "registry-staging-${RELEASE_SHA}.credentials"
 
   deploy-production:
     if: >-
       always() &&
       needs.release-verify.result == 'success' &&
-      github.event_name != 'pull_request' &&
+      needs.deploy-staging.result == 'success' &&
+      github.event_name == 'push' &&
       github.ref == 'refs/heads/main' &&
-      vars.PROD_DEPLOY_ENABLED == 'true' &&
-      (
-        (
-          github.event_name == 'push' &&
-          (
-            vars.STAGING_DEPLOY_ENABLED != 'true' ||
-            needs.deploy-staging.result == 'success'
-          )
-        ) ||
-        (
-          github.event_name == 'workflow_dispatch' &&
-          inputs.target_environment == 'production' &&
-          inputs.deploy == true
-        )
-      )
+      vars.PROD_DEPLOY_ENABLED == 'true'
     needs:
       - release-verify
       - deploy-staging
@@ -656,7 +761,7 @@ jobs:
       name: production
       url: https://${{ vars.PROD_PUBLIC_HOST }}
     env:
-      RELEASE_SHA: ${{ github.sha }}
+      RELEASE_SHA: ${{ needs.release-verify.outputs.revision }}
       IMAGE_DIGEST: ${{ needs.release-verify.outputs.digest }}
       REMOTE_HOST: ${{ vars.PROD_EC2_HOST }}
       REMOTE_PORT: ${{ vars.PROD_EC2_PORT }}
@@ -670,6 +775,7 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
           persist-credentials: false
+          ref: ${{ github.workflow_sha }}
 
       - name: Verify production deployment configuration
         env:
