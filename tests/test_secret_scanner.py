@@ -30,6 +30,24 @@ def test_secret_scanner_detects_complete_private_key_payload():
     assert findings == ["private key pattern: fixture"]
 
 
+def test_secret_scanner_detects_legacy_encrypted_pem_metadata():
+    encoded_payload = base64.b64encode(b"encrypted-private-key-payload" * 6)
+    body = (
+        b"Proc-Type: 4,ENCRYPTED\n"
+        b"DEK-Info: AES-256-CBC,0123456789ABCDEF\n\n"
+        + encoded_payload
+    )
+    findings: list[str] = []
+
+    scan_content(
+        "legacy-encrypted-fixture",
+        _private_key_block(b"RSA PRIVATE KEY", body),
+        findings,
+    )
+
+    assert findings == ["private key pattern: legacy-encrypted-fixture"]
+
+
 def test_secret_scanner_ignores_documented_header_and_placeholder():
     findings: list[str] = []
     documented_header = b"-----BEGIN " + b"OPENSSH PRIVATE KEY-----"

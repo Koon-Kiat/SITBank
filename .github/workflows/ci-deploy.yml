@@ -713,20 +713,26 @@ jobs:
               '::error::STAGING_EC2_SSH_PRIVATE_KEY contains literal \n text. Store the raw multiline private key instead.'
             exit 1
           fi
-          printf '%s\n' "${SSH_PRIVATE_KEY}" \
-            | tr -d '\r' > ~/.ssh/deploy_key
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          value = os.environ["SSH_PRIVATE_KEY"].replace("\r\n", "\n").replace("\r", "\n")
+          value = value.lstrip("\ufeff")
+          lines = value.split("\n")
+          while lines and not lines[0].strip():
+              lines.pop(0)
+          while lines and not lines[-1].strip():
+              lines.pop()
+          if not lines or "\x00" in value:
+              raise SystemExit("STAGING_EC2_SSH_PRIVATE_KEY is empty or malformed")
+          Path.home().joinpath(".ssh", "deploy_key").write_text(
+              "\n".join(lines) + "\n",
+              encoding="utf-8",
+              newline="\n",
+          )
+          PY
           chmod 0600 ~/.ssh/deploy_key
-          case "$(head -n 1 ~/.ssh/deploy_key)" in
-            "-----BEGIN OPENSSH PRIVATE KEY-----" | \
-            "-----BEGIN PRIVATE KEY-----" | \
-            "-----BEGIN RSA PRIVATE KEY-----" | \
-            "-----BEGIN EC PRIVATE KEY-----")
-              ;;
-            *)
-              echo "::error::STAGING_EC2_SSH_PRIVATE_KEY is not a supported raw private key."
-              exit 1
-              ;;
-          esac
           if ! ssh-keygen -y -P "" -f ~/.ssh/deploy_key >/dev/null 2>&1; then
             echo "::error::STAGING_EC2_SSH_PRIVATE_KEY could not be parsed. Use an unencrypted OpenSSH private key and preserve its multiline formatting."
             exit 1
@@ -875,20 +881,26 @@ jobs:
               '::error::PROD_EC2_SSH_PRIVATE_KEY contains literal \n text. Store the raw multiline private key instead.'
             exit 1
           fi
-          printf '%s\n' "${SSH_PRIVATE_KEY}" \
-            | tr -d '\r' > ~/.ssh/deploy_key
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          value = os.environ["SSH_PRIVATE_KEY"].replace("\r\n", "\n").replace("\r", "\n")
+          value = value.lstrip("\ufeff")
+          lines = value.split("\n")
+          while lines and not lines[0].strip():
+              lines.pop(0)
+          while lines and not lines[-1].strip():
+              lines.pop()
+          if not lines or "\x00" in value:
+              raise SystemExit("PROD_EC2_SSH_PRIVATE_KEY is empty or malformed")
+          Path.home().joinpath(".ssh", "deploy_key").write_text(
+              "\n".join(lines) + "\n",
+              encoding="utf-8",
+              newline="\n",
+          )
+          PY
           chmod 0600 ~/.ssh/deploy_key
-          case "$(head -n 1 ~/.ssh/deploy_key)" in
-            "-----BEGIN OPENSSH PRIVATE KEY-----" | \
-            "-----BEGIN PRIVATE KEY-----" | \
-            "-----BEGIN RSA PRIVATE KEY-----" | \
-            "-----BEGIN EC PRIVATE KEY-----")
-              ;;
-            *)
-              echo "::error::PROD_EC2_SSH_PRIVATE_KEY is not a supported raw private key."
-              exit 1
-              ;;
-          esac
           if ! ssh-keygen -y -P "" -f ~/.ssh/deploy_key >/dev/null 2>&1; then
             echo "::error::PROD_EC2_SSH_PRIVATE_KEY could not be parsed. Use an unencrypted OpenSSH private key and preserve its multiline formatting."
             exit 1

@@ -42,7 +42,24 @@ SECRET_PATTERNS = {
 
 def contains_private_key(content: bytes) -> bool:
     for match in PRIVATE_KEY_BLOCK_PATTERN.finditer(content):
-        encoded_payload = re.sub(rb"\s+", b"", match.group("body"))
+        payload_lines: list[bytes] = []
+        in_metadata = True
+        metadata_seen = False
+        normalized_body = match.group("body").replace(b"\r\n", b"\n").replace(
+            b"\r", b"\n"
+        )
+        for raw_line in normalized_body.split(b"\n"):
+            line = raw_line.strip()
+            if not line:
+                if metadata_seen:
+                    in_metadata = False
+                continue
+            if in_metadata and re.fullmatch(rb"[A-Za-z0-9-]+:.*", line):
+                metadata_seen = True
+                continue
+            in_metadata = False
+            payload_lines.append(line)
+        encoded_payload = b"".join(payload_lines)
         if not re.fullmatch(rb"[A-Za-z0-9+/]+={0,2}", encoded_payload):
             continue
         try:
