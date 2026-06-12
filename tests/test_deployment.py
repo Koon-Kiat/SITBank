@@ -19,6 +19,7 @@ from ops.deploy.render_container_bundle import (
 
 
 DEPLOYMENT_VALUES = {
+    "PROD_DATABASE_MIGRATION_URL": "postgresql+psycopg2://bank_owner:secret@127.0.0.1/bank",
     "PROD_DATABASE_URL": "postgresql+psycopg2://bank:secret@127.0.0.1/bank",
     "PROD_MFA_AES256_GCM_KEY_B64": "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=",
     "PROD_PASSWORD_PEPPER_B64": "MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE=",
@@ -57,6 +58,7 @@ def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypa
     assert "SECRET_KEY" not in environment
     assert secrets["secret_key"] == DEPLOYMENT_VALUES["PROD_SECRET_KEY"]
     assert secrets["database_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_URL"]
+    assert secrets["database_migration_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_MIGRATION_URL"]
     assert '"2026-06":"MjIy' in secrets["session_hmac_keys_json"]
 
 
@@ -75,6 +77,7 @@ def test_container_bundle_accepts_staging_prefix(monkeypatch):
     assert environment["SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06"
     assert secrets["secret_key"] == DEPLOYMENT_VALUES["PROD_SECRET_KEY"]
     assert secrets["database_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_URL"]
+    assert secrets["database_migration_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_MIGRATION_URL"]
 
 
 def test_deployment_profiles_keep_production_and_staging_isolated(monkeypatch):
@@ -169,6 +172,7 @@ def test_environment_only_bundle_does_not_export_long_lived_secrets(
 ):
     _set_deployment_values(monkeypatch)
     for name in (
+        "PROD_DATABASE_MIGRATION_URL",
         "PROD_DATABASE_URL",
         "PROD_MFA_AES256_GCM_KEY_B64",
         "PROD_PASSWORD_PEPPER_B64",
@@ -196,6 +200,7 @@ def test_environment_only_bundle_accepts_staging_prefix(monkeypatch, tmp_path):
         "staging.sitbank.example",
     )
     for name in (
+        "STAGING_DATABASE_MIGRATION_URL",
         "STAGING_DATABASE_URL",
         "STAGING_MFA_AES256_GCM_KEY_B64",
         "STAGING_PASSWORD_PEPPER_B64",
@@ -329,8 +334,13 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
         for name, value in app["environment"].items()
         if name.endswith("_FILE")
     )
+    assert "DATABASE_MIGRATION_URL_FILE" not in app["environment"]
     assert "/app/redis_compatibility_check.py:ro" in smoke_test
     assert "python /app/redis_compatibility_check.py" in smoke_test
+    assert "ci_owner" in smoke_test
+    assert "ci_app" in smoke_test
+    assert "DATABASE_MIGRATION_URL_FILE" in smoke_test
+    assert "verify-runtime-db-privileges" in smoke_test
     assert "/redis-check.py" not in smoke_test
     assert "--publish 127.0.0.1::5432" in smoke_test
     assert "--publish 127.0.0.1::6379" in smoke_test
@@ -368,6 +378,7 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert staging_app["cap_drop"] == ["ALL"]
     assert "no-new-privileges:true" in staging_app["security_opt"]
     assert staging_app["env_file"] == ["/etc/sitbank-staging/container.env"]
+    assert "DATABASE_MIGRATION_URL_FILE" not in staging_app["environment"]
     assert all(
         volume["source"].startswith("/etc/sitbank-staging/")
         for volume in staging_app["volumes"]
@@ -378,6 +389,21 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     )
     assert staging_services["postgres"]["container_name"] == (
         "sitbank-staging-postgres"
+    )
+    assert staging_services["postgres"]["environment"]["POSTGRES_USER"] == "sitbank_owner"
+    assert (
+        staging_services["postgres"]["environment"]["POSTGRES_PASSWORD_FILE"]
+        == "/run/secrets/postgres_owner_password"
+    )
+    assert {secret["source"] if isinstance(secret, dict) else secret for secret in staging_services["postgres"]["secrets"]} == {
+        "postgres_owner_password",
+        "postgres_app_password",
+    }
+    assert any(
+        volume["source"]
+        == "/etc/sitbank-staging/postgres/init-sitbank-staging-roles.sh"
+        for volume in staging_services["postgres"]["volumes"]
+        if isinstance(volume, dict)
     )
     assert staging_services["redis"]["container_name"] == "sitbank-staging-redis"
     assert "ports" not in staging_services["postgres"]
@@ -402,10 +428,16 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "--wait --wait-timeout 120" in deploy_script
     assert deploy_script.count("--retry-all-errors") == 2
     assert "show_app_diagnostics" in deploy_script
+    assert "DATABASE_MIGRATION_URL_FILE=/run/secrets/database_migration_url" in deploy_script
+    assert "verify-runtime-db-privileges" in deploy_script
+    assert "DATABASE_MIGRATION_URL must not be configured for the runtime app" in Path(
+        "app/ops/commands.py"
+    ).read_text(encoding="utf-8")
     assert "logs --no-color --tail 80 app" in deploy_script
     assert "runuser -u sitbank-container" in deploy_script
     assert "cannot traverse secret directory" in deploy_script
     assert '"${config_root}/secrets"' in bootstrap
+    assert "init-sitbank-staging-roles.sh" in bootstrap
     assert '-g "${CONTAINER_GID}" -m 0750' in bootstrap
 
     app_python = "\n".join(
@@ -969,7 +1001,8 @@ def test_migration_baseline_and_existing_database_runbook_are_present():
     assert "WenJiangggg/SITBank" in readme
     assert "ghcr.io/wenjiangggg/sitbank@sha256:<digest>" in readme
     assert "sitbank_db" in readme
-    assert "sitbank_user" in readme
+    assert "sitbank_owner" in readme
+    assert "sitbank_app" in readme
     assert "sitbank-database-cutover prepare" in readme
 
 

@@ -102,6 +102,26 @@ def _required_secret(name: str, *, min_length: int) -> str:
 
 def _required_url(name: str, *, schemes: set[str], require_password: bool) -> str:
     value = _required_env_or_file(name)
+    return _validate_url(name, value, schemes=schemes, require_password=require_password)
+
+
+def _optional_url(name: str, *, schemes: set[str], require_password: bool) -> str | None:
+    direct_value = os.getenv(name)
+    file_value = os.getenv(f"{name}_FILE")
+    if direct_value and file_value:
+        raise RuntimeError(f"Configure either {name} or {name}_FILE, not both")
+    if file_value:
+        value = _read_secret_file(name, file_value)
+    else:
+        value = direct_value
+    if not value:
+        return None
+    if _looks_placeholder(value):
+        raise RuntimeError(f"{name} contains a placeholder value")
+    return _validate_url(name, value, schemes=schemes, require_password=require_password)
+
+
+def _validate_url(name: str, value: str, *, schemes: set[str], require_password: bool) -> str:
     parsed = urlparse(value)
     if parsed.scheme not in schemes:
         allowed = ", ".join(sorted(schemes))
@@ -110,8 +130,10 @@ def _required_url(name: str, *, schemes: set[str], require_password: bool) -> st
         raise RuntimeError(f"{name} must include a real host")
     if require_password and not parsed.password:
         raise RuntimeError(f"{name} must include credentials")
-    if name == "DATABASE_URL" and (not parsed.username or parsed.path in {"", "/"}):
-        raise RuntimeError("DATABASE_URL must include username and database name")
+    if name in {"DATABASE_URL", "DATABASE_MIGRATION_URL"} and (
+        not parsed.username or parsed.path in {"", "/"}
+    ):
+        raise RuntimeError(f"{name} must include username and database name")
     if name == "REDIS_URL" and (parsed.query or parsed.fragment):
         raise RuntimeError(
             "REDIS_URL must not include query parameters or a fragment; "
@@ -195,6 +217,11 @@ class Config:
     )
     SQLALCHEMY_DATABASE_URI = _required_url(
         "DATABASE_URL",
+        schemes={"postgresql", "postgresql+psycopg2"},
+        require_password=True,
+    )
+    SQLALCHEMY_MIGRATION_DATABASE_URI = _optional_url(
+        "DATABASE_MIGRATION_URL",
         schemes={"postgresql", "postgresql+psycopg2"},
         require_password=True,
     )

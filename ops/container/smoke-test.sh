@@ -80,10 +80,10 @@ trap on_error ERR
 
 docker run --detach --name smoke-postgres \
     --publish 127.0.0.1::5432 \
-    --env POSTGRES_USER=ci \
-    --env POSTGRES_PASSWORD=ci-password \
+    --env POSTGRES_USER=ci_owner \
+    --env POSTGRES_PASSWORD=ci-owner-password \
     --env POSTGRES_DB=ci \
-    --health-cmd "pg_isready --username ci --dbname ci" \
+    --health-cmd "pg_isready --username ci_owner --dbname ci" \
     --health-interval 1s \
     --health-timeout 3s \
     --health-start-period 2s \
@@ -104,6 +104,23 @@ wait_for_healthy smoke-redis
 postgres_port="$(published_port smoke-postgres 5432)"
 redis_port="$(published_port smoke-redis 6379)"
 
+docker exec -e PGPASSWORD=ci-owner-password smoke-postgres \
+    psql --no-psqlrc --set ON_ERROR_STOP=1 \
+    --username ci_owner --dbname ci \
+    --set app_password=ci-app-password <<'SQL'
+CREATE ROLE ci_app LOGIN PASSWORD :'app_password';
+REVOKE ALL ON DATABASE ci FROM PUBLIC;
+GRANT CONNECT ON DATABASE ci TO ci_app;
+REVOKE ALL ON SCHEMA public FROM PUBLIC;
+REVOKE ALL ON SCHEMA public FROM ci_app;
+ALTER SCHEMA public OWNER TO ci_owner;
+GRANT USAGE ON SCHEMA public TO ci_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE ci_owner IN SCHEMA public
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ci_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE ci_owner IN SCHEMA public
+    GRANT USAGE, SELECT ON SEQUENCES TO ci_app;
+SQL
+
 install -d -m 0755 "${work_dir}/secrets" "${work_dir}/config"
 printf '%s' 'ci-secret-key-that-is-long-enough-for-container-tests' \
     > "${work_dir}/secrets/secret_key"
@@ -111,8 +128,10 @@ printf '%s' 'ci-csrf-key-that-is-long-enough-for-container-tests' \
     > "${work_dir}/secrets/wtf_csrf_secret_key"
 printf '%s' '{"ci":"MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjI="}' \
     > "${work_dir}/secrets/session_hmac_keys_json"
-printf 'postgresql+psycopg2://ci:ci-password@127.0.0.1:%s/ci' "${postgres_port}" \
+printf 'postgresql+psycopg2://ci_app:ci-app-password@127.0.0.1:%s/ci' "${postgres_port}" \
     > "${work_dir}/secrets/database_url"
+printf 'postgresql+psycopg2://ci_owner:ci-owner-password@127.0.0.1:%s/ci' "${postgres_port}" \
+    > "${work_dir}/database_migration_url"
 printf 'redis://:ci-password@127.0.0.1:%s/15' "${redis_port}" \
     > "${work_dir}/secrets/redis_url"
 printf '%s' 'MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=' \
@@ -120,6 +139,7 @@ printf '%s' 'MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=' \
 printf '%s' 'MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE=' \
     > "${work_dir}/secrets/password_pepper_b64"
 chmod 0444 "${work_dir}"/secrets/*
+chmod 0444 "${work_dir}/database_migration_url"
 
 seq -f 'blocked-password-%06g' 1 100000 \
     > "${work_dir}/config/common-passwords.txt"
@@ -156,11 +176,18 @@ docker_args=(
     --volume "${work_dir}/secrets:/run/secrets:ro"
     --volume "${work_dir}/config:/run/config:ro"
 )
+migration_docker_args=(
+    "${docker_args[@]}"
+    --env DATABASE_MIGRATION_URL_FILE=/run/secrets/database_migration_url
+    --volume "${work_dir}/database_migration_url:/run/secrets/database_migration_url:ro"
+)
 
-docker run --rm "${docker_args[@]}" "${IMAGE}" \
+docker run --rm "${migration_docker_args[@]}" "${IMAGE}" \
     python -m flask --app wsgi:app db upgrade
 docker run --rm "${docker_args[@]}" "${IMAGE}" \
     python -m flask --app wsgi:app production-check
+docker run --rm "${migration_docker_args[@]}" "${IMAGE}" \
+    python -m flask --app wsgi:app verify-runtime-db-privileges
 docker run --rm "${docker_args[@]}" \
     --volume "${repo_root}/ops/container/redis_compatibility_check.py:/app/redis_compatibility_check.py:ro" \
     "${IMAGE}" python /app/redis_compatibility_check.py
