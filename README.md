@@ -127,7 +127,9 @@ does not apply service-level `uid`, `gid`, or `mode` attributes. The host files
 are therefore the authority: application secrets must be root-owned, grouped
 to GID `10001`, and mode `0440`; staging PostgreSQL and Redis bootstrap files
 are root-owned mode `0444`. The deployment wrapper verifies readability before
-starting containers.
+starting containers. Each environment's `secrets` directory is
+`root:sitbank-container` mode `0750`, allowing the locked container account to
+traverse the directory without granting access to the SSH deployment user.
 
 The complete production configuration surface is:
 
@@ -513,8 +515,9 @@ from pathlib import Path
 from urllib.parse import quote
 
 root = Path("/etc/sitbank-staging/secrets")
-root.mkdir(mode=0o700, parents=True, exist_ok=True)
-os.chown(root, 0, 0)
+root.mkdir(mode=0o750, parents=True, exist_ok=True)
+os.chown(root, 0, 10001)
+os.chmod(root, 0o750)
 
 def write(name, value, mode=0o440, gid=10001):
     path = root / name
@@ -711,7 +714,7 @@ sudo install -o root -g root -m 0600 \
   /etc/sitbank/container.env
 sudo cp -a /etc/sitbank/runtime-import/secrets/. /etc/sitbank/secrets/
 sudo chown -R root:10001 /etc/sitbank/secrets
-sudo chmod 0700 /etc/sitbank/secrets
+sudo chmod 0750 /etc/sitbank/secrets
 sudo chmod 0440 /etc/sitbank/secrets/*
 sudo rm -rf /etc/sitbank/runtime-import
 ```
