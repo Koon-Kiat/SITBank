@@ -122,6 +122,13 @@ not copy their values into process environment variables. Non-secret settings
 live in each environment's `container.env`. Containers do not load a
 production `.env` file.
 
+Docker Compose implements local file-backed secrets as bind mounts, so Compose
+does not apply service-level `uid`, `gid`, or `mode` attributes. The host files
+are therefore the authority: application secrets must be root-owned, grouped
+to GID `10001`, and mode `0440`; staging PostgreSQL and Redis bootstrap files
+are root-owned mode `0444`. The deployment wrapper verifies readability before
+starting containers.
+
 The complete production configuration surface is:
 
 - `APP_ENV`

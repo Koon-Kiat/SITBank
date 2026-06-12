@@ -116,39 +116,18 @@ services:
     secrets:
       - source: secret_key
         target: secret_key
-        uid: "10001"
-        gid: "10001"
-        mode: 0400
       - source: wtf_csrf_secret_key
         target: wtf_csrf_secret_key
-        uid: "10001"
-        gid: "10001"
-        mode: 0400
       - source: session_hmac_keys_json
         target: session_hmac_keys_json
-        uid: "10001"
-        gid: "10001"
-        mode: 0400
       - source: database_url
         target: database_url
-        uid: "10001"
-        gid: "10001"
-        mode: 0400
       - source: redis_url
         target: redis_url
-        uid: "10001"
-        gid: "10001"
-        mode: 0400
       - source: mfa_aes256_gcm_key_b64
         target: mfa_aes256_gcm_key_b64
-        uid: "10001"
-        gid: "10001"
-        mode: 0400
       - source: password_pepper_b64
         target: password_pepper_b64
-        uid: "10001"
-        gid: "10001"
-        mode: 0400
     volumes:
       - type: bind
         source: /etc/sitbank-staging/common-passwords.txt

@@ -433,14 +433,20 @@ prepare_dependencies() {
 
 wait_until_ready() {
     curl --fail --silent --show-error \
-        --retry 15 --retry-delay 2 --retry-connrefused \
+        --retry 15 --retry-delay 2 --retry-all-errors \
         --header "Host: ${PUBLIC_HOST}" \
         --header "X-Forwarded-Proto: https" \
         "http://${APP_BIND_HOST}:${APP_BIND_PORT}/health/ready" >/dev/null
     curl --fail --silent --show-error \
-        --retry 8 --retry-delay 2 --retry-connrefused \
+        --retry 8 --retry-delay 2 --retry-all-errors \
         --resolve "${PUBLIC_HOST}:443:127.0.0.1" \
         "https://${PUBLIC_HOST}/health/ready" >/dev/null
+}
+
+show_app_diagnostics() {
+    echo "Application container diagnostics:" >&2
+    compose "${image}" ps app >&2 || true
+    compose "${image}" logs --no-color --tail 80 app >&2 || true
 }
 
 rollback() {
@@ -448,6 +454,9 @@ rollback() {
     local database_rollback_ok=1
     trap - ERR
     set +e
+    if [[ "${service_switched}" -eq 1 ]]; then
+        show_app_diagnostics
+    fi
     if [[ "${service_switched}" -eq 1 ]]; then
         compose "${image}" down --remove-orphans
     elif [[ "${target}" == "staging" \
@@ -551,6 +560,13 @@ for secret_file in "${required_secrets[@]}"; do
         echo "Missing required root-managed secret file: ${secret_file}" >&2
         exit 1
     fi
+    if [[ "${secret_file}" != "postgres_password" \
+        && "${secret_file}" != "redis.conf" ]] \
+        && ! runuser -u sitbank-container -- \
+            test -r "${SECRET_DIR}/${secret_file}"; then
+        echo "Container account cannot read secret file: ${secret_file}" >&2
+        exit 1
+    fi
 done
 validate_staging_isolation
 prepare_dependencies
@@ -572,7 +588,8 @@ elif [[ "${legacy_was_active}" -eq 1 ]]; then
 fi
 service_switched=1
 
-compose "${image}" up --detach --no-build --pull never --remove-orphans
+compose "${image}" up --detach --no-build --pull never --remove-orphans \
+    --wait --wait-timeout 120
 wait_until_ready
 
 install -d -o root -g root -m 0700 "${STATE_DIR}"
