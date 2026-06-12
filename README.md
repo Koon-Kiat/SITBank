@@ -41,8 +41,10 @@ ignored until a deliberate runtime migration is approved.
 
 Docker base images remain pinned by digest in the Dockerfile. Dependabot is
 configured to propose Dockerfile base-image updates as pull requests, and those
-PRs must run the same tests, Trivy scans, smoke test, authenticated DAST,
-actionlint, zizmor, and shellcheck checks as application changes.
+PRs must run the same tests, Trivy scans, container smoke test, Compose
+validation, actionlint, zizmor, and shellcheck checks as application changes.
+Ordinary pull requests skip the full authenticated DAST crawl; scheduled scans
+and release verification retain that coverage.
 Base-image updates must not be auto-merged.
 
 Docker Desktop is optional for ordinary Python development. Install it with
@@ -194,6 +196,15 @@ validation, and Trivy checks. This keeps the pinned Debian/Python base image
 under regular review and makes fixed upstream base digests or fixed Debian
 packages visible without permitting scheduled publish or deployment.
 
+Normal pull requests run the container smoke test, Compose validation, and
+both Trivy gates without pulling the ZAP image. This keeps feedback fast while
+preserving the full Python, SAST, dependency, secret, container, and image
+security checks. Authenticated DAST still runs during `release-verify` for
+every push to `main`. For manual staging, maintainers control it with the
+`run_dast` input; `true` runs DAST before staging deployment and `false` is the
+only manual opt-out. Scheduled runs continue to execute authenticated DAST for
+regular deeper coverage.
+
 Every third-party action is pinned to a full commit SHA. Publishing remains
 available while deployment is disabled, allowing the same signed digest to be
 verified without changing EC2.
@@ -202,7 +213,7 @@ The release flows are:
 
 ```text
 Pull request:
-  tests and validation only
+  tests, container smoke, Compose validation, and Trivy; no full ZAP DAST
 
 Manual pre-merge staging:
   run trusted workflow from main
@@ -282,7 +293,7 @@ deployment clearly.
 Add these staging environment secrets:
 
 - `STAGING_EC2_KNOWN_HOSTS`
-- `STAGING_EC2_SSH_PRIVATE_KEY`
+- `STAGING_EC2_SSH_PRIVATE_KEY_B64`
 
 Add these staging environment variables:
 
@@ -316,7 +327,7 @@ run_dast: true
 Add these production environment secrets:
 
 - `PROD_EC2_KNOWN_HOSTS`
-- `PROD_EC2_SSH_PRIVATE_KEY`
+- `PROD_EC2_SSH_PRIVATE_KEY_B64`
 
 Add these production environment variables:
 
@@ -341,7 +352,7 @@ by the workflow. Rename them before enabling production deployment:
 | Old name | New canonical name |
 | --- | --- |
 | `EC2_KNOWN_HOSTS` | `PROD_EC2_KNOWN_HOSTS` |
-| `EC2_SSH_PRIVATE_KEY` | `PROD_EC2_SSH_PRIVATE_KEY` |
+| `EC2_SSH_PRIVATE_KEY` | `PROD_EC2_SSH_PRIVATE_KEY_B64` |
 | `EC2_DEPLOY_USER` | `PROD_EC2_DEPLOY_USER` |
 | `EC2_HOST` | `PROD_EC2_HOST` |
 | `EC2_PORT` | `PROD_EC2_PORT` |
@@ -617,19 +628,25 @@ with `restrict`. The staging entry, for example, is:
 restrict ssh-ed25519 AAAA... github-actions-sitbank-staging
 ```
 
-Store the complete raw private-key contents as:
+Encode each private key as single-line Base64 and store the result as:
 
-- `STAGING_EC2_SSH_PRIVATE_KEY` in the `staging` environment.
-- `PROD_EC2_SSH_PRIVATE_KEY` in the `production` environment.
+- `STAGING_EC2_SSH_PRIVATE_KEY_B64` in the `staging` environment.
+- `PROD_EC2_SSH_PRIVATE_KEY_B64` in the `production` environment.
 
-The secret must start with `-----BEGIN OPENSSH PRIVATE KEY-----` and end with
-`-----END OPENSSH PRIVATE KEY-----`. Paste the multiline contents, not the
-`.pub` key, a filesystem path, a PuTTY `.ppk`, or text containing literal
-`\n` sequences. On Windows, copy it without changing its formatting:
+Base64 is transport encoding, not encryption; confidentiality still comes from
+the GitHub environment secret. Encode the private file bytes directly. Do not
+encode the `.pub` key, a filesystem path, or a PuTTY `.ppk`:
 
 ```powershell
-Get-Content -Raw "$HOME\.ssh\sitbank_github_actions_staging" | Set-Clipboard
+$keyBytes = [System.IO.File]::ReadAllBytes(
+  "$HOME\.ssh\sitbank_github_actions_staging"
+)
+[Convert]::ToBase64String($keyBytes) | Set-Clipboard
 ```
+
+The copied value must be one uninterrupted line. Delete the obsolete raw
+`STAGING_EC2_SSH_PRIVATE_KEY` or `PROD_EC2_SSH_PRIVATE_KEY` secret after the
+corresponding Base64 deployment succeeds.
 
 Verify that the corresponding public key is the one installed for
 `sitbank-deploy`:

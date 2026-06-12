@@ -295,9 +295,9 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Run container smoke and authenticated DAST tests
+      - name: Run container smoke test and scheduled authenticated DAST
         env:
-          RUN_ZAP_DAST: "true"
+          RUN_ZAP_DAST: ${{ github.event_name == 'schedule' && 'true' || 'false' }}
         run: bash ops/container/smoke-test.sh sitbank:pr
 
       - name: Validate production and staging Compose models
@@ -647,7 +647,7 @@ jobs:
       - name: Verify staging deployment configuration
         env:
           STAGING_EC2_KNOWN_HOSTS: ${{ secrets.STAGING_EC2_KNOWN_HOSTS }}
-          STAGING_EC2_SSH_PRIVATE_KEY: ${{ secrets.STAGING_EC2_SSH_PRIVATE_KEY }}
+          STAGING_EC2_SSH_PRIVATE_KEY_B64: ${{ secrets.STAGING_EC2_SSH_PRIVATE_KEY_B64 }}
         run: |
           required=(
             IMAGE_DIGEST
@@ -659,7 +659,7 @@ jobs:
             STAGING_PASSWORD_PBKDF2_ITERATIONS
             STAGING_MFA_ISSUER_NAME
             STAGING_EC2_KNOWN_HOSTS
-            STAGING_EC2_SSH_PRIVATE_KEY
+            STAGING_EC2_SSH_PRIVATE_KEY_B64
           )
           missing=0
           for name in "${required[@]}"; do
@@ -702,39 +702,24 @@ jobs:
 
       - name: Configure verified SSH
         env:
-          SSH_PRIVATE_KEY: ${{ secrets.STAGING_EC2_SSH_PRIVATE_KEY }}
+          SSH_PRIVATE_KEY_B64: ${{ secrets.STAGING_EC2_SSH_PRIVATE_KEY_B64 }}
           SSH_KNOWN_HOSTS: ${{ secrets.STAGING_EC2_KNOWN_HOSTS }}
         run: |
           umask 077
           install -d -m 0700 ~/.ssh
 
-          if [[ "${SSH_PRIVATE_KEY}" == *'\n'* ]]; then
-            printf '%s\n' \
-              '::error::STAGING_EC2_SSH_PRIVATE_KEY contains literal \n text. Store the raw multiline private key instead.'
+          if [[ ! "${SSH_PRIVATE_KEY_B64}" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]; then
+            echo "::error::STAGING_EC2_SSH_PRIVATE_KEY_B64 is not valid single-line Base64."
             exit 1
           fi
-          python3 - <<'PY'
-          import os
-          from pathlib import Path
-
-          value = os.environ["SSH_PRIVATE_KEY"].replace("\r\n", "\n").replace("\r", "\n")
-          value = value.lstrip("\ufeff")
-          lines = value.split("\n")
-          while lines and not lines[0].strip():
-              lines.pop(0)
-          while lines and not lines[-1].strip():
-              lines.pop()
-          if not lines or "\x00" in value:
-              raise SystemExit("STAGING_EC2_SSH_PRIVATE_KEY is empty or malformed")
-          Path.home().joinpath(".ssh", "deploy_key").write_text(
-              "\n".join(lines) + "\n",
-              encoding="utf-8",
-              newline="\n",
-          )
-          PY
+          if ! printf '%s' "${SSH_PRIVATE_KEY_B64}" \
+              | base64 --decode > ~/.ssh/deploy_key; then
+            echo "::error::STAGING_EC2_SSH_PRIVATE_KEY_B64 could not be decoded."
+            exit 1
+          fi
           chmod 0600 ~/.ssh/deploy_key
           if ! ssh-keygen -y -P "" -f ~/.ssh/deploy_key >/dev/null 2>&1; then
-            echo "::error::STAGING_EC2_SSH_PRIVATE_KEY could not be parsed. Use an unencrypted OpenSSH private key and preserve its multiline formatting."
+            echo "::error::Decoded staging SSH key could not be parsed. Store Base64 of an unencrypted OpenSSH private key."
             exit 1
           fi
 
@@ -815,7 +800,7 @@ jobs:
       - name: Verify production deployment configuration
         env:
           PROD_EC2_KNOWN_HOSTS: ${{ secrets.PROD_EC2_KNOWN_HOSTS }}
-          PROD_EC2_SSH_PRIVATE_KEY: ${{ secrets.PROD_EC2_SSH_PRIVATE_KEY }}
+          PROD_EC2_SSH_PRIVATE_KEY_B64: ${{ secrets.PROD_EC2_SSH_PRIVATE_KEY_B64 }}
         run: |
           required=(
             IMAGE_DIGEST
@@ -827,7 +812,7 @@ jobs:
             PROD_PASSWORD_PBKDF2_ITERATIONS
             PROD_MFA_ISSUER_NAME
             PROD_EC2_KNOWN_HOSTS
-            PROD_EC2_SSH_PRIVATE_KEY
+            PROD_EC2_SSH_PRIVATE_KEY_B64
           )
           missing=0
           for name in "${required[@]}"; do
@@ -870,39 +855,24 @@ jobs:
 
       - name: Configure verified SSH
         env:
-          SSH_PRIVATE_KEY: ${{ secrets.PROD_EC2_SSH_PRIVATE_KEY }}
+          SSH_PRIVATE_KEY_B64: ${{ secrets.PROD_EC2_SSH_PRIVATE_KEY_B64 }}
           SSH_KNOWN_HOSTS: ${{ secrets.PROD_EC2_KNOWN_HOSTS }}
         run: |
           umask 077
           install -d -m 0700 ~/.ssh
 
-          if [[ "${SSH_PRIVATE_KEY}" == *'\n'* ]]; then
-            printf '%s\n' \
-              '::error::PROD_EC2_SSH_PRIVATE_KEY contains literal \n text. Store the raw multiline private key instead.'
+          if [[ ! "${SSH_PRIVATE_KEY_B64}" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]; then
+            echo "::error::PROD_EC2_SSH_PRIVATE_KEY_B64 is not valid single-line Base64."
             exit 1
           fi
-          python3 - <<'PY'
-          import os
-          from pathlib import Path
-
-          value = os.environ["SSH_PRIVATE_KEY"].replace("\r\n", "\n").replace("\r", "\n")
-          value = value.lstrip("\ufeff")
-          lines = value.split("\n")
-          while lines and not lines[0].strip():
-              lines.pop(0)
-          while lines and not lines[-1].strip():
-              lines.pop()
-          if not lines or "\x00" in value:
-              raise SystemExit("PROD_EC2_SSH_PRIVATE_KEY is empty or malformed")
-          Path.home().joinpath(".ssh", "deploy_key").write_text(
-              "\n".join(lines) + "\n",
-              encoding="utf-8",
-              newline="\n",
-          )
-          PY
+          if ! printf '%s' "${SSH_PRIVATE_KEY_B64}" \
+              | base64 --decode > ~/.ssh/deploy_key; then
+            echo "::error::PROD_EC2_SSH_PRIVATE_KEY_B64 could not be decoded."
+            exit 1
+          fi
           chmod 0600 ~/.ssh/deploy_key
           if ! ssh-keygen -y -P "" -f ~/.ssh/deploy_key >/dev/null 2>&1; then
-            echo "::error::PROD_EC2_SSH_PRIVATE_KEY could not be parsed. Use an unencrypted OpenSSH private key and preserve its multiline formatting."
+            echo "::error::Decoded production SSH key could not be parsed. Store Base64 of an unencrypted OpenSSH private key."
             exit 1
           fi
 
