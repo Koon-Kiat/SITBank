@@ -593,7 +593,31 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert workflow_text.count("^[A-Za-z0-9+/]+={0,2}$") == 2
     assert "STAGING_EC2_SSH_PRIVATE_KEY:" not in workflow_text
     assert "PROD_EC2_SSH_PRIVATE_KEY:" not in workflow_text
-    assert workflow_text.count("-i ~/.ssh/deploy_key") == 4
+    assert workflow_text.count("-i ~/.ssh/deploy_key") == 6
+    assert workflow_text.count(
+        "sha256sum ops/deploy/sitbank-container-deploy"
+    ) == 2
+    assert workflow_text.count(
+        "sha256sum /usr/local/sbin/sitbank-container-deploy"
+    ) == 2
+    assert "EC2 staging deployment wrapper is missing or stale" in workflow_text
+    assert "EC2 production deployment wrapper is missing or stale" in workflow_text
+    for job_name, wrapper_step_name, upload_step_name in (
+        (
+            "deploy-staging",
+            "Verify trusted staging deployment wrapper",
+            "Upload authenticated deployment inputs",
+        ),
+        (
+            "deploy-production",
+            "Verify trusted production deployment wrapper",
+            "Upload authenticated deployment inputs",
+        ),
+    ):
+        step_names = [
+            step["name"] for step in workflow["jobs"][job_name]["steps"]
+        ]
+        assert step_names.index(wrapper_step_name) < step_names.index(upload_step_name)
     assert "~/.ssh/id_ed25519" not in workflow_text
     assert "vars.EC2_" not in workflow_text
     assert "secrets.EC2_" not in workflow_text

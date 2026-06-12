@@ -242,6 +242,13 @@ therefore do not execute with staging or production secrets. The candidate
 application itself receives only the isolated staging application secrets when
 it is intentionally deployed to staging.
 
+Before uploading a runtime bundle, each deployment job compares the SHA-256 of
+the trusted checked-out `sitbank-container-deploy` wrapper with the root-owned
+copy installed at `/usr/local/sbin/sitbank-container-deploy`. A mismatch fails
+closed. After any reviewed change to the wrapper, rerun the matching EC2
+bootstrap as an administrator before enabling that environment's next
+deployment.
+
 ### Temporary Trivy Exception
 
 `.trivyignore` contains a narrow temporary exception for only
