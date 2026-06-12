@@ -323,7 +323,7 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert app["mem_limit"] == "768m"
     assert app["restart"] == "unless-stopped"
     assert all(volume["read_only"] for volume in app["volumes"])
-    assert all(secret["mode"] == 0o400 for secret in app["secrets"])
+    assert all(set(secret) == {"source", "target"} for secret in app["secrets"])
     assert all(
         value.startswith("/run/secrets/")
         for name, value in app["environment"].items()
@@ -382,6 +382,13 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert staging_services["redis"]["container_name"] == "sitbank-staging-redis"
     assert "ports" not in staging_services["postgres"]
     assert "ports" not in staging_services["redis"]
+    assert staging_app["command"][
+        staging_app["command"].index("--bind") + 1
+    ] == "0.0.0.0:5000"
+    assert all(
+        set(secret) == {"source", "target"}
+        for secret in staging_app["secrets"]
+    )
     assert staging_compose["volumes"]["sitbank-staging-postgres-data"]["name"] == (
         "sitbank-staging-postgres-data"
     )
@@ -392,6 +399,11 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "/etc/sitbank/" not in staging_compose_text
     assert "sitbank-staging-postgres-data" not in compose_text
     assert "sitbank-staging-redis-data" not in compose_text
+    assert "--wait --wait-timeout 120" in deploy_script
+    assert deploy_script.count("--retry-all-errors") == 2
+    assert "show_app_diagnostics" in deploy_script
+    assert "logs --no-color --tail 80 app" in deploy_script
+    assert "runuser -u sitbank-container" in deploy_script
 
     app_python = "\n".join(
         path.read_text(encoding="utf-8")
