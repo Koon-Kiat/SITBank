@@ -161,13 +161,15 @@ development, tests, and the one-time protected legacy import only.
    and a blocking fixable High/Critical Trivy gate. Pull requests do not
    publish, sign, or deploy release images, and they do not reference staging
    or production secrets.
-2. Manual `workflow_dispatch` runs from a trusted feature branch may publish,
-   scan, sign, and verify one immutable staging candidate. Use
-   `target_environment=staging` and `deploy=false` for verification only.
-3. Manual pre-merge staging deployment requires
+2. Manual `workflow_dispatch` staging runs must be started from `main`. Set
+   `source_ref` to the candidate branch, tag, or commit SHA. The trusted
+   workflow resolves it to an immutable `source_sha`, then tests, builds,
+   scans, signs, and verifies that candidate digest.
+3. Manual pre-merge staging deployment requires the workflow ref `main`,
    `target_environment=staging`, `deploy=true`, and
    `STAGING_DEPLOY_ENABLED=true`. It deploys only the exact digest emitted by
-   `publish`; it cannot trigger production.
+   `publish`; it cannot trigger production. Use `deploy=false` for candidate
+   verification without deployment.
 4. Pushes to `main` publish one immutable GHCR image with SBOM and provenance
    attestations, verify the exact digest, and deploy to staging only when
    `STAGING_DEPLOY_ENABLED=true`.
@@ -203,8 +205,14 @@ Pull request:
   tests and validation only
 
 Manual pre-merge staging:
-  trusted branch -> workflow_dispatch -> publish -> release-verify -> staging
-  -> manual verification -> merge pull request
+  run trusted workflow from main
+  -> source_ref = candidate branch, tag, or SHA
+  -> resolve immutable source_sha
+  -> test/build/publish candidate source_sha
+  -> release-verify exact digest using trusted main scripts
+  -> deploy staging using trusted main scripts
+  -> manual verification
+  -> merge pull request
 
 Automatic main release:
   main push -> publish -> release-verify -> staging -> production
@@ -213,6 +221,15 @@ Automatic main release:
 Manual production deployment is disabled. A production deployment requires
 the protected `main` push path and a successful staging deployment in that
 same workflow run.
+
+Candidate code is checked out only in jobs that test or build the candidate.
+Jobs that render signed runtime bundles, access staging or production
+environment secrets, upload over SSH, or invoke the EC2 deployment wrapper
+explicitly check out `github.workflow_sha`, the trusted commit containing the
+workflow selected from `main`. Feature-branch workflow and deployment scripts
+therefore do not execute with staging or production secrets. The candidate
+application itself receives only the isolated staging application secrets when
+it is intentionally deployed to staging.
 
 ### Temporary Trivy Exception
 
@@ -233,10 +250,12 @@ gate, and blocks fixable High/Critical findings with no ignore file.
 
 ### GitHub Environments
 
-Create separate `staging` and `production` environments. Restrict production
-deployment branches to `main`, add required reviewers, prevent self-review
-where supported, and protect `main` with pull-request approval, required CI
-checks, and disabled force pushes.
+Create separate `staging` and `production` environments. Restrict both
+environment deployment branches to `main`; manual staging still tests a
+feature branch because the candidate is supplied through `source_ref`, while
+the secret-bearing job runs trusted workflow code from `main`. Add required
+reviewers, prevent self-review where supported, and protect `main` with
+pull-request approval, required CI checks, and disabled force pushes.
 
 Set these repository Actions variables before the first merge:
 
@@ -280,6 +299,17 @@ Staging application runtime secrets remain root-managed under
 not reuse production values. Do not copy database URLs, Redis URLs, Flask keys,
 password peppers, MFA encryption keys, or session HMAC key material into
 GitHub Actions secrets.
+
+To test a candidate before merge, open **Actions**, select the CI workflow,
+choose **Run workflow**, and set:
+
+```text
+Use workflow from: main
+source_ref: <feature branch, tag, or full/short commit SHA>
+target_environment: staging
+deploy: true
+run_dast: true
+```
 
 #### Production Environment
 
@@ -533,15 +563,9 @@ GHCR_REPOSITORY=ghcr.io/wenjiangggg/sitbank
 COSIGN_CERTIFICATE_IDENTITY=https://github.com/WenJiangggg/SITBank/.github/workflows/ci-deploy.yml@refs/heads/main
 ```
 
-Staging uses a separate, repository-scoped branch identity regular expression
-in `/etc/sitbank-staging/deploy.conf`:
-
-```text
-COSIGN_CERTIFICATE_IDENTITY_REGEXP=^https://github[.]com/WenJiangggg/SITBank/[.]github/workflows/ci-deploy[.]yml@refs/heads/[A-Za-z0-9._/-]+$
-```
-
-Production must retain the exact `main` identity. Do not replace its
-`COSIGN_CERTIFICATE_IDENTITY` with the staging regular expression.
+Staging and production both retain the exact trusted `main` workflow identity.
+The candidate image revision label and deployment revision use the resolved
+candidate `source_sha`, not `github.sha`.
 
 The private GHCR package must grant Actions access to `WenJiangggg/SITBank`
 before enabling production deployment.

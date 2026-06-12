@@ -103,27 +103,10 @@ if [[ ! "${PUBLIC_HOST}" =~ ^[A-Za-z0-9.-]+$ ]]; then
     exit 1
 fi
 
-if [[ "${target}" == "staging" ]]; then
-    github_repository_regexp="${GITHUB_REPOSITORY//./[.]}"
-    expected_identity_regexp="^https://github[.]com/${github_repository_regexp}/[.]github/workflows/ci-deploy[.]yml@refs/heads/[A-Za-z0-9._/-]+$"
-    if [[ "${COSIGN_CERTIFICATE_IDENTITY_REGEXP:-}" != "${expected_identity_regexp}" ]]; then
-        echo "Invalid configured staging Cosign workflow identity" >&2
-        exit 1
-    fi
-    cosign_identity_args=(
-        --certificate-identity-regexp
-        "${COSIGN_CERTIFICATE_IDENTITY_REGEXP}"
-    )
-else
-    expected_identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/ci-deploy.yml@refs/heads/main"
-    if [[ "${COSIGN_CERTIFICATE_IDENTITY:-}" != "${expected_identity}" ]]; then
-        echo "Invalid configured production Cosign workflow identity" >&2
-        exit 1
-    fi
-    cosign_identity_args=(
-        --certificate-identity
-        "${COSIGN_CERTIFICATE_IDENTITY}"
-    )
+expected_identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/ci-deploy.yml@refs/heads/main"
+if [[ "${COSIGN_CERTIFICATE_IDENTITY:-}" != "${expected_identity}" ]]; then
+    echo "Invalid configured Cosign workflow identity" >&2
+    exit 1
 fi
 
 readonly image="${GHCR_REPOSITORY}@${image_digest}"
@@ -232,7 +215,7 @@ install_runtime_bundle() {
     validate_input_file "${signature_path}"
     cosign verify-blob \
         --bundle "${signature_path}" \
-        "${cosign_identity_args[@]}" \
+        --certificate-identity "${COSIGN_CERTIFICATE_IDENTITY}" \
         --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
         "${bundle_path}" >/dev/null
     if [[ "$(wc -l < "${checksum_path}")" -ne 1 ]]; then
@@ -526,7 +509,7 @@ printf '%s' "${registry_token}" | docker login ghcr.io \
 unset registry_token
 
 cosign verify \
-    "${cosign_identity_args[@]}" \
+    --certificate-identity "${COSIGN_CERTIFICATE_IDENTITY}" \
     --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
     "${image}" >/dev/null
 docker pull "${image}" >/dev/null

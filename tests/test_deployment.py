@@ -419,6 +419,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     ).read_text(encoding="utf-8")
 
     assert set(workflow["jobs"]) == {
+        "resolve-source",
         "workflow-security",
         "dependency-review",
         "test",
@@ -444,6 +445,44 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         assert "github.event_name == 'push'" in condition
         assert "github.event_name == 'workflow_dispatch'" in condition
         assert "inputs.target_environment == 'staging'" in condition
+    source_job = workflow["jobs"]["resolve-source"]
+    source_step = next(
+        step
+        for step in source_job["steps"]
+        if step["name"] == "Resolve candidate source to an immutable commit"
+    )
+    assert source_job["permissions"] == {"contents": "read"}
+    assert source_job["outputs"]["source_sha"] == (
+        "${{ steps.resolve.outputs.source_sha }}"
+    )
+    assert source_step["env"]["SOURCE_REF_INPUT"] == "${{ inputs.source_ref }}"
+    assert "git rev-parse --verify" in source_step["run"]
+    assert "refs/remotes/origin/" in source_step["run"]
+    assert "refs/tags/" in source_step["run"]
+    assert "source_ref_display" in source_step["run"]
+    assert "refs/heads/main" in source_step["run"]
+    dispatch_inputs = workflow[True]["workflow_dispatch"]["inputs"]
+    assert dispatch_inputs["source_ref"]["required"] is True
+    assert dispatch_inputs["source_ref"]["type"] == "string"
+    assert dispatch_inputs["target_environment"]["options"] == ["staging"]
+    candidate_jobs = ("test", "publish")
+    for job_name in candidate_jobs:
+        checkout = next(
+            step
+            for step in workflow["jobs"][job_name]["steps"]
+            if step["name"] == "Check out repository"
+        )
+        assert checkout["with"]["ref"] == (
+            "${{ needs.resolve-source.outputs.source_sha }}"
+        )
+    trusted_jobs = ("release-verify", "deploy-staging", "deploy-production")
+    for job_name in trusted_jobs:
+        checkout = next(
+            step
+            for step in workflow["jobs"][job_name]["steps"]
+            if step["name"] == "Check out repository"
+        )
+        assert checkout["with"]["ref"] == "${{ github.workflow_sha }}"
     assert workflow["jobs"]["release-verify"]["needs"] == "publish"
     release_verify_steps = [
         step["name"] for step in workflow["jobs"]["release-verify"]["steps"]
@@ -468,6 +507,10 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert release_smoke_step["env"]["RUN_ZAP_DAST"] == (
         "${{ github.event_name != 'workflow_dispatch' || inputs.run_dast == true }}"
     )
+    assert (
+        release_image_step["env"]["RELEASE_SHA"]
+        == "${{ needs.publish.outputs.revision }}"
+    )
     assert workflow["jobs"]["deploy-staging"]["permissions"]["packages"] == "read"
     assert workflow["jobs"]["deploy-staging"]["permissions"]["id-token"] == "write"
     assert workflow["jobs"]["deploy-production"]["permissions"]["packages"] == "read"
@@ -479,6 +522,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "github.event_name == 'push'" in staging_condition
     assert "github.ref == 'refs/heads/main'" in staging_condition
     assert "github.event_name == 'workflow_dispatch'" in staging_condition
+    assert "github.ref == 'refs/heads/main'" in staging_condition
     assert "inputs.target_environment == 'staging'" in staging_condition
     assert "inputs.deploy == true" in staging_condition
     assert "vars.STAGING_DEPLOY_ENABLED == 'true'" in staging_condition
@@ -491,8 +535,6 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "needs.deploy-staging.result == 'success'" in production_condition
     assert "vars.STAGING_DEPLOY_ENABLED != 'true'" not in production_condition
     assert "inputs.deploy == true" not in production_condition
-    dispatch_inputs = workflow[True]["workflow_dispatch"]["inputs"]
-    assert dispatch_inputs["target_environment"]["options"] == ["staging"]
     assert (
         workflow["jobs"]["deploy-staging"]["env"]["IMAGE_DIGEST"]
         == "${{ needs.release-verify.outputs.digest }}"
@@ -505,6 +547,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         "test",
         "workflow-security",
         "deployment-preflight",
+        "resolve-source",
     ]
     assert (
         workflow["jobs"]["image-test"]["if"]
@@ -556,12 +599,12 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "check_dependency_locks.py" in workflow_text
     assert "IMAGE_DIGEST" in workflow_text
     assert "StrictHostKeyChecking=no" not in workflow_text
-    assert workflow_text.count("persist-credentials: false") == 8
+    assert workflow_text.count("persist-credentials: false") == 9
     assert (
         workflow_text.count(
             "actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10"
         )
-        == 8
+        == 9
     )
     assert (
         "actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405"
@@ -569,6 +612,15 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     )
     assert "sitbank:pr" in workflow_text
     assert "SITBANK_IMAGE" in workflow_text
+    assert "source_ref" in workflow_text
+    assert "source_sha" in workflow_text
+    assert "VCS_REF=${{ needs.resolve-source.outputs.source_sha }}" in workflow_text
+    assert "RELEASE_SHA: ${{ needs.publish.outputs.revision }}" in workflow_text
+    assert workflow_text.count("ref: ${{ github.workflow_sha }}") == 4
+    assert workflow_text.count(
+        "ref: ${{ needs.resolve-source.outputs.source_sha }}"
+    ) == 2
+    assert "RELEASE_SHA: ${{ github.sha }}" not in workflow_text
     assert "SITBANK_SECRET_KEY" not in workflow_text
     assert "STAGING_SECRET_KEY" not in workflow_text
     assert "STAGING_DATABASE_URL" not in workflow_text
@@ -590,16 +642,9 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     )
     assert "sha256:[0-9a-f]{64}" in deploy_script
     assert "COSIGN_CERTIFICATE_IDENTITY" in deploy_script
-    assert "COSIGN_CERTIFICATE_IDENTITY_REGEXP" in deploy_script
-    assert "--certificate-identity-regexp" in deploy_script
-    assert (
-        "ci-deploy[.]yml@refs/heads/[A-Za-z0-9._/-]+$"
-        in deploy_script
-    )
-    assert (
-        "ci-deploy.yml@refs/heads/main"
-        in deploy_script
-    )
+    assert "COSIGN_CERTIFICATE_IDENTITY_REGEXP" not in deploy_script
+    assert "--certificate-identity-regexp" not in deploy_script
+    assert "ci-deploy.yml@refs/heads/main" in deploy_script
     assert "org.opencontainers.image.revision" in deploy_script
     assert "production-check" in deploy_script
     assert "db upgrade" in deploy_script
@@ -626,11 +671,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "gpasswd --delete" in bootstrap
     assert "docker.sock" in bootstrap
     assert "COSIGN_SHA256" in bootstrap
-    assert "COSIGN_CERTIFICATE_IDENTITY_REGEXP" in bootstrap
-    assert (
-        "ci-deploy[.]yml@refs/heads/[A-Za-z0-9._/-]+$"
-        in bootstrap
-    )
+    assert "COSIGN_CERTIFICATE_IDENTITY_REGEXP" not in bootstrap
     assert "ci-deploy.yml@refs/heads/main" in bootstrap
     assert "/opt/sitbank" in bootstrap
     assert "/etc/sitbank" in bootstrap
@@ -644,10 +685,14 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
 
     readme = Path("README.md").read_text(encoding="utf-8")
     assert "Manual pre-merge staging:" in readme
-    assert "trusted branch -> workflow_dispatch -> publish -> release-verify -> staging" in readme
+    assert "run trusted workflow from main" in readme
+    assert "source_ref = candidate branch, tag, or SHA" in readme
+    assert "resolve immutable source_sha" in readme
+    assert "deploy staging using trusted main scripts" in readme
     assert "main push -> publish -> release-verify -> staging -> production" in readme
     assert "Manual production deployment is disabled." in readme
     assert "Production never skips disabled, skipped, or failed staging." in readme
+    assert "Feature-branch workflow and deployment scripts" in readme
 
 
 def test_trivy_exception_is_narrow_documented_and_temporary():

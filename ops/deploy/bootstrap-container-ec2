@@ -79,7 +79,6 @@ esac
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 repository_lower="${github_repository,,}"
-github_repository_regexp="${github_repository//./[.]}"
 
 if [[ "$(dpkg --print-architecture)" != "amd64" ]]; then
     echo "This deployment is pinned to linux/amd64" >&2
@@ -183,16 +182,10 @@ install -o root -g root -m 0440 \
     "${repo_root}/ops/sudoers/sitbank-container-deploy" \
     /etc/sudoers.d/sitbank-container-deploy
 
-if [[ "${target}" == "staging" ]]; then
-    cosign_identity_setting="COSIGN_CERTIFICATE_IDENTITY_REGEXP='^https://github[.]com/${github_repository_regexp}/[.]github/workflows/ci-deploy[.]yml@refs/heads/[A-Za-z0-9._/-]+$'"
-else
-    cosign_identity_setting="COSIGN_CERTIFICATE_IDENTITY=https://github.com/${github_repository}/.github/workflows/ci-deploy.yml@refs/heads/main"
-fi
-
 cat > "${config_root}/deploy.conf" <<EOF
 GITHUB_REPOSITORY=${github_repository}
 GHCR_REPOSITORY=ghcr.io/${repository_lower}
-${cosign_identity_setting}
+COSIGN_CERTIFICATE_IDENTITY=https://github.com/${github_repository}/.github/workflows/ci-deploy.yml@refs/heads/main
 PUBLIC_HOST=${public_host}
 LEGACY_SERVICE=${legacy_service}
 LEGACY_APP_ROOT=${legacy_app_root}
