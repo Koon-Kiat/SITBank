@@ -8,10 +8,26 @@ readonly ZAP_IMAGE="zaproxy/zap-stable:2.17.0@sha256:2ec1d5d5b44d55cfd02ba9b89cd
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 work_dir="$(mktemp -d)"
+network_name="sitbank-smoke-$RANDOM-$$"
+readonly postgres_container="smoke-postgres"
+readonly redis_container="smoke-redis"
+readonly app_container="sitbank-smoke"
+
+docker_bind_source() {
+    local path="$1"
+    case "$(uname -s)" in
+        MINGW* | MSYS* | CYGWIN*)
+            cygpath -w "${path}"
+            ;;
+        *)
+            printf '%s' "${path}"
+            ;;
+    esac
+}
 
 dump_container_diagnostics() {
     local container
-    for container in smoke-postgres smoke-redis sitbank-smoke; do
+    for container in "${postgres_container}" "${redis_container}" "${app_container}"; do
         if ! docker inspect "${container}" >/dev/null 2>&1; then
             continue
         fi
@@ -72,25 +88,27 @@ published_port() {
 
 # shellcheck disable=SC2317
 cleanup() {
-    docker rm -f sitbank-smoke smoke-postgres smoke-redis >/dev/null 2>&1 || true
+    docker rm -f "${app_container}" "${postgres_container}" "${redis_container}" >/dev/null 2>&1 || true
+    docker network rm "${network_name}" >/dev/null 2>&1 || true
     rm -rf -- "${work_dir}"
 }
 trap cleanup EXIT
 trap on_error ERR
 
-docker run --detach --name smoke-postgres \
-    --publish 127.0.0.1::5432 \
-    --env POSTGRES_USER=ci_owner \
-    --env POSTGRES_PASSWORD=ci-owner-password \
+docker network create "${network_name}" >/dev/null
+docker run --detach --name "${postgres_container}" \
+    --network "${network_name}" \
+    --env POSTGRES_USER=postgres \
+    --env POSTGRES_PASSWORD=ci-postgres-password \
     --env POSTGRES_DB=ci \
-    --health-cmd "pg_isready --username ci_owner --dbname ci" \
+    --health-cmd "pg_isready --username postgres --dbname ci" \
     --health-interval 1s \
     --health-timeout 3s \
     --health-start-period 2s \
     --health-retries 30 \
     "${POSTGRES_IMAGE}" >/dev/null
-docker run --detach --name smoke-redis \
-    --publish 127.0.0.1::6379 \
+docker run --detach --name "${redis_container}" \
+    --network "${network_name}" \
     --health-cmd "REDISCLI_AUTH=ci-password redis-cli ping | grep -q PONG" \
     --health-interval 1s \
     --health-timeout 3s \
@@ -99,18 +117,30 @@ docker run --detach --name smoke-redis \
     "${REDIS_IMAGE}" \
     redis-server --requirepass ci-password >/dev/null
 
-wait_for_healthy smoke-postgres
-wait_for_healthy smoke-redis
-postgres_port="$(published_port smoke-postgres 5432)"
-redis_port="$(published_port smoke-redis 6379)"
+wait_for_healthy "${postgres_container}"
+wait_for_healthy "${redis_container}"
 
-docker exec -e PGPASSWORD=ci-owner-password smoke-postgres \
-    psql --no-psqlrc --set ON_ERROR_STOP=1 \
-    --username ci_owner --dbname ci \
-    --set app_password=ci-app-password <<'SQL'
+psql_admin() {
+    docker exec -i -e PGPASSWORD=ci-postgres-password "${postgres_container}" \
+        psql --no-psqlrc --set ON_ERROR_STOP=1 \
+        --username postgres --dbname ci "$@"
+}
+
+psql_admin --set owner_password=ci-owner-password <<'SQL'
+CREATE ROLE ci_owner LOGIN PASSWORD :'owner_password';
+SQL
+
+psql_admin --set app_password=ci-app-password <<'SQL'
 CREATE ROLE ci_app LOGIN PASSWORD :'app_password';
+SQL
+
+psql_admin <<'SQL'
 REVOKE ALL ON DATABASE ci FROM PUBLIC;
-GRANT CONNECT ON DATABASE ci TO ci_app;
+GRANT CONNECT ON DATABASE ci TO ci_owner, ci_app;
+ALTER DATABASE ci OWNER TO ci_owner;
+SQL
+
+psql_admin <<'SQL'
 REVOKE ALL ON SCHEMA public FROM PUBLIC;
 REVOKE ALL ON SCHEMA public FROM ci_app;
 ALTER SCHEMA public OWNER TO ci_owner;
@@ -121,6 +151,69 @@ ALTER DEFAULT PRIVILEGES FOR ROLE ci_owner IN SCHEMA public
     GRANT USAGE, SELECT ON SEQUENCES TO ci_app;
 SQL
 
+roles="$(
+    docker exec -e PGPASSWORD=ci-postgres-password "${postgres_container}" \
+        psql --no-psqlrc --set ON_ERROR_STOP=1 \
+        --username postgres --dbname ci \
+        --tuples-only --no-align \
+        --command "SELECT rolname FROM pg_roles WHERE rolname IN ('ci_owner', 'ci_app') ORDER BY rolname;"
+)"
+if ! grep -qx "ci_owner" <<<"${roles}"; then
+    echo "Owner role exists: no"
+    echo "Owner role was not created in the smoke database" >&2
+    exit 1
+fi
+echo "Owner role exists: yes"
+if ! grep -qx "ci_app" <<<"${roles}"; then
+    echo "Runtime role exists: no"
+    echo "Runtime role was not created in the smoke database" >&2
+    exit 1
+fi
+echo "Runtime role exists: yes"
+owner_database="$(
+    docker run --rm --network "${network_name}" \
+        --env PGPASSWORD=ci-owner-password \
+        "${POSTGRES_IMAGE}" \
+        psql --no-psqlrc --set ON_ERROR_STOP=1 \
+        --host "${postgres_container}" --username ci_owner --dbname ci \
+        --tuples-only --no-align \
+        --command "SELECT current_database();"
+)"
+if [[ "${owner_database}" != "ci" ]]; then
+    echo "Owner connection test: failed" >&2
+    exit 1
+fi
+echo "Owner connection test: passed"
+runtime_database="$(
+    docker run --rm --network "${network_name}" \
+        --env PGPASSWORD=ci-app-password \
+        "${POSTGRES_IMAGE}" \
+        psql --no-psqlrc --set ON_ERROR_STOP=1 \
+        --host "${postgres_container}" --username ci_app --dbname ci \
+        --tuples-only --no-align \
+        --command "SELECT current_database();"
+)"
+if [[ "${runtime_database}" != "${owner_database}" ]]; then
+    echo "Runtime connection test: failed" >&2
+    exit 1
+fi
+runtime_user="$(
+    docker run --rm --network "${network_name}" \
+        --env PGPASSWORD=ci-app-password \
+        "${POSTGRES_IMAGE}" \
+        psql --no-psqlrc --set ON_ERROR_STOP=1 \
+        --host "${postgres_container}" --username ci_app --dbname ci \
+        --tuples-only --no-align \
+        --command "SELECT current_user;"
+)"
+if [[ "${runtime_user}" != "ci_app" ]]; then
+    echo "Runtime connection test: failed" >&2
+    echo "Runtime smoke database connection did not use ci_app" >&2
+    exit 1
+fi
+echo "Runtime connection test: passed"
+echo "Postgres smoke DB host: ${postgres_container}"
+
 install -d -m 0755 "${work_dir}/secrets" "${work_dir}/config"
 printf '%s' 'ci-secret-key-that-is-long-enough-for-container-tests' \
     > "${work_dir}/secrets/secret_key"
@@ -128,18 +221,19 @@ printf '%s' 'ci-csrf-key-that-is-long-enough-for-container-tests' \
     > "${work_dir}/secrets/wtf_csrf_secret_key"
 printf '%s' '{"ci":"MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjI="}' \
     > "${work_dir}/secrets/session_hmac_keys_json"
-printf 'postgresql+psycopg2://ci_app:ci-app-password@127.0.0.1:%s/ci' "${postgres_port}" \
+printf 'postgresql+psycopg2://ci_app:ci-app-password@%s:5432/ci' \
+    "${postgres_container}" \
     > "${work_dir}/secrets/database_url"
-printf 'postgresql+psycopg2://ci_owner:ci-owner-password@127.0.0.1:%s/ci' "${postgres_port}" \
-    > "${work_dir}/database_migration_url"
-printf 'redis://:ci-password@127.0.0.1:%s/15' "${redis_port}" \
+printf 'postgresql+psycopg2://ci_owner:ci-owner-password@%s:5432/ci' \
+    "${postgres_container}" \
+    > "${work_dir}/secrets/database_migration_url"
+printf 'redis://:ci-password@%s:6379/15' "${redis_container}" \
     > "${work_dir}/secrets/redis_url"
 printf '%s' 'MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=' \
     > "${work_dir}/secrets/mfa_aes256_gcm_key_b64"
 printf '%s' 'MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE=' \
     > "${work_dir}/secrets/password_pepper_b64"
 chmod 0444 "${work_dir}"/secrets/*
-chmod 0444 "${work_dir}/database_migration_url"
 
 seq -f 'blocked-password-%06g' 1 100000 \
     > "${work_dir}/config/common-passwords.txt"
@@ -149,8 +243,13 @@ cp tests/fixtures/fido-mds-cache.json \
     "${work_dir}/config/fido-mds-cache.json"
 chmod 0444 "${work_dir}"/config/*
 
+secrets_mount_source="$(docker_bind_source "${work_dir}/secrets")"
+config_mount_source="$(docker_bind_source "${work_dir}/config")"
+redis_check_source="$(docker_bind_source "${repo_root}/ops/container/redis_compatibility_check.py")"
+create_dast_session_source="$(docker_bind_source "${repo_root}/ops/container/create_dast_session.py")"
+
 docker_args=(
-    --network host
+    --network "${network_name}"
     --user 10001:10001
     --read-only
     --tmpfs "/tmp:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=1770"
@@ -173,13 +272,22 @@ docker_args=(
     --env WEBAUTHN_APPROVED_AAGUIDS_PATH=/run/config/fido-approved-aaguids.json
     --env WEBAUTHN_MDS_CACHE_PATH=/run/config/fido-mds-cache.json
     --env TRUSTED_PROXY_COUNT=1
-    --volume "${work_dir}/secrets:/run/secrets:ro"
-    --volume "${work_dir}/config:/run/config:ro"
+    --volume "${secrets_mount_source}:/run/secrets:ro"
+    --volume "${config_mount_source}:/run/config:ro"
+)
+app_command=(
+    python -m gunicorn
+    --workers 3
+    --bind 0.0.0.0:5000
+    --access-logfile -
+    --error-logfile -
+    --timeout 30
+    --graceful-timeout 30
+    wsgi:app
 )
 migration_docker_args=(
     "${docker_args[@]}"
     --env DATABASE_MIGRATION_URL_FILE=/run/secrets/database_migration_url
-    --volume "${work_dir}/database_migration_url:/run/secrets/database_migration_url:ro"
 )
 
 docker run --rm "${migration_docker_args[@]}" "${IMAGE}" \
@@ -189,16 +297,16 @@ docker run --rm "${docker_args[@]}" "${IMAGE}" \
 docker run --rm "${migration_docker_args[@]}" "${IMAGE}" \
     python -m flask --app wsgi:app verify-runtime-db-privileges
 docker run --rm "${docker_args[@]}" \
-    --volume "${repo_root}/ops/container/redis_compatibility_check.py:/app/redis_compatibility_check.py:ro" \
+    --volume "${redis_check_source}:/app/redis_compatibility_check.py:ro" \
     "${IMAGE}" python /app/redis_compatibility_check.py
 
-docker run --detach --name sitbank-smoke \
-    "${docker_args[@]}" "${IMAGE}" >/dev/null
+docker run --detach --name "${app_container}" \
+    "${docker_args[@]}" "${IMAGE}" "${app_command[@]}" >/dev/null
 ready=0
 for _ in $(seq 1 20); do
-    if curl --fail --silent \
-        --header "X-Forwarded-Proto: https" \
-        http://127.0.0.1:5000/health/ready >/dev/null; then
+    if docker exec "${app_container}" python -c \
+        "import urllib.request; request=urllib.request.Request('http://127.0.0.1:5000/health/ready', headers={'X-Forwarded-Proto':'https'}); urllib.request.urlopen(request, timeout=4).read()" \
+        >/dev/null 2>&1; then
         ready=1
         break
     fi
@@ -211,9 +319,10 @@ fi
 
 if [[ "${RUN_ZAP_DAST:-false}" == "true" ]]; then
     install -d -m 0777 "${work_dir}/dast"
+    dast_mount_source="$(docker_bind_source "${work_dir}/dast")"
     docker run --rm "${docker_args[@]}" \
-        --volume "${repo_root}/ops/container/create_dast_session.py:/app/create_dast_session.py:ro" \
-        --volume "${work_dir}/dast:/run/dast:rw" \
+        --volume "${create_dast_session_source}:/app/create_dast_session.py:ro" \
+        --volume "${dast_mount_source}:/run/dast:rw" \
         "${IMAGE}" \
         python /app/create_dast_session.py \
             --output /run/dast/auth-cookie
@@ -223,11 +332,12 @@ if [[ "${RUN_ZAP_DAST:-false}" == "true" ]]; then
         exit 1
     fi
     install -d -m 0777 "${work_dir}/zap"
-    docker run --rm --network host \
-        --volume "${work_dir}/zap:/zap/wrk:rw" \
+    zap_mount_source="$(docker_bind_source "${work_dir}/zap")"
+    docker run --rm --network "${network_name}" \
+        --volume "${zap_mount_source}:/zap/wrk:rw" \
         "${ZAP_IMAGE}" \
         zap-full-scan.py \
-            -t http://127.0.0.1:5000/dashboard \
+            -t "http://${app_container}:5000/dashboard" \
             -I \
             -m 2 \
             -r zap-report.html \

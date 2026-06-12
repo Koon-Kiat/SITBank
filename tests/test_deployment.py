@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+import importlib.util
 from pathlib import Path
 
 import pytest
@@ -43,6 +44,46 @@ def _set_prefixed_deployment_values(monkeypatch, prefix: str, public_host: str):
         if name == "PROD_PUBLIC_HOST":
             value = public_host
         monkeypatch.setenv(target_name, value)
+
+
+def _load_db_privileges_module():
+    module_path = Path("app/ops/db_privileges.py")
+    spec = importlib.util.spec_from_file_location("_db_privileges_under_test", module_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(spec.name, None)
+    return module
+
+
+def test_runtime_privilege_verifier_quotes_create_probe_table_name():
+    db_privileges = _load_db_privileges_module()
+    probe_table = "sitbank_privilege_probe_deadbeef"
+
+    create_probe_table_name = db_privileges._create_probe_table_name(probe_table)
+    qualified_create_probe = db_privileges._qualified_table_name(
+        "public",
+        create_probe_table_name,
+    )
+
+    assert create_probe_table_name == "sitbank_privilege_probe_deadbeef_create"
+    assert qualified_create_probe == '"public"."sitbank_privilege_probe_deadbeef_create"'
+    assert '"sitbank_privilege_probe_deadbeef"_create' not in qualified_create_probe
+
+    source = Path("app/ops/db_privileges.py").read_text(encoding="utf-8")
+    assert "_qualified_table_name(schema, create_probe_table_name)" in source
+    assert "_quote_identifier(probe_table)}_create" not in source
+    for privilege_probe in (
+        '"CREATE TABLE"',
+        '"ALTER TABLE"',
+        '"DROP TABLE"',
+        '"CREATE EXTENSION"',
+    ):
+        assert privilege_probe in source
 
 
 def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypatch):
@@ -339,13 +380,33 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "python /app/redis_compatibility_check.py" in smoke_test
     assert "ci_owner" in smoke_test
     assert "ci_app" in smoke_test
+    assert "CREATE ROLE ci_owner" in smoke_test
+    assert "CREATE ROLE ci_app" in smoke_test
+    assert "Owner role exists: yes" in smoke_test
+    assert "Runtime role exists: yes" in smoke_test
+    assert "Owner connection test: passed" in smoke_test
+    assert "Runtime connection test: passed" in smoke_test
     assert "DATABASE_MIGRATION_URL_FILE" in smoke_test
+    assert "docker_bind_source" in smoke_test
+    assert "docker network create" in smoke_test
+    assert '--network "${network_name}"' in smoke_test
+    assert "host.docker.internal" not in smoke_test
+    assert "postgresql+psycopg2://ci_app:ci-app-password@%s:5432/ci" in smoke_test
+    assert "postgresql+psycopg2://ci_owner:ci-owner-password@%s:5432/ci" in smoke_test
+    assert "redis://:ci-password@%s:6379/15" in smoke_test
+    assert '"${postgres_container}"' in smoke_test
+    assert '"${redis_container}"' in smoke_test
+    assert '"${secrets_mount_source}:/run/secrets:ro"' in smoke_test
+    assert '"${config_mount_source}:/run/config:ro"' in smoke_test
+    assert '"${work_dir}/secrets:/run/secrets:ro"' not in smoke_test
+    assert '"${work_dir}/secrets/database_migration_url"' in smoke_test
+    assert ':/run/secrets/database_migration_url:ro' not in smoke_test
     assert "verify-runtime-db-privileges" in smoke_test
     assert "/redis-check.py" not in smoke_test
-    assert "--publish 127.0.0.1::5432" in smoke_test
-    assert "--publish 127.0.0.1::6379" in smoke_test
-    assert "wait_for_healthy smoke-postgres" in smoke_test
-    assert "wait_for_healthy smoke-redis" in smoke_test
+    assert "--publish 127.0.0.1::5432" not in smoke_test
+    assert "--publish 127.0.0.1::6379" not in smoke_test
+    assert 'wait_for_healthy "${postgres_container}"' in smoke_test
+    assert 'wait_for_healthy "${redis_container}"' in smoke_test
     assert "dump_container_diagnostics" in smoke_test
     assert "RUN_ZAP_DAST" in smoke_test
     assert "zaproxy/zap-stable:2.17.0@sha256:" in smoke_test
