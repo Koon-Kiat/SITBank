@@ -569,7 +569,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "STAGING_EC2_SSH_PRIVATE_KEY" in workflow_text
     assert workflow_text.count("ssh-keygen -y -P") == 2
     assert workflow_text.count("tr -d '\\r' > ~/.ssh/deploy_key") == 2
-    assert workflow_text.count("contains literal \\\\n text") == 2
+    assert workflow_text.count(r"contains literal \n text") == 2
     assert workflow_text.count("-----BEGIN OPENSSH PRIVATE KEY-----") == 2
     assert workflow_text.count("-i ~/.ssh/deploy_key") == 4
     assert "~/.ssh/id_ed25519" not in workflow_text

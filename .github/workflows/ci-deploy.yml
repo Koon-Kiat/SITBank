@@ -709,7 +709,8 @@ jobs:
           install -d -m 0700 ~/.ssh
 
           if [[ "${SSH_PRIVATE_KEY}" == *'\n'* ]]; then
-            echo "::error::STAGING_EC2_SSH_PRIVATE_KEY contains literal \\n text. Store the raw multiline private key instead."
+            printf '%s\n' \
+              '::error::STAGING_EC2_SSH_PRIVATE_KEY contains literal \n text. Store the raw multiline private key instead.'
             exit 1
           fi
           printf '%s\n' "${SSH_PRIVATE_KEY}" \
@@ -870,7 +871,8 @@ jobs:
           install -d -m 0700 ~/.ssh
 
           if [[ "${SSH_PRIVATE_KEY}" == *'\n'* ]]; then
-            echo "::error::PROD_EC2_SSH_PRIVATE_KEY contains literal \\n text. Store the raw multiline private key instead."
+            printf '%s\n' \
+              '::error::PROD_EC2_SSH_PRIVATE_KEY contains literal \n text. Store the raw multiline private key instead.'
             exit 1
           fi
           printf '%s\n' "${SSH_PRIVATE_KEY}" \
