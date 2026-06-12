@@ -6,12 +6,15 @@
 /.github/dependabot.yml @WenJiangggg
 /Dockerfile @WenJiangggg
 /compose.prod.yml @WenJiangggg
+/compose.staging.yml @WenJiangggg
 /requirements.in @WenJiangggg
 /requirements-dev.in @WenJiangggg
 /requirements.lock @WenJiangggg
 /requirements-dev.lock @WenJiangggg
 /ops/container/ @WenJiangggg
 /ops/deploy/ @WenJiangggg
+/ops/nginx/ @WenJiangggg
+/ops/nginx-proxy-headers.conf @WenJiangggg
 /ops/security/ @WenJiangggg
 /ops/sudoers/ @WenJiangggg
 /ops/systemd/ @WenJiangggg

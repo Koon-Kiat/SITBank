@@ -50,7 +50,7 @@ the WSL2 Linux-container backend when changing the Dockerfile, Compose model,
 or container deployment scripts. GitHub Actions remains the authoritative
 `linux/amd64` build and security test environment.
 
-## Production Architecture
+## Production and Staging Architecture
 
 - Nginx terminates TLS and proxies to `127.0.0.1:5000`.
 - The application container uses host networking to reach the existing
@@ -68,6 +68,20 @@ or container deployment scripts. GitHub Actions remains the authoritative
   layers, labels, or the container environment.
 - The SSH deployment user is not a member of the `docker` group and can run
   only the validated root deployment wrapper.
+
+Staging runs beside production without sharing its Compose project, paths,
+containers, secrets, or data:
+
+- `staging-sitbank.duckdns.org` proxies to `127.0.0.1:5001`.
+- The staging Compose project is `sitbank-staging`.
+- Its app, PostgreSQL, and Redis containers are `sitbank-staging-app`,
+  `sitbank-staging-postgres`, and `sitbank-staging-redis`.
+- Its named data volumes are `sitbank-staging-postgres-data` and
+  `sitbank-staging-redis-data`.
+- Its configuration and state live under `/etc/sitbank-staging`,
+  `/opt/sitbank-staging`, and `/var/lib/sitbank-staging-container`.
+- Only the staging app publishes a loopback host port. PostgreSQL and Redis
+  remain on the private staging Docker network.
 
 The active deployment uses:
 
@@ -99,11 +113,12 @@ secret files must resolve beneath `/run/secrets`, must not be symlinks, and
 must contain one non-empty UTF-8 line without NUL, CR, or embedded LF
 characters.
 
-Root-owned host copies live under `/etc/sitbank/secrets`. Compose mounts those
+Root-owned production copies live under `/etc/sitbank/secrets`; staging uses
+the separate `/etc/sitbank-staging/secrets` directory. Compose mounts these
 files directly beneath `/run/secrets`; the deployment and runtime helpers do
 not copy their values into process environment variables. Non-secret settings
-live in `/etc/sitbank/container.env`. The container does not load a production
-`.env` file.
+live in each environment's `container.env`. Containers do not load a
+production `.env` file.
 
 The complete production configuration surface is:
 
@@ -146,17 +161,22 @@ development, tests, and the one-time protected legacy import only.
    and a blocking fixable High/Critical Trivy gate. Pull requests do not
    publish, sign, or deploy release images, and they do not reference staging
    or production secrets.
-2. Manual `workflow_dispatch` runs can publish and verify an immutable release
-   candidate digest. Use `target_environment=staging` and `deploy=false` for a
-   staging release verification only run.
-3. Manual staging deployment requires `target_environment=staging`,
-   `deploy=true`, and `STAGING_DEPLOY_ENABLED=true`.
+2. Manual `workflow_dispatch` staging runs must be started from `main`. Set
+   `source_ref` to the candidate branch, tag, or commit SHA. The trusted
+   workflow resolves it to an immutable `source_sha`, then tests, builds,
+   scans, signs, and verifies that candidate digest.
+3. Manual pre-merge staging deployment requires the workflow ref `main`,
+   `target_environment=staging`, `deploy=true`, and
+   `STAGING_DEPLOY_ENABLED=true`. It deploys only the exact digest emitted by
+   `publish`; it cannot trigger production. Use `deploy=false` for candidate
+   verification without deployment.
 4. Pushes to `main` publish one immutable GHCR image with SBOM and provenance
    attestations, verify the exact digest, and deploy to staging only when
    `STAGING_DEPLOY_ENABLED=true`.
 5. Production deployment is restricted to `main`, uses the `production`
-   environment, and runs only when `PROD_DEPLOY_ENABLED=true`. On automatic
-   `main` runs, production waits for staging when staging deployment is enabled.
+   environment, and runs automatically only on a push when
+   `PROD_DEPLOY_ENABLED=true` and staging succeeded in the same workflow.
+   Production never skips disabled, skipped, or failed staging.
 6. Release verification validates the exact digest from `publish`, checks the
    image revision label, validates the Compose model against that digest, runs
    migrations, `production-check`, Redis compatibility checks, `/health/ready`,
@@ -178,6 +198,39 @@ Every third-party action is pinned to a full commit SHA. Publishing remains
 available while deployment is disabled, allowing the same signed digest to be
 verified without changing EC2.
 
+The release flows are:
+
+```text
+Pull request:
+  tests and validation only
+
+Manual pre-merge staging:
+  run trusted workflow from main
+  -> source_ref = candidate branch, tag, or SHA
+  -> resolve immutable source_sha
+  -> test/build/publish candidate source_sha
+  -> release-verify exact digest using trusted main scripts
+  -> deploy staging using trusted main scripts
+  -> manual verification
+  -> merge pull request
+
+Automatic main release:
+  main push -> publish -> release-verify -> staging -> production
+```
+
+Manual production deployment is disabled. A production deployment requires
+the protected `main` push path and a successful staging deployment in that
+same workflow run.
+
+Candidate code is checked out only in jobs that test or build the candidate.
+Jobs that render signed runtime bundles, access staging or production
+environment secrets, upload over SSH, or invoke the EC2 deployment wrapper
+explicitly check out `github.workflow_sha`, the trusted commit containing the
+workflow selected from `main`. Feature-branch workflow and deployment scripts
+therefore do not execute with staging or production secrets. The candidate
+application itself receives only the isolated staging application secrets when
+it is intentionally deployed to staging.
+
 ### Temporary Trivy Exception
 
 `.trivyignore` contains a narrow temporary exception for only
@@ -197,10 +250,12 @@ gate, and blocks fixable High/Critical findings with no ignore file.
 
 ### GitHub Environments
 
-Create separate `staging` and `production` environments. Restrict production
-deployment branches to `main`, add required reviewers, prevent self-review
-where supported, and protect `main` with pull-request approval, required CI
-checks, and disabled force pushes.
+Create separate `staging` and `production` environments. Restrict both
+environment deployment branches to `main`; manual staging still tests a
+feature branch because the candidate is supplied through `source_ref`, while
+the secret-bearing job runs trusted workflow code from `main`. Add required
+reviewers, prevent self-review where supported, and protect `main` with
+pull-request approval, required CI checks, and disabled force pushes.
 
 Set these repository Actions variables before the first merge:
 
@@ -239,10 +294,22 @@ Add these staging environment variables:
 - `STAGING_PUBLIC_HOST`
 - `STAGING_SESSION_HMAC_ACTIVE_KEY_ID`
 
-Staging application runtime secrets remain root-managed on the staging host
-under `/etc/sitbank/secrets`. Do not copy database URLs, Redis URLs, Flask
-keys, password peppers, MFA encryption keys, or session HMAC key material into
+Staging application runtime secrets remain root-managed under
+`/etc/sitbank-staging/secrets`. They must be generated independently and must
+not reuse production values. Do not copy database URLs, Redis URLs, Flask keys,
+password peppers, MFA encryption keys, or session HMAC key material into
 GitHub Actions secrets.
+
+To test a candidate before merge, open **Actions**, select the CI workflow,
+choose **Run workflow**, and set:
+
+```text
+Use workflow from: main
+source_ref: <feature branch, tag, or full/short commit SHA>
+target_environment: staging
+deploy: true
+run_dast: true
+```
 
 #### Production Environment
 
@@ -354,6 +421,7 @@ sudo install -d -m 0755 /opt/sitbank-bootstrap
 sudo tar -xzf /tmp/sitbank-bootstrap.tar.gz -C /opt/sitbank-bootstrap
 cd /opt/sitbank-bootstrap
 sudo bash ops/deploy/bootstrap-container-ec2 \
+  production \
   WenJiangggg/SITBank \
   sitbank.duckdns.org \
   <current-service> \
@@ -364,6 +432,118 @@ Use `-` for either legacy argument when no old service or directory exists.
 The bootstrap installs Docker Engine and Compose, checksum-verified Cosign,
 the SITBank service and restricted wrappers, and the root-owned deployment
 configuration. It does not add `sitbank-deploy` to the Docker group.
+
+### 4. Bootstrap Isolated Staging on the Existing EC2 Host
+
+Run this from the same reviewed bootstrap checkout. It installs only staging
+Compose/config/state assets plus the shared restricted wrapper; it does not
+restart or migrate production:
+
+```bash
+cd /opt/sitbank-bootstrap
+sudo bash ops/deploy/bootstrap-container-ec2 \
+  staging \
+  WenJiangggg/SITBank \
+  staging-sitbank.duckdns.org
+```
+
+Copy the non-secret policy data into separate staging paths:
+
+```bash
+sudo install -o root -g 10001 -m 0640 \
+  /etc/sitbank/common-passwords.txt \
+  /etc/sitbank-staging/common-passwords.txt
+sudo install -o root -g 10001 -m 0640 \
+  /etc/sitbank/fido-approved-aaguids.json \
+  /etc/sitbank-staging/fido-approved-aaguids.json
+sudo install -o root -g 10001 -m 0640 \
+  /etc/sitbank/fido-mds-cache.json \
+  /etc/sitbank-staging/fido-mds-cache.json
+```
+
+Generate independent staging application and data-service secrets without
+printing them. Set the same non-secret key identifier as the GitHub
+`STAGING_SESSION_HMAC_ACTIVE_KEY_ID` variable:
+
+```bash
+sudo STAGING_SESSION_HMAC_ACTIVE_KEY_ID=2026-06-staging python3 - <<'PY'
+import base64
+import json
+import os
+import secrets
+from pathlib import Path
+from urllib.parse import quote
+
+root = Path("/etc/sitbank-staging/secrets")
+root.mkdir(mode=0o700, parents=True, exist_ok=True)
+os.chown(root, 0, 0)
+
+def write(name, value, mode=0o440, gid=10001):
+    path = root / name
+    path.write_text(value, encoding="utf-8", newline="")
+    os.chown(path, 0, gid)
+    os.chmod(path, mode)
+
+active_id = os.environ["STAGING_SESSION_HMAC_ACTIVE_KEY_ID"]
+postgres_password = secrets.token_urlsafe(32)
+redis_password = secrets.token_urlsafe(32)
+
+write("secret_key", secrets.token_urlsafe(48))
+write("wtf_csrf_secret_key", secrets.token_urlsafe(48))
+write(
+    "session_hmac_keys_json",
+    json.dumps(
+        {active_id: base64.b64encode(secrets.token_bytes(32)).decode("ascii")},
+        separators=(",", ":"),
+    ),
+)
+write("mfa_aes256_gcm_key_b64", base64.b64encode(secrets.token_bytes(32)).decode("ascii"))
+write("password_pepper_b64", base64.b64encode(secrets.token_bytes(32)).decode("ascii"))
+write(
+    "database_url",
+    "postgresql+psycopg2://sitbank_staging:"
+    f"{quote(postgres_password, safe='')}@postgres:5432/sitbank_staging",
+)
+write("redis_url", f"redis://:{quote(redis_password, safe='')}@redis:6379/0")
+write("postgres_password", postgres_password, mode=0o444, gid=0)
+write(
+    "redis.conf",
+    "appendonly yes\n"
+    "appendfsync everysec\n"
+    "protected-mode yes\n"
+    "bind 0.0.0.0\n"
+    f"requirepass {redis_password}\n",
+    mode=0o444,
+    gid=0,
+)
+PY
+```
+
+Install the staging TLS certificate before the first deployment, because the
+deployment wrapper verifies public HTTPS readiness:
+
+```bash
+sudo nginx -t
+sudo systemctl reload nginx
+sudo certbot --nginx -d staging-sitbank.duckdns.org
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+Verify that staging assets are separate and production remains healthy:
+
+```bash
+sudo systemctl is-active sitbank-container.service
+sudo test -r /etc/sitbank-staging/deploy.conf
+sudo test -r /opt/sitbank-staging/compose.yml
+sudo -u sitbank-container test -r /etc/sitbank-staging/common-passwords.txt
+curl --fail https://sitbank.duckdns.org/health/ready
+```
+
+Set `STAGING_PUBLIC_HOST=staging-sitbank.duckdns.org`,
+`STAGING_EC2_HOST=sitbank.duckdns.org` or the EC2 address, and the matching
+staging key identifier in the GitHub `staging` environment. Enable
+`STAGING_DEPLOY_ENABLED=true` only after these checks pass.
 
 The workflow intentionally cannot update its own privileged EC2 validator.
 Whenever `ops/deploy/sitbank-container-deploy`, the Compose file, sudoers
@@ -383,10 +563,14 @@ GHCR_REPOSITORY=ghcr.io/wenjiangggg/sitbank
 COSIGN_CERTIFICATE_IDENTITY=https://github.com/WenJiangggg/SITBank/.github/workflows/ci-deploy.yml@refs/heads/main
 ```
 
+Staging and production both retain the exact trusted `main` workflow identity.
+The candidate image revision label and deployment revision use the resolved
+candidate `source_sha`, not `github.sha`.
+
 The private GHCR package must grant Actions access to `WenJiangggg/SITBank`
 before enabling production deployment.
 
-### 4. Prepare Host Policy Files
+### 5. Prepare Host Policy Files
 
 Keep reviewed production copies outside the image:
 
@@ -408,7 +592,7 @@ sudo -u sitbank-container test -r /etc/sitbank/fido-mds-cache.json
 Do not replace production FIDO policy files with checked-in fail-closed
 placeholders.
 
-### 5. Configure the Restricted Deployment Key
+### 6. Configure the Restricted Deployment Key
 
 Generate a dedicated Ed25519 key. Do not reuse a personal EC2 key:
 
@@ -436,7 +620,7 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256
 Store the verified complete `ssh-keyscan -H -t ed25519
 sitbank.duckdns.org` result as `PROD_EC2_KNOWN_HOSTS`.
 
-### 6. Seed Root-Managed Container Secrets
+### 7. Seed Root-Managed Container Secrets
 
 This step is mandatory. Automated deployments do not transmit long-lived
 application secrets. Keep the root-owned files under `/etc/sitbank/secrets`
@@ -465,7 +649,7 @@ non-empty output directories. After import, confirm that every file is
 root-owned, unreadable by the SSH deploy user, and readable by container UID
 `10001` only through the Compose secret mount.
 
-### 7. Rename the PostgreSQL Database and Role
+### 8. Rename the PostgreSQL Database and Role
 
 Generate a new URL-safe password on an administrator workstation and send the
 password and complete database URL directly to root-only EC2 files without
@@ -521,7 +705,7 @@ After successful readiness it removes the former role with:
 sudo /usr/local/sbin/sitbank-database-cutover finalize
 ```
 
-### 8. Deploy and Verify
+### 9. Deploy and Verify
 
 Set the two SSH environment secrets and documented non-secret variables, then
 set `PROD_DEPLOY_ENABLED=true` and run the workflow from `main`.

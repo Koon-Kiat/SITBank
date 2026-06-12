@@ -14,6 +14,25 @@ def test_security_headers_are_present(client):
     assert "default-src 'self'" in response.headers["Content-Security-Policy"]
 
 
+def test_public_homepage_exposes_verification_and_student_disclaimer(client):
+    response = client.get("/")
+    html = response.get_data(as_text=True)
+    verification_tag = (
+        '<meta name="google-site-verification" '
+        'content="TdWqsa4Ln9t_GIYl4Devi4rrU48Z7XNSue_PiImREJs">'
+    )
+    disclaimer = (
+        "SITBank is a student cybersecurity project and demonstration site. "
+        "Do not enter real banking credentials, card numbers, phone numbers, "
+        "or personal financial information."
+    )
+
+    assert response.status_code == 200
+    assert verification_tag in html
+    assert html.index(verification_tag) < html.index("</head>")
+    assert html.count(disclaimer) == 1
+
+
 def test_external_next_parameter_cannot_create_an_open_redirect(client):
     register = client.post(
         "/register",
