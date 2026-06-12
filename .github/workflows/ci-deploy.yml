@@ -731,6 +731,28 @@ jobs:
             exit 1
           fi
 
+      - name: Verify trusted staging deployment wrapper
+        run: |
+          expected_hash="$(
+            sha256sum ops/deploy/sitbank-container-deploy | awk '{print $1}'
+          )"
+          if ! remote_output="$(
+              ssh -p "${REMOTE_PORT}" -i ~/.ssh/deploy_key \
+              -o BatchMode=yes -o IdentitiesOnly=yes \
+              -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+              "${REMOTE_USER}@${REMOTE_HOST}" \
+              "sha256sum /usr/local/sbin/sitbank-container-deploy"
+            )"; then
+            echo "::error::The EC2 staging deployment wrapper is unavailable. Rerun the trusted staging bootstrap before deployment."
+            exit 1
+          fi
+          remote_hash="${remote_output%% *}"
+          if [[ ! "${remote_hash}" =~ ^[0-9a-f]{64}$ \
+              || "${remote_hash}" != "${expected_hash}" ]]; then
+            echo "::error::The EC2 staging deployment wrapper is missing or stale. Rerun the trusted staging bootstrap before deployment."
+            exit 1
+          fi
+
       - name: Upload authenticated deployment inputs
         run: |
           scp -P "${REMOTE_PORT}" -i ~/.ssh/deploy_key \
@@ -881,6 +903,28 @@ jobs:
           chmod 0600 ~/.ssh/known_hosts
           if [[ ! -s ~/.ssh/known_hosts ]]; then
             echo "::error::PROD_EC2_KNOWN_HOSTS is empty."
+            exit 1
+          fi
+
+      - name: Verify trusted production deployment wrapper
+        run: |
+          expected_hash="$(
+            sha256sum ops/deploy/sitbank-container-deploy | awk '{print $1}'
+          )"
+          if ! remote_output="$(
+              ssh -p "${REMOTE_PORT}" -i ~/.ssh/deploy_key \
+              -o BatchMode=yes -o IdentitiesOnly=yes \
+              -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+              "${REMOTE_USER}@${REMOTE_HOST}" \
+              "sha256sum /usr/local/sbin/sitbank-container-deploy"
+            )"; then
+            echo "::error::The EC2 production deployment wrapper is unavailable. Rerun the trusted production bootstrap before deployment."
+            exit 1
+          fi
+          remote_hash="${remote_output%% *}"
+          if [[ ! "${remote_hash}" =~ ^[0-9a-f]{64}$ \
+              || "${remote_hash}" != "${expected_hash}" ]]; then
+            echo "::error::The EC2 production deployment wrapper is missing or stale. Rerun the trusted production bootstrap before deployment."
             exit 1
           fi
 
