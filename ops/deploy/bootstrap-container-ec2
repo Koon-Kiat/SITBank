@@ -80,6 +80,28 @@ esac
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 repository_lower="${github_repository,,}"
 
+linux_runtime_files=(
+    "${repo_root}/${compose_source}"
+    "${repo_root}/${systemd_source}"
+    "${repo_root}/ops/deploy/sitbank-container-deploy"
+    "${repo_root}/ops/deploy/sitbank-container-runtime"
+    "${repo_root}/ops/deploy/sitbank-database-cutover"
+    "${repo_root}/ops/sudoers/sitbank-container-deploy"
+)
+if [[ "${target}" == "staging" ]]; then
+    linux_runtime_files+=(
+        "${repo_root}/ops/nginx-proxy-headers.conf"
+        "${repo_root}/ops/nginx/sitbank-staging.conf"
+    )
+fi
+for runtime_file in "${linux_runtime_files[@]}"; do
+    if grep -q $'\r$' "${runtime_file}"; then
+        echo "Refusing to install CRLF-formatted Linux file: ${runtime_file}" >&2
+        echo "Recreate the bootstrap archive from a checkout honoring .gitattributes." >&2
+        exit 1
+    fi
+done
+
 if [[ "$(dpkg --print-architecture)" != "amd64" ]]; then
     echo "This deployment is pinned to linux/amd64" >&2
     exit 1
@@ -204,6 +226,24 @@ for policy_file in \
 done
 
 if [[ "${target}" == "staging" ]]; then
+    nginx_conflict=0
+    while IFS= read -r enabled_site; do
+        if [[ "$(readlink -f "${enabled_site}")" \
+            != "/etc/nginx/sites-available/sitbank-staging" ]]; then
+            echo "Conflicting Nginx staging site is already enabled: ${enabled_site}" >&2
+            nginx_conflict=1
+        fi
+    done < <(
+        grep -RlF \
+            "server_name ${public_host};" \
+            /etc/nginx/sites-enabled /etc/nginx/conf.d \
+            2>/dev/null || true
+    )
+    if [[ "${nginx_conflict}" -ne 0 ]]; then
+        echo "Disable the duplicate staging server block, then rerun bootstrap." >&2
+        exit 1
+    fi
+
     install -d -o root -g root -m 0755 /etc/nginx/snippets
     install -o root -g root -m 0644 \
         "${repo_root}/ops/nginx-proxy-headers.conf" \

@@ -846,13 +846,51 @@ def test_only_sitbank_container_deployment_units_are_active():
     assert Path("ops/sudoers/sitbank-container-deploy").exists()
 
 
+def test_linux_deployment_artifacts_are_forced_to_lf_and_reject_crlf():
+    attributes = Path(".gitattributes").read_text(encoding="utf-8")
+    bootstrap = Path("ops/deploy/bootstrap-container-ec2").read_text(
+        encoding="utf-8"
+    )
+    linux_files = (
+        Path("Dockerfile"),
+        Path("compose.prod.yml"),
+        Path("compose.staging.yml"),
+        Path("ops/deploy/bootstrap-container-ec2"),
+        Path("ops/deploy/sitbank-container-deploy"),
+        Path("ops/deploy/sitbank-container-runtime"),
+        Path("ops/deploy/sitbank-database-cutover"),
+        Path("ops/nginx-proxy-headers.conf"),
+        Path("ops/nginx/sitbank-staging.conf"),
+        Path("ops/sudoers/sitbank-container-deploy"),
+        Path("ops/systemd/sitbank-container.service"),
+        Path("ops/systemd/sitbank-staging-container.service"),
+    )
+
+    assert "*.sh text eol=lf" in attributes
+    assert "*.yml text eol=lf" in attributes
+    assert "*.conf text eol=lf" in attributes
+    assert "*.service text eol=lf" in attributes
+    assert "ops/deploy/bootstrap-container-ec2 text eol=lf" in attributes
+    assert "ops/sudoers/* text eol=lf" in attributes
+    for path in linux_files:
+        assert b"\r\n" not in path.read_bytes(), f"{path} must use LF line endings"
+
+    assert "Refusing to install CRLF-formatted Linux file" in bootstrap
+    assert "grep -q $'\\r$'" in bootstrap
+
+
 def test_staging_nginx_routes_only_to_the_staging_loopback_port():
     nginx = Path("ops/nginx/sitbank-staging.conf").read_text(encoding="utf-8")
+    bootstrap = Path("ops/deploy/bootstrap-container-ec2").read_text(
+        encoding="utf-8"
+    )
 
     assert "server_name staging-sitbank.duckdns.org;" in nginx
     assert "proxy_pass http://127.0.0.1:5001;" in nginx
     assert "127.0.0.1:5000" not in nginx
     assert "server_name sitbank.duckdns.org;" not in nginx
+    assert "Conflicting Nginx staging site is already enabled" in bootstrap
+    assert "Disable the duplicate staging server block" in bootstrap
 
 
 def test_dependency_manifests_have_one_hashed_lockfile_source_of_truth():
