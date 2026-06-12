@@ -594,24 +594,52 @@ placeholders.
 
 ### 6. Configure the Restricted Deployment Key
 
-Generate a dedicated Ed25519 key. Do not reuse a personal EC2 key:
+Generate a dedicated, unencrypted Ed25519 key for each environment. Do not
+reuse a personal EC2 key or the original EC2 administrator PEM:
 
 ```powershell
 ssh-keygen -t ed25519 -a 100 `
-  -f "$HOME\.ssh\sitbank_github_actions" `
-  -C "github-actions-sitbank"
+  -f "$HOME\.ssh\sitbank_github_actions_staging" `
+  -C "github-actions-sitbank-staging"
+
+ssh-keygen -t ed25519 -a 100 `
+  -f "$HOME\.ssh\sitbank_github_actions_production" `
+  -C "github-actions-sitbank-production"
 ```
 
-Add the public key to `/home/sitbank-deploy/.ssh/authorized_keys`, prefixed
-with:
+When prompted, press Enter twice to leave the passphrase empty. GitHub Actions
+cannot answer an interactive private-key passphrase prompt during deployment.
+
+Add each `.pub` key to `/home/sitbank-deploy/.ssh/authorized_keys`, prefixed
+with `restrict`. The staging entry, for example, is:
 
 ```text
-restrict ssh-ed25519 AAAA... github-actions-sitbank
+restrict ssh-ed25519 AAAA... github-actions-sitbank-staging
 ```
 
-Store the private key only as `PROD_EC2_SSH_PRIVATE_KEY` in the `production`
-environment. Verify the server host-key fingerprint through the EC2 console or
-another trusted channel:
+Store the complete raw private-key contents as:
+
+- `STAGING_EC2_SSH_PRIVATE_KEY` in the `staging` environment.
+- `PROD_EC2_SSH_PRIVATE_KEY` in the `production` environment.
+
+The secret must start with `-----BEGIN OPENSSH PRIVATE KEY-----` and end with
+`-----END OPENSSH PRIVATE KEY-----`. Paste the multiline contents, not the
+`.pub` key, a filesystem path, a PuTTY `.ppk`, or text containing literal
+`\n` sequences. On Windows, copy it without changing its formatting:
+
+```powershell
+Get-Content -Raw "$HOME\.ssh\sitbank_github_actions_staging" | Set-Clipboard
+```
+
+Verify that the corresponding public key is the one installed for
+`sitbank-deploy`:
+
+```powershell
+ssh-keygen -lf "$HOME\.ssh\sitbank_github_actions_staging.pub" -E sha256
+```
+
+Verify the server host-key fingerprint through the EC2 console or another
+trusted channel:
 
 ```bash
 sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256
