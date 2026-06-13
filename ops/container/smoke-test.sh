@@ -290,6 +290,29 @@ migration_docker_args=(
     --env DATABASE_MIGRATION_URL_FILE=/run/secrets/database_migration_url
 )
 
+wait_for_app_from_smoke_network() {
+    local base_url="$1"
+    docker run --rm "${docker_args[@]}" "${IMAGE}" python - "${base_url}" <<'PY'
+import sys
+import time
+import urllib.request
+
+base_url = sys.argv[1].rstrip("/")
+request = urllib.request.Request(
+    f"{base_url}/health/ready",
+    headers={"X-Forwarded-Proto": "https"},
+)
+for _ in range(60):
+    try:
+        with urllib.request.urlopen(request, timeout=4) as response:  # nosec B310
+            if response.status == 200:
+                sys.exit(0)
+    except OSError:
+        time.sleep(1)
+sys.exit(1)
+PY
+}
+
 docker run --rm "${migration_docker_args[@]}" "${IMAGE}" \
     python -m flask --app wsgi:app db upgrade
 docker run --rm "${docker_args[@]}" "${IMAGE}" \
@@ -318,6 +341,11 @@ if [[ "${ready}" -ne 1 ]]; then
 fi
 
 if [[ "${RUN_ZAP_DAST:-false}" == "true" ]]; then
+    dast_base_url="http://${app_container}:5000"
+    if ! wait_for_app_from_smoke_network "${dast_base_url}"; then
+        echo "SITBank application was not reachable from the DAST smoke network" >&2
+        false
+    fi
     install -d -m 0777 "${work_dir}/dast"
     dast_mount_source="$(docker_bind_source "${work_dir}/dast")"
     docker run --rm "${docker_args[@]}" \
@@ -325,6 +353,8 @@ if [[ "${RUN_ZAP_DAST:-false}" == "true" ]]; then
         --volume "${dast_mount_source}:/run/dast:rw" \
         "${IMAGE}" \
         python /app/create_dast_session.py \
+            --base-url "${dast_base_url}" \
+            --allow-host "${app_container}" \
             --output /run/dast/auth-cookie
     dast_cookie="$(cat "${work_dir}/dast/auth-cookie")"
     if [[ ! "${dast_cookie}" =~ ^__Host-sitbank_session=[A-Za-z0-9._~-]+$ ]]; then

@@ -60,6 +60,20 @@ def _load_db_privileges_module():
     return module
 
 
+def _load_create_dast_session_module():
+    module_path = Path("ops/container/create_dast_session.py")
+    spec = importlib.util.spec_from_file_location("_create_dast_session_under_test", module_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(spec.name, None)
+    return module
+
+
 def test_runtime_privilege_verifier_quotes_create_probe_table_name():
     db_privileges = _load_db_privileges_module()
     probe_table = "sitbank_privilege_probe_deadbeef"
@@ -84,6 +98,26 @@ def test_runtime_privilege_verifier_quotes_create_probe_table_name():
         '"CREATE EXTENSION"',
     ):
         assert privilege_probe in source
+
+
+def test_dast_session_creator_requires_loopback_or_explicit_smoke_host():
+    create_dast_session = _load_create_dast_session_module()
+
+    create_dast_session.DastClient("http://127.0.0.1:5000")
+    create_dast_session.DastClient("http://localhost:5000")
+    create_dast_session.DastClient(
+        "http://sitbank-smoke:5000",
+        allowed_hosts={"sitbank-smoke"},
+    )
+
+    with pytest.raises(ValueError, match="host is not allowed"):
+        create_dast_session.DastClient("http://sitbank-smoke:5000")
+
+    with pytest.raises(ValueError, match="host is not allowed"):
+        create_dast_session.DastClient(
+            "http://unexpected-smoke:5000",
+            allowed_hosts={"sitbank-smoke"},
+        )
 
 
 def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypatch):
@@ -407,6 +441,10 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "--publish 127.0.0.1::6379" not in smoke_test
     assert 'wait_for_healthy "${postgres_container}"' in smoke_test
     assert 'wait_for_healthy "${redis_container}"' in smoke_test
+    assert "wait_for_app_from_smoke_network" in smoke_test
+    assert 'dast_base_url="http://${app_container}:5000"' in smoke_test
+    assert '--base-url "${dast_base_url}"' in smoke_test
+    assert '--allow-host "${app_container}"' in smoke_test
     assert "dump_container_diagnostics" in smoke_test
     assert "RUN_ZAP_DAST" in smoke_test
     assert "zaproxy/zap-stable:2.17.0@sha256:" in smoke_test
