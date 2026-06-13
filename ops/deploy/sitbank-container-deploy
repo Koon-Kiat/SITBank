@@ -307,6 +307,13 @@ compose() {
         --project-name "${COMPOSE_PROJECT}" --file "${COMPOSE_FILE}" "$@"
 }
 
+staging_migration_run() {
+    compose "${image}" run --rm --no-deps \
+        --env DATABASE_MIGRATION_URL_FILE=/run/secrets/database_migration_url \
+        --volume "${SECRET_DIR}/database_migration_url:/run/secrets/database_migration_url:ro" \
+        app "$@"
+}
+
 validate_legacy_configuration() {
     if [[ "${target}" != "production" ]]; then
         return
@@ -368,6 +375,7 @@ validate_staging_isolation() {
         wtf_csrf_secret_key \
         session_hmac_keys_json \
         database_url \
+        database_migration_url \
         redis_url \
         mfa_aes256_gcm_key_b64 \
         password_pepper_b64; do
@@ -381,7 +389,9 @@ validate_staging_isolation() {
 
     python3 - \
         "${SECRET_DIR}/database_url" \
-        "${SECRET_DIR}/postgres_password" \
+        "${SECRET_DIR}/database_migration_url" \
+        "${SECRET_DIR}/postgres_app_password" \
+        "${SECRET_DIR}/postgres_owner_password" \
         "${SECRET_DIR}/redis_url" \
         "${SECRET_DIR}/redis.conf" <<'PY'
 from pathlib import Path
@@ -389,20 +399,35 @@ from urllib.parse import unquote, urlsplit
 import sys
 
 database_url = Path(sys.argv[1]).read_text(encoding="utf-8")
-postgres_password = Path(sys.argv[2]).read_text(encoding="utf-8")
-redis_url = Path(sys.argv[3]).read_text(encoding="utf-8")
-redis_config = Path(sys.argv[4]).read_text(encoding="utf-8")
+migration_url = Path(sys.argv[2]).read_text(encoding="utf-8")
+postgres_app_password = Path(sys.argv[3]).read_text(encoding="utf-8")
+postgres_owner_password = Path(sys.argv[4]).read_text(encoding="utf-8")
+redis_url = Path(sys.argv[5]).read_text(encoding="utf-8")
+redis_config = Path(sys.argv[6]).read_text(encoding="utf-8")
 
 database = urlsplit(database_url)
 if (
     database.scheme != "postgresql+psycopg2"
     or database.hostname != "postgres"
     or database.port != 5432
-    or unquote(database.username or "") != "sitbank_staging"
+    or unquote(database.username or "") != "sitbank_app"
     or database.path != "/sitbank_staging"
-    or unquote(database.password or "") != postgres_password
+    or unquote(database.password or "") != postgres_app_password
 ):
-    raise SystemExit("Staging database URL must target only the staging PostgreSQL service")
+    raise SystemExit("Staging runtime database URL must use only the staging app role")
+
+migration = urlsplit(migration_url)
+if (
+    migration.scheme != "postgresql+psycopg2"
+    or migration.hostname != "postgres"
+    or migration.port != 5432
+    or unquote(migration.username or "") != "sitbank_owner"
+    or migration.path != "/sitbank_staging"
+    or unquote(migration.password or "") != postgres_owner_password
+):
+    raise SystemExit("Staging migration database URL must use only the staging owner role")
+if database_url == migration_url:
+    raise SystemExit("Staging runtime and migration database URLs must be different")
 
 redis = urlsplit(redis_url)
 if (
@@ -552,7 +577,7 @@ required_secrets=(
     password_pepper_b64
 )
 if [[ "${target}" == "staging" ]]; then
-    required_secrets+=(postgres_password redis.conf)
+    required_secrets+=(database_migration_url postgres_owner_password postgres_app_password redis.conf)
 fi
 if ! runuser -u sitbank-container -- test -x "${SECRET_DIR}"; then
     echo "Container account cannot traverse secret directory: ${SECRET_DIR}" >&2
@@ -564,7 +589,8 @@ for secret_file in "${required_secrets[@]}"; do
         echo "Missing required root-managed secret file: ${secret_file}" >&2
         exit 1
     fi
-    if [[ "${secret_file}" != "postgres_password" \
+    if [[ "${secret_file}" != "postgres_owner_password" \
+        && "${secret_file}" != "postgres_app_password" \
         && "${secret_file}" != "redis.conf" ]] \
         && ! runuser -u sitbank-container -- \
             test -r "${SECRET_DIR}/${secret_file}"; then
@@ -577,8 +603,15 @@ prepare_dependencies
 
 compose "${image}" run --rm --no-deps app \
     python -m flask --app wsgi:app production-check
-compose "${image}" run --rm --no-deps app \
-    python -m flask --app wsgi:app db upgrade
+if [[ "${target}" == "staging" ]]; then
+    staging_migration_run \
+        python -m flask --app wsgi:app db upgrade
+    staging_migration_run \
+        python -m flask --app wsgi:app verify-runtime-db-privileges
+else
+    compose "${image}" run --rm --no-deps app \
+        python -m flask --app wsgi:app db upgrade
+fi
 
 if [[ "${target}" == "production" \
     && "${LEGACY_SERVICE:-"-"}" != "-" ]] \
