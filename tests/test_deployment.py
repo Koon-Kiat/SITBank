@@ -666,12 +666,12 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "check_dependency_locks.py" in workflow_text
     assert "IMAGE_DIGEST" in workflow_text
     assert "StrictHostKeyChecking=no" not in workflow_text
-    assert workflow_text.count("persist-credentials: false") == 9
+    assert workflow_text.count("persist-credentials: false") == 10
     assert (
         workflow_text.count(
             "actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10"
         )
-        == 9
+        == 10
     )
     assert (
         "actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405"
