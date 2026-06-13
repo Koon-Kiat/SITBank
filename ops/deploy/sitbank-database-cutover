@@ -8,6 +8,7 @@ readonly BACKUP_DIR="/var/backups/sitbank"
 readonly TARGET_DATABASE="sitbank_db"
 readonly TARGET_OWNER_ROLE="sitbank_owner"
 readonly TARGET_APP_ROLE="sitbank_app"
+readonly CONTAINER_SERVICE="sitbank-container.service"
 
 if [[ "${EUID}" -ne 0 ]]; then
     echo "Database cutover helper must run as root" >&2
@@ -40,13 +41,27 @@ database_exists() {
         | grep -qx 1
 }
 
+database_owner() {
+    sudo -u postgres psql --no-psqlrc --tuples-only --no-align \
+        --command "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = '$1'"
+}
+
+role_has_elevated_privileges() {
+    sudo -u postgres psql --no-psqlrc --tuples-only --no-align \
+        --command "SELECT rolsuper OR rolcreaterole OR rolcreatedb OR rolreplication OR rolbypassrls FROM pg_roles WHERE rolname = '$1'" \
+        | grep -qx t
+}
+
 terminate_database_connections() {
     sudo -u postgres psql --no-psqlrc --set ON_ERROR_STOP=1 \
         --command "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$1' AND pid <> pg_backend_pid();" \
         >/dev/null
 }
 
-restart_legacy_service() {
+restart_previous_services() {
+    if [[ "${CONTAINER_WAS_ACTIVE:-0}" == "1" ]]; then
+        systemctl start "${CONTAINER_SERVICE}"
+    fi
     if [[ "${LEGACY_WAS_ACTIVE:-0}" == "1" && "${LEGACY_SERVICE:-"-"}" != "-" ]]; then
         systemctl start "${LEGACY_SERVICE}"
     fi
@@ -95,12 +110,20 @@ rollback_cutover() {
     fi
     # shellcheck disable=SC1090
     source "${STATE_FILE}"
+    cutover_mode="${CUTOVER_MODE:-rename}"
+    if [[ "${cutover_mode}" != "rename" \
+        && "${cutover_mode}" != "adopt-existing" ]]; then
+        echo "Unsupported database cutover state" >&2
+        return 1
+    fi
     # shellcheck disable=SC2153
     validate_identifier "${SOURCE_DATABASE}"
     # shellcheck disable=SC2153
     validate_identifier "${SOURCE_ROLE}"
 
-    if database_exists "${TARGET_DATABASE}" && ! database_exists "${SOURCE_DATABASE}"; then
+    if [[ "${cutover_mode}" == "rename" ]] \
+        && database_exists "${TARGET_DATABASE}" \
+        && ! database_exists "${SOURCE_DATABASE}"; then
         terminate_database_connections "${TARGET_DATABASE}"
         if role_exists "${SOURCE_ROLE}"; then
             if role_exists "${TARGET_OWNER_ROLE}"; then
@@ -125,6 +148,31 @@ ALTER DATABASE "${TARGET_DATABASE}" OWNER TO "${SOURCE_ROLE}";
 ALTER DATABASE "${TARGET_DATABASE}" RENAME TO "${SOURCE_DATABASE}";
 SQL
         fi
+    elif [[ "${cutover_mode}" == "adopt-existing" ]] \
+        && database_exists "${TARGET_DATABASE}"; then
+        terminate_database_connections "${TARGET_DATABASE}"
+        if role_exists "${SOURCE_ROLE}"; then
+            if role_exists "${TARGET_OWNER_ROLE}"; then
+                sudo -u postgres psql --no-psqlrc --set ON_ERROR_STOP=1 \
+                    --dbname "${TARGET_DATABASE}" <<SQL
+REASSIGN OWNED BY "${TARGET_OWNER_ROLE}" TO "${SOURCE_ROLE}";
+DROP OWNED BY "${TARGET_OWNER_ROLE}";
+SQL
+            fi
+            if role_exists "${TARGET_APP_ROLE}"; then
+                sudo -u postgres psql --no-psqlrc --set ON_ERROR_STOP=1 \
+                    --dbname "${TARGET_DATABASE}" <<SQL
+DROP OWNED BY "${TARGET_APP_ROLE}";
+SQL
+            fi
+            sudo -u postgres psql --no-psqlrc --set ON_ERROR_STOP=1 \
+                --dbname "${TARGET_DATABASE}" <<SQL
+ALTER SCHEMA public OWNER TO "${SOURCE_ROLE}";
+SQL
+            sudo -u postgres psql --no-psqlrc --set ON_ERROR_STOP=1 <<SQL
+ALTER DATABASE "${TARGET_DATABASE}" OWNER TO "${SOURCE_ROLE}";
+SQL
+        fi
     fi
     if role_exists "${TARGET_APP_ROLE}"; then
         sudo -u postgres psql --no-psqlrc --set ON_ERROR_STOP=1 \
@@ -134,14 +182,29 @@ SQL
         sudo -u postgres psql --no-psqlrc --set ON_ERROR_STOP=1 \
             --command "DROP ROLE \"${TARGET_OWNER_ROLE}\";" >/dev/null
     fi
-    if ! database_exists "${SOURCE_DATABASE}" \
-        || database_exists "${TARGET_DATABASE}" \
-        || role_exists "${TARGET_APP_ROLE}" \
+    if [[ "${cutover_mode}" == "rename" ]] \
+        && ( ! database_exists "${SOURCE_DATABASE}" \
+            || database_exists "${TARGET_DATABASE}" ); then
+        echo "Database rollback is incomplete; preserving cutover state" >&2
+        return 1
+    fi
+    if [[ "${cutover_mode}" == "adopt-existing" ]] \
+        && ( ! database_exists "${TARGET_DATABASE}" \
+            || "$(database_owner "${TARGET_DATABASE}")" != "${SOURCE_ROLE}" ); then
+        echo "Database role rollback is incomplete; preserving cutover state" >&2
+        return 1
+    fi
+    if role_exists "${TARGET_APP_ROLE}" \
         || role_exists "${TARGET_OWNER_ROLE}"; then
         echo "Database rollback is incomplete; preserving cutover state" >&2
         return 1
     fi
-    restart_legacy_service
+    restart_previous_services
+    if [[ "${CONTAINER_WAS_ACTIVE:-0}" == "1" ]] \
+        && ! systemctl is-active --quiet "${CONTAINER_SERVICE}"; then
+        echo "Database was restored but the container service did not restart" >&2
+        return 1
+    fi
     if [[ "${LEGACY_WAS_ACTIVE:-0}" == "1" \
         && "${LEGACY_SERVICE:-"-"}" != "-" ]] \
         && ! systemctl is-active --quiet "${LEGACY_SERVICE}"; then
@@ -202,9 +265,11 @@ case "${1:-}" in
             legacy_was_active=1
         fi
         cat > "${STATE_FILE}" <<EOF
+CUTOVER_MODE=rename
 SOURCE_DATABASE=${source_database}
 SOURCE_ROLE=${source_role}
 LEGACY_WAS_ACTIVE=${legacy_was_active}
+CONTAINER_WAS_ACTIVE=0
 EOF
         chmod 0600 "${STATE_FILE}"
 
@@ -252,6 +317,125 @@ SQL
         rm -f -- "${temporary_backup}"
         echo "Database cutover prepared; deploy the SITBank container now"
         ;;
+    adopt-existing)
+        if [[ "$#" -ne 4 ]]; then
+            echo "Usage: sitbank-database-cutover adopt-existing SOURCE_ROLE OWNER_PASSWORD_FILE APP_PASSWORD_FILE" >&2
+            exit 2
+        fi
+        source_role="$2"
+        owner_password_file="$3"
+        app_password_file="$4"
+        validate_identifier "${source_role}"
+        if [[ "${source_role}" == "${TARGET_OWNER_ROLE}" \
+            || "${source_role}" == "${TARGET_APP_ROLE}" ]]; then
+            echo "Source role must differ from SITBank split-role targets" >&2
+            exit 2
+        fi
+        if [[ -e "${STATE_FILE}" ]]; then
+            echo "A database cutover is already pending" >&2
+            exit 1
+        fi
+        validate_password_file "${owner_password_file}" "OWNER_PASSWORD_FILE"
+        validate_password_file "${app_password_file}" "APP_PASSWORD_FILE"
+        owner_password="$(cat -- "${owner_password_file}")"
+        app_password="$(cat -- "${app_password_file}")"
+        validate_database_password "${owner_password}" "Owner database password"
+        validate_database_password "${app_password}" "Runtime app database password"
+        if [[ "${owner_password}" == "${app_password}" ]]; then
+            echo "Owner and runtime app database passwords must be different" >&2
+            exit 2
+        fi
+        if ! database_exists "${TARGET_DATABASE}" || ! role_exists "${source_role}"; then
+            echo "Existing SITBank database or source role does not exist" >&2
+            exit 1
+        fi
+        if role_has_elevated_privileges "${source_role}"; then
+            echo "Refusing to adopt a privileged PostgreSQL source role" >&2
+            exit 1
+        fi
+        if [[ "$(database_owner "${TARGET_DATABASE}")" != "${source_role}" ]]; then
+            echo "Source role must own the existing SITBank database" >&2
+            exit 1
+        fi
+        if role_exists "${TARGET_OWNER_ROLE}" || role_exists "${TARGET_APP_ROLE}"; then
+            echo "SITBank split roles already exist" >&2
+            exit 1
+        fi
+
+        install -d -o root -g root -m 0700 "${STATE_DIR}" "${BACKUP_DIR}"
+        legacy_was_active=0
+        container_was_active=0
+        if systemctl is-active --quiet "${CONTAINER_SERVICE}"; then
+            container_was_active=1
+        fi
+        if [[ "${LEGACY_SERVICE:-"-"}" != "-" ]] \
+            && systemctl is-active --quiet "${LEGACY_SERVICE}"; then
+            legacy_was_active=1
+        fi
+        if [[ "${container_was_active}" -eq 1 && "${legacy_was_active}" -eq 1 ]]; then
+            echo "Container and legacy services cannot both be active during role adoption" >&2
+            exit 1
+        fi
+        cat > "${STATE_FILE}" <<EOF
+CUTOVER_MODE=adopt-existing
+SOURCE_DATABASE=${TARGET_DATABASE}
+SOURCE_ROLE=${source_role}
+LEGACY_WAS_ACTIVE=${legacy_was_active}
+CONTAINER_WAS_ACTIVE=${container_was_active}
+EOF
+        chmod 0600 "${STATE_FILE}"
+
+        timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+        temporary_backup="$(
+            sudo -u postgres mktemp /tmp/sitbank-db.XXXXXX.dump
+        )"
+        trap prepare_failure ERR
+        trap 'rm -f -- "${temporary_backup}" "${owner_password_file}" "${app_password_file}"' EXIT
+        sudo -u postgres pg_dump --format=custom \
+            --file "${temporary_backup}" "${TARGET_DATABASE}"
+        install -o root -g root -m 0600 "${temporary_backup}" \
+            "${BACKUP_DIR}/database-${timestamp}.dump"
+
+        if [[ "${container_was_active}" -eq 1 ]]; then
+            systemctl stop "${CONTAINER_SERVICE}"
+        fi
+        if [[ "${legacy_was_active}" -eq 1 ]]; then
+            systemctl stop "${LEGACY_SERVICE}"
+        fi
+        terminate_database_connections "${TARGET_DATABASE}"
+        sudo -u postgres psql --no-psqlrc --set ON_ERROR_STOP=1 <<SQL
+CREATE ROLE "${TARGET_OWNER_ROLE}" LOGIN PASSWORD '${owner_password}';
+CREATE ROLE "${TARGET_APP_ROLE}" LOGIN PASSWORD '${app_password}';
+SQL
+        sudo -u postgres psql --no-psqlrc --set ON_ERROR_STOP=1 \
+            --dbname "${TARGET_DATABASE}" <<SQL
+REASSIGN OWNED BY "${source_role}" TO "${TARGET_OWNER_ROLE}";
+ALTER SCHEMA public OWNER TO "${TARGET_OWNER_ROLE}";
+REVOKE ALL ON SCHEMA public FROM PUBLIC;
+REVOKE ALL ON SCHEMA public FROM "${TARGET_APP_ROLE}";
+GRANT USAGE ON SCHEMA public TO "${TARGET_APP_ROLE}";
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO "${TARGET_APP_ROLE}";
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO "${TARGET_APP_ROLE}";
+GRANT USAGE ON SCHEMA public TO "${source_role}";
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO "${source_role}";
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO "${source_role}";
+ALTER DEFAULT PRIVILEGES FOR ROLE "${TARGET_OWNER_ROLE}" IN SCHEMA public
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO "${TARGET_APP_ROLE}";
+ALTER DEFAULT PRIVILEGES FOR ROLE "${TARGET_OWNER_ROLE}" IN SCHEMA public
+    GRANT USAGE, SELECT ON SEQUENCES TO "${TARGET_APP_ROLE}";
+SQL
+        sudo -u postgres psql --no-psqlrc --set ON_ERROR_STOP=1 <<SQL
+ALTER DATABASE "${TARGET_DATABASE}" OWNER TO "${TARGET_OWNER_ROLE}";
+REVOKE ALL ON DATABASE "${TARGET_DATABASE}" FROM PUBLIC;
+GRANT CONNECT ON DATABASE "${TARGET_DATABASE}" TO "${TARGET_APP_ROLE}";
+GRANT CONNECT ON DATABASE "${TARGET_DATABASE}" TO "${source_role}";
+SQL
+        rm -f -- "${owner_password_file}" "${app_password_file}"
+        rm -f -- "${temporary_backup}"
+        restart_previous_services
+        trap - ERR EXIT
+        echo "Existing SITBank database role split prepared; deploy the container now"
+        ;;
     rollback)
         rollback_cutover
         ;;
@@ -265,13 +449,16 @@ SQL
         validate_identifier "${SOURCE_ROLE}"
         if role_exists "${SOURCE_ROLE}"; then
             sudo -u postgres psql --no-psqlrc --set ON_ERROR_STOP=1 \
+                --dbname "${TARGET_DATABASE}" \
+                --command "DROP OWNED BY \"${SOURCE_ROLE}\";" >/dev/null
+            sudo -u postgres psql --no-psqlrc --set ON_ERROR_STOP=1 \
                 --command "DROP ROLE \"${SOURCE_ROLE}\";" >/dev/null
         fi
         rm -rf -- "${STATE_DIR}"
         echo "Database cutover finalized"
         ;;
     *)
-        echo "Usage: sitbank-database-cutover prepare SOURCE_DATABASE SOURCE_ROLE OWNER_PASSWORD_FILE APP_PASSWORD_FILE | rollback | finalize" >&2
+        echo "Usage: sitbank-database-cutover prepare SOURCE_DATABASE SOURCE_ROLE OWNER_PASSWORD_FILE APP_PASSWORD_FILE | adopt-existing SOURCE_ROLE OWNER_PASSWORD_FILE APP_PASSWORD_FILE | rollback | finalize" >&2
         exit 2
         ;;
 esac
