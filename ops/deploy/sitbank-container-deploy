@@ -307,7 +307,7 @@ compose() {
         --project-name "${COMPOSE_PROJECT}" --file "${COMPOSE_FILE}" "$@"
 }
 
-migration_run() {
+staging_migration_run() {
     compose "${image}" run --rm --no-deps \
         --env DATABASE_MIGRATION_URL_FILE=/run/secrets/database_migration_url \
         --volume "${SECRET_DIR}/database_migration_url:/run/secrets/database_migration_url:ro" \
@@ -604,10 +604,15 @@ prepare_dependencies
 
 compose "${image}" run --rm --no-deps app \
     python -m flask --app wsgi:app production-check
-migration_run \
-    python -m flask --app wsgi:app db upgrade
-migration_run \
-    python -m flask --app wsgi:app verify-runtime-db-privileges
+if [[ "${target}" == "staging" ]]; then
+    staging_migration_run \
+        python -m flask --app wsgi:app db upgrade
+    staging_migration_run \
+        python -m flask --app wsgi:app verify-runtime-db-privileges
+else
+    compose "${image}" run --rm --no-deps app \
+        python -m flask --app wsgi:app db upgrade
+fi
 
 if [[ "${target}" == "production" \
     && "${LEGACY_SERVICE:-"-"}" != "-" ]] \

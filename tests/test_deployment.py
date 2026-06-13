@@ -528,6 +528,14 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert deploy_script.count("--retry-all-errors") == 2
     assert "show_app_diagnostics" in deploy_script
     assert "DATABASE_MIGRATION_URL_FILE=/run/secrets/database_migration_url" in deploy_script
+    assert "Staging runtime database URL must use only the staging app role" in deploy_script
+    assert "Staging migration database URL must use only the staging owner role" in deploy_script
+    assert "Staging runtime and migration database URLs must be different" in deploy_script
+    assert "Staging database URL must target only the staging PostgreSQL service" not in deploy_script
+    assert 'unquote(database.username or "") != "sitbank_app"' in deploy_script
+    assert 'unquote(migration.username or "") != "sitbank_owner"' in deploy_script
+    assert "postgres_app_password" in deploy_script
+    assert "postgres_owner_password" in deploy_script
     assert "verify-runtime-db-privileges" in deploy_script
     assert "DATABASE_MIGRATION_URL must not be configured for the runtime app" in Path(
         "app/ops/commands.py"
