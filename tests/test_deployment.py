@@ -586,7 +586,22 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         assert checkout["with"]["ref"] == (
             "${{ needs.resolve-source.outputs.source_sha }}"
         )
-    trusted_jobs = ("release-verify", "deploy-staging", "deploy-production")
+    release_trusted_checkout = next(
+        step
+        for step in workflow["jobs"]["release-verify"]["steps"]
+        if step["name"] == "Check out trusted workflow repository state"
+    )
+    assert release_trusted_checkout["with"]["ref"] == "${{ github.workflow_sha }}"
+    release_candidate_checkout = next(
+        step
+        for step in workflow["jobs"]["release-verify"]["steps"]
+        if step["name"] == "Check out candidate source"
+    )
+    assert release_candidate_checkout["with"]["ref"] == (
+        "${{ needs.publish.outputs.revision }}"
+    )
+    assert release_candidate_checkout["with"]["path"] == "candidate-source"
+    trusted_jobs = ("deploy-staging", "deploy-production")
     for job_name in trusted_jobs:
         checkout = next(
             step
@@ -614,6 +629,17 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         step
         for step in workflow["jobs"]["release-verify"]["steps"]
         if step["name"] == "Smoke-test and DAST-scan the exact published digest"
+    )
+    release_compose_step = next(
+        step
+        for step in workflow["jobs"]["release-verify"]["steps"]
+        if step["name"] == "Validate production and staging Compose models for the exact digest"
+    )
+    assert release_compose_step["run"] == (
+        'bash candidate-source/ops/container/validate-compose.sh "${SITBANK_IMAGE}"'
+    )
+    assert release_smoke_step["run"] == (
+        'bash candidate-source/ops/container/smoke-test.sh "${IMAGE}"'
     )
     release_dast_policy = (
         "${{ github.event_name != 'workflow_dispatch' || inputs.run_dast == true }}"
@@ -759,12 +785,12 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "check_dependency_locks.py" in workflow_text
     assert "IMAGE_DIGEST" in workflow_text
     assert "StrictHostKeyChecking=no" not in workflow_text
-    assert workflow_text.count("persist-credentials: false") == 9
+    assert workflow_text.count("persist-credentials: false") == 10
     assert (
         workflow_text.count(
             "actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10"
         )
-        == 9
+        == 10
     )
     assert (
         "actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405"
@@ -780,6 +806,8 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert workflow_text.count(
         "ref: ${{ needs.resolve-source.outputs.source_sha }}"
     ) == 2
+    assert "ref: ${{ needs.publish.outputs.revision }}" in workflow_text
+    assert "candidate-source/ops/container/smoke-test.sh" in workflow_text
     assert "RELEASE_SHA: ${{ github.sha }}" not in workflow_text
     assert "SITBANK_SECRET_KEY" not in workflow_text
     assert "STAGING_SECRET_KEY" not in workflow_text
