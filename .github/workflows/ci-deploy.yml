@@ -493,6 +493,13 @@ jobs:
           persist-credentials: false
           ref: ${{ github.workflow_sha }}
 
+      - name: Check out candidate source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
+          ref: ${{ needs.publish.outputs.revision }}
+          path: candidate-source
+
       - name: Resolve verified image reference
         id: image
         shell: bash
@@ -540,13 +547,13 @@ jobs:
       - name: Validate production and staging Compose models for the exact digest
         env:
           SITBANK_IMAGE: ${{ steps.image.outputs.image }}
-        run: bash ops/container/validate-compose.sh "${SITBANK_IMAGE}"
+        run: bash candidate-source/ops/container/validate-compose.sh "${SITBANK_IMAGE}"
 
       - name: Smoke-test and DAST-scan the exact published digest
         env:
           IMAGE: ${{ steps.image.outputs.image }}
           RUN_ZAP_DAST: ${{ github.event_name != 'workflow_dispatch' || inputs.run_dast == true }}
-        run: bash ops/container/smoke-test.sh "${IMAGE}"
+        run: bash candidate-source/ops/container/smoke-test.sh "${IMAGE}"
 
       # zizmor: ignore[unpinned-tools] Trivy action is SHA-pinned; the action installs a pinned Trivy tool version.
       - name: Report all critical vulnerabilities in the published digest
