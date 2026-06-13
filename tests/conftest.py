@@ -48,6 +48,7 @@ class TestConfig:
         "test-previous": b"3" * 32,
     }
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
+    SQLALCHEMY_MIGRATION_DATABASE_URI = None
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     REDIS_URL = os.environ["REDIS_URL"]
     REDIS_PROTOCOL = 2

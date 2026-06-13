@@ -106,6 +106,7 @@ Sensitive settings accept either `NAME` or `NAME_FILE`, never both:
 - `WTF_CSRF_SECRET_KEY_FILE`
 - `SESSION_HMAC_KEYS_JSON_FILE`
 - `DATABASE_URL_FILE`
+- `DATABASE_MIGRATION_URL_FILE`
 - `REDIS_URL_FILE`
 - `MFA_AES256_GCM_KEY_B64_FILE`
 - `PASSWORD_PEPPER_B64_FILE`
@@ -116,11 +117,11 @@ must contain one non-empty UTF-8 line without NUL, CR, or embedded LF
 characters.
 
 Root-owned production copies live under `/etc/sitbank/secrets`; staging uses
-the separate `/etc/sitbank-staging/secrets` directory. Compose mounts these
-files directly beneath `/run/secrets`; the deployment and runtime helpers do
-not copy their values into process environment variables. Non-secret settings
-live in each environment's `container.env`. Containers do not load a
-production `.env` file.
+the separate `/etc/sitbank-staging/secrets` directory. Compose mounts runtime
+application secrets directly beneath `/run/secrets`; the deployment and
+runtime helpers do not copy their values into process environment variables.
+Non-secret settings live in each environment's `container.env`. Containers do
+not load a production `.env` file.
 
 Docker Compose implements local file-backed secrets as bind mounts, so Compose
 does not apply service-level `uid`, `gid`, or `mode` attributes. The host files
@@ -156,9 +157,36 @@ The complete production configuration surface is:
 - `WEBAUTHN_MDS_CACHE_PATH`
 
 The direct names `SECRET_KEY`, `WTF_CSRF_SECRET_KEY`,
-`SESSION_HMAC_KEYS_JSON`, `DATABASE_URL`, `REDIS_URL`,
+`SESSION_HMAC_KEYS_JSON`, `DATABASE_URL`, `DATABASE_MIGRATION_URL`, `REDIS_URL`,
 `MFA_AES256_GCM_KEY_B64`, and `PASSWORD_PEPPER_B64` remain available for local
 development, tests, and the one-time protected legacy import only.
+
+`DATABASE_URL` is always the Flask runtime URL and must use the non-owner
+`sitbank_app` role in staging and production. `DATABASE_MIGRATION_URL` is only
+for Alembic migrations and database privilege verification, and must use the
+`sitbank_owner` role. The long-running app service does not receive
+`DATABASE_MIGRATION_URL_FILE`; the deployment wrapper bind-mounts it only for
+`flask db upgrade` and `flask verify-runtime-db-privileges`.
+
+PostgreSQL ownership is split by role:
+
+- `sitbank_owner` owns `sitbank_db`/`sitbank_staging`, the `public` schema, and
+  migration-created schema objects.
+- `sitbank_app` is used by Flask during normal runtime and receives only
+  `SELECT`, `INSERT`, `UPDATE`, `DELETE` on tables plus `USAGE`/`SELECT` on
+  sequences.
+- Default privileges for objects created by `sitbank_owner` grant the same DML
+  privileges to `sitbank_app`.
+- `sitbank_app` must not own schema objects and must not be able to create,
+  alter, drop, or create extensions.
+
+Redis session data is stored as a versioned HMAC envelope around the
+Flask-Session serialized payload. `SESSION_HMAC_ACTIVE_KEY_ID` chooses the key
+used for new writes, while every key in `SESSION_HMAC_KEYS_JSON` can verify
+existing sessions during rotation. Missing signatures, invalid signatures,
+unknown key IDs, malformed payloads, and unsupported legacy payload formats are
+deleted, logged as `session_integrity` security events, and treated as a fresh
+unauthenticated session without exposing raw session contents.
 
 ## GitHub Actions Pipeline
 
@@ -526,7 +554,8 @@ def write(name, value, mode=0o440, gid=10001):
     os.chmod(path, mode)
 
 active_id = os.environ["STAGING_SESSION_HMAC_ACTIVE_KEY_ID"]
-postgres_password = secrets.token_urlsafe(32)
+postgres_owner_password = secrets.token_urlsafe(32)
+postgres_app_password = secrets.token_urlsafe(32)
 redis_password = secrets.token_urlsafe(32)
 
 write("secret_key", secrets.token_urlsafe(48))
@@ -542,11 +571,17 @@ write("mfa_aes256_gcm_key_b64", base64.b64encode(secrets.token_bytes(32)).decode
 write("password_pepper_b64", base64.b64encode(secrets.token_bytes(32)).decode("ascii"))
 write(
     "database_url",
-    "postgresql+psycopg2://sitbank_staging:"
-    f"{quote(postgres_password, safe='')}@postgres:5432/sitbank_staging",
+    "postgresql+psycopg2://sitbank_app:"
+    f"{quote(postgres_app_password, safe='')}@postgres:5432/sitbank_staging",
+)
+write(
+    "database_migration_url",
+    "postgresql+psycopg2://sitbank_owner:"
+    f"{quote(postgres_owner_password, safe='')}@postgres:5432/sitbank_staging",
 )
 write("redis_url", f"redis://:{quote(redis_password, safe='')}@redis:6379/0")
-write("postgres_password", postgres_password, mode=0o444, gid=0)
+write("postgres_owner_password", postgres_owner_password, mode=0o444, gid=0)
+write("postgres_app_password", postgres_app_password, mode=0o444, gid=0)
 write(
     "redis.conf",
     "appendonly yes\n"
@@ -577,6 +612,9 @@ Verify that staging assets are separate and production remains healthy:
 sudo systemctl is-active sitbank-container.service
 sudo test -r /etc/sitbank-staging/deploy.conf
 sudo test -r /opt/sitbank-staging/compose.yml
+sudo test -r /etc/sitbank-staging/postgres/init-sitbank-staging-roles.sh
+sudo -u sitbank-container test -r /etc/sitbank-staging/secrets/database_url
+sudo -u sitbank-container test -r /etc/sitbank-staging/secrets/database_migration_url
 sudo -u sitbank-container test -r /etc/sitbank-staging/common-passwords.txt
 curl --fail https://sitbank.duckdns.org/health/ready
 ```
@@ -724,29 +762,42 @@ non-empty output directories. After import, confirm that every file is
 root-owned, unreadable by the SSH deploy user, and readable by container UID
 `10001` only through the Compose secret mount.
 
-### 8. Rename the PostgreSQL Database and Role
+### 8. Rename the PostgreSQL Database and Split Roles
 
-Generate a new URL-safe password on an administrator workstation and send the
-password and complete database URL directly to root-only EC2 files without
-placing either value on a command line:
+Generate separate URL-safe passwords on an administrator workstation and send
+the passwords plus complete database URLs directly to root-only EC2 files
+without placing any secret value on a command line:
 
 ```powershell
-$bytes = [System.Security.Cryptography.RandomNumberGenerator]::GetBytes(36)
-$dbPassword = [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
-$dbUrl = "postgresql+psycopg2://sitbank_user:$dbPassword@127.0.0.1:5432/sitbank_db"
-$dbPassword | ssh -i "C:\path\to\existing-ec2-key.pem" `
+function New-UrlSafePassword {
+  $bytes = [System.Security.Cryptography.RandomNumberGenerator]::GetBytes(36)
+  [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+}
+
+$ownerPassword = New-UrlSafePassword
+$appPassword = New-UrlSafePassword
+$runtimeUrl = "postgresql+psycopg2://sitbank_app:$appPassword@127.0.0.1:5432/sitbank_db"
+$migrationUrl = "postgresql+psycopg2://sitbank_owner:$ownerPassword@127.0.0.1:5432/sitbank_db"
+$ownerPassword | ssh -i "C:\path\to\existing-ec2-key.pem" `
   "student12@sitbank.duckdns.org" `
-  "sudo install -o root -g root -m 0600 /dev/stdin /root/sitbank-db-password"
-$dbUrl | ssh -i "C:\path\to\existing-ec2-key.pem" `
+  "sudo install -o root -g root -m 0600 /dev/stdin /root/sitbank-db-owner-password"
+$appPassword | ssh -i "C:\path\to\existing-ec2-key.pem" `
+  "student12@sitbank.duckdns.org" `
+  "sudo install -o root -g root -m 0600 /dev/stdin /root/sitbank-db-app-password"
+$runtimeUrl | ssh -i "C:\path\to\existing-ec2-key.pem" `
   "student12@sitbank.duckdns.org" `
   "sudo install -o root -g 10001 -m 0440 /dev/stdin /etc/sitbank/secrets/database_url"
-Remove-Variable dbPassword, dbUrl, bytes
+$migrationUrl | ssh -i "C:\path\to\existing-ec2-key.pem" `
+  "student12@sitbank.duckdns.org" `
+  "sudo install -o root -g 10001 -m 0440 /dev/stdin /etc/sitbank/secrets/database_migration_url"
+Remove-Variable ownerPassword, appPassword, runtimeUrl, migrationUrl
 ```
 
-The resulting root-managed `database_url` secret value is:
+The resulting root-managed secret values are:
 
 ```text
-postgresql+psycopg2://sitbank_user:<new-password>@127.0.0.1:5432/sitbank_db
+database_url = postgresql+psycopg2://sitbank_app:<runtime-password>@127.0.0.1:5432/sitbank_db
+database_migration_url = postgresql+psycopg2://sitbank_owner:<owner-password>@127.0.0.1:5432/sitbank_db
 ```
 
 Prepare the cutover:
@@ -755,18 +806,23 @@ Prepare the cutover:
 sudo /usr/local/sbin/sitbank-database-cutover prepare \
   <current-database> \
   <current-role> \
-  /root/sitbank-db-password
+  /root/sitbank-db-owner-password \
+  /root/sitbank-db-app-password
 ```
 
 The helper:
 
 - creates a fresh protected PostgreSQL backup;
 - stops the configured legacy service;
-- creates `sitbank_user`;
+- creates `sitbank_owner` and `sitbank_app`;
 - renames the database to `sitbank_db`;
-- transfers database, schema, and object ownership;
-- records rollback state without storing the password;
-- deletes the temporary password file.
+- transfers database, schema, and object ownership to `sitbank_owner`;
+- grants `sitbank_app` DML on existing tables and sequence usage;
+- configures default privileges so future `sitbank_owner` migrations grant
+  `sitbank_app` DML and sequence usage automatically;
+- revokes public schema creation and database privileges;
+- records rollback state without storing passwords;
+- deletes the temporary password files.
 
 If deployment fails before readiness, the deploy wrapper calls:
 
@@ -787,10 +843,10 @@ set `PROD_DEPLOY_ENABLED=true` and run the workflow from `main`.
 
 The deployment wrapper verifies the Sigstore-signed non-secret configuration
 bundle, its checksum, Cosign workflow identity, immutable image digest, image
-revision label, production configuration, migrations, direct readiness, and
-Nginx/TLS readiness. Application secrets never pass through GitHub Actions.
-On first-cutover failure it restores the database identity and restarts the
-configured legacy service.
+revision label, production configuration, runtime database least privilege,
+migrations, direct readiness, and Nginx/TLS readiness. Application secrets
+never pass through GitHub Actions. On first-cutover failure it restores the
+database identity and restarts the configured legacy service.
 
 After readiness succeeds, it disables and removes the configured legacy unit
 and application directory. There is no new active `/var/www` application
@@ -805,12 +861,17 @@ sudo docker inspect --format '{{.Config.User}} {{.HostConfig.ReadonlyRootfs}}' \
 sudo docker inspect --format '{{json .Config.Env}}' sitbank-app
 sudo -u postgres psql -tAc \
   "SELECT datname, pg_get_userbyid(datdba) FROM pg_database WHERE datname = 'sitbank_db';"
+sudo -u postgres psql -d sitbank_db -tAc \
+  "SELECT count(*) FROM pg_class c JOIN pg_roles r ON r.oid = c.relowner JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND r.rolname = 'sitbank_app';"
 curl --fail https://sitbank.duckdns.org/health/ready
 ```
 
 The container user must be `10001:10001`, the root filesystem must be
-read-only, `sitbank_db` must be owned by `sitbank_user`, and container
-environment output must contain only non-secret settings and `_FILE` paths.
+read-only, `sitbank_db` must be owned by `sitbank_owner`, Flask must use
+`sitbank_app` through `database_url`, and container environment output must
+contain only non-secret settings and runtime `_FILE` paths. The `sitbank_app`
+object ownership count must be `0`. The long-running `sitbank-app` container
+must not include `DATABASE_MIGRATION_URL_FILE`.
 
 ## Later Deployments and Rollback
 

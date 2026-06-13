@@ -572,12 +572,13 @@ required_secrets=(
     wtf_csrf_secret_key
     session_hmac_keys_json
     database_url
+    database_migration_url
     redis_url
     mfa_aes256_gcm_key_b64
     password_pepper_b64
 )
 if [[ "${target}" == "staging" ]]; then
-    required_secrets+=(database_migration_url postgres_owner_password postgres_app_password redis.conf)
+    required_secrets+=(postgres_owner_password postgres_app_password redis.conf)
 fi
 if ! runuser -u sitbank-container -- test -x "${SECRET_DIR}"; then
     echo "Container account cannot traverse secret directory: ${SECRET_DIR}" >&2

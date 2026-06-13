@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+import importlib.util
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,7 @@ from ops.deploy.render_container_bundle import (
 
 
 DEPLOYMENT_VALUES = {
+    "PROD_DATABASE_MIGRATION_URL": "postgresql+psycopg2://bank_owner:secret@127.0.0.1/bank",
     "PROD_DATABASE_URL": "postgresql+psycopg2://bank:secret@127.0.0.1/bank",
     "PROD_MFA_AES256_GCM_KEY_B64": "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=",
     "PROD_PASSWORD_PEPPER_B64": "MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE=",
@@ -44,6 +46,80 @@ def _set_prefixed_deployment_values(monkeypatch, prefix: str, public_host: str):
         monkeypatch.setenv(target_name, value)
 
 
+def _load_db_privileges_module():
+    module_path = Path("app/ops/db_privileges.py")
+    spec = importlib.util.spec_from_file_location("_db_privileges_under_test", module_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(spec.name, None)
+    return module
+
+
+def _load_create_dast_session_module():
+    module_path = Path("ops/container/create_dast_session.py")
+    spec = importlib.util.spec_from_file_location("_create_dast_session_under_test", module_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(spec.name, None)
+    return module
+
+
+def test_runtime_privilege_verifier_quotes_create_probe_table_name():
+    db_privileges = _load_db_privileges_module()
+    probe_table = "sitbank_privilege_probe_deadbeef"
+
+    create_probe_table_name = db_privileges._create_probe_table_name(probe_table)
+    qualified_create_probe = db_privileges._qualified_table_name(
+        "public",
+        create_probe_table_name,
+    )
+
+    assert create_probe_table_name == "sitbank_privilege_probe_deadbeef_create"
+    assert qualified_create_probe == '"public"."sitbank_privilege_probe_deadbeef_create"'
+    assert '"sitbank_privilege_probe_deadbeef"_create' not in qualified_create_probe
+
+    source = Path("app/ops/db_privileges.py").read_text(encoding="utf-8")
+    assert "_qualified_table_name(schema, create_probe_table_name)" in source
+    assert "_quote_identifier(probe_table)}_create" not in source
+    for privilege_probe in (
+        '"CREATE TABLE"',
+        '"ALTER TABLE"',
+        '"DROP TABLE"',
+        '"CREATE EXTENSION"',
+    ):
+        assert privilege_probe in source
+
+
+def test_dast_session_creator_requires_loopback_or_explicit_smoke_host():
+    create_dast_session = _load_create_dast_session_module()
+
+    create_dast_session.DastClient("http://127.0.0.1:5000")
+    create_dast_session.DastClient("http://localhost:5000")
+    create_dast_session.DastClient(
+        "http://sitbank-smoke:5000",
+        allowed_hosts={"sitbank-smoke"},
+    )
+
+    with pytest.raises(ValueError, match="host is not allowed"):
+        create_dast_session.DastClient("http://sitbank-smoke:5000")
+
+    with pytest.raises(ValueError, match="host is not allowed"):
+        create_dast_session.DastClient(
+            "http://unexpected-smoke:5000",
+            allowed_hosts={"sitbank-smoke"},
+        )
+
+
 def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypatch):
     _set_deployment_values(monkeypatch)
 
@@ -57,6 +133,7 @@ def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypa
     assert "SECRET_KEY" not in environment
     assert secrets["secret_key"] == DEPLOYMENT_VALUES["PROD_SECRET_KEY"]
     assert secrets["database_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_URL"]
+    assert secrets["database_migration_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_MIGRATION_URL"]
     assert '"2026-06":"MjIy' in secrets["session_hmac_keys_json"]
 
 
@@ -75,6 +152,7 @@ def test_container_bundle_accepts_staging_prefix(monkeypatch):
     assert environment["SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06"
     assert secrets["secret_key"] == DEPLOYMENT_VALUES["PROD_SECRET_KEY"]
     assert secrets["database_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_URL"]
+    assert secrets["database_migration_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_MIGRATION_URL"]
 
 
 def test_deployment_profiles_keep_production_and_staging_isolated(monkeypatch):
@@ -169,6 +247,7 @@ def test_environment_only_bundle_does_not_export_long_lived_secrets(
 ):
     _set_deployment_values(monkeypatch)
     for name in (
+        "PROD_DATABASE_MIGRATION_URL",
         "PROD_DATABASE_URL",
         "PROD_MFA_AES256_GCM_KEY_B64",
         "PROD_PASSWORD_PEPPER_B64",
@@ -196,6 +275,7 @@ def test_environment_only_bundle_accepts_staging_prefix(monkeypatch, tmp_path):
         "staging.sitbank.example",
     )
     for name in (
+        "STAGING_DATABASE_MIGRATION_URL",
         "STAGING_DATABASE_URL",
         "STAGING_MFA_AES256_GCM_KEY_B64",
         "STAGING_PASSWORD_PEPPER_B64",
@@ -329,13 +409,42 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
         for name, value in app["environment"].items()
         if name.endswith("_FILE")
     )
+    assert "DATABASE_MIGRATION_URL_FILE" not in app["environment"]
     assert "/app/redis_compatibility_check.py:ro" in smoke_test
     assert "python /app/redis_compatibility_check.py" in smoke_test
+    assert "ci_owner" in smoke_test
+    assert "ci_app" in smoke_test
+    assert "CREATE ROLE ci_owner" in smoke_test
+    assert "CREATE ROLE ci_app" in smoke_test
+    assert "Owner role exists: yes" in smoke_test
+    assert "Runtime role exists: yes" in smoke_test
+    assert "Owner connection test: passed" in smoke_test
+    assert "Runtime connection test: passed" in smoke_test
+    assert "DATABASE_MIGRATION_URL_FILE" in smoke_test
+    assert "docker_bind_source" in smoke_test
+    assert "docker network create" in smoke_test
+    assert '--network "${network_name}"' in smoke_test
+    assert "host.docker.internal" not in smoke_test
+    assert "postgresql+psycopg2://ci_app:ci-app-password@%s:5432/ci" in smoke_test
+    assert "postgresql+psycopg2://ci_owner:ci-owner-password@%s:5432/ci" in smoke_test
+    assert "redis://:ci-password@%s:6379/15" in smoke_test
+    assert '"${postgres_container}"' in smoke_test
+    assert '"${redis_container}"' in smoke_test
+    assert '"${secrets_mount_source}:/run/secrets:ro"' in smoke_test
+    assert '"${config_mount_source}:/run/config:ro"' in smoke_test
+    assert '"${work_dir}/secrets:/run/secrets:ro"' not in smoke_test
+    assert '"${work_dir}/secrets/database_migration_url"' in smoke_test
+    assert ':/run/secrets/database_migration_url:ro' not in smoke_test
+    assert "verify-runtime-db-privileges" in smoke_test
     assert "/redis-check.py" not in smoke_test
-    assert "--publish 127.0.0.1::5432" in smoke_test
-    assert "--publish 127.0.0.1::6379" in smoke_test
-    assert "wait_for_healthy smoke-postgres" in smoke_test
-    assert "wait_for_healthy smoke-redis" in smoke_test
+    assert "--publish 127.0.0.1::5432" not in smoke_test
+    assert "--publish 127.0.0.1::6379" not in smoke_test
+    assert 'wait_for_healthy "${postgres_container}"' in smoke_test
+    assert 'wait_for_healthy "${redis_container}"' in smoke_test
+    assert "wait_for_app_from_smoke_network" in smoke_test
+    assert 'dast_base_url="http://${app_container}:5000"' in smoke_test
+    assert '--base-url "${dast_base_url}"' in smoke_test
+    assert '--allow-host "${app_container}"' in smoke_test
     assert "dump_container_diagnostics" in smoke_test
     assert "RUN_ZAP_DAST" in smoke_test
     assert "zaproxy/zap-stable:2.17.0@sha256:" in smoke_test
@@ -368,6 +477,7 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert staging_app["cap_drop"] == ["ALL"]
     assert "no-new-privileges:true" in staging_app["security_opt"]
     assert staging_app["env_file"] == ["/etc/sitbank-staging/container.env"]
+    assert "DATABASE_MIGRATION_URL_FILE" not in staging_app["environment"]
     assert all(
         volume["source"].startswith("/etc/sitbank-staging/")
         for volume in staging_app["volumes"]
@@ -378,6 +488,21 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     )
     assert staging_services["postgres"]["container_name"] == (
         "sitbank-staging-postgres"
+    )
+    assert staging_services["postgres"]["environment"]["POSTGRES_USER"] == "sitbank_owner"
+    assert (
+        staging_services["postgres"]["environment"]["POSTGRES_PASSWORD_FILE"]
+        == "/run/secrets/postgres_owner_password"
+    )
+    assert {secret["source"] if isinstance(secret, dict) else secret for secret in staging_services["postgres"]["secrets"]} == {
+        "postgres_owner_password",
+        "postgres_app_password",
+    }
+    assert any(
+        volume["source"]
+        == "/etc/sitbank-staging/postgres/init-sitbank-staging-roles.sh"
+        for volume in staging_services["postgres"]["volumes"]
+        if isinstance(volume, dict)
     )
     assert staging_services["redis"]["container_name"] == "sitbank-staging-redis"
     assert "ports" not in staging_services["postgres"]
@@ -412,10 +537,14 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "postgres_app_password" in deploy_script
     assert "postgres_owner_password" in deploy_script
     assert "verify-runtime-db-privileges" in deploy_script
+    assert "DATABASE_MIGRATION_URL must not be configured for the runtime app" in Path(
+        "app/ops/commands.py"
+    ).read_text(encoding="utf-8")
     assert "logs --no-color --tail 80 app" in deploy_script
     assert "runuser -u sitbank-container" in deploy_script
     assert "cannot traverse secret directory" in deploy_script
     assert '"${config_root}/secrets"' in bootstrap
+    assert "init-sitbank-staging-roles.sh" in bootstrap
     assert '-g "${CONTAINER_GID}" -m 0750' in bootstrap
 
     app_python = "\n".join(
@@ -503,7 +632,22 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         assert checkout["with"]["ref"] == (
             "${{ needs.resolve-source.outputs.source_sha }}"
         )
-    trusted_jobs = ("release-verify", "deploy-staging", "deploy-production")
+    release_trusted_checkout = next(
+        step
+        for step in workflow["jobs"]["release-verify"]["steps"]
+        if step["name"] == "Check out trusted workflow repository state"
+    )
+    assert release_trusted_checkout["with"]["ref"] == "${{ github.workflow_sha }}"
+    release_candidate_checkout = next(
+        step
+        for step in workflow["jobs"]["release-verify"]["steps"]
+        if step["name"] == "Check out candidate source"
+    )
+    assert release_candidate_checkout["with"]["ref"] == (
+        "${{ needs.publish.outputs.revision }}"
+    )
+    assert release_candidate_checkout["with"]["path"] == "candidate-source"
+    trusted_jobs = ("deploy-staging", "deploy-production")
     for job_name in trusted_jobs:
         checkout = next(
             step
@@ -531,6 +675,17 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         step
         for step in workflow["jobs"]["release-verify"]["steps"]
         if step["name"] == "Smoke-test and DAST-scan the exact published digest"
+    )
+    release_compose_step = next(
+        step
+        for step in workflow["jobs"]["release-verify"]["steps"]
+        if step["name"] == "Validate production and staging Compose models for the exact digest"
+    )
+    assert release_compose_step["run"] == (
+        'bash candidate-source/ops/container/validate-compose.sh "${SITBANK_IMAGE}"'
+    )
+    assert release_smoke_step["run"] == (
+        'bash candidate-source/ops/container/smoke-test.sh "${IMAGE}"'
     )
     release_dast_policy = (
         "${{ github.event_name != 'workflow_dispatch' || inputs.run_dast == true }}"
@@ -697,6 +852,8 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert workflow_text.count(
         "ref: ${{ needs.resolve-source.outputs.source_sha }}"
     ) == 2
+    assert "ref: ${{ needs.publish.outputs.revision }}" in workflow_text
+    assert "candidate-source/ops/container/smoke-test.sh" in workflow_text
     assert "RELEASE_SHA: ${{ github.sha }}" not in workflow_text
     assert "SITBANK_SECRET_KEY" not in workflow_text
     assert "STAGING_SECRET_KEY" not in workflow_text
@@ -979,7 +1136,8 @@ def test_migration_baseline_and_existing_database_runbook_are_present():
     assert "WenJiangggg/SITBank" in readme
     assert "ghcr.io/wenjiangggg/sitbank@sha256:<digest>" in readme
     assert "sitbank_db" in readme
-    assert "sitbank_user" in readme
+    assert "sitbank_owner" in readme
+    assert "sitbank_app" in readme
     assert "sitbank-database-cutover prepare" in readme
 
 

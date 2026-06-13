@@ -13,21 +13,22 @@ import pyotp
 
 
 class DastClient:
-    def __init__(self, base_url: str) -> None:
+    def __init__(self, base_url: str, *, allowed_hosts: set[str] | None = None) -> None:
         parsed = urllib.parse.urlsplit(base_url)
+        permitted_hosts = {"127.0.0.1", "localhost"} | (allowed_hosts or set())
         if (
             parsed.scheme != "http"
-            or parsed.hostname not in {"127.0.0.1", "localhost"}
+            or parsed.hostname not in permitted_hosts
             or parsed.username
             or parsed.password
             or parsed.query
             or parsed.fragment
         ):
-            raise ValueError("DAST base URL must be loopback HTTP")
+            raise ValueError("DAST base URL host is not allowed")
         self.base_url = base_url.rstrip("/")
         self.csrf_referrer = urllib.parse.urlunsplit(
-            # The smoke test connects over loopback HTTP but sets X-Forwarded-Proto=https
-            # to exercise production proxy behavior. Flask-WTF SSL-strict CSRF checks
+            # The smoke test connects over HTTP but sets X-Forwarded-Proto=https to
+            # exercise production proxy behavior. Flask-WTF SSL-strict CSRF checks
             # therefore require a same-origin HTTPS Referer.
             ("https", parsed.netloc, "/", "", "")
         )
@@ -91,8 +92,12 @@ class DastClient:
                 self.cookies[name] = morsel.value
 
 
-def create_authenticated_cookie(base_url: str) -> str:
-    client = DastClient(base_url)
+def create_authenticated_cookie(
+    base_url: str,
+    *,
+    allowed_hosts: set[str] | None = None,
+) -> str:
+    client = DastClient(base_url, allowed_hosts=allowed_hosts)
     suffix = secrets.token_hex(6)
     username = f"zap{suffix}"
     password = f"DAST-{secrets.token_urlsafe(24)}-A9!"
@@ -156,10 +161,19 @@ def create_authenticated_cookie(base_url: str) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", default="http://127.0.0.1:5000")
+    parser.add_argument(
+        "--allow-host",
+        action="append",
+        default=[],
+        help="additional exact HTTP host allowed for Docker-network smoke tests",
+    )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
-    cookie = create_authenticated_cookie(args.base_url)
+    cookie = create_authenticated_cookie(
+        args.base_url,
+        allowed_hosts=set(args.allow_host),
+    )
     args.output.write_text(cookie, encoding="utf-8", newline="")
     args.output.chmod(0o644)
 

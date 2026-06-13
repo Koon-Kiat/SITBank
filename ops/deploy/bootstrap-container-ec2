@@ -92,6 +92,7 @@ if [[ "${target}" == "staging" ]]; then
     linux_runtime_files+=(
         "${repo_root}/ops/nginx-proxy-headers.conf"
         "${repo_root}/ops/nginx/sitbank-staging.conf"
+        "${repo_root}/ops/postgres/init-sitbank-staging-roles.sh"
     )
 fi
 for runtime_file in "${linux_runtime_files[@]}"; do
@@ -197,6 +198,11 @@ if [[ "${target}" == "production" ]]; then
     install -o root -g root -m 0600 \
         "${repo_root}/ops/deploy/import_legacy_env.py" \
         /opt/sitbank/import_legacy_env.py
+else
+    install -d -o root -g root -m 0755 "${config_root}/postgres"
+    install -o root -g root -m 0755 \
+        "${repo_root}/ops/postgres/init-sitbank-staging-roles.sh" \
+        "${config_root}/postgres/init-sitbank-staging-roles.sh"
 fi
 install -o root -g root -m 0644 \
     "${repo_root}/${systemd_source}" \

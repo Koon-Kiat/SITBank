@@ -27,6 +27,17 @@ Session HMAC rotation must keep the old key in
 `SESSION_HMAC_ACTIVE_KEY_ID`, then remove the previous key after all sessions
 signed by it have expired.
 
+Redis session payloads are HMAC-wrapped with the session HMAC keyring before
+they are written to Redis. Tamper failures, missing signatures, unknown key
+IDs, malformed payloads, or unsupported legacy formats are logged as
+`session_integrity` security events and force a fresh unauthenticated session.
+Do not log or paste raw Redis session values during investigation.
+
+PostgreSQL uses separate `sitbank_owner` and `sitbank_app` roles in staging
+and production. `sitbank_owner` is only for Alembic migrations and ownership;
+`sitbank_app` is the Flask runtime role and must not own schema objects or have
+DDL privileges. Rotate `database_url` and `database_migration_url` separately.
+
 Staging secrets must never be copied from production. The staging deployment
 wrapper rejects identical application secret files when production secrets are
 present and requires database and Redis URLs to resolve only to the staging

@@ -13,7 +13,13 @@ from typing import Any
 from flask import Flask, current_app, flash, jsonify, redirect, request, session, url_for
 from redis import Redis
 
-from app.security.session_hmac import active_hmac_hex, matches_hmac
+from app.security.session_hmac import (
+    SessionPayloadIntegrityError,
+    active_hmac_hex,
+    matches_hmac,
+    sign_session_payload,
+    verify_session_payload,
+)
 
 try:
     from flask_session.redis import RedisSessionInterface
@@ -41,6 +47,65 @@ SESSION_END_REASON_LABELS = {
 class UuidRedisSessionInterface(RedisSessionInterface):
     def _generate_sid(self, session_id_length: int | None = None) -> str:
         return str(uuid.uuid4())
+
+    def _retrieve_session_data(self, store_id: str) -> dict | None:
+        serialized_session_data = self.client.get(store_id)
+        if not serialized_session_data:
+            return None
+
+        try:
+            payload = verify_session_payload(serialized_session_data)
+            session_data = self.serializer.decode(payload)
+        except SessionPayloadIntegrityError as exc:
+            self._handle_session_integrity_failure(store_id, exc.reason)
+            return None
+        except Exception:
+            self._handle_session_integrity_failure(store_id, "malformed_payload")
+            return None
+
+        if not isinstance(session_data, dict):
+            self._handle_session_integrity_failure(store_id, "malformed_payload")
+            return None
+        return session_data
+
+    def _upsert_session(self, session_lifetime, session, store_id: str) -> None:
+        serialized_session_data = self.serializer.encode(session)
+        signed_session_data = sign_session_payload(serialized_session_data)
+        self.client.set(
+            name=store_id,
+            value=signed_session_data,
+            ex=int(session_lifetime.total_seconds()),
+        )
+
+    def _handle_session_integrity_failure(self, store_id: str, reason: str) -> None:
+        session_id = self._session_id_from_store_id(store_id)
+        store_ref = active_hmac_hex(f"session-store:{session_id or store_id}", length=16)
+        self.client.delete(store_id)
+        current_app.logger.warning(
+            "session_integrity_failure reason=%s store_ref=%s",
+            reason,
+            store_ref,
+        )
+        try:
+            from app.security.audit import audit_event
+
+            audit_event(
+                "session_integrity",
+                "failure",
+                metadata={"reason": reason, "store_ref": store_ref},
+                session_id=session_id or None,
+            )
+        except Exception as exc:
+            current_app.logger.warning(
+                "session_integrity_audit_failed reason=%s error=%s",
+                reason,
+                type(exc).__name__,
+            )
+
+    def _session_id_from_store_id(self, store_id: str) -> str:
+        if store_id.startswith(self.key_prefix):
+            return store_id[len(self.key_prefix) :]
+        return ""
 
 
 def install_uuid_redis_sessions(app: Flask, redis_client: Redis) -> None:

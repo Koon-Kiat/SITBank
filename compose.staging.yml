@@ -7,16 +7,21 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_DB: sitbank_staging
-      POSTGRES_USER: sitbank_staging
-      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      POSTGRES_USER: sitbank_owner
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_owner_password
     secrets:
-      - postgres_password
+      - postgres_owner_password
+      - postgres_app_password
     volumes:
       - sitbank-staging-postgres-data:/var/lib/postgresql/data
+      - type: bind
+        source: /etc/sitbank-staging/postgres/init-sitbank-staging-roles.sh
+        target: /docker-entrypoint-initdb.d/10-sitbank-roles.sh
+        read_only: true
     healthcheck:
       test:
         - CMD-SHELL
-        - pg_isready --username sitbank_staging --dbname sitbank_staging
+        - pg_isready --username sitbank_owner --dbname sitbank_staging
       interval: 5s
       timeout: 5s
       retries: 12
@@ -164,14 +169,18 @@ secrets:
     file: /etc/sitbank-staging/secrets/session_hmac_keys_json
   database_url:
     file: /etc/sitbank-staging/secrets/database_url
+  database_migration_url:
+    file: /etc/sitbank-staging/secrets/database_migration_url
   redis_url:
     file: /etc/sitbank-staging/secrets/redis_url
   mfa_aes256_gcm_key_b64:
     file: /etc/sitbank-staging/secrets/mfa_aes256_gcm_key_b64
   password_pepper_b64:
     file: /etc/sitbank-staging/secrets/password_pepper_b64
-  postgres_password:
-    file: /etc/sitbank-staging/secrets/postgres_password
+  postgres_owner_password:
+    file: /etc/sitbank-staging/secrets/postgres_owner_password
+  postgres_app_password:
+    file: /etc/sitbank-staging/secrets/postgres_app_password
   redis_conf:
     file: /etc/sitbank-staging/secrets/redis.conf
 
