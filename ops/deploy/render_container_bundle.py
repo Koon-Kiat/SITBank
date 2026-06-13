@@ -11,6 +11,7 @@ from pathlib import Path
 
 
 SECRET_INPUTS = {
+    "DATABASE_MIGRATION_URL": "database_migration_url",
     "DATABASE_URL": "database_url",
     "MFA_AES256_GCM_KEY_B64": "mfa_aes256_gcm_key_b64",
     "PASSWORD_PEPPER_B64": "password_pepper_b64",

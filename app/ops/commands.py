@@ -12,6 +12,7 @@ from app.extensions import db
 from app.security.fido_mds import validate_fido_metadata_config
 from app.security.passwords import validate_common_password_dictionary, validate_password_hash_config
 from app.security.session_hmac import validate_session_hmac_config
+from app.ops.db_privileges import verify_runtime_database_privileges
 
 
 def register_ops_commands(app: Flask) -> None:
@@ -89,6 +90,8 @@ def register_ops_commands(app: Flask) -> None:
             failures.append("PASSWORD_PBKDF2_ITERATIONS must be 600000 or higher")
         if app.config.get("APP_ENV") != "production":
             failures.append("APP_ENV must be production")
+        if app.config.get("SQLALCHEMY_MIGRATION_DATABASE_URI"):
+            failures.append("DATABASE_MIGRATION_URL must not be configured for the runtime app")
         if len(str(app.config.get("WTF_CSRF_SECRET_KEY", ""))) < 32:
             failures.append("WTF_CSRF_SECRET_KEY must be at least 32 characters")
         if int(app.config.get("WEBAUTHN_REQUIRED_CREDENTIALS", 0)) < 2:
@@ -127,3 +130,24 @@ def register_ops_commands(app: Flask) -> None:
             raise click.ClickException("Production readiness checks failed")
 
         click.echo("Production readiness checks passed")
+
+    @app.cli.command("verify-runtime-db-privileges")
+    def verify_runtime_db_privileges() -> None:
+        """Verify the runtime database role cannot mutate schema objects."""
+        runtime_url = str(app.config.get("SQLALCHEMY_DATABASE_URI") or "")
+        migration_url = str(app.config.get("SQLALCHEMY_MIGRATION_DATABASE_URI") or "")
+        try:
+            result = verify_runtime_database_privileges(
+                runtime_url=runtime_url,
+                migration_url=migration_url,
+            )
+        except Exception as exc:
+            raise click.ClickException(str(exc)) from exc
+
+        click.echo(
+            "Runtime database privilege checks passed: "
+            f"runtime_role={result.runtime_role} "
+            f"migration_role={result.migration_role} "
+            f"probe_table={result.probe_table} "
+            f"extension_probe={result.extension_probe}"
+        )
