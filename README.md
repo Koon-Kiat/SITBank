@@ -168,6 +168,14 @@ for Alembic migrations and database privilege verification, and must use the
 `DATABASE_MIGRATION_URL_FILE`; the deployment wrapper bind-mounts it only for
 `flask db upgrade` and `flask verify-runtime-db-privileges`.
 
+Both staging and production deployments require the root-managed
+`database_migration_url` file before deployment begins. A missing file is not
+generated or copied from `database_url`: doing so would silently give the
+long-running application role schema-owner privileges. The one-shot migration
+and privilege-check containers receive the owner URL through an explicit
+read-only bind mount; the long-running application container never receives
+it.
+
 PostgreSQL ownership is split by role:
 
 - `sitbank_owner` owns `sitbank_db`/`sitbank_staging`, the `public` schema, and
@@ -800,7 +808,37 @@ database_url = postgresql+psycopg2://sitbank_app:<runtime-password>@127.0.0.1:54
 database_migration_url = postgresql+psycopg2://sitbank_owner:<owner-password>@127.0.0.1:5432/sitbank_db
 ```
 
-Prepare the cutover:
+If the production database is already named `sitbank_db` from an earlier
+container release, use the guarded in-place adoption path. First identify its
+current owner:
+
+```bash
+current_owner="$(
+  sudo -u postgres psql --no-psqlrc --tuples-only --no-align \
+    --command "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = 'sitbank_db';"
+)"
+printf 'Current owner: %s\n' "${current_owner}"
+```
+
+After confirming that this is the role used by the current production
+`database_url`, prepare the split:
+
+```bash
+sudo /usr/local/sbin/sitbank-database-cutover adopt-existing \
+  "${current_owner}" \
+  /root/sitbank-db-owner-password \
+  /root/sitbank-db-app-password
+```
+
+This path creates a protected backup, briefly stops the current service,
+transfers ownership to `sitbank_owner`, grants least-privilege runtime access
+to `sitbank_app`, and restarts the previous service while deployment is
+pending. The former role temporarily retains runtime DML access so production
+does not remain offline while the verified deployment runs. Successful
+deployment revokes that temporary access and removes the former role;
+deployment failure restores its ownership automatically.
+
+For a first cutover where the database still has its old name, use:
 
 ```bash
 sudo /usr/local/sbin/sitbank-database-cutover prepare \

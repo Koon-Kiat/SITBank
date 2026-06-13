@@ -307,7 +307,7 @@ compose() {
         --project-name "${COMPOSE_PROJECT}" --file "${COMPOSE_FILE}" "$@"
 }
 
-staging_migration_run() {
+migration_run() {
     compose "${image}" run --rm --no-deps \
         --env DATABASE_MIGRATION_URL_FILE=/run/secrets/database_migration_url \
         --volume "${SECRET_DIR}/database_migration_url:/run/secrets/database_migration_url:ro" \
@@ -587,6 +587,12 @@ fi
 for secret_file in "${required_secrets[@]}"; do
     if [[ ! -r "${SECRET_DIR}/${secret_file}" \
         || -L "${SECRET_DIR}/${secret_file}" ]]; then
+        if [[ "${target}" == "production" \
+            && "${secret_file}" == "database_migration_url" ]]; then
+            echo "Missing required root-managed secret file: database_migration_url" >&2
+            echo "Complete the production database role split and install the owner-role migration URL before retrying deployment." >&2
+            exit 1
+        fi
         echo "Missing required root-managed secret file: ${secret_file}" >&2
         exit 1
     fi
@@ -604,15 +610,10 @@ prepare_dependencies
 
 compose "${image}" run --rm --no-deps app \
     python -m flask --app wsgi:app production-check
-if [[ "${target}" == "staging" ]]; then
-    staging_migration_run \
-        python -m flask --app wsgi:app db upgrade
-    staging_migration_run \
-        python -m flask --app wsgi:app verify-runtime-db-privileges
-else
-    compose "${image}" run --rm --no-deps app \
-        python -m flask --app wsgi:app db upgrade
-fi
+migration_run \
+    python -m flask --app wsgi:app db upgrade
+migration_run \
+    python -m flask --app wsgi:app verify-runtime-db-privileges
 
 if [[ "${target}" == "production" \
     && "${LEGACY_SERVICE:-"-"}" != "-" ]] \

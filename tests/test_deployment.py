@@ -372,6 +372,9 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     runtime_script = Path("ops/deploy/sitbank-container-runtime").read_text(
         encoding="utf-8"
     )
+    database_cutover = Path("ops/deploy/sitbank-database-cutover").read_text(
+        encoding="utf-8"
+    )
     compose = yaml.safe_load(compose_text)
     app = compose["services"]["app"]
     staging_compose = yaml.safe_load(staging_compose_text)
@@ -537,9 +540,25 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "postgres_app_password" in deploy_script
     assert "postgres_owner_password" in deploy_script
     assert "verify-runtime-db-privileges" in deploy_script
+    assert "staging_migration_run" not in deploy_script
+    assert deploy_script.count("migration_run \\") == 2
+    assert (
+        "Complete the production database role split and install the "
+        "owner-role migration URL before retrying deployment."
+        in deploy_script
+    )
     assert "DATABASE_MIGRATION_URL must not be configured for the runtime app" in Path(
         "app/ops/commands.py"
     ).read_text(encoding="utf-8")
+    assert "adopt-existing)" in database_cutover
+    assert "CUTOVER_MODE=adopt-existing" in database_cutover
+    assert 'SOURCE_DATABASE=${TARGET_DATABASE}' in database_cutover
+    assert 'GRANT CONNECT ON DATABASE "${TARGET_DATABASE}" TO "${source_role}";' in (
+        database_cutover
+    )
+    assert 'DROP OWNED BY \\"${SOURCE_ROLE}\\";' in database_cutover
+    assert "restart_previous_services" in database_cutover
+    assert "Refusing to adopt a privileged PostgreSQL source role" in database_cutover
     assert "logs --no-color --tail 80 app" in deploy_script
     assert "runuser -u sitbank-container" in deploy_script
     assert "cannot traverse secret directory" in deploy_script
@@ -916,7 +935,6 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "sitbank-deploy" in bootstrap
     assert "sitbank-container.service" in bootstrap
     assert "sitbank-staging-container.service" in bootstrap
-
     readme = Path("README.md").read_text(encoding="utf-8")
     assert "Manual pre-merge staging:" in readme
     assert "run trusted workflow from main" in readme
@@ -927,6 +945,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "Manual production deployment is disabled." in readme
     assert "Production never skips disabled, skipped, or failed staging." in readme
     assert "Feature-branch workflow and deployment scripts" in readme
+    assert "adopt-existing" in readme
 
 
 def test_trivy_exception_is_narrow_documented_and_temporary():
