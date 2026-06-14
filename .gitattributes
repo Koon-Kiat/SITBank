@@ -8,6 +8,7 @@ Dockerfile text eol=lf
 *.service text eol=lf
 
 ops/deploy/bootstrap-container-ec2 text eol=lf
+ops/deploy/sitbank-container-bootstrap text eol=lf
 ops/deploy/sitbank-container-deploy text eol=lf
 ops/deploy/sitbank-container-runtime text eol=lf
 ops/deploy/sitbank-database-cutover text eol=lf

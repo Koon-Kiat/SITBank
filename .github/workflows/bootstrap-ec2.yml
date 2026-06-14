@@ -1,0 +1,329 @@
+name: Bootstrap EC2 from trusted main
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: EC2 environment whose root-owned deployment files should be refreshed.
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+
+permissions: {}
+
+concurrency:
+  group: bootstrap-ec2-${{ inputs.target_environment }}
+  cancel-in-progress: false
+
+jobs:
+  validate-request:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Require a trusted main dispatch
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+            echo "::error::EC2 bootstrap must be dispatched with 'Use workflow from' set to main."
+            exit 1
+          fi
+          if [[ ! "${GITHUB_WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::GitHub did not provide a valid trusted workflow commit."
+            exit 1
+          fi
+
+  bootstrap-staging:
+    if: inputs.target_environment == 'staging'
+    needs: validate-request
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: staging
+      url: https://${{ vars.STAGING_PUBLIC_HOST }}
+    env:
+      TARGET: staging
+      TRUSTED_SHA: ${{ github.workflow_sha }}
+      REMOTE_HOST: ${{ vars.STAGING_EC2_HOST }}
+      REMOTE_PORT: ${{ vars.STAGING_EC2_PORT }}
+      REMOTE_USER: ${{ vars.STAGING_EC2_DEPLOY_USER }}
+    steps:
+      - name: Check out trusted main workflow commit
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.workflow_sha }}
+
+      - name: Verify staging bootstrap configuration
+        env:
+          SSH_PRIVATE_KEY_B64: ${{ secrets.STAGING_EC2_SSH_PRIVATE_KEY_B64 }}
+          SSH_KNOWN_HOSTS: ${{ secrets.STAGING_EC2_KNOWN_HOSTS }}
+        shell: bash
+        run: |
+          required=(
+            REMOTE_HOST
+            REMOTE_PORT
+            REMOTE_USER
+            SSH_PRIVATE_KEY_B64
+            SSH_KNOWN_HOSTS
+          )
+          missing=0
+          for name in "${required[@]}"; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Missing required staging bootstrap setting: ${name}"
+              missing=1
+            fi
+          done
+          if [[ ! "${REMOTE_PORT}" =~ ^[0-9]+$ ]]; then
+            echo "::error::STAGING_EC2_PORT must be numeric."
+            missing=1
+          fi
+          exit "${missing}"
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+
+      - name: Create and sign trusted main bootstrap archive
+        shell: bash
+        run: |
+          umask 077
+          archive="bootstrap-${TARGET}-${TRUSTED_SHA}.tar.gz"
+          git archive \
+            --format=tar.gz \
+            --add-virtual-file=".sitbank-bootstrap-commit:${TRUSTED_SHA}" \
+            --output="${archive}" \
+            HEAD
+          cosign sign-blob --yes \
+            --bundle "${archive}.sigstore.json" \
+            "${archive}"
+
+      - name: Configure verified SSH
+        env:
+          SSH_PRIVATE_KEY_B64: ${{ secrets.STAGING_EC2_SSH_PRIVATE_KEY_B64 }}
+          SSH_KNOWN_HOSTS: ${{ secrets.STAGING_EC2_KNOWN_HOSTS }}
+        shell: bash
+        run: |
+          umask 077
+          install -d -m 0700 ~/.ssh
+          if [[ ! "${SSH_PRIVATE_KEY_B64}" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]; then
+            echo "::error::STAGING_EC2_SSH_PRIVATE_KEY_B64 is not valid single-line Base64."
+            exit 1
+          fi
+          if ! printf '%s' "${SSH_PRIVATE_KEY_B64}" \
+              | base64 --decode > ~/.ssh/bootstrap_key; then
+            echo "::error::STAGING_EC2_SSH_PRIVATE_KEY_B64 could not be decoded."
+            exit 1
+          fi
+          chmod 0600 ~/.ssh/bootstrap_key
+          if ! ssh-keygen -y -P "" -f ~/.ssh/bootstrap_key >/dev/null 2>&1; then
+            echo "::error::Decoded staging SSH key could not be parsed."
+            exit 1
+          fi
+          printf '%s\n' "${SSH_KNOWN_HOSTS}" \
+            | tr -d '\r' > ~/.ssh/known_hosts
+          chmod 0600 ~/.ssh/known_hosts
+          if [[ ! -s ~/.ssh/known_hosts ]]; then
+            echo "::error::STAGING_EC2_KNOWN_HOSTS is empty."
+            exit 1
+          fi
+
+      - name: Upload signed bootstrap archive
+        shell: bash
+        run: |
+          archive="bootstrap-${TARGET}-${TRUSTED_SHA}.tar.gz"
+          scp -P "${REMOTE_PORT}" -i ~/.ssh/bootstrap_key \
+            -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+            "${archive}" "${archive}.sigstore.json" \
+            "${REMOTE_USER}@${REMOTE_HOST}:incoming/"
+
+      - name: Install trusted staging deployment files
+        shell: bash
+        run: |
+          ssh -p "${REMOTE_PORT}" -i ~/.ssh/bootstrap_key \
+            -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+            "${REMOTE_USER}@${REMOTE_HOST}" \
+            "sudo /usr/local/sbin/sitbank-container-bootstrap '${TARGET}' '${TRUSTED_SHA}'"
+
+      - name: Verify installed staging wrapper hash
+        shell: bash
+        run: |
+          expected_hash="$(
+            sha256sum ops/deploy/sitbank-container-deploy | awk '{print $1}'
+          )"
+          remote_output="$(
+            ssh -p "${REMOTE_PORT}" -i ~/.ssh/bootstrap_key \
+              -o BatchMode=yes -o IdentitiesOnly=yes \
+              -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+              "${REMOTE_USER}@${REMOTE_HOST}" \
+              "sha256sum /usr/local/sbin/sitbank-container-deploy"
+          )"
+          remote_hash="${remote_output%% *}"
+          if [[ "${remote_hash}" != "${expected_hash}" ]]; then
+            echo "::error::Installed staging deployment wrapper hash does not match trusted main."
+            exit 1
+          fi
+          echo "EC2 staging deployment wrapper is current."
+
+      - name: Remove local bootstrap credentials and archive
+        if: always()
+        shell: bash
+        run: |
+          rm -f -- \
+            ~/.ssh/bootstrap_key \
+            "bootstrap-${TARGET}-${TRUSTED_SHA}.tar.gz" \
+            "bootstrap-${TARGET}-${TRUSTED_SHA}.tar.gz.sigstore.json"
+
+  bootstrap-production:
+    if: inputs.target_environment == 'production'
+    needs: validate-request
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: production
+      url: https://${{ vars.PROD_PUBLIC_HOST }}
+    env:
+      TARGET: production
+      TRUSTED_SHA: ${{ github.workflow_sha }}
+      REMOTE_HOST: ${{ vars.PROD_EC2_HOST }}
+      REMOTE_PORT: ${{ vars.PROD_EC2_PORT }}
+      REMOTE_USER: ${{ vars.PROD_EC2_DEPLOY_USER }}
+    steps:
+      - name: Check out trusted main workflow commit
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.workflow_sha }}
+
+      - name: Verify production bootstrap configuration
+        env:
+          SSH_PRIVATE_KEY_B64: ${{ secrets.PROD_EC2_SSH_PRIVATE_KEY_B64 }}
+          SSH_KNOWN_HOSTS: ${{ secrets.PROD_EC2_KNOWN_HOSTS }}
+        shell: bash
+        run: |
+          required=(
+            REMOTE_HOST
+            REMOTE_PORT
+            REMOTE_USER
+            SSH_PRIVATE_KEY_B64
+            SSH_KNOWN_HOSTS
+          )
+          missing=0
+          for name in "${required[@]}"; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Missing required production bootstrap setting: ${name}"
+              missing=1
+            fi
+          done
+          if [[ ! "${REMOTE_PORT}" =~ ^[0-9]+$ ]]; then
+            echo "::error::PROD_EC2_PORT must be numeric."
+            missing=1
+          fi
+          exit "${missing}"
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+
+      - name: Create and sign trusted main bootstrap archive
+        shell: bash
+        run: |
+          umask 077
+          archive="bootstrap-${TARGET}-${TRUSTED_SHA}.tar.gz"
+          git archive \
+            --format=tar.gz \
+            --add-virtual-file=".sitbank-bootstrap-commit:${TRUSTED_SHA}" \
+            --output="${archive}" \
+            HEAD
+          cosign sign-blob --yes \
+            --bundle "${archive}.sigstore.json" \
+            "${archive}"
+
+      - name: Configure verified SSH
+        env:
+          SSH_PRIVATE_KEY_B64: ${{ secrets.PROD_EC2_SSH_PRIVATE_KEY_B64 }}
+          SSH_KNOWN_HOSTS: ${{ secrets.PROD_EC2_KNOWN_HOSTS }}
+        shell: bash
+        run: |
+          umask 077
+          install -d -m 0700 ~/.ssh
+          if [[ ! "${SSH_PRIVATE_KEY_B64}" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]; then
+            echo "::error::PROD_EC2_SSH_PRIVATE_KEY_B64 is not valid single-line Base64."
+            exit 1
+          fi
+          if ! printf '%s' "${SSH_PRIVATE_KEY_B64}" \
+              | base64 --decode > ~/.ssh/bootstrap_key; then
+            echo "::error::PROD_EC2_SSH_PRIVATE_KEY_B64 could not be decoded."
+            exit 1
+          fi
+          chmod 0600 ~/.ssh/bootstrap_key
+          if ! ssh-keygen -y -P "" -f ~/.ssh/bootstrap_key >/dev/null 2>&1; then
+            echo "::error::Decoded production SSH key could not be parsed."
+            exit 1
+          fi
+          printf '%s\n' "${SSH_KNOWN_HOSTS}" \
+            | tr -d '\r' > ~/.ssh/known_hosts
+          chmod 0600 ~/.ssh/known_hosts
+          if [[ ! -s ~/.ssh/known_hosts ]]; then
+            echo "::error::PROD_EC2_KNOWN_HOSTS is empty."
+            exit 1
+          fi
+
+      - name: Upload signed bootstrap archive
+        shell: bash
+        run: |
+          archive="bootstrap-${TARGET}-${TRUSTED_SHA}.tar.gz"
+          scp -P "${REMOTE_PORT}" -i ~/.ssh/bootstrap_key \
+            -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+            "${archive}" "${archive}.sigstore.json" \
+            "${REMOTE_USER}@${REMOTE_HOST}:incoming/"
+
+      - name: Install trusted production deployment files
+        shell: bash
+        run: |
+          ssh -p "${REMOTE_PORT}" -i ~/.ssh/bootstrap_key \
+            -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+            "${REMOTE_USER}@${REMOTE_HOST}" \
+            "sudo /usr/local/sbin/sitbank-container-bootstrap '${TARGET}' '${TRUSTED_SHA}'"
+
+      - name: Verify installed production wrapper hash
+        shell: bash
+        run: |
+          expected_hash="$(
+            sha256sum ops/deploy/sitbank-container-deploy | awk '{print $1}'
+          )"
+          remote_output="$(
+            ssh -p "${REMOTE_PORT}" -i ~/.ssh/bootstrap_key \
+              -o BatchMode=yes -o IdentitiesOnly=yes \
+              -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+              "${REMOTE_USER}@${REMOTE_HOST}" \
+              "sha256sum /usr/local/sbin/sitbank-container-deploy"
+          )"
+          remote_hash="${remote_output%% *}"
+          if [[ "${remote_hash}" != "${expected_hash}" ]]; then
+            echo "::error::Installed production deployment wrapper hash does not match trusted main."
+            exit 1
+          fi
+          echo "EC2 production deployment wrapper is current."
+
+      - name: Remove local bootstrap credentials and archive
+        if: always()
+        shell: bash
+        run: |
+          rm -f -- \
+            ~/.ssh/bootstrap_key \
+            "bootstrap-${TARGET}-${TRUSTED_SHA}.tar.gz" \
+            "bootstrap-${TARGET}-${TRUSTED_SHA}.tar.gz.sigstore.json"

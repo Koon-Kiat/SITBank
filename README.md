@@ -294,6 +294,70 @@ closed. After any reviewed change to the wrapper, rerun the matching EC2
 bootstrap as an administrator before enabling that environment's next
 deployment.
 
+### Trusted EC2 Bootstrap Workflow
+
+The separate **Bootstrap EC2 from trusted main** workflow refreshes root-owned
+deployment files without building or deploying an application image. It is
+manual-only and accepts one target: `staging` or `production`. Always select
+`main` under **Use workflow from**. The workflow checks out
+`github.workflow_sha`, creates an archive containing that exact trusted main
+commit, signs the archive with GitHub OIDC, uploads it with strict SSH host-key
+checking, and invokes the restricted root bootstrap wrapper. The EC2 wrapper
+verifies the exact workflow identity and commit marker before running any
+archive content, then the workflow confirms that the installed deployment
+wrapper hash matches trusted main.
+
+The selected GitHub Environment still applies its reviewers and branch
+restrictions. Staging and production continue to use separate environment
+variables, SSH keys, known-hosts entries, configuration roots, and application
+secrets. The bootstrap workflow never transmits long-lived application
+secrets and never deploys an image.
+
+Use the workflows as follows:
+
+```text
+Pull request validation:
+  PR -> tests, image checks, security gates
+
+Normal application-only release:
+  PR -> checks -> merge -> deploy staging -> deploy production
+
+Reviewed EC2 deployment/runtime change:
+  PR -> checks -> merge -> Bootstrap EC2 from trusted main
+  -> deploy staging -> deploy production
+```
+
+EC2 bootstrap content is always taken from merged, protected `main`; an
+unmerged branch can never replace root-owned deployment files. The existing
+manual candidate-staging path may deploy a candidate application image to the
+isolated staging runtime, but it still uses deployment and bootstrap logic
+from trusted `main`. Ordinary pull requests remain validation-only unless a
+maintainer explicitly starts that protected staging path. Do not use the
+bootstrap workflow to work around a failed application test, image scan,
+signature check, or deployment approval.
+
+Run the bootstrap workflow after reviewed changes to root-installed deployment
+assets, including:
+
+- `ops/deploy/sitbank-container-bootstrap`
+- `ops/deploy/sitbank-container-deploy`
+- `ops/deploy/bootstrap-container-ec2`
+- `ops/deploy/sitbank-container-runtime`
+- `ops/deploy/sitbank-database-cutover`
+- `ops/deploy/render_container_bundle.py`
+- Compose, systemd, sudoers, Nginx, or other runtime files installed by the
+  bootstrap
+
+Bootstrap is normally unnecessary for Flask application code, templates,
+static assets, tests, or Docker image-only changes unless the same change also
+modifies a root-installed deployment/runtime file.
+
+The first release containing `sitbank-container-bootstrap` is the one
+exception: perform one final administrator-run bootstrap from reviewed
+`main` to install `/usr/local/sbin/sitbank-container-bootstrap` and its narrow
+sudoers entry. After that one-time installation, future trusted bootstrap
+refreshes can use the manual workflow.
+
 ### Temporary Trivy Exception
 
 `.trivyignore` contains a narrow temporary exception for only
@@ -632,12 +696,12 @@ Set `STAGING_PUBLIC_HOST=staging-sitbank.duckdns.org`,
 staging key identifier in the GitHub `staging` environment. Enable
 `STAGING_DEPLOY_ENABLED=true` only after these checks pass.
 
-The workflow intentionally cannot update its own privileged EC2 validator.
-Whenever `ops/deploy/sitbank-container-deploy`, the Compose file, sudoers
-policy, or systemd unit changes, upload a reviewed bootstrap archive and
-reinstall those root-owned assets before enabling the next automated
-deployment. This hardening change must be installed before the first workflow
-that sends `.sigstore.json` runtime bundles.
+The deployment workflow intentionally cannot update its own privileged EC2
+validator. Use **Bootstrap EC2 from trusted main** after reviewed changes to
+the deployment wrapper, Compose file, sudoers policy, systemd unit, or other
+root-installed runtime assets. For the first release containing the restricted
+bootstrap wrapper, use the administrator-run archive procedure above once;
+subsequent refreshes use the signed manual workflow.
 
 Review `/etc/sitbank/deploy.conf`. It must contain the expected GHCR repository,
 workflow identity, public host, and exact legacy service/path supplied above.

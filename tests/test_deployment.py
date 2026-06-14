@@ -948,6 +948,124 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "adopt-existing" in readme
 
 
+def test_manual_bootstrap_workflow_uses_only_signed_trusted_main_sources():
+    workflow_path = Path(".github/workflows/bootstrap-ec2.yml")
+    workflow_text = workflow_path.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(workflow_text)
+    triggers = workflow[True]
+
+    assert workflow["name"] == "Bootstrap EC2 from trusted main"
+    assert set(triggers) == {"workflow_dispatch"}
+    dispatch = triggers["workflow_dispatch"]
+    target_input = dispatch["inputs"]["target_environment"]
+    assert target_input["required"] is True
+    assert target_input["type"] == "choice"
+    assert target_input["options"] == ["staging", "production"]
+    assert workflow["permissions"] == {}
+    assert set(workflow["jobs"]) == {
+        "validate-request",
+        "bootstrap-staging",
+        "bootstrap-production",
+    }
+
+    guard_step = workflow["jobs"]["validate-request"]["steps"][0]
+    assert "refs/heads/main" in guard_step["run"]
+    assert "GITHUB_WORKFLOW_SHA" in guard_step["run"]
+
+    for target, prefix in (("staging", "STAGING"), ("production", "PROD")):
+        job = workflow["jobs"][f"bootstrap-{target}"]
+        assert job["if"] == f"inputs.target_environment == '{target}'"
+        assert job["needs"] == "validate-request"
+        assert job["environment"]["name"] == target
+        assert job["permissions"] == {
+            "contents": "read",
+            "id-token": "write",
+        }
+        assert job["env"]["TARGET"] == target
+        assert job["env"]["TRUSTED_SHA"] == "${{ github.workflow_sha }}"
+        assert job["env"]["REMOTE_HOST"] == (
+            f"${{{{ vars.{prefix}_EC2_HOST }}}}"
+        )
+        checkout = next(
+            step
+            for step in job["steps"]
+            if step["name"] == "Check out trusted main workflow commit"
+        )
+        assert checkout["with"]["ref"] == "${{ github.workflow_sha }}"
+        assert checkout["with"]["persist-credentials"] is False
+        assert checkout["with"]["fetch-depth"] == 0
+        step_text = "\n".join(
+            str(step.get("run", "")) for step in job["steps"]
+        )
+        assert "git archive" in step_text
+        assert "--add-virtual-file" in step_text
+        assert "cosign sign-blob --yes" in step_text
+        assert "StrictHostKeyChecking=yes" in step_text
+        assert "StrictHostKeyChecking=no" not in step_text
+        assert "incoming/" in step_text
+        assert (
+            "sudo /usr/local/sbin/sitbank-container-bootstrap "
+            "'${TARGET}' '${TRUSTED_SHA}'"
+        ) in step_text
+        assert "sha256sum ops/deploy/sitbank-container-deploy" in step_text
+        assert (
+            "sha256sum /usr/local/sbin/sitbank-container-deploy"
+            in step_text
+        )
+
+    assert "pull_request:" not in workflow_text
+    assert "\npush:" not in workflow_text
+    assert "\nschedule:" not in workflow_text
+    assert "sitbank-container-deploy staging" not in workflow_text
+    assert "IMAGE_DIGEST" not in workflow_text
+    assert ":latest" not in workflow_text
+    assert "STAGING_EC2_SSH_PRIVATE_KEY_B64" in workflow_text
+    assert "PROD_EC2_SSH_PRIVATE_KEY_B64" in workflow_text
+    assert "STAGING_EC2_KNOWN_HOSTS" in workflow_text
+    assert "PROD_EC2_KNOWN_HOSTS" in workflow_text
+
+
+def test_root_bootstrap_wrapper_authenticates_and_limits_privileged_updates():
+    wrapper = Path("ops/deploy/sitbank-container-bootstrap").read_text(
+        encoding="utf-8"
+    )
+    bootstrap = Path("ops/deploy/bootstrap-container-ec2").read_text(
+        encoding="utf-8"
+    )
+    sudoers = Path("ops/sudoers/sitbank-container-deploy").read_text(
+        encoding="utf-8"
+    )
+
+    assert "TARGET TRUSTED_MAIN_SHA" in wrapper
+    assert "bootstrap-ec2.yml@refs/heads/main" in wrapper
+    assert "cosign verify-blob" in wrapper
+    assert 'trusted_sha}" =~ ^[0-9a-f]{40}$' in wrapper
+    assert ".sitbank-bootstrap-commit" in wrapper
+    assert "token.actions.githubusercontent.com" in wrapper
+    assert "Bootstrap input must be owned by" in wrapper
+    assert "Unsafe bootstrap archive member" in wrapper
+    assert "unsupported special file" in wrapper
+    assert "/var/lock/sitbank-container-deploy.lock" in wrapper
+    assert "/var/lock/sitbank-staging-container-deploy.lock" in wrapper
+    assert "An application deployment is running" in wrapper
+    assert "sitbank-container-deploy" in wrapper
+    assert "sha256sum /usr/local/sbin/sitbank-container-deploy" in wrapper
+    assert "sitbank-container-bootstrap" in bootstrap
+    assert "/usr/local/sbin/sitbank-container-bootstrap" in bootstrap
+    assert sudoers.splitlines() == [
+        (
+            "sitbank-deploy ALL=(root) NOPASSWD: "
+            "/usr/local/sbin/sitbank-container-deploy"
+        ),
+        (
+            "sitbank-deploy ALL=(root) NOPASSWD: "
+            "/usr/local/sbin/sitbank-container-bootstrap"
+        ),
+    ]
+    assert "NOPASSWD: ALL" not in sudoers
+    assert "/bin/bash" not in sudoers
+
+
 def test_trivy_exception_is_narrow_documented_and_temporary():
     trivyignore = Path(".trivyignore").read_text(encoding="utf-8")
     readme = Path("README.md").read_text(encoding="utf-8")
@@ -1039,6 +1157,7 @@ def test_every_github_action_is_pinned_to_a_full_commit_sha():
 
 def test_only_sitbank_container_deployment_units_are_active():
     assert not Path("ops/deploy/bootstrap-ec2").exists()
+    assert Path("ops/deploy/sitbank-container-bootstrap").exists()
     assert Path("ops/deploy/sitbank-container-deploy").exists()
     assert Path("ops/deploy/sitbank-container-runtime").exists()
     assert Path("ops/deploy/sitbank-database-cutover").exists()
@@ -1057,6 +1176,7 @@ def test_linux_deployment_artifacts_are_forced_to_lf_and_reject_crlf():
         Path("compose.prod.yml"),
         Path("compose.staging.yml"),
         Path("ops/deploy/bootstrap-container-ec2"),
+        Path("ops/deploy/sitbank-container-bootstrap"),
         Path("ops/deploy/sitbank-container-deploy"),
         Path("ops/deploy/sitbank-container-runtime"),
         Path("ops/deploy/sitbank-database-cutover"),
@@ -1072,6 +1192,7 @@ def test_linux_deployment_artifacts_are_forced_to_lf_and_reject_crlf():
     assert "*.conf text eol=lf" in attributes
     assert "*.service text eol=lf" in attributes
     assert "ops/deploy/bootstrap-container-ec2 text eol=lf" in attributes
+    assert "ops/deploy/sitbank-container-bootstrap text eol=lf" in attributes
     assert "ops/sudoers/* text eol=lf" in attributes
     for path in linux_files:
         assert b"\r\n" not in path.read_bytes(), f"{path} must use LF line endings"
