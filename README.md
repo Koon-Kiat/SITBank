@@ -575,9 +575,89 @@ configuration. It does not add `sitbank-deploy` to the Docker group.
 
 ### 4. Bootstrap Isolated Staging on the Existing EC2 Host
 
-Run this from the same reviewed bootstrap checkout. It installs only staging
-Compose/config/state assets plus the shared restricted wrapper; it does not
-restart or migrate production:
+Prepare the staging Nginx edge files on EC2 before running the reviewed
+bootstrap. These files are local machine state, not repository content, and
+must never be committed, copied into GitHub secrets, or included in a runtime
+bundle.
+
+Install the operator tools and create the Basic Auth file. `htpasswd` prompts
+for the password without echoing it:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y nginx certbot python3-certbot-nginx apache2-utils
+
+read -r -p "Staging Basic Auth username: " STAGING_BASIC_AUTH_USER
+sudo htpasswd -c /etc/nginx/.htpasswd-sitbank-staging \
+  "$STAGING_BASIC_AUTH_USER"
+sudo chown root:www-data /etc/nginx/.htpasswd-sitbank-staging
+sudo chmod 0640 /etc/nginx/.htpasswd-sitbank-staging
+sudo test -s /etc/nginx/.htpasswd-sitbank-staging
+unset STAGING_BASIC_AUTH_USER
+```
+
+Do not store the Basic Auth password or generated htpasswd hash in the repo.
+To rotate the staging gate later, rerun `htpasswd` on EC2 and keep the same
+`root:www-data` ownership and `0640` mode.
+
+Issue the staging certificate before installing the final HTTPS server block.
+If an HTTP-only staging Nginx site is already serving
+`staging-sitbank.duckdns.org`, the Nginx plugin is acceptable:
+
+```bash
+sudo certbot --nginx -d staging-sitbank.duckdns.org
+```
+
+For a first-time host with no staging site yet, use an ACME-only webroot site
+so production Nginx keeps running:
+
+```bash
+sudo install -d -m 0755 /var/www/certbot
+sudo tee /etc/nginx/sites-available/sitbank-staging-acme >/dev/null <<'NGINX'
+server {
+    listen 80;
+    listen [::]:80;
+    server_name staging-sitbank.duckdns.org;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+        default_type "text/plain";
+        try_files $uri =404;
+    }
+
+    location / {
+        return 404;
+    }
+}
+NGINX
+sudo ln -sfn /etc/nginx/sites-available/sitbank-staging-acme \
+  /etc/nginx/sites-enabled/sitbank-staging-acme
+sudo nginx -t
+# If validation succeeds:
+sudo systemctl reload nginx
+sudo certbot certonly --webroot \
+  -w /var/www/certbot \
+  -d staging-sitbank.duckdns.org
+sudo rm -f /etc/nginx/sites-enabled/sitbank-staging-acme
+sudo rm -f /etc/nginx/sites-available/sitbank-staging-acme
+sudo nginx -t
+# If validation succeeds:
+sudo systemctl reload nginx
+```
+
+Check renewal without changing production or deploying the app:
+
+```bash
+sudo certbot renew --dry-run
+```
+
+Run this from the same reviewed bootstrap checkout after the htpasswd file and
+certificate exist. It installs only staging Compose/config/state assets, the
+Nginx proxy header snippet, the staging HTTPS server block, and the staging
+rate-limit include. It backs up an existing staging site config, replaces it
+from the reviewed repo files, runs `nginx -t`, and reloads Nginx only after
+validation succeeds. It does not restart, migrate, publish, pull, or deploy a
+SITBank application image:
 
 ```bash
 cd /opt/sitbank-bootstrap
@@ -667,16 +747,58 @@ write(
 PY
 ```
 
-Install the staging TLS certificate before the first deployment, because the
-deployment wrapper verifies public HTTPS readiness:
+If `nginx -t` fails after a reviewed Nginx change, do not reload. The bootstrap
+keeps backups under `/var/backups/sitbank-staging`; restore the previous site
+config, validate, and reload only after validation succeeds:
+
+```bash
+sudo install -o root -g root -m 0644 \
+  /var/backups/sitbank-staging/nginx-sitbank-staging.<timestamp>.conf \
+  /etc/nginx/sites-available/sitbank-staging
+sudo nginx -t
+# If validation succeeds:
+sudo systemctl reload nginx
+```
+
+After the staging app has been deployed intentionally through the protected
+staging deployment path, verify the edge behavior:
 
 ```bash
 sudo nginx -t
-sudo systemctl reload nginx
-sudo certbot --nginx -d staging-sitbank.duckdns.org
-sudo nginx -t
-sudo systemctl reload nginx
+curl -k -I https://staging-sitbank.duckdns.org/
+
+read -r -p "Staging Basic Auth username: " STAGING_BASIC_AUTH_USER
+read -r -s -p "Staging Basic Auth password: " STAGING_BASIC_AUTH_PASSWORD
+printf '\n'
+curl -k -I -u "$STAGING_BASIC_AUTH_USER:$STAGING_BASIC_AUTH_PASSWORD" \
+  https://staging-sitbank.duckdns.org/
+unset STAGING_BASIC_AUTH_USER
+unset STAGING_BASIC_AUTH_PASSWORD
+
+# Run this external check from a workstation or another non-loopback host.
+curl -k -I https://staging-sitbank.duckdns.org/health/ready
+curl -fsS http://127.0.0.1:5001/health/ready
 ```
+
+Expected results: unauthenticated `/` returns `401`, authenticated `/` returns
+`200`, external `/health/ready` returns `403`, and the local app readiness
+endpoint returns the app's ready JSON body. From EC2, the deployment wrapper's
+HTTPS readiness check still works through loopback because Nginx allows local
+`/health/ready` requests:
+
+```bash
+curl -k -fsS \
+  --resolve staging-sitbank.duckdns.org:443:127.0.0.1 \
+  https://staging-sitbank.duckdns.org/health/ready
+```
+
+Staging is behind Basic Auth to keep preview traffic, scanners, and credential
+stuffing away from the public banking app while testers still use normal app
+authentication inside the gate. External `/health/ready` is blocked because it
+reveals dependency readiness; local EC2 and deployment checks use loopback
+instead. This edge setup is separate from application deployment: Certbot,
+htpasswd, Nginx config replacement, rate-limit includes, `nginx -t`, and Nginx
+reload do not publish or roll a container image.
 
 Verify that staging assets are separate and production remains healthy:
 
@@ -685,6 +807,9 @@ sudo systemctl is-active sitbank-container.service
 sudo test -r /etc/sitbank-staging/deploy.conf
 sudo test -r /opt/sitbank-staging/compose.yml
 sudo test -r /etc/sitbank-staging/postgres/init-sitbank-staging-roles.sh
+sudo test -r /etc/nginx/.htpasswd-sitbank-staging
+sudo test -r /etc/nginx/conf.d/sitbank-staging-rate-limits.conf
+sudo test -r /etc/nginx/sites-available/sitbank-staging
 sudo -u sitbank-container test -r /etc/sitbank-staging/secrets/database_url
 sudo -u sitbank-container test -r /etc/sitbank-staging/secrets/database_migration_url
 sudo -u sitbank-container test -r /etc/sitbank-staging/common-passwords.txt
@@ -694,7 +819,10 @@ curl --fail https://sitbank.duckdns.org/health/ready
 Set `STAGING_PUBLIC_HOST=staging-sitbank.duckdns.org`,
 `STAGING_EC2_HOST=sitbank.duckdns.org` or the EC2 address, and the matching
 staging key identifier in the GitHub `staging` environment. Enable
-`STAGING_DEPLOY_ENABLED=true` only after these checks pass.
+`STAGING_DEPLOY_ENABLED=true` only after bootstrap, Nginx validation, Certbot,
+and local asset checks pass. Run the `401`, `200`, `403`, and local ready
+checks after the first intentional staging deployment before handing the URL
+to testers.
 
 The deployment workflow intentionally cannot update its own privileged EC2
 validator. Use **Bootstrap EC2 from trusted main** after reviewed changes to
