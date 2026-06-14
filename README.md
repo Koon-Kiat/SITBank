@@ -20,6 +20,20 @@ python -m venv .venv
 .\.venv\Scripts\python.exe ops/security/scan_repository_secrets.py --history
 ```
 
+To run the focused local CI entrypoint:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/ci-local
+```
+
+The script runs the deployment and Redis integrity tests, the full test suite,
+compilation, package checks, Bandit, whitespace checks, and Git Bash syntax
+checks for deployment shell scripts. When Docker is running, it also validates
+the production and staging Compose models; otherwise it prints a warning and
+skips only the Docker/Compose-only check. Each phase prints a named section
+and `PASS` or `SKIP` status so the failing surface is visible without reading
+the whole log.
+
 Refresh lock files only after reviewing dependency changes:
 
 ```powershell
@@ -161,6 +175,21 @@ The direct names `SECRET_KEY`, `WTF_CSRF_SECRET_KEY`,
 `MFA_AES256_GCM_KEY_B64`, and `PASSWORD_PEPPER_B64` remain available for local
 development, tests, and the one-time protected legacy import only.
 
+When adding a runtime configuration value or secret, update
+`ops/runtime_contract.py` first, then keep `config.py`, the deployment bundle
+renderer, production and staging Compose files, container smoke fixtures,
+deployment wrapper validation, GitHub Actions, tests, and this document in
+sync. `tests/test_deployment.py` compares those surfaces against the contract
+so drift fails with a targeted message instead of a broad deployment snapshot
+failure.
+
+Drift failures in `test_runtime_secret_inventory_matches_config_and_renderer`,
+`test_compose_secret_mounts_match_runtime_contract`, or
+`test_smoke_fixture_and_deployment_wrapper_match_runtime_contract` list the
+missing or unexpected names. Treat those failures as a contract mismatch, not
+as a reason to bypass the runtime split between app secrets and migration-only
+secrets.
+
 `DATABASE_URL` is always the Flask runtime URL and must use the non-owner
 `sitbank_app` role in staging and production. `DATABASE_MIGRATION_URL` is only
 for Alembic migrations and database privilege verification, and must use the
@@ -189,10 +218,12 @@ PostgreSQL ownership is split by role:
   alter, drop, or create extensions.
 
 Redis session data is stored as a versioned HMAC envelope around the
-Flask-Session serialized payload. `SESSION_HMAC_ACTIVE_KEY_ID` chooses the key
-used for new writes, while every key in `SESSION_HMAC_KEYS_JSON` can verify
-existing sessions during rotation. Missing signatures, invalid signatures,
-unknown key IDs, malformed payloads, and unsupported legacy payload formats are
+Flask-Session serialized payload. The signature is bound to the Redis session
+store key, so a valid signed payload copied under a different session key is
+rejected. `SESSION_HMAC_ACTIVE_KEY_ID` chooses the key used for new writes,
+while every key in `SESSION_HMAC_KEYS_JSON` can verify existing sessions during
+rotation. Missing signatures, invalid signatures, unknown key IDs, malformed
+payloads, missing binding context, and unsupported legacy payload formats are
 deleted, logged as `session_integrity` security events, and treated as a fresh
 unauthenticated session without exposing raw session contents.
 
@@ -381,7 +412,7 @@ the protected workflow can perform later staging or production refreshes.
 
 `.trivyignore` contains a narrow temporary exception for only
 `CVE-2026-42496` and `CVE-2026-8376`. Both findings are inherited from the
-official `python:3.12.13-slim-trixie` Debian Trixie base image through
+official `python:3.12` slim-trixie Debian Trixie base image through
 `perl-base`; the Dockerfile does not install Perl directly. Debian marks
 `perl-base` as an essential package. Removing `perl-base` or mixing Debian sid packages into Trixie is riskier
 than a narrow, documented exception while no safe Trixie fix exists.
