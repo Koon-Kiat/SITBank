@@ -74,6 +74,14 @@ def _load_create_dast_session_module():
     return module
 
 
+def _nginx_location_bodies(config: str, selector: str) -> list[str]:
+    return re.findall(
+        rf"location\s+{re.escape(selector)}\s*\{{(.*?)\n\s*\}}",
+        config,
+        flags=re.DOTALL,
+    )
+
+
 def test_runtime_privilege_verifier_quotes_create_probe_table_name():
     db_privileges = _load_db_privileges_module()
     probe_table = "sitbank_privilege_probe_deadbeef"
@@ -1182,6 +1190,7 @@ def test_linux_deployment_artifacts_are_forced_to_lf_and_reject_crlf():
         Path("ops/deploy/sitbank-database-cutover"),
         Path("ops/nginx-proxy-headers.conf"),
         Path("ops/nginx/sitbank-staging.conf"),
+        Path("ops/nginx/sitbank-staging-rate-limits.conf"),
         Path("ops/sudoers/sitbank-container-deploy"),
         Path("ops/systemd/sitbank-container.service"),
         Path("ops/systemd/sitbank-staging-container.service"),
@@ -1201,18 +1210,125 @@ def test_linux_deployment_artifacts_are_forced_to_lf_and_reject_crlf():
     assert "grep -q $'\\r$'" in bootstrap
 
 
-def test_staging_nginx_routes_only_to_the_staging_loopback_port():
+def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     nginx = Path("ops/nginx/sitbank-staging.conf").read_text(encoding="utf-8")
+    rate_limits = Path("ops/nginx/sitbank-staging-rate-limits.conf").read_text(
+        encoding="utf-8"
+    )
+    staging_compose = yaml.safe_load(Path("compose.staging.yml").read_text(encoding="utf-8"))
     bootstrap = Path("ops/deploy/bootstrap-container-ec2").read_text(
         encoding="utf-8"
     )
 
+    assert Path("ops/nginx/sitbank-staging-rate-limits.conf").exists()
+    assert "listen 80;" in nginx
+    assert "return 301 https://$host$request_uri;" in nginx
+    assert "listen 443 ssl http2;" in nginx
     assert "server_name staging-sitbank.duckdns.org;" in nginx
-    assert "proxy_pass http://127.0.0.1:5001;" in nginx
+    assert "ssl_certificate /etc/letsencrypt/live/staging-sitbank.duckdns.org/fullchain.pem;" in nginx
+    assert "ssl_certificate_key /etc/letsencrypt/live/staging-sitbank.duckdns.org/privkey.pem;" in nginx
+    assert 'add_header X-Content-Type-Options "nosniff" always;' in nginx
+    assert 'add_header X-Frame-Options "DENY" always;' in nginx
+    assert 'add_header Referrer-Policy "no-referrer" always;' in nginx
+    assert "Permissions-Policy" in nginx
+    assert "preload" not in nginx
+    assert 'auth_basic "SITBank staging";' in nginx
+    assert "auth_basic_user_file /etc/nginx/.htpasswd-sitbank-staging;" in nginx
+    assert not Path("ops/nginx/.htpasswd-sitbank-staging").exists()
+    assert not re.search(
+        r"^\S+:\$(?:apr1|2[aby]|5|6)\$",
+        nginx,
+        flags=re.MULTILINE,
+    )
+
+    acme_bodies = _nginx_location_bodies(nginx, "^~ /.well-known/acme-challenge/")
+    assert len(acme_bodies) == 2
+    for acme_body in acme_bodies:
+        assert "auth_basic off;" in acme_body
+        assert "root /var/www/certbot;" in acme_body
+        assert "limit_req" not in acme_body
+
+    health_bodies = _nginx_location_bodies(nginx, "= /health/ready")
+    assert len(health_bodies) == 1
+    health_body = health_bodies[0]
+    assert "auth_basic off;" in health_body
+    assert "allow 127.0.0.1;" in health_body
+    assert "allow ::1;" in health_body
+    assert "deny all;" in health_body
+    assert "proxy_pass http://127.0.0.1:5001;" in health_body
+    assert "limit_req" not in health_body
+
+    proxy_targets = set(re.findall(r"proxy_pass\s+([^;]+);", nginx))
+    assert proxy_targets == {"http://127.0.0.1:5001"}
     assert "127.0.0.1:5000" not in nginx
     assert "server_name sitbank.duckdns.org;" not in nginx
+    assert staging_compose["services"]["app"]["ports"] == ["127.0.0.1:5001:5000"]
+    assert "ports" not in staging_compose["services"]["postgres"]
+    assert "ports" not in staging_compose["services"]["redis"]
+
+    assert "limit_req_zone $binary_remote_addr zone=sitbank_staging_login:10m rate=5r/m;" in rate_limits
+    assert "limit_req_zone $binary_remote_addr zone=sitbank_staging_app:10m rate=10r/s;" in rate_limits
+    assert "limit_req_status 429;" in nginx
+    assert "limit_req_log_level warn;" in nginx
+    assert "limit_req_status" not in rate_limits
+    assert "limit_req_log_level" not in rate_limits
+    for selector in ("= /login", "= /register", "= /mfa/verify", "^~ /auth/"):
+        bodies = _nginx_location_bodies(nginx, selector)
+        assert len(bodies) == 1
+        assert "limit_req zone=sitbank_staging_login" in bodies[0]
+    assert any(
+        "limit_req zone=sitbank_staging_app" in body
+        for body in _nginx_location_bodies(nginx, "/")
+    )
+
     assert "Conflicting Nginx staging site is already enabled" in bootstrap
     assert "Disable the duplicate staging server block" in bootstrap
+    assert "Missing required staging Basic Auth file" in bootstrap
+    assert "Missing required staging TLS file" in bootstrap
+    assert "apache2-utils" in bootstrap
+    assert "certbot" in bootstrap
+    assert "STAGING_RATE_LIMITS_FILE=\"/etc/nginx/conf.d/sitbank-staging-rate-limits.conf\"" in bootstrap
+    assert "ops/nginx/sitbank-staging-rate-limits.conf" in bootstrap
+    assert "sitbank-staging-rate-limits.$(date -u +%Y%m%dT%H%M%SZ).conf" in bootstrap
+    assert "nginx-sitbank-staging.$(date -u +%Y%m%dT%H%M%SZ).conf" in bootstrap
+    assert "&& ! cmp -s \\" in bootstrap
+    assert '"${repo_root}/ops/nginx/sitbank-staging.conf" \\' in bootstrap
+    assert '"${staging_site}"; then' in bootstrap
+    assert "if [[ ! -e /etc/nginx/sites-available/sitbank-staging" not in bootstrap
+    assert bootstrap.index("nginx -t") < bootstrap.index("systemctl reload nginx")
+    assert "docker compose up" not in bootstrap
+    assert "docker pull" not in bootstrap
+    assert "SITBANK_IMAGE" not in bootstrap
+
+
+def test_staging_edge_runbook_documents_operator_verification_steps():
+    readme = Path("README.md").read_text(encoding="utf-8")
+
+    for required in (
+        "sudo htpasswd -c /etc/nginx/.htpasswd-sitbank-staging",
+        "sudo chown root:www-data /etc/nginx/.htpasswd-sitbank-staging",
+        "sudo chmod 0640 /etc/nginx/.htpasswd-sitbank-staging",
+        "Do not store the Basic Auth password or generated htpasswd hash in the repo.",
+        "sudo certbot --nginx -d staging-sitbank.duckdns.org",
+        "sudo certbot certonly --webroot",
+        "sudo certbot renew --dry-run",
+        "ops/deploy/bootstrap-container-ec2",
+        "staging-sitbank.duckdns.org",
+        "Nginx proxy header snippet",
+        "rate-limit include",
+        "sudo nginx -t",
+        "sudo systemctl reload nginx",
+        "curl -k -I https://staging-sitbank.duckdns.org/",
+        'curl -k -I -u "$STAGING_BASIC_AUTH_USER:$STAGING_BASIC_AUTH_PASSWORD"',
+        "curl -k -I https://staging-sitbank.duckdns.org/health/ready",
+        "curl -fsS http://127.0.0.1:5001/health/ready",
+        "unauthenticated `/` returns `401`",
+        "external `/health/ready` returns `403`",
+        "local app readiness",
+        "separate from application deployment",
+    ):
+        assert required in readme
+    assert re.search(r"authenticated `/` returns\s+`200`", readme)
 
 
 def test_dependency_manifests_have_one_hashed_lockfile_source_of_truth():
