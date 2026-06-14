@@ -274,6 +274,7 @@ jobs:
             ops/container/validate-compose.sh \
             ops/container/dast-smoke.sh \
             ops/deploy/bootstrap-container-ec2 \
+            ops/deploy/sitbank-container-bootstrap \
             ops/deploy/sitbank-container-deploy \
             ops/deploy/sitbank-container-runtime \
             ops/deploy/sitbank-database-cutover
