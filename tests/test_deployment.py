@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import re
 import subprocess
 import sys
@@ -12,12 +13,29 @@ from flask import request
 
 from ops.deploy.import_legacy_env import import_legacy_environment
 from ops.deploy.render_container_bundle import (
+    NON_SECRET_DEFAULTS,
+    SECRET_INPUTS,
     build_container_bundle,
     build_container_environment,
     build_deployment_environment,
     write_container_bundle,
 )
+from ops.runtime_contract import (
+    APP_SECRET_FILE_ENVIRONMENT,
+    APP_SECRET_FILES,
+    CONFIG_SECRET_INPUTS,
+    DEPLOYMENT_SECRET_INPUTS,
+    DEPLOYMENT_SECRET_FILES,
+    NON_SECRET_DEFAULTS as CONTRACT_NON_SECRET_DEFAULTS,
+    NON_SECRET_RUNTIME_ENVIRONMENT,
+    STAGING_DATA_SERVICE_SECRETS,
+)
 
+
+ACTION_USES_PIN_RE = re.compile(r"[^@]+@[0-9a-f]{40}")
+PYTHON_SLIM_TRIXIE_DIGEST_RE = re.compile(
+    r"python:3\.12(?:\.\d+)?-slim-trixie@sha256:[0-9a-f]{64}"
+)
 
 DEPLOYMENT_VALUES = {
     "PROD_DATABASE_MIGRATION_URL": "postgresql+psycopg2://bank_owner:secret@127.0.0.1/bank",
@@ -82,6 +100,72 @@ def _nginx_location_bodies(config: str, selector: str) -> list[str]:
     )
 
 
+def _config_secret_inputs() -> set[str]:
+    tree = ast.parse(Path("config.py").read_text(encoding="utf-8"))
+    secret_readers = {
+        "_optional_url",
+        "_required_b64_32_bytes",
+        "_required_secret",
+        "_required_session_hmac_keys",
+        "_required_url",
+    }
+    names = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not isinstance(node.func, ast.Name) or node.func.id not in secret_readers:
+            continue
+        if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+            names.add(node.args[0].value)
+    return names
+
+
+def _service_secret_targets(service: dict) -> dict[str, str]:
+    targets = {}
+    for secret in service.get("secrets", []):
+        if isinstance(secret, str):
+            targets[secret] = secret
+        else:
+            targets[secret["source"]] = secret["target"]
+    return targets
+
+
+def _extract_bash_array(script: str, name: str) -> list[str]:
+    match = re.search(rf"(?:local\s+)?{re.escape(name)}=\((.*?)\)", script, flags=re.DOTALL)
+    assert match, f"Missing bash array: {name}"
+    return re.findall(r"[A-Za-z0-9_.-]+", match.group(1))
+
+
+def _workflow_uses(workflow_text: str) -> list[str]:
+    return re.findall(r"^\s*uses:\s*([^\s#]+)", workflow_text, flags=re.MULTILINE)
+
+
+def _assert_pinned_actions(actions: list[str], *, context: str) -> None:
+    assert actions, f"{context} must use at least one pinned action"
+    for action in actions:
+        assert ACTION_USES_PIN_RE.fullmatch(action), f"{context} is not pinned: {action}"
+
+
+def _assert_sets_equal(actual: set[str], expected: set[str], *, context: str) -> None:
+    missing = sorted(expected - actual)
+    unexpected = sorted(actual - expected)
+    assert not missing and not unexpected, (
+        f"{context} drifted; missing={missing or 'none'}; "
+        f"unexpected={unexpected or 'none'}"
+    )
+
+
+def _dockerfile_stage_images(dockerfile: str) -> dict[str, str]:
+    return {
+        stage: image
+        for image, stage in re.findall(
+            r"^FROM\s+(\S+)\s+AS\s+([A-Za-z0-9_-]+)$",
+            dockerfile,
+            flags=re.MULTILINE,
+        )
+    }
+
+
 def test_runtime_privilege_verifier_quotes_create_probe_table_name():
     db_privileges = _load_db_privileges_module()
     probe_table = "sitbank_privilege_probe_deadbeef"
@@ -133,12 +217,15 @@ def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypa
 
     environment, secrets = build_container_bundle()
 
+    assert set(environment) == set(NON_SECRET_RUNTIME_ENVIRONMENT)
     assert environment["APP_ENV"] == "production"
     assert environment["WEBAUTHN_RP_ID"] == "sitbank.duckdns.org"
     assert environment["WEBAUTHN_RP_ORIGIN"] == "https://sitbank.duckdns.org"
     assert environment["SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06"
     assert environment["COMMON_PASSWORDS_PATH"] == "/run/config/common-passwords.txt"
     assert "SECRET_KEY" not in environment
+    assert "DATABASE_MIGRATION_URL" not in environment
+    assert "DATABASE_MIGRATION_URL_FILE" not in environment
     assert secrets["secret_key"] == DEPLOYMENT_VALUES["PROD_SECRET_KEY"]
     assert secrets["database_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_URL"]
     assert secrets["database_migration_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_MIGRATION_URL"]
@@ -247,6 +334,120 @@ def test_container_bundle_builds_two_key_rotation_ring(monkeypatch):
 
     assert '"2026-03":"MzMz' in secrets["session_hmac_keys_json"]
     assert '"2026-06":"MjIy' in secrets["session_hmac_keys_json"]
+
+
+def test_runtime_secret_inventory_matches_config_and_renderer():
+    assert SECRET_INPUTS == DEPLOYMENT_SECRET_INPUTS
+    assert NON_SECRET_DEFAULTS == CONTRACT_NON_SECRET_DEFAULTS
+    _assert_sets_equal(
+        _config_secret_inputs(),
+        set(CONFIG_SECRET_INPUTS),
+        context="Runtime secret readers in config.py vs ops/runtime_contract.py",
+    )
+
+
+def test_compose_secret_mounts_match_runtime_contract():
+    expected_app_secrets = {name: name for name in APP_SECRET_FILES}
+    for path, secret_root, extra_secrets in (
+        (
+            Path("compose.prod.yml"),
+            "/etc/sitbank/secrets",
+            {},
+        ),
+        (
+            Path("compose.staging.yml"),
+            "/etc/sitbank-staging/secrets",
+            STAGING_DATA_SERVICE_SECRETS,
+        ),
+    ):
+        compose = yaml.safe_load(path.read_text(encoding="utf-8"))
+        app = compose["services"]["app"]
+
+        assert app["environment"] == APP_SECRET_FILE_ENVIRONMENT, (
+            f"{path} app secret _FILE environment must match runtime contract"
+        )
+        assert "DATABASE_MIGRATION_URL_FILE" not in app["environment"]
+        assert _service_secret_targets(app) == expected_app_secrets, (
+            f"{path} app service secrets must match runtime contract"
+        )
+
+        expected_top_level = set(DEPLOYMENT_SECRET_FILES) | set(extra_secrets)
+        _assert_sets_equal(
+            set(compose["secrets"]),
+            expected_top_level,
+            context=f"{path} top-level Compose secrets vs runtime contract",
+        )
+        expected_secret_files = {
+            **{secret_name: secret_name for secret_name in DEPLOYMENT_SECRET_FILES},
+            **extra_secrets,
+        }
+        for secret_name in expected_top_level:
+            assert (
+                compose["secrets"][secret_name]["file"]
+                == f"{secret_root}/{expected_secret_files[secret_name]}"
+            ), f"{path} secret {secret_name} must map to its contract file"
+
+
+def test_smoke_fixture_and_deployment_wrapper_match_runtime_contract():
+    smoke_test = Path("ops/container/smoke-test.sh").read_text(encoding="utf-8")
+    deploy_script = Path("ops/deploy/sitbank-container-deploy").read_text(encoding="utf-8")
+
+    for env_name, secret_path in APP_SECRET_FILE_ENVIRONMENT.items():
+        assert f"--env {env_name}={secret_path}" in smoke_test, (
+            f"ops/container/smoke-test.sh is missing {env_name}={secret_path}"
+        )
+    for secret_name in DEPLOYMENT_SECRET_FILES:
+        assert f"${{work_dir}}/secrets/{secret_name}" in smoke_test, (
+            f"ops/container/smoke-test.sh is missing secret fixture {secret_name}"
+        )
+
+    assert "--env DATABASE_MIGRATION_URL_FILE=/run/secrets/database_migration_url" in smoke_test
+    assert ':/run/secrets/database_migration_url:ro' not in smoke_test
+    assert '"${secrets_mount_source}:/run/secrets:ro"' in smoke_test
+
+    _assert_sets_equal(
+        set(_extract_bash_array(deploy_script, "allowed_environment")),
+        set(NON_SECRET_RUNTIME_ENVIRONMENT),
+        context="sitbank-container-deploy allowed_environment vs runtime contract",
+    )
+    _assert_sets_equal(
+        set(_extract_bash_array(deploy_script, "required_secrets")),
+        set(DEPLOYMENT_SECRET_FILES),
+        context="sitbank-container-deploy required_secrets vs runtime contract",
+    )
+    assert "DATABASE_MIGRATION_URL_FILE=/run/secrets/database_migration_url" in deploy_script
+    assert (
+        '--volume "${SECRET_DIR}/database_migration_url:/run/secrets/database_migration_url:ro"'
+        in deploy_script
+    )
+
+
+def test_local_ci_command_documents_required_local_checks():
+    ci_local = Path("scripts/ci-local").read_text(encoding="utf-8")
+    readme = Path("README.md").read_text(encoding="utf-8")
+
+    for expected in (
+        "tests/test_deployment.py",
+        "tests/test_redis_session_integrity.py",
+        '"pytest"',
+        '"compileall"',
+        '"pip", "check"',
+        '"bandit"',
+        '"git", "diff", "--check"',
+        "ops/deploy/sitbank-container-deploy",
+        "ops/container/validate-compose.sh",
+        "== {name} ==",
+        "Python/test checks",
+        "Git Bash syntax checks",
+        "Docker/Compose checks",
+        "PASS:",
+        "SKIP:",
+        "No Docker result was recorded",
+    ):
+        assert expected in ci_local
+    assert "Docker is unavailable; skipped Docker/Compose-only local checks" in ci_local
+    assert "scripts/ci-local" in readme
+    assert "ops/runtime_contract.py" in readme
 
 
 def test_environment_only_bundle_does_not_export_long_lived_secrets(
@@ -390,12 +591,13 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     staging_app = staging_services["app"]
 
     assert compose["name"] == "sitbank"
-    assert (
-        "python:3.12.13-slim-trixie@"
-        "sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203"
-        in dockerfile
+    stage_images = _dockerfile_stage_images(dockerfile)
+    assert set(stage_images) == {"builder", "runtime"}
+    assert stage_images["builder"] == stage_images["runtime"]
+    assert PYTHON_SLIM_TRIXIE_DIGEST_RE.fullmatch(stage_images["runtime"]), (
+        "Dockerfile must use a Python 3.12 slim-trixie base image pinned by "
+        f"sha256 digest, got {stage_images['runtime']}"
     )
-    assert dockerfile.count("python:3.12.13-slim-trixie@sha256:") == 2
     assert 'org.opencontainers.image.title="SITBank banking application"' in dockerfile
     assert "USER 10001:10001" in dockerfile
     assert "--require-hashes" in dockerfile
@@ -858,16 +1060,20 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "check_dependency_locks.py" in workflow_text
     assert "IMAGE_DIGEST" in workflow_text
     assert "StrictHostKeyChecking=no" not in workflow_text
-    assert workflow_text.count("persist-credentials: false") == 10
-    assert (
-        workflow_text.count(
-            "actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10"
-        )
-        == 10
-    )
-    assert (
-        "actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405"
-        in workflow_text
+    checkout_uses = [
+        action for action in _workflow_uses(workflow_text)
+        if action.startswith("actions/checkout@")
+    ]
+    setup_python_uses = [
+        action for action in _workflow_uses(workflow_text)
+        if action.startswith("actions/setup-python@")
+    ]
+    assert len(checkout_uses) == 10
+    assert workflow_text.count("persist-credentials: false") == len(checkout_uses)
+    _assert_pinned_actions(checkout_uses, context="actions/checkout")
+    _assert_pinned_actions(
+        setup_python_uses,
+        context="actions/setup-python",
     )
     assert "sitbank:pr" in workflow_text
     assert "SITBANK_IMAGE" in workflow_text
@@ -1091,7 +1297,7 @@ def test_trivy_exception_is_narrow_documented_and_temporary():
 
     assert active_ignores == ["CVE-2026-42496", "CVE-2026-8376"]
     for required in (
-        "official python:3.12.13-slim-trixie / Debian Trixie",
+        "official python:3.12 slim-trixie / Debian Trixie",
         "does not install Perl directly",
         "Essential: yes",
         "must not be removed",
@@ -1150,8 +1356,17 @@ def test_codeowners_and_codeql_cover_security_sensitive_changes():
         "/ops/security/",
     ):
         assert protected_path in codeowners
-    assert "github/codeql-action/init@411bbbe57033eedfc1a82d68c01345aa96c737d7" in codeql
-    assert "github/codeql-action/analyze@411bbbe57033eedfc1a82d68c01345aa96c737d7" in codeql
+    codeql_uses = _workflow_uses(codeql)
+    init_actions = [
+        action for action in codeql_uses
+        if action.startswith("github/codeql-action/init@")
+    ]
+    analyze_actions = [
+        action for action in codeql_uses
+        if action.startswith("github/codeql-action/analyze@")
+    ]
+    _assert_pinned_actions(init_actions, context="github/codeql-action/init")
+    _assert_pinned_actions(analyze_actions, context="github/codeql-action/analyze")
     assert "languages: python" in codeql
 
 
@@ -1160,11 +1375,9 @@ def test_every_github_action_is_pinned_to_a_full_commit_sha():
         path.read_text(encoding="utf-8")
         for path in Path(".github/workflows").glob("*.yml")
     )
-    uses = re.findall(r"^\s*uses:\s*([^\s#]+)", workflow_text, flags=re.MULTILINE)
+    uses = _workflow_uses(workflow_text)
 
-    assert uses
-    for action in uses:
-        assert re.fullmatch(r"[^@]+@[0-9a-f]{40}", action), action
+    _assert_pinned_actions(uses, context="GitHub Actions workflow")
     assert "pull_request_target:" not in workflow_text
 
 

@@ -83,6 +83,8 @@ secrets:
     file: /etc/sitbank/secrets/session_hmac_keys_json
   database_url:
     file: /etc/sitbank/secrets/database_url
+  database_migration_url:
+    file: /etc/sitbank/secrets/database_migration_url
   redis_url:
     file: /etc/sitbank/secrets/redis_url
   mfa_aes256_gcm_key_b64:

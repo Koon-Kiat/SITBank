@@ -9,7 +9,7 @@ from collections.abc import Iterator
 from flask import current_app
 
 
-SESSION_PAYLOAD_FORMAT_VERSION = 1
+SESSION_PAYLOAD_FORMAT_VERSION = 2
 
 
 class SessionPayloadIntegrityError(ValueError):
@@ -47,10 +47,11 @@ def validate_session_hmac_config() -> int:
     return len(keyring)
 
 
-def sign_session_payload(payload: bytes) -> bytes:
+def sign_session_payload(payload: bytes, *, binding_context: str) -> bytes:
+    context = _binding_context(binding_context)
     active_key_id = str(current_app.config["SESSION_HMAC_ACTIVE_KEY_ID"])
     encoded_payload = base64.b64encode(payload).decode("ascii")
-    signature = _payload_signature(active_key_id, encoded_payload)
+    signature = _payload_signature(active_key_id, encoded_payload, context)
     envelope = {
         "v": SESSION_PAYLOAD_FORMAT_VERSION,
         "kid": active_key_id,
@@ -60,7 +61,8 @@ def sign_session_payload(payload: bytes) -> bytes:
     return json.dumps(envelope, separators=(",", ":"), sort_keys=True).encode("utf-8")
 
 
-def verify_session_payload(envelope_bytes: bytes) -> bytes:
+def verify_session_payload(envelope_bytes: bytes, *, binding_context: str) -> bytes:
+    context = _binding_context(binding_context)
     try:
         envelope = json.loads(envelope_bytes.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -83,7 +85,7 @@ def verify_session_payload(envelope_bytes: bytes) -> bytes:
     if key_id not in keyring:
         raise SessionPayloadIntegrityError("unknown_key_id")
 
-    expected_signature = _payload_signature(key_id, encoded_payload)
+    expected_signature = _payload_signature(key_id, encoded_payload, context)
     if not hmac.compare_digest(signature, expected_signature):
         raise SessionPayloadIntegrityError("invalid_signature")
 
@@ -112,7 +114,26 @@ def _digest(key: bytes, message: str, length: int) -> str:
     return hmac.new(key, message.encode("utf-8"), hashlib.sha256).hexdigest()[:length]
 
 
-def _payload_signature(key_id: str, encoded_payload: str) -> str:
+def _binding_context(binding_context: str) -> str:
+    if not isinstance(binding_context, str) or not binding_context:
+        raise SessionPayloadIntegrityError("missing_binding_context")
+    return binding_context
+
+
+def _payload_signature(key_id: str, encoded_payload: str, binding_context: str) -> str:
     keyring = current_app.config["SESSION_HMAC_KEYS"]
-    signing_input = f"sitbank-session-v{SESSION_PAYLOAD_FORMAT_VERSION}.{key_id}.{encoded_payload}"
-    return hmac.new(bytes(keyring[key_id]), signing_input.encode("ascii"), hashlib.sha256).hexdigest()
+    signing_input = json.dumps(
+        {
+            "ctx": binding_context,
+            "kid": key_id,
+            "payload": encoded_payload,
+            "v": SESSION_PAYLOAD_FORMAT_VERSION,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hmac.new(
+        bytes(keyring[key_id]),
+        signing_input.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()

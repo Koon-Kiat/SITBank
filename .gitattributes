@@ -13,6 +13,7 @@ ops/deploy/sitbank-container-deploy text eol=lf
 ops/deploy/sitbank-container-runtime text eol=lf
 ops/deploy/sitbank-database-cutover text eol=lf
 ops/sudoers/* text eol=lf
+scripts/ci-local text eol=lf
 
 *.bat text eol=crlf
 *.cmd text eol=crlf
