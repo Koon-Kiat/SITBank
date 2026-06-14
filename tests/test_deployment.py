@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import os
 import re
 import subprocess
 import sys
@@ -344,6 +345,22 @@ def test_runtime_secret_inventory_matches_config_and_renderer():
         set(CONFIG_SECRET_INPUTS),
         context="Runtime secret readers in config.py vs ops/runtime_contract.py",
     )
+
+
+def test_bundle_renderer_runs_directly_without_pythonpath():
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+
+    result = subprocess.run(
+        [sys.executable, "ops/deploy/render_container_bundle.py", "--help"],
+        check=False,
+        capture_output=True,
+        env=env,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "usage:" in result.stdout.lower()
 
 
 def test_compose_secret_mounts_match_runtime_contract():
