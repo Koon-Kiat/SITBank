@@ -1291,7 +1291,9 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     assert "ops/nginx/sitbank-staging-rate-limits.conf" in bootstrap
     assert "sitbank-staging-rate-limits.$(date -u +%Y%m%dT%H%M%SZ).conf" in bootstrap
     assert "nginx-sitbank-staging.$(date -u +%Y%m%dT%H%M%SZ).conf" in bootstrap
-    assert "cmp -s \"${repo_root}/ops/nginx/sitbank-staging.conf\" \"${staging_site}\"" in bootstrap
+    assert "&& ! cmp -s \\" in bootstrap
+    assert '"${repo_root}/ops/nginx/sitbank-staging.conf" \\' in bootstrap
+    assert '"${staging_site}"; then' in bootstrap
     assert "if [[ ! -e /etc/nginx/sites-available/sitbank-staging" not in bootstrap
     assert bootstrap.index("nginx -t") < bootstrap.index("systemctl reload nginx")
     assert "docker compose up" not in bootstrap

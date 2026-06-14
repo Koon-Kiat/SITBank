@@ -299,8 +299,10 @@ if [[ "${target}" == "staging" ]]; then
         echo "Refusing to replace unsafe staging Nginx rate-limit file: ${STAGING_RATE_LIMITS_FILE}" >&2
         exit 1
     fi
-    if [[ -f "${STAGING_RATE_LIMITS_FILE}" \
-        && ! cmp -s "${repo_root}/ops/nginx/sitbank-staging-rate-limits.conf" "${STAGING_RATE_LIMITS_FILE}" ]]; then
+    if [[ -f "${STAGING_RATE_LIMITS_FILE}" ]] \
+        && ! cmp -s \
+            "${repo_root}/ops/nginx/sitbank-staging-rate-limits.conf" \
+            "${STAGING_RATE_LIMITS_FILE}"; then
         install -o root -g root -m 0644 \
             "${STAGING_RATE_LIMITS_FILE}" \
             "${backup_dir}/nginx-sitbank-staging-rate-limits.$(date -u +%Y%m%dT%H%M%SZ).conf"
@@ -315,8 +317,10 @@ if [[ "${target}" == "staging" ]]; then
         echo "Refusing to replace unsafe staging Nginx config: ${staging_site}" >&2
         exit 1
     fi
-    if [[ -f "${staging_site}" \
-        && ! cmp -s "${repo_root}/ops/nginx/sitbank-staging.conf" "${staging_site}" ]]; then
+    if [[ -f "${staging_site}" ]] \
+        && ! cmp -s \
+            "${repo_root}/ops/nginx/sitbank-staging.conf" \
+            "${staging_site}"; then
         install -o root -g root -m 0644 \
             "${staging_site}" \
             "${backup_dir}/nginx-sitbank-staging.$(date -u +%Y%m%dT%H%M%SZ).conf"
