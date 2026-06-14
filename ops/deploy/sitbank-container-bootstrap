@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+readonly DEPLOY_USER="sitbank-deploy"
+readonly INCOMING_DIR="/home/${DEPLOY_USER}/incoming"
+readonly BOOTSTRAP_ROOT="/opt/sitbank-bootstrap"
+readonly LOCK_FILE="/var/lock/sitbank-container-bootstrap.lock"
+readonly PRODUCTION_DEPLOY_LOCK="/var/lock/sitbank-container-deploy.lock"
+readonly STAGING_DEPLOY_LOCK="/var/lock/sitbank-staging-container-deploy.lock"
+
+if [[ "${EUID}" -ne 0 ]]; then
+    echo "Bootstrap wrapper must run as root" >&2
+    exit 1
+fi
+if [[ "$#" -ne 2 ]]; then
+    echo "Usage: sitbank-container-bootstrap TARGET TRUSTED_MAIN_SHA" >&2
+    exit 2
+fi
+
+target="$1"
+trusted_sha="$2"
+case "${target}" in
+    staging)
+        config_root="/etc/sitbank-staging"
+        ;;
+    production)
+        config_root="/etc/sitbank"
+        ;;
+    *)
+        echo "Bootstrap target must be staging or production" >&2
+        exit 2
+        ;;
+esac
+if [[ ! "${trusted_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "Trusted main SHA must be a full lowercase commit SHA" >&2
+    exit 2
+fi
+
+deploy_config="${config_root}/deploy.conf"
+if [[ ! -f "${deploy_config}" || -L "${deploy_config}" \
+    || "$(stat -c '%U:%G' -- "${deploy_config}")" != "root:root" ]]; then
+    echo "Missing trusted root-owned deployment configuration" >&2
+    exit 1
+fi
+
+# shellcheck disable=SC1090
+source "${deploy_config}"
+if [[ ! "${GITHUB_REPOSITORY:-}" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ \
+    || ! "${PUBLIC_HOST:-}" =~ ^[A-Za-z0-9.-]+$ ]]; then
+    echo "Trusted deployment configuration is invalid" >&2
+    exit 1
+fi
+if [[ "${target}" == "staging" \
+    && "${PUBLIC_HOST}" != "staging-sitbank.duckdns.org" ]]; then
+    echo "Trusted staging public host is invalid" >&2
+    exit 1
+fi
+if [[ "${target}" == "production" \
+    && "${PUBLIC_HOST}" != "sitbank.duckdns.org" ]]; then
+    echo "Trusted production public host is invalid" >&2
+    exit 1
+fi
+
+readonly expected_identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/bootstrap-ec2.yml@refs/heads/main"
+readonly archive_name="bootstrap-${target}-${trusted_sha}.tar.gz"
+readonly archive_path="${INCOMING_DIR}/${archive_name}"
+readonly signature_path="${archive_path}.sigstore.json"
+
+validate_input_file() {
+    local path="$1"
+    if [[ ! -f "${path}" || -L "${path}" ]]; then
+        echo "Bootstrap input must be a regular non-symlink file: ${path}" >&2
+        exit 2
+    fi
+    if [[ "$(stat -c '%U' -- "${path}")" != "${DEPLOY_USER}" ]]; then
+        echo "Bootstrap input must be owned by ${DEPLOY_USER}: ${path}" >&2
+        exit 2
+    fi
+}
+
+validate_input_file "${archive_path}"
+validate_input_file "${signature_path}"
+
+exec 9>"${LOCK_FILE}"
+if ! flock -n 9; then
+    echo "Another EC2 bootstrap is already running" >&2
+    exit 1
+fi
+exec 8>"${PRODUCTION_DEPLOY_LOCK}"
+exec 7>"${STAGING_DEPLOY_LOCK}"
+if ! flock -n 8 || ! flock -n 7; then
+    echo "An application deployment is running; retry bootstrap after it finishes" >&2
+    exit 1
+fi
+
+work_dir="$(mktemp -d /opt/sitbank-bootstrap.update.XXXXXX)"
+source_root="${work_dir}/source"
+previous_root="${work_dir}/previous"
+root_replaced=0
+
+cleanup() {
+    rm -rf -- "${work_dir}"
+    rm -f -- "${archive_path}" "${signature_path}"
+}
+
+restore_bootstrap_root() {
+    if [[ "${root_replaced}" -eq 1 && -d "${previous_root}" ]]; then
+        rm -rf -- "${BOOTSTRAP_ROOT}"
+        mv -- "${previous_root}" "${BOOTSTRAP_ROOT}"
+    fi
+}
+
+trap cleanup EXIT
+trap restore_bootstrap_root ERR
+
+cosign verify-blob \
+    --bundle "${signature_path}" \
+    --certificate-identity "${expected_identity}" \
+    --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+    "${archive_path}" >/dev/null
+
+while IFS= read -r member; do
+    case "${member}" in
+        /*|..|../*|*/../*|*/..)
+            echo "Unsafe bootstrap archive member: ${member}" >&2
+            exit 1
+            ;;
+    esac
+done < <(tar -tzf "${archive_path}")
+
+install -d -o root -g root -m 0755 "${source_root}"
+tar --extract --gzip --file "${archive_path}" \
+    --directory "${source_root}" --no-same-owner --no-same-permissions
+if find "${source_root}" \
+    \( -type l -o -type b -o -type c -o -type p -o -type s \) \
+    -print -quit | grep -q .; then
+    echo "Bootstrap archive contains an unsupported special file" >&2
+    exit 1
+fi
+if [[ ! -f "${source_root}/.sitbank-bootstrap-commit" \
+    || -L "${source_root}/.sitbank-bootstrap-commit" \
+    || "$(<"${source_root}/.sitbank-bootstrap-commit")" != "${trusted_sha}" ]]; then
+    echo "Bootstrap archive commit marker does not match the requested trusted main SHA" >&2
+    exit 1
+fi
+rm -f -- "${source_root}/.sitbank-bootstrap-commit"
+
+bootstrap_script="${source_root}/ops/deploy/bootstrap-container-ec2"
+if [[ ! -f "${bootstrap_script}" || -L "${bootstrap_script}" ]]; then
+    echo "Signed archive is missing the EC2 bootstrap script" >&2
+    exit 1
+fi
+
+legacy_service="${LEGACY_SERVICE:--}"
+legacy_app_root="${LEGACY_APP_ROOT:--}"
+if [[ "${target}" == "staging" ]]; then
+    bash "${bootstrap_script}" \
+        staging "${GITHUB_REPOSITORY}" "${PUBLIC_HOST}"
+else
+    bash "${bootstrap_script}" \
+        production "${GITHUB_REPOSITORY}" "${PUBLIC_HOST}" \
+        "${legacy_service}" "${legacy_app_root}"
+fi
+
+expected_wrapper_hash="$(
+    sha256sum "${source_root}/ops/deploy/sitbank-container-deploy" \
+        | awk '{print $1}'
+)"
+installed_wrapper_hash="$(
+    sha256sum /usr/local/sbin/sitbank-container-deploy | awk '{print $1}'
+)"
+if [[ "${installed_wrapper_hash}" != "${expected_wrapper_hash}" ]]; then
+    echo "Installed deployment wrapper does not match the signed bootstrap archive" >&2
+    exit 1
+fi
+
+if [[ -e "${BOOTSTRAP_ROOT}" ]]; then
+    if [[ -L "${BOOTSTRAP_ROOT}" || ! -d "${BOOTSTRAP_ROOT}" ]]; then
+        echo "Refusing to replace unsafe bootstrap root: ${BOOTSTRAP_ROOT}" >&2
+        exit 1
+    fi
+    mv -- "${BOOTSTRAP_ROOT}" "${previous_root}"
+    root_replaced=1
+fi
+if ! mv -- "${source_root}" "${BOOTSTRAP_ROOT}"; then
+    restore_bootstrap_root
+    exit 1
+fi
+root_replaced=0
+rm -rf -- "${previous_root}"
+trap - ERR
+
+logger --tag sitbank-bootstrap -- \
+    "environment=${target} result=success revision=${trusted_sha}"
+echo "Installed trusted ${target} EC2 deployment files from ${trusted_sha}"

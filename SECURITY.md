@@ -93,6 +93,16 @@ identical. Deployment accepts only the configured GHCR repository, exact
 workflow identity, a 40-character candidate commit SHA, and an immutable
 SHA-256 digest.
 
+Root-owned EC2 deployment files are refreshed only through the manual
+`bootstrap-ec2.yml` workflow selected from protected `main`. Its archive is
+bound to `github.workflow_sha`, signed with GitHub OIDC, uploaded with strict
+SSH host-key verification, and verified by the restricted root bootstrap
+wrapper against the exact
+`bootstrap-ec2.yml@refs/heads/main` certificate identity. The deploy account
+has no general sudo or Docker access. Environment approval and separate
+staging/production SSH credentials remain mandatory. This workflow installs
+deployment files only; it cannot publish or deploy an application image.
+
 Production deployment is automatic on a protected `main` push only. It must
 not run unless staging succeeded in the same workflow; disabled, skipped, or
 failed staging blocks production.
