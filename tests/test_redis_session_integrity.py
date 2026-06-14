@@ -7,9 +7,16 @@ import json
 import time
 from datetime import datetime, timezone
 
+import pytest
+
 from app.extensions import db
 from app.models import SecurityAuditEvent, User
-from app.security.session_hmac import SESSION_PAYLOAD_FORMAT_VERSION
+from app.security.session_hmac import (
+    SESSION_PAYLOAD_FORMAT_VERSION,
+    SessionPayloadIntegrityError,
+    sign_session_payload,
+    verify_session_payload,
+)
 
 
 def _create_user(username: str = "alice01") -> int:
@@ -68,13 +75,20 @@ def _replace_unsigned_payload(app, session_id: str, mutator) -> None:
     _store_envelope(app, session_id, envelope)
 
 
-def _signature(app, key_id: str, encoded_payload: str) -> str:
-    signing_input = (
-        f"sitbank-session-v{SESSION_PAYLOAD_FORMAT_VERSION}.{key_id}.{encoded_payload}"
+def _signature(app, key_id: str, encoded_payload: str, binding_context: str) -> str:
+    signing_input = json.dumps(
+        {
+            "ctx": binding_context,
+            "kid": key_id,
+            "payload": encoded_payload,
+            "v": SESSION_PAYLOAD_FORMAT_VERSION,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
     )
     return hmac.new(
         app.config["SESSION_HMAC_KEYS"][key_id],
-        signing_input.encode("ascii"),
+        signing_input.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
 
@@ -164,7 +178,12 @@ def test_malformed_redis_session_payload_is_rejected(app, client):
     session_id = _authenticate_session(client, user_id)
     envelope = _load_envelope(app, session_id)
     envelope["payload"] = "not-valid-base64"
-    envelope["sig"] = _signature(app, envelope["kid"], envelope["payload"])
+    envelope["sig"] = _signature(
+        app,
+        envelope["kid"],
+        envelope["payload"],
+        _session_key(app, session_id),
+    )
     _store_envelope(app, session_id, envelope)
 
     _assert_session_rejected(app, client)
@@ -178,6 +197,20 @@ def test_unsupported_redis_session_payload_format_is_rejected(app, client):
     _assert_session_rejected(app, client)
 
 
+def test_signed_redis_session_payload_copied_to_another_key_is_rejected(app, client):
+    alice_id = _create_user("alice01")
+    alice_session_id = _authenticate_session(client, alice_id)
+    signed_payload = app.extensions["redis_session"].get(_session_key(app, alice_session_id))
+    assert signed_payload is not None
+
+    second_client = app.test_client()
+    bob_id = _create_user("bob02")
+    bob_session_id = _authenticate_session(second_client, bob_id)
+    app.extensions["redis_session"].set(_session_key(app, bob_session_id), signed_payload)
+
+    _assert_session_rejected(app, second_client)
+
+
 def test_redis_session_payload_survives_active_hmac_key_rotation(app, client):
     user_id = _create_user()
     session_id = _authenticate_session(client, user_id)
@@ -189,3 +222,18 @@ def test_redis_session_payload_survives_active_hmac_key_rotation(app, client):
 
     assert response.status_code == 200
     assert rotated_envelope["kid"] == "test-previous"
+
+
+def test_session_payload_binding_context_is_required_and_checked(app):
+    payload = app.session_interface.serializer.encode({"user_id": 1})
+    signed_payload = sign_session_payload(payload, binding_context="session:alpha")
+
+    assert verify_session_payload(signed_payload, binding_context="session:alpha") == payload
+
+    with pytest.raises(SessionPayloadIntegrityError) as missing_context:
+        verify_session_payload(signed_payload, binding_context="")
+    assert missing_context.value.reason == "missing_binding_context"
+
+    with pytest.raises(SessionPayloadIntegrityError) as wrong_context:
+        verify_session_payload(signed_payload, binding_context="session:bravo")
+    assert wrong_context.value.reason == "invalid_signature"

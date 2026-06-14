@@ -1,5 +1,5 @@
 # Temporary exception for inherited Debian Trixie perl-base CVEs.
-# Inherited from official python:3.12.13-slim-trixie / Debian Trixie.
+# Inherited from official python:3.12 slim-trixie / Debian Trixie.
 # SITBank does not install Perl directly.
 # Debian perl-base is Essential: yes and must not be removed.
 # SITBank does not invoke Perl.

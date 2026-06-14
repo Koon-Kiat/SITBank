@@ -9,25 +9,13 @@ import re
 import stat
 from pathlib import Path
 
+from ops.runtime_contract import (
+    DEPLOYMENT_SECRET_INPUTS,
+    NON_SECRET_DEFAULTS as RUNTIME_NON_SECRET_DEFAULTS,
+)
 
-SECRET_INPUTS = {
-    "DATABASE_MIGRATION_URL": "database_migration_url",
-    "DATABASE_URL": "database_url",
-    "MFA_AES256_GCM_KEY_B64": "mfa_aes256_gcm_key_b64",
-    "PASSWORD_PEPPER_B64": "password_pepper_b64",
-    "REDIS_URL": "redis_url",
-    "SECRET_KEY": "secret_key",
-    "WTF_CSRF_SECRET_KEY": "wtf_csrf_secret_key",
-}
-
-NON_SECRET_DEFAULTS = {
-    "COMMON_PASSWORDS_MIN_ENTRIES": "100000",
-    "HIBP_CIRCUIT_FAILURE_THRESHOLD": "3",
-    "HIBP_CIRCUIT_OPEN_SECONDS": "300",
-    "HIBP_PASSWORD_CHECK_TIMEOUT_SECONDS": "2.0",
-    "PASSWORD_PBKDF2_ITERATIONS": "600000",
-    "TRUSTED_PROXY_COUNT": "1",
-}
+SECRET_INPUTS = dict(DEPLOYMENT_SECRET_INPUTS)
+NON_SECRET_DEFAULTS = dict(RUNTIME_NON_SECRET_DEFAULTS)
 
 DEPLOYMENT_PREFIXES = {"PROD", "STAGING"}
 

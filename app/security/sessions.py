@@ -54,7 +54,10 @@ class UuidRedisSessionInterface(RedisSessionInterface):
             return None
 
         try:
-            payload = verify_session_payload(serialized_session_data)
+            payload = verify_session_payload(
+                serialized_session_data,
+                binding_context=store_id,
+            )
             session_data = self.serializer.decode(payload)
         except SessionPayloadIntegrityError as exc:
             self._handle_session_integrity_failure(store_id, exc.reason)
@@ -70,7 +73,10 @@ class UuidRedisSessionInterface(RedisSessionInterface):
 
     def _upsert_session(self, session_lifetime, session, store_id: str) -> None:
         serialized_session_data = self.serializer.encode(session)
-        signed_session_data = sign_session_payload(serialized_session_data)
+        signed_session_data = sign_session_payload(
+            serialized_session_data,
+            binding_context=store_id,
+        )
         self.client.set(
             name=store_id,
             value=signed_session_data,
