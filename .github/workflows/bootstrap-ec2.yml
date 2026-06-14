@@ -134,6 +134,18 @@ jobs:
             exit 1
           fi
 
+      - name: Verify restricted staging bootstrap authorization
+        shell: bash
+        run: |
+          if ! ssh -p "${REMOTE_PORT}" -i ~/.ssh/bootstrap_key \
+              -o BatchMode=yes -o IdentitiesOnly=yes \
+              -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+              "${REMOTE_USER}@${REMOTE_HOST}" \
+              "test -x /usr/local/sbin/sitbank-container-bootstrap && sudo -n -l /usr/local/sbin/sitbank-container-bootstrap >/dev/null"; then
+            echo "::error::The restricted EC2 bootstrap wrapper is not installed or is not authorized for passwordless execution. Complete the one-time administrator bootstrap from merged main, then rerun this workflow."
+            exit 1
+          fi
+
       - name: Upload signed bootstrap archive
         shell: bash
         run: |
@@ -151,7 +163,7 @@ jobs:
             -o BatchMode=yes -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
             "${REMOTE_USER}@${REMOTE_HOST}" \
-            "sudo /usr/local/sbin/sitbank-container-bootstrap '${TARGET}' '${TRUSTED_SHA}'"
+            "sudo -n /usr/local/sbin/sitbank-container-bootstrap '${TARGET}' '${TRUSTED_SHA}'"
 
       - name: Verify installed staging wrapper hash
         shell: bash
@@ -280,6 +292,18 @@ jobs:
             exit 1
           fi
 
+      - name: Verify restricted production bootstrap authorization
+        shell: bash
+        run: |
+          if ! ssh -p "${REMOTE_PORT}" -i ~/.ssh/bootstrap_key \
+              -o BatchMode=yes -o IdentitiesOnly=yes \
+              -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+              "${REMOTE_USER}@${REMOTE_HOST}" \
+              "test -x /usr/local/sbin/sitbank-container-bootstrap && sudo -n -l /usr/local/sbin/sitbank-container-bootstrap >/dev/null"; then
+            echo "::error::The restricted EC2 bootstrap wrapper is not installed or is not authorized for passwordless execution. Complete the one-time administrator bootstrap from merged main, then rerun this workflow."
+            exit 1
+          fi
+
       - name: Upload signed bootstrap archive
         shell: bash
         run: |
@@ -297,7 +321,7 @@ jobs:
             -o BatchMode=yes -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
             "${REMOTE_USER}@${REMOTE_HOST}" \
-            "sudo /usr/local/sbin/sitbank-container-bootstrap '${TARGET}' '${TRUSTED_SHA}'"
+            "sudo -n /usr/local/sbin/sitbank-container-bootstrap '${TARGET}' '${TRUSTED_SHA}'"
 
       - name: Verify installed production wrapper hash
         shell: bash

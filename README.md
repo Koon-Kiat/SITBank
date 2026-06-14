@@ -358,6 +358,25 @@ exception: perform one final administrator-run bootstrap from reviewed
 sudoers entry. After that one-time installation, future trusted bootstrap
 refreshes can use the manual workflow.
 
+If the manual workflow reports that `sudo` requires a terminal or password,
+the one-time installation has not been completed on EC2. Create and upload an
+archive from the merged `main` branch using the administrator procedure in
+**One-Time EC2 Transition**, then run:
+
+```bash
+cd /opt/sitbank-bootstrap
+sudo bash ops/deploy/bootstrap-container-ec2 \
+  staging WenJiangggg/SITBank staging-sitbank.duckdns.org
+sudo test -x /usr/local/sbin/sitbank-container-bootstrap
+sudo visudo -cf /etc/sudoers.d/sitbank-container-deploy
+sudo -u sitbank-deploy sudo -n -l \
+  /usr/local/sbin/sitbank-container-bootstrap
+```
+
+Only the first command requires the EC2 administrator account. A successful
+staging bootstrap installs the shared restricted wrapper and sudoers rule, so
+the protected workflow can perform later staging or production refreshes.
+
 ### Temporary Trivy Exception
 
 `.trivyignore` contains a narrow temporary exception for only
