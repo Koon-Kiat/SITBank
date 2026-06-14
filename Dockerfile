@@ -1,4 +1,4 @@
-FROM python:3.12.13-slim-trixie@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203 AS builder
+FROM python:3.12.13-slim-trixie@sha256:d764629ce0ddd8c71fd371e9901efb324a95789d2315a47db7e4d27e78f1b0e9 AS builder
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -10,7 +10,7 @@ RUN /opt/venv/bin/python -m pip install \
     --require-hashes \
     --requirement /tmp/requirements.lock
 
-FROM python:3.12.13-slim-trixie@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203 AS runtime
+FROM python:3.12.13-slim-trixie@sha256:d764629ce0ddd8c71fd371e9901efb324a95789d2315a47db7e4d27e78f1b0e9 AS runtime
 
 ARG VCS_REF=unknown
 ARG SOURCE_URL=unknown
