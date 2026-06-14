@@ -1012,9 +1012,14 @@ def test_manual_bootstrap_workflow_uses_only_signed_trusted_main_sources():
         assert "StrictHostKeyChecking=no" not in step_text
         assert "incoming/" in step_text
         assert (
-            "sudo /usr/local/sbin/sitbank-container-bootstrap "
+            "sudo -n /usr/local/sbin/sitbank-container-bootstrap "
             "'${TARGET}' '${TRUSTED_SHA}'"
         ) in step_text
+        assert (
+            "sudo -n -l /usr/local/sbin/sitbank-container-bootstrap"
+            in step_text
+        )
+        assert "one-time administrator bootstrap from merged main" in step_text
         assert "sha256sum ops/deploy/sitbank-container-deploy" in step_text
         assert (
             "sha256sum /usr/local/sbin/sitbank-container-deploy"
