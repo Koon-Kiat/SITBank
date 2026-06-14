@@ -6,6 +6,9 @@ readonly CONTAINER_GID="10001"
 readonly CONTAINER_ACCOUNT="sitbank-container"
 readonly COSIGN_VERSION="3.0.5"
 readonly COSIGN_SHA256="db15cc99e6e4837daabab023742aaddc3841ce57f193d11b7c3e06c8003642b2"
+readonly STAGING_PUBLIC_HOST="staging-sitbank.duckdns.org"
+readonly STAGING_BASIC_AUTH_FILE="/etc/nginx/.htpasswd-sitbank-staging"
+readonly STAGING_RATE_LIMITS_FILE="/etc/nginx/conf.d/sitbank-staging-rate-limits.conf"
 
 if [[ "${EUID}" -ne 0 ]]; then
     echo "Run this bootstrap script as root" >&2
@@ -35,6 +38,10 @@ if [[ -z "${public_host}" ]]; then
 fi
 if [[ ! "${public_host}" =~ ^[A-Za-z0-9.-]+$ ]]; then
     echo "PUBLIC_HOST must be a bare hostname" >&2
+    exit 2
+fi
+if [[ "${target}" == "staging" && "${public_host}" != "${STAGING_PUBLIC_HOST}" ]]; then
+    echo "Staging PUBLIC_HOST must be ${STAGING_PUBLIC_HOST}" >&2
     exit 2
 fi
 if [[ "${target}" == "staging" \
@@ -93,6 +100,7 @@ if [[ "${target}" == "staging" ]]; then
     linux_runtime_files+=(
         "${repo_root}/ops/nginx-proxy-headers.conf"
         "${repo_root}/ops/nginx/sitbank-staging.conf"
+        "${repo_root}/ops/nginx/sitbank-staging-rate-limits.conf"
         "${repo_root}/ops/postgres/init-sitbank-staging-roles.sh"
     )
 fi
@@ -127,6 +135,9 @@ if ! command -v docker >/dev/null 2>&1 \
         docker-buildx-plugin docker-compose-plugin
 fi
 systemctl enable --now docker.service
+if [[ "${target}" == "staging" ]]; then
+    apt-get install -y nginx certbot python3-certbot-nginx apache2-utils
+fi
 
 cosign_tmp="$(mktemp)"
 trap 'rm -f -- "${cosign_tmp}"' EXIT
@@ -237,6 +248,28 @@ for policy_file in \
 done
 
 if [[ "${target}" == "staging" ]]; then
+    staging_cert_dir="/etc/letsencrypt/live/${public_host}"
+    if [[ ! -f "${STAGING_BASIC_AUTH_FILE}" || -L "${STAGING_BASIC_AUTH_FILE}" \
+        || ! -r "${STAGING_BASIC_AUTH_FILE}" ]]; then
+        echo "Missing required staging Basic Auth file: ${STAGING_BASIC_AUTH_FILE}" >&2
+        echo "Create it with htpasswd, owned by root:www-data and mode 0640, before rerunning bootstrap." >&2
+        exit 1
+    fi
+    for required_staging_file in \
+        "${staging_cert_dir}/fullchain.pem" \
+        "${staging_cert_dir}/privkey.pem"; do
+        if [[ ! -r "${required_staging_file}" ]]; then
+            echo "Missing required staging TLS file: ${required_staging_file}" >&2
+            echo "Issue the staging Certbot certificate before rerunning bootstrap." >&2
+            exit 1
+        fi
+    done
+    if [[ "$(stat -c '%U:%G' -- "${STAGING_BASIC_AUTH_FILE}")" != "root:www-data" \
+        || "$(stat -c '%a' -- "${STAGING_BASIC_AUTH_FILE}")" != "640" ]]; then
+        echo "${STAGING_BASIC_AUTH_FILE} must be owned by root:www-data with mode 0640" >&2
+        exit 1
+    fi
+
     nginx_conflict=0
     while IFS= read -r enabled_site; do
         if [[ "$(readlink -f "${enabled_site}")" \
@@ -256,15 +289,46 @@ if [[ "${target}" == "staging" ]]; then
     fi
 
     install -d -o root -g root -m 0755 /etc/nginx/snippets
+    install -d -o root -g root -m 0755 /etc/nginx/conf.d
+    install -d -o root -g root -m 0755 /var/www/certbot
     install -o root -g root -m 0644 \
         "${repo_root}/ops/nginx-proxy-headers.conf" \
         /etc/nginx/snippets/sitbank-proxy-headers.conf
-    if [[ ! -e /etc/nginx/sites-available/sitbank-staging ]]; then
-        install -o root -g root -m 0644 \
-            "${repo_root}/ops/nginx/sitbank-staging.conf" \
-            /etc/nginx/sites-available/sitbank-staging
+    if [[ -e "${STAGING_RATE_LIMITS_FILE}" \
+        && ( -L "${STAGING_RATE_LIMITS_FILE}" || ! -f "${STAGING_RATE_LIMITS_FILE}" ) ]]; then
+        echo "Refusing to replace unsafe staging Nginx rate-limit file: ${STAGING_RATE_LIMITS_FILE}" >&2
+        exit 1
     fi
-    ln -sfn /etc/nginx/sites-available/sitbank-staging \
+    if [[ -f "${STAGING_RATE_LIMITS_FILE}" ]] \
+        && ! cmp -s \
+            "${repo_root}/ops/nginx/sitbank-staging-rate-limits.conf" \
+            "${STAGING_RATE_LIMITS_FILE}"; then
+        install -o root -g root -m 0644 \
+            "${STAGING_RATE_LIMITS_FILE}" \
+            "${backup_dir}/nginx-sitbank-staging-rate-limits.$(date -u +%Y%m%dT%H%M%SZ).conf"
+    fi
+    install -o root -g root -m 0644 \
+        "${repo_root}/ops/nginx/sitbank-staging-rate-limits.conf" \
+        "${STAGING_RATE_LIMITS_FILE}"
+
+    staging_site="/etc/nginx/sites-available/sitbank-staging"
+    if [[ -e "${staging_site}" \
+        && ( -L "${staging_site}" || ! -f "${staging_site}" ) ]]; then
+        echo "Refusing to replace unsafe staging Nginx config: ${staging_site}" >&2
+        exit 1
+    fi
+    if [[ -f "${staging_site}" ]] \
+        && ! cmp -s \
+            "${repo_root}/ops/nginx/sitbank-staging.conf" \
+            "${staging_site}"; then
+        install -o root -g root -m 0644 \
+            "${staging_site}" \
+            "${backup_dir}/nginx-sitbank-staging.$(date -u +%Y%m%dT%H%M%SZ).conf"
+    fi
+    install -o root -g root -m 0644 \
+        "${repo_root}/ops/nginx/sitbank-staging.conf" \
+        "${staging_site}"
+    ln -sfn "${staging_site}" \
         /etc/nginx/sites-enabled/sitbank-staging
     nginx -t
     systemctl reload nginx
