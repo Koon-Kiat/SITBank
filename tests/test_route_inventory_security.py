@@ -1,0 +1,690 @@
+from __future__ import annotations
+
+import ast
+from pathlib import Path
+
+
+UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+AUTH_DECORATORS = {"login_required", "web_login_required"}
+RATE_LIMIT_DECISIONS = {
+    "per_route",
+    "edge_auth",
+    "edge_app",
+    "edge_health_ready",
+    "not_needed_liveness",
+}
+STEP_UP_DECISIONS = {
+    "not_required",
+    "required",
+    "conditional",
+    "ceremony_endpoint",
+    "fresh_mfa",
+    "already_authorized_continuation",
+}
+SENSITIVE_CLASSIFICATIONS = {
+    "account_freeze",
+    "csrf",
+    "dashboard",
+    "login",
+    "logout",
+    "mfa",
+    "password",
+    "profile",
+    "registration",
+    "session",
+    "webauthn",
+}
+
+
+ROUTE_MODULES = {
+    "auth": Path("app/auth/routes.py"),
+    "main": Path("app/main/routes.py"),
+    "web": Path("app/web/routes.py"),
+}
+
+
+ROUTE_SECURITY_INVENTORY = {
+    "main.index": {
+        "endpoint": "main.index",
+        "rule": "/",
+        "methods": {"GET"},
+        "access": "public",
+        "classification": "homepage",
+        "csrf": "not_applicable",
+        "rate_limit": "edge_app",
+        "step_up": "not_required",
+        "public_justification": "Public landing page; authenticated users are redirected to the dashboard.",
+    },
+    "main.health_live": {
+        "endpoint": "main.health_live",
+        "rule": "/health/live",
+        "methods": {"GET"},
+        "access": "public",
+        "classification": "health",
+        "csrf": "not_applicable",
+        "rate_limit": "not_needed_liveness",
+        "step_up": "not_required",
+        "public_justification": "Liveness endpoint intentionally returns only process status for external monitors.",
+    },
+    "main.health_ready": {
+        "endpoint": "main.health_ready",
+        "rule": "/health/ready",
+        "methods": {"GET"},
+        "access": "public",
+        "classification": "health",
+        "csrf": "not_applicable",
+        "rate_limit": "edge_health_ready",
+        "step_up": "not_required",
+        "public_justification": "Readiness is public only inside Flask; production and staging Nginx restrict it to loopback.",
+    },
+    "auth.csrf_token": {
+        "endpoint": "auth.csrf_token",
+        "rule": "/auth/csrf-token",
+        "methods": {"GET"},
+        "access": "public",
+        "classification": "csrf",
+        "csrf": "not_applicable",
+        "rate_limit": "edge_auth",
+        "step_up": "not_required",
+        "public_justification": "JSON clients need a token before submitting CSRF-protected auth requests.",
+    },
+    "auth.register": {
+        "endpoint": "auth.register",
+        "rule": "/auth/register",
+        "methods": {"POST"},
+        "access": "public",
+        "classification": "registration",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "not_required",
+        "public_justification": "Account creation remains intentionally open but CSRF-protected and rate-limited.",
+    },
+    "auth.login": {
+        "endpoint": "auth.login",
+        "rule": "/auth/login",
+        "methods": {"POST"},
+        "access": "public",
+        "classification": "login",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "not_required",
+        "public_justification": "Primary authentication must be reachable before a user has a session.",
+    },
+    "auth.webauthn_register_options": {
+        "endpoint": "auth.webauthn_register_options",
+        "rule": "/auth/webauthn/register/options",
+        "methods": {"POST"},
+        "access": "authenticated",
+        "classification": "webauthn",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
+    "auth.webauthn_register_verify": {
+        "endpoint": "auth.webauthn_register_verify",
+        "rule": "/auth/webauthn/register/verify",
+        "methods": {"POST"},
+        "access": "authenticated",
+        "classification": "webauthn",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
+    "auth.webauthn_authenticate_options": {
+        "endpoint": "auth.webauthn_authenticate_options",
+        "rule": "/auth/webauthn/authenticate/options",
+        "methods": {"POST"},
+        "access": "public",
+        "classification": "webauthn",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "not_required",
+        "public_justification": "WebAuthn login challenge endpoint is part of authentication before a user session exists.",
+    },
+    "auth.webauthn_authenticate_verify": {
+        "endpoint": "auth.webauthn_authenticate_verify",
+        "rule": "/auth/webauthn/authenticate/verify",
+        "methods": {"POST"},
+        "access": "public",
+        "classification": "webauthn",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "not_required",
+        "public_justification": "WebAuthn login assertion endpoint completes authentication before a user session exists.",
+    },
+    "auth.webauthn_step_up_options": {
+        "endpoint": "auth.webauthn_step_up_options",
+        "rule": "/auth/webauthn/step-up/options",
+        "methods": {"POST"},
+        "access": "authenticated",
+        "classification": "webauthn",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "ceremony_endpoint",
+        "public_justification": "",
+    },
+    "auth.webauthn_step_up_verify": {
+        "endpoint": "auth.webauthn_step_up_verify",
+        "rule": "/auth/webauthn/step-up/verify",
+        "methods": {"POST"},
+        "access": "authenticated",
+        "classification": "webauthn",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "ceremony_endpoint",
+        "public_justification": "",
+    },
+    "auth.webauthn_credentials": {
+        "endpoint": "auth.webauthn_credentials",
+        "rule": "/auth/webauthn/credentials",
+        "methods": {"GET"},
+        "access": "authenticated",
+        "classification": "webauthn",
+        "csrf": "not_applicable",
+        "rate_limit": "edge_auth",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
+    "auth.webauthn_revoke_credential": {
+        "endpoint": "auth.webauthn_revoke_credential",
+        "rule": "/auth/webauthn/credentials/<credential_id>",
+        "methods": {"DELETE"},
+        "access": "authenticated",
+        "classification": "webauthn",
+        "csrf": "required",
+        "rate_limit": "edge_auth",
+        "step_up": "required",
+        "public_justification": "",
+    },
+    "auth.logout": {
+        "endpoint": "auth.logout",
+        "rule": "/auth/logout",
+        "methods": {"POST"},
+        "access": "public",
+        "classification": "logout",
+        "csrf": "required",
+        "rate_limit": "edge_auth",
+        "step_up": "not_required",
+        "public_justification": "Logout is idempotent and clears only the caller's current session state.",
+    },
+    "auth.mfa_setup": {
+        "endpoint": "auth.mfa_setup",
+        "rule": "/auth/mfa/setup",
+        "methods": {"POST"},
+        "access": "authenticated",
+        "classification": "mfa",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
+    "auth.mfa_setup_verify": {
+        "endpoint": "auth.mfa_setup_verify",
+        "rule": "/auth/mfa/setup/verify",
+        "methods": {"POST"},
+        "access": "authenticated",
+        "classification": "mfa",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
+    "auth.mfa_replace_start": {
+        "endpoint": "auth.mfa_replace_start",
+        "rule": "/auth/mfa/replace/start",
+        "methods": {"POST"},
+        "access": "authenticated",
+        "classification": "mfa",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "required",
+        "public_justification": "",
+    },
+    "auth.mfa_replace_verify": {
+        "endpoint": "auth.mfa_replace_verify",
+        "rule": "/auth/mfa/replace/verify",
+        "methods": {"POST"},
+        "access": "authenticated",
+        "classification": "mfa",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "already_authorized_continuation",
+        "public_justification": "",
+    },
+    "auth.mfa_verify": {
+        "endpoint": "auth.mfa_verify",
+        "rule": "/auth/mfa/verify",
+        "methods": {"POST"},
+        "access": "public",
+        "classification": "mfa",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "not_required",
+        "public_justification": "TOTP verification completes a pending login before a full user session exists.",
+    },
+    "auth.sessions_dashboard": {
+        "endpoint": "auth.sessions_dashboard",
+        "rule": "/auth/sessions",
+        "methods": {"GET"},
+        "access": "authenticated",
+        "classification": "session",
+        "csrf": "not_applicable",
+        "rate_limit": "edge_auth",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
+    "auth.terminate_session": {
+        "endpoint": "auth.terminate_session",
+        "rule": "/auth/sessions/<session_id>",
+        "methods": {"DELETE"},
+        "access": "authenticated",
+        "classification": "session",
+        "csrf": "required",
+        "rate_limit": "edge_auth",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
+    "auth.revoke_other_sessions": {
+        "endpoint": "auth.revoke_other_sessions",
+        "rule": "/auth/sessions/revoke-others",
+        "methods": {"POST"},
+        "access": "authenticated",
+        "classification": "session",
+        "csrf": "required",
+        "rate_limit": "edge_auth",
+        "step_up": "required",
+        "public_justification": "",
+    },
+    "auth.freeze_account": {
+        "endpoint": "auth.freeze_account",
+        "rule": "/auth/account/freeze",
+        "methods": {"POST"},
+        "access": "authenticated",
+        "classification": "account_freeze",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "required",
+        "public_justification": "",
+    },
+    "auth.password_change": {
+        "endpoint": "auth.password_change",
+        "rule": "/auth/password/change",
+        "methods": {"POST"},
+        "access": "authenticated",
+        "classification": "password",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "required",
+        "public_justification": "",
+    },
+    "web.register_form": {
+        "endpoint": "web.register_form",
+        "rule": "/register",
+        "methods": {"GET"},
+        "access": "public",
+        "classification": "registration",
+        "csrf": "not_applicable",
+        "rate_limit": "edge_app",
+        "step_up": "not_required",
+        "public_justification": "Registration form must be reachable before account creation.",
+    },
+    "web.register_submit": {
+        "endpoint": "web.register_submit",
+        "rule": "/register",
+        "methods": {"POST"},
+        "access": "public",
+        "classification": "registration",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "not_required",
+        "public_justification": "Account creation remains intentionally open but CSRF-protected and rate-limited.",
+    },
+    "web.login": {
+        "endpoint": "web.login",
+        "rule": "/login",
+        "methods": {"GET"},
+        "access": "public",
+        "classification": "login",
+        "csrf": "not_applicable",
+        "rate_limit": "edge_app",
+        "step_up": "not_required",
+        "public_justification": "Login form must be reachable before a user has a session.",
+    },
+    "web.login_submit": {
+        "endpoint": "web.login_submit",
+        "rule": "/login",
+        "methods": {"POST"},
+        "access": "public",
+        "classification": "login",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "not_required",
+        "public_justification": "Primary authentication must be reachable before a user has a session.",
+    },
+    "web.mfa_verify": {
+        "endpoint": "web.mfa_verify",
+        "rule": "/mfa/verify",
+        "methods": {"GET"},
+        "access": "public",
+        "classification": "mfa",
+        "csrf": "not_applicable",
+        "rate_limit": "edge_app",
+        "step_up": "not_required",
+        "public_justification": "MFA form is reachable with a pending MFA session before full authentication.",
+    },
+    "web.mfa_verify_submit": {
+        "endpoint": "web.mfa_verify_submit",
+        "rule": "/mfa/verify",
+        "methods": {"POST"},
+        "access": "public",
+        "classification": "mfa",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "not_required",
+        "public_justification": "TOTP verification completes a pending login before a full user session exists.",
+    },
+    "web.dashboard": {
+        "endpoint": "web.dashboard",
+        "rule": "/dashboard",
+        "methods": {"GET"},
+        "access": "authenticated",
+        "classification": "dashboard",
+        "csrf": "not_applicable",
+        "rate_limit": "edge_app",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
+    "web.security_keys": {
+        "endpoint": "web.security_keys",
+        "rule": "/security-keys",
+        "methods": {"GET"},
+        "access": "authenticated",
+        "classification": "webauthn",
+        "csrf": "not_applicable",
+        "rate_limit": "edge_app",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
+    "web.security_keys_mfa_refresh": {
+        "endpoint": "web.security_keys_mfa_refresh",
+        "rule": "/security-keys/mfa/refresh",
+        "methods": {"POST"},
+        "access": "authenticated",
+        "classification": "mfa",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "fresh_mfa",
+        "public_justification": "",
+    },
+    "web.security_key_revoke": {
+        "endpoint": "web.security_key_revoke",
+        "rule": "/security-keys/<credential_id>/revoke",
+        "methods": {"POST"},
+        "access": "authenticated",
+        "classification": "webauthn",
+        "csrf": "required",
+        "rate_limit": "edge_app",
+        "step_up": "required",
+        "public_justification": "",
+    },
+    "web.profile": {
+        "endpoint": "web.profile",
+        "rule": "/profile",
+        "methods": {"GET"},
+        "access": "authenticated",
+        "classification": "profile",
+        "csrf": "not_applicable",
+        "rate_limit": "edge_app",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
+    "web.profile_submit": {
+        "endpoint": "web.profile_submit",
+        "rule": "/profile",
+        "methods": {"POST"},
+        "access": "authenticated",
+        "classification": "profile",
+        "csrf": "required",
+        "rate_limit": "edge_app",
+        "step_up": "required",
+        "public_justification": "",
+    },
+    "web.mfa_setup": {
+        "endpoint": "web.mfa_setup",
+        "rule": "/mfa/setup",
+        "methods": {"GET"},
+        "access": "authenticated",
+        "classification": "mfa",
+        "csrf": "not_applicable",
+        "rate_limit": "edge_app",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
+    "web.mfa_setup_submit": {
+        "endpoint": "web.mfa_setup_submit",
+        "rule": "/mfa/setup",
+        "methods": {"POST"},
+        "access": "authenticated",
+        "classification": "mfa",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "conditional",
+        "public_justification": "",
+    },
+    "web.password_change": {
+        "endpoint": "web.password_change",
+        "rule": "/password/change",
+        "methods": {"GET"},
+        "access": "authenticated",
+        "classification": "password",
+        "csrf": "not_applicable",
+        "rate_limit": "edge_app",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
+    "web.password_change_submit": {
+        "endpoint": "web.password_change_submit",
+        "rule": "/password/change",
+        "methods": {"POST"},
+        "access": "authenticated",
+        "classification": "password",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "required",
+        "public_justification": "",
+    },
+    "web.sessions_dashboard": {
+        "endpoint": "web.sessions_dashboard",
+        "rule": "/sessions",
+        "methods": {"GET"},
+        "access": "authenticated",
+        "classification": "session",
+        "csrf": "not_applicable",
+        "rate_limit": "edge_app",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
+    "web.terminate_session": {
+        "endpoint": "web.terminate_session",
+        "rule": "/sessions/<session_id>/terminate",
+        "methods": {"POST"},
+        "access": "authenticated",
+        "classification": "session",
+        "csrf": "required",
+        "rate_limit": "edge_app",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
+    "web.revoke_other_sessions": {
+        "endpoint": "web.revoke_other_sessions",
+        "rule": "/sessions/revoke-others",
+        "methods": {"POST"},
+        "access": "authenticated",
+        "classification": "session",
+        "csrf": "required",
+        "rate_limit": "edge_app",
+        "step_up": "required",
+        "public_justification": "",
+    },
+    "web.freeze_account": {
+        "endpoint": "web.freeze_account",
+        "rule": "/account/freeze",
+        "methods": {"GET"},
+        "access": "authenticated",
+        "classification": "account_freeze",
+        "csrf": "not_applicable",
+        "rate_limit": "edge_app",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
+    "web.freeze_account_submit": {
+        "endpoint": "web.freeze_account_submit",
+        "rule": "/account/freeze",
+        "methods": {"POST"},
+        "access": "authenticated",
+        "classification": "account_freeze",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "required",
+        "public_justification": "",
+    },
+    "web.logout": {
+        "endpoint": "web.logout",
+        "rule": "/logout",
+        "methods": {"POST"},
+        "access": "public",
+        "classification": "logout",
+        "csrf": "required",
+        "rate_limit": "edge_app",
+        "step_up": "not_required",
+        "public_justification": "Logout is idempotent and clears only the caller's current session state.",
+    },
+}
+
+
+def _actual_routes(app):
+    routes = {}
+    duplicate_routes = {}
+    for rule in app.url_map.iter_rules():
+        if rule.endpoint == "static":
+            continue
+        route = {
+            "rule": rule.rule,
+            "methods": set(rule.methods) - {"HEAD", "OPTIONS"},
+        }
+        if rule.endpoint in routes:
+            duplicate_routes.setdefault(rule.endpoint, [routes[rule.endpoint]]).append(route)
+            continue
+        routes[rule.endpoint] = route
+    assert not duplicate_routes, (
+        "Route inventory keys by endpoint; model multiple rules explicitly "
+        f"before reusing endpoint names: {duplicate_routes}"
+    )
+    return routes
+
+
+def _decorator_name(decorator: ast.expr) -> str:
+    target = decorator.func if isinstance(decorator, ast.Call) else decorator
+    if isinstance(target, ast.Attribute):
+        return target.attr
+    if isinstance(target, ast.Name):
+        return target.id
+    return ast.dump(target)
+
+
+def _route_source_inventory():
+    decorators = {}
+    sources = {}
+    for blueprint, path in ROUTE_MODULES.items():
+        text = path.read_text(encoding="utf-8")
+        lines = text.splitlines()
+        tree = ast.parse(text)
+        for node in tree.body:
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            names = {_decorator_name(decorator) for decorator in node.decorator_list}
+            if names.intersection({"route", "get", "post", "put", "patch", "delete"}):
+                endpoint = f"{blueprint}.{node.name}"
+                decorators[endpoint] = names
+                sources[endpoint] = "\n".join(lines[node.lineno - 1 : node.end_lineno])
+    return decorators, sources
+
+
+def test_route_inventory_matches_registered_flask_routes(app):
+    actual = _actual_routes(app)
+    expected = {
+        endpoint: {
+            "rule": entry["rule"],
+            "methods": entry["methods"],
+        }
+        for endpoint, entry in ROUTE_SECURITY_INVENTORY.items()
+    }
+
+    assert actual == expected
+
+
+def test_route_inventory_has_complete_security_decisions(app):
+    actual = _actual_routes(app)
+    decorators, sources = _route_source_inventory()
+
+    for endpoint, entry in ROUTE_SECURITY_INVENTORY.items():
+        assert entry["endpoint"] == endpoint
+        assert entry["rule"] == actual[endpoint]["rule"]
+        assert entry["methods"] == actual[endpoint]["methods"]
+        assert entry["access"] in {"public", "authenticated"}
+        assert entry["classification"]
+        assert entry["rate_limit"] in RATE_LIMIT_DECISIONS
+        assert entry["step_up"] in STEP_UP_DECISIONS
+
+        route_decorators = decorators[endpoint]
+        if entry["access"] == "authenticated":
+            assert route_decorators.intersection(AUTH_DECORATORS), (
+                f"{endpoint} is inventoried as authenticated but has no login decorator"
+            )
+            assert not entry["public_justification"]
+        else:
+            assert entry["public_justification"], f"{endpoint} needs a public route justification"
+            assert not route_decorators.intersection(AUTH_DECORATORS), (
+                f"{endpoint} is inventoried as public but has an auth decorator"
+            )
+
+        if entry["methods"].intersection(UNSAFE_METHODS):
+            assert entry["csrf"] == "required", f"{endpoint} must have an unsafe-method CSRF decision"
+            assert "exempt" not in route_decorators, f"{endpoint} must not be CSRF-exempt"
+        else:
+            assert entry["csrf"] == "not_applicable"
+
+        if entry["classification"] in SENSITIVE_CLASSIFICATIONS:
+            assert entry["rate_limit"] in RATE_LIMIT_DECISIONS, (
+                f"{endpoint} is sensitive and needs an explicit rate-limit decision"
+            )
+        if entry["rate_limit"] == "per_route":
+            assert "limit" in route_decorators, f"{endpoint} is expected to have Flask-Limiter decorators"
+
+        source = sources[endpoint]
+        if entry["step_up"] == "required":
+            assert "stepup_token" in source or "verify_high_risk_authorization" in source, (
+                f"{endpoint} is expected to require WebAuthn step-up"
+            )
+        if entry["step_up"] == "conditional":
+            assert "stepup_token" in source, f"{endpoint} must document its conditional step-up branch"
+        if entry["step_up"] == "ceremony_endpoint":
+            assert endpoint.startswith("auth.webauthn_step_up_")
+
+
+def test_login_and_registration_have_method_level_security_decisions(app):
+    actual = _actual_routes(app)
+
+    assert actual["web.login"] == {"rule": "/login", "methods": {"GET"}}
+    assert actual["web.login_submit"] == {"rule": "/login", "methods": {"POST"}}
+    assert ROUTE_SECURITY_INVENTORY["web.login"]["csrf"] == "not_applicable"
+    assert ROUTE_SECURITY_INVENTORY["web.login_submit"]["csrf"] == "required"
+    assert ROUTE_SECURITY_INVENTORY["web.login_submit"]["rate_limit"] == "per_route"
+
+    assert actual["web.register_form"] == {"rule": "/register", "methods": {"GET"}}
+    assert actual["web.register_submit"] == {"rule": "/register", "methods": {"POST"}}
+    assert ROUTE_SECURITY_INVENTORY["web.register_form"]["csrf"] == "not_applicable"
+    assert ROUTE_SECURITY_INVENTORY["web.register_submit"]["csrf"] == "required"
+    assert ROUTE_SECURITY_INVENTORY["web.register_submit"]["rate_limit"] == "per_route"

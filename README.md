@@ -85,6 +85,75 @@ or container deployment scripts. GitHub Actions remains the authoritative
 - The SSH deployment user is not a member of the `docker` group and can run
   only the validated root deployment wrapper.
 
+### Production Edge and Network Hardening
+
+Production edge proof lives in:
+
+- `ops/nginx/sitbank-production.conf`
+- `ops/nginx/sitbank-production-rate-limits.conf`
+- `ops/nginx-proxy-headers.conf`
+- `compose.prod.yml`
+- `Dockerfile`
+
+The intended production network posture is:
+
+- Public ingress is TCP `80` and `443` only.
+- SSH is restricted to an administrator IP allowlist, AWS Systems Manager,
+  a bastion, or VPN. Do not expose TCP `22` to `0.0.0.0/0` or `::/0`.
+- Nginx terminates TLS, redirects HTTP to HTTPS, and proxies only to
+  `127.0.0.1:5000`.
+- Gunicorn binds only to `127.0.0.1:5000`; `compose.prod.yml` publishes no
+  application port.
+- PostgreSQL and Redis remain localhost-only host services and are not exposed
+  through Docker or the public security group.
+- `/health/live` may be public because it only reports process liveness.
+- `/health/ready` is for local deployment and load-balancer checks and must be
+  restricted to loopback at Nginx.
+- The production edge applies request body limits, proxy timeouts, security
+  headers, TRACE denial, and rate limits for login, registration, MFA,
+  WebAuthn challenge, password, account, profile, and session endpoints.
+- Cloudflare or AWS WAF should sit in front of Nginx with managed common,
+  SQL injection, XSS, bot, and rate-based rules enabled for the same
+  auth-sensitive paths.
+
+The current bootstrap workflow does not install the production Nginx sample.
+Install or manage the production edge files through reviewed infrastructure
+provisioning, or add a reviewed bootstrap installer before relying on them:
+
+```bash
+sudo install -o root -g root -m 0644 \
+  ops/nginx/sitbank-production-rate-limits.conf \
+  /etc/nginx/conf.d/sitbank-production-rate-limits.conf
+sudo install -o root -g root -m 0644 \
+  ops/nginx/sitbank-production.conf \
+  /etc/nginx/sites-available/sitbank
+sudo install -o root -g root -m 0644 \
+  ops/nginx-proxy-headers.conf \
+  /etc/nginx/snippets/sitbank-proxy-headers.conf
+sudo ln -sfn /etc/nginx/sites-available/sitbank \
+  /etc/nginx/sites-enabled/sitbank
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+Verify the edge posture after any production infrastructure change:
+
+```bash
+sudo nginx -t
+sudo ss -ltnp | grep -E ':(80|443|5000)\b'
+sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-app
+sudo docker inspect --format '{{json .HostConfig.PortBindings}}' sitbank-app
+curl --fail https://sitbank.duckdns.org/health/live
+curl -I https://sitbank.duckdns.org/health/ready
+curl --fail -H 'X-Forwarded-Proto: https' \
+  http://127.0.0.1:5000/health/ready
+```
+
+Expected results: Nginx listens publicly on `80` and `443`, Gunicorn listens
+on loopback `127.0.0.1:5000`, Docker reports no published app ports,
+external `/health/live` returns `200`, external `/health/ready` returns `403`,
+and local direct readiness returns `200`.
+
 Staging runs beside production without sharing its Compose project, paths,
 containers, secrets, or data:
 
@@ -1238,6 +1307,8 @@ Treat changes to these paths as production-security changes:
 - `compose.prod.yml`
 - `ops/container/`
 - `ops/deploy/`
+- `ops/nginx/`
+- `ops/nginx-proxy-headers.conf`
 - `ops/systemd/`
 - `ops/sudoers/`
 - `config.py`
