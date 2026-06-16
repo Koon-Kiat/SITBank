@@ -517,7 +517,7 @@ trap rollback ERR
 
 audit_log "environment=${target} result=started revision=${release_sha} digest=${image_digest}"
 validate_legacy_configuration
-if ss -lnt | grep -Eq ':(2375|2376)\b'; then
+if ss -lnt | grep -Eq ':(2375|2376)([[:space:]]|$)'; then
     echo "Docker API must not be exposed over TCP" >&2
     exit 1
 fi
