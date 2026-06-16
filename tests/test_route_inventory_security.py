@@ -566,13 +566,22 @@ ROUTE_SECURITY_INVENTORY = {
 
 def _actual_routes(app):
     routes = {}
+    duplicate_routes = {}
     for rule in app.url_map.iter_rules():
         if rule.endpoint == "static":
             continue
-        routes[rule.endpoint] = {
+        route = {
             "rule": rule.rule,
             "methods": set(rule.methods) - {"HEAD", "OPTIONS"},
         }
+        if rule.endpoint in routes:
+            duplicate_routes.setdefault(rule.endpoint, [routes[rule.endpoint]]).append(route)
+            continue
+        routes[rule.endpoint] = route
+    assert not duplicate_routes, (
+        "Route inventory keys by endpoint; model multiple rules explicitly "
+        f"before reusing endpoint names: {duplicate_routes}"
+    )
     return routes
 
 

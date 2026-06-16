@@ -1551,7 +1551,7 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     assert Path("ops/nginx/sitbank-production.conf").exists()
     assert Path("ops/nginx/sitbank-production-rate-limits.conf").exists()
     assert "listen 80;" in nginx
-    assert "return 301 https://$host$request_uri;" in nginx
+    assert "return 301 https://sitbank.duckdns.org$request_uri;" in nginx
     assert "listen 443 ssl http2;" in nginx
     assert "server_name sitbank.duckdns.org;" in nginx
     assert "ssl_certificate /etc/letsencrypt/live/sitbank.duckdns.org/fullchain.pem;" in nginx
