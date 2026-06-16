@@ -119,9 +119,13 @@ controls below. Some controls are represented by repository files; Cloudflare
 or AWS WAF and security-group settings remain infrastructure state and must be
 checked manually.
 
-- Install or equivalently manage `ops/nginx/sitbank-production.conf`,
+- Run production bootstrap from reviewed `main` so it installs
+  `ops/nginx/sitbank-production.conf`,
   `ops/nginx/sitbank-production-rate-limits.conf`, and
-  `ops/nginx-proxy-headers.conf`.
+  `ops/nginx-proxy-headers.conf`, validates Nginx, and reloads only after
+  `nginx -t` succeeds.
+- Issue production Certbot files under
+  `/etc/letsencrypt/live/sitbank.duckdns.org/` before bootstrap.
 - Allow public inbound TCP `80` and `443` only.
 - Restrict SSH to an administrator IP allowlist, AWS Systems Manager, a
   bastion, or VPN; never allow TCP `22` from `0.0.0.0/0` or `::/0`.

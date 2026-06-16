@@ -1532,7 +1532,12 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     assert '"${repo_root}/ops/nginx/sitbank-staging.conf" \\' in bootstrap
     assert '"${staging_site}"; then' in bootstrap
     assert "if [[ ! -e /etc/nginx/sites-available/sitbank-staging" not in bootstrap
-    assert bootstrap.index("nginx -t") < bootstrap.index("systemctl reload nginx")
+    staging_site_install = bootstrap.index('"${repo_root}/ops/nginx/sitbank-staging.conf"')
+    assert staging_site_install < bootstrap.index("nginx -t", staging_site_install)
+    assert bootstrap.index("nginx -t", staging_site_install) < bootstrap.index(
+        "systemctl reload nginx",
+        staging_site_install,
+    )
     assert "docker compose up" not in bootstrap
     assert "docker pull" not in bootstrap
     assert "SITBANK_IMAGE" not in bootstrap
@@ -1544,6 +1549,9 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
         encoding="utf-8"
     )
     proxy_headers = Path("ops/nginx-proxy-headers.conf").read_text(encoding="utf-8")
+    bootstrap = Path("ops/deploy/bootstrap-container-ec2").read_text(
+        encoding="utf-8"
+    )
     dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
     production_compose = yaml.safe_load(Path("compose.prod.yml").read_text(encoding="utf-8"))
     app = production_compose["services"]["app"]
@@ -1633,6 +1641,32 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     assert "proxy_set_header X-Forwarded-For $remote_addr;" in proxy_headers
     assert "$proxy_add_x_forwarded_for" not in proxy_headers
 
+    assert 'PRODUCTION_PUBLIC_HOST="sitbank.duckdns.org"' in bootstrap
+    assert "Production PUBLIC_HOST must be ${PRODUCTION_PUBLIC_HOST}" in bootstrap
+    assert "Missing required production TLS file" in bootstrap
+    assert "Issue the production Certbot certificate before rerunning bootstrap." in bootstrap
+    assert "PRODUCTION_RATE_LIMITS_FILE=\"/etc/nginx/conf.d/sitbank-production-rate-limits.conf\"" in bootstrap
+    assert "ops/nginx/sitbank-production-rate-limits.conf" in bootstrap
+    assert "ops/nginx/sitbank-production.conf" in bootstrap
+    assert "Refusing to replace unsafe production Nginx rate-limit file" in bootstrap
+    assert "Refusing to replace unsafe production Nginx config" in bootstrap
+    assert "Conflicting Nginx production site is already enabled" in bootstrap
+    assert "Disable the duplicate production server block" in bootstrap
+    assert "nginx-sitbank-production-rate-limits.$(date -u +%Y%m%dT%H%M%SZ).conf" in bootstrap
+    assert "nginx-sitbank-production.$(date -u +%Y%m%dT%H%M%SZ).conf" in bootstrap
+    assert "/etc/nginx/sites-enabled/sitbank" in bootstrap
+
+    production_rate_install = bootstrap.index(
+        '"${repo_root}/ops/nginx/sitbank-production-rate-limits.conf"'
+    )
+    production_site_install = bootstrap.index(
+        '"${repo_root}/ops/nginx/sitbank-production.conf"'
+    )
+    production_nginx_test = bootstrap.index("nginx -t", production_site_install)
+    production_reload = bootstrap.index("systemctl reload nginx", production_nginx_test)
+    assert production_rate_install < production_nginx_test
+    assert production_site_install < production_nginx_test < production_reload
+
 
 def test_production_edge_runbook_documents_network_waf_and_verification_steps():
     readme = Path("README.md").read_text(encoding="utf-8")
@@ -1649,6 +1683,10 @@ def test_production_edge_runbook_documents_network_waf_and_verification_steps():
         "compose.prod.yml` publishes no",
         "`/health/ready` is for local deployment and load-balancer checks",
         "Cloudflare or AWS WAF should sit in front of Nginx",
+        "The reviewed production bootstrap installs and enables the production edge",
+        "requires a production bootstrap after merge",
+        "sudo test -r /etc/letsencrypt/live/sitbank.duckdns.org/fullchain.pem",
+        "Cloudflare or AWS WAF rules and security-group allowlists are still",
         "sudo nginx -t",
         "sudo ss -ltnp | grep -E ':(80|443|5000)\\b'",
         "sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-app",
@@ -1660,6 +1698,9 @@ def test_production_edge_runbook_documents_network_waf_and_verification_steps():
 
     for required in (
         "Production Edge and WAF Checklist",
+        "Run production bootstrap from reviewed `main`",
+        "`nginx -t` succeeds",
+        "Issue production Certbot files under",
         "Allow public inbound TCP `80` and `443` only.",
         "never allow TCP `22` from `0.0.0.0/0` or `::/0`",
         "Do not expose Gunicorn, PostgreSQL, or Redis directly to the internet.",

@@ -116,25 +116,21 @@ The intended production network posture is:
   SQL injection, XSS, bot, and rate-based rules enabled for the same
   auth-sensitive paths.
 
-The current bootstrap workflow does not install the production Nginx sample.
-Install or manage the production edge files through reviewed infrastructure
-provisioning, or add a reviewed bootstrap installer before relying on them:
+The reviewed production bootstrap installs and enables the production edge
+files after the production Certbot certificate already exists. It refuses
+unsafe Nginx destination files, backs up changed Nginx files under
+`/var/backups/sitbank`, runs `nginx -t`, and reloads Nginx only after
+validation succeeds. Changing `ops/nginx/sitbank-production.conf`,
+`ops/nginx/sitbank-production-rate-limits.conf`, or
+`ops/nginx-proxy-headers.conf` requires a production bootstrap after merge.
 
 ```bash
-sudo install -o root -g root -m 0644 \
-  ops/nginx/sitbank-production-rate-limits.conf \
-  /etc/nginx/conf.d/sitbank-production-rate-limits.conf
-sudo install -o root -g root -m 0644 \
-  ops/nginx/sitbank-production.conf \
-  /etc/nginx/sites-available/sitbank
-sudo install -o root -g root -m 0644 \
-  ops/nginx-proxy-headers.conf \
-  /etc/nginx/snippets/sitbank-proxy-headers.conf
-sudo ln -sfn /etc/nginx/sites-available/sitbank \
-  /etc/nginx/sites-enabled/sitbank
-sudo nginx -t
-sudo systemctl reload nginx
+sudo test -r /etc/letsencrypt/live/sitbank.duckdns.org/fullchain.pem
+sudo test -r /etc/letsencrypt/live/sitbank.duckdns.org/privkey.pem
 ```
+
+Cloudflare or AWS WAF rules and security-group allowlists are still
+infrastructure state outside this repository and must be verified manually.
 
 Verify the edge posture after any production infrastructure change:
 
