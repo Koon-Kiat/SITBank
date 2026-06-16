@@ -112,6 +112,50 @@ readiness fails, the wrapper restores the previous digest and non-secret
 configuration. Database rollback follows the documented cutover procedure and
 must not be improvised during an incident.
 
+## Production Edge and WAF Checklist
+
+Before exposing production, the administrator must verify the edge/network
+controls below. Some controls are represented by repository files; Cloudflare
+or AWS WAF and security-group settings remain infrastructure state and must be
+checked manually.
+
+- Install or equivalently manage `ops/nginx/sitbank-production.conf`,
+  `ops/nginx/sitbank-production-rate-limits.conf`, and
+  `ops/nginx-proxy-headers.conf`.
+- Allow public inbound TCP `80` and `443` only.
+- Restrict SSH to an administrator IP allowlist, AWS Systems Manager, a
+  bastion, or VPN; never allow TCP `22` from `0.0.0.0/0` or `::/0`.
+- Do not expose Gunicorn, PostgreSQL, or Redis directly to the internet.
+- Keep Gunicorn bound to `127.0.0.1:5000` and keep `compose.prod.yml` free of
+  published app ports.
+- Restrict `/health/ready` to loopback and allow public `/health/live` only.
+- Enable WAF managed common, SQL injection, XSS, bot, and protocol anomaly
+  rules.
+- Add WAF rate-based rules for `/login`, `/register`, `/mfa/verify`,
+  `/auth/`, `/auth/webauthn/`, `/password/`, `/sessions/`, `/security-keys/`,
+  `/profile`, and `/account/`.
+- Block TRACE at the edge and preserve only the expected proxy headers:
+  `Host`, `X-Real-IP`, `X-Forwarded-For`, and `X-Forwarded-Proto`.
+- If a CDN or WAF forwards traffic to Nginx, configure the trusted real-client
+  IP source ranges deliberately before basing rate limits on client IPs.
+
+Verification commands:
+
+```bash
+sudo nginx -t
+sudo ss -ltnp | grep -E ':(80|443|5000)\b'
+sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-app
+sudo docker inspect --format '{{json .HostConfig.PortBindings}}' sitbank-app
+curl --fail https://sitbank.duckdns.org/health/live
+curl -I https://sitbank.duckdns.org/health/ready
+curl --fail -H 'X-Forwarded-Proto: https' \
+  http://127.0.0.1:5000/health/ready
+```
+
+Expected results: only `80` and `443` are publicly reachable, Gunicorn is
+loopback-only, Docker publishes no app ports, external readiness is denied,
+and local readiness succeeds.
+
 ## Monitoring
 
 Forward these sources to a protected centralized log destination:
