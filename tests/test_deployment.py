@@ -1424,6 +1424,8 @@ def test_linux_deployment_artifacts_are_forced_to_lf_and_reject_crlf():
         Path("ops/deploy/sitbank-container-runtime"),
         Path("ops/deploy/sitbank-database-cutover"),
         Path("ops/nginx-proxy-headers.conf"),
+        Path("ops/nginx/sitbank-production.conf"),
+        Path("ops/nginx/sitbank-production-rate-limits.conf"),
         Path("ops/nginx/sitbank-staging.conf"),
         Path("ops/nginx/sitbank-staging-rate-limits.conf"),
         Path("ops/sudoers/sitbank-container-deploy"),
@@ -1534,6 +1536,144 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     assert "docker compose up" not in bootstrap
     assert "docker pull" not in bootstrap
     assert "SITBANK_IMAGE" not in bootstrap
+
+
+def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
+    nginx = Path("ops/nginx/sitbank-production.conf").read_text(encoding="utf-8")
+    rate_limits = Path("ops/nginx/sitbank-production-rate-limits.conf").read_text(
+        encoding="utf-8"
+    )
+    proxy_headers = Path("ops/nginx-proxy-headers.conf").read_text(encoding="utf-8")
+    dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
+    production_compose = yaml.safe_load(Path("compose.prod.yml").read_text(encoding="utf-8"))
+    app = production_compose["services"]["app"]
+
+    assert Path("ops/nginx/sitbank-production.conf").exists()
+    assert Path("ops/nginx/sitbank-production-rate-limits.conf").exists()
+    assert "listen 80;" in nginx
+    assert "return 301 https://sitbank.duckdns.org$request_uri;" in nginx
+    assert "listen 443 ssl http2;" in nginx
+    assert "server_name sitbank.duckdns.org;" in nginx
+    assert "ssl_certificate /etc/letsencrypt/live/sitbank.duckdns.org/fullchain.pem;" in nginx
+    assert "ssl_certificate_key /etc/letsencrypt/live/sitbank.duckdns.org/privkey.pem;" in nginx
+    assert 'add_header X-Content-Type-Options "nosniff" always;' in nginx
+    assert 'add_header X-Frame-Options "DENY" always;' in nginx
+    assert 'add_header Referrer-Policy "no-referrer" always;' in nginx
+    assert "Permissions-Policy" in nginx
+    assert 'add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;' in nginx
+    assert "client_max_body_size 4m;" in nginx
+    for timeout in (
+        "client_body_timeout 15s;",
+        "client_header_timeout 15s;",
+        "keepalive_timeout 30s;",
+        "send_timeout 30s;",
+        "proxy_connect_timeout 5s;",
+        "proxy_send_timeout 30s;",
+        "proxy_read_timeout 30s;",
+    ):
+        assert timeout in nginx
+    assert "if ($request_method = TRACE)" in nginx
+    assert "return 405;" in nginx
+
+    health_ready_bodies = _nginx_location_bodies(nginx, "= /health/ready")
+    assert len(health_ready_bodies) == 1
+    health_ready = health_ready_bodies[0]
+    assert "allow 127.0.0.1;" in health_ready
+    assert "allow ::1;" in health_ready
+    assert "deny all;" in health_ready
+    assert "proxy_pass http://127.0.0.1:5000;" in health_ready
+    assert "limit_req" not in health_ready
+
+    health_live_bodies = _nginx_location_bodies(nginx, "= /health/live")
+    assert len(health_live_bodies) == 1
+    assert "proxy_pass http://127.0.0.1:5000;" in health_live_bodies[0]
+
+    proxy_targets = set(re.findall(r"proxy_pass\s+([^;]+);", nginx))
+    assert proxy_targets == {"http://127.0.0.1:5000"}
+    assert "0.0.0.0:5000" not in nginx
+    assert "--bind\", \"127.0.0.1:5000" in dockerfile
+    assert app["network_mode"] == "host"
+    assert "ports" not in app
+
+    for zone in (
+        "limit_req_zone $binary_remote_addr zone=sitbank_prod_app:10m rate=20r/s;",
+        "limit_req_zone $binary_remote_addr zone=sitbank_prod_auth:10m rate=5r/m;",
+        "limit_req_zone $binary_remote_addr zone=sitbank_prod_register:10m rate=2r/m;",
+        "limit_req_zone $binary_remote_addr zone=sitbank_prod_challenge:10m rate=3r/m;",
+        "limit_req_zone $binary_remote_addr zone=sitbank_prod_security:10m rate=10r/m;",
+    ):
+        assert zone in rate_limits
+    assert "limit_req_status 429;" in nginx
+    assert "limit_req_log_level warn;" in nginx
+    assert "limit_req_status" not in rate_limits
+    assert "limit_req_log_level" not in rate_limits
+
+    expected_location_limits = {
+        "= /login": "sitbank_prod_auth",
+        "= /auth/login": "sitbank_prod_auth",
+        "= /mfa/verify": "sitbank_prod_auth",
+        "= /auth/mfa/verify": "sitbank_prod_auth",
+        "= /register": "sitbank_prod_register",
+        "= /auth/register": "sitbank_prod_register",
+        "~ ^/auth/webauthn/(?:register|authenticate|step-up)/(?:options|verify)$": "sitbank_prod_challenge",
+        "~ ^/(?:account|password|profile|security-keys|sessions)(?:/|$)": "sitbank_prod_security",
+        "~ ^/auth/(?:account|mfa|password|sessions|webauthn/credentials)(?:/|$)": "sitbank_prod_security",
+        "/auth/": "sitbank_prod_auth",
+    }
+    for selector, zone in expected_location_limits.items():
+        bodies = _nginx_location_bodies(nginx, selector)
+        assert len(bodies) == 1
+        assert f"limit_req zone={zone}" in bodies[0]
+        assert "include /etc/nginx/snippets/sitbank-proxy-headers.conf;" in bodies[0]
+    assert any(
+        "limit_req zone=sitbank_prod_app" in body
+        for body in _nginx_location_bodies(nginx, "/")
+    )
+
+    assert "proxy_set_header X-Forwarded-For $remote_addr;" in proxy_headers
+    assert "$proxy_add_x_forwarded_for" not in proxy_headers
+
+
+def test_production_edge_runbook_documents_network_waf_and_verification_steps():
+    readme = Path("README.md").read_text(encoding="utf-8")
+    security = Path("SECURITY.md").read_text(encoding="utf-8")
+
+    for required in (
+        "Production Edge and Network Hardening",
+        "ops/nginx/sitbank-production.conf",
+        "ops/nginx/sitbank-production-rate-limits.conf",
+        "Public ingress is TCP `80` and `443` only.",
+        "SSH is restricted to an administrator IP allowlist",
+        "Nginx terminates TLS, redirects HTTP to HTTPS",
+        "Gunicorn binds only to `127.0.0.1:5000`",
+        "compose.prod.yml` publishes no",
+        "`/health/ready` is for local deployment and load-balancer checks",
+        "Cloudflare or AWS WAF should sit in front of Nginx",
+        "sudo nginx -t",
+        "sudo ss -ltnp | grep -E ':(80|443|5000)\\b'",
+        "sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-app",
+        "curl --fail https://sitbank.duckdns.org/health/live",
+        "curl -I https://sitbank.duckdns.org/health/ready",
+        "external `/health/ready` returns `403`",
+    ):
+        assert required in readme
+
+    for required in (
+        "Production Edge and WAF Checklist",
+        "Allow public inbound TCP `80` and `443` only.",
+        "never allow TCP `22` from `0.0.0.0/0` or `::/0`",
+        "Do not expose Gunicorn, PostgreSQL, or Redis directly to the internet.",
+        "Keep Gunicorn bound to `127.0.0.1:5000`",
+        "Restrict `/health/ready` to loopback",
+        "Enable WAF managed common, SQL injection, XSS, bot, and protocol anomaly",
+        "rules.",
+        "Add WAF rate-based rules for `/login`, `/register`, `/mfa/verify`,",
+        "Block TRACE at the edge",
+        "Host`, `X-Real-IP`, `X-Forwarded-For`, and `X-Forwarded-Proto`",
+        "sudo nginx -t",
+        "external readiness is denied",
+    ):
+        assert required in security
 
 
 def test_staging_edge_runbook_documents_operator_verification_steps():
