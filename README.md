@@ -136,7 +136,7 @@ Verify the edge posture after any production infrastructure change:
 
 ```bash
 sudo nginx -t
-sudo ss -ltnp | grep -E ':(80|443|5000)\b'
+sudo ss -ltnp | grep -E ':(80|443|5000)([[:space:]]|$)'
 sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-app
 sudo docker inspect --format '{{json .HostConfig.PortBindings}}' sitbank-app
 curl --fail https://sitbank.duckdns.org/health/live

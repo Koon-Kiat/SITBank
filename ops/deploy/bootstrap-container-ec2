@@ -42,6 +42,7 @@ if [[ ! "${public_host}" =~ ^[A-Za-z0-9.-]+$ ]]; then
     echo "PUBLIC_HOST must be a bare hostname" >&2
     exit 2
 fi
+public_host_regex="${public_host//./\\.}"
 if [[ "${target}" == "production" && "${public_host}" != "${PRODUCTION_PUBLIC_HOST}" ]]; then
     echo "Production PUBLIC_HOST must be ${PRODUCTION_PUBLIC_HOST}" >&2
     exit 2
@@ -281,8 +282,8 @@ if [[ "${target}" == "production" ]]; then
             nginx_conflict=1
         fi
     done < <(
-        grep -RlF \
-            "server_name ${public_host};" \
+        grep -RlE \
+            "^[[:space:]]*server_name[[:space:]].*(^|[[:space:]])${public_host_regex}([[:space:];]|$)" \
             /etc/nginx/sites-enabled /etc/nginx/conf.d \
             2>/dev/null || true
     )
@@ -368,8 +369,8 @@ if [[ "${target}" == "staging" ]]; then
             nginx_conflict=1
         fi
     done < <(
-        grep -RlF \
-            "server_name ${public_host};" \
+        grep -RlE \
+            "^[[:space:]]*server_name[[:space:]].*(^|[[:space:]])${public_host_regex}([[:space:];]|$)" \
             /etc/nginx/sites-enabled /etc/nginx/conf.d \
             2>/dev/null || true
     )
@@ -427,7 +428,7 @@ fi
 if [[ -S /var/run/docker.sock ]]; then
     chmod 0660 /var/run/docker.sock
 fi
-if ss -lnt | grep -Eq ':(2375|2376)\b'; then
+if ss -lnt | grep -Eq ':(2375|2376)([[:space:]]|$)'; then
     echo "Docker API must not be exposed over TCP" >&2
     exit 1
 fi

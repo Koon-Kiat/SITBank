@@ -1154,6 +1154,8 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "--project-name \"${COMPOSE_PROJECT}\"" in runtime_script
     assert "gpasswd --delete" in bootstrap
     assert "docker.sock" in bootstrap
+    assert "grep -Eq ':(2375|2376)([[:space:]]|$)'" in bootstrap
+    assert "grep -Eq ':(2375|2376)([[:space:]]|$)'" in deploy_script
     assert "COSIGN_SHA256" in bootstrap
     assert "COSIGN_CERTIFICATE_IDENTITY_REGEXP" not in bootstrap
     assert "ci-deploy.yml@refs/heads/main" in bootstrap
@@ -1520,6 +1522,12 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
 
     assert "Conflicting Nginx staging site is already enabled" in bootstrap
     assert "Disable the duplicate staging server block" in bootstrap
+    assert 'public_host_regex="${public_host//./\\\\.}"' in bootstrap
+    assert "grep -RlE \\" in bootstrap
+    assert (
+        '"^[[:space:]]*server_name[[:space:]].*(^|[[:space:]])'
+        '${public_host_regex}([[:space:];]|$)" \\'
+    ) in bootstrap
     assert "Missing required staging Basic Auth file" in bootstrap
     assert "Missing required staging TLS file" in bootstrap
     assert "apache2-utils" in bootstrap
@@ -1688,7 +1696,7 @@ def test_production_edge_runbook_documents_network_waf_and_verification_steps():
         "sudo test -r /etc/letsencrypt/live/sitbank.duckdns.org/fullchain.pem",
         "Cloudflare or AWS WAF rules and security-group allowlists are still",
         "sudo nginx -t",
-        "sudo ss -ltnp | grep -E ':(80|443|5000)\\b'",
+        "sudo ss -ltnp | grep -E ':(80|443|5000)([[:space:]]|$)'",
         "sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-app",
         "curl --fail https://sitbank.duckdns.org/health/live",
         "curl -I https://sitbank.duckdns.org/health/ready",
