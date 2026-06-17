@@ -236,8 +236,16 @@ def test_runtime_privilege_verifier_quotes_create_probe_table_name():
         '"ALTER TABLE"',
         '"DROP TABLE"',
         '"CREATE EXTENSION"',
+        '"UPDATE security_audit_events"',
+        '"DELETE security_audit_events"',
     ):
         assert privilege_probe in source
+    assert "apply_runtime_audit_table_privileges" in source
+    assert "REVOKE UPDATE, DELETE ON TABLE" in source
+    assert "GRANT SELECT, INSERT ON TABLE" in source
+    assert "previous_event_hash" in source
+    assert "event_hash" in source
+    assert "hash_algorithm" in source
 
 
 def test_dast_session_creator_requires_loopback_or_explicit_smoke_host():
@@ -750,7 +758,10 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert '"${work_dir}/secrets:/run/secrets:ro"' not in smoke_test
     assert '"${work_dir}/secrets/database_migration_url"' in smoke_test
     assert ':/run/secrets/database_migration_url:ro' not in smoke_test
+    assert "apply-runtime-db-privileges" in smoke_test
     assert "verify-runtime-db-privileges" in smoke_test
+    assert smoke_test.index("db upgrade") < smoke_test.index("apply-runtime-db-privileges")
+    assert smoke_test.index("apply-runtime-db-privileges") < smoke_test.index("verify-runtime-db-privileges")
     assert "/redis-check.py" not in smoke_test
     assert "--publish 127.0.0.1::5432" not in smoke_test
     assert "--publish 127.0.0.1::6379" not in smoke_test
@@ -851,9 +862,12 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert 'unquote(migration.username or "") != "sitbank_owner"' in deploy_script
     assert "postgres_app_password" in deploy_script
     assert "postgres_owner_password" in deploy_script
+    assert "apply-runtime-db-privileges" in deploy_script
     assert "verify-runtime-db-privileges" in deploy_script
+    assert deploy_script.index("db upgrade") < deploy_script.index("apply-runtime-db-privileges")
+    assert deploy_script.index("apply-runtime-db-privileges") < deploy_script.index("verify-runtime-db-privileges")
     assert "staging_migration_run" not in deploy_script
-    assert deploy_script.count("migration_run \\") == 2
+    assert deploy_script.count("migration_run \\") == 3
     assert (
         "Complete the production database role split and install the "
         "owner-role migration URL before retrying deployment."
@@ -1930,12 +1944,20 @@ def test_migration_baseline_and_existing_database_runbook_are_present():
     migration = Path(
         "migrations/versions/20260610_0001_baseline.py"
     ).read_text(encoding="utf-8")
+    audit_hash_migration = Path(
+        "migrations/versions/20260618_0002_audit_hash_chain.py"
+    ).read_text(encoding="utf-8")
     docs = _project_docs_text()
 
     assert 'revision = "20260610_0001"' in migration
     assert '"users"' in migration
     assert '"webauthn_credentials"' in migration
     assert '"security_audit_events"' in migration
+    assert 'revision = "20260618_0002"' in audit_hash_migration
+    assert 'down_revision = "20260610_0001"' in audit_hash_migration
+    assert "previous_event_hash" in audit_hash_migration
+    assert "event_hash" in audit_hash_migration
+    assert "hash_algorithm" in audit_hash_migration
     assert "verify-migration-baseline" in docs
     assert "db stamp 20260610_0001" in docs
     assert "Do not run `db.create_all()`" in docs
@@ -1947,6 +1969,59 @@ def test_migration_baseline_and_existing_database_runbook_are_present():
     assert "sitbank-database-cutover prepare" in docs
 
 
+def test_audit_operations_runbook_and_append_only_privileges_are_present():
+    docs = _project_docs_text()
+    commands = Path("app/ops/commands.py").read_text(encoding="utf-8")
+    privileges = Path("app/ops/db_privileges.py").read_text(encoding="utf-8")
+    deploy_script = Path("ops/deploy/sitbank-container-deploy").read_text(encoding="utf-8")
+    smoke_test = Path("ops/container/smoke-test.sh").read_text(encoding="utf-8")
+    staging_compose = Path("compose.staging.yml").read_text(encoding="utf-8")
+    prod_compose = Path("compose.prod.yml").read_text(encoding="utf-8")
+
+    for required in (
+        "Retain security audit records for 7 years",
+        "Do not silently auto-delete audit",
+        "apply-runtime-db-privileges",
+        "verify-runtime-db-privileges",
+        "security_audit_events",
+        "cannot update or delete",
+        "security_audit_write_failed",
+        "hash chain",
+        "verify-audit-log-chain",
+        "export-audit-log-anchor",
+        "check-security-alerts",
+        "SECURITY_ALERT_WEBHOOK_URL_FILE",
+        "immutable storage",
+        "10 or more `login` failures",
+        "`auth_backoff`",
+        "3 or more transaction failures",
+        "There is no final ledger",
+        "Docker `local` log rotation",
+    ):
+        assert required in docs
+
+    assert "apply-runtime-db-privileges" in commands
+    assert "apply_runtime_audit_table_privileges" in commands
+    assert "verify-audit-log-chain" in commands
+    assert "export-audit-log-anchor" in commands
+    assert "check-security-alerts" in commands
+    assert "build_security_alert_report" in commands
+    assert "REVOKE UPDATE, DELETE ON TABLE" in privileges
+    assert "GRANT SELECT, INSERT ON TABLE" in privileges
+    assert "previous_event_hash" in privileges
+    assert "event_hash" in privileges
+    assert "hash_algorithm" in privileges
+    assert "audit_update_delete=revoked" in commands
+    assert deploy_script.index("db upgrade") < deploy_script.index("apply-runtime-db-privileges")
+    assert deploy_script.index("apply-runtime-db-privileges") < deploy_script.index("verify-runtime-db-privileges")
+    assert smoke_test.index("db upgrade") < smoke_test.index("apply-runtime-db-privileges")
+    assert smoke_test.index("apply-runtime-db-privileges") < smoke_test.index("verify-runtime-db-privileges")
+    assert "driver: local" in staging_compose
+    assert "driver: local" in prod_compose
+    assert "max-size: 10m" in staging_compose
+    assert "max-size: 10m" in prod_compose
+
+
 def test_migration_baseline_renders_offline_sql(app):
     result = app.test_cli_runner().invoke(args=["db", "upgrade", "--sql"])
 
@@ -1954,6 +2029,9 @@ def test_migration_baseline_renders_offline_sql(app):
     assert "CREATE TABLE users" in result.output
     assert "CREATE TABLE webauthn_credentials" in result.output
     assert "CREATE TABLE security_audit_events" in result.output
+    assert "previous_event_hash" in result.output
+    assert "event_hash" in result.output
+    assert "hash_algorithm" in result.output
 
 
 def test_existing_schema_matches_migration_baseline(app):

@@ -4,7 +4,7 @@ import re
 import json
 import secrets
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import pyotp
@@ -35,6 +35,18 @@ def login(client, identifier="alice01", password="correct horse battery staple")
 
 def password_inputs(response):
     return re.findall(rb"<input(?=[^>]*type=\"password\")[^>]*>", response.data)
+
+
+def log_payloads(caplog, message):
+    payloads = []
+    for record in caplog.records:
+        try:
+            payload = json.loads(record.getMessage())
+        except json.JSONDecodeError:
+            continue
+        if payload.get("message") == message:
+            payloads.append(payload)
+    return payloads
 
 
 def api_login_from_ip(client, remote_addr, identifier="alice01", password="correct horse battery staple"):
@@ -372,6 +384,43 @@ def test_login_errors_are_generic_for_unknown_and_wrong_password(client):
     assert unknown_user.status_code == 401
     assert b"Invalid username or password" in wrong_password.data
     assert b"Invalid username or password" in unknown_user.data
+
+
+def test_failed_login_audit_includes_ip_timestamp_and_principal_ref(client, caplog):
+    from app.security.audit import principal_reference
+
+    register(client)
+    caplog.set_level("INFO", logger=current_app.logger.name)
+
+    response = client.post(
+        "/auth/login",
+        json={"identifier": "Alice@Example.com", "password": "wrong-password"},
+        environ_overrides={"REMOTE_ADDR": "203.0.113.10"},
+    )
+
+    event = (
+        db.session.query(SecurityAuditEvent)
+        .filter_by(event_type="login", outcome="failure")
+        .order_by(SecurityAuditEvent.id.desc())
+        .one()
+    )
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    payload = log_payloads(caplog, "security_audit_event")[-1]
+
+    assert response.status_code == 401
+    assert event.ip_address == "203.0.113.10"
+    assert event.created_at is not None
+    assert event.event_metadata["principal_ref"] == principal_reference("Alice@Example.com")
+    assert len(event.event_metadata["principal_ref"]) == 32
+    assert "Alice@Example.com" not in json.dumps(event.event_metadata)
+    assert "Alice@Example.com" not in logs
+    assert "wrong-password" not in logs
+    assert payload["event_type"] == "login"
+    assert payload["outcome"] == "failure"
+    assert payload["ip_address"] == "203.0.113.10"
+    assert payload["created_at"].endswith("Z")
+    assert payload["logged_at"].endswith("Z")
+    assert payload["metadata"]["principal_ref"] == event.event_metadata["principal_ref"]
 
 
 def test_mfa_pending_api_response_does_not_leak_user_id(client):
@@ -1224,8 +1273,17 @@ def test_account_freeze_is_durable_and_blocks_group_a_sensitive_actions(client):
 
     assert response.status_code == 302
     assert user.is_frozen is True
-    with pytest.raises(FrozenAccountError):
-        ensure_outbound_transfer_allowed(user)
+    with current_app.test_request_context("/banking/outbound-transfer", method="POST"):
+        with pytest.raises(FrozenAccountError):
+            ensure_outbound_transfer_allowed(user)
+
+    event = (
+        db.session.query(SecurityAuditEvent)
+        .filter_by(event_type="banking_outbound_transfer", outcome="blocked")
+        .one()
+    )
+    assert event.user_id == user.id
+    assert event.event_metadata["reason"] == "account_frozen"
 
 
 def test_frozen_account_cannot_create_new_login_session(client):
@@ -2103,6 +2161,351 @@ def test_audit_metadata_strips_control_characters_and_redacts_secrets(app):
     assert event.event_metadata["amount"] == "10.00"
 
 
+def test_structured_audit_log_output_is_sanitized(app, caplog):
+    from app.security.audit import audit_event
+
+    raw_session_id = "raw-session-id-should-not-be-logged"
+    caplog.set_level("INFO", logger=app.logger.name)
+    with app.test_request_context(
+        "/audit/hygiene?token=query-secret",
+        method="POST",
+        environ_overrides={"REMOTE_ADDR": "198.51.100.44"},
+        headers={"User-Agent": "AuditTest/1.0"},
+    ):
+        audit_event(
+            "audit_hygiene",
+            "success",
+            metadata={
+                "note": "line1\nline2",
+                "password": "plain-password",
+                "totp_code": "123456",
+                "csrf_token": "csrf-secret",
+                "bearer_token": "Bearer token-secret",
+                "session_id": raw_session_id,
+                "account_number": "1234 5678 9012 3456",
+            },
+            session_id=raw_session_id,
+        )
+
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    payload = log_payloads(caplog, "security_audit_event")[-1]
+
+    assert payload["path"] == "/audit/hygiene"
+    assert payload["method"] == "POST"
+    assert payload["session_ref"] != raw_session_id
+    assert len(payload["session_ref"]) == 16
+    assert payload["hash_algorithm"] == "sha256-v1"
+    assert len(payload["event_hash"]) == 64
+    assert len(payload["previous_event_hash"]) == 64
+    assert payload["metadata"]["note"] == "line1 line2"
+    assert payload["metadata"]["password"] == "[redacted]"
+    assert payload["metadata"]["totp_code"] == "[redacted]"
+    assert payload["metadata"]["csrf_token"] == "[redacted]"
+    assert payload["metadata"]["bearer_token"] == "[redacted]"
+    assert payload["metadata"]["session_id"] == "[redacted]"
+    assert payload["metadata"]["account_number"] == "[redacted]"
+    for forbidden in (
+        "query-secret",
+        "plain-password",
+        "123456",
+        "csrf-secret",
+        "token-secret",
+        raw_session_id,
+        "1234 5678 9012 3456",
+    ):
+        assert forbidden not in logs
+
+
+def test_audit_write_failure_warning_is_sanitized(app, caplog, monkeypatch):
+    from app.security.audit import audit_event
+
+    def fail_commit():
+        raise RuntimeError("database password leaked")
+
+    monkeypatch.setattr(db.session, "commit", fail_commit)
+    caplog.set_level("WARNING", logger=app.logger.name)
+
+    with app.test_request_context("/audit/fail", method="POST"):
+        audit_event(
+            "audit_failure",
+            "failure",
+            metadata={
+                "password": "plain-password",
+                "token": "Bearer token-secret",
+            },
+        )
+
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    payload = log_payloads(caplog, "security_audit_write_failed")[-1]
+
+    assert payload["event_type"] == "audit_failure"
+    assert payload["error_type"] == "RuntimeError"
+    assert payload["metadata"]["password"] == "[redacted]"
+    assert payload["metadata"]["token"] == "[redacted]"
+    assert "database password leaked" not in logs
+    assert "plain-password" not in logs
+    assert "token-secret" not in logs
+
+
+def test_audit_hash_chain_records_verifies_and_exports_anchor(app):
+    from app.security.audit import audit_event, audit_log_anchor, verify_audit_hash_chain
+
+    with app.test_request_context("/audit/chain-one", method="POST"):
+        audit_event("chain_one", "success", metadata={"note": "top-secret-note"})
+    with app.test_request_context("/audit/chain-two", method="POST"):
+        audit_event("chain_two", "success", metadata={"note": "second"})
+
+    events = db.session.query(SecurityAuditEvent).order_by(SecurityAuditEvent.id.asc()).all()
+    first, second = events
+    verification = verify_audit_hash_chain()
+    anchor = audit_log_anchor()
+    runner = app.test_cli_runner()
+    verify_cli = runner.invoke(args=["verify-audit-log-chain"])
+    anchor_cli = runner.invoke(args=["export-audit-log-anchor"])
+    cli_anchor = json.loads(anchor_cli.output)
+
+    assert first.previous_event_hash == "0" * 64
+    assert len(first.event_hash) == 64
+    assert first.hash_algorithm == "sha256-v1"
+    assert second.previous_event_hash == first.event_hash
+    assert len(second.event_hash) == 64
+    assert verification["valid"] is True
+    assert verification["event_count"] == 2
+    assert verification["latest_event_id"] == second.id
+    assert verification["latest_event_hash"] == second.event_hash
+    assert anchor["latest_event_id"] == second.id
+    assert anchor["latest_event_hash"] == second.event_hash
+    assert anchor["event_count"] == 2
+    assert "top-secret-note" not in json.dumps(anchor)
+    assert verify_cli.exit_code == 0, verify_cli.output
+    assert json.loads(verify_cli.output)["valid"] is True
+    assert anchor_cli.exit_code == 0, anchor_cli.output
+    assert cli_anchor["latest_event_hash"] == second.event_hash
+    assert "top-secret-note" not in anchor_cli.output
+
+
+def test_audit_hash_chain_detects_metadata_link_missing_row_and_order_tampering(app):
+    from sqlalchemy import text
+
+    from app.security.audit import audit_event, verify_audit_hash_chain
+
+    with app.test_request_context("/audit/one", method="POST"):
+        audit_event("chain_one", "success", metadata={"note": "one"})
+    with app.test_request_context("/audit/two", method="POST"):
+        audit_event("chain_two", "success", metadata={"note": "two"})
+    with app.test_request_context("/audit/three", method="POST"):
+        audit_event("chain_three", "success", metadata={"note": "three"})
+
+    first, second, third = db.session.query(SecurityAuditEvent).order_by(SecurityAuditEvent.id.asc()).all()
+    first.event_metadata = {"note": "tampered"}
+    second.previous_event_hash = "1" * 64
+    db.session.commit()
+
+    tampered = verify_audit_hash_chain()
+    tamper_reasons = {error["reason"] for error in tampered["errors"]}
+
+    assert tampered["valid"] is False
+    assert "event_hash_mismatch" in tamper_reasons
+    assert "previous_hash_mismatch" in tamper_reasons
+
+    db.session.delete(second)
+    db.session.commit()
+    missing_link = verify_audit_hash_chain()
+
+    assert missing_link["valid"] is False
+    assert any(error["event_id"] == third.id for error in missing_link["errors"])
+    assert "previous_hash_mismatch" in {error["reason"] for error in missing_link["errors"]}
+
+    db.session.execute(
+        text("UPDATE security_audit_events SET id = :new_id WHERE id = :event_id"),
+        {"new_id": third.id + 100, "event_id": first.id},
+    )
+    db.session.commit()
+    reordered = verify_audit_hash_chain()
+
+    assert reordered["valid"] is False
+    assert "previous_hash_mismatch" in {error["reason"] for error in reordered["errors"]}
+
+
+def test_security_alert_evaluator_cli_and_output_are_sanitized(app):
+    from app.security.alerts import evaluate_security_alerts
+    from app.security.audit import audit_event, audit_reference, principal_reference
+
+    raw_identifier = "Victim.User@example.com"
+    raw_password = "plain-password"
+    raw_token = "Bearer webhook-token-secret"
+    raw_account = "1234 5678 9012 3456"
+    raw_transaction = "TXN-SECRET-001"
+    principal_ref = principal_reference(raw_identifier)
+    transaction_ref = audit_reference("transaction", raw_transaction)
+
+    with app.test_request_context(
+        "/auth/login",
+        method="POST",
+        environ_overrides={"REMOTE_ADDR": "198.51.100.50"},
+    ):
+        for _attempt in range(10):
+            audit_event(
+                "login",
+                "failure",
+                metadata={"principal_ref": principal_ref, "password": raw_password},
+            )
+        for _attempt in range(5):
+            audit_event("rate_limit", "blocked", metadata={"authorization": raw_token})
+        audit_event("security_audit_write_failed", "failure", metadata={"token": raw_token})
+        audit_event("account_lock", "locked", metadata={"reason": "mfa_failed"})
+        audit_event("webauthn_clone_detected", "locked", metadata={"credential_id": "credential-ref"})
+        audit_event("session_integrity", "failure", metadata={"reason": "invalid_signature"})
+
+    with app.test_request_context(
+        "/banking/transactions",
+        method="POST",
+        environ_overrides={"REMOTE_ADDR": "198.51.100.51"},
+    ):
+        for _attempt in range(10):
+            audit_event(
+                "banking_transaction_authorization",
+                "failure",
+                user_id=7,
+                metadata={
+                    "transaction_ref": transaction_ref,
+                    "payee_account": raw_account,
+                },
+            )
+
+    alerts = evaluate_security_alerts()
+    alert_types = {alert["alert_type"] for alert in alerts}
+    serialized_alerts = json.dumps(alerts, sort_keys=True)
+    report_only = app.test_cli_runner().invoke(
+        args=["check-security-alerts", "--report-only", "--no-delivery"]
+    )
+    strict = app.test_cli_runner().invoke(args=["check-security-alerts", "--no-delivery"])
+
+    for expected in (
+        "security_audit_write_failed",
+        "account_lock",
+        "webauthn_clone_detected",
+        "session_integrity_failure",
+        "login_failure_burst",
+        "auth_backoff_or_rate_limit_burst",
+        "transaction_failure_burst",
+        "transaction_failure_global_burst",
+    ):
+        assert expected in alert_types
+    for forbidden in (
+        raw_identifier,
+        raw_password,
+        "webhook-token-secret",
+        raw_account,
+        raw_transaction,
+    ):
+        assert forbidden not in serialized_alerts
+        assert forbidden not in report_only.output
+    assert report_only.exit_code == 0, report_only.output
+    assert json.loads(report_only.output)["alert_count"] >= len(alert_types)
+    assert strict.exit_code != 0
+
+
+def test_security_alert_webhook_delivery_is_sanitized(monkeypatch):
+    from app.security.alerts import deliver_security_alerts
+
+    captured = {}
+
+    class FakeResponse:
+        status = 202
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def getcode(self):
+            return self.status
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["body"] = request.data.decode("utf-8")
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("app.security.alerts.urllib.request.urlopen", fake_urlopen)
+    alerts = [
+        {
+            "alert_type": "login_failure_burst",
+            "severity": "high",
+            "count": 10,
+            "window_seconds": 300,
+            "source": "principal_ref:abc123",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+    ]
+    result = deliver_security_alerts(
+        alerts,
+        webhook_url="https://hooks.example.test/services/secret-token",
+    )
+    serialized_result = json.dumps(result, sort_keys=True)
+
+    assert result["attempted"] is True
+    assert result["delivered"] is True
+    assert captured["url"].endswith("/secret-token")
+    assert "secret-token" not in captured["body"]
+    assert "secret-token" not in serialized_result
+
+    def failing_urlopen(_request, timeout):
+        del timeout
+        raise RuntimeError("secret-token leaked by transport")
+
+    monkeypatch.setattr("app.security.alerts.urllib.request.urlopen", failing_urlopen)
+    failed = deliver_security_alerts(
+        alerts,
+        webhook_url="https://hooks.example.test/services/secret-token",
+    )
+
+    assert failed["delivered"] is False
+    assert failed["error_type"] == "RuntimeError"
+    assert "secret-token" not in json.dumps(failed, sort_keys=True)
+
+    invalid_scheme = deliver_security_alerts(alerts, webhook_url="file:///tmp/secret-token")
+    assert invalid_scheme["delivered"] is False
+    assert invalid_scheme["error_type"] == "AlertConfigurationError"
+    assert "secret-token" not in json.dumps(invalid_scheme, sort_keys=True)
+
+
+def test_500_handler_logs_sanitized_context(app, client, caplog):
+    app.config["PROPAGATE_EXCEPTIONS"] = False
+
+    @app.post("/explode")
+    def explode():
+        raise RuntimeError("boom")
+
+    caplog.set_level("ERROR", logger=app.logger.name)
+    response = client.post(
+        "/explode?password=query-secret",
+        data={"password": "form-secret"},
+        headers={
+            "Authorization": "Bearer header-secret",
+            "Cookie": "session=cookie-secret",
+        },
+    )
+
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    payload = log_payloads(caplog, "system_error")[-1]
+
+    assert response.status_code == 500
+    assert payload["path"] == "/explode"
+    assert payload["method"] == "POST"
+    assert payload["exception_type"] == "RuntimeError"
+    assert payload["correlation_id"]
+    for forbidden in (
+        "query-secret",
+        "form-secret",
+        "header-secret",
+        "cookie-secret",
+    ):
+        assert forbidden not in logs
+
+
 def test_webauthn_browser_errors_are_sanitized_before_display():
     source = Path("app/static/js/webauthn.js").read_text(encoding="utf-8")
 
@@ -2178,6 +2581,53 @@ def test_future_transaction_payload_guardrails_reject_server_controlled_fields()
     assert normalized["idempotency_key"] == "txn-3"
     assert normalized["currency"] == "SGD"
     assert normalized["payee"] == "PAYEE-001"
+
+
+def test_public_transaction_validation_audits_sanitized_success_and_failure(app):
+    from app.auth.services import AuthError
+    from app.banking.services import validate_public_transaction_payload
+
+    with app.test_request_context("/banking/transactions", method="POST"):
+        with pytest.raises(AuthError):
+            validate_public_transaction_payload(
+                {
+                    "idempotency_key": "txn-secret-1",
+                    "amount": "10.00",
+                    "currency": "SGD",
+                    "payee": "PAYEE-001",
+                    "account_id": "server-controlled",
+                }
+            )
+        validate_public_transaction_payload(
+            {
+                "idempotency_key": "txn-secret-2",
+                "amount": "25.00",
+                "currency": "SGD",
+                "payee": "PAYEE-002",
+            }
+        )
+
+    failure = (
+        db.session.query(SecurityAuditEvent)
+        .filter_by(event_type="banking_public_transaction_validation", outcome="failure")
+        .one()
+    )
+    success = (
+        db.session.query(SecurityAuditEvent)
+        .filter_by(event_type="banking_public_transaction_validation", outcome="success")
+        .one()
+    )
+    serialized = json.dumps([failure.event_metadata, success.event_metadata], sort_keys=True)
+
+    assert failure.event_metadata["reason"] == "schema_validation_failed"
+    assert "account_id" in failure.event_metadata["rejected_fields"]
+    assert success.event_metadata["transaction_amount"] == "25.00"
+    assert success.event_metadata["transaction_currency"] == "SGD"
+    assert len(success.event_metadata["idempotency_key_ref"]) == 32
+    assert len(success.event_metadata["payee_account_ref"]) == 32
+    assert "txn-secret" not in serialized
+    assert "PAYEE-001" not in serialized
+    assert "PAYEE-002" not in serialized
 
 
 def test_health_endpoints_report_liveness_and_dependency_readiness(app, client, monkeypatch):

@@ -96,6 +96,9 @@ class SecurityAuditEvent(db.Model):
     correlation_id = db.Column(db.String(36), nullable=False, index=True)
     session_ref = db.Column(db.String(32), nullable=True)
     event_metadata = db.Column(db.JSON, nullable=False, default=dict)
+    previous_event_hash = db.Column(db.String(64), nullable=True)
+    event_hash = db.Column(db.String(64), nullable=True, index=True)
+    hash_algorithm = db.Column(db.String(32), nullable=False, default="sha256-v1")
     created_at = db.Column(
         db.DateTime(timezone=True),
         nullable=False,

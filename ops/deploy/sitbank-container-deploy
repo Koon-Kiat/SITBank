@@ -625,6 +625,8 @@ compose "${image}" run --rm --no-deps app \
 migration_run \
     python -m flask --app wsgi:app db upgrade
 migration_run \
+    python -m flask --app wsgi:app apply-runtime-db-privileges
+migration_run \
     python -m flask --app wsgi:app verify-runtime-db-privileges
 
 if [[ "${target}" == "production" \

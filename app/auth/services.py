@@ -19,7 +19,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
 from app.models import User
-from app.security.audit import audit_event
+from app.security.audit import audit_event, principal_reference
 from app.security.crypto import decrypt_mfa_secret, encrypt_mfa_secret
 from app.security.passwords import (
     PasswordPolicyError,
@@ -204,7 +204,10 @@ def authenticate_primary(identifier: str, password: str) -> dict[str, Any]:
             "login",
             "failure",
             user=user,
-            metadata={"known_user": user is not None},
+            metadata={
+                "known_user": user is not None,
+                "principal_ref": principal_reference(identifier),
+            },
         )
         record_failure("login", principal)
         raise AuthError(GENERIC_LOGIN_ERROR, 401)

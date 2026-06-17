@@ -31,7 +31,7 @@ from webauthn.helpers.structs import (
 
 from app.extensions import db
 from app.models import User, WebAuthnCredential
-from app.security.audit import audit_webauthn_event
+from app.security.audit import audit_reference, audit_webauthn_event
 from app.security.fido_mds import FidoMetadataError, pem_root_certs_by_fmt, validate_aaguid_policy
 from app.security.sessions import (
     current_session_id,
@@ -664,7 +664,16 @@ def revoke_credential(
 
 def stage_transaction_security_key_context(user: User, transaction_context: dict[str, Any]) -> str:
     ensure_account_not_frozen(user, "transaction staging")
-    context = _validate_transaction_context(transaction_context)
+    try:
+        context = _validate_transaction_context(transaction_context)
+    except AuthError:
+        _audit_transaction_authorization(
+            user,
+            "failure",
+            raw_context=transaction_context,
+            reason="invalid_transaction_context",
+        )
+        raise
     expiry = _parse_transaction_expiry(context["expiry"])
     ttl = max(1, min(int((expiry - datetime.now(timezone.utc)).total_seconds()), current_app.config["WEBAUTHN_TIMEOUT_MS"] // 1000))
     _redis().set(
@@ -678,6 +687,7 @@ def stage_transaction_security_key_context(user: User, transaction_context: dict
         user=user,
         metadata=_transaction_audit_metadata(context),
     )
+    _audit_transaction_authorization(user, "staged", context=context)
     return context["transaction_reference"]
 
 
@@ -692,9 +702,24 @@ def begin_transaction_security_key_challenge(user: User, transaction_reference: 
             user=user,
             metadata={"reason": "client_supplied_or_missing_reference"},
         )
+        _audit_transaction_authorization(
+            user,
+            "failure",
+            transaction_reference=transaction_reference,
+            reason="client_supplied_or_missing_reference",
+        )
         raise AuthError("Transaction reference is required", 400)
 
-    context = _load_staged_transaction_context(user.id, transaction_reference)
+    try:
+        context = _load_staged_transaction_context(user.id, transaction_reference)
+    except AuthError:
+        _audit_transaction_authorization(
+            user,
+            "failure",
+            transaction_reference=transaction_reference,
+            reason="staged_context_unavailable",
+        )
+        raise
     credentials = _credentials_for_user(user)
     if not credentials:
         audit_webauthn_event(
@@ -703,6 +728,7 @@ def begin_transaction_security_key_challenge(user: User, transaction_reference: 
             user=user,
             metadata={**_transaction_audit_metadata(context), "reason": "no_registered_security_key"},
         )
+        _audit_transaction_authorization(user, "failure", context=context, reason="no_registered_security_key")
         raise AuthError("A registered security key is required to approve this transaction", 403)
 
     options = generate_authentication_options(
@@ -745,11 +771,30 @@ def verify_transaction_security_key_challenge(user: User, credential: dict[str, 
             user=user,
             metadata={"reason": "missing_challenge"},
         )
+        _audit_transaction_authorization(user, "failure", raw_context=raw_context, reason="missing_challenge")
         raise AuthError(GENERIC_WEBAUTHN_ERROR, 401)
 
-    context = _validate_transaction_context(raw_context)
-    item = _credential_for_user_payload(user.id, credential, "transaction_verify")
-    verification = _verify_assertion_response(user, item, credential, str(challenge), "transaction_verify")
+    try:
+        context = _validate_transaction_context(raw_context)
+    except AuthError:
+        _audit_transaction_authorization(
+            user,
+            "failure",
+            raw_context=raw_context,
+            reason="invalid_staged_context",
+        )
+        raise
+    try:
+        item = _credential_for_user_payload(user.id, credential, "transaction_verify")
+        verification = _verify_assertion_response(user, item, credential, str(challenge), "transaction_verify")
+    except AuthError:
+        _audit_transaction_authorization(
+            user,
+            "failure",
+            context=context,
+            reason="security_key_verification_failed",
+        )
+        raise
 
     item.sign_count = verification.new_sign_count
     item.last_used_at = datetime.now(timezone.utc)
@@ -774,6 +819,7 @@ def verify_transaction_security_key_challenge(user: User, credential: dict[str, 
         aaguid=item.aaguid,
         metadata=_transaction_audit_metadata(context),
     )
+    _audit_transaction_authorization(user, "approved", context=context)
     return {
         "message": "Transaction security key challenge verified",
         "transaction_reference": context["transaction_reference"],
@@ -1130,10 +1176,43 @@ def _transaction_audit_metadata(context: dict[str, str]) -> dict[str, str]:
     return {
         "transaction_amount": context.get("amount", ""),
         "transaction_currency": context.get("currency", ""),
-        "transaction_payee_account": context.get("payee_account", ""),
-        "transaction_reference": context.get("transaction_reference", ""),
+        "transaction_payee_account_ref": audit_reference("transaction_payee_account", context.get("payee_account", "")),
+        "transaction_ref": audit_reference("transaction_reference", context.get("transaction_reference", "")),
         "transaction_expiry": context.get("expiry", ""),
     }
+
+
+def _audit_transaction_authorization(
+    user: User,
+    outcome: str,
+    *,
+    context: dict[str, str] | None = None,
+    raw_context: object | None = None,
+    transaction_reference: object | None = None,
+    reason: str | None = None,
+) -> None:
+    from app.banking.services import audit_transaction_authorization
+
+    metadata: dict[str, object] = {}
+    payee_account = None
+    reference = transaction_reference
+    if context:
+        metadata["transaction_amount"] = context.get("amount", "")
+        metadata["transaction_currency"] = context.get("currency", "")
+        payee_account = context.get("payee_account")
+        reference = context.get("transaction_reference")
+    elif isinstance(raw_context, dict):
+        payee_account = raw_context.get("payee_account") or raw_context.get("payee") or raw_context.get("account")
+        reference = raw_context.get("transaction_reference") or transaction_reference
+    if reason:
+        metadata["reason"] = reason
+    audit_transaction_authorization(
+        user,
+        outcome,
+        metadata=metadata,
+        transaction_reference=reference,
+        payee_account=payee_account,
+    )
 
 
 def _public_credential(item: WebAuthnCredential) -> dict[str, Any]:
