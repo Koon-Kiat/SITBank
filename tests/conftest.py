@@ -123,6 +123,56 @@ class TestConfig:
     TRUSTED_PROXY_COUNT = 0
 
 
+SECURITY_TEST_FILES = frozenset(
+    {
+        "tests/test_config.py",
+        "tests/test_deployment.py",
+        "tests/test_group_a_security.py",
+        "tests/test_mfa_envelope_crypto.py",
+        "tests/test_owasp_regressions.py",
+        "tests/test_passwords.py",
+        "tests/test_pentest_auth_bypass.py",
+        "tests/test_redis_session_integrity.py",
+        "tests/test_route_inventory_security.py",
+        "tests/test_secret_scanner.py",
+        "tests/test_webauthn_lifecycle.py",
+    }
+)
+DEPLOYMENT_TEST_FILES = frozenset({"tests/test_deployment.py"})
+SLOW_TEST_FILES = frozenset(
+    {
+        "tests/test_deployment.py",
+        "tests/test_group_a_security.py",
+        "tests/test_pentest_auth_bypass.py",
+        "tests/test_secret_scanner.py",
+        "tests/test_webauthn_lifecycle.py",
+    }
+)
+SERIAL_TEST_FILES = frozenset()
+
+
+def _relative_repo_path(path: Path) -> str:
+    repo_root = Path(__file__).resolve().parents[1]
+    try:
+        return path.resolve().relative_to(repo_root).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def pytest_collection_modifyitems(config, items):
+    marker_files = {
+        "security": SECURITY_TEST_FILES,
+        "deployment": DEPLOYMENT_TEST_FILES,
+        "slow": SLOW_TEST_FILES,
+        "serial": SERIAL_TEST_FILES,
+    }
+    for item in items:
+        test_path = _relative_repo_path(Path(str(item.path)))
+        for marker_name, test_files in marker_files.items():
+            if test_path in test_files:
+                item.add_marker(getattr(pytest.mark, marker_name))
+
+
 @pytest.fixture()
 def app(monkeypatch):
     import app as app_module

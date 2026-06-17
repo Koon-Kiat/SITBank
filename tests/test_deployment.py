@@ -478,9 +478,12 @@ def test_local_ci_command_documents_required_local_checks():
     readme = Path("README.md").read_text(encoding="utf-8")
 
     for expected in (
-        "tests/test_deployment.py",
-        "tests/test_redis_session_integrity.py",
+        "Full parallel test suite",
         '"pytest"',
+        '"-n"',
+        '"auto"',
+        '"--durations=30"',
+        '"--durations-min=0.5"',
         '"compileall"',
         '"pip", "check"',
         '"bandit"',
@@ -499,6 +502,10 @@ def test_local_ci_command_documents_required_local_checks():
     assert "Docker is unavailable; skipped Docker/Compose-only local checks" in ci_local
     assert "scripts/ci-local" in readme
     assert "ops/runtime_contract.py" in readme
+    assert "-m security" in readme
+    assert "-m deployment" in readme
+    assert '-m "not slow"' in readme
+    assert "Pull requests and protected CI still run the full pytest suite" in readme
 
 
 def test_environment_only_bundle_does_not_export_long_lived_secrets(
