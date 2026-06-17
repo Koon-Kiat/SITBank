@@ -1025,8 +1025,16 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         == "${{ needs.release-verify.outputs.digest }}"
     )
     assert (
+        workflow["jobs"]["deploy-staging"]["env"]["STAGING_MFA_KEK_ACTIVE_ID"]
+        == "${{ vars.STAGING_MFA_KEK_ACTIVE_ID }}"
+    )
+    assert (
         workflow["jobs"]["deploy-production"]["env"]["IMAGE_DIGEST"]
         == "${{ needs.release-verify.outputs.digest }}"
+    )
+    assert (
+        workflow["jobs"]["deploy-production"]["env"]["PROD_MFA_KEK_ACTIVE_ID"]
+        == "${{ vars.PROD_MFA_KEK_ACTIVE_ID }}"
     )
     assert workflow["jobs"]["publish"]["needs"] == [
         "test",
@@ -1146,8 +1154,12 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "SITBANK_SECRET_KEY" not in workflow_text
     assert "STAGING_SECRET_KEY" not in workflow_text
     assert "STAGING_DATABASE_URL" not in workflow_text
+    assert "STAGING_MFA_KEK_KEYS_JSON" not in workflow_text
     assert "PROD_SECRET_KEY" not in workflow_text
     assert "PROD_DATABASE_URL" not in workflow_text
+    assert "PROD_MFA_KEK_KEYS_JSON" not in workflow_text
+    assert "STAGING_MFA_KEK_ACTIVE_ID" in workflow_text
+    assert "PROD_MFA_KEK_ACTIVE_ID" in workflow_text
     assert "--environment-only" in workflow_text
     assert "--prefix STAGING" in workflow_text
     assert "--prefix PROD" in workflow_text
