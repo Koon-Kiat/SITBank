@@ -12,6 +12,7 @@ def test_security_headers_are_present(client):
     assert response.headers["X-Content-Type-Options"] == "nosniff"
     assert response.headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
     assert "default-src 'self'" in response.headers["Content-Security-Policy"]
+    assert response.headers["Cross-Origin-Resource-Policy"] == "same-origin"
 
 
 def test_public_homepage_exposes_verification_and_student_disclaimer(client):
