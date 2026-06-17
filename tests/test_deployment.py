@@ -102,6 +102,43 @@ def _nginx_location_bodies(config: str, selector: str) -> list[str]:
     )
 
 
+def _nginx_https_server_prelocation(config: str) -> str:
+    https_start = config.index("listen 443 ssl http2;")
+    first_location = config.index("\n    location ", https_start)
+    return config[https_start:first_location]
+
+
+def _assert_nginx_owns_duplicate_edge_security_headers(
+    nginx: str,
+    *,
+    hsts_add_header: str,
+) -> None:
+    https_server = _nginx_https_server_prelocation(nginx)
+    hide_directives = (
+        "proxy_hide_header X-Content-Type-Options;",
+        "proxy_hide_header X-Frame-Options;",
+        "proxy_hide_header Referrer-Policy;",
+        "proxy_hide_header Permissions-Policy;",
+        "proxy_hide_header Strict-Transport-Security;",
+    )
+    add_header_directives = (
+        'add_header X-Content-Type-Options "nosniff" always;',
+        'add_header X-Frame-Options "DENY" always;',
+        'add_header Referrer-Policy "no-referrer" always;',
+        'add_header Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()" always;',
+        hsts_add_header,
+    )
+
+    first_add_header = min(https_server.index(directive) for directive in add_header_directives)
+    for directive in hide_directives:
+        assert directive in https_server
+        assert nginx.count(directive) == 1
+        assert https_server.index(directive) < first_add_header
+    for directive in add_header_directives:
+        assert directive in https_server
+        assert nginx.count(directive) == 1
+
+
 def _config_secret_inputs() -> set[str]:
     tree = ast.parse(Path("config.py").read_text(encoding="utf-8"))
     secret_readers = {
@@ -1526,10 +1563,10 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     assert "server_name staging-sitbank.duckdns.org;" in nginx
     assert "ssl_certificate /etc/letsencrypt/live/staging-sitbank.duckdns.org/fullchain.pem;" in nginx
     assert "ssl_certificate_key /etc/letsencrypt/live/staging-sitbank.duckdns.org/privkey.pem;" in nginx
-    assert 'add_header X-Content-Type-Options "nosniff" always;' in nginx
-    assert 'add_header X-Frame-Options "DENY" always;' in nginx
-    assert 'add_header Referrer-Policy "no-referrer" always;' in nginx
-    assert "Permissions-Policy" in nginx
+    _assert_nginx_owns_duplicate_edge_security_headers(
+        nginx,
+        hsts_add_header='add_header Strict-Transport-Security "max-age=300" always;',
+    )
     assert "preload" not in nginx
     assert 'auth_basic "SITBank staging";' in nginx
     assert "auth_basic_user_file /etc/nginx/.htpasswd-sitbank-staging;" in nginx
@@ -1632,11 +1669,13 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     assert "server_name sitbank.duckdns.org;" in nginx
     assert "ssl_certificate /etc/letsencrypt/live/sitbank.duckdns.org/fullchain.pem;" in nginx
     assert "ssl_certificate_key /etc/letsencrypt/live/sitbank.duckdns.org/privkey.pem;" in nginx
-    assert 'add_header X-Content-Type-Options "nosniff" always;' in nginx
-    assert 'add_header X-Frame-Options "DENY" always;' in nginx
-    assert 'add_header Referrer-Policy "no-referrer" always;' in nginx
-    assert "Permissions-Policy" in nginx
-    assert 'add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;' in nginx
+    _assert_nginx_owns_duplicate_edge_security_headers(
+        nginx,
+        hsts_add_header=(
+            'add_header Strict-Transport-Security "max-age=31536000; '
+            'includeSubDomains" always;'
+        ),
+    )
     assert "client_max_body_size 4m;" in nginx
     for timeout in (
         "client_body_timeout 15s;",
