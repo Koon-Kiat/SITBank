@@ -11,11 +11,11 @@ from dotenv import dotenv_values
 
 SECRET_NAMES = {
     "DATABASE_URL": "database_url",
-    "MFA_AES256_GCM_KEY_B64": "mfa_aes256_gcm_key_b64",
     "PASSWORD_PEPPER_B64": "password_pepper_b64",
     "REDIS_URL": "redis_url",
     "SECRET_KEY": "secret_key",
     "SESSION_HMAC_KEYS_JSON": "session_hmac_keys_json",
+    "MFA_KEK_KEYS_JSON": "mfa_kek_keys_json",
     "WTF_CSRF_SECRET_KEY": "wtf_csrf_secret_key",
 }
 
@@ -72,6 +72,7 @@ def import_legacy_environment(source: Path, destination: Path, public_host: str)
             "2.0",
         ),
         "MFA_ISSUER_NAME": _required(values, "MFA_ISSUER_NAME", "SITBank"),
+        "MFA_KEK_ACTIVE_ID": _required(values, "MFA_KEK_ACTIVE_ID"),
         "PASSWORD_PBKDF2_ITERATIONS": _required(
             values,
             "PASSWORD_PBKDF2_ITERATIONS",

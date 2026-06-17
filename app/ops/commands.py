@@ -9,6 +9,13 @@ from flask import Flask
 from sqlalchemy import text
 
 from app.extensions import db
+from app.models import User
+from app.security.audit import audit_system_event
+from app.security.crypto import (
+    is_enveloped_mfa_secret,
+    mfa_envelope_kek_id,
+    rewrap_mfa_dek,
+)
 from app.security.fido_mds import validate_fido_metadata_config
 from app.security.passwords import validate_common_password_dictionary, validate_password_hash_config
 from app.security.session_hmac import validate_session_hmac_config
@@ -78,6 +85,15 @@ def register_ops_commands(app: Flask) -> None:
             failures.append(f"Session HMAC configuration check failed: {exc}")
         else:
             click.echo(f"Configured session HMAC keys: {session_hmac_keys}")
+
+        mfa_kek_keys = app.config.get("MFA_KEK_KEYS")
+        mfa_kek_active_id = app.config.get("MFA_KEK_ACTIVE_ID")
+        if not isinstance(mfa_kek_keys, dict) or not mfa_kek_keys:
+            failures.append("MFA_KEK_KEYS_JSON must configure at least one MFA KEK")
+        elif mfa_kek_active_id not in mfa_kek_keys:
+            failures.append("MFA_KEK_ACTIVE_ID must identify a configured MFA KEK")
+        else:
+            click.echo(f"Configured MFA KEKs: {len(mfa_kek_keys)}")
 
         try:
             approved_aaguids = validate_fido_metadata_config()
@@ -151,3 +167,116 @@ def register_ops_commands(app: Flask) -> None:
             f"probe_table={result.probe_table} "
             f"extension_probe={result.extension_probe}"
         )
+
+    @app.cli.command("rewrap-mfa-deks")
+    @click.option("--from-kek-id", required=True, help="Existing KEK id wrapping the target DEKs.")
+    @click.option("--to-kek-id", required=True, help="Configured KEK id to rewrap matching DEKs under.")
+    @click.option("--dry-run", is_flag=True, help="Validate and report without writing changes.")
+    def rewrap_mfa_deks(from_kek_id: str, to_kek_id: str, dry_run: bool) -> None:
+        """Rewrap envelope DEKs without re-encrypting TOTP secret ciphertext."""
+
+        if from_kek_id == to_kek_id:
+            raise click.ClickException("from-kek-id and to-kek-id must be different")
+        if from_kek_id not in app.config["MFA_KEK_KEYS"]:
+            raise click.ClickException("Source MFA KEK id is not configured")
+        if to_kek_id not in app.config["MFA_KEK_KEYS"]:
+            raise click.ClickException("Target MFA KEK id is not configured")
+        audit_system_event(
+            "mfa_dek_rewrap",
+            "started",
+            metadata={"from_kek_id": from_kek_id, "to_kek_id": to_kek_id, "dry_run": dry_run},
+        )
+
+        scanned = 0
+        updated = 0
+        skipped_legacy = 0
+        skipped_other_kek = 0
+        failures = 0
+        try:
+            users = _users_with_mfa_secret()
+            for user in users:
+                scanned += 1
+                try:
+                    if not is_enveloped_mfa_secret(
+                        user.mfa_secret_nonce,
+                        user.mfa_secret_ciphertext,
+                    ):
+                        skipped_legacy += 1
+                        continue
+                    current_kek_id = mfa_envelope_kek_id(
+                        user.mfa_secret_nonce,
+                        user.mfa_secret_ciphertext,
+                    )
+                    if current_kek_id != from_kek_id:
+                        skipped_other_kek += 1
+                        continue
+                    if not dry_run:
+                        user.mfa_secret_nonce, user.mfa_secret_ciphertext = rewrap_mfa_dek(
+                            user.mfa_secret_nonce,
+                            user.mfa_secret_ciphertext,
+                            user.id,
+                            from_kek_id=from_kek_id,
+                            to_kek_id=to_kek_id,
+                        )
+                    updated += 1
+                except Exception:
+                    failures += 1
+
+            if failures:
+                db.session.rollback()
+                raise click.ClickException("MFA DEK rewrap failed; no changes were committed")
+            if dry_run:
+                db.session.rollback()
+            else:
+                db.session.commit()
+        except Exception as exc:
+            db.session.rollback()
+            audit_system_event(
+                "mfa_dek_rewrap",
+                "failure",
+                metadata={
+                    "from_kek_id": from_kek_id,
+                    "to_kek_id": to_kek_id,
+                    "dry_run": dry_run,
+                    "scanned": scanned,
+                    "updated": updated,
+                    "skipped_legacy": skipped_legacy,
+                    "skipped_other_kek": skipped_other_kek,
+                    "failures": failures,
+                    "reason": type(exc).__name__,
+                },
+            )
+            if isinstance(exc, click.ClickException):
+                raise
+            raise click.ClickException("MFA DEK rewrap failed") from exc
+
+        audit_system_event(
+            "mfa_dek_rewrap",
+            "success",
+            metadata={
+                "from_kek_id": from_kek_id,
+                "to_kek_id": to_kek_id,
+                "dry_run": dry_run,
+                "scanned": scanned,
+                "updated": updated,
+                "skipped_legacy": skipped_legacy,
+                "skipped_other_kek": skipped_other_kek,
+                "failures": failures,
+            },
+        )
+        click.echo(
+            "MFA DEK rewrap complete: "
+            f"scanned={scanned} updated={updated} skipped_legacy={skipped_legacy} "
+            f"skipped_other_kek={skipped_other_kek} failures={failures} dry_run={dry_run}"
+        )
+
+
+def _users_with_mfa_secret() -> list[User]:
+    return list(
+        db.session.execute(
+            db.select(User).where(
+                User.mfa_secret_nonce.is_not(None),
+                User.mfa_secret_ciphertext.is_not(None),
+            )
+        ).scalars()
+    )

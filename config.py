@@ -193,6 +193,8 @@ def _required_session_hmac_keys(name: str, *, active_key_id: str) -> dict[str, b
         normalized_key_id = str(key_id).strip()
         if not re.fullmatch(r"[A-Za-z0-9._-]{1,32}", normalized_key_id):
             raise RuntimeError(f"{name} contains an invalid key identifier")
+        if normalized_key_id in keys:
+            raise RuntimeError(f"{name} contains duplicate key identifiers after normalization")
         try:
             decoded_key = base64.b64decode(str(encoded_key), validate=True)
         except Exception as exc:
@@ -203,6 +205,37 @@ def _required_session_hmac_keys(name: str, *, active_key_id: str) -> dict[str, b
 
     if active_key_id not in keys:
         raise RuntimeError("SESSION_HMAC_ACTIVE_KEY_ID must identify a configured session HMAC key")
+    return keys
+
+
+def _required_keyring(name: str, *, active_key_id: str, active_label: str) -> dict[str, bytes]:
+    import base64
+
+    raw_value = _required_env_or_file(name)
+    try:
+        payload = json.loads(raw_value)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"{name} must be a JSON object") from exc
+    if not isinstance(payload, dict) or not payload:
+        raise RuntimeError(f"{name} must contain at least one key")
+
+    keys: dict[str, bytes] = {}
+    for key_id, encoded_key in payload.items():
+        normalized_key_id = str(key_id).strip()
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,32}", normalized_key_id):
+            raise RuntimeError(f"{name} contains an invalid key identifier")
+        if normalized_key_id in keys:
+            raise RuntimeError(f"{name} contains duplicate key identifiers after normalization")
+        try:
+            decoded_key = base64.b64decode(str(encoded_key), validate=True)
+        except Exception as exc:
+            raise RuntimeError(f"{name} key {normalized_key_id} must be valid base64") from exc
+        if len(decoded_key) != 32:
+            raise RuntimeError(f"{name} key {normalized_key_id} must decode to exactly 32 bytes")
+        keys[normalized_key_id] = decoded_key
+
+    if active_key_id not in keys:
+        raise RuntimeError(f"{active_label} must identify a configured key in {name}")
     return keys
 
 
@@ -234,7 +267,12 @@ class Config:
     REDIS_SOCKET_TIMEOUT_SECONDS = 5.0
     REDIS_HEALTH_CHECK_INTERVAL_SECONDS = 30
     REDIS_MAX_CONNECTIONS = 100
-    MFA_AES256_GCM_KEY_B64 = _required_b64_32_bytes("MFA_AES256_GCM_KEY_B64")
+    MFA_KEK_ACTIVE_ID = _required_env("MFA_KEK_ACTIVE_ID")
+    MFA_KEK_KEYS = _required_keyring(
+        "MFA_KEK_KEYS_JSON",
+        active_key_id=MFA_KEK_ACTIVE_ID,
+        active_label="MFA_KEK_ACTIVE_ID",
+    )
     PASSWORD_PEPPER_B64 = _required_b64_32_bytes("PASSWORD_PEPPER_B64")
     PASSWORD_PBKDF2_ITERATIONS = int(os.getenv("PASSWORD_PBKDF2_ITERATIONS", "600000"))
     if PASSWORD_PBKDF2_ITERATIONS < 600000:

@@ -91,6 +91,31 @@ def _validate_b64_key(name: str, value: str) -> str:
     return value
 
 
+def _validate_key_id(name: str, value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,32}", value):
+        raise RuntimeError(f"{name} is invalid")
+    return value
+
+
+def _validate_keyring(name: str, value: str, *, active_key_id: str) -> str:
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"{name} must be a JSON object") from exc
+    if not isinstance(payload, dict) or not payload:
+        raise RuntimeError(f"{name} must contain at least one key")
+    normalized_key_ids: set[str] = set()
+    for key_id, encoded_key in payload.items():
+        normalized_key_id = _validate_key_id(f"{name} key identifier", str(key_id).strip())
+        if normalized_key_id in normalized_key_ids:
+            raise RuntimeError(f"{name} contains duplicate key identifiers after normalization")
+        normalized_key_ids.add(normalized_key_id)
+        _validate_b64_key(f"{name} key {normalized_key_id}", str(encoded_key))
+    if active_key_id not in normalized_key_ids:
+        raise RuntimeError(f"{name} must contain the active key id")
+    return value
+
+
 def _quote_environment_value(name: str, value: str) -> str:
     if "'" in value:
         raise RuntimeError(f"{name} contains an unsupported single quote")
@@ -143,6 +168,10 @@ def build_container_environment(prefix: str = "PROD") -> dict[str, str]:
     environment = {
         "APP_ENV": "production",
         "COMMON_PASSWORDS_PATH": "/run/config/common-passwords.txt",
+        "MFA_KEK_ACTIVE_ID": _validate_key_id(
+            _prefixed(prefix, "MFA_KEK_ACTIVE_ID"),
+            _value(_prefixed(prefix, "MFA_KEK_ACTIVE_ID")),
+        ),
         "MFA_ISSUER_NAME": _value(_prefixed(prefix, "MFA_ISSUER_NAME"), default="SITBank"),
         "SESSION_HMAC_ACTIVE_KEY_ID": _active_key_id(prefix),
         "WEBAUTHN_APPROVED_AAGUIDS_PATH": "/run/config/fido-approved-aaguids.json",
@@ -174,9 +203,10 @@ def build_container_bundle(
         target: _value(_prefixed(prefix, source))
         for source, target in SECRET_INPUTS.items()
     }
-    _validate_b64_key(
-        _prefixed(prefix, "MFA_AES256_GCM_KEY_B64"),
-        secrets["mfa_aes256_gcm_key_b64"],
+    _validate_keyring(
+        _prefixed(prefix, "MFA_KEK_KEYS_JSON"),
+        secrets["mfa_kek_keys_json"],
+        active_key_id=environment["MFA_KEK_ACTIVE_ID"],
     )
     _validate_b64_key(
         _prefixed(prefix, "PASSWORD_PEPPER_B64"),
