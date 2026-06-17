@@ -452,8 +452,8 @@ PY
 
 prepare_dependencies() {
     if [[ "${target}" == "staging" ]]; then
-        compose "${image}" up --detach --pull always --wait postgres redis
         dependencies_prepared=1
+        compose "${image}" up --detach --pull always --wait postgres redis
     fi
 }
 
@@ -475,6 +475,15 @@ show_app_diagnostics() {
     compose "${image}" logs --no-color --tail 80 app >&2 || true
 }
 
+show_dependency_diagnostics() {
+    if [[ "${target}" != "staging" ]]; then
+        return
+    fi
+    echo "Staging dependency diagnostics:" >&2
+    compose "${image}" ps postgres redis >&2 || true
+    compose "${image}" logs --no-color --tail 120 postgres redis >&2 || true
+}
+
 rollback() {
     local exit_code=$?
     local database_rollback_ok=1
@@ -482,6 +491,8 @@ rollback() {
     set +e
     if [[ "${service_switched}" -eq 1 ]]; then
         show_app_diagnostics
+    elif [[ "${dependencies_prepared}" -eq 1 ]]; then
+        show_dependency_diagnostics
     fi
     if [[ "${service_switched}" -eq 1 ]]; then
         compose "${image}" down --remove-orphans
