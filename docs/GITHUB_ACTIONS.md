@@ -24,6 +24,21 @@ Manual pre-merge staging:
 
 Feature-branch workflow and deployment scripts are never executed with environment secrets. The only accepted migration mode for existing EC2 deployment files is `adopt-existing`, and it must still pass wrapper hash validation before app deployment.
 
+## Environment Variables
+
+GitHub environment variables provide only non-secret deployment settings. For both `staging` and `production`, set:
+
+- `<PREFIX>_EC2_HOST`
+- `<PREFIX>_EC2_PORT`
+- `<PREFIX>_EC2_DEPLOY_USER`
+- `<PREFIX>_PUBLIC_HOST`
+- `<PREFIX>_MFA_KEK_ACTIVE_ID`
+- `<PREFIX>_SESSION_HMAC_ACTIVE_KEY_ID`
+- `<PREFIX>_PASSWORD_PBKDF2_ITERATIONS`
+- `<PREFIX>_MFA_ISSUER_NAME`
+
+`<PREFIX>_MFA_KEK_ACTIVE_ID` must match a key identifier in the root-managed `/etc/sitbank*/secrets/mfa_kek_keys_json` file on EC2. Do not put `MFA_KEK_KEYS_JSON` in GitHub Actions; the KEK keyring is a long-lived secret and remains host-managed.
+
 ## DAST Policy
 
 Ordinary pull requests skip the full authenticated DAST crawl to keep feedback fast. They still run unit tests, compile checks, `pip check`, Bandit, dependency audits, dependency lock validation, repository secret scan, Docker image build, container smoke test, Compose validation, and Trivy gates.
