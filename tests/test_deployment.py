@@ -41,7 +41,6 @@ PYTHON_SLIM_TRIXIE_DIGEST_RE = re.compile(
 DEPLOYMENT_VALUES = {
     "PROD_DATABASE_MIGRATION_URL": "postgresql+psycopg2://bank_owner:secret@127.0.0.1/bank",
     "PROD_DATABASE_URL": "postgresql+psycopg2://bank:secret@127.0.0.1/bank",
-    "PROD_MFA_AES256_GCM_KEY_B64": "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=",
     "PROD_MFA_KEK_ACTIVE_ID": "2026-06-mfa",
     "PROD_MFA_KEK_KEYS_JSON": '{"2026-06-mfa":"NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ="}',
     "PROD_PASSWORD_PEPPER_B64": "MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE=",
@@ -157,6 +156,14 @@ def _assert_sets_equal(actual: set[str], expected: set[str], *, context: str) ->
         f"{context} drifted; missing={missing or 'none'}; "
         f"unexpected={unexpected or 'none'}"
     )
+
+
+def _project_docs_text() -> str:
+    paths = [Path("README.md"), Path("SECURITY.md")]
+    docs_dir = Path("docs")
+    if docs_dir.exists():
+        paths.extend(sorted(docs_dir.rglob("*.md")))
+    return "\n".join(path.read_text(encoding="utf-8") for path in paths if path.exists())
 
 
 def _dockerfile_stage_images(dockerfile: str) -> dict[str, str]:
@@ -481,7 +488,6 @@ def test_environment_only_bundle_does_not_export_long_lived_secrets(
     for name in (
         "PROD_DATABASE_MIGRATION_URL",
         "PROD_DATABASE_URL",
-        "PROD_MFA_AES256_GCM_KEY_B64",
         "PROD_MFA_KEK_KEYS_JSON",
         "PROD_PASSWORD_PEPPER_B64",
         "PROD_REDIS_URL",
@@ -511,7 +517,6 @@ def test_environment_only_bundle_accepts_staging_prefix(monkeypatch, tmp_path):
     for name in (
         "STAGING_DATABASE_MIGRATION_URL",
         "STAGING_DATABASE_URL",
-        "STAGING_MFA_AES256_GCM_KEY_B64",
         "STAGING_MFA_KEK_KEYS_JSON",
         "STAGING_PASSWORD_PEPPER_B64",
         "STAGING_REDIS_URL",
@@ -564,7 +569,6 @@ def test_legacy_environment_import_seeds_root_runtime_without_printing_values(
                 'SESSION_HMAC_KEYS_JSON={"2026-06":"MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjI="}',
                 f"DATABASE_URL={DEPLOYMENT_VALUES['PROD_DATABASE_URL']}",
                 f"REDIS_URL={DEPLOYMENT_VALUES['PROD_REDIS_URL']}",
-                f"MFA_AES256_GCM_KEY_B64={DEPLOYMENT_VALUES['PROD_MFA_AES256_GCM_KEY_B64']}",
                 "MFA_KEK_ACTIVE_ID=2026-06-mfa",
                 f"MFA_KEK_KEYS_JSON={DEPLOYMENT_VALUES['PROD_MFA_KEK_KEYS_JSON']}",
                 f"PASSWORD_PEPPER_B64={DEPLOYMENT_VALUES['PROD_PASSWORD_PEPPER_B64']}",
@@ -1184,17 +1188,17 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "sitbank-deploy" in bootstrap
     assert "sitbank-container.service" in bootstrap
     assert "sitbank-staging-container.service" in bootstrap
-    readme = Path("README.md").read_text(encoding="utf-8")
-    assert "Manual pre-merge staging:" in readme
-    assert "run trusted workflow from main" in readme
-    assert "source_ref = candidate branch, tag, or SHA" in readme
-    assert "resolve immutable source_sha" in readme
-    assert "deploy staging using trusted main scripts" in readme
-    assert "main push -> publish -> release-verify -> staging -> production" in readme
-    assert "Manual production deployment is disabled." in readme
-    assert "Production never skips disabled, skipped, or failed staging." in readme
-    assert "Feature-branch workflow and deployment scripts" in readme
-    assert "adopt-existing" in readme
+    docs = _project_docs_text()
+    assert "Manual pre-merge staging:" in docs
+    assert "run trusted workflow from main" in docs
+    assert "source_ref = candidate branch, tag, or SHA" in docs
+    assert "resolve immutable source_sha" in docs
+    assert "deploy staging using trusted main scripts" in docs
+    assert "main push -> publish -> release-verify -> staging -> production" in docs
+    assert "Manual production deployment is disabled." in docs
+    assert "Production never skips disabled, skipped, or failed staging." in docs
+    assert "Feature-branch workflow and deployment scripts" in docs
+    assert "adopt-existing" in docs
 
 
 def test_manual_bootstrap_workflow_uses_only_signed_trusted_main_sources():
@@ -1322,7 +1326,7 @@ def test_root_bootstrap_wrapper_authenticates_and_limits_privileged_updates():
 
 def test_trivy_exception_is_narrow_documented_and_temporary():
     trivyignore = Path(".trivyignore").read_text(encoding="utf-8")
-    readme = Path("README.md").read_text(encoding="utf-8")
+    docs = _project_docs_text()
     security = Path("SECURITY.md").read_text(encoding="utf-8")
     active_ignores = [
         line.strip()
@@ -1342,17 +1346,17 @@ def test_trivy_exception_is_narrow_documented_and_temporary():
         "review/remove-by date: 2026-06-26",
     ):
         assert required in trivyignore
-    assert "CVE-2026-42496" in readme
-    assert "CVE-2026-8376" in readme
-    assert "2026-06-26" in readme
-    assert "mixing Debian sid packages into Trixie is riskier" in readme
-    assert "full Critical Trivy report with no ignore file" in readme
+    assert "CVE-2026-42496" in docs
+    assert "CVE-2026-8376" in docs
+    assert "2026-06-26" in docs
+    assert "mixing Debian sid packages into Trixie is riskier" in docs
+    assert "full Critical Trivy report with no ignore file" in docs
     assert "fixable High/Critical gate must continue to run without" in security
 
 
 def test_dependabot_tracks_docker_base_images_without_automerge():
     dependabot = yaml.safe_load(Path(".github/dependabot.yml").read_text(encoding="utf-8"))
-    readme = Path("README.md").read_text(encoding="utf-8")
+    docs = _project_docs_text()
     docker_updates = [
         update
         for update in dependabot["updates"]
@@ -1366,12 +1370,12 @@ def test_dependabot_tracks_docker_base_images_without_automerge():
     assert docker_update["ignore"] == [
         {"dependency-name": "python", "versions": [">=3.13"]}
     ]
-    assert "Dependabot updates are review-only" in readme
-    assert "Base-image updates must not be auto-merged" in readme
-    assert "container smoke test, Compose" in readme
-    assert "Ordinary pull requests skip the full authenticated DAST crawl" in readme
-    assert "scheduled scans" in readme
-    assert "release verification retain that coverage" in readme
+    assert "Dependabot updates are review-only" in docs
+    assert "Base-image updates must not be auto-merged" in docs
+    assert "container smoke test, Compose" in docs
+    assert "Ordinary pull requests skip the full authenticated DAST crawl" in docs
+    assert "scheduled scans" in docs
+    assert "release verification retain that coverage" in docs
 
 
 def test_codeowners_and_codeql_cover_security_sensitive_changes():
@@ -1693,7 +1697,7 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
 
 
 def test_production_edge_runbook_documents_network_waf_and_verification_steps():
-    readme = Path("README.md").read_text(encoding="utf-8")
+    docs = _project_docs_text()
     security = Path("SECURITY.md").read_text(encoding="utf-8")
 
     for required in (
@@ -1718,7 +1722,7 @@ def test_production_edge_runbook_documents_network_waf_and_verification_steps():
         "curl -I https://sitbank.duckdns.org/health/ready",
         "external `/health/ready` returns `403`",
     ):
-        assert required in readme
+        assert required in docs
 
     for required in (
         "Production Edge and WAF Checklist",
@@ -1742,7 +1746,7 @@ def test_production_edge_runbook_documents_network_waf_and_verification_steps():
 
 
 def test_staging_edge_runbook_documents_operator_verification_steps():
-    readme = Path("README.md").read_text(encoding="utf-8")
+    docs = _project_docs_text()
 
     for required in (
         "sudo htpasswd -c /etc/nginx/.htpasswd-sitbank-staging",
@@ -1767,8 +1771,8 @@ def test_staging_edge_runbook_documents_operator_verification_steps():
         "local app readiness",
         "separate from application deployment",
     ):
-        assert required in readme
-    assert re.search(r"authenticated `/` returns\s+`200`", readme)
+        assert required in docs
+    assert re.search(r"authenticated `/` returns\s+`200`", docs)
 
 
 def test_dependency_manifests_have_one_hashed_lockfile_source_of_truth():
@@ -1790,6 +1794,33 @@ def test_dependency_manifests_have_one_hashed_lockfile_source_of_truth():
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_removed_legacy_crypto_interfaces_stay_absent():
+    runtime_files = [
+        Path(".github/workflows/ci-deploy.yml"),
+        Path("app/auth/services.py"),
+        Path("app/ops/commands.py"),
+        Path("app/security/crypto.py"),
+        Path("compose.prod.yml"),
+        Path("compose.staging.yml"),
+        Path("config.py"),
+        Path("ops/container/dast-smoke.sh"),
+        Path("ops/container/smoke-test.sh"),
+        Path("ops/deploy/render_container_bundle.py"),
+        Path("ops/deploy/sitbank-container-deploy"),
+        Path("ops/production-env.required"),
+        Path("ops/runtime_contract.py"),
+        Path("requirements.in"),
+        Path("requirements.lock"),
+        Path("requirements-dev.lock"),
+    ]
+    combined = "\n".join(path.read_text(encoding="utf-8") for path in runtime_files)
+
+    assert "MFA_AES256_GCM_KEY_B64" not in combined
+    assert "mfa_aes256_gcm_key_b64" not in combined
+    assert "rotate-mfa-encryption" not in combined
+    assert "bcrypt==" not in combined
 
 
 def test_tracked_files_do_not_contain_the_retired_project_name():
@@ -1820,21 +1851,21 @@ def test_migration_baseline_and_existing_database_runbook_are_present():
     migration = Path(
         "migrations/versions/20260610_0001_baseline.py"
     ).read_text(encoding="utf-8")
-    readme = Path("README.md").read_text(encoding="utf-8")
+    docs = _project_docs_text()
 
     assert 'revision = "20260610_0001"' in migration
     assert '"users"' in migration
     assert '"webauthn_credentials"' in migration
     assert '"security_audit_events"' in migration
-    assert "verify-migration-baseline" in readme
-    assert "db stamp 20260610_0001" in readme
-    assert "Do not run `db.create_all()`" in readme
-    assert "WenJiangggg/SITBank" in readme
-    assert "ghcr.io/wenjiangggg/sitbank@sha256:<digest>" in readme
-    assert "sitbank_db" in readme
-    assert "sitbank_owner" in readme
-    assert "sitbank_app" in readme
-    assert "sitbank-database-cutover prepare" in readme
+    assert "verify-migration-baseline" in docs
+    assert "db stamp 20260610_0001" in docs
+    assert "Do not run `db.create_all()`" in docs
+    assert "WenJiangggg/SITBank" in docs
+    assert "ghcr.io/wenjiangggg/sitbank@sha256:<digest>" in docs
+    assert "sitbank_db" in docs
+    assert "sitbank_owner" in docs
+    assert "sitbank_app" in docs
+    assert "sitbank-database-cutover prepare" in docs
 
 
 def test_migration_baseline_renders_offline_sql(app):

@@ -23,10 +23,6 @@ os.environ.setdefault(
     "postgresql+psycopg2://user:pass@127.0.0.1:5432/sitbank_test",
 )
 os.environ.setdefault("REDIS_URL", "redis://:pass@127.0.0.1:6379/15")
-os.environ.setdefault(
-    "MFA_AES256_GCM_KEY_B64",
-    base64.b64encode(b"0" * 32).decode("ascii"),
-)
 os.environ.setdefault("MFA_KEK_ACTIVE_ID", "test-mfa-current")
 os.environ.setdefault(
     "MFA_KEK_KEYS_JSON",
@@ -67,7 +63,6 @@ class TestConfig:
     REDIS_SOCKET_TIMEOUT_SECONDS = 5.0
     REDIS_HEALTH_CHECK_INTERVAL_SECONDS = 30
     REDIS_MAX_CONNECTIONS = 100
-    MFA_AES256_GCM_KEY_B64 = os.environ["MFA_AES256_GCM_KEY_B64"]
     MFA_KEK_ACTIVE_ID = os.environ["MFA_KEK_ACTIVE_ID"]
     MFA_KEK_KEYS = {
         "test-mfa-current": b"4" * 32,

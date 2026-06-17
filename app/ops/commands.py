@@ -12,8 +12,6 @@ from app.extensions import db
 from app.models import User
 from app.security.audit import audit_system_event
 from app.security.crypto import (
-    decrypt_mfa_secret,
-    encrypt_mfa_secret,
     is_enveloped_mfa_secret,
     mfa_envelope_kek_id,
     rewrap_mfa_dek,
@@ -168,92 +166,6 @@ def register_ops_commands(app: Flask) -> None:
             f"migration_role={result.migration_role} "
             f"probe_table={result.probe_table} "
             f"extension_probe={result.extension_probe}"
-        )
-
-    @app.cli.command("rotate-mfa-encryption")
-    @click.option("--to-kek-id", required=True, help="Configured KEK id to encrypt every MFA secret under.")
-    @click.option("--dry-run", is_flag=True, help="Validate and report without writing changes.")
-    def rotate_mfa_encryption(to_kek_id: str, dry_run: bool) -> None:
-        """Decrypt and re-encrypt all stored MFA secrets under the target KEK."""
-
-        if to_kek_id not in app.config["MFA_KEK_KEYS"]:
-            raise click.ClickException("Target MFA KEK id is not configured")
-        audit_system_event(
-            "mfa_encryption_rotation",
-            "started",
-            metadata={"to_kek_id": to_kek_id, "dry_run": dry_run},
-        )
-
-        scanned = 0
-        updated = 0
-        failures = 0
-        try:
-            users = _users_with_mfa_secret()
-            for user in users:
-                scanned += 1
-                try:
-                    current_kek_id = mfa_envelope_kek_id(
-                        user.mfa_secret_nonce,
-                        user.mfa_secret_ciphertext,
-                    )
-                    secret = decrypt_mfa_secret(
-                        user.mfa_secret_nonce,
-                        user.mfa_secret_ciphertext,
-                        user.id,
-                    )
-                    if current_kek_id == to_kek_id:
-                        continue
-                    if not dry_run:
-                        user.mfa_secret_nonce, user.mfa_secret_ciphertext = encrypt_mfa_secret(
-                            secret,
-                            user.id,
-                            kek_id=to_kek_id,
-                        )
-                    updated += 1
-                except Exception:
-                    failures += 1
-
-            if failures:
-                db.session.rollback()
-                raise click.ClickException(
-                    "MFA encryption rotation failed; no changes were committed"
-                )
-            if dry_run:
-                db.session.rollback()
-            else:
-                db.session.commit()
-        except Exception as exc:
-            db.session.rollback()
-            audit_system_event(
-                "mfa_encryption_rotation",
-                "failure",
-                metadata={
-                    "to_kek_id": to_kek_id,
-                    "dry_run": dry_run,
-                    "scanned": scanned,
-                    "updated": updated,
-                    "failures": failures,
-                    "reason": type(exc).__name__,
-                },
-            )
-            if isinstance(exc, click.ClickException):
-                raise
-            raise click.ClickException("MFA encryption rotation failed") from exc
-
-        audit_system_event(
-            "mfa_encryption_rotation",
-            "success",
-            metadata={
-                "to_kek_id": to_kek_id,
-                "dry_run": dry_run,
-                "scanned": scanned,
-                "updated": updated,
-                "failures": failures,
-            },
-        )
-        click.echo(
-            "MFA encryption rotation complete: "
-            f"scanned={scanned} updated={updated} failures={failures} dry_run={dry_run}"
         )
 
     @app.cli.command("rewrap-mfa-deks")

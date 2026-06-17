@@ -6,7 +6,6 @@ APP_SECRET_INPUTS = {
     "SESSION_HMAC_KEYS_JSON": "session_hmac_keys_json",
     "DATABASE_URL": "database_url",
     "REDIS_URL": "redis_url",
-    "MFA_AES256_GCM_KEY_B64": "mfa_aes256_gcm_key_b64",
     "MFA_KEK_KEYS_JSON": "mfa_kek_keys_json",
     "PASSWORD_PEPPER_B64": "password_pepper_b64",
 }

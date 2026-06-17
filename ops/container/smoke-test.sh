@@ -229,8 +229,6 @@ printf 'postgresql+psycopg2://ci_owner:ci-owner-password@%s:5432/ci' \
     > "${work_dir}/secrets/database_migration_url"
 printf 'redis://:ci-password@%s:6379/15' "${redis_container}" \
     > "${work_dir}/secrets/redis_url"
-printf '%s' 'MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=' \
-    > "${work_dir}/secrets/mfa_aes256_gcm_key_b64"
 printf '%s' '{"ci-mfa":"NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ="}' \
     > "${work_dir}/secrets/mfa_kek_keys_json"
 printf '%s' 'MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE=' \
@@ -264,7 +262,6 @@ docker_args=(
     --env SESSION_HMAC_KEYS_JSON_FILE=/run/secrets/session_hmac_keys_json
     --env DATABASE_URL_FILE=/run/secrets/database_url
     --env REDIS_URL_FILE=/run/secrets/redis_url
-    --env MFA_AES256_GCM_KEY_B64_FILE=/run/secrets/mfa_aes256_gcm_key_b64
     --env MFA_KEK_ACTIVE_ID=ci-mfa
     --env MFA_KEK_KEYS_JSON_FILE=/run/secrets/mfa_kek_keys_json
     --env PASSWORD_PEPPER_B64_FILE=/run/secrets/password_pepper_b64

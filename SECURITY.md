@@ -17,8 +17,8 @@ log.
    `/etc/sitbank-staging/secrets` for staging.
 4. Restart through the restricted deployment/runtime command and run
    `production-check`.
-5. Revoke active sessions when rotating session-signing, Flask, CSRF, MFA
-   encryption, database, or Redis credentials as required by the incident.
+5. Revoke active sessions when rotating session-signing, Flask, CSRF, MFA KEK,
+   database, or Redis credentials as required by the incident.
 6. Remove the secret from Git history with a coordinated history rewrite when
    it was pushed. Treat the old value as compromised even after cleanup.
 
@@ -27,12 +27,10 @@ Session HMAC rotation must keep the old key in
 `SESSION_HMAC_ACTIVE_KEY_ID`, then remove the previous key after all sessions
 signed by it have expired.
 
-MFA/TOTP seed encryption uses envelope encryption. Keep old KEKs in
-`mfa_kek_keys_json` until `rewrap-mfa-deks` or `rotate-mfa-encryption` has
-removed their use from stored records, then update `MFA_KEK_ACTIVE_ID` and the
-root-managed keyring together. `MFA_AES256_GCM_KEY_B64` is retained for legacy
-record decryption and must not be removed until production checks and rotation
-reports confirm no legacy records remain.
+MFA/TOTP seed encryption uses envelope encryption only. Keep old KEKs in
+`mfa_kek_keys_json` until `rewrap-mfa-deks` has removed their use from stored
+records, then update `MFA_KEK_ACTIVE_ID` and the root-managed keyring together.
+Non-envelope legacy MFA ciphertext is unsupported and fails closed.
 
 Redis session payloads are HMAC-wrapped with the session HMAC keyring before
 they are written to Redis. Tamper failures, missing signatures, unknown key

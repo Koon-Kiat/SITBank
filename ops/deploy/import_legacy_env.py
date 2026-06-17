@@ -11,7 +11,6 @@ from dotenv import dotenv_values
 
 SECRET_NAMES = {
     "DATABASE_URL": "database_url",
-    "MFA_AES256_GCM_KEY_B64": "mfa_aes256_gcm_key_b64",
     "PASSWORD_PEPPER_B64": "password_pepper_b64",
     "REDIS_URL": "redis_url",
     "SECRET_KEY": "secret_key",

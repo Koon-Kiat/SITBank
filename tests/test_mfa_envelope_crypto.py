@@ -6,11 +6,9 @@ import json
 import pyotp
 import pytest
 from cryptography.exceptions import InvalidTag
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from app.auth.services import _mfa_secret_for_user
 from app.extensions import db
-from app.models import SecurityAuditEvent, User
+from app.models import User
 from app.security.crypto import (
     ENVELOPE_NONCE_MARKER,
     MFASecretEnvelopeError,
@@ -33,16 +31,6 @@ def _user(username: str = "alice01") -> User:
     db.session.add(user)
     db.session.commit()
     return user
-
-
-def _legacy_encrypt(secret: str, user_id: int, key: bytes = b"0" * 32) -> tuple[bytes, bytes]:
-    nonce = b"legacy000001"
-    ciphertext = AESGCM(key).encrypt(
-        nonce,
-        secret.encode("utf-8"),
-        f"osp-bank:mfa-secret:user:{user_id}".encode("utf-8"),
-    )
-    return nonce, ciphertext
 
 
 def _envelope(ciphertext: bytes) -> dict[str, str | int]:
@@ -138,47 +126,11 @@ def test_rewrap_changes_only_kek_wrapper_and_preserves_secret(app):
     assert decrypt_mfa_secret(rewrapped_nonce, rewrapped_ciphertext, user.id) == secret
 
 
-def test_legacy_mfa_secret_is_lazy_migrated_on_use(app):
+def test_non_envelope_mfa_secret_fails_closed(app):
     user = _user()
-    secret = pyotp.random_base32(length=32)
-    user.mfa_secret_nonce, user.mfa_secret_ciphertext = _legacy_encrypt(secret, user.id)
-    db.session.commit()
 
-    with app.test_request_context("/mfa"):
-        assert _mfa_secret_for_user(user) == secret
-
-    db.session.refresh(user)
-    assert user.mfa_secret_nonce == ENVELOPE_NONCE_MARKER
-    assert decrypt_mfa_secret(user.mfa_secret_nonce, user.mfa_secret_ciphertext, user.id) == secret
-    event = db.session.execute(
-        db.select(SecurityAuditEvent).where(
-            SecurityAuditEvent.event_type == "mfa_secret_reencrypted"
-        )
-    ).scalar_one()
-    assert secret not in json.dumps(event.event_metadata)
-
-
-def test_rotate_mfa_encryption_command_reencrypts_legacy_records(app):
-    user = _user()
-    secret = pyotp.random_base32(length=32)
-    user.mfa_secret_nonce, user.mfa_secret_ciphertext = _legacy_encrypt(secret, user.id)
-    db.session.commit()
-
-    result = app.test_cli_runner().invoke(
-        args=["rotate-mfa-encryption", "--to-kek-id", "test-mfa-previous"]
-    )
-
-    assert result.exit_code == 0, result.output
-    db.session.refresh(user)
-    assert mfa_envelope_kek_id(user.mfa_secret_nonce, user.mfa_secret_ciphertext) == "test-mfa-previous"
-    assert decrypt_mfa_secret(user.mfa_secret_nonce, user.mfa_secret_ciphertext, user.id) == secret
-    events = db.session.execute(
-        db.select(SecurityAuditEvent).where(
-            SecurityAuditEvent.event_type == "mfa_encryption_rotation"
-        )
-    ).scalars().all()
-    assert {event.outcome for event in events} == {"started", "success"}
-    assert secret not in json.dumps([event.event_metadata for event in events])
+    with pytest.raises(MFASecretEnvelopeError, match="envelope"):
+        decrypt_mfa_secret(b"legacy000001", b"not-an-envelope", user.id)
 
 
 def test_rewrap_mfa_deks_command_updates_matching_envelopes(app):

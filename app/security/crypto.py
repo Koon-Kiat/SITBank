@@ -20,18 +20,6 @@ class MFASecretEnvelopeError(ValueError):
     """Raised when an MFA secret envelope is malformed or cannot decrypt."""
 
 
-def _mfa_key() -> bytes:
-    encoded = current_app.config["MFA_AES256_GCM_KEY_B64"]
-    key = base64.b64decode(encoded, validate=True)
-    if len(key) != 32:
-        raise RuntimeError("MFA_AES256_GCM_KEY_B64 must decode to exactly 32 bytes")
-    return key
-
-
-def _legacy_associated_data(user_id: int) -> bytes:
-    return f"osp-bank:mfa-secret:user:{user_id}".encode("utf-8")
-
-
 def _associated_data(user_id: int, kek_id: str, part: str) -> bytes:
     if part == "secret":
         return (
@@ -119,7 +107,8 @@ def encrypt_mfa_secret(
 def decrypt_mfa_secret(nonce: bytes, ciphertext: bytes, user_id: int) -> str:
     if is_enveloped_mfa_secret(nonce, ciphertext):
         return _decrypt_envelope(ciphertext, user_id)
-    return _decrypt_legacy_mfa_secret(nonce, ciphertext, user_id)
+    _audit_mfa_crypto("decrypt", "failure", user_id=user_id, metadata={"reason": "unsupported_format"})
+    raise MFASecretEnvelopeError("MFA secret envelope is required")
 
 
 def rewrap_mfa_dek(
@@ -156,13 +145,6 @@ def rewrap_mfa_dek(
         metadata={"from_kek_id": current_kek_id, "to_kek_id": to_kek_id},
     )
     return ENVELOPE_NONCE_MARKER, json.dumps(envelope, separators=(",", ":"), sort_keys=True).encode("utf-8")
-
-
-def _decrypt_legacy_mfa_secret(nonce: bytes, ciphertext: bytes, user_id: int) -> str:
-    aesgcm = AESGCM(_mfa_key())
-    plaintext = aesgcm.decrypt(nonce, ciphertext, _legacy_associated_data(user_id))
-    return plaintext.decode("utf-8")
-
 
 def _decrypt_envelope(ciphertext: bytes, user_id: int) -> str:
     envelope = _load_envelope(ciphertext)

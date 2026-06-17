@@ -199,10 +199,6 @@ def build_container_bundle(
         target: _value(_prefixed(prefix, source))
         for source, target in SECRET_INPUTS.items()
     }
-    _validate_b64_key(
-        _prefixed(prefix, "MFA_AES256_GCM_KEY_B64"),
-        secrets["mfa_aes256_gcm_key_b64"],
-    )
     _validate_keyring(
         _prefixed(prefix, "MFA_KEK_KEYS_JSON"),
         secrets["mfa_kek_keys_json"],

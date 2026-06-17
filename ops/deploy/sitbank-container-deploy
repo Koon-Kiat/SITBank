@@ -378,7 +378,6 @@ validate_staging_isolation() {
         database_url \
         database_migration_url \
         redis_url \
-        mfa_aes256_gcm_key_b64 \
         mfa_kek_keys_json \
         password_pepper_b64; do
         production_secret="/etc/sitbank/secrets/${secret_file}"
@@ -576,7 +575,6 @@ required_secrets=(
     database_url
     database_migration_url
     redis_url
-    mfa_aes256_gcm_key_b64
     mfa_kek_keys_json
     password_pepper_b64
 )
