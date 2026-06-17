@@ -27,6 +27,16 @@ os.environ.setdefault(
     "MFA_AES256_GCM_KEY_B64",
     base64.b64encode(b"0" * 32).decode("ascii"),
 )
+os.environ.setdefault("MFA_KEK_ACTIVE_ID", "test-mfa-current")
+os.environ.setdefault(
+    "MFA_KEK_KEYS_JSON",
+    json.dumps(
+        {
+            "test-mfa-current": base64.b64encode(b"4" * 32).decode("ascii"),
+            "test-mfa-previous": base64.b64encode(b"5" * 32).decode("ascii"),
+        }
+    ),
+)
 os.environ.setdefault(
     "PASSWORD_PEPPER_B64",
     base64.b64encode(b"1" * 32).decode("ascii"),
@@ -58,6 +68,11 @@ class TestConfig:
     REDIS_HEALTH_CHECK_INTERVAL_SECONDS = 30
     REDIS_MAX_CONNECTIONS = 100
     MFA_AES256_GCM_KEY_B64 = os.environ["MFA_AES256_GCM_KEY_B64"]
+    MFA_KEK_ACTIVE_ID = os.environ["MFA_KEK_ACTIVE_ID"]
+    MFA_KEK_KEYS = {
+        "test-mfa-current": b"4" * 32,
+        "test-mfa-previous": b"5" * 32,
+    }
     PASSWORD_PEPPER_B64 = os.environ["PASSWORD_PEPPER_B64"]
     PASSWORD_PBKDF2_ITERATIONS = int(os.environ["PASSWORD_PBKDF2_ITERATIONS"])
     PASSWORD_MAX_CHARS = 256

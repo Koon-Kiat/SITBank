@@ -33,6 +33,7 @@ services:
       DATABASE_URL_FILE: /run/secrets/database_url
       REDIS_URL_FILE: /run/secrets/redis_url
       MFA_AES256_GCM_KEY_B64_FILE: /run/secrets/mfa_aes256_gcm_key_b64
+      MFA_KEK_KEYS_JSON_FILE: /run/secrets/mfa_kek_keys_json
       PASSWORD_PEPPER_B64_FILE: /run/secrets/password_pepper_b64
     secrets:
       - source: secret_key
@@ -47,6 +48,8 @@ services:
         target: redis_url
       - source: mfa_aes256_gcm_key_b64
         target: mfa_aes256_gcm_key_b64
+      - source: mfa_kek_keys_json
+        target: mfa_kek_keys_json
       - source: password_pepper_b64
         target: password_pepper_b64
     volumes:
@@ -89,5 +92,7 @@ secrets:
     file: /etc/sitbank/secrets/redis_url
   mfa_aes256_gcm_key_b64:
     file: /etc/sitbank/secrets/mfa_aes256_gcm_key_b64
+  mfa_kek_keys_json:
+    file: /etc/sitbank/secrets/mfa_kek_keys_json
   password_pepper_b64:
     file: /etc/sitbank/secrets/password_pepper_b64

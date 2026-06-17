@@ -42,6 +42,8 @@ DEPLOYMENT_VALUES = {
     "PROD_DATABASE_MIGRATION_URL": "postgresql+psycopg2://bank_owner:secret@127.0.0.1/bank",
     "PROD_DATABASE_URL": "postgresql+psycopg2://bank:secret@127.0.0.1/bank",
     "PROD_MFA_AES256_GCM_KEY_B64": "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=",
+    "PROD_MFA_KEK_ACTIVE_ID": "2026-06-mfa",
+    "PROD_MFA_KEK_KEYS_JSON": '{"2026-06-mfa":"NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ="}',
     "PROD_PASSWORD_PEPPER_B64": "MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE=",
     "PROD_PUBLIC_HOST": "sitbank.duckdns.org",
     "PROD_REDIS_URL": "redis://:secret@127.0.0.1:6379/0",
@@ -106,6 +108,7 @@ def _config_secret_inputs() -> set[str]:
     secret_readers = {
         "_optional_url",
         "_required_b64_32_bytes",
+        "_required_keyring",
         "_required_secret",
         "_required_session_hmac_keys",
         "_required_url",
@@ -223,6 +226,7 @@ def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypa
     assert environment["WEBAUTHN_RP_ID"] == "sitbank.duckdns.org"
     assert environment["WEBAUTHN_RP_ORIGIN"] == "https://sitbank.duckdns.org"
     assert environment["SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06"
+    assert environment["MFA_KEK_ACTIVE_ID"] == "2026-06-mfa"
     assert environment["COMMON_PASSWORDS_PATH"] == "/run/config/common-passwords.txt"
     assert "SECRET_KEY" not in environment
     assert "DATABASE_MIGRATION_URL" not in environment
@@ -230,6 +234,7 @@ def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypa
     assert secrets["secret_key"] == DEPLOYMENT_VALUES["PROD_SECRET_KEY"]
     assert secrets["database_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_URL"]
     assert secrets["database_migration_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_MIGRATION_URL"]
+    assert secrets["mfa_kek_keys_json"] == DEPLOYMENT_VALUES["PROD_MFA_KEK_KEYS_JSON"]
     assert '"2026-06":"MjIy' in secrets["session_hmac_keys_json"]
 
 
@@ -246,6 +251,7 @@ def test_container_bundle_accepts_staging_prefix(monkeypatch):
     assert environment["WEBAUTHN_RP_ID"] == "staging.sitbank.example"
     assert environment["WEBAUTHN_RP_ORIGIN"] == "https://staging.sitbank.example"
     assert environment["SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06"
+    assert environment["MFA_KEK_ACTIVE_ID"] == "2026-06-mfa"
     assert secrets["secret_key"] == DEPLOYMENT_VALUES["PROD_SECRET_KEY"]
     assert secrets["database_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_URL"]
     assert secrets["database_migration_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_MIGRATION_URL"]
@@ -476,6 +482,7 @@ def test_environment_only_bundle_does_not_export_long_lived_secrets(
         "PROD_DATABASE_MIGRATION_URL",
         "PROD_DATABASE_URL",
         "PROD_MFA_AES256_GCM_KEY_B64",
+        "PROD_MFA_KEK_KEYS_JSON",
         "PROD_PASSWORD_PEPPER_B64",
         "PROD_REDIS_URL",
         "PROD_SECRET_KEY",
@@ -489,6 +496,7 @@ def test_environment_only_bundle_does_not_export_long_lived_secrets(
     write_container_bundle(output, include_secrets=False)
 
     assert environment["SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06"
+    assert environment["MFA_KEK_ACTIVE_ID"] == "2026-06-mfa"
     assert (output / "container.env").is_file()
     assert (output / "deployment.env").is_file()
     assert not (output / "secrets").exists()
@@ -504,6 +512,7 @@ def test_environment_only_bundle_accepts_staging_prefix(monkeypatch, tmp_path):
         "STAGING_DATABASE_MIGRATION_URL",
         "STAGING_DATABASE_URL",
         "STAGING_MFA_AES256_GCM_KEY_B64",
+        "STAGING_MFA_KEK_KEYS_JSON",
         "STAGING_PASSWORD_PEPPER_B64",
         "STAGING_REDIS_URL",
         "STAGING_SECRET_KEY",
@@ -517,6 +526,7 @@ def test_environment_only_bundle_accepts_staging_prefix(monkeypatch, tmp_path):
 
     environment = (output / "container.env").read_text(encoding="utf-8")
     deployment = (output / "deployment.env").read_text(encoding="utf-8")
+    assert "MFA_KEK_ACTIVE_ID='2026-06-mfa'" in environment
     assert "WEBAUTHN_RP_ID='staging.sitbank.example'" in environment
     assert "APP_BIND_PORT='5001'" in deployment
     assert "COMPOSE_PROJECT_NAME='sitbank-staging'" in deployment
@@ -555,6 +565,8 @@ def test_legacy_environment_import_seeds_root_runtime_without_printing_values(
                 f"DATABASE_URL={DEPLOYMENT_VALUES['PROD_DATABASE_URL']}",
                 f"REDIS_URL={DEPLOYMENT_VALUES['PROD_REDIS_URL']}",
                 f"MFA_AES256_GCM_KEY_B64={DEPLOYMENT_VALUES['PROD_MFA_AES256_GCM_KEY_B64']}",
+                "MFA_KEK_ACTIVE_ID=2026-06-mfa",
+                f"MFA_KEK_KEYS_JSON={DEPLOYMENT_VALUES['PROD_MFA_KEK_KEYS_JSON']}",
                 f"PASSWORD_PEPPER_B64={DEPLOYMENT_VALUES['PROD_PASSWORD_PEPPER_B64']}",
                 "MFA_ISSUER_NAME=SITBank",
             ]
@@ -572,10 +584,14 @@ def test_legacy_environment_import_seeds_root_runtime_without_printing_values(
 
     environment = (destination / "container.env").read_text(encoding="utf-8")
     assert "MFA_ISSUER_NAME='SITBank'" in environment
+    assert "MFA_KEK_ACTIVE_ID='2026-06-mfa'" in environment
     assert "DATABASE_URL" not in environment
     assert (destination / "secrets" / "database_url").read_text(
         encoding="utf-8"
     ) == DEPLOYMENT_VALUES["PROD_DATABASE_URL"]
+    assert (destination / "secrets" / "mfa_kek_keys_json").read_text(
+        encoding="utf-8"
+    ) == DEPLOYMENT_VALUES["PROD_MFA_KEK_KEYS_JSON"]
 
 
 def test_dockerfile_and_compose_enforce_hardened_runtime():

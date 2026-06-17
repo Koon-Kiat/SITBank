@@ -20,7 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from app.extensions import db
 from app.models import User
 from app.security.audit import audit_event
-from app.security.crypto import decrypt_mfa_secret, encrypt_mfa_secret
+from app.security.crypto import decrypt_mfa_secret, encrypt_mfa_secret, is_enveloped_mfa_secret
 from app.security.passwords import (
     PasswordPolicyError,
     hash_password,
@@ -682,7 +682,18 @@ def _totp(secret: str) -> pyotp.TOTP:
 def _mfa_secret_for_user(user: User) -> str:
     if not user.mfa_secret_nonce or not user.mfa_secret_ciphertext:
         raise AuthError("MFA is not configured", 403)
-    return decrypt_mfa_secret(user.mfa_secret_nonce, user.mfa_secret_ciphertext, user.id)
+    was_legacy = not is_enveloped_mfa_secret(user.mfa_secret_nonce, user.mfa_secret_ciphertext)
+    secret = decrypt_mfa_secret(user.mfa_secret_nonce, user.mfa_secret_ciphertext, user.id)
+    if was_legacy:
+        user.mfa_secret_nonce, user.mfa_secret_ciphertext = encrypt_mfa_secret(secret, user.id)
+        db.session.commit()
+        audit_event(
+            "mfa_secret_reencrypted",
+            "success",
+            user=user,
+            metadata={"from_format": "legacy", "to_kek_id": current_app.config["MFA_KEK_ACTIVE_ID"]},
+        )
+    return secret
 
 
 def _verify_totp_for_user(user: User, code: str, scope: str, *, valid_window: int | None = None) -> bool:

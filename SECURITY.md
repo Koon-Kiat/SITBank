@@ -27,6 +27,13 @@ Session HMAC rotation must keep the old key in
 `SESSION_HMAC_ACTIVE_KEY_ID`, then remove the previous key after all sessions
 signed by it have expired.
 
+MFA/TOTP seed encryption uses envelope encryption. Keep old KEKs in
+`mfa_kek_keys_json` until `rewrap-mfa-deks` or `rotate-mfa-encryption` has
+removed their use from stored records, then update `MFA_KEK_ACTIVE_ID` and the
+root-managed keyring together. `MFA_AES256_GCM_KEY_B64` is retained for legacy
+record decryption and must not be removed until production checks and rotation
+reports confirm no legacy records remain.
+
 Redis session payloads are HMAC-wrapped with the session HMAC keyring before
 they are written to Redis. Tamper failures, missing signatures, unknown key
 IDs, malformed payloads, or unsupported legacy formats are logged as

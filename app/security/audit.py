@@ -73,6 +73,31 @@ def audit_event(
         current_app.logger.warning("security_audit_write_failed event=%s error=%s", event_type, type(exc).__name__)
 
 
+def audit_system_event(
+    event_type: str,
+    outcome: str,
+    *,
+    user_id: int | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    try:
+        event = SecurityAuditEvent(
+            event_type=event_type[:80],
+            outcome=outcome[:24],
+            user_id=user_id,
+            ip_address="system",
+            user_agent="system",
+            correlation_id=str(uuid.uuid4()),
+            session_ref=None,
+            event_metadata=_sanitize_metadata(metadata or {}),
+        )
+        db.session.add(event)
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        current_app.logger.warning("security_audit_write_failed event=%s error=%s", event_type, type(exc).__name__)
+
+
 def audit_webauthn_event(
     action: str,
     outcome: str,

@@ -188,6 +188,7 @@ Sensitive settings accept either `NAME` or `NAME_FILE`, never both:
 - `DATABASE_MIGRATION_URL_FILE`
 - `REDIS_URL_FILE`
 - `MFA_AES256_GCM_KEY_B64_FILE`
+- `MFA_KEK_KEYS_JSON_FILE`
 - `PASSWORD_PEPPER_B64_FILE`
 
 Direct values remain supported for local development and tests. In production,
@@ -221,6 +222,8 @@ The complete production configuration surface is:
 - `DATABASE_URL_FILE`
 - `REDIS_URL_FILE`
 - `MFA_AES256_GCM_KEY_B64_FILE`
+- `MFA_KEK_ACTIVE_ID`
+- `MFA_KEK_KEYS_JSON_FILE`
 - `PASSWORD_PEPPER_B64_FILE`
 - `PASSWORD_PBKDF2_ITERATIONS`
 - `COMMON_PASSWORDS_PATH`
@@ -237,8 +240,31 @@ The complete production configuration surface is:
 
 The direct names `SECRET_KEY`, `WTF_CSRF_SECRET_KEY`,
 `SESSION_HMAC_KEYS_JSON`, `DATABASE_URL`, `DATABASE_MIGRATION_URL`, `REDIS_URL`,
-`MFA_AES256_GCM_KEY_B64`, and `PASSWORD_PEPPER_B64` remain available for local
-development, tests, and the one-time protected legacy import only.
+`MFA_AES256_GCM_KEY_B64`, `MFA_KEK_KEYS_JSON`, and `PASSWORD_PEPPER_B64` remain
+available for local development, tests, and the one-time protected legacy
+import only.
+
+`MFA_AES256_GCM_KEY_B64` is retained only to decrypt legacy authenticator
+secrets. New and migrated TOTP secrets use envelope encryption: a fresh
+per-secret data-encryption key encrypts the TOTP seed, and that DEK is wrapped
+by the active key in `MFA_KEK_KEYS_JSON`. `MFA_KEK_ACTIVE_ID` selects the KEK
+for new writes. Keep retired KEKs in the keyring until all records using them
+have been rotated or rewrapped, then remove them during a controlled
+maintenance window.
+
+Operational commands:
+
+```bash
+python -m flask --app wsgi:app rotate-mfa-encryption --to-kek-id <new-kek-id> --dry-run
+python -m flask --app wsgi:app rotate-mfa-encryption --to-kek-id <new-kek-id>
+python -m flask --app wsgi:app rewrap-mfa-deks --from-kek-id <old-kek-id> --to-kek-id <new-kek-id> --dry-run
+python -m flask --app wsgi:app rewrap-mfa-deks --from-kek-id <old-kek-id> --to-kek-id <new-kek-id>
+```
+
+Use full rotation when retiring the legacy MFA key or re-encrypting all TOTP
+secrets. Use DEK rewrap when only the KEK wrapper is rotating. The commands
+emit counts only and write audit events; they never print TOTP seeds, DEKs, or
+KEK material.
 
 When adding a runtime configuration value or secret, update
 `ops/runtime_contract.py` first, then keep `config.py`, the deployment bundle
@@ -531,6 +557,7 @@ Add these staging environment variables:
 - `STAGING_EC2_DEPLOY_USER`
 - `STAGING_EC2_HOST`
 - `STAGING_EC2_PORT`
+- `STAGING_MFA_KEK_ACTIVE_ID`
 - `STAGING_MFA_ISSUER_NAME`
 - `STAGING_PASSWORD_PBKDF2_ITERATIONS`
 - `STAGING_PUBLIC_HOST`
@@ -565,15 +592,16 @@ Add these production environment variables:
 - `PROD_EC2_DEPLOY_USER`
 - `PROD_EC2_HOST`
 - `PROD_EC2_PORT`
+- `PROD_MFA_KEK_ACTIVE_ID`
 - `PROD_MFA_ISSUER_NAME`
 - `PROD_PASSWORD_PBKDF2_ITERATIONS`
 - `PROD_PUBLIC_HOST`, currently `sitbank.duckdns.org`
 - `PROD_SESSION_HMAC_ACTIVE_KEY_ID`
 
 Production application runtime secrets remain root-managed on the production
-host under `/etc/sitbank/secrets`. Session HMAC keyring rotation is performed
-by updating the protected host secret file and the non-secret active key ID
-together during a controlled maintenance procedure.
+host under `/etc/sitbank/secrets`. Session HMAC and MFA KEK keyring rotation
+are performed by updating the protected host secret files and the matching
+non-secret active key IDs together during a controlled maintenance procedure.
 
 #### Production EC2 Name Migration
 
@@ -797,11 +825,14 @@ sudo install -o root -g 10001 -m 0640 \
 ```
 
 Generate independent staging application and data-service secrets without
-printing them. Set the same non-secret key identifier as the GitHub
-`STAGING_SESSION_HMAC_ACTIVE_KEY_ID` variable:
+printing them. Set the same non-secret key identifiers as the GitHub
+`STAGING_SESSION_HMAC_ACTIVE_KEY_ID` and `STAGING_MFA_KEK_ACTIVE_ID`
+variables:
 
 ```bash
-sudo STAGING_SESSION_HMAC_ACTIVE_KEY_ID=2026-06-staging python3 - <<'PY'
+sudo STAGING_SESSION_HMAC_ACTIVE_KEY_ID=2026-06-staging \
+  STAGING_MFA_KEK_ACTIVE_ID=2026-06-staging-mfa \
+  python3 - <<'PY'
 import base64
 import json
 import os
@@ -820,7 +851,8 @@ def write(name, value, mode=0o440, gid=10001):
     os.chown(path, 0, gid)
     os.chmod(path, mode)
 
-active_id = os.environ["STAGING_SESSION_HMAC_ACTIVE_KEY_ID"]
+session_active_id = os.environ["STAGING_SESSION_HMAC_ACTIVE_KEY_ID"]
+mfa_kek_active_id = os.environ["STAGING_MFA_KEK_ACTIVE_ID"]
 postgres_owner_password = secrets.token_urlsafe(32)
 postgres_app_password = secrets.token_urlsafe(32)
 redis_password = secrets.token_urlsafe(32)
@@ -830,11 +862,18 @@ write("wtf_csrf_secret_key", secrets.token_urlsafe(48))
 write(
     "session_hmac_keys_json",
     json.dumps(
-        {active_id: base64.b64encode(secrets.token_bytes(32)).decode("ascii")},
+        {session_active_id: base64.b64encode(secrets.token_bytes(32)).decode("ascii")},
         separators=(",", ":"),
     ),
 )
 write("mfa_aes256_gcm_key_b64", base64.b64encode(secrets.token_bytes(32)).decode("ascii"))
+write(
+    "mfa_kek_keys_json",
+    json.dumps(
+        {mfa_kek_active_id: base64.b64encode(secrets.token_bytes(32)).decode("ascii")},
+        separators=(",", ":"),
+    ),
+)
 write("password_pepper_b64", base64.b64encode(secrets.token_bytes(32)).decode("ascii"))
 write(
     "database_url",
@@ -1054,6 +1093,11 @@ This step is mandatory. Automated deployments do not transmit long-lived
 application secrets. Keep the root-owned files under `/etc/sitbank/secrets`
 and rotate them through an administrator-controlled maintenance procedure or
 AWS Secrets Manager.
+
+Before using the legacy importer, add `MFA_KEK_ACTIVE_ID` and
+`MFA_KEK_KEYS_JSON` to the source `.env` with a newly generated 32-byte
+base64 KEK. Keep `MFA_AES256_GCM_KEY_B64` in place until all legacy TOTP
+records have been lazily migrated or rotated.
 
 ```bash
 sudo install -d -o root -g root -m 0700 /etc/sitbank/runtime-import
