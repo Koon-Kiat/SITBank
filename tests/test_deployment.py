@@ -468,6 +468,9 @@ def test_smoke_fixture_and_deployment_wrapper_match_runtime_contract():
         '--volume "${SECRET_DIR}/database_migration_url:/run/secrets/database_migration_url:ro"'
         in deploy_script
     )
+    assert "show_dependency_diagnostics" in deploy_script
+    assert 'logs --no-color --tail 120 postgres redis' in deploy_script
+    assert "dependencies_prepared=1" in deploy_script
 
 
 def test_local_ci_command_documents_required_local_checks():
