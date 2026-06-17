@@ -23,14 +23,18 @@ BASH_SCRIPTS = (
 
 PYTHON_CHECKS = (
     (
-        "Deployment contract tests",
-        (sys.executable, "-m", "pytest", "tests/test_deployment.py", "-q"),
+        "Full parallel test suite",
+        (
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-n",
+            "auto",
+            "--durations=30",
+            "--durations-min=0.5",
+        ),
     ),
-    (
-        "Redis session integrity tests",
-        (sys.executable, "-m", "pytest", "tests/test_redis_session_integrity.py", "-q"),
-    ),
-    ("Full test suite", (sys.executable, "-m", "pytest", "-q")),
     ("Compile Python sources", (sys.executable, "-m", "compileall", "app", "config.py", "wsgi.py")),
     ("Package consistency", (sys.executable, "-m", "pip", "check")),
     (

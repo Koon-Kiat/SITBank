@@ -236,6 +236,7 @@ jobs:
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+          # setup-python's pip cache key includes runner OS, Python version, and these lockfile hashes.
           cache: pip
           cache-dependency-path: |
             requirements.lock
@@ -246,7 +247,7 @@ jobs:
 
       - name: Run tests and security checks
         run: |
-          python -m pytest -q
+          python -m pytest -q -n auto --durations=30 --durations-min=0.5
           python -m compileall app config.py wsgi.py
           python -m pip check
           python -m bandit -q -ll -r app ops config.py wsgi.py
