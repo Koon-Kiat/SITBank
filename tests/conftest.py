@@ -9,24 +9,40 @@ import fakeredis
 import pytest
 
 
+TEST_SESSION_HMAC_ACTIVE_KEY_ID = "test-current"
+TEST_SESSION_HMAC_KEYS = {
+    "test-current": b"2" * 32,
+    "test-previous": b"3" * 32,
+}
+TEST_MFA_KEK_ACTIVE_ID = "test-mfa-current"
+TEST_MFA_KEK_KEYS = {
+    "test-mfa-current": b"4" * 32,
+    "test-mfa-previous": b"5" * 32,
+}
+
+
+def _encoded_keyring(keys: dict[str, bytes]) -> str:
+    return json.dumps(
+        {
+            key_id: base64.b64encode(key).decode("ascii")
+            for key_id, key in keys.items()
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
 os.environ.setdefault("SECRET_KEY", "test-secret-key-that-is-long-enough-for-config")
 os.environ.setdefault("WTF_CSRF_SECRET_KEY", "test-csrf-secret-that-is-long-enough-for-config")
-os.environ["SESSION_HMAC_ACTIVE_KEY_ID"] = "test-current"
-os.environ["SESSION_HMAC_KEYS_JSON"] = json.dumps(
-    {
-        "test-current": base64.b64encode(b"2" * 32).decode("ascii"),
-        "test-previous": base64.b64encode(b"3" * 32).decode("ascii"),
-    }
-)
+os.environ["SESSION_HMAC_ACTIVE_KEY_ID"] = TEST_SESSION_HMAC_ACTIVE_KEY_ID
+os.environ["SESSION_HMAC_KEYS_JSON"] = _encoded_keyring(TEST_SESSION_HMAC_KEYS)
 os.environ.setdefault(
     "DATABASE_URL",
     "postgresql+psycopg2://user:pass@127.0.0.1:5432/sitbank_test",
 )
 os.environ.setdefault("REDIS_URL", "redis://:pass@127.0.0.1:6379/15")
-os.environ.setdefault(
-    "MFA_AES256_GCM_KEY_B64",
-    base64.b64encode(b"0" * 32).decode("ascii"),
-)
+os.environ["MFA_KEK_ACTIVE_ID"] = TEST_MFA_KEK_ACTIVE_ID
+os.environ["MFA_KEK_KEYS_JSON"] = _encoded_keyring(TEST_MFA_KEK_KEYS)
 os.environ.setdefault(
     "PASSWORD_PEPPER_B64",
     base64.b64encode(b"1" * 32).decode("ascii"),
@@ -42,11 +58,8 @@ class TestConfig:
     TESTING = True
     SECRET_KEY = os.environ["SECRET_KEY"]
     WTF_CSRF_SECRET_KEY = os.environ["WTF_CSRF_SECRET_KEY"]
-    SESSION_HMAC_ACTIVE_KEY_ID = os.environ["SESSION_HMAC_ACTIVE_KEY_ID"]
-    SESSION_HMAC_KEYS = {
-        "test-current": b"2" * 32,
-        "test-previous": b"3" * 32,
-    }
+    SESSION_HMAC_ACTIVE_KEY_ID = TEST_SESSION_HMAC_ACTIVE_KEY_ID
+    SESSION_HMAC_KEYS = TEST_SESSION_HMAC_KEYS
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
     SQLALCHEMY_MIGRATION_DATABASE_URI = None
     SQLALCHEMY_TRACK_MODIFICATIONS = False
@@ -57,7 +70,8 @@ class TestConfig:
     REDIS_SOCKET_TIMEOUT_SECONDS = 5.0
     REDIS_HEALTH_CHECK_INTERVAL_SECONDS = 30
     REDIS_MAX_CONNECTIONS = 100
-    MFA_AES256_GCM_KEY_B64 = os.environ["MFA_AES256_GCM_KEY_B64"]
+    MFA_KEK_ACTIVE_ID = TEST_MFA_KEK_ACTIVE_ID
+    MFA_KEK_KEYS = TEST_MFA_KEK_KEYS
     PASSWORD_PEPPER_B64 = os.environ["PASSWORD_PEPPER_B64"]
     PASSWORD_PBKDF2_ITERATIONS = int(os.environ["PASSWORD_PBKDF2_ITERATIONS"])
     PASSWORD_MAX_CHARS = 256

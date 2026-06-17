@@ -261,6 +261,7 @@ install_runtime_bundle() {
         HIBP_CIRCUIT_FAILURE_THRESHOLD
         HIBP_CIRCUIT_OPEN_SECONDS
         HIBP_PASSWORD_CHECK_TIMEOUT_SECONDS
+        MFA_KEK_ACTIVE_ID
         MFA_ISSUER_NAME
         PASSWORD_PBKDF2_ITERATIONS
         SESSION_HMAC_ACTIVE_KEY_ID
@@ -377,7 +378,7 @@ validate_staging_isolation() {
         database_url \
         database_migration_url \
         redis_url \
-        mfa_aes256_gcm_key_b64 \
+        mfa_kek_keys_json \
         password_pepper_b64; do
         production_secret="/etc/sitbank/secrets/${secret_file}"
         if [[ -r "${production_secret}" ]] \
@@ -574,7 +575,7 @@ required_secrets=(
     database_url
     database_migration_url
     redis_url
-    mfa_aes256_gcm_key_b64
+    mfa_kek_keys_json
     password_pepper_b64
 )
 if [[ "${target}" == "staging" ]]; then

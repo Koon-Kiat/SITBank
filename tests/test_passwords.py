@@ -158,14 +158,14 @@ class PasswordPolicyTests(unittest.TestCase):
         self.assertEqual(validate_password_policy(long_ascii_password), [])
         self.assertEqual(validate_password_policy(long_unicode_password), [])
 
-    def test_hashes_long_unicode_passwords_with_pbkdf2_and_rejects_legacy_hashes(self) -> None:
+    def test_hashes_long_unicode_passwords_with_pbkdf2_and_rejects_unknown_hashes(self) -> None:
         password = "correct horse battery staple " + ("\u5b89\u5168\u306a\u5408\u8a00\u8449" * 12)
         password_hash = hash_password(password)
-        legacy_bcrypt_hash = "$2b$12$w7W16l.k2YRrSu7rlXG9GeKl2FpA1/b6jqve8GXCYgQFPu74B3k2."
+        unknown_hash = "unknown$v1$not-a-supported-password-hash"
 
         self.assertTrue(password_hash.startswith(f"{PBKDF2_PREFIX}$v1$i=600000$"))
         self.assertTrue(verify_password(password, password_hash))
-        self.assertFalse(verify_password("legacy direct bcrypt", legacy_bcrypt_hash))
+        self.assertFalse(verify_password("unsupported format", unknown_hash))
         self.assertFalse(verify_password(password + "!", password_hash))
 
     def test_password_hashing_normalizes_unicode_with_nfc(self) -> None:
