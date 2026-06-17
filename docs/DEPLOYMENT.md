@@ -4,16 +4,20 @@
 
 Only Flask/Gunicorn runs in the SITBank container. Nginx, TLS, PostgreSQL, Redis, backups, and FIDO policy files remain host-managed on EC2.
 
-- Production public host: `sitbank.duckdns.org`
-- Staging public host: `staging-sitbank.duckdns.org`
+ - Customer production public host: `sitbank.duckdns.org`
+ - Admin production public host: `admin-sitbank.duckdns.org`
+ - Customer staging public host: `staging-sitbank.duckdns.org`
+ - Admin staging public host: `admin-staging-sitbank.duckdns.org`
 - Production image form: `ghcr.io/wenjiangggg/sitbank@sha256:<digest>`
 - Repository identity: `WenJiangggg/SITBank`
 - Production config root: `/etc/sitbank`
 - Production compose dir: `/opt/sitbank`
 - Production service: `sitbank-container.service`
+ - Admin production service: `sitbank-admin-container.service`
 - Production database: `sitbank_db`
 - Production owner role: `sitbank_owner`
-- Production app role: `sitbank_app`
+ - Customer app role: `sitbank_app`
+ - Admin app role: `sitbank_admin`
 - Staging config root: `/etc/sitbank-staging`
 - Staging compose dir: `/opt/sitbank-staging`
 - Staging service: `sitbank-staging-container.service`
@@ -111,9 +115,11 @@ The reviewed production bootstrap installs and enables the production edge from 
 - Public ingress is TCP `80` and `443` only.
 - SSH is restricted to an administrator IP allowlist, AWS Systems Manager, a bastion, or VPN.
 - Nginx terminates TLS, redirects HTTP to HTTPS, and forwards only expected proxy headers.
-- Gunicorn binds only to `127.0.0.1:5000`.
+- Nginx strictly enforces host-based routing: `sitbank.duckdns.org` to the customer upstream, and `admin-sitbank.duckdns.org` to the admin upstream.
+- Admin hostname routing restricts network access (VPN/IP allowlist preferred).
+ - Customer Gunicorn binds only to `127.0.0.1:5000`. Admin Gunicorn binds only to `127.0.0.1:5002`.
 - `compose.prod.yml` publishes no app ports.
-- `/health/ready` is for local deployment and load-balancer checks and should deny public traffic.
+ - `/health/ready` is for local deployment and load-balancer checks. Public health checks for admin are blocked entirely.
 - Cloudflare or AWS WAF should sit in front of Nginx for managed common, SQL injection, XSS, bot, and protocol anomaly rules.
 - Cloudflare or AWS WAF rules and security-group allowlists are still infrastructure state and must be checked manually.
 

@@ -6,7 +6,7 @@ SITBank is a student cybersecurity project and demonstration site. Do not enter 
 
 ## Overview
 
-SITBank is a Flask/Gunicorn application deployed as a hardened Docker container behind host-managed Nginx, TLS, PostgreSQL, and Redis. Production runs at `https://sitbank.duckdns.org`; staging runs separately at `https://staging-sitbank.duckdns.org`.
+SITBank is a Flask/Gunicorn application deployed as hardened Docker containers (split into Customer and Admin deployment units) behind host-managed Nginx, TLS, PostgreSQL, and Redis. Production runs at `https://sitbank.duckdns.org` and `https://admin-sitbank.duckdns.org`; staging runs separately at `https://staging-sitbank.duckdns.org`.
 
 The app keeps password hashing PBKDF2+pepper only and MFA/TOTP seed encryption envelope-only using `MFA_KEK_ACTIVE_ID` plus `MFA_KEK_KEYS_JSON`. Legacy one-key MFA AES compatibility and direct non-PBKDF2 password hash compatibility are intentionally removed because current users are test-only and environments must be reset before this change is deployed.
 
@@ -16,7 +16,7 @@ The app keeps password hashing PBKDF2+pepper only and MFA/TOTP seed encryption e
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --require-hashes -r requirements-dev.lock
 .\.venv\Scripts\python.exe -m pytest -q
-.\.venv\Scripts\python.exe -m compileall app config.py wsgi.py
+.\.venv\Scripts\python.exe -m compileall app config.py wsgi.py admin_wsgi.py
 ```
 
 For a fuller local check, run `scripts/ci-local`. It includes Python/test checks, Git Bash syntax checks, Docker/Compose checks when Docker is available, and contract checks around `ops/runtime_contract.py`.

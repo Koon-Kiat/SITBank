@@ -8,6 +8,13 @@ APP_SECRET_INPUTS = {
     "REDIS_URL": "redis_url",
     "MFA_KEK_KEYS_JSON": "mfa_kek_keys_json",
     "PASSWORD_PEPPER_B64": "password_pepper_b64",
+    "ADMIN_SECRET_KEY": "admin_secret_key",
+    "ADMIN_WTF_CSRF_SECRET_KEY": "admin_wtf_csrf_secret_key",
+    "ADMIN_SESSION_HMAC_KEYS_JSON": "admin_session_hmac_keys_json",
+    "ADMIN_DATABASE_URL": "admin_database_url",
+    "ADMIN_REDIS_URL": "admin_redis_url",
+    "ADMIN_MFA_KEK_KEYS_JSON": "admin_mfa_kek_keys_json",
+    "ADMIN_PASSWORD_PEPPER_B64": "admin_password_pepper_b64",
 }
 
 MIGRATION_SECRET_INPUTS = {
@@ -59,8 +66,10 @@ NON_SECRET_RUNTIME_ENVIRONMENT = tuple(
         {
             "APP_ENV",
             "MFA_KEK_ACTIVE_ID",
+            "ADMIN_MFA_KEK_ACTIVE_ID",
             "MFA_ISSUER_NAME",
             "SESSION_HMAC_ACTIVE_KEY_ID",
+            "ADMIN_SESSION_HMAC_ACTIVE_KEY_ID",
             "WEBAUTHN_RP_ID",
             "WEBAUTHN_RP_ORIGIN",
             *NON_SECRET_DEFAULTS,

@@ -39,9 +39,10 @@ IDs, malformed payloads, or unsupported legacy formats are logged as
 Do not log or paste raw Redis session values during investigation.
 
 PostgreSQL uses separate `sitbank_owner` and `sitbank_app` roles in staging
-and production. `sitbank_owner` is only for Alembic migrations and ownership;
-`sitbank_app` is the Flask runtime role and must not own schema objects or have
-DDL privileges. Rotate `database_url` and `database_migration_url` separately.
+and production. `sitbank_owner` is only for Alembic migrations and ownership.
+The customer application uses the `sitbank_app` role, and the admin application
+uses the `sitbank_admin` role. Neither runtime role must own schema objects or
+have DDL privileges. Rotate `database_url` and `database_migration_url` separately.
 
 Staging secrets must never be copied from production. The staging deployment
 wrapper rejects identical application secret files when production secrets are
@@ -131,13 +132,15 @@ checked manually.
   `nginx -t` succeeds.
 - Issue production Certbot files under
   `/etc/letsencrypt/live/sitbank.duckdns.org/` before bootstrap.
+- Configure Nginx host-based routing: ensure `sitbank.duckdns.org` goes only to the customer upstream and `admin-sitbank.duckdns.org` goes only to the admin upstream.
 - Allow public inbound TCP `80` and `443` only.
 - Restrict SSH to an administrator IP allowlist, AWS Systems Manager, a
   bastion, or VPN; never allow TCP `22` from `0.0.0.0/0` or `::/0`.
+- Restrict the admin hostname to a VPN or a strict IP allowlist in Nginx/security groups.
 - Do not expose Gunicorn, PostgreSQL, or Redis directly to the internet.
-- Keep Gunicorn bound to `127.0.0.1:5000` and keep `compose.prod.yml` free of
-  published app ports.
-- Restrict `/health/ready` to loopback and allow public `/health/live` only.
+ - Keep customer Gunicorn bound to `127.0.0.1:5000` and admin to `127.0.0.1:5002`.
+  Keep `compose.prod.yml` free of published app ports.
+ - Restrict `/health/ready` to loopback. Allow public `/health/live` only for the customer app, and block `/health/ready` publicly for admin.
 - Enable WAF managed common, SQL injection, XSS, bot, and protocol anomaly
   rules.
 - Add WAF rate-based rules for `/login`, `/register`, `/mfa/verify`,

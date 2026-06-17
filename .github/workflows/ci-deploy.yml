@@ -224,6 +224,15 @@ jobs:
       COMMON_PASSWORDS_MIN_ENTRIES: "100000"
       WEBAUTHN_RP_ID: sitbank.duckdns.org
       WEBAUTHN_RP_ORIGIN: https://sitbank.duckdns.org
+      ADMIN_SECRET_KEY: ci-admin-secret-key-that-is-long-enough-for-tests
+      ADMIN_WTF_CSRF_SECRET_KEY: ci-admin-csrf-key-that-is-long-enough-for-tests
+      ADMIN_SESSION_HMAC_ACTIVE_KEY_ID: ci-admin-current
+      ADMIN_SESSION_HMAC_KEYS_JSON: '{"ci-admin-current":"MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjI="}'
+      ADMIN_DATABASE_URL: postgresql+psycopg2://ci_admin:ci@127.0.0.1:5432/ci
+      ADMIN_REDIS_URL: redis://:ci@127.0.0.1:6379/14
+      ADMIN_MFA_KEK_ACTIVE_ID: ci-admin-mfa
+      ADMIN_MFA_KEK_KEYS_JSON: '{"ci-admin-mfa":"NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ="}'
+      ADMIN_PASSWORD_PEPPER_B64: MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE=
     steps:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
@@ -247,9 +256,9 @@ jobs:
       - name: Run tests and security checks
         run: |
           python -m pytest -q
-          python -m compileall app config.py wsgi.py
+          python -m compileall app config.py wsgi.py admin_wsgi.py
           python -m pip check
-          python -m bandit -q -ll -r app ops config.py wsgi.py
+          python -m bandit -q -ll -r app ops config.py wsgi.py admin_wsgi.py
           python -m pip_audit --disable-pip --require-hashes -r requirements.lock
           python -m pip_audit --disable-pip --require-hashes -r requirements-dev.lock
           python ops/security/check_dependency_locks.py
@@ -644,7 +653,9 @@ jobs:
       REMOTE_USER: ${{ vars.STAGING_EC2_DEPLOY_USER }}
       STAGING_PUBLIC_HOST: ${{ vars.STAGING_PUBLIC_HOST }}
       STAGING_MFA_KEK_ACTIVE_ID: ${{ vars.STAGING_MFA_KEK_ACTIVE_ID }}
+      STAGING_ADMIN_MFA_KEK_ACTIVE_ID: ${{ vars.STAGING_ADMIN_MFA_KEK_ACTIVE_ID }}
       STAGING_SESSION_HMAC_ACTIVE_KEY_ID: ${{ vars.STAGING_SESSION_HMAC_ACTIVE_KEY_ID }}
+      STAGING_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID: ${{ vars.STAGING_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID }}
       STAGING_PASSWORD_PBKDF2_ITERATIONS: ${{ vars.STAGING_PASSWORD_PBKDF2_ITERATIONS }}
       STAGING_MFA_ISSUER_NAME: ${{ vars.STAGING_MFA_ISSUER_NAME }}
     steps:
@@ -666,7 +677,9 @@ jobs:
             REMOTE_USER
             STAGING_PUBLIC_HOST
             STAGING_MFA_KEK_ACTIVE_ID
+            STAGING_ADMIN_MFA_KEK_ACTIVE_ID
             STAGING_SESSION_HMAC_ACTIVE_KEY_ID
+            STAGING_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID
             STAGING_PASSWORD_PBKDF2_ITERATIONS
             STAGING_MFA_ISSUER_NAME
             STAGING_EC2_KNOWN_HOSTS
@@ -821,7 +834,9 @@ jobs:
       REMOTE_USER: ${{ vars.PROD_EC2_DEPLOY_USER }}
       PROD_PUBLIC_HOST: ${{ vars.PROD_PUBLIC_HOST }}
       PROD_MFA_KEK_ACTIVE_ID: ${{ vars.PROD_MFA_KEK_ACTIVE_ID }}
+      PROD_ADMIN_MFA_KEK_ACTIVE_ID: ${{ vars.PROD_ADMIN_MFA_KEK_ACTIVE_ID }}
       PROD_SESSION_HMAC_ACTIVE_KEY_ID: ${{ vars.PROD_SESSION_HMAC_ACTIVE_KEY_ID }}
+      PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID: ${{ vars.PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID }}
       PROD_PASSWORD_PBKDF2_ITERATIONS: ${{ vars.PROD_PASSWORD_PBKDF2_ITERATIONS }}
       PROD_MFA_ISSUER_NAME: ${{ vars.PROD_MFA_ISSUER_NAME }}
     steps:
@@ -843,7 +858,9 @@ jobs:
             REMOTE_USER
             PROD_PUBLIC_HOST
             PROD_MFA_KEK_ACTIVE_ID
+            PROD_ADMIN_MFA_KEK_ACTIVE_ID
             PROD_SESSION_HMAC_ACTIVE_KEY_ID
+            PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID
             PROD_PASSWORD_PBKDF2_ITERATIONS
             PROD_MFA_ISSUER_NAME
             PROD_EC2_KNOWN_HOSTS

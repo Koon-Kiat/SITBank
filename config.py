@@ -14,6 +14,10 @@ APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
 if APP_ENV != "production":
     load_dotenv()
 
+SITBANK_COMPONENT = os.getenv("SITBANK_COMPONENT", "customer").strip().lower()
+if SITBANK_COMPONENT not in {"customer", "admin"}:
+    raise RuntimeError("SITBANK_COMPONENT must be 'customer' or 'admin'")
+
 
 PLACEHOLDER_TOKENS = {
     "changeme",
@@ -240,19 +244,62 @@ def _required_keyring(name: str, *, active_key_id: str, active_label: str) -> di
 
 
 class Config:
+    SITBANK_COMPONENT = SITBANK_COMPONENT
+
     APP_ENV = APP_ENV
-    SECRET_KEY = _required_secret("SECRET_KEY", min_length=32)
-    WTF_CSRF_SECRET_KEY = _required_secret("WTF_CSRF_SECRET_KEY", min_length=32)
-    SESSION_HMAC_ACTIVE_KEY_ID = _required_env("SESSION_HMAC_ACTIVE_KEY_ID")
-    SESSION_HMAC_KEYS = _required_session_hmac_keys(
-        "SESSION_HMAC_KEYS_JSON",
-        active_key_id=SESSION_HMAC_ACTIVE_KEY_ID,
-    )
-    SQLALCHEMY_DATABASE_URI = _required_url(
-        "DATABASE_URL",
-        schemes={"postgresql", "postgresql+psycopg2"},
-        require_password=True,
-    )
+    if SITBANK_COMPONENT == "admin":
+        SECRET_KEY = _required_secret("ADMIN_SECRET_KEY", min_length=32)
+        WTF_CSRF_SECRET_KEY = _required_secret("ADMIN_WTF_CSRF_SECRET_KEY", min_length=32)
+        SESSION_HMAC_ACTIVE_KEY_ID = _required_env("ADMIN_SESSION_HMAC_ACTIVE_KEY_ID")
+        SESSION_HMAC_KEYS = _required_session_hmac_keys(
+            "ADMIN_SESSION_HMAC_KEYS_JSON",
+            active_key_id=SESSION_HMAC_ACTIVE_KEY_ID,
+        )
+        SQLALCHEMY_DATABASE_URI = _required_url(
+            "ADMIN_DATABASE_URL",
+            schemes={"postgresql", "postgresql+psycopg2"},
+            require_password=True,
+        )
+        REDIS_URL = _required_url("ADMIN_REDIS_URL", schemes={"redis", "rediss"}, require_password=True)
+        MFA_KEK_ACTIVE_ID = _required_env("ADMIN_MFA_KEK_ACTIVE_ID")
+        MFA_KEK_KEYS = _required_keyring(
+            "ADMIN_MFA_KEK_KEYS_JSON",
+            active_key_id=MFA_KEK_ACTIVE_ID,
+            active_label="ADMIN_MFA_KEK_ACTIVE_ID",
+        )
+        PASSWORD_PEPPER_B64 = _required_b64_32_bytes("ADMIN_PASSWORD_PEPPER_B64")
+        SESSION_KEY_PREFIX = "admin_session:"
+        SESSION_COOKIE_NAME = "__Host-sitbank_admin_session"
+        RATELIMIT_KEY_PREFIX = "ospbank:admin_ratelimit:"
+        PERMANENT_SESSION_LIFETIME = timedelta(minutes=10)
+        SESSION_INACTIVITY_SECONDS = 10 * 60
+    else:
+        SECRET_KEY = _required_secret("SECRET_KEY", min_length=32)
+        WTF_CSRF_SECRET_KEY = _required_secret("WTF_CSRF_SECRET_KEY", min_length=32)
+        SESSION_HMAC_ACTIVE_KEY_ID = _required_env("SESSION_HMAC_ACTIVE_KEY_ID")
+        SESSION_HMAC_KEYS = _required_session_hmac_keys(
+            "SESSION_HMAC_KEYS_JSON",
+            active_key_id=SESSION_HMAC_ACTIVE_KEY_ID,
+        )
+        SQLALCHEMY_DATABASE_URI = _required_url(
+            "DATABASE_URL",
+            schemes={"postgresql", "postgresql+psycopg2"},
+            require_password=True,
+        )
+        REDIS_URL = _required_url("REDIS_URL", schemes={"redis", "rediss"}, require_password=True)
+        MFA_KEK_ACTIVE_ID = _required_env("MFA_KEK_ACTIVE_ID")
+        MFA_KEK_KEYS = _required_keyring(
+            "MFA_KEK_KEYS_JSON",
+            active_key_id=MFA_KEK_ACTIVE_ID,
+            active_label="MFA_KEK_ACTIVE_ID",
+        )
+        PASSWORD_PEPPER_B64 = _required_b64_32_bytes("PASSWORD_PEPPER_B64")
+        SESSION_KEY_PREFIX = "session:"
+        SESSION_COOKIE_NAME = "__Host-sitbank_session"
+        RATELIMIT_KEY_PREFIX = "ospbank:ratelimit:"
+        PERMANENT_SESSION_LIFETIME = timedelta(minutes=15)
+        SESSION_INACTIVITY_SECONDS = 15 * 60
+
     SQLALCHEMY_MIGRATION_DATABASE_URI = _optional_url(
         "DATABASE_MIGRATION_URL",
         schemes={"postgresql", "postgresql+psycopg2"},
@@ -267,13 +314,6 @@ class Config:
     REDIS_SOCKET_TIMEOUT_SECONDS = 5.0
     REDIS_HEALTH_CHECK_INTERVAL_SECONDS = 30
     REDIS_MAX_CONNECTIONS = 100
-    MFA_KEK_ACTIVE_ID = _required_env("MFA_KEK_ACTIVE_ID")
-    MFA_KEK_KEYS = _required_keyring(
-        "MFA_KEK_KEYS_JSON",
-        active_key_id=MFA_KEK_ACTIVE_ID,
-        active_label="MFA_KEK_ACTIVE_ID",
-    )
-    PASSWORD_PEPPER_B64 = _required_b64_32_bytes("PASSWORD_PEPPER_B64")
     PASSWORD_PBKDF2_ITERATIONS = int(os.getenv("PASSWORD_PBKDF2_ITERATIONS", "600000"))
     if PASSWORD_PBKDF2_ITERATIONS < 600000:
         raise RuntimeError("PASSWORD_PBKDF2_ITERATIONS must be 600000 or higher")
@@ -315,14 +355,10 @@ class Config:
         raise RuntimeError("HIBP_CIRCUIT_OPEN_SECONDS must be between 30 and 3600")
 
     SESSION_TYPE = "redis"
-    SESSION_KEY_PREFIX = "session:"
-    SESSION_COOKIE_NAME = "__Host-sitbank_session"
     SESSION_COOKIE_SECURE = True
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Strict"
     SESSION_PERMANENT = True
-    PERMANENT_SESSION_LIFETIME = timedelta(minutes=15)
-    SESSION_INACTIVITY_SECONDS = 15 * 60
     SESSION_HISTORY_LIMIT = int(os.getenv("SESSION_HISTORY_LIMIT", "20"))
     if SESSION_HISTORY_LIMIT < 1 or SESSION_HISTORY_LIMIT > 100:
         raise RuntimeError("SESSION_HISTORY_LIMIT must be between 1 and 100")
@@ -341,7 +377,6 @@ class Config:
     RATELIMIT_STORAGE_URI = REDIS_URL
     RATELIMIT_HEADERS_ENABLED = True
     RATELIMIT_STRATEGY = "fixed-window"
-    RATELIMIT_KEY_PREFIX = "ospbank:ratelimit:"
 
     FRESH_MFA_SECONDS = 5 * 60
     TOTP_LOGIN_VALID_WINDOW = int(os.getenv("TOTP_LOGIN_VALID_WINDOW", "1"))
