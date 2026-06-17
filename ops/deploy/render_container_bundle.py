@@ -104,10 +104,14 @@ def _validate_keyring(name: str, value: str, *, active_key_id: str) -> str:
         raise RuntimeError(f"{name} must be a JSON object") from exc
     if not isinstance(payload, dict) or not payload:
         raise RuntimeError(f"{name} must contain at least one key")
+    normalized_key_ids: set[str] = set()
     for key_id, encoded_key in payload.items():
         normalized_key_id = _validate_key_id(f"{name} key identifier", str(key_id).strip())
+        if normalized_key_id in normalized_key_ids:
+            raise RuntimeError(f"{name} contains duplicate key identifiers after normalization")
+        normalized_key_ids.add(normalized_key_id)
         _validate_b64_key(f"{name} key {normalized_key_id}", str(encoded_key))
-    if active_key_id not in payload:
+    if active_key_id not in normalized_key_ids:
         raise RuntimeError(f"{name} must contain the active key id")
     return value
 

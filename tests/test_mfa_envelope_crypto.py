@@ -19,7 +19,7 @@ from app.security.crypto import (
     rewrap_mfa_dek,
 )
 from app.security.passwords import hash_password
-from config import _required_keyring
+from config import _required_keyring, _required_session_hmac_keys
 
 
 def _user(username: str = "alice01") -> User:
@@ -59,6 +59,11 @@ def test_mfa_secret_envelope_hides_plaintext_and_uses_active_kek(app):
     assert secret.encode("utf-8") not in ciphertext
     assert b"44444444444444444444444444444444" not in ciphertext
     assert decrypt_mfa_secret(nonce, ciphertext, user.id) == secret
+
+
+def test_test_config_active_key_ids_exist_in_keyrings(app):
+    assert app.config["MFA_KEK_ACTIVE_ID"] in app.config["MFA_KEK_KEYS"]
+    assert app.config["SESSION_HMAC_ACTIVE_KEY_ID"] in app.config["SESSION_HMAC_KEYS"]
 
 
 def test_mfa_secret_envelope_is_bound_to_user_kek_and_ciphertext(app):
@@ -191,4 +196,28 @@ def test_mfa_keyring_config_fails_closed(monkeypatch):
             "BAD_MFA_KEYS_JSON",
             active_key_id="bad",
             active_label="ACTIVE",
+        )
+
+
+def test_keyring_config_rejects_duplicate_normalized_identifiers(monkeypatch):
+    key = base64.b64encode(b"6" * 32).decode("ascii")
+    monkeypatch.setenv(
+        "BAD_MFA_KEYS_JSON",
+        json.dumps({"dup": key, " dup ": key}),
+    )
+    with pytest.raises(RuntimeError, match="duplicate key identifiers"):
+        _required_keyring(
+            "BAD_MFA_KEYS_JSON",
+            active_key_id="dup",
+            active_label="ACTIVE",
+        )
+
+    monkeypatch.setenv(
+        "BAD_SESSION_KEYS_JSON",
+        json.dumps({"dup": key, " dup ": key}),
+    )
+    with pytest.raises(RuntimeError, match="duplicate key identifiers"):
+        _required_session_hmac_keys(
+            "BAD_SESSION_KEYS_JSON",
+            active_key_id="dup",
         )

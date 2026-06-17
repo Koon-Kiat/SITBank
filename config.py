@@ -193,6 +193,8 @@ def _required_session_hmac_keys(name: str, *, active_key_id: str) -> dict[str, b
         normalized_key_id = str(key_id).strip()
         if not re.fullmatch(r"[A-Za-z0-9._-]{1,32}", normalized_key_id):
             raise RuntimeError(f"{name} contains an invalid key identifier")
+        if normalized_key_id in keys:
+            raise RuntimeError(f"{name} contains duplicate key identifiers after normalization")
         try:
             decoded_key = base64.b64decode(str(encoded_key), validate=True)
         except Exception as exc:
@@ -222,6 +224,8 @@ def _required_keyring(name: str, *, active_key_id: str, active_label: str) -> di
         normalized_key_id = str(key_id).strip()
         if not re.fullmatch(r"[A-Za-z0-9._-]{1,32}", normalized_key_id):
             raise RuntimeError(f"{name} contains an invalid key identifier")
+        if normalized_key_id in keys:
+            raise RuntimeError(f"{name} contains duplicate key identifiers after normalization")
         try:
             decoded_key = base64.b64decode(str(encoded_key), validate=True)
         except Exception as exc:

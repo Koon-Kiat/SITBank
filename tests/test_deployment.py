@@ -336,6 +336,24 @@ def test_container_bundle_rejects_missing_multiline_and_partial_rotation(monkeyp
         build_container_bundle()
 
 
+def test_container_bundle_keyring_validation_normalizes_ids_and_rejects_duplicates(monkeypatch):
+    _set_deployment_values(monkeypatch)
+    key = DEPLOYMENT_VALUES["PROD_MFA_KEK_KEYS_JSON"].split('"')[3]
+
+    monkeypatch.setenv("PROD_MFA_KEK_KEYS_JSON", f'{{" 2026-06-mfa ":"{key}"}}')
+    environment, secrets = build_container_bundle()
+
+    assert environment["MFA_KEK_ACTIVE_ID"] == "2026-06-mfa"
+    assert secrets["mfa_kek_keys_json"] == f'{{" 2026-06-mfa ":"{key}"}}'
+
+    monkeypatch.setenv(
+        "PROD_MFA_KEK_KEYS_JSON",
+        f'{{"2026-06-mfa":"{key}"," 2026-06-mfa ":"{key}"}}',
+    )
+    with pytest.raises(RuntimeError, match="duplicate key identifiers"):
+        build_container_bundle()
+
+
 def test_container_bundle_builds_two_key_rotation_ring(monkeypatch):
     _set_deployment_values(monkeypatch)
     monkeypatch.setenv("PROD_SESSION_HMAC_PREVIOUS_KEY_ID", "2026-03")
@@ -1375,7 +1393,7 @@ def test_dependabot_tracks_docker_base_images_without_automerge():
     assert "container smoke test, Compose" in docs
     assert "Ordinary pull requests skip the full authenticated DAST crawl" in docs
     assert "scheduled scans" in docs
-    assert "release verification retain that coverage" in docs
+    assert "release verification retains that coverage" in docs
 
 
 def test_codeowners_and_codeql_cover_security_sensitive_changes():
