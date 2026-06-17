@@ -15,11 +15,34 @@ The app keeps password hashing PBKDF2+pepper only and MFA/TOTP seed encryption e
 ```powershell
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --require-hashes -r requirements-dev.lock
-.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m pytest -q -n auto
 .\.venv\Scripts\python.exe -m compileall app config.py wsgi.py
 ```
 
-For a fuller local check, run `scripts/ci-local`. It includes Python/test checks, Git Bash syntax checks, Docker/Compose checks when Docker is available, and contract checks around `ops/runtime_contract.py`.
+Common local test commands:
+
+```powershell
+# Fast parallel full suite
+.\.venv\Scripts\python.exe -m pytest -q -n auto
+
+# Lower-resource parallel run
+.\.venv\Scripts\python.exe -m pytest -q -n 4
+
+# Show the slowest tests for optimization work
+.\.venv\Scripts\python.exe -m pytest -q --durations=30 --durations-min=0.5
+
+# Re-run only the last failures
+.\.venv\Scripts\python.exe -m pytest -q --lf
+
+# Focused groups
+.\.venv\Scripts\python.exe -m pytest -q -m security
+.\.venv\Scripts\python.exe -m pytest -q -m deployment
+.\.venv\Scripts\python.exe -m pytest -q -m "not slow"
+```
+
+The `not slow` and focused marker commands are for local iteration only. Pull requests and protected CI still run the full pytest suite, including security, deployment, Redis session integrity, CSRF, MFA, WebAuthn, route inventory, production guard, dependency lock, and secret-scanning checks.
+
+For a fuller local check, run `scripts/ci-local`. It runs the full pytest suite in parallel with timing output, then Python/package/security checks, Git Bash syntax checks, Docker/Compose checks when Docker is available, and contract checks around `ops/runtime_contract.py`.
 
 ## Required Configuration
 
