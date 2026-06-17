@@ -316,6 +316,8 @@ PY
 
 docker run --rm "${migration_docker_args[@]}" "${IMAGE}" \
     python -m flask --app wsgi:app db upgrade
+docker run --rm "${migration_docker_args[@]}" "${IMAGE}" \
+    python -m flask --app wsgi:app apply-runtime-db-privileges
 docker run --rm "${docker_args[@]}" "${IMAGE}" \
     python -m flask --app wsgi:app production-check
 docker run --rm "${migration_docker_args[@]}" "${IMAGE}" \

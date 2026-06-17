@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from urllib.parse import urlparse
 
 import click
@@ -10,7 +12,8 @@ from sqlalchemy import text
 
 from app.extensions import db
 from app.models import User
-from app.security.audit import audit_system_event
+from app.security.alerts import build_security_alert_report
+from app.security.audit import audit_log_anchor, audit_system_event, verify_audit_hash_chain
 from app.security.crypto import (
     is_enveloped_mfa_secret,
     mfa_envelope_kek_id,
@@ -19,7 +22,7 @@ from app.security.crypto import (
 from app.security.fido_mds import validate_fido_metadata_config
 from app.security.passwords import validate_common_password_dictionary, validate_password_hash_config
 from app.security.session_hmac import validate_session_hmac_config
-from app.ops.db_privileges import verify_runtime_database_privileges
+from app.ops.db_privileges import apply_runtime_audit_table_privileges, verify_runtime_database_privileges
 
 
 def register_ops_commands(app: Flask) -> None:
@@ -165,8 +168,66 @@ def register_ops_commands(app: Flask) -> None:
             f"runtime_role={result.runtime_role} "
             f"migration_role={result.migration_role} "
             f"probe_table={result.probe_table} "
+            f"audit_table={result.audit_table} "
             f"extension_probe={result.extension_probe}"
         )
+
+    @app.cli.command("apply-runtime-db-privileges")
+    def apply_runtime_db_privileges() -> None:
+        """Apply runtime database grants that are narrower than default table DML."""
+        runtime_url = str(app.config.get("SQLALCHEMY_DATABASE_URI") or "")
+        migration_url = str(app.config.get("SQLALCHEMY_MIGRATION_DATABASE_URI") or "")
+        try:
+            result = apply_runtime_audit_table_privileges(
+                runtime_url=runtime_url,
+                migration_url=migration_url,
+            )
+        except Exception as exc:
+            raise click.ClickException(str(exc)) from exc
+
+        click.echo(
+            "Runtime database privilege application passed: "
+            f"runtime_role={result.runtime_role} "
+            f"migration_role={result.migration_role} "
+            f"audit_table={result.audit_table} "
+            "audit_update_delete=revoked"
+        )
+
+    @app.cli.command("verify-audit-log-chain")
+    def verify_audit_log_chain() -> None:
+        """Verify the tamper-evident security audit hash chain."""
+        result = verify_audit_hash_chain()
+        click.echo(json.dumps(result, separators=(",", ":"), sort_keys=True))
+        if not result["valid"]:
+            raise click.ClickException("Security audit hash chain verification failed")
+
+    @app.cli.command("export-audit-log-anchor")
+    @click.option(
+        "--output",
+        "output_path",
+        type=click.Path(dir_okay=False, path_type=Path),
+        help="Optional path for the sanitized anchor JSON.",
+    )
+    def export_audit_log_anchor(output_path: Path | None) -> None:
+        """Export a sanitized anchor for the current audit hash-chain head."""
+        anchor = audit_log_anchor()
+        payload = json.dumps(anchor, separators=(",", ":"), sort_keys=True)
+        if output_path is not None:
+            output_path.write_text(payload + "\n", encoding="utf-8")
+        click.echo(payload)
+
+    @app.cli.command("check-security-alerts")
+    @click.option("--report-only", is_flag=True, help="Exit zero even when active alerts are found.")
+    @click.option("--no-delivery", is_flag=True, help="Skip configured webhook delivery and only print JSON.")
+    def check_security_alerts(report_only: bool, no_delivery: bool) -> None:
+        """Evaluate recent audit events against security alert thresholds."""
+        report = build_security_alert_report(deliver=not no_delivery)
+        click.echo(json.dumps(report, separators=(",", ":"), sort_keys=True))
+        if report.get("alert_count", 0) and not report_only:
+            raise click.ClickException("Security alerts active")
+        delivery = report.get("delivery", {})
+        if delivery.get("attempted") and delivery.get("delivered") is False and not report_only:
+            raise click.ClickException("Security alert delivery failed")
 
     @app.cli.command("rewrap-mfa-deks")
     @click.option("--from-kek-id", required=True, help="Existing KEK id wrapping the target DEKs.")

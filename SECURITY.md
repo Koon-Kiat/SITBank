@@ -41,12 +41,62 @@ Do not log or paste raw Redis session values during investigation.
 PostgreSQL uses separate `sitbank_owner` and `sitbank_app` roles in staging
 and production. `sitbank_owner` is only for Alembic migrations and ownership;
 `sitbank_app` is the Flask runtime role and must not own schema objects or have
-DDL privileges. Rotate `database_url` and `database_migration_url` separately.
+DDL privileges. The runtime role keeps `SELECT` and `INSERT` on
+`security_audit_events`, but `UPDATE` and `DELETE` are revoked after migrations
+so audit records are append-only to the running app. Rotate `database_url` and
+`database_migration_url` separately.
 
 Staging secrets must never be copied from production. The staging deployment
 wrapper rejects identical application secret files when production secrets are
 present and requires database and Redis URLs to resolve only to the staging
 Compose service names.
+
+## Audit Logs
+
+Security audit events are written to `security_audit_events` and emitted as
+sanitized structured application log lines for container and journald
+forwarding. Audit records must capture who, what, where, and when without
+storing plaintext passwords, TOTP codes, CSRF tokens, WebAuthn challenges,
+private keys, bearer tokens, MFA secrets, ciphertext, nonces, raw Redis session
+payloads, raw session IDs, raw attempted login identifiers, or full account
+numbers.
+
+New audit rows are chained with `previous_event_hash`, `event_hash`, and
+`hash_algorithm` using deterministic canonical JSON over stable audit fields.
+The current hash chain uses stdlib SHA-256 (`sha256-v1`) instead of the rotating
+session HMAC keyring so 7-year records remain verifiable after session keys
+expire. This provides tamper evidence when operators export anchors off-box;
+a database owner who can alter historical rows could recompute an unanchored
+chain. Operators must therefore verify the chain and export anchors on a
+schedule:
+
+```bash
+python -m flask --app wsgi:app verify-audit-log-chain
+python -m flask --app wsgi:app export-audit-log-anchor
+```
+
+Ship the sanitized anchor JSON to immutable storage, WORM object storage,
+signed release artifacts, or a separate SIEM/log archive. Do not store real
+cloud credentials, webhook URLs, or signing keys in the repository.
+
+Retain security audit records for 7 years. Do not silently auto-delete audit
+records from application code or scheduled jobs. Disposal after the retention
+period requires an operator-reviewed change record, a scoped deletion approved
+by the deployment administrator, and a retained summary of the deleted date
+range and approval. Keep Docker `local` log rotation in Compose and forward
+application audit logs to protected centralized storage before host-local logs
+rotate out.
+
+After each migration, run the runtime privilege commands through the deployment
+wrapper or migration container:
+
+```bash
+python -m flask --app wsgi:app apply-runtime-db-privileges
+python -m flask --app wsgi:app verify-runtime-db-privileges
+```
+
+The expected result is that `sitbank_app` can insert and select audit rows but
+cannot update or delete rows from `security_audit_events`.
 
 ## Dependency Response
 
@@ -175,9 +225,40 @@ Forward these sources to a protected centralized log destination:
 - application security audit events;
 - PostgreSQL and Redis authentication/availability events.
 
-Alert on failed deployments, signature or revision mismatches, unexpected
-image digests, repeated authentication lockouts, security-key counter
-anomalies, and changes to root-managed secret or FIDO policy files.
+Operator verification commands:
+
+```bash
+psql "$DATABASE_MIGRATION_URL" --no-psqlrc --command \
+  "SELECT event_type, outcome, count(*) FROM security_audit_events GROUP BY 1,2 ORDER BY 3 DESC LIMIT 20;"
+psql "$DATABASE_MIGRATION_URL" --no-psqlrc --command \
+  "SELECT created_at, ip_address, event_metadata->>'principal_ref' AS principal_ref FROM security_audit_events WHERE event_type = 'login' AND outcome = 'failure' ORDER BY created_at DESC LIMIT 20;"
+psql "$DATABASE_MIGRATION_URL" --no-psqlrc --command \
+  "SELECT created_at, user_id, event_metadata->>'reason' AS reason FROM security_audit_events WHERE event_type = 'account_lock' ORDER BY created_at DESC LIMIT 20;"
+psql "$DATABASE_MIGRATION_URL" --no-psqlrc --command \
+  "SELECT created_at, user_id, event_metadata->>'credential_id' AS credential_ref FROM security_audit_events WHERE event_type = 'webauthn_clone_detected' ORDER BY created_at DESC LIMIT 20;"
+psql "$DATABASE_MIGRATION_URL" --no-psqlrc --command \
+  "SELECT created_at, ip_address, session_ref, event_metadata->>'reason' AS reason FROM security_audit_events WHERE event_type = 'session_integrity' AND outcome = 'failure' ORDER BY created_at DESC LIMIT 20;"
+journalctl -u sitbank-container.service --since -15m | grep security_audit_write_failed
+python -m flask --app wsgi:app check-security-alerts --report-only
+```
+
+`check-security-alerts` emits sanitized JSON and returns non-zero when active
+alerts are found unless `--report-only` is used. Optional webhook delivery uses
+only Python stdlib and reads `SECURITY_ALERT_WEBHOOK_URL` or
+`SECURITY_ALERT_WEBHOOK_URL_FILE`; configure those only as operator-managed
+secret values outside the repository. Delivery failures are reported by type
+only and must not include webhook URLs, tokens, headers, request bodies, raw
+identifiers, passwords, session IDs, or full account numbers.
+
+Alert immediately on any `security_audit_write_failed`, `account_lock`,
+`webauthn_clone_detected`, or `session_integrity` failure. Alert when there are
+10 or more `login` failures for the same `principal_ref` or IP in 5 minutes, 5
+or more `auth_backoff` or `rate_limit` events from the same source in 10
+minutes, 3 or more transaction failures for the same user/ref in 15 minutes, or
+10 transaction failures globally in 15 minutes. Also alert on failed
+deployments, signature or revision mismatches, unexpected image digests,
+security-key counter anomalies, and changes to root-managed secret or FIDO
+policy files.
 
 ## AWS OIDC and Systems Manager
 

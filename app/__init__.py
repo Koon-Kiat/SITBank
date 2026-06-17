@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from typing import Any
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, g, jsonify, render_template, request
 from flask_wtf.csrf import CSRFError
 from redis import Redis
 from redis.backoff import NoBackoff
@@ -165,6 +167,21 @@ def register_error_handlers(app: Flask) -> None:
 
     @app.errorhandler(500)
     def internal_error(error):
+        original_error = getattr(error, "original_exception", None) or error
+        app.logger.error(
+            json.dumps(
+                {
+                    "message": "system_error",
+                    "correlation_id": getattr(g, "correlation_id", ""),
+                    "path": request.path,
+                    "method": request.method,
+                    "exception_type": type(original_error).__name__,
+                    "logged_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
         return respond("Server error. Please try again later.", 500)
 
 
