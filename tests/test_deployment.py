@@ -50,6 +50,15 @@ DEPLOYMENT_VALUES = {
     "PROD_SESSION_HMAC_ACTIVE_KEY_B64": "MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjI=",
     "PROD_SESSION_HMAC_ACTIVE_KEY_ID": "2026-06",
     "PROD_WTF_CSRF_SECRET_KEY": "csrf-secret-with-enough-length-for-production",
+    "PROD_ADMIN_DATABASE_URL": "postgresql+psycopg2://admin:secret@127.0.0.1/admin_bank",
+    "PROD_ADMIN_MFA_KEK_ACTIVE_ID": "2026-06-admin-mfa",
+    "PROD_ADMIN_MFA_KEK_KEYS_JSON": '{"2026-06-admin-mfa":"NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ="}',
+    "PROD_ADMIN_PASSWORD_PEPPER_B64": "MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE=",
+    "PROD_ADMIN_REDIS_URL": "redis://:secret@127.0.0.1:6379/1",
+    "PROD_ADMIN_SECRET_KEY": "admin-secret-key-with-$-and-enough-length-for-production",
+    "PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_B64": "MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjI=",
+    "PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID": "2026-06-admin",
+    "PROD_ADMIN_WTF_CSRF_SECRET_KEY": "admin-csrf-secret-with-enough-length-for-production",
 }
 
 
@@ -411,11 +420,13 @@ def test_compose_secret_mounts_match_runtime_contract():
         compose = yaml.safe_load(path.read_text(encoding="utf-8"))
         app = compose["services"]["app"]
 
-        assert app["environment"] == APP_SECRET_FILE_ENVIRONMENT, (
+        expected_app_env = {k: v for k, v in APP_SECRET_FILE_ENVIRONMENT.items() if not k.startswith("ADMIN_")}
+        assert app["environment"] == expected_app_env, (
             f"{path} app secret _FILE environment must match runtime contract"
         )
         assert "DATABASE_MIGRATION_URL_FILE" not in app["environment"]
-        assert _service_secret_targets(app) == expected_app_secrets, (
+        expected_app_targets = {k: v for k, v in expected_app_secrets.items() if not k.startswith("admin_")}
+        assert _service_secret_targets(app) == expected_app_targets, (
             f"{path} app service secrets must match runtime contract"
         )
 
@@ -441,10 +452,14 @@ def test_smoke_fixture_and_deployment_wrapper_match_runtime_contract():
     deploy_script = Path("ops/deploy/sitbank-container-deploy").read_text(encoding="utf-8")
 
     for env_name, secret_path in APP_SECRET_FILE_ENVIRONMENT.items():
+        if env_name.startswith("ADMIN_"):
+            continue
         assert f"--env {env_name}={secret_path}" in smoke_test, (
             f"ops/container/smoke-test.sh is missing {env_name}={secret_path}"
         )
     for secret_name in DEPLOYMENT_SECRET_FILES:
+        if secret_name.startswith("admin_"):
+            continue
         assert f"${{work_dir}}/secrets/{secret_name}" in smoke_test, (
             f"ops/container/smoke-test.sh is missing secret fixture {secret_name}"
         )
@@ -515,6 +530,13 @@ def test_environment_only_bundle_does_not_export_long_lived_secrets(
         "PROD_SECRET_KEY",
         "PROD_SESSION_HMAC_ACTIVE_KEY_B64",
         "PROD_WTF_CSRF_SECRET_KEY",
+        "PROD_ADMIN_DATABASE_URL",
+        "PROD_ADMIN_MFA_KEK_KEYS_JSON",
+        "PROD_ADMIN_PASSWORD_PEPPER_B64",
+        "PROD_ADMIN_REDIS_URL",
+        "PROD_ADMIN_SECRET_KEY",
+        "PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_B64",
+        "PROD_ADMIN_WTF_CSRF_SECRET_KEY",
     ):
         monkeypatch.delenv(name)
 
@@ -544,6 +566,13 @@ def test_environment_only_bundle_accepts_staging_prefix(monkeypatch, tmp_path):
         "STAGING_SECRET_KEY",
         "STAGING_SESSION_HMAC_ACTIVE_KEY_B64",
         "STAGING_WTF_CSRF_SECRET_KEY",
+        "STAGING_ADMIN_DATABASE_URL",
+        "STAGING_ADMIN_MFA_KEK_KEYS_JSON",
+        "STAGING_ADMIN_PASSWORD_PEPPER_B64",
+        "STAGING_ADMIN_REDIS_URL",
+        "STAGING_ADMIN_SECRET_KEY",
+        "STAGING_ADMIN_SESSION_HMAC_ACTIVE_KEY_B64",
+        "STAGING_ADMIN_WTF_CSRF_SECRET_KEY",
     ):
         monkeypatch.delenv(name)
 
@@ -1765,7 +1794,7 @@ def test_production_edge_runbook_documents_network_waf_and_verification_steps():
         "Allow public inbound TCP `80` and `443` only.",
         "never allow TCP `22` from `0.0.0.0/0` or `::/0`",
         "Do not expose Gunicorn, PostgreSQL, or Redis directly to the internet.",
-        "Keep Gunicorn bound to `127.0.0.1:5000`",
+            "Keep customer Gunicorn bound to `127.0.0.1:5000` and admin to `127.0.0.1:5002`.",
         "Restrict `/health/ready` to loopback",
         "Enable WAF managed common, SQL injection, XSS, bot, and protocol anomaly",
         "rules.",
