@@ -603,6 +603,36 @@ def test_transaction_security_key_challenge_binds_context(app):
         assert "transaction" not in payload
         assert session["webauthn_transaction_user_id"] == user.id
 
+    events = (
+        db.session.query(SecurityAuditEvent)
+        .filter(
+            SecurityAuditEvent.event_type.in_(
+                [
+                    "webauthn_transaction_stage",
+                    "webauthn_transaction_options",
+                    "banking_transaction_authorization",
+                ]
+            )
+        )
+        .all()
+    )
+    serialized = json.dumps([event.event_metadata for event in events], sort_keys=True)
+    webauthn_stage = next(event for event in events if event.event_type == "webauthn_transaction_stage")
+    banking_stage = next(
+        event
+        for event in events
+        if event.event_type == "banking_transaction_authorization" and event.outcome == "staged"
+    )
+
+    assert len(webauthn_stage.event_metadata["transaction_ref"]) == 32
+    assert len(webauthn_stage.event_metadata["transaction_payee_account_ref"]) == 32
+    assert len(banking_stage.event_metadata["transaction_ref"]) == 32
+    assert len(banking_stage.event_metadata["payee_account_ref"]) == 32
+    assert "transaction_reference" not in webauthn_stage.event_metadata
+    assert "transaction_payee_account" not in webauthn_stage.event_metadata
+    assert "TXN-001" not in serialized
+    assert "PAYEE-001" not in serialized
+
 
 def test_transaction_security_key_challenge_rejects_client_supplied_context(app):
     user = User(
