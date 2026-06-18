@@ -36,7 +36,10 @@ TRANSACTION_EVENT_TYPES = {
 ALERT_SEVERITY_RANK = {"low": 10, "medium": 20, "high": 30, "critical": 40}
 DEFAULT_ALERT_TIMEOUT_SECONDS = 5.0
 DEFAULT_ALERT_DEDUPE_TTL_SECONDS = 300
-DISCORD_MESSAGE_LIMIT = 1900
+DISCORD_EMBED_FIELD_LIMIT = 10
+ALERT_USER_AGENT = "SITBank-SecurityAlerts/1.0"
+DISCORD_DISPLAY_TIMEZONE = timezone(timedelta(hours=8))
+DISCORD_DISPLAY_TIMEZONE_LABEL = "UTC+8"
 
 
 class AlertConfigurationError(RuntimeError):
@@ -154,7 +157,11 @@ def deliver_security_alerts(
     request = urllib.request.Request(
         url,
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": ALERT_USER_AGENT,
+        },
         method="POST",
     )
     if timeout_seconds is None:
@@ -313,10 +320,7 @@ def _webhook_provider(url: str) -> str:
 def _alert_webhook_body(alerts: list[dict[str, Any]], *, provider: str) -> bytes:
     generated_at = _utc_iso(datetime.now(timezone.utc))
     if provider == "discord":
-        payload = {
-            "content": _discord_alert_content(alerts, generated_at=generated_at),
-            "allowed_mentions": {"parse": []},
-        }
+        payload = _discord_alert_payload(alerts, generated_at=generated_at)
     else:
         payload = {
             "message": "security_alerts",
@@ -326,27 +330,89 @@ def _alert_webhook_body(alerts: list[dict[str, Any]], *, provider: str) -> bytes
     return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
 
 
-def _discord_alert_content(alerts: list[dict[str, Any]], *, generated_at: str) -> str:
-    lines = [
-        "SITBank security alerts",
-        f"Generated: {generated_at}",
-        "",
-    ]
-    for alert in alerts[:15]:
-        lines.append(
-            "- "
-            f"[{_safe_text(alert.get('severity'), 24).upper()}] "
-            f"{_safe_text(alert.get('alert_type'), 80)} "
-            f"source={_safe_text(alert.get('source'), 160)} "
-            f"count={_safe_text(alert.get('count'), 12)}"
-        )
-    omitted = len(alerts) - 15
+def _discord_alert_payload(alerts: list[dict[str, Any]], *, generated_at: str) -> dict[str, Any]:
+    displayed_alerts = alerts[:DISCORD_EMBED_FIELD_LIMIT]
+    omitted = len(alerts) - len(displayed_alerts)
+    embed = {
+        "title": "SITBank Security Alerts",
+        "description": _discord_alert_summary(alerts, generated_at=generated_at),
+        "color": _discord_embed_color(alerts),
+        "timestamp": generated_at,
+        "fields": [_discord_alert_field(alert) for alert in displayed_alerts],
+        "footer": {"text": "Audit monitoring"},
+    }
     if omitted > 0:
-        lines.append(f"- {omitted} additional alerts omitted from Discord summary")
-    content = "\n".join(lines)
-    if len(content) <= DISCORD_MESSAGE_LIMIT:
-        return content
-    return content[: DISCORD_MESSAGE_LIMIT - 3] + "..."
+        embed["fields"].append(
+            {
+                "name": "Additional alerts",
+                "value": f"{omitted} more alert(s) omitted from this Discord summary.",
+                "inline": False,
+            }
+        )
+    return {
+        "content": f"SITBank security alerts: {len(alerts)} active",
+        "embeds": [embed],
+        "allowed_mentions": {"parse": []},
+    }
+
+
+def _discord_alert_summary(alerts: list[dict[str, Any]], *, generated_at: str) -> str:
+    timestamp = _parse_utc_iso(generated_at).astimezone(DISCORD_DISPLAY_TIMEZONE)
+    date_text = timestamp.strftime("%Y-%m-%d")
+    time_text = timestamp.strftime("%H:%M:%S.%f")
+    return (
+        f"{len(alerts)} active alert(s).\n"
+        f"Date: {date_text}\n"
+        f"Time: {time_text}\n"
+        f"Timezone: {DISCORD_DISPLAY_TIMEZONE_LABEL}"
+    )
+
+
+def _discord_embed_color(alerts: list[dict[str, Any]]) -> int:
+    highest = max(
+        (
+            ALERT_SEVERITY_RANK.get(str(alert.get("severity", "low")).casefold(), 0)
+            for alert in alerts
+        ),
+        default=0,
+    )
+    if highest >= ALERT_SEVERITY_RANK["critical"]:
+        return 0xD92D20
+    if highest >= ALERT_SEVERITY_RANK["high"]:
+        return 0xDC6803
+    if highest >= ALERT_SEVERITY_RANK["medium"]:
+        return 0xF79009
+    return 0x1570EF
+
+
+def _discord_alert_field(alert: Mapping[str, Any]) -> dict[str, Any]:
+    severity = _safe_text(alert.get("severity"), 24).upper() or "UNKNOWN"
+    alert_type = _safe_text(alert.get("alert_type"), 80) or "security_alert"
+    source = _safe_text(alert.get("source"), 160) or "unknown"
+    count = _safe_text(alert.get("count"), 12) or "1"
+    window = _format_window_seconds(alert.get("window_seconds"))
+    return {
+        "name": f"{severity} | {alert_type}"[:256],
+        "value": (
+            f"Source: {source}\n"
+            f"Count: {count}\n"
+            f"Window: {window}"
+        )[:1024],
+        "inline": False,
+    }
+
+
+def _format_window_seconds(value: Any) -> str:
+    try:
+        seconds = int(value or 0)
+    except (TypeError, ValueError):
+        seconds = 0
+    if seconds <= 0:
+        return "immediate"
+    if seconds % 60 == 0:
+        minutes = seconds // 60
+        return f"{minutes} minute(s)"
+    return f"{seconds} second(s)"
 
 
 def _filter_alerts_by_min_severity(alerts: list[dict[str, Any]], min_severity: str) -> list[dict[str, Any]]:
@@ -645,3 +711,7 @@ def _as_utc(value: datetime) -> datetime:
 
 def _utc_iso(value: datetime) -> str:
     return _as_utc(value).isoformat().replace("+00:00", "Z")
+
+
+def _parse_utc_iso(value: str) -> datetime:
+    return _as_utc(datetime.fromisoformat(value.replace("Z", "+00:00")))
