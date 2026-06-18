@@ -102,7 +102,12 @@ else
 fi
 ```
 
-After the reset, deploy the signed image through the restricted wrapper so it runs `production-check`, `db upgrade`, and readiness checks before declaring success.
+After the reset, install `/etc/sitbank/secrets/security_alert_webhook_url`
+or `/etc/sitbank-staging/secrets/security_alert_webhook_url` with the
+operator-managed HTTPS alert webhook for that environment. Deploy the signed
+image through the restricted wrapper so it runs `production-check`, `db
+upgrade`, `apply-runtime-db-privileges`, `verify-runtime-db-privileges`, and
+readiness checks before declaring success.
 
 ## Production Edge and Network Hardening
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import urllib.request
@@ -9,6 +10,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlparse
 
+from flask import current_app, has_app_context
+
 from app.extensions import db
 from app.models import SecurityAuditEvent
 
@@ -17,6 +20,10 @@ IMMEDIATE_ALERT_EVENT_TYPES = {
     "security_audit_write_failed": "security_audit_write_failed",
     "account_lock": "account_lock",
     "webauthn_clone_detected": "webauthn_clone_detected",
+    "audit_chain_verification_failed": "audit_chain_verification_failed",
+    "audit_anchor_mismatch": "audit_anchor_mismatch",
+    "audit_append_only_protection_failed": "audit_append_only_protection_failed",
+    "runtime_db_privilege_verification_failed": "runtime_db_privilege_verification_failed",
 }
 TRANSACTION_EVENT_TYPES = {
     "banking_outbound_transfer",
@@ -26,6 +33,9 @@ TRANSACTION_EVENT_TYPES = {
     "webauthn_transaction_options",
     "webauthn_transaction_verify",
 }
+ALERT_SEVERITY_RANK = {"low": 10, "medium": 20, "high": 30, "critical": 40}
+DEFAULT_ALERT_TIMEOUT_SECONDS = 5.0
+DEFAULT_ALERT_DEDUPE_TTL_SECONDS = 300
 
 
 class AlertConfigurationError(RuntimeError):
@@ -52,15 +62,58 @@ def build_security_alert_report(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     current_time = _as_utc(now or datetime.now(timezone.utc))
-    alerts = evaluate_security_alerts(now=current_time)
-    delivery = {"attempted": False, "configured": False}
-    if deliver and alerts:
-        delivery = deliver_security_alerts(alerts)
+    alert_config = validate_security_alert_config()
+    alerts = _filter_alerts_by_min_severity(
+        evaluate_security_alerts(now=current_time),
+        alert_config["min_severity"],
+    )
+    delivery = {
+        "attempted": False,
+        "configured": alert_config["webhook_configured"],
+        "enabled": alert_config["enabled"],
+    }
+    dedupe = {
+        "enabled": False,
+        "ttl_seconds": alert_config["dedupe_ttl_seconds"],
+        "suppressed": 0,
+    }
+    deliverable_alerts = alerts
+    if deliver and alerts and alert_config["enabled"]:
+        try:
+            deliverable_alerts, dedupe = _dedupe_alerts(
+                alerts,
+                ttl_seconds=alert_config["dedupe_ttl_seconds"],
+            )
+        except AlertConfigurationError as exc:
+            delivery = {
+                "attempted": False,
+                "configured": True,
+                "enabled": True,
+                "delivered": False,
+                "error_type": _safe_text(type(exc).__name__, 80),
+            }
+        else:
+            if deliverable_alerts:
+                delivery = deliver_security_alerts(
+                    deliverable_alerts,
+                    timeout_seconds=alert_config["timeout_seconds"],
+                )
+                delivery["enabled"] = True
+            else:
+                delivery = {
+                    "attempted": False,
+                    "configured": alert_config["webhook_configured"],
+                    "enabled": True,
+                    "delivered": True,
+                    "deduped": True,
+                }
     return {
         "message": "security_alert_report",
         "generated_at": _utc_iso(current_time),
         "alert_count": len(alerts),
+        "deliverable_alert_count": len(deliverable_alerts),
         "alerts": alerts,
+        "dedupe": dedupe,
         "delivery": delivery,
     }
 
@@ -69,7 +122,7 @@ def deliver_security_alerts(
     alerts: list[dict[str, Any]],
     *,
     webhook_url: str | None = None,
-    timeout_seconds: float = 5.0,
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     if not alerts:
         return {"attempted": False, "configured": False}
@@ -110,6 +163,8 @@ def deliver_security_alerts(
         headers={"Content-Type": "application/json"},
         method="POST",
     )
+    if timeout_seconds is None:
+        timeout_seconds = _configured_alert_timeout_seconds()
     try:
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:  # nosec B310
             status_code = int(getattr(response, "status", 0) or response.getcode())
@@ -129,18 +184,118 @@ def deliver_security_alerts(
     }
 
 
+def validate_security_alert_config(
+    *,
+    require_delivery: bool = False,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    enabled = _configured_alert_enabled(environ)
+    min_severity = _configured_alert_min_severity(environ)
+    timeout_seconds = _configured_alert_timeout_seconds(environ)
+    dedupe_ttl_seconds = _configured_alert_dedupe_ttl_seconds(environ)
+    webhook_url = configured_alert_webhook_url(environ)
+
+    if require_delivery and not enabled:
+        raise AlertConfigurationError("SECURITY_ALERT_ENABLED must be true in production")
+    if enabled or require_delivery:
+        if not webhook_url:
+            raise AlertConfigurationError("SECURITY_ALERT_WEBHOOK_URL_FILE is required when security alerting is enabled")
+        _validated_webhook_url(webhook_url)
+
+    return {
+        "enabled": enabled,
+        "webhook_configured": bool(webhook_url),
+        "min_severity": min_severity,
+        "timeout_seconds": timeout_seconds,
+        "dedupe_ttl_seconds": dedupe_ttl_seconds,
+    }
+
+
 def configured_alert_webhook_url(environ: Mapping[str, str] | None = None) -> str | None:
+    if environ is None and has_app_context():
+        configured_url = current_app.config.get("SECURITY_ALERT_WEBHOOK_URL")
+        if configured_url:
+            return _safe_secret_text(str(configured_url))
+        file_path = str(current_app.config.get("SECURITY_ALERT_WEBHOOK_URL_FILE") or "").strip()
+        if file_path:
+            return _read_webhook_url_file(file_path)
+        return None
+
     source = environ or os.environ
     file_path = str(source.get("SECURITY_ALERT_WEBHOOK_URL_FILE") or "").strip()
+    if file_path and str(source.get("SECURITY_ALERT_WEBHOOK_URL") or "").strip():
+        raise AlertConfigurationError(
+            "Configure either SECURITY_ALERT_WEBHOOK_URL or SECURITY_ALERT_WEBHOOK_URL_FILE, not both"
+        )
     if file_path:
-        try:
-            with open(file_path, encoding="utf-8") as handle:
-                return _safe_secret_text(handle.read())
-        except OSError as exc:
-            raise AlertConfigurationError(
-                f"SECURITY_ALERT_WEBHOOK_URL_FILE is not readable: {type(exc).__name__}"
-            ) from exc
+        return _read_webhook_url_file(file_path)
     return _safe_secret_text(str(source.get("SECURITY_ALERT_WEBHOOK_URL") or ""))
+
+
+def _configured_alert_enabled(environ: Mapping[str, str] | None = None) -> bool:
+    if environ is None and has_app_context():
+        return bool(current_app.config.get("SECURITY_ALERT_ENABLED", False))
+    source = environ or os.environ
+    raw_value = str(source.get("SECURITY_ALERT_ENABLED") or "").strip()
+    if not raw_value:
+        return str(source.get("APP_ENV") or "").strip().casefold() == "production"
+    normalized = raw_value.casefold()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise AlertConfigurationError("SECURITY_ALERT_ENABLED must be a boolean value")
+
+
+def _configured_alert_min_severity(environ: Mapping[str, str] | None = None) -> str:
+    if environ is None and has_app_context():
+        value = str(current_app.config.get("SECURITY_ALERT_MIN_SEVERITY", "high")).strip().casefold()
+    else:
+        source = environ or os.environ
+        value = str(source.get("SECURITY_ALERT_MIN_SEVERITY") or "high").strip().casefold()
+    if value not in ALERT_SEVERITY_RANK:
+        raise AlertConfigurationError("SECURITY_ALERT_MIN_SEVERITY is invalid")
+    return value
+
+
+def _configured_alert_timeout_seconds(environ: Mapping[str, str] | None = None) -> float:
+    if environ is None and has_app_context():
+        raw_value = current_app.config.get("SECURITY_ALERT_TIMEOUT_SECONDS", DEFAULT_ALERT_TIMEOUT_SECONDS)
+    else:
+        source = environ or os.environ
+        raw_value = source.get("SECURITY_ALERT_TIMEOUT_SECONDS") or str(DEFAULT_ALERT_TIMEOUT_SECONDS)
+    try:
+        value = float(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise AlertConfigurationError("SECURITY_ALERT_TIMEOUT_SECONDS must be numeric") from exc
+    if value < 1.0 or value > 30.0:
+        raise AlertConfigurationError("SECURITY_ALERT_TIMEOUT_SECONDS must be between 1 and 30")
+    return value
+
+
+def _configured_alert_dedupe_ttl_seconds(environ: Mapping[str, str] | None = None) -> int:
+    if environ is None and has_app_context():
+        raw_value = current_app.config.get("SECURITY_ALERT_DEDUPE_TTL_SECONDS", DEFAULT_ALERT_DEDUPE_TTL_SECONDS)
+    else:
+        source = environ or os.environ
+        raw_value = source.get("SECURITY_ALERT_DEDUPE_TTL_SECONDS") or str(DEFAULT_ALERT_DEDUPE_TTL_SECONDS)
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise AlertConfigurationError("SECURITY_ALERT_DEDUPE_TTL_SECONDS must be an integer") from exc
+    if value < 60 or value > 86400:
+        raise AlertConfigurationError("SECURITY_ALERT_DEDUPE_TTL_SECONDS must be between 60 and 86400")
+    return value
+
+
+def _read_webhook_url_file(file_path: str) -> str | None:
+    try:
+        with open(file_path, encoding="utf-8") as handle:
+            return _safe_secret_text(handle.read())
+    except OSError as exc:
+        raise AlertConfigurationError(
+            f"SECURITY_ALERT_WEBHOOK_URL_FILE is not readable: {type(exc).__name__}"
+        ) from exc
 
 
 def _validated_webhook_url(url: str) -> str:
@@ -148,6 +303,52 @@ def _validated_webhook_url(url: str) -> str:
     if parsed.scheme != "https" or not parsed.netloc:
         raise AlertConfigurationError("SECURITY_ALERT_WEBHOOK_URL must be an HTTPS URL")
     return url
+
+
+def _filter_alerts_by_min_severity(alerts: list[dict[str, Any]], min_severity: str) -> list[dict[str, Any]]:
+    minimum = ALERT_SEVERITY_RANK[min_severity]
+    return [
+        alert
+        for alert in alerts
+        if ALERT_SEVERITY_RANK.get(str(alert.get("severity", "low")).casefold(), 0) >= minimum
+    ]
+
+
+def _dedupe_alerts(
+    alerts: list[dict[str, Any]],
+    *,
+    ttl_seconds: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if not has_app_context() or "redis" not in current_app.extensions:
+        raise AlertConfigurationError("Redis is required for security alert dedupe")
+    redis_client = current_app.extensions["redis"]
+    deliverable: list[dict[str, Any]] = []
+    for alert in alerts:
+        key = _alert_dedupe_key(alert)
+        try:
+            accepted = redis_client.set(key, "1", ex=ttl_seconds, nx=True)
+        except Exception as exc:
+            raise AlertConfigurationError("Redis security alert dedupe failed") from exc
+        if accepted:
+            deliverable.append(alert)
+    return deliverable, {
+        "enabled": True,
+        "ttl_seconds": ttl_seconds,
+        "suppressed": len(alerts) - len(deliverable),
+    }
+
+
+def _alert_dedupe_key(alert: Mapping[str, Any]) -> str:
+    stable = {
+        "alert_type": _safe_text(alert.get("alert_type"), 80),
+        "severity": _safe_text(alert.get("severity"), 24),
+        "source": _safe_text(alert.get("source"), 160),
+        "window_seconds": int(alert.get("window_seconds") or 0),
+    }
+    digest = hashlib.sha256(
+        json.dumps(stable, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    return f"sitbank:security_alert:dedupe:{digest}"
 
 
 def _recent_events(since: datetime) -> list[SecurityAuditEvent]:

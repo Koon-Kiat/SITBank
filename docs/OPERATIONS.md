@@ -36,6 +36,7 @@ Run verification after deployments and on a daily schedule:
 
 ```bash
 python -m flask --app wsgi:app verify-audit-log-chain
+python -m flask --app wsgi:app verify-audit-log-chain --anchor /var/lib/sitbank/audit-anchor.json
 ```
 
 Export a sanitized anchor at least daily and after security-sensitive releases:
@@ -78,10 +79,20 @@ backpressure protection.
 Run `check-security-alerts` from an operator scheduler. Without flags it exits
 non-zero when active alerts are found. Use `--report-only` for dashboards or
 cron jobs that should not fail the wrapper, and `--no-delivery` when testing
-JSON output only. Optional webhook delivery uses Python stdlib and reads
-`SECURITY_ALERT_WEBHOOK_URL` or `SECURITY_ALERT_WEBHOOK_URL_FILE`; these are
-placeholder secret names, not checked-in values. Delivery failures are
-sanitized by exception type and must not print webhook URLs or tokens.
+JSON output only. Production must set `SECURITY_ALERT_ENABLED=true` and provide
+`SECURITY_ALERT_WEBHOOK_URL_FILE` as a root-managed secret file. Optional direct
+`SECURITY_ALERT_WEBHOOK_URL` is supported for non-production tests only; these
+are placeholder secret names, not checked-in values. Delivery failures are
+sanitized by exception type and must not print webhook URLs or tokens. Redis
+dedupe suppresses repeated delivery of the same alert for
+`SECURITY_ALERT_DEDUPE_TTL_SECONDS` while keeping the active alert in the JSON
+report.
+
+Example systemd timer cadence: run
+`python -m flask --app wsgi:app verify-audit-log-chain --anchor /var/lib/sitbank/audit-anchor.json --alert-on-failure`
+every 15 minutes and
+`python -m flask --app wsgi:app check-security-alerts` every 5 minutes from a
+root-managed service account with the same container/runtime environment.
 
 Alert on any `security_audit_write_failed`, `account_lock`,
 `webauthn_clone_detected`, or `session_integrity` failure; 10 or more login

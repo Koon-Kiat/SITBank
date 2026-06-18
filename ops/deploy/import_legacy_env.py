@@ -14,6 +14,7 @@ SECRET_NAMES = {
     "PASSWORD_PEPPER_B64": "password_pepper_b64",
     "REDIS_URL": "redis_url",
     "SECRET_KEY": "secret_key",
+    "SECURITY_ALERT_WEBHOOK_URL": "security_alert_webhook_url",
     "SESSION_HMAC_KEYS_JSON": "session_hmac_keys_json",
     "MFA_KEK_KEYS_JSON": "mfa_kek_keys_json",
     "WTF_CSRF_SECRET_KEY": "wtf_csrf_secret_key",
@@ -77,6 +78,18 @@ def import_legacy_environment(source: Path, destination: Path, public_host: str)
             values,
             "PASSWORD_PBKDF2_ITERATIONS",
             "600000",
+        ),
+        "SECURITY_ALERT_DEDUPE_TTL_SECONDS": _required(
+            values,
+            "SECURITY_ALERT_DEDUPE_TTL_SECONDS",
+            "300",
+        ),
+        "SECURITY_ALERT_ENABLED": _required(values, "SECURITY_ALERT_ENABLED", "true"),
+        "SECURITY_ALERT_MIN_SEVERITY": _required(values, "SECURITY_ALERT_MIN_SEVERITY", "high"),
+        "SECURITY_ALERT_TIMEOUT_SECONDS": _required(
+            values,
+            "SECURITY_ALERT_TIMEOUT_SECONDS",
+            "5.0",
         ),
         "SESSION_HMAC_ACTIVE_KEY_ID": _required(
             values,

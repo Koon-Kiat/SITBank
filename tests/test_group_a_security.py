@@ -2247,7 +2247,7 @@ def test_audit_write_failure_warning_is_sanitized(app, caplog, monkeypatch):
     assert "token-secret" not in logs
 
 
-def test_audit_hash_chain_records_verifies_and_exports_anchor(app):
+def test_audit_hash_chain_records_verifies_and_exports_anchor(app, tmp_path):
     from app.security.audit import audit_event, audit_log_anchor, verify_audit_hash_chain
 
     with app.test_request_context("/audit/chain-one", method="POST"):
@@ -2263,6 +2263,16 @@ def test_audit_hash_chain_records_verifies_and_exports_anchor(app):
     verify_cli = runner.invoke(args=["verify-audit-log-chain"])
     anchor_cli = runner.invoke(args=["export-audit-log-anchor"])
     cli_anchor = json.loads(anchor_cli.output)
+    anchor_path = tmp_path / "audit-anchor.json"
+    anchor_path.write_text(json.dumps(anchor), encoding="utf-8")
+    verify_anchor_cli = runner.invoke(args=["verify-audit-log-chain", "--anchor", str(anchor_path)])
+    stale_anchor = dict(anchor)
+    stale_anchor["latest_event_hash"] = "0" * 64
+    stale_anchor_path = tmp_path / "stale-audit-anchor.json"
+    stale_anchor_path.write_text(json.dumps(stale_anchor), encoding="utf-8")
+    stale_anchor_cli = runner.invoke(
+        args=["verify-audit-log-chain", "--anchor", str(stale_anchor_path)]
+    )
 
     assert first.previous_event_hash == "0" * 64
     assert len(first.event_hash) == 64
@@ -2282,6 +2292,10 @@ def test_audit_hash_chain_records_verifies_and_exports_anchor(app):
     assert anchor_cli.exit_code == 0, anchor_cli.output
     assert cli_anchor["latest_event_hash"] == second.event_hash
     assert "top-secret-note" not in anchor_cli.output
+    assert verify_anchor_cli.exit_code == 0, verify_anchor_cli.output
+    assert json.loads(verify_anchor_cli.output)["anchor_validated"] is True
+    assert stale_anchor_cli.exit_code != 0
+    assert "anchor_mismatch" in stale_anchor_cli.output
 
 
 def test_audit_hash_chain_detects_metadata_link_missing_row_and_order_tampering(app):
@@ -2470,6 +2484,86 @@ def test_security_alert_webhook_delivery_is_sanitized(monkeypatch):
     assert invalid_scheme["delivered"] is False
     assert invalid_scheme["error_type"] == "AlertConfigurationError"
     assert "secret-token" not in json.dumps(invalid_scheme, sort_keys=True)
+
+
+def test_security_alert_config_validation_and_redis_dedupe(app, monkeypatch):
+    from app.security.alerts import (
+        AlertConfigurationError,
+        build_security_alert_report,
+        validate_security_alert_config,
+    )
+    from app.security.audit import audit_event, principal_reference
+
+    captured_bodies = []
+
+    class FakeResponse:
+        status = 202
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def getcode(self):
+            return self.status
+
+    def fake_urlopen(request, timeout):
+        captured_bodies.append(json.loads(request.data.decode("utf-8")))
+        assert timeout == 3.0
+        return FakeResponse()
+
+    app.config.update(
+        SECURITY_ALERT_ENABLED=True,
+        SECURITY_ALERT_WEBHOOK_URL="https://hooks.example.test/sitbank-security-alerts",
+        SECURITY_ALERT_MIN_SEVERITY="high",
+        SECURITY_ALERT_TIMEOUT_SECONDS=3.0,
+        SECURITY_ALERT_DEDUPE_TTL_SECONDS=300,
+    )
+    monkeypatch.setattr("app.security.alerts.urllib.request.urlopen", fake_urlopen)
+
+    with app.test_request_context(
+        "/auth/login",
+        method="POST",
+        environ_overrides={"REMOTE_ADDR": "198.51.100.90"},
+    ):
+        principal_ref = principal_reference("victim@example.com")
+        for _attempt in range(10):
+            audit_event("login", "failure", metadata={"principal_ref": principal_ref})
+
+    first_report = build_security_alert_report(deliver=True)
+    second_report = build_security_alert_report(deliver=True)
+    with app.test_request_context("/ops/check", method="POST"):
+        audit_event("account_lock", "locked", metadata={"reason": "mfa_failed"})
+    third_report = build_security_alert_report(deliver=True)
+
+    assert first_report["delivery"]["attempted"] is True
+    assert first_report["dedupe"]["suppressed"] == 0
+    assert second_report["delivery"]["deduped"] is True
+    assert second_report["dedupe"]["suppressed"] >= 1
+    assert third_report["delivery"]["attempted"] is True
+    assert len(captured_bodies) == 2
+
+    with pytest.raises(AlertConfigurationError, match="WEBHOOK"):
+        validate_security_alert_config(
+            require_delivery=True,
+            environ={"APP_ENV": "production", "SECURITY_ALERT_ENABLED": "true"},
+        )
+    with pytest.raises(AlertConfigurationError, match="HTTPS"):
+        validate_security_alert_config(
+            require_delivery=True,
+            environ={
+                "APP_ENV": "production",
+                "SECURITY_ALERT_ENABLED": "true",
+                "SECURITY_ALERT_WEBHOOK_URL": "http://hooks.example.test/insecure",
+            },
+        )
+    with pytest.raises(AlertConfigurationError, match="MIN_SEVERITY"):
+        validate_security_alert_config(environ={"SECURITY_ALERT_MIN_SEVERITY": "urgent"})
+    with pytest.raises(AlertConfigurationError, match="TIMEOUT"):
+        validate_security_alert_config(environ={"SECURITY_ALERT_TIMEOUT_SECONDS": "0"})
+    with pytest.raises(AlertConfigurationError, match="DEDUPE"):
+        validate_security_alert_config(environ={"SECURITY_ALERT_DEDUPE_TTL_SECONDS": "1"})
 
 
 def test_500_handler_logs_sanitized_context(app, client, caplog):

@@ -264,6 +264,10 @@ install_runtime_bundle() {
         MFA_KEK_ACTIVE_ID
         MFA_ISSUER_NAME
         PASSWORD_PBKDF2_ITERATIONS
+        SECURITY_ALERT_DEDUPE_TTL_SECONDS
+        SECURITY_ALERT_ENABLED
+        SECURITY_ALERT_MIN_SEVERITY
+        SECURITY_ALERT_TIMEOUT_SECONDS
         SESSION_HMAC_ACTIVE_KEY_ID
         TRUSTED_PROXY_COUNT
         WEBAUTHN_APPROVED_AAGUIDS_PATH
@@ -588,6 +592,7 @@ required_secrets=(
     redis_url
     mfa_kek_keys_json
     password_pepper_b64
+    security_alert_webhook_url
 )
 if [[ "${target}" == "staging" ]]; then
     required_secrets+=(postgres_owner_password postgres_app_password redis.conf)

@@ -47,6 +47,7 @@ DEPLOYMENT_VALUES = {
     "PROD_PUBLIC_HOST": "sitbank.duckdns.org",
     "PROD_REDIS_URL": "redis://:secret@127.0.0.1:6379/0",
     "PROD_SECRET_KEY": "secret-key-with-$-and-enough-length-for-production",
+    "PROD_SECURITY_ALERT_WEBHOOK_URL": "https://hooks.example.test/sitbank-security-alerts",
     "PROD_SESSION_HMAC_ACTIVE_KEY_B64": "MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjI=",
     "PROD_SESSION_HMAC_ACTIVE_KEY_ID": "2026-06",
     "PROD_WTF_CSRF_SECRET_KEY": "csrf-secret-with-enough-length-for-production",
@@ -137,6 +138,8 @@ def _assert_nginx_owns_duplicate_edge_security_headers(
     for directive in add_header_directives:
         assert directive in https_server
         assert nginx.count(directive) == 1
+    assert "proxy_hide_header Content-Security-Policy;" not in https_server
+    assert "add_header Content-Security-Policy" not in https_server
 
 
 def _config_secret_inputs() -> set[str]:
@@ -532,6 +535,12 @@ def test_local_ci_command_documents_required_local_checks():
         '"compileall"',
         '"pip", "check"',
         '"bandit"',
+        '"pip_audit"',
+        '"requirements.lock"',
+        '"requirements-dev.lock"',
+        '"ops/security/check_dependency_locks.py"',
+        '"ops/security/scan_repository_secrets.py"',
+        '"--history"',
         '"git", "diff", "--check"',
         "ops/deploy/sitbank-container-deploy",
         "ops/container/validate-compose.sh",
@@ -565,6 +574,7 @@ def test_environment_only_bundle_does_not_export_long_lived_secrets(
         "PROD_PASSWORD_PEPPER_B64",
         "PROD_REDIS_URL",
         "PROD_SECRET_KEY",
+        "PROD_SECURITY_ALERT_WEBHOOK_URL",
         "PROD_SESSION_HMAC_ACTIVE_KEY_B64",
         "PROD_WTF_CSRF_SECRET_KEY",
     ):
@@ -594,6 +604,7 @@ def test_environment_only_bundle_accepts_staging_prefix(monkeypatch, tmp_path):
         "STAGING_PASSWORD_PEPPER_B64",
         "STAGING_REDIS_URL",
         "STAGING_SECRET_KEY",
+        "STAGING_SECURITY_ALERT_WEBHOOK_URL",
         "STAGING_SESSION_HMAC_ACTIVE_KEY_B64",
         "STAGING_WTF_CSRF_SECRET_KEY",
     ):
@@ -645,6 +656,7 @@ def test_legacy_environment_import_seeds_root_runtime_without_printing_values(
                 "MFA_KEK_ACTIVE_ID=2026-06-mfa",
                 f"MFA_KEK_KEYS_JSON={DEPLOYMENT_VALUES['PROD_MFA_KEK_KEYS_JSON']}",
                 f"PASSWORD_PEPPER_B64={DEPLOYMENT_VALUES['PROD_PASSWORD_PEPPER_B64']}",
+                f"SECURITY_ALERT_WEBHOOK_URL={DEPLOYMENT_VALUES['PROD_SECURITY_ALERT_WEBHOOK_URL']}",
                 "MFA_ISSUER_NAME=SITBank",
             ]
         )
@@ -669,6 +681,9 @@ def test_legacy_environment_import_seeds_root_runtime_without_printing_values(
     assert (destination / "secrets" / "mfa_kek_keys_json").read_text(
         encoding="utf-8"
     ) == DEPLOYMENT_VALUES["PROD_MFA_KEK_KEYS_JSON"]
+    assert (destination / "secrets" / "security_alert_webhook_url").read_text(
+        encoding="utf-8"
+    ) == DEPLOYMENT_VALUES["PROD_SECURITY_ALERT_WEBHOOK_URL"]
 
 
 def test_dockerfile_and_compose_enforce_hardened_runtime():
@@ -1947,6 +1962,9 @@ def test_migration_baseline_and_existing_database_runbook_are_present():
     audit_hash_migration = Path(
         "migrations/versions/20260618_0002_audit_hash_chain.py"
     ).read_text(encoding="utf-8")
+    audit_append_only_migration = Path(
+        "migrations/versions/20260618_0003_audit_append_only_triggers.py"
+    ).read_text(encoding="utf-8")
     docs = _project_docs_text()
 
     assert 'revision = "20260610_0001"' in migration
@@ -1958,6 +1976,12 @@ def test_migration_baseline_and_existing_database_runbook_are_present():
     assert "previous_event_hash" in audit_hash_migration
     assert "event_hash" in audit_hash_migration
     assert "hash_algorithm" in audit_hash_migration
+    assert 'revision = "20260618_0003"' in audit_append_only_migration
+    assert 'down_revision = "20260618_0002"' in audit_append_only_migration
+    assert "security_audit_events_reject_mutation" in audit_append_only_migration
+    assert "BEFORE UPDATE ON security_audit_events" in audit_append_only_migration
+    assert "BEFORE DELETE ON security_audit_events" in audit_append_only_migration
+    assert "ERRCODE = '42501'" in audit_append_only_migration
     assert "verify-migration-baseline" in docs
     assert "db stamp 20260610_0001" in docs
     assert "Do not run `db.create_all()`" in docs
@@ -1972,7 +1996,11 @@ def test_migration_baseline_and_existing_database_runbook_are_present():
 def test_audit_operations_runbook_and_append_only_privileges_are_present():
     docs = _project_docs_text()
     commands = Path("app/ops/commands.py").read_text(encoding="utf-8")
+    audit_source = Path("app/security/audit.py").read_text(encoding="utf-8")
     privileges = Path("app/ops/db_privileges.py").read_text(encoding="utf-8")
+    append_only_migration = Path(
+        "migrations/versions/20260618_0003_audit_append_only_triggers.py"
+    ).read_text(encoding="utf-8")
     deploy_script = Path("ops/deploy/sitbank-container-deploy").read_text(encoding="utf-8")
     smoke_test = Path("ops/container/smoke-test.sh").read_text(encoding="utf-8")
     staging_compose = Path("compose.staging.yml").read_text(encoding="utf-8")
@@ -1990,7 +2018,10 @@ def test_audit_operations_runbook_and_append_only_privileges_are_present():
         "verify-audit-log-chain",
         "export-audit-log-anchor",
         "check-security-alerts",
+        "verify-audit-log-chain --anchor",
         "SECURITY_ALERT_WEBHOOK_URL_FILE",
+        "SECURITY_ALERT_DEDUPE_TTL_SECONDS",
+        "systemd timer",
         "immutable storage",
         "10 or more `login` failures",
         "`auth_backoff`",
@@ -2003,11 +2034,21 @@ def test_audit_operations_runbook_and_append_only_privileges_are_present():
     assert "apply-runtime-db-privileges" in commands
     assert "apply_runtime_audit_table_privileges" in commands
     assert "verify-audit-log-chain" in commands
+    assert "--anchor" in commands
+    assert "--alert-on-failure" in commands
     assert "export-audit-log-anchor" in commands
     assert "check-security-alerts" in commands
     assert "build_security_alert_report" in commands
+    assert "validate_security_alert_config" in commands
+    assert "pg_advisory_xact_lock" in audit_source
+    assert "AUDIT_CHAIN_ADVISORY_LOCK_ID" in audit_source
+    assert "security_audit_events_reject_mutation" in append_only_migration
+    assert "security_audit_events_reject_update" in append_only_migration
+    assert "security_audit_events_reject_delete" in append_only_migration
     assert "REVOKE UPDATE, DELETE ON TABLE" in privileges
     assert "GRANT SELECT, INSERT ON TABLE" in privileges
+    assert "_assert_audit_append_only_triggers_installed" in privileges
+    assert "pg_advisory_xact_lock" in privileges
     assert "previous_event_hash" in privileges
     assert "event_hash" in privileges
     assert "hash_algorithm" in privileges

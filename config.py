@@ -121,6 +121,48 @@ def _optional_url(name: str, *, schemes: set[str], require_password: bool) -> st
     return _validate_url(name, value, schemes=schemes, require_password=require_password)
 
 
+def _optional_bool(name: str, *, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    normalized = value.strip().casefold()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise RuntimeError(f"{name} must be a boolean value")
+
+
+def _choice_env(name: str, *, default: str, choices: set[str]) -> str:
+    value = os.getenv(name, default).strip().casefold()
+    if value not in choices:
+        allowed = ", ".join(sorted(choices))
+        raise RuntimeError(f"{name} must be one of: {allowed}")
+    return value
+
+
+def _float_env(name: str, *, default: str, minimum: float, maximum: float) -> float:
+    raw_value = os.getenv(name, default)
+    try:
+        value = float(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"{name} must be a number") from exc
+    if value < minimum or value > maximum:
+        raise RuntimeError(f"{name} must be between {minimum:g} and {maximum:g}")
+    return value
+
+
+def _int_env(name: str, *, default: str, minimum: int, maximum: int) -> int:
+    raw_value = os.getenv(name, default)
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"{name} must be an integer") from exc
+    if value < minimum or value > maximum:
+        raise RuntimeError(f"{name} must be between {minimum} and {maximum}")
+    return value
+
+
 def _validate_url(name: str, value: str, *, schemes: set[str], require_password: bool) -> str:
     parsed = urlparse(value)
     if parsed.scheme not in schemes:
@@ -313,6 +355,34 @@ class Config:
     HIBP_CIRCUIT_OPEN_SECONDS = int(os.getenv("HIBP_CIRCUIT_OPEN_SECONDS", "300"))
     if HIBP_CIRCUIT_OPEN_SECONDS < 30 or HIBP_CIRCUIT_OPEN_SECONDS > 3600:
         raise RuntimeError("HIBP_CIRCUIT_OPEN_SECONDS must be between 30 and 3600")
+
+    SECURITY_ALERT_ENABLED = _optional_bool(
+        "SECURITY_ALERT_ENABLED",
+        default=APP_ENV == "production",
+    )
+    SECURITY_ALERT_WEBHOOK_URL_FILE = os.getenv("SECURITY_ALERT_WEBHOOK_URL_FILE")
+    SECURITY_ALERT_WEBHOOK_URL = _optional_url(
+        "SECURITY_ALERT_WEBHOOK_URL",
+        schemes={"https"},
+        require_password=False,
+    )
+    SECURITY_ALERT_MIN_SEVERITY = _choice_env(
+        "SECURITY_ALERT_MIN_SEVERITY",
+        default="high",
+        choices={"low", "medium", "high", "critical"},
+    )
+    SECURITY_ALERT_TIMEOUT_SECONDS = _float_env(
+        "SECURITY_ALERT_TIMEOUT_SECONDS",
+        default="5.0",
+        minimum=1.0,
+        maximum=30.0,
+    )
+    SECURITY_ALERT_DEDUPE_TTL_SECONDS = _int_env(
+        "SECURITY_ALERT_DEDUPE_TTL_SECONDS",
+        default="300",
+        minimum=60,
+        maximum=86400,
+    )
 
     SESSION_TYPE = "redis"
     SESSION_KEY_PREFIX = "session:"

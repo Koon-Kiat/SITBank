@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from flask import current_app, g, has_app_context, has_request_context, request, session
+from sqlalchemy import text
 
 from app.extensions import db
 from app.models import SecurityAuditEvent, User
@@ -56,6 +57,7 @@ ACCOUNT_KEY_PARTS = (
 
 AUDIT_HASH_ALGORITHM = "sha256-v1"
 AUDIT_CHAIN_START_HASH = "0" * 64
+AUDIT_CHAIN_ADVISORY_LOCK_ID = 6151467082736394621
 
 
 def register_correlation_id(app) -> None:
@@ -107,6 +109,7 @@ def audit_event(
     created_at = datetime.now(timezone.utc)
 
     try:
+        _lock_audit_chain_for_insert()
         previous_event_hash = _latest_audit_event_hash()
         event = SecurityAuditEvent(
             event_type=clean_event_type,
@@ -158,6 +161,7 @@ def audit_system_event(
     correlation_id = str(uuid.uuid4())
     created_at = datetime.now(timezone.utc)
     try:
+        _lock_audit_chain_for_insert()
         previous_event_hash = _latest_audit_event_hash()
         event = SecurityAuditEvent(
             event_type=clean_event_type,
@@ -230,7 +234,7 @@ def audit_webauthn_event(
     )
 
 
-def verify_audit_hash_chain() -> dict[str, Any]:
+def verify_audit_hash_chain(*, anchor: Mapping[str, Any] | None = None) -> dict[str, Any]:
     events = list(
         db.session.execute(
             db.select(SecurityAuditEvent).order_by(SecurityAuditEvent.id.asc())
@@ -276,7 +280,7 @@ def verify_audit_hash_chain() -> dict[str, Any]:
         latest_event_hash = str(event.event_hash)
         verified_event_count += 1
 
-    return {
+    result = {
         "valid": not errors,
         "hash_algorithm": AUDIT_HASH_ALGORITHM,
         "chain_start": AUDIT_CHAIN_START_HASH,
@@ -286,7 +290,12 @@ def verify_audit_hash_chain() -> dict[str, Any]:
         "latest_event_id": latest_event_id,
         "latest_event_hash": latest_event_hash,
         "errors": errors,
+        "anchor_validated": None,
+        "anchor_errors": [],
     }
+    if anchor is not None:
+        _compare_audit_anchor(result, anchor)
+    return result
 
 
 def audit_log_anchor() -> dict[str, Any]:
@@ -379,6 +388,15 @@ def _latest_audit_event_hash() -> str:
     return str(latest_hash or AUDIT_CHAIN_START_HASH)
 
 
+def _lock_audit_chain_for_insert() -> None:
+    if db.engine.dialect.name != "postgresql":
+        return
+    db.session.execute(
+        text("SELECT pg_advisory_xact_lock(:lock_id)"),
+        {"lock_id": AUDIT_CHAIN_ADVISORY_LOCK_ID},
+    )
+
+
 def _compute_audit_event_hash(event: SecurityAuditEvent) -> str:
     canonical_payload = _canonical_audit_event_payload(event)
     return hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
@@ -425,6 +443,35 @@ def _append_chain_error(
     for key, value in extra.items():
         error[_clean_audit_text(key, 48)] = _clean_audit_text(value, 80)
     errors.append(error)
+
+
+def _compare_audit_anchor(result: dict[str, Any], anchor: Mapping[str, Any]) -> None:
+    anchor_errors: list[dict[str, Any]] = []
+    for field in (
+        "hash_algorithm",
+        "chain_start",
+        "event_count",
+        "verified_event_count",
+        "legacy_unhashed_event_count",
+        "latest_event_id",
+        "latest_event_hash",
+    ):
+        if anchor.get(field) == result.get(field):
+            continue
+        _append_chain_error(
+            anchor_errors,
+            int(result.get("latest_event_id") or 0),
+            "anchor_mismatch",
+            field=field,
+        )
+    if anchor_errors:
+        result["errors"].extend(anchor_errors)
+        result["valid"] = False
+        result["anchor_validated"] = False
+        result["anchor_errors"] = anchor_errors
+    else:
+        result["anchor_validated"] = True
+        result["anchor_errors"] = []
 
 
 def _log_audit_record(event: SecurityAuditEvent, *, path: str | None, method: str | None) -> None:
