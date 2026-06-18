@@ -12,7 +12,6 @@ import pytest
 import yaml
 from flask import request
 
-from ops.deploy.import_legacy_env import import_legacy_environment
 from ops.deploy.render_container_bundle import (
     NON_SECRET_DEFAULTS,
     SECRET_INPUTS,
@@ -638,52 +637,6 @@ def test_container_bundle_writer_quotes_dollar_values_and_separates_files(
     assert (output / "secrets" / "secret_key").read_text(encoding="utf-8") == (
         DEPLOYMENT_VALUES["PROD_SECRET_KEY"]
     )
-
-
-def test_legacy_environment_import_seeds_root_runtime_without_printing_values(
-    tmp_path,
-):
-    source = tmp_path / "legacy.env"
-    source.write_text(
-        "\n".join(
-            [
-                f"SECRET_KEY={DEPLOYMENT_VALUES['PROD_SECRET_KEY']}",
-                f"WTF_CSRF_SECRET_KEY={DEPLOYMENT_VALUES['PROD_WTF_CSRF_SECRET_KEY']}",
-                "SESSION_HMAC_ACTIVE_KEY_ID=2026-06",
-                'SESSION_HMAC_KEYS_JSON={"2026-06":"MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjI="}',
-                f"DATABASE_URL={DEPLOYMENT_VALUES['PROD_DATABASE_URL']}",
-                f"REDIS_URL={DEPLOYMENT_VALUES['PROD_REDIS_URL']}",
-                "MFA_KEK_ACTIVE_ID=2026-06-mfa",
-                f"MFA_KEK_KEYS_JSON={DEPLOYMENT_VALUES['PROD_MFA_KEK_KEYS_JSON']}",
-                f"PASSWORD_PEPPER_B64={DEPLOYMENT_VALUES['PROD_PASSWORD_PEPPER_B64']}",
-                f"SECURITY_ALERT_WEBHOOK_URL={DEPLOYMENT_VALUES['PROD_SECURITY_ALERT_WEBHOOK_URL']}",
-                "MFA_ISSUER_NAME=SITBank",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    destination = tmp_path / "runtime"
-
-    import_legacy_environment(
-        source.resolve(),
-        destination,
-        "sitbank.duckdns.org",
-    )
-
-    environment = (destination / "container.env").read_text(encoding="utf-8")
-    assert "MFA_ISSUER_NAME='SITBank'" in environment
-    assert "MFA_KEK_ACTIVE_ID='2026-06-mfa'" in environment
-    assert "DATABASE_URL" not in environment
-    assert (destination / "secrets" / "database_url").read_text(
-        encoding="utf-8"
-    ) == DEPLOYMENT_VALUES["PROD_DATABASE_URL"]
-    assert (destination / "secrets" / "mfa_kek_keys_json").read_text(
-        encoding="utf-8"
-    ) == DEPLOYMENT_VALUES["PROD_MFA_KEK_KEYS_JSON"]
-    assert (destination / "secrets" / "security_alert_webhook_url").read_text(
-        encoding="utf-8"
-    ) == DEPLOYMENT_VALUES["PROD_SECURITY_ALERT_WEBHOOK_URL"]
 
 
 def test_dockerfile_and_compose_enforce_hardened_runtime():
@@ -1416,6 +1369,24 @@ def test_root_bootstrap_wrapper_authenticates_and_limits_privileged_updates():
     assert "sha256sum /usr/local/sbin/sitbank-container-deploy" in wrapper
     assert "sitbank-container-bootstrap" in bootstrap
     assert "/usr/local/sbin/sitbank-container-bootstrap" in bootstrap
+    assert "OWNER/REPOSITORY [PUBLIC_HOST]" in bootstrap
+    deployment_scripts = "\n".join(
+        Path(path).read_text(encoding="utf-8")
+        for path in (
+            "ops/deploy/bootstrap-container-ec2",
+            "ops/deploy/sitbank-container-bootstrap",
+            "ops/deploy/sitbank-container-deploy",
+            "ops/deploy/sitbank-database-cutover",
+        )
+    )
+    for forbidden in (
+        "LEGACY_SERVICE",
+        "LEGACY_APP_ROOT",
+        "import_legacy_env.py",
+        "legacy service",
+        "former application",
+    ):
+        assert forbidden not in deployment_scripts
     assert sudoers.splitlines() == [
         (
             "sitbank-deploy ALL=(root) NOPASSWD: "

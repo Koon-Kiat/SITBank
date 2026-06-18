@@ -62,9 +62,6 @@ restart_previous_services() {
     if [[ "${CONTAINER_WAS_ACTIVE:-0}" == "1" ]]; then
         systemctl start "${CONTAINER_SERVICE}"
     fi
-    if [[ "${LEGACY_WAS_ACTIVE:-0}" == "1" && "${LEGACY_SERVICE:-"-"}" != "-" ]]; then
-        systemctl start "${LEGACY_SERVICE}"
-    fi
 }
 
 prepare_failure() {
@@ -205,12 +202,6 @@ SQL
         echo "Database was restored but the container service did not restart" >&2
         return 1
     fi
-    if [[ "${LEGACY_WAS_ACTIVE:-0}" == "1" \
-        && "${LEGACY_SERVICE:-"-"}" != "-" ]] \
-        && ! systemctl is-active --quiet "${LEGACY_SERVICE}"; then
-        echo "Database was restored but the legacy service did not restart" >&2
-        return 1
-    fi
     rm -rf -- "${STATE_DIR}"
     echo "Restored database ${SOURCE_DATABASE} and role ${SOURCE_ROLE}"
 }
@@ -259,16 +250,10 @@ case "${1:-}" in
         fi
 
         install -d -o root -g root -m 0700 "${STATE_DIR}" "${BACKUP_DIR}"
-        legacy_was_active=0
-        if [[ "${LEGACY_SERVICE:-"-"}" != "-" ]] \
-            && systemctl is-active --quiet "${LEGACY_SERVICE}"; then
-            legacy_was_active=1
-        fi
         cat > "${STATE_FILE}" <<EOF
 CUTOVER_MODE=rename
 SOURCE_DATABASE=${source_database}
 SOURCE_ROLE=${source_role}
-LEGACY_WAS_ACTIVE=${legacy_was_active}
 CONTAINER_WAS_ACTIVE=0
 EOF
         chmod 0600 "${STATE_FILE}"
@@ -284,9 +269,6 @@ EOF
         install -o root -g root -m 0600 "${temporary_backup}" \
             "${BACKUP_DIR}/database-${timestamp}.dump"
 
-        if [[ "${legacy_was_active}" -eq 1 ]]; then
-            systemctl stop "${LEGACY_SERVICE}"
-        fi
         terminate_database_connections "${source_database}"
         sudo -u postgres psql --no-psqlrc --set ON_ERROR_STOP=1 <<SQL
 CREATE ROLE "${TARGET_OWNER_ROLE}" LOGIN PASSWORD '${owner_password}';
@@ -363,24 +345,14 @@ SQL
         fi
 
         install -d -o root -g root -m 0700 "${STATE_DIR}" "${BACKUP_DIR}"
-        legacy_was_active=0
         container_was_active=0
         if systemctl is-active --quiet "${CONTAINER_SERVICE}"; then
             container_was_active=1
-        fi
-        if [[ "${LEGACY_SERVICE:-"-"}" != "-" ]] \
-            && systemctl is-active --quiet "${LEGACY_SERVICE}"; then
-            legacy_was_active=1
-        fi
-        if [[ "${container_was_active}" -eq 1 && "${legacy_was_active}" -eq 1 ]]; then
-            echo "Container and legacy services cannot both be active during role adoption" >&2
-            exit 1
         fi
         cat > "${STATE_FILE}" <<EOF
 CUTOVER_MODE=adopt-existing
 SOURCE_DATABASE=${TARGET_DATABASE}
 SOURCE_ROLE=${source_role}
-LEGACY_WAS_ACTIVE=${legacy_was_active}
 CONTAINER_WAS_ACTIVE=${container_was_active}
 EOF
         chmod 0600 "${STATE_FILE}"
@@ -398,9 +370,6 @@ EOF
 
         if [[ "${container_was_active}" -eq 1 ]]; then
             systemctl stop "${CONTAINER_SERVICE}"
-        fi
-        if [[ "${legacy_was_active}" -eq 1 ]]; then
-            systemctl stop "${LEGACY_SERVICE}"
         fi
         terminate_database_connections "${TARGET_DATABASE}"
         sudo -u postgres psql --no-psqlrc --set ON_ERROR_STOP=1 <<SQL

@@ -127,7 +127,6 @@ staging_dir="$(mktemp -d "${STATE_DIR}/runtime-staging.XXXXXX")"
 runtime_backup="$(mktemp -d "${STATE_DIR}/runtime-backup.XXXXXX")"
 runtime_replaced=0
 service_switched=0
-legacy_was_active=0
 dependencies_prepared=0
 previous_image=""
 if [[ -r "${STATE_FILE}" ]]; then
@@ -319,56 +318,6 @@ migration_run() {
         app "$@"
 }
 
-validate_legacy_configuration() {
-    if [[ "${target}" != "production" ]]; then
-        return
-    fi
-    if [[ "${LEGACY_SERVICE:-"-"}" != "-" \
-        && ! "${LEGACY_SERVICE}" =~ ^[A-Za-z0-9_.@-]+\.service$ ]]; then
-        echo "Configured legacy service name is invalid" >&2
-        exit 1
-    fi
-    if [[ "${LEGACY_APP_ROOT:-"-"}" != "-" ]]; then
-        if [[ ! "${LEGACY_APP_ROOT}" =~ ^/var/www/[A-Za-z0-9._-]+$ \
-            || "${LEGACY_APP_ROOT}" == "/var/www" \
-            || -L "${LEGACY_APP_ROOT}" ]]; then
-            echo "Configured legacy application path is invalid" >&2
-            exit 1
-        fi
-    fi
-}
-
-remove_legacy_runtime() {
-    local fragment_path=""
-    local resolved_root=""
-
-    if [[ "${target}" != "production" ]]; then
-        return
-    fi
-    if [[ "${LEGACY_SERVICE:-"-"}" != "-" ]]; then
-        systemctl disable --now "${LEGACY_SERVICE}" >/dev/null 2>&1 || true
-        fragment_path="$(
-            systemctl show --property=FragmentPath --value \
-                "${LEGACY_SERVICE}" 2>/dev/null || true
-        )"
-        if [[ "${fragment_path}" == "/etc/systemd/system/${LEGACY_SERVICE}" \
-            && -f "${fragment_path}" && ! -L "${fragment_path}" ]]; then
-            rm -f -- "${fragment_path}"
-            systemctl daemon-reload
-        fi
-    fi
-
-    if [[ "${LEGACY_APP_ROOT:-"-"}" != "-" && -d "${LEGACY_APP_ROOT}" ]]; then
-        resolved_root="$(readlink -e -- "${LEGACY_APP_ROOT}")"
-        if [[ ! "${resolved_root}" =~ ^/var/www/[A-Za-z0-9._-]+$ \
-            || "${resolved_root}" == "/var/www" ]]; then
-            echo "Refusing to remove unsafe legacy path: ${resolved_root}" >&2
-            return 1
-        fi
-        rm -rf --one-file-system -- "${resolved_root}"
-    fi
-}
-
 validate_staging_isolation() {
     local secret_file
     local production_secret
@@ -517,11 +466,6 @@ rollback() {
     if [[ -n "${previous_image}" ]]; then
         compose "${previous_image}" up --detach --no-build --pull never --remove-orphans
         wait_until_ready
-    elif [[ "${database_rollback_ok}" -eq 1 \
-        && "${legacy_was_active}" -eq 1 \
-        && "${LEGACY_SERVICE:-"-"}" != "-" ]]; then
-        systemctl enable "${LEGACY_SERVICE}" >/dev/null 2>&1
-        systemctl start "${LEGACY_SERVICE}"
     fi
     audit_log "environment=${target} result=failure revision=${release_sha} digest=${image_digest}"
     echo "Deployment failed; the previous ${target} runtime was restored" >&2
@@ -532,7 +476,6 @@ trap cleanup EXIT
 trap rollback ERR
 
 audit_log "environment=${target} result=started revision=${release_sha} digest=${image_digest}"
-validate_legacy_configuration
 if ss -lnt | grep -Eq ':(2375|2376)([[:space:]]|$)'; then
     echo "Docker API must not be exposed over TCP" >&2
     exit 1
@@ -634,15 +577,8 @@ migration_run \
 migration_run \
     python -m flask --app wsgi:app verify-runtime-db-privileges
 
-if [[ "${target}" == "production" \
-    && "${LEGACY_SERVICE:-"-"}" != "-" ]] \
-    && systemctl is-active --quiet "${LEGACY_SERVICE}"; then
-    legacy_was_active=1
-fi
 if [[ -n "${previous_image}" ]]; then
     compose "${image}" down --remove-orphans
-elif [[ "${legacy_was_active}" -eq 1 ]]; then
-    systemctl disable --now "${LEGACY_SERVICE}"
 fi
 service_switched=1
 
@@ -671,9 +607,6 @@ systemctl start "${SYSTEMD_SERVICE}"
 service_switched=0
 runtime_replaced=0
 trap - ERR
-if ! remove_legacy_runtime; then
-    echo "Warning: SITBank is healthy, but the former application files require manual cleanup" >&2
-fi
 if [[ -n "${DATABASE_CUTOVER}" && -r "${DATABASE_CUTOVER}" ]]; then
     if ! /usr/local/sbin/sitbank-database-cutover finalize; then
         echo "Warning: SITBank is healthy, but the former database role still requires manual cleanup" >&2
