@@ -31,7 +31,7 @@ from webauthn.helpers.structs import (
 
 from app.extensions import db
 from app.models import User, WebAuthnCredential
-from app.security.audit import audit_webauthn_event
+from app.security.audit import audit_webauthn_event, audit_reference
 from app.security.fido_mds import FidoMetadataError, pem_root_certs_by_fmt, validate_aaguid_policy
 from app.security.sessions import (
     current_session_id,
@@ -1130,8 +1130,8 @@ def _transaction_audit_metadata(context: dict[str, str]) -> dict[str, str]:
     return {
         "transaction_amount": context.get("amount", ""),
         "transaction_currency": context.get("currency", ""),
-        "transaction_payee_account": context.get("payee_account", ""),
-        "transaction_reference": context.get("transaction_reference", ""),
+        "transaction_payee_account_ref": audit_reference(context.get("payee_account", "")),
+        "transaction_reference_ref": audit_reference(context.get("transaction_reference", "")),
         "transaction_expiry": context.get("expiry", ""),
     }
 

@@ -122,25 +122,25 @@ def _quote_environment_value(name: str, value: str) -> str:
     return f"'{value}'"
 
 
-def _active_key_id(prefix: str) -> str:
-    active_id_name = _prefixed(prefix, "SESSION_HMAC_ACTIVE_KEY_ID")
+def _active_key_id(prefix: str, base_name: str = "SESSION_HMAC") -> str:
+    active_id_name = _prefixed(prefix, f"{base_name}_ACTIVE_KEY_ID")
     active_id = _value(active_id_name)
     if not re.fullmatch(r"[A-Za-z0-9._-]{1,32}", active_id):
         raise RuntimeError(f"{active_id_name} is invalid")
     return active_id
 
 
-def _session_keyring(prefix: str) -> tuple[str, str]:
-    active_id = _active_key_id(prefix)
-    active_key_name = _prefixed(prefix, "SESSION_HMAC_ACTIVE_KEY_B64")
+def _session_keyring(prefix: str, base_name: str = "SESSION_HMAC") -> tuple[str, str]:
+    active_id = _active_key_id(prefix, base_name)
+    active_key_name = _prefixed(prefix, f"{base_name}_ACTIVE_KEY_B64")
     active_key = _validate_b64_key(
         active_key_name,
         _value(active_key_name),
     )
     keyring = {active_id: active_key}
 
-    previous_id_name = _prefixed(prefix, "SESSION_HMAC_PREVIOUS_KEY_ID")
-    previous_key_name = _prefixed(prefix, "SESSION_HMAC_PREVIOUS_KEY_B64")
+    previous_id_name = _prefixed(prefix, f"{base_name}_PREVIOUS_KEY_ID")
+    previous_key_name = _prefixed(prefix, f"{base_name}_PREVIOUS_KEY_B64")
     previous_id = os.environ.get(previous_id_name, "").strip()
     previous_key = os.environ.get(previous_key_name, "").strip()
     if bool(previous_id) != bool(previous_key):
@@ -165,6 +165,11 @@ def build_container_environment(prefix: str = "PROD") -> dict[str, str]:
     if not re.fullmatch(r"[A-Za-z0-9.-]+", public_host):
         raise RuntimeError(f"{public_host_name} must be a bare hostname")
 
+    admin_public_host_name = _prefixed(prefix, "ADMIN_PUBLIC_HOST")
+    admin_public_host = _value(admin_public_host_name, default=f"admin-{public_host}")
+    if not re.fullmatch(r"[A-Za-z0-9.-]+", admin_public_host):
+        raise RuntimeError(f"{admin_public_host_name} must be a bare hostname")
+
     environment = {
         "APP_ENV": "production",
         "COMMON_PASSWORDS_PATH": "/run/config/common-passwords.txt",
@@ -172,12 +177,19 @@ def build_container_environment(prefix: str = "PROD") -> dict[str, str]:
             _prefixed(prefix, "MFA_KEK_ACTIVE_ID"),
             _value(_prefixed(prefix, "MFA_KEK_ACTIVE_ID")),
         ),
+        "ADMIN_MFA_KEK_ACTIVE_ID": _validate_key_id(
+            _prefixed(prefix, "ADMIN_MFA_KEK_ACTIVE_ID"),
+            _value(_prefixed(prefix, "ADMIN_MFA_KEK_ACTIVE_ID")),
+        ),
         "MFA_ISSUER_NAME": _value(_prefixed(prefix, "MFA_ISSUER_NAME"), default="SITBank"),
-        "SESSION_HMAC_ACTIVE_KEY_ID": _active_key_id(prefix),
+        "SESSION_HMAC_ACTIVE_KEY_ID": _active_key_id(prefix, "SESSION_HMAC"),
+        "ADMIN_SESSION_HMAC_ACTIVE_KEY_ID": _active_key_id(prefix, "ADMIN_SESSION_HMAC"),
         "WEBAUTHN_APPROVED_AAGUIDS_PATH": "/run/config/fido-approved-aaguids.json",
         "WEBAUTHN_MDS_CACHE_PATH": "/run/config/fido-mds-cache.json",
         "WEBAUTHN_RP_ID": public_host,
         "WEBAUTHN_RP_ORIGIN": f"https://{public_host}",
+        "ADMIN_WEBAUTHN_RP_ID": admin_public_host,
+        "ADMIN_WEBAUTHN_RP_ORIGIN": f"https://{admin_public_host}",
     }
     for name, default in NON_SECRET_DEFAULTS.items():
         environment[name] = _value(_prefixed(prefix, name), default=default)
@@ -195,9 +207,13 @@ def build_container_bundle(
     prefix: str = "PROD",
 ) -> tuple[dict[str, str], dict[str, str]]:
     environment = build_container_environment(prefix)
-    active_key_id, keyring = _session_keyring(prefix)
+    active_key_id, keyring = _session_keyring(prefix, "SESSION_HMAC")
     if environment["SESSION_HMAC_ACTIVE_KEY_ID"] != active_key_id:
         raise RuntimeError("Session HMAC active key identifiers do not match")
+
+    admin_active_key_id, admin_keyring = _session_keyring(prefix, "ADMIN_SESSION_HMAC")
+    if environment["ADMIN_SESSION_HMAC_ACTIVE_KEY_ID"] != admin_active_key_id:
+        raise RuntimeError("Admin Session HMAC active key identifiers do not match")
 
     secrets = {
         target: _value(_prefixed(prefix, source))
@@ -208,11 +224,23 @@ def build_container_bundle(
         secrets["mfa_kek_keys_json"],
         active_key_id=environment["MFA_KEK_ACTIVE_ID"],
     )
+    if "admin_mfa_kek_keys_json" in secrets:
+        _validate_keyring(
+            _prefixed(prefix, "ADMIN_MFA_KEK_KEYS_JSON"),
+            secrets["admin_mfa_kek_keys_json"],
+            active_key_id=environment["ADMIN_MFA_KEK_ACTIVE_ID"],
+        )
     _validate_b64_key(
         _prefixed(prefix, "PASSWORD_PEPPER_B64"),
         secrets["password_pepper_b64"],
     )
+    if "admin_password_pepper_b64" in secrets:
+        _validate_b64_key(
+            _prefixed(prefix, "ADMIN_PASSWORD_PEPPER_B64"),
+            secrets["admin_password_pepper_b64"],
+        )
     secrets["session_hmac_keys_json"] = keyring
+    secrets["admin_session_hmac_keys_json"] = admin_keyring
     return environment, secrets
 
 

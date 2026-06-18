@@ -40,7 +40,7 @@ def create_app(config_name: str | None = None) -> Flask:
     talisman.init_app(app)
 
     # Initialize custom server-side session management
-    from .security.session import init_app as init_session
+    from .security.sessions import init_app as init_session
     init_session(app)
 
     # Register blueprints based on the application component
@@ -48,11 +48,13 @@ def create_app(config_name: str | None = None) -> Flask:
         from .routes import admin_bp
         app.register_blueprint(admin_bp)
     else:
-        # NOTE: The import paths for auth_bp and web_bp are assumed.
         from .auth.routes import auth_bp
         from .web.routes import web_bp
+        from .banking.routes import banking_bp
+        from .main.routes import main_bp
         app.register_blueprint(auth_bp)
         app.register_blueprint(web_bp)
+        app.register_blueprint(banking_bp)
+        app.register_blueprint(main_bp)
 
     return app
-

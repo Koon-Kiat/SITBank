@@ -44,6 +44,11 @@ The customer application uses the `sitbank_app` role, and the admin application
 uses the `sitbank_admin` role. Neither runtime role must own schema objects or
 have DDL privileges. Rotate `database_url` and `database_migration_url` separately.
 
+The `security_audit_events` table enforces an append-only privilege model. 
+The runtime database roles must only have `SELECT` and `INSERT` grants on this table, 
+and must not be granted `UPDATE` or `DELETE`. Use the `apply-runtime-audit-privileges` 
+and `verify-audit-log-chain` CLI commands to enforce and check audit integrity.
+
 Staging secrets must never be copied from production. The staging deployment
 wrapper rejects identical application secret files when production secrets are
 present and requires database and Redis URLs to resolve only to the staging
@@ -177,6 +182,9 @@ Forward these sources to a protected centralized log destination:
 - Nginx access/error and TLS events;
 - application security audit events;
 - PostgreSQL and Redis authentication/availability events.
+
+Use `check-security-alerts` to continuously monitor the audit logs for critical
+events such as account lockouts, WebAuthn clone detections, and audit write failures.
 
 Alert on failed deployments, signature or revision mismatches, unexpected
 image digests, repeated authentication lockouts, security-key counter

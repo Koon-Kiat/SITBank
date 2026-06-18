@@ -62,6 +62,7 @@ def verify_runtime_database_privileges(
                     expected_owner=migration_role,
                 )
                 _assert_runtime_dml_allowed(runtime_connection, schema=schema, probe_table=probe_table)
+                _assert_audit_table_append_only(runtime_connection, schema=schema)
                 _expect_privilege_denied(
                     runtime_connection,
                     f"ALTER TABLE {_qualified_table_name(schema, probe_table)} "
@@ -98,6 +99,25 @@ def verify_runtime_database_privileges(
         extension_probe=extension_probe,
     )
 
+
+def apply_runtime_audit_table_privileges(
+    *,
+    migration_url: str,
+    runtime_role: str,
+    schema: str = "public",
+) -> None:
+    if not migration_url:
+        raise RuntimeError("DATABASE_MIGRATION_URL is required to apply privileges")
+    
+    engine = create_engine(migration_url)
+    try:
+        with engine.begin() as connection:
+            audit_table = _qualified_table_name(schema, "security_audit_events")
+            role = _quote_identifier(runtime_role)
+            connection.execute(text(f"GRANT SELECT, INSERT ON {audit_table} TO {role}"))
+            connection.execute(text(f"REVOKE UPDATE, DELETE ON {audit_table} FROM {role}"))
+    finally:
+        engine.dispose()
 
 def _assert_runtime_role_owns_no_schema_objects(connection, runtime_role: str, schema: str) -> None:
     database_owner = connection.execute(
@@ -206,6 +226,19 @@ def _assert_runtime_dml_allowed(connection, *, schema: str, probe_table: str) ->
             raise RuntimeError("Runtime role could not read back inserted probe data")
         connection.execute(table.update().where(table.c.id == inserted_id).values(marker="updated"))
         connection.execute(table.delete().where(table.c.id == inserted_id))
+
+
+def _assert_audit_table_append_only(connection, *, schema: str) -> None:
+    _expect_privilege_denied(
+        connection,
+        f"UPDATE {_qualified_table_name(schema, 'security_audit_events')} SET id = id",
+        "UPDATE on security_audit_events",
+    )
+    _expect_privilege_denied(
+        connection,
+        f"DELETE FROM {_qualified_table_name(schema, 'security_audit_events')} WHERE id = 0",
+        "DELETE on security_audit_events",
+    )
 
 
 def _expect_privilege_denied(connection, statement: str, label: str) -> None:

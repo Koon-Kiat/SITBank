@@ -2,6 +2,7 @@ from flask import Blueprint, jsonify, request, abort, g, session
 from app.security.audit import audit_event
 from app.models import User
 from app.extensions import db
+from app.security.passwords import verify_password
 
 admin_bp = Blueprint("admin", __name__)
 
@@ -28,9 +29,9 @@ def require_admin_auth():
         audit_event("admin_access", "denied", metadata={"reason": "not_an_admin"})
         abort(403)
 
-    # Enforce WebAuthn (password-only or TOTP-only access is blocked)
-    if session.get("auth_context") != "webauthn":
-        audit_event("admin_access", "denied", metadata={"reason": "webauthn_required"})
+    # Temporarily relax WebAuthn enforcement since it is not active yet.
+    if session.get("auth_context") not in ("webauthn", "password", "password+mfa_bootstrap"):
+        audit_event("admin_access", "denied", metadata={"reason": "valid_auth_context_required"})
         abort(403)
 
 @admin_bp.route("/login", methods=["POST"])
@@ -40,6 +41,7 @@ def admin_login():
     """
     data = request.get_json() or {}
     username = data.get("username")
+    password = data.get("password", "")
     user = db.session.execute(db.select(User).where(User.username == username)).scalar_one_or_none()
     
     metadata = {
@@ -48,14 +50,14 @@ def admin_login():
         "user_agent": request.user_agent.string if request.user_agent else "Unknown"
     }
 
-    if not user or user.role != "admin":
-        audit_event("admin_login", "failure", metadata={**metadata, "reason": "invalid_user_or_role"})
+    if not user or user.role != "admin" or not verify_password(password, user.password_hash):
+        audit_event("admin_login", "failure", metadata={**metadata, "reason": "invalid_credentials_or_role"})
         return jsonify({"error": "Unauthorized"}), 401
         
-    # Note: A real implementation would verify the WebAuthn assertion payload here.
+    # WebAuthn is currently inactive. Setting session via password validation.
     session.clear()
     session["user_id"] = user.id
-    session["auth_context"] = "webauthn"
+    session["auth_context"] = "password"
     
     audit_event("admin_login", "success", user_id=user.id, metadata=metadata)
     return jsonify({"message": "Admin login successful"})

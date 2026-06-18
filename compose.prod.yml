@@ -77,6 +77,7 @@ services:
   admin:
     image: ${SITBANK_IMAGE:?SITBANK_IMAGE must be an immutable digest reference}
     container_name: sitbank-admin
+    command: gunicorn --bind 127.0.0.1:5002 admin_wsgi:app
     network_mode: host
     user: "10002:10002"
     read_only: true

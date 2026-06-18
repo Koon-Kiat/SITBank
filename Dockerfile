@@ -36,13 +36,16 @@ RUN apt-get update \
     && groupadd --gid 10001 sitbank \
     && useradd --uid 10001 --gid 10001 --no-create-home \
         --home-dir /nonexistent --shell /usr/sbin/nologin sitbank \
-    && install -d -o 10001 -g 10001 -m 0750 /app
+    && groupadd --gid 10002 sitbank_admin \
+    && useradd --uid 10002 --gid 10002 --no-create-home \
+        --home-dir /nonexistent --shell /usr/sbin/nologin sitbank_admin \
+    && install -d -o 10001 -g 10001 -m 0755 /app
 
 COPY --from=builder /opt/venv /opt/venv
 WORKDIR /app
 COPY --chown=10001:10001 app ./app
 COPY --chown=10001:10001 migrations ./migrations
-COPY --chown=10001:10001 config.py wsgi.py ./
+COPY --chown=10001:10001 config.py wsgi.py admin_wsgi.py ./
 
 USER 10001:10001
 

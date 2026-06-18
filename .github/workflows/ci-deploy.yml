@@ -222,8 +222,8 @@ jobs:
       PASSWORD_PBKDF2_ITERATIONS: "600000"
       COMMON_PASSWORDS_PATH: tests/fixtures/common_passwords.txt
       COMMON_PASSWORDS_MIN_ENTRIES: "100000"
-      # WEBAUTHN_RP_ID: sitbank.duckdns.org
-      # WEBAUTHN_RP_ORIGIN: https://sitbank.duckdns.org
+      WEBAUTHN_RP_ID: sitbank.duckdns.org
+      WEBAUTHN_RP_ORIGIN: https://sitbank.duckdns.org
       ADMIN_SECRET_KEY: ci-admin-secret-key-that-is-long-enough-for-tests
       ADMIN_WTF_CSRF_SECRET_KEY: ci-admin-csrf-key-that-is-long-enough-for-tests
       ADMIN_SESSION_HMAC_ACTIVE_KEY_ID: ci-admin-current
@@ -233,6 +233,8 @@ jobs:
       ADMIN_MFA_KEK_ACTIVE_ID: ci-admin-mfa
       ADMIN_MFA_KEK_KEYS_JSON: '{"ci-admin-mfa":"NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ="}'
       ADMIN_PASSWORD_PEPPER_B64: MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE=
+      ADMIN_WEBAUTHN_RP_ID: admin-sitbank.duckdns.org
+      ADMIN_WEBAUTHN_RP_ORIGIN: https://admin-sitbank.duckdns.org
     steps:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
