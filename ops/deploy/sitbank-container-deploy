@@ -439,7 +439,6 @@ show_dependency_diagnostics() {
 
 rollback() {
     local exit_code=$?
-    local database_rollback_ok=1
     trap - ERR
     set +e
     if [[ "${service_switched}" -eq 1 ]]; then
@@ -459,7 +458,6 @@ rollback() {
     fi
     if [[ -n "${DATABASE_CUTOVER}" && -r "${DATABASE_CUTOVER}" ]]; then
         if ! /usr/local/sbin/sitbank-database-cutover rollback; then
-            database_rollback_ok=0
             echo "Database rollback requires administrator intervention" >&2
         fi
     fi
