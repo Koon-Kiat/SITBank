@@ -146,26 +146,26 @@ def _validate_url(name: str, value: str, *, schemes: set[str], require_password:
     return value
 
 
-def _required_webauthn_rp_id(name: str) -> str:
-    value = _required_env(name).strip().lower()
-    parsed = urlparse(f"//{value}")
-    if parsed.hostname != value or parsed.port or parsed.username or parsed.password:
-        raise RuntimeError(f"{name} must be a bare hostname without scheme, path, port, or credentials")
-    return value
-
-
-def _required_webauthn_origin(name: str, *, rp_id: str) -> str:
-    value = _required_env(name).strip().rstrip("/")
-    parsed = urlparse(value)
-    if parsed.scheme != "https":
-        raise RuntimeError(f"{name} must use HTTPS")
-    if parsed.hostname != rp_id:
-        raise RuntimeError(f"{name} hostname must match WEBAUTHN_RP_ID")
-    if parsed.username or parsed.password or parsed.params or parsed.query or parsed.fragment:
-        raise RuntimeError(f"{name} must not include credentials, query, or fragment")
-    if parsed.path not in {"", "/"}:
-        raise RuntimeError(f"{name} must not include a path")
-    return value
+# def _required_webauthn_rp_id(name: str) -> str:
+#     value = _required_env(name).strip().lower()
+#     parsed = urlparse(f"//{value}")
+#     if parsed.hostname != value or parsed.port or parsed.username or parsed.password:
+#         raise RuntimeError(f"{name} must be a bare hostname without scheme, path, port, or credentials")
+#     return value
+# 
+# 
+# def _required_webauthn_origin(name: str, *, rp_id: str) -> str:
+#     value = _required_env(name).strip().rstrip("/")
+#     parsed = urlparse(value)
+#     if parsed.scheme != "https":
+#         raise RuntimeError(f"{name} must use HTTPS")
+#     if parsed.hostname != rp_id:
+#         raise RuntimeError(f"{name} hostname must match WEBAUTHN_RP_ID")
+#     if parsed.username or parsed.password or parsed.params or parsed.query or parsed.fragment:
+#         raise RuntimeError(f"{name} must not include credentials, query, or fragment")
+#     if parsed.path not in {"", "/"}:
+#         raise RuntimeError(f"{name} must not include a path")
+#     return value
 
 
 def _required_b64_32_bytes(name: str) -> str:
@@ -322,20 +322,20 @@ class Config:
         raise RuntimeError("PASSWORD_MAX_CHARS must be between 64 and 1024")
     MFA_ISSUER_NAME = os.getenv("MFA_ISSUER_NAME", "SITBank")
 
-    WEBAUTHN_RP_ID = _required_webauthn_rp_id("WEBAUTHN_RP_ID")
-    WEBAUTHN_RP_ORIGIN = _required_webauthn_origin("WEBAUTHN_RP_ORIGIN", rp_id=WEBAUTHN_RP_ID)
-    WEBAUTHN_RP_NAME = "SITBank"
-    WEBAUTHN_TIMEOUT_MS = 60_000
-    WEBAUTHN_REQUIRED_CREDENTIALS = 2
-    WEBAUTHN_ENFORCE_KEY_SETUP = False
-    WEBAUTHN_MDS_CACHE_PATH = os.getenv(
-        "WEBAUTHN_MDS_CACHE_PATH",
-        str(Path(__file__).resolve().parent / "ops" / "fido-mds-cache.json"),
-    )
-    WEBAUTHN_APPROVED_AAGUIDS_PATH = os.getenv(
-        "WEBAUTHN_APPROVED_AAGUIDS_PATH",
-        str(Path(__file__).resolve().parent / "ops" / "fido-approved-aaguids.json"),
-    )
+    # WEBAUTHN_RP_ID = _required_webauthn_rp_id("WEBAUTHN_RP_ID")
+    # WEBAUTHN_RP_ORIGIN = _required_webauthn_origin("WEBAUTHN_RP_ORIGIN", rp_id=WEBAUTHN_RP_ID)
+    # WEBAUTHN_RP_NAME = "SITBank"
+    # WEBAUTHN_TIMEOUT_MS = 60_000
+    # WEBAUTHN_REQUIRED_CREDENTIALS = 2
+    # WEBAUTHN_ENFORCE_KEY_SETUP = False
+    # WEBAUTHN_MDS_CACHE_PATH = os.getenv(
+    #     "WEBAUTHN_MDS_CACHE_PATH",
+    #     str(Path(__file__).resolve().parent / "ops" / "fido-mds-cache.json"),
+    # )
+    # WEBAUTHN_APPROVED_AAGUIDS_PATH = os.getenv(
+    #     "WEBAUTHN_APPROVED_AAGUIDS_PATH",
+    #     str(Path(__file__).resolve().parent / "ops" / "fido-approved-aaguids.json"),
+    # )
 
     COMMON_PASSWORDS_PATH = _required_env("COMMON_PASSWORDS_PATH")
     COMMON_PASSWORDS_MIN_ENTRIES = int(os.getenv("COMMON_PASSWORDS_MIN_ENTRIES", "100000"))
@@ -385,9 +385,9 @@ class Config:
     TOTP_HIGH_RISK_VALID_WINDOW = int(os.getenv("TOTP_HIGH_RISK_VALID_WINDOW", "0"))
     if TOTP_HIGH_RISK_VALID_WINDOW != 0:
         raise RuntimeError("TOTP_HIGH_RISK_VALID_WINDOW must be 0")
-    WEBAUTHN_STEP_UP_TTL_SECONDS = int(os.getenv("WEBAUTHN_STEP_UP_TTL_SECONDS", "120"))
-    if WEBAUTHN_STEP_UP_TTL_SECONDS < 30 or WEBAUTHN_STEP_UP_TTL_SECONDS > 300:
-        raise RuntimeError("WEBAUTHN_STEP_UP_TTL_SECONDS must be between 30 and 300")
+    # WEBAUTHN_STEP_UP_TTL_SECONDS = int(os.getenv("WEBAUTHN_STEP_UP_TTL_SECONDS", "120"))
+    # if WEBAUTHN_STEP_UP_TTL_SECONDS < 30 or WEBAUTHN_STEP_UP_TTL_SECONDS > 300:
+    #     raise RuntimeError("WEBAUTHN_STEP_UP_TTL_SECONDS must be between 30 and 300")
 
     TALISMAN_FORCE_HTTPS = True
     TALISMAN_CONTENT_SECURITY_POLICY = {

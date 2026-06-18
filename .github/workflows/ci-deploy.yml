@@ -222,8 +222,8 @@ jobs:
       PASSWORD_PBKDF2_ITERATIONS: "600000"
       COMMON_PASSWORDS_PATH: tests/fixtures/common_passwords.txt
       COMMON_PASSWORDS_MIN_ENTRIES: "100000"
-      WEBAUTHN_RP_ID: sitbank.duckdns.org
-      WEBAUTHN_RP_ORIGIN: https://sitbank.duckdns.org
+      # WEBAUTHN_RP_ID: sitbank.duckdns.org
+      # WEBAUTHN_RP_ORIGIN: https://sitbank.duckdns.org
       ADMIN_SECRET_KEY: ci-admin-secret-key-that-is-long-enough-for-tests
       ADMIN_WTF_CSRF_SECRET_KEY: ci-admin-csrf-key-that-is-long-enough-for-tests
       ADMIN_SESSION_HMAC_ACTIVE_KEY_ID: ci-admin-current

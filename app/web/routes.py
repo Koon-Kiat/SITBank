@@ -40,11 +40,11 @@ from app.auth.services import (
     verify_mfa_replacement,
     verify_mfa_setup,
 )
-from app.auth.webauthn_services import (
-    list_credentials_for_user,
-    revoke_credential,
-    webauthn_credential_count,
-)
+# from app.auth.webauthn_services import (
+#     list_credentials_for_user,
+#     revoke_credential,
+#     webauthn_credential_count,
+# )
 from app.extensions import limiter
 from app.security.rate_limits import mfa_principal, request_principal
 from app.security.sessions import (
@@ -220,93 +220,93 @@ def dashboard():
     return render_template(
         "dashboard.html",
         user=g.current_user,
-        credential_count=g.webauthn_credential_count,
-        required_count=g.webauthn_required_count,
+        # credential_count=g.webauthn_credential_count,
+        # required_count=g.webauthn_required_count,
         logout_form=CsrfOnlyForm(),
     )
 
 
-@web_bp.get("/security-keys")
-@web_login_required
-@web_not_frozen_required
-def security_keys():
-    credentials = list_credentials_for_user(g.current_user)
-    required_count = current_app.config.get("WEBAUTHN_REQUIRED_CREDENTIALS", 2)
-    return render_template(
-        "security_keys.html",
-        user=g.current_user,
-        credentials=credentials,
-        credential_count=webauthn_credential_count(g.current_user),
-        required_count=required_count,
-        recent_mfa=has_recent_fresh_mfa(),
-        add_form=CsrfOnlyForm(),
-        refresh_mfa_form=TotpForm(),
-        revoke_form=StepUpTokenForm(),
-    )
+# @web_bp.get("/security-keys")
+# @web_login_required
+# @web_not_frozen_required
+# def security_keys():
+#     credentials = list_credentials_for_user(g.current_user)
+#     required_count = current_app.config.get("WEBAUTHN_REQUIRED_CREDENTIALS", 2)
+#     return render_template(
+#         "security_keys.html",
+#         user=g.current_user,
+#         credentials=credentials,
+#         credential_count=webauthn_credential_count(g.current_user),
+#         required_count=required_count,
+#         recent_mfa=has_recent_fresh_mfa(),
+#         add_form=CsrfOnlyForm(),
+#         refresh_mfa_form=TotpForm(),
+#         revoke_form=StepUpTokenForm(),
+#     )
 
 
-@web_bp.post("/security-keys/mfa/refresh")
-@web_login_required
-@web_not_frozen_required
-@limiter.limit("5 per 5 minutes", key_func=get_remote_address)
-@limiter.limit("5 per 5 minutes", key_func=mfa_principal)
-def security_keys_mfa_refresh():
-    if not g.current_user.mfa_enabled:
-        flash("Set up authenticator MFA before registering security keys.", "warning")
-        return redirect(url_for("web.mfa_setup"))
+# @web_bp.post("/security-keys/mfa/refresh")
+# @web_login_required
+# @web_not_frozen_required
+# @limiter.limit("5 per 5 minutes", key_func=get_remote_address)
+# @limiter.limit("5 per 5 minutes", key_func=mfa_principal)
+# def security_keys_mfa_refresh():
+#     if not g.current_user.mfa_enabled:
+#         flash("Set up authenticator MFA before registering security keys.", "warning")
+#         return redirect(url_for("web.mfa_setup"))
+# 
+#     form = TotpForm()
+#     if not form.validate_on_submit():
+#         flash("Enter a valid authenticator code to continue.", "error")
+#         return redirect(url_for("web.security_keys"))
+# 
+#     try:
+#         require_stable_session_for_sensitive_action("webauthn_mfa_refresh")
+#         verify_fresh_mfa_for_action(
+#             g.current_user,
+#             form.totp_code.data,
+#             "webauthn_mfa_refresh",
+#         )
+#     except AuthError as exc:
+#         flash(exc.message, "error")
+#         if session.get(SESSION_RISK_REAUTH_REQUIRED_KEY):
+#             return redirect(url_for("web.login"))
+#         return redirect(url_for("web.security_keys"))
+# 
+#     flash("Authenticator code verified. You can register or manage security keys now.", "success")
+#     return redirect(url_for("web.security_keys"))
 
-    form = TotpForm()
-    if not form.validate_on_submit():
-        flash("Enter a valid authenticator code to continue.", "error")
-        return redirect(url_for("web.security_keys"))
 
-    try:
-        require_stable_session_for_sensitive_action("webauthn_mfa_refresh")
-        verify_fresh_mfa_for_action(
-            g.current_user,
-            form.totp_code.data,
-            "webauthn_mfa_refresh",
-        )
-    except AuthError as exc:
-        flash(exc.message, "error")
-        if session.get(SESSION_RISK_REAUTH_REQUIRED_KEY):
-            return redirect(url_for("web.login"))
-        return redirect(url_for("web.security_keys"))
-
-    flash("Authenticator code verified. You can register or manage security keys now.", "success")
-    return redirect(url_for("web.security_keys"))
-
-
-@web_bp.post("/security-keys/<credential_id>/revoke")
-@web_login_required
-@web_not_frozen_required
-def security_key_revoke(credential_id: str):
-    form = StepUpTokenForm()
-    if not form.validate_on_submit():
-        flash("Complete security-key step-up before revoking a key.", "error")
-        return redirect(url_for("web.security_keys"))
-    try:
-        verify_high_risk_authorization(
-            g.current_user,
-            None,
-            form.stepup_token.data,
-            "webauthn_revoke",
-            rotate_session_on_success=False,
-        )
-        result = revoke_credential(
-            g.current_user,
-            credential_id,
-            stepup_token=form.stepup_token.data,
-            stepup_already_consumed=True,
-        )
-    except AuthError as exc:
-        flash(exc.message, "error")
-        return redirect(url_for("web.security_keys"))
-    if result.get("current_session_revoked"):
-        flash("Security key revoked. Please sign in again.", "success")
-        return redirect(url_for("web.login"))
-    flash("Security key revoked.", "success")
-    return redirect(url_for("web.security_keys"))
+# @web_bp.post("/security-keys/<credential_id>/revoke")
+# @web_login_required
+# @web_not_frozen_required
+# def security_key_revoke(credential_id: str):
+#     form = StepUpTokenForm()
+#     if not form.validate_on_submit():
+#         flash("Complete security-key step-up before revoking a key.", "error")
+#         return redirect(url_for("web.security_keys"))
+#     try:
+#         verify_high_risk_authorization(
+#             g.current_user,
+#             None,
+#             form.stepup_token.data,
+#             "webauthn_revoke",
+#             rotate_session_on_success=False,
+#         )
+#         result = revoke_credential(
+#             g.current_user,
+#             credential_id,
+#             stepup_token=form.stepup_token.data,
+#             stepup_already_consumed=True,
+#         )
+#     except AuthError as exc:
+#         flash(exc.message, "error")
+#         return redirect(url_for("web.security_keys"))
+#     if result.get("current_session_revoked"):
+#         flash("Security key revoked. Please sign in again.", "success")
+#         return redirect(url_for("web.login"))
+#     flash("Security key revoked.", "success")
+#     return redirect(url_for("web.security_keys"))
 
 
 @web_bp.get("/profile")
@@ -474,9 +474,9 @@ def password_change():
     if not g.current_user.mfa_enabled:
         flash("Set up authenticator MFA before changing your password.", "warning")
         return redirect(url_for("web.mfa_setup"))
-    if not g.high_risk_ready:
-        flash("Add two approved security keys before changing your password.", "warning")
-        return redirect(url_for("web.security_keys"))
+    # if not g.high_risk_ready:
+    #     flash("Add two approved security keys before changing your password.", "warning")
+    #     return redirect(url_for("web.security_keys"))
     return render_template(
         "password_change.html",
         form=PasswordChangeForm(),
@@ -493,9 +493,9 @@ def password_change_submit():
     if not g.current_user.mfa_enabled:
         flash("Set up authenticator MFA before changing your password.", "warning")
         return redirect(url_for("web.mfa_setup"))
-    if not g.high_risk_ready:
-        flash("Add two approved security keys before changing your password.", "warning")
-        return redirect(url_for("web.security_keys"))
+    # if not g.high_risk_ready:
+    #     flash("Add two approved security keys before changing your password.", "warning")
+    #     return redirect(url_for("web.security_keys"))
 
     form = PasswordChangeForm()
     recent_mfa = has_recent_fresh_mfa()

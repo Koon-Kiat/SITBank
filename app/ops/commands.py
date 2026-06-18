@@ -16,7 +16,7 @@ from app.security.crypto import (
     mfa_envelope_kek_id,
     rewrap_mfa_dek,
 )
-from app.security.fido_mds import validate_fido_metadata_config
+# from app.security.fido_mds import validate_fido_metadata_config
 from app.security.passwords import validate_common_password_dictionary, validate_password_hash_config
 from app.security.session_hmac import validate_session_hmac_config
 from app.ops.db_privileges import verify_runtime_database_privileges
@@ -95,12 +95,12 @@ def register_ops_commands(app: Flask) -> None:
         else:
             click.echo(f"Configured MFA KEKs: {len(mfa_kek_keys)}")
 
-        try:
-            approved_aaguids = validate_fido_metadata_config()
-        except Exception as exc:
-            failures.append(f"FIDO metadata configuration check failed: {exc}")
-        else:
-            click.echo(f"Approved FIDO authenticator AAGUIDs: {approved_aaguids}")
+        # try:
+        #     approved_aaguids = validate_fido_metadata_config()
+        # except Exception as exc:
+        #     failures.append(f"FIDO metadata configuration check failed: {exc}")
+        # else:
+        #     click.echo(f"Approved FIDO authenticator AAGUIDs: {approved_aaguids}")
 
         if int(app.config.get("PASSWORD_PBKDF2_ITERATIONS", 0)) < 600000:
             failures.append("PASSWORD_PBKDF2_ITERATIONS must be 600000 or higher")
@@ -110,8 +110,8 @@ def register_ops_commands(app: Flask) -> None:
             failures.append("DATABASE_MIGRATION_URL must not be configured for the runtime app")
         if len(str(app.config.get("WTF_CSRF_SECRET_KEY", ""))) < 32:
             failures.append("WTF_CSRF_SECRET_KEY must be at least 32 characters")
-        if int(app.config.get("WEBAUTHN_REQUIRED_CREDENTIALS", 0)) < 2:
-            failures.append("WEBAUTHN_REQUIRED_CREDENTIALS must be at least 2")
+        # if int(app.config.get("WEBAUTHN_REQUIRED_CREDENTIALS", 0)) < 2:
+        #     failures.append("WEBAUTHN_REQUIRED_CREDENTIALS must be at least 2")
         if int(app.config.get("TRUSTED_PROXY_COUNT", -1)) != 1:
             failures.append("TRUSTED_PROXY_COUNT must be 1 for the single Nginx proxy boundary")
         if not app.config.get("SESSION_COOKIE_SECURE"):
@@ -128,13 +128,13 @@ def register_ops_commands(app: Flask) -> None:
             failures.append("TALISMAN_FORCE_HTTPS must be enabled")
         if str(app.config.get("RATELIMIT_STORAGE_URI", "")).startswith("memory://"):
             failures.append("Rate limiting must use Redis-backed storage in production")
-        rp_origin = str(app.config.get("WEBAUTHN_RP_ORIGIN", ""))
-        rp_id = str(app.config.get("WEBAUTHN_RP_ID", ""))
-        parsed_origin = urlparse(rp_origin)
-        if parsed_origin.scheme != "https":
-            failures.append("WEBAUTHN_RP_ORIGIN must use HTTPS")
-        if parsed_origin.hostname != rp_id:
-            failures.append("WEBAUTHN_RP_ORIGIN hostname must match WEBAUTHN_RP_ID")
+        # rp_origin = str(app.config.get("WEBAUTHN_RP_ORIGIN", ""))
+        # rp_id = str(app.config.get("WEBAUTHN_RP_ID", ""))
+        # parsed_origin = urlparse(rp_origin)
+        # if parsed_origin.scheme != "https":
+        #     failures.append("WEBAUTHN_RP_ORIGIN must use HTTPS")
+        # if parsed_origin.hostname != rp_id:
+        #     failures.append("WEBAUTHN_RP_ORIGIN hostname must match WEBAUTHN_RP_ID")
         if int(app.config.get("TOTP_LOGIN_VALID_WINDOW", -1)) > 1:
             failures.append("TOTP_LOGIN_VALID_WINDOW must be 0 or 1")
         if int(app.config.get("TOTP_HIGH_RISK_VALID_WINDOW", -1)) != 0:
