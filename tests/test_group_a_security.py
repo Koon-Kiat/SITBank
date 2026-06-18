@@ -2440,6 +2440,7 @@ def test_security_alert_webhook_delivery_is_sanitized(monkeypatch):
     def fake_urlopen(request, timeout):
         captured["url"] = request.full_url
         captured["body"] = request.data.decode("utf-8")
+        captured["user_agent"] = request.headers["User-agent"]
         captured["timeout"] = timeout
         return FakeResponse()
 
@@ -2463,6 +2464,7 @@ def test_security_alert_webhook_delivery_is_sanitized(monkeypatch):
     assert result["attempted"] is True
     assert result["delivered"] is True
     assert captured["url"].endswith("/secret-token")
+    assert captured["user_agent"] == "SITBank-SecurityAlerts/1.0"
     assert "secret-token" not in captured["body"]
     assert "secret-token" not in serialized_result
 
@@ -2507,6 +2509,7 @@ def test_security_alert_delivery_formats_discord_webhooks(monkeypatch):
         del timeout
         captured["body"] = request.data.decode("utf-8")
         captured["content_type"] = request.headers["Content-type"]
+        captured["user_agent"] = request.headers["User-agent"]
         return FakeResponse()
 
     monkeypatch.setattr("app.security.alerts.urllib.request.urlopen", fake_urlopen)
@@ -2532,11 +2535,18 @@ def test_security_alert_delivery_formats_discord_webhooks(monkeypatch):
     assert result["delivered"] is True
     assert result["provider"] == "discord"
     assert captured["content_type"] == "application/json"
+    assert captured["user_agent"] == "SITBank-SecurityAlerts/1.0"
     assert payload["allowed_mentions"] == {"parse": []}
-    assert "content" in payload
-    assert "SITBank security alerts" in payload["content"]
-    assert "login_failure_burst" in payload["content"]
-    assert "principal_ref:abc123" in payload["content"]
+    assert payload["content"] == "SITBank security alerts: 1 active"
+    assert payload["embeds"][0]["title"] == "SITBank Security Alerts"
+    assert payload["embeds"][0]["color"] == 0xD92D20
+    assert "Date: " in payload["embeds"][0]["description"]
+    assert "Time: " in payload["embeds"][0]["description"]
+    assert "Timezone: UTC+8" in payload["embeds"][0]["description"]
+    assert payload["embeds"][0]["fields"][0]["name"] == "CRITICAL | login_failure_burst"
+    assert "Source: principal_ref:abc123" in payload["embeds"][0]["fields"][0]["value"]
+    assert "Count: 10" in payload["embeds"][0]["fields"][0]["value"]
+    assert "Window: 5 minute(s)" in payload["embeds"][0]["fields"][0]["value"]
     assert "example-secret-token" not in serialized_payload
     assert "example-secret-token" not in serialized_result
 
