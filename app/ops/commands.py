@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -12,7 +13,11 @@ from sqlalchemy import text
 
 from app.extensions import db
 from app.models import User
-from app.security.alerts import build_security_alert_report
+from app.security.alerts import (
+    build_security_alert_report,
+    deliver_security_alerts,
+    validate_security_alert_config,
+)
 from app.security.audit import audit_log_anchor, audit_system_event, verify_audit_hash_chain
 from app.security.crypto import (
     is_enveloped_mfa_secret,
@@ -105,6 +110,17 @@ def register_ops_commands(app: Flask) -> None:
         else:
             click.echo(f"Approved FIDO authenticator AAGUIDs: {approved_aaguids}")
 
+        try:
+            alert_config = validate_security_alert_config(require_delivery=True)
+        except Exception as exc:
+            failures.append(f"Security alert configuration check failed: {exc}")
+        else:
+            click.echo(
+                "Security alerting configured: "
+                f"min_severity={alert_config['min_severity']} "
+                f"dedupe_ttl_seconds={alert_config['dedupe_ttl_seconds']}"
+            )
+
         if int(app.config.get("PASSWORD_PBKDF2_ITERATIONS", 0)) < 600000:
             failures.append("PASSWORD_PBKDF2_ITERATIONS must be 600000 or higher")
         if app.config.get("APP_ENV") != "production":
@@ -161,6 +177,11 @@ def register_ops_commands(app: Flask) -> None:
                 migration_url=migration_url,
             )
         except Exception as exc:
+            _deliver_ops_failure_alert(
+                "runtime_db_privilege_verification_failed",
+                "verify-runtime-db-privileges",
+                exc,
+            )
             raise click.ClickException(str(exc)) from exc
 
         click.echo(
@@ -183,6 +204,11 @@ def register_ops_commands(app: Flask) -> None:
                 migration_url=migration_url,
             )
         except Exception as exc:
+            _deliver_ops_failure_alert(
+                "audit_append_only_protection_failed",
+                "apply-runtime-db-privileges",
+                exc,
+            )
             raise click.ClickException(str(exc)) from exc
 
         click.echo(
@@ -194,9 +220,25 @@ def register_ops_commands(app: Flask) -> None:
         )
 
     @app.cli.command("verify-audit-log-chain")
-    def verify_audit_log_chain() -> None:
+    @click.option(
+        "--anchor",
+        "anchor_path",
+        type=click.Path(exists=True, dir_okay=False, path_type=Path),
+        help="Optional sanitized anchor JSON to compare against the current chain head.",
+    )
+    @click.option(
+        "--alert-on-failure",
+        is_flag=True,
+        help="Send the configured security alert webhook when verification fails.",
+    )
+    def verify_audit_log_chain(anchor_path: Path | None, alert_on_failure: bool) -> None:
         """Verify the tamper-evident security audit hash chain."""
-        result = verify_audit_hash_chain()
+        anchor = _load_audit_anchor(anchor_path) if anchor_path is not None else None
+        result = verify_audit_hash_chain(anchor=anchor)
+        if not result["valid"] and alert_on_failure:
+            result["alert_delivery"] = deliver_security_alerts(
+                [_audit_chain_failure_alert(result)]
+            )
         click.echo(json.dumps(result, separators=(",", ":"), sort_keys=True))
         if not result["valid"]:
             raise click.ClickException("Security audit hash chain verification failed")
@@ -340,4 +382,47 @@ def _users_with_mfa_secret() -> list[User]:
                 User.mfa_secret_ciphertext.is_not(None),
             )
         ).scalars()
+    )
+
+
+def _load_audit_anchor(anchor_path: Path) -> dict:
+    try:
+        anchor = json.loads(anchor_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise click.ClickException(f"Audit anchor could not be read: {type(exc).__name__}") from exc
+    if not isinstance(anchor, dict):
+        raise click.ClickException("Audit anchor must be a JSON object")
+    return anchor
+
+
+def _audit_chain_failure_alert(result: dict) -> dict:
+    alert_type = (
+        "audit_anchor_mismatch"
+        if result.get("anchor_errors")
+        else "audit_chain_verification_failed"
+    )
+    return {
+        "alert_type": alert_type,
+        "severity": "critical",
+        "count": max(1, len(result.get("errors", []))),
+        "window_seconds": 0,
+        "source": "verify-audit-log-chain",
+        "latest_event_id": result.get("latest_event_id"),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _deliver_ops_failure_alert(alert_type: str, source: str, exc: Exception) -> None:
+    deliver_security_alerts(
+        [
+            {
+                "alert_type": alert_type,
+                "severity": "critical",
+                "count": 1,
+                "window_seconds": 0,
+                "source": source,
+                "error_type": type(exc).__name__,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        ]
     )

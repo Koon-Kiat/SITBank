@@ -41,6 +41,22 @@ PYTHON_CHECKS = (
         "Bandit high-confidence scan",
         (sys.executable, "-m", "bandit", "-q", "-ll", "-r", "app", "ops", "config.py", "wsgi.py"),
     ),
+    (
+        "Runtime dependency audit",
+        (sys.executable, "-m", "pip_audit", "--disable-pip", "--require-hashes", "-r", "requirements.lock"),
+    ),
+    (
+        "Dev dependency audit",
+        (sys.executable, "-m", "pip_audit", "--disable-pip", "--require-hashes", "-r", "requirements-dev.lock"),
+    ),
+    (
+        "Dependency lock validation",
+        (sys.executable, "ops/security/check_dependency_locks.py"),
+    ),
+    (
+        "Repository secret scan",
+        (sys.executable, "ops/security/scan_repository_secrets.py", "--history"),
+    ),
     ("Whitespace check", ("git", "diff", "--check")),
 )
 

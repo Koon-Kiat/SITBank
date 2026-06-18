@@ -30,79 +30,14 @@ python -m flask --app wsgi:app db upgrade
 
 Do not run `db.create_all()` in deployment. For role cutover use `sitbank-database-cutover prepare`, review the generated SQL, and execute it only during an approved maintenance window.
 
-## Data Reset Required For Legacy MFA Removal
+## Deployment Prerequisites
 
-This release removes the legacy one-key MFA AES decrypt path and keeps envelope-encrypted MFA only. Existing test users, old MFA records, active sessions, and staging volumes must be discarded before deploying it.
-
-Staging reset:
-
-```bash
-sudo systemctl stop sitbank-staging-container.service || true
-sudo docker compose --project-name sitbank-staging -f /opt/sitbank-staging/compose.yml down -v || true
-sudo docker volume rm sitbank-staging-postgres-data sitbank-staging-redis-data || true
-sudo rm -f /etc/sitbank-staging/secrets/mfa_aes256_gcm_key_b64
-sudo test -s /etc/sitbank-staging/secrets/mfa_kek_keys_json
-sudo grep -q '^MFA_KEK_ACTIVE_ID=' /etc/sitbank-staging/container.env
-```
-
-Before rerunning deployment, create `/etc/sitbank-staging/secrets/mfa_kek_keys_json` with at least one generated 32-byte base64 KEK and set matching `MFA_KEK_ACTIVE_ID` in `/etc/sitbank-staging/container.env`. The active ID must exist as a key in `mfa_kek_keys_json`.
-
-```bash
-config_root=/etc/sitbank-staging
-active_id=2026-06-staging-mfa-v1
-sudo install -d -o root -g root -m 0700 "${config_root}/secrets"
-python3 - "${active_id}" <<'PY' | sudo tee "${config_root}/secrets/mfa_kek_keys_json" >/dev/null
-import base64, json, secrets, sys
-key_id = sys.argv[1]
-print(json.dumps({key_id: base64.b64encode(secrets.token_bytes(32)).decode("ascii")}, separators=(",", ":")))
-PY
-sudo chown root:sitbank-container "${config_root}/secrets/mfa_kek_keys_json"
-sudo chmod 0640 "${config_root}/secrets/mfa_kek_keys_json"
-if sudo grep -q '^MFA_KEK_ACTIVE_ID=' "${config_root}/container.env"; then
-  sudo sed -i "s/^MFA_KEK_ACTIVE_ID=.*/MFA_KEK_ACTIVE_ID=${active_id}/" "${config_root}/container.env"
-else
-  printf 'MFA_KEK_ACTIVE_ID=%s\n' "${active_id}" | sudo tee -a "${config_root}/container.env" >/dev/null
-fi
-```
-
-Production reset:
-
-```bash
-timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
-sudo install -d -o root -g root -m 0700 /var/backups/sitbank
-sudo -u postgres pg_dump -Fc -f "/tmp/sitbank-${timestamp}.dump" sitbank_db
-sudo install -o root -g root -m 0600 "/tmp/sitbank-${timestamp}.dump" \
-  "/var/backups/sitbank/database-${timestamp}.dump"
-sudo rm -f "/tmp/sitbank-${timestamp}.dump"
-sudo systemctl stop sitbank-container.service || true
-sudo -u postgres dropdb --if-exists sitbank_db
-sudo -u postgres createdb -O sitbank_owner sitbank_db
-sudo rm -f /etc/sitbank/secrets/mfa_aes256_gcm_key_b64
-sudo test -s /etc/sitbank/secrets/mfa_kek_keys_json
-sudo grep -q '^MFA_KEK_ACTIVE_ID=' /etc/sitbank/container.env
-```
-
-Before rerunning deployment, create `/etc/sitbank/secrets/mfa_kek_keys_json` with at least one generated 32-byte base64 KEK and set matching `MFA_KEK_ACTIVE_ID` in `/etc/sitbank/container.env`. The active ID must exist as a key in `mfa_kek_keys_json`.
-
-```bash
-config_root=/etc/sitbank
-active_id=2026-06-production-mfa-v1
-sudo install -d -o root -g root -m 0700 "${config_root}/secrets"
-python3 - "${active_id}" <<'PY' | sudo tee "${config_root}/secrets/mfa_kek_keys_json" >/dev/null
-import base64, json, secrets, sys
-key_id = sys.argv[1]
-print(json.dumps({key_id: base64.b64encode(secrets.token_bytes(32)).decode("ascii")}, separators=(",", ":")))
-PY
-sudo chown root:sitbank-container "${config_root}/secrets/mfa_kek_keys_json"
-sudo chmod 0640 "${config_root}/secrets/mfa_kek_keys_json"
-if sudo grep -q '^MFA_KEK_ACTIVE_ID=' "${config_root}/container.env"; then
-  sudo sed -i "s/^MFA_KEK_ACTIVE_ID=.*/MFA_KEK_ACTIVE_ID=${active_id}/" "${config_root}/container.env"
-else
-  printf 'MFA_KEK_ACTIVE_ID=%s\n' "${active_id}" | sudo tee -a "${config_root}/container.env" >/dev/null
-fi
-```
-
-After the reset, deploy the signed image through the restricted wrapper so it runs `production-check`, `db upgrade`, and readiness checks before declaring success.
+Install `/etc/sitbank/secrets/security_alert_webhook_url` or
+`/etc/sitbank-staging/secrets/security_alert_webhook_url` with the
+operator-managed HTTPS alert webhook for that environment. Deploy the signed
+image through the restricted wrapper so it runs `production-check`, `db
+upgrade`, `apply-runtime-db-privileges`, `verify-runtime-db-privileges`, and
+readiness checks before declaring success.
 
 ## Production Edge and Network Hardening
 
