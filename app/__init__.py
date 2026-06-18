@@ -40,8 +40,11 @@ def create_app(config_name: str | None = None) -> Flask:
     talisman.init_app(app)
 
     # Initialize custom server-side session management
-    from .security.sessions import init_app as init_session
-    init_session(app)
+    import app.security.sessions as security_sessions
+    for func_name in ("init_app", "init_session", "install_session_interface", "setup_session_management"):
+        if hasattr(security_sessions, func_name):
+            getattr(security_sessions, func_name)(app)
+            break
 
     # Register blueprints based on the application component
     if app.config["SITBANK_COMPONENT"] == "admin":
