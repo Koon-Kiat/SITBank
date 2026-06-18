@@ -2486,6 +2486,61 @@ def test_security_alert_webhook_delivery_is_sanitized(monkeypatch):
     assert "secret-token" not in json.dumps(invalid_scheme, sort_keys=True)
 
 
+def test_security_alert_delivery_formats_discord_webhooks(monkeypatch):
+    from app.security.alerts import deliver_security_alerts
+
+    captured = {}
+
+    class FakeResponse:
+        status = 204
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def getcode(self):
+            return self.status
+
+    def fake_urlopen(request, timeout):
+        del timeout
+        captured["body"] = request.data.decode("utf-8")
+        captured["content_type"] = request.headers["Content-type"]
+        return FakeResponse()
+
+    monkeypatch.setattr("app.security.alerts.urllib.request.urlopen", fake_urlopen)
+    alerts = [
+        {
+            "alert_type": "login_failure_burst",
+            "severity": "critical",
+            "count": 10,
+            "window_seconds": 300,
+            "source": "principal_ref:abc123",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+    ]
+    result = deliver_security_alerts(
+        alerts,
+        webhook_url="https://discord.com/api/webhooks/123456789012345678/example-secret-token",
+    )
+    payload = json.loads(captured["body"])
+    serialized_result = json.dumps(result, sort_keys=True)
+    serialized_payload = json.dumps(payload, sort_keys=True)
+
+    assert result["attempted"] is True
+    assert result["delivered"] is True
+    assert result["provider"] == "discord"
+    assert captured["content_type"] == "application/json"
+    assert payload["allowed_mentions"] == {"parse": []}
+    assert "content" in payload
+    assert "SITBank security alerts" in payload["content"]
+    assert "login_failure_burst" in payload["content"]
+    assert "principal_ref:abc123" in payload["content"]
+    assert "example-secret-token" not in serialized_payload
+    assert "example-secret-token" not in serialized_result
+
+
 def test_security_alert_config_validation_and_redis_dedupe(app, monkeypatch):
     from app.security.alerts import (
         AlertConfigurationError,

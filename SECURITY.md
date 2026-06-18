@@ -250,7 +250,10 @@ python -m flask --app wsgi:app check-security-alerts --report-only
 alerts are found unless `--report-only` is used. Production must keep
 `SECURITY_ALERT_ENABLED=true`, set `SECURITY_ALERT_MIN_SEVERITY`, and provide
 `SECURITY_ALERT_WEBHOOK_URL_FILE` as an operator-managed secret file outside the
-repository. `SECURITY_ALERT_TIMEOUT_SECONDS` bounds webhook delivery, and
+repository. Discord incoming webhook URLs are supported directly and are sent
+Discord-compatible JSON with mention parsing disabled. The webhook URL itself
+is a secret and must be regenerated if exposed.
+`SECURITY_ALERT_TIMEOUT_SECONDS` bounds webhook delivery, and
 `SECURITY_ALERT_DEDUPE_TTL_SECONDS` uses Redis to suppress repeated deliveries
 of the same alert while preserving the alert in reports. Delivery failures are
 reported by type only and must not include webhook URLs, tokens, headers,

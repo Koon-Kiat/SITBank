@@ -36,6 +36,7 @@ TRANSACTION_EVENT_TYPES = {
 ALERT_SEVERITY_RANK = {"low": 10, "medium": 20, "high": 30, "critical": 40}
 DEFAULT_ALERT_TIMEOUT_SECONDS = 5.0
 DEFAULT_ALERT_DEDUPE_TTL_SECONDS = 300
+DISCORD_MESSAGE_LIMIT = 1900
 
 
 class AlertConfigurationError(RuntimeError):
@@ -148,15 +149,8 @@ def deliver_security_alerts(
             "error_type": _safe_text(type(exc).__name__, 80),
         }
 
-    body = json.dumps(
-        {
-            "message": "security_alerts",
-            "generated_at": _utc_iso(datetime.now(timezone.utc)),
-            "alerts": alerts,
-        },
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
+    provider = _webhook_provider(url)
+    body = _alert_webhook_body(alerts, provider=provider)
     request = urllib.request.Request(
         url,
         data=body,
@@ -174,12 +168,14 @@ def deliver_security_alerts(
             "configured": True,
             "delivered": False,
             "error_type": _safe_text(type(exc).__name__, 80),
+            "provider": provider,
         }
 
     return {
         "attempted": True,
         "configured": True,
         "delivered": 200 <= status_code < 300,
+        "provider": provider,
         "status_code": status_code,
     }
 
@@ -303,6 +299,54 @@ def _validated_webhook_url(url: str) -> str:
     if parsed.scheme != "https" or not parsed.netloc:
         raise AlertConfigurationError("SECURITY_ALERT_WEBHOOK_URL must be an HTTPS URL")
     return url
+
+
+def _webhook_provider(url: str) -> str:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").casefold()
+    path = parsed.path or ""
+    if host in {"discord.com", "discordapp.com"} and path.startswith("/api/webhooks/"):
+        return "discord"
+    return "generic"
+
+
+def _alert_webhook_body(alerts: list[dict[str, Any]], *, provider: str) -> bytes:
+    generated_at = _utc_iso(datetime.now(timezone.utc))
+    if provider == "discord":
+        payload = {
+            "content": _discord_alert_content(alerts, generated_at=generated_at),
+            "allowed_mentions": {"parse": []},
+        }
+    else:
+        payload = {
+            "message": "security_alerts",
+            "generated_at": generated_at,
+            "alerts": alerts,
+        }
+    return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+
+
+def _discord_alert_content(alerts: list[dict[str, Any]], *, generated_at: str) -> str:
+    lines = [
+        "SITBank security alerts",
+        f"Generated: {generated_at}",
+        "",
+    ]
+    for alert in alerts[:15]:
+        lines.append(
+            "- "
+            f"[{_safe_text(alert.get('severity'), 24).upper()}] "
+            f"{_safe_text(alert.get('alert_type'), 80)} "
+            f"source={_safe_text(alert.get('source'), 160)} "
+            f"count={_safe_text(alert.get('count'), 12)}"
+        )
+    omitted = len(alerts) - 15
+    if omitted > 0:
+        lines.append(f"- {omitted} additional alerts omitted from Discord summary")
+    content = "\n".join(lines)
+    if len(content) <= DISCORD_MESSAGE_LIMIT:
+        return content
+    return content[: DISCORD_MESSAGE_LIMIT - 3] + "..."
 
 
 def _filter_alerts_by_min_severity(alerts: list[dict[str, Any]], min_severity: str) -> list[dict[str, Any]]:

@@ -80,7 +80,9 @@ Run `check-security-alerts` from an operator scheduler. Without flags it exits
 non-zero when active alerts are found. Use `--report-only` for dashboards or
 cron jobs that should not fail the wrapper, and `--no-delivery` when testing
 JSON output only. Production must set `SECURITY_ALERT_ENABLED=true` and provide
-`SECURITY_ALERT_WEBHOOK_URL_FILE` as a root-managed secret file. Optional direct
+`SECURITY_ALERT_WEBHOOK_URL_FILE` as a root-managed secret file. A Discord
+incoming webhook URL is supported directly; the application formats Discord
+payloads with mention parsing disabled. Optional direct
 `SECURITY_ALERT_WEBHOOK_URL` is supported for non-production tests only; these
 are placeholder secret names, not checked-in values. Delivery failures are
 sanitized by exception type and must not print webhook URLs or tokens. Redis
