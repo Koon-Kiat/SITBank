@@ -72,6 +72,7 @@ schedule:
 
 ```bash
 python -m flask --app wsgi:app verify-audit-log-chain
+python -m flask --app wsgi:app verify-audit-log-chain --anchor /var/lib/sitbank/audit-anchor.json
 python -m flask --app wsgi:app export-audit-log-anchor
 ```
 
@@ -96,7 +97,10 @@ python -m flask --app wsgi:app verify-runtime-db-privileges
 ```
 
 The expected result is that `sitbank_app` can insert and select audit rows but
-cannot update or delete rows from `security_audit_events`.
+cannot update or delete rows from `security_audit_events`. PostgreSQL also
+installs append-only triggers that reject `UPDATE` and `DELETE` with SQLSTATE
+`42501`, so owner-role verification detects missing trigger protection before
+runtime privilege checks pass.
 
 ## Dependency Response
 
@@ -243,15 +247,24 @@ python -m flask --app wsgi:app check-security-alerts --report-only
 ```
 
 `check-security-alerts` emits sanitized JSON and returns non-zero when active
-alerts are found unless `--report-only` is used. Optional webhook delivery uses
-only Python stdlib and reads `SECURITY_ALERT_WEBHOOK_URL` or
-`SECURITY_ALERT_WEBHOOK_URL_FILE`; configure those only as operator-managed
-secret values outside the repository. Delivery failures are reported by type
-only and must not include webhook URLs, tokens, headers, request bodies, raw
-identifiers, passwords, session IDs, or full account numbers.
+alerts are found unless `--report-only` is used. Production must keep
+`SECURITY_ALERT_ENABLED=true`, set `SECURITY_ALERT_MIN_SEVERITY`, and provide
+`SECURITY_ALERT_WEBHOOK_URL_FILE` as an operator-managed secret file outside the
+repository. Discord incoming webhook URLs are supported directly and are sent
+Discord-compatible JSON with mention parsing disabled. The webhook URL itself
+is a secret and must be regenerated if exposed.
+`SECURITY_ALERT_TIMEOUT_SECONDS` bounds webhook delivery, and
+`SECURITY_ALERT_DEDUPE_TTL_SECONDS` uses Redis to suppress repeated deliveries
+of the same alert while preserving the alert in reports. Delivery failures are
+reported by type only and must not include webhook URLs, tokens, headers,
+request bodies, raw identifiers, passwords, session IDs, or full account
+numbers.
 
 Alert immediately on any `security_audit_write_failed`, `account_lock`,
-`webauthn_clone_detected`, or `session_integrity` failure. Alert when there are
+`webauthn_clone_detected`, `session_integrity` failure,
+`audit_chain_verification_failed`, `audit_anchor_mismatch`,
+`audit_append_only_protection_failed`, or
+`runtime_db_privilege_verification_failed`. Alert when there are
 10 or more `login` failures for the same `principal_ref` or IP in 5 minutes, 5
 or more `auth_backoff` or `rate_limit` events from the same source in 10
 minutes, 3 or more transaction failures for the same user/ref in 15 minutes, or
@@ -259,6 +272,11 @@ minutes, 3 or more transaction failures for the same user/ref in 15 minutes, or
 deployments, signature or revision mismatches, unexpected image digests,
 security-key counter anomalies, and changes to root-managed secret or FIDO
 policy files.
+
+Run a systemd timer or equivalent scheduler for
+`verify-audit-log-chain --anchor /var/lib/sitbank/audit-anchor.json --alert-on-failure`
+and `check-security-alerts` so anchor mismatch and alert delivery failures are
+visible without waiting for a manual audit.
 
 ## AWS OIDC and Systems Manager
 

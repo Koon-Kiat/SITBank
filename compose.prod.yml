@@ -34,6 +34,7 @@ services:
       REDIS_URL_FILE: /run/secrets/redis_url
       MFA_KEK_KEYS_JSON_FILE: /run/secrets/mfa_kek_keys_json
       PASSWORD_PEPPER_B64_FILE: /run/secrets/password_pepper_b64
+      SECURITY_ALERT_WEBHOOK_URL_FILE: /run/secrets/security_alert_webhook_url
     secrets:
       - source: secret_key
         target: secret_key
@@ -49,6 +50,8 @@ services:
         target: mfa_kek_keys_json
       - source: password_pepper_b64
         target: password_pepper_b64
+      - source: security_alert_webhook_url
+        target: security_alert_webhook_url
     volumes:
       - type: bind
         source: /etc/sitbank/common-passwords.txt
@@ -91,3 +94,5 @@ secrets:
     file: /etc/sitbank/secrets/mfa_kek_keys_json
   password_pepper_b64:
     file: /etc/sitbank/secrets/password_pepper_b64
+  security_alert_webhook_url:
+    file: /etc/sitbank/secrets/security_alert_webhook_url

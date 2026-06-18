@@ -74,6 +74,31 @@ def test_ci_keeps_full_parallel_pytest_and_locked_dependency_checks():
         assert required in checks_step["run"]
 
 
+def test_local_ci_keeps_full_parallel_pytest_and_security_gates():
+    ci_local = Path("scripts/ci-local").read_text(encoding="utf-8")
+
+    for required in (
+        '"pytest"',
+        '"-n"',
+        '"auto"',
+        '"--durations=30"',
+        '"--durations-min=0.5"',
+        '"compileall"',
+        '"pip", "check"',
+        '"bandit"',
+        '"pip_audit"',
+        '"requirements.lock"',
+        '"requirements-dev.lock"',
+        '"ops/security/check_dependency_locks.py"',
+        '"ops/security/scan_repository_secrets.py"',
+        '"--history"',
+        '"git", "diff", "--check"',
+    ):
+        assert required in ci_local
+    assert '"-m"' not in ci_local.split('"pytest"', 1)[1].split(")", 1)[0]
+    assert '"tests/"' not in ci_local
+
+
 def test_all_tracked_test_files_are_collected_by_unscoped_ci_pytest():
     tracked_test_files = {
         path.as_posix()

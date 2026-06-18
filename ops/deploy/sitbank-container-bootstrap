@@ -151,15 +151,12 @@ if [[ ! -f "${bootstrap_script}" || -L "${bootstrap_script}" ]]; then
     exit 1
 fi
 
-legacy_service="${LEGACY_SERVICE:--}"
-legacy_app_root="${LEGACY_APP_ROOT:--}"
 if [[ "${target}" == "staging" ]]; then
     bash "${bootstrap_script}" \
         staging "${GITHUB_REPOSITORY}" "${PUBLIC_HOST}"
 else
     bash "${bootstrap_script}" \
-        production "${GITHUB_REPOSITORY}" "${PUBLIC_HOST}" \
-        "${legacy_service}" "${legacy_app_root}"
+        production "${GITHUB_REPOSITORY}" "${PUBLIC_HOST}"
 fi
 
 expected_wrapper_hash="$(

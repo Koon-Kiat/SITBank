@@ -23,12 +23,14 @@ if [[ "${1:-}" == "production" || "${1:-}" == "staging" ]]; then
     shift
 fi
 
+if [[ "$#" -lt 1 || "$#" -gt 2 ]]; then
+    echo "Usage: bootstrap-container-ec2 [production|staging] OWNER/REPOSITORY [PUBLIC_HOST]" >&2
+    exit 2
+fi
 github_repository="${1:-}"
 public_host="${2:-}"
-legacy_service="${3:--}"
-legacy_app_root="${4:--}"
 if [[ ! "${github_repository}" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
-    echo "Usage: bootstrap-container-ec2 [production|staging] OWNER/REPOSITORY PUBLIC_HOST [LEGACY_SERVICE|-] [LEGACY_APP_ROOT|-]" >&2
+    echo "Usage: bootstrap-container-ec2 [production|staging] OWNER/REPOSITORY [PUBLIC_HOST]" >&2
     exit 2
 fi
 if [[ -z "${public_host}" ]]; then
@@ -51,25 +53,6 @@ if [[ "${target}" == "staging" && "${public_host}" != "${STAGING_PUBLIC_HOST}" ]
     echo "Staging PUBLIC_HOST must be ${STAGING_PUBLIC_HOST}" >&2
     exit 2
 fi
-if [[ "${target}" == "staging" \
-    && ( "${legacy_service}" != "-" || "${legacy_app_root}" != "-" ) ]]; then
-    echo "Staging bootstrap does not accept legacy production migration inputs" >&2
-    exit 2
-fi
-if [[ "${legacy_service}" != "-" \
-    && ! "${legacy_service}" =~ ^[A-Za-z0-9_.@-]+\.service$ ]]; then
-    echo "LEGACY_SERVICE must be a systemd service name or '-'" >&2
-    exit 2
-fi
-if [[ "${legacy_app_root}" != "-" ]]; then
-    if [[ ! "${legacy_app_root}" =~ ^/var/www/[A-Za-z0-9._-]+$ \
-        || "${legacy_app_root}" == "/var/www" \
-        || -L "${legacy_app_root}" ]]; then
-        echo "LEGACY_APP_ROOT must be a non-symlink directory directly beneath /var/www or '-'" >&2
-        exit 2
-    fi
-fi
-
 case "${target}" in
     production)
         config_root="/etc/sitbank"
@@ -224,11 +207,7 @@ install -o root -g root -m 0755 \
 install -o root -g root -m 0755 \
     "${repo_root}/ops/deploy/sitbank-database-cutover" \
     /usr/local/sbin/sitbank-database-cutover
-if [[ "${target}" == "production" ]]; then
-    install -o root -g root -m 0600 \
-        "${repo_root}/ops/deploy/import_legacy_env.py" \
-        /opt/sitbank/import_legacy_env.py
-else
+if [[ "${target}" == "staging" ]]; then
     install -d -o root -g root -m 0755 "${config_root}/postgres"
     install -o root -g root -m 0755 \
         "${repo_root}/ops/postgres/init-sitbank-staging-roles.sh" \
@@ -246,8 +225,6 @@ GITHUB_REPOSITORY=${github_repository}
 GHCR_REPOSITORY=ghcr.io/${repository_lower}
 COSIGN_CERTIFICATE_IDENTITY=https://github.com/${github_repository}/.github/workflows/ci-deploy.yml@refs/heads/main
 PUBLIC_HOST=${public_host}
-LEGACY_SERVICE=${legacy_service}
-LEGACY_APP_ROOT=${legacy_app_root}
 EOF
 chown root:root "${config_root}/deploy.conf"
 chmod 0644 "${config_root}/deploy.conf"
