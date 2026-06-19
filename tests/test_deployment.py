@@ -545,8 +545,11 @@ def test_compose_secret_mounts_match_runtime_contract():
         admin = compose["services"].get("admin")
         if path.name == "compose.prod.yml":
             assert admin is not None
+        expected_path_admin_environment = dict(expected_admin_environment)
+        if path.name == "compose.staging.yml" and admin is not None:
+            expected_path_admin_environment["ADMIN_SESSION_HMAC_ACTIVE_KEY_ID"] = "2026-06-admin"
         if admin is not None:
-            assert admin["environment"] == expected_admin_environment, (
+            assert admin["environment"] == expected_path_admin_environment, (
                 f"{path} admin secret _FILE environment must match runtime contract"
             )
             assert _service_secret_targets(admin) == expected_admin_secrets, (
@@ -824,6 +827,7 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "DATABASE_MIGRATION_URL_FILE" not in app["environment"]
     assert admin["network_mode"] == "host"
     assert admin["container_name"] == "sitbank-admin"
+    assert admin["env_file"] == ["/etc/sitbank/container.env"]
     assert "ports" not in admin
     assert admin["command"][admin["command"].index("--bind") + 1] == "127.0.0.1:5002"
     assert admin["command"][-1] == "admin_wsgi:app"
@@ -955,6 +959,7 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "no-new-privileges:true" in staging_admin["security_opt"]
     assert staging_admin["env_file"] == ["/etc/sitbank-staging/container.env"]
     assert "DATABASE_MIGRATION_URL_FILE" not in staging_admin["environment"]
+    assert staging_admin["environment"]["ADMIN_SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06-admin"
     for smtp_env in ("SMTP_USERNAME_FILE", "SMTP_PASSWORD_FILE"):
         assert staging_admin["environment"][smtp_env] == staging_app["environment"][smtp_env]
     assert (
