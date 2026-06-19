@@ -59,8 +59,13 @@ case "${1:-}" in
         exec docker compose --project-name "${COMPOSE_PROJECT}" \
             --file "${COMPOSE_FILE}" down --remove-orphans
         ;;
+    check-security-alerts)
+        exec docker compose --project-name "${COMPOSE_PROJECT}" \
+            --file "${COMPOSE_FILE}" \
+            exec -T app python -m flask --app wsgi:app check-security-alerts
+        ;;
     *)
-        echo "Usage: sitbank-container-runtime [staging|production] up|down" >&2
+        echo "Usage: sitbank-container-runtime [staging|production] up|down|check-security-alerts" >&2
         exit 2
         ;;
 esac

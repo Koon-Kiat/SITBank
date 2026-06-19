@@ -2520,6 +2520,120 @@ def test_security_alert_webhook_delivery_is_sanitized(monkeypatch):
     assert "secret-token" not in json.dumps(invalid_scheme, sort_keys=True)
 
 
+def test_security_alert_webhook_delivery_redacts_final_payload_fields(monkeypatch):
+    from app.security.alerts import deliver_security_alerts
+
+    captured_bodies = []
+
+    class FakeResponse:
+        status = 202
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def getcode(self):
+            return self.status
+
+    def fake_urlopen(request, timeout):
+        del timeout
+        captured_bodies.append(json.loads(request.data.decode("utf-8")))
+        return FakeResponse()
+
+    monkeypatch.setattr("app.security.alerts.urllib.request.urlopen", fake_urlopen)
+    long_token = "alerttoken" + ("A1" * 24)
+    private_key_marker = "BEGIN " + "PRIVATE KEY fake material"
+    alert = {
+        "alert_type": "manual_security_alert",
+        "severity": "critical",
+        "summary": "safe summary",
+        "generated_at": "2026-06-19T08:00:00Z",
+        "display_timestamp": "2026-06-19 16:00:00 UTC+8",
+        "correlation_id": "corr-123",
+        "public_session_ref": "public-session-ref-123",
+        "safe_user_identifier": "user:7",
+        "password": "plain-password",
+        "Authorization": "Bearer authorization-secret",
+        "cookie": "session=cookie-secret",
+        "mfa_secret": "mfa-secret",
+        "totp_secret": "totp-secret",
+        "api_key": "api-secret",
+        "private_key": private_key_marker,
+        "database_url": "postgresql://user:postgres-password@db/sitbank",
+        "redis_url": "redis://:redis-password@redis:6379/0",
+        "webhook_url": "https://hooks.example.test/services/webhook-secret",
+        "nested": {
+            "refresh_token": long_token,
+            "note": "safe nested note",
+        },
+        "list_values": [
+            {"csrf_token": "csrf-secret"},
+            "safe list note",
+        ],
+    }
+    original_alert = json.loads(json.dumps(alert, sort_keys=True))
+
+    generic = deliver_security_alerts(
+        [alert],
+        webhook_url="https://hooks.example.test/services/delivery-secret",
+    )
+    discord = deliver_security_alerts(
+        [alert],
+        webhook_url="https://discord.com/api/webhooks/123456789012345678/delivery-secret",
+    )
+
+    generic_payload = captured_bodies[0]
+    discord_payload = captured_bodies[1]
+    serialized_generic = json.dumps(generic_payload, sort_keys=True)
+    serialized_discord = json.dumps(discord_payload, sort_keys=True)
+
+    assert generic["delivered"] is True
+    assert discord["delivered"] is True
+    assert alert == original_alert
+    delivered_alert = generic_payload["alerts"][0]
+    assert delivered_alert["severity"] == "critical"
+    assert delivered_alert["summary"] == "safe summary"
+    assert delivered_alert["generated_at"] == "2026-06-19T08:00:00Z"
+    assert delivered_alert["display_timestamp"] == "2026-06-19 16:00:00 UTC+8"
+    assert delivered_alert["correlation_id"] == "corr-123"
+    assert delivered_alert["public_session_ref"] == "public-session-ref-123"
+    assert delivered_alert["safe_user_identifier"] == "user:7"
+    assert delivered_alert["password"] == "[redacted]"
+    assert delivered_alert["Authorization"] == "[redacted]"
+    assert delivered_alert["cookie"] == "[redacted]"
+    assert delivered_alert["mfa_secret"] == "[redacted]"
+    assert delivered_alert["totp_secret"] == "[redacted]"
+    assert delivered_alert["api_key"] == "[redacted]"
+    assert delivered_alert["private_key"] == "[redacted]"
+    assert delivered_alert["database_url"] == "[redacted]"
+    assert delivered_alert["redis_url"] == "[redacted]"
+    assert delivered_alert["webhook_url"] == "[redacted]"
+    assert delivered_alert["nested"]["refresh_token"] == "[redacted]"
+    assert delivered_alert["nested"]["note"] == "safe nested note"
+    assert delivered_alert["list_values"][0]["csrf_token"] == "[redacted]"
+    assert delivered_alert["list_values"][1] == "safe list note"
+    assert discord_payload["allowed_mentions"] == {"parse": []}
+    assert discord_payload["embeds"][0]["fields"][0]["name"] == "CRITICAL | manual_security_alert"
+    for forbidden in (
+        "plain-password",
+        "authorization-secret",
+        "cookie-secret",
+        "mfa-secret",
+        "totp-secret",
+        "api-secret",
+        "PRIVATE KEY fake material",
+        "postgres-password",
+        "redis-password",
+        "webhook-secret",
+        "delivery-secret",
+        long_token,
+    ):
+        assert forbidden not in serialized_generic
+        assert forbidden not in serialized_discord
+
+
 def test_security_alert_delivery_formats_discord_webhooks(monkeypatch):
     from app.security.alerts import deliver_security_alerts
 
