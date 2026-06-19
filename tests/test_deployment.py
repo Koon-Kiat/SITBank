@@ -1150,6 +1150,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         assert "github.event_name == 'push'" in condition
         assert "github.event_name == 'workflow_dispatch'" in condition
         assert "inputs.target_environment == 'staging'" in condition
+        assert "inputs.target_environment == 'production'" in condition
     source_job = workflow["jobs"]["resolve-source"]
     source_step = next(
         step
@@ -1169,10 +1170,23 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     dispatch_inputs = workflow[True]["workflow_dispatch"]["inputs"]
     assert dispatch_inputs["source_ref"]["required"] is True
     assert dispatch_inputs["source_ref"]["type"] == "string"
-    assert dispatch_inputs["target_environment"]["options"] == ["staging"]
+    assert dispatch_inputs["target_environment"]["options"] == [
+        "staging",
+        "production",
+    ]
     assert dispatch_inputs["run_dast"]["required"] is True
     assert dispatch_inputs["run_dast"]["type"] == "boolean"
     assert dispatch_inputs["run_dast"]["default"] is True
+    preflight_step = next(
+        step
+        for step in workflow["jobs"]["deployment-preflight"]["steps"]
+        if step["name"] == "Validate release request"
+    )
+    preflight_run = preflight_step["run"]
+    assert "staging|production" in preflight_run
+    assert "PROD_DEPLOY_ENABLED is not true" in preflight_run
+    assert "Production deployment is manual-only and will not run on push." in preflight_run
+    assert "Missing required production deployment setting" not in preflight_run
     candidate_jobs = ("test", "publish")
     for job_name in candidate_jobs:
         checkout = next(
@@ -1279,16 +1293,19 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "inputs.deploy == true" in staging_condition
     assert "vars.STAGING_DEPLOY_ENABLED == 'true'" in staging_condition
     assert "always()" in production_condition
-    assert "github.event_name == 'push'" in production_condition
-    assert "github.event_name == 'workflow_dispatch'" not in production_condition
+    assert "github.event_name == 'push'" not in production_condition
+    assert "github.event_name == 'workflow_dispatch'" in production_condition
     assert "github.ref == 'refs/heads/main'" in production_condition
+    assert "inputs.target_environment == 'production'" in production_condition
+    assert "inputs.deploy == true" in production_condition
     assert "vars.PROD_DEPLOY_ENABLED == 'true'" in production_condition
     assert "needs.release-verify.result == 'success'" in production_condition
-    assert "needs.deploy-staging.result == 'success'" in production_condition
+    assert "needs.deploy-staging.result == 'success'" not in production_condition
     assert "vars.STAGING_DEPLOY_ENABLED != 'true'" not in production_condition
-    assert "inputs.deploy == true" not in production_condition
+    assert workflow["jobs"]["deploy-production"]["needs"] == "release-verify"
     staging_deploy_env = workflow["jobs"]["deploy-staging"]["env"]
     production_deploy_env = workflow["jobs"]["deploy-production"]["env"]
+    assert not any(name.startswith("PROD_") for name in staging_deploy_env)
     assert (
         staging_deploy_env["IMAGE_DIGEST"]
         == "${{ needs.release-verify.outputs.digest }}"
@@ -1328,7 +1345,11 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         (
             "deploy-production",
             "Verify production deployment configuration",
-            {"PROD_PASSWORD_RESET_EMAIL_FROM", "PROD_SMTP_HOST"},
+            {
+                "PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID",
+                "PROD_PASSWORD_RESET_EMAIL_FROM",
+                "PROD_SMTP_HOST",
+            },
         ),
     ):
         verify_step = next(
@@ -1530,9 +1551,14 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "source_ref = candidate branch, tag, or SHA" in docs
     assert "resolve immutable source_sha" in docs
     assert "deploy staging using trusted main scripts" in docs
-    assert "main push -> publish -> release-verify -> staging -> production" in docs
-    assert "Manual production deployment is disabled." in docs
-    assert "Production never skips disabled, skipped, or failed staging." in docs
+    assert "main push -> publish -> release-verify -> staging" in docs
+    assert "manual production dispatch -> publish -> release-verify -> production" in docs
+    assert "Production deployment is manual-only." in docs
+    assert "target_environment = production" in docs
+    assert "deploy = true" in docs
+    assert "PROD_DEPLOY_ENABLED = true" in docs
+    assert "production deployment job is skipped" in docs
+    assert "PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID" in docs
     assert "Feature-branch workflow and deployment scripts" in docs
     assert "adopt-existing" in docs
 
