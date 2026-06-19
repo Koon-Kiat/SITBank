@@ -904,6 +904,50 @@ form {
   font-weight: 650;
 }
 
+.strength-meter.weak {
+  color: var(--danger);
+}
+
+.strength-meter.fair {
+  color: var(--warning);
+}
+
+.strength-meter.strong {
+  color: var(--success);
+}
+
+.strength-meter-wrapper {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.strength-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-strong);
+  overflow: hidden;
+}
+
+.strength-bar-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 3px;
+  background: var(--muted);
+  transition: width 150ms ease, background-color 150ms ease;
+}
+
+.strength-bar-fill.weak {
+  background: var(--danger);
+}
+
+.strength-bar-fill.fair {
+  background: var(--warning);
+}
+
+.strength-bar-fill.strong {
+  background: var(--success);
+}
+
 label {
   color: var(--muted-strong);
   font-weight: 650;
