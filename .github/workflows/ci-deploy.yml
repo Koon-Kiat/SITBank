@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       source_ref:
-        description: Branch, tag, or commit SHA to build and deploy to staging.
+        description: Branch, tag, or commit SHA to build and verify for the selected target.
         required: true
         type: string
       target_environment:
@@ -19,6 +19,7 @@ on:
         type: choice
         options:
           - staging
+          - production
         default: staging
       deploy:
         description: Deploy the verified digest after release verification.
@@ -69,7 +70,7 @@ jobs:
         run: |
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
             if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
-              echo "::error::Manual staging must be dispatched from refs/heads/main."
+              echo "::error::Manual deployment must be dispatched from refs/heads/main."
               exit 1
             fi
             source_ref="${SOURCE_REF_INPUT}"
@@ -360,7 +361,7 @@ jobs:
         shell: bash
         run: |
           case "${TARGET_ENVIRONMENT}" in
-            staging) ;;
+            staging|production) ;;
             *)
               echo "::error::Invalid target_environment '${TARGET_ENVIRONMENT}'."
               exit 1
@@ -378,13 +379,17 @@ jobs:
             echo "::notice::Staging deployment requested, but STAGING_DEPLOY_ENABLED is not true. The digest will be verified and deployment will be skipped."
           fi
 
+          if [[ "${DEPLOY_REQUESTED}" == "true" \
+              && "${TARGET_ENVIRONMENT}" == "production" \
+              && "${PROD_DEPLOY_ENABLED}" != "true" ]]; then
+            echo "::notice::Production deployment requested, but PROD_DEPLOY_ENABLED is not true. The digest will be verified and deployment will be skipped."
+          fi
+
           if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF}" == "refs/heads/main" ]]; then
             if [[ "${STAGING_DEPLOY_ENABLED}" != "true" ]]; then
               echo "::notice::STAGING_DEPLOY_ENABLED is not true. Automatic staging deployment will be skipped."
             fi
-            if [[ "${PROD_DEPLOY_ENABLED}" != "true" ]]; then
-              echo "::notice::PROD_DEPLOY_ENABLED is not true. Automatic production deployment will be skipped."
-            fi
+            echo "::notice::Production deployment is manual-only and will not run on push."
           fi
 
   publish:
@@ -395,7 +400,10 @@ jobs:
         github.event_name == 'push' ||
         (
           github.event_name == 'workflow_dispatch' &&
-          inputs.target_environment == 'staging'
+          (
+            inputs.target_environment == 'staging' ||
+            inputs.target_environment == 'production'
+          )
         )
       )
     needs: [test, workflow-security, deployment-preflight, resolve-source]
@@ -474,7 +482,10 @@ jobs:
         github.event_name == 'push' ||
         (
           github.event_name == 'workflow_dispatch' &&
-          inputs.target_environment == 'staging'
+          (
+            inputs.target_environment == 'staging' ||
+            inputs.target_environment == 'production'
+          )
         )
       )
     needs: publish
@@ -802,13 +813,12 @@ jobs:
     if: >-
       always() &&
       needs.release-verify.result == 'success' &&
-      needs.deploy-staging.result == 'success' &&
-      github.event_name == 'push' &&
+      github.event_name == 'workflow_dispatch' &&
       github.ref == 'refs/heads/main' &&
+      inputs.target_environment == 'production' &&
+      inputs.deploy == true &&
       vars.PROD_DEPLOY_ENABLED == 'true'
-    needs:
-      - release-verify
-      - deploy-staging
+    needs: release-verify
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
