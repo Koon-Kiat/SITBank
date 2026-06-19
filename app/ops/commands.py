@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -27,7 +28,11 @@ from app.security.crypto import (
 from app.security.fido_mds import validate_fido_metadata_config
 from app.security.passwords import validate_common_password_dictionary, validate_password_hash_config
 from app.security.session_hmac import validate_session_hmac_config
-from app.ops.db_privileges import apply_runtime_audit_table_privileges, verify_runtime_database_privileges
+from app.ops.db_privileges import (
+    apply_admin_runtime_database_privileges,
+    apply_runtime_audit_table_privileges,
+    verify_runtime_database_privileges,
+)
 
 
 def register_ops_commands(app: Flask) -> None:
@@ -232,6 +237,31 @@ def register_ops_commands(app: Flask) -> None:
             "audit_update_delete_truncate=revoked"
         )
 
+    @app.cli.command("apply-admin-runtime-db-privileges")
+    def apply_admin_runtime_db_privileges() -> None:
+        """Create/update the admin runtime role and grant fail-closed DB access."""
+        migration_url = str(app.config.get("SQLALCHEMY_MIGRATION_DATABASE_URI") or "")
+        try:
+            result = apply_admin_runtime_database_privileges(
+                admin_url=_env_or_file("ADMIN_DATABASE_URL"),
+                migration_url=migration_url,
+            )
+        except Exception as exc:
+            _deliver_ops_failure_alert(
+                "admin_runtime_db_privilege_application_failed",
+                "apply-admin-runtime-db-privileges",
+                exc,
+            )
+            raise click.ClickException(str(exc)) from exc
+
+        click.echo(
+            "Admin runtime database privilege application passed: "
+            f"admin_role={result.admin_role} "
+            f"migration_role={result.migration_role} "
+            f"database={result.database} "
+            f"schema={result.schema}"
+        )
+
     @app.cli.command("verify-audit-log-chain")
     @click.option(
         "--anchor",
@@ -406,6 +436,18 @@ def _load_audit_anchor(anchor_path: Path) -> dict:
     if not isinstance(anchor, dict):
         raise click.ClickException("Audit anchor must be a JSON object")
     return anchor
+
+
+def _env_or_file(name: str) -> str:
+    value = os.getenv(name)
+    file_path = os.getenv(f"{name}_FILE")
+    if value and file_path:
+        raise click.ClickException(f"{name} and {name}_FILE must not both be configured")
+    if file_path:
+        return Path(file_path).read_text(encoding="utf-8").strip()
+    if value:
+        return value
+    raise click.ClickException(f"{name} or {name}_FILE is required")
 
 
 def _audit_chain_failure_alert(result: dict) -> dict:
