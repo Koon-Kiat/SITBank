@@ -1,0 +1,11 @@
+[Unit]
+Description=Run SITBank security alert checks every 5 minutes
+
+[Timer]
+OnActiveSec=5min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Unit=sitbank-security-alerts.service
+
+[Install]
+WantedBy=timers.target
