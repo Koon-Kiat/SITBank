@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-APP_SECRET_INPUTS = {
+CUSTOMER_APP_SECRET_INPUTS = {
     "SECRET_KEY": "secret_key",
     "WTF_CSRF_SECRET_KEY": "wtf_csrf_secret_key",
     "SESSION_HMAC_KEYS_JSON": "session_hmac_keys_json",
@@ -13,28 +13,55 @@ APP_SECRET_INPUTS = {
     "SMTP_PASSWORD": "smtp_password",
 }
 
+ADMIN_APP_SECRET_INPUTS = {
+    "ADMIN_SECRET_KEY": "admin_secret_key",
+    "ADMIN_WTF_CSRF_SECRET_KEY": "admin_wtf_csrf_secret_key",
+    "ADMIN_SESSION_HMAC_KEYS_JSON": "admin_session_hmac_keys_json",
+    "ADMIN_DATABASE_URL": "admin_database_url",
+    "ADMIN_REDIS_URL": "admin_redis_url",
+    "ADMIN_PASSWORD_PEPPER_B64": "admin_password_pepper_b64",
+}
+
+APP_SECRET_INPUTS = CUSTOMER_APP_SECRET_INPUTS
+
 MIGRATION_SECRET_INPUTS = {
     "DATABASE_MIGRATION_URL": "database_migration_url",
 }
 
 CONFIG_SECRET_INPUTS = {
     **MIGRATION_SECRET_INPUTS,
-    **APP_SECRET_INPUTS,
+    **CUSTOMER_APP_SECRET_INPUTS,
+    **ADMIN_APP_SECRET_INPUTS,
 }
 
 DEPLOYMENT_SECRET_INPUTS = {
     name: secret_file
-    for name, secret_file in CONFIG_SECRET_INPUTS.items()
+    for name, secret_file in {**MIGRATION_SECRET_INPUTS, **CUSTOMER_APP_SECRET_INPUTS}.items()
     if name != "SESSION_HMAC_KEYS_JSON"
+}
+
+PRODUCTION_SECRET_INPUTS = {
+    name: secret_file
+    for name, secret_file in CONFIG_SECRET_INPUTS.items()
+    if name not in {"SESSION_HMAC_KEYS_JSON", "ADMIN_SESSION_HMAC_KEYS_JSON"}
 }
 
 APP_SECRET_FILE_ENVIRONMENT = {
     f"{name}_FILE": f"/run/secrets/{secret_file}"
-    for name, secret_file in APP_SECRET_INPUTS.items()
+    for name, secret_file in CUSTOMER_APP_SECRET_INPUTS.items()
 }
 
-APP_SECRET_FILES = tuple(APP_SECRET_INPUTS.values())
-DEPLOYMENT_SECRET_FILES = tuple(CONFIG_SECRET_INPUTS.values())
+ADMIN_SECRET_FILE_ENVIRONMENT = {
+    f"{name}_FILE": f"/run/secrets/{secret_file}"
+    for name, secret_file in ADMIN_APP_SECRET_INPUTS.items()
+}
+
+APP_SECRET_FILES = tuple(CUSTOMER_APP_SECRET_INPUTS.values())
+ADMIN_SECRET_FILES = tuple(ADMIN_APP_SECRET_INPUTS.values())
+DEPLOYMENT_SECRET_FILES = tuple(
+    {**MIGRATION_SECRET_INPUTS, **CUSTOMER_APP_SECRET_INPUTS}.values()
+)
+PRODUCTION_SECRET_FILES = tuple(CONFIG_SECRET_INPUTS.values())
 STAGING_DATA_SERVICE_SECRETS = {
     "postgres_owner_password": "postgres_owner_password",
     "postgres_app_password": "postgres_app_password",
@@ -84,4 +111,14 @@ NON_SECRET_RUNTIME_ENVIRONMENT = tuple(
             *POLICY_CONFIG_PATHS,
         }
     )
+)
+
+ADMIN_NON_SECRET_RUNTIME_ENVIRONMENT = (
+    "ADMIN_SESSION_HMAC_ACTIVE_KEY_ID",
+    "ADMIN_SESSION_KEY_PREFIX",
+    "ADMIN_RATELIMIT_KEY_PREFIX",
+)
+
+PRODUCTION_NON_SECRET_RUNTIME_ENVIRONMENT = tuple(
+    sorted({*NON_SECRET_RUNTIME_ENVIRONMENT, *ADMIN_NON_SECRET_RUNTIME_ENVIRONMENT})
 )

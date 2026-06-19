@@ -21,6 +21,8 @@ from ops.deploy.render_container_bundle import (
     write_container_bundle,
 )
 from ops.runtime_contract import (
+    ADMIN_SECRET_FILE_ENVIRONMENT,
+    ADMIN_SECRET_FILES,
     APP_SECRET_FILE_ENVIRONMENT,
     APP_SECRET_FILES,
     CONFIG_SECRET_INPUTS,
@@ -28,6 +30,9 @@ from ops.runtime_contract import (
     DEPLOYMENT_SECRET_FILES,
     NON_SECRET_DEFAULTS as CONTRACT_NON_SECRET_DEFAULTS,
     NON_SECRET_RUNTIME_ENVIRONMENT,
+    PRODUCTION_NON_SECRET_RUNTIME_ENVIRONMENT,
+    PRODUCTION_SECRET_INPUTS,
+    PRODUCTION_SECRET_FILES,
     STAGING_DATA_SERVICE_SECRETS,
 )
 
@@ -38,6 +43,13 @@ PYTHON_SLIM_TRIXIE_DIGEST_RE = re.compile(
 )
 
 DEPLOYMENT_VALUES = {
+    "PROD_ADMIN_DATABASE_URL": "postgresql+psycopg2://bank_admin:secret@127.0.0.1/bank",
+    "PROD_ADMIN_PASSWORD_PEPPER_B64": "ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg=",
+    "PROD_ADMIN_REDIS_URL": "redis://:admin-secret@127.0.0.1:6379/1",
+    "PROD_ADMIN_SECRET_KEY": "admin-secret-key-with-enough-length-for-production",
+    "PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_B64": "NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY=",
+    "PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID": "2026-06-admin",
+    "PROD_ADMIN_WTF_CSRF_SECRET_KEY": "admin-csrf-secret-with-enough-length-for-production",
     "PROD_DATABASE_MIGRATION_URL": "postgresql+psycopg2://bank_owner:secret@127.0.0.1/bank",
     "PROD_DATABASE_URL": "postgresql+psycopg2://bank:secret@127.0.0.1/bank",
     "PROD_MFA_KEK_ACTIVE_ID": "2026-06-mfa",
@@ -106,18 +118,44 @@ def _nginx_location_bodies(config: str, selector: str) -> list[str]:
     )
 
 
-def _nginx_https_server_prelocation(config: str) -> str:
-    https_start = config.index("listen 443 ssl http2;")
-    first_location = config.index("\n    location ", https_start)
-    return config[https_start:first_location]
+def _nginx_server_block(config: str, server_name: str) -> str:
+    marker = f"server_name {server_name};"
+    blocks = []
+    search_from = 0
+    while True:
+        marker_index = config.find(marker, search_from)
+        if marker_index == -1:
+            break
+        start = config.rfind("\nserver {", 0, marker_index)
+        if start == -1:
+            start = 0
+        else:
+            start += 1
+        end = config.find("\nserver {", marker_index)
+        block = config[start:] if end == -1 else config[start:end]
+        blocks.append(block)
+        search_from = marker_index + len(marker)
+    assert blocks, f"Missing Nginx server block for {server_name}"
+    for block in blocks:
+        if "listen 443 ssl http2;" in block:
+            return block
+    return blocks[0]
+
+
+def _nginx_https_server_prelocation(config: str, *, server_name: str | None = None) -> str:
+    server = _nginx_server_block(config, server_name) if server_name else config
+    https_start = server.index("listen 443 ssl http2;")
+    first_location = server.index("\n    location ", https_start)
+    return server[https_start:first_location]
 
 
 def _assert_nginx_owns_duplicate_edge_security_headers(
     nginx: str,
     *,
     hsts_add_header: str,
+    server_name: str | None = None,
 ) -> None:
-    https_server = _nginx_https_server_prelocation(nginx)
+    https_server = _nginx_https_server_prelocation(nginx, server_name=server_name)
     hide_directives = (
         "proxy_hide_header X-Content-Type-Options;",
         "proxy_hide_header X-Frame-Options;",
@@ -136,11 +174,11 @@ def _assert_nginx_owns_duplicate_edge_security_headers(
     first_add_header = min(https_server.index(directive) for directive in add_header_directives)
     for directive in hide_directives:
         assert directive in https_server
-        assert nginx.count(directive) == 1
+        assert https_server.count(directive) == 1
         assert https_server.index(directive) < first_add_header
     for directive in add_header_directives:
         assert directive in https_server
-        assert nginx.count(directive) == 1
+        assert https_server.count(directive) == 1
     assert "proxy_hide_header Content-Security-Policy;" not in https_server
     assert "add_header Content-Security-Policy" not in https_server
 
@@ -281,7 +319,7 @@ def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypa
 
     environment, secrets = build_container_bundle()
 
-    assert set(environment) == set(NON_SECRET_RUNTIME_ENVIRONMENT)
+    assert set(environment) == set(PRODUCTION_NON_SECRET_RUNTIME_ENVIRONMENT)
     assert environment["APP_ENV"] == "production"
     assert environment["WEBAUTHN_RP_ID"] == "sitbank.duckdns.org"
     assert environment["WEBAUTHN_RP_ORIGIN"] == "https://sitbank.duckdns.org"
@@ -290,6 +328,9 @@ def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypa
     assert environment["PASSWORD_RESET_EMAIL_FROM"] == DEPLOYMENT_VALUES["PROD_PASSWORD_RESET_EMAIL_FROM"]
     assert environment["SMTP_HOST"] == DEPLOYMENT_VALUES["PROD_SMTP_HOST"]
     assert environment["SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06"
+    assert environment["ADMIN_SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06-admin"
+    assert environment["ADMIN_SESSION_KEY_PREFIX"] == "admin-session:"
+    assert environment["ADMIN_RATELIMIT_KEY_PREFIX"] == "ospbank:admin:ratelimit:"
     assert environment["MFA_KEK_ACTIVE_ID"] == "2026-06-mfa"
     assert environment["COMMON_PASSWORDS_PATH"] == "/run/config/common-passwords.txt"
     assert environment["SECURITY_ALERT_STATE_PATH"] == "/run/state/security-alert-state.json"
@@ -298,11 +339,15 @@ def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypa
     assert "DATABASE_MIGRATION_URL_FILE" not in environment
     assert secrets["secret_key"] == DEPLOYMENT_VALUES["PROD_SECRET_KEY"]
     assert secrets["database_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_URL"]
+    assert secrets["admin_database_url"] == DEPLOYMENT_VALUES["PROD_ADMIN_DATABASE_URL"]
+    assert secrets["admin_redis_url"] == DEPLOYMENT_VALUES["PROD_ADMIN_REDIS_URL"]
+    assert secrets["admin_secret_key"] == DEPLOYMENT_VALUES["PROD_ADMIN_SECRET_KEY"]
     assert secrets["database_migration_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_MIGRATION_URL"]
     assert secrets["mfa_kek_keys_json"] == DEPLOYMENT_VALUES["PROD_MFA_KEK_KEYS_JSON"]
     assert secrets["smtp_username"] == DEPLOYMENT_VALUES["PROD_SMTP_USERNAME"]
     assert secrets["smtp_password"] == DEPLOYMENT_VALUES["PROD_SMTP_PASSWORD"]
     assert '"2026-06":"MjIy' in secrets["session_hmac_keys_json"]
+    assert '"2026-06-admin":"NjY2' in secrets["admin_session_hmac_keys_json"]
 
 
 def test_container_bundle_accepts_staging_prefix(monkeypatch):
@@ -343,6 +388,10 @@ def test_deployment_profiles_keep_production_and_staging_isolated(monkeypatch):
     assert production["COMPOSE_PROJECT_NAME"] == "sitbank"
     assert production["APP_CONTAINER_NAME"] == "sitbank-app"
     assert production["APP_BIND_PORT"] == "5000"
+    assert production["ADMIN_APP_CONTAINER_NAME"] == "sitbank-admin"
+    assert production["ADMIN_APP_BIND_HOST"] == "127.0.0.1"
+    assert production["ADMIN_APP_BIND_PORT"] == "5002"
+    assert production["ADMIN_PUBLIC_HOST"] == "admin-sitbank.duckdns.org"
     assert production["POSTGRES_VOLUME_NAME"] == "none"
     assert production["REDIS_VOLUME_NAME"] == "none"
 
@@ -430,7 +479,7 @@ def test_container_bundle_builds_two_key_rotation_ring(monkeypatch):
 
 
 def test_runtime_secret_inventory_matches_config_and_renderer():
-    assert SECRET_INPUTS == DEPLOYMENT_SECRET_INPUTS
+    assert SECRET_INPUTS == PRODUCTION_SECRET_INPUTS
     assert NON_SECRET_DEFAULTS == CONTRACT_NON_SECRET_DEFAULTS
     _assert_sets_equal(
         _config_secret_inputs(),
@@ -457,7 +506,15 @@ def test_bundle_renderer_runs_directly_without_pythonpath():
 
 def test_compose_secret_mounts_match_runtime_contract():
     expected_app_secrets = {name: name for name in APP_SECRET_FILES}
-    for path, secret_root, extra_secrets in (
+    expected_admin_environment = {
+        **ADMIN_SECRET_FILE_ENVIRONMENT,
+        "SECURITY_ALERT_WEBHOOK_URL_FILE": "/run/secrets/security_alert_webhook_url",
+    }
+    expected_admin_secrets = {
+        **{name: name for name in ADMIN_SECRET_FILES},
+        "security_alert_webhook_url": "security_alert_webhook_url",
+    }
+    for path, secret_root, base_extra_secrets in (
         (
             Path("compose.prod.yml"),
             "/etc/sitbank/secrets",
@@ -480,7 +537,24 @@ def test_compose_secret_mounts_match_runtime_contract():
             f"{path} app service secrets must match runtime contract"
         )
 
-        expected_top_level = set(DEPLOYMENT_SECRET_FILES) | set(extra_secrets)
+        extra_secrets = dict(base_extra_secrets)
+        admin = compose["services"].get("admin")
+        if path.name == "compose.prod.yml":
+            assert admin is not None
+        if admin is not None:
+            assert admin["environment"] == expected_admin_environment, (
+                f"{path} admin secret _FILE environment must match runtime contract"
+            )
+            assert _service_secret_targets(admin) == expected_admin_secrets, (
+                f"{path} admin service secrets must match runtime contract"
+            )
+            extra_secrets.update(expected_admin_secrets)
+
+        expected_top_level = (
+            set(PRODUCTION_SECRET_FILES)
+            if path.name == "compose.prod.yml"
+            else set(DEPLOYMENT_SECRET_FILES) | set(extra_secrets)
+        )
         _assert_sets_equal(
             set(compose["secrets"]),
             expected_top_level,
@@ -519,6 +593,12 @@ def test_smoke_fixture_and_deployment_wrapper_match_runtime_contract():
         set(NON_SECRET_RUNTIME_ENVIRONMENT),
         context="sitbank-container-deploy allowed_environment vs runtime contract",
     )
+    for admin_env in (
+        "ADMIN_RATELIMIT_KEY_PREFIX",
+        "ADMIN_SESSION_HMAC_ACTIVE_KEY_ID",
+        "ADMIN_SESSION_KEY_PREFIX",
+    ):
+        assert admin_env in deploy_script
     _assert_sets_equal(
         set(_extract_bash_array(deploy_script, "required_secrets")),
         set(DEPLOYMENT_SECRET_FILES),
@@ -678,9 +758,11 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     )
     compose = yaml.safe_load(compose_text)
     app = compose["services"]["app"]
+    admin = compose["services"]["admin"]
     staging_compose = yaml.safe_load(staging_compose_text)
     staging_services = staging_compose["services"]
     staging_app = staging_services["app"]
+    staging_admin = staging_services["admin"]
 
     assert compose["name"] == "sitbank"
     stage_images = _dockerfile_stage_images(dockerfile)
@@ -694,6 +776,7 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "USER 10001:10001" in dockerfile
     assert "--require-hashes" in dockerfile
     assert "/health/ready" in dockerfile
+    assert "admin_wsgi.py" in dockerfile
     assert "apt-get upgrade" not in dockerfile
     assert "--only-upgrade" in dockerfile
     for security_package in ("gpgv", "libgnutls30", "libssl3", "openssl", "perl-base"):
@@ -724,22 +807,46 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
         if name.endswith("_FILE")
     )
     assert "DATABASE_MIGRATION_URL_FILE" not in app["environment"]
+    assert admin["network_mode"] == "host"
+    assert admin["container_name"] == "sitbank-admin"
+    assert "ports" not in admin
+    assert admin["command"][admin["command"].index("--bind") + 1] == "127.0.0.1:5002"
+    assert admin["command"][-1] == "admin_wsgi:app"
+    assert app.get("command", []) == [] or "wsgi:app" not in admin["command"]
+    assert admin["read_only"] is True
+    assert admin["user"] == "10001:10001"
+    assert admin["cap_drop"] == ["ALL"]
+    assert "no-new-privileges:true" in admin["security_opt"]
+    assert all(set(secret) == {"source", "target"} for secret in admin["secrets"])
+    assert all(
+        value.startswith("/run/secrets/")
+        for name, value in admin["environment"].items()
+        if name.endswith("_FILE")
+    )
+    assert "DATABASE_MIGRATION_URL_FILE" not in admin["environment"]
+    assert "ADMIN_DATABASE_URL_FILE" in admin["environment"]
+    assert "ADMIN_REDIS_URL_FILE" in admin["environment"]
     assert "/app/redis_compatibility_check.py:ro" in smoke_test
     assert "python /app/redis_compatibility_check.py" in smoke_test
     assert "ci_owner" in smoke_test
     assert "ci_app" in smoke_test
+    assert "ci_admin" in smoke_test
     assert "CREATE ROLE ci_owner" in smoke_test
     assert "CREATE ROLE ci_app" in smoke_test
+    assert "CREATE ROLE ci_admin" in smoke_test
     assert "Owner role exists: yes" in smoke_test
     assert "Runtime role exists: yes" in smoke_test
+    assert "Admin role exists: yes" in smoke_test
     assert "Owner connection test: passed" in smoke_test
     assert "Runtime connection test: passed" in smoke_test
+    assert "Admin connection test: passed" in smoke_test
     assert "DATABASE_MIGRATION_URL_FILE" in smoke_test
     assert "docker_bind_source" in smoke_test
     assert "docker network create" in smoke_test
     assert '--network "${network_name}"' in smoke_test
     assert "host.docker.internal" not in smoke_test
     assert "postgresql+psycopg2://ci_app:ci-app-password@%s:5432/ci" in smoke_test
+    assert "postgresql+psycopg2://ci_admin:ci-admin-password@%s:5432/ci" in smoke_test
     assert "postgresql+psycopg2://ci_owner:ci-owner-password@%s:5432/ci" in smoke_test
     assert "redis://:ci-password@%s:6379/15" in smoke_test
     assert '"${postgres_container}"' in smoke_test
@@ -751,6 +858,9 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert ':/run/secrets/database_migration_url:ro' not in smoke_test
     assert "apply-runtime-db-privileges" in smoke_test
     assert "verify-runtime-db-privileges" in smoke_test
+    assert "python -m flask --app admin_wsgi:app production-check" in smoke_test
+    assert "admin_wsgi:app" in smoke_test
+    assert "SITBank admin application did not become ready" in smoke_test
     assert smoke_test.index("db upgrade") < smoke_test.index("apply-runtime-db-privileges")
     assert smoke_test.index("apply-runtime-db-privileges") < smoke_test.index("verify-runtime-db-privileges")
     assert "/redis-check.py" not in smoke_test
@@ -785,7 +895,7 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "56379" not in smoke_test
 
     assert staging_compose["name"] == "sitbank-staging"
-    assert set(staging_services) == {"app", "postgres", "redis"}
+    assert set(staging_services) == {"app", "admin", "postgres", "redis"}
     assert staging_app["container_name"] == "sitbank-staging-app"
     assert staging_app["ports"] == ["127.0.0.1:5001:5000"]
     assert "network_mode" not in staging_app
@@ -803,6 +913,21 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
         for target, volume in staging_volume_by_target.items()
         if target.startswith("/run/config/")
     )
+    assert staging_admin["container_name"] == "sitbank-staging-admin"
+    assert staging_admin["ports"] == ["127.0.0.1:5002:5000"]
+    assert "network_mode" not in staging_admin
+    assert staging_admin["read_only"] is True
+    assert staging_admin["user"] == "10001:10001"
+    assert staging_admin["cap_drop"] == ["ALL"]
+    assert "no-new-privileges:true" in staging_admin["security_opt"]
+    assert staging_admin["env_file"] == ["/etc/sitbank-staging/container.env"]
+    assert "DATABASE_MIGRATION_URL_FILE" not in staging_admin["environment"]
+    assert (
+        staging_admin["command"][staging_admin["command"].index("--bind") + 1]
+        == "0.0.0.0:5000"
+    )
+    assert staging_admin["command"][-1] == "admin_wsgi:app"
+    assert all(set(secret) == {"source", "target"} for secret in staging_admin["secrets"])
     assert staging_volume_by_target["/run/state"]["source"] == (
         "/var/lib/sitbank-staging-container/security-alert-state"
     )
@@ -850,7 +975,7 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "sitbank-staging-postgres-data" not in compose_text
     assert "sitbank-staging-redis-data" not in compose_text
     assert "--wait --wait-timeout 120" in deploy_script
-    assert deploy_script.count("--retry-all-errors") == 2
+    assert deploy_script.count("--retry-all-errors") == 3
     assert "show_app_diagnostics" in deploy_script
     assert "DATABASE_MIGRATION_URL_FILE=/run/secrets/database_migration_url" in deploy_script
     assert "Staging runtime database URL must use only the staging app role" in deploy_script
@@ -863,6 +988,14 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "postgres_owner_password" in deploy_script
     assert "apply-runtime-db-privileges" in deploy_script
     assert "verify-runtime-db-privileges" in deploy_script
+    assert "validate_production_admin_isolation" in deploy_script
+    assert "ADMIN_APP_BIND_PORT='5002'" in deploy_script
+    assert "ADMIN_PUBLIC_HOST='admin-sitbank.duckdns.org'" in deploy_script
+    assert "Admin runtime database URL is required for production" in deploy_script
+    assert "Admin runtime database role must be distinct from customer runtime role" in deploy_script
+    assert "Admin runtime database role must not be the migration/schema-owner role" in deploy_script
+    assert "python -m flask --app admin_wsgi:app production-check" in deploy_script
+    assert '"http://${APP_BIND_HOST}:5002/health/ready"' in deploy_script
     assert deploy_script.index("db upgrade") < deploy_script.index("apply-runtime-db-privileges")
     assert deploy_script.index("apply-runtime-db-privileges") < deploy_script.index("verify-runtime-db-privileges")
     assert "staging_migration_run" not in deploy_script
@@ -1104,6 +1237,10 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         == "${{ vars.PROD_MFA_KEK_ACTIVE_ID }}"
     )
     assert (
+        workflow["jobs"]["deploy-production"]["env"]["PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID"]
+        == "${{ vars.PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID }}"
+    )
+    assert (
         production_deploy_env["PROD_PASSWORD_RESET_EMAIL_FROM"]
         == "${{ vars.PROD_PASSWORD_RESET_EMAIL_FROM }}"
     )
@@ -1246,6 +1383,9 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "STAGING_DATABASE_URL" not in workflow_text
     assert "STAGING_MFA_KEK_KEYS_JSON" not in workflow_text
     assert "PROD_SECRET_KEY" not in workflow_text
+    assert "PROD_ADMIN_SECRET_KEY" not in workflow_text
+    assert "PROD_ADMIN_DATABASE_URL" not in workflow_text
+    assert "PROD_ADMIN_REDIS_URL" not in workflow_text
     assert "PROD_DATABASE_URL" not in workflow_text
     assert "PROD_MFA_KEK_KEYS_JSON" not in workflow_text
     assert "STAGING_MFA_KEK_ACTIVE_ID" in workflow_text
@@ -1776,21 +1916,34 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
     production_compose = yaml.safe_load(Path("compose.prod.yml").read_text(encoding="utf-8"))
     app = production_compose["services"]["app"]
+    admin = production_compose["services"]["admin"]
+    customer_nginx = _nginx_server_block(nginx, "sitbank.duckdns.org")
+    admin_nginx = _nginx_server_block(nginx, "admin-sitbank.duckdns.org")
 
     assert Path("ops/nginx/sitbank-production.conf").exists()
     assert Path("ops/nginx/sitbank-production-rate-limits.conf").exists()
     assert "listen 80;" in nginx
     assert "return 301 https://sitbank.duckdns.org$request_uri;" in nginx
+    assert "return 301 https://admin-sitbank.duckdns.org$request_uri;" in nginx
+    assert "listen 80 default_server;" in nginx
+    assert "listen 443 ssl http2 default_server;" in nginx
+    assert "server_name _;" in nginx
+    assert "ssl_reject_handshake on;" in nginx
+    assert "return 444;" in nginx
     assert "listen 443 ssl http2;" in nginx
     assert "server_name sitbank.duckdns.org;" in nginx
+    assert "server_name admin-sitbank.duckdns.org;" in nginx
     assert "ssl_certificate /etc/letsencrypt/live/sitbank.duckdns.org/fullchain.pem;" in nginx
     assert "ssl_certificate_key /etc/letsencrypt/live/sitbank.duckdns.org/privkey.pem;" in nginx
+    assert "ssl_certificate /etc/letsencrypt/live/admin-sitbank.duckdns.org/fullchain.pem;" in nginx
+    assert "ssl_certificate_key /etc/letsencrypt/live/admin-sitbank.duckdns.org/privkey.pem;" in nginx
     _assert_nginx_owns_duplicate_edge_security_headers(
         nginx,
         hsts_add_header=(
             'add_header Strict-Transport-Security "max-age=31536000; '
             'includeSubDomains" always;'
         ),
+        server_name="sitbank.duckdns.org",
     )
     assert "client_max_body_size 4m;" in nginx
     for timeout in (
@@ -1806,7 +1959,7 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     assert "if ($request_method = TRACE)" in nginx
     assert "return 405;" in nginx
 
-    health_ready_bodies = _nginx_location_bodies(nginx, "= /health/ready")
+    health_ready_bodies = _nginx_location_bodies(customer_nginx, "= /health/ready")
     assert len(health_ready_bodies) == 1
     health_ready = health_ready_bodies[0]
     assert "allow 127.0.0.1;" in health_ready
@@ -1815,16 +1968,49 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     assert "proxy_pass http://127.0.0.1:5000;" in health_ready
     assert "limit_req" not in health_ready
 
-    health_live_bodies = _nginx_location_bodies(nginx, "= /health/live")
+    health_live_bodies = _nginx_location_bodies(customer_nginx, "= /health/live")
     assert len(health_live_bodies) == 1
     assert "proxy_pass http://127.0.0.1:5000;" in health_live_bodies[0]
 
-    proxy_targets = set(re.findall(r"proxy_pass\s+([^;]+);", nginx))
-    assert proxy_targets == {"http://127.0.0.1:5000"}
+    customer_admin_bodies = _nginx_location_bodies(customer_nginx, "^~ /admin")
+    assert len(customer_admin_bodies) == 1
+    assert "return 404;" in customer_admin_bodies[0]
+
+    admin_health_ready_bodies = _nginx_location_bodies(admin_nginx, "= /health/ready")
+    assert len(admin_health_ready_bodies) == 1
+    assert "deny all;" in admin_health_ready_bodies[0]
+    assert "return 403;" in admin_health_ready_bodies[0]
+    assert "proxy_pass" not in admin_health_ready_bodies[0]
+
+    admin_health_live_bodies = _nginx_location_bodies(admin_nginx, "= /health/live")
+    assert len(admin_health_live_bodies) == 1
+    assert "allow 127.0.0.1;" in admin_health_live_bodies[0]
+    assert "allow ::1;" in admin_health_live_bodies[0]
+    assert "deny all;" in admin_health_live_bodies[0]
+    assert "proxy_pass http://127.0.0.1:5002;" in admin_health_live_bodies[0]
+
+    admin_login_bodies = _nginx_location_bodies(admin_nginx, "= /login")
+    assert len(admin_login_bodies) == 1
+    assert "deny all;" in admin_login_bodies[0]
+    assert "limit_req zone=sitbank_prod_admin_auth" in admin_login_bodies[0]
+    assert "proxy_pass http://127.0.0.1:5002;" in admin_login_bodies[0]
+
+    admin_root_bodies = _nginx_location_bodies(admin_nginx, "/")
+    assert any("deny all;" in body and "limit_req zone=sitbank_prod_admin" in body for body in admin_root_bodies)
+
+    customer_proxy_targets = set(re.findall(r"proxy_pass\s+([^;]+);", customer_nginx))
+    admin_proxy_targets = set(re.findall(r"proxy_pass\s+([^;]+);", admin_nginx))
+    assert customer_proxy_targets == {"http://127.0.0.1:5000"}
+    assert admin_proxy_targets == {"http://127.0.0.1:5002"}
     assert "0.0.0.0:5000" not in nginx
+    assert "0.0.0.0:5002" not in nginx
     assert "--bind\", \"127.0.0.1:5000" in dockerfile
     assert app["network_mode"] == "host"
     assert "ports" not in app
+    assert admin["network_mode"] == "host"
+    assert "ports" not in admin
+    assert admin["command"][admin["command"].index("--bind") + 1] == "127.0.0.1:5002"
+    assert admin["command"][-1] == "admin_wsgi:app"
 
     for zone in (
         "limit_req_zone $binary_remote_addr zone=sitbank_prod_app:10m rate=20r/s;",
@@ -1832,6 +2018,8 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
         "limit_req_zone $binary_remote_addr zone=sitbank_prod_register:10m rate=2r/m;",
         "limit_req_zone $binary_remote_addr zone=sitbank_prod_challenge:10m rate=3r/m;",
         "limit_req_zone $binary_remote_addr zone=sitbank_prod_security:10m rate=10r/m;",
+        "limit_req_zone $binary_remote_addr zone=sitbank_prod_admin:10m rate=2r/s;",
+        "limit_req_zone $binary_remote_addr zone=sitbank_prod_admin_auth:10m rate=3r/m;",
     ):
         assert zone in rate_limits
     assert "limit_req_status 429;" in nginx
@@ -1852,21 +2040,23 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
         "/auth/": "sitbank_prod_auth",
     }
     for selector, zone in expected_location_limits.items():
-        bodies = _nginx_location_bodies(nginx, selector)
+        bodies = _nginx_location_bodies(customer_nginx, selector)
         assert len(bodies) == 1
         assert f"limit_req zone={zone}" in bodies[0]
         assert "include /etc/nginx/snippets/sitbank-proxy-headers.conf;" in bodies[0]
     assert any(
         "limit_req zone=sitbank_prod_app" in body
-        for body in _nginx_location_bodies(nginx, "/")
+        for body in _nginx_location_bodies(customer_nginx, "/")
     )
 
     assert "proxy_set_header X-Forwarded-For $remote_addr;" in proxy_headers
     assert "$proxy_add_x_forwarded_for" not in proxy_headers
 
     assert 'PRODUCTION_PUBLIC_HOST="sitbank.duckdns.org"' in bootstrap
+    assert 'PRODUCTION_ADMIN_PUBLIC_HOST="admin-sitbank.duckdns.org"' in bootstrap
     assert "Production PUBLIC_HOST must be ${PRODUCTION_PUBLIC_HOST}" in bootstrap
     assert "Missing required production TLS file" in bootstrap
+    assert "/etc/letsencrypt/live/${PRODUCTION_ADMIN_PUBLIC_HOST}" in bootstrap
     assert "Issue the production Certbot certificate before rerunning bootstrap." in bootstrap
     assert "PRODUCTION_RATE_LIMITS_FILE=\"/etc/nginx/conf.d/sitbank-production-rate-limits.conf\"" in bootstrap
     assert "ops/nginx/sitbank-production-rate-limits.conf" in bootstrap
@@ -1903,6 +2093,8 @@ def test_production_edge_runbook_documents_network_waf_and_verification_steps():
         "SSH is restricted to an administrator IP allowlist",
         "Nginx terminates TLS, redirects HTTP to HTTPS",
         "Gunicorn binds only to `127.0.0.1:5000`",
+        "Admin Gunicorn binds only to `127.0.0.1:5002`",
+        "Admin WebAuthn/passkey authentication and admin step-up are Phase 2",
         "compose.prod.yml` publishes no",
         "`/health/ready` is for local deployment and load-balancer checks",
         "Cloudflare or AWS WAF should sit in front of Nginx",
@@ -1911,10 +2103,12 @@ def test_production_edge_runbook_documents_network_waf_and_verification_steps():
         "sudo test -r /etc/letsencrypt/live/sitbank.duckdns.org/fullchain.pem",
         "Cloudflare or AWS WAF rules and security-group allowlists are still",
         "sudo nginx -t",
-        "sudo ss -ltnp | grep -E ':(80|443|5000)([[:space:]]|$)'",
+        "sudo ss -ltnp | grep -E ':(80|443|5000|5002)([[:space:]]|$)'",
         "sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-app",
+        "sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-admin",
         "curl --fail https://sitbank.duckdns.org/health/live",
         "curl -I https://sitbank.duckdns.org/health/ready",
+        "curl -I https://admin-sitbank.duckdns.org/login",
         "external `/health/ready` returns `403`",
     ):
         assert required in docs
@@ -1927,8 +2121,10 @@ def test_production_edge_runbook_documents_network_waf_and_verification_steps():
         "Allow public inbound TCP `80` and `443` only.",
         "never allow TCP `22` from `0.0.0.0/0` or `::/0`",
         "Do not expose Gunicorn, PostgreSQL, or Redis directly to the internet.",
-        "Keep Gunicorn bound to `127.0.0.1:5000`",
+        "admin Gunicorn bound to",
+        "`127.0.0.1:5002`",
         "Restrict `/health/ready` to loopback",
+        "Keep admin routes denied by default",
         "Enable WAF managed common, SQL injection, XSS, bot, and protocol anomaly",
         "rules.",
         "Add WAF rate-based rules for `/login`, `/register`, `/mfa/verify`,",
