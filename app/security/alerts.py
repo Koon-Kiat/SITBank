@@ -7,6 +7,7 @@ import urllib.request
 from collections import Counter
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -67,9 +68,15 @@ def build_security_alert_report(
 ) -> dict[str, Any]:
     current_time = _as_utc(now or datetime.now(timezone.utc))
     alert_config = validate_security_alert_config()
-    alerts = _filter_alerts_by_min_severity(
-        evaluate_security_alerts(now=current_time),
-        alert_config["min_severity"],
+    audit_chain_alerts, audit_chain_status = _audit_chain_verification_alerts(
+        current_time=current_time
+    )
+    alerts = sorted(
+        _filter_alerts_by_min_severity(
+            [*evaluate_security_alerts(now=current_time), *audit_chain_alerts],
+            alert_config["min_severity"],
+        ),
+        key=lambda item: (item["alert_type"], str(item.get("source", ""))),
     )
     delivery = {
         "attempted": False,
@@ -117,6 +124,7 @@ def build_security_alert_report(
         "alert_count": len(alerts),
         "deliverable_alert_count": len(deliverable_alerts),
         "alerts": alerts,
+        "audit_chain": audit_chain_status,
         "dedupe": dedupe,
         "delivery": delivery,
     }
@@ -315,6 +323,123 @@ def _webhook_provider(url: str) -> str:
     if host in {"discord.com", "discordapp.com"} and path.startswith("/api/webhooks/"):
         return "discord"
     return "generic"
+
+
+def _audit_chain_verification_alerts(
+    *,
+    current_time: datetime,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    from app.security.audit import verify_audit_hash_chain
+
+    anchor_path = _configured_audit_anchor_path()
+    anchor_configured = anchor_path is not None
+    anchor = None
+    if anchor_path is not None:
+        try:
+            anchor = _load_audit_anchor(anchor_path)
+        except AlertConfigurationError as exc:
+            return [
+                _alert(
+                    "audit_anchor_mismatch",
+                    current_time=current_time,
+                    severity="critical",
+                    count=1,
+                    window_seconds=0,
+                    source="audit_anchor",
+                    error_type=type(exc).__name__,
+                    reason="anchor_unavailable",
+                )
+            ], {
+                "checked": False,
+                "valid": False,
+                "anchor_configured": True,
+                "anchor_validated": False,
+                "error_type": type(exc).__name__,
+            }
+
+    try:
+        result = verify_audit_hash_chain(anchor=anchor)
+    except Exception as exc:
+        return [
+            _alert(
+                "audit_chain_verification_failed",
+                current_time=current_time,
+                severity="critical",
+                count=1,
+                window_seconds=0,
+                source="audit_hash_chain",
+                error_type=type(exc).__name__,
+            )
+        ], {
+            "checked": False,
+            "valid": False,
+            "anchor_configured": anchor_configured,
+            "anchor_validated": None,
+            "error_type": type(exc).__name__,
+        }
+
+    status = _audit_chain_status(result, anchor_configured=anchor_configured)
+    if result.get("valid") is True:
+        return [], status
+
+    anchor_error_count = len(result.get("anchor_errors") or [])
+    alert_type = (
+        "audit_anchor_mismatch"
+        if anchor_error_count
+        else "audit_chain_verification_failed"
+    )
+    source = "audit_anchor" if anchor_error_count else "audit_hash_chain"
+    return [
+        _alert(
+            alert_type,
+            current_time=current_time,
+            severity="critical",
+            count=max(1, len(result.get("errors") or [])),
+            window_seconds=0,
+            source=source,
+            latest_event_id=result.get("latest_event_id"),
+            event_count=result.get("event_count"),
+            anchor_error_count=anchor_error_count,
+        )
+    ], status
+
+
+def _configured_audit_anchor_path() -> Path | None:
+    if has_app_context():
+        value = current_app.config.get("SECURITY_AUDIT_ANCHOR_PATH")
+    else:
+        value = os.environ.get("SECURITY_AUDIT_ANCHOR_PATH")
+    text = str(value or "").strip()
+    return Path(text) if text else None
+
+
+def _load_audit_anchor(anchor_path: Path) -> dict[str, Any]:
+    try:
+        anchor = json.loads(anchor_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise AlertConfigurationError(
+            f"SECURITY_AUDIT_ANCHOR_PATH is not readable: {type(exc).__name__}"
+        ) from exc
+    if not isinstance(anchor, dict):
+        raise AlertConfigurationError("SECURITY_AUDIT_ANCHOR_PATH must contain a JSON object")
+    return anchor
+
+
+def _audit_chain_status(
+    result: Mapping[str, Any],
+    *,
+    anchor_configured: bool,
+) -> dict[str, Any]:
+    return {
+        "checked": True,
+        "valid": bool(result.get("valid")),
+        "anchor_configured": anchor_configured,
+        "anchor_validated": result.get("anchor_validated"),
+        "event_count": int(result.get("event_count") or 0),
+        "latest_event_id": result.get("latest_event_id"),
+        "error_count": len(result.get("errors") or []),
+        "anchor_error_count": len(result.get("anchor_errors") or []),
+    }
 
 
 def _alert_webhook_body(alerts: list[dict[str, Any]], *, provider: str) -> bytes:

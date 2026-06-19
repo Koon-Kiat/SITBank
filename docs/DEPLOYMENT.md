@@ -39,6 +39,14 @@ image through the restricted wrapper so it runs `production-check`, `db
 upgrade`, `apply-runtime-db-privileges`, `verify-runtime-db-privileges`, and
 readiness checks before declaring success.
 
+When a trusted audit anchor has been exported, set
+`SECURITY_AUDIT_ANCHOR_PATH=/var/lib/sitbank/audit-anchor.json` in the
+root-managed runtime configuration so `check-security-alerts` verifies the
+hash chain and compares the anchor during automated alert runs. Audit trigger
+changes require `db upgrade`, then `apply-runtime-db-privileges` and
+`verify-runtime-db-privileges`; they do not require an EC2 edge bootstrap
+unless host-managed deployment, Nginx, or systemd files also changed.
+
 ## Production Edge and Network Hardening
 
 The reviewed production bootstrap installs and enables the production edge from `ops/nginx/sitbank-production.conf`, `ops/nginx/sitbank-production-rate-limits.conf`, and `ops/nginx-proxy-headers.conf`. Any change to those files requires a production bootstrap after merge.
