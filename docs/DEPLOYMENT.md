@@ -48,6 +48,13 @@ Deploy the signed image through the restricted wrapper so it runs
 `production-check`, `db upgrade`, `apply-runtime-db-privileges`,
 `verify-runtime-db-privileges`, and readiness checks before declaring success.
 
+Production deployment is manual-only from the trusted `main` workflow. It
+requires `target_environment=production`, `deploy=true`, and the GitHub
+environment variable `PROD_DEPLOY_ENABLED=true`. Leave `PROD_DEPLOY_ENABLED`
+unset or false until the production admin secret files and matching
+`PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID` are ready; production deployment is
+skipped before production preflight when the flag is not explicitly true.
+
 Production also requires a DNS record for `admin-sitbank.duckdns.org` pointing
 at the same EC2 edge, Certbot files under
 `/etc/letsencrypt/live/admin-sitbank.duckdns.org/`, and root-managed admin
