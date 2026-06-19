@@ -224,6 +224,7 @@ services:
     env_file:
       - /etc/sitbank-staging/container.env
     environment:
+      ADMIN_SESSION_HMAC_ACTIVE_KEY_ID: 2026-06-admin
       ADMIN_SECRET_KEY_FILE: /run/secrets/admin_secret_key
       ADMIN_WTF_CSRF_SECRET_KEY_FILE: /run/secrets/admin_wtf_csrf_secret_key
       ADMIN_SESSION_HMAC_KEYS_JSON_FILE: /run/secrets/admin_session_hmac_keys_json
