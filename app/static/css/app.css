@@ -945,7 +945,7 @@ form {
 }
 
 .strength-bar-fill.strong {
-  background: var(--success);
+  background: var(--success-soft);
 }
 
 label {
