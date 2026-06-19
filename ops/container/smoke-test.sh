@@ -235,6 +235,10 @@ printf '%s' 'MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE=' \
     > "${work_dir}/secrets/password_pepper_b64"
 printf '%s' 'https://hooks.example.test/sitbank-security-alerts' \
     > "${work_dir}/secrets/security_alert_webhook_url"
+printf '%s' 'smtp-user' \
+    > "${work_dir}/secrets/smtp_username"
+printf '%s' 'smtp-password' \
+    > "${work_dir}/secrets/smtp_password"
 chmod 0444 "${work_dir}"/secrets/*
 
 seq -f 'blocked-password-%06g' 1 100000 \
@@ -268,7 +272,18 @@ docker_args=(
     --env MFA_KEK_KEYS_JSON_FILE=/run/secrets/mfa_kek_keys_json
     --env PASSWORD_PEPPER_B64_FILE=/run/secrets/password_pepper_b64
     --env SECURITY_ALERT_WEBHOOK_URL_FILE=/run/secrets/security_alert_webhook_url
+    --env SMTP_USERNAME_FILE=/run/secrets/smtp_username
+    --env SMTP_PASSWORD_FILE=/run/secrets/smtp_password
     --env PASSWORD_PBKDF2_ITERATIONS=600000
+    --env PASSWORD_RESET_ENABLED=true
+    --env PASSWORD_RESET_TOKEN_TTL_SECONDS=1800
+    --env PASSWORD_RESET_TRANSACTION_TTL_SECONDS=900
+    --env PASSWORD_RESET_EMAIL_BACKEND=smtp
+    --env PASSWORD_RESET_EMAIL_FROM=security@sitbank.example
+    --env PASSWORD_RESET_BASE_URL=https://sitbank.duckdns.org
+    --env SMTP_HOST=smtp.example.test
+    --env SMTP_PORT=587
+    --env SMTP_USE_TLS=true
     --env COMMON_PASSWORDS_PATH=/run/config/common-passwords.txt
     --env COMMON_PASSWORDS_MIN_ENTRIES=100000
     --env WEBAUTHN_RP_ID=sitbank.duckdns.org

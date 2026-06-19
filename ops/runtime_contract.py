@@ -9,6 +9,8 @@ APP_SECRET_INPUTS = {
     "MFA_KEK_KEYS_JSON": "mfa_kek_keys_json",
     "PASSWORD_PEPPER_B64": "password_pepper_b64",
     "SECURITY_ALERT_WEBHOOK_URL": "security_alert_webhook_url",
+    "SMTP_USERNAME": "smtp_username",
+    "SMTP_PASSWORD": "smtp_password",
 }
 
 MIGRATION_SECRET_INPUTS = {
@@ -45,11 +47,18 @@ NON_SECRET_DEFAULTS = {
     "HIBP_CIRCUIT_FAILURE_THRESHOLD": "3",
     "HIBP_CIRCUIT_OPEN_SECONDS": "300",
     "HIBP_PASSWORD_CHECK_TIMEOUT_SECONDS": "2.0",
+    "PASSWORD_RESET_EMAIL_BACKEND": "smtp",
+    "PASSWORD_RESET_ENABLED": "true",
+    "PASSWORD_RESET_TOKEN_TTL_SECONDS": "1800",
+    "PASSWORD_RESET_TRANSACTION_TTL_SECONDS": "900",
     "PASSWORD_PBKDF2_ITERATIONS": "600000",
     "SECURITY_ALERT_DEDUPE_TTL_SECONDS": "300",
     "SECURITY_ALERT_ENABLED": "true",
     "SECURITY_ALERT_MIN_SEVERITY": "high",
+    "SECURITY_ALERT_STATE_PATH": "/run/state/security-alert-state.json",
     "SECURITY_ALERT_TIMEOUT_SECONDS": "5.0",
+    "SMTP_PORT": "587",
+    "SMTP_USE_TLS": "true",
     "TRUSTED_PROXY_COUNT": "1",
 }
 
@@ -63,9 +72,12 @@ NON_SECRET_RUNTIME_ENVIRONMENT = tuple(
     sorted(
         {
             "APP_ENV",
+            "PASSWORD_RESET_BASE_URL",
+            "PASSWORD_RESET_EMAIL_FROM",
             "MFA_KEK_ACTIVE_ID",
             "MFA_ISSUER_NAME",
             "SESSION_HMAC_ACTIVE_KEY_ID",
+            "SMTP_HOST",
             "WEBAUTHN_RP_ID",
             "WEBAUTHN_RP_ORIGIN",
             *NON_SECRET_DEFAULTS,

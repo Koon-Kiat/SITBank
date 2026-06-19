@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 from flask import current_app, has_app_context
 
 from app.extensions import db
-from app.models import SecurityAuditEvent
+from app.models import SecurityAuditEvent, User
 
 
 IMMEDIATE_ALERT_EVENT_TYPES = {
@@ -26,6 +26,9 @@ IMMEDIATE_ALERT_EVENT_TYPES = {
     "audit_anchor_mismatch": "audit_anchor_mismatch",
     "audit_append_only_protection_failed": "audit_append_only_protection_failed",
     "runtime_db_privilege_verification_failed": "runtime_db_privilege_verification_failed",
+    "password_reset_token_reused": "password_reset_token_reused",
+    "password_reset_webauthn_failed": "password_reset_webauthn_failed",
+    "manual_recovery_requested": "manual_recovery_requested",
 }
 TRANSACTION_EVENT_TYPES = {
     "banking_outbound_transfer",
@@ -34,6 +37,14 @@ TRANSACTION_EVENT_TYPES = {
     "webauthn_transaction_stage",
     "webauthn_transaction_options",
     "webauthn_transaction_verify",
+}
+PASSWORD_RESET_EVENT_TYPES = {
+    "password_reset_requested",
+    "password_reset_failed",
+    "password_reset_mfa_failed",
+    "password_reset_webauthn_failed",
+    "password_reset_token_reused",
+    "manual_recovery_requested",
 }
 ALERT_SEVERITY_RANK = {"low": 10, "medium": 20, "high": 30, "critical": 40}
 DEFAULT_ALERT_TIMEOUT_SECONDS = 5.0
@@ -62,11 +73,21 @@ DELIVERY_SAFE_KEYS = {
     "severity",
     "source",
     "summary",
+    "table",
     "timestamp",
     "user_id",
     "user_ref",
     "window_seconds",
+    "current_count",
+    "current_max_id",
+    "previous_count",
+    "previous_max_id",
 }
+DATABASE_INTEGRITY_TABLES = {
+    "security_audit_events": SecurityAuditEvent,
+    "users": User,
+}
+DATABASE_INTEGRITY_STATE_VERSION = 1
 DELIVERY_SENSITIVE_KEY_PARTS = (
     "access_token",
     "api_key",
@@ -126,6 +147,7 @@ def evaluate_security_alerts(*, now: datetime | None = None) -> list[dict[str, A
     _add_immediate_alerts(alerts, events, current_time=current_time)
     _add_login_failure_alerts(alerts, events, current_time=current_time)
     _add_auth_backoff_alerts(alerts, events, current_time=current_time)
+    _add_password_reset_alerts(alerts, events, current_time=current_time)
     _add_transaction_failure_alerts(alerts, events, current_time=current_time)
 
     return sorted(alerts, key=lambda item: (item["alert_type"], str(item.get("source", ""))))
@@ -141,9 +163,17 @@ def build_security_alert_report(
     audit_chain_alerts, audit_chain_status = _audit_chain_verification_alerts(
         current_time=current_time
     )
+    database_integrity_alerts, database_integrity_status = _database_integrity_alerts(
+        current_time=current_time,
+        update_state=deliver,
+    )
     alerts = sorted(
         _filter_alerts_by_min_severity(
-            [*evaluate_security_alerts(now=current_time), *audit_chain_alerts],
+            [
+                *evaluate_security_alerts(now=current_time),
+                *audit_chain_alerts,
+                *database_integrity_alerts,
+            ],
             alert_config["min_severity"],
         ),
         key=lambda item: (item["alert_type"], str(item.get("source", ""))),
@@ -195,6 +225,7 @@ def build_security_alert_report(
         "deliverable_alert_count": len(deliverable_alerts),
         "alerts": alerts,
         "audit_chain": audit_chain_status,
+        "database_integrity": database_integrity_status,
         "dedupe": dedupe,
         "delivery": delivery,
     }
@@ -483,6 +514,15 @@ def _configured_audit_anchor_path() -> Path | None:
     return Path(text) if text else None
 
 
+def _configured_alert_state_path() -> Path | None:
+    if has_app_context():
+        value = current_app.config.get("SECURITY_ALERT_STATE_PATH")
+    else:
+        value = os.environ.get("SECURITY_ALERT_STATE_PATH")
+    text = str(value or "").strip()
+    return Path(text) if text else None
+
+
 def _load_audit_anchor(anchor_path: Path) -> dict[str, Any]:
     try:
         anchor = json.loads(anchor_path.read_text(encoding="utf-8"))
@@ -510,6 +550,214 @@ def _audit_chain_status(
         "error_count": len(result.get("errors") or []),
         "anchor_error_count": len(result.get("anchor_errors") or []),
     }
+
+
+def _database_integrity_alerts(
+    *,
+    current_time: datetime,
+    update_state: bool,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    state_path = _configured_alert_state_path()
+    if state_path is None:
+        return [], {
+            "checked": False,
+            "configured": False,
+        }
+
+    status: dict[str, Any] = {
+        "checked": False,
+        "configured": True,
+        "state_path_configured": True,
+    }
+    try:
+        current_state = _database_integrity_snapshot(current_time)
+        previous_state = _load_database_integrity_state(state_path)
+    except AlertConfigurationError as exc:
+        return [
+            _alert(
+                "database_integrity_state_unavailable",
+                current_time=current_time,
+                severity="critical",
+                count=1,
+                window_seconds=0,
+                source="database_integrity_state",
+                error_type=type(exc).__name__,
+            )
+        ], {
+            **status,
+            "error_type": type(exc).__name__,
+        }
+    except Exception as exc:
+        return [
+            _alert(
+                "database_integrity_check_failed",
+                current_time=current_time,
+                severity="critical",
+                count=1,
+                window_seconds=0,
+                source="database_integrity",
+                error_type=type(exc).__name__,
+            )
+        ], {
+            **status,
+            "error_type": type(exc).__name__,
+        }
+
+    alerts = _database_integrity_regression_alerts(
+        previous_state,
+        current_state,
+        current_time=current_time,
+    )
+    if update_state and not alerts:
+        try:
+            _write_database_integrity_state(state_path, current_state)
+        except AlertConfigurationError as exc:
+            return [
+                _alert(
+                    "database_integrity_state_unavailable",
+                    current_time=current_time,
+                    severity="critical",
+                    count=1,
+                    window_seconds=0,
+                    source="database_integrity_state",
+                    error_type=type(exc).__name__,
+                )
+            ], {
+                **status,
+                "error_type": type(exc).__name__,
+            }
+
+    return alerts, {
+        "checked": True,
+        "configured": True,
+        "baseline_available": previous_state is not None,
+        "valid": not alerts,
+        "table_count": len(current_state["tables"]),
+        "tables": current_state["tables"],
+    }
+
+
+def _database_integrity_snapshot(current_time: datetime) -> dict[str, Any]:
+    tables: dict[str, dict[str, int | None]] = {}
+    for table_name, model in DATABASE_INTEGRITY_TABLES.items():
+        count_value, max_id = db.session.execute(
+            db.select(db.func.count(model.id), db.func.max(model.id))
+        ).one()
+        tables[table_name] = {
+            "count": int(count_value or 0),
+            "max_id": int(max_id) if max_id is not None else None,
+        }
+    return {
+        "message": "security_alert_database_integrity_state",
+        "version": DATABASE_INTEGRITY_STATE_VERSION,
+        "generated_at": _utc_iso(current_time),
+        "tables": tables,
+    }
+
+
+def _load_database_integrity_state(state_path: Path) -> dict[str, Any] | None:
+    try:
+        raw_state = state_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeError) as exc:
+        raise AlertConfigurationError(
+            f"SECURITY_ALERT_STATE_PATH is not readable: {type(exc).__name__}"
+        ) from exc
+    try:
+        state = json.loads(raw_state)
+    except json.JSONDecodeError as exc:
+        raise AlertConfigurationError("SECURITY_ALERT_STATE_PATH must contain JSON") from exc
+    if not isinstance(state, dict):
+        raise AlertConfigurationError("SECURITY_ALERT_STATE_PATH must contain a JSON object")
+    tables = state.get("tables")
+    if not isinstance(tables, dict):
+        raise AlertConfigurationError("SECURITY_ALERT_STATE_PATH is missing table metrics")
+    return state
+
+
+def _write_database_integrity_state(state_path: Path, state: Mapping[str, Any]) -> None:
+    parent = state_path.parent
+    if not parent:
+        raise AlertConfigurationError("SECURITY_ALERT_STATE_PATH must include a parent directory")
+    try:
+        parent.mkdir(mode=0o750, parents=True, exist_ok=True)
+        temporary_path = state_path.with_name(f".{state_path.name}.tmp")
+        temporary_path.write_text(
+            json.dumps(state, separators=(",", ":"), sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        temporary_path.replace(state_path)
+    except OSError as exc:
+        raise AlertConfigurationError(
+            f"SECURITY_ALERT_STATE_PATH is not writable: {type(exc).__name__}"
+        ) from exc
+
+
+def _database_integrity_regression_alerts(
+    previous_state: Mapping[str, Any] | None,
+    current_state: Mapping[str, Any],
+    *,
+    current_time: datetime,
+) -> list[dict[str, Any]]:
+    if previous_state is None:
+        return []
+    previous_tables = previous_state.get("tables")
+    current_tables = current_state.get("tables")
+    if not isinstance(previous_tables, Mapping) or not isinstance(current_tables, Mapping):
+        raise AlertConfigurationError("database integrity state is malformed")
+
+    alerts: list[dict[str, Any]] = []
+    for table_name in DATABASE_INTEGRITY_TABLES:
+        previous_metrics = previous_tables.get(table_name)
+        current_metrics = current_tables.get(table_name)
+        if not isinstance(previous_metrics, Mapping) or not isinstance(current_metrics, Mapping):
+            continue
+        previous_count = _state_int(previous_metrics.get("count"))
+        current_count = _state_int(current_metrics.get("count"))
+        previous_max_id = _state_optional_int(previous_metrics.get("max_id"))
+        current_max_id = _state_optional_int(current_metrics.get("max_id"))
+        count_regressed = previous_count > 0 and current_count < previous_count
+        id_regressed = (
+            previous_max_id is not None
+            and previous_max_id > 0
+            and (current_max_id is None or current_max_id < previous_max_id)
+        )
+        if not count_regressed and not id_regressed:
+            continue
+        alerts.append(
+            _alert(
+                "database_table_regression",
+                current_time=current_time,
+                severity="critical",
+                count=1,
+                window_seconds=0,
+                source=f"table:{table_name}",
+                table=table_name,
+                previous_count=previous_count,
+                current_count=current_count,
+                previous_max_id=previous_max_id or 0,
+                current_max_id=current_max_id or 0,
+                reason="row_count_or_identity_rewind",
+            )
+        )
+    return alerts
+
+
+def _state_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _state_optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _alert_webhook_body(alerts: list[dict[str, Any]], *, provider: str) -> bytes:
@@ -824,6 +1072,52 @@ def _add_auth_backoff_alerts(
             alerts.append(
                 _alert(
                     "auth_backoff_or_rate_limit_burst",
+                    current_time=current_time,
+                    severity="high",
+                    count=count,
+                    window_seconds=10 * 60,
+                    source=source,
+                )
+            )
+
+
+def _add_password_reset_alerts(
+    alerts: list[dict[str, Any]],
+    events: list[SecurityAuditEvent],
+    *,
+    current_time: datetime,
+) -> None:
+    window_start = current_time - timedelta(minutes=10)
+    request_by_source: Counter[str] = Counter()
+    failure_by_source: Counter[str] = Counter()
+    for event in events:
+        if _as_utc(event.created_at) < window_start:
+            continue
+        if event.event_type not in PASSWORD_RESET_EVENT_TYPES:
+            continue
+        source = _event_source(event)
+        if event.event_type in {"password_reset_requested", "manual_recovery_requested"}:
+            request_by_source[source] += 1
+        if event.outcome in {"failure", "blocked", "expired"}:
+            failure_by_source[source] += 1
+
+    for source, count in request_by_source.items():
+        if count >= 5:
+            alerts.append(
+                _alert(
+                    "password_reset_request_burst",
+                    current_time=current_time,
+                    severity="high",
+                    count=count,
+                    window_seconds=10 * 60,
+                    source=source,
+                )
+            )
+    for source, count in failure_by_source.items():
+        if count >= 3:
+            alerts.append(
+                _alert(
+                    "password_reset_failure_burst",
                     current_time=current_time,
                     severity="high",
                     count=count,

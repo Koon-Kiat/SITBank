@@ -110,7 +110,11 @@ and long token-like strings while preserving harmless severity, event type, summ
 timestamp, correlation ID, public session reference, and safe user references.
 Redis dedupe suppresses repeated delivery of the same alert for
 `SECURITY_ALERT_DEDUPE_TTL_SECONDS` while keeping the active alert in the JSON
-report. Set `SECURITY_AUDIT_ANCHOR_PATH` when a trusted exported anchor is
+report. Keep `SECURITY_ALERT_STATE_PATH=/run/state/security-alert-state.json`
+on the host-mounted alert state volume so `check-security-alerts` records table
+count and identity baselines outside Postgres/Redis and emits critical
+`database_table_regression` alerts when `users` or `security_audit_events`
+rewind or shrink. Set `SECURITY_AUDIT_ANCHOR_PATH` when a trusted exported anchor is
 available so `check-security-alerts` emits critical
 `audit_chain_verification_failed` or `audit_anchor_mismatch` alerts for chain
 tampering, rewind, or tail deletion detectable from the anchor.
@@ -140,6 +144,37 @@ failures for one `principal_ref` or IP in 5 minutes; 5 or more
 `auth_backoff`/`rate_limit` events from the same source in 10 minutes; 3 or more
 transaction failures for the same user/ref in 15 minutes; 10 transaction
 failures globally in 15 minutes; audit hash-chain verification failure; audit
-anchor mismatch; failed deployments; signature or revision mismatches;
-unexpected image digests; security-key counter anomalies; and changes to
-root-managed secret or FIDO policy files.
+anchor mismatch; database table regression; failed deployments; signature or
+revision mismatches; unexpected image digests; security-key counter anomalies;
+and changes to root-managed secret or FIDO policy files.
+
+## Password Reset Operations
+
+Customer password reset is customer-domain only. Admin account recovery is not
+implemented here and must not be handled through `/forgot-password`,
+`/reset-password`, `/auth/password-reset/*`, or `/account-recovery`.
+
+Operational checks for suspected recovery abuse:
+
+```bash
+psql "$DATABASE_MIGRATION_URL" --no-psqlrc --command \
+  "SELECT created_at, event_type, outcome, ip_address, event_metadata->>'principal_ref' AS principal_ref FROM security_audit_events WHERE event_type LIKE 'password_reset%' OR event_type = 'manual_recovery_requested' ORDER BY created_at DESC LIMIT 50;"
+psql "$DATABASE_MIGRATION_URL" --no-psqlrc --command \
+  "SELECT status, count(*) FROM manual_recovery_requests GROUP BY status;"
+python -m flask --app wsgi:app check-security-alerts --report-only
+```
+
+Expected reset email configuration in production:
+
+- `PASSWORD_RESET_EMAIL_BACKEND=smtp`
+- `PASSWORD_RESET_BASE_URL=https://sitbank.duckdns.org`
+- `PASSWORD_RESET_EMAIL_FROM=<approved sender>`
+- `SMTP_HOST=<approved provider host>`
+- `SMTP_USERNAME_FILE=/run/secrets/smtp_username`
+- `SMTP_PASSWORD_FILE=/run/secrets/smtp_password`
+
+Do not paste reset links into Discord, Telegram, ntfy, tickets, audit logs, or
+security alert payloads. Reset links belong only in customer recovery email.
+Manual recovery requests create pending records and audit events only; account
+freezing, unlocking, MFA removal, or re-enrollment must require a trusted
+future approval workflow.

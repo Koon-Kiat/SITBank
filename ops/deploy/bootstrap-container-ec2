@@ -198,6 +198,8 @@ install -d -o root -g "${CONTAINER_GID}" -m 0750 "${config_root}"
 install -d -o root -g "${CONTAINER_GID}" -m 0750 \
     "${config_root}/secrets"
 install -d -o root -g root -m 0700 "${state_dir}" "${backup_dir}"
+install -d -o "${CONTAINER_ACCOUNT}" -g "${CONTAINER_GID}" -m 0750 \
+    "${state_dir}/security-alert-state"
 
 install -o root -g root -m 0644 \
     "${repo_root}/${compose_source}" "${compose_dir}/compose.yml"
@@ -428,7 +430,7 @@ visudo -cf /etc/sudoers.d/sitbank-container-deploy
 systemctl daemon-reload
 systemctl enable "${systemd_service}"
 if [[ "${target}" == "production" ]]; then
-    systemctl enable "${alert_systemd_timer}"
+    systemctl enable --now "${alert_systemd_timer}"
 fi
 
 echo "${target^} container bootstrap complete; existing production containers were not restarted."

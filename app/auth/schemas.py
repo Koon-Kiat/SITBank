@@ -12,6 +12,7 @@ WEBAUTHN_CREDENTIAL_REFERENCE_RE = r"^[A-Za-z0-9_-]{16,4096}$"
 WEBAUTHN_LABEL_RE = r"^[A-Za-z0-9][A-Za-z0-9 ._()#:/+\-]{0,79}$"
 STEP_UP_ACTION_RE = r"^[a-z_]{3,64}$"
 STEP_UP_TOKEN_RE = r"^[A-Za-z0-9_-]{32,256}$"
+RESET_TOKEN_RE = r"^[A-Za-z0-9_-]{16,96}\.[A-Za-z0-9_-]{32,128}$"
 
 
 def password_length(*, minimum: int | None = None):
@@ -56,6 +57,22 @@ class RegisterSchema(Schema):
 class LoginSchema(Schema):
     identifier = fields.Str(required=True, validate=validate.Length(min=1, max=255))
     password = fields.Str(required=True, load_only=True, validate=validate.Length(min=1))
+
+
+class ForgotPasswordSchema(Schema):
+    email = fields.Email(required=True, validate=validate.Length(max=255))
+
+
+class ManualRecoverySchema(Schema):
+    identifier = fields.Str(required=True, validate=validate.Length(min=1, max=255))
+
+
+class ResetTokenExchangeSchema(Schema):
+    token = fields.Str(
+        required=True,
+        load_only=True,
+        validate=validate.Regexp(RESET_TOKEN_RE, error="Invalid reset token"),
+    )
 
 
 class TotpSchema(Schema):
@@ -103,6 +120,28 @@ class PasswordChangeSchema(Schema):
     def validate_password_match(self, data, **_kwargs):
         if data.get("new_password") != data.get("confirm_new_password"):
             raise ValidationError("Passwords must match")
+
+
+class PasswordResetSchema(Schema):
+    new_password = fields.Str(
+        required=True,
+        load_only=True,
+        validate=password_length(minimum=PASSWORD_MIN_LENGTH),
+    )
+    confirm_new_password = fields.Str(
+        required=True,
+        load_only=True,
+        validate=password_length(minimum=PASSWORD_MIN_LENGTH),
+    )
+
+    @validates_schema
+    def validate_password_match(self, data, **_kwargs):
+        if data.get("new_password") != data.get("confirm_new_password"):
+            raise ValidationError("Passwords must match")
+
+
+class RecoveryCodeSchema(Schema):
+    recovery_code = fields.Str(required=True, load_only=True, validate=validate.Length(min=8, max=80))
 
 
 class WebAuthnRegistrationOptionsSchema(Schema):

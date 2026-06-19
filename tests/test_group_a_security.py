@@ -2373,6 +2373,45 @@ def test_audit_hash_chain_detects_metadata_link_missing_row_and_order_tampering(
     assert "previous_hash_mismatch" in {error["reason"] for error in reordered["errors"]}
 
 
+def test_security_alerts_detect_database_table_regression_from_external_state(app, tmp_path):
+    from app.security.alerts import build_security_alert_report
+    from app.security.audit import audit_event
+
+    state_path = tmp_path / "security-alert-state.json"
+    app.config["SECURITY_ALERT_STATE_PATH"] = str(state_path)
+    user = User(
+        username="alice01",
+        email="alice@example.com",
+        password_hash=hash_password("correct horse battery staple"),
+    )
+    db.session.add(user)
+    db.session.commit()
+    with app.test_request_context("/audit/baseline", method="POST"):
+        audit_event("baseline", "success", user=user)
+
+    baseline_report = build_security_alert_report(deliver=True)
+    assert baseline_report["database_integrity"]["baseline_available"] is False
+    assert state_path.exists()
+
+    db.session.execute(db.delete(SecurityAuditEvent))
+    db.session.execute(db.delete(User))
+    db.session.commit()
+
+    regression_report = build_security_alert_report(deliver=True)
+    regression_alerts = [
+        alert
+        for alert in regression_report["alerts"]
+        if alert["alert_type"] == "database_table_regression"
+    ]
+    regressed_sources = {alert["source"] for alert in regression_alerts}
+    persisted_state = json.loads(state_path.read_text(encoding="utf-8"))
+
+    assert regression_report["database_integrity"]["valid"] is False
+    assert {"table:security_audit_events", "table:users"} <= regressed_sources
+    assert persisted_state["tables"]["security_audit_events"]["count"] == 1
+    assert persisted_state["tables"]["users"]["count"] == 1
+
+
 def test_security_alert_evaluator_cli_and_output_are_sanitized(app):
     from app.security.alerts import evaluate_security_alerts
     from app.security.audit import audit_event, audit_reference, principal_reference
@@ -2832,6 +2871,7 @@ def test_production_env_docs_require_pbkdf2_pepper_not_bcrypt():
         "PASSWORD_PBKDF2_ITERATIONS",
         "HIBP_CIRCUIT_FAILURE_THRESHOLD",
         "HIBP_CIRCUIT_OPEN_SECONDS",
+        "SECURITY_ALERT_STATE_PATH",
         "WEBAUTHN_APPROVED_AAGUIDS_PATH",
         "WEBAUTHN_MDS_CACHE_PATH",
     ):
