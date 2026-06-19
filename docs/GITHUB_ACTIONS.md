@@ -65,9 +65,13 @@ For production only, also set:
 - `PROD_ADMIN_SESSION_KEY_PREFIX` if overriding the default `admin-session:`
 - `PROD_ADMIN_RATELIMIT_KEY_PREFIX` if overriding the default `ospbank:admin:ratelimit:`
 
+For staging admin, also set:
+
+- `STAGING_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID`
+
 `<PREFIX>_MFA_KEK_ACTIVE_ID` must match a key identifier in the root-managed `/etc/sitbank*/secrets/mfa_kek_keys_json` file on EC2. Do not put `MFA_KEK_KEYS_JSON` in GitHub Actions; the KEK keyring is a long-lived secret and remains host-managed.
-`PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID` must match a key identifier in
-`/etc/sitbank/secrets/admin_session_hmac_keys_json`. Do not put admin Flask,
+`<PREFIX>_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID` must match a key identifier in
+`/etc/sitbank*/secrets/admin_session_hmac_keys_json`. Do not put admin Flask,
 CSRF, session-HMAC, password-pepper, Redis, or database secret values in GitHub
 Actions; those remain root-managed EC2 secret files.
 
