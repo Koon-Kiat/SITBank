@@ -230,8 +230,8 @@ def build_container_environment(prefix: str = "PROD") -> dict[str, str]:
     }
     for name, default in NON_SECRET_DEFAULTS.items():
         environment[name] = _value(_prefixed(prefix, name), default=default)
+    environment["ADMIN_SESSION_HMAC_ACTIVE_KEY_ID"] = _admin_active_key_id(prefix)
     if prefix == "PROD":
-        environment["ADMIN_SESSION_HMAC_ACTIVE_KEY_ID"] = _admin_active_key_id(prefix)
         environment["ADMIN_SESSION_KEY_PREFIX"] = _value(
             _prefixed(prefix, "ADMIN_SESSION_KEY_PREFIX"),
             default="admin-session:",

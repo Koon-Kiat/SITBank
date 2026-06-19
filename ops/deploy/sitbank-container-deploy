@@ -320,6 +320,11 @@ install_runtime_bundle() {
             ADMIN_SESSION_KEY_PREFIX
         )
     fi
+    if [[ "${target}" == "staging" ]]; then
+        allowed_environment+=(
+            ADMIN_SESSION_HMAC_ACTIVE_KEY_ID
+        )
+    fi
     if grep -Evq "^[A-Z][A-Z0-9_]*='[^']+'\$" \
         "${staging_dir}/container.env"; then
         echo "Runtime environment file has an invalid line" >&2

@@ -364,6 +364,7 @@ def test_container_bundle_accepts_staging_prefix(monkeypatch):
     assert environment["WEBAUTHN_RP_ORIGIN"] == "https://staging.sitbank.example"
     assert environment["PASSWORD_RESET_BASE_URL"] == "https://staging.sitbank.example"
     assert environment["SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06"
+    assert environment["ADMIN_SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06-admin"
     assert environment["MFA_KEK_ACTIVE_ID"] == "2026-06-mfa"
     assert secrets["secret_key"] == DEPLOYMENT_VALUES["PROD_SECRET_KEY"]
     assert secrets["database_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_URL"]
@@ -619,6 +620,13 @@ def test_smoke_fixture_and_deployment_wrapper_match_runtime_contract():
     assert "show_dependency_diagnostics" in deploy_script
     assert 'logs --no-color --tail 120 postgres redis' in deploy_script
     assert "dependencies_prepared=1" in deploy_script
+    assert 'if [[ "${target}" == "staging" ]]; then' in deploy_script
+    assert re.search(
+        r'\[\[ "\$\{target\}" == "staging" \]\].*?'
+        r"allowed_environment\+=\(\s*ADMIN_SESSION_HMAC_ACTIVE_KEY_ID\s*\)",
+        deploy_script,
+        flags=re.DOTALL,
+    )
 
 
 def test_local_ci_command_documents_required_local_checks():
@@ -715,6 +723,7 @@ def test_environment_only_bundle_accepts_staging_prefix(monkeypatch, tmp_path):
 
     environment = (output / "container.env").read_text(encoding="utf-8")
     deployment = (output / "deployment.env").read_text(encoding="utf-8")
+    assert "ADMIN_SESSION_HMAC_ACTIVE_KEY_ID='2026-06-admin'" in environment
     assert "MFA_KEK_ACTIVE_ID='2026-06-mfa'" in environment
     assert "WEBAUTHN_RP_ID='staging.sitbank.example'" in environment
     assert "APP_BIND_PORT='5001'" in deployment
@@ -1275,6 +1284,10 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         == "${{ vars.STAGING_MFA_KEK_ACTIVE_ID }}"
     )
     assert (
+        staging_deploy_env["STAGING_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID"]
+        == "${{ vars.STAGING_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID }}"
+    )
+    assert (
         staging_deploy_env["STAGING_PASSWORD_RESET_EMAIL_FROM"]
         == "${{ vars.STAGING_PASSWORD_RESET_EMAIL_FROM }}"
     )
@@ -1300,7 +1313,11 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         (
             "deploy-staging",
             "Verify staging deployment configuration",
-            {"STAGING_PASSWORD_RESET_EMAIL_FROM", "STAGING_SMTP_HOST"},
+            {
+                "STAGING_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID",
+                "STAGING_PASSWORD_RESET_EMAIL_FROM",
+                "STAGING_SMTP_HOST",
+            },
         ),
         (
             "deploy-production",
