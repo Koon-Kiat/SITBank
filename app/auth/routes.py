@@ -9,8 +9,41 @@ from app.extensions import limiter
 from app.security.rate_limits import mfa_principal, request_principal
 
 from .decorators import login_required, not_frozen_required
-from .forms import CsrfOnlyForm, LoginForm, PasswordChangeForm, RegisterForm, StepUpTokenForm, TotpForm
-from .schemas import LoginSchema, PasswordChangeSchema, RegisterSchema, StepUpTokenSchema, TerminateSessionSchema, TotpSchema
+from .forms import (
+    CsrfOnlyForm,
+    ForgotPasswordForm,
+    LoginForm,
+    ManualRecoveryForm,
+    PasswordChangeForm,
+    PasswordResetForm,
+    RecoveryCodeForm,
+    RegisterForm,
+    StepUpTokenForm,
+    TotpForm,
+)
+from .password_reset import (
+    complete_password_reset,
+    current_reset_transaction,
+    request_manual_recovery,
+    request_password_reset,
+    reset_transaction_user_and_id,
+    verify_recovery_code_for_reset,
+    verify_reset_totp,
+    exchange_reset_token,
+)
+from .schemas import (
+    ForgotPasswordSchema,
+    LoginSchema,
+    ManualRecoverySchema,
+    PasswordChangeSchema,
+    PasswordResetSchema,
+    RecoveryCodeSchema,
+    RegisterSchema,
+    ResetTokenExchangeSchema,
+    StepUpTokenSchema,
+    TerminateSessionSchema,
+    TotpSchema,
+)
 from .schemas import (
     WebAuthnAuthenticationOptionsSchema,
     WebAuthnAuthenticationVerifySchema,
@@ -41,11 +74,13 @@ from .services import (
 from .webauthn_services import (
     begin_step_up_options,
     begin_authentication_options,
+    begin_password_reset_options,
     begin_registration_options,
     verify_step_up,
     list_credentials_for_user,
     revoke_credential,
     verify_authentication,
+    verify_password_reset_assertion,
     verify_registration,
 )
 
@@ -57,6 +92,15 @@ AUTH_MFA_ONBOARDING_ALLOWED_ENDPOINTS = {
     "auth.logout",
     "auth.mfa_setup",
     "auth.mfa_setup_verify",
+    "auth.password_reset_request",
+    "auth.password_reset_exchange",
+    "auth.password_reset_transaction",
+    "auth.password_reset_totp",
+    "auth.password_reset_recovery_code",
+    "auth.password_reset_webauthn_options",
+    "auth.password_reset_webauthn_verify",
+    "auth.password_reset_complete",
+    "auth.manual_recovery_request",
 }
 
 
@@ -140,6 +184,75 @@ def register():
 def login():
     data = _load_payload(LoginSchema(), LoginForm)
     return jsonify(authenticate_primary(data["identifier"], data["password"]))
+
+
+@auth_bp.post("/password-reset/request")
+@limiter.limit("5 per 15 minutes", key_func=get_remote_address)
+@limiter.limit("5 per 15 minutes", key_func=request_principal)
+def password_reset_request():
+    data = _load_payload(ForgotPasswordSchema(), ForgotPasswordForm)
+    return jsonify(request_password_reset(data["email"]))
+
+
+@auth_bp.post("/password-reset/exchange")
+@limiter.limit("10 per 15 minutes", key_func=get_remote_address)
+def password_reset_exchange():
+    data = ResetTokenExchangeSchema().load(request.get_json(silent=False) or {})
+    return jsonify(exchange_reset_token(data["token"]))
+
+
+@auth_bp.get("/password-reset/transaction")
+def password_reset_transaction():
+    return jsonify(current_reset_transaction())
+
+
+@auth_bp.post("/password-reset/mfa/totp")
+@limiter.limit("5 per 5 minutes", key_func=get_remote_address)
+@limiter.limit("5 per 5 minutes", key_func=mfa_principal)
+def password_reset_totp():
+    data = _load_payload(TotpSchema(), TotpForm)
+    return jsonify(verify_reset_totp(data["totp_code"]))
+
+
+@auth_bp.post("/password-reset/mfa/recovery-code")
+@limiter.limit("5 per 15 minutes", key_func=get_remote_address)
+@limiter.limit("5 per 15 minutes", key_func=mfa_principal)
+def password_reset_recovery_code():
+    data = _load_payload(RecoveryCodeSchema(), RecoveryCodeForm)
+    return jsonify(verify_recovery_code_for_reset(data["recovery_code"]))
+
+
+@auth_bp.post("/password-reset/mfa/webauthn/options")
+@limiter.limit("5 per 5 minutes", key_func=get_remote_address)
+@limiter.limit("5 per 5 minutes", key_func=mfa_principal)
+def password_reset_webauthn_options():
+    user, transaction_id = reset_transaction_user_and_id()
+    return jsonify(begin_password_reset_options(user, transaction_id))
+
+
+@auth_bp.post("/password-reset/mfa/webauthn/verify")
+@limiter.limit("5 per 5 minutes", key_func=get_remote_address)
+@limiter.limit("5 per 5 minutes", key_func=mfa_principal)
+def password_reset_webauthn_verify():
+    user, transaction_id = reset_transaction_user_and_id()
+    data = WebAuthnAuthenticationVerifySchema().load(request.get_json(silent=False) or {})
+    return jsonify(verify_password_reset_assertion(user, transaction_id, data["credential"]))
+
+
+@auth_bp.post("/password-reset/complete")
+@limiter.limit("5 per 15 minutes", key_func=get_remote_address)
+@limiter.limit("5 per 15 minutes", key_func=mfa_principal)
+def password_reset_complete():
+    data = _load_payload(PasswordResetSchema(), PasswordResetForm)
+    return jsonify(complete_password_reset(data["new_password"], data["confirm_new_password"]))
+
+
+@auth_bp.post("/account-recovery")
+@limiter.limit("3 per hour", key_func=get_remote_address)
+@limiter.limit("3 per hour", key_func=request_principal)
+def manual_recovery_request():
+    data = _load_payload(ManualRecoverySchema(), ManualRecoveryForm)
+    return jsonify(request_manual_recovery(data["identifier"]))
 
 
 @auth_bp.post("/webauthn/register/options")

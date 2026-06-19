@@ -62,11 +62,23 @@ Current required settings include:
 - `MFA_KEK_KEYS_JSON` or `MFA_KEK_KEYS_JSON_FILE`
 - `PASSWORD_PEPPER_B64` or `PASSWORD_PEPPER_B64_FILE`
 - `PASSWORD_PBKDF2_ITERATIONS`
+- `PASSWORD_RESET_ENABLED`
+- `PASSWORD_RESET_TOKEN_TTL_SECONDS`
+- `PASSWORD_RESET_TRANSACTION_TTL_SECONDS`
+- `PASSWORD_RESET_EMAIL_BACKEND`
+- `PASSWORD_RESET_EMAIL_FROM`
+- `PASSWORD_RESET_BASE_URL`
+- `SMTP_HOST`
+- `SMTP_PORT`
+- `SMTP_USE_TLS`
+- `SMTP_USERNAME` or `SMTP_USERNAME_FILE`
+- `SMTP_PASSWORD` or `SMTP_PASSWORD_FILE`
 - `SECURITY_ALERT_ENABLED`
 - `SECURITY_ALERT_WEBHOOK_URL` or `SECURITY_ALERT_WEBHOOK_URL_FILE`
 - `SECURITY_ALERT_MIN_SEVERITY`
 - `SECURITY_ALERT_TIMEOUT_SECONDS`
 - `SECURITY_ALERT_DEDUPE_TTL_SECONDS`
+- `SECURITY_ALERT_STATE_PATH`
 - `HIBP_CIRCUIT_FAILURE_THRESHOLD`
 - `HIBP_CIRCUIT_OPEN_SECONDS`
 - `WEBAUTHN_RP_ID`
@@ -76,6 +88,21 @@ Current required settings include:
 - `COMMON_PASSWORDS_PATH`
 
 See `ops/production-env.required` for the machine-readable checklist.
+
+## Customer Password Reset
+
+Customer forgot-password requests use generic responses and do not reveal
+whether an account exists. A reset email contains a short-lived one-time
+`selector.verifier` link. The server immediately exchanges that URL token for a
+tokenless Redis reset transaction, then rejects replay of the original URL
+token.
+
+Password reset changes only the password. It does not disable MFA, does not
+create a login session, and revokes active sessions after completion. Customers
+with WebAuthn credentials must verify a reset-bound WebAuthn challenge;
+customers with TOTP must verify TOTP; customers without MFA can reset but are
+sent through the existing MFA onboarding gate on next login. Admin-account
+reset is not implemented in the customer domain.
 
 ## Documentation
 

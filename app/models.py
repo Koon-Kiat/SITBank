@@ -84,6 +84,64 @@ class WebAuthnCredential(db.Model):
         return f"<WebAuthnCredential id={self.id!r} user_id={self.user_id!r} label={self.label!r}>"
 
 
+class PasswordResetToken(db.Model):
+    __tablename__ = "password_reset_tokens"
+
+    id = db.Column(db.Integer, primary_key=True)
+    selector = db.Column(db.String(64), nullable=False, unique=True, index=True)
+    verifier_hmac = db.Column(db.String(64), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    purpose = db.Column(db.String(40), nullable=False, default="password_reset")
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
+    used_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    exchanged_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    requested_ip = db.Column(db.String(64), nullable=False, default="")
+    requested_user_agent = db.Column(db.String(256), nullable=False, default="")
+
+    user = db.relationship("User", backref="password_reset_tokens")
+
+
+class RecoveryCode(db.Model):
+    __tablename__ = "recovery_codes"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    code_hmac = db.Column(db.String(64), nullable=False, unique=True)
+    purpose = db.Column(db.String(40), nullable=False, default="account_recovery")
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    used_at = db.Column(db.DateTime(timezone=True), nullable=True)
+
+    user = db.relationship("User", backref="recovery_codes")
+
+
+class ManualRecoveryRequest(db.Model):
+    __tablename__ = "manual_recovery_requests"
+
+    id = db.Column(db.Integer, primary_key=True)
+    identifier_ref = db.Column(db.String(64), nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True, index=True)
+    status = db.Column(db.String(32), nullable=False, default="pending")
+    requested_ip = db.Column(db.String(64), nullable=False, default="")
+    requested_user_agent = db.Column(db.String(256), nullable=False, default="")
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+    )
+
+    user = db.relationship("User", backref="manual_recovery_requests")
+
+
 class SecurityAuditEvent(db.Model):
     __tablename__ = "security_audit_events"
 
