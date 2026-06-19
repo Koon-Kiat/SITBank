@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+
+{% block title %}Account Recovery | SITBank{% endblock %}
+
+{% block content %}
+<section class="auth-shell">
+  <div class="auth-intro">
+    <p class="eyebrow">Manual review</p>
+    <h1>Account recovery</h1>
+    <p class="lede">Request customer recovery review when password, MFA, and recovery codes are unavailable.</p>
+  </div>
+
+  <div class="auth-card">
+    <div class="page-heading">
+      <p class="eyebrow">Customer account</p>
+      <h2>Request review</h2>
+    </div>
+    <form method="post" action="{{ url_for('web.account_recovery_submit') }}" novalidate>
+      {{ form.hidden_tag() }}
+      <div class="form-group">
+        <label for="{{ form.identifier.id }}">Username or email</label>
+        {{ form.identifier(autocomplete="username", maxlength="255") }}
+        {% for error in form.identifier.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+      </div>
+      <button class="button full" type="submit">Request recovery review</button>
+    </form>
+    <p class="switch-link"><a href="{{ url_for('web.login') }}">Back to login</a></p>
+  </div>
+</section>
+{% endblock %}

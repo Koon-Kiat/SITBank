@@ -206,7 +206,19 @@ def register_no_store_headers(app: Flask) -> None:
 
         response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
 
-        if session.get("user_id") or session.get("pending_mfa_user_id"):
+        if (
+            session.get("user_id")
+            or session.get("pending_mfa_user_id")
+            or request.path.startswith(
+                (
+                    "/forgot-password",
+                    "/reset-password",
+                    "/account-recovery",
+                    "/auth/password-reset",
+                    "/auth/account-recovery",
+                )
+            )
+        ):
             response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
             response.headers["Pragma"] = "no-cache"
             response.headers["Expires"] = "0"

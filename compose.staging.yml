@@ -119,6 +119,8 @@ services:
       MFA_KEK_KEYS_JSON_FILE: /run/secrets/mfa_kek_keys_json
       PASSWORD_PEPPER_B64_FILE: /run/secrets/password_pepper_b64
       SECURITY_ALERT_WEBHOOK_URL_FILE: /run/secrets/security_alert_webhook_url
+      SMTP_USERNAME_FILE: /run/secrets/smtp_username
+      SMTP_PASSWORD_FILE: /run/secrets/smtp_password
     secrets:
       - source: secret_key
         target: secret_key
@@ -136,6 +138,10 @@ services:
         target: password_pepper_b64
       - source: security_alert_webhook_url
         target: security_alert_webhook_url
+      - source: smtp_username
+        target: smtp_username
+      - source: smtp_password
+        target: smtp_password
     volumes:
       - type: bind
         source: /etc/sitbank-staging/common-passwords.txt
@@ -153,6 +159,12 @@ services:
         source: /etc/sitbank-staging/fido-mds-cache.json
         target: /run/config/fido-mds-cache.json
         read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /var/lib/sitbank-staging-container/security-alert-state
+        target: /run/state
+        read_only: false
         bind:
           create_host_path: false
     networks:
@@ -261,6 +273,10 @@ secrets:
     file: /etc/sitbank-staging/secrets/password_pepper_b64
   security_alert_webhook_url:
     file: /etc/sitbank-staging/secrets/security_alert_webhook_url
+  smtp_username:
+    file: /etc/sitbank-staging/secrets/smtp_username
+  smtp_password:
+    file: /etc/sitbank-staging/secrets/smtp_password
   postgres_owner_password:
     file: /etc/sitbank-staging/secrets/postgres_owner_password
   postgres_app_password:

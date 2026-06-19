@@ -160,6 +160,7 @@
   window.addEventListener("DOMContentLoaded", function () {
     var registerForm = document.querySelector("[data-webauthn-register-form]");
     var loginForm = document.querySelector("[data-webauthn-login-form]");
+    var resetForm = document.querySelector("[data-webauthn-reset-form]");
     var stepUpForms = document.querySelectorAll("[data-webauthn-step-up-form]");
 
     if (registerForm) {
@@ -207,6 +208,35 @@
           })
           .then(function () {
             window.location.assign("/dashboard");
+          })
+          .catch(function (error) {
+            showError(errorNode, webAuthnErrorMessage(error));
+          });
+      });
+    }
+
+    if (resetForm) {
+      resetForm.addEventListener("submit", function (event) {
+        event.preventDefault();
+        var errorNode = document.querySelector("[data-webauthn-reset-error]");
+        clearError(errorNode);
+        if (!window.PublicKeyCredential || !navigator.credentials) {
+          showError(errorNode, "Security key verification is not available in this browser.");
+          return;
+        }
+        postJson("/auth/password-reset/mfa/webauthn/options", {}, csrfToken(resetForm))
+          .then(function (options) {
+            return navigator.credentials.get({ publicKey: prepareAuthenticationOptions(options) });
+          })
+          .then(function (credential) {
+            return postJson(
+              "/auth/password-reset/mfa/webauthn/verify",
+              { credential: authenticationResponse(credential) },
+              csrfToken(resetForm)
+            );
+          })
+          .then(function () {
+            window.location.assign("/reset-password/continue");
           })
           .catch(function (error) {
             showError(errorNode, webAuthnErrorMessage(error));

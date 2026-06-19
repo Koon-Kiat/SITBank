@@ -108,6 +108,22 @@ def _required_env_or_file(name: str) -> str:
     return value
 
 
+def _optional_env_or_file(name: str) -> str | None:
+    direct_value = os.getenv(name)
+    file_value = os.getenv(f"{name}_FILE")
+    if direct_value and file_value:
+        raise RuntimeError(f"Configure either {name} or {name}_FILE, not both")
+    if file_value:
+        value = _read_secret_file(name, file_value)
+    else:
+        value = direct_value
+    if not value:
+        return None
+    if _looks_placeholder(value):
+        raise RuntimeError(f"{name} contains a placeholder value")
+    return value
+
+
 def _required_env(name: str) -> str:
     value = os.getenv(name)
     if not value:
@@ -230,6 +246,23 @@ def _required_webauthn_origin(name: str, *, rp_id: str) -> str:
     return value
 
 
+def _password_reset_base_url(name: str, *, default: str | None) -> str | None:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        if default is None:
+            return None
+        raw_value = default
+    value = raw_value.strip().rstrip("/")
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise RuntimeError(f"{name} must be an HTTP or HTTPS URL with a host")
+    if parsed.username or parsed.password or parsed.params or parsed.query or parsed.fragment:
+        raise RuntimeError(f"{name} must not include credentials, query, or fragment")
+    if APP_ENV == "production" and parsed.scheme != "https":
+        raise RuntimeError(f"{name} must use HTTPS in production")
+    return value
+
+
 def _required_b64_32_bytes(name: str) -> str:
     import base64
 
@@ -310,6 +343,13 @@ def _customer_runtime_overrides(config: dict) -> dict[str, object]:
             lambda: _required_url("REDIS_URL", schemes={"redis", "rediss"}, require_password=True),
         )
     )
+    webauthn_rp_origin = str(
+        _configured_value(
+            config,
+            "WEBAUTHN_RP_ORIGIN",
+            lambda: _required_webauthn_origin("WEBAUTHN_RP_ORIGIN", rp_id=webauthn_rp_id),
+        )
+    )
     return {
         "APP_MODE": "customer",
         "SECRET_ENV_NAMES": CUSTOMER_RUNTIME_SECRET_ENV_NAMES,
@@ -367,10 +407,14 @@ def _customer_runtime_overrides(config: dict) -> dict[str, object]:
             lambda: _required_b64_32_bytes("PASSWORD_PEPPER_B64"),
         ),
         "WEBAUTHN_RP_ID": webauthn_rp_id,
-        "WEBAUTHN_RP_ORIGIN": _configured_value(
+        "WEBAUTHN_RP_ORIGIN": webauthn_rp_origin,
+        "PASSWORD_RESET_BASE_URL": _configured_value(
             config,
-            "WEBAUTHN_RP_ORIGIN",
-            lambda: _required_webauthn_origin("WEBAUTHN_RP_ORIGIN", rp_id=webauthn_rp_id),
+            "PASSWORD_RESET_BASE_URL",
+            lambda: _password_reset_base_url(
+                "PASSWORD_RESET_BASE_URL",
+                default=webauthn_rp_origin,
+            ),
         ),
         "SESSION_KEY_PREFIX": config.get("SESSION_KEY_PREFIX") or "session:",
         "SESSION_COOKIE_NAME": config.get("SESSION_COOKIE_NAME") or "__Host-sitbank_session",
@@ -562,6 +606,47 @@ class Config:
     if HIBP_CIRCUIT_OPEN_SECONDS < 30 or HIBP_CIRCUIT_OPEN_SECONDS > 3600:
         raise RuntimeError("HIBP_CIRCUIT_OPEN_SECONDS must be between 30 and 3600")
 
+    PASSWORD_RESET_ENABLED = _optional_bool("PASSWORD_RESET_ENABLED", default=True)
+    PASSWORD_RESET_TOKEN_TTL_SECONDS = _int_env(
+        "PASSWORD_RESET_TOKEN_TTL_SECONDS",
+        default="1800",
+        minimum=300,
+        maximum=1800,
+    )
+    PASSWORD_RESET_TRANSACTION_TTL_SECONDS = _int_env(
+        "PASSWORD_RESET_TRANSACTION_TTL_SECONDS",
+        default="900",
+        minimum=300,
+        maximum=1800,
+    )
+    PASSWORD_RESET_EMAIL_BACKEND = _choice_env(
+        "PASSWORD_RESET_EMAIL_BACKEND",
+        default="smtp" if APP_ENV == "production" else "console",
+        choices={"console", "smtp"},
+    )
+    PASSWORD_RESET_EMAIL_FROM = os.getenv("PASSWORD_RESET_EMAIL_FROM", "security@sitbank.local").strip()
+    PASSWORD_RESET_BASE_URL = _password_reset_base_url(
+        "PASSWORD_RESET_BASE_URL",
+        default=WEBAUTHN_RP_ORIGIN,
+    )
+    SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
+    SMTP_PORT = _int_env("SMTP_PORT", default="587", minimum=1, maximum=65535)
+    SMTP_USE_TLS = _optional_bool("SMTP_USE_TLS", default=True)
+    SMTP_USERNAME = _optional_env_or_file("SMTP_USERNAME")
+    SMTP_PASSWORD = _optional_env_or_file("SMTP_PASSWORD")
+    if PASSWORD_RESET_ENABLED and APP_ENV == "production":
+        if PASSWORD_RESET_EMAIL_BACKEND == "console":
+            raise RuntimeError("PASSWORD_RESET_EMAIL_BACKEND=console is not allowed in production")
+        if not PASSWORD_RESET_EMAIL_FROM:
+            raise RuntimeError("PASSWORD_RESET_EMAIL_FROM is required when password reset is enabled")
+        if PASSWORD_RESET_EMAIL_BACKEND == "smtp":
+            if not SMTP_HOST:
+                raise RuntimeError("SMTP_HOST is required when production password reset uses SMTP")
+            if not SMTP_USERNAME:
+                raise RuntimeError("SMTP_USERNAME or SMTP_USERNAME_FILE is required in production")
+            if not SMTP_PASSWORD:
+                raise RuntimeError("SMTP_PASSWORD or SMTP_PASSWORD_FILE is required in production")
+
     SECURITY_ALERT_ENABLED = _optional_bool(
         "SECURITY_ALERT_ENABLED",
         default=APP_ENV == "production",
@@ -589,6 +674,7 @@ class Config:
         minimum=60,
         maximum=86400,
     )
+    SECURITY_ALERT_STATE_PATH = os.getenv("SECURITY_ALERT_STATE_PATH")
     SECURITY_AUDIT_ANCHOR_PATH = os.getenv("SECURITY_AUDIT_ANCHOR_PATH")
 
     SESSION_TYPE = "redis"

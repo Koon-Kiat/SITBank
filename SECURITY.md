@@ -290,7 +290,12 @@ numbers. Immediately before webhook delivery, both generic JSON payloads and
 Discord-formatted payloads pass through a final sanitizer that redacts
 sensitive keys, bearer/basic credentials, session or cookie values, database or
 Redis URLs with credentials, webhook URLs, API keys, private-key-like values,
-and long token-like strings. Set `SECURITY_AUDIT_ANCHOR_PATH` to the latest
+and long token-like strings. Set
+`SECURITY_ALERT_STATE_PATH=/run/state/security-alert-state.json` on the
+host-mounted alert state directory so `check-security-alerts` can compare
+current `users` and `security_audit_events` metrics against a baseline outside
+Postgres/Redis and alert on `database_table_regression` after a table rewind or
+wipe. Set `SECURITY_AUDIT_ANCHOR_PATH` to the latest
 exported anchor path to make `check-security-alerts` alert on anchor mismatch,
 chain rewind, or tail deletion detectable from the anchor. On mismatch, treat
 the database and host as incident evidence, stop routine anchor rotation,
@@ -301,14 +306,18 @@ Alert immediately on any `security_audit_write_failed`, `account_lock`,
 `webauthn_clone_detected`, `session_integrity` failure,
 `audit_chain_verification_failed`, `audit_anchor_mismatch`,
 `audit_append_only_protection_failed`, or
-`runtime_db_privilege_verification_failed`. Alert when there are
+`runtime_db_privilege_verification_failed`. Password recovery monitoring also
+alerts on `password_reset_token_reused`, `password_reset_webauthn_failed`,
+`manual_recovery_requested`, 5 or more password reset or manual recovery
+requests from one source in 10 minutes, or 3 or more reset failures from one
+source in 10 minutes. Alert when there are
 10 or more `login` failures for the same `principal_ref` or IP in 5 minutes, 5
 or more `auth_backoff` or `rate_limit` events from the same source in 10
 minutes, 3 or more transaction failures for the same user/ref in 15 minutes, or
 10 transaction failures globally in 15 minutes. Also alert on failed
 deployments, signature or revision mismatches, unexpected image digests,
-security-key counter anomalies, and changes to root-managed secret or FIDO
-policy files.
+database table regression, security-key counter anomalies, and changes to
+root-managed secret or FIDO policy files.
 
 Production installs `sitbank-security-alerts.service` and
 `sitbank-security-alerts.timer` through the EC2 bootstrap path. The timer runs
@@ -322,6 +331,40 @@ sudo systemctl enable --now sitbank-security-alerts.timer
 sudo systemctl status sitbank-security-alerts.timer
 journalctl -u sitbank-security-alerts.service
 ```
+
+## Customer Password Reset and Recovery
+
+The customer-domain forgot-password flow is deliberately separate from admin
+account recovery. Admin reset routes, templates, APIs, and customer-domain
+fallback behavior are out of scope; admin recovery belongs only in the future
+admin-sitbank domain.
+
+Customer reset links are short-lived one-time `selector.verifier` URLs. The raw
+verifier is never stored. On first use the token is atomically exchanged for a
+short-lived server-side reset transaction, the browser continues at
+`/reset-password/continue`, and the original URL token is no longer accepted.
+The transaction is not an authenticated login session and cannot access
+dashboard or banking routes.
+
+Reset MFA policy:
+
+- WebAuthn-enrolled customers must complete a WebAuthn assertion bound to the
+  reset transaction.
+- TOTP-only customers must verify TOTP after the reset transaction is active.
+- No-MFA customers can set a new password but remain incomplete-security-state
+  users and hit MFA onboarding on next login.
+- Recovery codes are stored HMACed, shown only by trusted authenticated
+  generation paths, consumed once, and do not disable MFA.
+- Customers who lost password, MFA, and recovery codes can only create a
+  pending manual customer recovery request. That unauthenticated request does
+  not freeze, unlock, or otherwise change the account.
+
+Production must use SMTP-backed reset email delivery with
+`PASSWORD_RESET_EMAIL_BACKEND=smtp`, an HTTPS `PASSWORD_RESET_BASE_URL`,
+`PASSWORD_RESET_EMAIL_FROM`, `SMTP_HOST`, and root-managed
+`SMTP_USERNAME_FILE` / `SMTP_PASSWORD_FILE` secrets. Console reset email is
+allowed only outside production. Security alert webhooks are never used to
+deliver password reset links.
 
 ## AWS OIDC and Systems Manager
 

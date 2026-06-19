@@ -16,7 +16,28 @@ from flask import (
 from flask_limiter.util import get_remote_address
 from marshmallow import ValidationError
 
-from app.auth.forms import CsrfOnlyForm, LoginForm, PasswordChangeForm, ProfileForm, RegisterForm, StepUpTokenForm, TotpForm
+from app.auth.forms import (
+    CsrfOnlyForm,
+    ForgotPasswordForm,
+    LoginForm,
+    ManualRecoveryForm,
+    PasswordChangeForm,
+    PasswordResetForm,
+    ProfileForm,
+    RecoveryCodeForm,
+    RegisterForm,
+    StepUpTokenForm,
+    TotpForm,
+)
+from app.auth.password_reset import (
+    complete_password_reset,
+    current_reset_transaction,
+    exchange_reset_token,
+    request_manual_recovery,
+    request_password_reset,
+    verify_recovery_code_for_reset,
+    verify_reset_totp,
+)
 from app.auth.schemas import TerminateSessionSchema
 from app.auth.services import (
     AuthError,
@@ -59,6 +80,13 @@ from app.security.sessions import (
 web_bp = Blueprint("web", __name__)
 
 WEB_MFA_ONBOARDING_ALLOWED_ENDPOINTS = {
+    "web.forgot_password",
+    "web.forgot_password_submit",
+    "web.reset_password_exchange",
+    "web.reset_password_continue",
+    "web.reset_password_continue_submit",
+    "web.account_recovery",
+    "web.account_recovery_submit",
     "web.mfa_setup",
     "web.mfa_setup_submit",
     "web.logout",
@@ -101,7 +129,20 @@ def web_not_frozen_required(view):
 
 @web_bp.after_request
 def prevent_sensitive_page_caching(response):
-    if session.get("user_id") or session.get("pending_mfa_user_id"):
+    if (
+        session.get("user_id")
+        or session.get("pending_mfa_user_id")
+        or request.endpoint
+        in {
+            "web.forgot_password",
+            "web.forgot_password_submit",
+            "web.reset_password_exchange",
+            "web.reset_password_continue",
+            "web.reset_password_continue_submit",
+            "web.account_recovery",
+            "web.account_recovery_submit",
+        }
+    ):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
@@ -180,6 +221,135 @@ def login_submit():
 
     flash("Login successful.", "success")
     return redirect(url_for("web.dashboard"))
+
+
+@web_bp.get("/forgot-password")
+def forgot_password():
+    if getattr(g, "current_user", None) is not None:
+        return redirect(url_for("web.dashboard"))
+    return render_template("forgot_password.html", form=ForgotPasswordForm())
+
+
+@web_bp.post("/forgot-password")
+@limiter.limit("5 per 15 minutes", key_func=get_remote_address)
+@limiter.limit("5 per 15 minutes", key_func=request_principal)
+def forgot_password_submit():
+    form = ForgotPasswordForm()
+    if not form.validate_on_submit():
+        return render_template("forgot_password.html", form=form), 400
+    result = request_password_reset(form.email.data)
+    flash(result["message"], "success")
+    return redirect(url_for("web.login"))
+
+
+@web_bp.get("/reset-password")
+@limiter.limit("10 per 15 minutes", key_func=get_remote_address)
+def reset_password_exchange():
+    token = request.args.get("token", "")
+    try:
+        exchange_reset_token(token)
+    except AuthError as exc:
+        flash(exc.message, "error")
+        return redirect(url_for("web.forgot_password"))
+    return redirect(url_for("web.reset_password_continue"))
+
+
+@web_bp.get("/reset-password/continue")
+def reset_password_continue():
+    try:
+        transaction = current_reset_transaction()
+    except AuthError as exc:
+        flash(exc.message, "error")
+        return redirect(url_for("web.forgot_password"))
+    return render_template(
+        "reset_password.html",
+        transaction=transaction,
+        totp_form=TotpForm(),
+        recovery_form=RecoveryCodeForm(),
+        reset_form=PasswordResetForm(),
+    )
+
+
+@web_bp.post("/reset-password/continue")
+@limiter.limit("5 per 15 minutes", key_func=get_remote_address)
+@limiter.limit("5 per 15 minutes", key_func=mfa_principal)
+def reset_password_continue_submit():
+    action = request.form.get("action")
+    try:
+        transaction = current_reset_transaction()
+    except AuthError as exc:
+        flash(exc.message, "error")
+        return redirect(url_for("web.forgot_password"))
+
+    if action == "verify_totp":
+        form = TotpForm()
+        if not form.validate_on_submit():
+            return _render_reset_continue(transaction, status_code=400)
+        try:
+            transaction = verify_reset_totp(form.totp_code.data)
+        except AuthError as exc:
+            flash(exc.message, "error")
+            return _render_reset_continue(transaction, status_code=exc.status_code)
+        flash("Authenticator code verified.", "success")
+        return _render_reset_continue(transaction)
+
+    if action == "verify_recovery_code":
+        form = RecoveryCodeForm()
+        if not form.validate_on_submit():
+            return _render_reset_continue(transaction, status_code=400)
+        try:
+            transaction = verify_recovery_code_for_reset(form.recovery_code.data)
+        except AuthError as exc:
+            flash(exc.message, "error")
+            return _render_reset_continue(transaction, status_code=exc.status_code)
+        flash("Recovery code verified.", "success")
+        return _render_reset_continue(transaction)
+
+    if action == "complete":
+        form = PasswordResetForm()
+        if not form.validate_on_submit():
+            return _render_reset_continue(transaction, status_code=400)
+        try:
+            result = complete_password_reset(form.new_password.data, form.confirm_new_password.data)
+        except AuthError as exc:
+            flash(exc.message, "error")
+            return _render_reset_continue(transaction, status_code=exc.status_code)
+        for warning in result.get("warnings", []):
+            flash(warning, "warning")
+        flash(result["message"], "success")
+        return redirect(url_for("web.login"))
+
+    flash("Invalid password reset action.", "error")
+    return _render_reset_continue(transaction, status_code=400)
+
+
+def _render_reset_continue(transaction: dict, *, status_code: int = 200):
+    return render_template(
+        "reset_password.html",
+        transaction=transaction,
+        totp_form=TotpForm(),
+        recovery_form=RecoveryCodeForm(),
+        reset_form=PasswordResetForm(),
+    ), status_code
+
+
+@web_bp.get("/account-recovery")
+def account_recovery():
+    if getattr(g, "current_user", None) is not None:
+        return redirect(url_for("web.dashboard"))
+    return render_template("account_recovery.html", form=ManualRecoveryForm())
+
+
+@web_bp.post("/account-recovery")
+@limiter.limit("3 per hour", key_func=get_remote_address)
+@limiter.limit("3 per hour", key_func=request_principal)
+def account_recovery_submit():
+    form = ManualRecoveryForm()
+    if not form.validate_on_submit():
+        return render_template("account_recovery.html", form=form), 400
+    result = request_manual_recovery(form.identifier.data)
+    flash(result["message"], "success")
+    return redirect(url_for("web.login"))
 
 
 @web_bp.get("/mfa/verify")

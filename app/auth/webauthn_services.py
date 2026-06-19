@@ -31,7 +31,7 @@ from webauthn.helpers.structs import (
 
 from app.extensions import db
 from app.models import User, WebAuthnCredential
-from app.security.audit import audit_reference, audit_webauthn_event
+from app.security.audit import audit_event, audit_reference, audit_webauthn_event
 from app.security.fido_mds import FidoMetadataError, pem_root_certs_by_fmt, validate_aaguid_policy
 from app.security.sessions import (
     current_session_id,
@@ -63,6 +63,7 @@ STEP_UP_CHALLENGE_KEY = "webauthn_step_up_challenge"
 STEP_UP_ACTION_KEY = "webauthn_step_up_action"
 STEP_UP_USER_KEY = "webauthn_step_up_user_id"
 STEP_UP_TOKEN_PREFIX = "ospbank:webauthn_stepup:"
+PASSWORD_RESET_CHALLENGE_PREFIX = "ospbank:password_reset_webauthn:"
 STEP_UP_ACTIONS = frozenset(
     {
         "password_change",
@@ -530,6 +531,125 @@ def verify_step_up(user: User, action: str, credential: dict[str, Any]) -> dict[
     }
 
 
+def begin_password_reset_options(user: User, transaction_id: str) -> dict[str, Any]:
+    enforce_request_origin()
+    ensure_account_not_frozen(user, "password reset security key verification")
+    if not transaction_id:
+        audit_webauthn_event("password_reset_options", "failure", user=user, metadata={"reason": "missing_transaction"})
+        audit_event("password_reset_webauthn_failed", "failure", user=user, metadata={"reason": "missing_transaction"})
+        raise AuthError(GENERIC_WEBAUTHN_ERROR, 401)
+
+    credentials = _credentials_for_user(user)
+    if not credentials:
+        audit_webauthn_event("password_reset_options", "failure", user=user, metadata={"reason": "no_registered_security_key"})
+        audit_event("password_reset_webauthn_failed", "failure", user=user, metadata={"reason": "no_registered_security_key"})
+        raise AuthError(GENERIC_WEBAUTHN_ERROR, 401)
+
+    options = generate_authentication_options(
+        rp_id=current_app.config["WEBAUTHN_RP_ID"],
+        timeout=current_app.config["WEBAUTHN_TIMEOUT_MS"],
+        allow_credentials=[
+            PublicKeyCredentialDescriptor(
+                id=item.credential_id,
+                transports=_transports_for_descriptor(item),
+            )
+            for item in credentials
+        ],
+        user_verification=UserVerificationRequirement.REQUIRED,
+    )
+    challenge = bytes_to_base64url(options.challenge)
+    _redis().set(
+        _password_reset_challenge_key(transaction_id),
+        json.dumps(
+            {
+                "transaction_id": transaction_id,
+                "user_id": user.id,
+                "purpose": "password_reset",
+                "challenge": challenge,
+                "allowed_credential_ids": [
+                    bytes_to_base64url(item.credential_id)
+                    for item in credentials
+                ],
+                "issued_at": _now_timestamp(),
+            },
+            separators=(",", ":"),
+        ),
+        ex=int(current_app.config["PASSWORD_RESET_TRANSACTION_TTL_SECONDS"]),
+    )
+    audit_webauthn_event(
+        "password_reset_options",
+        "success",
+        user=user,
+        metadata={"credential_count": len(credentials)},
+    )
+    audit_event(
+        "password_reset_webauthn_challenge_created",
+        "success",
+        user=user,
+        metadata={"credential_count": len(credentials)},
+    )
+    return options_to_json_dict(options)
+
+
+def verify_password_reset_assertion(user: User, transaction_id: str, credential: dict[str, Any]) -> dict[str, Any]:
+    enforce_request_origin()
+    ensure_account_not_frozen(user, "password reset security key verification")
+    payload = _consume_password_reset_challenge(transaction_id)
+    if (
+        payload.get("user_id") != user.id
+        or payload.get("transaction_id") != transaction_id
+        or payload.get("purpose") != "password_reset"
+    ):
+        audit_webauthn_event(
+            "password_reset_verify",
+            "failure",
+            user=user,
+            metadata={"reason": "challenge_scope_mismatch"},
+        )
+        audit_event("password_reset_webauthn_failed", "failure", user=user, metadata={"reason": "challenge_scope_mismatch"})
+        raise AuthError(GENERIC_WEBAUTHN_ERROR, 401)
+
+    item = _credential_for_user_payload(user.id, credential, "password_reset_verify")
+    allowed_ids = set(payload.get("allowed_credential_ids") or [])
+    if bytes_to_base64url(item.credential_id) not in allowed_ids:
+        audit_webauthn_event(
+            "password_reset_verify",
+            "failure",
+            user=user,
+            credential_id=item.credential_id,
+            metadata={"reason": "credential_not_allowed_for_challenge"},
+        )
+        audit_event("password_reset_webauthn_failed", "failure", user=user, metadata={"reason": "credential_not_allowed"})
+        raise AuthError(GENERIC_WEBAUTHN_ERROR, 401)
+
+    verification = _verify_assertion_response(
+        user,
+        item,
+        credential,
+        str(payload["challenge"]),
+        "password_reset_verify",
+    )
+    item.sign_count = verification.new_sign_count
+    item.last_used_at = datetime.now(timezone.utc)
+    item.credential_device_type = _enum_value(verification.credential_device_type)
+    item.credential_backed_up = verification.credential_backed_up
+    db.session.commit()
+
+    from app.auth.password_reset import mark_reset_webauthn_verified
+
+    result = mark_reset_webauthn_verified(transaction_id, user.id)
+    audit_webauthn_event(
+        "password_reset_verify",
+        "success",
+        user=user,
+        credential_id=item.credential_id,
+        label=item.label,
+        aaguid=item.aaguid,
+    )
+    audit_event("password_reset_webauthn_verified", "success", user=user)
+    return result
+
+
 def consume_step_up_token(user: User, action: str, token: str | None) -> None:
     normalized_action = _validate_step_up_action(action)
     _ensure_authenticated_user_session(user, "step_up_consume")
@@ -896,6 +1016,35 @@ def _ensure_step_up_key_access(user: User, action: str) -> None:
 def _step_up_token_cache_key(token: str) -> str:
     digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
     return f"{STEP_UP_TOKEN_PREFIX}{digest}"
+
+
+def _password_reset_challenge_key(transaction_id: str) -> str:
+    digest = hashlib.sha256(transaction_id.encode("utf-8")).hexdigest()
+    return f"{PASSWORD_RESET_CHALLENGE_PREFIX}{digest}"
+
+
+def _consume_password_reset_challenge(transaction_id: str) -> dict[str, Any]:
+    redis_client = _redis()
+    key = _password_reset_challenge_key(transaction_id)
+    getdel = getattr(redis_client, "getdel", None)
+    raw = getdel(key) if getdel else redis_client.get(key)
+    if not getdel:
+        redis_client.delete(key)
+    if not raw:
+        audit_webauthn_event("password_reset_verify", "failure", metadata={"reason": "missing_challenge"})
+        audit_event("password_reset_webauthn_failed", "failure", metadata={"reason": "missing_challenge"})
+        raise AuthError(GENERIC_WEBAUTHN_ERROR, 401)
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        audit_webauthn_event("password_reset_verify", "failure", metadata={"reason": "invalid_challenge_payload"})
+        audit_event("password_reset_webauthn_failed", "failure", metadata={"reason": "invalid_challenge_payload"})
+        raise AuthError(GENERIC_WEBAUTHN_ERROR, 401) from exc
+    if not isinstance(payload, dict):
+        audit_webauthn_event("password_reset_verify", "failure", metadata={"reason": "invalid_challenge_payload"})
+        audit_event("password_reset_webauthn_failed", "failure", metadata={"reason": "invalid_challenge_payload"})
+        raise AuthError(GENERIC_WEBAUTHN_ERROR, 401)
+    return payload
 
 
 def _required_webauthn_login_credential_count() -> int:

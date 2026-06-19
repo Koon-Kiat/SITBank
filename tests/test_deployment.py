@@ -61,6 +61,10 @@ DEPLOYMENT_VALUES = {
     "PROD_SECURITY_ALERT_WEBHOOK_URL": "https://hooks.example.test/sitbank-security-alerts",
     "PROD_SESSION_HMAC_ACTIVE_KEY_B64": "MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjI=",
     "PROD_SESSION_HMAC_ACTIVE_KEY_ID": "2026-06",
+    "PROD_PASSWORD_RESET_EMAIL_FROM": "security@sitbank.example",
+    "PROD_SMTP_HOST": "smtp.example.test",
+    "PROD_SMTP_USERNAME": "smtp-user",
+    "PROD_SMTP_PASSWORD": "smtp-password",
     "PROD_WTF_CSRF_SECRET_KEY": "csrf-secret-with-enough-length-for-production",
 }
 
@@ -183,6 +187,7 @@ def _config_secret_inputs() -> set[str]:
     tree = ast.parse(Path("config.py").read_text(encoding="utf-8"))
     secret_readers = {
         "_optional_url",
+        "_optional_env_or_file",
         "_required_b64_32_bytes",
         "_required_keyring",
         "_required_secret",
@@ -318,12 +323,17 @@ def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypa
     assert environment["APP_ENV"] == "production"
     assert environment["WEBAUTHN_RP_ID"] == "sitbank.duckdns.org"
     assert environment["WEBAUTHN_RP_ORIGIN"] == "https://sitbank.duckdns.org"
+    assert environment["PASSWORD_RESET_BASE_URL"] == "https://sitbank.duckdns.org"
+    assert environment["PASSWORD_RESET_EMAIL_BACKEND"] == "smtp"
+    assert environment["PASSWORD_RESET_EMAIL_FROM"] == DEPLOYMENT_VALUES["PROD_PASSWORD_RESET_EMAIL_FROM"]
+    assert environment["SMTP_HOST"] == DEPLOYMENT_VALUES["PROD_SMTP_HOST"]
     assert environment["SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06"
     assert environment["ADMIN_SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06-admin"
     assert environment["ADMIN_SESSION_KEY_PREFIX"] == "admin-session:"
     assert environment["ADMIN_RATELIMIT_KEY_PREFIX"] == "ospbank:admin:ratelimit:"
     assert environment["MFA_KEK_ACTIVE_ID"] == "2026-06-mfa"
     assert environment["COMMON_PASSWORDS_PATH"] == "/run/config/common-passwords.txt"
+    assert environment["SECURITY_ALERT_STATE_PATH"] == "/run/state/security-alert-state.json"
     assert "SECRET_KEY" not in environment
     assert "DATABASE_MIGRATION_URL" not in environment
     assert "DATABASE_MIGRATION_URL_FILE" not in environment
@@ -334,6 +344,8 @@ def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypa
     assert secrets["admin_secret_key"] == DEPLOYMENT_VALUES["PROD_ADMIN_SECRET_KEY"]
     assert secrets["database_migration_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_MIGRATION_URL"]
     assert secrets["mfa_kek_keys_json"] == DEPLOYMENT_VALUES["PROD_MFA_KEK_KEYS_JSON"]
+    assert secrets["smtp_username"] == DEPLOYMENT_VALUES["PROD_SMTP_USERNAME"]
+    assert secrets["smtp_password"] == DEPLOYMENT_VALUES["PROD_SMTP_PASSWORD"]
     assert '"2026-06":"MjIy' in secrets["session_hmac_keys_json"]
     assert '"2026-06-admin":"NjY2' in secrets["admin_session_hmac_keys_json"]
 
@@ -350,6 +362,7 @@ def test_container_bundle_accepts_staging_prefix(monkeypatch):
     assert environment["APP_ENV"] == "production"
     assert environment["WEBAUTHN_RP_ID"] == "staging.sitbank.example"
     assert environment["WEBAUTHN_RP_ORIGIN"] == "https://staging.sitbank.example"
+    assert environment["PASSWORD_RESET_BASE_URL"] == "https://staging.sitbank.example"
     assert environment["SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06"
     assert environment["MFA_KEK_ACTIVE_ID"] == "2026-06-mfa"
     assert secrets["secret_key"] == DEPLOYMENT_VALUES["PROD_SECRET_KEY"]
@@ -777,7 +790,16 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert app["pids_limit"] == 256
     assert app["mem_limit"] == "768m"
     assert app["restart"] == "unless-stopped"
-    assert all(volume["read_only"] for volume in app["volumes"])
+    app_volume_by_target = {volume["target"]: volume for volume in app["volumes"]}
+    assert all(
+        volume["read_only"]
+        for target, volume in app_volume_by_target.items()
+        if target.startswith("/run/config/")
+    )
+    assert app_volume_by_target["/run/state"]["source"] == (
+        "/var/lib/sitbank-container/security-alert-state"
+    )
+    assert app_volume_by_target["/run/state"]["read_only"] is False
     assert all(set(secret) == {"source", "target"} for secret in app["secrets"])
     assert all(
         value.startswith("/run/secrets/")
@@ -883,9 +905,13 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "no-new-privileges:true" in staging_app["security_opt"]
     assert staging_app["env_file"] == ["/etc/sitbank-staging/container.env"]
     assert "DATABASE_MIGRATION_URL_FILE" not in staging_app["environment"]
+    staging_volume_by_target = {
+        volume["target"]: volume for volume in staging_app["volumes"]
+    }
     assert all(
         volume["source"].startswith("/etc/sitbank-staging/")
-        for volume in staging_app["volumes"]
+        for target, volume in staging_volume_by_target.items()
+        if target.startswith("/run/config/")
     )
     assert staging_admin["container_name"] == "sitbank-staging-admin"
     assert staging_admin["ports"] == ["127.0.0.1:5002:5000"]
@@ -902,6 +928,10 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     )
     assert staging_admin["command"][-1] == "admin_wsgi:app"
     assert all(set(secret) == {"source", "target"} for secret in staging_admin["secrets"])
+    assert staging_volume_by_target["/run/state"]["source"] == (
+        "/var/lib/sitbank-staging-container/security-alert-state"
+    )
+    assert staging_volume_by_target["/run/state"]["read_only"] is False
     assert all(
         secret["file"].startswith("/etc/sitbank-staging/secrets/")
         for secret in staging_compose["secrets"].values()
@@ -1183,26 +1213,56 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "needs.deploy-staging.result == 'success'" in production_condition
     assert "vars.STAGING_DEPLOY_ENABLED != 'true'" not in production_condition
     assert "inputs.deploy == true" not in production_condition
+    staging_deploy_env = workflow["jobs"]["deploy-staging"]["env"]
+    production_deploy_env = workflow["jobs"]["deploy-production"]["env"]
     assert (
-        workflow["jobs"]["deploy-staging"]["env"]["IMAGE_DIGEST"]
+        staging_deploy_env["IMAGE_DIGEST"]
         == "${{ needs.release-verify.outputs.digest }}"
     )
     assert (
-        workflow["jobs"]["deploy-staging"]["env"]["STAGING_MFA_KEK_ACTIVE_ID"]
+        staging_deploy_env["STAGING_MFA_KEK_ACTIVE_ID"]
         == "${{ vars.STAGING_MFA_KEK_ACTIVE_ID }}"
     )
     assert (
-        workflow["jobs"]["deploy-production"]["env"]["IMAGE_DIGEST"]
+        staging_deploy_env["STAGING_PASSWORD_RESET_EMAIL_FROM"]
+        == "${{ vars.STAGING_PASSWORD_RESET_EMAIL_FROM }}"
+    )
+    assert staging_deploy_env["STAGING_SMTP_HOST"] == "${{ vars.STAGING_SMTP_HOST }}"
+    assert (
+        production_deploy_env["IMAGE_DIGEST"]
         == "${{ needs.release-verify.outputs.digest }}"
     )
     assert (
-        workflow["jobs"]["deploy-production"]["env"]["PROD_MFA_KEK_ACTIVE_ID"]
+        production_deploy_env["PROD_MFA_KEK_ACTIVE_ID"]
         == "${{ vars.PROD_MFA_KEK_ACTIVE_ID }}"
     )
     assert (
         workflow["jobs"]["deploy-production"]["env"]["PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID"]
         == "${{ vars.PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID }}"
     )
+    assert (
+        production_deploy_env["PROD_PASSWORD_RESET_EMAIL_FROM"]
+        == "${{ vars.PROD_PASSWORD_RESET_EMAIL_FROM }}"
+    )
+    assert production_deploy_env["PROD_SMTP_HOST"] == "${{ vars.PROD_SMTP_HOST }}"
+    for job_name, verify_step_name, required_names in (
+        (
+            "deploy-staging",
+            "Verify staging deployment configuration",
+            {"STAGING_PASSWORD_RESET_EMAIL_FROM", "STAGING_SMTP_HOST"},
+        ),
+        (
+            "deploy-production",
+            "Verify production deployment configuration",
+            {"PROD_PASSWORD_RESET_EMAIL_FROM", "PROD_SMTP_HOST"},
+        ),
+    ):
+        verify_step = next(
+            step
+            for step in workflow["jobs"][job_name]["steps"]
+            if step["name"] == verify_step_name
+        )
+        assert required_names <= set(_extract_bash_array(verify_step["run"], "required"))
     assert workflow["jobs"]["publish"]["needs"] == [
         "test",
         "workflow-security",
@@ -1730,7 +1790,7 @@ def test_security_alert_scheduler_units_are_committed_and_safe():
     assert "exec -T app python -m flask --app wsgi:app check-security-alerts" in runtime
     assert "ops/systemd/${alert_systemd_service}" in bootstrap
     assert "ops/systemd/${alert_systemd_timer}" in bootstrap
-    assert "systemctl enable \"${alert_systemd_timer}\"" in bootstrap
+    assert "systemctl enable --now \"${alert_systemd_timer}\"" in bootstrap
     for required in (
         "sudo systemctl daemon-reload",
         "sudo systemctl enable --now sitbank-security-alerts.timer",
@@ -2256,8 +2316,10 @@ def test_audit_operations_runbook_and_append_only_privileges_are_present():
         "verify-audit-log-chain --anchor",
         "SECURITY_ALERT_WEBHOOK_URL_FILE",
         "SECURITY_ALERT_DEDUPE_TTL_SECONDS",
+        "SECURITY_ALERT_STATE_PATH",
         "SECURITY_AUDIT_ANCHOR_PATH",
         "systemd timer",
+        "database table regression",
         "immutable storage",
         "10 or more `login` failures",
         "`auth_backoff`",

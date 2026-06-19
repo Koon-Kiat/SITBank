@@ -37,10 +37,16 @@ Do not run `db.create_all()` in deployment. For role cutover use `sitbank-databa
 
 Install `/etc/sitbank/secrets/security_alert_webhook_url` or
 `/etc/sitbank-staging/secrets/security_alert_webhook_url` with the
-operator-managed HTTPS alert webhook for that environment. Deploy the signed
-image through the restricted wrapper so it runs `production-check`, `db
-upgrade`, `apply-runtime-db-privileges`, `verify-runtime-db-privileges`, and
-readiness checks before declaring success.
+operator-managed HTTPS alert webhook for that environment. Install
+`smtp_username` and `smtp_password` secret files for the reset email provider,
+and set `PASSWORD_RESET_EMAIL_BACKEND=smtp`, `PASSWORD_RESET_EMAIL_FROM`,
+`PASSWORD_RESET_BASE_URL`, `SMTP_HOST`, `SMTP_PORT`, and `SMTP_USE_TLS` in the
+container runtime environment. Production rejects console reset email and
+non-HTTPS reset base URLs.
+
+Deploy the signed image through the restricted wrapper so it runs
+`production-check`, `db upgrade`, `apply-runtime-db-privileges`,
+`verify-runtime-db-privileges`, and readiness checks before declaring success.
 
 Production also requires a DNS record for `admin-sitbank.duckdns.org` pointing
 at the same EC2 edge, Certbot files under
@@ -58,6 +64,10 @@ hash chain and compares the anchor during automated alert runs. Audit trigger
 changes require `db upgrade`, then `apply-runtime-db-privileges` and
 `verify-runtime-db-privileges`; they do not require an EC2 edge bootstrap
 unless host-managed deployment, Nginx, or systemd files also changed.
+Production also renders
+`SECURITY_ALERT_STATE_PATH=/run/state/security-alert-state.json` and mounts the
+host alert-state directory there so `check-security-alerts` can alert when
+`users` or `security_audit_events` shrink after a direct database wipe.
 
 Security alert scheduling is host-managed systemd state. Changes to
 `ops/systemd/sitbank-security-alerts.service`,
