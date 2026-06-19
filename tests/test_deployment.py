@@ -278,10 +278,11 @@ def test_runtime_privilege_verifier_quotes_create_probe_table_name():
         '"CREATE EXTENSION"',
         '"UPDATE security_audit_events"',
         '"DELETE security_audit_events"',
+        '"TRUNCATE security_audit_events"',
     ):
         assert privilege_probe in source
     assert "apply_runtime_audit_table_privileges" in source
-    assert "REVOKE UPDATE, DELETE ON TABLE" in source
+    assert "REVOKE UPDATE, DELETE, TRUNCATE ON TABLE" in source
     assert "GRANT SELECT, INSERT ON TABLE" in source
     assert "previous_event_hash" in source
     assert "event_hash" in source
@@ -492,11 +493,19 @@ def test_bundle_renderer_runs_directly_without_pythonpath():
 
 def test_compose_secret_mounts_match_runtime_contract():
     expected_app_secrets = {name: name for name in APP_SECRET_FILES}
-    for path, secret_root, extra_secrets in (
+    expected_admin_environment = {
+        **ADMIN_SECRET_FILE_ENVIRONMENT,
+        "SECURITY_ALERT_WEBHOOK_URL_FILE": "/run/secrets/security_alert_webhook_url",
+    }
+    expected_admin_secrets = {
+        **{name: name for name in ADMIN_SECRET_FILES},
+        "security_alert_webhook_url": "security_alert_webhook_url",
+    }
+    for path, secret_root, base_extra_secrets in (
         (
             Path("compose.prod.yml"),
             "/etc/sitbank/secrets",
-            {name: name for name in ADMIN_SECRET_FILES},
+            {},
         ),
         (
             Path("compose.staging.yml"),
@@ -515,16 +524,18 @@ def test_compose_secret_mounts_match_runtime_contract():
             f"{path} app service secrets must match runtime contract"
         )
 
+        extra_secrets = dict(base_extra_secrets)
+        admin = compose["services"].get("admin")
         if path.name == "compose.prod.yml":
-            admin = compose["services"]["admin"]
-            assert admin["environment"] == {
-                **ADMIN_SECRET_FILE_ENVIRONMENT,
-                "SECURITY_ALERT_WEBHOOK_URL_FILE": "/run/secrets/security_alert_webhook_url",
-            }
-            assert _service_secret_targets(admin) == {
-                **{name: name for name in ADMIN_SECRET_FILES},
-                "security_alert_webhook_url": "security_alert_webhook_url",
-            }
+            assert admin is not None
+        if admin is not None:
+            assert admin["environment"] == expected_admin_environment, (
+                f"{path} admin secret _FILE environment must match runtime contract"
+            )
+            assert _service_secret_targets(admin) == expected_admin_secrets, (
+                f"{path} admin service secrets must match runtime contract"
+            )
+            extra_secrets.update(expected_admin_secrets)
 
         expected_top_level = (
             set(PRODUCTION_SECRET_FILES)
@@ -738,6 +749,7 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     staging_compose = yaml.safe_load(staging_compose_text)
     staging_services = staging_compose["services"]
     staging_app = staging_services["app"]
+    staging_admin = staging_services["admin"]
 
     assert compose["name"] == "sitbank"
     stage_images = _dockerfile_stage_images(dockerfile)
@@ -861,7 +873,7 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "56379" not in smoke_test
 
     assert staging_compose["name"] == "sitbank-staging"
-    assert set(staging_services) == {"app", "postgres", "redis"}
+    assert set(staging_services) == {"app", "admin", "postgres", "redis"}
     assert staging_app["container_name"] == "sitbank-staging-app"
     assert staging_app["ports"] == ["127.0.0.1:5001:5000"]
     assert "network_mode" not in staging_app
@@ -875,6 +887,21 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
         volume["source"].startswith("/etc/sitbank-staging/")
         for volume in staging_app["volumes"]
     )
+    assert staging_admin["container_name"] == "sitbank-staging-admin"
+    assert staging_admin["ports"] == ["127.0.0.1:5002:5000"]
+    assert "network_mode" not in staging_admin
+    assert staging_admin["read_only"] is True
+    assert staging_admin["user"] == "10001:10001"
+    assert staging_admin["cap_drop"] == ["ALL"]
+    assert "no-new-privileges:true" in staging_admin["security_opt"]
+    assert staging_admin["env_file"] == ["/etc/sitbank-staging/container.env"]
+    assert "DATABASE_MIGRATION_URL_FILE" not in staging_admin["environment"]
+    assert (
+        staging_admin["command"][staging_admin["command"].index("--bind") + 1]
+        == "0.0.0.0:5000"
+    )
+    assert staging_admin["command"][-1] == "admin_wsgi:app"
+    assert all(set(secret) == {"source", "target"} for secret in staging_admin["secrets"])
     assert all(
         secret["file"].startswith("/etc/sitbank-staging/secrets/")
         for secret in staging_compose["secrets"].values()
@@ -2106,6 +2133,9 @@ def test_migration_baseline_and_existing_database_runbook_are_present():
     audit_append_only_migration = Path(
         "migrations/versions/20260618_0003_audit_append_only_triggers.py"
     ).read_text(encoding="utf-8")
+    audit_truncate_migration = Path(
+        "migrations/versions/20260618_0004_audit_truncate_trigger.py"
+    ).read_text(encoding="utf-8")
     docs = _project_docs_text()
 
     assert 'revision = "20260610_0001"' in migration
@@ -2123,6 +2153,12 @@ def test_migration_baseline_and_existing_database_runbook_are_present():
     assert "BEFORE UPDATE ON security_audit_events" in audit_append_only_migration
     assert "BEFORE DELETE ON security_audit_events" in audit_append_only_migration
     assert "ERRCODE = '42501'" in audit_append_only_migration
+    assert 'revision = "20260618_0004"' in audit_truncate_migration
+    assert 'down_revision = "20260618_0003"' in audit_truncate_migration
+    assert "security_audit_events_reject_mutation" in audit_truncate_migration
+    assert "security_audit_events_reject_truncate" in audit_truncate_migration
+    assert "BEFORE TRUNCATE ON security_audit_events" in audit_truncate_migration
+    assert "FOR EACH STATEMENT" in audit_truncate_migration
     assert "verify-migration-baseline" in docs
     assert "db stamp 20260610_0001" in docs
     assert "Do not run `db.create_all()`" in docs
@@ -2142,6 +2178,9 @@ def test_audit_operations_runbook_and_append_only_privileges_are_present():
     append_only_migration = Path(
         "migrations/versions/20260618_0003_audit_append_only_triggers.py"
     ).read_text(encoding="utf-8")
+    truncate_migration = Path(
+        "migrations/versions/20260618_0004_audit_truncate_trigger.py"
+    ).read_text(encoding="utf-8")
     deploy_script = Path("ops/deploy/sitbank-container-deploy").read_text(encoding="utf-8")
     smoke_test = Path("ops/container/smoke-test.sh").read_text(encoding="utf-8")
     staging_compose = Path("compose.staging.yml").read_text(encoding="utf-8")
@@ -2153,7 +2192,7 @@ def test_audit_operations_runbook_and_append_only_privileges_are_present():
         "apply-runtime-db-privileges",
         "verify-runtime-db-privileges",
         "security_audit_events",
-        "cannot update or delete",
+        "cannot update, delete, or truncate",
         "security_audit_write_failed",
         "hash chain",
         "verify-audit-log-chain",
@@ -2162,6 +2201,7 @@ def test_audit_operations_runbook_and_append_only_privileges_are_present():
         "verify-audit-log-chain --anchor",
         "SECURITY_ALERT_WEBHOOK_URL_FILE",
         "SECURITY_ALERT_DEDUPE_TTL_SECONDS",
+        "SECURITY_AUDIT_ANCHOR_PATH",
         "systemd timer",
         "immutable storage",
         "10 or more `login` failures",
@@ -2186,14 +2226,17 @@ def test_audit_operations_runbook_and_append_only_privileges_are_present():
     assert "security_audit_events_reject_mutation" in append_only_migration
     assert "security_audit_events_reject_update" in append_only_migration
     assert "security_audit_events_reject_delete" in append_only_migration
-    assert "REVOKE UPDATE, DELETE ON TABLE" in privileges
+    assert "security_audit_events_reject_truncate" in truncate_migration
+    assert "BEFORE TRUNCATE ON security_audit_events" in truncate_migration
+    assert "REVOKE UPDATE, DELETE, TRUNCATE ON TABLE" in privileges
+    assert "TRUNCATE security_audit_events" in privileges
     assert "GRANT SELECT, INSERT ON TABLE" in privileges
     assert "_assert_audit_append_only_triggers_installed" in privileges
     assert "pg_advisory_xact_lock" in privileges
     assert "previous_event_hash" in privileges
     assert "event_hash" in privileges
     assert "hash_algorithm" in privileges
-    assert "audit_update_delete=revoked" in commands
+    assert "audit_update_delete_truncate=revoked" in commands
     assert deploy_script.index("db upgrade") < deploy_script.index("apply-runtime-db-privileges")
     assert deploy_script.index("apply-runtime-db-privileges") < deploy_script.index("verify-runtime-db-privileges")
     assert smoke_test.index("db upgrade") < smoke_test.index("apply-runtime-db-privileges")

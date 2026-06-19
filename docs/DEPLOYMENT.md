@@ -50,6 +50,14 @@ secret files under `/etc/sitbank/secrets`: `admin_secret_key`,
 `admin_database_url` must use a dedicated admin runtime database role and must
 not reuse either `database_url` or `database_migration_url`.
 
+When a trusted audit anchor has been exported, set
+`SECURITY_AUDIT_ANCHOR_PATH=/var/lib/sitbank/audit-anchor.json` in the
+root-managed runtime configuration so `check-security-alerts` verifies the
+hash chain and compares the anchor during automated alert runs. Audit trigger
+changes require `db upgrade`, then `apply-runtime-db-privileges` and
+`verify-runtime-db-privileges`; they do not require an EC2 edge bootstrap
+unless host-managed deployment, Nginx, or systemd files also changed.
+
 ## Production Edge and Network Hardening
 
 The reviewed production bootstrap installs and enables the production edge from `ops/nginx/sitbank-production.conf`, `ops/nginx/sitbank-production-rate-limits.conf`, and `ops/nginx-proxy-headers.conf`. Any change to those files requires a production bootstrap after merge.
@@ -89,9 +97,12 @@ Expected: local customer and admin readiness succeeds, external `/health/ready`
 returns `403`, and admin public routes return `403` or are otherwise denied by
 Nginx.
 
-Staging admin is out of scope for Phase 1A. Do not add a staging admin host or
-half-wire staging admin secrets until the staging admin boundary is implemented
-as a complete follow-up.
+Staging admin must follow the same boundary pattern as production. Do not expose
+admin routes publicly. The staging admin service must bind only to localhost,
+use a dedicated Nginx server block, and deny public admin traffic unless an
+approved access path such as VPN, SSH tunnel, or explicit allowlist is
+configured. Staging admin secrets must be root-managed under
+`/etc/sitbank-staging/secrets` and must not reuse customer runtime secrets.
 
 ## Staging Edge Setup
 

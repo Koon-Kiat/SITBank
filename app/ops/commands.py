@@ -229,7 +229,7 @@ def register_ops_commands(app: Flask) -> None:
             f"runtime_role={result.runtime_role} "
             f"migration_role={result.migration_role} "
             f"audit_table={result.audit_table} "
-            "audit_update_delete=revoked"
+            "audit_update_delete_truncate=revoked"
         )
 
     @app.cli.command("verify-audit-log-chain")

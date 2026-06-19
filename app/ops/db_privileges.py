@@ -61,8 +61,10 @@ def apply_runtime_audit_table_privileges(
             qualified_table = _qualified_table_name(schema, audit_table)
             quoted_runtime_role = _quote_identifier(runtime_role)
             migration_connection.execute(text(f"GRANT SELECT, INSERT ON TABLE {qualified_table} TO {quoted_runtime_role}"))
-            migration_connection.execute(text(f"REVOKE UPDATE, DELETE ON TABLE {qualified_table} FROM {quoted_runtime_role}"))
-            migration_connection.execute(text(f"REVOKE UPDATE, DELETE ON TABLE {qualified_table} FROM PUBLIC"))
+            migration_connection.execute(
+                text(f"REVOKE UPDATE, DELETE, TRUNCATE ON TABLE {qualified_table} FROM {quoted_runtime_role}")
+            )
+            migration_connection.execute(text(f"REVOKE UPDATE, DELETE, TRUNCATE ON TABLE {qualified_table} FROM PUBLIC"))
     finally:
         runtime_engine.dispose()
         migration_engine.dispose()
@@ -328,6 +330,11 @@ def _assert_audit_table_append_only(connection, *, schema: str) -> int:
         lambda: connection.execute(table.delete().where(table.c.id == inserted_id)),
         "DELETE security_audit_events",
     )
+    _expect_privilege_denied(
+        connection,
+        f"TRUNCATE TABLE {_qualified_table_name(schema, 'security_audit_events')}",
+        "TRUNCATE security_audit_events",
+    )
     return int(inserted_id)
 
 
@@ -345,7 +352,8 @@ def _assert_audit_append_only_triggers_installed(connection, *, schema: str) -> 
                   AND NOT t.tgisinternal
                   AND t.tgname IN (
                     'security_audit_events_reject_update',
-                    'security_audit_events_reject_delete'
+                    'security_audit_events_reject_delete',
+                    'security_audit_events_reject_truncate'
                   )
                 """
             ),
@@ -355,6 +363,7 @@ def _assert_audit_append_only_triggers_installed(connection, *, schema: str) -> 
     if trigger_names != {
         "security_audit_events_reject_update",
         "security_audit_events_reject_delete",
+        "security_audit_events_reject_truncate",
     }:
         raise RuntimeError("security_audit_events append-only triggers are not installed")
 
