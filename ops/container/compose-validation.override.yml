@@ -1,3 +1,5 @@
 services:
   app:
     env_file: !reset []
+  admin:
+    env_file: !reset []

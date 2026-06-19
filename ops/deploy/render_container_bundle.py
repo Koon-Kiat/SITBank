@@ -15,17 +15,26 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from ops.runtime_contract import (
+    ADMIN_APP_SECRET_INPUTS,
+    CUSTOMER_APP_SECRET_INPUTS,
     DEPLOYMENT_SECRET_INPUTS,
     NON_SECRET_DEFAULTS as RUNTIME_NON_SECRET_DEFAULTS,
+    PRODUCTION_SECRET_INPUTS,
 )
 
-SECRET_INPUTS = dict(DEPLOYMENT_SECRET_INPUTS)
+SECRET_INPUTS = dict(PRODUCTION_SECRET_INPUTS)
 NON_SECRET_DEFAULTS = dict(RUNTIME_NON_SECRET_DEFAULTS)
+CUSTOMER_SECRET_INPUTS = dict(CUSTOMER_APP_SECRET_INPUTS)
+ADMIN_SECRET_INPUTS = dict(ADMIN_APP_SECRET_INPUTS)
 
 DEPLOYMENT_PREFIXES = {"PROD", "STAGING"}
 
 DEPLOYMENT_PROFILES = {
     "PROD": {
+        "ADMIN_APP_BIND_HOST": "127.0.0.1",
+        "ADMIN_APP_BIND_PORT": "5002",
+        "ADMIN_APP_CONTAINER_NAME": "sitbank-admin",
+        "ADMIN_PUBLIC_HOST": "admin-sitbank.duckdns.org",
         "APP_BIND_HOST": "127.0.0.1",
         "APP_BIND_PORT": "5000",
         "APP_CONTAINER_NAME": "sitbank-app",
@@ -159,6 +168,43 @@ def _session_keyring(prefix: str) -> tuple[str, str]:
     return active_id, json.dumps(keyring, separators=(",", ":"), sort_keys=True)
 
 
+def _admin_active_key_id(prefix: str) -> str:
+    active_id_name = _prefixed(prefix, "ADMIN_SESSION_HMAC_ACTIVE_KEY_ID")
+    active_id = _value(active_id_name)
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,32}", active_id):
+        raise RuntimeError(f"{active_id_name} is invalid")
+    return active_id
+
+
+def _admin_session_keyring(prefix: str) -> tuple[str, str]:
+    active_id = _admin_active_key_id(prefix)
+    active_key_name = _prefixed(prefix, "ADMIN_SESSION_HMAC_ACTIVE_KEY_B64")
+    active_key = _validate_b64_key(
+        active_key_name,
+        _value(active_key_name),
+    )
+    keyring = {active_id: active_key}
+
+    previous_id_name = _prefixed(prefix, "ADMIN_SESSION_HMAC_PREVIOUS_KEY_ID")
+    previous_key_name = _prefixed(prefix, "ADMIN_SESSION_HMAC_PREVIOUS_KEY_B64")
+    previous_id = os.environ.get(previous_id_name, "").strip()
+    previous_key = os.environ.get(previous_key_name, "").strip()
+    if bool(previous_id) != bool(previous_key):
+        raise RuntimeError(
+            f"{previous_id_name} and {previous_key_name} must be configured together"
+        )
+    if previous_id:
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,32}", previous_id):
+            raise RuntimeError(f"{previous_id_name} is invalid")
+        if previous_id == active_id:
+            raise RuntimeError("Admin session HMAC key identifiers must be unique")
+        keyring[previous_id] = _validate_b64_key(
+            previous_key_name,
+            previous_key,
+        )
+    return active_id, json.dumps(keyring, separators=(",", ":"), sort_keys=True)
+
+
 def build_container_environment(prefix: str = "PROD") -> dict[str, str]:
     public_host_name = _prefixed(prefix, "PUBLIC_HOST")
     public_host = _value(public_host_name)
@@ -181,6 +227,16 @@ def build_container_environment(prefix: str = "PROD") -> dict[str, str]:
     }
     for name, default in NON_SECRET_DEFAULTS.items():
         environment[name] = _value(_prefixed(prefix, name), default=default)
+    if prefix == "PROD":
+        environment["ADMIN_SESSION_HMAC_ACTIVE_KEY_ID"] = _admin_active_key_id(prefix)
+        environment["ADMIN_SESSION_KEY_PREFIX"] = _value(
+            _prefixed(prefix, "ADMIN_SESSION_KEY_PREFIX"),
+            default="admin-session:",
+        )
+        environment["ADMIN_RATELIMIT_KEY_PREFIX"] = _value(
+            _prefixed(prefix, "ADMIN_RATELIMIT_KEY_PREFIX"),
+            default="ospbank:admin:ratelimit:",
+        )
     return environment
 
 
@@ -201,7 +257,8 @@ def build_container_bundle(
 
     secrets = {
         target: _value(_prefixed(prefix, source))
-        for source, target in SECRET_INPUTS.items()
+        for source, target in DEPLOYMENT_SECRET_INPUTS.items()
+        if source in CUSTOMER_SECRET_INPUTS or source in {"DATABASE_MIGRATION_URL"}
     }
     _validate_keyring(
         _prefixed(prefix, "MFA_KEK_KEYS_JSON"),
@@ -213,6 +270,19 @@ def build_container_bundle(
         secrets["password_pepper_b64"],
     )
     secrets["session_hmac_keys_json"] = keyring
+    if prefix == "PROD":
+        admin_active_key_id, admin_keyring = _admin_session_keyring(prefix)
+        if environment["ADMIN_SESSION_HMAC_ACTIVE_KEY_ID"] != admin_active_key_id:
+            raise RuntimeError("Admin session HMAC active key identifiers do not match")
+        for source, target in ADMIN_SECRET_INPUTS.items():
+            if source == "ADMIN_SESSION_HMAC_KEYS_JSON":
+                continue
+            secrets[target] = _value(_prefixed(prefix, source))
+        _validate_b64_key(
+            _prefixed(prefix, "ADMIN_PASSWORD_PEPPER_B64"),
+            secrets["admin_password_pepper_b64"],
+        )
+        secrets["admin_session_hmac_keys_json"] = admin_keyring
     return environment, secrets
 
 

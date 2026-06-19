@@ -52,7 +52,8 @@ def mfa_principal() -> str:
 
 
 def _failure_key(scope: str, principal: str) -> str:
-    return f"ospbank:authfail:{scope}:{_safe_identifier(principal)}"
+    prefix = str(current_app.config.get("AUTH_FAILURE_KEY_PREFIX") or "ospbank:authfail:")
+    return f"{prefix}{scope}:{_safe_identifier(principal)}"
 
 
 def _backoff_start_attempts(scope: str) -> int:

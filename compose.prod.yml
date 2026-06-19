@@ -77,6 +77,94 @@ services:
         max-size: 10m
         max-file: "5"
 
+  admin:
+    image: ${SITBANK_IMAGE:?SITBANK_IMAGE must be an immutable digest reference}
+    container_name: sitbank-admin
+    network_mode: host
+    user: "10001:10001"
+    read_only: true
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 35s
+    command:
+      - python
+      - -m
+      - gunicorn
+      - --workers
+      - "2"
+      - --bind
+      - 127.0.0.1:5002
+      - --access-logfile
+      - "-"
+      - --error-logfile
+      - "-"
+      - --timeout
+      - "30"
+      - --graceful-timeout
+      - "30"
+      - admin_wsgi:app
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 512m
+    mem_reservation: 128m
+    cpus: 1.0
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 8192
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=1770
+    env_file:
+      - /etc/sitbank/container.env
+    environment:
+      ADMIN_SECRET_KEY_FILE: /run/secrets/admin_secret_key
+      ADMIN_WTF_CSRF_SECRET_KEY_FILE: /run/secrets/admin_wtf_csrf_secret_key
+      ADMIN_SESSION_HMAC_KEYS_JSON_FILE: /run/secrets/admin_session_hmac_keys_json
+      ADMIN_DATABASE_URL_FILE: /run/secrets/admin_database_url
+      ADMIN_REDIS_URL_FILE: /run/secrets/admin_redis_url
+      ADMIN_PASSWORD_PEPPER_B64_FILE: /run/secrets/admin_password_pepper_b64
+      SECURITY_ALERT_WEBHOOK_URL_FILE: /run/secrets/security_alert_webhook_url
+    secrets:
+      - source: admin_secret_key
+        target: admin_secret_key
+      - source: admin_wtf_csrf_secret_key
+        target: admin_wtf_csrf_secret_key
+      - source: admin_session_hmac_keys_json
+        target: admin_session_hmac_keys_json
+      - source: admin_database_url
+        target: admin_database_url
+      - source: admin_redis_url
+        target: admin_redis_url
+      - source: admin_password_pepper_b64
+        target: admin_password_pepper_b64
+      - source: security_alert_webhook_url
+        target: security_alert_webhook_url
+    volumes:
+      - type: bind
+        source: /etc/sitbank/common-passwords.txt
+        target: /run/config/common-passwords.txt
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; request=urllib.request.Request('http://127.0.0.1:5002/health/ready', headers={'X-Forwarded-Proto':'https','Host':'admin-sitbank.duckdns.org'}); urllib.request.urlopen(request, timeout=4).read()"
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 4
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "5"
+
 secrets:
   secret_key:
     file: /etc/sitbank/secrets/secret_key
@@ -96,3 +184,15 @@ secrets:
     file: /etc/sitbank/secrets/password_pepper_b64
   security_alert_webhook_url:
     file: /etc/sitbank/secrets/security_alert_webhook_url
+  admin_secret_key:
+    file: /etc/sitbank/secrets/admin_secret_key
+  admin_wtf_csrf_secret_key:
+    file: /etc/sitbank/secrets/admin_wtf_csrf_secret_key
+  admin_session_hmac_keys_json:
+    file: /etc/sitbank/secrets/admin_session_hmac_keys_json
+  admin_database_url:
+    file: /etc/sitbank/secrets/admin_database_url
+  admin_redis_url:
+    file: /etc/sitbank/secrets/admin_redis_url
+  admin_password_pepper_b64:
+    file: /etc/sitbank/secrets/admin_password_pepper_b64

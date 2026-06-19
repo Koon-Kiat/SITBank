@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+from datetime import timedelta
 from pathlib import Path
 
 import fakeredis
@@ -13,6 +14,11 @@ TEST_SESSION_HMAC_ACTIVE_KEY_ID = "test-current"
 TEST_SESSION_HMAC_KEYS = {
     "test-current": b"2" * 32,
     "test-previous": b"3" * 32,
+}
+TEST_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID = "test-admin-current"
+TEST_ADMIN_SESSION_HMAC_KEYS = {
+    "test-admin-current": b"6" * 32,
+    "test-admin-previous": b"7" * 32,
 }
 TEST_MFA_KEK_ACTIVE_ID = "test-mfa-current"
 TEST_MFA_KEK_KEYS = {
@@ -36,16 +42,29 @@ os.environ.setdefault("SECRET_KEY", "test-secret-key-that-is-long-enough-for-con
 os.environ.setdefault("WTF_CSRF_SECRET_KEY", "test-csrf-secret-that-is-long-enough-for-config")
 os.environ["SESSION_HMAC_ACTIVE_KEY_ID"] = TEST_SESSION_HMAC_ACTIVE_KEY_ID
 os.environ["SESSION_HMAC_KEYS_JSON"] = _encoded_keyring(TEST_SESSION_HMAC_KEYS)
+os.environ["ADMIN_SESSION_HMAC_ACTIVE_KEY_ID"] = TEST_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID
+os.environ["ADMIN_SESSION_HMAC_KEYS_JSON"] = _encoded_keyring(TEST_ADMIN_SESSION_HMAC_KEYS)
 os.environ.setdefault(
     "DATABASE_URL",
     "postgresql+psycopg2://user:pass@127.0.0.1:5432/sitbank_test",
 )
 os.environ.setdefault("REDIS_URL", "redis://:pass@127.0.0.1:6379/15")
+os.environ.setdefault("ADMIN_REDIS_URL", "redis://:admin-pass@127.0.0.1:6379/14")
 os.environ["MFA_KEK_ACTIVE_ID"] = TEST_MFA_KEK_ACTIVE_ID
 os.environ["MFA_KEK_KEYS_JSON"] = _encoded_keyring(TEST_MFA_KEK_KEYS)
 os.environ.setdefault(
     "PASSWORD_PEPPER_B64",
     base64.b64encode(b"1" * 32).decode("ascii"),
+)
+os.environ.setdefault("ADMIN_SECRET_KEY", "test-admin-secret-key-that-is-long-enough")
+os.environ.setdefault("ADMIN_WTF_CSRF_SECRET_KEY", "test-admin-csrf-secret-that-is-long-enough")
+os.environ.setdefault(
+    "ADMIN_DATABASE_URL",
+    "postgresql+psycopg2://admin:pass@127.0.0.1:5432/sitbank_test",
+)
+os.environ.setdefault(
+    "ADMIN_PASSWORD_PEPPER_B64",
+    base64.b64encode(b"8" * 32).decode("ascii"),
 )
 os.environ.setdefault("COMMON_PASSWORDS_PATH", str(Path(__file__).parent / "fixtures" / "common_passwords.txt"))
 os.environ.setdefault("COMMON_PASSWORDS_MIN_ENTRIES", "100000")
@@ -60,10 +79,16 @@ class TestConfig:
     WTF_CSRF_SECRET_KEY = os.environ["WTF_CSRF_SECRET_KEY"]
     SESSION_HMAC_ACTIVE_KEY_ID = TEST_SESSION_HMAC_ACTIVE_KEY_ID
     SESSION_HMAC_KEYS = TEST_SESSION_HMAC_KEYS
+    ADMIN_SECRET_KEY = os.environ["ADMIN_SECRET_KEY"]
+    ADMIN_WTF_CSRF_SECRET_KEY = os.environ["ADMIN_WTF_CSRF_SECRET_KEY"]
+    ADMIN_SESSION_HMAC_ACTIVE_KEY_ID = TEST_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID
+    ADMIN_SESSION_HMAC_KEYS = TEST_ADMIN_SESSION_HMAC_KEYS
+    ADMIN_SQLALCHEMY_DATABASE_URI = "sqlite+pysqlite:///:memory:"
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
     SQLALCHEMY_MIGRATION_DATABASE_URI = None
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     REDIS_URL = os.environ["REDIS_URL"]
+    ADMIN_REDIS_URL = os.environ["ADMIN_REDIS_URL"]
     REDIS_PROTOCOL = 2
     REDIS_LEGACY_RESPONSES = True
     REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS = 2.0
@@ -73,6 +98,7 @@ class TestConfig:
     MFA_KEK_ACTIVE_ID = TEST_MFA_KEK_ACTIVE_ID
     MFA_KEK_KEYS = TEST_MFA_KEK_KEYS
     PASSWORD_PEPPER_B64 = os.environ["PASSWORD_PEPPER_B64"]
+    ADMIN_PASSWORD_PEPPER_B64 = os.environ["ADMIN_PASSWORD_PEPPER_B64"]
     PASSWORD_PBKDF2_ITERATIONS = int(os.environ["PASSWORD_PBKDF2_ITERATIONS"])
     PASSWORD_MAX_CHARS = 256
     MFA_ISSUER_NAME = "SITBank Test"
@@ -98,11 +124,26 @@ class TestConfig:
     SESSION_TYPE = "redis"
     SESSION_KEY_PREFIX = "session:"
     SESSION_COOKIE_NAME = "__Host-sitbank_session"
+    ADMIN_SESSION_KEY_PREFIX = "admin-session:"
+    ADMIN_SESSION_COOKIE_NAME = "__Host-sitbank_admin_session"
     SESSION_COOKIE_SECURE = True
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Strict"
     SESSION_PERMANENT = True
     SESSION_INACTIVITY_SECONDS = 15 * 60
+    ADMIN_PERMANENT_SESSION_LIFETIME = timedelta(minutes=5)
+    ADMIN_SESSION_INACTIVITY_SECONDS = 5 * 60
+    ADMIN_PENDING_MFA_MAX_AGE_SECONDS = 60
+    SESSION_METADATA_KEY_PREFIX = "ospbank:session_meta:"
+    USER_SESSIONS_KEY_PREFIX = "ospbank:user_sessions:"
+    PAST_SESSIONS_KEY_PREFIX = "ospbank:past_sessions:"
+    REVOKED_SESSION_KEY_PREFIX = "ospbank:revoked_session:"
+    AUTH_FAILURE_KEY_PREFIX = "ospbank:authfail:"
+    ADMIN_SESSION_METADATA_KEY_PREFIX = "ospbank:admin:session_meta:"
+    ADMIN_USER_SESSIONS_KEY_PREFIX = "ospbank:admin:user_sessions:"
+    ADMIN_PAST_SESSIONS_KEY_PREFIX = "ospbank:admin:past_sessions:"
+    ADMIN_REVOKED_SESSION_KEY_PREFIX = "ospbank:admin:revoked_session:"
+    ADMIN_AUTH_FAILURE_KEY_PREFIX = "ospbank:admin:authfail:"
     SESSION_HISTORY_LIMIT = 20
     PENDING_MFA_MAX_AGE_SECONDS = 5 * 60
     WTF_CSRF_ENABLED = False
@@ -115,6 +156,8 @@ class TestConfig:
     RATELIMIT_HEADERS_ENABLED = True
     RATELIMIT_STRATEGY = "fixed-window"
     RATELIMIT_KEY_PREFIX = "test:"
+    ADMIN_RATELIMIT_STORAGE_URI = "memory://"
+    ADMIN_RATELIMIT_KEY_PREFIX = "test-admin:"
     FRESH_MFA_SECONDS = 5 * 60
     TOTP_LOGIN_VALID_WINDOW = 1
     TOTP_HIGH_RISK_VALID_WINDOW = 0

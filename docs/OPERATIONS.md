@@ -4,6 +4,14 @@
 
 Keep root-managed secret files in `/etc/sitbank/secrets` and `/etc/sitbank-staging/secrets`. The container reads only mounted files under `/run/secrets`; long-lived application secrets are not exported into the Compose process environment.
 
+Production admin uses separate root-managed secret files in
+`/etc/sitbank/secrets`: `admin_secret_key`, `admin_wtf_csrf_secret_key`,
+`admin_session_hmac_keys_json`, `admin_database_url`, `admin_redis_url`, and
+`admin_password_pepper_b64`. These must not reuse customer Flask signing,
+CSRF, session-HMAC, Redis, password-pepper, or database runtime material.
+`admin_database_url` must use a dedicated admin runtime role, distinct from
+both the customer runtime role and the migration/schema-owner role.
+
 MFA/TOTP seed encryption uses envelope encryption. Keep old KEKs in `mfa_kek_keys_json` until `rewrap-mfa-deks` has moved stored records to the new active KEK. Then update `MFA_KEK_ACTIVE_ID` and the root-managed keyring together.
 
 ## Trivy Exception
@@ -55,6 +63,12 @@ The current banking implementation audits public transaction validation and
 WebAuthn transaction approval scaffolding only. There is no final ledger
 movement endpoint in this codebase, so final transfer execution is intentionally
 out of scope until such an endpoint exists.
+
+The Phase 1A admin boundary audits disabled/fail-closed admin login and access
+denied attempts with `admin_*` event types. Full admin audit coverage, including
+admin login success/failure, admin WebAuthn/passkey, admin step-up, admin data
+access, and admin configuration changes, is Phase 2 after strong admin auth and
+network controls exist.
 
 Useful checks:
 

@@ -248,7 +248,7 @@ jobs:
       - name: Run tests and security checks
         run: |
           python -m pytest -q -n auto --durations=30 --durations-min=0.5
-          python -m compileall app config.py wsgi.py
+          python -m compileall app config.py wsgi.py admin_wsgi.py
           python -m pip check
           python -m bandit -q -ll -r app ops config.py wsgi.py
           python -m pip_audit --disable-pip --require-hashes -r requirements.lock
@@ -823,6 +823,7 @@ jobs:
       PROD_PUBLIC_HOST: ${{ vars.PROD_PUBLIC_HOST }}
       PROD_MFA_KEK_ACTIVE_ID: ${{ vars.PROD_MFA_KEK_ACTIVE_ID }}
       PROD_SESSION_HMAC_ACTIVE_KEY_ID: ${{ vars.PROD_SESSION_HMAC_ACTIVE_KEY_ID }}
+      PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID: ${{ vars.PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID }}
       PROD_PASSWORD_PBKDF2_ITERATIONS: ${{ vars.PROD_PASSWORD_PBKDF2_ITERATIONS }}
       PROD_MFA_ISSUER_NAME: ${{ vars.PROD_MFA_ISSUER_NAME }}
     steps:
@@ -845,6 +846,7 @@ jobs:
             PROD_PUBLIC_HOST
             PROD_MFA_KEK_ACTIVE_ID
             PROD_SESSION_HMAC_ACTIVE_KEY_ID
+            PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID
             PROD_PASSWORD_PBKDF2_ITERATIONS
             PROD_MFA_ISSUER_NAME
             PROD_EC2_KNOWN_HOSTS
