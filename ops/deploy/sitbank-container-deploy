@@ -522,10 +522,8 @@ show_app_diagnostics() {
     echo "Application container diagnostics:" >&2
     compose "${image}" ps app >&2 || true
     compose "${image}" logs --no-color --tail 80 app >&2 || true
-    if [[ "${target}" == "production" ]]; then
-        compose "${image}" ps admin >&2 || true
-        compose "${image}" logs --no-color --tail 80 admin >&2 || true
-    fi
+    compose "${image}" ps admin >&2 || true
+    compose "${image}" logs --no-color --tail 80 admin >&2 || true
 }
 
 show_dependency_diagnostics() {
