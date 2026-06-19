@@ -2273,6 +2273,17 @@ def test_audit_hash_chain_records_verifies_and_exports_anchor(app, tmp_path):
     stale_anchor_cli = runner.invoke(
         args=["verify-audit-log-chain", "--anchor", str(stale_anchor_path)]
     )
+    app.config["SECURITY_AUDIT_ANCHOR_PATH"] = str(anchor_path)
+    matching_anchor_alert_cli = runner.invoke(
+        args=["check-security-alerts", "--report-only", "--no-delivery"]
+    )
+    app.config["SECURITY_AUDIT_ANCHOR_PATH"] = str(stale_anchor_path)
+    stale_anchor_alert_cli = runner.invoke(
+        args=["check-security-alerts", "--report-only", "--no-delivery"]
+    )
+    strict_stale_anchor_alert_cli = runner.invoke(args=["check-security-alerts", "--no-delivery"])
+    matching_anchor_report = json.loads(matching_anchor_alert_cli.output)
+    stale_anchor_report = json.loads(stale_anchor_alert_cli.output)
 
     assert first.previous_event_hash == "0" * 64
     assert len(first.event_hash) == 64
@@ -2296,11 +2307,26 @@ def test_audit_hash_chain_records_verifies_and_exports_anchor(app, tmp_path):
     assert json.loads(verify_anchor_cli.output)["anchor_validated"] is True
     assert stale_anchor_cli.exit_code != 0
     assert "anchor_mismatch" in stale_anchor_cli.output
+    assert matching_anchor_alert_cli.exit_code == 0, matching_anchor_alert_cli.output
+    assert matching_anchor_report["audit_chain"]["anchor_validated"] is True
+    assert not any(
+        alert["alert_type"] == "audit_anchor_mismatch"
+        for alert in matching_anchor_report["alerts"]
+    )
+    assert stale_anchor_alert_cli.exit_code == 0, stale_anchor_alert_cli.output
+    assert stale_anchor_report["audit_chain"]["anchor_validated"] is False
+    assert any(
+        alert["alert_type"] == "audit_anchor_mismatch"
+        for alert in stale_anchor_report["alerts"]
+    )
+    assert strict_stale_anchor_alert_cli.exit_code != 0
+    assert "top-secret-note" not in stale_anchor_alert_cli.output
 
 
 def test_audit_hash_chain_detects_metadata_link_missing_row_and_order_tampering(app):
     from sqlalchemy import text
 
+    from app.security.alerts import build_security_alert_report
     from app.security.audit import audit_event, verify_audit_hash_chain
 
     with app.test_request_context("/audit/one", method="POST"):
@@ -2316,11 +2342,17 @@ def test_audit_hash_chain_detects_metadata_link_missing_row_and_order_tampering(
     db.session.commit()
 
     tampered = verify_audit_hash_chain()
+    tampered_alert_report = build_security_alert_report(deliver=False)
     tamper_reasons = {error["reason"] for error in tampered["errors"]}
 
     assert tampered["valid"] is False
     assert "event_hash_mismatch" in tamper_reasons
     assert "previous_hash_mismatch" in tamper_reasons
+    assert any(
+        alert["alert_type"] == "audit_chain_verification_failed"
+        for alert in tampered_alert_report["alerts"]
+    )
+    assert "tampered" not in json.dumps(tampered_alert_report, sort_keys=True)
 
     db.session.delete(second)
     db.session.commit()

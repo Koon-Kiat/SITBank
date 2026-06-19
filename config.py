@@ -383,6 +383,7 @@ class Config:
         minimum=60,
         maximum=86400,
     )
+    SECURITY_AUDIT_ANCHOR_PATH = os.getenv("SECURITY_AUDIT_ANCHOR_PATH")
 
     SESSION_TYPE = "redis"
     SESSION_KEY_PREFIX = "session:"

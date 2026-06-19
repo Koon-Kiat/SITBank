@@ -26,8 +26,11 @@ record and a retained summary of the affected date range.
 
 After `db upgrade`, run `apply-runtime-db-privileges`, then
 `verify-runtime-db-privileges`. The runtime `sitbank_app` role must keep
-`SELECT` and `INSERT` on `security_audit_events`, while `UPDATE` and `DELETE`
-remain revoked so the table is append-only to the app.
+`SELECT` and `INSERT` on `security_audit_events`, while `UPDATE`, `DELETE`,
+and `TRUNCATE` remain revoked so the table is append-only to the app.
+PostgreSQL append-only triggers also reject `UPDATE`, `DELETE`, and `TRUNCATE`
+with SQLSTATE `42501`; a missing trigger should fail runtime privilege
+verification before deployment is considered healthy.
 
 Each new audit row is part of a tamper-evident hash chain stored in
 `previous_event_hash`, `event_hash`, and `hash_algorithm`. The chain uses
@@ -50,6 +53,19 @@ Operators are responsible for moving anchor JSON to immutable storage, WORM
 object storage, signed release artifacts, or a separate SIEM/log archive. The
 application does not provision external immutable storage and no real secrets
 or cloud credentials belong in the repository.
+
+Set `SECURITY_AUDIT_ANCHOR_PATH=/var/lib/sitbank/audit-anchor.json` in the
+runtime configuration after exporting a trusted anchor. `check-security-alerts`
+then verifies the audit chain on every run and compares the current chain head
+with the configured anchor. If no anchor path is configured, the command still
+checks hash-chain integrity but does not fail development or test environments
+for lacking an anchor.
+
+On an anchor mismatch, stop rotating anchors, preserve the current database and
+the mismatched anchor as incident evidence, run
+`python -m flask --app wsgi:app verify-audit-log-chain --anchor /var/lib/sitbank/audit-anchor.json`,
+and investigate possible row tampering, chain rewind, or tail deletion before
+resuming routine deployments.
 
 The current banking implementation audits public transaction validation and
 WebAuthn transaction approval scaffolding only. There is no final ledger
@@ -88,19 +104,26 @@ are placeholder secret names, not checked-in values. Delivery failures are
 sanitized by exception type and must not print webhook URLs or tokens. Redis
 dedupe suppresses repeated delivery of the same alert for
 `SECURITY_ALERT_DEDUPE_TTL_SECONDS` while keeping the active alert in the JSON
-report.
+report. Set `SECURITY_AUDIT_ANCHOR_PATH` when a trusted exported anchor is
+available so `check-security-alerts` emits critical
+`audit_chain_verification_failed` or `audit_anchor_mismatch` alerts for chain
+tampering, rewind, or tail deletion detectable from the anchor.
 
 Example systemd timer cadence: run
 `python -m flask --app wsgi:app verify-audit-log-chain --anchor /var/lib/sitbank/audit-anchor.json --alert-on-failure`
 every 15 minutes and
 `python -m flask --app wsgi:app check-security-alerts` every 5 minutes from a
-root-managed service account with the same container/runtime environment.
+root-managed service account with the same container/runtime environment. A
+change to audit trigger migrations requires `db upgrade` and runtime privilege
+reapply/verify; it does not require an EC2 edge bootstrap unless deployment
+unit or host-managed configuration files also changed.
 
 Alert on any `security_audit_write_failed`, `account_lock`,
 `webauthn_clone_detected`, or `session_integrity` failure; 10 or more login
 failures for one `principal_ref` or IP in 5 minutes; 5 or more
 `auth_backoff`/`rate_limit` events from the same source in 10 minutes; 3 or more
 transaction failures for the same user/ref in 15 minutes; 10 transaction
-failures globally in 15 minutes; failed deployments; signature or revision
-mismatches; unexpected image digests; security-key counter anomalies; and
-changes to root-managed secret or FIDO policy files.
+failures globally in 15 minutes; audit hash-chain verification failure; audit
+anchor mismatch; failed deployments; signature or revision mismatches;
+unexpected image digests; security-key counter anomalies; and changes to
+root-managed secret or FIDO policy files.

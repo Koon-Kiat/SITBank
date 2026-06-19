@@ -240,10 +240,11 @@ def test_runtime_privilege_verifier_quotes_create_probe_table_name():
         '"CREATE EXTENSION"',
         '"UPDATE security_audit_events"',
         '"DELETE security_audit_events"',
+        '"TRUNCATE security_audit_events"',
     ):
         assert privilege_probe in source
     assert "apply_runtime_audit_table_privileges" in source
-    assert "REVOKE UPDATE, DELETE ON TABLE" in source
+    assert "REVOKE UPDATE, DELETE, TRUNCATE ON TABLE" in source
     assert "GRANT SELECT, INSERT ON TABLE" in source
     assert "previous_event_hash" in source
     assert "event_hash" in source
@@ -1936,6 +1937,9 @@ def test_migration_baseline_and_existing_database_runbook_are_present():
     audit_append_only_migration = Path(
         "migrations/versions/20260618_0003_audit_append_only_triggers.py"
     ).read_text(encoding="utf-8")
+    audit_truncate_migration = Path(
+        "migrations/versions/20260618_0004_audit_truncate_trigger.py"
+    ).read_text(encoding="utf-8")
     docs = _project_docs_text()
 
     assert 'revision = "20260610_0001"' in migration
@@ -1953,6 +1957,12 @@ def test_migration_baseline_and_existing_database_runbook_are_present():
     assert "BEFORE UPDATE ON security_audit_events" in audit_append_only_migration
     assert "BEFORE DELETE ON security_audit_events" in audit_append_only_migration
     assert "ERRCODE = '42501'" in audit_append_only_migration
+    assert 'revision = "20260618_0004"' in audit_truncate_migration
+    assert 'down_revision = "20260618_0003"' in audit_truncate_migration
+    assert "security_audit_events_reject_mutation" in audit_truncate_migration
+    assert "security_audit_events_reject_truncate" in audit_truncate_migration
+    assert "BEFORE TRUNCATE ON security_audit_events" in audit_truncate_migration
+    assert "FOR EACH STATEMENT" in audit_truncate_migration
     assert "verify-migration-baseline" in docs
     assert "db stamp 20260610_0001" in docs
     assert "Do not run `db.create_all()`" in docs
@@ -1972,6 +1982,9 @@ def test_audit_operations_runbook_and_append_only_privileges_are_present():
     append_only_migration = Path(
         "migrations/versions/20260618_0003_audit_append_only_triggers.py"
     ).read_text(encoding="utf-8")
+    truncate_migration = Path(
+        "migrations/versions/20260618_0004_audit_truncate_trigger.py"
+    ).read_text(encoding="utf-8")
     deploy_script = Path("ops/deploy/sitbank-container-deploy").read_text(encoding="utf-8")
     smoke_test = Path("ops/container/smoke-test.sh").read_text(encoding="utf-8")
     staging_compose = Path("compose.staging.yml").read_text(encoding="utf-8")
@@ -1983,7 +1996,7 @@ def test_audit_operations_runbook_and_append_only_privileges_are_present():
         "apply-runtime-db-privileges",
         "verify-runtime-db-privileges",
         "security_audit_events",
-        "cannot update or delete",
+        "cannot update, delete, or truncate",
         "security_audit_write_failed",
         "hash chain",
         "verify-audit-log-chain",
@@ -1992,6 +2005,7 @@ def test_audit_operations_runbook_and_append_only_privileges_are_present():
         "verify-audit-log-chain --anchor",
         "SECURITY_ALERT_WEBHOOK_URL_FILE",
         "SECURITY_ALERT_DEDUPE_TTL_SECONDS",
+        "SECURITY_AUDIT_ANCHOR_PATH",
         "systemd timer",
         "immutable storage",
         "10 or more `login` failures",
@@ -2016,14 +2030,17 @@ def test_audit_operations_runbook_and_append_only_privileges_are_present():
     assert "security_audit_events_reject_mutation" in append_only_migration
     assert "security_audit_events_reject_update" in append_only_migration
     assert "security_audit_events_reject_delete" in append_only_migration
-    assert "REVOKE UPDATE, DELETE ON TABLE" in privileges
+    assert "security_audit_events_reject_truncate" in truncate_migration
+    assert "BEFORE TRUNCATE ON security_audit_events" in truncate_migration
+    assert "REVOKE UPDATE, DELETE, TRUNCATE ON TABLE" in privileges
+    assert "TRUNCATE security_audit_events" in privileges
     assert "GRANT SELECT, INSERT ON TABLE" in privileges
     assert "_assert_audit_append_only_triggers_installed" in privileges
     assert "pg_advisory_xact_lock" in privileges
     assert "previous_event_hash" in privileges
     assert "event_hash" in privileges
     assert "hash_algorithm" in privileges
-    assert "audit_update_delete=revoked" in commands
+    assert "audit_update_delete_truncate=revoked" in commands
     assert deploy_script.index("db upgrade") < deploy_script.index("apply-runtime-db-privileges")
     assert deploy_script.index("apply-runtime-db-privileges") < deploy_script.index("verify-runtime-db-privileges")
     assert smoke_test.index("db upgrade") < smoke_test.index("apply-runtime-db-privileges")
