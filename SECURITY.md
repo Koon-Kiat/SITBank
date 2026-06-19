@@ -263,12 +263,16 @@ is a secret and must be regenerated if exposed.
 of the same alert while preserving the alert in reports. Delivery failures are
 reported by type only and must not include webhook URLs, tokens, headers,
 request bodies, raw identifiers, passwords, session IDs, or full account
-numbers. Set `SECURITY_AUDIT_ANCHOR_PATH` to the latest exported anchor path to
-make `check-security-alerts` alert on anchor mismatch, chain rewind, or tail
-deletion detectable from the anchor. On mismatch, treat the database and host
-as incident evidence, stop routine anchor rotation, preserve the mismatched
-anchor, run `verify-audit-log-chain --anchor`, and investigate before resuming
-normal deployments.
+numbers. Immediately before webhook delivery, both generic JSON payloads and
+Discord-formatted payloads pass through a final sanitizer that redacts
+sensitive keys, bearer/basic credentials, session or cookie values, database or
+Redis URLs with credentials, webhook URLs, API keys, private-key-like values,
+and long token-like strings. Set `SECURITY_AUDIT_ANCHOR_PATH` to the latest
+exported anchor path to make `check-security-alerts` alert on anchor mismatch,
+chain rewind, or tail deletion detectable from the anchor. On mismatch, treat
+the database and host as incident evidence, stop routine anchor rotation,
+preserve the mismatched anchor, run `verify-audit-log-chain --anchor`, and
+investigate before resuming normal deployments.
 
 Alert immediately on any `security_audit_write_failed`, `account_lock`,
 `webauthn_clone_detected`, `session_integrity` failure,
@@ -283,10 +287,18 @@ deployments, signature or revision mismatches, unexpected image digests,
 security-key counter anomalies, and changes to root-managed secret or FIDO
 policy files.
 
-Run a systemd timer or equivalent scheduler for
-`verify-audit-log-chain --anchor /var/lib/sitbank/audit-anchor.json --alert-on-failure`
-and `check-security-alerts` so anchor mismatch and alert delivery failures are
-visible without waiting for a manual audit.
+Production installs `sitbank-security-alerts.service` and
+`sitbank-security-alerts.timer` through the EC2 bootstrap path. The timer runs
+`check-security-alerts` through the container runtime wrapper every 5 minutes,
+so anchor mismatch and alert delivery failures are visible without waiting for
+a manual audit.
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now sitbank-security-alerts.timer
+sudo systemctl status sitbank-security-alerts.timer
+journalctl -u sitbank-security-alerts.service
+```
 
 ## AWS OIDC and Systems Manager
 
