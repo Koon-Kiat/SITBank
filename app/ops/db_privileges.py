@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from collections.abc import Mapping, Sequence
 
 from sqlalchemy import Column, DateTime, Integer, JSON, MetaData, String, Table, bindparam, create_engine, select, text
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.exc import DBAPIError
 
 
@@ -33,6 +33,120 @@ class AuditPrivilegeApplication:
     runtime_role: str
     migration_role: str
     audit_table: str
+
+
+@dataclass(frozen=True)
+class AdminRuntimePrivilegeApplication:
+    admin_role: str
+    migration_role: str
+    database: str
+    schema: str
+
+
+def apply_admin_runtime_database_privileges(
+    *,
+    admin_url: str,
+    migration_url: str,
+    schema: str = "public",
+) -> AdminRuntimePrivilegeApplication:
+    if not admin_url:
+        raise RuntimeError("ADMIN_DATABASE_URL is required for admin privilege application")
+    if not migration_url:
+        raise RuntimeError("DATABASE_MIGRATION_URL is required for admin privilege application")
+    if admin_url == migration_url:
+        raise RuntimeError("ADMIN_DATABASE_URL and DATABASE_MIGRATION_URL must use different roles")
+    if not _is_identifier(schema):
+        raise RuntimeError("Schema name is not a safe PostgreSQL identifier")
+
+    admin_config = make_url(admin_url)
+    migration_config = make_url(migration_url)
+    admin_role = str(admin_config.username or "")
+    admin_password = str(admin_config.password or "")
+    migration_config_role = str(migration_config.username or "")
+    database = str(admin_config.database or "")
+    if not _is_identifier(admin_role):
+        raise RuntimeError("ADMIN_DATABASE_URL username must be a safe PostgreSQL role")
+    if not admin_password:
+        raise RuntimeError("ADMIN_DATABASE_URL must include a password")
+    if admin_role == migration_config_role:
+        raise RuntimeError("Admin runtime and migration connections must use different roles")
+    if not _is_identifier(database):
+        raise RuntimeError("ADMIN_DATABASE_URL database name is not a safe PostgreSQL identifier")
+    if database != str(migration_config.database or ""):
+        raise RuntimeError("ADMIN_DATABASE_URL must target the migration database")
+
+    migration_engine = create_engine(migration_url)
+    try:
+        with migration_engine.begin() as connection:
+            migration_role = str(connection.execute(text("SELECT current_user")).scalar_one())
+            if admin_role == migration_role:
+                raise RuntimeError("Admin runtime and migration connections are using the same role")
+            current_database = str(connection.execute(text("SELECT current_database()")).scalar_one())
+            if current_database != database:
+                raise RuntimeError("Migration connection is not using the admin runtime database")
+
+            quoted_admin_role = _quote_identifier(admin_role)
+            quoted_migration_role = _quote_identifier(migration_role)
+            quoted_database = _quote_identifier(database)
+            qualified_schema = _quote_identifier(schema)
+            role_exists = bool(
+                connection.execute(
+                    text("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :role)"),
+                    {"role": admin_role},
+                ).scalar_one()
+            )
+            if role_exists:
+                connection.execute(
+                    text(f"ALTER ROLE {quoted_admin_role} LOGIN PASSWORD :password"),
+                    {"password": admin_password},
+                )
+            else:
+                connection.execute(
+                    text(f"CREATE ROLE {quoted_admin_role} LOGIN PASSWORD :password"),
+                    {"password": admin_password},
+                )
+
+            connection.execute(
+                text(f"GRANT CONNECT ON DATABASE {quoted_database} TO {quoted_admin_role}")
+            )
+            connection.execute(
+                text(f"GRANT USAGE ON SCHEMA {qualified_schema} TO {quoted_admin_role}")
+            )
+            connection.execute(
+                text(
+                    f"GRANT SELECT, INSERT ON ALL TABLES IN SCHEMA {qualified_schema} "
+                    f"TO {quoted_admin_role}"
+                )
+            )
+            connection.execute(
+                text(
+                    f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA {qualified_schema} "
+                    f"TO {quoted_admin_role}"
+                )
+            )
+            connection.execute(
+                text(
+                    f"ALTER DEFAULT PRIVILEGES FOR ROLE {quoted_migration_role} "
+                    f"IN SCHEMA {qualified_schema} GRANT SELECT, INSERT ON TABLES "
+                    f"TO {quoted_admin_role}"
+                )
+            )
+            connection.execute(
+                text(
+                    f"ALTER DEFAULT PRIVILEGES FOR ROLE {quoted_migration_role} "
+                    f"IN SCHEMA {qualified_schema} GRANT USAGE, SELECT ON SEQUENCES "
+                    f"TO {quoted_admin_role}"
+                )
+            )
+    finally:
+        migration_engine.dispose()
+
+    return AdminRuntimePrivilegeApplication(
+        admin_role=admin_role,
+        migration_role=migration_role,
+        database=database,
+        schema=schema,
+    )
 
 
 def apply_runtime_audit_table_privileges(

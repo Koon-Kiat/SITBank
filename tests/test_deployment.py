@@ -287,6 +287,12 @@ def test_runtime_privilege_verifier_quotes_create_probe_table_name():
     ):
         assert privilege_probe in source
     assert "apply_runtime_audit_table_privileges" in source
+    assert "apply_admin_runtime_database_privileges" in source
+    assert "ADMIN_DATABASE_URL is required for admin privilege application" in source
+    assert "CREATE ROLE" in source
+    assert "ALTER ROLE" in source
+    assert "GRANT SELECT, INSERT ON ALL TABLES" in source
+    assert "ALTER DEFAULT PRIVILEGES FOR ROLE" in source
     assert "REVOKE UPDATE, DELETE, TRUNCATE ON TABLE" in source
     assert "GRANT SELECT, INSERT ON TABLE" in source
     assert "previous_event_hash" in source
@@ -1025,11 +1031,19 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "Staging migration database URL must use only the staging owner role" in deploy_script
     assert "Staging runtime and migration database URLs must be different" in deploy_script
     assert "Staging database URL must target only the staging PostgreSQL service" not in deploy_script
+    assert "Staging admin runtime database URL must use only the staging admin role" in deploy_script
+    assert "Staging admin runtime database URL must be distinct from app and migration URLs" in deploy_script
+    assert "Staging admin Redis URL must target only isolated staging admin Redis DB 14" in deploy_script
     assert 'unquote(database.username or "") != "sitbank_app"' in deploy_script
     assert 'unquote(migration.username or "") != "sitbank_owner"' in deploy_script
+    assert 'unquote(admin_database.username or "") != "sitbank_admin"' in deploy_script
     assert "postgres_app_password" in deploy_script
     assert "postgres_owner_password" in deploy_script
+    assert "admin_database_url" in deploy_script
+    assert "admin_redis_url" in deploy_script
     assert "apply-runtime-db-privileges" in deploy_script
+    assert "apply-admin-runtime-db-privileges" in deploy_script
+    assert "apply_staging_admin_runtime_db_privileges" in deploy_script
     assert "verify-runtime-db-privileges" in deploy_script
     assert "validate_production_admin_isolation" in deploy_script
     assert "ADMIN_APP_BIND_PORT='5002'" in deploy_script
@@ -1039,8 +1053,17 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "Admin runtime database role must not be the migration/schema-owner role" in deploy_script
     assert "python -m flask --app admin_wsgi:app production-check" in deploy_script
     assert '"http://${APP_BIND_HOST}:5002/health/ready"' in deploy_script
-    assert deploy_script.index("db upgrade") < deploy_script.index("apply-runtime-db-privileges")
-    assert deploy_script.index("apply-runtime-db-privileges") < deploy_script.index("verify-runtime-db-privileges")
+    deploy_db_sequence = re.search(
+        r"migration_run \\\n    python -m flask --app wsgi:app db upgrade"
+        r".*?if \[\[ -n \"\$\{previous_image\}\" \]\]; then",
+        deploy_script,
+        flags=re.DOTALL,
+    )
+    assert deploy_db_sequence is not None
+    deploy_db_sequence_text = deploy_db_sequence.group(0)
+    assert deploy_db_sequence_text.index("db upgrade") < deploy_db_sequence_text.index("apply-runtime-db-privileges")
+    assert deploy_db_sequence_text.index("apply-runtime-db-privileges") < deploy_db_sequence_text.index("apply_staging_admin_runtime_db_privileges")
+    assert deploy_db_sequence_text.index("apply_staging_admin_runtime_db_privileges") < deploy_db_sequence_text.index("verify-runtime-db-privileges")
     assert "staging_migration_run" not in deploy_script
     assert deploy_script.count("migration_run \\") == 3
     assert (

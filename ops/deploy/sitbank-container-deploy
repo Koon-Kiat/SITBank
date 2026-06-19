@@ -364,6 +364,18 @@ migration_run() {
         app "$@"
 }
 
+apply_staging_admin_runtime_db_privileges() {
+    if [[ "${target}" != "staging" ]]; then
+        return
+    fi
+    compose "${image}" run --rm --no-deps \
+        --env DATABASE_MIGRATION_URL_FILE=/run/secrets/database_migration_url \
+        --env ADMIN_DATABASE_URL_FILE=/run/secrets/admin_database_url \
+        --volume "${SECRET_DIR}/database_migration_url:/run/secrets/database_migration_url:ro" \
+        --volume "${SECRET_DIR}/admin_database_url:/run/secrets/admin_database_url:ro" \
+        app python -m flask --app wsgi:app apply-admin-runtime-db-privileges
+}
+
 validate_staging_isolation() {
     local secret_file
     local production_secret
@@ -379,6 +391,12 @@ validate_staging_isolation() {
         redis_url \
         mfa_kek_keys_json \
         password_pepper_b64 \
+        admin_secret_key \
+        admin_wtf_csrf_secret_key \
+        admin_session_hmac_keys_json \
+        admin_database_url \
+        admin_redis_url \
+        admin_password_pepper_b64 \
         smtp_username \
         smtp_password; do
         production_secret="/etc/sitbank/secrets/${secret_file}"
@@ -395,7 +413,9 @@ validate_staging_isolation() {
         "${SECRET_DIR}/postgres_app_password" \
         "${SECRET_DIR}/postgres_owner_password" \
         "${SECRET_DIR}/redis_url" \
-        "${SECRET_DIR}/redis.conf" <<'PY'
+        "${SECRET_DIR}/redis.conf" \
+        "${SECRET_DIR}/admin_database_url" \
+        "${SECRET_DIR}/admin_redis_url" <<'PY'
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 import sys
@@ -406,6 +426,8 @@ postgres_app_password = Path(sys.argv[3]).read_text(encoding="utf-8")
 postgres_owner_password = Path(sys.argv[4]).read_text(encoding="utf-8")
 redis_url = Path(sys.argv[5]).read_text(encoding="utf-8")
 redis_config = Path(sys.argv[6]).read_text(encoding="utf-8")
+admin_database_url = Path(sys.argv[7]).read_text(encoding="utf-8")
+admin_redis_url = Path(sys.argv[8]).read_text(encoding="utf-8")
 
 database = urlsplit(database_url)
 if (
@@ -431,6 +453,19 @@ if (
 if database_url == migration_url:
     raise SystemExit("Staging runtime and migration database URLs must be different")
 
+admin_database = urlsplit(admin_database_url)
+if (
+    admin_database.scheme != "postgresql+psycopg2"
+    or admin_database.hostname != "postgres"
+    or admin_database.port != 5432
+    or unquote(admin_database.username or "") != "sitbank_admin"
+    or admin_database.path != "/sitbank_staging"
+    or not unquote(admin_database.password or "")
+):
+    raise SystemExit("Staging admin runtime database URL must use only the staging admin role")
+if admin_database_url in {database_url, migration_url}:
+    raise SystemExit("Staging admin runtime database URL must be distinct from app and migration URLs")
+
 redis = urlsplit(redis_url)
 if (
     redis.scheme != "redis"
@@ -440,6 +475,15 @@ if (
 ):
     raise SystemExit("Staging Redis URL must target only the staging Redis service")
 
+admin_redis = urlsplit(admin_redis_url)
+if (
+    admin_redis.scheme != "redis"
+    or admin_redis.hostname != "redis"
+    or admin_redis.port != 6379
+    or admin_redis.path != "/14"
+):
+    raise SystemExit("Staging admin Redis URL must target only isolated staging admin Redis DB 14")
+
 password_lines = [
     line.split(None, 1)[1]
     for line in redis_config.splitlines()
@@ -448,6 +492,10 @@ password_lines = [
 ]
 if len(password_lines) != 1 or unquote(redis.password or "") != password_lines[0]:
     raise SystemExit("Staging Redis URL and protected Redis configuration do not match")
+if unquote(admin_redis.password or "") != password_lines[0]:
+    raise SystemExit("Staging admin Redis URL and protected Redis configuration do not match")
+if admin_redis.path == redis.path:
+    raise SystemExit("Staging admin Redis URL must use an isolated Redis logical database")
 PY
 }
 
@@ -636,7 +684,17 @@ required_secrets=(
     smtp_password
 )
 if [[ "${target}" == "staging" ]]; then
-    required_secrets+=(postgres_owner_password postgres_app_password redis.conf)
+    required_secrets+=(
+        postgres_owner_password
+        postgres_app_password
+        redis.conf
+        admin_secret_key
+        admin_wtf_csrf_secret_key
+        admin_session_hmac_keys_json
+        admin_database_url
+        admin_redis_url
+        admin_password_pepper_b64
+    )
 elif [[ "${target}" == "production" ]]; then
     required_secrets+=(
         admin_secret_key
@@ -686,8 +744,13 @@ migration_run \
     python -m flask --app wsgi:app db upgrade
 migration_run \
     python -m flask --app wsgi:app apply-runtime-db-privileges
+apply_staging_admin_runtime_db_privileges
 migration_run \
     python -m flask --app wsgi:app verify-runtime-db-privileges
+if [[ "${target}" == "staging" ]]; then
+    compose "${image}" run --rm --no-deps admin \
+        python -m flask --app admin_wsgi:app production-check
+fi
 
 if [[ -n "${previous_image}" ]]; then
     compose "${image}" down --remove-orphans

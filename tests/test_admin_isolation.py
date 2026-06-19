@@ -84,6 +84,32 @@ def test_app_factory_reenables_shared_application_logger(monkeypatch):
         logger.disabled = False
 
 
+def test_admin_health_reports_liveness_and_dependency_readiness(monkeypatch):
+    _install_fake_redis(monkeypatch)
+    from app import create_app
+
+    admin_app = create_app(TestConfig, app_mode="admin")
+    client = admin_app.test_client()
+
+    live = client.get("/health/live")
+    ready = client.get("/health/ready")
+
+    assert live.status_code == 200
+    assert live.get_json() == {"status": "ok", "app_mode": "admin"}
+    assert ready.status_code == 200
+    assert ready.get_json() == {"status": "ready", "app_mode": "admin"}
+
+    monkeypatch.setattr(
+        admin_app.extensions["redis"],
+        "ping",
+        lambda: (_ for _ in ()).throw(ConnectionError("offline")),
+    )
+    unavailable = client.get("/health/ready")
+
+    assert unavailable.status_code == 503
+    assert unavailable.get_json() == {"status": "unavailable", "app_mode": "admin"}
+
+
 def test_admin_runtime_config_is_separate_and_stricter(monkeypatch):
     _install_fake_redis(monkeypatch)
     from app import create_app

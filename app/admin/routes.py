@@ -43,6 +43,7 @@ def health_ready():
         db.session.execute(text("SELECT 1"))
         current_app.extensions["redis"].ping()
     except Exception:
+        current_app.logger.warning("Admin readiness dependency check failed", exc_info=True)
         db.session.rollback()
         return jsonify({"status": "unavailable", "app_mode": "admin"}), 503
     return jsonify({"status": "ready", "app_mode": "admin"})
