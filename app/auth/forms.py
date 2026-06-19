@@ -47,6 +47,14 @@ class LoginForm(FlaskForm):
     password = PasswordField("Password", validators=[InputRequired()])
 
 
+class ForgotPasswordForm(FlaskForm):
+    email = StringField("Email address", validators=[InputRequired(), Email(), Length(max=255)])
+
+
+class ManualRecoveryForm(FlaskForm):
+    identifier = StringField("Username or email", validators=[InputRequired(), Length(max=255)])
+
+
 class ProfileForm(FlaskForm):
     username = StringField(
         "Username",
@@ -121,6 +129,22 @@ class PasswordChangeForm(FlaskForm):
             Regexp(STEP_UP_TOKEN_RE, message="Invalid security key step-up token"),
         ],
     )
+
+
+class PasswordResetForm(FlaskForm):
+    new_password = PasswordField("New password", validators=[InputRequired(), password_length(minimum=PASSWORD_MIN_LENGTH)])
+    confirm_new_password = PasswordField(
+        "Confirm new password",
+        validators=[
+            InputRequired(),
+            password_length(),
+            EqualTo("new_password", message="Passwords must match"),
+        ],
+    )
+
+
+class RecoveryCodeForm(FlaskForm):
+    recovery_code = StringField("Recovery code", validators=[InputRequired(), Length(min=8, max=80)])
 
 
 class CsrfOnlyForm(FlaskForm):

@@ -8,6 +8,7 @@ import pytest
 
 import config
 from config import (
+    _password_reset_base_url,
     _required_b64_32_bytes,
     _required_env_or_file,
     _required_url,
@@ -45,6 +46,17 @@ def test_webauthn_origin_must_be_https_and_match_rp_id(monkeypatch):
 
     with pytest.raises(RuntimeError, match="hostname must match"):
         _required_webauthn_origin("WEBAUTHN_RP_ORIGIN", rp_id="sitbank.duckdns.org")
+
+
+def test_password_reset_base_url_must_be_https_in_production(monkeypatch):
+    monkeypatch.setattr(config, "APP_ENV", "production")
+    monkeypatch.setenv("PASSWORD_RESET_BASE_URL", "http://sitbank.duckdns.org")
+
+    with pytest.raises(RuntimeError, match="HTTPS"):
+        _password_reset_base_url(
+            "PASSWORD_RESET_BASE_URL",
+            default="https://sitbank.duckdns.org",
+        )
 
 
 def test_redis_url_cannot_override_application_connection_policy(monkeypatch):
