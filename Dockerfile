@@ -42,7 +42,7 @@ COPY --from=builder /opt/venv /opt/venv
 WORKDIR /app
 COPY --chown=10001:10001 app ./app
 COPY --chown=10001:10001 migrations ./migrations
-COPY --chown=10001:10001 config.py wsgi.py ./
+COPY --chown=10001:10001 config.py wsgi.py admin_wsgi.py ./
 
 USER 10001:10001
 

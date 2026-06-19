@@ -7,6 +7,7 @@ readonly CONTAINER_ACCOUNT="sitbank-container"
 readonly COSIGN_VERSION="3.0.5"
 readonly COSIGN_SHA256="db15cc99e6e4837daabab023742aaddc3841ce57f193d11b7c3e06c8003642b2"
 readonly PRODUCTION_PUBLIC_HOST="sitbank.duckdns.org"
+readonly PRODUCTION_ADMIN_PUBLIC_HOST="admin-sitbank.duckdns.org"
 readonly PRODUCTION_RATE_LIMITS_FILE="/etc/nginx/conf.d/sitbank-production-rate-limits.conf"
 readonly STAGING_PUBLIC_HOST="staging-sitbank.duckdns.org"
 readonly STAGING_BASIC_AUTH_FILE="/etc/nginx/.htpasswd-sitbank-staging"
@@ -45,6 +46,7 @@ if [[ ! "${public_host}" =~ ^[A-Za-z0-9.-]+$ ]]; then
     exit 2
 fi
 public_host_regex="${public_host//./\\.}"
+admin_public_host_regex="${PRODUCTION_ADMIN_PUBLIC_HOST//./\\.}"
 if [[ "${target}" == "production" && "${public_host}" != "${PRODUCTION_PUBLIC_HOST}" ]]; then
     echo "Production PUBLIC_HOST must be ${PRODUCTION_PUBLIC_HOST}" >&2
     exit 2
@@ -257,9 +259,12 @@ done
 
 if [[ "${target}" == "production" ]]; then
     production_cert_dir="/etc/letsencrypt/live/${public_host}"
+    production_admin_cert_dir="/etc/letsencrypt/live/${PRODUCTION_ADMIN_PUBLIC_HOST}"
     for required_production_file in \
         "${production_cert_dir}/fullchain.pem" \
-        "${production_cert_dir}/privkey.pem"; do
+        "${production_cert_dir}/privkey.pem" \
+        "${production_admin_cert_dir}/fullchain.pem" \
+        "${production_admin_cert_dir}/privkey.pem"; do
         if [[ ! -r "${required_production_file}" ]]; then
             echo "Missing required production TLS file: ${required_production_file}" >&2
             echo "Issue the production Certbot certificate before rerunning bootstrap." >&2
@@ -276,7 +281,7 @@ if [[ "${target}" == "production" ]]; then
         fi
     done < <(
         grep -RlE \
-            "^[[:space:]]*server_name[[:space:]].*(^|[[:space:]])${public_host_regex}([[:space:];]|$)" \
+            "^[[:space:]]*server_name[[:space:]].*(^|[[:space:]])(${public_host_regex}|${admin_public_host_regex})([[:space:];]|$)" \
             /etc/nginx/sites-enabled /etc/nginx/conf.d \
             2>/dev/null || true
     )

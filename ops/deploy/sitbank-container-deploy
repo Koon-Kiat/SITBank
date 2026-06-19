@@ -177,8 +177,13 @@ restore_runtime() {
 validate_deployment_profile() {
     local deployment_file="$1"
     local expected
-    expected="$(
-        cat <<EOF
+    if [[ "${target}" == "production" ]]; then
+        expected="$(
+            cat <<EOF
+ADMIN_APP_BIND_HOST='127.0.0.1'
+ADMIN_APP_BIND_PORT='5002'
+ADMIN_APP_CONTAINER_NAME='sitbank-admin'
+ADMIN_PUBLIC_HOST='admin-sitbank.duckdns.org'
 APP_BIND_HOST='${APP_BIND_HOST}'
 APP_BIND_PORT='${APP_BIND_PORT}'
 APP_CONTAINER_NAME='${APP_CONTAINER}'
@@ -196,7 +201,29 @@ SECRET_ROOT='${SECRET_DIR}'
 STATE_DIR='${STATE_DIR}'
 SYSTEMD_SERVICE='${SYSTEMD_SERVICE}'
 EOF
-    )"
+        )"
+    else
+        expected="$(
+            cat <<EOF
+APP_BIND_HOST='${APP_BIND_HOST}'
+APP_BIND_PORT='${APP_BIND_PORT}'
+APP_CONTAINER_NAME='${APP_CONTAINER}'
+COMPOSE_DIR='${COMPOSE_DIR}'
+COMPOSE_FILE='${COMPOSE_FILE}'
+COMPOSE_PROJECT_NAME='${COMPOSE_PROJECT}'
+CONFIG_ROOT='${CONFIG_ROOT}'
+DEPLOYMENT_TARGET='${target}'
+POSTGRES_CONTAINER_NAME='${POSTGRES_CONTAINER}'
+POSTGRES_VOLUME_NAME='${POSTGRES_VOLUME}'
+PUBLIC_HOST='${PUBLIC_HOST}'
+REDIS_CONTAINER_NAME='${REDIS_CONTAINER}'
+REDIS_VOLUME_NAME='${REDIS_VOLUME}'
+SECRET_ROOT='${SECRET_DIR}'
+STATE_DIR='${STATE_DIR}'
+SYSTEMD_SERVICE='${SYSTEMD_SERVICE}'
+EOF
+        )"
+    fi
     if ! diff -u \
         <(printf '%s\n' "${expected}" | sort) \
         <(sort "${deployment_file}") >/dev/null; then
@@ -286,6 +313,13 @@ install_runtime_bundle() {
         WEBAUTHN_RP_ID
         WEBAUTHN_RP_ORIGIN
     )
+    if [[ "${target}" == "production" ]]; then
+        allowed_environment+=(
+            ADMIN_RATELIMIT_KEY_PREFIX
+            ADMIN_SESSION_HMAC_ACTIVE_KEY_ID
+            ADMIN_SESSION_KEY_PREFIX
+        )
+    fi
     if grep -Evq "^[A-Z][A-Z0-9_]*='[^']+'\$" \
         "${staging_dir}/container.env"; then
         echo "Runtime environment file has an invalid line" >&2
@@ -417,6 +451,47 @@ if len(password_lines) != 1 or unquote(redis.password or "") != password_lines[0
 PY
 }
 
+validate_production_admin_isolation() {
+    if [[ "${target}" != "production" ]]; then
+        return
+    fi
+
+    python3 - \
+        "${SECRET_DIR}/database_url" \
+        "${SECRET_DIR}/admin_database_url" \
+        "${SECRET_DIR}/database_migration_url" <<'PY'
+from pathlib import Path
+from urllib.parse import unquote, urlsplit
+import sys
+
+customer_url = Path(sys.argv[1]).read_text(encoding="utf-8")
+admin_url = Path(sys.argv[2]).read_text(encoding="utf-8")
+migration_url = Path(sys.argv[3]).read_text(encoding="utf-8")
+
+customer = urlsplit(customer_url)
+admin = urlsplit(admin_url)
+migration = urlsplit(migration_url)
+customer_role = unquote(customer.username or "")
+admin_role = unquote(admin.username or "")
+migration_role = unquote(migration.username or "")
+
+if not admin_role:
+    raise SystemExit("Admin runtime database URL is required for production")
+if not customer_role:
+    raise SystemExit("Customer runtime database URL is required for production")
+if not migration_role:
+    raise SystemExit("Migration database URL is required for production")
+if admin_url == customer_url or admin_role == customer_role:
+    raise SystemExit("Admin runtime database role must be distinct from customer runtime role")
+if admin_url == migration_url or admin_role == migration_role:
+    raise SystemExit("Admin runtime database role must not be the migration/schema-owner role")
+if customer_url == migration_url or customer_role == migration_role:
+    raise SystemExit("Customer runtime database role must not be the migration/schema-owner role")
+if admin.hostname != customer.hostname or admin.path != customer.path:
+    raise SystemExit("Admin runtime database URL must target the same production database with a distinct role")
+PY
+}
+
 prepare_dependencies() {
     if [[ "${target}" == "staging" ]]; then
         dependencies_prepared=1
@@ -434,12 +509,23 @@ wait_until_ready() {
         --retry 8 --retry-delay 2 --retry-all-errors \
         --resolve "${PUBLIC_HOST}:443:127.0.0.1" \
         "https://${PUBLIC_HOST}/health/ready" >/dev/null
+    if [[ "${target}" == "production" ]]; then
+        curl --fail --silent --show-error \
+            --retry 15 --retry-delay 2 --retry-all-errors \
+            --header "Host: admin-sitbank.duckdns.org" \
+            --header "X-Forwarded-Proto: https" \
+            "http://${APP_BIND_HOST}:5002/health/ready" >/dev/null
+    fi
 }
 
 show_app_diagnostics() {
     echo "Application container diagnostics:" >&2
     compose "${image}" ps app >&2 || true
     compose "${image}" logs --no-color --tail 80 app >&2 || true
+    if [[ "${target}" == "production" ]]; then
+        compose "${image}" ps admin >&2 || true
+        compose "${image}" logs --no-color --tail 80 admin >&2 || true
+    fi
 }
 
 show_dependency_diagnostics() {
@@ -553,6 +639,15 @@ required_secrets=(
 )
 if [[ "${target}" == "staging" ]]; then
     required_secrets+=(postgres_owner_password postgres_app_password redis.conf)
+elif [[ "${target}" == "production" ]]; then
+    required_secrets+=(
+        admin_secret_key
+        admin_wtf_csrf_secret_key
+        admin_session_hmac_keys_json
+        admin_database_url
+        admin_redis_url
+        admin_password_pepper_b64
+    )
 fi
 if ! runuser -u sitbank-container -- test -x "${SECRET_DIR}"; then
     echo "Container account cannot traverse secret directory: ${SECRET_DIR}" >&2
@@ -580,10 +675,15 @@ for secret_file in "${required_secrets[@]}"; do
     fi
 done
 validate_staging_isolation
+validate_production_admin_isolation
 prepare_dependencies
 
 compose "${image}" run --rm --no-deps app \
     python -m flask --app wsgi:app production-check
+if [[ "${target}" == "production" ]]; then
+    compose "${image}" run --rm --no-deps admin \
+        python -m flask --app admin_wsgi:app production-check
+fi
 migration_run \
     python -m flask --app wsgi:app db upgrade
 migration_run \

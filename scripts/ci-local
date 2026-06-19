@@ -35,11 +35,11 @@ PYTHON_CHECKS = (
             "--durations-min=0.5",
         ),
     ),
-    ("Compile Python sources", (sys.executable, "-m", "compileall", "app", "config.py", "wsgi.py")),
+    ("Compile Python sources", (sys.executable, "-m", "compileall", "app", "config.py", "wsgi.py", "admin_wsgi.py")),
     ("Package consistency", (sys.executable, "-m", "pip", "check")),
     (
         "Bandit high-confidence scan",
-        (sys.executable, "-m", "bandit", "-q", "-ll", "-r", "app", "ops", "config.py", "wsgi.py"),
+        (sys.executable, "-m", "bandit", "-q", "-ll", "-r", "app", "ops", "config.py", "wsgi.py", "admin_wsgi.py"),
     ),
     (
         "Runtime dependency audit",

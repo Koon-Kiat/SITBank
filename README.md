@@ -6,7 +6,7 @@ SITBank is a student cybersecurity project and demonstration site. Do not enter 
 
 ## Overview
 
-SITBank is a Flask/Gunicorn application deployed as a hardened Docker container behind host-managed Nginx, TLS, PostgreSQL, and Redis. Production runs at `https://sitbank.duckdns.org`; staging runs separately at `https://staging-sitbank.duckdns.org`.
+SITBank is a Flask/Gunicorn application deployed as hardened Docker containers behind host-managed Nginx, TLS, PostgreSQL, and Redis. Production customer traffic runs at `https://sitbank.duckdns.org`; the isolated production admin boundary is reserved at `https://admin-sitbank.duckdns.org` and is fail-closed until future WebAuthn/passkey and network allowlist controls are implemented. Staging runs separately at `https://staging-sitbank.duckdns.org` and does not include an admin service in this phase.
 
 The app keeps password hashing PBKDF2+pepper only and MFA/TOTP seed encryption envelope-only using `MFA_KEK_ACTIVE_ID` plus `MFA_KEK_KEYS_JSON`. Legacy one-key MFA AES compatibility and direct non-PBKDF2 password hash compatibility are intentionally removed because current users are test-only and environments must be reset before this change is deployed.
 
@@ -16,7 +16,7 @@ The app keeps password hashing PBKDF2+pepper only and MFA/TOTP seed encryption e
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --require-hashes -r requirements-dev.lock
 .\.venv\Scripts\python.exe -m pytest -q -n auto
-.\.venv\Scripts\python.exe -m compileall app config.py wsgi.py
+.\.venv\Scripts\python.exe -m compileall app config.py wsgi.py admin_wsgi.py
 ```
 
 Common local test commands:
@@ -58,6 +58,15 @@ Current required settings include:
 - `DATABASE_URL` or `DATABASE_URL_FILE`
 - `DATABASE_MIGRATION_URL` or `DATABASE_MIGRATION_URL_FILE`
 - `REDIS_URL` or `REDIS_URL_FILE`
+- `ADMIN_SECRET_KEY` or `ADMIN_SECRET_KEY_FILE`
+- `ADMIN_WTF_CSRF_SECRET_KEY` or `ADMIN_WTF_CSRF_SECRET_KEY_FILE`
+- `ADMIN_SESSION_HMAC_ACTIVE_KEY_ID`
+- `ADMIN_SESSION_HMAC_KEYS_JSON` or `ADMIN_SESSION_HMAC_KEYS_JSON_FILE`
+- `ADMIN_DATABASE_URL` or `ADMIN_DATABASE_URL_FILE`
+- `ADMIN_REDIS_URL` or `ADMIN_REDIS_URL_FILE`
+- `ADMIN_PASSWORD_PEPPER_B64` or `ADMIN_PASSWORD_PEPPER_B64_FILE`
+- `ADMIN_SESSION_KEY_PREFIX`
+- `ADMIN_RATELIMIT_KEY_PREFIX`
 - `MFA_KEK_ACTIVE_ID`
 - `MFA_KEK_KEYS_JSON` or `MFA_KEK_KEYS_JSON_FILE`
 - `PASSWORD_PEPPER_B64` or `PASSWORD_PEPPER_B64_FILE`
@@ -114,6 +123,6 @@ reset is not implemented in the customer domain.
 
 ## Deployment Snapshot
 
-Images are published as immutable signed digests under `ghcr.io/wenjiangggg/sitbank@sha256:<digest>` from the renamed `WenJiangggg/SITBank` repository. Production uses `/etc/sitbank`, `/opt/sitbank`, `sitbank-container.service`, `sitbank_db`, `sitbank_owner`, and `sitbank_app`. Staging uses separate `/etc/sitbank-staging`, `/opt/sitbank-staging`, isolated Compose services, and isolated Docker volumes.
+Images are published as immutable signed digests under `ghcr.io/wenjiangggg/sitbank@sha256:<digest>` from the renamed `WenJiangggg/SITBank` repository. Production uses `/etc/sitbank`, `/opt/sitbank`, `sitbank-container.service`, `sitbank_db`, `sitbank_owner`, `sitbank_app`, and a distinct admin runtime DB role such as `sitbank_admin`. Staging uses separate `/etc/sitbank-staging`, `/opt/sitbank-staging`, isolated Compose services, and isolated Docker volumes.
 
 Database migrations use Alembic. Existing databases that predate Alembic must first pass `verify-migration-baseline`, then be stamped with `db stamp 20260610_0001`. Do not run `db.create_all()` in deployment.

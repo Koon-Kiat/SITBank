@@ -44,6 +44,10 @@ SESSION_END_REASON_LABELS = {
 }
 
 
+def _configured_prefix(name: str, default: str) -> str:
+    return str(current_app.config.get(name) or default)
+
+
 class UuidRedisSessionInterface(RedisSessionInterface):
     def _generate_sid(self, session_id_length: int | None = None) -> str:
         return str(uuid.uuid4())
@@ -158,19 +162,19 @@ def _session_storage_key(session_id: str) -> str:
 
 
 def _session_meta_key(session_id: str) -> str:
-    return f"{SESSION_META_PREFIX}{session_id}"
+    return f"{_configured_prefix('SESSION_METADATA_KEY_PREFIX', SESSION_META_PREFIX)}{session_id}"
 
 
 def _user_sessions_key(user_id: int) -> str:
-    return f"{USER_SESSIONS_PREFIX}{user_id}"
+    return f"{_configured_prefix('USER_SESSIONS_KEY_PREFIX', USER_SESSIONS_PREFIX)}{user_id}"
 
 
 def _past_sessions_key(user_id: int) -> str:
-    return f"{PAST_SESSIONS_PREFIX}{user_id}"
+    return f"{_configured_prefix('PAST_SESSIONS_KEY_PREFIX', PAST_SESSIONS_PREFIX)}{user_id}"
 
 
 def _revoked_key(session_id: str) -> str:
-    return f"{REVOKED_SESSION_PREFIX}{session_id}"
+    return f"{_configured_prefix('REVOKED_SESSION_KEY_PREFIX', REVOKED_SESSION_PREFIX)}{session_id}"
 
 
 def rotate_session_id() -> None:

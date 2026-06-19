@@ -12,8 +12,9 @@ from redis.backoff import NoBackoff
 from redis.retry import Retry
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from config import Config
+from config import Config, apply_runtime_mode_config
 
+from .admin.routes import admin_bp
 from .auth.routes import auth_bp
 from .auth.services import warm_dummy_password_hash
 from .banking.routes import banking_bp
@@ -40,9 +41,11 @@ def redis_connection_options(config: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def create_app(config_object: type[Config] = Config) -> Flask:
+def create_app(config_object: type[Config] = Config, *, app_mode: str = "customer") -> Flask:
     app = Flask(__name__)
+    app.logger.disabled = False
     app.config.from_object(config_object)
+    apply_runtime_mode_config(app.config, app_mode)
     trusted_proxy_count = app.config["TRUSTED_PROXY_COUNT"]
     if trusted_proxy_count:
         app.wsgi_app = ProxyFix(
@@ -56,13 +59,13 @@ def create_app(config_object: type[Config] = Config) -> Flask:
     redis_client = Redis.from_url(
         app.config["REDIS_URL"],
         decode_responses=True,
-        client_name="sitbank-application",
+        client_name=f"sitbank-{app.config['APP_MODE']}-application",
         **redis_connection_options(app.config),
     )
     redis_session_client = Redis.from_url(
         app.config["REDIS_URL"],
         decode_responses=False,
-        client_name="sitbank-session",
+        client_name=f"sitbank-{app.config['APP_MODE']}-session",
         **redis_connection_options(app.config),
     )
     app.extensions["redis"] = redis_client
@@ -74,7 +77,7 @@ def create_app(config_object: type[Config] = Config) -> Flask:
     if app.config["RATELIMIT_STORAGE_URI"].startswith(("redis://", "rediss://")):
         app.config["RATELIMIT_STORAGE_OPTIONS"] = {
             **redis_connection_options(app.config),
-            "client_name": "sitbank-rate-limiter",
+            "client_name": f"sitbank-{app.config['APP_MODE']}-rate-limiter",
         }
     limiter.init_app(app)
     talisman.init_app(
@@ -97,12 +100,23 @@ def create_app(config_object: type[Config] = Config) -> Flask:
     with app.app_context():
         warm_dummy_password_hash()
 
-    app.register_blueprint(auth_bp)
-    app.register_blueprint(banking_bp)
-    app.register_blueprint(web_bp)
-    app.register_blueprint(main_bp)
+    if app.config["APP_MODE"] == "customer":
+        app.register_blueprint(auth_bp)
+        app.register_blueprint(banking_bp)
+        app.register_blueprint(web_bp)
+        app.register_blueprint(main_bp)
+    else:
+        app.register_blueprint(admin_bp)
 
     return app
+
+
+def create_customer_app(config_object: type[Config] = Config) -> Flask:
+    return create_app(config_object, app_mode="customer")
+
+
+def create_admin_app(config_object: type[Config] = Config) -> Flask:
+    return create_app(config_object, app_mode="admin")
 
 
 def register_current_user_loader(app: Flask) -> None:
@@ -134,7 +148,7 @@ def register_error_handlers(app: Flask) -> None:
         )
 
     def respond(message: str, status_code: int):
-        if wants_json():
+        if app.config.get("APP_MODE") == "admin" or wants_json():
             return jsonify({"error": message}), status_code
         return render_template("error.html", message=message, status_code=status_code), status_code
 

@@ -46,6 +46,15 @@ DDL privileges. The runtime role keeps `SELECT` and `INSERT` on
 so audit records are append-only to the running app. Rotate `database_url` and
 `database_migration_url` separately.
 
+Production admin runtime uses a separate Flask app, Docker Compose service,
+Redis/session namespace, signing material, and database runtime role. The admin
+role must be distinct from both `sitbank_app` and `sitbank_owner`; it must not
+use migration/schema-owner credentials. Admin WebAuthn/passkey authentication,
+administrator step-up, VPN, Tailscale, WireGuard, and administrator IP allowlist
+setup are Phase 2 items. Until those controls exist, `admin-sitbank.duckdns.org`
+is fail-closed at Nginx with `deny all` and the Flask admin login route returns
+failure without creating a session.
+
 Staging secrets must never be copied from production. The staging deployment
 wrapper rejects identical application secret files when production secrets are
 present and requires database and Redis URLs to resolve only to the staging
@@ -190,13 +199,18 @@ checked manually.
   `nginx -t` succeeds.
 - Issue production Certbot files under
   `/etc/letsencrypt/live/sitbank.duckdns.org/` before bootstrap.
+- Issue admin Certbot files under
+  `/etc/letsencrypt/live/admin-sitbank.duckdns.org/` before bootstrap.
 - Allow public inbound TCP `80` and `443` only.
 - Restrict SSH to an administrator IP allowlist, AWS Systems Manager, a
   bastion, or VPN; never allow TCP `22` from `0.0.0.0/0` or `::/0`.
 - Do not expose Gunicorn, PostgreSQL, or Redis directly to the internet.
-- Keep Gunicorn bound to `127.0.0.1:5000` and keep `compose.prod.yml` free of
-  published app ports.
+- Keep customer Gunicorn bound to `127.0.0.1:5000`, admin Gunicorn bound to
+  `127.0.0.1:5002`, and keep `compose.prod.yml` free of published app ports.
 - Restrict `/health/ready` to loopback and allow public `/health/live` only.
+- Keep admin routes denied by default. Do not make
+  `admin-sitbank.duckdns.org` usable until strong admin WebAuthn/passkey and
+  VPN or explicit IP allowlist controls are implemented.
 - Enable WAF managed common, SQL injection, XSS, bot, and protocol anomaly
   rules.
 - Add WAF rate-based rules for `/login`, `/register`, `/mfa/verify`,
@@ -211,18 +225,26 @@ Verification commands:
 
 ```bash
 sudo nginx -t
-sudo ss -ltnp | grep -E ':(80|443|5000)([[:space:]]|$)'
+sudo ss -ltnp | grep -E ':(80|443|5000|5002)([[:space:]]|$)'
 sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-app
+sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-admin
 sudo docker inspect --format '{{json .HostConfig.PortBindings}}' sitbank-app
+sudo docker inspect --format '{{json .HostConfig.PortBindings}}' sitbank-admin
 curl --fail https://sitbank.duckdns.org/health/live
 curl -I https://sitbank.duckdns.org/health/ready
+curl -I https://admin-sitbank.duckdns.org/login
 curl --fail -H 'X-Forwarded-Proto: https' \
   http://127.0.0.1:5000/health/ready
+curl --fail -H 'Host: admin-sitbank.duckdns.org' \
+  -H 'X-Forwarded-Proto: https' \
+  http://127.0.0.1:5002/health/ready
 ```
 
 Expected results: only `80` and `443` are publicly reachable, Gunicorn is
-loopback-only, Docker publishes no app ports, external readiness is denied,
-and local readiness succeeds.
+loopback-only on `5000` and `5002`, Docker publishes no app ports, external
+customer readiness is denied, admin routes are denied, and local readiness
+succeeds.
+In short, external readiness is denied.
 
 ## Monitoring
 
@@ -230,6 +252,7 @@ Forward these sources to a protected centralized log destination:
 
 - journald events tagged `sitbank-deploy`;
 - `sitbank-container.service` and Docker container logs;
+- `sitbank-admin` container logs after the admin boundary is enabled;
 - Nginx access/error and TLS events;
 - application security audit events;
 - PostgreSQL and Redis authentication/availability events.

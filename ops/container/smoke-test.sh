@@ -12,6 +12,7 @@ network_name="sitbank-smoke-$RANDOM-$$"
 readonly postgres_container="smoke-postgres"
 readonly redis_container="smoke-redis"
 readonly app_container="sitbank-smoke"
+readonly admin_container="sitbank-admin-smoke"
 
 docker_bind_source() {
     local path="$1"
@@ -27,7 +28,7 @@ docker_bind_source() {
 
 dump_container_diagnostics() {
     local container
-    for container in "${postgres_container}" "${redis_container}" "${app_container}"; do
+    for container in "${postgres_container}" "${redis_container}" "${app_container}" "${admin_container}"; do
         if ! docker inspect "${container}" >/dev/null 2>&1; then
             continue
         fi
@@ -88,7 +89,7 @@ published_port() {
 
 # shellcheck disable=SC2317
 cleanup() {
-    docker rm -f "${app_container}" "${postgres_container}" "${redis_container}" >/dev/null 2>&1 || true
+    docker rm -f "${app_container}" "${admin_container}" "${postgres_container}" "${redis_container}" >/dev/null 2>&1 || true
     docker network rm "${network_name}" >/dev/null 2>&1 || true
     rm -rf -- "${work_dir}"
 }
@@ -134,9 +135,13 @@ psql_admin --set app_password=ci-app-password <<'SQL'
 CREATE ROLE ci_app LOGIN PASSWORD :'app_password';
 SQL
 
+psql_admin --set admin_password=ci-admin-password <<'SQL'
+CREATE ROLE ci_admin LOGIN PASSWORD :'admin_password';
+SQL
+
 psql_admin <<'SQL'
 REVOKE ALL ON DATABASE ci FROM PUBLIC;
-GRANT CONNECT ON DATABASE ci TO ci_owner, ci_app;
+GRANT CONNECT ON DATABASE ci TO ci_owner, ci_app, ci_admin;
 ALTER DATABASE ci OWNER TO ci_owner;
 SQL
 
@@ -144,11 +149,15 @@ psql_admin <<'SQL'
 REVOKE ALL ON SCHEMA public FROM PUBLIC;
 REVOKE ALL ON SCHEMA public FROM ci_app;
 ALTER SCHEMA public OWNER TO ci_owner;
-GRANT USAGE ON SCHEMA public TO ci_app;
+GRANT USAGE ON SCHEMA public TO ci_app, ci_admin;
 ALTER DEFAULT PRIVILEGES FOR ROLE ci_owner IN SCHEMA public
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ci_app;
 ALTER DEFAULT PRIVILEGES FOR ROLE ci_owner IN SCHEMA public
+    GRANT SELECT, INSERT ON TABLES TO ci_admin;
+ALTER DEFAULT PRIVILEGES FOR ROLE ci_owner IN SCHEMA public
     GRANT USAGE, SELECT ON SEQUENCES TO ci_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE ci_owner IN SCHEMA public
+    GRANT USAGE, SELECT ON SEQUENCES TO ci_admin;
 SQL
 
 roles="$(
@@ -156,8 +165,14 @@ roles="$(
         psql --no-psqlrc --set ON_ERROR_STOP=1 \
         --username postgres --dbname ci \
         --tuples-only --no-align \
-        --command "SELECT rolname FROM pg_roles WHERE rolname IN ('ci_owner', 'ci_app') ORDER BY rolname;"
+        --command "SELECT rolname FROM pg_roles WHERE rolname IN ('ci_owner', 'ci_app', 'ci_admin') ORDER BY rolname;"
 )"
+if ! grep -qx "ci_admin" <<<"${roles}"; then
+    echo "Admin role exists: no"
+    echo "Admin role was not created in the smoke database" >&2
+    exit 1
+fi
+echo "Admin role exists: yes"
 if ! grep -qx "ci_owner" <<<"${roles}"; then
     echo "Owner role exists: no"
     echo "Owner role was not created in the smoke database" >&2
@@ -212,6 +227,21 @@ if [[ "${runtime_user}" != "ci_app" ]]; then
     exit 1
 fi
 echo "Runtime connection test: passed"
+admin_user="$(
+    docker run --rm --network "${network_name}" \
+        --env PGPASSWORD=ci-admin-password \
+        "${POSTGRES_IMAGE}" \
+        psql --no-psqlrc --set ON_ERROR_STOP=1 \
+        --host "${postgres_container}" --username ci_admin --dbname ci \
+        --tuples-only --no-align \
+        --command "SELECT current_user;"
+)"
+if [[ "${admin_user}" != "ci_admin" ]]; then
+    echo "Admin connection test: failed" >&2
+    echo "Admin smoke database connection did not use ci_admin" >&2
+    exit 1
+fi
+echo "Admin connection test: passed"
 echo "Postgres smoke DB host: ${postgres_container}"
 
 install -d -m 0755 "${work_dir}/secrets" "${work_dir}/config"
@@ -235,6 +265,19 @@ printf '%s' 'MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE=' \
     > "${work_dir}/secrets/password_pepper_b64"
 printf '%s' 'https://hooks.example.test/sitbank-security-alerts' \
     > "${work_dir}/secrets/security_alert_webhook_url"
+printf '%s' 'ci-admin-secret-key-that-is-long-enough-for-container-tests' \
+    > "${work_dir}/secrets/admin_secret_key"
+printf '%s' 'ci-admin-csrf-key-that-is-long-enough-for-container-tests' \
+    > "${work_dir}/secrets/admin_wtf_csrf_secret_key"
+printf '%s' '{"ci-admin":"NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY="}' \
+    > "${work_dir}/secrets/admin_session_hmac_keys_json"
+printf 'postgresql+psycopg2://ci_admin:ci-admin-password@%s:5432/ci' \
+    "${postgres_container}" \
+    > "${work_dir}/secrets/admin_database_url"
+printf 'redis://:ci-password@%s:6379/14' "${redis_container}" \
+    > "${work_dir}/secrets/admin_redis_url"
+printf '%s' 'ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg=' \
+    > "${work_dir}/secrets/admin_password_pepper_b64"
 printf '%s' 'smtp-user' \
     > "${work_dir}/secrets/smtp_username"
 printf '%s' 'smtp-password' \
@@ -272,6 +315,15 @@ docker_args=(
     --env MFA_KEK_KEYS_JSON_FILE=/run/secrets/mfa_kek_keys_json
     --env PASSWORD_PEPPER_B64_FILE=/run/secrets/password_pepper_b64
     --env SECURITY_ALERT_WEBHOOK_URL_FILE=/run/secrets/security_alert_webhook_url
+    --env ADMIN_SECRET_KEY_FILE=/run/secrets/admin_secret_key
+    --env ADMIN_WTF_CSRF_SECRET_KEY_FILE=/run/secrets/admin_wtf_csrf_secret_key
+    --env ADMIN_SESSION_HMAC_ACTIVE_KEY_ID=ci-admin
+    --env ADMIN_SESSION_HMAC_KEYS_JSON_FILE=/run/secrets/admin_session_hmac_keys_json
+    --env ADMIN_DATABASE_URL_FILE=/run/secrets/admin_database_url
+    --env ADMIN_REDIS_URL_FILE=/run/secrets/admin_redis_url
+    --env ADMIN_PASSWORD_PEPPER_B64_FILE=/run/secrets/admin_password_pepper_b64
+    --env ADMIN_SESSION_KEY_PREFIX=admin-session:
+    --env ADMIN_RATELIMIT_KEY_PREFIX=ospbank:admin:ratelimit:
     --env SMTP_USERNAME_FILE=/run/secrets/smtp_username
     --env SMTP_PASSWORD_FILE=/run/secrets/smtp_password
     --env PASSWORD_PBKDF2_ITERATIONS=600000
@@ -303,6 +355,16 @@ app_command=(
     --timeout 30
     --graceful-timeout 30
     wsgi:app
+)
+admin_command=(
+    python -m gunicorn
+    --workers 2
+    --bind 0.0.0.0:5002
+    --access-logfile -
+    --error-logfile -
+    --timeout 30
+    --graceful-timeout 30
+    admin_wsgi:app
 )
 migration_docker_args=(
     "${docker_args[@]}"
@@ -338,6 +400,8 @@ docker run --rm "${migration_docker_args[@]}" "${IMAGE}" \
     python -m flask --app wsgi:app apply-runtime-db-privileges
 docker run --rm "${docker_args[@]}" "${IMAGE}" \
     python -m flask --app wsgi:app production-check
+docker run --rm "${docker_args[@]}" "${IMAGE}" \
+    python -m flask --app admin_wsgi:app production-check
 docker run --rm "${migration_docker_args[@]}" "${IMAGE}" \
     python -m flask --app wsgi:app verify-runtime-db-privileges
 docker run --rm "${docker_args[@]}" \
@@ -346,6 +410,8 @@ docker run --rm "${docker_args[@]}" \
 
 docker run --detach --name "${app_container}" \
     "${docker_args[@]}" "${IMAGE}" "${app_command[@]}" >/dev/null
+docker run --detach --name "${admin_container}" \
+    "${docker_args[@]}" "${IMAGE}" "${admin_command[@]}" >/dev/null
 ready=0
 for _ in $(seq 1 20); do
     if docker exec "${app_container}" python -c \
@@ -358,6 +424,20 @@ for _ in $(seq 1 20); do
 done
 if [[ "${ready}" -ne 1 ]]; then
     echo "SITBank application did not become ready within 20 seconds" >&2
+    false
+fi
+admin_ready=0
+for _ in $(seq 1 20); do
+    if docker exec "${admin_container}" python -c \
+        "import urllib.request; request=urllib.request.Request('http://127.0.0.1:5002/health/ready', headers={'X-Forwarded-Proto':'https','Host':'admin-sitbank.duckdns.org'}); urllib.request.urlopen(request, timeout=4).read()" \
+        >/dev/null 2>&1; then
+        admin_ready=1
+        break
+    fi
+    sleep 1
+done
+if [[ "${admin_ready}" -ne 1 ]]; then
+    echo "SITBank admin application did not become ready within 20 seconds" >&2
     false
 fi
 

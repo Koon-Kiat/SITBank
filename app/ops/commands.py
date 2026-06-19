@@ -62,6 +62,7 @@ def register_ops_commands(app: Flask) -> None:
     def production_check() -> None:
         """Validate real production dependencies and security prerequisites."""
         failures: list[str] = []
+        app_mode = str(app.config.get("APP_MODE") or "customer")
 
         try:
             db.session.execute(text("SELECT 1"))
@@ -94,21 +95,22 @@ def register_ops_commands(app: Flask) -> None:
         else:
             click.echo(f"Configured session HMAC keys: {session_hmac_keys}")
 
-        mfa_kek_keys = app.config.get("MFA_KEK_KEYS")
-        mfa_kek_active_id = app.config.get("MFA_KEK_ACTIVE_ID")
-        if not isinstance(mfa_kek_keys, dict) or not mfa_kek_keys:
-            failures.append("MFA_KEK_KEYS_JSON must configure at least one MFA KEK")
-        elif mfa_kek_active_id not in mfa_kek_keys:
-            failures.append("MFA_KEK_ACTIVE_ID must identify a configured MFA KEK")
-        else:
-            click.echo(f"Configured MFA KEKs: {len(mfa_kek_keys)}")
+        if app_mode == "customer":
+            mfa_kek_keys = app.config.get("MFA_KEK_KEYS")
+            mfa_kek_active_id = app.config.get("MFA_KEK_ACTIVE_ID")
+            if not isinstance(mfa_kek_keys, dict) or not mfa_kek_keys:
+                failures.append("MFA_KEK_KEYS_JSON must configure at least one MFA KEK")
+            elif mfa_kek_active_id not in mfa_kek_keys:
+                failures.append("MFA_KEK_ACTIVE_ID must identify a configured MFA KEK")
+            else:
+                click.echo(f"Configured MFA KEKs: {len(mfa_kek_keys)}")
 
-        try:
-            approved_aaguids = validate_fido_metadata_config()
-        except Exception as exc:
-            failures.append(f"FIDO metadata configuration check failed: {exc}")
-        else:
-            click.echo(f"Approved FIDO authenticator AAGUIDs: {approved_aaguids}")
+            try:
+                approved_aaguids = validate_fido_metadata_config()
+            except Exception as exc:
+                failures.append(f"FIDO metadata configuration check failed: {exc}")
+            else:
+                click.echo(f"Approved FIDO authenticator AAGUIDs: {approved_aaguids}")
 
         try:
             alert_config = validate_security_alert_config(require_delivery=True)
@@ -129,7 +131,7 @@ def register_ops_commands(app: Flask) -> None:
             failures.append("DATABASE_MIGRATION_URL must not be configured for the runtime app")
         if len(str(app.config.get("WTF_CSRF_SECRET_KEY", ""))) < 32:
             failures.append("WTF_CSRF_SECRET_KEY must be at least 32 characters")
-        if int(app.config.get("WEBAUTHN_REQUIRED_CREDENTIALS", 0)) < 2:
+        if app_mode == "customer" and int(app.config.get("WEBAUTHN_REQUIRED_CREDENTIALS", 0)) < 2:
             failures.append("WEBAUTHN_REQUIRED_CREDENTIALS must be at least 2")
         if int(app.config.get("TRUSTED_PROXY_COUNT", -1)) != 1:
             failures.append("TRUSTED_PROXY_COUNT must be 1 for the single Nginx proxy boundary")
@@ -147,13 +149,24 @@ def register_ops_commands(app: Flask) -> None:
             failures.append("TALISMAN_FORCE_HTTPS must be enabled")
         if str(app.config.get("RATELIMIT_STORAGE_URI", "")).startswith("memory://"):
             failures.append("Rate limiting must use Redis-backed storage in production")
-        rp_origin = str(app.config.get("WEBAUTHN_RP_ORIGIN", ""))
-        rp_id = str(app.config.get("WEBAUTHN_RP_ID", ""))
-        parsed_origin = urlparse(rp_origin)
-        if parsed_origin.scheme != "https":
-            failures.append("WEBAUTHN_RP_ORIGIN must use HTTPS")
-        if parsed_origin.hostname != rp_id:
-            failures.append("WEBAUTHN_RP_ORIGIN hostname must match WEBAUTHN_RP_ID")
+        if app_mode == "customer":
+            rp_origin = str(app.config.get("WEBAUTHN_RP_ORIGIN", ""))
+            rp_id = str(app.config.get("WEBAUTHN_RP_ID", ""))
+            parsed_origin = urlparse(rp_origin)
+            if parsed_origin.scheme != "https":
+                failures.append("WEBAUTHN_RP_ORIGIN must use HTTPS")
+            if parsed_origin.hostname != rp_id:
+                failures.append("WEBAUTHN_RP_ORIGIN hostname must match WEBAUTHN_RP_ID")
+        if app_mode == "admin":
+            if app.config.get("SESSION_COOKIE_NAME") != "__Host-sitbank_admin_session":
+                failures.append("Admin session cookie name must be isolated")
+            if app.config.get("ADMIN_AUTH_ENABLED") is not False:
+                failures.append("Admin authentication must remain disabled in Phase 1A")
+            if not str(app.config.get("RATELIMIT_KEY_PREFIX", "")).startswith("ospbank:admin:"):
+                failures.append("Admin rate-limit key prefix must be isolated")
+            if not str(app.config.get("SESSION_KEY_PREFIX", "")).startswith("admin-"):
+                failures.append("Admin session key prefix must be isolated")
+            click.echo("Admin auth is fail-closed; WebAuthn/passkey and step-up are Phase 2")
         if int(app.config.get("TOTP_LOGIN_VALID_WINDOW", -1)) > 1:
             failures.append("TOTP_LOGIN_VALID_WINDOW must be 0 or 1")
         if int(app.config.get("TOTP_HIGH_RISK_VALID_WINDOW", -1)) != 0:
