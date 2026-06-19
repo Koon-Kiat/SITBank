@@ -1080,22 +1080,52 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "needs.deploy-staging.result == 'success'" in production_condition
     assert "vars.STAGING_DEPLOY_ENABLED != 'true'" not in production_condition
     assert "inputs.deploy == true" not in production_condition
+    staging_deploy_env = workflow["jobs"]["deploy-staging"]["env"]
+    production_deploy_env = workflow["jobs"]["deploy-production"]["env"]
     assert (
-        workflow["jobs"]["deploy-staging"]["env"]["IMAGE_DIGEST"]
+        staging_deploy_env["IMAGE_DIGEST"]
         == "${{ needs.release-verify.outputs.digest }}"
     )
     assert (
-        workflow["jobs"]["deploy-staging"]["env"]["STAGING_MFA_KEK_ACTIVE_ID"]
+        staging_deploy_env["STAGING_MFA_KEK_ACTIVE_ID"]
         == "${{ vars.STAGING_MFA_KEK_ACTIVE_ID }}"
     )
     assert (
-        workflow["jobs"]["deploy-production"]["env"]["IMAGE_DIGEST"]
+        staging_deploy_env["STAGING_PASSWORD_RESET_EMAIL_FROM"]
+        == "${{ vars.STAGING_PASSWORD_RESET_EMAIL_FROM }}"
+    )
+    assert staging_deploy_env["STAGING_SMTP_HOST"] == "${{ vars.STAGING_SMTP_HOST }}"
+    assert (
+        production_deploy_env["IMAGE_DIGEST"]
         == "${{ needs.release-verify.outputs.digest }}"
     )
     assert (
-        workflow["jobs"]["deploy-production"]["env"]["PROD_MFA_KEK_ACTIVE_ID"]
+        production_deploy_env["PROD_MFA_KEK_ACTIVE_ID"]
         == "${{ vars.PROD_MFA_KEK_ACTIVE_ID }}"
     )
+    assert (
+        production_deploy_env["PROD_PASSWORD_RESET_EMAIL_FROM"]
+        == "${{ vars.PROD_PASSWORD_RESET_EMAIL_FROM }}"
+    )
+    assert production_deploy_env["PROD_SMTP_HOST"] == "${{ vars.PROD_SMTP_HOST }}"
+    for job_name, verify_step_name, required_names in (
+        (
+            "deploy-staging",
+            "Verify staging deployment configuration",
+            {"STAGING_PASSWORD_RESET_EMAIL_FROM", "STAGING_SMTP_HOST"},
+        ),
+        (
+            "deploy-production",
+            "Verify production deployment configuration",
+            {"PROD_PASSWORD_RESET_EMAIL_FROM", "PROD_SMTP_HOST"},
+        ),
+    ):
+        verify_step = next(
+            step
+            for step in workflow["jobs"][job_name]["steps"]
+            if step["name"] == verify_step_name
+        )
+        assert required_names <= set(_extract_bash_array(verify_step["run"], "required"))
     assert workflow["jobs"]["publish"]["needs"] == [
         "test",
         "workflow-security",
