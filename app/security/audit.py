@@ -23,6 +23,8 @@ except ImportError:  # pragma: no cover - dependency is required in production.
 
 
 SENSITIVE_KEY_PARTS = (
+    "api_key",
+    "apikey",
     "authorization",
     "bearer",
     "challenge",
@@ -33,6 +35,7 @@ SENSITIVE_KEY_PARTS = (
     "iban",
     "mfa_secret",
     "nonce",
+    "passwd",
     "password",
     "private_key",
     "public_key",
@@ -48,12 +51,31 @@ SENSITIVE_KEY_PARTS = (
     "url",
 )
 
+SENSITIVE_EXACT_KEYS = (
+    "credential",
+    "sid",
+)
+
 ACCOUNT_KEY_PARTS = (
     "account_number",
     "account_no",
     "payee_account",
     "pan",
 )
+
+SENSITIVE_CREDENTIAL_URL_RE = re.compile(
+    r"\b(?:postgres(?:ql)?|redis)://[^\s/@]*:[^\s/@]*@",
+    re.IGNORECASE,
+)
+SENSITIVE_WEBHOOK_URL_RE = re.compile(
+    r"https://(?:[^/\s]*hooks[^/\s]*|(?:discord(?:app)?\.com))/(?:api/)?(?:webhooks|services)/\S+",
+    re.IGNORECASE,
+)
+SENSITIVE_PRIVATE_KEY_RE = re.compile(
+    r"BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY",
+    re.IGNORECASE,
+)
+SENSITIVE_LONG_TOKEN_RE = re.compile(r"(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9_+/=-]{48,}")
 
 AUDIT_HASH_ALGORITHM = "sha256-v1"
 AUDIT_CHAIN_START_HASH = "0" * 64
@@ -329,7 +351,7 @@ def _sanitize_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
 def _sanitize_metadata_value(value: Any, key_lower: str, *, depth: int) -> Any:
     if isinstance(value, bool | int | float) or value is None:
         return value
-    if depth < 2 and isinstance(value, Mapping):
+    if depth < 4 and isinstance(value, Mapping):
         nested: dict[str, Any] = {}
         for nested_key, nested_value in list(value.items())[:20]:
             nested_key_text = _clean_audit_text(nested_key, 64)
@@ -340,7 +362,7 @@ def _sanitize_metadata_value(value: Any, key_lower: str, *, depth: int) -> Any:
                 else _sanitize_metadata_value(nested_value, nested_key_lower, depth=depth + 1)
             )
         return nested
-    if depth < 2 and isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
+    if depth < 4 and isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
         return [_sanitize_metadata_value(item, key_lower, depth=depth + 1) for item in list(value)[:20]]
 
     text = _clean_audit_text(value, 256)
@@ -358,12 +380,23 @@ def _clean_audit_text(value: Any, limit: int) -> str:
 def _is_sensitive_key(key_lower: str) -> bool:
     if key_lower.endswith("_ref") or key_lower in {"principal_ref", "session_ref"}:
         return False
-    return any(part in key_lower for part in SENSITIVE_KEY_PARTS)
+    normalized_key = key_lower.replace("-", "_")
+    if normalized_key in SENSITIVE_EXACT_KEYS:
+        return True
+    return any(part in normalized_key for part in SENSITIVE_KEY_PARTS)
 
 
 def _looks_like_sensitive_value(text: str) -> bool:
     lowered = text.casefold()
-    return lowered.startswith(("bearer ", "basic ", "token "))
+    if lowered.startswith(("bearer ", "basic ", "token ")):
+        return True
+    if SENSITIVE_CREDENTIAL_URL_RE.search(text):
+        return True
+    if SENSITIVE_WEBHOOK_URL_RE.search(text):
+        return True
+    if SENSITIVE_PRIVATE_KEY_RE.search(text):
+        return True
+    return bool(SENSITIVE_LONG_TOKEN_RE.fullmatch(text.strip()))
 
 
 def _looks_like_account_value(key_lower: str, text: str) -> bool:
