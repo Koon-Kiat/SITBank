@@ -64,6 +64,8 @@ case "${target}" in
         compose_source="compose.prod.yml"
         systemd_source="ops/systemd/sitbank-container.service"
         systemd_service="sitbank-container.service"
+        alert_systemd_service="sitbank-security-alerts.service"
+        alert_systemd_timer="sitbank-security-alerts.timer"
         ;;
     staging)
         config_root="/etc/sitbank-staging"
@@ -73,6 +75,8 @@ case "${target}" in
         compose_source="compose.staging.yml"
         systemd_source="ops/systemd/sitbank-staging-container.service"
         systemd_service="sitbank-staging-container.service"
+        alert_systemd_service=""
+        alert_systemd_timer=""
         ;;
 esac
 
@@ -100,6 +104,8 @@ else
         "${repo_root}/ops/nginx-proxy-headers.conf"
         "${repo_root}/ops/nginx/sitbank-production.conf"
         "${repo_root}/ops/nginx/sitbank-production-rate-limits.conf"
+        "${repo_root}/ops/systemd/${alert_systemd_service}"
+        "${repo_root}/ops/systemd/${alert_systemd_timer}"
     )
 fi
 for runtime_file in "${linux_runtime_files[@]}"; do
@@ -218,6 +224,14 @@ fi
 install -o root -g root -m 0644 \
     "${repo_root}/${systemd_source}" \
     "/etc/systemd/system/${systemd_service}"
+if [[ "${target}" == "production" ]]; then
+    install -o root -g root -m 0644 \
+        "${repo_root}/ops/systemd/${alert_systemd_service}" \
+        "/etc/systemd/system/${alert_systemd_service}"
+    install -o root -g root -m 0644 \
+        "${repo_root}/ops/systemd/${alert_systemd_timer}" \
+        "/etc/systemd/system/${alert_systemd_timer}"
+fi
 install -o root -g root -m 0440 \
     "${repo_root}/ops/sudoers/sitbank-container-deploy" \
     /etc/sudoers.d/sitbank-container-deploy
@@ -418,6 +432,9 @@ fi
 visudo -cf /etc/sudoers.d/sitbank-container-deploy
 systemctl daemon-reload
 systemctl enable "${systemd_service}"
+if [[ "${target}" == "production" ]]; then
+    systemctl enable "${alert_systemd_timer}"
+fi
 
 echo "${target^} container bootstrap complete; existing production containers were not restarted."
 echo "Seed ${config_root} with unique runtime secrets and policy files before deployment."

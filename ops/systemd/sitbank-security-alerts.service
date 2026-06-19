@@ -1,0 +1,18 @@
+[Unit]
+Description=SITBank security alert check
+Requires=docker.service sitbank-container.service
+After=docker.service network-online.target sitbank-container.service
+Wants=network-online.target
+ConditionPathExists=/var/lib/sitbank-container/current
+
+[Service]
+Type=oneshot
+Environment=HOME=/tmp
+ExecStart=/usr/local/sbin/sitbank-container-runtime check-security-alerts
+TimeoutStartSec=90
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/run/docker.sock

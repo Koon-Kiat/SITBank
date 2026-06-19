@@ -115,22 +115,38 @@ incoming webhook URL is supported directly; the application formats Discord
 payloads with mention parsing disabled. Optional direct
 `SECURITY_ALERT_WEBHOOK_URL` is supported for non-production tests only; these
 are placeholder secret names, not checked-in values. Delivery failures are
-sanitized by exception type and must not print webhook URLs or tokens. Redis
-dedupe suppresses repeated delivery of the same alert for
+sanitized by exception type and must not print webhook URLs or tokens. A final
+sanitization pass runs immediately before outbound webhook JSON serialization
+for both generic and Discord payloads; it redacts sensitive keys, bearer/basic
+credentials, cookies, session values, MFA/TOTP secrets, API keys,
+private-key-like text, database or Redis URLs with credentials, webhook URLs,
+and long token-like strings while preserving harmless severity, event type, summary,
+timestamp, correlation ID, public session reference, and safe user references.
+Redis dedupe suppresses repeated delivery of the same alert for
 `SECURITY_ALERT_DEDUPE_TTL_SECONDS` while keeping the active alert in the JSON
 report. Set `SECURITY_AUDIT_ANCHOR_PATH` when a trusted exported anchor is
 available so `check-security-alerts` emits critical
 `audit_chain_verification_failed` or `audit_anchor_mismatch` alerts for chain
 tampering, rewind, or tail deletion detectable from the anchor.
 
-Example systemd timer cadence: run
-`python -m flask --app wsgi:app verify-audit-log-chain --anchor /var/lib/sitbank/audit-anchor.json --alert-on-failure`
-every 15 minutes and
-`python -m flask --app wsgi:app check-security-alerts` every 5 minutes from a
-root-managed service account with the same container/runtime environment. A
-change to audit trigger migrations requires `db upgrade` and runtime privilege
-reapply/verify; it does not require an EC2 edge bootstrap unless deployment
-unit or host-managed configuration files also changed.
+Production uses the committed systemd timer `sitbank-security-alerts.timer` to run
+`check-security-alerts` through the container runtime wrapper every 5 minutes.
+The service fails visibly when alert evaluation fails, when active alerts are
+present, or when required delivery fails.
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now sitbank-security-alerts.timer
+sudo systemctl status sitbank-security-alerts.timer
+journalctl -u sitbank-security-alerts.service
+```
+
+Changes to `ops/systemd/sitbank-security-alerts.service`,
+`ops/systemd/sitbank-security-alerts.timer`, or the container runtime wrapper
+require the reviewed production bootstrap so the host-managed unit files are
+installed, followed by `systemctl daemon-reload`. Application-only alert code
+changes require the normal staging/production deploy path. A change to audit
+trigger migrations requires `db upgrade` and runtime privilege reapply/verify.
 
 Alert on any `security_audit_write_failed`, `account_lock`,
 `webauthn_clone_detected`, or `session_integrity` failure; 10 or more login

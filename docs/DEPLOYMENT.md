@@ -12,6 +12,7 @@ Only Flask/Gunicorn runs in the SITBank container. Nginx, TLS, PostgreSQL, Redis
 - Production config root: `/etc/sitbank`
 - Production compose dir: `/opt/sitbank`
 - Production service: `sitbank-container.service`
+- Production alert timer: `sitbank-security-alerts.timer`
 - Production database: `sitbank_db`
 - Production owner role: `sitbank_owner`
 - Production app role: `sitbank_app`
@@ -57,6 +58,19 @@ hash chain and compares the anchor during automated alert runs. Audit trigger
 changes require `db upgrade`, then `apply-runtime-db-privileges` and
 `verify-runtime-db-privileges`; they do not require an EC2 edge bootstrap
 unless host-managed deployment, Nginx, or systemd files also changed.
+
+Security alert scheduling is host-managed systemd state. Changes to
+`ops/systemd/sitbank-security-alerts.service`,
+`ops/systemd/sitbank-security-alerts.timer`, or
+`ops/deploy/sitbank-container-runtime` require the trusted EC2 bootstrap after
+merge so production receives the unit files and runs `systemctl daemon-reload`.
+Then enable or verify the timer:
+
+```bash
+sudo systemctl enable --now sitbank-security-alerts.timer
+sudo systemctl status sitbank-security-alerts.timer
+journalctl -u sitbank-security-alerts.service
+```
 
 ## Production Edge and Network Hardening
 

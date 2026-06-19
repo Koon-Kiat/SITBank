@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import urllib.request
 from collections import Counter
 from collections.abc import Mapping
@@ -41,6 +42,75 @@ DISCORD_EMBED_FIELD_LIMIT = 10
 ALERT_USER_AGENT = "SITBank-SecurityAlerts/1.0"
 DISCORD_DISPLAY_TIMEZONE = timezone(timedelta(hours=8))
 DISCORD_DISPLAY_TIMEZONE_LABEL = "UTC+8"
+DELIVERY_SAFE_KEYS = {
+    "alert_type",
+    "anchor_error_count",
+    "correlation_id",
+    "count",
+    "display_timestamp",
+    "event_count",
+    "event_id",
+    "event_type",
+    "generated_at",
+    "latest_event_id",
+    "message",
+    "outcome",
+    "public_session_ref",
+    "safe_user_id",
+    "safe_user_identifier",
+    "session_ref",
+    "severity",
+    "source",
+    "summary",
+    "timestamp",
+    "user_id",
+    "user_ref",
+    "window_seconds",
+}
+DELIVERY_SENSITIVE_KEY_PARTS = (
+    "access_token",
+    "api_key",
+    "apikey",
+    "authorization",
+    "bearer",
+    "cookie",
+    "csrf",
+    "database_url",
+    "mfa_secret",
+    "passwd",
+    "password",
+    "postgres_url",
+    "postgresql_url",
+    "private_key",
+    "redis_url",
+    "refresh_token",
+    "secret",
+    "session",
+    "session_id",
+    "sid",
+    "set_cookie",
+    "set-cookie",
+    "token",
+    "totp",
+    "webhook",
+)
+DELIVERY_CREDENTIAL_URL_RE = re.compile(
+    r"\b(?:postgres(?:ql)?|redis)://[^\s/@]*:[^\s/@]*@",
+    re.IGNORECASE,
+)
+DELIVERY_WEBHOOK_URL_RE = re.compile(
+    r"https://(?:[^/\s]*hooks[^/\s]*|(?:discord(?:app)?\.com))/(?:api/)?(?:webhooks|services)/\S+",
+    re.IGNORECASE,
+)
+DELIVERY_PRIVATE_KEY_RE = re.compile(
+    r"BEGIN (?:RSA |EC |OPENSSH |)PRIVATE KEY",
+    re.IGNORECASE,
+)
+DELIVERY_LONG_TOKEN_RE = re.compile(r"(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9_+/=-]{40,}")
+UUID_TEXT_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
 
 
 class AlertConfigurationError(RuntimeError):
@@ -444,15 +514,80 @@ def _audit_chain_status(
 
 def _alert_webhook_body(alerts: list[dict[str, Any]], *, provider: str) -> bytes:
     generated_at = _utc_iso(datetime.now(timezone.utc))
+    safe_alerts = [_sanitize_alert_for_delivery(alert) for alert in alerts]
     if provider == "discord":
-        payload = _discord_alert_payload(alerts, generated_at=generated_at)
+        payload = _discord_alert_payload(safe_alerts, generated_at=generated_at)
     else:
         payload = {
             "message": "security_alerts",
             "generated_at": generated_at,
-            "alerts": alerts,
+            "alerts": safe_alerts,
         }
     return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+
+
+def _sanitize_alert_for_delivery(alert: Mapping[str, Any]) -> dict[str, Any]:
+    clean: dict[str, Any] = {}
+    for key, value in alert.items():
+        key_text = _safe_text(key, 80) or "field"
+        key_lower = key_text.casefold()
+        if _is_sensitive_delivery_key(key_lower):
+            clean[key_text] = "[redacted]"
+            continue
+        clean[key_text] = _sanitize_delivery_value(value, key_lower, depth=0)
+    return clean
+
+
+def _sanitize_delivery_value(value: Any, key_lower: str, *, depth: int) -> Any:
+    if isinstance(value, bool | int | float) or value is None:
+        return value
+    if depth < 4 and isinstance(value, Mapping):
+        nested: dict[str, Any] = {}
+        for nested_key, nested_value in list(value.items())[:25]:
+            nested_key_text = _safe_text(nested_key, 80) or "field"
+            nested_key_lower = nested_key_text.casefold()
+            nested[nested_key_text] = (
+                "[redacted]"
+                if _is_sensitive_delivery_key(nested_key_lower)
+                else _sanitize_delivery_value(nested_value, nested_key_lower, depth=depth + 1)
+            )
+        return nested
+    if depth < 4 and isinstance(value, list | tuple):
+        return [
+            _sanitize_delivery_value(item, key_lower, depth=depth + 1)
+            for item in list(value)[:25]
+        ]
+
+    text = _safe_text(value, 512)
+    if _looks_like_sensitive_delivery_value(text):
+        return "[redacted]"
+    return text
+
+
+def _is_sensitive_delivery_key(key_lower: str) -> bool:
+    normalized = key_lower.replace("-", "_")
+    if normalized in DELIVERY_SAFE_KEYS:
+        return False
+    return any(part in normalized for part in DELIVERY_SENSITIVE_KEY_PARTS)
+
+
+def _looks_like_sensitive_delivery_value(text: str) -> bool:
+    if not text:
+        return False
+    lowered = text.casefold()
+    if lowered == "[redacted]":
+        return True
+    if lowered.startswith(("bearer ", "basic ", "token ")):
+        return True
+    if DELIVERY_CREDENTIAL_URL_RE.search(text):
+        return True
+    if DELIVERY_WEBHOOK_URL_RE.search(text):
+        return True
+    if DELIVERY_PRIVATE_KEY_RE.search(text):
+        return True
+    if UUID_TEXT_RE.fullmatch(text.strip()):
+        return False
+    return bool(DELIVERY_LONG_TOKEN_RE.fullmatch(text.strip()))
 
 
 def _discord_alert_payload(alerts: list[dict[str, Any]], *, generated_at: str) -> dict[str, Any]:

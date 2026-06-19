@@ -1388,6 +1388,8 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "sitbank-deploy" in bootstrap
     assert "sitbank-container.service" in bootstrap
     assert "sitbank-staging-container.service" in bootstrap
+    assert "sitbank-security-alerts.service" in bootstrap
+    assert "sitbank-security-alerts.timer" in bootstrap
     docs = _project_docs_text()
     assert "Manual pre-merge staging:" in docs
     assert "run trusted workflow from main" in docs
@@ -1646,6 +1648,8 @@ def test_only_sitbank_container_deployment_units_are_active():
     assert Path("ops/deploy/sitbank-database-cutover").exists()
     assert Path("ops/systemd/sitbank-container.service").exists()
     assert Path("ops/systemd/sitbank-staging-container.service").exists()
+    assert Path("ops/systemd/sitbank-security-alerts.service").exists()
+    assert Path("ops/systemd/sitbank-security-alerts.timer").exists()
     assert Path("ops/sudoers/sitbank-container-deploy").exists()
 
 
@@ -1671,12 +1675,15 @@ def test_linux_deployment_artifacts_are_forced_to_lf_and_reject_crlf():
         Path("ops/sudoers/sitbank-container-deploy"),
         Path("ops/systemd/sitbank-container.service"),
         Path("ops/systemd/sitbank-staging-container.service"),
+        Path("ops/systemd/sitbank-security-alerts.service"),
+        Path("ops/systemd/sitbank-security-alerts.timer"),
     )
 
     assert "*.sh text eol=lf" in attributes
     assert "*.yml text eol=lf" in attributes
     assert "*.conf text eol=lf" in attributes
     assert "*.service text eol=lf" in attributes
+    assert "*.timer text eol=lf" in attributes
     assert "ops/deploy/bootstrap-container-ec2 text eol=lf" in attributes
     assert "ops/deploy/sitbank-container-bootstrap text eol=lf" in attributes
     assert "ops/sudoers/* text eol=lf" in attributes
@@ -1685,6 +1692,54 @@ def test_linux_deployment_artifacts_are_forced_to_lf_and_reject_crlf():
 
     assert "Refusing to install CRLF-formatted Linux file" in bootstrap
     assert "grep -q $'\\r$'" in bootstrap
+
+
+def test_security_alert_scheduler_units_are_committed_and_safe():
+    service_path = Path("ops/systemd/sitbank-security-alerts.service")
+    timer_path = Path("ops/systemd/sitbank-security-alerts.timer")
+    service = service_path.read_text(encoding="utf-8")
+    timer = timer_path.read_text(encoding="utf-8")
+    runtime = Path("ops/deploy/sitbank-container-runtime").read_text(encoding="utf-8")
+    bootstrap = Path("ops/deploy/bootstrap-container-ec2").read_text(encoding="utf-8")
+    docs = _project_docs_text()
+    exec_start = next(
+        line for line in service.splitlines() if line.startswith("ExecStart=")
+    )
+
+    assert "Description=SITBank security alert check" in service
+    assert "ConditionPathExists=/var/lib/sitbank-container/current" in service
+    assert "ExecStart=/usr/local/sbin/sitbank-container-runtime check-security-alerts" in service
+    assert "NoNewPrivileges=true" in service
+    assert "ProtectSystem=strict" in service
+    assert "ReadWritePaths=/run/docker.sock" in service
+    assert "OnActiveSec=5min" in timer
+    assert "OnUnitActiveSec=5min" in timer
+    assert "Unit=sitbank-security-alerts.service" in timer
+    for forbidden in (
+        "webhook",
+        "password",
+        "token",
+        "api_key",
+        "apikey",
+        "secret",
+        "https://",
+    ):
+        assert forbidden not in exec_start.casefold()
+
+    assert "check-security-alerts)" in runtime
+    assert "exec -T app python -m flask --app wsgi:app check-security-alerts" in runtime
+    assert "ops/systemd/${alert_systemd_service}" in bootstrap
+    assert "ops/systemd/${alert_systemd_timer}" in bootstrap
+    assert "systemctl enable \"${alert_systemd_timer}\"" in bootstrap
+    for required in (
+        "sudo systemctl daemon-reload",
+        "sudo systemctl enable --now sitbank-security-alerts.timer",
+        "sudo systemctl status sitbank-security-alerts.timer",
+        "journalctl -u sitbank-security-alerts.service",
+        "every 5 minutes",
+        "production bootstrap",
+    ):
+        assert required in docs
 
 
 def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
