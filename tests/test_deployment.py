@@ -791,6 +791,17 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert app["mem_limit"] == "768m"
     assert app["restart"] == "unless-stopped"
     app_volume_by_target = {volume["target"]: volume for volume in app["volumes"]}
+    admin_volume_by_target = {volume["target"]: volume for volume in admin["volumes"]}
+    expected_prod_config_mounts = {
+        "/run/config/common-passwords.txt": "/etc/sitbank/common-passwords.txt",
+        "/run/config/fido-approved-aaguids.json": "/etc/sitbank/fido-approved-aaguids.json",
+        "/run/config/fido-mds-cache.json": "/etc/sitbank/fido-mds-cache.json",
+    }
+    for target, source in expected_prod_config_mounts.items():
+        assert app_volume_by_target[target]["source"] == source
+        assert app_volume_by_target[target]["read_only"] is True
+        assert admin_volume_by_target[target]["source"] == source
+        assert admin_volume_by_target[target]["read_only"] is True
     assert all(
         volume["read_only"]
         for target, volume in app_volume_by_target.items()
@@ -908,6 +919,19 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     staging_volume_by_target = {
         volume["target"]: volume for volume in staging_app["volumes"]
     }
+    staging_admin_volume_by_target = {
+        volume["target"]: volume for volume in staging_admin["volumes"]
+    }
+    expected_staging_config_mounts = {
+        "/run/config/common-passwords.txt": "/etc/sitbank-staging/common-passwords.txt",
+        "/run/config/fido-approved-aaguids.json": "/etc/sitbank-staging/fido-approved-aaguids.json",
+        "/run/config/fido-mds-cache.json": "/etc/sitbank-staging/fido-mds-cache.json",
+    }
+    for target, source in expected_staging_config_mounts.items():
+        assert staging_volume_by_target[target]["source"] == source
+        assert staging_volume_by_target[target]["read_only"] is True
+        assert staging_admin_volume_by_target[target]["source"] == source
+        assert staging_admin_volume_by_target[target]["read_only"] is True
     assert all(
         volume["source"].startswith("/etc/sitbank-staging/")
         for target, volume in staging_volume_by_target.items()
@@ -1017,7 +1041,15 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert 'DROP OWNED BY \\"${SOURCE_ROLE}\\";' in database_cutover
     assert "restart_previous_services" in database_cutover
     assert "Refusing to adopt a privileged PostgreSQL source role" in database_cutover
-    assert "logs --no-color --tail 80 app" in deploy_script
+    show_app_diagnostics = re.search(
+        r"show_app_diagnostics\(\) \{(.*?)\n\}",
+        deploy_script,
+        flags=re.DOTALL,
+    )
+    assert show_app_diagnostics is not None
+    assert "logs --no-color --tail 80 app" in show_app_diagnostics.group(1)
+    assert "logs --no-color --tail 80 admin" in show_app_diagnostics.group(1)
+    assert '[[ "${target}" == "production" ]]' not in show_app_diagnostics.group(1)
     assert "runuser -u sitbank-container" in deploy_script
     assert "cannot traverse secret directory" in deploy_script
     assert '"${config_root}/secrets"' in bootstrap

@@ -161,6 +161,18 @@ services:
         read_only: true
         bind:
           create_host_path: false
+      - type: bind
+        source: /etc/sitbank/fido-approved-aaguids.json
+        target: /run/config/fido-approved-aaguids.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /etc/sitbank/fido-mds-cache.json
+        target: /run/config/fido-mds-cache.json
+        read_only: true
+        bind:
+          create_host_path: false
     healthcheck:
       test:
         - CMD

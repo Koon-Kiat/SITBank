@@ -246,6 +246,25 @@ services:
         target: admin_password_pepper_b64
       - source: security_alert_webhook_url
         target: security_alert_webhook_url
+    volumes:
+      - type: bind
+        source: /etc/sitbank-staging/common-passwords.txt
+        target: /run/config/common-passwords.txt
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /etc/sitbank-staging/fido-approved-aaguids.json
+        target: /run/config/fido-approved-aaguids.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /etc/sitbank-staging/fido-mds-cache.json
+        target: /run/config/fido-mds-cache.json
+        read_only: true
+        bind:
+          create_host_path: false
     networks:
       - sitbank-staging
     logging:
