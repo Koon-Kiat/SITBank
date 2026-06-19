@@ -509,10 +509,14 @@ def test_compose_secret_mounts_match_runtime_contract():
     expected_admin_environment = {
         **ADMIN_SECRET_FILE_ENVIRONMENT,
         "SECURITY_ALERT_WEBHOOK_URL_FILE": "/run/secrets/security_alert_webhook_url",
+        "SMTP_USERNAME_FILE": "/run/secrets/smtp_username",
+        "SMTP_PASSWORD_FILE": "/run/secrets/smtp_password",
     }
     expected_admin_secrets = {
         **{name: name for name in ADMIN_SECRET_FILES},
         "security_alert_webhook_url": "security_alert_webhook_url",
+        "smtp_username": "smtp_username",
+        "smtp_password": "smtp_password",
     }
     for path, secret_root, base_extra_secrets in (
         (
@@ -837,6 +841,11 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "DATABASE_MIGRATION_URL_FILE" not in admin["environment"]
     assert "ADMIN_DATABASE_URL_FILE" in admin["environment"]
     assert "ADMIN_REDIS_URL_FILE" in admin["environment"]
+    for smtp_env in ("SMTP_USERNAME_FILE", "SMTP_PASSWORD_FILE"):
+        assert admin["environment"][smtp_env] == app["environment"][smtp_env]
+    admin_secret_targets = _service_secret_targets(admin)
+    assert admin_secret_targets["smtp_username"] == "smtp_username"
+    assert admin_secret_targets["smtp_password"] == "smtp_password"
     assert "/app/redis_compatibility_check.py:ro" in smoke_test
     assert "python /app/redis_compatibility_check.py" in smoke_test
     assert "ci_owner" in smoke_test
@@ -946,12 +955,17 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "no-new-privileges:true" in staging_admin["security_opt"]
     assert staging_admin["env_file"] == ["/etc/sitbank-staging/container.env"]
     assert "DATABASE_MIGRATION_URL_FILE" not in staging_admin["environment"]
+    for smtp_env in ("SMTP_USERNAME_FILE", "SMTP_PASSWORD_FILE"):
+        assert staging_admin["environment"][smtp_env] == staging_app["environment"][smtp_env]
     assert (
         staging_admin["command"][staging_admin["command"].index("--bind") + 1]
         == "0.0.0.0:5000"
     )
     assert staging_admin["command"][-1] == "admin_wsgi:app"
     assert all(set(secret) == {"source", "target"} for secret in staging_admin["secrets"])
+    staging_admin_secret_targets = _service_secret_targets(staging_admin)
+    assert staging_admin_secret_targets["smtp_username"] == "smtp_username"
+    assert staging_admin_secret_targets["smtp_password"] == "smtp_password"
     assert staging_volume_by_target["/run/state"]["source"] == (
         "/var/lib/sitbank-staging-container/security-alert-state"
     )
