@@ -77,8 +77,13 @@ python -m flask --app wsgi:app export-audit-log-anchor
 ```
 
 Ship the sanitized anchor JSON to immutable storage, WORM object storage,
-signed release artifacts, or a separate SIEM/log archive. Do not store real
-cloud credentials, webhook URLs, or signing keys in the repository.
+signed release artifacts, or a separate SIEM/log archive. Set
+`SECURITY_AUDIT_ANCHOR_PATH=/var/lib/sitbank/audit-anchor.json` for automated
+alert checks once an exported anchor is available. `check-security-alerts`
+verifies the audit hash chain on every run and compares the current chain head
+with the configured anchor; without this path it still verifies the chain but
+skips anchor comparison. Do not store real cloud credentials, webhook URLs, or
+signing keys in the repository.
 
 Retain security audit records for 7 years. Do not silently auto-delete audit
 records from application code or scheduled jobs. Disposal after the retention
@@ -97,10 +102,10 @@ python -m flask --app wsgi:app verify-runtime-db-privileges
 ```
 
 The expected result is that `sitbank_app` can insert and select audit rows but
-cannot update or delete rows from `security_audit_events`. PostgreSQL also
-installs append-only triggers that reject `UPDATE` and `DELETE` with SQLSTATE
-`42501`, so owner-role verification detects missing trigger protection before
-runtime privilege checks pass.
+cannot update, delete, or truncate rows from `security_audit_events`.
+PostgreSQL also installs append-only triggers that reject `UPDATE`, `DELETE`,
+and `TRUNCATE` with SQLSTATE `42501`, so owner-role verification detects
+missing trigger protection before runtime privilege checks pass.
 
 ## Dependency Response
 
@@ -258,7 +263,12 @@ is a secret and must be regenerated if exposed.
 of the same alert while preserving the alert in reports. Delivery failures are
 reported by type only and must not include webhook URLs, tokens, headers,
 request bodies, raw identifiers, passwords, session IDs, or full account
-numbers.
+numbers. Set `SECURITY_AUDIT_ANCHOR_PATH` to the latest exported anchor path to
+make `check-security-alerts` alert on anchor mismatch, chain rewind, or tail
+deletion detectable from the anchor. On mismatch, treat the database and host
+as incident evidence, stop routine anchor rotation, preserve the mismatched
+anchor, run `verify-audit-log-chain --anchor`, and investigate before resuming
+normal deployments.
 
 Alert immediately on any `security_audit_write_failed`, `account_lock`,
 `webauthn_clone_detected`, `session_integrity` failure,
