@@ -90,7 +90,7 @@ journalctl -u sitbank-security-alerts.service
 
 ## Production Edge and Network Hardening
 
-The reviewed production bootstrap installs and enables the production edge from `ops/nginx/sitbank-production.conf`, `ops/nginx/sitbank-production-rate-limits.conf`, and `ops/nginx-proxy-headers.conf`. Any change to those files requires a production bootstrap after merge.
+The reviewed production bootstrap installs and enables the production edge from `ops/nginx/sitbank-default.conf`, `ops/nginx/sitbank-production.conf`, `ops/nginx/sitbank-production-rate-limits.conf`, and `ops/nginx-proxy-headers.conf`. The shared default config owns unknown-host rejection so production and staging can run on the same EC2 without duplicate Nginx `default_server` listeners. Any change to those files requires a production bootstrap after merge.
 
 - Public ingress is TCP `80` and `443` only.
 - SSH is restricted to an administrator IP allowlist, AWS Systems Manager, a bastion, or VPN.
