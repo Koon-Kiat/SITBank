@@ -1853,6 +1853,7 @@ def test_linux_deployment_artifacts_are_forced_to_lf_and_reject_crlf():
         Path("ops/deploy/sitbank-container-runtime"),
         Path("ops/deploy/sitbank-database-cutover"),
         Path("ops/nginx-proxy-headers.conf"),
+        Path("ops/nginx/sitbank-default.conf"),
         Path("ops/nginx/sitbank-production.conf"),
         Path("ops/nginx/sitbank-production-rate-limits.conf"),
         Path("ops/nginx/sitbank-staging.conf"),
@@ -1927,7 +1928,25 @@ def test_security_alert_scheduler_units_are_committed_and_safe():
         assert required in docs
 
 
+def test_nginx_default_server_is_shared_for_same_host_production_and_staging():
+    default_nginx = Path("ops/nginx/sitbank-default.conf").read_text(encoding="utf-8")
+    production_nginx = Path("ops/nginx/sitbank-production.conf").read_text(encoding="utf-8")
+    staging_nginx = Path("ops/nginx/sitbank-staging.conf").read_text(encoding="utf-8")
+    combined = "\n".join([default_nginx, production_nginx, staging_nginx])
+
+    assert combined.count("listen 80 default_server;") == 1
+    assert combined.count("listen [::]:80 default_server;") == 1
+    assert combined.count("listen 443 ssl http2 default_server;") == 1
+    assert combined.count("listen [::]:443 ssl http2 default_server;") == 1
+    assert "listen 80 default_server;" not in production_nginx
+    assert "listen 80 default_server;" not in staging_nginx
+    assert "server_name sitbank.duckdns.org;" in combined
+    assert "server_name admin-sitbank.duckdns.org;" in combined
+    assert "server_name staging-sitbank.duckdns.org;" in combined
+
+
 def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
+    default_nginx = Path("ops/nginx/sitbank-default.conf").read_text(encoding="utf-8")
     nginx = Path("ops/nginx/sitbank-staging.conf").read_text(encoding="utf-8")
     rate_limits = Path("ops/nginx/sitbank-staging-rate-limits.conf").read_text(
         encoding="utf-8"
@@ -1937,13 +1956,19 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
         encoding="utf-8"
     )
 
+    assert Path("ops/nginx/sitbank-default.conf").exists()
     assert Path("ops/nginx/sitbank-staging-rate-limits.conf").exists()
+    assert "listen 80 default_server;" in default_nginx
+    assert "listen [::]:80 default_server;" in default_nginx
+    assert "listen 443 ssl http2 default_server;" in default_nginx
+    assert "listen [::]:443 ssl http2 default_server;" in default_nginx
+    assert "server_name _;" in default_nginx
+    assert "ssl_reject_handshake on;" in default_nginx
+    assert "return 444;" in default_nginx
     assert "listen 80;" in nginx
-    assert "listen 80 default_server;" in nginx
-    assert "listen 443 ssl http2 default_server;" in nginx
-    assert "server_name _;" in nginx
-    assert "ssl_reject_handshake on;" in nginx
-    assert "return 444;" in nginx
+    assert "listen 80 default_server;" not in nginx
+    assert "listen 443 ssl http2 default_server;" not in nginx
+    assert "server_name _;" not in nginx
     assert "return 301 https://$host$request_uri;" in nginx
     assert "listen 443 ssl http2;" in nginx
     assert "server_name staging-sitbank.duckdns.org;" in nginx
@@ -2021,11 +2046,17 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     assert "apache2-utils" in bootstrap
     assert "certbot" in bootstrap
     assert "STAGING_RATE_LIMITS_FILE=\"/etc/nginx/conf.d/sitbank-staging-rate-limits.conf\"" in bootstrap
+    assert "EDGE_DEFAULTS_FILE=\"/etc/nginx/conf.d/sitbank-default.conf\"" in bootstrap
+    assert "ops/nginx/sitbank-default.conf" in bootstrap
     assert "ops/nginx/sitbank-staging-rate-limits.conf" in bootstrap
     assert "sitbank-staging-rate-limits.$(date -u +%Y%m%dT%H%M%SZ).conf" in bootstrap
+    assert '"nginx-sitbank-default"' in bootstrap
+    assert '${backup_prefix}.$(date -u +%Y%m%dT%H%M%SZ).conf' in bootstrap
     assert "nginx-sitbank-staging.$(date -u +%Y%m%dT%H%M%SZ).conf" in bootstrap
     assert "&& ! cmp -s \\" in bootstrap
     assert '"${repo_root}/ops/nginx/sitbank-staging.conf" \\' in bootstrap
+    assert "refresh_enabled_sibling_site" in bootstrap
+    assert "&& -e /etc/nginx/sites-enabled/sitbank" in bootstrap
     assert '"${staging_site}"; then' in bootstrap
     assert "if [[ ! -e /etc/nginx/sites-available/sitbank-staging" not in bootstrap
     staging_site_install = bootstrap.index('"${repo_root}/ops/nginx/sitbank-staging.conf"')
@@ -2040,6 +2071,7 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
 
 
 def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
+    default_nginx = Path("ops/nginx/sitbank-default.conf").read_text(encoding="utf-8")
     nginx = Path("ops/nginx/sitbank-production.conf").read_text(encoding="utf-8")
     rate_limits = Path("ops/nginx/sitbank-production-rate-limits.conf").read_text(
         encoding="utf-8"
@@ -2055,16 +2087,22 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     customer_nginx = _nginx_server_block(nginx, "sitbank.duckdns.org")
     admin_nginx = _nginx_server_block(nginx, "admin-sitbank.duckdns.org")
 
+    assert Path("ops/nginx/sitbank-default.conf").exists()
     assert Path("ops/nginx/sitbank-production.conf").exists()
     assert Path("ops/nginx/sitbank-production-rate-limits.conf").exists()
+    assert "listen 80 default_server;" in default_nginx
+    assert "listen [::]:80 default_server;" in default_nginx
+    assert "listen 443 ssl http2 default_server;" in default_nginx
+    assert "listen [::]:443 ssl http2 default_server;" in default_nginx
+    assert "server_name _;" in default_nginx
+    assert "ssl_reject_handshake on;" in default_nginx
+    assert "return 444;" in default_nginx
     assert "listen 80;" in nginx
     assert "return 301 https://sitbank.duckdns.org$request_uri;" in nginx
     assert "return 301 https://admin-sitbank.duckdns.org$request_uri;" in nginx
-    assert "listen 80 default_server;" in nginx
-    assert "listen 443 ssl http2 default_server;" in nginx
-    assert "server_name _;" in nginx
-    assert "ssl_reject_handshake on;" in nginx
-    assert "return 444;" in nginx
+    assert "listen 80 default_server;" not in nginx
+    assert "listen 443 ssl http2 default_server;" not in nginx
+    assert "server_name _;" not in nginx
     assert "listen 443 ssl http2;" in nginx
     assert "server_name sitbank.duckdns.org;" in nginx
     assert "server_name admin-sitbank.duckdns.org;" in nginx
@@ -2195,6 +2233,8 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     assert "/etc/letsencrypt/live/${PRODUCTION_ADMIN_PUBLIC_HOST}" in bootstrap
     assert "Issue the production Certbot certificate before rerunning bootstrap." in bootstrap
     assert "PRODUCTION_RATE_LIMITS_FILE=\"/etc/nginx/conf.d/sitbank-production-rate-limits.conf\"" in bootstrap
+    assert "EDGE_DEFAULTS_FILE=\"/etc/nginx/conf.d/sitbank-default.conf\"" in bootstrap
+    assert "ops/nginx/sitbank-default.conf" in bootstrap
     assert "ops/nginx/sitbank-production-rate-limits.conf" in bootstrap
     assert "ops/nginx/sitbank-production.conf" in bootstrap
     assert "Refusing to replace unsafe production Nginx rate-limit file" in bootstrap
@@ -2202,8 +2242,11 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     assert "Conflicting Nginx production site is already enabled" in bootstrap
     assert "Disable the duplicate production server block" in bootstrap
     assert "nginx-sitbank-production-rate-limits.$(date -u +%Y%m%dT%H%M%SZ).conf" in bootstrap
+    assert '"nginx-sitbank-default"' in bootstrap
+    assert '${backup_prefix}.$(date -u +%Y%m%dT%H%M%SZ).conf' in bootstrap
     assert "nginx-sitbank-production.$(date -u +%Y%m%dT%H%M%SZ).conf" in bootstrap
     assert "/etc/nginx/sites-enabled/sitbank" in bootstrap
+    assert "&& -e /etc/nginx/sites-enabled/sitbank-staging" in bootstrap
 
     production_rate_install = bootstrap.index(
         '"${repo_root}/ops/nginx/sitbank-production-rate-limits.conf"'
