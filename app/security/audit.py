@@ -77,9 +77,18 @@ SENSITIVE_PRIVATE_KEY_RE = re.compile(
 )
 SENSITIVE_LONG_TOKEN_RE = re.compile(r"(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9_+/=-]{48,}")
 
-AUDIT_HASH_ALGORITHM = "sha256-v1"
+AUDIT_HASH_ALGORITHM = "hmac-sha256-v1"
+LEGACY_AUDIT_HASH_ALGORITHM = "sha256-v1"
+SUPPORTED_AUDIT_HASH_ALGORITHMS = frozenset(
+    {AUDIT_HASH_ALGORITHM, LEGACY_AUDIT_HASH_ALGORITHM}
+)
+AUDIT_HMAC_KEY_MIN_LENGTH = 32
 AUDIT_CHAIN_START_HASH = "0" * 64
 AUDIT_CHAIN_ADVISORY_LOCK_ID = 6151467082736394621
+
+
+class AuditWriteError(RuntimeError):
+    """Raised when a protected action cannot write its required audit event."""
 
 
 def register_correlation_id(app) -> None:
@@ -115,7 +124,54 @@ def audit_event(
     metadata: dict[str, Any] | None = None,
     session_id: str | None = None,
 ) -> None:
+    _audit_event(
+        event_type,
+        outcome,
+        user=user,
+        user_id=user_id,
+        metadata=metadata,
+        session_id=session_id,
+        required=False,
+    )
+
+
+def audit_event_required(
+    event_type: str,
+    outcome: str,
+    *,
+    user: User | None = None,
+    user_id: int | None = None,
+    metadata: dict[str, Any] | None = None,
+    session_id: str | None = None,
+) -> None:
+    _audit_event(
+        event_type,
+        outcome,
+        user=user,
+        user_id=user_id,
+        metadata=metadata,
+        session_id=session_id,
+        required=True,
+    )
+
+
+def validate_audit_integrity_config() -> int:
+    return len(_audit_hmac_key_bytes())
+
+
+def _audit_event(
+    event_type: str,
+    outcome: str,
+    *,
+    user: User | None,
+    user_id: int | None,
+    metadata: dict[str, Any] | None,
+    session_id: str | None,
+    required: bool,
+) -> None:
     if not has_request_context():
+        if required:
+            raise AuditWriteError("Required audit events need a request context")
         return
 
     clean_event_type = _clean_audit_text(event_type, 80)
@@ -165,6 +221,8 @@ def audit_event(
             metadata=clean_metadata,
             error_type=type(exc).__name__,
         )
+        if required:
+            raise AuditWriteError("Required audit event could not be recorded") from exc
         return
 
     _log_audit_record(event, path=path, method=method)
@@ -233,6 +291,7 @@ def audit_webauthn_event(
     aaguid: str | None = None,
     metadata: dict[str, Any] | None = None,
     session_id: str | None = None,
+    required: bool = False,
 ) -> None:
     credential_ref = credential_id
     if isinstance(credential_id, bytes):
@@ -246,7 +305,8 @@ def audit_webauthn_event(
         "aaguid": aaguid,
     }
     event_metadata.update(metadata or {})
-    audit_event(
+    writer = audit_event_required if required else audit_event
+    writer(
         f"webauthn_{action}",
         outcome,
         user=user,
@@ -279,12 +339,13 @@ def verify_audit_hash_chain(*, anchor: Mapping[str, Any] | None = None) -> dict[
             continue
 
         chain_started = True
-        if event.hash_algorithm != AUDIT_HASH_ALGORITHM:
+        event_algorithm = event.hash_algorithm or LEGACY_AUDIT_HASH_ALGORITHM
+        if event_algorithm not in SUPPORTED_AUDIT_HASH_ALGORITHMS:
             _append_chain_error(
                 errors,
                 event.id,
                 "unsupported_hash_algorithm",
-                algorithm=event.hash_algorithm,
+                algorithm=event_algorithm,
             )
         if event.previous_event_hash != previous_hash:
             _append_chain_error(errors, event.id, "previous_hash_mismatch")
@@ -432,7 +493,24 @@ def _lock_audit_chain_for_insert() -> None:
 
 def _compute_audit_event_hash(event: SecurityAuditEvent) -> str:
     canonical_payload = _canonical_audit_event_payload(event)
-    return hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
+    algorithm = event.hash_algorithm or LEGACY_AUDIT_HASH_ALGORITHM
+    payload = canonical_payload.encode("utf-8")
+    if algorithm == AUDIT_HASH_ALGORITHM:
+        return hmac.new(_audit_hmac_key_bytes(), payload, hashlib.sha256).hexdigest()
+    if algorithm == LEGACY_AUDIT_HASH_ALGORITHM:
+        return hashlib.sha256(payload).hexdigest()
+    raise ValueError(f"Unsupported audit hash algorithm: {algorithm}")
+
+
+def _audit_hmac_key_bytes() -> bytes:
+    if not has_app_context():
+        raise RuntimeError("SECURITY_AUDIT_HMAC_KEY requires an application context")
+    value = str(current_app.config.get("SECURITY_AUDIT_HMAC_KEY") or "")
+    if len(value) < AUDIT_HMAC_KEY_MIN_LENGTH:
+        raise RuntimeError(
+            f"SECURITY_AUDIT_HMAC_KEY must be at least {AUDIT_HMAC_KEY_MIN_LENGTH} characters"
+        )
+    return value.encode("utf-8")
 
 
 def _canonical_audit_event_payload(event: SecurityAuditEvent) -> str:

@@ -13,14 +13,19 @@ from flask import current_app, request, session
 from sqlalchemy import func, or_
 
 from app.extensions import db
-from app.models import ManualRecoveryRequest, PasswordResetToken, RecoveryCode, User
-from app.security.audit import audit_event, audit_reference, principal_reference
+from app.models import ManualRecoveryRequest, PasswordResetToken, User
+from app.security.audit import audit_event, audit_event_required, audit_reference, principal_reference
 from app.security.email import send_security_email
 from app.security.passwords import PasswordPolicyError, hash_password, validate_password_policy, verify_password
 from app.security.rate_limits import AuthBackoffRequired, apply_exponential_backoff, clear_failures, record_failure
 from app.security.session_hmac import active_hmac_hex
 from app.security.sessions import revoke_all_sessions, rotate_session_id
 
+from .recovery_codes import (
+    consume_recovery_code,
+    generate_recovery_codes_for_user,
+    send_recovery_code_used_notification,
+)
 from .services import AuthError, _verify_totp_for_user
 
 
@@ -29,7 +34,7 @@ GENERIC_MANUAL_RECOVERY_MESSAGE = "If the account can be reviewed, a recovery re
 GENERIC_RESET_ERROR = "Password reset link is invalid or expired"
 RESET_TRANSACTION_SESSION_KEY = "password_reset_transaction_id"
 RESET_TRANSACTION_PREFIX = "ospbank:password_reset_transaction:"
-RECOVERY_CODE_COUNT = 10
+GENERIC_AUTHENTICATION_CODE_ERROR = "Invalid authentication code."
 
 
 def request_password_reset(identifier: str) -> dict[str, str]:
@@ -142,15 +147,28 @@ def verify_reset_totp(code: str) -> dict[str, Any]:
         audit_event("password_reset_mfa_failed", "failure", user=user, metadata={"reason": "totp_not_required"})
         raise AuthError("Authenticator code is not required for this reset", 400)
 
-    if not _verify_totp_for_user(user, code, "password_reset_mfa"):
-        _record_transaction_failure(transaction, "totp_failed")
-        audit_event("password_reset_mfa_failed", "failure", user=user, metadata={"factor": "totp"})
-        raise AuthError("Invalid MFA code", 401)
+    if _is_totp_code(code):
+        if not _verify_totp_for_user(user, code, "password_reset_mfa"):
+            _record_transaction_failure(transaction, "totp_failed")
+            audit_event("password_reset_mfa_failed", "failure", user=user, metadata={"factor": "totp"})
+            raise AuthError(GENERIC_AUTHENTICATION_CODE_ERROR, 401)
+        factor = "totp"
+    else:
+        _enforce_reset_backoff("password_reset_recovery_code", transaction["transaction_id"])
+        if not consume_recovery_code(user, code):
+            record_failure("password_reset_recovery_code", transaction["transaction_id"])
+            _record_transaction_failure(transaction, "recovery_code_failed")
+            audit_event("password_reset_mfa_failed", "failure", user=user, metadata={"factor": "recovery_code"})
+            raise AuthError(GENERIC_AUTHENTICATION_CODE_ERROR, 401)
+        clear_failures("password_reset_recovery_code", transaction["transaction_id"])
+        _send_recovery_code_used_notification(user)
+        transaction["recovery_code_verified"] = True
+        factor = "recovery_code"
 
+    audit_event_required("password_reset_mfa_verified", "success", user=user, metadata={"factor": factor})
     transaction["mfa_verified"] = True
     transaction["mfa_verified_at"] = _now_timestamp()
     _store_transaction(transaction)
-    audit_event("password_reset_mfa_verified", "success", user=user, metadata={"factor": "totp"})
     return _public_transaction(transaction)
 
 
@@ -168,30 +186,29 @@ def mark_reset_webauthn_verified(transaction_id: str, user_id: int) -> dict[str,
 def verify_recovery_code_for_reset(code: str) -> dict[str, Any]:
     transaction = _load_current_transaction()
     user = _transaction_user(transaction)
-    _enforce_reset_backoff("password_reset_recovery_code", transaction["transaction_id"])
-    code_hmac = _recovery_code_hmac(code)
-    item = db.session.execute(
-        db.select(RecoveryCode).where(
-            RecoveryCode.user_id == user.id,
-            RecoveryCode.code_hmac == code_hmac,
-            RecoveryCode.used_at.is_(None),
-            RecoveryCode.purpose == "account_recovery",
+    if transaction["mfa_required"] != "totp":
+        audit_event(
+            "password_reset_mfa_failed",
+            "failure",
+            user=user,
+            metadata={"reason": "recovery_code_not_allowed"},
         )
-    ).scalar_one_or_none()
-    if item is None:
+        raise AuthError("Authenticator code is not required for this reset", 400)
+
+    _enforce_reset_backoff("password_reset_recovery_code", transaction["transaction_id"])
+    if not consume_recovery_code(user, code):
         record_failure("password_reset_recovery_code", transaction["transaction_id"])
         _record_transaction_failure(transaction, "recovery_code_failed")
         audit_event("password_reset_mfa_failed", "failure", user=user, metadata={"factor": "recovery_code"})
-        raise AuthError("Recovery code is invalid", 401)
+        raise AuthError(GENERIC_AUTHENTICATION_CODE_ERROR, 401)
 
-    item.used_at = _utcnow()
-    db.session.commit()
     clear_failures("password_reset_recovery_code", transaction["transaction_id"])
+    _send_recovery_code_used_notification(user)
+    audit_event_required("password_reset_mfa_verified", "success", user=user, metadata={"factor": "recovery_code"})
     transaction["mfa_verified"] = True
     transaction["recovery_code_verified"] = True
     transaction["mfa_verified_at"] = _now_timestamp()
     _store_transaction(transaction)
-    audit_event("password_reset_mfa_verified", "success", user=user, metadata={"factor": "recovery_code"})
     return _public_transaction(transaction)
 
 
@@ -224,14 +241,9 @@ def complete_password_reset(new_password: str, confirm_new_password: str) -> dic
         )
     ).scalars():
         token.used_at = now
-    db.session.commit()
 
     revoked = revoke_all_sessions(user.id, ended_reason="password_reset")
-    _clear_reset_transaction(transaction)
-    session.clear()
-    clear_failures("login", _auth_principal(user.username))
-    clear_failures("login", _auth_principal(user.email))
-    audit_event(
+    audit_event_required(
         "password_reset_completed",
         "success",
         user=user,
@@ -242,6 +254,10 @@ def complete_password_reset(new_password: str, confirm_new_password: str) -> dic
             "password_screening": "local_only_fallback" if password_policy_warnings else "local_and_live",
         },
     )
+    _clear_reset_transaction(transaction)
+    session.clear()
+    clear_failures("login", _auth_principal(user.username))
+    clear_failures("login", _auth_principal(user.email))
     try:
         _send_password_reset_notification(user)
     except Exception as exc:
@@ -277,32 +293,6 @@ def request_manual_recovery(identifier: str) -> dict[str, str]:
         metadata={"principal_ref": identifier_ref},
     )
     return {"message": GENERIC_MANUAL_RECOVERY_MESSAGE}
-
-
-def generate_recovery_codes_for_user(user: User, *, count: int = RECOVERY_CODE_COUNT) -> list[str]:
-    if count < 1 or count > 20:
-        raise ValueError("Recovery code count must be between 1 and 20")
-    now = _utcnow()
-    for item in db.session.execute(
-        db.select(RecoveryCode).where(
-            RecoveryCode.user_id == user.id,
-            RecoveryCode.used_at.is_(None),
-        )
-    ).scalars():
-        item.used_at = now
-
-    codes = [_new_recovery_code() for _ in range(count)]
-    for code in codes:
-        db.session.add(
-            RecoveryCode(
-                user_id=user.id,
-                code_hmac=_recovery_code_hmac(code),
-                purpose="account_recovery",
-            )
-        )
-    db.session.commit()
-    audit_event("recovery_codes_generated", "success", user=user, metadata={"count": count})
-    return codes
 
 
 def reset_transaction_user_and_id() -> tuple[User, str]:
@@ -508,18 +498,6 @@ def _token_hmac(verifier: str) -> str:
     return active_hmac_hex(f"password-reset-token:{verifier}", length=64)
 
 
-def _recovery_code_hmac(code: str) -> str:
-    return active_hmac_hex(f"recovery-code:{_normalize_recovery_code(code)}", length=64)
-
-
-def _new_recovery_code() -> str:
-    return "-".join(secrets.token_hex(2) for _ in range(4))
-
-
-def _normalize_recovery_code(code: str) -> str:
-    return "".join(char for char in str(code or "").casefold() if char.isalnum())
-
-
 def _account_reset_blocked(user: User) -> bool:
     return bool(user.is_frozen or user.security_locked_at is not None)
 
@@ -538,6 +516,19 @@ def _enforce_reset_backoff(scope: str, principal: str) -> None:
     except AuthBackoffRequired as exc:
         audit_event("auth_backoff", "blocked", metadata={"scope": scope, "retry_after": exc.retry_after})
         raise AuthError("Too many attempts. Please try again later.", 429, retry_after=exc.retry_after) from exc
+
+
+def _is_totp_code(code: str) -> bool:
+    text = str(code or "")
+    return len(text) == 6 and text.isdigit()
+
+
+def _send_recovery_code_used_notification(user: User) -> None:
+    try:
+        send_recovery_code_used_notification(user)
+    except Exception as exc:
+        current_app.logger.warning("recovery_code_notification_failed error=%s", type(exc).__name__)
+        audit_event("recovery_code_notification", "failure", user=user, metadata={"reason": "email_delivery_failed"})
 
 
 def _auth_principal(identifier: str) -> str:

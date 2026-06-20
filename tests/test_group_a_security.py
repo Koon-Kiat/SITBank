@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from webauthn.helpers.structs import CredentialDeviceType
 
 from app.extensions import db
-from app.models import SecurityAuditEvent, User, WebAuthnCredential
+from app.models import RecoveryCode, SecurityAuditEvent, User, WebAuthnCredential
 from app.security.passwords import (
     PASSWORD_MAX_CHARS,
     PASSWORD_MIN_LENGTH,
@@ -815,8 +815,167 @@ def test_mfa_setup_stores_encrypted_secret_and_rejects_replay(client):
     assert "Manual setup key" in setup_markup
     assert 'id="manual-entry-secret"' in setup_markup
     assert f'value="{secret}"' in setup_markup
-    assert verify_response.status_code == 302
+    assert verify_response.status_code == 200
     assert replay_response.status_code == 401
+
+
+def test_mfa_setup_generates_ten_hashed_recovery_codes_and_shows_once(client):
+    register(client)
+    login(client)
+    client.post("/mfa/setup", data={"action": "start"})
+
+    user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
+    secret = decrypt_test_mfa_secret(user)
+    code = pyotp.TOTP(secret, digits=6, interval=30).now()
+
+    response = client.post("/mfa/setup", data={"action": "verify", "totp_code": code})
+    markup = response.data.decode("utf-8")
+    recovery_codes = re.findall(r"<code>([0-9a-f]{8}(?:-[0-9a-f]{8}){3})</code>", markup)
+    stored_codes = list(
+        db.session.execute(
+            db.select(RecoveryCode).where(
+                RecoveryCode.user_id == user.id,
+                RecoveryCode.purpose == "totp_recovery",
+                RecoveryCode.used_at.is_(None),
+            )
+        ).scalars()
+    )
+    followup = client.get("/mfa/setup")
+    followup_markup = followup.data.decode("utf-8")
+
+    assert response.status_code == 200
+    assert len(recovery_codes) == 10
+    assert len(stored_codes) == 10
+    assert all(len(code.replace("-", "")) == 32 for code in recovery_codes)
+    assert all(item.code_hmac not in recovery_codes for item in stored_codes)
+    assert recovery_codes[0] not in followup_markup
+
+
+def test_recovery_code_satisfies_pending_totp_login_once_and_notifies(app, client):
+    from app.auth.recovery_codes import generate_recovery_codes_for_user
+    from app.security.email import password_reset_outbox
+
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    recovery_codes = generate_recovery_codes_for_user(user)
+
+    client.post("/logout")
+    login_response = login(client)
+    verified = client.post("/auth/mfa/verify", json={"totp_code": recovery_codes[0]})
+    dashboard = client.get("/dashboard")
+    client.post("/logout")
+    login(client)
+    reused = client.post("/auth/mfa/verify", json={"totp_code": recovery_codes[0]})
+
+    assert login_response.status_code == 302
+    assert verified.status_code == 200
+    assert verified.get_json()["recovery_codes_remaining"] == 9
+    assert dashboard.status_code == 200
+    assert "9 unused recovery codes remain." in dashboard.data.decode("utf-8")
+    assert reused.status_code == 401
+    assert reused.get_json()["error"] == "Invalid authentication code."
+    assert db.session.query(RecoveryCode).filter_by(user_id=user.id).filter(RecoveryCode.used_at.is_not(None)).count() == 1
+    assert db.session.query(SecurityAuditEvent).filter_by(event_type="mfa_recovery_code_verify", outcome="success").count() == 1
+    assert password_reset_outbox()[-1]["subject"] == "SITBank recovery code used"
+
+
+def test_invalid_recovery_code_attempt_uses_generic_error_and_audits_failure(client):
+    register(client)
+    login(client)
+    enable_mfa_for_user()
+
+    client.post("/logout")
+    login(client)
+    response = client.post("/auth/mfa/verify", json={"totp_code": "not-a-valid-recovery-code"})
+
+    assert response.status_code == 401
+    assert response.get_json()["error"] == "Invalid authentication code."
+    assert db.session.query(SecurityAuditEvent).filter_by(event_type="mfa_recovery_code_verify", outcome="failure").count() == 1
+
+
+def test_recovery_code_cannot_satisfy_login_when_security_key_primary_is_required(client):
+    from app.auth.recovery_codes import generate_recovery_codes_for_user
+
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    recovery_codes = generate_recovery_codes_for_user(user)
+    add_security_keys_for_user(user)
+
+    client.post("/logout")
+    with client.session_transaction() as sess:
+        sess["pending_mfa_user_id"] = user.id
+        sess["password_authenticated_at"] = int(time.time())
+    response = client.post("/auth/mfa/verify", json={"totp_code": recovery_codes[0]})
+
+    assert response.status_code == 403
+    assert response.get_json()["error"] == "Security key sign-in required for this account"
+    assert db.session.query(RecoveryCode).filter_by(user_id=user.id).filter(RecoveryCode.used_at.is_not(None)).count() == 0
+
+
+def test_recovery_code_regeneration_revokes_old_unused_codes(client):
+    from app.auth.recovery_codes import generate_recovery_codes_for_user
+
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    old_codes = generate_recovery_codes_for_user(user, count=3)
+
+    response = client.post("/auth/mfa/recovery-codes/regenerate")
+    payload = response.get_json()
+    used_count = db.session.query(RecoveryCode).filter_by(user_id=user.id).filter(RecoveryCode.used_at.is_not(None)).count()
+    unused_count = db.session.query(RecoveryCode).filter_by(user_id=user.id, used_at=None).count()
+
+    assert response.status_code == 200
+    assert len(payload["recovery_codes"]) == 10
+    assert old_codes[0] not in payload["recovery_codes"]
+    assert used_count == 3
+    assert unused_count == 10
+
+
+def test_recovery_code_use_and_regeneration_use_required_audit_writer(client, monkeypatch):
+    from app.auth import services as auth_services
+    from app.auth.recovery_codes import generate_recovery_codes_for_user
+
+    calls = []
+
+    def required_audit(event_type, outcome, **kwargs):
+        calls.append((event_type, outcome, kwargs))
+        db.session.commit()
+
+    monkeypatch.setattr(auth_services, "audit_event_required", required_audit)
+
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    recovery_codes = generate_recovery_codes_for_user(user)
+
+    client.post("/logout")
+    login(client)
+    verify_response = client.post("/auth/mfa/verify", json={"totp_code": recovery_codes[0]})
+    regenerate_response = client.post("/auth/mfa/recovery-codes/regenerate")
+
+    assert verify_response.status_code == 200
+    assert regenerate_response.status_code == 200
+    assert ("mfa_recovery_code_verify", "success") in [(call[0], call[1]) for call in calls]
+    assert ("recovery_codes_regenerate", "success") in [(call[0], call[1]) for call in calls]
+
+
+def test_dashboard_warns_when_recovery_codes_are_low(client):
+    from app.auth.recovery_codes import generate_recovery_codes_for_user
+
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    generate_recovery_codes_for_user(user, count=2)
+
+    response = client.get("/dashboard")
+    markup = response.data.decode("utf-8")
+
+    assert response.status_code == 200
+    assert "2 unused recovery codes remain." in markup
+    assert "Regenerate soon" in markup
 
 
 def test_mfa_setup_generates_independent_user_secrets(app, client):
@@ -871,7 +1030,7 @@ def test_mfa_code_verifies_only_for_own_enrolled_secret(app, client, monkeypatch
     own_user_response = second_client.post("/mfa/setup", data={"action": "verify", "totp_code": bob_code})
 
     assert wrong_user_response.status_code == 401
-    assert own_user_response.status_code == 302
+    assert own_user_response.status_code == 200
 
 
 def test_pending_mfa_restart_replaces_previous_setup_secret(client, monkeypatch):
@@ -911,7 +1070,7 @@ def test_pending_mfa_restart_replaces_previous_setup_secret(client, monkeypatch)
     assert second_setup.status_code == 200
     assert first_secret != second_secret
     assert old_secret_response.status_code == 401
-    assert new_secret_response.status_code == 302
+    assert new_secret_response.status_code == 200
 
 
 def test_mfa_management_page_shows_replacement_controls_when_enabled(client):
@@ -1030,7 +1189,7 @@ def test_mfa_replacement_keeps_old_secret_until_new_code_is_verified(client, mon
     assert active_secret_after_wrong_code == old_secret
     assert decrypt_test_mfa_secret(user) == replacement_secret
     assert wrong_response.status_code == 401
-    assert correct_response.status_code == 302
+    assert correct_response.status_code == 200
     assert db.session.query(SecurityAuditEvent).filter_by(event_type="mfa_replace_verify", outcome="success").count() == 1
 
     client.post("/logout")
@@ -1181,7 +1340,7 @@ def test_revoke_other_sessions_requires_security_key_stepup_and_rotates_session(
         session_after_revoke = sess.sid
     revoked_response = second_client.get("/auth/sessions")
 
-    assert setup_verify.status_code == 302
+    assert setup_verify.status_code == 200
     assert revoke_without_stepup.status_code == 302
     assert api_without_stepup.status_code == 403
     assert other_session_before_revoke.status_code == 200
@@ -2219,7 +2378,7 @@ def test_structured_audit_log_output_is_sanitized(app, caplog):
     assert payload["method"] == "POST"
     assert payload["session_ref"] != raw_session_id
     assert len(payload["session_ref"]) == 16
-    assert payload["hash_algorithm"] == "sha256-v1"
+    assert payload["hash_algorithm"] == "hmac-sha256-v1"
     assert len(payload["event_hash"]) == 64
     assert len(payload["previous_event_hash"]) == 64
     assert payload["metadata"]["note"] == "line1 line2"
@@ -2270,6 +2429,57 @@ def test_audit_write_failure_warning_is_sanitized(app, caplog, monkeypatch):
     assert "database password leaked" not in logs
     assert "plain-password" not in logs
     assert "token-secret" not in logs
+
+
+def test_required_audit_write_failure_raises_and_logs_sanitized_warning(app, caplog, monkeypatch):
+    from app.security.audit import AuditWriteError, audit_event_required
+
+    def fail_commit():
+        raise RuntimeError("database password leaked")
+
+    monkeypatch.setattr(db.session, "commit", fail_commit)
+    caplog.set_level("WARNING", logger=app.logger.name)
+
+    with app.test_request_context("/audit/required", method="POST"):
+        with pytest.raises(AuditWriteError):
+            audit_event_required(
+                "banking_transaction_authorization",
+                "approved",
+                metadata={
+                    "transaction_ref": "TXN-001",
+                    "authorization": "Bearer token-secret",
+                },
+            )
+
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    payload = log_payloads(caplog, "security_audit_write_failed")[-1]
+
+    assert payload["event_type"] == "banking_transaction_authorization"
+    assert payload["metadata"]["authorization"] == "[redacted]"
+    assert "database password leaked" not in logs
+    assert "token-secret" not in logs
+
+
+def test_webauthn_audit_wrapper_can_use_required_writer(monkeypatch):
+    from app.security import audit as audit_module
+
+    calls = []
+    monkeypatch.setattr(
+        audit_module,
+        "audit_event_required",
+        lambda event_type, outcome, **kwargs: calls.append((event_type, outcome, kwargs)),
+    )
+    monkeypatch.setattr(
+        audit_module,
+        "audit_event",
+        lambda *_args, **_kwargs: pytest.fail("required WebAuthn audit must not use best-effort writer"),
+    )
+
+    audit_module.audit_webauthn_event("register", "success", credential_id=b"credential-id", required=True)
+
+    assert calls
+    assert calls[0][0] == "webauthn_register"
+    assert calls[0][1] == "success"
 
 
 def test_audit_system_writer_uses_append_only_runtime_read_path(app, monkeypatch):
@@ -2345,7 +2555,7 @@ def test_audit_hash_chain_records_verifies_and_exports_anchor(app, tmp_path):
 
     assert first.previous_event_hash == "0" * 64
     assert len(first.event_hash) == 64
-    assert first.hash_algorithm == "sha256-v1"
+    assert first.hash_algorithm == "hmac-sha256-v1"
     assert second.previous_event_hash == first.event_hash
     assert len(second.event_hash) == 64
     assert verification["valid"] is True
@@ -2379,6 +2589,32 @@ def test_audit_hash_chain_records_verifies_and_exports_anchor(app, tmp_path):
     )
     assert strict_stale_anchor_alert_cli.exit_code != 0
     assert "top-secret-note" not in stale_anchor_alert_cli.output
+
+
+def test_audit_hash_chain_uses_hmac_key_and_reads_legacy_sha_rows(app):
+    from app.security import audit as audit_module
+
+    with app.test_request_context("/audit/hmac", method="POST"):
+        audit_module.audit_event("chain_hmac", "success", metadata={"note": "keyed"})
+
+    event = db.session.query(SecurityAuditEvent).one()
+    original_hash = event.event_hash
+    original_key = app.config["SECURITY_AUDIT_HMAC_KEY"]
+
+    app.config["SECURITY_AUDIT_HMAC_KEY"] = "different-test-audit-hmac-key-that-is-long-enough"
+    wrong_key = audit_module.verify_audit_hash_chain()
+    app.config["SECURITY_AUDIT_HMAC_KEY"] = original_key
+
+    event.hash_algorithm = audit_module.LEGACY_AUDIT_HASH_ALGORITHM
+    event.event_hash = audit_module._compute_audit_event_hash(event)
+    db.session.commit()
+    legacy = audit_module.verify_audit_hash_chain()
+
+    assert original_hash != event.event_hash
+    assert wrong_key["valid"] is False
+    assert "event_hash_mismatch" in {error["reason"] for error in wrong_key["errors"]}
+    assert legacy["valid"] is True
+    assert legacy["verified_event_count"] == 1
 
 
 def test_audit_hash_chain_detects_metadata_link_missing_row_and_order_tampering(app):
@@ -2927,6 +3163,7 @@ def test_production_env_docs_require_pbkdf2_pepper_not_bcrypt():
         "SESSION_HMAC_KEYS_JSON",
         "PASSWORD_PEPPER_B64",
         "PASSWORD_PBKDF2_ITERATIONS",
+        "SECURITY_AUDIT_HMAC_KEY",
         "HIBP_CIRCUIT_FAILURE_THRESHOLD",
         "HIBP_CIRCUIT_OPEN_SECONDS",
         "SECURITY_ALERT_STATE_PATH",
@@ -2958,13 +3195,19 @@ def test_future_transaction_payload_guardrails_reject_server_controlled_fields()
     from app.banking.services import validate_public_transaction_payload
 
     with pytest.raises(AuthError):
-        validate_public_transaction_payload({"idempotency_key": "txn-1", "amount": "10.00", "account_id": "acct-1"})
+        validate_public_transaction_payload(
+            {
+                "idempotency_key": "11111111-1111-4111-8111-111111111111",
+                "amount": "10.00",
+                "account_id": "acct-1",
+            }
+        )
     with pytest.raises(AuthError):
         validate_public_transaction_payload({"amount": "10.00", "currency": "SGD"})
     with pytest.raises(AuthError):
         validate_public_transaction_payload(
             {
-                "idempotency_key": "txn-2",
+                "idempotency_key": "22222222-2222-4222-8222-222222222222",
                 "amount": "10.00",
                 "currency": "SGD",
                 "payee": "PAYEE-001",
@@ -2974,16 +3217,94 @@ def test_future_transaction_payload_guardrails_reject_server_controlled_fields()
 
     normalized = validate_public_transaction_payload(
         {
-            "idempotency_key": " txn-3 ",
+            "idempotency_key": " 33333333-3333-4333-8333-333333333333 ",
             "amount": "10.00",
             "currency": "sgd",
-            "payee": " PAYEE-001 ",
+            "payee": " payee-001 ",
         }
     )
 
-    assert normalized["idempotency_key"] == "txn-3"
+    assert normalized["idempotency_key"] == "33333333-3333-4333-8333-333333333333"
     assert normalized["currency"] == "SGD"
     assert normalized["payee"] == "PAYEE-001"
+
+
+def test_public_transaction_payload_business_rules_reject_unsafe_values():
+    from app.auth.services import AuthError
+    from app.banking.services import validate_public_transaction_payload
+
+    valid = {
+        "idempotency_key": "44444444-4444-4444-8444-444444444444",
+        "amount": "10.00",
+        "currency": "SGD",
+        "payee": "PAYEE-001",
+    }
+
+    invalid_cases = [
+        {**valid, "amount": "50000.01"},
+        {**valid, "amount": "10.001"},
+        {**valid, "amount": "0.00"},
+        {**valid, "amount": "NaN"},
+        {**valid, "currency": "USD"},
+        {**valid, "payee": "../etc/passwd"},
+        {**valid, "idempotency_key": "not-a-uuid"},
+    ]
+
+    for payload in invalid_cases:
+        with pytest.raises(AuthError):
+            validate_public_transaction_payload(payload)
+
+
+def test_public_transaction_idempotency_binds_key_to_exact_payload():
+    from app.auth.services import AuthError
+    from app.banking.services import validate_public_transaction_payload
+
+    store = {}
+    payload = {
+        "idempotency_key": "55555555-5555-4555-8555-555555555555",
+        "amount": "25.00",
+        "currency": "SGD",
+        "payee": "PAYEE-002",
+    }
+
+    first = validate_public_transaction_payload(payload, idempotency_store=store)
+    replay = validate_public_transaction_payload(dict(payload), idempotency_store=store)
+
+    with pytest.raises(AuthError):
+        validate_public_transaction_payload(
+            {**payload, "amount": "30.00"},
+            idempotency_store=store,
+        )
+
+    assert first == replay
+
+
+def test_banking_transaction_approval_uses_required_audit_writer(monkeypatch):
+    from app.banking import services as banking_services
+
+    calls = []
+    monkeypatch.setattr(
+        banking_services,
+        "audit_event_required",
+        lambda event_type, outcome, **kwargs: calls.append((event_type, outcome, kwargs)),
+    )
+    monkeypatch.setattr(
+        banking_services,
+        "audit_event",
+        lambda *_args, **_kwargs: pytest.fail("approval audit must be required"),
+    )
+
+    banking_services.audit_transaction_authorization(
+        None,
+        "approved",
+        metadata={"decision": "approved"},
+        transaction_reference="TXN-001",
+    )
+
+    assert calls
+    assert calls[0][0] == "banking_transaction_authorization"
+    assert calls[0][1] == "approved"
+    assert calls[0][2]["metadata"]["decision"] == "approved"
 
 
 def test_public_transaction_validation_audits_sanitized_success_and_failure(app):
@@ -2994,7 +3315,7 @@ def test_public_transaction_validation_audits_sanitized_success_and_failure(app)
         with pytest.raises(AuthError):
             validate_public_transaction_payload(
                 {
-                    "idempotency_key": "txn-secret-1",
+                    "idempotency_key": "66666666-6666-4666-8666-666666666666",
                     "amount": "10.00",
                     "currency": "SGD",
                     "payee": "PAYEE-001",
@@ -3003,7 +3324,7 @@ def test_public_transaction_validation_audits_sanitized_success_and_failure(app)
             )
         validate_public_transaction_payload(
             {
-                "idempotency_key": "txn-secret-2",
+                "idempotency_key": "77777777-7777-4777-8777-777777777777",
                 "amount": "25.00",
                 "currency": "SGD",
                 "payee": "PAYEE-002",
@@ -3026,9 +3347,11 @@ def test_public_transaction_validation_audits_sanitized_success_and_failure(app)
     assert "account_id" in failure.event_metadata["rejected_fields"]
     assert success.event_metadata["transaction_amount"] == "25.00"
     assert success.event_metadata["transaction_currency"] == "SGD"
+    assert len(success.event_metadata["payload_hash_ref"]) == 32
     assert len(success.event_metadata["idempotency_key_ref"]) == 32
     assert len(success.event_metadata["payee_account_ref"]) == 32
-    assert "txn-secret" not in serialized
+    assert "66666666-6666-4666-8666-666666666666" not in serialized
+    assert "77777777-7777-4777-8777-777777777777" not in serialized
     assert "PAYEE-001" not in serialized
     assert "PAYEE-002" not in serialized
 

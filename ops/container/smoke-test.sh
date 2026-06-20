@@ -263,6 +263,8 @@ printf '%s' '{"ci-mfa":"NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ="}' \
     > "${work_dir}/secrets/mfa_kek_keys_json"
 printf '%s' 'MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE=' \
     > "${work_dir}/secrets/password_pepper_b64"
+printf '%s' 'ci-audit-hmac-key-that-is-long-enough-for-container-tests' \
+    > "${work_dir}/secrets/security_audit_hmac_key"
 printf '%s' 'https://hooks.example.test/sitbank-security-alerts' \
     > "${work_dir}/secrets/security_alert_webhook_url"
 printf '%s' 'ci-admin-secret-key-that-is-long-enough-for-container-tests' \
@@ -314,6 +316,7 @@ docker_args=(
     --env MFA_KEK_ACTIVE_ID=ci-mfa
     --env MFA_KEK_KEYS_JSON_FILE=/run/secrets/mfa_kek_keys_json
     --env PASSWORD_PEPPER_B64_FILE=/run/secrets/password_pepper_b64
+    --env SECURITY_AUDIT_HMAC_KEY_FILE=/run/secrets/security_audit_hmac_key
     --env SECURITY_ALERT_WEBHOOK_URL_FILE=/run/secrets/security_alert_webhook_url
     --env ADMIN_SECRET_KEY_FILE=/run/secrets/admin_secret_key
     --env ADMIN_WTF_CSRF_SECRET_KEY_FILE=/run/secrets/admin_wtf_csrf_secret_key

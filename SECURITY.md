@@ -72,12 +72,11 @@ numbers.
 
 New audit rows are chained with `previous_event_hash`, `event_hash`, and
 `hash_algorithm` using deterministic canonical JSON over stable audit fields.
-The current hash chain uses stdlib SHA-256 (`sha256-v1`) instead of the rotating
-session HMAC keyring so 7-year records remain verifiable after session keys
-expire. This provides tamper evidence when operators export anchors off-box;
-a database owner who can alter historical rows could recompute an unanchored
-chain. Operators must therefore verify the chain and export anchors on a
-schedule:
+The current hash chain uses keyed stdlib HMAC-SHA256 (`hmac-sha256-v1`) with
+`SECURITY_AUDIT_HMAC_KEY`, which is a production secret file and is not stored
+in the database. Legacy `sha256-v1` rows remain verifiable so existing audit
+history can be read. Operators must protect and rotate the audit HMAC key under
+change control, then verify the chain and export anchors on a schedule:
 
 ```bash
 python -m flask --app wsgi:app verify-audit-log-chain

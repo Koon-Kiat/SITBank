@@ -112,7 +112,7 @@ class RecoveryCode(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
     code_hmac = db.Column(db.String(64), nullable=False, unique=True)
-    purpose = db.Column(db.String(40), nullable=False, default="account_recovery")
+    purpose = db.Column(db.String(40), nullable=False, default="totp_recovery")
     created_at = db.Column(
         db.DateTime(timezone=True),
         nullable=False,
@@ -156,7 +156,7 @@ class SecurityAuditEvent(db.Model):
     event_metadata = db.Column(db.JSON, nullable=False, default=dict)
     previous_event_hash = db.Column(db.String(64), nullable=True)
     event_hash = db.Column(db.String(64), nullable=True, index=True)
-    hash_algorithm = db.Column(db.String(32), nullable=False, default="sha256-v1")
+    hash_algorithm = db.Column(db.String(32), nullable=False, default="hmac-sha256-v1")
     created_at = db.Column(
         db.DateTime(timezone=True),
         nullable=False,

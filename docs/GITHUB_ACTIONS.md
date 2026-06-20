@@ -59,6 +59,8 @@ For staging admin, also set:
 `/etc/sitbank*/secrets/admin_session_hmac_keys_json`. Do not put admin Flask,
 CSRF, session-HMAC, password-pepper, Redis, or database secret values in GitHub
 Actions; those remain root-managed EC2 secret files.
+`SECURITY_AUDIT_HMAC_KEY` is also a root-managed EC2 secret file and is not
+exported through GitHub Actions environment variables.
 
 ## DAST Policy
 

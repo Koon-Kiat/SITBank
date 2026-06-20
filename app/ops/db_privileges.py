@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import uuid
 from dataclasses import dataclass
@@ -14,7 +15,8 @@ from sqlalchemy.exc import DBAPIError
 
 PRIVILEGE_DENIED_SQLSTATE = "42501"
 KNOWN_EXTENSION_PROBES = ("pg_trgm", "hstore", "citext", "pgcrypto")
-AUDIT_HASH_ALGORITHM = "sha256-v1"
+AUDIT_HASH_ALGORITHM = "hmac-sha256-v1"
+LEGACY_AUDIT_HASH_ALGORITHM = "sha256-v1"
 AUDIT_CHAIN_START_HASH = "0" * 64
 AUDIT_CHAIN_ADVISORY_LOCK_ID = 6151467082736394621
 
@@ -195,6 +197,7 @@ def verify_runtime_database_privileges(
     runtime_url: str,
     migration_url: str,
     schema: str = "public",
+    audit_hmac_key: str | None = None,
 ) -> RuntimePrivilegeVerification:
     if not migration_url:
         raise RuntimeError("DATABASE_MIGRATION_URL is required for runtime privilege verification")
@@ -233,7 +236,11 @@ def verify_runtime_database_privileges(
                     expected_owner=migration_role,
                 )
                 _assert_runtime_dml_allowed(runtime_connection, schema=schema, probe_table=probe_table)
-                _assert_audit_table_append_only(runtime_connection, schema=schema)
+                _assert_audit_table_append_only(
+                    runtime_connection,
+                    schema=schema,
+                    audit_hmac_key=audit_hmac_key,
+                )
                 _expect_privilege_denied(
                     runtime_connection,
                     f"ALTER TABLE {_qualified_table_name(schema, probe_table)} "
@@ -381,7 +388,12 @@ def _assert_runtime_dml_allowed(connection, *, schema: str, probe_table: str) ->
         connection.execute(table.delete().where(table.c.id == inserted_id))
 
 
-def _assert_audit_table_append_only(connection, *, schema: str) -> int:
+def _assert_audit_table_append_only(
+    connection,
+    *,
+    schema: str,
+    audit_hmac_key: str | None,
+) -> int:
     table = Table(
         "security_audit_events",
         MetaData(),
@@ -409,6 +421,7 @@ def _assert_audit_table_append_only(connection, *, schema: str) -> int:
             .order_by(table.c.id.desc())
             .limit(1)
         ).scalar_one_or_none()
+        hash_algorithm = AUDIT_HASH_ALGORITHM if audit_hmac_key else LEGACY_AUDIT_HASH_ALGORITHM
         event_values = {
             "event_type": "privilege_probe",
             "outcome": "success",
@@ -418,10 +431,13 @@ def _assert_audit_table_append_only(connection, *, schema: str) -> int:
             "session_ref": None,
             "event_metadata": {"probe": "runtime_append_only"},
             "previous_event_hash": str(previous_event_hash or AUDIT_CHAIN_START_HASH),
-            "hash_algorithm": AUDIT_HASH_ALGORITHM,
+            "hash_algorithm": hash_algorithm,
             "created_at": datetime.now(timezone.utc),
         }
-        event_values["event_hash"] = _compute_audit_probe_hash(event_values)
+        event_values["event_hash"] = _compute_audit_probe_hash(
+            event_values,
+            audit_hmac_key=audit_hmac_key,
+        )
         inserted_id = connection.execute(
             table.insert()
             .values(**event_values)
@@ -508,7 +524,11 @@ def _lock_audit_chain(connection) -> None:
     )
 
 
-def _compute_audit_probe_hash(values: dict[str, object]) -> str:
+def _compute_audit_probe_hash(
+    values: dict[str, object],
+    *,
+    audit_hmac_key: str | None,
+) -> str:
     payload = {
         "event_type": values["event_type"],
         "outcome": values["outcome"],
@@ -522,7 +542,12 @@ def _compute_audit_probe_hash(values: dict[str, object]) -> str:
         "previous_event_hash": values["previous_event_hash"],
     }
     canonical_payload = json.dumps(payload, separators=(",", ":"), sort_keys=True, ensure_ascii=True)
-    return hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
+    encoded_payload = canonical_payload.encode("utf-8")
+    if values.get("hash_algorithm") == AUDIT_HASH_ALGORITHM:
+        if not audit_hmac_key or len(audit_hmac_key) < 32:
+            raise RuntimeError("SECURITY_AUDIT_HMAC_KEY must be at least 32 characters")
+        return hmac.new(audit_hmac_key.encode("utf-8"), encoded_payload, hashlib.sha256).hexdigest()
+    return hashlib.sha256(encoded_payload).hexdigest()
 
 
 def _canonical_json_value(value: object) -> object:

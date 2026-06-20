@@ -96,6 +96,10 @@ class TotpForm(FlaskForm):
     )
 
 
+class AuthenticationCodeForm(FlaskForm):
+    totp_code = StringField("Authentication code", validators=[InputRequired(), Length(max=80)])
+
+
 class StepUpTokenForm(FlaskForm):
     stepup_token = HiddenField(
         validators=[

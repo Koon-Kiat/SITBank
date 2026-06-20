@@ -396,6 +396,7 @@ validate_staging_isolation() {
         redis_url \
         mfa_kek_keys_json \
         password_pepper_b64 \
+        security_audit_hmac_key \
         admin_secret_key \
         admin_wtf_csrf_secret_key \
         admin_session_hmac_keys_json \
@@ -684,6 +685,7 @@ required_secrets=(
     redis_url
     mfa_kek_keys_json
     password_pepper_b64
+    security_audit_hmac_key
     security_alert_webhook_url
     smtp_username
     smtp_password
