@@ -27,14 +27,14 @@
     </div>
 
     {% if recovery_codes %}
-      <div class="notice">
+      <div class="notice recovery-code-notice">
         <span class="notice-icon" aria-hidden="true">
           <svg class="icon" focusable="false"><use href="#icon-lock"></use></svg>
         </span>
         <div>
           <h2>Save your recovery codes</h2>
           <p class="muted">These codes are shown only once. Store them somewhere private before leaving this page.</p>
-          <ul class="recovery-code-list" data-recovery-code-list>
+          <ul class="recovery-code-list recovery-code-list-display" data-recovery-code-list>
             {% for code in recovery_codes %}
               <li><code data-recovery-code>{{ code }}</code></li>
             {% endfor %}
