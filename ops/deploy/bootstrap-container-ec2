@@ -8,6 +8,7 @@ readonly COSIGN_VERSION="3.0.5"
 readonly COSIGN_SHA256="db15cc99e6e4837daabab023742aaddc3841ce57f193d11b7c3e06c8003642b2"
 readonly PRODUCTION_PUBLIC_HOST="sitbank.duckdns.org"
 readonly PRODUCTION_ADMIN_PUBLIC_HOST="admin-sitbank.duckdns.org"
+readonly EDGE_DEFAULTS_FILE="/etc/nginx/conf.d/sitbank-default.conf"
 readonly PRODUCTION_RATE_LIMITS_FILE="/etc/nginx/conf.d/sitbank-production-rate-limits.conf"
 readonly STAGING_PUBLIC_HOST="staging-sitbank.duckdns.org"
 readonly STAGING_BASIC_AUTH_FILE="/etc/nginx/.htpasswd-sitbank-staging"
@@ -90,6 +91,7 @@ linux_runtime_files=(
     "${repo_root}/ops/deploy/sitbank-container-deploy"
     "${repo_root}/ops/deploy/sitbank-container-runtime"
     "${repo_root}/ops/deploy/sitbank-database-cutover"
+    "${repo_root}/ops/nginx/sitbank-default.conf"
     "${repo_root}/ops/sudoers/sitbank-container-deploy"
 )
 if [[ "${target}" == "staging" ]]; then
@@ -257,6 +259,52 @@ for policy_file in \
     fi
 done
 
+install_nginx_config() {
+    local source_file="$1"
+    local target_file="$2"
+    local label="$3"
+    local backup_prefix="$4"
+
+    if [[ -e "${target_file}" \
+        && ( -L "${target_file}" || ! -f "${target_file}" ) ]]; then
+        echo "Refusing to replace unsafe ${label}: ${target_file}" >&2
+        exit 1
+    fi
+    if [[ -f "${target_file}" ]] \
+        && ! cmp -s "${source_file}" "${target_file}"; then
+        install -o root -g root -m 0644 \
+            "${target_file}" \
+            "${backup_dir}/${backup_prefix}.$(date -u +%Y%m%dT%H%M%SZ).conf"
+    fi
+    install -o root -g root -m 0644 "${source_file}" "${target_file}"
+}
+
+install_edge_default_site() {
+    install_nginx_config \
+        "${repo_root}/ops/nginx/sitbank-default.conf" \
+        "${EDGE_DEFAULTS_FILE}" \
+        "shared Nginx default config" \
+        "nginx-sitbank-default"
+}
+
+refresh_enabled_sibling_site() {
+    if [[ "${target}" == "production" \
+        && -e /etc/nginx/sites-enabled/sitbank-staging ]]; then
+        install_nginx_config \
+            "${repo_root}/ops/nginx/sitbank-staging.conf" \
+            /etc/nginx/sites-available/sitbank-staging \
+            "staging Nginx config" \
+            "nginx-sitbank-staging"
+    elif [[ "${target}" == "staging" \
+        && -e /etc/nginx/sites-enabled/sitbank ]]; then
+        install_nginx_config \
+            "${repo_root}/ops/nginx/sitbank-production.conf" \
+            /etc/nginx/sites-available/sitbank \
+            "production Nginx config" \
+            "nginx-sitbank-production"
+    fi
+}
+
 if [[ "${target}" == "production" ]]; then
     production_cert_dir="/etc/letsencrypt/live/${public_host}"
     production_admin_cert_dir="/etc/letsencrypt/live/${PRODUCTION_ADMIN_PUBLIC_HOST}"
@@ -293,6 +341,7 @@ if [[ "${target}" == "production" ]]; then
     install -d -o root -g root -m 0755 /etc/nginx/snippets
     install -d -o root -g root -m 0755 /etc/nginx/conf.d
     install -d -o root -g root -m 0755 /var/www/certbot
+    install_edge_default_site
     install -o root -g root -m 0644 \
         "${repo_root}/ops/nginx-proxy-headers.conf" \
         /etc/nginx/snippets/sitbank-proxy-headers.conf
@@ -330,6 +379,7 @@ if [[ "${target}" == "production" ]]; then
     install -o root -g root -m 0644 \
         "${repo_root}/ops/nginx/sitbank-production.conf" \
         "${production_site}"
+    refresh_enabled_sibling_site
     ln -sfn "${production_site}" \
         /etc/nginx/sites-enabled/sitbank
     nginx -t
@@ -380,6 +430,7 @@ if [[ "${target}" == "staging" ]]; then
     install -d -o root -g root -m 0755 /etc/nginx/snippets
     install -d -o root -g root -m 0755 /etc/nginx/conf.d
     install -d -o root -g root -m 0755 /var/www/certbot
+    install_edge_default_site
     install -o root -g root -m 0644 \
         "${repo_root}/ops/nginx-proxy-headers.conf" \
         /etc/nginx/snippets/sitbank-proxy-headers.conf
@@ -417,6 +468,7 @@ if [[ "${target}" == "staging" ]]; then
     install -o root -g root -m 0644 \
         "${repo_root}/ops/nginx/sitbank-staging.conf" \
         "${staging_site}"
+    refresh_enabled_sibling_site
     ln -sfn "${staging_site}" \
         /etc/nginx/sites-enabled/sitbank-staging
     nginx -t
