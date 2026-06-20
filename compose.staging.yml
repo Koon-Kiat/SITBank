@@ -204,7 +204,7 @@ services:
       - "30"
       - admin_wsgi:app
     ports:
-      - 127.0.0.1:5002:5000
+      - 127.0.0.1:5003:5000
     depends_on:
       postgres:
         condition: service_healthy
