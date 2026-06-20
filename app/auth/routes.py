@@ -17,7 +17,6 @@ from .forms import (
     ManualRecoveryForm,
     PasswordChangeForm,
     PasswordResetForm,
-    RecoveryCodeForm,
     RegisterForm,
     StepUpTokenForm,
     TotpForm,
@@ -28,7 +27,6 @@ from .password_reset import (
     request_manual_recovery,
     request_password_reset,
     reset_transaction_user_and_id,
-    verify_recovery_code_for_reset,
     verify_reset_totp,
     exchange_reset_token,
 )
@@ -39,7 +37,6 @@ from .schemas import (
     ManualRecoverySchema,
     PasswordChangeSchema,
     PasswordResetSchema,
-    RecoveryCodeSchema,
     RegisterSchema,
     ResetTokenExchangeSchema,
     StepUpTokenSchema,
@@ -99,7 +96,6 @@ AUTH_MFA_ONBOARDING_ALLOWED_ENDPOINTS = {
     "auth.password_reset_exchange",
     "auth.password_reset_transaction",
     "auth.password_reset_totp",
-    "auth.password_reset_recovery_code",
     "auth.password_reset_webauthn_options",
     "auth.password_reset_webauthn_verify",
     "auth.password_reset_complete",
@@ -215,14 +211,6 @@ def password_reset_transaction():
 def password_reset_totp():
     data = _load_payload(AuthenticationCodeSchema(), AuthenticationCodeForm)
     return jsonify(verify_reset_totp(data["totp_code"]))
-
-
-@auth_bp.post("/password-reset/mfa/recovery-code")
-@limiter.limit("5 per 15 minutes", key_func=get_remote_address)
-@limiter.limit("5 per 15 minutes", key_func=mfa_principal)
-def password_reset_recovery_code():
-    data = _load_payload(RecoveryCodeSchema(), RecoveryCodeForm)
-    return jsonify(verify_recovery_code_for_reset(data["recovery_code"]))
 
 
 @auth_bp.post("/password-reset/mfa/webauthn/options")

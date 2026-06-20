@@ -146,9 +146,5 @@ class PasswordResetForm(FlaskForm):
     )
 
 
-class RecoveryCodeForm(FlaskForm):
-    recovery_code = StringField("Recovery code", validators=[InputRequired(), Length(min=8, max=80)])
-
-
 class CsrfOnlyForm(FlaskForm):
     pass
