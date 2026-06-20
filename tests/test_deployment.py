@@ -974,7 +974,8 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
         if target.startswith("/run/config/")
     )
     assert staging_admin["container_name"] == "sitbank-staging-admin"
-    assert staging_admin["ports"] == ["127.0.0.1:5002:5000"]
+    assert staging_admin["ports"] == ["127.0.0.1:5003:5000"]
+    assert "127.0.0.1:5002:5000" not in staging_admin["ports"]
     assert "network_mode" not in staging_admin
     assert staging_admin["read_only"] is True
     assert staging_admin["user"] == "10001:10001"
@@ -2015,6 +2016,8 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     assert "127.0.0.1:5000" not in nginx
     assert "server_name sitbank.duckdns.org;" not in nginx
     assert staging_compose["services"]["app"]["ports"] == ["127.0.0.1:5001:5000"]
+    assert staging_compose["services"]["admin"]["ports"] == ["127.0.0.1:5003:5000"]
+    assert "127.0.0.1:5002:5000" not in staging_compose["services"]["admin"]["ports"]
     assert "ports" not in staging_compose["services"]["postgres"]
     assert "ports" not in staging_compose["services"]["redis"]
 
