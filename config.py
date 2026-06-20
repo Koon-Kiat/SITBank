@@ -34,6 +34,7 @@ CUSTOMER_RUNTIME_SECRET_ENV_NAMES = {
     "REDIS_URL": "REDIS_URL",
     "MFA_KEK_KEYS": "MFA_KEK_KEYS_JSON",
     "PASSWORD_PEPPER_B64": "PASSWORD_PEPPER_B64",
+    "SECURITY_AUDIT_HMAC_KEY": "SECURITY_AUDIT_HMAC_KEY",
 }
 
 ADMIN_RUNTIME_SECRET_ENV_NAMES = {
@@ -43,6 +44,7 @@ ADMIN_RUNTIME_SECRET_ENV_NAMES = {
     "SQLALCHEMY_DATABASE_URI": "ADMIN_DATABASE_URL",
     "REDIS_URL": "ADMIN_REDIS_URL",
     "PASSWORD_PEPPER_B64": "ADMIN_PASSWORD_PEPPER_B64",
+    "SECURITY_AUDIT_HMAC_KEY": "SECURITY_AUDIT_HMAC_KEY",
 }
 
 RUNTIME_SECRET_ENV_NAMES_BY_MODE = {
@@ -135,6 +137,20 @@ def _required_env(name: str) -> str:
 
 def _required_secret(name: str, *, min_length: int) -> str:
     value = _required_env_or_file(name)
+    if len(value) < min_length:
+        raise RuntimeError(f"{name} must be at least {min_length} characters")
+    return value
+
+
+def _configured_secret(
+    name: str,
+    *,
+    min_length: int,
+    development_default: str,
+) -> str:
+    if APP_ENV == "production":
+        return _required_secret(name, min_length=min_length)
+    value = _optional_env_or_file(name) or development_default
     if len(value) < min_length:
         raise RuntimeError(f"{name} must be at least {min_length} characters")
     return value
@@ -678,6 +694,11 @@ class Config:
     )
     SECURITY_ALERT_STATE_PATH = os.getenv("SECURITY_ALERT_STATE_PATH")
     SECURITY_AUDIT_ANCHOR_PATH = os.getenv("SECURITY_AUDIT_ANCHOR_PATH")
+    SECURITY_AUDIT_HMAC_KEY = _configured_secret(
+        "SECURITY_AUDIT_HMAC_KEY",
+        min_length=32,
+        development_default="development-audit-hmac-key-change-before-production",
+    )
 
     SESSION_TYPE = "redis"
     SESSION_KEY_PREFIX = None

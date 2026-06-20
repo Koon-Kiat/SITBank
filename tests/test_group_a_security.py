@@ -880,6 +880,20 @@ def test_recovery_code_satisfies_pending_totp_login_once_and_notifies(app, clien
     assert password_reset_outbox()[-1]["subject"] == "SITBank recovery code used"
 
 
+def test_invalid_recovery_code_attempt_uses_generic_error_and_audits_failure(client):
+    register(client)
+    login(client)
+    enable_mfa_for_user()
+
+    client.post("/logout")
+    login(client)
+    response = client.post("/auth/mfa/verify", json={"totp_code": "not-a-valid-recovery-code"})
+
+    assert response.status_code == 401
+    assert response.get_json()["error"] == "Invalid authentication code."
+    assert db.session.query(SecurityAuditEvent).filter_by(event_type="mfa_recovery_code_verify", outcome="failure").count() == 1
+
+
 def test_recovery_code_cannot_satisfy_login_when_security_key_primary_is_required(client):
     from app.auth.recovery_codes import generate_recovery_codes_for_user
 
@@ -2336,7 +2350,7 @@ def test_structured_audit_log_output_is_sanitized(app, caplog):
     assert payload["method"] == "POST"
     assert payload["session_ref"] != raw_session_id
     assert len(payload["session_ref"]) == 16
-    assert payload["hash_algorithm"] == "sha256-v1"
+    assert payload["hash_algorithm"] == "hmac-sha256-v1"
     assert len(payload["event_hash"]) == 64
     assert len(payload["previous_event_hash"]) == 64
     assert payload["metadata"]["note"] == "line1 line2"
@@ -2386,6 +2400,35 @@ def test_audit_write_failure_warning_is_sanitized(app, caplog, monkeypatch):
     assert payload["metadata"]["token"] == "[redacted]"
     assert "database password leaked" not in logs
     assert "plain-password" not in logs
+    assert "token-secret" not in logs
+
+
+def test_required_audit_write_failure_raises_and_logs_sanitized_warning(app, caplog, monkeypatch):
+    from app.security.audit import AuditWriteError, audit_event_required
+
+    def fail_commit():
+        raise RuntimeError("database password leaked")
+
+    monkeypatch.setattr(db.session, "commit", fail_commit)
+    caplog.set_level("WARNING", logger=app.logger.name)
+
+    with app.test_request_context("/audit/required", method="POST"):
+        with pytest.raises(AuditWriteError):
+            audit_event_required(
+                "banking_transaction_authorization",
+                "approved",
+                metadata={
+                    "transaction_ref": "TXN-001",
+                    "authorization": "Bearer token-secret",
+                },
+            )
+
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    payload = log_payloads(caplog, "security_audit_write_failed")[-1]
+
+    assert payload["event_type"] == "banking_transaction_authorization"
+    assert payload["metadata"]["authorization"] == "[redacted]"
+    assert "database password leaked" not in logs
     assert "token-secret" not in logs
 
 
@@ -2462,7 +2505,7 @@ def test_audit_hash_chain_records_verifies_and_exports_anchor(app, tmp_path):
 
     assert first.previous_event_hash == "0" * 64
     assert len(first.event_hash) == 64
-    assert first.hash_algorithm == "sha256-v1"
+    assert first.hash_algorithm == "hmac-sha256-v1"
     assert second.previous_event_hash == first.event_hash
     assert len(second.event_hash) == 64
     assert verification["valid"] is True
@@ -2496,6 +2539,32 @@ def test_audit_hash_chain_records_verifies_and_exports_anchor(app, tmp_path):
     )
     assert strict_stale_anchor_alert_cli.exit_code != 0
     assert "top-secret-note" not in stale_anchor_alert_cli.output
+
+
+def test_audit_hash_chain_uses_hmac_key_and_reads_legacy_sha_rows(app):
+    from app.security import audit as audit_module
+
+    with app.test_request_context("/audit/hmac", method="POST"):
+        audit_module.audit_event("chain_hmac", "success", metadata={"note": "keyed"})
+
+    event = db.session.query(SecurityAuditEvent).one()
+    original_hash = event.event_hash
+    original_key = app.config["SECURITY_AUDIT_HMAC_KEY"]
+
+    app.config["SECURITY_AUDIT_HMAC_KEY"] = "different-test-audit-hmac-key-that-is-long-enough"
+    wrong_key = audit_module.verify_audit_hash_chain()
+    app.config["SECURITY_AUDIT_HMAC_KEY"] = original_key
+
+    event.hash_algorithm = audit_module.LEGACY_AUDIT_HASH_ALGORITHM
+    event.event_hash = audit_module._compute_audit_event_hash(event)
+    db.session.commit()
+    legacy = audit_module.verify_audit_hash_chain()
+
+    assert original_hash != event.event_hash
+    assert wrong_key["valid"] is False
+    assert "event_hash_mismatch" in {error["reason"] for error in wrong_key["errors"]}
+    assert legacy["valid"] is True
+    assert legacy["verified_event_count"] == 1
 
 
 def test_audit_hash_chain_detects_metadata_link_missing_row_and_order_tampering(app):
@@ -3044,6 +3113,7 @@ def test_production_env_docs_require_pbkdf2_pepper_not_bcrypt():
         "SESSION_HMAC_KEYS_JSON",
         "PASSWORD_PEPPER_B64",
         "PASSWORD_PBKDF2_ITERATIONS",
+        "SECURITY_AUDIT_HMAC_KEY",
         "HIBP_CIRCUIT_FAILURE_THRESHOLD",
         "HIBP_CIRCUIT_OPEN_SECONDS",
         "SECURITY_ALERT_STATE_PATH",
@@ -3075,13 +3145,19 @@ def test_future_transaction_payload_guardrails_reject_server_controlled_fields()
     from app.banking.services import validate_public_transaction_payload
 
     with pytest.raises(AuthError):
-        validate_public_transaction_payload({"idempotency_key": "txn-1", "amount": "10.00", "account_id": "acct-1"})
+        validate_public_transaction_payload(
+            {
+                "idempotency_key": "11111111-1111-4111-8111-111111111111",
+                "amount": "10.00",
+                "account_id": "acct-1",
+            }
+        )
     with pytest.raises(AuthError):
         validate_public_transaction_payload({"amount": "10.00", "currency": "SGD"})
     with pytest.raises(AuthError):
         validate_public_transaction_payload(
             {
-                "idempotency_key": "txn-2",
+                "idempotency_key": "22222222-2222-4222-8222-222222222222",
                 "amount": "10.00",
                 "currency": "SGD",
                 "payee": "PAYEE-001",
@@ -3091,16 +3167,94 @@ def test_future_transaction_payload_guardrails_reject_server_controlled_fields()
 
     normalized = validate_public_transaction_payload(
         {
-            "idempotency_key": " txn-3 ",
+            "idempotency_key": " 33333333-3333-4333-8333-333333333333 ",
             "amount": "10.00",
             "currency": "sgd",
-            "payee": " PAYEE-001 ",
+            "payee": " payee-001 ",
         }
     )
 
-    assert normalized["idempotency_key"] == "txn-3"
+    assert normalized["idempotency_key"] == "33333333-3333-4333-8333-333333333333"
     assert normalized["currency"] == "SGD"
     assert normalized["payee"] == "PAYEE-001"
+
+
+def test_public_transaction_payload_business_rules_reject_unsafe_values():
+    from app.auth.services import AuthError
+    from app.banking.services import validate_public_transaction_payload
+
+    valid = {
+        "idempotency_key": "44444444-4444-4444-8444-444444444444",
+        "amount": "10.00",
+        "currency": "SGD",
+        "payee": "PAYEE-001",
+    }
+
+    invalid_cases = [
+        {**valid, "amount": "50000.01"},
+        {**valid, "amount": "10.001"},
+        {**valid, "amount": "0.00"},
+        {**valid, "amount": "NaN"},
+        {**valid, "currency": "USD"},
+        {**valid, "payee": "../etc/passwd"},
+        {**valid, "idempotency_key": "not-a-uuid"},
+    ]
+
+    for payload in invalid_cases:
+        with pytest.raises(AuthError):
+            validate_public_transaction_payload(payload)
+
+
+def test_public_transaction_idempotency_binds_key_to_exact_payload():
+    from app.auth.services import AuthError
+    from app.banking.services import validate_public_transaction_payload
+
+    store = {}
+    payload = {
+        "idempotency_key": "55555555-5555-4555-8555-555555555555",
+        "amount": "25.00",
+        "currency": "SGD",
+        "payee": "PAYEE-002",
+    }
+
+    first = validate_public_transaction_payload(payload, idempotency_store=store)
+    replay = validate_public_transaction_payload(dict(payload), idempotency_store=store)
+
+    with pytest.raises(AuthError):
+        validate_public_transaction_payload(
+            {**payload, "amount": "30.00"},
+            idempotency_store=store,
+        )
+
+    assert first == replay
+
+
+def test_banking_transaction_approval_uses_required_audit_writer(monkeypatch):
+    from app.banking import services as banking_services
+
+    calls = []
+    monkeypatch.setattr(
+        banking_services,
+        "audit_event_required",
+        lambda event_type, outcome, **kwargs: calls.append((event_type, outcome, kwargs)),
+    )
+    monkeypatch.setattr(
+        banking_services,
+        "audit_event",
+        lambda *_args, **_kwargs: pytest.fail("approval audit must be required"),
+    )
+
+    banking_services.audit_transaction_authorization(
+        None,
+        "approved",
+        metadata={"decision": "approved"},
+        transaction_reference="TXN-001",
+    )
+
+    assert calls
+    assert calls[0][0] == "banking_transaction_authorization"
+    assert calls[0][1] == "approved"
+    assert calls[0][2]["metadata"]["decision"] == "approved"
 
 
 def test_public_transaction_validation_audits_sanitized_success_and_failure(app):
@@ -3111,7 +3265,7 @@ def test_public_transaction_validation_audits_sanitized_success_and_failure(app)
         with pytest.raises(AuthError):
             validate_public_transaction_payload(
                 {
-                    "idempotency_key": "txn-secret-1",
+                    "idempotency_key": "66666666-6666-4666-8666-666666666666",
                     "amount": "10.00",
                     "currency": "SGD",
                     "payee": "PAYEE-001",
@@ -3120,7 +3274,7 @@ def test_public_transaction_validation_audits_sanitized_success_and_failure(app)
             )
         validate_public_transaction_payload(
             {
-                "idempotency_key": "txn-secret-2",
+                "idempotency_key": "77777777-7777-4777-8777-777777777777",
                 "amount": "25.00",
                 "currency": "SGD",
                 "payee": "PAYEE-002",
@@ -3143,9 +3297,11 @@ def test_public_transaction_validation_audits_sanitized_success_and_failure(app)
     assert "account_id" in failure.event_metadata["rejected_fields"]
     assert success.event_metadata["transaction_amount"] == "25.00"
     assert success.event_metadata["transaction_currency"] == "SGD"
+    assert len(success.event_metadata["payload_hash_ref"]) == 32
     assert len(success.event_metadata["idempotency_key_ref"]) == 32
     assert len(success.event_metadata["payee_account_ref"]) == 32
-    assert "txn-secret" not in serialized
+    assert "66666666-6666-4666-8666-666666666666" not in serialized
+    assert "77777777-7777-4777-8777-777777777777" not in serialized
     assert "PAYEE-001" not in serialized
     assert "PAYEE-002" not in serialized
 

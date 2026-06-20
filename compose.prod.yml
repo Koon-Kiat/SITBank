@@ -4,6 +4,8 @@ services:
   app:
     image: ${SITBANK_IMAGE:?SITBANK_IMAGE must be an immutable digest reference}
     container_name: sitbank-app
+    # Production keeps host networking for EC2/Nginx compatibility; Gunicorn
+    # must bind only to 127.0.0.1 so Nginx is the public HTTP/S entry point.
     network_mode: host
     user: "10001:10001"
     read_only: true
@@ -34,6 +36,7 @@ services:
       REDIS_URL_FILE: /run/secrets/redis_url
       MFA_KEK_KEYS_JSON_FILE: /run/secrets/mfa_kek_keys_json
       PASSWORD_PEPPER_B64_FILE: /run/secrets/password_pepper_b64
+      SECURITY_AUDIT_HMAC_KEY_FILE: /run/secrets/security_audit_hmac_key
       SECURITY_ALERT_WEBHOOK_URL_FILE: /run/secrets/security_alert_webhook_url
       SMTP_USERNAME_FILE: /run/secrets/smtp_username
       SMTP_PASSWORD_FILE: /run/secrets/smtp_password
@@ -52,6 +55,8 @@ services:
         target: mfa_kek_keys_json
       - source: password_pepper_b64
         target: password_pepper_b64
+      - source: security_audit_hmac_key
+        target: security_audit_hmac_key
       - source: security_alert_webhook_url
         target: security_alert_webhook_url
       - source: smtp_username
@@ -92,6 +97,7 @@ services:
   admin:
     image: ${SITBANK_IMAGE:?SITBANK_IMAGE must be an immutable digest reference}
     container_name: sitbank-admin
+    # Host networking is accepted only with the explicit loopback bind below.
     network_mode: host
     user: "10001:10001"
     read_only: true
@@ -138,6 +144,7 @@ services:
       ADMIN_DATABASE_URL_FILE: /run/secrets/admin_database_url
       ADMIN_REDIS_URL_FILE: /run/secrets/admin_redis_url
       ADMIN_PASSWORD_PEPPER_B64_FILE: /run/secrets/admin_password_pepper_b64
+      SECURITY_AUDIT_HMAC_KEY_FILE: /run/secrets/security_audit_hmac_key
       SECURITY_ALERT_WEBHOOK_URL_FILE: /run/secrets/security_alert_webhook_url
       SMTP_USERNAME_FILE: /run/secrets/smtp_username
       SMTP_PASSWORD_FILE: /run/secrets/smtp_password
@@ -154,6 +161,8 @@ services:
         target: admin_redis_url
       - source: admin_password_pepper_b64
         target: admin_password_pepper_b64
+      - source: security_audit_hmac_key
+        target: security_audit_hmac_key
       - source: security_alert_webhook_url
         target: security_alert_webhook_url
       - source: smtp_username
@@ -212,6 +221,8 @@ secrets:
     file: /etc/sitbank/secrets/mfa_kek_keys_json
   password_pepper_b64:
     file: /etc/sitbank/secrets/password_pepper_b64
+  security_audit_hmac_key:
+    file: /etc/sitbank/secrets/security_audit_hmac_key
   security_alert_webhook_url:
     file: /etc/sitbank/secrets/security_alert_webhook_url
   admin_secret_key:
