@@ -17,7 +17,6 @@ from .forms import (
     ManualRecoveryForm,
     PasswordChangeForm,
     PasswordResetForm,
-    RecoveryCodeForm,
     RegisterForm,
     StepUpTokenForm,
     TotpForm,
@@ -28,7 +27,6 @@ from .password_reset import (
     request_manual_recovery,
     request_password_reset,
     reset_transaction_user_and_id,
-    verify_recovery_code_for_reset,
     verify_reset_totp,
     exchange_reset_token,
 )
@@ -98,7 +96,6 @@ AUTH_MFA_ONBOARDING_ALLOWED_ENDPOINTS = {
     "auth.password_reset_exchange",
     "auth.password_reset_transaction",
     "auth.password_reset_totp",
-    "auth.password_reset_recovery_code",
     "auth.password_reset_webauthn_options",
     "auth.password_reset_webauthn_verify",
     "auth.password_reset_complete",
@@ -133,23 +130,6 @@ def _load_payload(schema: Schema, form_cls) -> dict:
         for name, field in form._fields.items()
         if name != "csrf_token"
     }
-
-
-def _load_reset_authentication_code() -> str:
-    if request.is_json:
-        payload = request.get_json(silent=False) or {}
-        code = payload.get("totp_code")
-        if code is None:
-            code = payload.get("recovery_code")
-        return AuthenticationCodeSchema().load({"totp_code": code})["totp_code"]
-
-    if "recovery_code" in request.form and "totp_code" not in request.form:
-        form = RecoveryCodeForm()
-        if not form.validate_on_submit():
-            raise ValidationError(form.errors)
-        return form.recovery_code.data
-
-    return _load_payload(AuthenticationCodeSchema(), AuthenticationCodeForm)["totp_code"]
 
 
 @auth_bp.errorhandler(AuthError)
@@ -231,16 +211,6 @@ def password_reset_transaction():
 def password_reset_totp():
     data = _load_payload(AuthenticationCodeSchema(), AuthenticationCodeForm)
     return jsonify(verify_reset_totp(data["totp_code"]))
-
-
-@auth_bp.post("/password-reset/mfa/recovery-code")
-@limiter.limit("5 per 15 minutes", key_func=get_remote_address)
-@limiter.limit("5 per 15 minutes", key_func=mfa_principal)
-def password_reset_recovery_code():
-    # Deprecated compatibility route. The reset UI uses /mfa/totp as a single
-    # "Authentication code" endpoint for both TOTP and recovery codes. TODO:
-    # remove this endpoint after older clients have migrated to /mfa/totp.
-    return jsonify(verify_recovery_code_for_reset(_load_reset_authentication_code()))
 
 
 @auth_bp.post("/password-reset/mfa/webauthn/options")

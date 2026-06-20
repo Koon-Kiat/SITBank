@@ -196,10 +196,6 @@ def mark_reset_webauthn_verified(transaction_id: str, user_id: int) -> dict[str,
     return _public_transaction(transaction)
 
 
-def verify_recovery_code_for_reset(code: str) -> dict[str, Any]:
-    return _verify_reset_authentication_code(code, submitted_factor="recovery_code")
-
-
 def complete_password_reset(new_password: str, confirm_new_password: str) -> dict[str, Any]:
     transaction = _load_current_transaction()
     user = _transaction_user(transaction)

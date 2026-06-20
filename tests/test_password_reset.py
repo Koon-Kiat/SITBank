@@ -346,16 +346,12 @@ def test_webauthn_reset_cannot_be_satisfied_by_recovery_code(app, client):
         user, _secret = _create_totp_user("resetkey", "resetkey@example.com")
         _add_webauthn_credential(user)
         with app.test_request_context("/"):
-            codes = generate_recovery_codes_for_user(user, count=2)
+            codes = generate_recovery_codes_for_user(user, count=1)
 
     _request_reset(client, "resetkey@example.com")
     token = _reset_token(app)
     exchanged = _exchange(client, token)
     recovery_attempt = client.post("/auth/password-reset/mfa/totp", json={"totp_code": codes[0]})
-    deprecated_recovery_attempt = client.post(
-        "/auth/password-reset/mfa/recovery-code",
-        json={"recovery_code": codes[1]},
-    )
     transaction = client.get("/auth/password-reset/transaction")
     completed = client.post(
         "/auth/password-reset/complete",
@@ -366,10 +362,7 @@ def test_webauthn_reset_cannot_be_satisfied_by_recovery_code(app, client):
     assert exchanged.get_json()["mfa_required"] == "webauthn"
     assert recovery_attempt.status_code == 400
     assert recovery_attempt.get_json() == {"error": "Invalid authentication code."}
-    assert deprecated_recovery_attempt.status_code == 400
-    assert deprecated_recovery_attempt.get_json() == {"error": "Invalid authentication code."}
     assert "Authenticator code is not required" not in recovery_attempt.get_data(as_text=True)
-    assert "Authenticator code is not required" not in deprecated_recovery_attempt.get_data(as_text=True)
     assert transaction.get_json()["mfa_verified"] is False
     assert completed.status_code == 403
     with app.app_context():
@@ -387,7 +380,6 @@ def test_webauthn_reset_cannot_be_satisfied_by_recovery_code(app, client):
             sort_keys=True,
         )
         assert codes[0] not in audit_text
-        assert codes[1] not in audit_text
 
 
 def test_admin_like_customer_domain_reset_fails_closed(app, client):
@@ -456,7 +448,7 @@ def test_recovery_codes_are_hashed_single_use_reset_factors(app, client):
         assert codes[0] not in audit_text
 
 
-def test_deprecated_recovery_code_reset_endpoint_uses_shared_verifier(app, client):
+def test_separate_password_reset_recovery_code_endpoint_is_removed(app, client):
     with app.app_context():
         user, _secret = _create_totp_user("reset08", "reset08@example.com")
         with app.test_request_context("/"):
@@ -466,31 +458,10 @@ def test_deprecated_recovery_code_reset_endpoint_uses_shared_verifier(app, clien
     token = _reset_token(app)
     assert _exchange(client, token).status_code == 200
 
-    verified = client.post("/auth/password-reset/mfa/recovery-code", json={"recovery_code": codes[0]})
+    response = client.post("/auth/password-reset/mfa/recovery-code", json={"recovery_code": codes[0]})
 
-    assert verified.status_code == 200
-    assert verified.get_json()["mfa_verified"] is True
-    assert verified.get_json()["recovery_code_verified"] is True
+    assert response.status_code == 404
     with app.app_context():
-        used_count = db.session.execute(
+        assert db.session.execute(
             db.select(func.count(RecoveryCode.id)).where(RecoveryCode.used_at.is_not(None))
-        ).scalar_one()
-        assert used_count == 1
-
-
-def test_deprecated_recovery_code_reset_endpoint_accepts_shared_code_field(app, client):
-    with app.app_context():
-        _user, secret = _create_totp_user("reset09", "reset09@example.com")
-
-    _request_reset(client, "reset09@example.com")
-    token = _reset_token(app)
-    assert _exchange(client, token).status_code == 200
-
-    verified = client.post(
-        "/auth/password-reset/mfa/recovery-code",
-        json={"totp_code": pyotp.TOTP(secret).now()},
-    )
-
-    assert verified.status_code == 200
-    assert verified.get_json()["mfa_verified"] is True
-    assert verified.get_json().get("recovery_code_verified") is not True
+        ).scalar_one() == 0
