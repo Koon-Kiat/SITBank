@@ -830,7 +830,7 @@ def test_mfa_setup_generates_ten_hashed_recovery_codes_and_shows_once(client):
 
     response = client.post("/mfa/setup", data={"action": "verify", "totp_code": code})
     markup = response.data.decode("utf-8")
-    recovery_codes = re.findall(r"<code>([0-9a-f]{8}(?:-[0-9a-f]{8}){3})</code>", markup)
+    recovery_codes = re.findall(r"<code[^>]*>([0-9a-f]{8}(?:-[0-9a-f]{8}){3})</code>", markup)
     stored_codes = list(
         db.session.execute(
             db.select(RecoveryCode).where(
@@ -844,11 +844,47 @@ def test_mfa_setup_generates_ten_hashed_recovery_codes_and_shows_once(client):
     followup_markup = followup.data.decode("utf-8")
 
     assert response.status_code == 200
+    assert "data-recovery-code-list" in markup
+    assert "data-copy-recovery-codes" in markup
+    assert "data-download-recovery-codes" in markup
+    assert "Copy all codes" in markup
+    assert "Download codes" in markup
     assert len(recovery_codes) == 10
     assert len(stored_codes) == 10
     assert all(len(code.replace("-", "")) == 32 for code in recovery_codes)
     assert all(item.code_hmac not in recovery_codes for item in stored_codes)
     assert recovery_codes[0] not in followup_markup
+    assert "data-copy-recovery-codes" not in followup_markup
+    assert "data-download-recovery-codes" not in followup_markup
+
+
+def test_mfa_recovery_codes_are_separate_from_replacement_steps(client):
+    register(client)
+    login(client)
+    enable_mfa_for_user()
+
+    response = client.get("/mfa/setup")
+    markup = response.data.decode("utf-8")
+    script = Path("app/static/js/account.js").read_text(encoding="utf-8")
+    recovery_heading = markup.index("<h2>Recovery codes</h2>")
+    replacement_heading = markup.index("<h2>Replace authenticator</h2>")
+    recovery_article_start = markup.rfind("<article", 0, recovery_heading)
+    recovery_article_end = markup.index("</article>", recovery_heading)
+    recovery_article = markup[recovery_article_start:recovery_article_end]
+
+    assert response.status_code == 200
+    assert recovery_heading < replacement_heading
+    assert 'class="mfa-step recovery-code-panel"' in recovery_article
+    assert '<span class="step-number">2</span>' not in recovery_article
+    assert '<span class="step-number">2</span>' in markup[
+        markup.rfind("<article", 0, replacement_heading):markup.index("</article>", replacement_heading)
+    ]
+    assert '<span class="step-number">3</span>' in markup
+    assert '<span class="step-number">4</span>' in markup
+    assert '<span class="step-number">5</span>' not in markup
+    assert "navigator.clipboard" in script
+    assert "sitbank-recovery-codes.txt" in script
+    assert "console." not in script
 
 
 def test_recovery_code_satisfies_pending_totp_login_once_and_notifies(app, client):

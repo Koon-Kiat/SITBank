@@ -34,32 +34,26 @@
         <div>
           <h2>Save your recovery codes</h2>
           <p class="muted">These codes are shown only once. Store them somewhere private before leaving this page.</p>
-          <ul class="recovery-code-list">
+          <ul class="recovery-code-list" data-recovery-code-list>
             {% for code in recovery_codes %}
-              <li><code>{{ code }}</code></li>
+              <li><code data-recovery-code>{{ code }}</code></li>
             {% endfor %}
           </ul>
+          <div class="button-row recovery-code-actions" data-recovery-code-actions>
+            <button class="button secondary" type="button" data-copy-recovery-codes>Copy all codes</button>
+            <button class="button secondary" type="button" data-download-recovery-codes>Download codes</button>
+          </div>
+          <p class="hint" data-recovery-code-status aria-live="polite"></p>
         </div>
       </div>
     {% endif %}
 
-    <div class="mfa-steps">
-      <article class="mfa-step is-complete">
+    <div class="mfa-support-grid">
+      <article class="mfa-step recovery-code-panel">
         <div class="mfa-step-header">
-          <span class="step-number">1</span>
-          <div>
-            <p class="eyebrow">Status</p>
-            <h2>Current authenticator active</h2>
-          </div>
-        </div>
-        <div class="mfa-step-body">
-          <p class="muted">Do not remove this authenticator from your app until replacement has been verified.</p>
-        </div>
-      </article>
-
-      <article class="mfa-step">
-        <div class="mfa-step-header">
-          <span class="step-number">2</span>
+          <span class="step-number" aria-hidden="true">
+            <svg class="icon" focusable="false"><use href="#icon-lock"></use></svg>
+          </span>
           <div>
             <p class="eyebrow">Recovery</p>
             <h2>Recovery codes</h2>
@@ -77,10 +71,25 @@
           </form>
         </div>
       </article>
+    </div>
+
+    <div class="mfa-steps">
+      <article class="mfa-step is-complete">
+        <div class="mfa-step-header">
+          <span class="step-number">1</span>
+          <div>
+            <p class="eyebrow">Status</p>
+            <h2>Current authenticator active</h2>
+          </div>
+        </div>
+        <div class="mfa-step-body">
+          <p class="muted">Do not remove this authenticator from your app until replacement has been verified.</p>
+        </div>
+      </article>
 
       <article class="mfa-step{% if replacement %} is-complete{% endif %}">
         <div class="mfa-step-header">
-          <span class="step-number">3</span>
+          <span class="step-number">2</span>
           <div>
             <p class="eyebrow">Replacement</p>
             <h2>Replace authenticator</h2>
@@ -99,7 +108,7 @@
 
       <article class="mfa-step{% if not replacement %} is-muted{% endif %}">
         <div class="mfa-step-header">
-          <span class="step-number">4</span>
+          <span class="step-number">3</span>
           <div>
             <p class="eyebrow">New authenticator</p>
             <h2>Scan QR or enter key</h2>
@@ -124,7 +133,7 @@
 
       <article class="mfa-step{% if not replacement %} is-muted{% endif %}">
         <div class="mfa-step-header">
-          <span class="step-number">5</span>
+          <span class="step-number">4</span>
           <div>
             <p class="eyebrow">Confirm</p>
             <h2>Verify replacement</h2>
