@@ -305,6 +305,34 @@ def test_webauthn_user_cannot_fall_back_to_email_only_reset(app, client):
     assert completed.status_code == 403
 
 
+def test_webauthn_reset_cannot_be_satisfied_by_recovery_code(app, client):
+    with app.app_context():
+        user, _secret = _create_totp_user("resetkey", "resetkey@example.com")
+        _add_webauthn_credential(user)
+        with app.test_request_context("/"):
+            codes = generate_recovery_codes_for_user(user, count=2)
+
+    _request_reset(client, "resetkey@example.com")
+    token = _reset_token(app)
+    exchanged = _exchange(client, token)
+    recovery_attempt = client.post("/auth/password-reset/mfa/recovery-code", json={"recovery_code": codes[0]})
+    transaction = client.get("/auth/password-reset/transaction")
+    completed = client.post(
+        "/auth/password-reset/complete",
+        json={"new_password": NEW_PASSWORD, "confirm_new_password": NEW_PASSWORD},
+    )
+
+    assert exchanged.status_code == 200
+    assert exchanged.get_json()["mfa_required"] == "webauthn"
+    assert recovery_attempt.status_code == 400
+    assert transaction.get_json()["mfa_verified"] is False
+    assert completed.status_code == 403
+    with app.app_context():
+        assert db.session.execute(
+            db.select(func.count(RecoveryCode.id)).where(RecoveryCode.used_at.is_not(None))
+        ).scalar_one() == 0
+
+
 def test_admin_like_customer_domain_reset_fails_closed(app, client):
     with app.app_context():
         _create_user("admin", "admin@example.com")

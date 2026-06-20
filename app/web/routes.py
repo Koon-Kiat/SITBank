@@ -17,6 +17,7 @@ from flask_limiter.util import get_remote_address
 from marshmallow import ValidationError
 
 from app.auth.forms import (
+    AuthenticationCodeForm,
     CsrfOnlyForm,
     ForgotPasswordForm,
     LoginForm,
@@ -53,6 +54,7 @@ from app.auth.services import (
     pending_mfa_replacement,
     pending_mfa_setup,
     register_user,
+    regenerate_totp_recovery_codes,
     terminate_other_sessions_for_user,
     terminate_session_for_user,
     update_profile_details,
@@ -67,6 +69,7 @@ from app.auth.webauthn_services import (
     webauthn_credential_count,
 )
 from app.extensions import limiter
+from app.auth.recovery_codes import RECOVERY_CODE_LOW_THRESHOLD, unused_recovery_code_count
 from app.security.rate_limits import mfa_principal, request_principal
 from app.security.sessions import (
     SESSION_RISK_REAUTH_REQUIRED_KEY,
@@ -264,7 +267,7 @@ def reset_password_continue():
     return render_template(
         "reset_password.html",
         transaction=transaction,
-        totp_form=TotpForm(),
+        totp_form=AuthenticationCodeForm(),
         recovery_form=RecoveryCodeForm(),
         reset_form=PasswordResetForm(),
     )
@@ -282,7 +285,7 @@ def reset_password_continue_submit():
         return redirect(url_for("web.forgot_password"))
 
     if action == "verify_totp":
-        form = TotpForm()
+        form = AuthenticationCodeForm()
         if not form.validate_on_submit():
             return _render_reset_continue(transaction, status_code=400)
         try:
@@ -290,7 +293,7 @@ def reset_password_continue_submit():
         except AuthError as exc:
             flash(exc.message, "error")
             return _render_reset_continue(transaction, status_code=exc.status_code)
-        flash("Authenticator code verified.", "success")
+        flash("Authentication code verified.", "success")
         return _render_reset_continue(transaction)
 
     if action == "verify_recovery_code":
@@ -327,7 +330,7 @@ def _render_reset_continue(transaction: dict, *, status_code: int = 200):
     return render_template(
         "reset_password.html",
         transaction=transaction,
-        totp_form=TotpForm(),
+        totp_form=AuthenticationCodeForm(),
         recovery_form=RecoveryCodeForm(),
         reset_form=PasswordResetForm(),
     ), status_code
@@ -359,7 +362,7 @@ def mfa_verify():
     if not session.get("pending_mfa_user_id"):
         flash("Please log in first.", "warning")
         return redirect(url_for("web.login"))
-    return render_template("mfa_verify.html", form=TotpForm())
+    return render_template("mfa_verify.html", form=AuthenticationCodeForm())
 
 
 @web_bp.post("/mfa/verify")
@@ -370,7 +373,7 @@ def mfa_verify_submit():
         flash("Please log in first.", "warning")
         return redirect(url_for("web.login"))
 
-    form = TotpForm()
+    form = AuthenticationCodeForm()
     if not form.validate_on_submit():
         return render_template("mfa_verify.html", form=form), 400
 
@@ -387,11 +390,14 @@ def mfa_verify_submit():
 @web_bp.get("/dashboard")
 @web_login_required
 def dashboard():
+    recovery_codes_remaining = unused_recovery_code_count(g.current_user) if g.current_user.mfa_enabled else 0
     return render_template(
         "dashboard.html",
         user=g.current_user,
         credential_count=g.webauthn_credential_count,
         required_count=g.webauthn_required_count,
+        recovery_codes_remaining=recovery_codes_remaining,
+        recovery_codes_low=recovery_codes_remaining <= RECOVERY_CODE_LOW_THRESHOLD,
         logout_form=CsrfOnlyForm(),
     )
 
@@ -526,16 +532,21 @@ def mfa_setup():
     setup = pending_mfa_setup(g.current_user)
     replacement = pending_mfa_replacement(g.current_user)
     recent_mfa = has_recent_fresh_mfa()
+    recovery_codes_remaining = unused_recovery_code_count(g.current_user) if g.current_user.mfa_enabled else 0
     return render_template(
         "mfa_setup.html",
         user=g.current_user,
         setup=setup,
         replacement=replacement,
         recent_mfa=recent_mfa,
+        recovery_codes=None,
+        recovery_codes_remaining=recovery_codes_remaining,
+        recovery_codes_low=recovery_codes_remaining <= RECOVERY_CODE_LOW_THRESHOLD,
         start_form=CsrfOnlyForm(),
         verify_form=TotpForm(),
         replace_start_form=StepUpTokenForm(),
         replace_verify_form=TotpForm(),
+        recovery_regenerate_form=CsrfOnlyForm(),
     )
 
 
@@ -551,18 +562,24 @@ def mfa_setup_submit():
     recent_mfa = has_recent_fresh_mfa()
     replace_start_form = StepUpTokenForm()
     replace_verify_form = TotpForm()
+    recovery_regenerate_form = CsrfOnlyForm()
 
     def render_mfa_management(status_code: int = 200):
+        recovery_codes_remaining = unused_recovery_code_count(g.current_user) if g.current_user.mfa_enabled else 0
         return render_template(
             "mfa_setup.html",
             user=g.current_user,
             setup=pending_mfa_setup(g.current_user),
             replacement=pending_mfa_replacement(g.current_user),
             recent_mfa=has_recent_fresh_mfa(),
+            recovery_codes=None,
+            recovery_codes_remaining=recovery_codes_remaining,
+            recovery_codes_low=recovery_codes_remaining <= RECOVERY_CODE_LOW_THRESHOLD,
             start_form=start_form,
             verify_form=verify_form,
             replace_start_form=replace_start_form,
             replace_verify_form=replace_verify_form,
+            recovery_regenerate_form=recovery_regenerate_form,
         ), status_code
 
     if action == "start":
@@ -580,22 +597,40 @@ def mfa_setup_submit():
             setup=setup,
             replacement=pending_mfa_replacement(g.current_user),
             recent_mfa=has_recent_fresh_mfa(),
+            recovery_codes=None,
+            recovery_codes_remaining=0,
+            recovery_codes_low=False,
             start_form=CsrfOnlyForm(),
             verify_form=TotpForm(),
             replace_start_form=StepUpTokenForm(),
             replace_verify_form=TotpForm(),
+            recovery_regenerate_form=CsrfOnlyForm(),
         )
 
     if action == "verify":
         if not verify_form.validate_on_submit():
             return render_mfa_management(400)
         try:
-            verify_mfa_setup(g.current_user, verify_form.totp_code.data)
+            result = verify_mfa_setup(g.current_user, verify_form.totp_code.data)
         except AuthError as exc:
             flash(exc.message, "error")
             return render_mfa_management(exc.status_code)
         flash("MFA is now enabled.", "success")
-        return redirect(url_for("web.dashboard"))
+        return render_template(
+            "mfa_setup.html",
+            user=g.current_user,
+            setup=None,
+            replacement=None,
+            recent_mfa=has_recent_fresh_mfa(),
+            recovery_codes=result["recovery_codes"],
+            recovery_codes_remaining=result["recovery_codes_remaining"],
+            recovery_codes_low=result["recovery_codes_low"],
+            start_form=CsrfOnlyForm(),
+            verify_form=TotpForm(),
+            replace_start_form=StepUpTokenForm(),
+            replace_verify_form=TotpForm(),
+            recovery_regenerate_form=CsrfOnlyForm(),
+        )
 
     if action == "replace_start":
         if not replace_start_form.validate_on_submit():
@@ -616,22 +651,65 @@ def mfa_setup_submit():
             setup=pending_mfa_setup(g.current_user),
             replacement=replacement,
             recent_mfa=has_recent_fresh_mfa(),
+            recovery_codes=None,
+            recovery_codes_remaining=unused_recovery_code_count(g.current_user),
+            recovery_codes_low=unused_recovery_code_count(g.current_user) <= RECOVERY_CODE_LOW_THRESHOLD,
             start_form=CsrfOnlyForm(),
             verify_form=TotpForm(),
-            replace_start_form=TotpForm(),
+            replace_start_form=StepUpTokenForm(),
             replace_verify_form=TotpForm(),
+            recovery_regenerate_form=CsrfOnlyForm(),
         )
 
     if action == "replace_verify":
         if not replace_verify_form.validate_on_submit():
             return render_mfa_management(400)
         try:
-            verify_mfa_replacement(g.current_user, replace_verify_form.totp_code.data)
+            result = verify_mfa_replacement(g.current_user, replace_verify_form.totp_code.data)
         except AuthError as exc:
             flash(exc.message, "error")
             return render_mfa_management(exc.status_code)
         flash("Authenticator MFA replaced. Other sessions were revoked.", "success")
-        return redirect(url_for("web.mfa_setup"))
+        return render_template(
+            "mfa_setup.html",
+            user=g.current_user,
+            setup=None,
+            replacement=None,
+            recent_mfa=has_recent_fresh_mfa(),
+            recovery_codes=result["recovery_codes"],
+            recovery_codes_remaining=result["recovery_codes_remaining"],
+            recovery_codes_low=result["recovery_codes_low"],
+            start_form=CsrfOnlyForm(),
+            verify_form=TotpForm(),
+            replace_start_form=StepUpTokenForm(),
+            replace_verify_form=TotpForm(),
+            recovery_regenerate_form=CsrfOnlyForm(),
+        )
+
+    if action == "recovery_codes_regenerate":
+        if not recovery_regenerate_form.validate_on_submit():
+            return render_mfa_management(400)
+        try:
+            result = regenerate_totp_recovery_codes(g.current_user)
+        except AuthError as exc:
+            flash(exc.message, "error")
+            return render_mfa_management(exc.status_code)
+        flash("Recovery codes regenerated.", "success")
+        return render_template(
+            "mfa_setup.html",
+            user=g.current_user,
+            setup=None,
+            replacement=pending_mfa_replacement(g.current_user),
+            recent_mfa=has_recent_fresh_mfa(),
+            recovery_codes=result["recovery_codes"],
+            recovery_codes_remaining=result["recovery_codes_remaining"],
+            recovery_codes_low=result["recovery_codes_low"],
+            start_form=CsrfOnlyForm(),
+            verify_form=TotpForm(),
+            replace_start_form=StepUpTokenForm(),
+            replace_verify_form=TotpForm(),
+            recovery_regenerate_form=CsrfOnlyForm(),
+        )
 
     flash("Invalid MFA setup action.", "error")
     return redirect(url_for("web.mfa_setup"))

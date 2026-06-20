@@ -10,6 +10,7 @@ from app.security.rate_limits import mfa_principal, request_principal
 
 from .decorators import login_required, not_frozen_required
 from .forms import (
+    AuthenticationCodeForm,
     CsrfOnlyForm,
     ForgotPasswordForm,
     LoginForm,
@@ -32,6 +33,7 @@ from .password_reset import (
     exchange_reset_token,
 )
 from .schemas import (
+    AuthenticationCodeSchema,
     ForgotPasswordSchema,
     LoginSchema,
     ManualRecoverySchema,
@@ -65,6 +67,7 @@ from .services import (
     logout_current_session,
     past_sessions_for_user,
     register_user,
+    regenerate_totp_recovery_codes,
     terminate_other_sessions_for_user,
     terminate_session_for_user,
     verify_high_risk_authorization,
@@ -210,7 +213,7 @@ def password_reset_transaction():
 @limiter.limit("5 per 5 minutes", key_func=get_remote_address)
 @limiter.limit("5 per 5 minutes", key_func=mfa_principal)
 def password_reset_totp():
-    data = _load_payload(TotpSchema(), TotpForm)
+    data = _load_payload(AuthenticationCodeSchema(), AuthenticationCodeForm)
     return jsonify(verify_reset_totp(data["totp_code"]))
 
 
@@ -388,11 +391,21 @@ def mfa_replace_verify():
     return jsonify(verify_mfa_replacement(g.current_user, data["totp_code"]))
 
 
+@auth_bp.post("/mfa/recovery-codes/regenerate")
+@login_required
+@not_frozen_required
+@limiter.limit("5 per 15 minutes", key_func=get_remote_address)
+@limiter.limit("5 per 15 minutes", key_func=mfa_principal)
+def mfa_recovery_codes_regenerate():
+    CsrfOnlyForm().validate()
+    return jsonify(regenerate_totp_recovery_codes(g.current_user))
+
+
 @auth_bp.post("/mfa/verify")
 @limiter.limit("5 per 5 minutes", key_func=get_remote_address)
 @limiter.limit("5 per 5 minutes", key_func=mfa_principal)
 def mfa_verify():
-    data = _load_payload(TotpSchema(), TotpForm)
+    data = _load_payload(AuthenticationCodeSchema(), AuthenticationCodeForm)
     return jsonify(complete_pending_mfa(data["totp_code"]))
 
 

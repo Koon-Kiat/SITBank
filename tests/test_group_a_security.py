@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from webauthn.helpers.structs import CredentialDeviceType
 
 from app.extensions import db
-from app.models import SecurityAuditEvent, User, WebAuthnCredential
+from app.models import RecoveryCode, SecurityAuditEvent, User, WebAuthnCredential
 from app.security.passwords import (
     PASSWORD_MAX_CHARS,
     PASSWORD_MIN_LENGTH,
@@ -815,8 +815,125 @@ def test_mfa_setup_stores_encrypted_secret_and_rejects_replay(client):
     assert "Manual setup key" in setup_markup
     assert 'id="manual-entry-secret"' in setup_markup
     assert f'value="{secret}"' in setup_markup
-    assert verify_response.status_code == 302
+    assert verify_response.status_code == 200
     assert replay_response.status_code == 401
+
+
+def test_mfa_setup_generates_ten_hashed_recovery_codes_and_shows_once(client):
+    register(client)
+    login(client)
+    client.post("/mfa/setup", data={"action": "start"})
+
+    user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
+    secret = decrypt_test_mfa_secret(user)
+    code = pyotp.TOTP(secret, digits=6, interval=30).now()
+
+    response = client.post("/mfa/setup", data={"action": "verify", "totp_code": code})
+    markup = response.data.decode("utf-8")
+    recovery_codes = re.findall(r"<code>([0-9a-f]{8}(?:-[0-9a-f]{8}){3})</code>", markup)
+    stored_codes = list(
+        db.session.execute(
+            db.select(RecoveryCode).where(
+                RecoveryCode.user_id == user.id,
+                RecoveryCode.purpose == "totp_recovery",
+                RecoveryCode.used_at.is_(None),
+            )
+        ).scalars()
+    )
+    followup = client.get("/mfa/setup")
+    followup_markup = followup.data.decode("utf-8")
+
+    assert response.status_code == 200
+    assert len(recovery_codes) == 10
+    assert len(stored_codes) == 10
+    assert all(len(code.replace("-", "")) == 32 for code in recovery_codes)
+    assert all(item.code_hmac not in recovery_codes for item in stored_codes)
+    assert recovery_codes[0] not in followup_markup
+
+
+def test_recovery_code_satisfies_pending_totp_login_once_and_notifies(app, client):
+    from app.auth.recovery_codes import generate_recovery_codes_for_user
+    from app.security.email import password_reset_outbox
+
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    recovery_codes = generate_recovery_codes_for_user(user)
+
+    client.post("/logout")
+    login_response = login(client)
+    verified = client.post("/auth/mfa/verify", json={"totp_code": recovery_codes[0]})
+    dashboard = client.get("/dashboard")
+    client.post("/logout")
+    login(client)
+    reused = client.post("/auth/mfa/verify", json={"totp_code": recovery_codes[0]})
+
+    assert login_response.status_code == 302
+    assert verified.status_code == 200
+    assert verified.get_json()["recovery_codes_remaining"] == 9
+    assert dashboard.status_code == 200
+    assert "9 unused recovery codes remain." in dashboard.data.decode("utf-8")
+    assert reused.status_code == 401
+    assert reused.get_json()["error"] == "Invalid authentication code."
+    assert db.session.query(RecoveryCode).filter_by(user_id=user.id).filter(RecoveryCode.used_at.is_not(None)).count() == 1
+    assert db.session.query(SecurityAuditEvent).filter_by(event_type="mfa_recovery_code_verify", outcome="success").count() == 1
+    assert password_reset_outbox()[-1]["subject"] == "SITBank recovery code used"
+
+
+def test_recovery_code_cannot_satisfy_login_when_security_key_primary_is_required(client):
+    from app.auth.recovery_codes import generate_recovery_codes_for_user
+
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    recovery_codes = generate_recovery_codes_for_user(user)
+    add_security_keys_for_user(user)
+
+    client.post("/logout")
+    with client.session_transaction() as sess:
+        sess["pending_mfa_user_id"] = user.id
+        sess["password_authenticated_at"] = int(time.time())
+    response = client.post("/auth/mfa/verify", json={"totp_code": recovery_codes[0]})
+
+    assert response.status_code == 403
+    assert response.get_json()["error"] == "Security key sign-in required for this account"
+    assert db.session.query(RecoveryCode).filter_by(user_id=user.id).filter(RecoveryCode.used_at.is_not(None)).count() == 0
+
+
+def test_recovery_code_regeneration_revokes_old_unused_codes(client):
+    from app.auth.recovery_codes import generate_recovery_codes_for_user
+
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    old_codes = generate_recovery_codes_for_user(user, count=3)
+
+    response = client.post("/auth/mfa/recovery-codes/regenerate")
+    payload = response.get_json()
+    used_count = db.session.query(RecoveryCode).filter_by(user_id=user.id).filter(RecoveryCode.used_at.is_not(None)).count()
+    unused_count = db.session.query(RecoveryCode).filter_by(user_id=user.id, used_at=None).count()
+
+    assert response.status_code == 200
+    assert len(payload["recovery_codes"]) == 10
+    assert old_codes[0] not in payload["recovery_codes"]
+    assert used_count == 3
+    assert unused_count == 10
+
+
+def test_dashboard_warns_when_recovery_codes_are_low(client):
+    from app.auth.recovery_codes import generate_recovery_codes_for_user
+
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    generate_recovery_codes_for_user(user, count=2)
+
+    response = client.get("/dashboard")
+    markup = response.data.decode("utf-8")
+
+    assert response.status_code == 200
+    assert "2 unused recovery codes remain." in markup
+    assert "Regenerate soon" in markup
 
 
 def test_mfa_setup_generates_independent_user_secrets(app, client):
@@ -871,7 +988,7 @@ def test_mfa_code_verifies_only_for_own_enrolled_secret(app, client, monkeypatch
     own_user_response = second_client.post("/mfa/setup", data={"action": "verify", "totp_code": bob_code})
 
     assert wrong_user_response.status_code == 401
-    assert own_user_response.status_code == 302
+    assert own_user_response.status_code == 200
 
 
 def test_pending_mfa_restart_replaces_previous_setup_secret(client, monkeypatch):
@@ -911,7 +1028,7 @@ def test_pending_mfa_restart_replaces_previous_setup_secret(client, monkeypatch)
     assert second_setup.status_code == 200
     assert first_secret != second_secret
     assert old_secret_response.status_code == 401
-    assert new_secret_response.status_code == 302
+    assert new_secret_response.status_code == 200
 
 
 def test_mfa_management_page_shows_replacement_controls_when_enabled(client):
@@ -1030,7 +1147,7 @@ def test_mfa_replacement_keeps_old_secret_until_new_code_is_verified(client, mon
     assert active_secret_after_wrong_code == old_secret
     assert decrypt_test_mfa_secret(user) == replacement_secret
     assert wrong_response.status_code == 401
-    assert correct_response.status_code == 302
+    assert correct_response.status_code == 200
     assert db.session.query(SecurityAuditEvent).filter_by(event_type="mfa_replace_verify", outcome="success").count() == 1
 
     client.post("/logout")
@@ -1181,7 +1298,7 @@ def test_revoke_other_sessions_requires_security_key_stepup_and_rotates_session(
         session_after_revoke = sess.sid
     revoked_response = second_client.get("/auth/sessions")
 
-    assert setup_verify.status_code == 302
+    assert setup_verify.status_code == 200
     assert revoke_without_stepup.status_code == 302
     assert api_without_stepup.status_code == 403
     assert other_session_before_revoke.status_code == 200

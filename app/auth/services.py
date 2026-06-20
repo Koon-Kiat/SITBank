@@ -47,9 +47,17 @@ from app.security.sessions import (
     rotate_authenticated_session_after_mfa,
 )
 
+from .recovery_codes import (
+    RECOVERY_CODE_LOW_THRESHOLD,
+    consume_recovery_code,
+    generate_recovery_codes_for_user,
+    send_recovery_code_used_notification,
+    unused_recovery_code_count,
+)
+
 
 GENERIC_LOGIN_ERROR = "Invalid username or password"
-GENERIC_MFA_ERROR = "Invalid MFA code"
+GENERIC_MFA_ERROR = "Invalid authentication code."
 AUTH_BACKOFF_ERROR = "Too many attempts. Please try again later."
 ACCOUNT_AUTH_UNAVAILABLE_ERROR = "Authentication unavailable for this account"
 FIDO_PRIMARY_LOGIN_ERROR = "Security key sign-in required for this account"
@@ -286,11 +294,21 @@ def verify_mfa_setup(user: User, code: str) -> dict[str, Any]:
 
     user.mfa_enabled = True
     db.session.commit()
+    recovery_codes = generate_recovery_codes_for_user(user)
     session_id = rotate_authenticated_session_after_mfa(user.id)
-    audit_event("mfa_setup_verify", "success", user=user, session_id=session_id)
+    audit_event(
+        "mfa_setup_verify",
+        "success",
+        user=user,
+        session_id=session_id,
+        metadata={"recovery_code_count": len(recovery_codes)},
+    )
     return {
         "message": "MFA enabled",
         "session_ref": public_session_reference(session_id),
+        "recovery_codes": recovery_codes,
+        "recovery_codes_remaining": len(recovery_codes),
+        "recovery_codes_low": False,
     }
 
 
@@ -344,6 +362,7 @@ def verify_mfa_replacement(user: User, code: str) -> dict[str, Any]:
     user.mfa_secret_ciphertext = _b64decode(str(session[MFA_REPLACEMENT_CIPHERTEXT_KEY]))
     user.mfa_enabled = True
     db.session.commit()
+    recovery_codes = generate_recovery_codes_for_user(user)
     _clear_pending_mfa_replacement()
     session_id = rotate_authenticated_session_after_mfa(user.id)
     revoked = revoke_other_sessions(user.id)
@@ -352,12 +371,15 @@ def verify_mfa_replacement(user: User, code: str) -> dict[str, Any]:
         "success",
         user=user,
         session_id=session_id,
-        metadata={"revoked_other_sessions": revoked},
+        metadata={"revoked_other_sessions": revoked, "recovery_code_count": len(recovery_codes)},
     )
     return {
         "message": "Authenticator MFA replaced",
         "session_ref": public_session_reference(session_id),
         "revoked_other_sessions": revoked,
+        "recovery_codes": recovery_codes,
+        "recovery_codes_remaining": len(recovery_codes),
+        "recovery_codes_low": False,
     }
 
 
@@ -372,24 +394,55 @@ def complete_pending_mfa(code: str) -> dict[str, Any]:
         raise AuthError("No pending MFA challenge", 401)
 
     ensure_account_can_authenticate(user)
+    if _requires_security_key_login(user):
+        audit_event(
+            "mfa_login_verify",
+            "blocked",
+            user=user,
+            metadata={"reason": "security_key_primary_required"},
+        )
+        raise AuthError(FIDO_PRIMARY_LOGIN_ERROR, 403)
 
-    if not _verify_totp_for_user(user, code, "mfa_login"):
-        _handle_mfa_verification_failure(user, "mfa_login_verify")
+    factor = _verify_pending_login_authentication_code(user, code)
 
     user.last_login_at = datetime.now(timezone.utc)
     user.failed_login_count = 0
     db.session.commit()
     _clear_user_security_failures(user, "mfa")
+    recovery_codes_remaining = unused_recovery_code_count(user)
     session_id = establish_authenticated_session(
         user_id=user.id,
         mfa_verified=True,
         auth_context="password+mfa_bootstrap",
     )
-    audit_event("mfa_login_verify", "success", user=user, session_id=session_id)
+    audit_event("mfa_login_verify", "success", user=user, session_id=session_id, metadata={"factor": factor})
     return {
         "message": "Login successful",
         "session_ref": public_session_reference(session_id),
         "user": _public_user(user),
+        "recovery_codes_remaining": recovery_codes_remaining,
+        "recovery_codes_low": recovery_codes_remaining <= RECOVERY_CODE_LOW_THRESHOLD,
+    }
+
+
+def regenerate_totp_recovery_codes(user: User) -> dict[str, Any]:
+    ensure_account_not_frozen(user, "recovery code regeneration")
+    if not user.mfa_enabled:
+        audit_event("recovery_codes_regenerate", "failure", user=user, metadata={"reason": "mfa_not_enabled"})
+        raise AuthError("MFA is not enabled", 403)
+
+    recovery_codes = generate_recovery_codes_for_user(user)
+    audit_event(
+        "recovery_codes_regenerate",
+        "success",
+        user=user,
+        metadata={"recovery_code_count": len(recovery_codes)},
+    )
+    return {
+        "message": "Recovery codes regenerated",
+        "recovery_codes": recovery_codes,
+        "recovery_codes_remaining": len(recovery_codes),
+        "recovery_codes_low": False,
     }
 
 
@@ -645,6 +698,45 @@ def _handle_mfa_verification_failure(user: User, action: str) -> None:
     audit_event(action, "failure", user=user)
     _record_user_security_failure(user, "mfa", "mfa_failed_attempts")
     raise AuthError(GENERIC_MFA_ERROR, 401)
+
+
+def _verify_pending_login_authentication_code(user: User, code: str) -> str:
+    if _is_totp_code(code):
+        if _verify_totp_for_user(user, code, "mfa_login"):
+            return "totp"
+        _handle_mfa_verification_failure(user, "mfa_login_verify")
+
+    try:
+        _enforce_auth_backoff("mfa_recovery_code", str(user.id))
+    except AuthError:
+        _record_user_security_failure(user, "mfa", "mfa_failed_attempts")
+        raise
+
+    if not consume_recovery_code(user, code):
+        record_failure("mfa_recovery_code", str(user.id))
+        audit_event("mfa_recovery_code_verify", "failure", user=user)
+        _record_user_security_failure(user, "mfa", "mfa_failed_attempts")
+        raise AuthError(GENERIC_MFA_ERROR, 401)
+
+    clear_failures("mfa_recovery_code", str(user.id))
+    _clear_user_security_failures(user, "mfa")
+    remaining = unused_recovery_code_count(user)
+    _send_mfa_recovery_code_used_notification(user)
+    audit_event("mfa_recovery_code_verify", "success", user=user, metadata={"remaining_codes": remaining})
+    return "recovery_code"
+
+
+def _is_totp_code(code: str) -> bool:
+    text = str(code or "")
+    return len(text) == 6 and text.isdigit()
+
+
+def _send_mfa_recovery_code_used_notification(user: User) -> None:
+    try:
+        send_recovery_code_used_notification(user)
+    except Exception as exc:
+        current_app.logger.warning("recovery_code_notification_failed error=%s", type(exc).__name__)
+        audit_event("recovery_code_notification", "failure", user=user, metadata={"reason": "email_delivery_failed"})
 
 
 def _record_user_security_failure(user: User, scope: str, lock_reason: str) -> None:

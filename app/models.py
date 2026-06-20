@@ -112,7 +112,7 @@ class RecoveryCode(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
     code_hmac = db.Column(db.String(64), nullable=False, unique=True)
-    purpose = db.Column(db.String(40), nullable=False, default="account_recovery")
+    purpose = db.Column(db.String(40), nullable=False, default="totp_recovery")
     created_at = db.Column(
         db.DateTime(timezone=True),
         nullable=False,
