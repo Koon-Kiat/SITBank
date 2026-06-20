@@ -21,6 +21,8 @@ def generate_recovery_codes_for_user(
     *,
     count: int = RECOVERY_CODE_COUNT,
     purpose: str = RECOVERY_CODE_PURPOSE_TOTP,
+    commit: bool = True,
+    audit: bool = True,
 ) -> list[str]:
     if count < 1 or count > 20:
         raise ValueError("Recovery code count must be between 1 and 20")
@@ -45,8 +47,10 @@ def generate_recovery_codes_for_user(
                 purpose=purpose,
             )
         )
-    db.session.commit()
-    audit_event("recovery_codes_generated", "success", user=user, metadata={"count": count, "purpose": purpose})
+    if commit:
+        db.session.commit()
+        if audit:
+            audit_event("recovery_codes_generated", "success", user=user, metadata={"count": count, "purpose": purpose})
     return codes
 
 

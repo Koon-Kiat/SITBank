@@ -934,6 +934,34 @@ def test_recovery_code_regeneration_revokes_old_unused_codes(client):
     assert unused_count == 10
 
 
+def test_recovery_code_use_and_regeneration_use_required_audit_writer(client, monkeypatch):
+    from app.auth import services as auth_services
+    from app.auth.recovery_codes import generate_recovery_codes_for_user
+
+    calls = []
+
+    def required_audit(event_type, outcome, **kwargs):
+        calls.append((event_type, outcome, kwargs))
+        db.session.commit()
+
+    monkeypatch.setattr(auth_services, "audit_event_required", required_audit)
+
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    recovery_codes = generate_recovery_codes_for_user(user)
+
+    client.post("/logout")
+    login(client)
+    verify_response = client.post("/auth/mfa/verify", json={"totp_code": recovery_codes[0]})
+    regenerate_response = client.post("/auth/mfa/recovery-codes/regenerate")
+
+    assert verify_response.status_code == 200
+    assert regenerate_response.status_code == 200
+    assert ("mfa_recovery_code_verify", "success") in [(call[0], call[1]) for call in calls]
+    assert ("recovery_codes_regenerate", "success") in [(call[0], call[1]) for call in calls]
+
+
 def test_dashboard_warns_when_recovery_codes_are_low(client):
     from app.auth.recovery_codes import generate_recovery_codes_for_user
 
@@ -2430,6 +2458,28 @@ def test_required_audit_write_failure_raises_and_logs_sanitized_warning(app, cap
     assert payload["metadata"]["authorization"] == "[redacted]"
     assert "database password leaked" not in logs
     assert "token-secret" not in logs
+
+
+def test_webauthn_audit_wrapper_can_use_required_writer(monkeypatch):
+    from app.security import audit as audit_module
+
+    calls = []
+    monkeypatch.setattr(
+        audit_module,
+        "audit_event_required",
+        lambda event_type, outcome, **kwargs: calls.append((event_type, outcome, kwargs)),
+    )
+    monkeypatch.setattr(
+        audit_module,
+        "audit_event",
+        lambda *_args, **_kwargs: pytest.fail("required WebAuthn audit must not use best-effort writer"),
+    )
+
+    audit_module.audit_webauthn_event("register", "success", credential_id=b"credential-id", required=True)
+
+    assert calls
+    assert calls[0][0] == "webauthn_register"
+    assert calls[0][1] == "success"
 
 
 def test_audit_system_writer_uses_append_only_runtime_read_path(app, monkeypatch):

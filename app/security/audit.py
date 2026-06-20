@@ -291,6 +291,7 @@ def audit_webauthn_event(
     aaguid: str | None = None,
     metadata: dict[str, Any] | None = None,
     session_id: str | None = None,
+    required: bool = False,
 ) -> None:
     credential_ref = credential_id
     if isinstance(credential_id, bytes):
@@ -304,7 +305,8 @@ def audit_webauthn_event(
         "aaguid": aaguid,
     }
     event_metadata.update(metadata or {})
-    audit_event(
+    writer = audit_event_required if required else audit_event
+    writer(
         f"webauthn_{action}",
         outcome,
         user=user,

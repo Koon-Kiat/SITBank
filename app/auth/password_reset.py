@@ -14,7 +14,7 @@ from sqlalchemy import func, or_
 
 from app.extensions import db
 from app.models import ManualRecoveryRequest, PasswordResetToken, User
-from app.security.audit import audit_event, audit_reference, principal_reference
+from app.security.audit import audit_event, audit_event_required, audit_reference, principal_reference
 from app.security.email import send_security_email
 from app.security.passwords import PasswordPolicyError, hash_password, validate_password_policy, verify_password
 from app.security.rate_limits import AuthBackoffRequired, apply_exponential_backoff, clear_failures, record_failure
@@ -165,10 +165,10 @@ def verify_reset_totp(code: str) -> dict[str, Any]:
         transaction["recovery_code_verified"] = True
         factor = "recovery_code"
 
+    audit_event_required("password_reset_mfa_verified", "success", user=user, metadata={"factor": factor})
     transaction["mfa_verified"] = True
     transaction["mfa_verified_at"] = _now_timestamp()
     _store_transaction(transaction)
-    audit_event("password_reset_mfa_verified", "success", user=user, metadata={"factor": factor})
     return _public_transaction(transaction)
 
 
@@ -204,11 +204,11 @@ def verify_recovery_code_for_reset(code: str) -> dict[str, Any]:
 
     clear_failures("password_reset_recovery_code", transaction["transaction_id"])
     _send_recovery_code_used_notification(user)
+    audit_event_required("password_reset_mfa_verified", "success", user=user, metadata={"factor": "recovery_code"})
     transaction["mfa_verified"] = True
     transaction["recovery_code_verified"] = True
     transaction["mfa_verified_at"] = _now_timestamp()
     _store_transaction(transaction)
-    audit_event("password_reset_mfa_verified", "success", user=user, metadata={"factor": "recovery_code"})
     return _public_transaction(transaction)
 
 
@@ -241,14 +241,9 @@ def complete_password_reset(new_password: str, confirm_new_password: str) -> dic
         )
     ).scalars():
         token.used_at = now
-    db.session.commit()
 
     revoked = revoke_all_sessions(user.id, ended_reason="password_reset")
-    _clear_reset_transaction(transaction)
-    session.clear()
-    clear_failures("login", _auth_principal(user.username))
-    clear_failures("login", _auth_principal(user.email))
-    audit_event(
+    audit_event_required(
         "password_reset_completed",
         "success",
         user=user,
@@ -259,6 +254,10 @@ def complete_password_reset(new_password: str, confirm_new_password: str) -> dic
             "password_screening": "local_only_fallback" if password_policy_warnings else "local_and_live",
         },
     )
+    _clear_reset_transaction(transaction)
+    session.clear()
+    clear_failures("login", _auth_principal(user.username))
+    clear_failures("login", _auth_principal(user.email))
     try:
         _send_password_reset_notification(user)
     except Exception as exc:

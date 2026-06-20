@@ -19,7 +19,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
 from app.models import User
-from app.security.audit import audit_event, principal_reference
+from app.security.audit import audit_event, audit_event_required, principal_reference
 from app.security.crypto import decrypt_mfa_secret, encrypt_mfa_secret
 from app.security.passwords import (
     PasswordPolicyError,
@@ -293,10 +293,9 @@ def verify_mfa_setup(user: User, code: str) -> dict[str, Any]:
         _handle_mfa_verification_failure(user, "mfa_setup_verify")
 
     user.mfa_enabled = True
-    db.session.commit()
-    recovery_codes = generate_recovery_codes_for_user(user)
+    recovery_codes = generate_recovery_codes_for_user(user, commit=False, audit=False)
     session_id = rotate_authenticated_session_after_mfa(user.id)
-    audit_event(
+    audit_event_required(
         "mfa_setup_verify",
         "success",
         user=user,
@@ -361,12 +360,11 @@ def verify_mfa_replacement(user: User, code: str) -> dict[str, Any]:
     user.mfa_secret_nonce = _b64decode(str(session[MFA_REPLACEMENT_NONCE_KEY]))
     user.mfa_secret_ciphertext = _b64decode(str(session[MFA_REPLACEMENT_CIPHERTEXT_KEY]))
     user.mfa_enabled = True
-    db.session.commit()
-    recovery_codes = generate_recovery_codes_for_user(user)
+    recovery_codes = generate_recovery_codes_for_user(user, commit=False, audit=False)
     _clear_pending_mfa_replacement()
     session_id = rotate_authenticated_session_after_mfa(user.id)
     revoked = revoke_other_sessions(user.id)
-    audit_event(
+    audit_event_required(
         "mfa_replace_verify",
         "success",
         user=user,
@@ -431,8 +429,8 @@ def regenerate_totp_recovery_codes(user: User) -> dict[str, Any]:
         audit_event("recovery_codes_regenerate", "failure", user=user, metadata={"reason": "mfa_not_enabled"})
         raise AuthError("MFA is not enabled", 403)
 
-    recovery_codes = generate_recovery_codes_for_user(user)
-    audit_event(
+    recovery_codes = generate_recovery_codes_for_user(user, commit=False, audit=False)
+    audit_event_required(
         "recovery_codes_regenerate",
         "success",
         user=user,
@@ -722,7 +720,7 @@ def _verify_pending_login_authentication_code(user: User, code: str) -> str:
     _clear_user_security_failures(user, "mfa")
     remaining = unused_recovery_code_count(user)
     _send_mfa_recovery_code_used_notification(user)
-    audit_event("mfa_recovery_code_verify", "success", user=user, metadata={"remaining_codes": remaining})
+    audit_event_required("mfa_recovery_code_verify", "success", user=user, metadata={"remaining_codes": remaining})
     return "recovery_code"
 
 

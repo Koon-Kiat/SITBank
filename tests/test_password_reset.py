@@ -187,6 +187,31 @@ def test_password_reset_accepts_256_character_password_without_truncation(app, c
         assert not verify_password(truncated_variant, user.password_hash)
 
 
+def test_password_reset_completion_uses_required_audit_writer(app, client, monkeypatch):
+    from app.auth import password_reset
+
+    calls = []
+
+    def required_audit(event_type, outcome, **kwargs):
+        calls.append((event_type, outcome, kwargs))
+        db.session.commit()
+
+    monkeypatch.setattr(password_reset, "audit_event_required", required_audit)
+    user_id = _begin_no_mfa_reset(app, client, username="resetaudit", email="resetaudit@example.com")
+
+    completed = client.post(
+        "/auth/password-reset/complete",
+        json={"new_password": NEW_PASSWORD, "confirm_new_password": NEW_PASSWORD},
+    )
+
+    assert completed.status_code == 200, completed.get_data(as_text=True)
+    assert ("password_reset_completed", "success") in [(call[0], call[1]) for call in calls]
+    with app.app_context():
+        user = db.session.get(User, user_id)
+        assert user is not None
+        assert verify_password(NEW_PASSWORD, user.password_hash)
+
+
 def test_password_reset_accepts_8_character_password(app, client, monkeypatch):
     monkeypatch.setattr("app.security.passwords._is_password_pwned_by_hibp", lambda _password: False)
     minimum_password = "Abcdef12"
