@@ -2487,8 +2487,8 @@ def test_migration_baseline_and_existing_database_runbook_are_present():
     assert "verify-migration-baseline" in docs
     assert "db stamp 20260610_0001" in docs
     assert "Do not run `db.create_all()`" in docs
-    assert "WenJiangggg/SITBank" in docs
-    assert "ghcr.io/wenjiangggg/sitbank@sha256:<digest>" in docs
+    assert "hetp88/SITBank" in docs
+    assert "ghcr.io/hetp88/sitbank@sha256:<digest>" in docs
     assert "sitbank_db" in docs
     assert "sitbank_owner" in docs
     assert "sitbank_app" in docs
