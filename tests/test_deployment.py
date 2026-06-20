@@ -2457,6 +2457,7 @@ def test_audit_operations_runbook_and_append_only_privileges_are_present():
     assert "validate_security_alert_config" in commands
     assert "pg_advisory_xact_lock" in audit_source
     assert "AUDIT_CHAIN_ADVISORY_LOCK_ID" in audit_source
+    assert ".with_for_update(" not in audit_source
     assert "security_audit_events_reject_mutation" in append_only_migration
     assert "security_audit_events_reject_update" in append_only_migration
     assert "security_audit_events_reject_delete" in append_only_migration
