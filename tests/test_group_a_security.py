@@ -887,6 +887,28 @@ def test_mfa_recovery_codes_are_separate_from_replacement_steps(client):
     assert "console." not in script
 
 
+def test_recovery_code_ui_uses_full_width_card_and_readable_code_chips(client):
+    from app.auth.recovery_codes import generate_recovery_codes_for_user
+
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    recovery_codes = generate_recovery_codes_for_user(user)
+    stylesheet = Path("app/static/css/app.css").read_text(encoding="utf-8")
+
+    response = client.post("/mfa/setup", data={"action": "recovery_codes_regenerate"})
+    markup = response.data.decode("utf-8")
+
+    assert response.status_code == 200
+    assert recovery_codes[0] not in markup
+    assert 'class="notice recovery-code-notice"' in markup
+    assert "recovery-code-list-display" in markup
+    assert "grid-template-columns: minmax(0, 1fr);" in stylesheet
+    assert ".recovery-code-list code" in stylesheet
+    assert "background: var(--surface-raised);" in stylesheet
+    assert "margin-top: var(--space-5);" in stylesheet
+
+
 def test_recovery_code_satisfies_pending_totp_login_once_and_notifies(app, client):
     from app.auth.recovery_codes import generate_recovery_codes_for_user
     from app.security.email import password_reset_outbox

@@ -1060,7 +1060,7 @@ input:focus {
 
 .mfa-support-grid {
   display: grid;
-  grid-template-columns: minmax(280px, 0.34fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-4);
 }
 
@@ -1225,6 +1225,10 @@ input:focus {
 .recovery-code-panel .step-number .icon {
   width: 17px;
   height: 17px;
+}
+
+.recovery-code-panel form {
+  max-width: 100%;
 }
 
 .mfa-step-header {
@@ -1454,8 +1458,28 @@ input:focus {
   list-style: none;
 }
 
+.recovery-code-list-display {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+
+.recovery-code-list code {
+  display: block;
+  border: 1px solid color-mix(in srgb, var(--primary) 22%, var(--line));
+  padding: 8px 10px;
+  background: var(--surface-raised);
+  color: var(--text);
+  font-family: Consolas, "Liberation Mono", monospace;
+  font-size: 0.9rem;
+  line-height: 1.35;
+  letter-spacing: 0;
+}
+
 .recovery-code-actions {
   justify-content: flex-start;
+  margin-top: var(--space-5);
+  gap: var(--space-3);
 }
 
 code {
