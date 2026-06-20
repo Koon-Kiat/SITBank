@@ -7,8 +7,8 @@ Only Flask/Gunicorn runs in the SITBank container. Nginx, TLS, PostgreSQL, Redis
 - Production public host: `sitbank.duckdns.org`
 - Production admin host: `admin-sitbank.duckdns.org`
 - Staging public host: `staging-sitbank.duckdns.org`
-- Production image form: `ghcr.io/wenjiangggg/sitbank@sha256:<digest>`
-- Repository identity: `WenJiangggg/SITBank`
+- Production image form: `ghcr.io/hetp88/sitbank@sha256:<digest>`
+- Repository identity: `hetp88/SITBank`
 - Production config root: `/etc/sitbank`
 - Production compose dir: `/opt/sitbank`
 - Production service: `sitbank-container.service`
@@ -165,7 +165,7 @@ sudo certbot certonly --webroot -w /var/www/certbot -d staging-sitbank.duckdns.o
 sudo certbot renew --dry-run
 ```
 
-Then run `ops/deploy/bootstrap-container-ec2 staging WenJiangggg/SITBank staging-sitbank.duckdns.org`. The bootstrap installs the Nginx proxy header snippet and rate-limit include, then runs `sudo nginx -t` before `sudo systemctl reload nginx`. This edge setup is separate from application deployment.
+Then run `ops/deploy/bootstrap-container-ec2 staging hetp88/SITBank staging-sitbank.duckdns.org`. The bootstrap installs the Nginx proxy header snippet and rate-limit include, then runs `sudo nginx -t` before `sudo systemctl reload nginx`. This edge setup is separate from application deployment.
 
 Staging verification:
 
