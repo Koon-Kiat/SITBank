@@ -39,7 +39,6 @@ from .schemas import (
     ManualRecoverySchema,
     PasswordChangeSchema,
     PasswordResetSchema,
-    RecoveryCodeSchema,
     RegisterSchema,
     ResetTokenExchangeSchema,
     StepUpTokenSchema,
@@ -136,6 +135,23 @@ def _load_payload(schema: Schema, form_cls) -> dict:
     }
 
 
+def _load_reset_authentication_code() -> str:
+    if request.is_json:
+        payload = request.get_json(silent=False) or {}
+        code = payload.get("totp_code")
+        if code is None:
+            code = payload.get("recovery_code")
+        return AuthenticationCodeSchema().load({"totp_code": code})["totp_code"]
+
+    if "recovery_code" in request.form and "totp_code" not in request.form:
+        form = RecoveryCodeForm()
+        if not form.validate_on_submit():
+            raise ValidationError(form.errors)
+        return form.recovery_code.data
+
+    return _load_payload(AuthenticationCodeSchema(), AuthenticationCodeForm)["totp_code"]
+
+
 @auth_bp.errorhandler(AuthError)
 def handle_auth_error(error: AuthError):
     response = jsonify({"error": error.message})
@@ -221,8 +237,10 @@ def password_reset_totp():
 @limiter.limit("5 per 15 minutes", key_func=get_remote_address)
 @limiter.limit("5 per 15 minutes", key_func=mfa_principal)
 def password_reset_recovery_code():
-    data = _load_payload(RecoveryCodeSchema(), RecoveryCodeForm)
-    return jsonify(verify_recovery_code_for_reset(data["recovery_code"]))
+    # Deprecated compatibility route. The reset UI uses /mfa/totp as a single
+    # "Authentication code" endpoint for both TOTP and recovery codes. TODO:
+    # remove this endpoint after older clients have migrated to /mfa/totp.
+    return jsonify(verify_recovery_code_for_reset(_load_reset_authentication_code()))
 
 
 @auth_bp.post("/password-reset/mfa/webauthn/options")

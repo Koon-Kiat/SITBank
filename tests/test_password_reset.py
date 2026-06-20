@@ -327,7 +327,18 @@ def test_webauthn_user_cannot_fall_back_to_email_only_reset(app, client):
     assert exchanged.status_code == 200
     assert exchanged.get_json()["mfa_required"] == "webauthn"
     assert totp_attempt.status_code == 400
+    assert totp_attempt.get_json() == {"error": "Invalid authentication code."}
+    assert "Authenticator code is not required" not in totp_attempt.get_data(as_text=True)
     assert completed.status_code == 403
+    with app.app_context():
+        wrong_factor_event = db.session.execute(
+            db.select(SecurityAuditEvent)
+            .where(SecurityAuditEvent.event_type == "password_reset_mfa_failed")
+            .order_by(SecurityAuditEvent.id.desc())
+        ).scalars().first()
+        assert wrong_factor_event is not None
+        assert wrong_factor_event.event_metadata["reason"] == "wrong_factor"
+        assert wrong_factor_event.event_metadata["submitted_factor"] == "authentication_code"
 
 
 def test_webauthn_reset_cannot_be_satisfied_by_recovery_code(app, client):
@@ -340,7 +351,11 @@ def test_webauthn_reset_cannot_be_satisfied_by_recovery_code(app, client):
     _request_reset(client, "resetkey@example.com")
     token = _reset_token(app)
     exchanged = _exchange(client, token)
-    recovery_attempt = client.post("/auth/password-reset/mfa/recovery-code", json={"recovery_code": codes[0]})
+    recovery_attempt = client.post("/auth/password-reset/mfa/totp", json={"totp_code": codes[0]})
+    deprecated_recovery_attempt = client.post(
+        "/auth/password-reset/mfa/recovery-code",
+        json={"recovery_code": codes[1]},
+    )
     transaction = client.get("/auth/password-reset/transaction")
     completed = client.post(
         "/auth/password-reset/complete",
@@ -350,12 +365,29 @@ def test_webauthn_reset_cannot_be_satisfied_by_recovery_code(app, client):
     assert exchanged.status_code == 200
     assert exchanged.get_json()["mfa_required"] == "webauthn"
     assert recovery_attempt.status_code == 400
+    assert recovery_attempt.get_json() == {"error": "Invalid authentication code."}
+    assert deprecated_recovery_attempt.status_code == 400
+    assert deprecated_recovery_attempt.get_json() == {"error": "Invalid authentication code."}
+    assert "Authenticator code is not required" not in recovery_attempt.get_data(as_text=True)
+    assert "Authenticator code is not required" not in deprecated_recovery_attempt.get_data(as_text=True)
     assert transaction.get_json()["mfa_verified"] is False
     assert completed.status_code == 403
     with app.app_context():
         assert db.session.execute(
             db.select(func.count(RecoveryCode.id)).where(RecoveryCode.used_at.is_not(None))
         ).scalar_one() == 0
+        audit_text = json.dumps(
+            [
+                {
+                    "event_type": event.event_type,
+                    "metadata": event.event_metadata,
+                }
+                for event in db.session.execute(db.select(SecurityAuditEvent)).scalars()
+            ],
+            sort_keys=True,
+        )
+        assert codes[0] not in audit_text
+        assert codes[1] not in audit_text
 
 
 def test_admin_like_customer_domain_reset_fails_closed(app, client):
@@ -400,8 +432,8 @@ def test_recovery_codes_are_hashed_single_use_reset_factors(app, client):
     _request_reset(client, "reset07@example.com")
     token = _reset_token(app)
     assert _exchange(client, token).status_code == 200
-    verified = client.post("/auth/password-reset/mfa/recovery-code", json={"recovery_code": codes[0]})
-    reused = client.post("/auth/password-reset/mfa/recovery-code", json={"recovery_code": codes[0]})
+    verified = client.post("/auth/password-reset/mfa/totp", json={"totp_code": codes[0]})
+    reused = client.post("/auth/password-reset/mfa/totp", json={"totp_code": codes[0]})
 
     assert verified.status_code == 200
     assert verified.get_json()["recovery_code_verified"] is True
@@ -411,3 +443,54 @@ def test_recovery_codes_are_hashed_single_use_reset_factors(app, client):
             db.select(func.count(RecoveryCode.id)).where(RecoveryCode.used_at.is_not(None))
         ).scalar_one()
         assert used_count == 1
+        audit_text = json.dumps(
+            [
+                {
+                    "event_type": event.event_type,
+                    "metadata": event.event_metadata,
+                }
+                for event in db.session.execute(db.select(SecurityAuditEvent)).scalars()
+            ],
+            sort_keys=True,
+        )
+        assert codes[0] not in audit_text
+
+
+def test_deprecated_recovery_code_reset_endpoint_uses_shared_verifier(app, client):
+    with app.app_context():
+        user, _secret = _create_totp_user("reset08", "reset08@example.com")
+        with app.test_request_context("/"):
+            codes = generate_recovery_codes_for_user(user, count=1)
+
+    _request_reset(client, "reset08@example.com")
+    token = _reset_token(app)
+    assert _exchange(client, token).status_code == 200
+
+    verified = client.post("/auth/password-reset/mfa/recovery-code", json={"recovery_code": codes[0]})
+
+    assert verified.status_code == 200
+    assert verified.get_json()["mfa_verified"] is True
+    assert verified.get_json()["recovery_code_verified"] is True
+    with app.app_context():
+        used_count = db.session.execute(
+            db.select(func.count(RecoveryCode.id)).where(RecoveryCode.used_at.is_not(None))
+        ).scalar_one()
+        assert used_count == 1
+
+
+def test_deprecated_recovery_code_reset_endpoint_accepts_shared_code_field(app, client):
+    with app.app_context():
+        _user, secret = _create_totp_user("reset09", "reset09@example.com")
+
+    _request_reset(client, "reset09@example.com")
+    token = _reset_token(app)
+    assert _exchange(client, token).status_code == 200
+
+    verified = client.post(
+        "/auth/password-reset/mfa/recovery-code",
+        json={"totp_code": pyotp.TOTP(secret).now()},
+    )
+
+    assert verified.status_code == 200
+    assert verified.get_json()["mfa_verified"] is True
+    assert verified.get_json().get("recovery_code_verified") is not True

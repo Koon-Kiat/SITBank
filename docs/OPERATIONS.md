@@ -64,12 +64,14 @@ object storage, signed release artifacts, or a separate SIEM/log archive. The
 application does not provision external immutable storage and no real secrets
 or cloud credentials belong in the repository.
 
-Set `SECURITY_AUDIT_ANCHOR_PATH=/var/lib/sitbank/audit-anchor.json` in the
-runtime configuration after exporting a trusted anchor. `check-security-alerts`
-then verifies the audit chain on every run and compares the current chain head
-with the configured anchor. If no anchor path is configured, the command still
-checks hash-chain integrity but does not fail development or test environments
-for lacking an anchor.
+`SECURITY_AUDIT_HMAC_KEY` is mandatory in production. Keep
+`SECURITY_AUDIT_ANCHOR_PATH` unset until a trusted anchor has been exported and
+preserved outside normal application writes. After that, set
+`SECURITY_AUDIT_ANCHOR_PATH=/var/lib/sitbank/audit-anchor.json` in the runtime
+configuration. `check-security-alerts` then verifies the audit chain on every
+run and compares the current chain head with the configured anchor. If no anchor
+path is configured, the command still checks hash-chain integrity but does not
+compare an external anchor.
 
 On an anchor mismatch, stop rotating anchors, preserve the current database and
 the mismatched anchor as incident evidence, run
@@ -130,8 +132,8 @@ report. Keep `SECURITY_ALERT_STATE_PATH=/run/state/security-alert-state.json`
 on the host-mounted alert state volume so `check-security-alerts` records table
 count and identity baselines outside Postgres/Redis and emits critical
 `database_table_regression` alerts when `users` or `security_audit_events`
-rewind or shrink. Set `SECURITY_AUDIT_ANCHOR_PATH` when a trusted exported anchor is
-available so `check-security-alerts` emits critical
+rewind or shrink. `SECURITY_AUDIT_ANCHOR_PATH` remains optional until a trusted
+exported anchor is available; set it then so `check-security-alerts` emits critical
 `audit_chain_verification_failed` or `audit_anchor_mismatch` alerts for chain
 tampering, rewind, or tail deletion detectable from the anchor.
 
