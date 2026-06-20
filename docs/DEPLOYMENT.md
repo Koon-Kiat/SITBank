@@ -128,8 +128,11 @@ returns `403`, and admin public routes return `403` or are otherwise denied by
 Nginx.
 
 Staging admin must follow the same boundary pattern as production. Do not expose
-admin routes publicly. The staging admin service must bind only to localhost,
-use a dedicated Nginx server block, and deny public admin traffic unless an
+admin routes publicly. The staging admin service must bind only to localhost
+and use a separate loopback port from production admin when both environments
+share one EC2 host. Production admin owns `127.0.0.1:5002`; staging admin owns
+`127.0.0.1:5003`. If a staging admin Nginx server block is added later, deny
+public admin traffic unless an
 approved access path such as VPN, SSH tunnel, or explicit allowlist is
 configured. Staging admin secrets must be root-managed under
 `/etc/sitbank-staging/secrets` and must not reuse customer runtime secrets.
