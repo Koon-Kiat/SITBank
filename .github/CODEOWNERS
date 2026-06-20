@@ -1,21 +1,21 @@
 # Default owner for application and documentation changes.
-* @WenJiangggg
+* @hetp88
 
 # Production supply-chain and deployment controls require explicit ownership.
-/.github/workflows/ @WenJiangggg
-/.github/dependabot.yml @WenJiangggg
-/Dockerfile @WenJiangggg
-/compose.prod.yml @WenJiangggg
-/compose.staging.yml @WenJiangggg
-/requirements.in @WenJiangggg
-/requirements-dev.in @WenJiangggg
-/requirements.lock @WenJiangggg
-/requirements-dev.lock @WenJiangggg
-/ops/container/ @WenJiangggg
-/ops/deploy/ @WenJiangggg
-/ops/nginx/ @WenJiangggg
-/ops/nginx-proxy-headers.conf @WenJiangggg
-/ops/security/ @WenJiangggg
-/ops/sudoers/ @WenJiangggg
-/ops/systemd/ @WenJiangggg
-/migrations/ @WenJiangggg
+/.github/workflows/ @hetp88
+/.github/dependabot.yml @hetp88
+/Dockerfile @hetp88
+/compose.prod.yml @hetp88
+/compose.staging.yml @hetp88
+/requirements.in @hetp88
+/requirements-dev.in @hetp88
+/requirements.lock @hetp88
+/requirements-dev.lock @hetp88
+/ops/container/ @hetp88
+/ops/deploy/ @hetp88
+/ops/nginx/ @hetp88
+/ops/nginx-proxy-headers.conf @hetp88
+/ops/security/ @hetp88
+/ops/sudoers/ @hetp88
+/ops/systemd/ @hetp88
+/migrations/ @hetp88
