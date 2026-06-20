@@ -25,7 +25,6 @@ from app.auth.forms import (
     PasswordChangeForm,
     PasswordResetForm,
     ProfileForm,
-    RecoveryCodeForm,
     RegisterForm,
     StepUpTokenForm,
     TotpForm,
@@ -36,7 +35,6 @@ from app.auth.password_reset import (
     exchange_reset_token,
     request_manual_recovery,
     request_password_reset,
-    verify_recovery_code_for_reset,
     verify_reset_totp,
 )
 from app.auth.schemas import TerminateSessionSchema
@@ -268,7 +266,6 @@ def reset_password_continue():
         "reset_password.html",
         transaction=transaction,
         totp_form=AuthenticationCodeForm(),
-        recovery_form=RecoveryCodeForm(),
         reset_form=PasswordResetForm(),
     )
 
@@ -296,18 +293,6 @@ def reset_password_continue_submit():
         flash("Authentication code verified.", "success")
         return _render_reset_continue(transaction)
 
-    if action == "verify_recovery_code":
-        form = RecoveryCodeForm()
-        if not form.validate_on_submit():
-            return _render_reset_continue(transaction, status_code=400)
-        try:
-            transaction = verify_recovery_code_for_reset(form.recovery_code.data)
-        except AuthError as exc:
-            flash(exc.message, "error")
-            return _render_reset_continue(transaction, status_code=exc.status_code)
-        flash("Recovery code verified.", "success")
-        return _render_reset_continue(transaction)
-
     if action == "complete":
         form = PasswordResetForm()
         if not form.validate_on_submit():
@@ -331,7 +316,6 @@ def _render_reset_continue(transaction: dict, *, status_code: int = 200):
         "reset_password.html",
         transaction=transaction,
         totp_form=AuthenticationCodeForm(),
-        recovery_form=RecoveryCodeForm(),
         reset_form=PasswordResetForm(),
     ), status_code
 

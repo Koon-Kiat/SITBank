@@ -141,11 +141,24 @@ def current_reset_transaction() -> dict[str, Any]:
 
 
 def verify_reset_totp(code: str) -> dict[str, Any]:
+    return _verify_reset_authentication_code(code, submitted_factor="authentication_code")
+
+
+def _verify_reset_authentication_code(code: str, *, submitted_factor: str) -> dict[str, Any]:
     transaction = _load_current_transaction()
     user = _transaction_user(transaction)
     if transaction["mfa_required"] != "totp":
-        audit_event("password_reset_mfa_failed", "failure", user=user, metadata={"reason": "totp_not_required"})
-        raise AuthError("Authenticator code is not required for this reset", 400)
+        audit_event(
+            "password_reset_mfa_failed",
+            "failure",
+            user=user,
+            metadata={
+                "reason": "wrong_factor",
+                "submitted_factor": submitted_factor,
+                "required_factor": transaction["mfa_required"],
+            },
+        )
+        raise AuthError(GENERIC_AUTHENTICATION_CODE_ERROR, 400)
 
     if _is_totp_code(code):
         if not _verify_totp_for_user(user, code, "password_reset_mfa"):
@@ -178,35 +191,6 @@ def mark_reset_webauthn_verified(transaction_id: str, user_id: int) -> dict[str,
         audit_event("password_reset_webauthn_failed", "failure", user_id=user_id, metadata={"reason": "transaction_mismatch"})
         raise AuthError("Security key verification failed", 401)
     transaction["mfa_verified"] = True
-    transaction["mfa_verified_at"] = _now_timestamp()
-    _store_transaction(transaction)
-    return _public_transaction(transaction)
-
-
-def verify_recovery_code_for_reset(code: str) -> dict[str, Any]:
-    transaction = _load_current_transaction()
-    user = _transaction_user(transaction)
-    if transaction["mfa_required"] != "totp":
-        audit_event(
-            "password_reset_mfa_failed",
-            "failure",
-            user=user,
-            metadata={"reason": "recovery_code_not_allowed"},
-        )
-        raise AuthError("Authenticator code is not required for this reset", 400)
-
-    _enforce_reset_backoff("password_reset_recovery_code", transaction["transaction_id"])
-    if not consume_recovery_code(user, code):
-        record_failure("password_reset_recovery_code", transaction["transaction_id"])
-        _record_transaction_failure(transaction, "recovery_code_failed")
-        audit_event("password_reset_mfa_failed", "failure", user=user, metadata={"factor": "recovery_code"})
-        raise AuthError(GENERIC_AUTHENTICATION_CODE_ERROR, 401)
-
-    clear_failures("password_reset_recovery_code", transaction["transaction_id"])
-    _send_recovery_code_used_notification(user)
-    audit_event_required("password_reset_mfa_verified", "success", user=user, metadata={"factor": "recovery_code"})
-    transaction["mfa_verified"] = True
-    transaction["recovery_code_verified"] = True
     transaction["mfa_verified_at"] = _now_timestamp()
     _store_transaction(transaction)
     return _public_transaction(transaction)

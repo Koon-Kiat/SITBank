@@ -156,17 +156,6 @@ ROUTE_SECURITY_INVENTORY = {
         "step_up": "reset_mfa",
         "public_justification": "TOTP verification completes a password-reset transaction before login.",
     },
-    "auth.password_reset_recovery_code": {
-        "endpoint": "auth.password_reset_recovery_code",
-        "rule": "/auth/password-reset/mfa/recovery-code",
-        "methods": {"POST"},
-        "access": "public",
-        "classification": "mfa",
-        "csrf": "required",
-        "rate_limit": "per_route",
-        "step_up": "reset_mfa",
-        "public_justification": "Recovery-code verification completes a password-reset transaction before login.",
-    },
     "auth.password_reset_webauthn_options": {
         "endpoint": "auth.password_reset_webauthn_options",
         "rule": "/auth/password-reset/mfa/webauthn/options",
