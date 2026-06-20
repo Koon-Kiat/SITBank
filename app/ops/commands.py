@@ -19,7 +19,12 @@ from app.security.alerts import (
     deliver_security_alerts,
     validate_security_alert_config,
 )
-from app.security.audit import audit_log_anchor, audit_system_event, verify_audit_hash_chain
+from app.security.audit import (
+    audit_log_anchor,
+    audit_system_event,
+    validate_audit_integrity_config,
+    verify_audit_hash_chain,
+)
 from app.security.crypto import (
     is_enveloped_mfa_secret,
     mfa_envelope_kek_id,
@@ -128,6 +133,13 @@ def register_ops_commands(app: Flask) -> None:
                 f"dedupe_ttl_seconds={alert_config['dedupe_ttl_seconds']}"
             )
 
+        try:
+            audit_key_length = validate_audit_integrity_config()
+        except Exception as exc:
+            failures.append(f"Audit integrity configuration check failed: {exc}")
+        else:
+            click.echo(f"Audit HMAC integrity configured: key_length={audit_key_length}")
+
         if int(app.config.get("PASSWORD_PBKDF2_ITERATIONS", 0)) < 600000:
             failures.append("PASSWORD_PBKDF2_ITERATIONS must be 600000 or higher")
         if app.config.get("APP_ENV") != "production":
@@ -193,6 +205,7 @@ def register_ops_commands(app: Flask) -> None:
             result = verify_runtime_database_privileges(
                 runtime_url=runtime_url,
                 migration_url=migration_url,
+                audit_hmac_key=str(app.config.get("SECURITY_AUDIT_HMAC_KEY") or ""),
             )
         except Exception as exc:
             _deliver_ops_failure_alert(

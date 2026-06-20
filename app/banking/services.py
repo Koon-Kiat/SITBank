@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+import hashlib
+import json
+from collections.abc import Mapping, MutableMapping
 
 from marshmallow import ValidationError
 
 from app.auth.services import AuthError, ensure_account_not_frozen
 from app.banking.schemas import PublicTransactionSchema
 from app.models import User
-from app.security.audit import audit_event, audit_reference
+from app.security.audit import audit_event, audit_event_required, audit_reference
 
 
 def ensure_outbound_transfer_allowed(user: User) -> None:
@@ -34,7 +36,12 @@ def before_sensitive_profile_change(user: User) -> None:
     ensure_sensitive_profile_change_allowed(user)
 
 
-def validate_public_transaction_payload(payload: Mapping[str, object], *, user: User | None = None) -> dict[str, object]:
+def validate_public_transaction_payload(
+    payload: Mapping[str, object],
+    *,
+    user: User | None = None,
+    idempotency_store: MutableMapping[tuple[str, str], str] | None = None,
+) -> dict[str, object]:
     raw_payload = dict(payload)
     try:
         normalized = PublicTransactionSchema().load(raw_payload)
@@ -51,17 +58,37 @@ def validate_public_transaction_payload(payload: Mapping[str, object], *, user: 
             payee_account=raw_payload.get("payee"),
         )
         raise AuthError("Invalid transaction request", 400) from exc
+
+    payload_hash = public_transaction_payload_hash(normalized)
+    if idempotency_store is not None:
+        _record_idempotency_key_use(
+            idempotency_store,
+            normalized["idempotency_key"],
+            payload_hash,
+            user=user,
+        )
     audit_public_transaction_validation(
         "success",
         user=user,
         metadata={
             "transaction_amount": normalized.get("amount"),
             "transaction_currency": normalized.get("currency"),
+            "payload_hash_ref": audit_reference("transaction_payload_hash", payload_hash),
         },
         idempotency_key=normalized.get("idempotency_key"),
         payee_account=normalized.get("payee"),
     )
     return normalized
+
+
+def public_transaction_payload_hash(payload: Mapping[str, object]) -> str:
+    canonical = {
+        "amount": str(payload.get("amount")),
+        "currency": str(payload.get("currency") or "").upper(),
+        "payee": str(payload.get("payee") or "").upper(),
+    }
+    encoded = json.dumps(canonical, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def audit_outbound_transfer(
@@ -157,7 +184,8 @@ def audit_banking_action(
         event_metadata["payee_account_ref"] = audit_reference("payee_account", payee_account)
     if idempotency_key is not None:
         event_metadata["idempotency_key_ref"] = audit_reference("idempotency_key", idempotency_key)
-    audit_event(f"banking_{action}", outcome, user=user, metadata=event_metadata)
+    writer = audit_event_required if _requires_durable_audit(action, outcome) else audit_event
+    writer(f"banking_{action}", outcome, user=user, metadata=event_metadata)
 
 
 def _ensure_banking_action_allowed(user: User, action: str, label: str) -> None:
@@ -175,3 +203,34 @@ def _ensure_banking_action_allowed(user: User, action: str, label: str) -> None:
 
 def _safe_field_name(value: object) -> str:
     return str(value).strip()[:64]
+
+
+def _record_idempotency_key_use(
+    store: MutableMapping[tuple[str, str], str],
+    idempotency_key: object,
+    payload_hash: str,
+    *,
+    user: User | None,
+) -> None:
+    scope = f"user:{user.id}" if user is not None and user.id is not None else "anonymous"
+    key = (scope, str(idempotency_key))
+    existing_hash = store.get(key)
+    if existing_hash is None:
+        store[key] = payload_hash
+        return
+    if existing_hash != payload_hash:
+        raise AuthError("Idempotency key already used for a different transaction request", 409)
+
+
+def _requires_durable_audit(action: str, outcome: str) -> bool:
+    normalized_action = action.strip().casefold()
+    normalized_outcome = outcome.strip().casefold()
+    return (
+        normalized_action
+        in {
+            "outbound_transfer",
+            "scheduled_transfer_execution",
+            "transaction_authorization",
+        }
+        and normalized_outcome in {"success", "approved", "completed", "executed"}
+    )

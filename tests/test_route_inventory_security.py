@@ -354,6 +354,17 @@ ROUTE_SECURITY_INVENTORY = {
         "step_up": "already_authorized_continuation",
         "public_justification": "",
     },
+    "auth.mfa_recovery_codes_regenerate": {
+        "endpoint": "auth.mfa_recovery_codes_regenerate",
+        "rule": "/auth/mfa/recovery-codes/regenerate",
+        "methods": {"POST"},
+        "access": "authenticated",
+        "classification": "mfa",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
     "auth.mfa_verify": {
         "endpoint": "auth.mfa_verify",
         "rule": "/auth/mfa/verify",

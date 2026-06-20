@@ -8,6 +8,7 @@ import pytest
 
 import config
 from config import (
+    _configured_secret,
     _password_reset_base_url,
     _required_b64_32_bytes,
     _required_env_or_file,
@@ -144,6 +145,34 @@ def test_required_configuration_accepts_direct_or_file_exclusively(monkeypatch, 
 
     monkeypatch.delenv("CONTAINER_TEST_SECRET_FILE")
     assert _required_env_or_file("CONTAINER_TEST_SECRET") == "direct-value"
+
+
+def test_audit_hmac_key_is_required_and_strong_in_production(monkeypatch):
+    monkeypatch.setattr(config, "APP_ENV", "production")
+    monkeypatch.delenv("SECURITY_AUDIT_HMAC_KEY", raising=False)
+    monkeypatch.delenv("SECURITY_AUDIT_HMAC_KEY_FILE", raising=False)
+
+    with pytest.raises(RuntimeError, match="SECURITY_AUDIT_HMAC_KEY"):
+        _configured_secret(
+            "SECURITY_AUDIT_HMAC_KEY",
+            min_length=32,
+            development_default="development-audit-hmac-key-change-before-production",
+        )
+
+    monkeypatch.setenv("SECURITY_AUDIT_HMAC_KEY", "short")
+    with pytest.raises(RuntimeError, match="at least 32"):
+        _configured_secret(
+            "SECURITY_AUDIT_HMAC_KEY",
+            min_length=32,
+            development_default="development-audit-hmac-key-change-before-production",
+        )
+
+    monkeypatch.setenv("SECURITY_AUDIT_HMAC_KEY", "production-audit-hmac-key-that-is-long-enough")
+    assert _configured_secret(
+        "SECURITY_AUDIT_HMAC_KEY",
+        min_length=32,
+        development_default="development-audit-hmac-key-change-before-production",
+    ) == "production-audit-hmac-key-that-is-long-enough"
 
 
 def test_secret_file_rejects_empty_multiline_and_symlink(monkeypatch, tmp_path):

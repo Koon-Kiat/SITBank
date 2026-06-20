@@ -8,6 +8,7 @@ CUSTOMER_APP_SECRET_INPUTS = {
     "REDIS_URL": "redis_url",
     "MFA_KEK_KEYS_JSON": "mfa_kek_keys_json",
     "PASSWORD_PEPPER_B64": "password_pepper_b64",
+    "SECURITY_AUDIT_HMAC_KEY": "security_audit_hmac_key",
     "SECURITY_ALERT_WEBHOOK_URL": "security_alert_webhook_url",
     "SMTP_USERNAME": "smtp_username",
     "SMTP_PASSWORD": "smtp_password",

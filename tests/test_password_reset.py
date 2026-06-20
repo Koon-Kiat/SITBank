@@ -187,6 +187,31 @@ def test_password_reset_accepts_256_character_password_without_truncation(app, c
         assert not verify_password(truncated_variant, user.password_hash)
 
 
+def test_password_reset_completion_uses_required_audit_writer(app, client, monkeypatch):
+    from app.auth import password_reset
+
+    calls = []
+
+    def required_audit(event_type, outcome, **kwargs):
+        calls.append((event_type, outcome, kwargs))
+        db.session.commit()
+
+    monkeypatch.setattr(password_reset, "audit_event_required", required_audit)
+    user_id = _begin_no_mfa_reset(app, client, username="resetaudit", email="resetaudit@example.com")
+
+    completed = client.post(
+        "/auth/password-reset/complete",
+        json={"new_password": NEW_PASSWORD, "confirm_new_password": NEW_PASSWORD},
+    )
+
+    assert completed.status_code == 200, completed.get_data(as_text=True)
+    assert ("password_reset_completed", "success") in [(call[0], call[1]) for call in calls]
+    with app.app_context():
+        user = db.session.get(User, user_id)
+        assert user is not None
+        assert verify_password(NEW_PASSWORD, user.password_hash)
+
+
 def test_password_reset_accepts_8_character_password(app, client, monkeypatch):
     monkeypatch.setattr("app.security.passwords._is_password_pwned_by_hibp", lambda _password: False)
     minimum_password = "Abcdef12"
@@ -303,6 +328,34 @@ def test_webauthn_user_cannot_fall_back_to_email_only_reset(app, client):
     assert exchanged.get_json()["mfa_required"] == "webauthn"
     assert totp_attempt.status_code == 400
     assert completed.status_code == 403
+
+
+def test_webauthn_reset_cannot_be_satisfied_by_recovery_code(app, client):
+    with app.app_context():
+        user, _secret = _create_totp_user("resetkey", "resetkey@example.com")
+        _add_webauthn_credential(user)
+        with app.test_request_context("/"):
+            codes = generate_recovery_codes_for_user(user, count=2)
+
+    _request_reset(client, "resetkey@example.com")
+    token = _reset_token(app)
+    exchanged = _exchange(client, token)
+    recovery_attempt = client.post("/auth/password-reset/mfa/recovery-code", json={"recovery_code": codes[0]})
+    transaction = client.get("/auth/password-reset/transaction")
+    completed = client.post(
+        "/auth/password-reset/complete",
+        json={"new_password": NEW_PASSWORD, "confirm_new_password": NEW_PASSWORD},
+    )
+
+    assert exchanged.status_code == 200
+    assert exchanged.get_json()["mfa_required"] == "webauthn"
+    assert recovery_attempt.status_code == 400
+    assert transaction.get_json()["mfa_verified"] is False
+    assert completed.status_code == 403
+    with app.app_context():
+        assert db.session.execute(
+            db.select(func.count(RecoveryCode.id)).where(RecoveryCode.used_at.is_not(None))
+        ).scalar_one() == 0
 
 
 def test_admin_like_customer_domain_reset_fails_closed(app, client):

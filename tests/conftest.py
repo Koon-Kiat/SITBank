@@ -71,6 +71,7 @@ os.environ.setdefault("COMMON_PASSWORDS_MIN_ENTRIES", "100000")
 os.environ.setdefault("PASSWORD_PBKDF2_ITERATIONS", "600000")
 os.environ.setdefault("WEBAUTHN_RP_ID", "sitbank.duckdns.org")
 os.environ.setdefault("WEBAUTHN_RP_ORIGIN", "https://sitbank.duckdns.org")
+os.environ.setdefault("SECURITY_AUDIT_HMAC_KEY", "test-audit-hmac-key-that-is-long-enough")
 
 
 class TestConfig:
@@ -136,6 +137,7 @@ class TestConfig:
     SECURITY_ALERT_DEDUPE_TTL_SECONDS = 300
     SECURITY_ALERT_STATE_PATH = None
     SECURITY_AUDIT_ANCHOR_PATH = None
+    SECURITY_AUDIT_HMAC_KEY = os.environ["SECURITY_AUDIT_HMAC_KEY"]
     SESSION_TYPE = "redis"
     SESSION_KEY_PREFIX = "session:"
     SESSION_COOKIE_NAME = "__Host-sitbank_session"

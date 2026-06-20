@@ -58,6 +58,7 @@ DEPLOYMENT_VALUES = {
     "PROD_PUBLIC_HOST": "sitbank.duckdns.org",
     "PROD_REDIS_URL": "redis://:secret@127.0.0.1:6379/0",
     "PROD_SECRET_KEY": "secret-key-with-$-and-enough-length-for-production",
+    "PROD_SECURITY_AUDIT_HMAC_KEY": "audit-hmac-key-with-enough-length-for-production",
     "PROD_SECURITY_ALERT_WEBHOOK_URL": "https://hooks.example.test/sitbank-security-alerts",
     "PROD_SESSION_HMAC_ACTIVE_KEY_B64": "MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjI=",
     "PROD_SESSION_HMAC_ACTIVE_KEY_ID": "2026-06",
@@ -191,6 +192,7 @@ def _config_secret_inputs() -> set[str]:
         "_required_b64_32_bytes",
         "_required_keyring",
         "_required_secret",
+        "_configured_secret",
         "_required_session_hmac_keys",
         "_required_url",
     }
@@ -350,6 +352,7 @@ def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypa
     assert secrets["admin_secret_key"] == DEPLOYMENT_VALUES["PROD_ADMIN_SECRET_KEY"]
     assert secrets["database_migration_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_MIGRATION_URL"]
     assert secrets["mfa_kek_keys_json"] == DEPLOYMENT_VALUES["PROD_MFA_KEK_KEYS_JSON"]
+    assert secrets["security_audit_hmac_key"] == DEPLOYMENT_VALUES["PROD_SECURITY_AUDIT_HMAC_KEY"]
     assert secrets["smtp_username"] == DEPLOYMENT_VALUES["PROD_SMTP_USERNAME"]
     assert secrets["smtp_password"] == DEPLOYMENT_VALUES["PROD_SMTP_PASSWORD"]
     assert '"2026-06":"MjIy' in secrets["session_hmac_keys_json"]
@@ -375,6 +378,7 @@ def test_container_bundle_accepts_staging_prefix(monkeypatch):
     assert secrets["secret_key"] == DEPLOYMENT_VALUES["PROD_SECRET_KEY"]
     assert secrets["database_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_URL"]
     assert secrets["database_migration_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_MIGRATION_URL"]
+    assert secrets["security_audit_hmac_key"] == DEPLOYMENT_VALUES["PROD_SECURITY_AUDIT_HMAC_KEY"]
 
 
 def test_deployment_profiles_keep_production_and_staging_isolated(monkeypatch):
@@ -515,12 +519,14 @@ def test_compose_secret_mounts_match_runtime_contract():
     expected_app_secrets = {name: name for name in APP_SECRET_FILES}
     expected_admin_environment = {
         **ADMIN_SECRET_FILE_ENVIRONMENT,
+        "SECURITY_AUDIT_HMAC_KEY_FILE": "/run/secrets/security_audit_hmac_key",
         "SECURITY_ALERT_WEBHOOK_URL_FILE": "/run/secrets/security_alert_webhook_url",
         "SMTP_USERNAME_FILE": "/run/secrets/smtp_username",
         "SMTP_PASSWORD_FILE": "/run/secrets/smtp_password",
     }
     expected_admin_secrets = {
         **{name: name for name in ADMIN_SECRET_FILES},
+        "security_audit_hmac_key": "security_audit_hmac_key",
         "security_alert_webhook_url": "security_alert_webhook_url",
         "smtp_username": "smtp_username",
         "smtp_password": "smtp_password",
@@ -688,6 +694,7 @@ def test_environment_only_bundle_does_not_export_long_lived_secrets(
         "PROD_PASSWORD_PEPPER_B64",
         "PROD_REDIS_URL",
         "PROD_SECRET_KEY",
+        "PROD_SECURITY_AUDIT_HMAC_KEY",
         "PROD_SECURITY_ALERT_WEBHOOK_URL",
         "PROD_SESSION_HMAC_ACTIVE_KEY_B64",
         "PROD_WTF_CSRF_SECRET_KEY",
@@ -718,6 +725,7 @@ def test_environment_only_bundle_accepts_staging_prefix(monkeypatch, tmp_path):
         "STAGING_PASSWORD_PEPPER_B64",
         "STAGING_REDIS_URL",
         "STAGING_SECRET_KEY",
+        "STAGING_SECURITY_AUDIT_HMAC_KEY",
         "STAGING_SECURITY_ALERT_WEBHOOK_URL",
         "STAGING_SESSION_HMAC_ACTIVE_KEY_B64",
         "STAGING_WTF_CSRF_SECRET_KEY",
@@ -1931,6 +1939,11 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
 
     assert Path("ops/nginx/sitbank-staging-rate-limits.conf").exists()
     assert "listen 80;" in nginx
+    assert "listen 80 default_server;" in nginx
+    assert "listen 443 ssl http2 default_server;" in nginx
+    assert "server_name _;" in nginx
+    assert "ssl_reject_handshake on;" in nginx
+    assert "return 444;" in nginx
     assert "return 301 https://$host$request_uri;" in nginx
     assert "listen 443 ssl http2;" in nginx
     assert "server_name staging-sitbank.duckdns.org;" in nginx
@@ -1966,6 +1979,11 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     assert "deny all;" in health_body
     assert "proxy_pass http://127.0.0.1:5001;" in health_body
     assert "limit_req" not in health_body
+
+    health_live_bodies = _nginx_location_bodies(nginx, "= /health/live")
+    assert len(health_live_bodies) == 1
+    assert "limit_req zone=sitbank_staging_app" in health_live_bodies[0]
+    assert "proxy_pass http://127.0.0.1:5001;" in health_live_bodies[0]
 
     proxy_targets = set(re.findall(r"proxy_pass\s+([^;]+);", nginx))
     assert proxy_targets == {"http://127.0.0.1:5001"}
@@ -2087,6 +2105,7 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
 
     health_live_bodies = _nginx_location_bodies(customer_nginx, "= /health/live")
     assert len(health_live_bodies) == 1
+    assert "limit_req zone=sitbank_prod_app" in health_live_bodies[0]
     assert "proxy_pass http://127.0.0.1:5000;" in health_live_bodies[0]
 
     customer_admin_bodies = _nginx_location_bodies(customer_nginx, "^~ /admin")
@@ -2368,6 +2387,9 @@ def test_migration_baseline_and_existing_database_runbook_are_present():
     audit_truncate_migration = Path(
         "migrations/versions/20260618_0004_audit_truncate_trigger.py"
     ).read_text(encoding="utf-8")
+    audit_hmac_default_migration = Path(
+        "migrations/versions/20260620_0006_audit_hmac_default.py"
+    ).read_text(encoding="utf-8")
     docs = _project_docs_text()
 
     assert 'revision = "20260610_0001"' in migration
@@ -2391,6 +2413,9 @@ def test_migration_baseline_and_existing_database_runbook_are_present():
     assert "security_audit_events_reject_truncate" in audit_truncate_migration
     assert "BEFORE TRUNCATE ON security_audit_events" in audit_truncate_migration
     assert "FOR EACH STATEMENT" in audit_truncate_migration
+    assert 'revision = "20260620_0006"' in audit_hmac_default_migration
+    assert 'down_revision = "20260619_0005"' in audit_hmac_default_migration
+    assert "hmac-sha256-v1" in audit_hmac_default_migration
     assert "verify-migration-baseline" in docs
     assert "db stamp 20260610_0001" in docs
     assert "Do not run `db.create_all()`" in docs

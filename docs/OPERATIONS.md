@@ -42,8 +42,10 @@ verification before deployment is considered healthy.
 
 Each new audit row is part of a tamper-evident hash chain stored in
 `previous_event_hash`, `event_hash`, and `hash_algorithm`. The chain uses
-stdlib SHA-256 so old records remain verifiable for the full retention period.
-Run verification after deployments and on a daily schedule:
+keyed stdlib HMAC-SHA256 with `SECURITY_AUDIT_HMAC_KEY`; legacy `sha256-v1`
+rows remain verifiable for existing history. Keep the audit HMAC key in the
+root-managed secret file and run verification after deployments and on a daily
+schedule:
 
 ```bash
 python -m flask --app wsgi:app verify-audit-log-chain

@@ -202,7 +202,7 @@ def verify_registration(user: User, credential: dict[str, Any]) -> dict[str, Any
     )
     db.session.add(item)
     try:
-        db.session.commit()
+        db.session.flush()
     except IntegrityError as exc:
         db.session.rollback()
         audit_webauthn_event(
@@ -227,6 +227,7 @@ def verify_registration(user: User, credential: dict[str, Any]) -> dict[str, Any
         credential_id=item.credential_id,
         label=item.label,
         aaguid=item.aaguid,
+        required=True,
     )
     return {
         "message": "Security key registered",
@@ -763,7 +764,6 @@ def revoke_credential(
     label = item.label
     aaguid = item.aaguid
     db.session.delete(item)
-    db.session.commit()
     audit_webauthn_event(
         "revoke",
         "success",
@@ -772,6 +772,7 @@ def revoke_credential(
         label=label,
         aaguid=aaguid,
         metadata={"current_session_credential": is_current_credential},
+        required=True,
     )
     if is_current_credential:
         revoke_current_session()

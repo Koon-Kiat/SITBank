@@ -56,6 +56,8 @@ printf '%s' '{"ci-mfa":"NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ="}' \
     > "${work_dir}/secrets/mfa_kek_keys_json"
 printf '%s' 'MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE=' \
     > "${work_dir}/secrets/password_pepper_b64"
+printf '%s' 'ci-audit-hmac-key-that-is-long-enough-for-dast-tests' \
+    > "${work_dir}/secrets/security_audit_hmac_key"
 chmod 0444 "${work_dir}"/secrets/*
 
 seq -f 'blocked-password-%06g' 1 100000 \
@@ -84,6 +86,7 @@ docker_args=(
     --env MFA_KEK_ACTIVE_ID=ci-mfa
     --env MFA_KEK_KEYS_JSON_FILE=/run/secrets/mfa_kek_keys_json
     --env PASSWORD_PEPPER_B64_FILE=/run/secrets/password_pepper_b64
+    --env SECURITY_AUDIT_HMAC_KEY_FILE=/run/secrets/security_audit_hmac_key
     --env PASSWORD_PBKDF2_ITERATIONS=600000
     --env COMMON_PASSWORDS_PATH=/run/config/common-passwords.txt
     --env COMMON_PASSWORDS_MIN_ENTRIES=100000

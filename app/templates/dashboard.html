@@ -32,6 +32,10 @@
         {% if user.mfa_enabled %}
           <p class="badge">Enabled</p>
           <p class="muted">Password login is protected with a time-based authenticator code.</p>
+          <p class="muted">{{ recovery_codes_remaining }} unused recovery code{{ "" if recovery_codes_remaining == 1 else "s" }} remain.</p>
+          {% if recovery_codes_low %}
+            <p class="badge warning">Regenerate soon</p>
+          {% endif %}
         {% else %}
           <p class="badge warning">Setup needed</p>
           <p class="muted">Add an authenticator app so normal login uses password plus MFA.</p>
