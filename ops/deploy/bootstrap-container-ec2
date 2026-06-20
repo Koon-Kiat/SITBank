@@ -287,6 +287,13 @@ install_edge_default_site() {
         "nginx-sitbank-default"
 }
 
+install_admin_verification_page() {
+    install -d -o root -g root -m 0755 /var/www/sitbank-admin-verification
+    install -o root -g root -m 0644 \
+        "${repo_root}/ops/nginx/admin-verification.html" \
+        /var/www/sitbank-admin-verification/index.html
+}
+
 refresh_enabled_sibling_site() {
     if [[ "${target}" == "production" \
         && -e /etc/nginx/sites-enabled/sitbank-staging ]]; then
@@ -342,6 +349,7 @@ if [[ "${target}" == "production" ]]; then
     install -d -o root -g root -m 0755 /etc/nginx/conf.d
     install -d -o root -g root -m 0755 /var/www/certbot
     install_edge_default_site
+    install_admin_verification_page
     install -o root -g root -m 0644 \
         "${repo_root}/ops/nginx-proxy-headers.conf" \
         /etc/nginx/snippets/sitbank-proxy-headers.conf
@@ -431,6 +439,7 @@ if [[ "${target}" == "staging" ]]; then
     install -d -o root -g root -m 0755 /etc/nginx/conf.d
     install -d -o root -g root -m 0755 /var/www/certbot
     install_edge_default_site
+    install_admin_verification_page
     install -o root -g root -m 0644 \
         "${repo_root}/ops/nginx-proxy-headers.conf" \
         /etc/nginx/snippets/sitbank-proxy-headers.conf

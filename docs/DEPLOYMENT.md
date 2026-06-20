@@ -100,9 +100,10 @@ The reviewed production bootstrap installs and enables the production edge from 
   `admin-sitbank.duckdns.org` Nginx server block.
 - `compose.prod.yml` publishes no app ports.
 - `/health/ready` is for local deployment and load-balancer checks and should deny public traffic.
-- Admin `/health/ready` is not public through Nginx. Admin routes use
-  `deny all` by default until a future VPN, explicit IP allowlist, or
-  equivalent network control is configured.
+- Admin `/` serves only a static Google verification and restricted-access
+  notice. Admin `/health/ready`, `/login`, and all other admin routes remain
+  denied by default until a future VPN, explicit IP allowlist, or equivalent
+  network control is configured.
 - Cloudflare or AWS WAF should sit in front of Nginx for managed common, SQL injection, XSS, bot, and protocol anomaly rules.
 - Cloudflare or AWS WAF rules and security-group allowlists are still infrastructure state and must be checked manually.
 - Admin WebAuthn/passkey authentication and admin step-up are Phase 2 and are
@@ -119,13 +120,17 @@ sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-app
 sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-admin
 curl --fail https://sitbank.duckdns.org/health/live
 curl -I https://sitbank.duckdns.org/health/ready
+curl https://admin-sitbank.duckdns.org/ | grep google-site-verification
 curl -I https://admin-sitbank.duckdns.org/health/ready
 curl -I https://admin-sitbank.duckdns.org/login
 ```
 
 Expected: local customer and admin readiness succeeds, external `/health/ready`
-returns `403`, and admin public routes return `403` or are otherwise denied by
-Nginx.
+returns `403`, admin `/` returns only the static verification page, and admin
+application routes return `403` or are otherwise denied by Nginx. The Google
+verification tag proves Search Console ownership only; dangerous-site removal
+still requires reviewing Security Issues in Search Console and requesting a
+Google review after the reported cause is resolved.
 
 Staging admin must follow the same boundary pattern as production. Do not expose
 admin routes publicly. The staging admin service must bind only to localhost

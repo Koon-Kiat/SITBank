@@ -1058,6 +1058,12 @@ input:focus {
   align-items: stretch;
 }
 
+.mfa-support-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.34fr);
+  gap: var(--space-4);
+}
+
 .freeze-grid {
   grid-template-columns: minmax(0, 1.05fr) minmax(320px, 0.95fr);
   align-items: start;
@@ -1209,6 +1215,16 @@ input:focus {
 .mfa-step.is-complete .step-number {
   background: var(--primary);
   color: var(--primary-contrast);
+}
+
+.recovery-code-panel .step-number {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.recovery-code-panel .step-number .icon {
+  width: 17px;
+  height: 17px;
 }
 
 .mfa-step-header {
@@ -1438,6 +1454,10 @@ input:focus {
   list-style: none;
 }
 
+.recovery-code-actions {
+  justify-content: flex-start;
+}
+
 code {
   overflow-wrap: anywhere;
   border-radius: var(--radius-sm);
@@ -1584,6 +1604,7 @@ th {
   .status-grid,
   .quick-grid,
   .profile-grid,
+  .mfa-support-grid,
   .mfa-steps,
   .freeze-grid {
     grid-template-columns: 1fr;

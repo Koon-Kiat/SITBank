@@ -2076,6 +2076,9 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
 def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     default_nginx = Path("ops/nginx/sitbank-default.conf").read_text(encoding="utf-8")
     nginx = Path("ops/nginx/sitbank-production.conf").read_text(encoding="utf-8")
+    admin_verification = Path("ops/nginx/admin-verification.html").read_text(
+        encoding="utf-8"
+    )
     rate_limits = Path("ops/nginx/sitbank-production-rate-limits.conf").read_text(
         encoding="utf-8"
     )
@@ -2092,7 +2095,14 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
 
     assert Path("ops/nginx/sitbank-default.conf").exists()
     assert Path("ops/nginx/sitbank-production.conf").exists()
+    assert Path("ops/nginx/admin-verification.html").exists()
     assert Path("ops/nginx/sitbank-production-rate-limits.conf").exists()
+    assert (
+        '<meta name="google-site-verification" '
+        'content="TdWqsa4Ln9t_GIYl4Devi4rrU48Z7XNSue_PiImREJs">'
+        in admin_verification
+    )
+    assert admin_verification.index("google-site-verification") < admin_verification.index("</head>")
     assert "listen 80 default_server;" in default_nginx
     assert "listen [::]:80 default_server;" in default_nginx
     assert "listen 443 ssl http2 default_server;" in default_nginx
@@ -2172,6 +2182,16 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     assert "limit_req zone=sitbank_prod_admin_auth" in admin_login_bodies[0]
     assert "proxy_pass http://127.0.0.1:5002;" in admin_login_bodies[0]
 
+    admin_exact_root_bodies = _nginx_location_bodies(admin_nginx, "= /")
+    assert len(admin_exact_root_bodies) == 1
+    admin_exact_root = admin_exact_root_bodies[0]
+    assert "root /var/www/sitbank-admin-verification;" in admin_exact_root
+    assert "try_files /index.html =404;" in admin_exact_root
+    assert "default_type text/html;" in admin_exact_root
+    assert "limit_req zone=sitbank_prod_admin" in admin_exact_root
+    assert "proxy_pass" not in admin_exact_root
+    assert "deny all;" not in admin_exact_root
+
     admin_root_bodies = _nginx_location_bodies(admin_nginx, "/")
     assert any("deny all;" in body and "limit_req zone=sitbank_prod_admin" in body for body in admin_root_bodies)
 
@@ -2240,6 +2260,8 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     assert "ops/nginx/sitbank-default.conf" in bootstrap
     assert "ops/nginx/sitbank-production-rate-limits.conf" in bootstrap
     assert "ops/nginx/sitbank-production.conf" in bootstrap
+    assert "ops/nginx/admin-verification.html" in bootstrap
+    assert "/var/www/sitbank-admin-verification/index.html" in bootstrap
     assert "Refusing to replace unsafe production Nginx rate-limit file" in bootstrap
     assert "Refusing to replace unsafe production Nginx config" in bootstrap
     assert "Conflicting Nginx production site is already enabled" in bootstrap
