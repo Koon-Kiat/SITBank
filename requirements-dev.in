@@ -1,7 +1,7 @@
 -r requirements.in
-pytest==9.0.3
+pytest==9.1.0
 pytest-xdist==3.8.0
-fakeredis==2.36.1
-pip-audit==2.10.0
+fakeredis==2.36.2
+pip-audit==2.10.1
 bandit==1.9.4
 pip-tools==7.5.3
