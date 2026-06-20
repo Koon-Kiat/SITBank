@@ -12,7 +12,7 @@ from app.extensions import db
 from app.models import ManualRecoveryRequest, PasswordResetToken, RecoveryCode, SecurityAuditEvent, User, WebAuthnCredential
 from app.security.crypto import encrypt_mfa_secret
 from app.security.email import password_reset_outbox
-from app.security.passwords import hash_password, verify_password
+from app.security.passwords import PASSWORD_MAX_CHARS, PASSWORD_MIN_LENGTH, hash_password, verify_password
 
 
 VALID_PASSWORD = "Correct-Horse-Battery-Staple-2026!"
@@ -70,6 +70,19 @@ def _reset_token(app) -> str:
 
 def _exchange(client, token: str):
     return client.post("/auth/password-reset/exchange", json={"token": token})
+
+
+def _begin_no_mfa_reset(app, client, *, username: str, email: str) -> int:
+    with app.app_context():
+        user = _create_user(username, email)
+        user_id = user.id
+
+    assert _request_reset(client, email).status_code == 200
+    token = _reset_token(app)
+    exchanged = _exchange(client, token)
+    assert exchanged.status_code == 200, exchanged.get_data(as_text=True)
+    assert exchanged.get_json()["mfa_required"] == "none"
+    return user_id
 
 
 def test_forgot_password_response_is_generic_and_token_is_hashed(app, client):
@@ -153,6 +166,95 @@ def test_no_mfa_password_reset_does_not_auto_login_and_forces_mfa_on_next_login(
         assert user is not None
         assert user.password_hash != old_hash
         assert verify_password(NEW_PASSWORD, user.password_hash)
+
+
+def test_password_reset_accepts_256_character_password_without_truncation(app, client, monkeypatch):
+    monkeypatch.setattr("app.security.passwords._is_password_pwned_by_hibp", lambda _password: False)
+    max_length_password = ("A" * (PASSWORD_MAX_CHARS - 1)) + "Z"
+    truncated_variant = "A" * PASSWORD_MAX_CHARS
+    user_id = _begin_no_mfa_reset(app, client, username="resetmax", email="resetmax@example.com")
+
+    completed = client.post(
+        "/auth/password-reset/complete",
+        json={"new_password": max_length_password, "confirm_new_password": max_length_password},
+    )
+
+    assert completed.status_code == 200, completed.get_data(as_text=True)
+    with app.app_context():
+        user = db.session.get(User, user_id)
+        assert user is not None
+        assert verify_password(max_length_password, user.password_hash)
+        assert not verify_password(truncated_variant, user.password_hash)
+
+
+def test_password_reset_accepts_8_character_password(app, client, monkeypatch):
+    monkeypatch.setattr("app.security.passwords._is_password_pwned_by_hibp", lambda _password: False)
+    minimum_password = "Abcdef12"
+    user_id = _begin_no_mfa_reset(app, client, username="resetmin", email="resetmin@example.com")
+
+    completed = client.post(
+        "/auth/password-reset/complete",
+        json={"new_password": minimum_password, "confirm_new_password": minimum_password},
+    )
+
+    assert len(minimum_password) == PASSWORD_MIN_LENGTH
+    assert completed.status_code == 200, completed.get_data(as_text=True)
+    with app.app_context():
+        user = db.session.get(User, user_id)
+        assert user is not None
+        assert verify_password(minimum_password, user.password_hash)
+
+
+def test_password_reset_rejects_passwords_over_256_characters(app, client):
+    user_id = _begin_no_mfa_reset(app, client, username="resettoo", email="resettoo@example.com")
+    oversized_password = "A" * (PASSWORD_MAX_CHARS + 1)
+
+    completed = client.post(
+        "/auth/password-reset/complete",
+        json={"new_password": oversized_password, "confirm_new_password": oversized_password},
+    )
+
+    assert completed.status_code == 400
+    assert "at most 256 characters" in completed.get_data(as_text=True)
+    with app.app_context():
+        user = db.session.get(User, user_id)
+        assert user is not None
+        assert verify_password(VALID_PASSWORD, user.password_hash)
+
+
+def test_password_reset_rejects_local_common_password(app, client, tmp_path):
+    from app.security import passwords as password_module
+
+    common_password = "common reset phrase 2026"
+    blocklist = tmp_path / "common-passwords.txt"
+    blocklist.write_text(f"{common_password}\n", encoding="utf-8")
+    app.config["COMMON_PASSWORDS_PATH"] = str(blocklist)
+    password_module._load_common_passwords.cache_clear()
+    try:
+        _begin_no_mfa_reset(app, client, username="resetcommon", email="resetcommon@example.com")
+        completed = client.post(
+            "/auth/password-reset/complete",
+            json={"new_password": common_password, "confirm_new_password": common_password},
+        )
+    finally:
+        password_module._load_common_passwords.cache_clear()
+
+    assert completed.status_code == 400
+    assert "Password is too common or has appeared in breach lists" in completed.get_data(as_text=True)
+
+
+def test_password_reset_rejects_live_breached_password(app, client, monkeypatch):
+    breached_password = "breached reset phrase 2026"
+    monkeypatch.setattr("app.security.passwords._is_password_pwned_by_hibp", lambda _password: True)
+    _begin_no_mfa_reset(app, client, username="resetbreach", email="resetbreach@example.com")
+
+    completed = client.post(
+        "/auth/password-reset/complete",
+        json={"new_password": breached_password, "confirm_new_password": breached_password},
+    )
+
+    assert completed.status_code == 400
+    assert "Password is too common or has appeared in breach lists" in completed.get_data(as_text=True)
 
 
 def test_totp_user_must_verify_totp_before_password_reset(app, client):

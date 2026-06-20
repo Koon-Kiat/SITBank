@@ -415,8 +415,8 @@ def _latest_audit_event_hash() -> str:
         .order_by(SecurityAuditEvent.id.desc())
         .limit(1)
     )
-    if db.engine.dialect.name == "postgresql":
-        statement = statement.with_for_update()
+    # PostgreSQL inserts are already serialized by the advisory transaction lock.
+    # Avoid row locks so the runtime role only needs append-only SELECT/INSERT access.
     latest_hash = db.session.execute(statement).scalar_one_or_none()
     return str(latest_hash or AUDIT_CHAIN_START_HASH)
 

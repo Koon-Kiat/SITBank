@@ -126,12 +126,10 @@ class PasswordResetSchema(Schema):
     new_password = fields.Str(
         required=True,
         load_only=True,
-        validate=password_length(minimum=PASSWORD_MIN_LENGTH),
     )
     confirm_new_password = fields.Str(
         required=True,
         load_only=True,
-        validate=password_length(minimum=PASSWORD_MIN_LENGTH),
     )
 
     @validates_schema

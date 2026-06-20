@@ -10,11 +10,20 @@ import pytest
 import pyotp
 from flask import current_app
 from pathlib import Path
+from sqlalchemy import event as sqlalchemy_event
+from sqlalchemy.orm import Session
 from webauthn.helpers.structs import CredentialDeviceType
 
 from app.extensions import db
 from app.models import SecurityAuditEvent, User, WebAuthnCredential
-from app.security.passwords import PASSWORD_MAX_CHARS, PBKDF2_PREFIX, hash_password, verify_password
+from app.security.passwords import (
+    PASSWORD_MAX_CHARS,
+    PASSWORD_MIN_LENGTH,
+    PASSWORD_RECOMMENDED_MIN_LENGTH,
+    PBKDF2_PREFIX,
+    hash_password,
+    verify_password,
+)
 
 
 def register(client, username="alice01", email="alice@example.com", password="correct horse battery staple"):
@@ -250,10 +259,26 @@ def test_password_templates_do_not_truncate_and_show_max_length_guidance(client)
     assert all(b"maxlength" not in field for field in password_inputs(register_response))
     assert all(b"maxlength" not in field for field in password_inputs(login_response))
     assert all(b"maxlength" not in field for field in password_inputs(change_response))
-    assert b"Use 15 to 256 characters." in register_response.data
+    expected_guidance = (
+        f"Use {PASSWORD_MIN_LENGTH} to {PASSWORD_MAX_CHARS} characters. "
+        f"{PASSWORD_RECOMMENDED_MIN_LENGTH} or more is recommended."
+    ).encode("utf-8")
+    assert expected_guidance in register_response.data
     assert b"Maximum password length is 256 characters." in login_response.data
-    assert b"Use 15 to 256 characters." in change_response.data
+    assert expected_guidance in change_response.data
     assert b"Maximum password length is 256 characters." in change_response.data
+
+
+def test_password_at_minimum_length_can_register_and_login(client):
+    password = "Abcdef12"
+
+    response = register(client, password=password)
+    login_response = login(client, password=password)
+
+    assert len(password) == PASSWORD_MIN_LENGTH
+    assert response.status_code == 302
+    assert login_response.status_code == 302
+    assert db.session.query(User).count() == 1
 
 
 def test_password_at_configured_max_length_can_register_and_login(client):
@@ -2245,6 +2270,39 @@ def test_audit_write_failure_warning_is_sanitized(app, caplog, monkeypatch):
     assert "database password leaked" not in logs
     assert "plain-password" not in logs
     assert "token-secret" not in logs
+
+
+def test_audit_system_writer_uses_append_only_runtime_read_path(app, monkeypatch):
+    from app.security import audit as audit_module
+
+    def reject_row_locks(execute_state):
+        if getattr(execute_state.statement, "_for_update_arg", None) is not None:
+            raise AssertionError("audit writer must not issue SELECT FOR UPDATE")
+
+    sqlalchemy_event.listen(Session, "do_orm_execute", reject_row_locks)
+    monkeypatch.setattr(db.engine.dialect, "name", "postgresql", raising=False)
+    monkeypatch.setattr(audit_module, "_lock_audit_chain_for_insert", lambda: None)
+    try:
+        audit_module.audit_system_event(
+            "runtime_audit_writer_probe",
+            "success",
+            metadata={"probe": "append_only_runtime"},
+        )
+    finally:
+        sqlalchemy_event.remove(Session, "do_orm_execute", reject_row_locks)
+
+    event = db.session.execute(
+        db.select(SecurityAuditEvent).where(SecurityAuditEvent.event_type == "runtime_audit_writer_probe")
+    ).scalar_one()
+    verification = audit_module.verify_audit_hash_chain()
+
+    assert event.outcome == "success"
+    assert event.previous_event_hash == audit_module.AUDIT_CHAIN_START_HASH
+    assert event.hash_algorithm == audit_module.AUDIT_HASH_ALGORITHM
+    assert event.event_metadata["actor"] == "system"
+    assert verification["valid"] is True
+    assert verification["event_count"] == 1
+    assert verification["latest_event_hash"] == event.event_hash
 
 
 def test_audit_hash_chain_records_verifies_and_exports_anchor(app, tmp_path):
