@@ -132,12 +132,11 @@ class PasswordChangeForm(FlaskForm):
 
 
 class PasswordResetForm(FlaskForm):
-    new_password = PasswordField("New password", validators=[InputRequired(), password_length(minimum=PASSWORD_MIN_LENGTH)])
+    new_password = PasswordField("New password", validators=[InputRequired()])
     confirm_new_password = PasswordField(
         "Confirm new password",
         validators=[
             InputRequired(),
-            password_length(),
             EqualTo("new_password", message="Passwords must match"),
         ],
     )

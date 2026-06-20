@@ -15,6 +15,8 @@ from app.security.passwords import (
     HIBP_FAILURE_KEY,
     HIBP_FALLBACK_WARNING,
     PASSWORD_MAX_CHARS,
+    PASSWORD_MIN_LENGTH,
+    PASSWORD_RECOMMENDED_MIN_LENGTH,
     PBKDF2_PREFIX,
     PasswordPolicyError,
     hash_password,
@@ -124,6 +126,18 @@ class PasswordPolicyTests(unittest.TestCase):
     def test_rejects_300_character_password_directly(self) -> None:
         with self.assertRaisesRegex(PasswordPolicyError, "at most 256 characters"):
             validate_password_policy("A" * 300)
+
+    @patch("app.security.passwords.urlopen")
+    def test_allows_8_character_password_length(self, urlopen) -> None:
+        urlopen.return_value = FakeResponse(b"00000000000000000000000000000000000:0\r\n")
+
+        self.assertEqual(PASSWORD_MIN_LENGTH, 8)
+        self.assertEqual(PASSWORD_RECOMMENDED_MIN_LENGTH, 15)
+        self.assertEqual(validate_password_policy("Abcdef12"), [])
+
+    def test_rejects_password_below_8_character_minimum(self) -> None:
+        with self.assertRaisesRegex(PasswordPolicyError, "at least 8 characters"):
+            validate_password_policy("Abcdef1")
 
     @patch("app.security.passwords.urlopen")
     def test_allows_256_character_password_length(self, urlopen) -> None:

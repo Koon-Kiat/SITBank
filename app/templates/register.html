@@ -39,18 +39,18 @@
       <div class="form-group">
         <label for="{{ form.password.id }}">Password</label>
         <div class="password-input-wrap">
-          {{ form.password(autocomplete="new-password", minlength="15", data_password_strength_input="registration-password") }}
+          {{ form.password(autocomplete="new-password", minlength=config["PASSWORD_MIN_LENGTH"], data_password_strength_input="registration-password") }}
           <button class="password-toggle" type="button" data-password-toggle="{{ form.password.id }}" aria-label="Show password">Show</button>
         </div>
         {% for error in form.password.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
-        <p class="hint">Use 15 to {{ config["PASSWORD_MAX_CHARS"] }} characters.</p>
+        <p class="hint">Use {{ config["PASSWORD_MIN_LENGTH"] }} to {{ config["PASSWORD_MAX_CHARS"] }} characters. {{ config["PASSWORD_RECOMMENDED_MIN_LENGTH"] }} or more is recommended.</p>
         <p class="strength-meter" data-password-strength="registration-password">Password strength: not entered</p>
       </div>
 
       <div class="form-group">
         <label for="{{ form.confirm_password.id }}">Confirm password</label>
         <div class="password-input-wrap">
-          {{ form.confirm_password(autocomplete="new-password", minlength="15") }}
+          {{ form.confirm_password(autocomplete="new-password", minlength=config["PASSWORD_MIN_LENGTH"]) }}
           <button class="password-toggle" type="button" data-password-toggle="{{ form.confirm_password.id }}" aria-label="Show password">Show</button>
         </div>
         {% for error in form.confirm_password.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
