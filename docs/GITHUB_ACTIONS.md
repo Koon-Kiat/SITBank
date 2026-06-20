@@ -5,18 +5,14 @@
 The normal release path is:
 
 ```text
-main push -> publish -> release-verify -> staging
-manual production dispatch -> publish -> release-verify -> production
+main push -> publish -> release-verify -> staging -> production
 ```
 
 The tested, scanned, signed, and deployed digest must be identical. Deployments never use `latest`.
 
-Production deployment is manual-only. It requires running the trusted workflow
-from `main` with `target_environment = production`, `deploy = true`, and
-`PROD_DEPLOY_ENABLED = true`. If `PROD_DEPLOY_ENABLED` is missing or false, the
-production deployment job is skipped and the production deployment preflight does
-not run. When production deployment is enabled, the preflight still requires all
-production settings, including `PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID`.
+Production never skips disabled, skipped, or failed staging. It runs only after
+release verification and staging deployment both succeed on `main`, with
+`PROD_DEPLOY_ENABLED = true` and GitHub production environment approval.
 
 ## Manual Pre-Merge Staging
 
@@ -30,25 +26,12 @@ Manual pre-merge staging:
 
 Feature-branch workflow and deployment scripts are never executed with environment secrets. The only accepted migration mode for existing EC2 deployment files is `adopt-existing`, and it must still pass wrapper hash validation before app deployment.
 
-## Manual Production Deployment
-
-Manual production deployment:
-
-1. run trusted workflow from main;
-2. set `source_ref = main` or an approved immutable SHA;
-3. set `target_environment = production`;
-4. set `deploy = true`;
-5. require `PROD_DEPLOY_ENABLED = true` and all production runtime variables;
-6. deploy production using trusted main scripts.
-
-Do not set `PROD_DEPLOY_ENABLED = true` until production admin secrets,
-including `/etc/sitbank/secrets/admin_session_hmac_keys_json`, have been
-provisioned and the matching `PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID` GitHub
-variable exists.
-
 ## Environment Variables
 
-GitHub environment variables provide only non-secret deployment settings. For both `staging` and `production`, set:
+GitHub environment variables provide only non-secret deployment settings. Keep
+`STAGING_DEPLOY_ENABLED` and `PROD_DEPLOY_ENABLED` as repository variables. Put
+environment-specific settings, including SMTP sender/host values, under their
+matching GitHub environment. For both `staging` and `production`, set:
 
 - `<PREFIX>_EC2_HOST`
 - `<PREFIX>_EC2_PORT`
@@ -58,6 +41,8 @@ GitHub environment variables provide only non-secret deployment settings. For bo
 - `<PREFIX>_SESSION_HMAC_ACTIVE_KEY_ID`
 - `<PREFIX>_PASSWORD_PBKDF2_ITERATIONS`
 - `<PREFIX>_MFA_ISSUER_NAME`
+- `<PREFIX>_PASSWORD_RESET_EMAIL_FROM`
+- `<PREFIX>_SMTP_HOST`
 
 For production only, also set:
 
