@@ -65,42 +65,20 @@
         </ul>
       </article>
     </div>
-  {% elif not g.high_risk_ready %}
-    <div class="freeze-grid">
-      <article class="freeze-panel">
-        <div class="notice warning">
-          <span class="notice-icon" aria-hidden="true">
-            <svg class="icon" focusable="false"><use href="#icon-shield-check"></use></svg>
-          </span>
-          <div>
-            <h2>Security keys required</h2>
-            <p class="muted">Account freeze requires two approved hardware security keys.</p>
-          </div>
-        </div>
-        <div class="freeze-actions">
-          <a class="button" href="{{ url_for('web.security_keys') }}">Manage security keys</a>
-          <a class="button secondary" href="{{ url_for('web.dashboard') }}">Back to dashboard</a>
-        </div>
-      </article>
-      <article class="freeze-panel">
-        <h2>Freeze readiness</h2>
-        <p class="muted">You can keep using the portal after TOTP setup, but emergency freeze and other high-risk account actions stay locked until hardware-key enrollment is complete.</p>
-        <ul class="freeze-list">
-          <li>Add a primary approved hardware security key.</li>
-          <li>Add a backup approved hardware security key.</li>
-          <li>Use your security key during final confirmation.</li>
-        </ul>
-      </article>
-    </div>
   {% else %}
     <div class="freeze-grid">
       <article class="freeze-panel danger-panel">
         <h2>Confirm account freeze</h2>
-        <p class="muted">Verify an approved hardware security key to confirm this protective lock.</p>
+        <p class="muted">Verify with an authenticator code or passkey to confirm this protective lock.</p>
         <form method="post" action="{{ url_for('web.freeze_account_submit') }}" data-webauthn-step-up-form data-step-up-action="account_freeze" novalidate>
           {{ form.hidden_tag() }}
+          <div class="form-group">
+            <label for="{{ form.totp_code.id }}">Authenticator code</label>
+            {{ form.totp_code(inputmode="numeric", autocomplete="one-time-code", maxlength="6", placeholder="6-digit code") }}
+          </div>
+          <p class="hint">Enter your authenticator code, or leave this blank to verify with a passkey.</p>
           <p class="field-error" data-webauthn-step-up-error hidden></p>
-          <button class="button danger-button full" type="submit">Verify with security key and freeze account</button>
+          <button class="button danger-button full" type="submit">Verify and freeze account</button>
         </form>
         <a class="button secondary" href="{{ url_for('web.dashboard') }}">Cancel and return to dashboard</a>
       </article>

@@ -22,11 +22,11 @@ from app.auth.forms import (
     ForgotPasswordForm,
     LoginForm,
     ManualRecoveryForm,
+    MfaOrStepUpForm,
     PasswordChangeForm,
     PasswordResetForm,
     ProfileForm,
     RegisterForm,
-    StepUpTokenForm,
     TotpForm,
 )
 from app.auth.password_reset import (
@@ -391,7 +391,7 @@ def dashboard():
 @web_not_frozen_required
 def security_keys():
     credentials = list_credentials_for_user(g.current_user)
-    required_count = current_app.config.get("WEBAUTHN_REQUIRED_CREDENTIALS", 2)
+    required_count = current_app.config.get("WEBAUTHN_REQUIRED_CREDENTIALS", 1)
     return render_template(
         "security_keys.html",
         user=g.current_user,
@@ -401,7 +401,7 @@ def security_keys():
         recent_mfa=has_recent_fresh_mfa(),
         add_form=CsrfOnlyForm(),
         refresh_mfa_form=TotpForm(),
-        revoke_form=StepUpTokenForm(),
+        revoke_form=MfaOrStepUpForm(),
     )
 
 
@@ -412,7 +412,7 @@ def security_keys():
 @limiter.limit("5 per 5 minutes", key_func=mfa_principal)
 def security_keys_mfa_refresh():
     if not g.current_user.mfa_enabled:
-        flash("Set up authenticator MFA before registering security keys.", "warning")
+        flash("Set up authenticator MFA before registering passkeys.", "warning")
         return redirect(url_for("web.mfa_setup"))
 
     form = TotpForm()
@@ -433,7 +433,7 @@ def security_keys_mfa_refresh():
             return redirect(url_for("web.login"))
         return redirect(url_for("web.security_keys"))
 
-    flash("Authenticator code verified. You can register or manage security keys now.", "success")
+    flash("Authenticator code verified. You can register or manage passkeys now.", "success")
     return redirect(url_for("web.security_keys"))
 
 
@@ -441,14 +441,14 @@ def security_keys_mfa_refresh():
 @web_login_required
 @web_not_frozen_required
 def security_key_revoke(credential_id: str):
-    form = StepUpTokenForm()
+    form = MfaOrStepUpForm()
     if not form.validate_on_submit():
-        flash("Complete security-key step-up before revoking a key.", "error")
+        flash("Complete MFA verification before revoking a passkey.", "error")
         return redirect(url_for("web.security_keys"))
     try:
         verify_high_risk_authorization(
             g.current_user,
-            None,
+            form.totp_code.data,
             form.stepup_token.data,
             "webauthn_revoke",
             rotate_session_on_success=False,
@@ -476,6 +476,7 @@ def profile():
     form = ProfileForm()
     form.username.data = g.current_user.username
     form.email.data = g.current_user.email
+    form.mfa_step_up_preference.data = g.current_user.mfa_step_up_preference
     return render_template(
         "profile.html",
         user=g.current_user,
@@ -498,7 +499,8 @@ def profile_submit():
             g.current_user,
             form.username.data,
             form.email.data,
-            None,
+            form.mfa_step_up_preference.data,
+            form.totp_code.data,
             form.stepup_token.data,
         )
     except AuthError as exc:
@@ -528,7 +530,7 @@ def mfa_setup():
         recovery_codes_low=recovery_codes_remaining <= RECOVERY_CODE_LOW_THRESHOLD,
         start_form=CsrfOnlyForm(),
         verify_form=TotpForm(),
-        replace_start_form=StepUpTokenForm(),
+        replace_start_form=MfaOrStepUpForm(),
         replace_verify_form=TotpForm(),
         recovery_regenerate_form=CsrfOnlyForm(),
     )
@@ -544,7 +546,7 @@ def mfa_setup_submit():
     start_form = CsrfOnlyForm()
     verify_form = TotpForm()
     recent_mfa = has_recent_fresh_mfa()
-    replace_start_form = StepUpTokenForm()
+    replace_start_form = MfaOrStepUpForm()
     replace_verify_form = TotpForm()
     recovery_regenerate_form = CsrfOnlyForm()
 
@@ -586,7 +588,7 @@ def mfa_setup_submit():
             recovery_codes_low=False,
             start_form=CsrfOnlyForm(),
             verify_form=TotpForm(),
-            replace_start_form=StepUpTokenForm(),
+            replace_start_form=MfaOrStepUpForm(),
             replace_verify_form=TotpForm(),
             recovery_regenerate_form=CsrfOnlyForm(),
         )
@@ -611,7 +613,7 @@ def mfa_setup_submit():
             recovery_codes_low=result["recovery_codes_low"],
             start_form=CsrfOnlyForm(),
             verify_form=TotpForm(),
-            replace_start_form=StepUpTokenForm(),
+            replace_start_form=MfaOrStepUpForm(),
             replace_verify_form=TotpForm(),
             recovery_regenerate_form=CsrfOnlyForm(),
         )
@@ -622,7 +624,7 @@ def mfa_setup_submit():
         try:
             replacement = generate_mfa_replacement(
                 g.current_user,
-                None,
+                replace_start_form.totp_code.data,
                 replace_start_form.stepup_token.data,
             )
         except AuthError as exc:
@@ -640,7 +642,7 @@ def mfa_setup_submit():
             recovery_codes_low=unused_recovery_code_count(g.current_user) <= RECOVERY_CODE_LOW_THRESHOLD,
             start_form=CsrfOnlyForm(),
             verify_form=TotpForm(),
-            replace_start_form=StepUpTokenForm(),
+            replace_start_form=MfaOrStepUpForm(),
             replace_verify_form=TotpForm(),
             recovery_regenerate_form=CsrfOnlyForm(),
         )
@@ -665,7 +667,7 @@ def mfa_setup_submit():
             recovery_codes_low=result["recovery_codes_low"],
             start_form=CsrfOnlyForm(),
             verify_form=TotpForm(),
-            replace_start_form=StepUpTokenForm(),
+            replace_start_form=MfaOrStepUpForm(),
             replace_verify_form=TotpForm(),
             recovery_regenerate_form=CsrfOnlyForm(),
         )
@@ -690,7 +692,7 @@ def mfa_setup_submit():
             recovery_codes_low=result["recovery_codes_low"],
             start_form=CsrfOnlyForm(),
             verify_form=TotpForm(),
-            replace_start_form=StepUpTokenForm(),
+            replace_start_form=MfaOrStepUpForm(),
             replace_verify_form=TotpForm(),
             recovery_regenerate_form=CsrfOnlyForm(),
         )
@@ -706,9 +708,6 @@ def password_change():
     if not g.current_user.mfa_enabled:
         flash("Set up authenticator MFA before changing your password.", "warning")
         return redirect(url_for("web.mfa_setup"))
-    if not g.high_risk_ready:
-        flash("Add two approved security keys before changing your password.", "warning")
-        return redirect(url_for("web.security_keys"))
     return render_template(
         "password_change.html",
         form=PasswordChangeForm(),
@@ -725,9 +724,6 @@ def password_change_submit():
     if not g.current_user.mfa_enabled:
         flash("Set up authenticator MFA before changing your password.", "warning")
         return redirect(url_for("web.mfa_setup"))
-    if not g.high_risk_ready:
-        flash("Add two approved security keys before changing your password.", "warning")
-        return redirect(url_for("web.security_keys"))
 
     form = PasswordChangeForm()
     recent_mfa = has_recent_fresh_mfa()
@@ -740,7 +736,7 @@ def password_change_submit():
             form.current_password.data,
             form.new_password.data,
             form.confirm_new_password.data,
-            None,
+            form.totp_code.data,
             form.stepup_token.data,
         )
     except AuthError as exc:
@@ -762,7 +758,7 @@ def sessions_dashboard():
         past_sessions=past_sessions_for_user(g.current_user),
         recent_mfa=has_recent_fresh_mfa(),
         revoke_others_csrf_form=CsrfOnlyForm(),
-        revoke_others_form=StepUpTokenForm(),
+        revoke_others_form=MfaOrStepUpForm(),
         terminate_form=CsrfOnlyForm(),
     )
 
@@ -797,15 +793,15 @@ def terminate_session(session_id: str):
 @web_login_required
 @web_not_frozen_required
 def revoke_other_sessions():
-    form = StepUpTokenForm()
+    form = MfaOrStepUpForm()
     if not form.validate_on_submit():
-        flash("Complete security-key step-up to terminate other sessions.", "error")
+        flash("Complete MFA or passkey step-up to terminate other sessions.", "error")
         return redirect(url_for("web.sessions_dashboard"))
 
     try:
         verify_high_risk_authorization(
             g.current_user,
-            None,
+            form.totp_code.data,
             form.stepup_token.data,
             "session_revoke_others",
         )
@@ -822,7 +818,7 @@ def revoke_other_sessions():
 @web_login_required
 @web_not_frozen_required
 def freeze_account():
-    return render_template("freeze.html", user=g.current_user, form=StepUpTokenForm())
+    return render_template("freeze.html", user=g.current_user, form=MfaOrStepUpForm())
 
 
 @web_bp.post("/account/freeze")
@@ -831,12 +827,12 @@ def freeze_account():
 @limiter.limit("5 per 5 minutes", key_func=get_remote_address)
 @limiter.limit("5 per 5 minutes", key_func=mfa_principal)
 def freeze_account_submit():
-    form = StepUpTokenForm()
+    form = MfaOrStepUpForm()
     if not form.validate_on_submit():
         return render_template("freeze.html", user=g.current_user, form=form), 400
 
     try:
-        freeze_own_account(g.current_user, None, form.stepup_token.data)
+        freeze_own_account(g.current_user, form.totp_code.data, form.stepup_token.data)
     except AuthError as exc:
         flash(exc.message, "error")
         return render_template("freeze.html", user=g.current_user, form=form), exc.status_code

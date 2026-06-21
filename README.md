@@ -8,7 +8,7 @@ SITBank is a student cybersecurity project and demonstration site. Do not enter 
 
 SITBank is a Flask/Gunicorn application deployed as hardened Docker containers behind host-managed Nginx, TLS, PostgreSQL, and Redis. Production customer traffic runs at `https://sitbank.duckdns.org`; the isolated production admin boundary is reserved at `https://admin-sitbank.duckdns.org` and is fail-closed until future WebAuthn/passkey and network allowlist controls are implemented. Staging runs separately at `https://staging-sitbank.duckdns.org` and does not include an admin service in this phase.
 
-The app keeps password hashing PBKDF2+pepper only and MFA/TOTP seed encryption envelope-only using `MFA_KEK_ACTIVE_ID` plus `MFA_KEK_KEYS_JSON`. Legacy one-key MFA AES compatibility and direct non-PBKDF2 password hash compatibility are intentionally removed because current users are test-only and environments must be reset before this change is deployed.
+The app keeps password hashing PBKDF2+pepper only and MFA/TOTP seed encryption envelope-only using `MFA_KEK_ACTIVE_ID` plus `MFA_KEK_KEYS_JSON`. Authenticator TOTP is the required baseline MFA method. Passkeys, including Windows Hello, browser/password-manager passkeys such as Bitwarden, and external FIDO2 security keys, are optional add-ons for sign-in and step-up. Legacy one-key MFA AES compatibility and direct non-PBKDF2 password hash compatibility are intentionally removed because current users are test-only and environments must be reset before this change is deployed.
 
 ## Local Development
 
@@ -93,11 +93,11 @@ Current required settings include:
 - `HIBP_CIRCUIT_OPEN_SECONDS`
 - `WEBAUTHN_RP_ID`
 - `WEBAUTHN_RP_ORIGIN`
-- `WEBAUTHN_APPROVED_AAGUIDS_PATH`
-- `WEBAUTHN_MDS_CACHE_PATH`
 - `COMMON_PASSWORDS_PATH`
 
 See `ops/production-env.required` for the machine-readable checklist.
+
+`WEBAUTHN_APPROVED_AAGUIDS_PATH` and `WEBAUTHN_MDS_CACHE_PATH` may still be configured for local lab inventory and audit review, but optional passkey registration no longer requires direct attestation, approved AAGUID metadata, cross-platform attachment, or single-device status.
 
 ## Customer Password Reset
 
@@ -109,10 +109,10 @@ token.
 
 Password reset changes only the password. It does not disable MFA, does not
 create a login session, and revokes active sessions after completion. Customers
-with WebAuthn credentials must verify a reset-bound WebAuthn challenge;
-customers with TOTP must verify TOTP; customers without MFA can reset but are
-sent through the existing MFA onboarding gate on next login. Admin-account
-reset is not implemented in the customer domain.
+with TOTP must verify TOTP or a recovery code; passkeys do not replace TOTP
+recovery. Customers without MFA can reset but are sent through the existing MFA
+onboarding gate on next login. Admin-account reset is not implemented in the
+customer domain.
 
 ## Documentation
 

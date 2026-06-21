@@ -12,6 +12,20 @@ from app.models import User
 from app.security.audit import audit_event, audit_event_required, audit_reference
 
 
+TRANSFER_RISK_NORMAL = "normal"
+TRANSFER_RISK_NEW_PAYEE = "new_payee"
+TRANSFER_RISK_LARGE_TRANSFER = "large_transfer"
+TRANSFER_STEP_UP_STANDARD = "mfa_or_passkey"
+TRANSFER_STEP_UP_PASSKEY = "passkey"
+TRANSFER_RISKS = frozenset(
+    {
+        TRANSFER_RISK_NORMAL,
+        TRANSFER_RISK_NEW_PAYEE,
+        TRANSFER_RISK_LARGE_TRANSFER,
+    }
+)
+
+
 def ensure_outbound_transfer_allowed(user: User) -> None:
     _ensure_banking_action_allowed(user, "outbound_transfer", "outbound transfers")
 
@@ -81,6 +95,48 @@ def validate_public_transaction_payload(
     return normalized
 
 
+def transfer_step_up_requirement(transfer_risk: str) -> str:
+    normalized = _normalize_transfer_risk(transfer_risk)
+    if normalized == TRANSFER_RISK_NORMAL:
+        return TRANSFER_STEP_UP_STANDARD
+    return TRANSFER_STEP_UP_PASSKEY
+
+
+def classify_transfer_risk(*, new_payee: bool = False, large_transfer: bool = False) -> str:
+    if new_payee:
+        return TRANSFER_RISK_NEW_PAYEE
+    if large_transfer:
+        return TRANSFER_RISK_LARGE_TRANSFER
+    return TRANSFER_RISK_NORMAL
+
+
+def verify_transfer_step_up(
+    user: User,
+    transfer_risk: str,
+    *,
+    totp_code: str | None = None,
+    stepup_token: str | None = None,
+    action: str = "transaction_authorization",
+) -> None:
+    from app.auth.services import verify_high_risk_authorization
+    from app.auth.webauthn_services import consume_step_up_token
+    from app.security.sessions import require_stable_session_for_sensitive_action
+
+    ensure_outbound_transfer_allowed(user)
+    requirement = transfer_step_up_requirement(transfer_risk)
+    if requirement == TRANSFER_STEP_UP_STANDARD:
+        verify_high_risk_authorization(user, totp_code, stepup_token, action)
+        return
+
+    require_stable_session_for_sensitive_action(action)
+    consume_step_up_token(user, action, stepup_token)
+    audit_transaction_authorization(
+        user,
+        "passkey_step_up_success",
+        metadata={"transfer_risk": _normalize_transfer_risk(transfer_risk)},
+    )
+
+
 def public_transaction_payload_hash(payload: Mapping[str, object]) -> str:
     canonical = {
         "amount": str(payload.get("amount")),
@@ -89,6 +145,13 @@ def public_transaction_payload_hash(payload: Mapping[str, object]) -> str:
     }
     encoded = json.dumps(canonical, separators=(",", ":"), sort_keys=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _normalize_transfer_risk(value: str) -> str:
+    normalized = str(value or "").strip().casefold()
+    if normalized not in TRANSFER_RISKS:
+        raise AuthError("Invalid transfer risk classification", 400)
+    return normalized
 
 
 def audit_outbound_transfer(

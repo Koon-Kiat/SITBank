@@ -126,7 +126,9 @@ def register_current_user_loader(app: Flask) -> None:
 
         g.current_user = None
         g.webauthn_credential_count = 0
-        g.webauthn_required_count = app.config.get("WEBAUTHN_REQUIRED_CREDENTIALS", 2)
+        g.webauthn_required_count = app.config.get("WEBAUTHN_REQUIRED_CREDENTIALS", 1)
+        g.passkey_ready = False
+        g.mfa_ready = False
         g.high_risk_ready = False
         user_id = session.get("user_id")
         if user_id is not None:
@@ -135,7 +137,9 @@ def register_current_user_loader(app: Flask) -> None:
                 from app.auth.webauthn_services import webauthn_credential_count
 
                 g.webauthn_credential_count = webauthn_credential_count(g.current_user)
-                g.high_risk_ready = g.webauthn_credential_count >= g.webauthn_required_count
+                g.passkey_ready = g.webauthn_credential_count > 0
+                g.mfa_ready = bool(g.current_user.mfa_enabled)
+                g.high_risk_ready = g.mfa_ready
 
 
 def register_error_handlers(app: Flask) -> None:

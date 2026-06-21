@@ -183,7 +183,7 @@ def test_registration_rejects_live_breached_password(client, monkeypatch):
 
     assert response.status_code == 400
     assert db.session.query(User).count() == 0
-    assert b"Password is too common or has appeared in breach lists" in response.data
+    assert b"Password is too common. Please try again" in response.data
 
 
 def test_registration_hashes_password_with_pbkdf2(client):
@@ -952,7 +952,7 @@ def test_invalid_recovery_code_attempt_uses_generic_error_and_audits_failure(cli
     assert db.session.query(SecurityAuditEvent).filter_by(event_type="mfa_recovery_code_verify", outcome="failure").count() == 1
 
 
-def test_recovery_code_cannot_satisfy_login_when_security_key_primary_is_required(client):
+def test_recovery_code_satisfies_totp_login_even_when_passkeys_are_registered(client):
     from app.auth.recovery_codes import generate_recovery_codes_for_user
 
     register(client)
@@ -967,9 +967,9 @@ def test_recovery_code_cannot_satisfy_login_when_security_key_primary_is_require
         sess["password_authenticated_at"] = int(time.time())
     response = client.post("/auth/mfa/verify", json={"totp_code": recovery_codes[0]})
 
-    assert response.status_code == 403
-    assert response.get_json()["error"] == "Security key sign-in required for this account"
-    assert db.session.query(RecoveryCode).filter_by(user_id=user.id).filter(RecoveryCode.used_at.is_not(None)).count() == 0
+    assert response.status_code == 200
+    assert response.get_json()["message"] == "Login successful"
+    assert db.session.query(RecoveryCode).filter_by(user_id=user.id).filter(RecoveryCode.used_at.is_not(None)).count() == 1
 
 
 def test_recovery_code_regeneration_revokes_old_unused_codes(client):
@@ -1144,7 +1144,7 @@ def test_mfa_management_page_shows_replacement_controls_when_enabled(client):
     assert "Authenticator MFA" in markup
     assert "Authenticator MFA is enabled" in markup
     assert "Replace authenticator" in markup
-    assert "Verify with security key" in markup
+    assert "Verify replacement start" in markup
     assert "Disable MFA" not in markup
     assert "Remove MFA" not in markup
 
@@ -1183,18 +1183,18 @@ def test_security_management_pages_use_polished_stepup_ui(client):
     assert "AAGUID" not in keys_markup
     assert "11111111-1111-1111-1111-111111111111" not in keys_markup
     assert "Last used: 05 Jun 2026 15:11 UTC" in keys_markup
-    assert "Verify with security key and revoke" in keys_markup
+    assert "Verify and revoke" in keys_markup
     assert 'class="button danger-button button-small key-revoke-button"' in keys_markup
-    assert "Revoke is disabled because at least two approved security keys must stay registered" in keys_markup
+    assert "Revoke is disabled because at least two approved security keys must stay registered" not in keys_markup
     assert 'class="button danger-button"' in sessions_markup
-    assert "Verify with security key and terminate other sessions" in sessions_markup
+    assert "Verify and terminate other sessions" in sessions_markup
     assert 'class="button danger-button full"' in freeze_markup
-    assert "Verify with security key and freeze account" in freeze_markup
+    assert "Verify and freeze account" in freeze_markup
     assert "color: var(--button-primary-text);" in css
     assert "text-align: left;" in css
 
 
-def test_mfa_replacement_start_requires_security_key_stepup(client):
+def test_mfa_replacement_start_requires_fresh_mfa_stepup(client):
     register(client)
     login(client)
     user, _secret = enable_mfa_for_user()
@@ -1253,8 +1253,8 @@ def test_mfa_replacement_keeps_old_secret_until_new_code_is_verified(client, mon
     client.post("/logout")
     login_response = login(client)
 
-    assert login_response.status_code == 403
-    assert b"Security key sign-in required for this account" in login_response.data
+    assert login_response.status_code == 302
+    assert login_response.headers["Location"].endswith("/mfa/verify")
 
 
 def test_unauthenticated_users_cannot_access_mfa_setup_material(client):
@@ -1361,7 +1361,7 @@ def test_past_sessions_are_scoped_to_current_user(app, client):
     assert bob_ref not in markup
 
 
-def test_revoke_other_sessions_requires_security_key_stepup_and_rotates_session(app, client, monkeypatch):
+def test_revoke_other_sessions_accepts_totp_stepup_and_rotates_session(app, client, monkeypatch):
     second_client = app.test_client()
     register(client)
     login(client)
@@ -1378,7 +1378,6 @@ def test_revoke_other_sessions_requires_security_key_stepup_and_rotates_session(
     code = pyotp.TOTP(secret, digits=6, interval=30).at(setup_time)
 
     setup_verify = client.post("/mfa/setup", data={"action": "verify", "totp_code": code})
-    add_security_keys_for_user(user)
     with client.session_transaction() as sess:
         session_after_setup = sess.sid
 
@@ -1391,7 +1390,7 @@ def test_revoke_other_sessions_requires_security_key_stepup_and_rotates_session(
     api_revoke_response = client.post(
         "/auth/sessions/revoke-others",
         json={
-            "stepup_token": mint_stepup_token(client, user, "session_revoke_others"),
+            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(revoke_time),
         },
     )
     with client.session_transaction() as sess:
@@ -1628,15 +1627,15 @@ def test_authenticated_layout_contains_working_profile_menu_destinations(client)
     assert 'href="/profile"' in markup
     assert "Edit Profile" in markup
     assert "Change Password" in markup
-    assert 'aria-disabled="true">Change Password' in markup
-    assert 'href="/password/change"' not in markup
+    assert 'aria-disabled="true">Change Password' not in markup
+    assert 'href="/password/change"' in markup
     assert "Authenticator MFA" in markup
     assert "Active Sessions" in markup
-    assert "Security Keys" in markup
+    assert "Passkeys" in markup
     assert "Freeze Account" in markup
     assert "Log Out" in markup
     assert markup.index('href="/mfa/setup"') < markup.index('href="/security-keys"') < markup.index('href="/sessions"')
-    assert "No hardware security keys are enrolled yet" in markup
+    assert "No passkeys are registered" in markup
     assert "Transaction-ready" not in markup
 
 
@@ -1658,7 +1657,7 @@ def test_public_layout_does_not_expose_authenticated_account_actions(client):
     assert "data-account-menu" not in markup
     assert "Edit Profile" not in markup
     assert "data-webauthn-login-form" in markup
-    assert "Available after two approved hardware security keys are registered." in markup
+    assert "Available after a passkey or security key is registered." in markup
     assert 'href="/profile"' not in markup
     assert 'action="/logout"' not in markup
 
@@ -1743,18 +1742,18 @@ def test_authenticated_user_can_open_own_edit_profile_page(client):
     assert b"Edit profile" in response.data
     assert b"alice01" in response.data
     assert b"alice@example.com" in response.data
-    assert 'name="username"' not in markup
-    assert 'name="email"' not in markup
+    assert 'name="username"' in markup
+    assert 'name="email"' in markup
     assert "Update profile details" in markup
-    assert "Save profile" not in markup
-    assert "Security keys required" in markup
-    assert "Manage keys" in markup
+    assert "Verify and save" in markup
+    assert "Authenticator MFA required" not in markup
+    assert "Manage passkeys" in markup
     assert "Manage MFA" in markup
     assert "Change password" in markup
-    assert 'aria-disabled="true">Change password' in markup
-    assert 'href="/password/change"' not in markup
+    assert 'aria-disabled="true">Change password' not in markup
+    assert 'href="/password/change"' in markup
     assert "profile-status-copy" in markup
-    assert "Hardware keys are used for future high-risk transaction approval." in markup
+    assert "Use Windows Hello, a browser or password-manager passkey, or an external security key." in markup
     assert 'href="/security-keys"' in markup
     assert 'class="badge warning"' not in markup
 
@@ -1823,17 +1822,16 @@ def test_password_change_succeeds_with_recent_mfa_and_revokes_other_sessions(app
     assert session_after_change != session_before_change
     assert user.password_hash != old_hash
     assert old_login.status_code == 401
-    assert new_login.status_code == 403
-    assert b"Security key sign-in required for this account" in new_login.data
+    assert new_login.status_code == 302
+    assert new_login.headers["Location"].endswith("/mfa/verify")
     assert revoked_response.status_code == 401
     assert db.session.query(SecurityAuditEvent).filter_by(event_type="password_change", outcome="success").count() == 1
 
 
-def test_password_change_rejects_totp_only_without_security_key_stepup(client):
+def test_password_change_accepts_totp_stepup_without_passkey(client):
     register(client)
     login(client)
     user, secret = enable_mfa_for_user()
-    add_security_keys_for_user(user)
     mark_recent_mfa(client, user)
     old_hash = user.password_hash
 
@@ -1848,8 +1846,8 @@ def test_password_change_rejects_totp_only_without_security_key_stepup(client):
     )
     db.session.refresh(user)
 
-    assert response.status_code == 403
-    assert user.password_hash == old_hash
+    assert response.status_code == 302
+    assert user.password_hash != old_hash
 
 
 def test_password_change_rejects_over_limit_current_and_new_passwords(client):
@@ -1926,6 +1924,7 @@ def test_profile_details_update_succeeds_for_authenticated_user(client):
         data={
             "username": "alice02",
             "email": "alice.new@example.com",
+            "mfa_step_up_preference": "totp",
             "stepup_token": mint_stepup_token(client, user, "profile_update"),
         },
     )
@@ -1937,12 +1936,12 @@ def test_profile_details_update_succeeds_for_authenticated_user(client):
     assert response.headers["Location"].endswith("/profile")
     assert user.username == "alice02"
     assert user.email == "alice.new@example.com"
-    assert new_username_login.status_code == 403
-    assert b"Security key sign-in required for this account" in new_username_login.data
+    assert new_username_login.status_code == 302
+    assert new_username_login.headers["Location"].endswith("/mfa/verify")
     assert db.session.query(SecurityAuditEvent).filter_by(event_type="profile_update", outcome="success").count() == 1
 
 
-def test_profile_email_update_requires_security_key_stepup_and_rotates_session(client):
+def test_profile_email_update_accepts_passkey_stepup_and_rotates_session(client):
     register(client)
     login(client)
     user, _secret = enable_mfa_for_user()
@@ -1956,6 +1955,7 @@ def test_profile_email_update_requires_security_key_stepup_and_rotates_session(c
         data={
             "username": "alice01",
             "email": "alice.mfa@example.com",
+            "mfa_step_up_preference": "totp",
             "stepup_token": mint_stepup_token(client, user, "profile_update"),
         },
     )
@@ -1968,11 +1968,10 @@ def test_profile_email_update_requires_security_key_stepup_and_rotates_session(c
     assert user.email == "alice.mfa@example.com"
 
 
-def test_profile_email_update_rejects_totp_only_without_security_key_stepup(client):
+def test_profile_email_update_accepts_totp_stepup_without_passkey(client):
     register(client)
     login(client)
     user, secret = enable_mfa_for_user()
-    add_security_keys_for_user(user)
     mark_recent_mfa(client, user)
 
     response = client.post(
@@ -1980,13 +1979,14 @@ def test_profile_email_update_rejects_totp_only_without_security_key_stepup(clie
         data={
             "username": "alice01",
             "email": "alice.mfa@example.com",
+            "mfa_step_up_preference": "totp",
             "totp_code": pyotp.TOTP(secret, digits=6, interval=30).now(),
         },
     )
     db.session.refresh(user)
 
-    assert response.status_code == 403
-    assert user.email == "alice@example.com"
+    assert response.status_code == 302
+    assert user.email == "alice.mfa@example.com"
 
 
 def test_profile_update_rejects_invalid_email(client):
@@ -1995,7 +1995,10 @@ def test_profile_update_rejects_invalid_email(client):
     user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
     mark_recent_mfa(client, user)
 
-    response = client.post("/profile", data={"username": "alice01", "email": "not-an-email"})
+    response = client.post(
+        "/profile",
+        data={"username": "alice01", "email": "not-an-email", "mfa_step_up_preference": "totp"},
+    )
     db.session.refresh(user)
 
     assert response.status_code == 400
@@ -2007,7 +2010,10 @@ def test_profile_update_rejects_invalid_username(client):
     login(client)
     user, _secret = enable_mfa_for_user()
 
-    response = client.post("/profile", data={"username": "bad user", "email": "alice@example.com"})
+    response = client.post(
+        "/profile",
+        data={"username": "bad user", "email": "alice@example.com", "mfa_step_up_preference": "totp"},
+    )
     db.session.refresh(user)
 
     assert response.status_code == 400
@@ -2020,7 +2026,10 @@ def test_profile_update_rejects_duplicate_username(client):
     login(client)
     user, _secret = enable_mfa_for_user()
 
-    response = client.post("/profile", data={"username": "BOB02", "email": "alice@example.com"})
+    response = client.post(
+        "/profile",
+        data={"username": "BOB02", "email": "alice@example.com", "mfa_step_up_preference": "totp"},
+    )
     db.session.refresh(user)
 
     assert response.status_code == 400
@@ -2035,7 +2044,10 @@ def test_profile_update_rejects_duplicate_email(client):
     user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
     mark_recent_mfa(client, user)
 
-    response = client.post("/profile", data={"username": "alice01", "email": "bob@example.com"})
+    response = client.post(
+        "/profile",
+        data={"username": "alice01", "email": "bob@example.com", "mfa_step_up_preference": "totp"},
+    )
     db.session.refresh(user)
 
     assert response.status_code == 400
@@ -2050,7 +2062,10 @@ def test_profile_post_requires_csrf_when_enabled(app, client):
     app.config["WTF_CSRF_ENABLED"] = True
 
     try:
-        response = client.post("/profile", data={"username": "alice02", "email": "alice.new@example.com"})
+        response = client.post(
+            "/profile",
+            data={"username": "alice02", "email": "alice.new@example.com", "mfa_step_up_preference": "totp"},
+        )
     finally:
         app.config["WTF_CSRF_ENABLED"] = original
 
@@ -2097,6 +2112,7 @@ def test_profile_submission_cannot_modify_privileged_fields(client):
         data={
             "username": "alice02",
             "email": "alice.new@example.com",
+            "mfa_step_up_preference": "totp",
             "stepup_token": mint_stepup_token(client, user, "profile_update"),
             "user_id": str(other_user.id),
             "mfa_enabled": "true",
@@ -2176,6 +2192,7 @@ def test_high_risk_stepup_token_is_scoped_one_time_and_expirable(app, client):
         data={
             "username": "alice01",
             "email": "wrong-action@example.com",
+            "mfa_step_up_preference": "totp",
             "totp_code": totp.now(),
             "stepup_token": wrong_action_token,
         },
@@ -2194,6 +2211,7 @@ def test_high_risk_stepup_token_is_scoped_one_time_and_expirable(app, client):
         data={
             "username": "alice01",
             "email": "wrong-session@example.com",
+            "mfa_step_up_preference": "totp",
             "totp_code": totp.now(),
             "stepup_token": session_scoped_token,
         },
@@ -2206,6 +2224,7 @@ def test_high_risk_stepup_token_is_scoped_one_time_and_expirable(app, client):
         data={
             "username": "alice01",
             "email": "alice.stepup@example.com",
+            "mfa_step_up_preference": "totp",
             "totp_code": totp.now(),
             "stepup_token": valid_token,
         },
@@ -2216,6 +2235,7 @@ def test_high_risk_stepup_token_is_scoped_one_time_and_expirable(app, client):
         data={
             "username": "alice01",
             "email": "reuse-token@example.com",
+            "mfa_step_up_preference": "totp",
             "totp_code": totp.now(),
             "stepup_token": valid_token,
         },
@@ -2229,6 +2249,7 @@ def test_high_risk_stepup_token_is_scoped_one_time_and_expirable(app, client):
         data={
             "username": "alice01",
             "email": "expired-token@example.com",
+            "mfa_step_up_preference": "totp",
             "totp_code": totp.now(),
             "stepup_token": expired_token,
         },
@@ -2244,7 +2265,7 @@ def test_high_risk_stepup_token_is_scoped_one_time_and_expirable(app, client):
     assert db.session.query(SecurityAuditEvent).filter_by(event_type="webauthn_step_up_consume", outcome="expired").count() >= 1
 
 
-def test_high_risk_action_without_two_keys_returns_enrollment_error(client):
+def test_high_risk_action_without_passkey_accepts_totp_stepup(client):
     register(client)
     login(client)
     user, secret = enable_mfa_for_user()
@@ -2254,14 +2275,14 @@ def test_high_risk_action_without_two_keys_returns_enrollment_error(client):
         data={
             "username": "alice01",
             "email": "alice.needs-keys@example.com",
+            "mfa_step_up_preference": "totp",
             "totp_code": pyotp.TOTP(secret, digits=6, interval=30).now(),
         },
     )
     db.session.refresh(user)
 
-    assert response.status_code == 403
-    assert b"Two registered security keys are required for this action" in response.data
-    assert user.email == "alice@example.com"
+    assert response.status_code == 302
+    assert user.email == "alice.needs-keys@example.com"
 
 
 def test_api_onboarding_requires_totp_before_authenticated_endpoints(client):
@@ -2279,7 +2300,7 @@ def test_api_onboarding_requires_totp_before_authenticated_endpoints(client):
     assert csrf_response.status_code == 200
 
 
-def test_totp_user_without_security_keys_can_navigate_but_high_risk_actions_are_locked(client):
+def test_totp_user_without_passkeys_can_navigate_and_use_high_risk_forms(client):
     register(client)
     login(client)
     user, _secret = enable_mfa_for_user()
@@ -2296,12 +2317,11 @@ def test_totp_user_without_security_keys_can_navigate_but_high_risk_actions_are_
     assert profile_response.status_code == 200
     assert sessions_response.status_code == 200
     assert keys_response.status_code == 200
-    assert password_response.status_code == 302
-    assert password_response.headers["Location"].endswith("/security-keys")
+    assert password_response.status_code == 200
     assert freeze_response.status_code == 200
-    assert b"Security keys required" in profile_response.data
-    assert b"Security keys required" in sessions_response.data
-    assert b"Security keys required" in freeze_response.data
+    assert b"Security keys required" not in profile_response.data
+    assert b"Security keys required" not in sessions_response.data
+    assert b"Security keys required" not in freeze_response.data
 
 
 def test_security_key_page_allows_inline_totp_refresh_for_stale_session(client, monkeypatch):
@@ -2326,10 +2346,10 @@ def test_security_key_page_allows_inline_totp_refresh_for_stale_session(client, 
 
     assert stale_page.status_code == 200
     assert b"Enter your authenticator code to continue" in stale_page.data
-    assert b"Register security key</button>" in stale_page.data
-    assert b"Register security key</button>" in fresh_page.data
-    assert b"disabled>Register security key</button>" in stale_page.data
-    assert b"disabled>Register security key</button>" not in fresh_page.data
+    assert b"Register passkey</button>" in stale_page.data
+    assert b"Register passkey</button>" in fresh_page.data
+    assert b"disabled>Register passkey</button>" in stale_page.data
+    assert b"disabled>Register passkey</button>" not in fresh_page.data
     assert refresh_response.status_code == 302
     assert refresh_response.headers["Location"].endswith("/security-keys")
     assert session_after_refresh != session_before_refresh
@@ -2370,6 +2390,7 @@ def test_session_risk_drift_requires_reauth_before_sensitive_action(client):
         data={
             "username": "alice01",
             "email": "alice.drift@example.com",
+            "mfa_step_up_preference": "totp",
             "totp_code": pyotp.TOTP(secret, digits=6, interval=30).now(),
             "stepup_token": token,
         },
@@ -3225,11 +3246,11 @@ def test_production_env_docs_require_pbkdf2_pepper_not_bcrypt():
         "HIBP_CIRCUIT_FAILURE_THRESHOLD",
         "HIBP_CIRCUIT_OPEN_SECONDS",
         "SECURITY_ALERT_STATE_PATH",
-        "WEBAUTHN_APPROVED_AAGUIDS_PATH",
-        "WEBAUTHN_MDS_CACHE_PATH",
     ):
         assert setting in required
         assert setting in readme
+    assert "WEBAUTHN_APPROVED_AAGUIDS_PATH" not in required
+    assert "WEBAUTHN_MDS_CACHE_PATH" not in required
     assert "BCRYPT_ROUNDS" not in required
     assert "BCRYPT_ROUNDS" not in readme
 
@@ -3311,6 +3332,28 @@ def test_public_transaction_payload_business_rules_reject_unsafe_values():
     for payload in invalid_cases:
         with pytest.raises(AuthError):
             validate_public_transaction_payload(payload)
+
+
+def test_transfer_step_up_policy_distinguishes_normal_and_stronger_flows():
+    from app.auth.services import AuthError
+    from app.banking.services import (
+        TRANSFER_RISK_LARGE_TRANSFER,
+        TRANSFER_RISK_NEW_PAYEE,
+        TRANSFER_RISK_NORMAL,
+        TRANSFER_STEP_UP_PASSKEY,
+        TRANSFER_STEP_UP_STANDARD,
+        classify_transfer_risk,
+        transfer_step_up_requirement,
+    )
+
+    assert classify_transfer_risk() == TRANSFER_RISK_NORMAL
+    assert classify_transfer_risk(new_payee=True) == TRANSFER_RISK_NEW_PAYEE
+    assert classify_transfer_risk(large_transfer=True) == TRANSFER_RISK_LARGE_TRANSFER
+    assert transfer_step_up_requirement(TRANSFER_RISK_NORMAL) == TRANSFER_STEP_UP_STANDARD
+    assert transfer_step_up_requirement(TRANSFER_RISK_NEW_PAYEE) == TRANSFER_STEP_UP_PASSKEY
+    assert transfer_step_up_requirement(TRANSFER_RISK_LARGE_TRANSFER) == TRANSFER_STEP_UP_PASSKEY
+    with pytest.raises(AuthError):
+        transfer_step_up_requirement("unexpected")
 
 
 def test_public_transaction_idempotency_binds_key_to_exact_payload():

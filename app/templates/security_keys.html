@@ -1,28 +1,28 @@
 {% extends "base.html" %}
 
-{% block title %}Security Keys | SITBank{% endblock %}
+{% block title %}Passkeys | SITBank{% endblock %}
 
 {% block content %}
 <section class="security-page key-page">
   <div class="dashboard-header">
     <div class="page-heading">
-      <p class="eyebrow">Transaction step-up</p>
-      <h1>Security Keys</h1>
-      <p class="muted">Register and manage approved hardware security keys for future high-risk transaction approval.</p>
+      <p class="eyebrow">Optional step-up</p>
+      <h1>Passkeys and security keys</h1>
+      <p class="muted">Register Windows Hello, browser or password-manager passkeys, or external security keys for optional sign-in and step-up.</p>
     </div>
     <div class="button-row">
       <a class="button secondary" href="{{ url_for('web.dashboard') }}">Back to dashboard</a>
     </div>
   </div>
 
-  {% if credential_count < required_count %}
+  {% if credential_count == 0 %}
     <div class="notice">
       <span class="notice-icon" aria-hidden="true">
         <svg class="icon" focusable="false"><use href="#icon-alert"></use></svg>
       </span>
       <div>
-        <h2>Backup key required for transaction readiness</h2>
-        <p class="muted">High-risk transaction approval will require approved hardware security keys. Add {{ required_count }} keys so a lost primary key does not stop future transaction approvals.</p>
+        <h2>Passkeys are optional</h2>
+        <p class="muted">Authenticator MFA is the baseline. Add a passkey if you want faster sign-in or passkey step-up for protected actions.</p>
       </div>
     </div>
   {% endif %}
@@ -34,7 +34,7 @@
       </span>
       <div>
         <h2>Set up authenticator MFA first</h2>
-        <p class="muted">Security-key registration requires a recent normal MFA verification. Enable authenticator MFA, then return here to register your hardware key.</p>
+        <p class="muted">Passkey registration requires a recent normal MFA verification. Enable authenticator MFA, then return here to register your passkey.</p>
         <div class="actions">
           <a class="button secondary" href="{{ url_for('web.mfa_setup') }}">Set up MFA</a>
         </div>
@@ -47,7 +47,7 @@
       </span>
       <div>
         <h2>Recent MFA required</h2>
-        <p class="muted">Security-key registration and revocation require a recent MFA check. Enter your authenticator code to continue.</p>
+        <p class="muted">Passkey registration and revocation require a recent MFA check. Enter your authenticator code to continue.</p>
         <form class="compact-verification-form" method="post" action="{{ url_for('web.security_keys_mfa_refresh') }}">
           {{ refresh_mfa_form.hidden_tag() }}
           <div class="form-group compact">
@@ -63,18 +63,26 @@
   <div class="profile-grid">
     <article class="profile-panel profile-card">
       <div class="profile-panel-title">
-        <p class="eyebrow">Register key</p>
-        <h2>Add a hardware security key</h2>
+        <p class="eyebrow">Register passkey</p>
+        <h2>Add a passkey or security key</h2>
       </div>
-      <p class="muted">Use a cross-platform FIDO2 hardware key with local PIN or biometric verification.</p>
+      <p class="muted">Use Windows Hello, a browser or password-manager passkey such as Bitwarden, or an external FIDO2 security key.</p>
       <form method="post" action="{{ url_for('web.security_keys') }}" data-webauthn-register-form novalidate>
         {{ add_form.hidden_tag() }}
         <div class="form-group">
-          <label for="security-key-label">Key label</label>
-          <input id="security-key-label" name="label" maxlength="80" autocomplete="off" placeholder="Primary YubiKey" required>
+          <label for="security-key-label">Passkey label</label>
+          <input id="security-key-label" name="label" maxlength="80" autocomplete="off" placeholder="Windows Hello" required>
         </div>
-        <p class="hint">Direct attestation and FIDO metadata policy are verified server-side before the key is accepted.</p>
-        <button class="button full" type="submit"{% if not user.mfa_enabled or not recent_mfa %} disabled{% endif %}>Register security key</button>
+        <div class="form-group">
+          <label for="credential-kind">Passkey type</label>
+          <select id="credential-kind" name="credential_kind">
+            <option value="platform">This device or Windows Hello</option>
+            <option value="password_manager">Browser or password manager</option>
+            <option value="security_key">External security key</option>
+          </select>
+        </div>
+        <p class="hint">Origin, RP ID, challenge, and user verification are checked server-side before the passkey is accepted.</p>
+        <button class="button full" type="submit"{% if not user.mfa_enabled or not recent_mfa %} disabled{% endif %}>Register passkey</button>
         <p class="field-error" data-webauthn-register-error hidden></p>
       </form>
     </article>
@@ -85,8 +93,8 @@
           <svg class="icon" focusable="false"><use href="#icon-lock"></use></svg>
         </span>
         <div class="profile-panel-title">
-          <p class="eyebrow">Registered keys</p>
-          <h2>{{ credential_count }} of {{ required_count }} required</h2>
+          <p class="eyebrow">Registered passkeys</p>
+          <h2>{{ credential_count }} registered</h2>
         </div>
       </div>
       {% if credentials %}
@@ -95,24 +103,27 @@
             <article class="key-item">
               <div>
                 <h3>{{ item.label }}</h3>
+                <p class="hint">{{ item.credential_kind_display }}</p>
                 <p class="hint">Last used: {{ item.last_used_at_display }}</p>
                 {% if item.current %}<p class="badge">Current session key</p>{% endif %}
               </div>
               <form method="post" action="{{ url_for('web.security_key_revoke', credential_id=item.credential_id) }}" data-webauthn-step-up-form data-step-up-action="webauthn_revoke">
                 {{ revoke_form.hidden_tag() }}
+                <div class="form-group compact">
+                  <label for="revoke-totp-{{ loop.index }}">Authenticator code</label>
+                  {{ revoke_form.totp_code(id="revoke-totp-" ~ loop.index, inputmode="numeric", autocomplete="one-time-code", maxlength="6", placeholder="6-digit code") }}
+                </div>
+                <p class="hint key-revoke-disabled-reason">Enter an authenticator code, or leave it blank to verify with a passkey.</p>
                 <p class="field-error" data-webauthn-step-up-error hidden></p>
-                <button class="button danger-button button-small key-revoke-button" type="submit"{% if credential_count <= required_count %} disabled aria-describedby="revoke-disabled-{{ loop.index }}"{% endif %}>Verify with security key and revoke</button>
-                {% if credential_count <= required_count %}
-                  <p class="hint key-revoke-disabled-reason" id="revoke-disabled-{{ loop.index }}">Revoke is disabled because at least two approved security keys must stay registered. Add another backup key before revoking.</p>
-                {% endif %}
+                <button class="button danger-button button-small key-revoke-button" type="submit">Verify and revoke</button>
               </form>
             </article>
           {% endfor %}
         </div>
       {% else %}
         <div class="empty-state compact">
-          <h2>No security keys registered</h2>
-          <p class="muted">Register a primary key, then add a backup key before high-risk transaction testing.</p>
+          <h2>No passkeys registered</h2>
+          <p class="muted">Authenticator MFA is active without a passkey. Add one whenever you want optional passkey sign-in or step-up.</p>
         </div>
       {% endif %}
     </article>
