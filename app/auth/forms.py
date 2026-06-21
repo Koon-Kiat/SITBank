@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from flask_wtf import FlaskForm
-from wtforms import HiddenField, PasswordField, StringField
+from wtforms import HiddenField, PasswordField, SelectField, StringField
 from wtforms.validators import Email, EqualTo, InputRequired, Length, Optional, Regexp, ValidationError
 
 from app.security.passwords import PASSWORD_MIN_LENGTH, password_max_chars
@@ -65,6 +65,14 @@ class ProfileForm(FlaskForm):
         ],
     )
     email = StringField("Email address", validators=[InputRequired(), Email(), Length(max=255)])
+    mfa_step_up_preference = SelectField(
+        "Preferred verification",
+        choices=[
+            ("totp", "Authenticator code first"),
+            ("passkey", "Passkey first"),
+        ],
+        validators=[InputRequired()],
+    )
     totp_code = StringField(
         "Authenticator code",
         validators=[
@@ -101,6 +109,22 @@ class AuthenticationCodeForm(FlaskForm):
 
 
 class StepUpTokenForm(FlaskForm):
+    stepup_token = HiddenField(
+        validators=[
+            Optional(),
+            Regexp(STEP_UP_TOKEN_RE, message="Invalid security key step-up token"),
+        ],
+    )
+
+
+class MfaOrStepUpForm(FlaskForm):
+    totp_code = StringField(
+        "Authenticator code",
+        validators=[
+            Optional(),
+            Regexp(TOTP_RE, message="MFA code must be exactly 6 digits"),
+        ],
+    )
     stepup_token = HiddenField(
         validators=[
             Optional(),

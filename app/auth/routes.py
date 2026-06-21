@@ -15,10 +15,10 @@ from .forms import (
     ForgotPasswordForm,
     LoginForm,
     ManualRecoveryForm,
+    MfaOrStepUpForm,
     PasswordChangeForm,
     PasswordResetForm,
     RegisterForm,
-    StepUpTokenForm,
     TotpForm,
 )
 from .password_reset import (
@@ -33,13 +33,13 @@ from .password_reset import (
 from .schemas import (
     AuthenticationCodeSchema,
     ForgotPasswordSchema,
+    HighRiskTotpSchema,
     LoginSchema,
     ManualRecoverySchema,
     PasswordChangeSchema,
     PasswordResetSchema,
     RegisterSchema,
     ResetTokenExchangeSchema,
-    StepUpTokenSchema,
     TerminateSessionSchema,
     TotpSchema,
 )
@@ -253,7 +253,7 @@ def manual_recovery_request():
 @limiter.limit("5 per 5 minutes", key_func=mfa_principal)
 def webauthn_register_options():
     data = WebAuthnRegistrationOptionsSchema().load(request.get_json(silent=False) or {})
-    return jsonify(begin_registration_options(g.current_user, data["label"]))
+    return jsonify(begin_registration_options(g.current_user, data["label"], data["credential_kind"]))
 
 
 @auth_bp.post("/webauthn/register/verify")
@@ -314,10 +314,10 @@ def webauthn_credentials():
 def webauthn_revoke_credential(credential_id: str):
     WebAuthnCredentialReferenceSchema().load({"credential_id": credential_id})
     payload = request.get_json(silent=True) or {}
-    data = StepUpTokenSchema().load(payload)
+    data = HighRiskTotpSchema().load(payload)
     verify_high_risk_authorization(
         g.current_user,
-        None,
+        data.get("totp_code"),
         data.get("stepup_token"),
         "webauthn_revoke",
         rotate_session_on_success=False,
@@ -365,8 +365,8 @@ def mfa_setup_verify():
 @limiter.limit("5 per 5 minutes", key_func=get_remote_address)
 @limiter.limit("5 per 5 minutes", key_func=mfa_principal)
 def mfa_replace_start():
-    data = StepUpTokenSchema().load(request.get_json(silent=False) or {})
-    return jsonify(generate_mfa_replacement(g.current_user, None, data.get("stepup_token")))
+    data = HighRiskTotpSchema().load(request.get_json(silent=False) or {})
+    return jsonify(generate_mfa_replacement(g.current_user, data.get("totp_code"), data.get("stepup_token")))
 
 
 @auth_bp.post("/mfa/replace/verify")
@@ -421,10 +421,10 @@ def terminate_session(session_id: str):
 @login_required
 @not_frozen_required
 def revoke_other_sessions():
-    data = _load_payload(StepUpTokenSchema(), StepUpTokenForm)
+    data = _load_payload(HighRiskTotpSchema(), MfaOrStepUpForm)
     verify_high_risk_authorization(
         g.current_user,
-        None,
+        data.get("totp_code"),
         data.get("stepup_token"),
         "session_revoke_others",
     )
@@ -438,8 +438,8 @@ def revoke_other_sessions():
 @limiter.limit("5 per 5 minutes", key_func=get_remote_address)
 @limiter.limit("5 per 5 minutes", key_func=mfa_principal)
 def freeze_account():
-    data = _load_payload(StepUpTokenSchema(), StepUpTokenForm)
-    return jsonify(freeze_own_account(g.current_user, None, data.get("stepup_token")))
+    data = _load_payload(HighRiskTotpSchema(), MfaOrStepUpForm)
+    return jsonify(freeze_own_account(g.current_user, data.get("totp_code"), data.get("stepup_token")))
 
 
 @auth_bp.post("/password/change")
@@ -455,7 +455,7 @@ def password_change():
             data["current_password"],
             data["new_password"],
             data["confirm_new_password"],
-            None,
+            data.get("totp_code"),
             data.get("stepup_token"),
         )
     )

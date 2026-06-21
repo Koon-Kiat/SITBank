@@ -168,8 +168,14 @@
         event.preventDefault();
         var errorNode = document.querySelector("[data-webauthn-register-error]");
         var label = registerForm.querySelector('input[name="label"]').value;
+        var kindInput = registerForm.querySelector('select[name="credential_kind"], input[name="credential_kind"]:checked');
+        var credentialKind = kindInput ? kindInput.value : "security_key";
         clearError(errorNode);
-        postJson("/auth/webauthn/register/options", { label: label }, csrfToken(registerForm))
+        postJson(
+          "/auth/webauthn/register/options",
+          { label: label, credential_kind: credentialKind },
+          csrfToken(registerForm)
+        )
           .then(function (options) {
             return navigator.credentials.create({ publicKey: prepareRegistrationOptions(options) });
           })
@@ -247,6 +253,10 @@
     stepUpForms.forEach(function (form) {
       form.addEventListener("submit", function (event) {
         if (form.getAttribute("data-webauthn-step-up-complete") === "true") {
+          return;
+        }
+        var totpInput = form.querySelector('input[name="totp_code"]');
+        if (totpInput && totpInput.value.trim()) {
           return;
         }
         event.preventDefault();

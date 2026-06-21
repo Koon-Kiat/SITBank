@@ -60,7 +60,6 @@ GENERIC_LOGIN_ERROR = "Invalid username or password"
 GENERIC_MFA_ERROR = "Invalid authentication code."
 AUTH_BACKOFF_ERROR = "Too many attempts. Please try again later."
 ACCOUNT_AUTH_UNAVAILABLE_ERROR = "Authentication unavailable for this account"
-FIDO_PRIMARY_LOGIN_ERROR = "Security key sign-in required for this account"
 AUTH_LOCK_THRESHOLD = 10
 AUTH_LOCK_WINDOW_SECONDS = 15 * 60
 MFA_REPLACEMENT_NONCE_KEY = "mfa_replacement_secret_nonce"
@@ -86,6 +85,13 @@ def _redis():
 
 def _normalize(value: str) -> str:
     return value.strip().casefold()
+
+
+def _normalize_step_up_preference(value: str | None) -> str:
+    normalized = str(value or "totp").strip().casefold()
+    if normalized not in {"totp", "passkey"}:
+        raise AuthError("Invalid verification preference", 400)
+    return normalized
 
 
 def _client_ip() -> str:
@@ -221,16 +227,6 @@ def authenticate_primary(identifier: str, password: str) -> dict[str, Any]:
         raise AuthError(GENERIC_LOGIN_ERROR, 401)
 
     ensure_account_can_authenticate(user)
-    if _requires_security_key_login(user):
-        clear_failures("login", principal)
-        _clear_user_security_failures(user, "password")
-        audit_event(
-            "login",
-            "blocked",
-            user=user,
-            metadata={"reason": "security_key_primary_required"},
-        )
-        raise AuthError(FIDO_PRIMARY_LOGIN_ERROR, 403)
 
     user.failed_login_count = 0
     user.last_login_at = datetime.now(timezone.utc)
@@ -392,14 +388,6 @@ def complete_pending_mfa(code: str) -> dict[str, Any]:
         raise AuthError("No pending MFA challenge", 401)
 
     ensure_account_can_authenticate(user)
-    if _requires_security_key_login(user):
-        audit_event(
-            "mfa_login_verify",
-            "blocked",
-            user=user,
-            metadata={"reason": "security_key_primary_required"},
-        )
-        raise AuthError(FIDO_PRIMARY_LOGIN_ERROR, 403)
 
     factor = _verify_pending_login_authentication_code(user, code)
 
@@ -496,13 +484,19 @@ def update_profile_details(
     user: User,
     username: str,
     email: str,
+    mfa_step_up_preference: str | None,
     code: str | None,
     stepup_token: str | None = None,
 ) -> bool:
     normalized_username = username.strip()
     username_lookup = _normalize(normalized_username)
     normalized_email = email.strip().lower()
-    if username_lookup == _normalize(user.username) and normalized_email == user.email:
+    normalized_preference = _normalize_step_up_preference(mfa_step_up_preference)
+    if (
+        username_lookup == _normalize(user.username)
+        and normalized_email == user.email
+        and normalized_preference == user.mfa_step_up_preference
+    ):
         return False
 
     ensure_account_not_frozen(user, "profile update")
@@ -529,6 +523,7 @@ def update_profile_details(
 
     user.username = normalized_username
     user.email = normalized_email
+    user.mfa_step_up_preference = normalized_preference
     try:
         db.session.commit()
     except IntegrityError as exc:
@@ -664,16 +659,18 @@ def verify_high_risk_authorization(
     if not user.mfa_enabled:
         audit_event(action, "failure", user=user, metadata={"reason": "mfa_not_enabled"})
         raise AuthError("MFA is required for this action", 403)
-    consume_step_up_token(user, action, stepup_token)
+    if stepup_token:
+        consume_step_up_token(user, action, stepup_token)
+        audit_event(action, "passkey_success", user=user)
+    elif code:
+        if not _verify_totp_for_user(user, code, action):
+            _handle_mfa_verification_failure(user, action)
+        audit_event(action, "mfa_success", user=user)
+    else:
+        audit_event(action, "failure", user=user, metadata={"reason": "missing_mfa_step_up"})
+        raise AuthError("MFA verification is required for this action", 403)
     if rotate_session_on_success and session.get("user_id") == user.id:
         rotate_authenticated_session_after_mfa(user.id)
-    audit_event(action, "security_key_success", user=user)
-
-
-def _requires_security_key_login(user: User) -> bool:
-    from app.auth.webauthn_services import has_full_webauthn_access
-
-    return has_full_webauthn_access(user)
 
 
 def ensure_account_can_authenticate(user: User) -> None:
@@ -905,5 +902,6 @@ def _public_user(user: User) -> dict[str, Any]:
         "username": user.username,
         "email": user.email,
         "mfa_enabled": user.mfa_enabled,
+        "mfa_step_up_preference": user.mfa_step_up_preference,
         "is_frozen": user.is_frozen,
     }

@@ -42,14 +42,9 @@
               <strong class="profile-status-title">Setup MFA first</strong>
               <span class="compact">Enable authenticator MFA before changing your password.</span>
               <a class="button button-small secondary is-disabled" aria-disabled="true">Change password</a>
-            {% elif not g.high_risk_ready %}
-              <strong class="profile-status-title">Security keys required</strong>
-              <span class="compact">Password changes require two approved hardware security keys.</span>
-              <a class="button button-small secondary" href="{{ url_for('web.security_keys') }}">Manage keys</a>
-              <a class="button button-small secondary is-disabled" aria-disabled="true">Change password</a>
             {% else %}
               <strong class="profile-status-title">Change available</strong>
-              <span class="compact">Password changes require your current password and security-key step-up.</span>
+              <span class="compact">Password changes require your current password and MFA step-up.</span>
               <a class="button button-small secondary" href="{{ url_for('web.password_change') }}">Change password</a>
             {% endif %}
           </dd>
@@ -65,9 +60,9 @@
         <div class="profile-status-row">
           <dt>Security keys</dt>
           <dd class="profile-status-copy">
-            <strong class="profile-status-title">Transaction step-up</strong>
-            <span class="compact">Hardware keys are used for future high-risk transaction approval.</span>
-            <a class="button button-small secondary" href="{{ url_for('web.security_keys') }}">Manage keys</a>
+            <strong class="profile-status-title">Optional passkeys</strong>
+            <span class="compact">Use Windows Hello, a browser or password-manager passkey, or an external security key.</span>
+            <a class="button button-small secondary" href="{{ url_for('web.security_keys') }}">Manage passkeys</a>
           </dd>
         </div>
       </dl>
@@ -78,8 +73,8 @@
         <p class="eyebrow">Editable field</p>
         <h2>Update profile details</h2>
       </div>
-      <p class="muted">Changes to your sign-in details are securely recorded and require security-key verification.</p>
-      {% if g.high_risk_ready %}
+      <p class="muted">Changes to your sign-in details are securely recorded and require MFA or passkey verification.</p>
+      {% if user.mfa_enabled %}
         <form method="post" action="{{ url_for('web.profile_submit') }}" data-webauthn-step-up-form data-step-up-action="profile_update" novalidate>
           {{ form.hidden_tag() }}
           <div class="form-group">
@@ -92,8 +87,20 @@
             {{ form.email(autocomplete="email", maxlength="255") }}
             {% for error in form.email.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
           </div>
+          <div class="form-group">
+            <label for="{{ form.mfa_step_up_preference.id }}">Preferred verification</label>
+            {{ form.mfa_step_up_preference() }}
+            {% for error in form.mfa_step_up_preference.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+            <p class="hint">TOTP remains required for the account. This only changes which step-up method the UI presents first.</p>
+          </div>
+          <div class="form-group">
+            <label for="{{ form.totp_code.id }}">Authenticator code</label>
+            {{ form.totp_code(inputmode="numeric", autocomplete="one-time-code", maxlength="6", placeholder="6-digit code") }}
+            {% for error in form.totp_code.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+            <p class="hint">Enter your authenticator code, or leave this blank to verify with a passkey.</p>
+          </div>
           <p class="field-error" data-webauthn-step-up-error hidden></p>
-          <button class="button full" type="submit">Verify with security key and save</button>
+          <button class="button full" type="submit">Verify and save</button>
         </form>
       {% else %}
         <div class="notice warning">
@@ -101,11 +108,11 @@
             <svg class="icon" focusable="false"><use href="#icon-shield-check"></use></svg>
           </span>
           <div>
-            <h3>Security keys required</h3>
-            <p class="muted">Profile updates stay locked until two approved hardware security keys are enrolled.</p>
+            <h3>Authenticator MFA required</h3>
+            <p class="muted">Profile updates stay locked until authenticator MFA is enabled.</p>
           </div>
         </div>
-        <a class="button secondary" href="{{ url_for('web.security_keys') }}">Manage security keys</a>
+        <a class="button secondary" href="{{ url_for('web.mfa_setup') }}">Manage MFA</a>
       {% endif %}
     </article>
   </div>

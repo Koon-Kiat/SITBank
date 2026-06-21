@@ -56,7 +56,7 @@
         {% for error in form.confirm_password.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
       </div>
 
-      <p class="hint">Common breached passwords are rejected server-side.</p>
+      <p class="hint">Common passwords are rejected server-side.</p>
       <button class="button full" type="submit">Register account</button>
     </form>
     <p class="switch-link">Already registered? <a href="{{ url_for('web.login') }}">Login</a>.</p>
