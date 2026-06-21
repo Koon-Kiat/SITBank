@@ -253,7 +253,7 @@ def manual_recovery_request():
 @limiter.limit("5 per 5 minutes", key_func=mfa_principal)
 def webauthn_register_options():
     data = WebAuthnRegistrationOptionsSchema().load(request.get_json(silent=False) or {})
-    return jsonify(begin_registration_options(g.current_user, data["label"], data["credential_kind"]))
+    return jsonify(begin_registration_options(g.current_user, data["label"]))
 
 
 @auth_bp.post("/webauthn/register/verify")
