@@ -118,9 +118,9 @@ def register_ops_commands(app: Flask) -> None:
             try:
                 approved_aaguids = validate_fido_metadata_config()
             except Exception as exc:
-                failures.append(f"FIDO metadata configuration check failed: {exc}")
+                click.echo(f"Optional FIDO metadata configuration skipped: {exc}")
             else:
-                click.echo(f"Approved FIDO authenticator AAGUIDs: {approved_aaguids}")
+                click.echo(f"Optional FIDO authenticator AAGUIDs configured: {approved_aaguids}")
 
         try:
             alert_config = validate_security_alert_config(require_delivery=True)
@@ -148,8 +148,6 @@ def register_ops_commands(app: Flask) -> None:
             failures.append("DATABASE_MIGRATION_URL must not be configured for the runtime app")
         if len(str(app.config.get("WTF_CSRF_SECRET_KEY", ""))) < 32:
             failures.append("WTF_CSRF_SECRET_KEY must be at least 32 characters")
-        if app_mode == "customer" and int(app.config.get("WEBAUTHN_REQUIRED_CREDENTIALS", 0)) < 2:
-            failures.append("WEBAUTHN_REQUIRED_CREDENTIALS must be at least 2")
         if int(app.config.get("TRUSTED_PROXY_COUNT", -1)) != 1:
             failures.append("TRUSTED_PROXY_COUNT must be 1 for the single Nginx proxy boundary")
         if not app.config.get("SESSION_COOKIE_SECURE"):

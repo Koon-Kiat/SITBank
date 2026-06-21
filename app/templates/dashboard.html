@@ -13,7 +13,7 @@
     <div class="button-row" aria-label="Primary security actions">
       <a class="button secondary" href="{{ url_for('web.sessions_dashboard') }}">Manage sessions</a>
       {% if not user.is_frozen %}
-        {% if g.high_risk_ready %}
+        {% if user.mfa_enabled %}
           <a class="button secondary" href="{{ url_for('web.freeze_account') }}">Freeze account</a>
         {% else %}
           <a class="button secondary is-disabled" aria-disabled="true">Freeze account</a>
@@ -49,21 +49,18 @@
       <span class="card-icon" aria-hidden="true">
         <svg class="icon" focusable="false"><use href="#icon-shield-check"></use></svg>
       </span>
-      <h2>Hardware security keys</h2>
+      <h2>Passkeys</h2>
       <div class="status-card-body">
-        {% if credential_count >= required_count %}
-          <p class="badge">Transaction-ready</p>
-          <p class="muted">{{ credential_count }} approved FIDO2 hardware keys are enrolled for future high-risk transaction approval.</p>
-        {% elif credential_count > 0 %}
-          <p class="badge warning">Backup needed</p>
-          <p class="muted">{{ credential_count }} of {{ required_count }} hardware keys enrolled. Add a backup key before high-risk transaction approval.</p>
+        {% if credential_count > 0 %}
+          <p class="badge">Available</p>
+          <p class="muted">{{ credential_count }} passkey{{ "" if credential_count == 1 else "s" }} registered for optional sign-in and protected action step-up.</p>
         {% else %}
-          <p class="badge warning">Setup needed</p>
-          <p class="muted">No hardware security keys are enrolled yet. Set up authenticator MFA first, then add keys for future transaction approval.</p>
+          <p class="badge neutral">Optional</p>
+          <p class="muted">No passkeys are registered. Authenticator MFA remains the required baseline.</p>
         {% endif %}
       </div>
       <div class="status-card-actions">
-        <a class="button secondary" href="{{ url_for('web.security_keys') }}">Manage keys</a>
+        <a class="button secondary" href="{{ url_for('web.security_keys') }}">Manage passkeys</a>
       </div>
     </article>
     <article class="status-card">
@@ -75,17 +72,17 @@
         {% if user.is_frozen %}
           <p class="badge danger">Frozen</p>
           <p class="muted">Unfreeze requires manual support review.</p>
-        {% elif not g.high_risk_ready %}
-          <p class="badge warning">Keys required</p>
-          <p class="muted">Emergency freeze is locked until two approved hardware security keys are enrolled.</p>
+        {% elif not user.mfa_enabled %}
+          <p class="badge warning">MFA required</p>
+          <p class="muted">Emergency freeze is locked until authenticator MFA is enabled.</p>
         {% else %}
           <p class="badge">Ready</p>
-          <p class="muted">Emergency freeze is available after authenticator and security-key verification.</p>
+          <p class="muted">Emergency freeze is available after MFA or passkey verification.</p>
         {% endif %}
       </div>
       <div class="status-card-actions">
         {% if not user.is_frozen %}
-          {% if g.high_risk_ready %}
+          {% if user.mfa_enabled %}
             <a class="button secondary" href="{{ url_for('web.freeze_account') }}">Freeze account</a>
           {% else %}
             <a class="button secondary is-disabled" aria-disabled="true">Freeze account</a>

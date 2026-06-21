@@ -32,7 +32,6 @@ from webauthn.helpers.structs import (
 from app.extensions import db
 from app.models import User, WebAuthnCredential
 from app.security.audit import audit_event, audit_reference, audit_webauthn_event
-from app.security.fido_mds import FidoMetadataError, pem_root_certs_by_fmt, validate_aaguid_policy
 from app.security.sessions import (
     current_session_id,
     establish_authenticated_session,
@@ -50,6 +49,7 @@ LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._()#:/+\-]{0,79}$")
 GENERIC_WEBAUTHN_ERROR = "Security key verification failed"
 REGISTRATION_CHALLENGE_KEY = "webauthn_registration_challenge"
 REGISTRATION_LABEL_KEY = "webauthn_registration_label"
+REGISTRATION_KIND_KEY = "webauthn_registration_credential_kind"
 REGISTRATION_USER_KEY = "webauthn_registration_user_id"
 AUTH_CHALLENGE_KEY = "webauthn_authentication_challenge"
 AUTH_USER_KEY = "webauthn_authentication_user_id"
@@ -64,6 +64,16 @@ STEP_UP_ACTION_KEY = "webauthn_step_up_action"
 STEP_UP_USER_KEY = "webauthn_step_up_user_id"
 STEP_UP_TOKEN_PREFIX = "ospbank:webauthn_stepup:"
 PASSWORD_RESET_CHALLENGE_PREFIX = "ospbank:password_reset_webauthn:"
+PASSKEY_KIND_PLATFORM = "platform"
+PASSKEY_KIND_PASSWORD_MANAGER = "password_manager"
+PASSKEY_KIND_SECURITY_KEY = "security_key"
+PASSKEY_KINDS = frozenset(
+    {
+        PASSKEY_KIND_PLATFORM,
+        PASSKEY_KIND_PASSWORD_MANAGER,
+        PASSKEY_KIND_SECURITY_KEY,
+    }
+)
 STEP_UP_ACTIONS = frozenset(
     {
         "password_change",
@@ -72,6 +82,7 @@ STEP_UP_ACTIONS = frozenset(
         "session_revoke_others",
         "account_freeze",
         "webauthn_revoke",
+        "transaction_authorization",
     }
 )
 
@@ -100,7 +111,7 @@ def has_webauthn_credentials(user: User) -> bool:
 
 
 def has_full_webauthn_access(user: User) -> bool:
-    return webauthn_credential_count(user) >= current_app.config.get("WEBAUTHN_REQUIRED_CREDENTIALS", 2)
+    return has_webauthn_credentials(user)
 
 
 def needs_security_key_setup(user: User) -> bool:
@@ -114,10 +125,11 @@ def current_webauthn_credential_reference() -> str | None:
     return str(value) if value else None
 
 
-def begin_registration_options(user: User, label: str) -> dict[str, Any]:
+def begin_registration_options(user: User, label: str, credential_kind: str = PASSKEY_KIND_SECURITY_KEY) -> dict[str, Any]:
     enforce_request_origin()
     ensure_account_not_frozen(user, "security key registration")
     label = _validate_label(label)
+    credential_kind = _validate_credential_kind(credential_kind)
     _ensure_registration_session_allowed(user)
     _ensure_label_available(user, label)
 
@@ -129,21 +141,18 @@ def begin_registration_options(user: User, label: str) -> dict[str, Any]:
         user_name=user.username,
         user_display_name=user.username,
         timeout=current_app.config["WEBAUTHN_TIMEOUT_MS"],
-        attestation=AttestationConveyancePreference.DIRECT,
-        authenticator_selection=AuthenticatorSelectionCriteria(
-            authenticator_attachment=AuthenticatorAttachment.CROSS_PLATFORM,
-            resident_key=ResidentKeyRequirement.DISCOURAGED,
-            user_verification=UserVerificationRequirement.REQUIRED,
-        ),
+        attestation=AttestationConveyancePreference.NONE,
+        authenticator_selection=_registration_authenticator_selection(credential_kind),
         exclude_credentials=[PublicKeyCredentialDescriptor(id=item.credential_id) for item in credentials],
-        hints=[PublicKeyCredentialHint.SECURITY_KEY],
+        hints=_registration_hints(credential_kind),
     )
 
     session[REGISTRATION_CHALLENGE_KEY] = bytes_to_base64url(options.challenge)
     session[REGISTRATION_LABEL_KEY] = label
+    session[REGISTRATION_KIND_KEY] = credential_kind
     session[REGISTRATION_USER_KEY] = user.id
     session.modified = True
-    audit_webauthn_event("register_options", "success", user=user, label=label)
+    audit_webauthn_event("register_options", "success", user=user, label=label, metadata={"credential_kind": credential_kind})
     return options_to_json_dict(options)
 
 
@@ -157,27 +166,21 @@ def verify_registration(user: User, credential: dict[str, Any]) -> dict[str, Any
     label = str(session.get(REGISTRATION_LABEL_KEY) or "")
     _ensure_registration_session_allowed(user)
     _ensure_label_available(user, label)
-    _enforce_cross_platform_attachment(credential)
+    credential_kind = _validate_credential_kind(str(session.get(REGISTRATION_KIND_KEY) or PASSKEY_KIND_SECURITY_KEY))
 
     verification = None
     failure_stage = "attestation_verification"
     try:
-        # Direct attestation is verified before the AAGUID is accepted against local MDS policy.
         verification = verify_registration_response(
             credential=credential,
             expected_challenge=base64url_to_bytes(str(session[REGISTRATION_CHALLENGE_KEY])),
             expected_rp_id=current_app.config["WEBAUTHN_RP_ID"],
             expected_origin=current_app.config["WEBAUTHN_RP_ORIGIN"],
             require_user_verification=True,
-            pem_root_certs_bytes_by_fmt=pem_root_certs_by_fmt(),
         )
-        failure_stage = "single_device_policy"
-        _enforce_single_device_credential(verification.credential_device_type, verification.credential_backed_up)
-        failure_stage = "metadata_policy"
-        validate_aaguid_policy(verification.aaguid, verification.fmt)
     except AuthError:
         raise
-    except (InvalidRegistrationResponse, FidoMetadataError, ValueError) as exc:
+    except (InvalidRegistrationResponse, ValueError) as exc:
         audit_webauthn_event(
             "register",
             "failure",
@@ -194,11 +197,12 @@ def verify_registration(user: User, credential: dict[str, Any]) -> dict[str, Any
         credential_public_key=verification.credential_public_key,
         sign_count=verification.sign_count,
         label=label,
-        aaguid=verification.aaguid,
+        aaguid=_aaguid_value(verification.aaguid),
         attestation_format=_enum_value(verification.fmt),
         transports=transports,
         credential_device_type=_enum_value(verification.credential_device_type),
         credential_backed_up=verification.credential_backed_up,
+        credential_kind=credential_kind,
     )
     db.session.add(item)
     try:
@@ -218,6 +222,7 @@ def verify_registration(user: User, credential: dict[str, Any]) -> dict[str, Any
 
     session.pop(REGISTRATION_CHALLENGE_KEY, None)
     session.pop(REGISTRATION_LABEL_KEY, None)
+    session.pop(REGISTRATION_KIND_KEY, None)
     session.pop(REGISTRATION_USER_KEY, None)
     session.modified = True
     audit_webauthn_event(
@@ -227,12 +232,12 @@ def verify_registration(user: User, credential: dict[str, Any]) -> dict[str, Any
         credential_id=item.credential_id,
         label=item.label,
         aaguid=item.aaguid,
-        required=True,
+        metadata={"credential_kind": credential_kind},
     )
     return {
-        "message": "Security key registered",
+        "message": "Passkey registered",
         "credential": _public_credential(item),
-        "requires_backup_key": webauthn_credential_count(user) < current_app.config.get("WEBAUTHN_REQUIRED_CREDENTIALS", 2),
+        "requires_backup_key": False,
     }
 
 
@@ -250,7 +255,7 @@ def begin_authentication_options(identifier: str) -> dict[str, Any]:
     if user is not None:
         user_credentials = _credentials_for_user(user)
         registered_count = len(user_credentials)
-        if registered_count >= _required_webauthn_login_credential_count():
+        if registered_count > 0:
             credentials = user_credentials
             user_id = user.id
 
@@ -329,24 +334,6 @@ def verify_authentication(credential: dict[str, Any]) -> dict[str, Any]:
         )
         raise AuthError(GENERIC_WEBAUTHN_ERROR, 401) from exc
 
-    registered_count = webauthn_credential_count(user)
-    required_count = _required_webauthn_login_credential_count()
-    if registered_count < required_count:
-        audit_webauthn_event(
-            "authenticate",
-            "failure",
-            user=user,
-            credential_id=item.credential_id,
-            label=item.label,
-            aaguid=item.aaguid,
-            metadata={
-                "reason": "insufficient_security_keys",
-                "registered_credential_count": registered_count,
-                "required_credential_count": required_count,
-            },
-        )
-        raise AuthError(GENERIC_WEBAUTHN_ERROR, 401)
-
     try:
         # py_webauthn rejects stale counters; the explicit check keeps monkeypatched tests and
         # future library behavior aligned with the MAS clone-response lockout requirement.
@@ -359,16 +346,12 @@ def verify_authentication(credential: dict[str, Any]) -> dict[str, Any]:
             credential_current_sign_count=item.sign_count,
             require_user_verification=True,
         )
-        _enforce_single_device_credential(
-            verification.credential_device_type,
-            verification.credential_backed_up,
-        )
-        if verification.new_sign_count <= item.sign_count:
+        if _should_lock_for_counter_anomaly(item.sign_count, verification.new_sign_count):
             _lock_for_counter_anomaly(user, item, verification.new_sign_count)
     except AuthError:
         raise
     except InvalidAuthenticationResponse as exc:
-        if "sign count" in str(exc).casefold():
+        if "sign count" in str(exc).casefold() and int(item.sign_count or 0) > 0:
             _lock_for_counter_anomaly(user, item, item.sign_count)
         audit_webauthn_event(
             "authenticate",
@@ -380,7 +363,7 @@ def verify_authentication(credential: dict[str, Any]) -> dict[str, Any]:
             metadata={"reason": type(exc).__name__},
         )
         raise AuthError(GENERIC_WEBAUTHN_ERROR, 401) from exc
-    except (ValueError, FidoMetadataError) as exc:
+    except ValueError as exc:
         audit_webauthn_event(
             "authenticate",
             "failure",
@@ -423,7 +406,7 @@ def verify_authentication(credential: dict[str, Any]) -> dict[str, Any]:
     return {
         "message": "Login successful",
         "session_ref": public_session_reference(session_id),
-        "requires_backup_key": webauthn_credential_count(user) < current_app.config.get("WEBAUTHN_REQUIRED_CREDENTIALS", 2),
+        "requires_backup_key": False,
         "user": _public_user(user),
     }
 
@@ -742,8 +725,7 @@ def revoke_credential(
         raise AuthError("Security key not found", 404)
 
     active_count = webauthn_credential_count(user)
-    required_count = current_app.config.get("WEBAUTHN_REQUIRED_CREDENTIALS", 2)
-    if active_count <= required_count:
+    if not user.mfa_enabled and active_count <= 1:
         audit_webauthn_event(
             "revoke",
             "failure",
@@ -752,12 +734,11 @@ def revoke_credential(
             label=item.label,
             aaguid=item.aaguid,
             metadata={
-                "reason": "required_key_count_revocation_blocked",
+                "reason": "last_mfa_method_revocation_blocked",
                 "registered_credential_count": active_count,
-                "required_credential_count": required_count,
             },
         )
-        raise AuthError("At least two security keys must remain registered", 409)
+        raise AuthError("At least one MFA method must remain enabled", 409)
 
     current_ref = current_webauthn_credential_reference()
     is_current_credential = current_ref == credential_reference
@@ -772,14 +753,13 @@ def revoke_credential(
         label=label,
         aaguid=aaguid,
         metadata={"current_session_credential": is_current_credential},
-        required=True,
     )
     if is_current_credential:
         revoke_current_session()
     return {
         "message": "Security key revoked",
         "current_session_revoked": is_current_credential,
-        "requires_backup_key": webauthn_credential_count(user) < current_app.config.get("WEBAUTHN_REQUIRED_CREDENTIALS", 2),
+        "requires_backup_key": False,
     }
 
 
@@ -983,6 +963,48 @@ def _enum_value(value: Any) -> str:
     return str(enum_value if enum_value is not None else value)
 
 
+def _aaguid_value(value: Any) -> str:
+    text = str(value or "").strip()
+    return text or "00000000-0000-0000-0000-000000000000"
+
+
+def _validate_credential_kind(value: str) -> str:
+    normalized = str(value or PASSKEY_KIND_SECURITY_KEY).strip().casefold()
+    if normalized not in PASSKEY_KINDS:
+        raise AuthError("Invalid passkey type", 400)
+    return normalized
+
+
+def _registration_authenticator_selection(credential_kind: str) -> AuthenticatorSelectionCriteria:
+    attachment = None
+    if credential_kind == PASSKEY_KIND_PLATFORM:
+        attachment = AuthenticatorAttachment.PLATFORM
+    elif credential_kind == PASSKEY_KIND_SECURITY_KEY:
+        attachment = AuthenticatorAttachment.CROSS_PLATFORM
+    return AuthenticatorSelectionCriteria(
+        authenticator_attachment=attachment,
+        resident_key=ResidentKeyRequirement.PREFERRED,
+        user_verification=UserVerificationRequirement.REQUIRED,
+    )
+
+
+def _registration_hints(credential_kind: str):
+    if credential_kind == PASSKEY_KIND_SECURITY_KEY:
+        return [PublicKeyCredentialHint.SECURITY_KEY]
+    hint_name = "CLIENT_DEVICE" if credential_kind == PASSKEY_KIND_PLATFORM else "HYBRID"
+    hint = getattr(PublicKeyCredentialHint, hint_name, None)
+    return [hint] if hint is not None else None
+
+
+def _should_lock_for_counter_anomaly(stored_count: int | None, new_count: int | None) -> bool:
+    try:
+        stored = int(stored_count or 0)
+        incoming = int(new_count or 0)
+    except (TypeError, ValueError):
+        return False
+    return stored > 0 and incoming > 0 and incoming <= stored
+
+
 def _validate_step_up_action(action: str) -> str:
     normalized = str(action or "").strip()
     if normalized not in STEP_UP_ACTIONS:
@@ -997,21 +1019,19 @@ def _ensure_authenticated_user_session(user: User, action: str) -> None:
 
 
 def _ensure_step_up_key_access(user: User, action: str) -> None:
-    required_count = current_app.config.get("WEBAUTHN_REQUIRED_CREDENTIALS", 2)
     registered_count = webauthn_credential_count(user)
-    if registered_count < required_count:
+    if registered_count < 1:
         audit_webauthn_event(
             "step_up_denied",
             "failure",
             user=user,
             metadata={
-                "reason": "insufficient_security_keys",
+                "reason": "no_registered_passkey",
                 "step_up_action": action,
                 "registered_credential_count": registered_count,
-                "required_credential_count": required_count,
             },
         )
-        raise AuthError("Two registered security keys are required for this action", 403)
+        raise AuthError("A registered passkey is required for this action", 403)
 
 
 def _step_up_token_cache_key(token: str) -> str:
@@ -1049,7 +1069,7 @@ def _consume_password_reset_challenge(transaction_id: str) -> dict[str, Any]:
 
 
 def _required_webauthn_login_credential_count() -> int:
-    return int(current_app.config.get("WEBAUTHN_REQUIRED_CREDENTIALS", 2))
+    return 1
 
 
 def _credentials_for_user(user: User) -> list[WebAuthnCredential]:
@@ -1108,21 +1128,6 @@ def _ensure_transaction_session_allowed(user: User) -> None:
     if session.get("user_id") != user.id:
         audit_webauthn_event("transaction_options", "failure", user=user, metadata={"reason": "not_authenticated_session"})
         raise AuthError("Authentication required", 401)
-
-
-def _enforce_cross_platform_attachment(credential: dict[str, Any]) -> None:
-    attachment = credential.get("authenticatorAttachment")
-    if attachment != AuthenticatorAttachment.CROSS_PLATFORM.value:
-        raise AuthError("Only cross-platform hardware security keys are allowed", 400)
-
-
-def _enforce_single_device_credential(
-    credential_device_type: CredentialDeviceType | str,
-    credential_backed_up: bool,
-) -> None:
-    value = credential_device_type.value if isinstance(credential_device_type, CredentialDeviceType) else str(credential_device_type)
-    if value != CredentialDeviceType.SINGLE_DEVICE.value or credential_backed_up:
-        raise FidoMetadataError("Synced or backed-up passkeys are not allowed")
 
 
 def _registration_transports(credential: dict[str, Any]) -> list[str]:
@@ -1187,17 +1192,13 @@ def _verify_assertion_response(
             credential_current_sign_count=item.sign_count,
             require_user_verification=True,
         )
-        _enforce_single_device_credential(
-            verification.credential_device_type,
-            verification.credential_backed_up,
-        )
-        if verification.new_sign_count <= item.sign_count:
+        if _should_lock_for_counter_anomaly(item.sign_count, verification.new_sign_count):
             _lock_for_counter_anomaly(user, item, verification.new_sign_count)
         return verification
     except AuthError:
         raise
     except InvalidAuthenticationResponse as exc:
-        if "sign count" in str(exc).casefold():
+        if "sign count" in str(exc).casefold() and int(item.sign_count or 0) > 0:
             _lock_for_counter_anomaly(user, item, item.sign_count)
         audit_webauthn_event(
             action,
@@ -1209,7 +1210,7 @@ def _verify_assertion_response(
             metadata={"reason": type(exc).__name__},
         )
         raise AuthError(GENERIC_WEBAUTHN_ERROR, 401) from exc
-    except (ValueError, FidoMetadataError) as exc:
+    except ValueError as exc:
         audit_webauthn_event(
             action,
             "failure",
@@ -1374,6 +1375,8 @@ def _public_credential(item: WebAuthnCredential) -> dict[str, Any]:
         "transports": item.transports or [],
         "credential_device_type": item.credential_device_type,
         "credential_backed_up": item.credential_backed_up,
+        "credential_kind": item.credential_kind,
+        "credential_kind_display": _credential_kind_display(item.credential_kind),
         "created_at": item.created_at.isoformat() if item.created_at else None,
         "last_used_at": item.last_used_at.isoformat() if item.last_used_at else None,
         "last_used_at_display": _format_credential_time(item.last_used_at),
@@ -1389,11 +1392,20 @@ def _format_credential_time(value: datetime | None) -> str:
     return value.astimezone(timezone.utc).strftime("%d %b %Y %H:%M UTC")
 
 
+def _credential_kind_display(value: str | None) -> str:
+    return {
+        PASSKEY_KIND_PLATFORM: "This device",
+        PASSKEY_KIND_PASSWORD_MANAGER: "Browser or password manager",
+        PASSKEY_KIND_SECURITY_KEY: "External security key",
+    }.get(str(value or "").strip().casefold(), "Passkey")
+
+
 def _public_user(user: User) -> dict[str, Any]:
     return {
         "id": user.id,
         "username": user.username,
         "email": user.email,
         "mfa_enabled": user.mfa_enabled,
+        "mfa_step_up_preference": user.mfa_step_up_preference,
         "is_frozen": user.is_frozen,
     }

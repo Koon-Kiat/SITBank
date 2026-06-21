@@ -109,7 +109,7 @@ class TestConfig:
     WEBAUTHN_RP_ORIGIN = os.environ["WEBAUTHN_RP_ORIGIN"]
     WEBAUTHN_RP_NAME = "SITBank Test"
     WEBAUTHN_TIMEOUT_MS = 60_000
-    WEBAUTHN_REQUIRED_CREDENTIALS = 2
+    WEBAUTHN_REQUIRED_CREDENTIALS = 1
     WEBAUTHN_ENFORCE_KEY_SETUP = False
     WEBAUTHN_MDS_CACHE_PATH = str(Path(__file__).parent / "fixtures" / "fido-mds-cache.json")
     WEBAUTHN_APPROVED_AAGUIDS_PATH = str(Path(__file__).parent / "fixtures" / "fido-approved-aaguids.json")

@@ -120,7 +120,7 @@
               {% endif %}
               <a href="{{ url_for('web.mfa_setup') }}"{% if request.endpoint in ("web.mfa_setup", "web.mfa_setup_submit") %} aria-current="page"{% endif %}>MFA</a>
               {% if g.current_user.mfa_enabled %}
-                <a href="{{ url_for('web.security_keys') }}"{% if request.endpoint in ("web.security_keys", "web.security_key_revoke") %} aria-current="page"{% endif %}>Security Keys</a>
+                <a href="{{ url_for('web.security_keys') }}"{% if request.endpoint in ("web.security_keys", "web.security_key_revoke") %} aria-current="page"{% endif %}>Passkeys</a>
                 <a href="{{ url_for('web.sessions_dashboard') }}"{% if request.endpoint == "web.sessions_dashboard" %} aria-current="page"{% endif %}>Sessions</a>
                 {% if g.high_risk_ready %}
                   <a href="{{ url_for('web.freeze_account') }}"{% if request.endpoint == "web.freeze_account" %} aria-current="page"{% endif %}>Freeze</a>
@@ -165,7 +165,7 @@
                   {% endif %}
                   <a role="menuitem" href="{{ url_for('web.mfa_setup') }}">Authenticator MFA</a>
                   {% if g.current_user.mfa_enabled %}
-                    <a role="menuitem" href="{{ url_for('web.security_keys') }}">Security Keys</a>
+                    <a role="menuitem" href="{{ url_for('web.security_keys') }}">Passkeys</a>
                     <a role="menuitem" href="{{ url_for('web.sessions_dashboard') }}">Active Sessions</a>
                     {% if g.high_risk_ready %}
                       <a role="menuitem" href="{{ url_for('web.freeze_account') }}">Freeze Account</a>
@@ -224,7 +224,7 @@
               {% endif %}
               <li><a href="{{ url_for('web.mfa_setup') }}">MFA</a></li>
               {% if g.current_user.mfa_enabled %}
-                <li><a href="{{ url_for('web.security_keys') }}">Security Keys</a></li>
+                <li><a href="{{ url_for('web.security_keys') }}">Passkeys</a></li>
                 <li><a href="{{ url_for('web.sessions_dashboard') }}">Sessions</a></li>
                 {% if g.high_risk_ready %}
                   <li><a href="{{ url_for('web.freeze_account') }}">Freeze</a></li>
@@ -251,7 +251,7 @@
               {% endif %}
               <li><a href="{{ url_for('web.mfa_setup') }}">Manage authenticator MFA</a></li>
               {% if g.current_user.mfa_enabled %}
-                <li><a href="{{ url_for('web.security_keys') }}">Manage security keys</a></li>
+                <li><a href="{{ url_for('web.security_keys') }}">Manage passkeys</a></li>
                 <li><a href="{{ url_for('web.sessions_dashboard') }}">Review active sessions</a></li>
                 {% if g.high_risk_ready %}
                   <li><a href="{{ url_for('web.freeze_account') }}">Freeze account</a></li>
@@ -268,7 +268,7 @@
 
         <section class="footer-column" aria-label="Security posture">
           <h2 class="footer-heading">Security Posture</h2>
-          <p>Hardware security keys, CSRF-protected forms, safe session references, and session revocation are used to protect portal activity.</p>
+          <p>Authenticator MFA, optional passkeys, CSRF-protected forms, safe session references, and session revocation are used to protect portal activity.</p>
         </section>
       </div>
     </footer>

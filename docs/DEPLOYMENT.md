@@ -2,7 +2,7 @@
 
 ## Current Architecture
 
-Only Flask/Gunicorn runs in the SITBank container. Nginx, TLS, PostgreSQL, Redis, backups, and FIDO policy files remain host-managed on EC2.
+Only Flask/Gunicorn runs in the SITBank container. Nginx, TLS, PostgreSQL, Redis, and backups remain host-managed on EC2. Optional FIDO metadata files may remain on the host for lab inventory, but customer passkey registration no longer depends on an approved-AAGUID allow-list.
 
 - Production public host: `sitbank.duckdns.org`
 - Production admin host: `admin-sitbank.duckdns.org`

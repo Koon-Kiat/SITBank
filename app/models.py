@@ -18,6 +18,7 @@ class User(db.Model):
     mfa_secret_ciphertext = db.Column(db.LargeBinary, nullable=True)
     mfa_secret_nonce = db.Column(db.LargeBinary(12), nullable=True)
     mfa_enabled = db.Column(db.Boolean, nullable=False, default=False)
+    mfa_step_up_preference = db.Column(db.String(32), nullable=False, default="totp")
 
     is_frozen = db.Column(db.Boolean, nullable=False, default=False)
     failed_login_count = db.Column(db.Integer, nullable=False, default=0)
@@ -60,6 +61,7 @@ class WebAuthnCredential(db.Model):
     transports = db.Column(db.JSON, nullable=False, default=list)
     credential_device_type = db.Column(db.String(32), nullable=False)
     credential_backed_up = db.Column(db.Boolean, nullable=False, default=False)
+    credential_kind = db.Column(db.String(32), nullable=False, default="passkey")
     created_at = db.Column(
         db.DateTime(timezone=True),
         nullable=False,

@@ -49,12 +49,12 @@
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
       <div class="form-group">
-        <label for="security-key-identifier">Username or email for security-key login</label>
+        <label for="security-key-identifier">Username or email for passkey login</label>
         <input id="security-key-identifier" name="identifier" type="text" autocomplete="username" maxlength="255">
-        <p class="hint">Available after two approved hardware security keys are registered.</p>
+        <p class="hint">Available after a passkey or security key is registered.</p>
       </div>
 
-      <button class="button secondary full" type="submit">Sign In With Security Key</button>
+      <button class="button secondary full" type="submit">Sign in with passkey</button>
       <p class="field-error" data-webauthn-login-error hidden></p>
     </form>
     <p class="switch-link"><a href="{{ url_for('web.forgot_password') }}">Forgot password?</a></p>

@@ -265,7 +265,7 @@ def test_password_reset_rejects_local_common_password(app, client, tmp_path):
         password_module._load_common_passwords.cache_clear()
 
     assert completed.status_code == 400
-    assert "Password is too common or has appeared in breach lists" in completed.get_data(as_text=True)
+    assert "Password is too common. Please try again" in completed.get_data(as_text=True)
 
 
 def test_password_reset_rejects_live_breached_password(app, client, monkeypatch):
@@ -279,7 +279,7 @@ def test_password_reset_rejects_live_breached_password(app, client, monkeypatch)
     )
 
     assert completed.status_code == 400
-    assert "Password is too common or has appeared in breach lists" in completed.get_data(as_text=True)
+    assert "Password is too common. Please try again" in completed.get_data(as_text=True)
 
 
 def test_totp_user_must_verify_totp_before_password_reset(app, client):
@@ -310,7 +310,7 @@ def test_totp_user_must_verify_totp_before_password_reset(app, client):
     assert completed.status_code == 200
 
 
-def test_webauthn_user_cannot_fall_back_to_email_only_reset(app, client):
+def test_passkey_only_user_cannot_fall_back_to_email_only_reset(app, client):
     with app.app_context():
         user = _create_user("reset05", "reset05@example.com")
         _add_webauthn_credential(user)
@@ -341,7 +341,7 @@ def test_webauthn_user_cannot_fall_back_to_email_only_reset(app, client):
         assert wrong_factor_event.event_metadata["submitted_factor"] == "authentication_code"
 
 
-def test_webauthn_reset_cannot_be_satisfied_by_recovery_code(app, client):
+def test_totp_recovery_code_still_works_when_passkey_is_registered(app, client):
     with app.app_context():
         user, _secret = _create_totp_user("resetkey", "resetkey@example.com")
         _add_webauthn_credential(user)
@@ -359,16 +359,15 @@ def test_webauthn_reset_cannot_be_satisfied_by_recovery_code(app, client):
     )
 
     assert exchanged.status_code == 200
-    assert exchanged.get_json()["mfa_required"] == "webauthn"
-    assert recovery_attempt.status_code == 400
-    assert recovery_attempt.get_json() == {"error": "Invalid authentication code."}
-    assert "Authenticator code is not required" not in recovery_attempt.get_data(as_text=True)
-    assert transaction.get_json()["mfa_verified"] is False
-    assert completed.status_code == 403
+    assert exchanged.get_json()["mfa_required"] == "totp"
+    assert recovery_attempt.status_code == 200
+    assert recovery_attempt.get_json()["mfa_verified"] is True
+    assert transaction.get_json()["mfa_verified"] is True
+    assert completed.status_code == 200
     with app.app_context():
         assert db.session.execute(
             db.select(func.count(RecoveryCode.id)).where(RecoveryCode.used_at.is_not(None))
-        ).scalar_one() == 0
+        ).scalar_one() == 1
         audit_text = json.dumps(
             [
                 {

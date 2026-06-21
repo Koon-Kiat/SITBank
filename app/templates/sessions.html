@@ -23,8 +23,13 @@
     {% if g.high_risk_ready %}
       <form method="post" action="{{ url_for('web.revoke_other_sessions') }}" data-webauthn-step-up-form data-step-up-action="session_revoke_others">
         {{ revoke_others_form.hidden_tag() }}
+        <div class="form-group compact">
+          <label for="{{ revoke_others_form.totp_code.id }}">Authenticator code</label>
+          {{ revoke_others_form.totp_code(inputmode="numeric", autocomplete="one-time-code", maxlength="6", placeholder="6-digit code") }}
+        </div>
+        <p class="hint">Enter your authenticator code, or leave this blank to verify with a passkey.</p>
         <p class="field-error" data-webauthn-step-up-error hidden></p>
-        <button class="button danger-button" type="submit">Verify with security key and terminate other sessions</button>
+        <button class="button danger-button" type="submit">Verify and terminate other sessions</button>
       </form>
     {% elif g.current_user.mfa_enabled %}
       <div class="notice warning">
@@ -32,10 +37,10 @@
           <svg class="icon" focusable="false"><use href="#icon-shield-check"></use></svg>
         </span>
         <div>
-          <h3>Security keys required</h3>
-          <p class="muted">Terminating all other sessions requires two approved hardware security keys. Individual session termination remains available below.</p>
+          <h3>Authenticator MFA required</h3>
+          <p class="muted">Terminating all other sessions requires MFA verification. Individual session termination remains available below.</p>
           <div class="actions">
-            <a class="button secondary" href="{{ url_for('web.security_keys') }}">Manage security keys</a>
+            <a class="button secondary" href="{{ url_for('web.mfa_setup') }}">Manage MFA</a>
           </div>
         </div>
       </div>

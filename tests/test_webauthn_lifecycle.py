@@ -146,23 +146,38 @@ def test_webauthn_options_fail_closed_without_exact_origin(client):
     assert old_origin.get_json()["error"] == "Invalid request origin"
 
 
-def test_registration_options_enforce_direct_cross_platform_uv_policy(client):
+@pytest.mark.parametrize(
+    ("credential_kind", "expected_attachment"),
+    [
+        ("platform", "platform"),
+        ("password_manager", None),
+        ("security_key", "cross-platform"),
+    ],
+)
+def test_registration_options_support_optional_passkey_modes(client, credential_kind, expected_attachment):
     register(client)
     login(client)
     mark_recent_mfa_session(client, user_by_name())
 
-    response = client.post("/auth/webauthn/register/options", json={"label": "Primary YubiKey"}, headers=ORIGIN)
+    response = client.post(
+        "/auth/webauthn/register/options",
+        json={"label": f"{credential_kind} credential", "credential_kind": credential_kind},
+        headers=ORIGIN,
+    )
     payload = response.get_json()
 
     assert response.status_code == 200
     assert payload["rp"]["id"] == "sitbank.duckdns.org"
-    assert payload["attestation"] == "direct"
-    assert payload["authenticatorSelection"]["authenticatorAttachment"] == "cross-platform"
+    assert payload["attestation"] == "none"
+    if expected_attachment is None:
+        assert "authenticatorAttachment" not in payload["authenticatorSelection"]
+    else:
+        assert payload["authenticatorSelection"]["authenticatorAttachment"] == expected_attachment
     assert payload["authenticatorSelection"]["userVerification"] == "required"
-    assert payload["hints"] == ["security-key"]
+    assert payload["authenticatorSelection"]["residentKey"] == "preferred"
 
 
-def test_registration_rejects_unknown_mds_aaguid(client, monkeypatch):
+def test_registration_allows_optional_passkey_without_mds_aaguid(client, monkeypatch):
     register(client)
     login(client)
     mark_recent_mfa_session(client, user_by_name())
@@ -202,49 +217,32 @@ def test_registration_rejects_unknown_mds_aaguid(client, monkeypatch):
         headers=ORIGIN,
     )
 
-    assert response.status_code == 401
-    assert db.session.query(WebAuthnCredential).count() == 0
-    event = (
-        db.session.query(SecurityAuditEvent)
-        .filter_by(event_type="webauthn_register", outcome="failure")
-        .order_by(SecurityAuditEvent.id.desc())
-        .first()
-    )
-    assert event is not None
-    assert event.event_metadata["failure_stage"] == "metadata_policy"
-    assert event.event_metadata["reason"] == "FidoMetadataError"
-    assert event.event_metadata["failure_detail"] == "Authenticator AAGUID is not approved"
-    assert event.event_metadata["aaguid"] == "22222222-2222-2222-2222-222222222222"
-    assert event.event_metadata["attestation_format"] == "packed"
-    assert event.event_metadata["credential_device_type"] == "single_device"
+    assert response.status_code == 200
+    item = db.session.query(WebAuthnCredential).one()
+    assert item.aaguid == "22222222-2222-2222-2222-222222222222"
+    assert item.credential_kind == "security_key"
+    assert response.get_json()["requires_backup_key"] is False
 
 
-def test_registration_allows_explicit_legacy_level1_aaguid_missing_from_mds(app, client, monkeypatch, tmp_path):
-    policy_path = tmp_path / "fido-approved-aaguids.json"
-    policy_path.write_text(
-        json.dumps(
-            {
-                "approved_aaguids": [],
-                "legacy_level1_approved_aaguids": [LEGACY_LEVEL1_AAGUID],
-            }
-        ),
-        encoding="utf-8",
-    )
-    app.config["WEBAUTHN_APPROVED_AAGUIDS_PATH"] = str(policy_path)
+def test_registration_records_password_manager_kind_for_synced_passkey(client, monkeypatch):
     register(client)
     login(client)
     mark_recent_mfa_session(client, user_by_name())
-    client.post("/auth/webauthn/register/options", json={"label": "Primary YubiKey"}, headers=ORIGIN)
+    client.post(
+        "/auth/webauthn/register/options",
+        json={"label": "Bitwarden", "credential_kind": "password_manager"},
+        headers=ORIGIN,
+    )
 
     def fake_verify_registration_response(**_kwargs):
         return SimpleNamespace(
-            credential_id=b"legacy-yubikey",
+            credential_id=b"bitwarden-passkey",
             credential_public_key=b"public-key",
-            sign_count=1,
-            aaguid=LEGACY_LEVEL1_AAGUID,
-            fmt="packed",
-            credential_device_type="single_device",
-            credential_backed_up=False,
+            sign_count=0,
+            aaguid="",
+            fmt="none",
+            credential_device_type="multi_device",
+            credential_backed_up=True,
         )
 
     monkeypatch.setattr(
@@ -256,14 +254,14 @@ def test_registration_allows_explicit_legacy_level1_aaguid_missing_from_mds(app,
         "/auth/webauthn/register/verify",
         json={
             "credential": {
-                "id": bytes_to_base64url(b"legacy-yubikey"),
-                "rawId": bytes_to_base64url(b"legacy-yubikey"),
+                "id": bytes_to_base64url(b"bitwarden-passkey"),
+                "rawId": bytes_to_base64url(b"bitwarden-passkey"),
                 "type": "public-key",
-                "authenticatorAttachment": "cross-platform",
+                "authenticatorAttachment": "platform",
                 "response": {
                     "attestationObject": "AA",
                     "clientDataJSON": "AA",
-                    "transports": ["usb"],
+                    "transports": ["internal"],
                 },
             }
         },
@@ -272,9 +270,12 @@ def test_registration_allows_explicit_legacy_level1_aaguid_missing_from_mds(app,
 
     assert response.status_code == 200
     item = db.session.query(WebAuthnCredential).one()
-    assert item.attestation_format == "packed"
-    assert item.credential_device_type == "single_device"
-    assert response.get_json()["credential"]["aaguid"] == LEGACY_LEVEL1_AAGUID
+    assert item.attestation_format == "none"
+    assert item.credential_device_type == "multi_device"
+    assert item.credential_backed_up is True
+    assert item.credential_kind == "password_manager"
+    assert response.get_json()["credential"]["credential_kind"] == "password_manager"
+    assert response.get_json()["credential"]["aaguid"] == "00000000-0000-0000-0000-000000000000"
 
 
 def test_registration_verify_unexpected_error_returns_json(app, client, monkeypatch):
@@ -368,10 +369,10 @@ def test_password_totp_login_allowed_after_security_key_enrollment(client):
     assert mfa_response.get_json()["message"] == "Login successful"
 
 
-def test_fully_enrolled_user_cannot_downgrade_to_password_totp_login(client):
+def test_fully_enrolled_user_can_still_use_password_totp_login(client):
     register(client)
     user = user_by_name()
-    enable_totp(user)
+    secret = enable_totp(user)
     add_credential(user, credential_id=b"credential-one", label="Primary YubiKey")
     add_credential(user, credential_id=b"credential-two", label="Backup YubiKey")
 
@@ -379,12 +380,15 @@ def test_fully_enrolled_user_cannot_downgrade_to_password_totp_login(client):
         "/auth/login",
         json={"identifier": "alice01", "password": "correct horse battery staple"},
     )
-    mfa_response = client.post("/auth/mfa/verify", json={"totp_code": "000000"})
+    mfa_response = client.post(
+        "/auth/mfa/verify",
+        json={"totp_code": pyotp.TOTP(secret, digits=6, interval=30).now()},
+    )
 
-    assert password_response.status_code == 403
-    assert password_response.get_json()["error"] == "Security key sign-in required for this account"
-    assert mfa_response.status_code == 401
-    assert mfa_response.get_json()["error"] == "No pending MFA challenge"
+    assert password_response.status_code == 200
+    assert password_response.get_json()["mfa_required"] is True
+    assert mfa_response.status_code == 200
+    assert mfa_response.get_json()["message"] == "Login successful"
 
 
 def test_authentication_updates_specific_credential_counter_and_last_used(client, monkeypatch):
@@ -436,13 +440,27 @@ def test_authentication_updates_specific_credential_counter_and_last_used(client
     assert response.get_json()["requires_backup_key"] is False
 
 
-def test_security_key_login_requires_two_registered_keys(client):
+def test_passkey_login_accepts_one_registered_credential(client, monkeypatch):
     register(client)
     user = user_by_name()
     item = add_credential(user, credential_id=b"credential-one", sign_count=10)
     credential_ref = bytes_to_base64url(item.credential_id)
 
     options_response = client.post("/auth/webauthn/authenticate/options", json={"identifier": "alice01"}, headers=ORIGIN)
+
+    def fake_verify_authentication_response(**_kwargs):
+        return SimpleNamespace(
+            credential_id=item.credential_id,
+            new_sign_count=11,
+            credential_device_type=CredentialDeviceType.SINGLE_DEVICE,
+            credential_backed_up=False,
+            user_verified=True,
+        )
+
+    monkeypatch.setattr(
+        "app.auth.webauthn_services.verify_authentication_response",
+        fake_verify_authentication_response,
+    )
     response = client.post(
         "/auth/webauthn/authenticate/verify",
         json={
@@ -462,9 +480,9 @@ def test_security_key_login_requires_two_registered_keys(client):
     )
 
     assert options_response.status_code == 200
-    assert options_response.get_json()["allowCredentials"] == []
-    assert response.status_code == 401
-    assert response.get_json()["error"] == "Security key verification failed"
+    assert len(options_response.get_json()["allowCredentials"]) == 1
+    assert response.status_code == 200
+    assert response.get_json()["message"] == "Login successful"
     assert db.session.get(WebAuthnCredential, item.id) is not None
 
 
@@ -514,7 +532,7 @@ def test_signature_counter_anomaly_locks_user_and_audits(client, monkeypatch):
     assert db.session.query(SecurityAuditEvent).filter_by(event_type="webauthn_clone_detected", outcome="locked").count() == 1
 
 
-def test_revoke_credential_deletes_only_owned_key_and_blocks_last_key(client, monkeypatch):
+def test_revoke_credential_deletes_only_owned_key_and_allows_last_passkey_when_totp_enabled(client, monkeypatch):
     user = User(
         username="alice01",
         email="alice@example.com",
@@ -557,8 +575,8 @@ def test_revoke_credential_deletes_only_owned_key_and_blocks_last_key(client, mo
     assert unowned.status_code == 404
     assert revoked.status_code == 200
     assert db.session.get(WebAuthnCredential, lost.id) is None
-    assert last_key.status_code == 409
-    assert db.session.get(WebAuthnCredential, current.id) is not None
+    assert last_key.status_code == 200
+    assert db.session.get(WebAuthnCredential, current.id) is None
     assert db.session.get(WebAuthnCredential, spare.id) is not None
 
 

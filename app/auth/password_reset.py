@@ -425,12 +425,12 @@ def _public_transaction(transaction: dict[str, Any]) -> dict[str, Any]:
 
 
 def _mfa_requirement(user: User) -> str:
+    if user.mfa_enabled:
+        return "totp"
     from app.auth.webauthn_services import webauthn_credential_count
 
     if webauthn_credential_count(user) > 0:
         return "webauthn"
-    if user.mfa_enabled:
-        return "totp"
     return "none"
 
 

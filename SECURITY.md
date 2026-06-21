@@ -347,9 +347,11 @@ dashboard or banking routes.
 
 Reset MFA policy:
 
-- WebAuthn-enrolled customers must complete a WebAuthn assertion bound to the
-  reset transaction.
-- TOTP-only customers must verify TOTP after the reset transaction is active.
+- TOTP customers must verify TOTP after the reset transaction is active.
+  Recovery codes are accepted only as TOTP recovery factors.
+- Passkeys do not replace TOTP recovery. A passkey-only edge-case account must
+  complete a reset-bound WebAuthn assertion, then complete TOTP onboarding on
+  next login.
 - No-MFA customers can set a new password but remain incomplete-security-state
   users and hit MFA onboarding on next login.
 - Recovery codes are stored HMACed, shown only by trusted authenticated

@@ -24,6 +24,7 @@ HIBP_FALLBACK_WARNING = (
     "Live breached-password screening was unavailable; "
     "the local password blocklist was applied."
 )
+COMMON_PASSWORD_ERROR = "Password is too common. Please try again"
 HIBP_FAILURE_KEY = "ospbank:hibp:failures"
 HIBP_CIRCUIT_OPEN_KEY = "ospbank:hibp:circuit_open"
 PASSWORD_MIN_LENGTH = 8
@@ -75,7 +76,7 @@ def validate_password_policy(password: str) -> list[str]:
 
     common_passwords = _load_common_passwords(current_app.config["COMMON_PASSWORDS_PATH"])
     if normalized_password.casefold() in common_passwords:
-        raise PasswordPolicyError("Password is too common or has appeared in breach lists")
+        raise PasswordPolicyError(COMMON_PASSWORD_ERROR)
 
     if _hibp_circuit_is_open():
         return [HIBP_FALLBACK_WARNING]
@@ -92,7 +93,7 @@ def validate_password_policy(password: str) -> list[str]:
 
     _clear_hibp_failures()
     if is_pwned:
-        raise PasswordPolicyError("Password is too common or has appeared in breach lists")
+        raise PasswordPolicyError(COMMON_PASSWORD_ERROR)
     return []
 
 
