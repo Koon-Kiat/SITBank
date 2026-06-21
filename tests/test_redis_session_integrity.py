@@ -143,6 +143,28 @@ def test_modified_redis_session_privilege_flags_are_rejected(app, client):
     _assert_session_rejected(app, client)
 
 
+def test_tampered_redis_session_payload_logs_only_safe_reference(app, client, caplog):
+    user_id = _create_user()
+    session_id = _authenticate_session(client, user_id)
+    secret_marker = "session-payload-secret-marker"
+
+    def add_sensitive_payload(payload: dict) -> None:
+        payload["is_admin"] = True
+        payload["totp_secret"] = secret_marker
+
+    _replace_unsigned_payload(app, session_id, add_sensitive_payload)
+
+    caplog.set_level("WARNING")
+    _assert_session_rejected(app, client)
+    log_text = "\n".join(record.getMessage() for record in caplog.records)
+
+    assert "session_integrity_failure" in log_text
+    assert "store_ref=" in log_text
+    assert session_id not in log_text
+    assert secret_marker not in log_text
+    assert "totp_secret" not in log_text
+
+
 def test_missing_redis_session_signature_is_rejected(app, client):
     user_id = _create_user()
     session_id = _authenticate_session(client, user_id)
