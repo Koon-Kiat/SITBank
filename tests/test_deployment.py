@@ -180,8 +180,15 @@ def _assert_nginx_owns_duplicate_edge_security_headers(
     for directive in add_header_directives:
         assert directive in https_server
         assert https_server.count(directive) == 1
-    assert "proxy_hide_header Content-Security-Policy;" not in https_server
-    assert "add_header Content-Security-Policy" not in https_server
+    app_owned_or_unused_headers = (
+        "Content-Security-Policy",
+        "Cross-Origin-Resource-Policy",
+        "Cross-Origin-Opener-Policy",
+        "Cross-Origin-Embedder-Policy",
+    )
+    for header in app_owned_or_unused_headers:
+        assert f"proxy_hide_header {header};" not in https_server
+        assert f"add_header {header}" not in https_server
 
 
 def _config_secret_inputs() -> set[str]:
