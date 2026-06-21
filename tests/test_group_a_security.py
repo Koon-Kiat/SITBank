@@ -2983,12 +2983,28 @@ def test_security_alert_webhook_delivery_redacts_final_payload_fields(monkeypatc
         "database_url": "postgresql://user:postgres-password@db/sitbank",
         "redis_url": "redis://:redis-password@redis:6379/0",
         "webhook_url": "https://hooks.example.test/services/webhook-secret",
+        "password_reset_token": "password-reset-token-secret",
+        "session_id": "session-id-secret",
+        "totp_code": "123456",
+        "recovery_codes": ["recovery-code-one", "recovery-code-two"],
+        "webauthn_challenge": "webauthn-challenge-secret",
+        "webauthn_assertion": {
+            "clientDataJSON": "client-data-json-secret",
+            "authenticatorData": "authenticator-data-secret",
+            "signature": "signature-secret",
+        },
+        "hmac_key": "session-hmac-key-secret",
+        "mfa_kek": "mfa-kek-secret",
+        "smtp_username": "smtp-user-secret",
+        "smtp_password": "smtp-password-secret",
         "nested": {
             "refresh_token": long_token,
+            "Authorization": "Basic nested-authorization-secret",
             "note": "safe nested note",
         },
         "list_values": [
             {"csrf_token": "csrf-secret"},
+            {"recovery_code": "nested-recovery-code-secret"},
             "safe list note",
         ],
     }
@@ -3029,10 +3045,22 @@ def test_security_alert_webhook_delivery_redacts_final_payload_fields(monkeypatc
     assert delivered_alert["database_url"] == "[redacted]"
     assert delivered_alert["redis_url"] == "[redacted]"
     assert delivered_alert["webhook_url"] == "[redacted]"
+    assert delivered_alert["password_reset_token"] == "[redacted]"
+    assert delivered_alert["session_id"] == "[redacted]"
+    assert delivered_alert["totp_code"] == "[redacted]"
+    assert delivered_alert["recovery_codes"] == "[redacted]"
+    assert delivered_alert["webauthn_challenge"] == "[redacted]"
+    assert delivered_alert["webauthn_assertion"] == "[redacted]"
+    assert delivered_alert["hmac_key"] == "[redacted]"
+    assert delivered_alert["mfa_kek"] == "[redacted]"
+    assert delivered_alert["smtp_username"] == "[redacted]"
+    assert delivered_alert["smtp_password"] == "[redacted]"
     assert delivered_alert["nested"]["refresh_token"] == "[redacted]"
+    assert delivered_alert["nested"]["Authorization"] == "[redacted]"
     assert delivered_alert["nested"]["note"] == "safe nested note"
     assert delivered_alert["list_values"][0]["csrf_token"] == "[redacted]"
-    assert delivered_alert["list_values"][1] == "safe list note"
+    assert delivered_alert["list_values"][1]["recovery_code"] == "[redacted]"
+    assert delivered_alert["list_values"][2] == "safe list note"
     assert discord_payload["allowed_mentions"] == {"parse": []}
     assert discord_payload["embeds"][0]["fields"][0]["name"] == "CRITICAL | manual_security_alert"
     for forbidden in (
@@ -3048,6 +3076,21 @@ def test_security_alert_webhook_delivery_redacts_final_payload_fields(monkeypatc
         "webhook-secret",
         "delivery-secret",
         long_token,
+        "password-reset-token-secret",
+        "session-id-secret",
+        "123456",
+        "recovery-code-one",
+        "recovery-code-two",
+        "webauthn-challenge-secret",
+        "client-data-json-secret",
+        "authenticator-data-secret",
+        "signature-secret",
+        "session-hmac-key-secret",
+        "mfa-kek-secret",
+        "smtp-user-secret",
+        "smtp-password-secret",
+        "nested-authorization-secret",
+        "nested-recovery-code-secret",
     ):
         assert forbidden not in serialized_generic
         assert forbidden not in serialized_discord
