@@ -909,7 +909,8 @@ label {
   font-weight: 650;
 }
 
-input {
+input,
+select {
   width: 100%;
   min-height: 46px;
   border: 1px solid var(--line);
@@ -924,18 +925,39 @@ input {
     background-color 150ms ease;
 }
 
+select {
+  appearance: none;
+  padding-right: 42px;
+  background-color: var(--input-bg);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted-strong) 50%),
+    linear-gradient(135deg, var(--muted-strong) 50%, transparent 50%);
+  background-position:
+    calc(100% - 19px) 50%,
+    calc(100% - 13px) 50%;
+  background-repeat: no-repeat;
+  background-size: 6px 6px, 6px 6px;
+}
+
+select option {
+  background: var(--surface);
+  color: var(--text);
+}
+
 input::placeholder {
   color: color-mix(in srgb, var(--muted) 72%, transparent);
 }
 
 input:focus,
+select:focus,
 a:focus-visible,
 button:focus-visible {
   outline: 3px solid var(--focus);
   outline-offset: 2px;
 }
 
-input:focus {
+input:focus,
+select:focus {
   border-color: var(--primary);
   box-shadow: 0 0 0 4px var(--focus);
   outline: 0;
