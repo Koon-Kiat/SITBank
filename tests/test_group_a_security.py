@@ -1183,6 +1183,9 @@ def test_security_management_pages_use_polished_stepup_ui(client):
     assert "AAGUID" not in keys_markup
     assert "11111111-1111-1111-1111-111111111111" not in keys_markup
     assert "Last used: 05 Jun 2026 15:11 UTC" in keys_markup
+    assert 'name="credential_kind"' not in keys_markup
+    assert "Passkey type" not in keys_markup
+    assert "browser and installed passkey provider decide which prompt appears" in keys_markup
     assert "Verify and revoke" in keys_markup
     assert 'class="button danger-button button-small key-revoke-button"' in keys_markup
     assert "Revoke is disabled because at least two approved security keys must stay registered" not in keys_markup
@@ -1192,6 +1195,10 @@ def test_security_management_pages_use_polished_stepup_ui(client):
     assert "Verify and freeze account" in freeze_markup
     assert "color: var(--button-primary-text);" in css
     assert "text-align: left;" in css
+    assert "select {" in css
+    assert "appearance: none;" in css
+    assert "background-color: var(--input-bg);" in css
+    assert "background-image:" in css
 
 
 def test_mfa_replacement_start_requires_fresh_mfa_stepup(client):
@@ -3229,6 +3236,8 @@ def test_webauthn_browser_errors_are_sanitized_before_display():
     assert "Security key verification was not completed. Try again." in source
     assert "showError(errorNode, error.message)" not in source
     assert "webAuthnErrorMessage(error)" in source
+    assert "credential_kind" not in source
+    assert 'querySelector(\'select[name="credential_kind"]' not in source
 
 
 def test_production_env_docs_require_pbkdf2_pepper_not_bcrypt():

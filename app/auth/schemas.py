@@ -10,7 +10,6 @@ TOTP_RE = r"^[0-9]{6}$"
 SESSION_REFERENCE_RE = r"^[A-Fa-f0-9]{32}$"
 WEBAUTHN_CREDENTIAL_REFERENCE_RE = r"^[A-Za-z0-9_-]{16,4096}$"
 WEBAUTHN_LABEL_RE = r"^[A-Za-z0-9][A-Za-z0-9 ._()#:/+\-]{0,79}$"
-WEBAUTHN_CREDENTIAL_KIND_RE = r"^(platform|password_manager|security_key)$"
 STEP_UP_ACTION_RE = r"^[a-z_]{3,64}$"
 STEP_UP_TOKEN_RE = r"^[A-Za-z0-9_-]{32,256}$"
 RESET_TOKEN_RE = r"^[A-Za-z0-9_-]{16,96}\.[A-Za-z0-9_-]{32,128}$"
@@ -144,17 +143,15 @@ class PasswordResetSchema(Schema):
 
 
 class WebAuthnRegistrationOptionsSchema(Schema):
+    class Meta:
+        unknown = EXCLUDE
+
     label = fields.Str(
         required=True,
         validate=[
             validate.Length(min=1, max=80),
             validate.Regexp(WEBAUTHN_LABEL_RE, error="Invalid security key label"),
         ],
-    )
-    credential_kind = fields.Str(
-        required=False,
-        load_default="security_key",
-        validate=validate.Regexp(WEBAUTHN_CREDENTIAL_KIND_RE, error="Invalid passkey type"),
     )
 
 

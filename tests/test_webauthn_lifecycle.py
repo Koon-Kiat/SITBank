@@ -146,22 +146,14 @@ def test_webauthn_options_fail_closed_without_exact_origin(client):
     assert old_origin.get_json()["error"] == "Invalid request origin"
 
 
-@pytest.mark.parametrize(
-    ("credential_kind", "expected_attachment"),
-    [
-        ("platform", "platform"),
-        ("password_manager", None),
-        ("security_key", "cross-platform"),
-    ],
-)
-def test_registration_options_support_optional_passkey_modes(client, credential_kind, expected_attachment):
+def test_registration_options_are_generic_so_browser_can_choose_passkey_provider(client):
     register(client)
     login(client)
     mark_recent_mfa_session(client, user_by_name())
 
     response = client.post(
         "/auth/webauthn/register/options",
-        json={"label": f"{credential_kind} credential", "credential_kind": credential_kind},
+        json={"label": "Primary passkey"},
         headers=ORIGIN,
     )
     payload = response.get_json()
@@ -169,10 +161,8 @@ def test_registration_options_support_optional_passkey_modes(client, credential_
     assert response.status_code == 200
     assert payload["rp"]["id"] == "sitbank.duckdns.org"
     assert payload["attestation"] == "none"
-    if expected_attachment is None:
-        assert "authenticatorAttachment" not in payload["authenticatorSelection"]
-    else:
-        assert payload["authenticatorSelection"]["authenticatorAttachment"] == expected_attachment
+    assert "authenticatorAttachment" not in payload["authenticatorSelection"]
+    assert "hints" not in payload
     assert payload["authenticatorSelection"]["userVerification"] == "required"
     assert payload["authenticatorSelection"]["residentKey"] == "preferred"
 
@@ -224,19 +214,19 @@ def test_registration_allows_optional_passkey_without_mds_aaguid(client, monkeyp
     assert response.get_json()["requires_backup_key"] is False
 
 
-def test_registration_records_password_manager_kind_for_synced_passkey(client, monkeypatch):
+def test_registration_records_platform_kind_for_internal_passkey(client, monkeypatch):
     register(client)
     login(client)
     mark_recent_mfa_session(client, user_by_name())
     client.post(
         "/auth/webauthn/register/options",
-        json={"label": "Bitwarden", "credential_kind": "password_manager"},
+        json={"label": "Windows Hello"},
         headers=ORIGIN,
     )
 
     def fake_verify_registration_response(**_kwargs):
         return SimpleNamespace(
-            credential_id=b"bitwarden-passkey",
+            credential_id=b"windows-passkey",
             credential_public_key=b"public-key",
             sign_count=0,
             aaguid="",
@@ -254,8 +244,8 @@ def test_registration_records_password_manager_kind_for_synced_passkey(client, m
         "/auth/webauthn/register/verify",
         json={
             "credential": {
-                "id": bytes_to_base64url(b"bitwarden-passkey"),
-                "rawId": bytes_to_base64url(b"bitwarden-passkey"),
+                "id": bytes_to_base64url(b"windows-passkey"),
+                "rawId": bytes_to_base64url(b"windows-passkey"),
                 "type": "public-key",
                 "authenticatorAttachment": "platform",
                 "response": {
@@ -273,9 +263,54 @@ def test_registration_records_password_manager_kind_for_synced_passkey(client, m
     assert item.attestation_format == "none"
     assert item.credential_device_type == "multi_device"
     assert item.credential_backed_up is True
-    assert item.credential_kind == "password_manager"
-    assert response.get_json()["credential"]["credential_kind"] == "password_manager"
+    assert item.credential_kind == "platform"
+    assert response.get_json()["credential"]["credential_kind"] == "platform"
     assert response.get_json()["credential"]["aaguid"] == "00000000-0000-0000-0000-000000000000"
+
+
+def test_registration_records_generic_passkey_when_browser_metadata_is_opaque(client, monkeypatch):
+    register(client)
+    login(client)
+    mark_recent_mfa_session(client, user_by_name())
+    client.post("/auth/webauthn/register/options", json={"label": "Browser passkey"}, headers=ORIGIN)
+
+    def fake_verify_registration_response(**_kwargs):
+        return SimpleNamespace(
+            credential_id=b"browser-passkey",
+            credential_public_key=b"public-key",
+            sign_count=0,
+            aaguid="",
+            fmt="none",
+            credential_device_type="multi_device",
+            credential_backed_up=True,
+        )
+
+    monkeypatch.setattr(
+        "app.auth.webauthn_services.verify_registration_response",
+        fake_verify_registration_response,
+    )
+
+    response = client.post(
+        "/auth/webauthn/register/verify",
+        json={
+            "credential": {
+                "id": bytes_to_base64url(b"browser-passkey"),
+                "rawId": bytes_to_base64url(b"browser-passkey"),
+                "type": "public-key",
+                "response": {
+                    "attestationObject": "AA",
+                    "clientDataJSON": "AA",
+                    "transports": [],
+                },
+            }
+        },
+        headers=ORIGIN,
+    )
+
+    assert response.status_code == 200
+    item = db.session.query(WebAuthnCredential).one()
+    assert item.credential_kind == "passkey"
+    assert response.get_json()["credential"]["credential_kind_display"] == "Passkey"
 
 
 def test_registration_verify_unexpected_error_returns_json(app, client, monkeypatch):

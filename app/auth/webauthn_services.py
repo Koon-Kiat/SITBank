@@ -20,11 +20,9 @@ from webauthn.helpers import base64url_to_bytes, bytes_to_base64url, options_to_
 from webauthn.helpers.exceptions import InvalidAuthenticationResponse, InvalidRegistrationResponse
 from webauthn.helpers.structs import (
     AttestationConveyancePreference,
-    AuthenticatorAttachment,
     AuthenticatorSelectionCriteria,
     CredentialDeviceType,
     PublicKeyCredentialDescriptor,
-    PublicKeyCredentialHint,
     ResidentKeyRequirement,
     UserVerificationRequirement,
 )
@@ -49,7 +47,6 @@ LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._()#:/+\-]{0,79}$")
 GENERIC_WEBAUTHN_ERROR = "Security key verification failed"
 REGISTRATION_CHALLENGE_KEY = "webauthn_registration_challenge"
 REGISTRATION_LABEL_KEY = "webauthn_registration_label"
-REGISTRATION_KIND_KEY = "webauthn_registration_credential_kind"
 REGISTRATION_USER_KEY = "webauthn_registration_user_id"
 AUTH_CHALLENGE_KEY = "webauthn_authentication_challenge"
 AUTH_USER_KEY = "webauthn_authentication_user_id"
@@ -67,11 +64,13 @@ PASSWORD_RESET_CHALLENGE_PREFIX = "ospbank:password_reset_webauthn:"
 PASSKEY_KIND_PLATFORM = "platform"
 PASSKEY_KIND_PASSWORD_MANAGER = "password_manager"
 PASSKEY_KIND_SECURITY_KEY = "security_key"
+PASSKEY_KIND_GENERIC = "passkey"
 PASSKEY_KINDS = frozenset(
     {
         PASSKEY_KIND_PLATFORM,
         PASSKEY_KIND_PASSWORD_MANAGER,
         PASSKEY_KIND_SECURITY_KEY,
+        PASSKEY_KIND_GENERIC,
     }
 )
 STEP_UP_ACTIONS = frozenset(
@@ -125,11 +124,10 @@ def current_webauthn_credential_reference() -> str | None:
     return str(value) if value else None
 
 
-def begin_registration_options(user: User, label: str, credential_kind: str = PASSKEY_KIND_SECURITY_KEY) -> dict[str, Any]:
+def begin_registration_options(user: User, label: str) -> dict[str, Any]:
     enforce_request_origin()
     ensure_account_not_frozen(user, "security key registration")
     label = _validate_label(label)
-    credential_kind = _validate_credential_kind(credential_kind)
     _ensure_registration_session_allowed(user)
     _ensure_label_available(user, label)
 
@@ -142,17 +140,18 @@ def begin_registration_options(user: User, label: str, credential_kind: str = PA
         user_display_name=user.username,
         timeout=current_app.config["WEBAUTHN_TIMEOUT_MS"],
         attestation=AttestationConveyancePreference.NONE,
-        authenticator_selection=_registration_authenticator_selection(credential_kind),
+        authenticator_selection=AuthenticatorSelectionCriteria(
+            resident_key=ResidentKeyRequirement.PREFERRED,
+            user_verification=UserVerificationRequirement.REQUIRED,
+        ),
         exclude_credentials=[PublicKeyCredentialDescriptor(id=item.credential_id) for item in credentials],
-        hints=_registration_hints(credential_kind),
     )
 
     session[REGISTRATION_CHALLENGE_KEY] = bytes_to_base64url(options.challenge)
     session[REGISTRATION_LABEL_KEY] = label
-    session[REGISTRATION_KIND_KEY] = credential_kind
     session[REGISTRATION_USER_KEY] = user.id
     session.modified = True
-    audit_webauthn_event("register_options", "success", user=user, label=label, metadata={"credential_kind": credential_kind})
+    audit_webauthn_event("register_options", "success", user=user, label=label)
     return options_to_json_dict(options)
 
 
@@ -166,7 +165,6 @@ def verify_registration(user: User, credential: dict[str, Any]) -> dict[str, Any
     label = str(session.get(REGISTRATION_LABEL_KEY) or "")
     _ensure_registration_session_allowed(user)
     _ensure_label_available(user, label)
-    credential_kind = _validate_credential_kind(str(session.get(REGISTRATION_KIND_KEY) or PASSKEY_KIND_SECURITY_KEY))
 
     verification = None
     failure_stage = "attestation_verification"
@@ -191,6 +189,7 @@ def verify_registration(user: User, credential: dict[str, Any]) -> dict[str, Any
         raise AuthError(GENERIC_WEBAUTHN_ERROR, 401) from exc
 
     transports = _registration_transports(credential)
+    credential_kind = _credential_kind_from_browser_response(credential, transports)
     item = WebAuthnCredential(
         user_id=user.id,
         credential_id=verification.credential_id,
@@ -222,7 +221,6 @@ def verify_registration(user: User, credential: dict[str, Any]) -> dict[str, Any
 
     session.pop(REGISTRATION_CHALLENGE_KEY, None)
     session.pop(REGISTRATION_LABEL_KEY, None)
-    session.pop(REGISTRATION_KIND_KEY, None)
     session.pop(REGISTRATION_USER_KEY, None)
     session.modified = True
     audit_webauthn_event(
@@ -969,31 +967,20 @@ def _aaguid_value(value: Any) -> str:
 
 
 def _validate_credential_kind(value: str) -> str:
-    normalized = str(value or PASSKEY_KIND_SECURITY_KEY).strip().casefold()
+    normalized = str(value or PASSKEY_KIND_GENERIC).strip().casefold()
     if normalized not in PASSKEY_KINDS:
         raise AuthError("Invalid passkey type", 400)
     return normalized
 
 
-def _registration_authenticator_selection(credential_kind: str) -> AuthenticatorSelectionCriteria:
-    attachment = None
-    if credential_kind == PASSKEY_KIND_PLATFORM:
-        attachment = AuthenticatorAttachment.PLATFORM
-    elif credential_kind == PASSKEY_KIND_SECURITY_KEY:
-        attachment = AuthenticatorAttachment.CROSS_PLATFORM
-    return AuthenticatorSelectionCriteria(
-        authenticator_attachment=attachment,
-        resident_key=ResidentKeyRequirement.PREFERRED,
-        user_verification=UserVerificationRequirement.REQUIRED,
-    )
-
-
-def _registration_hints(credential_kind: str):
-    if credential_kind == PASSKEY_KIND_SECURITY_KEY:
-        return [PublicKeyCredentialHint.SECURITY_KEY]
-    hint_name = "CLIENT_DEVICE" if credential_kind == PASSKEY_KIND_PLATFORM else "HYBRID"
-    hint = getattr(PublicKeyCredentialHint, hint_name, None)
-    return [hint] if hint is not None else None
+def _credential_kind_from_browser_response(credential: dict[str, Any], transports: list[str]) -> str:
+    attachment = str(credential.get("authenticatorAttachment") or "").strip().casefold()
+    normalized_transports = {str(value).strip().casefold() for value in transports}
+    if attachment == "platform" or "internal" in normalized_transports:
+        return PASSKEY_KIND_PLATFORM
+    if attachment == "cross-platform" or normalized_transports.intersection({"usb", "nfc", "ble"}):
+        return PASSKEY_KIND_SECURITY_KEY
+    return PASSKEY_KIND_GENERIC
 
 
 def _should_lock_for_counter_anomaly(stored_count: int | None, new_count: int | None) -> bool:
@@ -1397,6 +1384,7 @@ def _credential_kind_display(value: str | None) -> str:
         PASSKEY_KIND_PLATFORM: "This device",
         PASSKEY_KIND_PASSWORD_MANAGER: "Browser or password manager",
         PASSKEY_KIND_SECURITY_KEY: "External security key",
+        PASSKEY_KIND_GENERIC: "Passkey",
     }.get(str(value or "").strip().casefold(), "Passkey")
 
 

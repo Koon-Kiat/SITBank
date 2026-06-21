@@ -168,12 +168,10 @@
         event.preventDefault();
         var errorNode = document.querySelector("[data-webauthn-register-error]");
         var label = registerForm.querySelector('input[name="label"]').value;
-        var kindInput = registerForm.querySelector('select[name="credential_kind"], input[name="credential_kind"]:checked');
-        var credentialKind = kindInput ? kindInput.value : "security_key";
         clearError(errorNode);
         postJson(
           "/auth/webauthn/register/options",
-          { label: label, credential_kind: credentialKind },
+          { label: label },
           csrfToken(registerForm)
         )
           .then(function (options) {
