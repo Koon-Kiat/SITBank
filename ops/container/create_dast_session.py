@@ -114,6 +114,8 @@ def create_authenticated_cookie(
         "/auth/register",
          payload={
              "username": username,
+             "full_name": f"DAST User {suffix}",
+             "phone_number": f"9{secrets.randbelow(9000000) + 1000000}",
              "email": f"{username}@example.test",
              "password": password,
              "confirm_password": password,
