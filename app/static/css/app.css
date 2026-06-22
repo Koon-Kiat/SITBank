@@ -1637,6 +1637,166 @@ th {
   opacity: 0.5;
 }
 
+/* ── Banking dashboard ─────────────────────────────── */
+
+.bank-section-title {
+  margin-bottom: var(--space-4);
+}
+
+.bank-account-card {
+  border-radius: var(--radius);
+  background: linear-gradient(135deg, var(--primary) 0%, var(--accent) 100%);
+  padding: var(--space-7);
+  box-shadow: var(--shadow);
+}
+
+.bank-account-card-inner {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-6);
+  flex-wrap: wrap;
+}
+
+.bank-account-identity {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.bank-card-eyebrow {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.bank-card-name {
+  color: #ffffff;
+  font-size: 1.6rem;
+}
+
+.bank-card-number {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.82);
+  font-family: Consolas, "Liberation Mono", monospace;
+  font-size: 1.05rem;
+  letter-spacing: 0.12em;
+}
+
+.bank-account-balance {
+  display: grid;
+  gap: var(--space-1);
+  text-align: right;
+}
+
+.balance-amount {
+  margin: 0;
+  color: #ffffff;
+  font-size: 2.4rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.card-eye-btn {
+  background: none;
+  border: none;
+  padding: var(--space-1);
+  cursor: pointer;
+  color: rgba(255, 255, 255, 0.7);
+  display: inline-flex;
+  align-items: center;
+  border-radius: 4px;
+  transition: color 0.15s;
+  flex-shrink: 0;
+}
+
+.card-eye-btn:hover {
+  color: #ffffff;
+}
+
+.card-eye-btn .icon {
+  width: 20px;
+  height: 20px;
+}
+
+.bank-account-frozen-notice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-5);
+  border-top: 1px solid rgba(255, 255, 255, 0.22);
+  padding-top: var(--space-4);
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 0.92rem;
+  font-weight: 650;
+}
+
+.bank-quick-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+
+.bank-quick-btn {
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: var(--space-3);
+  min-height: 112px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--space-5);
+  background: var(--surface);
+  color: var(--primary-hover);
+  font-weight: 650;
+  text-align: center;
+  text-decoration: none;
+  box-shadow: var(--shadow-soft);
+  transition:
+    border-color 150ms ease,
+    background-color 150ms ease,
+    color 150ms ease,
+    transform 150ms ease;
+}
+
+.bank-quick-btn:hover {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  color: var(--primary-hover);
+  transform: translateY(-2px);
+}
+
+.bank-quick-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 46px;
+  border-radius: var(--radius);
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.bank-quick-icon .icon {
+  width: 24px;
+  height: 24px;
+}
+
+.account-menu-section-label {
+  padding: var(--space-2) var(--space-3) var(--space-1);
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border-top: 1px solid var(--line);
+  margin-top: var(--space-1);
+}
+
+/* ── End banking dashboard ─────────────────────────── */
+
 @media (max-width: 980px) {
   .hero,
   .auth-shell {
@@ -1670,6 +1830,14 @@ th {
 }
 
 @media (max-width: 760px) {
+  .bank-quick-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .bank-account-balance {
+    text-align: left;
+  }
+
   :root {
     --content-gutter: 24px;
   }

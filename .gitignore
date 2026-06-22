@@ -40,3 +40,4 @@ appendonly.aof*
 *.pem
 *.pdf
 .vscode/
+compose.dev.yml

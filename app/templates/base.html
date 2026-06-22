@@ -94,6 +94,14 @@
         <circle cx="12" cy="8" r="4"></circle>
         <path d="M4.5 21a7.5 7.5 0 0 1 15 0"></path>
       </symbol>
+      <symbol id="icon-eye" viewBox="0 0 24 24">
+        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+        <circle cx="12" cy="12" r="3"></circle>
+      </symbol>
+      <symbol id="icon-eye-off" viewBox="0 0 24 24">
+        <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+        <line x1="1" y1="1" x2="23" y2="23"></line>
+      </symbol>
     </svg>
     <a class="skip-link" href="#main-content">Skip to main content</a>
     <header class="site-header">
@@ -112,27 +120,12 @@
         </button>
 
         <nav class="nav" id="primary-nav" aria-label="Primary navigation" data-nav-menu>
+          {% if not g.current_user %}
           <div class="nav-links">
-            {% if g.current_user %}
-              {% if g.current_user.mfa_enabled %}
-                <a href="{{ url_for('web.dashboard') }}"{% if request.endpoint == "web.dashboard" %} aria-current="page"{% endif %}>Dashboard</a>
-                <a href="{{ url_for('web.profile') }}"{% if request.endpoint in ("web.profile", "web.profile_submit") %} aria-current="page"{% endif %}>Profile</a>
-              {% endif %}
-              <a href="{{ url_for('web.mfa_setup') }}"{% if request.endpoint in ("web.mfa_setup", "web.mfa_setup_submit") %} aria-current="page"{% endif %}>MFA</a>
-              {% if g.current_user.mfa_enabled %}
-                <a href="{{ url_for('web.security_keys') }}"{% if request.endpoint in ("web.security_keys", "web.security_key_revoke") %} aria-current="page"{% endif %}>Passkeys</a>
-                <a href="{{ url_for('web.sessions_dashboard') }}"{% if request.endpoint == "web.sessions_dashboard" %} aria-current="page"{% endif %}>Sessions</a>
-                {% if g.high_risk_ready %}
-                  <a href="{{ url_for('web.freeze_account') }}"{% if request.endpoint == "web.freeze_account" %} aria-current="page"{% endif %}>Freeze</a>
-                {% else %}
-                  <a class="is-disabled" aria-disabled="true">Freeze</a>
-                {% endif %}
-              {% endif %}
-            {% else %}
-              <a href="{{ url_for('web.login') }}"{% if request.endpoint == "web.login" %} aria-current="page"{% endif %}>Login</a>
-              <a class="button button-small" href="{{ url_for('web.register_form') }}">Register</a>
-            {% endif %}
+            <a href="{{ url_for('web.login') }}"{% if request.endpoint == "web.login" %} aria-current="page"{% endif %}>Login</a>
+            <a class="button button-small" href="{{ url_for('web.register_form') }}">Register</a>
           </div>
+          {% endif %}
           <div class="nav-actions">
             <button class="theme-toggle icon-button" type="button" data-theme-toggle aria-pressed="false" aria-label="Switch to dark mode" title="Switch to dark mode">
               <span class="theme-icon" aria-hidden="true" data-theme-toggle-icon>
@@ -163,6 +156,7 @@
                   {% else %}
                     <a role="menuitem" class="is-disabled" aria-disabled="true">Change Password</a>
                   {% endif %}
+                  <div class="account-menu-section-label" role="separator">Security Settings</div>
                   <a role="menuitem" href="{{ url_for('web.mfa_setup') }}">Authenticator MFA</a>
                   {% if g.current_user.mfa_enabled %}
                     <a role="menuitem" href="{{ url_for('web.security_keys') }}">Passkeys</a>
@@ -272,5 +266,6 @@
         </section>
       </div>
     </footer>
+    {% block scripts %}{% endblock %}
   </body>
 </html>
