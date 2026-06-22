@@ -57,6 +57,35 @@
   </div>
   {% endif %}
 
+  {% if user.mfa_enabled %}
+  {% if recovery_codes_low %}
+  <div class="notice warning">
+    <span class="notice-icon" aria-hidden="true">
+      <svg class="icon" focusable="false"><use href="#icon-alert"></use></svg>
+    </span>
+    <div>
+      <p>{{ recovery_codes_remaining }} unused recovery codes remain. <strong>Regenerate soon</strong> to avoid being locked out.</p>
+      <a class="button secondary small" style="margin-top: var(--space-3); display: inline-flex; width: auto;" href="{{ url_for('web.mfa_setup') }}">Manage recovery codes</a>
+    </div>
+  </div>
+  {% else %}
+  <div class="notice info">
+    <span class="notice-icon" aria-hidden="true">
+      <svg class="icon" focusable="false"><use href="#icon-info"></use></svg>
+    </span>
+    <p>{{ recovery_codes_remaining }} unused recovery codes remain.</p>
+  </div>
+  {% endif %}
+  {% if credential_count == 0 %}
+  <div class="notice info">
+    <span class="notice-icon" aria-hidden="true">
+      <svg class="icon" focusable="false"><use href="#icon-info"></use></svg>
+    </span>
+    <p>No passkeys are registered. Add a passkey for faster, more secure login.</p>
+  </div>
+  {% endif %}
+  {% endif %}
+
   <!-- Quick Actions -->
   <div>
     <h2 class="bank-section-title">Quick Actions</h2>
