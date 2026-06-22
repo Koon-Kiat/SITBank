@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 from urllib.parse import parse_qs, urlparse
 
 import pyotp
@@ -19,15 +20,18 @@ VALID_PASSWORD = "Correct-Horse-Battery-Staple-2026!"
 NEW_PASSWORD = "Reset-Correct-Horse-Battery-Staple-2026!"
 
 
-def _create_user(username: str, email: str, password: str = VALID_PASSWORD) -> User:
-    user = User(username=username, email=email, password_hash=hash_password(password))
+def _create_user(username: str, email: str, password: str = VALID_PASSWORD,
+                 full_name: str = "Test User", phone_number: str = "91234567") -> User:
+    account_number = "012" + "".join(str(secrets.randbelow(10)) for _ in range(6))
+    user = User(username=username, email=email, password_hash=hash_password(password),
+                full_name=full_name, phone_number=phone_number, account_number=account_number)
     db.session.add(user)
     db.session.commit()
     return user
 
 
-def _create_totp_user(username: str, email: str) -> tuple[User, str]:
-    user = _create_user(username, email)
+def _create_totp_user(username: str, email: str, full_name: str = "Test User", phone_number: str = "91234567") -> tuple[User, str]:
+    user = _create_user(username, email, full_name=full_name, phone_number=phone_number)
     secret = pyotp.random_base32(length=32)
     nonce, ciphertext = encrypt_mfa_secret(secret, user.id)
     user.mfa_secret_nonce = nonce
@@ -72,9 +76,9 @@ def _exchange(client, token: str):
     return client.post("/auth/password-reset/exchange", json={"token": token})
 
 
-def _begin_no_mfa_reset(app, client, *, username: str, email: str) -> int:
+def _begin_no_mfa_reset(app, client, *, username: str, email: str, full_name: str = "Test User", phone_number: str = "91234567") -> int:
     with app.app_context():
-        user = _create_user(username, email)
+        user = _create_user(username, email, full_name=full_name, phone_number=phone_number)
         user_id = user.id
 
     assert _request_reset(client, email).status_code == 200

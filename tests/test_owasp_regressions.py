@@ -40,6 +40,8 @@ def test_external_next_parameter_cannot_create_an_open_redirect(client):
         data={
             "username": "redirect01",
             "email": "redirect@example.com",
+            "full_name": "Redirect User",
+            "phone_number": "91234567",
             "password": VALID_PASSWORD,
             "confirm_password": VALID_PASSWORD,
         },
