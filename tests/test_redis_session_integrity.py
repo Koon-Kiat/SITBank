@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import secrets
 import time
 from datetime import datetime, timezone
 
@@ -19,12 +20,16 @@ from app.security.session_hmac import (
 )
 
 
-def _create_user(username: str = "alice01") -> int:
+def _create_user(username: str = "alice01", full_name: str = "Alice Test", phone_number: str = "91234567") -> int:
+    account_number = "012" + "".join(str(secrets.randbelow(10)) for _ in range(6))
     user = User(
         username=username,
         email=f"{username}@example.com",
         password_hash="not-used-by-session-integrity-tests",
         mfa_enabled=True,
+        full_name=full_name,
+        phone_number=phone_number,
+        account_number=account_number,
     )
     db.session.add(user)
     db.session.commit()
@@ -122,7 +127,7 @@ def test_valid_redis_session_payload_continues_to_authenticate(app, client):
 
 def test_modified_redis_session_user_id_is_rejected(app, client):
     alice_id = _create_user("alice01")
-    bob_id = _create_user("bob02")
+    bob_id = _create_user("bob02", full_name="Bob Test", phone_number="81234567")
     session_id = _authenticate_session(client, alice_id)
 
     _replace_unsigned_payload(app, session_id, lambda payload: payload.update(user_id=bob_id))
@@ -226,7 +231,7 @@ def test_signed_redis_session_payload_copied_to_another_key_is_rejected(app, cli
     assert signed_payload is not None
 
     second_client = app.test_client()
-    bob_id = _create_user("bob02")
+    bob_id = _create_user("bob02", full_name="Bob Test", phone_number="81234567")
     bob_session_id = _authenticate_session(second_client, bob_id)
     app.extensions["redis_session"].set(_session_key(app, bob_session_id), signed_payload)
 

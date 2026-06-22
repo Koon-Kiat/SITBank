@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import io
 import re
+import secrets
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -160,6 +161,26 @@ def _find_user_by_username_or_email(username: str, email: str) -> User | None:
     ).scalar_one_or_none()
 
 
+def _find_user_by_registration_fields(username: str, email: str, phone_number: str) -> User | None:
+    return db.session.execute(
+        db.select(User).where(
+            or_(
+                func.lower(User.username) == _normalize(username),
+                func.lower(User.email) == _normalize(email),
+                User.phone_number == phone_number.strip(),
+            )
+        )
+    ).scalar_one_or_none()
+
+
+def _generate_account_number() -> str:
+    for _ in range(10):
+        candidate = "012" + "".join(str(secrets.randbelow(10)) for _ in range(6))
+        if not db.session.execute(db.select(User).where(User.account_number == candidate)).scalar_one_or_none():
+            return candidate
+    raise AuthError("Could not generate a unique account number", 500)
+
+
 def register_user(data: dict[str, Any]) -> tuple[User, list[str]]:
     if data.get("password") != data.get("confirm_password"):
         audit_event("registration", "failure", metadata={"reason": "password_mismatch"})
@@ -171,7 +192,7 @@ def register_user(data: dict[str, Any]) -> tuple[User, list[str]]:
         audit_event("registration", "failure", metadata={"reason": "password_policy"})
         raise AuthError(str(exc), 400) from exc
 
-    if _find_user_by_username_or_email(data["username"], data["email"]):
+    if _find_user_by_registration_fields(data["username"], data["email"], data["phone_number"]):
         audit_event("registration", "failure", metadata={"reason": "duplicate_identifier"})
         raise AuthError("Registration could not be completed with those details", 400)
 
@@ -179,6 +200,9 @@ def register_user(data: dict[str, Any]) -> tuple[User, list[str]]:
         username=data["username"].strip(),
         email=data["email"].strip().lower(),
         password_hash=hash_password(data["password"]),
+        full_name=data["full_name"].strip(),
+        phone_number=data["phone_number"].strip(),
+        account_number=_generate_account_number(),
     )
     db.session.add(user)
     try:

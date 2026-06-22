@@ -31,6 +31,19 @@
       </div>
 
       <div class="form-group">
+        <label for="{{ form.full_name.id }}">Full name</label>
+        {{ form.full_name(autocomplete="name", maxlength="120") }}
+        {% for error in form.full_name.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+      </div>
+
+      <div class="form-group">
+        <label for="{{ form.phone_number.id }}">Phone number</label>
+        {{ form.phone_number(autocomplete="tel", maxlength="8", placeholder="e.g. 91234567") }}
+        {% for error in form.phone_number.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+        <p class="hint">Singapore number only (8 digits, starting with 8 or 9).</p>
+      </div>
+
+      <div class="form-group">
         <label for="{{ form.email.id }}">Email</label>
         {{ form.email(autocomplete="email", maxlength="255") }}
         {% for error in form.email.errors %}<p class="field-error">{{ error }}</p>{% endfor %}

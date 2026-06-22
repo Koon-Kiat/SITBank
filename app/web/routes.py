@@ -172,6 +172,8 @@ def register_submit():
         _user, warnings = register_user(
             {
                 "username": form.username.data,
+                "full_name": form.full_name.data,
+                "phone_number": form.phone_number.data,
                 "email": form.email.data,
                 "password": form.password.data,
                 "confirm_password": form.confirm_password.data,

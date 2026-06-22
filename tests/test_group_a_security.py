@@ -26,10 +26,18 @@ from app.security.passwords import (
 )
 
 
-def register(client, username="alice01", email="alice@example.com", password="correct horse battery staple"):
+def register(client, username="alice01", email="alice@example.com", password="correct horse battery staple",
+             full_name="Alice Test", phone_number="91234567"):
     return client.post(
         "/register",
-        data={"username": username, "email": email, "password": password, "confirm_password": password},
+        data={
+            "username": username,
+            "email": email,
+            "full_name": full_name,
+            "phone_number": phone_number,
+            "password": password,
+            "confirm_password": password,
+        },
         follow_redirects=False,
     )
 
@@ -165,6 +173,8 @@ def test_registration_uses_local_fallback_when_live_password_check_is_unavailabl
         data={
             "username": "alice01",
             "email": "alice@example.com",
+            "full_name": "Alice Test",
+            "phone_number": "91234567",
             "password": "correct horse battery staple",
             "confirm_password": "correct horse battery staple",
         },
@@ -318,6 +328,8 @@ def test_oversized_api_registration_password_rejected_cleanly(client, monkeypatc
         json={
             "username": "oversized01",
             "email": "oversized@example.com",
+            "full_name": "Oversized Test",
+            "phone_number": "91234567",
             "password": password,
             "confirm_password": password,
         },
@@ -384,6 +396,8 @@ def test_registration_requires_matching_confirm_password(client):
         data={
             "username": "alice01",
             "email": "alice@example.com",
+            "full_name": "Alice Test",
+            "phone_number": "91234567",
             "password": "correct horse battery staple",
             "confirm_password": "different horse battery staple",
         },
@@ -1039,7 +1053,7 @@ def test_dashboard_warns_when_recovery_codes_are_low(client):
 def test_mfa_setup_generates_independent_user_secrets(app, client):
     second_client = app.test_client()
     register(client)
-    register(second_client, username="bob02", email="bob@example.com")
+    register(second_client, username="bob02", email="bob@example.com", full_name="Bob Test", phone_number="81234567")
     login(client)
     login(second_client, identifier="bob02")
 
@@ -1062,7 +1076,7 @@ def test_mfa_code_verifies_only_for_own_enrolled_secret(app, client, monkeypatch
 
     second_client = app.test_client()
     register(client)
-    register(second_client, username="bob02", email="bob@example.com")
+    register(second_client, username="bob02", email="bob@example.com", full_name="Bob Test", phone_number="81234567")
     login(client)
     login(second_client, identifier="bob02")
 
@@ -1351,7 +1365,7 @@ def test_past_sessions_are_scoped_to_current_user(app, client):
     alice, _alice_secret = enable_mfa_for_user()
     mark_recent_mfa(client, alice)
 
-    register(second_client, username="bob02", email="bob@example.com")
+    register(second_client, username="bob02", email="bob@example.com", full_name="Bob Test", phone_number="81234567")
     login(second_client, identifier="bob02")
     bob, _bob_secret = enable_mfa_for_user("bob02")
     mark_recent_mfa(second_client, bob)
@@ -1693,6 +1707,8 @@ def test_flash_messages_are_dismissible(client):
         data={
             "username": "flash01",
             "email": "flash@example.com",
+            "full_name": "Flash Test",
+            "phone_number": "91234567",
             "password": "correct horse battery staple",
             "confirm_password": "correct horse battery staple",
         },
@@ -2029,7 +2045,7 @@ def test_profile_update_rejects_invalid_username(client):
 
 def test_profile_update_rejects_duplicate_username(client):
     register(client)
-    register(client, username="bob02", email="bob@example.com")
+    register(client, username="bob02", email="bob@example.com", full_name="Bob Test", phone_number="81234567")
     login(client)
     user, _secret = enable_mfa_for_user()
 
@@ -2046,7 +2062,7 @@ def test_profile_update_rejects_duplicate_username(client):
 
 def test_profile_update_rejects_duplicate_email(client):
     register(client)
-    register(client, username="bob02", email="bob@example.com")
+    register(client, username="bob02", email="bob@example.com", full_name="Bob Test", phone_number="81234567")
     login(client)
     user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
     mark_recent_mfa(client, user)
@@ -2107,7 +2123,7 @@ def test_json_auth_post_requires_global_csrf_header_when_enabled(app, client):
 
 def test_profile_submission_cannot_modify_privileged_fields(client):
     register(client)
-    register(client, username="bob02", email="bob@example.com")
+    register(client, username="bob02", email="bob@example.com", full_name="Bob Test", phone_number="81234567")
     login(client)
     user, secret = enable_mfa_for_user()
     add_security_keys_for_user(user)
@@ -2763,6 +2779,9 @@ def test_security_alerts_detect_database_table_regression_from_external_state(ap
         username="alice01",
         email="alice@example.com",
         password_hash=hash_password("correct horse battery staple"),
+        full_name="Alice Test",
+        phone_number="91234567",
+        account_number="012" + "".join(str(secrets.randbelow(10)) for _ in range(6)),
     )
     db.session.add(user)
     db.session.commit()
