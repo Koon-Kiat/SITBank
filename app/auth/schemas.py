@@ -6,6 +6,7 @@ from app.security.passwords import PASSWORD_MIN_LENGTH, password_max_chars
 
 
 USERNAME_RE = r"^[A-Za-z0-9_.-]{3,64}$"
+PHONE_RE = r"^[89][0-9]{7}$"
 TOTP_RE = r"^[0-9]{6}$"
 SESSION_REFERENCE_RE = r"^[A-Fa-f0-9]{32}$"
 WEBAUTHN_CREDENTIAL_REFERENCE_RE = r"^[A-Za-z0-9_-]{16,4096}$"
@@ -35,6 +36,11 @@ class RegisterSchema(Schema):
             validate.Length(min=3, max=64),
             validate.Regexp(USERNAME_RE, error="Username contains invalid characters"),
         ],
+    )
+    full_name = fields.Str(required=True, validate=validate.Length(min=1, max=120))
+    phone_number = fields.Str(
+        required=True,
+        validate=validate.Regexp(PHONE_RE, error="Enter a valid Singapore phone number (8 digits starting with 8 or 9)"),
     )
     email = fields.Email(required=True, validate=validate.Length(max=255))
     password = fields.Str(

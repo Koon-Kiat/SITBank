@@ -6,7 +6,7 @@ from wtforms.validators import Email, EqualTo, InputRequired, Length, Optional, 
 
 from app.security.passwords import PASSWORD_MIN_LENGTH, password_max_chars
 
-from .schemas import STEP_UP_TOKEN_RE, TOTP_RE, USERNAME_RE
+from .schemas import PHONE_RE, STEP_UP_TOKEN_RE, TOTP_RE, USERNAME_RE
 
 
 def password_length(*, minimum: int | None = None):
@@ -28,6 +28,14 @@ class RegisterForm(FlaskForm):
             InputRequired(),
             Length(min=3, max=64),
             Regexp(USERNAME_RE, message="Username contains invalid characters"),
+        ],
+    )
+    full_name = StringField("Full name", validators=[InputRequired(), Length(min=1, max=120)])
+    phone_number = StringField(
+        "Phone number",
+        validators=[
+            InputRequired(),
+            Regexp(PHONE_RE, message="Enter a valid Singapore phone number (8 digits starting with 8 or 9)"),
         ],
     )
     email = StringField("Email", validators=[InputRequired(), Email(), Length(max=255)])
