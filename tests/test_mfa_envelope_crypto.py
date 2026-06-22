@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import secrets
 
 import pyotp
 import pytest
@@ -22,11 +23,15 @@ from app.security.passwords import hash_password
 from config import _required_keyring, _required_session_hmac_keys
 
 
-def _user(username: str = "alice01") -> User:
+def _user(username: str = "alice01", full_name: str = "Alice User", phone_number: str = "91234567") -> User:
+    account_number = "012" + "".join(str(secrets.randbelow(10)) for _ in range(6))
     user = User(
         username=username,
         email=f"{username}@example.com",
         password_hash=hash_password("correct horse battery staple"),
+        full_name=full_name,
+        phone_number=phone_number,
+        account_number=account_number,
     )
     db.session.add(user)
     db.session.commit()
@@ -140,7 +145,7 @@ def test_non_envelope_mfa_secret_fails_closed(app):
 
 def test_rewrap_mfa_deks_command_updates_matching_envelopes(app):
     user = _user()
-    other = _user("bob02")
+    other = _user("bob02", full_name="Bob Test", phone_number="81234567")
     secret = pyotp.random_base32(length=32)
     other_secret = pyotp.random_base32(length=32)
     user.mfa_secret_nonce, user.mfa_secret_ciphertext = encrypt_mfa_secret(

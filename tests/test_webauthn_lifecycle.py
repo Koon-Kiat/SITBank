@@ -23,10 +23,18 @@ LEGACY_LEVEL1_AAGUID = "2fc0579f-8113-47ea-b116-bb5a8db9202a"
 ORIGIN = {"Origin": "https://sitbank.duckdns.org"}
 
 
-def register(client, username="alice01", email="alice@example.com", password="correct horse battery staple"):
+def register(client, username="alice01", email="alice@example.com", password="correct horse battery staple",
+             full_name="Alice Test", phone_number="91234567"):
     return client.post(
         "/register",
-        data={"username": username, "email": email, "password": password, "confirm_password": password},
+        data={
+            "username": username,
+            "email": email,
+            "full_name": full_name,
+            "phone_number": phone_number,
+            "password": password,
+            "confirm_password": password,
+        },
         follow_redirects=False,
     )
 
@@ -572,11 +580,17 @@ def test_revoke_credential_deletes_only_owned_key_and_allows_last_passkey_when_t
         username="alice01",
         email="alice@example.com",
         password_hash=hash_password("correct horse battery staple"),
+        full_name="Alice Test",
+        phone_number="91234567",
+        account_number="012" + "".join(str(secrets.randbelow(10)) for _ in range(6)),
     )
     other = User(
         username="bob02",
         email="bob@example.com",
         password_hash=hash_password("correct horse battery staple"),
+        full_name="Bob Test",
+        phone_number="81234567",
+        account_number="012" + "".join(str(secrets.randbelow(10)) for _ in range(6)),
     )
     db.session.add_all([user, other])
     db.session.commit()
@@ -631,6 +645,9 @@ def test_transaction_security_key_challenge_binds_context(app):
         username="alice01",
         email="alice@example.com",
         password_hash=hash_password("correct horse battery staple"),
+        full_name="Alice Test",
+        phone_number="91234567",
+        account_number="012" + "".join(str(secrets.randbelow(10)) for _ in range(6)),
     )
     db.session.add(user)
     db.session.commit()
@@ -692,6 +709,9 @@ def test_transaction_security_key_challenge_rejects_client_supplied_context(app)
         username="alice01",
         email="alice@example.com",
         password_hash=hash_password("correct horse battery staple"),
+        full_name="Alice Test",
+        phone_number="91234567",
+        account_number="012" + "".join(str(secrets.randbelow(10)) for _ in range(6)),
     )
     db.session.add(user)
     db.session.commit()
