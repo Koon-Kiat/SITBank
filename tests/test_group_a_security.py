@@ -935,7 +935,7 @@ def test_recovery_code_satisfies_pending_totp_login_once_and_notifies(app, clien
     client.post("/logout")
     login_response = login(client)
     verified = client.post("/auth/mfa/verify", json={"totp_code": recovery_codes[0]})
-    dashboard = client.get("/dashboard")
+    mfa_page = client.get("/mfa/setup")
     client.post("/logout")
     login(client)
     reused = client.post("/auth/mfa/verify", json={"totp_code": recovery_codes[0]})
@@ -943,8 +943,8 @@ def test_recovery_code_satisfies_pending_totp_login_once_and_notifies(app, clien
     assert login_response.status_code == 302
     assert verified.status_code == 200
     assert verified.get_json()["recovery_codes_remaining"] == 9
-    assert dashboard.status_code == 200
-    assert "9 unused recovery codes remain." in dashboard.data.decode("utf-8")
+    assert mfa_page.status_code == 200
+    assert "9 unused recovery codes remain." in mfa_page.data.decode("utf-8")
     assert reused.status_code == 401
     assert reused.get_json()["error"] == "Invalid authentication code."
     assert db.session.query(RecoveryCode).filter_by(user_id=user.id).filter(RecoveryCode.used_at.is_not(None)).count() == 1
@@ -1042,7 +1042,7 @@ def test_dashboard_warns_when_recovery_codes_are_low(client):
     user, _secret = enable_mfa_for_user()
     generate_recovery_codes_for_user(user, count=2)
 
-    response = client.get("/dashboard")
+    response = client.get("/mfa/setup")
     markup = response.data.decode("utf-8")
 
     assert response.status_code == 200
@@ -1656,8 +1656,10 @@ def test_authenticated_layout_contains_working_profile_menu_destinations(client)
     assert "Freeze Account" in markup
     assert "Log Out" in markup
     assert markup.index('href="/mfa/setup"') < markup.index('href="/security-keys"') < markup.index('href="/sessions"')
-    assert "No passkeys are registered" in markup
     assert "Transaction-ready" not in markup
+
+    keys_markup = client.get("/security-keys").data.decode("utf-8")
+    assert "No passkeys registered" in keys_markup
 
 
 def test_security_key_setup_prompts_for_authenticator_mfa_first(client):
