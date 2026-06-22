@@ -14,13 +14,9 @@
         {% if user.account_number %}
         <div class="card-acct-label-group">
           <p class="bank-card-eyebrow">Account No.</p>
-          {# Full number in DOM is UX masking only — not a security boundary #}
+          {# Render only the masked suffix; the full account number is not exposed in page markup. #}
           <p class="bank-card-number">
             <span id="card-acct-masked">•••-•••-{{ user.account_number[-3:] }}</span>
-            <span id="card-acct-full" hidden>{{ user.account_number[:3] }}-{{ user.account_number[3:6] }}-{{ user.account_number[6:] }}</span>
-            <button id="acct-eye-btn" class="card-eye-btn" type="button" aria-label="Show account number" aria-pressed="false">
-              <svg class="icon" focusable="false" aria-hidden="true"><use id="acct-eye-icon" href="#icon-eye-off"></use></svg>
-            </button>
           </p>
         </div>
         {% else %}
@@ -57,7 +53,6 @@
     </div>
   </div>
   {% endif %}
-
 
   <!-- Quick Actions -->
   <div>

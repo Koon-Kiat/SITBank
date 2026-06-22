@@ -329,6 +329,26 @@ def test_dast_session_creator_requires_loopback_or_explicit_smoke_host():
         )
 
 
+def test_dast_session_creator_matches_registration_contract():
+    source = Path("ops/container/create_dast_session.py").read_text(encoding="utf-8")
+
+    assert '"full_name": f"DAST User {suffix}"' in source
+    assert '"phone_number": f"9{secrets.randbelow(9000000) + 1000000}"' in source
+    assert '"account_number"' not in source
+
+
+def test_registration_field_migration_backfills_existing_users_deterministically():
+    migration = Path(
+        "migrations/versions/20260622_0008_add_user_registration_fields.py"
+    ).read_text(encoding="utf-8")
+
+    assert "SET phone_number = ''" not in migration
+    assert "floor(random()" not in migration
+    assert "abs(random())" not in migration
+    assert "row_number() OVER (ORDER BY id)" in migration
+    assert "SET full_name = username" in migration
+
+
 def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypatch):
     _set_deployment_values(monkeypatch)
 

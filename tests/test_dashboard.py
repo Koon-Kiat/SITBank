@@ -134,11 +134,12 @@ def test_dashboard_masks_account_number_showing_last_three_digits(client):
     assert "789" in markup
 
 
-def test_dashboard_account_number_full_format_uses_dashes(client):
+def test_dashboard_does_not_render_full_account_number(client):
     user = login_with_mfa(client)
     set_account_number(user, "123456789")
     markup = client.get("/dashboard").data.decode("utf-8")
-    assert "123-456-789" in markup
+    assert "123-456-789" not in markup
+    assert "card-acct-full" not in markup
 
 
 def test_dashboard_account_number_masked_format_uses_dashes(client):
@@ -148,11 +149,11 @@ def test_dashboard_account_number_masked_format_uses_dashes(client):
     assert "•••-•••-789" in markup
 
 
-def test_dashboard_account_number_eye_toggle_button_present(client):
+def test_dashboard_account_number_eye_toggle_button_absent(client):
     user = login_with_mfa(client)
     set_account_number(user, "123456789")
     markup = client.get("/dashboard").data.decode("utf-8")
-    assert "acct-eye-btn" in markup
+    assert "acct-eye-btn" not in markup
 
 
 def test_dashboard_loads_eye_toggle_script(client):

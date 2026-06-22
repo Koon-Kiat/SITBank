@@ -28,19 +28,76 @@ def upgrade() -> None:
         op.add_column("users", sa.Column("phone_number", sa.String(8), nullable=True))
         op.add_column("users", sa.Column("account_number", sa.String(9), nullable=True))
 
-    op.execute(text("UPDATE users SET full_name = '' WHERE full_name IS NULL"))
-    op.execute(text("UPDATE users SET phone_number = '' WHERE phone_number IS NULL"))
+    op.execute(text("UPDATE users SET full_name = username WHERE full_name IS NULL OR full_name = ''"))
 
     if dialect == "postgresql":
-        op.execute(text(
-            "UPDATE users SET account_number = '012' || lpad((floor(random() * 1000000))::text, 6, '0') "
-            "WHERE account_number IS NULL"
-        ))
+        op.execute(
+            text(
+                """
+                WITH numbered AS (
+                    SELECT id, row_number() OVER (ORDER BY id) AS row_index
+                    FROM users
+                    WHERE phone_number IS NULL OR phone_number = ''
+                )
+                UPDATE users
+                SET phone_number = '9' || lpad(numbered.row_index::text, 7, '0')
+                FROM numbered
+                WHERE users.id = numbered.id
+                """
+            )
+        )
+        op.execute(
+            text(
+                """
+                WITH numbered AS (
+                    SELECT id, row_number() OVER (ORDER BY id) AS row_index
+                    FROM users
+                    WHERE account_number IS NULL OR account_number = ''
+                )
+                UPDATE users
+                SET account_number = '012' || lpad(numbered.row_index::text, 6, '0')
+                FROM numbered
+                WHERE users.id = numbered.id
+                """
+            )
+        )
     else:
-        op.execute(text(
-            "UPDATE users SET account_number = '012' || printf('%06d', abs(random()) % 1000000) "
-            "WHERE account_number IS NULL"
-        ))
+        op.execute(
+            text(
+                """
+                WITH numbered AS (
+                    SELECT id, row_number() OVER (ORDER BY id) AS row_index
+                    FROM users
+                    WHERE phone_number IS NULL OR phone_number = ''
+                )
+                UPDATE users
+                SET phone_number = (
+                    SELECT '9' || printf('%07d', numbered.row_index)
+                    FROM numbered
+                    WHERE numbered.id = users.id
+                )
+                WHERE id IN (SELECT id FROM numbered)
+                """
+            )
+        )
+        op.execute(
+            text(
+                """
+                WITH numbered AS (
+                    SELECT id, row_number() OVER (ORDER BY id) AS row_index
+                    FROM users
+                    WHERE account_number IS NULL OR account_number = ''
+                )
+                UPDATE users
+                SET account_number = (
+                    SELECT '012' || printf('%06d', numbered.row_index)
+                    FROM numbered
+                    WHERE numbered.id = users.id
+                )
+                WHERE id IN (SELECT id FROM numbered)
+                """
+            )
+        )
 
     if dialect != "sqlite":
         op.alter_column("users", "full_name", existing_type=sa.String(128), nullable=False)
