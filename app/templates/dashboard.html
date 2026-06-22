@@ -4,116 +4,114 @@
 
 {% block content %}
 <section class="dashboard">
-  <div class="dashboard-header">
-    <div class="account-identity">
-      <p class="eyebrow">Security dashboard</p>
-      <h1>Welcome back, {{ user.username }}</h1>
-      <p class="muted">{{ user.email }}</p>
-    </div>
-    <div class="button-row" aria-label="Primary security actions">
-      <a class="button secondary" href="{{ url_for('web.sessions_dashboard') }}">Manage sessions</a>
-      {% if not user.is_frozen %}
-        {% if user.mfa_enabled %}
-          <a class="button secondary" href="{{ url_for('web.freeze_account') }}">Freeze account</a>
+
+  <!-- Account Card -->
+  <div class="bank-account-card">
+    <div class="bank-account-card-inner">
+      <div class="bank-account-identity">
+        <p class="bank-card-eyebrow">Savings Account</p>
+        <h1 class="bank-card-name">{{ user.full_name or user.username }}</h1>
+        {% if user.account_number %}
+        <div style="display: grid; gap: var(--space-1);">
+          <p class="bank-card-eyebrow">Account No.</p>
+          <p class="bank-card-number" style="display: flex; align-items: center; gap: var(--space-2);">
+            <span id="card-acct-masked">•••-•••-{{ user.account_number[-3:] }}</span>
+            <span id="card-acct-full" hidden>{{ user.account_number[:3] }}-{{ user.account_number[3:6] }}-{{ user.account_number[6:] }}</span>
+            <button id="acct-eye-btn" class="card-eye-btn" type="button" aria-label="Show account number" aria-pressed="false">
+              <svg class="icon" focusable="false" aria-hidden="true"><use id="acct-eye-icon" href="#icon-eye-off"></use></svg>
+            </button>
+          </p>
+        </div>
         {% else %}
-          <a class="button secondary is-disabled" aria-disabled="true">Freeze account</a>
+        <p class="bank-card-number">— — —</p>
         {% endif %}
-      {% endif %}
+      </div>
+      <div class="bank-account-balance">
+        <p class="bank-card-eyebrow">Available Balance</p>
+        <p class="balance-amount" style="margin: 0; display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2);">
+          <span>SGD <span id="card-balance-masked">••••••</span><span id="card-balance-full" hidden>0.00</span></span>
+          <button id="bal-eye-btn" class="card-eye-btn" type="button" aria-label="Show balance" aria-pressed="false">
+            <svg class="icon" focusable="false" aria-hidden="true"><use id="bal-eye-icon" href="#icon-eye-off"></use></svg>
+          </button>
+        </p>
+      </div>
+    </div>
+    {% if user.is_frozen %}
+    <div class="bank-account-frozen-notice">
+      <svg class="icon" focusable="false" aria-hidden="true"><use href="#icon-alert"></use></svg>
+      Account frozen — contact support to unfreeze
+    </div>
+    {% endif %}
+  </div>
+
+  {% if not user.mfa_enabled %}
+  <!-- MFA setup banner -->
+  <div class="notice warning">
+    <span class="notice-icon" aria-hidden="true">
+      <svg class="icon" focusable="false"><use href="#icon-alert"></use></svg>
+    </span>
+    <div>
+      <p><strong>Set up Authenticator MFA</strong> to unlock transfers, payments, and all account actions.</p>
+      <a class="button secondary small" style="margin-top: var(--space-3); display: inline-flex; width: auto;" href="{{ url_for('web.mfa_setup') }}">Set up MFA</a>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Quick Actions -->
+  <div>
+    <h2 class="bank-section-title">Quick Actions</h2>
+    <div class="bank-quick-grid">
+      <a class="bank-quick-btn is-disabled" aria-disabled="true">
+        <span class="bank-quick-icon" aria-hidden="true">
+          <svg class="icon" focusable="false"><use href="#icon-refresh"></use></svg>
+        </span>
+        <span>Local Transfer</span>
+        <span class="badge neutral">Coming soon</span>
+      </a>
+      <a class="bank-quick-btn is-disabled" aria-disabled="true">
+        <span class="bank-quick-icon" aria-hidden="true">
+          <svg class="icon" focusable="false"><use href="#icon-shield-check"></use></svg>
+        </span>
+        <span>PayUp</span>
+        <span class="badge neutral">Coming soon</span>
+      </a>
+      <a class="bank-quick-btn is-disabled" aria-disabled="true">
+        <span class="bank-quick-icon" aria-hidden="true">
+          <svg class="icon" focusable="false"><use href="#icon-session"></use></svg>
+        </span>
+        <span>Past Transaction</span>
+        <span class="badge neutral">Coming soon</span>
+      </a>
+      <a class="bank-quick-btn is-disabled" aria-disabled="true">
+        <span class="bank-quick-icon" aria-hidden="true">
+          <svg class="icon" focusable="false"><use href="#icon-education"></use></svg>
+        </span>
+        <span>Monthly Statement</span>
+        <span class="badge neutral">Coming soon</span>
+      </a>
     </div>
   </div>
 
-  <div class="status-grid">
-    <article class="status-card">
-      <span class="card-icon" aria-hidden="true">
-        <svg class="icon" focusable="false"><use href="#icon-lock"></use></svg>
-      </span>
-      <h2>Authenticator MFA</h2>
-      <div class="status-card-body">
-        {% if user.mfa_enabled %}
-          <p class="badge">Enabled</p>
-          <p class="muted">Password login is protected with a time-based authenticator code.</p>
-          <p class="muted">{{ recovery_codes_remaining }} unused recovery code{{ "" if recovery_codes_remaining == 1 else "s" }} remain.</p>
-          {% if recovery_codes_low %}
-            <p class="badge warning">Regenerate soon</p>
-          {% endif %}
-        {% else %}
-          <p class="badge warning">Setup needed</p>
-          <p class="muted">Add an authenticator app so normal login uses password plus MFA.</p>
-        {% endif %}
-      </div>
-      <div class="status-card-actions">
-        <a class="button secondary" href="{{ url_for('web.mfa_setup') }}">Manage MFA</a>
-      </div>
-    </article>
-    <article class="status-card">
-      <span class="card-icon" aria-hidden="true">
-        <svg class="icon" focusable="false"><use href="#icon-shield-check"></use></svg>
-      </span>
-      <h2>Passkeys</h2>
-      <div class="status-card-body">
-        {% if credential_count > 0 %}
-          <p class="badge">Available</p>
-          <p class="muted">{{ credential_count }} passkey{{ "" if credential_count == 1 else "s" }} registered for optional sign-in and protected action step-up.</p>
-        {% else %}
-          <p class="badge neutral">Optional</p>
-          <p class="muted">No passkeys are registered. Authenticator MFA remains the required baseline.</p>
-        {% endif %}
-      </div>
-      <div class="status-card-actions">
-        <a class="button secondary" href="{{ url_for('web.security_keys') }}">Manage passkeys</a>
-      </div>
-    </article>
-    <article class="status-card">
-      <span class="card-icon" aria-hidden="true">
-        <svg class="icon" focusable="false"><use href="#icon-freeze"></use></svg>
-      </span>
-      <h2>Account Freeze</h2>
-      <div class="status-card-body">
-        {% if user.is_frozen %}
-          <p class="badge danger">Frozen</p>
-          <p class="muted">Unfreeze requires manual support review.</p>
-        {% elif not user.mfa_enabled %}
-          <p class="badge warning">MFA required</p>
-          <p class="muted">Emergency freeze is locked until authenticator MFA is enabled.</p>
-        {% else %}
-          <p class="badge">Ready</p>
-          <p class="muted">Emergency freeze is available after MFA or passkey verification.</p>
-        {% endif %}
-      </div>
-      <div class="status-card-actions">
-        {% if not user.is_frozen %}
-          {% if user.mfa_enabled %}
-            <a class="button secondary" href="{{ url_for('web.freeze_account') }}">Freeze account</a>
-          {% else %}
-            <a class="button secondary is-disabled" aria-disabled="true">Freeze account</a>
-          {% endif %}
-        {% endif %}
-      </div>
-    </article>
-    <article class="status-card">
-      <span class="card-icon" aria-hidden="true">
-        <svg class="icon" focusable="false"><use href="#icon-session"></use></svg>
-      </span>
-      <h2>Active sessions</h2>
-      <div class="status-card-body">
-        <p class="badge neutral">Session controls</p>
-        <p class="muted">View current access and terminate sessions you do not recognise.</p>
-      </div>
-      <div class="status-card-actions">
-        <a class="button secondary" href="{{ url_for('web.sessions_dashboard') }}">Manage sessions</a>
-      </div>
-    </article>
+  <!-- Recent Transactions -->
+  <div class="panel">
+    <div class="section-header" style="margin-bottom: var(--space-5); justify-content: space-between; align-items: center;">
+      <h2>Recent Transactions</h2>
+      <a href="#" class="muted" style="font-size: 0.82rem; white-space: nowrap; align-self: center;">More...</a>
+    </div>
+    {% if transactions %}
+      {% for txn in transactions[:5] %}
+      {# transaction rows go here #}
+      {% endfor %}
+    {% else %}
+    <div class="empty-state" style="margin-top: var(--space-6);">
+      <p class="muted">No recent transactions to display.</p>
+    </div>
+    {% endif %}
   </div>
 
-  <section class="quick-grid" aria-label="Security shortcuts">
-    <article class="card quick-card">
-      <h2>Account protection</h2>
-      <p class="muted">Review authenticator MFA, transaction key status, session controls, and freeze readiness from one place.</p>
-    </article>
-    <article class="card quick-card">
-      <h2>Account scope</h2>
-      <p class="muted">This portal currently shows account access and security controls. Balances, account numbers, and transactions are not available.</p>
-    </article>
-  </section>
 </section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
 {% endblock %}
