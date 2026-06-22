@@ -191,26 +191,40 @@ class TestConfig:
 
 SECURITY_TEST_FILES = frozenset(
     {
+        "tests/test_account_security_actions.py",
+        "tests/test_audit_alerting.py",
+        "tests/test_auth_registration_login.py",
+        "tests/test_authenticated_portal_ui.py",
+        "tests/test_banking_transaction_security.py",
         "tests/test_config.py",
         "tests/test_deployment.py",
-        "tests/test_group_a_security.py",
+        "tests/test_health_endpoints.py",
         "tests/test_mfa_envelope_crypto.py",
+        "tests/test_mfa_lifecycle.py",
         "tests/test_owasp_regressions.py",
         "tests/test_passwords.py",
         "tests/test_pentest_auth_bypass.py",
         "tests/test_redis_session_integrity.py",
         "tests/test_route_inventory_security.py",
         "tests/test_secret_scanner.py",
+        "tests/test_session_management.py",
         "tests/test_webauthn_lifecycle.py",
     }
 )
 DEPLOYMENT_TEST_FILES = frozenset({"tests/test_deployment.py"})
 SLOW_TEST_FILES = frozenset(
     {
+        "tests/test_account_security_actions.py",
+        "tests/test_audit_alerting.py",
+        "tests/test_auth_registration_login.py",
+        "tests/test_authenticated_portal_ui.py",
+        "tests/test_banking_transaction_security.py",
         "tests/test_deployment.py",
-        "tests/test_group_a_security.py",
+        "tests/test_health_endpoints.py",
+        "tests/test_mfa_lifecycle.py",
         "tests/test_pentest_auth_bypass.py",
         "tests/test_secret_scanner.py",
+        "tests/test_session_management.py",
         "tests/test_webauthn_lifecycle.py",
     }
 )

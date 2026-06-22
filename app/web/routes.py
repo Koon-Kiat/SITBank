@@ -376,14 +376,11 @@ def mfa_verify_submit():
 @web_bp.get("/dashboard")
 @web_login_required
 def dashboard():
-    recovery_codes_remaining = unused_recovery_code_count(g.current_user) if g.current_user.mfa_enabled else 0
     return render_template(
         "dashboard.html",
         user=g.current_user,
         credential_count=g.webauthn_credential_count,
         required_count=g.webauthn_required_count,
-        recovery_codes_remaining=recovery_codes_remaining,
-        recovery_codes_low=recovery_codes_remaining <= RECOVERY_CODE_LOW_THRESHOLD,
         logout_form=CsrfOnlyForm(),
     )
 
