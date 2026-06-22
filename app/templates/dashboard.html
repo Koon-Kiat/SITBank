@@ -12,9 +12,10 @@
         <p class="bank-card-eyebrow">Savings Account</p>
         <h1 class="bank-card-name">{{ user.full_name or user.username }}</h1>
         {% if user.account_number %}
-        <div style="display: grid; gap: var(--space-1);">
+        <div class="card-acct-label-group">
           <p class="bank-card-eyebrow">Account No.</p>
-          <p class="bank-card-number" style="display: flex; align-items: center; gap: var(--space-2);">
+          {# Full number in DOM is UX masking only — not a security boundary #}
+          <p class="bank-card-number">
             <span id="card-acct-masked">•••-•••-{{ user.account_number[-3:] }}</span>
             <span id="card-acct-full" hidden>{{ user.account_number[:3] }}-{{ user.account_number[3:6] }}-{{ user.account_number[6:] }}</span>
             <button id="acct-eye-btn" class="card-eye-btn" type="button" aria-label="Show account number" aria-pressed="false">
@@ -28,7 +29,7 @@
       </div>
       <div class="bank-account-balance">
         <p class="bank-card-eyebrow">Available Balance</p>
-        <p class="balance-amount" style="margin: 0; display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2);">
+        <p class="balance-amount">
           <span>SGD <span id="card-balance-masked">••••••</span><span id="card-balance-full" hidden>0.00</span></span>
           <button id="bal-eye-btn" class="card-eye-btn" type="button" aria-label="Show balance" aria-pressed="false">
             <svg class="icon" focusable="false" aria-hidden="true"><use id="bal-eye-icon" href="#icon-eye-off"></use></svg>
@@ -52,39 +53,11 @@
     </span>
     <div>
       <p><strong>Set up Authenticator MFA</strong> to unlock transfers, payments, and all account actions.</p>
-      <a class="button secondary small" style="margin-top: var(--space-3); display: inline-flex; width: auto;" href="{{ url_for('web.mfa_setup') }}">Set up MFA</a>
+      <a class="button secondary small notice-action" href="{{ url_for('web.mfa_setup') }}">Set up MFA</a>
     </div>
   </div>
   {% endif %}
 
-  {% if user.mfa_enabled %}
-  {% if recovery_codes_low %}
-  <div class="notice warning">
-    <span class="notice-icon" aria-hidden="true">
-      <svg class="icon" focusable="false"><use href="#icon-alert"></use></svg>
-    </span>
-    <div>
-      <p>{{ recovery_codes_remaining }} unused recovery codes remain. <strong>Regenerate soon</strong> to avoid being locked out.</p>
-      <a class="button secondary small" style="margin-top: var(--space-3); display: inline-flex; width: auto;" href="{{ url_for('web.mfa_setup') }}">Manage recovery codes</a>
-    </div>
-  </div>
-  {% else %}
-  <div class="notice info">
-    <span class="notice-icon" aria-hidden="true">
-      <svg class="icon" focusable="false"><use href="#icon-info"></use></svg>
-    </span>
-    <p>{{ recovery_codes_remaining }} unused recovery codes remain.</p>
-  </div>
-  {% endif %}
-  {% if credential_count == 0 %}
-  <div class="notice info">
-    <span class="notice-icon" aria-hidden="true">
-      <svg class="icon" focusable="false"><use href="#icon-info"></use></svg>
-    </span>
-    <p>No passkeys are registered. Add a passkey for faster, more secure login.</p>
-  </div>
-  {% endif %}
-  {% endif %}
 
   <!-- Quick Actions -->
   <div>
@@ -123,16 +96,16 @@
 
   <!-- Recent Transactions -->
   <div class="panel">
-    <div class="section-header" style="margin-bottom: var(--space-5); justify-content: space-between; align-items: center;">
+    <div class="section-header dashboard-txn-header">
       <h2>Recent Transactions</h2>
-      <a href="#" class="muted" style="font-size: 0.82rem; white-space: nowrap; align-self: center;">More...</a>
+      <a href="#" class="muted dashboard-txn-more">More...</a>
     </div>
     {% if transactions %}
       {% for txn in transactions[:5] %}
       {# transaction rows go here #}
       {% endfor %}
     {% else %}
-    <div class="empty-state" style="margin-top: var(--space-6);">
+    <div class="empty-state dashboard-txn-empty">
       <p class="muted">No recent transactions to display.</p>
     </div>
     {% endif %}

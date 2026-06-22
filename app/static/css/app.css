@@ -1683,6 +1683,14 @@ th {
   font-family: Consolas, "Liberation Mono", monospace;
   font-size: 1.05rem;
   letter-spacing: 0.12em;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.card-acct-label-group {
+  display: grid;
+  gap: var(--space-1);
 }
 
 .bank-account-balance {
@@ -1697,6 +1705,31 @@ th {
   font-size: 2.4rem;
   font-weight: 700;
   line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.dashboard-txn-header {
+  margin-bottom: var(--space-5);
+  align-items: center;
+}
+
+.dashboard-txn-more {
+  font-size: 0.82rem;
+  white-space: nowrap;
+  align-self: center;
+}
+
+.dashboard-txn-empty {
+  margin-top: var(--space-6);
+}
+
+.notice-action {
+  margin-top: var(--space-3);
+  display: inline-flex;
+  width: auto;
 }
 
 .card-eye-btn {
