@@ -14,7 +14,6 @@ from flask import (
     url_for,
 )
 from flask_limiter.util import get_remote_address
-from marshmallow import ValidationError
 
 from app.auth.forms import (
     AuthenticationCodeForm,
@@ -37,7 +36,6 @@ from app.auth.password_reset import (
     request_password_reset,
     verify_reset_totp,
 )
-from app.auth.schemas import TerminateSessionSchema
 from app.auth.services import (
     AuthError,
     active_sessions_for_user,
@@ -53,8 +51,6 @@ from app.auth.services import (
     pending_mfa_setup,
     register_user,
     regenerate_totp_recovery_codes,
-    terminate_other_sessions_for_user,
-    terminate_session_for_user,
     update_profile_details,
     verify_fresh_mfa_for_action,
     verify_high_risk_authorization,
@@ -71,9 +67,7 @@ from app.auth.recovery_codes import RECOVERY_CODE_LOW_THRESHOLD, unused_recovery
 from app.security.rate_limits import mfa_principal, request_principal
 from app.security.sessions import (
     SESSION_RISK_REAUTH_REQUIRED_KEY,
-    current_session_id,
     has_recent_fresh_mfa,
-    public_session_reference,
     require_stable_session_for_sensitive_action,
 )
 
@@ -193,6 +187,8 @@ def register_submit():
 def login():
     if getattr(g, "current_user", None) is not None:
         return redirect(url_for("web.dashboard"))
+    if request.args.get("session_expired"):
+        flash("Your session expired due to inactivity. Please log in again.", "warning")
     return render_template("login.html", form=LoginForm())
 
 
@@ -755,62 +751,7 @@ def sessions_dashboard():
         "sessions.html",
         sessions=active_sessions_for_user(g.current_user),
         past_sessions=past_sessions_for_user(g.current_user),
-        recent_mfa=has_recent_fresh_mfa(),
-        revoke_others_csrf_form=CsrfOnlyForm(),
-        revoke_others_form=MfaOrStepUpForm(),
-        terminate_form=CsrfOnlyForm(),
     )
-
-
-@web_bp.post("/sessions/<session_id>/terminate")
-@web_login_required
-@web_not_frozen_required
-def terminate_session(session_id: str):
-    form = CsrfOnlyForm()
-    if not form.validate_on_submit():
-        flash("Security token expired. Please try again.", "error")
-        return redirect(url_for("web.sessions_dashboard"))
-
-    try:
-        TerminateSessionSchema().load({"session_id": session_id})
-        current_sid = current_session_id()
-        was_current = session_id == public_session_reference(current_sid)
-        terminate_session_for_user(g.current_user, session_id)
-    except (AuthError, ValidationError) as exc:
-        message = exc.message if isinstance(exc, AuthError) else "Invalid session identifier."
-        flash(message, "error")
-        return redirect(url_for("web.sessions_dashboard"))
-
-    if was_current:
-        return redirect(url_for("web.login"))
-
-    flash("Session terminated.", "success")
-    return redirect(url_for("web.sessions_dashboard"))
-
-
-@web_bp.post("/sessions/revoke-others")
-@web_login_required
-@web_not_frozen_required
-def revoke_other_sessions():
-    form = MfaOrStepUpForm()
-    if not form.validate_on_submit():
-        flash("Complete MFA or passkey step-up to terminate other sessions.", "error")
-        return redirect(url_for("web.sessions_dashboard"))
-
-    try:
-        verify_high_risk_authorization(
-            g.current_user,
-            form.totp_code.data,
-            form.stepup_token.data,
-            "session_revoke_others",
-        )
-    except AuthError as exc:
-        flash(exc.message, "error")
-        return redirect(url_for("web.sessions_dashboard"))
-
-    revoked = terminate_other_sessions_for_user(g.current_user)
-    flash(f"Terminated {revoked} other session(s).", "success")
-    return redirect(url_for("web.sessions_dashboard"))
 
 
 @web_bp.get("/account/freeze")

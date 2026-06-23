@@ -64,7 +64,7 @@ def test_logout_records_session_as_past_session_on_management_page(client):
     assert "Past Sessions" in markup
     assert original_ref in markup
     assert f"/sessions/{original_ref}/terminate" not in markup
-    assert f"/sessions/{current_ref}/terminate" in markup
+    assert f"/sessions/{current_ref}/terminate" not in markup
     assert "Current" in markup
 
 def test_incognito_logout_appears_in_past_sessions_for_existing_browser(app, client, monkeypatch):
@@ -136,15 +136,6 @@ def test_session_references_survive_hmac_key_rotation(app, client):
     assert new_reference != old_reference
     assert resolve_session_reference_for_user(user.id, old_reference) == session_id
     assert resolve_session_reference_for_user(user.id, new_reference) == session_id
-
-def test_revoke_other_sessions_requires_mfa(client):
-    register(client)
-    login(client)
-
-    response = client.post("/sessions/revoke-others", data={"totp_code": "123456"})
-
-    assert response.status_code == 302
-    assert db.session.query(SecurityAuditEvent).filter_by(event_type="session_revoke_others").count() == 0
 
 def test_terminate_other_session_by_public_reference_revokes_it(app, client):
     second_client = app.test_client()
@@ -235,7 +226,6 @@ def test_revoke_other_sessions_accepts_totp_stepup_and_rotates_session(app, clie
     with client.session_transaction() as sess:
         session_after_setup = sess.sid
 
-    revoke_without_stepup = client.post("/sessions/revoke-others")
     api_without_stepup = client.post("/auth/sessions/revoke-others", json={})
     other_session_before_revoke = second_client.get("/auth/sessions")
 
@@ -252,7 +242,6 @@ def test_revoke_other_sessions_accepts_totp_stepup_and_rotates_session(app, clie
     revoked_response = second_client.get("/auth/sessions")
 
     assert setup_verify.status_code == 200
-    assert revoke_without_stepup.status_code == 302
     assert api_without_stepup.status_code == 403
     assert other_session_before_revoke.status_code == 200
     assert api_revoke_response.status_code == 200
@@ -265,9 +254,9 @@ def test_session_termination_rejects_unowned_session_id(client):
     user, _secret = enable_mfa_for_user()
     mark_recent_mfa(client, user)
 
-    response = client.post("/sessions/00000000000000000000000000000000/terminate")
+    response = client.delete("/auth/sessions/00000000000000000000000000000000")
 
-    assert response.status_code == 302
+    assert response.status_code == 404
     assert db.session.query(SecurityAuditEvent).filter_by(event_type="session_terminate", outcome="failure").count() == 1
 
 def test_session_termination_rejects_raw_internal_session_id(client):
@@ -284,24 +273,6 @@ def test_session_termination_rejects_raw_internal_session_id(client):
 
     assert response.status_code == 400
     assert public_sessions.status_code == 200
-
-def test_web_terminating_current_session_redirects_to_login_page(client):
-    register(client)
-    login(client)
-    user, _secret = enable_mfa_for_user()
-    mark_recent_mfa(client, user)
-
-    sessions_page = client.get("/sessions")
-    current_ref = client.get("/auth/sessions").get_json()["sessions"][0]["session_ref"]
-    response = client.post(f"/sessions/{current_ref}/terminate")
-    login_page = client.get(response.headers["Location"])
-
-    assert sessions_page.status_code == 200
-    assert response.status_code == 302
-    assert response.headers["Location"].endswith("/login")
-    assert login_page.status_code == 200
-    assert b"Log in to SITBank" in login_page.data
-    assert b"Session revoked" not in login_page.data
 
 def test_session_inactivity_expiry_revokes_session(client):
     register(client)

@@ -1830,6 +1830,113 @@ th {
 
 /* ── End banking dashboard ─────────────────────────── */
 
+/* ── Session timer indicator ───────────────────────── */
+.session-timer {
+  position: fixed;
+  top: 14px;
+  right: 20px;
+  z-index: 9998;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 5px 14px 5px 10px;
+  font-size: 0.78rem;
+  color: var(--muted);
+  box-shadow: var(--shadow-soft);
+  pointer-events: none;
+  user-select: none;
+  transition: border-color 300ms ease, background 300ms ease;
+}
+
+.session-timer::before {
+  content: '';
+  display: block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--success);
+  flex-shrink: 0;
+  transition: background 300ms ease;
+}
+
+.session-timer-label {
+  letter-spacing: 0.02em;
+}
+
+.session-timer-value {
+  font-weight: 700;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.03em;
+}
+
+.session-timer.is-warning {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.session-timer.is-warning::before {
+  background: var(--danger);
+}
+
+.session-timer.is-warning .session-timer-value {
+  color: var(--danger);
+}
+/* ── End session timer indicator ────────────────────── */
+
+/* ── Session timeout modal ─────────────────────────── */
+.session-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(23, 34, 52, 0.65);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.session-modal {
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: var(--space-7) var(--space-8);
+  max-width: 420px;
+  width: 90%;
+  text-align: center;
+}
+
+.session-modal-title {
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: var(--text);
+  margin: 0 0 var(--space-4);
+}
+
+.session-modal-countdown {
+  font-size: 3.5rem;
+  font-weight: 800;
+  color: var(--danger);
+  line-height: 1;
+  margin: var(--space-4) 0;
+}
+
+.session-modal-message {
+  color: var(--muted);
+  margin: 0 0 var(--space-6);
+  font-size: 0.95rem;
+}
+
+.session-modal-actions {
+  display: flex;
+  gap: var(--space-3);
+  justify-content: center;
+  flex-wrap: wrap;
+}
+/* ── End session timeout modal ──────────────────────── */
+
 @media (max-width: 980px) {
   .hero,
   .auth-shell {
