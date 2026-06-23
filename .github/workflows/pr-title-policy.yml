@@ -1,0 +1,69 @@
+name: PR title policy
+
+on:
+  pull_request:
+    types:
+      - opened
+      - edited
+      - synchronize
+      - reopened
+      - ready_for_review
+
+permissions: {}
+
+jobs:
+  pr-title-policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Validate PR title
+        shell: bash
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -Eeuo pipefail
+
+          allowed_verbs='Add|Fix|Update|Remove|Refactor|Document|Improve|Secure|Configure|Align|Restore|Prevent|Validate|Enforce|Implement|Rename|Replace|Move|Create|Delete|Test'
+
+          annotation_escape() {
+            local value="$1"
+            value="${value//'%'/'%25'}"
+            value="${value//$'\r'/'%0D'}"
+            value="${value//$'\n'/'%0A'}"
+            printf '%s' "$value"
+          }
+
+          fail() {
+            local message="$1"
+            local escaped_title
+            escaped_title="$(annotation_escape "${PR_TITLE}")"
+            echo "::error title=Invalid PR title::${message} Current title: ${escaped_title}"
+            exit 1
+          }
+
+          title="${PR_TITLE}"
+          lower_title="${title,,}"
+
+          if (( ${#title} < 12 )); then
+            fail "PR title must be at least 12 characters."
+          fi
+
+          if (( ${#title} > 72 )); then
+            fail "PR title must be at most 72 characters."
+          fi
+
+          if [[ "${title}" == *. ]]; then
+            fail "PR title must not end with a full stop."
+          fi
+
+          case "${lower_title}" in
+            fix|update|changes|change|wip|test|misc|stuff|done|bug|final|commit)
+              fail "PR title is too generic."
+              ;;
+          esac
+
+          if [[ ! "${title}" =~ ^(${allowed_verbs})[[:space:]] ]]; then
+            fail "PR title must start with an approved capitalized imperative verb."
+          fi
+
+          echo "PR title policy passed."
