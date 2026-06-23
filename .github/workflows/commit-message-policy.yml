@@ -1,0 +1,96 @@
+name: Commit message policy
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - edited
+
+permissions:
+  contents: read
+
+jobs:
+  commit-message-policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out pull request history
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate commit subjects
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -Eeuo pipefail
+
+          allowed_verbs='Add|Fix|Update|Remove|Refactor|Document|Improve|Secure|Configure|Align|Restore|Prevent|Validate|Enforce|Implement|Rename|Replace|Move|Create|Delete|Test'
+          failed=0
+
+          annotation_escape() {
+            local value="$1"
+            value="${value//'%'/'%25'}"
+            value="${value//$'\r'/'%0D'}"
+            value="${value//$'\n'/'%0A'}"
+            printf '%s' "$value"
+          }
+
+          report_error() {
+            local sha="$1"
+            local subject="$2"
+            local message="$3"
+            local escaped_subject
+            escaped_subject="$(annotation_escape "${subject}")"
+            echo "::error title=Invalid commit subject::${sha}: ${message} Subject: ${escaped_subject}"
+            failed=1
+          }
+
+          while IFS= read -r line; do
+            sha="${line%% *}"
+            subject="${line#* }"
+
+            if [[ "${subject}" =~ ^Merge[[:space:]] ]] || [[ "${subject}" =~ ^Revert[[:space:]] ]]; then
+              continue
+            fi
+
+            lower_subject="${subject,,}"
+
+            if (( ${#subject} < 12 )); then
+              report_error "${sha}" "${subject}" "Commit subject must be at least 12 characters."
+              continue
+            fi
+
+            if (( ${#subject} > 72 )); then
+              report_error "${sha}" "${subject}" "Commit subject must be at most 72 characters."
+              continue
+            fi
+
+            if [[ "${subject}" == *. ]]; then
+              report_error "${sha}" "${subject}" "Commit subject must not end with a full stop."
+              continue
+            fi
+
+            case "${lower_subject}" in
+              fix|update|changes|change|wip|test|misc|stuff|done|bug|final|commit)
+                report_error "${sha}" "${subject}" "Commit subject is too generic."
+                continue
+                ;;
+            esac
+
+            if [[ ! "${subject}" =~ ^(${allowed_verbs})[[:space:]] ]]; then
+              report_error "${sha}" "${subject}" "Commit subject must start with an approved capitalized imperative verb."
+              continue
+            fi
+          done < <(git log --format='%H %s' "${BASE_SHA}..${HEAD_SHA}")
+
+          if (( failed != 0 )); then
+            exit 1
+          fi
+
+          echo "Commit message policy passed."
