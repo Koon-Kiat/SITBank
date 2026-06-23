@@ -38,6 +38,10 @@
           alert.remove();
         }
       });
+      var alert = button.closest(".alert");
+      if (alert) {
+        setTimeout(function () { alert.remove(); }, 3000);
+      }
     });
 
     document.querySelectorAll("[data-password-toggle]").forEach(function (button) {

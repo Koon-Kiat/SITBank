@@ -13,42 +13,6 @@
     <a class="button secondary" href="{{ url_for('web.dashboard') }}">Back to dashboard</a>
   </div>
 
-  <div class="action-panel">
-    <div class="action-header">
-      <div>
-        <h2>Terminate all other sessions</h2>
-        <p class="muted">Use this if you suspect another device should no longer have access.</p>
-      </div>
-    </div>
-    {% if g.high_risk_ready %}
-      <form method="post" action="{{ url_for('web.revoke_other_sessions') }}" data-webauthn-step-up-form data-step-up-action="session_revoke_others">
-        {{ revoke_others_form.hidden_tag() }}
-        <div class="form-group compact">
-          <label for="{{ revoke_others_form.totp_code.id }}">Authenticator code</label>
-          {{ revoke_others_form.totp_code(inputmode="numeric", autocomplete="one-time-code", maxlength="6", placeholder="6-digit code") }}
-        </div>
-        <p class="hint">Enter your authenticator code, or leave this blank to verify with a passkey.</p>
-        <p class="field-error" data-webauthn-step-up-error hidden></p>
-        <button class="button danger-button" type="submit">Verify and terminate other sessions</button>
-      </form>
-    {% elif g.current_user.mfa_enabled %}
-      <div class="notice warning">
-        <span class="notice-icon" aria-hidden="true">
-          <svg class="icon" focusable="false"><use href="#icon-shield-check"></use></svg>
-        </span>
-        <div>
-          <h3>Authenticator MFA required</h3>
-          <p class="muted">Terminating all other sessions requires MFA verification. Individual session termination remains available below.</p>
-          <div class="actions">
-            <a class="button secondary" href="{{ url_for('web.mfa_setup') }}">Manage MFA</a>
-          </div>
-        </div>
-      </div>
-    {% else %}
-      <a class="button secondary" href="{{ url_for('web.mfa_setup') }}">Enable MFA before revoking all other sessions</a>
-    {% endif %}
-  </div>
-
   <div class="section-heading">
     <h2>Active Sessions</h2>
     <p class="muted">Signed-in sessions that can still access this account.</p>
@@ -64,7 +28,6 @@
             <th>User agent</th>
             <th>Login time</th>
             <th>Last activity</th>
-            <th>Action</th>
           </tr>
         </thead>
         <tbody>
@@ -80,12 +43,6 @@
               <td data-label="Device">{{ item.user_agent }}</td>
               <td data-label="Login time"><time datetime="{{ item.login_time }}">{{ item.login_time_display }}</time></td>
               <td data-label="Last activity"><time datetime="{{ item.last_activity }}">{{ item.last_activity_display }}</time></td>
-              <td data-label="Action">
-                <form method="post" action="{{ url_for('web.terminate_session', session_id=item.session_ref) }}">
-                  {{ terminate_form.hidden_tag() }}
-                  <button class="link-button danger" type="submit">Terminate</button>
-                </form>
-              </td>
             </tr>
           {% endfor %}
         </tbody>
