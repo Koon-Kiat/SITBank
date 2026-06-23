@@ -1857,9 +1857,9 @@ th {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--success);
+  background-color: var(--success);
   flex-shrink: 0;
-  transition: background 300ms ease;
+  transition: background-color 300ms ease;
 }
 
 .session-timer-label {
@@ -1879,7 +1879,7 @@ th {
 }
 
 .session-timer.is-warning::before {
-  background: var(--danger);
+  background-color: var(--danger);
 }
 
 .session-timer.is-warning .session-timer-value {
