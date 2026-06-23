@@ -434,8 +434,8 @@ def _customer_runtime_overrides(config: dict) -> dict[str, object]:
         ),
         "SESSION_KEY_PREFIX": config.get("SESSION_KEY_PREFIX") or "session:",
         "SESSION_COOKIE_NAME": config.get("SESSION_COOKIE_NAME") or "__Host-sitbank_session",
-        "PERMANENT_SESSION_LIFETIME": config.get("PERMANENT_SESSION_LIFETIME") or timedelta(minutes=15),
-        "SESSION_INACTIVITY_SECONDS": config.get("SESSION_INACTIVITY_SECONDS") or 15 * 60,
+        "PERMANENT_SESSION_LIFETIME": config.get("PERMANENT_SESSION_LIFETIME") or timedelta(minutes=5),
+        "SESSION_INACTIVITY_SECONDS": config.get("SESSION_INACTIVITY_SECONDS") or 5 * 60,
         "SESSION_METADATA_KEY_PREFIX": config.get("SESSION_METADATA_KEY_PREFIX") or "ospbank:session_meta:",
         "USER_SESSIONS_KEY_PREFIX": config.get("USER_SESSIONS_KEY_PREFIX") or "ospbank:user_sessions:",
         "PAST_SESSIONS_KEY_PREFIX": config.get("PAST_SESSIONS_KEY_PREFIX") or "ospbank:past_sessions:",
@@ -707,8 +707,8 @@ class Config:
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Strict"
     SESSION_PERMANENT = True
-    PERMANENT_SESSION_LIFETIME = timedelta(minutes=15)
-    SESSION_INACTIVITY_SECONDS = 15 * 60
+    PERMANENT_SESSION_LIFETIME = timedelta(minutes=5)
+    SESSION_INACTIVITY_SECONDS = 5 * 60
     SESSION_HISTORY_LIMIT = int(os.getenv("SESSION_HISTORY_LIMIT", "20"))
     if SESSION_HISTORY_LIMIT < 1 or SESSION_HISTORY_LIMIT > 100:
         raise RuntimeError("SESSION_HISTORY_LIMIT must be between 1 and 100")

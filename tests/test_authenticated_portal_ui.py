@@ -43,8 +43,8 @@ def test_security_management_pages_use_polished_stepup_ui(client):
     assert "Verify and revoke" in keys_markup
     assert 'class="button danger-button button-small key-revoke-button"' in keys_markup
     assert "Revoke is disabled because at least two approved security keys must stay registered" not in keys_markup
-    assert 'class="button danger-button"' in sessions_markup
-    assert "Verify and terminate other sessions" in sessions_markup
+    assert "Active Sessions" in sessions_markup
+    assert "Past Sessions" in sessions_markup
     assert 'class="button danger-button full"' in freeze_markup
     assert "Verify and freeze account" in freeze_markup
     assert "color: var(--button-primary-text);" in css
