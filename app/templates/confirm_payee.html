@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+
+{% block title %}Confirm Payee | SITBank{% endblock %}
+
+{% block content %}
+<section class="security-page profile-page">
+  <div class="dashboard-header">
+    <div class="page-heading">
+      <p class="eyebrow">Local Transfer</p>
+      <h1>Confirm Payee</h1>
+      <p class="muted">Check the recipient details below. Enter your MFA code to save this payee.</p>
+    </div>
+    <div class="button-row">
+      <a class="button secondary" href="{{ url_for('banking.payees_add') }}">Back</a>
+    </div>
+  </div>
+
+  <div class="profile-grid">
+    <article class="profile-panel profile-summary">
+      <div class="profile-panel-title">
+        <p class="eyebrow">Recipient (bank-verified)</p>
+        <h2>{{ pending.recipient_name }}</h2>
+      </div>
+      <p class="muted">Account: •••-•••-{{ pending.account_number[-3:] }}</p>
+      <p class="muted">Nickname: {{ pending.nickname }}</p>
+      <p class="muted">A cooldown period will apply after saving. You will not be able to transfer to this payee immediately.</p>
+    </article>
+
+    <article class="profile-panel profile-card">
+      <div class="profile-panel-title">
+        <p class="eyebrow">Step-up verification</p>
+        <h2>Verify with MFA</h2>
+      </div>
+      <form method="post" action="{{ url_for('banking.payees_confirm_submit') }}" data-webauthn-step-up-form data-step-up-action="payee_add" novalidate>
+        {{ form.hidden_tag() }}
+        {{ form.stepup_token() }}
+        <div class="form-group">
+          <label for="{{ form.totp_code.id }}">Authenticator code</label>
+          {{ form.totp_code(inputmode="numeric", autocomplete="one-time-code", maxlength="6", placeholder="6-digit code") }}
+          {% for error in form.totp_code.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+          <p class="hint">Enter your authenticator code, or leave blank to verify with a passkey.</p>
+        </div>
+        <p class="field-error" data-webauthn-step-up-error hidden></p>
+        <button class="button full" type="submit">Confirm and Add Payee</button>
+      </form>
+    </article>
+  </div>
+</section>
+{% endblock %}
