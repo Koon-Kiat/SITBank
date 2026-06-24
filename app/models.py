@@ -137,12 +137,31 @@ class ManualRecoveryRequest(db.Model):
     status = db.Column(db.String(32), nullable=False, default="pending")
     requested_ip = db.Column(db.String(64), nullable=False, default="")
     requested_user_agent = db.Column(db.String(256), nullable=False, default="")
+    request_count = db.Column(db.Integer, nullable=False, default=1)
     created_at = db.Column(
         db.DateTime(timezone=True),
         nullable=False,
         default=lambda: datetime.now(timezone.utc),
         index=True,
     )
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+    last_submitted_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
+    status_changed_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    completed_at = db.Column(db.DateTime(timezone=True), nullable=True)
 
     user = db.relationship("User", backref="manual_recovery_requests")
 

@@ -3,13 +3,20 @@ from __future__ import annotations
 import json
 import re
 import secrets
+from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlparse
 
 import pyotp
 import pytest
 from sqlalchemy import func
 
-from app.auth.password_reset import generate_recovery_codes_for_user
+from app.auth.password_reset import (
+    complete_manual_recovery_request,
+    expire_manual_recovery_requests,
+    generate_recovery_codes_for_user,
+    transition_manual_recovery_request,
+)
+from app.auth.services import AuthError
 from app.extensions import db
 from app.models import ManualRecoveryRequest, PasswordResetToken, RecoveryCode, SecurityAuditEvent, User, WebAuthnCredential
 from app.security.crypto import encrypt_mfa_secret
@@ -439,6 +446,163 @@ def test_manual_recovery_request_does_not_freeze_or_unlock_account(app, client):
         assert user.security_locked_at is None
         assert request_record.user_id == user.id
         assert request_record.status == "pending"
+
+
+def test_manual_recovery_dedupes_active_requests_and_keeps_public_response_generic(app, client):
+    with app.app_context():
+        user = _create_user("recover01", "recover01@example.com")
+        user_id = user.id
+
+    first = client.post("/auth/account-recovery", json={"identifier": "recover01@example.com"})
+    duplicate = client.post("/auth/account-recovery", json={"identifier": "recover01@example.com"})
+    missing = client.post("/auth/account-recovery", json={"identifier": "missing-recover@example.com"})
+
+    assert first.status_code == 200
+    assert duplicate.status_code == 200
+    assert missing.status_code == 200
+    assert first.get_json() == duplicate.get_json() == missing.get_json()
+    with app.app_context():
+        known_request = db.session.execute(
+            db.select(ManualRecoveryRequest).where(ManualRecoveryRequest.user_id == user_id)
+        ).scalar_one()
+        unknown_request = db.session.execute(
+            db.select(ManualRecoveryRequest).where(ManualRecoveryRequest.user_id.is_(None))
+        ).scalar_one()
+        assert known_request.status == "pending"
+        assert known_request.request_count == 2
+        assert unknown_request.status == "pending"
+        assert db.session.execute(db.select(func.count(ManualRecoveryRequest.id))).scalar_one() == 2
+        assert [item["subject"] for item in password_reset_outbox()] == [
+            "SITBank manual recovery requested",
+        ]
+        assert db.session.query(SecurityAuditEvent).filter_by(
+            event_type="manual_recovery_requested",
+            outcome="deduped",
+        ).count() == 1
+
+
+def test_manual_recovery_expiry_blocks_stale_transitions(app, client):
+    with app.app_context():
+        user = _create_user("recover02", "recover02@example.com")
+        user_id = user.id
+
+    client.post("/auth/account-recovery", json={"identifier": "recover02@example.com"})
+
+    with app.app_context():
+        request_record = db.session.execute(
+            db.select(ManualRecoveryRequest).where(ManualRecoveryRequest.user_id == user_id)
+        ).scalar_one()
+        request_id = request_record.id
+        request_record.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        db.session.commit()
+
+        with pytest.raises(AuthError, match="expired"):
+            transition_manual_recovery_request(request_id, "under_review")
+
+        db.session.refresh(request_record)
+        assert request_record.status == "expired"
+        assert db.session.query(SecurityAuditEvent).filter_by(
+            event_type="manual_recovery_expired",
+            outcome="expired",
+        ).count() == 1
+
+
+def test_manual_recovery_valid_and_invalid_status_transitions_are_audited(app, client):
+    with app.app_context():
+        user = _create_user("recover03", "recover03@example.com")
+        user_id = user.id
+
+    client.post("/auth/account-recovery", json={"identifier": "recover03@example.com"})
+
+    with app.app_context():
+        request_record = db.session.execute(
+            db.select(ManualRecoveryRequest).where(ManualRecoveryRequest.user_id == user_id)
+        ).scalar_one()
+        request_id = request_record.id
+
+        under_review = transition_manual_recovery_request(request_id, "under_review", reason="support_triage")
+        approved = transition_manual_recovery_request(request_id, "approved", reason="identity_verified")
+        with pytest.raises(AuthError, match="Invalid manual recovery status transition"):
+            transition_manual_recovery_request(request_id, "pending")
+
+        db.session.refresh(request_record)
+        assert under_review["status"] == "under_review"
+        assert approved["status"] == "approved"
+        assert request_record.status == "approved"
+        assert db.session.query(SecurityAuditEvent).filter_by(
+            event_type="manual_recovery_status_changed",
+            outcome="success",
+        ).count() == 2
+        assert db.session.query(SecurityAuditEvent).filter_by(
+            event_type="manual_recovery_status_changed",
+            outcome="failure",
+        ).count() == 1
+
+
+def test_manual_recovery_completion_forces_mfa_reenrollment_and_notifies(app, client):
+    with app.app_context():
+        user, _secret = _create_totp_user("recover04", "recover04@example.com")
+        _add_webauthn_credential(user)
+        user_id = user.id
+
+    client.post("/auth/account-recovery", json={"identifier": "recover04@example.com"})
+
+    with app.app_context():
+        request_record = db.session.execute(
+            db.select(ManualRecoveryRequest).where(ManualRecoveryRequest.user_id == user_id)
+        ).scalar_one()
+        request_id = request_record.id
+        transition_manual_recovery_request(request_id, "under_review")
+        transition_manual_recovery_request(request_id, "approved")
+
+    with app.test_request_context("/support/manual-recovery/complete", method="POST"):
+        result = complete_manual_recovery_request(request_id, reason="identity_verified")
+
+    login = client.post("/auth/login", json={"identifier": "recover04", "password": VALID_PASSWORD})
+
+    assert result["status"] == "completed"
+    assert result["mfa_reenrollment_required"] is True
+    assert login.status_code == 200
+    assert login.get_json()["mfa_setup_required"] is True
+    with app.app_context():
+        user = db.session.get(User, user_id)
+        request_record = db.session.get(ManualRecoveryRequest, request_id)
+        assert user is not None
+        assert request_record is not None
+        assert user.mfa_enabled is False
+        assert user.mfa_secret_nonce is None
+        assert user.mfa_secret_ciphertext is None
+        assert request_record.status == "completed"
+        assert request_record.completed_at is not None
+        assert db.session.execute(db.select(func.count(WebAuthnCredential.id))).scalar_one() == 0
+        subjects = [item["subject"] for item in password_reset_outbox()]
+        assert "SITBank manual recovery requested" in subjects
+        assert "SITBank manual recovery completed" in subjects
+        assert db.session.query(SecurityAuditEvent).filter_by(
+            event_type="manual_recovery_completed",
+            outcome="success",
+        ).count() == 1
+
+
+def test_manual_recovery_cleanup_helper_expires_stale_active_requests(app, client):
+    with app.app_context():
+        user = _create_user("recover05", "recover05@example.com")
+        user_id = user.id
+
+    client.post("/auth/account-recovery", json={"identifier": "recover05@example.com"})
+
+    with app.app_context():
+        request_record = db.session.execute(
+            db.select(ManualRecoveryRequest).where(ManualRecoveryRequest.user_id == user_id)
+        ).scalar_one()
+        request_record.expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+        db.session.commit()
+
+        expired_count = expire_manual_recovery_requests()
+
+        db.session.refresh(request_record)
+        assert expired_count == 1
+        assert request_record.status == "expired"
 
 
 def test_recovery_codes_are_hashed_single_use_reset_factors(app, client):

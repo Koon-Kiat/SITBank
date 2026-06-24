@@ -637,6 +637,12 @@ class Config:
         minimum=300,
         maximum=1800,
     )
+    MANUAL_RECOVERY_REQUEST_TTL_SECONDS = _int_env(
+        "MANUAL_RECOVERY_REQUEST_TTL_SECONDS",
+        default=str(7 * 24 * 60 * 60),
+        minimum=3600,
+        maximum=30 * 24 * 60 * 60,
+    )
     PASSWORD_RESET_EMAIL_BACKEND = _choice_env(
         "PASSWORD_RESET_EMAIL_BACKEND",
         default="smtp" if APP_ENV == "production" else "console",
