@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+
+{% block title %}My Payees | SITBank{% endblock %}
+
+{% block content %}
+<section class="security-page profile-page">
+  <div class="dashboard-header">
+    <div class="page-heading">
+      <p class="eyebrow">Local Transfer</p>
+      <h1>My Payees</h1>
+      <p class="muted">Manage your saved payees. New payees have a cooldown period before you can transfer to them.</p>
+    </div>
+    <div class="button-row">
+      <a class="button" href="{{ url_for('banking.payees_add') }}">Add Payee</a>
+      <a class="button secondary" href="{{ url_for('web.dashboard') }}">Back to Dashboard</a>
+    </div>
+  </div>
+
+  {% if payee_rows %}
+  <div class="panel">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th scope="col">Nickname</th>
+          <th scope="col">Recipient Name</th>
+          <th scope="col">Account</th>
+          <th scope="col">Status</th>
+          <th scope="col"><span class="sr-only">Actions</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in payee_rows %}
+        <tr>
+          <td>{{ row.payee.nickname }}</td>
+          <td>{{ row.payee.recipient_name }}</td>
+          <td>•••-•••-{{ row.payee.account_number[-3:] }}</td>
+          <td>
+            {% if row.status == "active" %}
+            <span class="badge">Ready</span>
+            {% else %}
+            <span class="badge neutral" data-cooldown-expires="{{ row.expires_at }}">Cooldown: {{ row.remaining }}</span>
+            {% endif %}
+          </td>
+          <td>
+            <a class="button secondary small" href="{{ url_for('banking.payees_remove', payee_id=row.payee.id) }}">Remove</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="panel">
+    <div class="empty-state dashboard-txn-empty">
+      <p class="muted">No payees yet. Add a payee to get started with Local Transfer.</p>
+      <a class="button" href="{{ url_for('banking.payees_add') }}">Add Payee</a>
+    </div>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/payees.js') }}"></script>
+{% endblock %}

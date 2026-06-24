@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+
+{% block title %}Remove Payee | SITBank{% endblock %}
+
+{% block content %}
+<section class="security-page profile-page">
+  <div class="dashboard-header">
+    <div class="page-heading">
+      <p class="eyebrow">Local Transfer</p>
+      <h1>Remove Payee</h1>
+      <p class="muted">This will permanently remove the payee from your list. You will need to re-add them with a fresh cooldown period if you change your mind.</p>
+    </div>
+    <div class="button-row">
+      <a class="button secondary" href="{{ url_for('banking.payees') }}">Cancel</a>
+    </div>
+  </div>
+
+  <div class="profile-grid">
+    <article class="profile-panel profile-summary">
+      <div class="profile-panel-title">
+        <p class="eyebrow">Payee to remove</p>
+        <h2>{{ payee.nickname }}</h2>
+      </div>
+      <p class="muted">Recipient: {{ payee.recipient_name }}</p>
+      <p class="muted">Account: •••-•••-{{ payee.account_number[-3:] }}</p>
+    </article>
+
+    <article class="profile-panel profile-card">
+      <div class="profile-panel-title">
+        <p class="eyebrow">Step-up verification</p>
+        <h2>Verify with MFA</h2>
+      </div>
+      <form method="post" action="{{ url_for('banking.payees_remove_submit', payee_id=payee.id) }}" data-webauthn-step-up-form data-step-up-action="payee_remove" novalidate>
+        {{ form.hidden_tag() }}
+        {{ form.stepup_token() }}
+        <div class="form-group">
+          <label for="{{ form.totp_code.id }}">Authenticator code</label>
+          {{ form.totp_code(inputmode="numeric", autocomplete="one-time-code", maxlength="6", placeholder="6-digit code") }}
+          {% for error in form.totp_code.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+          <p class="hint">Enter your authenticator code, or leave blank to verify with a passkey.</p>
+        </div>
+        <p class="field-error" data-webauthn-step-up-error hidden></p>
+        <button class="button button-danger full" type="submit">Remove Payee</button>
+      </form>
+    </article>
+  </div>
+</section>
+{% endblock %}

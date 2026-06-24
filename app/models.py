@@ -216,3 +216,30 @@ class SecurityAuditEvent(db.Model):
     )
 
     user = db.relationship("User", backref="security_audit_events")
+
+
+class Payee(db.Model):
+    __tablename__ = "payees"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    nickname = db.Column(db.String(64), nullable=False)
+    account_number = db.Column(db.String(9), nullable=False)
+    recipient_name = db.Column(db.String(128), nullable=False)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    user = db.relationship(
+        "User",
+        backref=db.backref("payees", cascade="all, delete-orphan", lazy="selectin"),
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint("user_id", "account_number", name="uq_payees_user_account"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<Payee id={self.id!r} user_id={self.user_id!r} nickname={self.nickname!r}>"

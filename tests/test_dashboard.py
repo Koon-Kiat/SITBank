@@ -143,12 +143,12 @@ def test_dashboard_masks_account_number_showing_last_three_digits(client):
     assert "789" in markup
 
 
-def test_dashboard_does_not_render_full_account_number(client):
+def test_dashboard_account_number_full_in_hidden_span(client):
     user = login_with_mfa(client)
     set_account_number(user, "123456789")
     markup = client.get("/dashboard").data.decode("utf-8")
-    assert "123-456-789" not in markup
-    assert "card-acct-full" not in markup
+    assert 'id="card-acct-full" hidden' in markup
+    assert "123-456-789" in markup
 
 
 def test_dashboard_account_number_masked_format_uses_dashes(client):
@@ -158,11 +158,11 @@ def test_dashboard_account_number_masked_format_uses_dashes(client):
     assert "•••-•••-789" in markup
 
 
-def test_dashboard_account_number_eye_toggle_button_absent(client):
+def test_dashboard_account_number_eye_toggle_button_present(client):
     user = login_with_mfa(client)
     set_account_number(user, "123456789")
     markup = client.get("/dashboard").data.decode("utf-8")
-    assert "acct-eye-btn" not in markup
+    assert "acct-eye-btn" in markup
 
 
 def test_dashboard_loads_eye_toggle_script(client):
@@ -185,13 +185,20 @@ def test_dashboard_quick_actions_have_correct_labels(client):
 def test_dashboard_all_quick_actions_are_coming_soon(client):
     login_with_mfa(client)
     markup = client.get("/dashboard").data.decode("utf-8")
-    assert markup.count("Coming soon") == 4
+    assert markup.count("Coming soon") == 3
 
 
 def test_dashboard_quick_actions_are_disabled(client):
     login_with_mfa(client)
     markup = client.get("/dashboard").data.decode("utf-8")
-    assert markup.count("is-disabled") >= 4
+    assert markup.count("is-disabled") >= 3
+
+
+def test_dashboard_local_transfer_links_to_payees_when_mfa_ready(client):
+    login_with_mfa(client)
+    markup = client.get("/dashboard").data.decode("utf-8")
+    assert 'href="/banking/payees"' in markup
+    assert "Local Transfer" in markup
 
 
 # ── Recent transactions panel ──────────────────────────────────────────────────

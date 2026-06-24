@@ -14,9 +14,11 @@
         {% if user.account_number %}
         <div class="card-acct-label-group">
           <p class="bank-card-eyebrow">Account No.</p>
-          {# Render only the masked suffix; the full account number is not exposed in page markup. #}
           <p class="bank-card-number">
-            <span id="card-acct-masked">•••-•••-{{ user.account_number[-3:] }}</span>
+            <span id="card-acct-masked">•••-•••-{{ user.account_number[-3:] }}</span><span id="card-acct-full" hidden>{{ user.account_number[:3] }}-{{ user.account_number[3:6] }}-{{ user.account_number[6:] }}</span>
+            <button id="acct-eye-btn" class="card-eye-btn" type="button" aria-label="Show account number" aria-pressed="false">
+              <svg class="icon" focusable="false" aria-hidden="true"><use id="acct-eye-icon" href="#icon-eye-off"></use></svg>
+            </button>
           </p>
         </div>
         {% else %}
@@ -58,13 +60,22 @@
   <div>
     <h2 class="bank-section-title">Quick Actions</h2>
     <div class="bank-quick-grid">
+      {% if g.mfa_ready %}
+      <a class="bank-quick-btn" href="{{ url_for('banking.payees') }}">
+        <span class="bank-quick-icon" aria-hidden="true">
+          <svg class="icon" focusable="false"><use href="#icon-refresh"></use></svg>
+        </span>
+        <span>Local Transfer</span>
+      </a>
+      {% else %}
       <a class="bank-quick-btn is-disabled" aria-disabled="true">
         <span class="bank-quick-icon" aria-hidden="true">
           <svg class="icon" focusable="false"><use href="#icon-refresh"></use></svg>
         </span>
         <span>Local Transfer</span>
-        <span class="badge neutral">Coming soon</span>
+        <span class="badge neutral">Set up MFA first</span>
       </a>
+      {% endif %}
       <a class="bank-quick-btn is-disabled" aria-disabled="true">
         <span class="bank-quick-icon" aria-hidden="true">
           <svg class="icon" focusable="false"><use href="#icon-shield-check"></use></svg>
