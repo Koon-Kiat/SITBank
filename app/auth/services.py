@@ -20,6 +20,11 @@ from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
 from app.models import User
+from app.auth.registration_invites import (
+    RegistrationInviteRejected,
+    mark_registration_invite_used,
+    require_registration_invite_for_email,
+)
 from app.auth.mfa_policy import (
     PASSWORD_BOOTSTRAP_AUTH_CONTEXT,
     enrolled_webauthn_credential_count,
@@ -188,6 +193,11 @@ def _generate_account_number() -> str:
 
 
 def register_user(data: dict[str, Any]) -> tuple[User, list[str]]:
+    try:
+        invite = require_registration_invite_for_email(data.get("invite_token"), data["email"])
+    except RegistrationInviteRejected as exc:
+        raise AuthError(str(exc), exc.status_code) from exc
+
     if data.get("password") != data.get("confirm_password"):
         audit_event("registration", "failure", metadata={"reason": "password_mismatch"})
         raise AuthError("Passwords must match", 400)
@@ -212,11 +222,16 @@ def register_user(data: dict[str, Any]) -> tuple[User, list[str]]:
     )
     db.session.add(user)
     try:
+        db.session.flush()
+        mark_registration_invite_used(invite, user)
         db.session.commit()
     except IntegrityError as exc:
         db.session.rollback()
         audit_event("registration", "failure", metadata={"reason": "integrity_error"})
         raise AuthError("Registration could not be completed with those details", 400) from exc
+    except RegistrationInviteRejected as exc:
+        db.session.rollback()
+        raise AuthError(str(exc), exc.status_code) from exc
     audit_event(
         "registration",
         "success",

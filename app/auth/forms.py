@@ -22,6 +22,7 @@ def password_length(*, minimum: int | None = None):
 
 
 class RegisterForm(FlaskForm):
+    invite_token = HiddenField()
     username = StringField(
         "Username",
         validators=[

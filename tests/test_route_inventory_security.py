@@ -99,7 +99,7 @@ ROUTE_SECURITY_INVENTORY = {
         "csrf": "required",
         "rate_limit": "per_route",
         "step_up": "not_required",
-        "public_justification": "Account creation remains intentionally open but CSRF-protected and rate-limited.",
+        "public_justification": "Invite-gated account creation must be reachable before authentication but requires a valid token.",
     },
     "auth.login": {
         "endpoint": "auth.login",
@@ -429,7 +429,7 @@ ROUTE_SECURITY_INVENTORY = {
         "csrf": "not_applicable",
         "rate_limit": "edge_app",
         "step_up": "not_required",
-        "public_justification": "Registration form must be reachable before account creation.",
+        "public_justification": "Registration invite links must be reachable before account creation.",
     },
     "web.register_submit": {
         "endpoint": "web.register_submit",
@@ -440,7 +440,7 @@ ROUTE_SECURITY_INVENTORY = {
         "csrf": "required",
         "rate_limit": "per_route",
         "step_up": "not_required",
-        "public_justification": "Account creation remains intentionally open but CSRF-protected and rate-limited.",
+        "public_justification": "Invite-gated account creation must be reachable before authentication but requires a valid token.",
     },
     "web.login": {
         "endpoint": "web.login",
@@ -844,3 +844,4 @@ def test_login_and_registration_have_method_level_security_decisions(app):
     assert ROUTE_SECURITY_INVENTORY["web.register_form"]["csrf"] == "not_applicable"
     assert ROUTE_SECURITY_INVENTORY["web.register_submit"]["csrf"] == "required"
     assert ROUTE_SECURITY_INVENTORY["web.register_submit"]["rate_limit"] == "per_route"
+    assert "Invite-gated" in ROUTE_SECURITY_INVENTORY["web.register_submit"]["public_justification"]

@@ -7,6 +7,7 @@ import secrets
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pyotp
@@ -100,7 +101,9 @@ def create_authenticated_cookie(
     client = DastClient(base_url, allowed_hosts=allowed_hosts)
     suffix = secrets.token_hex(6)
     username = f"zap{suffix}"
+    email = f"{username}@example.test"
     password = f"DAST-{secrets.token_urlsafe(24)}-A9!"
+    invite_token = create_registration_invite_token(email)
 
     csrf_token = str(
         client.request(
@@ -112,14 +115,15 @@ def create_authenticated_cookie(
     client.request(
         "POST",
         "/auth/register",
-         payload={
-             "username": username,
-             "full_name": f"DAST User {suffix}",
-             "phone_number": f"9{secrets.randbelow(9000000) + 1000000}",
-             "email": f"{username}@example.test",
-             "password": password,
-             "confirm_password": password,
-         },
+        payload={
+            "invite_token": invite_token,
+            "username": username,
+            "full_name": f"DAST User {suffix}",
+            "phone_number": f"9{secrets.randbelow(9000000) + 1000000}",
+            "email": email,
+            "password": password,
+            "confirm_password": password,
+        },
         csrf_token=csrf_token,
         expected_status=201,
     )
@@ -158,6 +162,20 @@ def create_authenticated_cookie(
     if not session_cookie:
         raise RuntimeError("Authenticated DAST session cookie was not issued")
     return f"__Host-sitbank_session={session_cookie}"
+
+
+def create_registration_invite_token(email: str) -> str:
+    from app import create_app
+    from app.auth.registration_invites import create_registration_invite
+
+    app = create_app()
+    with app.app_context():
+        _invite, token = create_registration_invite(
+            email,
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
+            audit=False,
+        )
+    return token
 
 
 def main() -> None:

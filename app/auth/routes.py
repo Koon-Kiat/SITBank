@@ -159,6 +159,7 @@ def csrf_token():
 @limiter.limit("5 per 5 minutes", key_func=request_principal)
 def register():
     data = _load_payload(RegisterSchema(), RegisterForm)
+    data["invite_token"] = data.get("invite_token") or request.args.get("invite", "")
     user, warnings = register_user(data)
     return (
         jsonify(

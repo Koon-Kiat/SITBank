@@ -25,9 +25,17 @@ ORIGIN = {"Origin": "https://sitbank.duckdns.org"}
 
 def register(client, username="alice01", email="alice@example.com", password="correct horse battery staple",
              full_name="Alice Test", phone_number="91234567"):
+    from app.auth.registration_invites import create_registration_invite
+
+    _invite, invite_token = create_registration_invite(
+        email,
+        expires_at=datetime.now(timezone.utc) + timedelta(days=1),
+        audit=False,
+    )
     return client.post(
         "/register",
         data={
+            "invite_token": invite_token,
             "username": username,
             "email": email,
             "full_name": full_name,

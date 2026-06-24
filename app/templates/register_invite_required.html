@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+
+{% block title %}Invitation required | SITBank{% endblock %}
+
+{% block content %}
+<section class="auth-shell">
+  <div class="auth-intro">
+    <p class="eyebrow">Customer onboarding</p>
+    <h1>Invitation required</h1>
+    <p class="lede">SITBank account creation is available only through an approved invitation link.</p>
+    <div class="notice">
+      <span class="notice-icon" aria-hidden="true">
+        <svg class="icon" focusable="false"><use href="#icon-info"></use></svg>
+      </span>
+      <p class="muted">
+        {% if invalid %}
+          This invitation is invalid or no longer available.
+        {% else %}
+          Contact the project administrator if you need access.
+        {% endif %}
+      </p>
+    </div>
+  </div>
+</section>
+{% endblock %}
