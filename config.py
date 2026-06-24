@@ -197,6 +197,37 @@ def _choice_env(name: str, *, default: str, choices: set[str]) -> str:
     return value
 
 
+def _validate_password_reset_email_config(
+    *,
+    app_env: str,
+    password_reset_enabled: bool,
+    email_backend: str,
+    email_from: str,
+    smtp_host: str,
+    smtp_use_tls: bool,
+    smtp_username: str | None,
+    smtp_password: str | None,
+) -> None:
+    if not password_reset_enabled or app_env != "production":
+        return
+
+    if email_backend == "console":
+        raise RuntimeError("PASSWORD_RESET_EMAIL_BACKEND=console is not allowed in production")
+    if not email_from:
+        raise RuntimeError("PASSWORD_RESET_EMAIL_FROM is required when password reset is enabled")
+    if email_backend == "smtp":
+        if not smtp_host:
+            raise RuntimeError("SMTP_HOST is required when production password reset uses SMTP")
+        if not smtp_use_tls:
+            raise RuntimeError(
+                "SMTP_USE_TLS=true is required when production password reset uses SMTP"
+            )
+        if not smtp_username:
+            raise RuntimeError("SMTP_USERNAME or SMTP_USERNAME_FILE is required in production")
+        if not smtp_password:
+            raise RuntimeError("SMTP_PASSWORD or SMTP_PASSWORD_FILE is required in production")
+
+
 def _float_env(name: str, *, default: str, minimum: float, maximum: float) -> float:
     raw_value = os.getenv(name, default)
     try:
@@ -658,18 +689,16 @@ class Config:
     SMTP_USE_TLS = _optional_bool("SMTP_USE_TLS", default=True)
     SMTP_USERNAME = _optional_env_or_file("SMTP_USERNAME")
     SMTP_PASSWORD = _optional_env_or_file("SMTP_PASSWORD")
-    if PASSWORD_RESET_ENABLED and APP_ENV == "production":
-        if PASSWORD_RESET_EMAIL_BACKEND == "console":
-            raise RuntimeError("PASSWORD_RESET_EMAIL_BACKEND=console is not allowed in production")
-        if not PASSWORD_RESET_EMAIL_FROM:
-            raise RuntimeError("PASSWORD_RESET_EMAIL_FROM is required when password reset is enabled")
-        if PASSWORD_RESET_EMAIL_BACKEND == "smtp":
-            if not SMTP_HOST:
-                raise RuntimeError("SMTP_HOST is required when production password reset uses SMTP")
-            if not SMTP_USERNAME:
-                raise RuntimeError("SMTP_USERNAME or SMTP_USERNAME_FILE is required in production")
-            if not SMTP_PASSWORD:
-                raise RuntimeError("SMTP_PASSWORD or SMTP_PASSWORD_FILE is required in production")
+    _validate_password_reset_email_config(
+        app_env=APP_ENV,
+        password_reset_enabled=PASSWORD_RESET_ENABLED,
+        email_backend=PASSWORD_RESET_EMAIL_BACKEND,
+        email_from=PASSWORD_RESET_EMAIL_FROM,
+        smtp_host=SMTP_HOST,
+        smtp_use_tls=SMTP_USE_TLS,
+        smtp_username=SMTP_USERNAME,
+        smtp_password=SMTP_PASSWORD,
+    )
 
     SECURITY_ALERT_ENABLED = _optional_bool(
         "SECURITY_ALERT_ENABLED",
