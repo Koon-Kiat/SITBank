@@ -41,14 +41,14 @@
     {% endif %}
   </div>
 
-  {% if not user.mfa_enabled %}
+  {% if not g.mfa_ready %}
   <!-- MFA setup banner -->
   <div class="notice warning">
     <span class="notice-icon" aria-hidden="true">
       <svg class="icon" focusable="false"><use href="#icon-alert"></use></svg>
     </span>
     <div>
-      <p><strong>Set up Authenticator MFA</strong> to unlock transfers, payments, and all account actions.</p>
+      <p><strong>Set up MFA</strong> to unlock transfers, payments, and all account actions.</p>
       <a class="button secondary small notice-action" href="{{ url_for('web.mfa_setup') }}">Set up MFA</a>
     </div>
   </div>

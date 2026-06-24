@@ -304,14 +304,17 @@ def audit_webauthn_event(
     session_id: str | None = None,
     required: bool = False,
 ) -> None:
-    credential_ref = credential_id
+    credential_ref = None
     if isinstance(credential_id, bytes):
-        credential_ref = bytes_to_base64url(credential_id) if bytes_to_base64url else credential_id.hex()
+        credential_value = bytes_to_base64url(credential_id) if bytes_to_base64url else credential_id.hex()
+        credential_ref = audit_reference("webauthn_credential", credential_value) or "[unavailable]"
+    elif credential_id:
+        credential_ref = audit_reference("webauthn_credential", credential_id) or "[unavailable]"
 
     event_metadata = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "action": action,
-        "credential_id": credential_ref,
+        "credential_ref": credential_ref,
         "label": label,
         "aaguid": aaguid,
     }

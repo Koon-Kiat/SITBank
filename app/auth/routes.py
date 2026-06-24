@@ -6,6 +6,7 @@ from flask_wtf.csrf import generate_csrf
 from marshmallow import Schema, ValidationError
 
 from app.extensions import limiter
+from app.auth.mfa_policy import has_enrolled_mfa_method
 from app.security.rate_limits import mfa_principal, request_principal
 
 from .decorators import login_required, not_frozen_required
@@ -100,19 +101,21 @@ AUTH_MFA_ONBOARDING_ALLOWED_ENDPOINTS = {
     "auth.password_reset_webauthn_verify",
     "auth.password_reset_complete",
     "auth.manual_recovery_request",
+    "auth.webauthn_register_options",
+    "auth.webauthn_register_verify",
 }
 
 
 @auth_bp.before_request
 def enforce_api_mfa_onboarding():
     user = getattr(g, "current_user", None)
-    if user is None or user.mfa_enabled:
+    if user is None or has_enrolled_mfa_method(user):
         return None
     if request.endpoint in AUTH_MFA_ONBOARDING_ALLOWED_ENDPOINTS:
         return None
     return jsonify(
         {
-            "error": "Authenticator MFA setup required",
+            "error": "MFA setup required",
             "code": "mfa_setup_required",
         }
     ), 403
@@ -270,8 +273,8 @@ def webauthn_register_verify():
 @limiter.limit("5 per 5 minutes", key_func=get_remote_address)
 @limiter.limit("5 per 5 minutes", key_func=request_principal)
 def webauthn_authenticate_options():
-    data = WebAuthnAuthenticationOptionsSchema().load(request.get_json(silent=False) or {})
-    return jsonify(begin_authentication_options(data["identifier"]))
+    WebAuthnAuthenticationOptionsSchema().load(request.get_json(silent=True) or {})
+    return jsonify(begin_authentication_options())
 
 
 @auth_bp.post("/webauthn/authenticate/verify")

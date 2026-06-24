@@ -166,7 +166,8 @@ class WebAuthnRegistrationVerifySchema(Schema):
 
 
 class WebAuthnAuthenticationOptionsSchema(Schema):
-    identifier = fields.Str(required=True, validate=validate.Length(min=1, max=255))
+    class Meta:
+        unknown = EXCLUDE
 
 
 class WebAuthnAuthenticationVerifySchema(Schema):

@@ -48,13 +48,8 @@
     <form method="post" action="{{ url_for('auth.webauthn_authenticate_options') }}" data-webauthn-login-form novalidate>
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
-      <div class="form-group">
-        <label for="security-key-identifier">Username or email for passkey login</label>
-        <input id="security-key-identifier" name="identifier" type="text" autocomplete="username" maxlength="255">
-        <p class="hint">Available after a passkey or security key is registered.</p>
-      </div>
-
       <button class="button secondary full" type="submit">Sign in with passkey</button>
+      <p class="hint">Use Windows Hello, your device passkey, a password-manager passkey, or a hardware security key.</p>
       <p class="field-error" data-webauthn-login-error hidden></p>
     </form>
     <p class="switch-link"><a href="{{ url_for('web.forgot_password') }}">Forgot password?</a></p>

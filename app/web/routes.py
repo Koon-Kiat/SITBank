@@ -36,6 +36,7 @@ from app.auth.password_reset import (
     request_password_reset,
     verify_reset_totp,
 )
+from app.auth.mfa_policy import enrolled_webauthn_credential_count, has_enrolled_mfa_method
 from app.auth.services import (
     AuthError,
     active_sessions_for_user,
@@ -91,11 +92,11 @@ WEB_MFA_ONBOARDING_ALLOWED_ENDPOINTS = {
 @web_bp.before_request
 def enforce_mfa_onboarding():
     user = getattr(g, "current_user", None)
-    if user is None or user.mfa_enabled:
+    if user is None or has_enrolled_mfa_method(user):
         return None
     if request.endpoint in WEB_MFA_ONBOARDING_ALLOWED_ENDPOINTS:
         return None
-    flash("Set up authenticator MFA before continuing.", "warning")
+    flash("Set up an authenticator app or passkey before continuing.", "warning")
     return redirect(url_for("web.mfa_setup"))
 
 
@@ -212,10 +213,13 @@ def login_submit():
         return render_template("login.html", form=form), exc.status_code
 
     if result.get("mfa_required"):
-        flash("Enter your authenticator code to finish signing in.", "info")
+        if result.get("webauthn_required"):
+            flash("Use your passkey to finish signing in.", "info")
+        else:
+            flash("Enter your authenticator code to finish signing in.", "info")
         return redirect(url_for("web.mfa_verify"))
     if result.get("mfa_setup_required"):
-        flash("Set up authenticator MFA before continuing.", "warning")
+        flash("Choose an MFA method before continuing.", "warning")
         return redirect(url_for("web.mfa_setup"))
 
     flash("Login successful.", "success")
@@ -344,7 +348,20 @@ def mfa_verify():
     if not session.get("pending_mfa_user_id"):
         flash("Please log in first.", "warning")
         return redirect(url_for("web.login"))
-    return render_template("mfa_verify.html", form=AuthenticationCodeForm())
+    from app.extensions import db
+    from app.models import User
+
+    pending_user = db.session.get(User, int(session["pending_mfa_user_id"]))
+    webauthn_required = bool(
+        pending_user is not None
+        and not pending_user.mfa_enabled
+        and enrolled_webauthn_credential_count(pending_user) > 0
+    )
+    return render_template(
+        "mfa_verify.html",
+        form=AuthenticationCodeForm(),
+        webauthn_required=webauthn_required,
+    )
 
 
 @web_bp.post("/mfa/verify")
@@ -700,8 +717,8 @@ def mfa_setup_submit():
 @web_login_required
 @web_not_frozen_required
 def password_change():
-    if not g.current_user.mfa_enabled:
-        flash("Set up authenticator MFA before changing your password.", "warning")
+    if not has_enrolled_mfa_method(g.current_user):
+        flash("Set up MFA before changing your password.", "warning")
         return redirect(url_for("web.mfa_setup"))
     return render_template(
         "password_change.html",
@@ -716,8 +733,8 @@ def password_change():
 @limiter.limit("5 per 5 minutes", key_func=get_remote_address)
 @limiter.limit("5 per 5 minutes", key_func=mfa_principal)
 def password_change_submit():
-    if not g.current_user.mfa_enabled:
-        flash("Set up authenticator MFA before changing your password.", "warning")
+    if not has_enrolled_mfa_method(g.current_user):
+        flash("Set up MFA before changing your password.", "warning")
         return redirect(url_for("web.mfa_setup"))
 
     form = PasswordChangeForm()
