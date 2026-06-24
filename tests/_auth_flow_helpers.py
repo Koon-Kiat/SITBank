@@ -15,7 +15,12 @@ from sqlalchemy.orm import Session
 from webauthn.helpers.structs import CredentialDeviceType
 
 from app.extensions import db
-from app.models import RecoveryCode, RegistrationInvite, SecurityAuditEvent, User, WebAuthnCredential
+from app.auth.registration_otp import (
+    REGISTRATION_OTP_VERIFIED_EMAIL_KEY,
+    REGISTRATION_OTP_VERIFIED_AT_KEY,
+    normalize_registration_email,
+)
+from app.models import RecoveryCode, SecurityAuditEvent, User, WebAuthnCredential
 from app.security.passwords import (
     PASSWORD_MAX_CHARS,
     PASSWORD_MIN_LENGTH,
@@ -26,25 +31,45 @@ from app.security.passwords import (
 )
 
 
-def registration_invite_token(email="alice@example.com", *, expires_at=None, audit=False):
-    from app.auth.registration_invites import create_registration_invite
+def _latest_registration_otp() -> str:
+    from app.security.email import password_reset_outbox
 
-    invite, token = create_registration_invite(
-        email,
-        expires_at=expires_at or datetime.now(timezone.utc) + timedelta(days=1),
-        audit=audit,
+    assert password_reset_outbox(), "registration OTP email was not sent"
+    body = password_reset_outbox()[-1]["body"]
+    match = re.search(r"\b([0-9]{6})\b", body)
+    assert match, "registration OTP email did not contain a 6-digit code"
+    return match.group(1)
+
+
+def verify_registration_email(client, email="alice@sit.singaporetech.edu.sg"):
+    normalized_email = normalize_registration_email(email)
+    with client.session_transaction() as sess:
+        already_verified = (
+            normalize_registration_email(str(sess.get(REGISTRATION_OTP_VERIFIED_EMAIL_KEY) or ""))
+            == normalized_email
+            and sess.get(REGISTRATION_OTP_VERIFIED_AT_KEY)
+        )
+    if already_verified:
+        return None, None
+
+    request_response = client.post("/auth/register/otp/request", json={"email": email})
+    if request_response.status_code != 200:
+        return request_response, None
+    otp_code = _latest_registration_otp()
+    verify_response = client.post(
+        "/auth/register/otp/verify",
+        json={"email": email, "otp_code": otp_code},
     )
-    return token
+    return request_response, verify_response
 
 
-def register(client, username="alice01", email="alice@example.com", password="correct horse battery staple",
-             full_name="Alice Test", phone_number="91234567", invite_token=None, create_invite=True):
-    if invite_token is None and create_invite:
-        invite_token = registration_invite_token(email)
+def register(client, username="alice01", email="alice@sit.singaporetech.edu.sg", password="correct horse battery staple",
+             full_name="Alice Test", phone_number="91234567", verify_email=True):
+    if verify_email:
+        verify_registration_email(client, email)
     return client.post(
         "/register",
         data={
-            "invite_token": invite_token or "",
             "username": username,
             "email": email,
             "full_name": full_name,

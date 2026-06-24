@@ -18,13 +18,13 @@ def test_registration_uses_local_fallback_when_live_password_check_is_unavailabl
         raise LivePasswordCheckUnavailable("offline")
 
     monkeypatch.setattr("app.security.passwords._is_password_pwned_by_hibp", unavailable)
+    verify_registration_email(client)
 
     response = client.post(
         "/register",
         data={
-            "invite_token": registration_invite_token("alice@example.com"),
             "username": "alice01",
-            "email": "alice@example.com",
+            "email": "alice@sit.singaporetech.edu.sg",
             "full_name": "Alice Test",
             "phone_number": "91234567",
             "password": "correct horse battery staple",
@@ -46,279 +46,148 @@ def test_registration_rejects_live_breached_password(client, monkeypatch):
     assert db.session.query(User).count() == 0
     assert b"Password is too common. Please try again" in response.data
 
-def test_register_requires_invite_token(client):
-    response = register(client, create_invite=False)
+def test_register_requires_verified_sit_email(client):
+    response = register(client, verify_email=False)
 
     assert response.status_code == 400
-    assert b"Registration requires a valid invitation" in response.data
+    assert b"Verify your SIT email before creating an account" in response.data
     assert db.session.query(User).count() == 0
 
 
-def test_register_rejects_invalid_invite(client):
-    response = register(client, invite_token="not-a-real-registration-token")
+def test_registration_otp_rejects_non_sit_email_domain(client):
+    response = client.post("/auth/register/otp/request", json={"email": "alice@example.com"})
 
-    assert response.status_code == 403
-    assert b"Registration requires a valid invitation" in response.data
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "Use your SIT email address to register."}
     assert db.session.query(User).count() == 0
 
 
-def test_register_rejects_expired_invite(client):
-    from app.auth.registration_invites import registration_invite_token_hash
-
-    token = registration_invite_token("alice@example.com")
-    invite = db.session.execute(
-        db.select(RegistrationInvite).where(RegistrationInvite.token_hash == registration_invite_token_hash(token))
-    ).scalar_one()
-    invite.expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
-    db.session.commit()
-
-    response = register(client, invite_token=token)
-
-    assert response.status_code == 403
-    assert db.session.query(User).count() == 0
-    db.session.refresh(invite)
-    assert invite.last_attempt_at is not None
-
-
-def test_register_rejects_revoked_invite(client):
-    from app.auth.registration_invites import registration_invite_token_hash
-
-    token = registration_invite_token("alice@example.com")
-    invite = db.session.execute(
-        db.select(RegistrationInvite).where(RegistrationInvite.token_hash == registration_invite_token_hash(token))
-    ).scalar_one()
-    invite.revoked_at = datetime.now(timezone.utc)
-    db.session.commit()
-
-    response = register(client, invite_token=token)
-
-    assert response.status_code == 403
-    assert db.session.query(User).count() == 0
-    db.session.refresh(invite)
-    assert invite.used_at is None
-
-
-def test_register_rejects_reused_invite(client):
-    from app.auth.registration_invites import registration_invite_token_hash
-
-    token = registration_invite_token("alice@example.com")
-    created = register(client, invite_token=token)
-    reused = register(
-        client,
-        username="alice02",
-        email="alice@example.com",
-        phone_number="81234567",
-        invite_token=token,
+def test_registration_otp_rejects_suffix_lookalike_domain(client):
+    response = client.post(
+        "/auth/register/otp/request",
+        json={"email": "alice@sit.singaporetech.edu.sg.example.com"},
     )
-    invite = db.session.execute(
-        db.select(RegistrationInvite).where(RegistrationInvite.token_hash == registration_invite_token_hash(token))
-    ).scalar_one()
+
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "Use your SIT email address to register."}
+
+
+def test_registration_otp_hashes_code_and_verifies_email(client):
+    from app.security.email import password_reset_outbox
+
+    email = "alice@sit.singaporetech.edu.sg"
+    request_response = client.post("/auth/register/otp/request", json={"email": email})
+    raw_code = re.search(r"\b([0-9]{6})\b", password_reset_outbox()[-1]["body"]).group(1)
+    redis_payloads = [
+        current_app.extensions["redis"].get(key)
+        for key in current_app.extensions["redis"].scan_iter("ospbank:registration_otp:*")
+    ]
+    verify_response = client.post("/auth/register/otp/verify", json={"email": email, "otp_code": raw_code})
+
+    assert request_response.status_code == 200
+    assert verify_response.status_code == 200
+    assert password_reset_outbox()[-1]["to"] == "alice@sit.singaporetech.edu.sg"
+    assert password_reset_outbox()[-1]["subject"] == "SITBank registration verification code"
+    assert all(raw_code not in str(payload) for payload in redis_payloads)
+
+
+def test_registration_otp_resend_invalidates_previous_code(client, monkeypatch):
+    from app.security.email import password_reset_outbox
+
+    email = "alice@sit.singaporetech.edu.sg"
+    first = client.post("/auth/register/otp/request", json={"email": email})
+    first_code = re.search(r"\b([0-9]{6})\b", password_reset_outbox()[-1]["body"]).group(1)
+    resend_time = int(time.time()) + 61
+    monkeypatch.setattr("app.auth.registration_otp.time.time", lambda: resend_time)
+    second = client.post("/auth/register/otp/request", json={"email": email})
+    second_code = re.search(r"\b([0-9]{6})\b", password_reset_outbox()[-1]["body"]).group(1)
+    old_code_verify = client.post("/auth/register/otp/verify", json={"email": email, "otp_code": first_code})
+    new_code_verify = client.post("/auth/register/otp/verify", json={"email": email, "otp_code": second_code})
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first_code != second_code
+    assert old_code_verify.status_code == 400
+    assert new_code_verify.status_code == 200
+
+
+def test_registration_otp_attempt_limit_invalidates_code(client):
+    from app.security.email import password_reset_outbox
+
+    email = "alice@sit.singaporetech.edu.sg"
+    client.post("/auth/register/otp/request", json={"email": email})
+    code = re.search(r"\b([0-9]{6})\b", password_reset_outbox()[-1]["body"]).group(1)
+    failures = [
+        client.post("/auth/register/otp/verify", json={"email": email, "otp_code": "000000"})
+        for _ in range(5)
+    ]
+    valid_after_lock = client.post("/auth/register/otp/verify", json={"email": email, "otp_code": code})
+
+    assert [response.status_code for response in failures] == [400, 400, 400, 400, 400]
+    assert valid_after_lock.status_code == 400
+
+
+def test_registration_otp_existing_account_response_is_generic(client):
+    from app.security.email import password_reset_outbox
+
+    created = register(client)
+    before_count = len(password_reset_outbox())
+    second_client = current_app.test_client()
+    response = second_client.post(
+        "/auth/register/otp/request",
+        json={"email": "alice@sit.singaporetech.edu.sg"},
+    )
 
     assert created.status_code == 302
-    assert reused.status_code == 403
-    assert db.session.query(User).count() == 1
-    assert invite.used_at is not None
-    assert invite.used_by_user_id is not None
+    assert response.status_code == 200
+    assert response.get_json() == {"message": "If the email is eligible, a verification code has been sent."}
+    assert len(password_reset_outbox()) == before_count
 
 
-def test_register_rejects_email_mismatch(client):
-    token = registration_invite_token("alice@example.com")
-
-    response = register(client, email="alice+1@example.com", invite_token=token)
-
-    assert response.status_code == 403
-    assert db.session.query(User).count() == 0
-
-
-def test_register_consumes_invite_atomically(client, monkeypatch):
-    from sqlalchemy.exc import IntegrityError
-    from app.auth import services
-    from app.auth.registration_invites import registration_invite_token_hash
-
-    token = registration_invite_token("alice@example.com")
-    original_mark_used = services.mark_registration_invite_used
-
-    def fail_after_marking(invite, user):
-        original_mark_used(invite, user)
-        raise IntegrityError("forced", {}, None)
-
-    monkeypatch.setattr(services, "mark_registration_invite_used", fail_after_marking)
-
-    response = register(client, invite_token=token)
-    invite = db.session.execute(
-        db.select(RegistrationInvite).where(RegistrationInvite.token_hash == registration_invite_token_hash(token))
-    ).scalar_one()
-
-    assert response.status_code == 400
-    assert db.session.query(User).count() == 0
-    assert invite.used_at is None
-    assert invite.used_by_user_id is None
-
-
-def test_register_invite_token_hash_only_stored(client):
-    from app.auth.registration_invites import registration_invite_token_hash
-
-    token = registration_invite_token("alice@example.com")
-    invite = db.session.execute(
-        db.select(RegistrationInvite).where(RegistrationInvite.token_hash == registration_invite_token_hash(token))
-    ).scalar_one()
-
-    assert invite.token_hash != token
-    assert len(invite.token_hash) == 64
-    assert token not in invite.token_hash
-
-
-def test_invite_registration_audit_events(client):
-    token = registration_invite_token("alice@example.com", audit=True)
-
-    response = register(client, invite_token=token)
-    events = db.session.query(SecurityAuditEvent).filter_by(event_type="registration_invite").all()
-    outcomes = {event.outcome for event in events}
-
-    assert response.status_code == 302
-    assert {"created", "used"} <= outcomes
-    assert all("token" not in event.event_metadata for event in events)
-
-
-def test_bulk_invite_creation_from_csv(app, tmp_path):
-    csv_path = tmp_path / "invites.csv"
-    csv_path.write_text("email\nalice@example.com\nbob@example.com\n", encoding="utf-8")
-
-    result = app.test_cli_runner().invoke(
-        args=[
-            "create-registration-invites",
-            str(csv_path),
-            "--expires-in",
-            "1d",
-            "--base-url",
-            "https://sitbank.test",
-        ]
-    )
-
-    assert result.exit_code == 0
-    assert "alice@example.com" in result.output
-    assert "https://sitbank.test/register?invite=" in result.output
-    assert db.session.query(RegistrationInvite).count() == 2
-
-
-def test_single_invite_can_be_emailed_without_printing_link(app):
-    from app.security.email import password_reset_outbox
-
-    result = app.test_cli_runner().invoke(
-        args=[
-            "create-registration-invite",
-            "Alice@Example.com",
-            "--expires-in",
-            "1d",
-            "--base-url",
-            "https://sitbank.test",
-            "--send-email",
-        ]
-    )
-    outbox = password_reset_outbox()
-    payload = json.loads(result.output)
-
-    assert result.exit_code == 0
-    assert payload["email"] == "alice@example.com"
-    assert payload["email_delivery"] == "sent"
-    assert "invite_url" not in payload
-    assert "https://sitbank.test/register?invite=" not in result.output
-    assert len(outbox) == 1
-    assert outbox[0]["to"] == "alice@example.com"
-    assert outbox[0]["subject"] == "SITBank registration invitation"
-    assert "https://sitbank.test/register?invite=" in outbox[0]["body"]
-
-
-def test_bulk_invites_can_be_emailed_without_printing_links(app, tmp_path):
-    from app.security.email import password_reset_outbox
-
-    csv_path = tmp_path / "invites.csv"
-    csv_path.write_text("email\nalice@example.com\nbob@example.com\n", encoding="utf-8")
-
-    result = app.test_cli_runner().invoke(
-        args=[
-            "create-registration-invites",
-            str(csv_path),
-            "--expires-in",
-            "1d",
-            "--base-url",
-            "https://sitbank.test",
-            "--send-email",
-        ]
-    )
-    outbox = password_reset_outbox()
-
-    assert result.exit_code == 0
-    assert "email,invite_id,expires_at,email_delivery" in result.output
-    assert "invite_url" not in result.output
-    assert "https://sitbank.test/register?invite=" not in result.output
-    assert "alice@example.com" in result.output
-    assert "bob@example.com" in result.output
-    assert [item["to"] for item in outbox] == ["alice@example.com", "bob@example.com"]
-    assert all(item["subject"] == "SITBank registration invitation" for item in outbox)
-    assert all("https://sitbank.test/register?invite=" in item["body"] for item in outbox)
-    assert db.session.query(RegistrationInvite).count() == 2
-
-
-def test_invite_email_failure_reports_created_invite_without_link(app, monkeypatch):
-    from app.auth import registration_invites
-
+def test_registration_otp_email_failure_fails_closed_without_code(client, monkeypatch):
     def fail_delivery(*_args, **_kwargs):
         raise RuntimeError("smtp secret should not leak")
 
-    monkeypatch.setattr(registration_invites, "send_security_email", fail_delivery)
+    monkeypatch.setattr("app.auth.registration_otp.send_security_email", fail_delivery)
 
-    result = app.test_cli_runner().invoke(
-        args=[
-            "create-registration-invite",
-            "alice@example.com",
-            "--expires-in",
-            "1d",
-            "--base-url",
-            "https://sitbank.test",
-            "--send-email",
-        ]
+    response = client.post(
+        "/auth/register/otp/request",
+        json={"email": "alice@sit.singaporetech.edu.sg"},
     )
 
-    assert result.exit_code != 0
-    assert "Registration invite " in result.output
-    assert " was created, but email delivery failed: RuntimeError" in result.output
-    assert "smtp secret should not leak" not in result.output
-    assert "https://sitbank.test/register?invite=" not in result.output
-    assert db.session.query(RegistrationInvite).count() == 1
+    assert response.status_code == 503
+    assert response.get_json() == {"error": "Could not send verification code. Please try again later."}
+    assert list(current_app.extensions["redis"].scan_iter("ospbank:registration_otp:*")) == []
 
 
-def test_list_registration_invites_shows_pending_without_tokens(app):
-    from app.auth.registration_invites import registration_invite_token_hash
+def test_registration_otp_audit_events_do_not_store_codes(client):
+    from app.security.email import password_reset_outbox
 
-    pending_token = registration_invite_token("pending@example.com")
-    expired_token = registration_invite_token("expired@example.com")
-    revoked_token = registration_invite_token("revoked@example.com")
-    expired = db.session.execute(
-        db.select(RegistrationInvite).where(RegistrationInvite.token_hash == registration_invite_token_hash(expired_token))
-    ).scalar_one()
-    revoked = db.session.execute(
-        db.select(RegistrationInvite).where(RegistrationInvite.token_hash == registration_invite_token_hash(revoked_token))
-    ).scalar_one()
-    expired.expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
-    revoked.revoked_at = datetime.now(timezone.utc)
-    db.session.commit()
+    request_response, verify_response = verify_registration_email(client)
+    otp_code = re.search(r"\b([0-9]{6})\b", password_reset_outbox()[-1]["body"]).group(1)
+    events = db.session.query(SecurityAuditEvent).filter_by(event_type="registration_otp").all()
+    metadata_json = json.dumps([event.event_metadata for event in events])
 
-    pending_result = app.test_cli_runner().invoke(args=["list-registration-invites"])
-    all_result = app.test_cli_runner().invoke(args=["list-registration-invites", "--all"])
-    pending_payload = json.loads(pending_result.output)
-    all_payload = json.loads(all_result.output)
-
-    assert pending_result.exit_code == 0
-    assert pending_payload["count"] == 1
-    assert pending_payload["invites"][0]["email"] == "pending@example.com"
-    assert pending_payload["invites"][0]["status"] == "pending"
-    assert pending_token not in pending_result.output
-    assert expired_token not in all_result.output
-    assert {invite["status"] for invite in all_payload["invites"]} == {"expired", "pending", "revoked"}
+    assert request_response.status_code == 200
+    assert verify_response.status_code == 200
+    assert {event.outcome for event in events} == {"requested", "verified"}
+    assert otp_code not in metadata_json
+    assert "otp" not in metadata_json.casefold()
 
 
-def test_invite_registration_preserves_mfa_onboarding(client):
+def test_registration_invite_cli_commands_are_removed(app):
+    for command in (
+        "create-registration-invite",
+        "create-registration-invites",
+        "list-registration-invites",
+        "revoke-registration-invite",
+    ):
+        result = app.test_cli_runner().invoke(args=[command])
+        assert result.exit_code != 0
+        assert "No such command" in result.output
+
+
+def test_email_otp_registration_preserves_mfa_onboarding(client):
     created = register(client)
     login_response = login(client)
 
@@ -335,8 +204,8 @@ def test_registration_hashes_password_with_pbkdf2(client):
     assert user.password_hash.startswith(f"{PBKDF2_PREFIX}$v1$i=600000$")
 
 def test_short_password_registration_retry_can_login(client):
-    rejected = register(client, username="retry01", email="retry@example.com", password="short")
-    created = register(client, username="retry01", email="retry@example.com")
+    rejected = register(client, username="retry01", email="retry@sit.singaporetech.edu.sg", password="short")
+    created = register(client, username="retry01", email="retry@sit.singaporetech.edu.sg")
     login_response = login(client, identifier="retry01")
     dashboard_response = client.get("/dashboard")
 
@@ -379,7 +248,7 @@ def test_long_unicode_password_can_register_login_and_change(client, monkeypatch
     assert verify_password(new_password, user.password_hash)
 
 def test_password_templates_do_not_truncate_and_show_max_length_guidance(client):
-    register_response = client.get(f"/register?invite={registration_invite_token('template@example.com')}")
+    register_response = client.get("/register")
     login_response = client.get("/login")
     register(client)
     login(client)
@@ -449,9 +318,8 @@ def test_oversized_api_registration_password_rejected_cleanly(client, monkeypatc
     response = client.post(
         "/auth/register",
         json={
-            "invite_token": registration_invite_token("oversized@example.com"),
             "username": "oversized01",
-            "email": "oversized@example.com",
+            "email": "oversized@sit.singaporetech.edu.sg",
             "full_name": "Oversized Test",
             "phone_number": "91234567",
             "password": password,
@@ -514,9 +382,8 @@ def test_registration_requires_matching_confirm_password(client):
     response = client.post(
         "/register",
         data={
-            "invite_token": registration_invite_token("alice@example.com"),
             "username": "alice01",
-            "email": "alice@example.com",
+            "email": "alice@sit.singaporetech.edu.sg",
             "full_name": "Alice Test",
             "phone_number": "91234567",
             "password": "correct horse battery staple",
@@ -531,9 +398,8 @@ def test_registration_requires_full_name_and_valid_phone_number(client):
     missing_name = client.post(
         "/register",
         data={
-            "invite_token": registration_invite_token("alice@example.com"),
             "username": "alice01",
-            "email": "alice@example.com",
+            "email": "alice@sit.singaporetech.edu.sg",
             "phone_number": "91234567",
             "password": "correct horse battery staple",
             "confirm_password": "correct horse battery staple",
@@ -542,9 +408,8 @@ def test_registration_requires_full_name_and_valid_phone_number(client):
     invalid_phone = client.post(
         "/register",
         data={
-            "invite_token": registration_invite_token("alice@example.com"),
             "username": "alice01",
-            "email": "alice@example.com",
+            "email": "alice@sit.singaporetech.edu.sg",
             "full_name": "Alice Test",
             "phone_number": "71234567",
             "password": "correct horse battery staple",
@@ -562,7 +427,7 @@ def test_registration_rejects_duplicate_phone_with_generic_error(client):
     duplicate_phone = register(
         client,
         username="bob02",
-        email="bob@example.com",
+        email="bob@sit.singaporetech.edu.sg",
         full_name="Bob Test",
         phone_number="91234567",
     )
@@ -576,9 +441,8 @@ def test_api_registration_rejects_client_supplied_account_number(client):
     response = client.post(
         "/auth/register",
         json={
-            "invite_token": registration_invite_token("alice@example.com"),
             "username": "alice01",
-            "email": "alice@example.com",
+            "email": "alice@sit.singaporetech.edu.sg",
             "full_name": "Alice Test",
             "phone_number": "91234567",
             "account_number": "999999999",

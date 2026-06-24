@@ -100,7 +100,29 @@ ROUTE_SECURITY_INVENTORY = {
         "csrf": "required",
         "rate_limit": "per_route",
         "step_up": "not_required",
-        "public_justification": "Invite-gated account creation must be reachable before authentication but requires a valid token.",
+        "public_justification": "Account creation must be reachable before authentication but requires a verified SIT email OTP.",
+    },
+    "auth.register_otp_request": {
+        "endpoint": "auth.register_otp_request",
+        "rule": "/auth/register/otp/request",
+        "methods": {"POST"},
+        "access": "public",
+        "classification": "registration",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "not_required",
+        "public_justification": "Registration OTP requests must be reachable before account creation and are constrained to approved SIT email domains.",
+    },
+    "auth.register_otp_verify": {
+        "endpoint": "auth.register_otp_verify",
+        "rule": "/auth/register/otp/verify",
+        "methods": {"POST"},
+        "access": "public",
+        "classification": "registration",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "not_required",
+        "public_justification": "Registration OTP verification binds the approved SIT email to the caller's pre-authentication session.",
     },
     "auth.login": {
         "endpoint": "auth.login",
@@ -430,7 +452,29 @@ ROUTE_SECURITY_INVENTORY = {
         "csrf": "not_applicable",
         "rate_limit": "edge_app",
         "step_up": "not_required",
-        "public_justification": "Registration invite links must be reachable before account creation.",
+        "public_justification": "The registration form must be reachable before account creation.",
+    },
+    "web.register_otp_request": {
+        "endpoint": "web.register_otp_request",
+        "rule": "/register/otp/request",
+        "methods": {"POST"},
+        "access": "public",
+        "classification": "registration",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "not_required",
+        "public_justification": "Browser registration OTP requests must be reachable before account creation.",
+    },
+    "web.register_otp_verify": {
+        "endpoint": "web.register_otp_verify",
+        "rule": "/register/otp/verify",
+        "methods": {"POST"},
+        "access": "public",
+        "classification": "registration",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "not_required",
+        "public_justification": "Browser registration OTP verification must be reachable before account creation.",
     },
     "web.register_submit": {
         "endpoint": "web.register_submit",
@@ -441,7 +485,7 @@ ROUTE_SECURITY_INVENTORY = {
         "csrf": "required",
         "rate_limit": "per_route",
         "step_up": "not_required",
-        "public_justification": "Invite-gated account creation must be reachable before authentication but requires a valid token.",
+        "public_justification": "Account creation must be reachable before authentication but requires a verified SIT email OTP.",
     },
     "web.login": {
         "endpoint": "web.login",
@@ -922,4 +966,4 @@ def test_login_and_registration_have_method_level_security_decisions(app):
     assert ROUTE_SECURITY_INVENTORY["web.register_form"]["csrf"] == "not_applicable"
     assert ROUTE_SECURITY_INVENTORY["web.register_submit"]["csrf"] == "required"
     assert ROUTE_SECURITY_INVENTORY["web.register_submit"]["rate_limit"] == "per_route"
-    assert "Invite-gated" in ROUTE_SECURITY_INVENTORY["web.register_submit"]["public_justification"]
+    assert "verified SIT email OTP" in ROUTE_SECURITY_INVENTORY["web.register_submit"]["public_justification"]

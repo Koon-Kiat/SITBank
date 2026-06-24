@@ -6,7 +6,7 @@ from wtforms.validators import Email, EqualTo, InputRequired, Length, Optional, 
 
 from app.security.passwords import PASSWORD_MIN_LENGTH, password_max_chars
 
-from .schemas import PHONE_RE, STEP_UP_TOKEN_RE, TOTP_RE, USERNAME_RE
+from .schemas import PHONE_RE, REGISTRATION_OTP_RE, STEP_UP_TOKEN_RE, TOTP_RE, USERNAME_RE
 
 
 def password_length(*, minimum: int | None = None):
@@ -22,7 +22,6 @@ def password_length(*, minimum: int | None = None):
 
 
 class RegisterForm(FlaskForm):
-    invite_token = HiddenField()
     username = StringField(
         "Username",
         validators=[
@@ -47,6 +46,21 @@ class RegisterForm(FlaskForm):
             InputRequired(),
             password_length(),
             EqualTo("password", message="Passwords must match"),
+        ],
+    )
+
+
+class RegistrationOtpRequestForm(FlaskForm):
+    email = StringField("SIT email", validators=[InputRequired(), Email(), Length(max=255)])
+
+
+class RegistrationOtpVerifyForm(FlaskForm):
+    email = StringField("SIT email", validators=[InputRequired(), Email(), Length(max=255)])
+    otp_code = StringField(
+        "Verification code",
+        validators=[
+            InputRequired(),
+            Regexp(REGISTRATION_OTP_RE, message="Verification code must be exactly 6 digits"),
         ],
     )
 

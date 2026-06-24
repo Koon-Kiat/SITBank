@@ -50,33 +50,6 @@ class User(db.Model):
         return f"<User id={self.id!r} username={self.username!r}>"
 
 
-class RegistrationInvite(db.Model):
-    __tablename__ = "registration_invites"
-
-    id = db.Column(db.Integer, primary_key=True)
-    token_hash = db.Column(db.String(64), nullable=False, unique=True, index=True)
-    intended_email_normalized = db.Column(db.String(255), nullable=False, index=True)
-    created_by_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True, index=True)
-    created_at = db.Column(
-        db.DateTime(timezone=True),
-        nullable=False,
-        default=lambda: datetime.now(timezone.utc),
-    )
-    expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
-    used_at = db.Column(db.DateTime(timezone=True), nullable=True)
-    used_by_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True, index=True)
-    revoked_at = db.Column(db.DateTime(timezone=True), nullable=True)
-    revoked_by_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True, index=True)
-    last_attempt_at = db.Column(db.DateTime(timezone=True), nullable=True)
-
-    created_by = db.relationship("User", foreign_keys=[created_by_user_id])
-    used_by = db.relationship("User", foreign_keys=[used_by_user_id])
-    revoked_by = db.relationship("User", foreign_keys=[revoked_by_user_id])
-
-    def __repr__(self) -> str:
-        return f"<RegistrationInvite id={self.id!r} email={self.intended_email_normalized!r}>"
-
-
 class WebAuthnCredential(db.Model):
     __tablename__ = "webauthn_credentials"
 

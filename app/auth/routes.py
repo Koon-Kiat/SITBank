@@ -20,6 +20,8 @@ from .forms import (
     PasswordChangeForm,
     PasswordResetForm,
     RegisterForm,
+    RegistrationOtpRequestForm,
+    RegistrationOtpVerifyForm,
     TotpForm,
 )
 from .password_reset import (
@@ -40,6 +42,8 @@ from .schemas import (
     PasswordChangeSchema,
     PasswordResetSchema,
     RegisterSchema,
+    RegistrationOtpRequestSchema,
+    RegistrationOtpVerifySchema,
     ResetTokenExchangeSchema,
     TerminateSessionSchema,
     TotpSchema,
@@ -71,6 +75,11 @@ from .services import (
     verify_high_risk_authorization,
     verify_mfa_replacement,
     verify_mfa_setup,
+)
+from .registration_otp import (
+    RegistrationOtpError,
+    request_registration_otp,
+    verify_registration_otp,
 )
 from .webauthn_services import (
     begin_step_up_options,
@@ -144,6 +153,15 @@ def handle_auth_error(error: AuthError):
     return response, error.status_code
 
 
+@auth_bp.errorhandler(RegistrationOtpError)
+def handle_registration_otp_error(error: RegistrationOtpError):
+    response = jsonify({"error": error.message})
+    if error.retry_after is not None:
+        response.headers["Retry-After"] = str(error.retry_after)
+        response.headers["X-Auth-Retry-After"] = str(error.retry_after)
+    return response, error.status_code
+
+
 @auth_bp.errorhandler(ValidationError)
 def handle_validation_error(error: ValidationError):
     return jsonify({"error": "Invalid request"}), 400
@@ -154,12 +172,27 @@ def csrf_token():
     return jsonify({"csrf_token": generate_csrf()})
 
 
+@auth_bp.post("/register/otp/request")
+@limiter.limit("10 per hour", key_func=get_remote_address)
+@limiter.limit("3 per 5 minutes", key_func=request_principal)
+def register_otp_request():
+    data = _load_payload(RegistrationOtpRequestSchema(), RegistrationOtpRequestForm)
+    return jsonify(request_registration_otp(data["email"]))
+
+
+@auth_bp.post("/register/otp/verify")
+@limiter.limit("10 per hour", key_func=get_remote_address)
+@limiter.limit("10 per 5 minutes", key_func=request_principal)
+def register_otp_verify():
+    data = _load_payload(RegistrationOtpVerifySchema(), RegistrationOtpVerifyForm)
+    return jsonify(verify_registration_otp(data["email"], data["otp_code"]))
+
+
 @auth_bp.post("/register")
 @limiter.limit("5 per 5 minutes", key_func=get_remote_address)
 @limiter.limit("5 per 5 minutes", key_func=request_principal)
 def register():
     data = _load_payload(RegisterSchema(), RegisterForm)
-    data["invite_token"] = data.get("invite_token") or request.args.get("invite", "")
     user, warnings = register_user(data)
     return (
         jsonify(

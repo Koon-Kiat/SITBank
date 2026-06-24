@@ -182,7 +182,7 @@ def test_public_layout_does_not_expose_authenticated_account_actions(client):
     assert 'action="/logout"' not in markup
 
 def test_authentication_pages_have_password_helpers_and_mfa_back_link(client):
-    register_page = client.get(f"/register?invite={registration_invite_token('ui-helper@example.com')}")
+    register_page = client.get("/register")
     login_page = client.get("/login")
     register(client)
     user, secret = enable_mfa_for_user()
@@ -199,12 +199,12 @@ def test_authentication_pages_have_password_helpers_and_mfa_back_link(client):
     assert "Back to login" in mfa_page.data.decode("utf-8")
 
 def test_flash_messages_are_dismissible(client):
+    verify_registration_email(client, "flash@sit.singaporetech.edu.sg")
     response = client.post(
         "/register",
         data={
-            "invite_token": registration_invite_token("flash@example.com"),
             "username": "flash01",
-            "email": "flash@example.com",
+            "email": "flash@sit.singaporetech.edu.sg",
             "full_name": "Flash Test",
             "phone_number": "91234567",
             "password": "correct horse battery staple",

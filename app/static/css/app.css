@@ -505,6 +505,24 @@ img {
   margin-top: var(--space-5);
 }
 
+.stacked-panel {
+  display: grid;
+  gap: var(--space-5);
+  margin: var(--space-5) 0 var(--space-6);
+  padding: var(--space-5);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+}
+
+.page-heading.compact {
+  gap: var(--space-1);
+}
+
+.page-heading.compact h3 {
+  font-size: 1.15rem;
+}
+
 .eyebrow {
   margin: 0;
   color: var(--primary);
