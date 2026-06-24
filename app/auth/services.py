@@ -322,6 +322,7 @@ def verify_mfa_setup(user: User, code: str) -> dict[str, Any]:
         session_id=session_id,
         metadata={"recovery_code_count": len(recovery_codes)},
     )
+    db.session.commit()
     return {
         "message": "MFA enabled",
         "session_ref": public_session_reference(session_id),
@@ -391,6 +392,7 @@ def verify_mfa_replacement(user: User, code: str) -> dict[str, Any]:
         session_id=session_id,
         metadata={"revoked_other_sessions": revoked, "recovery_code_count": len(recovery_codes)},
     )
+    db.session.commit()
     return {
         "message": "Authenticator MFA replaced",
         "session_ref": public_session_reference(session_id),
@@ -448,6 +450,7 @@ def regenerate_totp_recovery_codes(user: User) -> dict[str, Any]:
         user=user,
         metadata={"recovery_code_count": len(recovery_codes)},
     )
+    db.session.commit()
     return {
         "message": "Recovery codes regenerated",
         "recovery_codes": recovery_codes,
@@ -731,7 +734,7 @@ def _verify_pending_login_authentication_code(user: User, code: str) -> str:
         _record_user_security_failure(user, "mfa", "mfa_failed_attempts")
         raise
 
-    if not consume_recovery_code(user, code):
+    if not consume_recovery_code(user, code, commit=False):
         record_failure("mfa_recovery_code", str(user.id))
         audit_event("mfa_recovery_code_verify", "failure", user=user)
         _record_user_security_failure(user, "mfa", "mfa_failed_attempts")
@@ -740,8 +743,9 @@ def _verify_pending_login_authentication_code(user: User, code: str) -> str:
     clear_failures("mfa_recovery_code", str(user.id))
     _clear_user_security_failures(user, "mfa")
     remaining = unused_recovery_code_count(user)
-    _send_mfa_recovery_code_used_notification(user)
     audit_event_required("mfa_recovery_code_verify", "success", user=user, metadata={"remaining_codes": remaining})
+    db.session.commit()
+    _send_mfa_recovery_code_used_notification(user)
     return "recovery_code"
 
 

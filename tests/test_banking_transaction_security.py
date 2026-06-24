@@ -110,7 +110,7 @@ def test_public_transaction_idempotency_binds_key_to_exact_payload():
 
     assert first == replay
 
-def test_banking_transaction_approval_uses_required_audit_writer(monkeypatch):
+def test_banking_transaction_approval_uses_required_audit_writer(app, monkeypatch):
     from app.banking import services as banking_services
 
     calls = []
