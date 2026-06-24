@@ -7,27 +7,42 @@
   <div class="page-heading">
     <p class="eyebrow">Second step</p>
     <h1>MFA Verification</h1>
-    <p class="muted">Enter an authenticator or recovery code to finish signing in.</p>
+    <p class="muted">
+      {% if webauthn_required %}
+        Use your passkey or security key to finish signing in.
+      {% else %}
+        Enter an authenticator or recovery code to finish signing in.
+      {% endif %}
+    </p>
   </div>
 
-  <div class="notice">
-    <span class="notice-icon" aria-hidden="true">
-      <svg class="icon" focusable="false"><use href="#icon-refresh"></use></svg>
-    </span>
-    <p class="muted">Each authenticator code can only be used once. If you just used it, wait for the next one.</p>
-  </div>
-
-  <form method="post" action="{{ url_for('web.mfa_verify_submit') }}" novalidate>
-    {{ form.hidden_tag() }}
-
-    <div class="form-group">
-      <label for="{{ form.totp_code.id }}">Authentication code</label>
-      {{ form.totp_code(autocomplete="one-time-code", maxlength="80") }}
-      {% for error in form.totp_code.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+  {% if webauthn_required %}
+    <form method="post" action="{{ url_for('auth.webauthn_authenticate_options') }}" data-webauthn-login-form novalidate>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button class="button full" type="submit">Sign in with passkey</button>
+      <p class="hint">Use Windows Hello, your device passkey, a password-manager passkey, or a hardware security key.</p>
+      <p class="field-error" data-webauthn-login-error hidden></p>
+    </form>
+  {% else %}
+    <div class="notice">
+      <span class="notice-icon" aria-hidden="true">
+        <svg class="icon" focusable="false"><use href="#icon-refresh"></use></svg>
+      </span>
+      <p class="muted">Each authenticator code can only be used once. If you just used it, wait for the next one.</p>
     </div>
 
-    <button class="button full" type="submit">Verify code</button>
-  </form>
+    <form method="post" action="{{ url_for('web.mfa_verify_submit') }}" novalidate>
+      {{ form.hidden_tag() }}
+
+      <div class="form-group">
+        <label for="{{ form.totp_code.id }}">Authentication code</label>
+        {{ form.totp_code(autocomplete="one-time-code", maxlength="80") }}
+        {% for error in form.totp_code.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+      </div>
+
+      <button class="button full" type="submit">Verify code</button>
+    </form>
+  {% endif %}
   <p class="switch-link"><a href="{{ url_for('web.login') }}">Back to login</a></p>
 </section>
 {% endblock %}

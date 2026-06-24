@@ -20,6 +20,11 @@ from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
 from app.models import User
+from app.auth.mfa_policy import (
+    PASSWORD_BOOTSTRAP_AUTH_CONTEXT,
+    enrolled_webauthn_credential_count,
+    has_enrolled_mfa_method,
+)
 from app.security.audit import audit_event, audit_event_required, principal_reference
 from app.security.crypto import decrypt_mfa_secret, encrypt_mfa_secret
 from app.security.passwords import (
@@ -35,6 +40,7 @@ from app.security.sessions import (
     begin_password_authenticated_session,
     current_session_id,
     establish_authenticated_session,
+    has_recent_fresh_mfa,
     list_active_sessions,
     list_past_sessions,
     mark_fresh_mfa,
@@ -268,10 +274,19 @@ def authenticate_primary(identifier: str, password: str) -> dict[str, Any]:
             "mfa_required": True,
         }
 
+    if enrolled_webauthn_credential_count(user) > 0:
+        begin_password_authenticated_session(user.id)
+        audit_event("login_password", "success", user=user, metadata={"passkey_required": True})
+        return {
+            "message": "Passkey verification required",
+            "mfa_required": True,
+            "webauthn_required": True,
+        }
+
     session_id = establish_authenticated_session(
         user_id=user.id,
         mfa_verified=False,
-        auth_context="password_bootstrap",
+        auth_context=PASSWORD_BOOTSTRAP_AUTH_CONTEXT,
     )
     audit_event("login", "success", user=user, session_id=session_id, metadata={"mfa_required": False})
     return {
@@ -288,6 +303,9 @@ def generate_mfa_setup(user: User) -> dict[str, str]:
     if user.mfa_enabled:
         audit_event("mfa_setup_generate", "failure", user=user, metadata={"reason": "already_enabled"})
         raise AuthError("MFA is already enabled", 409)
+    if has_enrolled_mfa_method(user) and not has_recent_fresh_mfa():
+        audit_event("mfa_setup_generate", "failure", user=user, metadata={"reason": "fresh_mfa_required"})
+        raise AuthError("Recent MFA verification is required before adding another MFA method", 403)
 
     secret = pyotp.random_base32(length=32)
     nonce, ciphertext = encrypt_mfa_secret(secret, user.id)
@@ -683,13 +701,16 @@ def verify_high_risk_authorization(
     from app.auth.webauthn_services import consume_step_up_token
 
     require_stable_session_for_sensitive_action(action)
-    if not user.mfa_enabled:
+    if not has_enrolled_mfa_method(user):
         audit_event(action, "failure", user=user, metadata={"reason": "mfa_not_enabled"})
         raise AuthError("MFA is required for this action", 403)
     if stepup_token:
         consume_step_up_token(user, action, stepup_token)
         audit_event(action, "passkey_success", user=user)
     elif code:
+        if not user.mfa_enabled:
+            audit_event(action, "failure", user=user, metadata={"reason": "totp_not_enabled"})
+            raise AuthError("Use a passkey to verify this action", 403)
         if not _verify_totp_for_user(user, code, action):
             _handle_mfa_verification_failure(user, action)
         audit_event(action, "mfa_success", user=user)

@@ -236,6 +236,9 @@ def test_webauthn_audit_wrapper_can_use_required_writer(monkeypatch):
     assert calls
     assert calls[0][0] == "webauthn_register"
     assert calls[0][1] == "success"
+    metadata = calls[0][2]["metadata"]
+    assert metadata["credential_ref"]
+    assert "credential_id" not in metadata
 
 def test_audit_system_writer_uses_append_only_runtime_read_path(app, monkeypatch):
     from app.security import audit as audit_module

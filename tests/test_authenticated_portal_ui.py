@@ -168,7 +168,7 @@ def test_no_passkey_empty_state_lives_on_passkey_page_not_dashboard(client):
     assert keys_response.status_code == 200
     assert "No passkeys are registered" not in dashboard_markup
     assert "No passkeys registered" in keys_markup
-    assert "Authenticator MFA is active without a passkey" in keys_markup
+    assert "Add one whenever you want optional passkey sign-in or step-up." in keys_markup
 
 def test_public_layout_does_not_expose_authenticated_account_actions(client):
     response = client.get("/login")
@@ -178,7 +178,7 @@ def test_public_layout_does_not_expose_authenticated_account_actions(client):
     assert "data-account-menu" not in markup
     assert "Edit Profile" not in markup
     assert "data-webauthn-login-form" in markup
-    assert "Available after a passkey or security key is registered." in markup
+    assert "Windows Hello" in markup
     assert 'href="/profile"' not in markup
     assert 'action="/logout"' not in markup
 

@@ -113,10 +113,14 @@
 
   function prepareAuthenticationOptions(options) {
     options.challenge = base64urlToBuffer(options.challenge);
-    options.allowCredentials = (options.allowCredentials || []).map(function (credential) {
-      credential.id = base64urlToBuffer(credential.id);
-      return credential;
-    });
+    if (Array.isArray(options.allowCredentials)) {
+      options.allowCredentials = options.allowCredentials.map(function (credential) {
+        credential.id = base64urlToBuffer(credential.id);
+        return credential;
+      });
+    } else {
+      delete options.allowCredentials;
+    }
     return options;
   }
 
@@ -197,9 +201,8 @@
       loginForm.addEventListener("submit", function (event) {
         event.preventDefault();
         var errorNode = document.querySelector("[data-webauthn-login-error]");
-        var identifier = loginForm.querySelector('input[name="identifier"]').value;
         clearError(errorNode);
-        postJson("/auth/webauthn/authenticate/options", { identifier: identifier }, csrfToken(loginForm))
+        postJson("/auth/webauthn/authenticate/options", {}, csrfToken(loginForm))
           .then(function (options) {
             return navigator.credentials.get({ publicKey: prepareAuthenticationOptions(options) });
           })

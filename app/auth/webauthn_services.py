@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from flask import current_app, request, session
-from sqlalchemy import func, or_
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from webauthn import (
     generate_authentication_options,
@@ -29,6 +29,7 @@ from webauthn.helpers.structs import (
 
 from app.extensions import db
 from app.models import User, WebAuthnCredential
+from app.auth.mfa_policy import has_enrolled_mfa_method, has_password_bootstrap_session
 from app.security.audit import audit_event, audit_reference, audit_webauthn_event
 from app.security.sessions import (
     current_session_id,
@@ -141,7 +142,8 @@ def begin_registration_options(user: User, label: str) -> dict[str, Any]:
         timeout=current_app.config["WEBAUTHN_TIMEOUT_MS"],
         attestation=AttestationConveyancePreference.NONE,
         authenticator_selection=AuthenticatorSelectionCriteria(
-            resident_key=ResidentKeyRequirement.PREFERRED,
+            resident_key=ResidentKeyRequirement.REQUIRED,
+            require_resident_key=True,
             user_verification=UserVerificationRequirement.REQUIRED,
         ),
         exclude_credentials=[PublicKeyCredentialDescriptor(id=item.credential_id) for item in credentials],
@@ -239,72 +241,41 @@ def verify_registration(user: User, credential: dict[str, Any]) -> dict[str, Any
     }
 
 
-def begin_authentication_options(identifier: str) -> dict[str, Any]:
+def begin_authentication_options() -> dict[str, Any]:
     enforce_request_origin()
-    user = _find_user_by_identifier(identifier)
-    credentials: list[WebAuthnCredential] = []
-    registered_count = 0
-    user_id: int | None = None
-    if user is not None:
-        try:
-            ensure_account_can_authenticate(user)
-        except AuthError:
-            user = None
-    if user is not None:
-        user_credentials = _credentials_for_user(user)
-        registered_count = len(user_credentials)
-        if registered_count > 0:
-            credentials = user_credentials
-            user_id = user.id
-
     options = generate_authentication_options(
         rp_id=current_app.config["WEBAUTHN_RP_ID"],
         timeout=current_app.config["WEBAUTHN_TIMEOUT_MS"],
-        allow_credentials=[
-            PublicKeyCredentialDescriptor(
-                id=item.credential_id,
-                transports=_transports_for_descriptor(item),
-            )
-            for item in credentials
-        ],
         user_verification=UserVerificationRequirement.REQUIRED,
     )
     session[AUTH_CHALLENGE_KEY] = bytes_to_base64url(options.challenge)
-    session[AUTH_USER_KEY] = user_id
+    session.pop(AUTH_USER_KEY, None)
     session.modified = True
     audit_webauthn_event(
         "authenticate_options",
         "success",
-        user=user,
-        metadata={
-            "credential_count": len(credentials),
-            "registered_credential_count": registered_count,
-            "required_credential_count": _required_webauthn_login_credential_count(),
-        },
+        metadata={"discoverable": True},
     )
-    return options_to_json_dict(options)
+    payload = options_to_json_dict(options)
+    payload.pop("allowCredentials", None)
+    return payload
 
 
 def verify_authentication(credential: dict[str, Any]) -> dict[str, Any]:
     enforce_request_origin()
     challenge = session.get(AUTH_CHALLENGE_KEY)
-    pending_user_id = session.get(AUTH_USER_KEY)
-    if not challenge or not pending_user_id:
+    if not challenge:
         audit_webauthn_event("authenticate", "failure", metadata={"reason": "missing_challenge"})
         raise AuthError(GENERIC_WEBAUTHN_ERROR, 401)
 
     credential_id = _credential_id_from_payload(credential)
     item = db.session.execute(
-        db.select(WebAuthnCredential).where(
-            WebAuthnCredential.user_id == int(pending_user_id),
-            WebAuthnCredential.credential_id == credential_id,
-        )
+        db.select(WebAuthnCredential).where(WebAuthnCredential.credential_id == credential_id)
     ).scalar_one_or_none()
     if item is None:
         audit_webauthn_event(
             "authenticate",
             "failure",
-            user_id=int(pending_user_id),
             credential_id=credential_id,
             metadata={"reason": "unknown_or_unowned_credential"},
         )
@@ -318,6 +289,16 @@ def verify_authentication(credential: dict[str, Any]) -> dict[str, Any]:
             user_id=item.user_id,
             credential_id=item.credential_id,
             metadata={"reason": "missing_user"},
+        )
+        raise AuthError(GENERIC_WEBAUTHN_ERROR, 401)
+    pending_user_id = session.get("pending_mfa_user_id")
+    if pending_user_id is not None and int(pending_user_id) != int(user.id):
+        audit_webauthn_event(
+            "authenticate",
+            "failure",
+            user=user,
+            credential_id=item.credential_id,
+            metadata={"reason": "pending_user_mismatch"},
         )
         raise AuthError(GENERIC_WEBAUTHN_ERROR, 401)
     try:
@@ -926,18 +907,6 @@ def verify_transaction_security_key_challenge(user: User, credential: dict[str, 
     }
 
 
-def _find_user_by_identifier(identifier: str) -> User | None:
-    normalized = identifier.strip().casefold()
-    return db.session.execute(
-        db.select(User).where(
-            or_(
-                func.lower(User.username) == normalized,
-                func.lower(User.email) == normalized,
-            )
-        )
-    ).scalar_one_or_none()
-
-
 def _registration_failure_metadata(exc: Exception, verification, failure_stage: str) -> dict[str, Any]:
     metadata: dict[str, Any] = {
         "reason": type(exc).__name__,
@@ -1093,6 +1062,8 @@ def _ensure_registration_session_allowed(user: User) -> None:
         raise AuthError("Authentication required", 401)
 
     existing_count = webauthn_credential_count(user)
+    if existing_count == 0 and not has_enrolled_mfa_method(user) and has_password_bootstrap_session(user):
+        return
     if existing_count == 0 and has_recent_fresh_mfa():
         return
     if existing_count > 0 and _has_recent_lifecycle_authorization():

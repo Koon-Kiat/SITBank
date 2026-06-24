@@ -501,7 +501,7 @@ def test_api_onboarding_requires_totp_before_authenticated_endpoints(client):
 
     assert sessions_response.status_code == 403
     assert sessions_response.get_json() == {
-        "error": "Authenticator MFA setup required",
+        "error": "MFA setup required",
         "code": "mfa_setup_required",
     }
     assert csrf_response.status_code == 200

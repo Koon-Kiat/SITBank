@@ -119,14 +119,16 @@ def mint_stepup_token(client, user, action):
     return token
 
 
-def test_registration_requires_recent_mfa_before_first_key(client):
+def test_registration_allows_first_passkey_after_password_bootstrap(client):
     register(client)
     login(client)
 
     response = client.post("/auth/webauthn/register/options", json={"label": "Primary YubiKey"}, headers=ORIGIN)
+    payload = response.get_json()
 
-    assert response.status_code == 403
-    assert response.get_json()["error"] == "Authenticator MFA setup required"
+    assert response.status_code == 200
+    assert payload["authenticatorSelection"]["residentKey"] == "required"
+    assert payload["authenticatorSelection"]["requireResidentKey"] is True
 
 
 def test_webauthn_options_fail_closed_without_exact_origin(client):
@@ -172,7 +174,8 @@ def test_registration_options_are_generic_so_browser_can_choose_passkey_provider
     assert "authenticatorAttachment" not in payload["authenticatorSelection"]
     assert "hints" not in payload
     assert payload["authenticatorSelection"]["userVerification"] == "required"
-    assert payload["authenticatorSelection"]["residentKey"] == "preferred"
+    assert payload["authenticatorSelection"]["residentKey"] == "required"
+    assert payload["authenticatorSelection"]["requireResidentKey"] is True
 
 
 def test_registration_allows_optional_passkey_without_mds_aaguid(client, monkeypatch):
@@ -387,8 +390,9 @@ def test_password_login_allowed_after_security_key_enrollment(client):
     response = client.post("/auth/login", json={"identifier": "alice01", "password": "correct horse battery staple"})
 
     assert response.status_code == 200
-    assert response.get_json()["message"] == "MFA setup required"
-    assert response.get_json()["mfa_setup_required"] is True
+    assert response.get_json()["message"] == "Passkey verification required"
+    assert response.get_json()["mfa_required"] is True
+    assert response.get_json()["webauthn_required"] is True
 
 
 def test_password_totp_login_allowed_after_security_key_enrollment(client):
@@ -441,7 +445,7 @@ def test_authentication_updates_specific_credential_counter_and_last_used(client
     add_credential(user, credential_id=b"credential-two", label="Backup Key", sign_count=20)
     credential_ref = bytes_to_base64url(item.credential_id)
 
-    options_response = client.post("/auth/webauthn/authenticate/options", json={"identifier": "alice01"}, headers=ORIGIN)
+    options_response = client.post("/auth/webauthn/authenticate/options", json={}, headers=ORIGIN)
 
     def fake_verify_authentication_response(**_kwargs):
         return SimpleNamespace(
@@ -476,6 +480,7 @@ def test_authentication_updates_specific_credential_counter_and_last_used(client
     db.session.refresh(item)
 
     assert options_response.status_code == 200
+    assert "allowCredentials" not in options_response.get_json()
     assert response.status_code == 200
     assert item.sign_count == 11
     assert item.credential_device_type == "single_device"
@@ -489,7 +494,7 @@ def test_passkey_login_accepts_one_registered_credential(client, monkeypatch):
     item = add_credential(user, credential_id=b"credential-one", sign_count=10)
     credential_ref = bytes_to_base64url(item.credential_id)
 
-    options_response = client.post("/auth/webauthn/authenticate/options", json={"identifier": "alice01"}, headers=ORIGIN)
+    options_response = client.post("/auth/webauthn/authenticate/options", json={}, headers=ORIGIN)
 
     def fake_verify_authentication_response(**_kwargs):
         return SimpleNamespace(
@@ -523,7 +528,7 @@ def test_passkey_login_accepts_one_registered_credential(client, monkeypatch):
     )
 
     assert options_response.status_code == 200
-    assert len(options_response.get_json()["allowCredentials"]) == 1
+    assert "allowCredentials" not in options_response.get_json()
     assert response.status_code == 200
     assert response.get_json()["message"] == "Login successful"
     assert db.session.get(WebAuthnCredential, item.id) is not None
@@ -535,7 +540,7 @@ def test_signature_counter_anomaly_locks_user_and_audits(client, monkeypatch):
     item = add_credential(user, credential_id=b"credential-one", sign_count=10)
     add_credential(user, credential_id=b"credential-two", label="Backup Key", sign_count=20)
     credential_ref = bytes_to_base64url(item.credential_id)
-    client.post("/auth/webauthn/authenticate/options", json={"identifier": "alice01"}, headers=ORIGIN)
+    client.post("/auth/webauthn/authenticate/options", json={}, headers=ORIGIN)
 
     def fake_verify_authentication_response(**_kwargs):
         return SimpleNamespace(

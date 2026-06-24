@@ -38,9 +38,9 @@
         <div class="profile-status-row">
           <dt>Password</dt>
           <dd class="profile-status-copy">
-            {% if not user.mfa_enabled %}
+            {% if not g.mfa_ready %}
               <strong class="profile-status-title">Setup MFA first</strong>
-              <span class="compact">Enable authenticator MFA before changing your password.</span>
+              <span class="compact">Set up an authenticator app or passkey before changing your password.</span>
               <a class="button button-small secondary is-disabled" aria-disabled="true">Change password</a>
             {% else %}
               <strong class="profile-status-title">Change available</strong>
@@ -50,10 +50,10 @@
           </dd>
         </div>
         <div class="profile-status-row">
-          <dt>Authenticator MFA</dt>
+          <dt>MFA</dt>
           <dd class="profile-status-copy">
-            <strong class="profile-status-title">{{ "Enabled" if user.mfa_enabled else "Setup needed" }}</strong>
-            <span class="compact">Use an authenticator app for normal login MFA.</span>
+            <strong class="profile-status-title">{{ "Enabled" if g.mfa_ready else "Setup needed" }}</strong>
+            <span class="compact">Use an authenticator app, passkey, or security key for login MFA.</span>
             <a class="button button-small secondary" href="{{ url_for('web.mfa_setup') }}">Manage MFA</a>
           </dd>
         </div>
@@ -74,7 +74,7 @@
         <h2>Update profile details</h2>
       </div>
       <p class="muted">Changes to your sign-in details are securely recorded and require MFA or passkey verification.</p>
-      {% if user.mfa_enabled %}
+      {% if g.mfa_ready %}
         <form method="post" action="{{ url_for('web.profile_submit') }}" data-webauthn-step-up-form data-step-up-action="profile_update" novalidate>
           {{ form.hidden_tag() }}
           <div class="form-group">
@@ -91,7 +91,7 @@
             <label for="{{ form.mfa_step_up_preference.id }}">Preferred verification</label>
             {{ form.mfa_step_up_preference() }}
             {% for error in form.mfa_step_up_preference.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
-            <p class="hint">TOTP remains required for the account. This only changes which step-up method the UI presents first.</p>
+            <p class="hint">Choose which verification method the UI presents first when more than one is available.</p>
           </div>
           <div class="form-group">
             <label for="{{ form.totp_code.id }}">Authenticator code</label>
@@ -108,8 +108,8 @@
             <svg class="icon" focusable="false"><use href="#icon-shield-check"></use></svg>
           </span>
           <div>
-            <h3>Authenticator MFA required</h3>
-            <p class="muted">Profile updates stay locked until authenticator MFA is enabled.</p>
+            <h3>MFA required</h3>
+            <p class="muted">Profile updates stay locked until an authenticator app, passkey, or security key is enrolled.</p>
           </div>
         </div>
         <a class="button secondary" href="{{ url_for('web.mfa_setup') }}">Manage MFA</a>

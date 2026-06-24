@@ -1,14 +1,14 @@
 {% extends "base.html" %}
 
-{% block title %}Authenticator MFA | SITBank{% endblock %}
+{% block title %}MFA Setup | SITBank{% endblock %}
 
 {% block content %}
 <section class="security-page mfa-page">
   <div class="dashboard-header">
     <div class="page-heading">
       <p class="eyebrow">Authenticator protection</p>
-      <h1>Authenticator MFA</h1>
-      <p class="muted">Use one active authenticator app for normal sign-in and protected account actions.</p>
+      <h1>MFA setup</h1>
+      <p class="muted">Use an authenticator app, a passkey, or a security key for normal sign-in and protected account actions.</p>
     </div>
     <div class="button-row">
       <a class="button secondary" href="{{ url_for('web.dashboard') }}">Back to dashboard</a>
@@ -164,6 +164,52 @@
       </article>
     </div>
   {% else %}
+    <div class="notice">
+      <span class="notice-icon" aria-hidden="true">
+        <svg class="icon" focusable="false"><use href="#icon-info"></use></svg>
+      </span>
+      <div>
+        <h2>Choose your first MFA method</h2>
+        <p class="muted">Set up an authenticator app, or register a passkey or security key. Passkeys can use Windows Hello, your device passkey, a password-manager passkey, or a hardware security key.</p>
+      </div>
+    </div>
+
+    <div class="profile-grid">
+      <article class="profile-panel profile-card">
+        <div class="profile-panel-title">
+          <p class="eyebrow">Passkey or security key</p>
+          <h2>Register a passkey</h2>
+        </div>
+        <p class="muted">Your browser and passkey provider choose the prompt. SITBank verifies origin, RP ID, challenge, and user verification before accepting it.</p>
+        <form method="post" action="{{ url_for('web.security_keys') }}" data-webauthn-register-form novalidate>
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="form-group">
+            <label for="onboarding-security-key-label">Passkey label</label>
+            <input id="onboarding-security-key-label" name="label" maxlength="80" autocomplete="off" placeholder="Windows Hello" required>
+          </div>
+          <button class="button full" type="submit">Register passkey</button>
+          <p class="field-error" data-webauthn-register-error hidden></p>
+        </form>
+      </article>
+
+      <article class="profile-panel profile-card">
+        <div class="profile-panel-title">
+          <p class="eyebrow">Authenticator app</p>
+          <h2>Set up TOTP</h2>
+        </div>
+        <p class="muted">Use a 6-digit code from an authenticator app. Recovery codes are generated after verification.</p>
+        {% if setup %}
+          <p class="badge">Setup code generated</p>
+        {% else %}
+          <form method="post" action="{{ url_for('web.mfa_setup_submit') }}">
+            {{ start_form.hidden_tag() }}
+            <input type="hidden" name="action" value="start">
+            <button class="button full" type="submit">Generate authenticator setup</button>
+          </form>
+        {% endif %}
+      </article>
+    </div>
+
     <div class="mfa-steps">
       <article class="mfa-step{% if setup %} is-complete{% endif %}">
         <div class="mfa-step-header">
@@ -186,7 +232,7 @@
             <form method="post" action="{{ url_for('web.mfa_setup_submit') }}">
               {{ start_form.hidden_tag() }}
               <input type="hidden" name="action" value="start">
-              <button class="button full" type="submit">Generate MFA setup</button>
+              <button class="button full" type="submit">Generate authenticator setup</button>
             </form>
           {% endif %}
         </div>

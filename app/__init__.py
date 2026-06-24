@@ -134,11 +134,12 @@ def register_current_user_loader(app: Flask) -> None:
         if user_id is not None:
             g.current_user = db.session.get(User, user_id)
             if g.current_user is not None:
+                from app.auth.mfa_policy import has_enrolled_mfa_method
                 from app.auth.webauthn_services import webauthn_credential_count
 
                 g.webauthn_credential_count = webauthn_credential_count(g.current_user)
                 g.passkey_ready = g.webauthn_credential_count > 0
-                g.mfa_ready = bool(g.current_user.mfa_enabled)
+                g.mfa_ready = has_enrolled_mfa_method(g.current_user)
                 g.high_risk_ready = g.mfa_ready
 
 
