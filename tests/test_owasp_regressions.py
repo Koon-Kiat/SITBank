@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 
 VALID_PASSWORD = "Correct-Horse-Battery-Staple-2026!"
 
@@ -35,9 +37,17 @@ def test_public_homepage_exposes_verification_and_student_disclaimer(client):
 
 
 def test_external_next_parameter_cannot_create_an_open_redirect(client):
+    from app.auth.registration_invites import create_registration_invite
+
+    _invite, invite_token = create_registration_invite(
+        "redirect@example.com",
+        expires_at=datetime.now(timezone.utc) + timedelta(days=1),
+        audit=False,
+    )
     register = client.post(
         "/register",
         data={
+            "invite_token": invite_token,
             "username": "redirect01",
             "email": "redirect@example.com",
             "full_name": "Redirect User",

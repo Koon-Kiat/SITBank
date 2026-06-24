@@ -36,6 +36,7 @@ from app.auth.password_reset import (
     request_password_reset,
     verify_reset_totp,
 )
+from app.auth.registration_invites import valid_registration_invite_for_form
 from app.auth.mfa_policy import enrolled_webauthn_credential_count, has_enrolled_mfa_method
 from app.auth.services import (
     AuthError,
@@ -149,7 +150,16 @@ def prevent_sensitive_page_caching(response):
 def register_form():
     if getattr(g, "current_user", None) is not None:
         return redirect(url_for("web.dashboard"))
-    return render_template("register.html", form=RegisterForm())
+    token = request.args.get("invite", "")
+    if not token:
+        return render_template("register_invite_required.html", invalid=False)
+    invite = valid_registration_invite_for_form(token)
+    if invite is None:
+        return render_template("register_invite_required.html", invalid=True), 403
+    form = RegisterForm()
+    form.invite_token.data = token
+    form.email.data = invite.intended_email_normalized
+    return render_template("register.html", form=form)
 
 
 @web_bp.post("/register")
@@ -166,6 +176,7 @@ def register_submit():
     try:
         _user, warnings = register_user(
             {
+                "invite_token": form.invite_token.data or request.args.get("invite", ""),
                 "username": form.username.data,
                 "full_name": form.full_name.data,
                 "phone_number": form.phone_number.data,

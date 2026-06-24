@@ -14,6 +14,7 @@ WEBAUTHN_LABEL_RE = r"^[A-Za-z0-9][A-Za-z0-9 ._()#:/+\-]{0,79}$"
 STEP_UP_ACTION_RE = r"^[a-z_]{3,64}$"
 STEP_UP_TOKEN_RE = r"^[A-Za-z0-9_-]{32,256}$"
 RESET_TOKEN_RE = r"^[A-Za-z0-9_-]{16,96}\.[A-Za-z0-9_-]{32,128}$"
+INVITE_TOKEN_RE = r"^[A-Za-z0-9_-]{0,256}$"
 
 
 def password_length(*, minimum: int | None = None):
@@ -30,6 +31,11 @@ def password_length(*, minimum: int | None = None):
 
 
 class RegisterSchema(Schema):
+    invite_token = fields.Str(
+        required=False,
+        load_only=True,
+        validate=validate.Regexp(INVITE_TOKEN_RE, error="Invalid invite token"),
+    )
     username = fields.Str(
         required=True,
         validate=[
