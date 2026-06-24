@@ -110,10 +110,10 @@ def test_audit_write_failure_warning_is_sanitized(app, caplog, monkeypatch):
 def test_required_audit_write_failure_raises_and_logs_sanitized_warning(app, caplog, monkeypatch):
     from app.security.audit import AuditWriteError, audit_event_required
 
-    def fail_commit():
+    def fail_flush(_objects=None):
         raise RuntimeError("database password leaked")
 
-    monkeypatch.setattr(db.session, "commit", fail_commit)
+    monkeypatch.setattr(db.session, "flush", fail_flush)
     caplog.set_level("WARNING", logger=app.logger.name)
 
     with app.test_request_context("/audit/required", method="POST"):
@@ -134,6 +134,87 @@ def test_required_audit_write_failure_raises_and_logs_sanitized_warning(app, cap
     assert payload["metadata"]["authorization"] == "[redacted]"
     assert "database password leaked" not in logs
     assert "token-secret" not in logs
+
+def test_required_audit_waits_for_caller_commit_before_persisting(app):
+    from app.security.audit import audit_event_required
+
+    user = User(
+        username="auditboundary",
+        email="auditboundary@example.com",
+        password_hash=hash_password("correct horse battery staple"),
+        full_name="Audit Boundary",
+        phone_number="81234567",
+        account_number="012345678",
+    )
+    db.session.add(user)
+    db.session.commit()
+    user_id = user.id
+
+    user.full_name = "Unexpected Commit"
+    with app.test_request_context("/audit/required-boundary", method="POST"):
+        audit_event_required("required_boundary", "success", user=user)
+
+    db.session.rollback()
+
+    persisted = db.session.get(User, user_id)
+    assert persisted.full_name == "Audit Boundary"
+    assert db.session.query(SecurityAuditEvent).filter_by(event_type="required_boundary").count() == 0
+
+def test_required_audit_success_is_committed_by_the_caller(app):
+    from app.security.audit import audit_event_required
+
+    user = User(
+        username="auditcommit",
+        email="auditcommit@example.com",
+        password_hash=hash_password("correct horse battery staple"),
+        full_name="Audit Commit",
+        phone_number="82345678",
+        account_number="012456789",
+    )
+    db.session.add(user)
+    db.session.commit()
+    user_id = user.id
+
+    user.full_name = "Caller Commit"
+    with app.test_request_context("/audit/required-commit", method="POST"):
+        audit_event_required("required_commit", "success", user=user)
+    db.session.commit()
+
+    persisted = db.session.get(User, user_id)
+    event = db.session.query(SecurityAuditEvent).filter_by(event_type="required_commit").one()
+    assert persisted.full_name == "Caller Commit"
+    assert event.outcome == "success"
+    assert event.user_id == user_id
+
+def test_required_audit_failure_leaves_business_rollback_to_caller(app, monkeypatch):
+    from app.security import audit as audit_module
+
+    user = User(
+        username="auditfailure",
+        email="auditfailure@example.com",
+        password_hash=hash_password("correct horse battery staple"),
+        full_name="Audit Failure",
+        phone_number="83456789",
+        account_number="012567890",
+    )
+    db.session.add(user)
+    db.session.commit()
+    user_id = user.id
+
+    def fail_latest_hash():
+        raise RuntimeError("audit writer unavailable")
+
+    monkeypatch.setattr(audit_module, "_latest_audit_event_hash", fail_latest_hash)
+    user.full_name = "Should Roll Back"
+    with app.test_request_context("/audit/required-fail", method="POST"):
+        with pytest.raises(audit_module.AuditWriteError):
+            audit_module.audit_event_required("required_failure", "success", user=user)
+
+    db.session.rollback()
+
+    persisted = db.session.get(User, user_id)
+    assert persisted.full_name == "Audit Failure"
+    assert db.session.query(SecurityAuditEvent).filter_by(event_type="required_failure").count() == 0
 
 def test_webauthn_audit_wrapper_can_use_required_writer(monkeypatch):
     from app.security import audit as audit_module
