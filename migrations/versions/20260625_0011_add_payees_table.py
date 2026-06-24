@@ -1,16 +1,16 @@
 """Add payees table.
 
-Revision ID: 20260624_0010
-Revises: 20260624_0009
-Create Date: 2026-06-24 00:00:00
+Revision ID: 20260625_0011
+Revises: 20260624_0010
+Create Date: 2026-06-25 00:00:00
 """
 
 from alembic import op
 import sqlalchemy as sa
 
 
-revision = "20260624_0010"
-down_revision = "20260624_0009"
+revision = "20260625_0011"
+down_revision = "20260624_0010"
 branch_labels = None
 depends_on = None
 
