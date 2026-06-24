@@ -325,6 +325,15 @@ def register_ops_commands(app: Flask) -> None:
         if delivery.get("attempted") and delivery.get("delivered") is False and not report_only:
             raise click.ClickException("Security alert delivery failed")
 
+    @app.cli.command("expire-manual-recovery-requests")
+    @click.option("--limit", type=int, default=None, help="Maximum number of stale requests to expire.")
+    def expire_manual_recovery_requests_command(limit: int | None) -> None:
+        """Expire stale manual account recovery requests."""
+        from app.auth.password_reset import expire_manual_recovery_requests
+
+        expired_count = expire_manual_recovery_requests(limit=limit)
+        click.echo(json.dumps({"expired_count": expired_count}, separators=(",", ":"), sort_keys=True))
+
     @app.cli.command("rewrap-mfa-deks")
     @click.option("--from-kek-id", required=True, help="Existing KEK id wrapping the target DEKs.")
     @click.option("--to-kek-id", required=True, help="Configured KEK id to rewrap matching DEKs under.")
