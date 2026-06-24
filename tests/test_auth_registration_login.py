@@ -20,6 +20,7 @@ def test_registration_uses_local_fallback_when_live_password_check_is_unavailabl
     response = client.post(
         "/register",
         data={
+            "invite_token": registration_invite_token("alice@example.com"),
             "username": "alice01",
             "email": "alice@example.com",
             "full_name": "Alice Test",
@@ -42,6 +43,169 @@ def test_registration_rejects_live_breached_password(client, monkeypatch):
     assert response.status_code == 400
     assert db.session.query(User).count() == 0
     assert b"Password is too common. Please try again" in response.data
+
+def test_register_requires_invite_token(client):
+    response = register(client, create_invite=False)
+
+    assert response.status_code == 400
+    assert b"Registration requires a valid invitation" in response.data
+    assert db.session.query(User).count() == 0
+
+
+def test_register_rejects_invalid_invite(client):
+    response = register(client, invite_token="not-a-real-registration-token")
+
+    assert response.status_code == 403
+    assert b"Registration requires a valid invitation" in response.data
+    assert db.session.query(User).count() == 0
+
+
+def test_register_rejects_expired_invite(client):
+    from app.auth.registration_invites import registration_invite_token_hash
+
+    token = registration_invite_token("alice@example.com")
+    invite = db.session.execute(
+        db.select(RegistrationInvite).where(RegistrationInvite.token_hash == registration_invite_token_hash(token))
+    ).scalar_one()
+    invite.expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    db.session.commit()
+
+    response = register(client, invite_token=token)
+
+    assert response.status_code == 403
+    assert db.session.query(User).count() == 0
+    db.session.refresh(invite)
+    assert invite.last_attempt_at is not None
+
+
+def test_register_rejects_revoked_invite(client):
+    from app.auth.registration_invites import registration_invite_token_hash
+
+    token = registration_invite_token("alice@example.com")
+    invite = db.session.execute(
+        db.select(RegistrationInvite).where(RegistrationInvite.token_hash == registration_invite_token_hash(token))
+    ).scalar_one()
+    invite.revoked_at = datetime.now(timezone.utc)
+    db.session.commit()
+
+    response = register(client, invite_token=token)
+
+    assert response.status_code == 403
+    assert db.session.query(User).count() == 0
+    db.session.refresh(invite)
+    assert invite.used_at is None
+
+
+def test_register_rejects_reused_invite(client):
+    from app.auth.registration_invites import registration_invite_token_hash
+
+    token = registration_invite_token("alice@example.com")
+    created = register(client, invite_token=token)
+    reused = register(
+        client,
+        username="alice02",
+        email="alice@example.com",
+        phone_number="81234567",
+        invite_token=token,
+    )
+    invite = db.session.execute(
+        db.select(RegistrationInvite).where(RegistrationInvite.token_hash == registration_invite_token_hash(token))
+    ).scalar_one()
+
+    assert created.status_code == 302
+    assert reused.status_code == 403
+    assert db.session.query(User).count() == 1
+    assert invite.used_at is not None
+    assert invite.used_by_user_id is not None
+
+
+def test_register_rejects_email_mismatch(client):
+    token = registration_invite_token("alice@example.com")
+
+    response = register(client, email="alice+1@example.com", invite_token=token)
+
+    assert response.status_code == 403
+    assert db.session.query(User).count() == 0
+
+
+def test_register_consumes_invite_atomically(client, monkeypatch):
+    from sqlalchemy.exc import IntegrityError
+    from app.auth import services
+    from app.auth.registration_invites import registration_invite_token_hash
+
+    token = registration_invite_token("alice@example.com")
+    original_mark_used = services.mark_registration_invite_used
+
+    def fail_after_marking(invite, user):
+        original_mark_used(invite, user)
+        raise IntegrityError("forced", {}, None)
+
+    monkeypatch.setattr(services, "mark_registration_invite_used", fail_after_marking)
+
+    response = register(client, invite_token=token)
+    invite = db.session.execute(
+        db.select(RegistrationInvite).where(RegistrationInvite.token_hash == registration_invite_token_hash(token))
+    ).scalar_one()
+
+    assert response.status_code == 400
+    assert db.session.query(User).count() == 0
+    assert invite.used_at is None
+    assert invite.used_by_user_id is None
+
+
+def test_register_invite_token_hash_only_stored(client):
+    from app.auth.registration_invites import registration_invite_token_hash
+
+    token = registration_invite_token("alice@example.com")
+    invite = db.session.execute(
+        db.select(RegistrationInvite).where(RegistrationInvite.token_hash == registration_invite_token_hash(token))
+    ).scalar_one()
+
+    assert invite.token_hash != token
+    assert len(invite.token_hash) == 64
+    assert token not in invite.token_hash
+
+
+def test_invite_registration_audit_events(client):
+    token = registration_invite_token("alice@example.com", audit=True)
+
+    response = register(client, invite_token=token)
+    events = db.session.query(SecurityAuditEvent).filter_by(event_type="registration_invite").all()
+    outcomes = {event.outcome for event in events}
+
+    assert response.status_code == 302
+    assert {"created", "used"} <= outcomes
+    assert all("token" not in event.event_metadata for event in events)
+
+
+def test_bulk_invite_creation_from_csv(app, tmp_path):
+    csv_path = tmp_path / "invites.csv"
+    csv_path.write_text("email\nalice@example.com\nbob@example.com\n", encoding="utf-8")
+
+    result = app.test_cli_runner().invoke(
+        args=[
+            "create-registration-invites",
+            str(csv_path),
+            "--expires-in",
+            "1d",
+            "--base-url",
+            "https://sitbank.test",
+        ]
+    )
+
+    assert result.exit_code == 0
+    assert "alice@example.com" in result.output
+    assert "https://sitbank.test/register?invite=" in result.output
+    assert db.session.query(RegistrationInvite).count() == 2
+
+
+def test_invite_registration_preserves_mfa_onboarding(client):
+    created = register(client)
+    login_response = login(client)
+
+    assert created.status_code == 302
+    assert login_response.status_code == 302
+    assert login_response.headers["Location"].endswith("/mfa/setup")
 
 def test_registration_hashes_password_with_pbkdf2(client):
     response = register(client)
@@ -96,7 +260,7 @@ def test_long_unicode_password_can_register_login_and_change(client, monkeypatch
     assert verify_password(new_password, user.password_hash)
 
 def test_password_templates_do_not_truncate_and_show_max_length_guidance(client):
-    register_response = client.get("/register")
+    register_response = client.get(f"/register?invite={registration_invite_token('template@example.com')}")
     login_response = client.get("/login")
     register(client)
     login(client)
@@ -166,6 +330,7 @@ def test_oversized_api_registration_password_rejected_cleanly(client, monkeypatc
     response = client.post(
         "/auth/register",
         json={
+            "invite_token": registration_invite_token("oversized@example.com"),
             "username": "oversized01",
             "email": "oversized@example.com",
             "full_name": "Oversized Test",
@@ -230,6 +395,7 @@ def test_registration_requires_matching_confirm_password(client):
     response = client.post(
         "/register",
         data={
+            "invite_token": registration_invite_token("alice@example.com"),
             "username": "alice01",
             "email": "alice@example.com",
             "full_name": "Alice Test",
@@ -246,6 +412,7 @@ def test_registration_requires_full_name_and_valid_phone_number(client):
     missing_name = client.post(
         "/register",
         data={
+            "invite_token": registration_invite_token("alice@example.com"),
             "username": "alice01",
             "email": "alice@example.com",
             "phone_number": "91234567",
@@ -256,6 +423,7 @@ def test_registration_requires_full_name_and_valid_phone_number(client):
     invalid_phone = client.post(
         "/register",
         data={
+            "invite_token": registration_invite_token("alice@example.com"),
             "username": "alice01",
             "email": "alice@example.com",
             "full_name": "Alice Test",
@@ -289,6 +457,7 @@ def test_api_registration_rejects_client_supplied_account_number(client):
     response = client.post(
         "/auth/register",
         json={
+            "invite_token": registration_invite_token("alice@example.com"),
             "username": "alice01",
             "email": "alice@example.com",
             "full_name": "Alice Test",

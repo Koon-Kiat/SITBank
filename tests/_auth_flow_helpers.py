@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from webauthn.helpers.structs import CredentialDeviceType
 
 from app.extensions import db
-from app.models import RecoveryCode, SecurityAuditEvent, User, WebAuthnCredential
+from app.models import RecoveryCode, RegistrationInvite, SecurityAuditEvent, User, WebAuthnCredential
 from app.security.passwords import (
     PASSWORD_MAX_CHARS,
     PASSWORD_MIN_LENGTH,
@@ -26,11 +26,25 @@ from app.security.passwords import (
 )
 
 
+def registration_invite_token(email="alice@example.com", *, expires_at=None, audit=False):
+    from app.auth.registration_invites import create_registration_invite
+
+    invite, token = create_registration_invite(
+        email,
+        expires_at=expires_at or datetime.now(timezone.utc) + timedelta(days=1),
+        audit=audit,
+    )
+    return token
+
+
 def register(client, username="alice01", email="alice@example.com", password="correct horse battery staple",
-             full_name="Alice Test", phone_number="91234567"):
+             full_name="Alice Test", phone_number="91234567", invite_token=None, create_invite=True):
+    if invite_token is None and create_invite:
+        invite_token = registration_invite_token(email)
     return client.post(
         "/register",
         data={
+            "invite_token": invite_token or "",
             "username": username,
             "email": email,
             "full_name": full_name,

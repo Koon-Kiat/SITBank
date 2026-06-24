@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -14,6 +15,12 @@ from sqlalchemy import text
 
 from app.extensions import db
 from app.models import User
+from app.auth.registration_invites import (
+    create_registration_invite,
+    create_registration_invites_from_csv,
+    registration_invite_url,
+    revoke_registration_invite,
+)
 from app.security.alerts import (
     build_security_alert_report,
     deliver_security_alerts,
@@ -41,6 +48,99 @@ from app.ops.db_privileges import (
 
 
 def register_ops_commands(app: Flask) -> None:
+    @app.cli.command("create-registration-invite")
+    @click.argument("email")
+    @click.option("--expires-in", default="7d", show_default=True, help="Invite lifetime, such as 30m, 12h, or 7d.")
+    @click.option("--created-by-user-id", type=int, default=None, help="Optional admin/operator user id.")
+    @click.option("--base-url", default=None, help="Override the public base URL used in the one-time invite link.")
+    def create_registration_invite_command(
+        email: str,
+        expires_in: str,
+        created_by_user_id: int | None,
+        base_url: str | None,
+    ) -> None:
+        """Create one invite-only registration token."""
+        expires_at = datetime.now(timezone.utc) + _parse_duration(expires_in)
+        try:
+            invite, token = create_registration_invite(
+                email,
+                expires_at=expires_at,
+                created_by_user_id=created_by_user_id,
+            )
+        except Exception as exc:
+            raise click.ClickException(str(exc)) from exc
+
+        click.echo(
+            json.dumps(
+                {
+                    "invite_id": invite.id,
+                    "email": invite.intended_email_normalized,
+                    "expires_at": invite.expires_at.astimezone(timezone.utc).isoformat(),
+                    "invite_url": registration_invite_url(token, base_url=base_url),
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
+
+    @app.cli.command("create-registration-invites")
+    @click.argument("csv_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+    @click.option("--expires-in", default="7d", show_default=True, help="Invite lifetime, such as 30m, 12h, or 7d.")
+    @click.option("--created-by-user-id", type=int, default=None, help="Optional admin/operator user id.")
+    @click.option("--base-url", default=None, help="Override the public base URL used in one-time invite links.")
+    def create_registration_invites_command(
+        csv_path: Path,
+        expires_in: str,
+        created_by_user_id: int | None,
+        base_url: str | None,
+    ) -> None:
+        """Create invite-only registration tokens from a CSV with an email column."""
+        expires_at = datetime.now(timezone.utc) + _parse_duration(expires_in)
+        try:
+            created = create_registration_invites_from_csv(
+                csv_path,
+                expires_at=expires_at,
+                created_by_user_id=created_by_user_id,
+            )
+        except Exception as exc:
+            raise click.ClickException(str(exc)) from exc
+
+        click.echo("email,invite_id,expires_at,invite_url")
+        for invite, token in created:
+            click.echo(
+                ",".join(
+                    [
+                        invite.intended_email_normalized,
+                        str(invite.id),
+                        invite.expires_at.astimezone(timezone.utc).isoformat(),
+                        registration_invite_url(token, base_url=base_url),
+                    ]
+                )
+            )
+
+    @app.cli.command("revoke-registration-invite")
+    @click.argument("invite_id", type=int)
+    @click.option("--revoked-by-user-id", type=int, default=None, help="Optional admin/operator user id.")
+    def revoke_registration_invite_command(invite_id: int, revoked_by_user_id: int | None) -> None:
+        """Revoke an unused registration invite."""
+        try:
+            invite = revoke_registration_invite(invite_id, revoked_by_user_id=revoked_by_user_id)
+        except Exception as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(
+            json.dumps(
+                {
+                    "invite_id": invite.id,
+                    "revoked": invite.revoked_at is not None,
+                    "revoked_at": invite.revoked_at.astimezone(timezone.utc).isoformat()
+                    if invite.revoked_at
+                    else None,
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
+
     @app.cli.command("verify-migration-baseline")
     def verify_migration_baseline() -> None:
         """Verify an existing schema before adopting the initial revision."""
@@ -446,6 +546,23 @@ def _users_with_mfa_secret() -> list[User]:
             )
         ).scalars()
     )
+
+
+def _parse_duration(value: str) -> timedelta:
+    match = re.fullmatch(r"\s*(\d+)\s*([smhd])\s*", value or "", flags=re.IGNORECASE)
+    if not match:
+        raise click.ClickException("Duration must look like 30m, 12h, or 7d")
+    amount = int(match.group(1))
+    unit = match.group(2).casefold()
+    if amount <= 0:
+        raise click.ClickException("Duration must be positive")
+    if unit == "s":
+        return timedelta(seconds=amount)
+    if unit == "m":
+        return timedelta(minutes=amount)
+    if unit == "h":
+        return timedelta(hours=amount)
+    return timedelta(days=amount)
 
 
 def _load_audit_anchor(anchor_path: Path) -> dict:
