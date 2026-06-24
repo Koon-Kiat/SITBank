@@ -250,7 +250,7 @@ def test_mfa_setup_warns_when_recovery_codes_are_low_and_dashboard_stays_quiet(c
 def test_mfa_setup_generates_independent_user_secrets(app, client):
     second_client = app.test_client()
     register(client)
-    register(second_client, username="bob02", email="bob@example.com", full_name="Bob Test", phone_number="81234567")
+    register(second_client, username="bob02", email="bob@sit.singaporetech.edu.sg", full_name="Bob Test", phone_number="81234567")
     login(client)
     login(second_client, identifier="bob02")
 
@@ -272,7 +272,7 @@ def test_mfa_code_verifies_only_for_own_enrolled_secret(app, client, monkeypatch
 
     second_client = app.test_client()
     register(client)
-    register(second_client, username="bob02", email="bob@example.com", full_name="Bob Test", phone_number="81234567")
+    register(second_client, username="bob02", email="bob@sit.singaporetech.edu.sg", full_name="Bob Test", phone_number="81234567")
     login(client)
     login(second_client, identifier="bob02")
 

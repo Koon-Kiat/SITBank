@@ -11,6 +11,7 @@ from flask import current_app, session
 from webauthn.helpers import bytes_to_base64url
 from webauthn.helpers.structs import AttestationFormat, CredentialDeviceType
 
+from _auth_flow_helpers import verify_registration_email
 from app.auth.webauthn_services import begin_transaction_security_key_challenge, stage_transaction_security_key_context
 from app.extensions import db
 from app.models import SecurityAuditEvent, User, WebAuthnCredential
@@ -23,19 +24,12 @@ LEGACY_LEVEL1_AAGUID = "2fc0579f-8113-47ea-b116-bb5a8db9202a"
 ORIGIN = {"Origin": "https://sitbank.duckdns.org"}
 
 
-def register(client, username="alice01", email="alice@example.com", password="correct horse battery staple",
+def register(client, username="alice01", email="alice@sit.singaporetech.edu.sg", password="correct horse battery staple",
              full_name="Alice Test", phone_number="91234567"):
-    from app.auth.registration_invites import create_registration_invite
-
-    _invite, invite_token = create_registration_invite(
-        email,
-        expires_at=datetime.now(timezone.utc) + timedelta(days=1),
-        audit=False,
-    )
+    verify_registration_email(client, email)
     return client.post(
         "/register",
         data={
-            "invite_token": invite_token,
             "username": username,
             "email": email,
             "full_name": full_name,

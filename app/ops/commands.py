@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -14,14 +13,7 @@ from flask import Flask
 from sqlalchemy import text
 
 from app.extensions import db
-from app.models import RegistrationInvite, User
-from app.auth.registration_invites import (
-    create_registration_invite,
-    create_registration_invites_from_csv,
-    registration_invite_url,
-    revoke_registration_invite,
-    send_registration_invite_email,
-)
+from app.models import User
 from app.security.alerts import (
     build_security_alert_report,
     deliver_security_alerts,
@@ -49,163 +41,6 @@ from app.ops.db_privileges import (
 
 
 def register_ops_commands(app: Flask) -> None:
-    @app.cli.command("create-registration-invite")
-    @click.argument("email")
-    @click.option("--expires-in", default="7d", show_default=True, help="Invite lifetime, such as 30m, 12h, or 7d.")
-    @click.option("--created-by-user-id", type=int, default=None, help="Optional admin/operator user id.")
-    @click.option("--base-url", default=None, help="Override the public base URL used in the one-time invite link.")
-    @click.option("--send-email", is_flag=True, help="Email the one-time invite link instead of printing it.")
-    def create_registration_invite_command(
-        email: str,
-        expires_in: str,
-        created_by_user_id: int | None,
-        base_url: str | None,
-        send_email: bool,
-    ) -> None:
-        """Create one invite-only registration token."""
-        expires_at = datetime.now(timezone.utc) + _parse_duration(expires_in)
-        try:
-            invite, token = create_registration_invite(
-                email,
-                expires_at=expires_at,
-                created_by_user_id=created_by_user_id,
-            )
-        except Exception as exc:
-            raise click.ClickException(str(exc)) from exc
-
-        payload = {
-            "invite_id": invite.id,
-            "email": invite.intended_email_normalized,
-            "expires_at": invite.expires_at.astimezone(timezone.utc).isoformat(),
-        }
-        if send_email:
-            try:
-                send_registration_invite_email(invite, token, base_url=base_url)
-            except Exception as exc:
-                raise click.ClickException(
-                    f"Registration invite {invite.id} was created, but email delivery failed: {type(exc).__name__}"
-                ) from exc
-            payload["email_delivery"] = "sent"
-        else:
-            payload["invite_url"] = registration_invite_url(token, base_url=base_url)
-
-        click.echo(
-            json.dumps(
-                payload,
-                separators=(",", ":"),
-                sort_keys=True,
-            )
-        )
-
-    @app.cli.command("create-registration-invites")
-    @click.argument("csv_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
-    @click.option("--expires-in", default="7d", show_default=True, help="Invite lifetime, such as 30m, 12h, or 7d.")
-    @click.option("--created-by-user-id", type=int, default=None, help="Optional admin/operator user id.")
-    @click.option("--base-url", default=None, help="Override the public base URL used in one-time invite links.")
-    @click.option("--send-email", is_flag=True, help="Email each one-time invite link instead of printing it.")
-    def create_registration_invites_command(
-        csv_path: Path,
-        expires_in: str,
-        created_by_user_id: int | None,
-        base_url: str | None,
-        send_email: bool,
-    ) -> None:
-        """Create invite-only registration tokens from a CSV with an email column."""
-        expires_at = datetime.now(timezone.utc) + _parse_duration(expires_in)
-        try:
-            created = create_registration_invites_from_csv(
-                csv_path,
-                expires_at=expires_at,
-                created_by_user_id=created_by_user_id,
-            )
-        except Exception as exc:
-            raise click.ClickException(str(exc)) from exc
-
-        if send_email:
-            for invite, token in created:
-                try:
-                    send_registration_invite_email(invite, token, base_url=base_url)
-                except Exception as exc:
-                    raise click.ClickException(
-                        f"Registration invite {invite.id} was created, but email delivery failed for "
-                        f"{invite.intended_email_normalized}: {type(exc).__name__}"
-                    ) from exc
-            click.echo("email,invite_id,expires_at,email_delivery")
-            for invite, _token in created:
-                click.echo(
-                    ",".join(
-                        [
-                            invite.intended_email_normalized,
-                            str(invite.id),
-                            invite.expires_at.astimezone(timezone.utc).isoformat(),
-                            "sent",
-                        ]
-                    )
-                )
-            return
-
-        click.echo("email,invite_id,expires_at,invite_url")
-        for invite, token in created:
-            click.echo(
-                ",".join(
-                    [
-                        invite.intended_email_normalized,
-                        str(invite.id),
-                        invite.expires_at.astimezone(timezone.utc).isoformat(),
-                        registration_invite_url(token, base_url=base_url),
-                    ]
-                )
-            )
-
-    @app.cli.command("revoke-registration-invite")
-    @click.argument("invite_id", type=int)
-    @click.option("--revoked-by-user-id", type=int, default=None, help="Optional admin/operator user id.")
-    def revoke_registration_invite_command(invite_id: int, revoked_by_user_id: int | None) -> None:
-        """Revoke an unused registration invite."""
-        try:
-            invite = revoke_registration_invite(invite_id, revoked_by_user_id=revoked_by_user_id)
-        except Exception as exc:
-            raise click.ClickException(str(exc)) from exc
-        click.echo(
-            json.dumps(
-                {
-                    "invite_id": invite.id,
-                    "revoked": invite.revoked_at is not None,
-                    "revoked_at": invite.revoked_at.astimezone(timezone.utc).isoformat()
-                    if invite.revoked_at
-                    else None,
-                },
-                separators=(",", ":"),
-                sort_keys=True,
-            )
-        )
-
-    @app.cli.command("list-registration-invites")
-    @click.option("--all", "include_all", is_flag=True, help="Include used, revoked, and expired invites.")
-    @click.option("--limit", type=click.IntRange(1, 500), default=50, show_default=True)
-    def list_registration_invites_command(include_all: bool, limit: int) -> None:
-        """List registration invites without exposing invite tokens or token hashes."""
-        now = datetime.now(timezone.utc)
-        statement = db.select(RegistrationInvite).order_by(
-            RegistrationInvite.expires_at.asc(),
-            RegistrationInvite.id.asc(),
-        )
-        if not include_all:
-            statement = statement.where(
-                RegistrationInvite.used_at.is_(None),
-                RegistrationInvite.revoked_at.is_(None),
-                RegistrationInvite.expires_at > now,
-            )
-        invites = list(db.session.execute(statement.limit(limit)).scalars())
-        payload = {
-            "count": len(invites),
-            "invites": [
-                _registration_invite_payload(invite, now=now)
-                for invite in invites
-            ],
-        }
-        click.echo(json.dumps(payload, separators=(",", ":"), sort_keys=True))
-
     @app.cli.command("verify-migration-baseline")
     def verify_migration_baseline() -> None:
         """Verify an existing schema before adopting the initial revision."""
@@ -611,48 +446,6 @@ def _users_with_mfa_secret() -> list[User]:
             )
         ).scalars()
     )
-
-
-def _parse_duration(value: str) -> timedelta:
-    match = re.fullmatch(r"\s*(\d+)\s*([smhd])\s*", value or "", flags=re.IGNORECASE)
-    if not match:
-        raise click.ClickException("Duration must look like 30m, 12h, or 7d")
-    amount = int(match.group(1))
-    unit = match.group(2).casefold()
-    if amount <= 0:
-        raise click.ClickException("Duration must be positive")
-    if unit == "s":
-        return timedelta(seconds=amount)
-    if unit == "m":
-        return timedelta(minutes=amount)
-    if unit == "h":
-        return timedelta(hours=amount)
-    return timedelta(days=amount)
-
-
-def _registration_invite_payload(invite: RegistrationInvite, *, now: datetime) -> dict[str, object]:
-    return {
-        "invite_id": invite.id,
-        "email": invite.intended_email_normalized,
-        "status": _registration_invite_status(invite, now=now),
-        "created_at": _utc_iso_or_none(invite.created_at),
-        "expires_at": _utc_iso_or_none(invite.expires_at),
-        "used_at": _utc_iso_or_none(invite.used_at),
-        "used_by_user_id": invite.used_by_user_id,
-        "revoked_at": _utc_iso_or_none(invite.revoked_at),
-        "revoked_by_user_id": invite.revoked_by_user_id,
-        "last_attempt_at": _utc_iso_or_none(invite.last_attempt_at),
-    }
-
-
-def _registration_invite_status(invite: RegistrationInvite, *, now: datetime) -> str:
-    if invite.used_at is not None:
-        return "used"
-    if invite.revoked_at is not None:
-        return "revoked"
-    if _aware_utc(invite.expires_at) <= _aware_utc(now):
-        return "expired"
-    return "pending"
 
 
 def _utc_iso_or_none(value: datetime | None) -> str | None:

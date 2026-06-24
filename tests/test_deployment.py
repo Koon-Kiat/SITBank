@@ -332,10 +332,13 @@ def test_dast_session_creator_requires_loopback_or_explicit_smoke_host():
 def test_dast_session_creator_matches_registration_contract():
     source = Path("ops/container/create_dast_session.py").read_text(encoding="utf-8")
 
-    assert "create_registration_invite(" in source
-    assert '"invite_token": invite_token' in source
-    assert '"full_name": f"DAST User {suffix}"' in source
-    assert '"phone_number": f"9{secrets.randbelow(9000000) + 1000000}"' in source
+    assert "create_dast_user(" in source
+    assert "hash_password(password)" in source
+    assert "@sit.singaporetech.edu.sg" in source
+    assert "create_registration_invite" not in source
+    assert '"invite_token"' not in source
+    assert 'full_name=f"DAST User {suffix}"' in source
+    assert 'phone_number=f"9{secrets.randbelow(9000000) + 1000000}"' in source
     assert '"account_number"' not in source
 
 
@@ -2614,6 +2617,7 @@ def test_migration_baseline_renders_offline_sql(app):
     assert "CREATE TABLE users" in result.output
     assert "CREATE TABLE webauthn_credentials" in result.output
     assert "CREATE TABLE registration_invites" in result.output
+    assert "DROP TABLE registration_invites" in result.output
     assert "CREATE TABLE security_audit_events" in result.output
     assert "previous_event_hash" in result.output
     assert "event_hash" in result.output
