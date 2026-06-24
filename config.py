@@ -802,6 +802,9 @@ class Config:
     if TRUSTED_PROXY_COUNT < 0 or TRUSTED_PROXY_COUNT > 2:
         raise RuntimeError("TRUSTED_PROXY_COUNT must be between 0 and 2")
 
+    # 60 seconds (1 min) for testing — change to 43200 for 12h in production
+    PAYEE_COOLDOWN_SECONDS = int(os.getenv("PAYEE_COOLDOWN_SECONDS", "60"))
+
 
 class TestingConfig(Config):
     TESTING = True

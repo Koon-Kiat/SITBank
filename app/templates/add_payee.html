@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+
+{% block title %}Add Payee | SITBank{% endblock %}
+
+{% block content %}
+<section class="security-page profile-page">
+  <div class="dashboard-header">
+    <div class="page-heading">
+      <p class="eyebrow">Local Transfer</p>
+      <h1>Add a Payee</h1>
+      <p class="muted">Enter the recipient's account number. The name will be looked up from bank records — you cannot change it.</p>
+    </div>
+    <div class="button-row">
+      <a class="button secondary" href="{{ url_for('banking.payees') }}">Cancel</a>
+    </div>
+  </div>
+
+  <div class="profile-grid">
+    <article class="profile-panel profile-summary">
+      <div class="profile-panel-title">
+        <p class="eyebrow">How it works</p>
+        <h2>Payee lookup</h2>
+      </div>
+      <p class="muted">Enter the 9-digit SITBank account number. The bank will fetch the registered name for you to confirm before saving. After adding a payee, a cooldown period applies before transfers are allowed.</p>
+    </article>
+
+    <article class="profile-panel profile-card">
+      <div class="profile-panel-title">
+        <p class="eyebrow">New payee</p>
+        <h2>Recipient details</h2>
+      </div>
+      <form method="post" action="{{ url_for('banking.payees_add_submit') }}" novalidate>
+        {{ form.hidden_tag() }}
+        <div class="form-group">
+          <label for="{{ form.nickname.id }}">Nickname</label>
+          {{ form.nickname(autocomplete="off", maxlength="64", placeholder="e.g. John") }}
+          {% for error in form.nickname.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+          <p class="hint">A short label to identify this payee (max 64 characters).</p>
+        </div>
+        <div class="form-group">
+          <label for="{{ form.account_number.id }}">Account number</label>
+          {{ form.account_number(autocomplete="off", maxlength="9", placeholder="9-digit account number", inputmode="numeric") }}
+          {% for error in form.account_number.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+          <p class="hint">The 9-digit SITBank account number of the recipient.</p>
+        </div>
+        <button class="button full" type="submit">Look Up Recipient</button>
+      </form>
+    </article>
+  </div>
+</section>
+{% endblock %}
