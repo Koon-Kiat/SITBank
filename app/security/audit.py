@@ -144,6 +144,12 @@ def audit_event_required(
     metadata: dict[str, Any] | None = None,
     session_id: str | None = None,
 ) -> None:
+    """Flush a required audit row without owning the caller's transaction.
+
+    Callers that mutate business state must commit after this returns, or roll
+    back if it raises. Keeping that boundary explicit prevents audit logging
+    from accidentally committing or rolling back unrelated pending state.
+    """
     _audit_event(
         event_type,
         outcome,
@@ -187,8 +193,9 @@ def _audit_event(
     created_at = datetime.now(timezone.utc)
 
     try:
-        _lock_audit_chain_for_insert()
-        previous_event_hash = _latest_audit_event_hash()
+        with db.session.no_autoflush:
+            _lock_audit_chain_for_insert()
+            previous_event_hash = _latest_audit_event_hash()
         event = SecurityAuditEvent(
             event_type=clean_event_type,
             outcome=clean_outcome,
@@ -204,10 +211,14 @@ def _audit_event(
         )
         event.event_hash = _compute_audit_event_hash(event)
         db.session.add(event)
-        db.session.flush()
-        db.session.commit()
+        if required:
+            db.session.flush([event])
+        else:
+            db.session.flush()
+            db.session.commit()
     except Exception as exc:
-        db.session.rollback()
+        if not required:
+            db.session.rollback()
         _log_audit_write_failed(
             event_type=clean_event_type,
             outcome=clean_outcome,

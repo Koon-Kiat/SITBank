@@ -168,17 +168,19 @@ def _verify_reset_authentication_code(code: str, *, submitted_factor: str) -> di
         factor = "totp"
     else:
         _enforce_reset_backoff("password_reset_recovery_code", transaction["transaction_id"])
-        if not consume_recovery_code(user, code):
+        if not consume_recovery_code(user, code, commit=False):
             record_failure("password_reset_recovery_code", transaction["transaction_id"])
             _record_transaction_failure(transaction, "recovery_code_failed")
             audit_event("password_reset_mfa_failed", "failure", user=user, metadata={"factor": "recovery_code"})
             raise AuthError(GENERIC_AUTHENTICATION_CODE_ERROR, 401)
         clear_failures("password_reset_recovery_code", transaction["transaction_id"])
-        _send_recovery_code_used_notification(user)
         transaction["recovery_code_verified"] = True
         factor = "recovery_code"
 
     audit_event_required("password_reset_mfa_verified", "success", user=user, metadata={"factor": factor})
+    db.session.commit()
+    if factor == "recovery_code":
+        _send_recovery_code_used_notification(user)
     transaction["mfa_verified"] = True
     transaction["mfa_verified_at"] = _now_timestamp()
     _store_transaction(transaction)
@@ -238,6 +240,7 @@ def complete_password_reset(new_password: str, confirm_new_password: str) -> dic
             "password_screening": "local_only_fallback" if password_policy_warnings else "local_and_live",
         },
     )
+    db.session.commit()
     _clear_reset_transaction(transaction)
     session.clear()
     clear_failures("login", _auth_principal(user.username))

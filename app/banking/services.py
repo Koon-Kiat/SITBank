@@ -7,6 +7,7 @@ from collections.abc import Mapping, MutableMapping
 from marshmallow import ValidationError
 
 from app.auth.services import AuthError, ensure_account_not_frozen
+from app.extensions import db
 from app.banking.schemas import PublicTransactionSchema
 from app.models import User
 from app.security.audit import audit_event, audit_event_required, audit_reference
@@ -247,8 +248,13 @@ def audit_banking_action(
         event_metadata["payee_account_ref"] = audit_reference("payee_account", payee_account)
     if idempotency_key is not None:
         event_metadata["idempotency_key_ref"] = audit_reference("idempotency_key", idempotency_key)
-    writer = audit_event_required if _requires_durable_audit(action, outcome) else audit_event
+    requires_durable_audit = _requires_durable_audit(action, outcome)
+    writer = audit_event_required if requires_durable_audit else audit_event
     writer(f"banking_{action}", outcome, user=user, metadata=event_metadata)
+    if requires_durable_audit:
+        # This helper is audit-only in the current banking scaffold; future
+        # ledger mutations should own their transaction and commit explicitly.
+        db.session.commit()
 
 
 def _ensure_banking_action_allowed(user: User, action: str, label: str) -> None:

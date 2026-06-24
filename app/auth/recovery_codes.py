@@ -54,7 +54,13 @@ def generate_recovery_codes_for_user(
     return codes
 
 
-def consume_recovery_code(user: User, code: str, *, purpose: str = RECOVERY_CODE_PURPOSE_TOTP) -> bool:
+def consume_recovery_code(
+    user: User,
+    code: str,
+    *,
+    purpose: str = RECOVERY_CODE_PURPOSE_TOTP,
+    commit: bool = True,
+) -> bool:
     result = db.session.execute(
         db.update(RecoveryCode)
         .where(
@@ -66,9 +72,11 @@ def consume_recovery_code(user: User, code: str, *, purpose: str = RECOVERY_CODE
         .values(used_at=_utcnow())
     )
     if result.rowcount != 1:
-        db.session.rollback()
+        if commit:
+            db.session.rollback()
         return False
-    db.session.commit()
+    if commit:
+        db.session.commit()
     return True
 
 

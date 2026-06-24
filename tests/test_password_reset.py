@@ -6,6 +6,7 @@ import secrets
 from urllib.parse import parse_qs, urlparse
 
 import pyotp
+import pytest
 from sqlalchemy import func
 
 from app.auth.password_reset import generate_recovery_codes_for_user
@@ -214,6 +215,31 @@ def test_password_reset_completion_uses_required_audit_writer(app, client, monke
         user = db.session.get(User, user_id)
         assert user is not None
         assert verify_password(NEW_PASSWORD, user.password_hash)
+
+def test_password_reset_completion_required_audit_failure_does_not_commit_password(app, client, monkeypatch):
+    from app.auth import password_reset
+    from app.security.audit import AuditWriteError
+
+    user_id = _begin_no_mfa_reset(app, client, username="resetauditfail", email="resetauditfail@example.com")
+    original_hash = db.session.get(User, user_id).password_hash
+
+    def fail_required_audit(*_args, **_kwargs):
+        raise AuditWriteError("required audit unavailable")
+
+    monkeypatch.setattr(password_reset, "audit_event_required", fail_required_audit)
+    app.config["PROPAGATE_EXCEPTIONS"] = True
+
+    with pytest.raises(AuditWriteError):
+        client.post(
+            "/auth/password-reset/complete",
+            json={"new_password": NEW_PASSWORD, "confirm_new_password": NEW_PASSWORD},
+        )
+
+    db.session.rollback()
+    user = db.session.get(User, user_id)
+    assert user.password_hash == original_hash
+    assert not verify_password(NEW_PASSWORD, user.password_hash)
+    assert db.session.query(SecurityAuditEvent).filter_by(event_type="password_reset_completed").count() == 0
 
 
 def test_password_reset_accepts_8_character_password(app, client, monkeypatch):
