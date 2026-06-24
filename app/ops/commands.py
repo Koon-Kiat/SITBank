@@ -20,6 +20,7 @@ from app.auth.registration_invites import (
     create_registration_invites_from_csv,
     registration_invite_url,
     revoke_registration_invite,
+    send_registration_invite_email,
 )
 from app.security.alerts import (
     build_security_alert_report,
@@ -53,11 +54,13 @@ def register_ops_commands(app: Flask) -> None:
     @click.option("--expires-in", default="7d", show_default=True, help="Invite lifetime, such as 30m, 12h, or 7d.")
     @click.option("--created-by-user-id", type=int, default=None, help="Optional admin/operator user id.")
     @click.option("--base-url", default=None, help="Override the public base URL used in the one-time invite link.")
+    @click.option("--send-email", is_flag=True, help="Email the one-time invite link instead of printing it.")
     def create_registration_invite_command(
         email: str,
         expires_in: str,
         created_by_user_id: int | None,
         base_url: str | None,
+        send_email: bool,
     ) -> None:
         """Create one invite-only registration token."""
         expires_at = datetime.now(timezone.utc) + _parse_duration(expires_in)
@@ -70,14 +73,25 @@ def register_ops_commands(app: Flask) -> None:
         except Exception as exc:
             raise click.ClickException(str(exc)) from exc
 
+        payload = {
+            "invite_id": invite.id,
+            "email": invite.intended_email_normalized,
+            "expires_at": invite.expires_at.astimezone(timezone.utc).isoformat(),
+        }
+        if send_email:
+            try:
+                send_registration_invite_email(invite, token, base_url=base_url)
+            except Exception as exc:
+                raise click.ClickException(
+                    f"Registration invite {invite.id} was created, but email delivery failed: {type(exc).__name__}"
+                ) from exc
+            payload["email_delivery"] = "sent"
+        else:
+            payload["invite_url"] = registration_invite_url(token, base_url=base_url)
+
         click.echo(
             json.dumps(
-                {
-                    "invite_id": invite.id,
-                    "email": invite.intended_email_normalized,
-                    "expires_at": invite.expires_at.astimezone(timezone.utc).isoformat(),
-                    "invite_url": registration_invite_url(token, base_url=base_url),
-                },
+                payload,
                 separators=(",", ":"),
                 sort_keys=True,
             )
@@ -88,11 +102,13 @@ def register_ops_commands(app: Flask) -> None:
     @click.option("--expires-in", default="7d", show_default=True, help="Invite lifetime, such as 30m, 12h, or 7d.")
     @click.option("--created-by-user-id", type=int, default=None, help="Optional admin/operator user id.")
     @click.option("--base-url", default=None, help="Override the public base URL used in one-time invite links.")
+    @click.option("--send-email", is_flag=True, help="Email each one-time invite link instead of printing it.")
     def create_registration_invites_command(
         csv_path: Path,
         expires_in: str,
         created_by_user_id: int | None,
         base_url: str | None,
+        send_email: bool,
     ) -> None:
         """Create invite-only registration tokens from a CSV with an email column."""
         expires_at = datetime.now(timezone.utc) + _parse_duration(expires_in)
@@ -104,6 +120,29 @@ def register_ops_commands(app: Flask) -> None:
             )
         except Exception as exc:
             raise click.ClickException(str(exc)) from exc
+
+        if send_email:
+            for invite, token in created:
+                try:
+                    send_registration_invite_email(invite, token, base_url=base_url)
+                except Exception as exc:
+                    raise click.ClickException(
+                        f"Registration invite {invite.id} was created, but email delivery failed for "
+                        f"{invite.intended_email_normalized}: {type(exc).__name__}"
+                    ) from exc
+            click.echo("email,invite_id,expires_at,email_delivery")
+            for invite, _token in created:
+                click.echo(
+                    ",".join(
+                        [
+                            invite.intended_email_normalized,
+                            str(invite.id),
+                            invite.expires_at.astimezone(timezone.utc).isoformat(),
+                            "sent",
+                        ]
+                    )
+                )
+            return
 
         click.echo("email,invite_id,expires_at,invite_url")
         for invite, token in created:
