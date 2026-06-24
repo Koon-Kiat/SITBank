@@ -201,6 +201,93 @@ def test_bulk_invite_creation_from_csv(app, tmp_path):
     assert db.session.query(RegistrationInvite).count() == 2
 
 
+def test_single_invite_can_be_emailed_without_printing_link(app):
+    from app.security.email import password_reset_outbox
+
+    result = app.test_cli_runner().invoke(
+        args=[
+            "create-registration-invite",
+            "Alice@Example.com",
+            "--expires-in",
+            "1d",
+            "--base-url",
+            "https://sitbank.test",
+            "--send-email",
+        ]
+    )
+    outbox = password_reset_outbox()
+    payload = json.loads(result.output)
+
+    assert result.exit_code == 0
+    assert payload["email"] == "alice@example.com"
+    assert payload["email_delivery"] == "sent"
+    assert "invite_url" not in payload
+    assert "https://sitbank.test/register?invite=" not in result.output
+    assert len(outbox) == 1
+    assert outbox[0]["to"] == "alice@example.com"
+    assert outbox[0]["subject"] == "SITBank registration invitation"
+    assert "https://sitbank.test/register?invite=" in outbox[0]["body"]
+
+
+def test_bulk_invites_can_be_emailed_without_printing_links(app, tmp_path):
+    from app.security.email import password_reset_outbox
+
+    csv_path = tmp_path / "invites.csv"
+    csv_path.write_text("email\nalice@example.com\nbob@example.com\n", encoding="utf-8")
+
+    result = app.test_cli_runner().invoke(
+        args=[
+            "create-registration-invites",
+            str(csv_path),
+            "--expires-in",
+            "1d",
+            "--base-url",
+            "https://sitbank.test",
+            "--send-email",
+        ]
+    )
+    outbox = password_reset_outbox()
+
+    assert result.exit_code == 0
+    assert "email,invite_id,expires_at,email_delivery" in result.output
+    assert "invite_url" not in result.output
+    assert "https://sitbank.test/register?invite=" not in result.output
+    assert "alice@example.com" in result.output
+    assert "bob@example.com" in result.output
+    assert [item["to"] for item in outbox] == ["alice@example.com", "bob@example.com"]
+    assert all(item["subject"] == "SITBank registration invitation" for item in outbox)
+    assert all("https://sitbank.test/register?invite=" in item["body"] for item in outbox)
+    assert db.session.query(RegistrationInvite).count() == 2
+
+
+def test_invite_email_failure_reports_created_invite_without_link(app, monkeypatch):
+    from app.auth import registration_invites
+
+    def fail_delivery(*_args, **_kwargs):
+        raise RuntimeError("smtp secret should not leak")
+
+    monkeypatch.setattr(registration_invites, "send_security_email", fail_delivery)
+
+    result = app.test_cli_runner().invoke(
+        args=[
+            "create-registration-invite",
+            "alice@example.com",
+            "--expires-in",
+            "1d",
+            "--base-url",
+            "https://sitbank.test",
+            "--send-email",
+        ]
+    )
+
+    assert result.exit_code != 0
+    assert "Registration invite " in result.output
+    assert " was created, but email delivery failed: RuntimeError" in result.output
+    assert "smtp secret should not leak" not in result.output
+    assert "https://sitbank.test/register?invite=" not in result.output
+    assert db.session.query(RegistrationInvite).count() == 1
+
+
 def test_list_registration_invites_shows_pending_without_tokens(app):
     from app.auth.registration_invites import registration_invite_token_hash
 
