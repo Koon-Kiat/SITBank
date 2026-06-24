@@ -51,19 +51,21 @@ def upgrade() -> None:
             )
         )
 
-    with op.batch_alter_table("manual_recovery_requests") as batch_op:
-        batch_op.alter_column("updated_at", existing_type=sa.DateTime(timezone=True), nullable=False)
-        batch_op.alter_column("last_submitted_at", existing_type=sa.DateTime(timezone=True), nullable=False)
-        batch_op.alter_column("expires_at", existing_type=sa.DateTime(timezone=True), nullable=False)
-        batch_op.alter_column("status_changed_at", existing_type=sa.DateTime(timezone=True), nullable=False)
-        batch_op.create_index("ix_manual_recovery_requests_expires_at", ["expires_at"], unique=False)
-        batch_op.create_index("ix_manual_recovery_requests_status", ["status"], unique=False)
+    if dialect != "sqlite":
+        with op.batch_alter_table("manual_recovery_requests") as batch_op:
+            batch_op.alter_column("updated_at", existing_type=sa.DateTime(timezone=True), nullable=False)
+            batch_op.alter_column("last_submitted_at", existing_type=sa.DateTime(timezone=True), nullable=False)
+            batch_op.alter_column("expires_at", existing_type=sa.DateTime(timezone=True), nullable=False)
+            batch_op.alter_column("status_changed_at", existing_type=sa.DateTime(timezone=True), nullable=False)
+
+    op.create_index("ix_manual_recovery_requests_expires_at", "manual_recovery_requests", ["expires_at"], unique=False)
+    op.create_index("ix_manual_recovery_requests_status", "manual_recovery_requests", ["status"], unique=False)
 
 
 def downgrade() -> None:
+    op.drop_index("ix_manual_recovery_requests_status", table_name="manual_recovery_requests")
+    op.drop_index("ix_manual_recovery_requests_expires_at", table_name="manual_recovery_requests")
     with op.batch_alter_table("manual_recovery_requests") as batch_op:
-        batch_op.drop_index("ix_manual_recovery_requests_status")
-        batch_op.drop_index("ix_manual_recovery_requests_expires_at")
         batch_op.drop_column("completed_at")
         batch_op.drop_column("status_changed_at")
         batch_op.drop_column("expires_at")
