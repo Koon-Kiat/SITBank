@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from _auth_flow_helpers import *
 
 
@@ -197,6 +199,36 @@ def test_bulk_invite_creation_from_csv(app, tmp_path):
     assert "alice@example.com" in result.output
     assert "https://sitbank.test/register?invite=" in result.output
     assert db.session.query(RegistrationInvite).count() == 2
+
+
+def test_list_registration_invites_shows_pending_without_tokens(app):
+    from app.auth.registration_invites import registration_invite_token_hash
+
+    pending_token = registration_invite_token("pending@example.com")
+    expired_token = registration_invite_token("expired@example.com")
+    revoked_token = registration_invite_token("revoked@example.com")
+    expired = db.session.execute(
+        db.select(RegistrationInvite).where(RegistrationInvite.token_hash == registration_invite_token_hash(expired_token))
+    ).scalar_one()
+    revoked = db.session.execute(
+        db.select(RegistrationInvite).where(RegistrationInvite.token_hash == registration_invite_token_hash(revoked_token))
+    ).scalar_one()
+    expired.expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    revoked.revoked_at = datetime.now(timezone.utc)
+    db.session.commit()
+
+    pending_result = app.test_cli_runner().invoke(args=["list-registration-invites"])
+    all_result = app.test_cli_runner().invoke(args=["list-registration-invites", "--all"])
+    pending_payload = json.loads(pending_result.output)
+    all_payload = json.loads(all_result.output)
+
+    assert pending_result.exit_code == 0
+    assert pending_payload["count"] == 1
+    assert pending_payload["invites"][0]["email"] == "pending@example.com"
+    assert pending_payload["invites"][0]["status"] == "pending"
+    assert pending_token not in pending_result.output
+    assert expired_token not in all_result.output
+    assert {invite["status"] for invite in all_payload["invites"]} == {"expired", "pending", "revoked"}
 
 
 def test_invite_registration_preserves_mfa_onboarding(client):
