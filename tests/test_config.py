@@ -16,6 +16,7 @@ from config import (
     _required_session_hmac_keys,
     _required_webauthn_origin,
     _required_webauthn_rp_id,
+    _validate_password_reset_email_config,
 )
 
 
@@ -58,6 +59,70 @@ def test_password_reset_base_url_must_be_https_in_production(monkeypatch):
             "PASSWORD_RESET_BASE_URL",
             default="https://sitbank.duckdns.org",
         )
+
+
+def _valid_production_email_config(**overrides):
+    values = {
+        "app_env": "production",
+        "password_reset_enabled": True,
+        "email_backend": "smtp",
+        "email_from": "security@sitbank.example",
+        "smtp_host": "smtp.example.test",
+        "smtp_use_tls": True,
+        "smtp_username": "smtp-user-secret",
+        "smtp_password": "smtp-password-secret",
+    }
+    values.update(overrides)
+    return values
+
+
+def test_production_smtp_email_requires_transport_tls():
+    _validate_password_reset_email_config(**_valid_production_email_config())
+
+    with pytest.raises(RuntimeError, match="SMTP_USE_TLS=true") as excinfo:
+        _validate_password_reset_email_config(
+            **_valid_production_email_config(smtp_use_tls=False)
+        )
+
+    message = str(excinfo.value)
+    assert "smtp-user-secret" not in message
+    assert "smtp-password-secret" not in message
+
+
+def test_production_smtp_email_requires_host_and_credentials_without_secret_leakage():
+    for field_name, expected_message in (
+        ("smtp_host", "SMTP_HOST"),
+        ("smtp_username", "SMTP_USERNAME"),
+        ("smtp_password", "SMTP_PASSWORD"),
+    ):
+        with pytest.raises(RuntimeError, match=expected_message) as excinfo:
+            _validate_password_reset_email_config(
+                **_valid_production_email_config(**{field_name: None})
+            )
+
+        message = str(excinfo.value)
+        assert "smtp-user-secret" not in message
+        assert "smtp-password-secret" not in message
+
+
+def test_production_email_rejects_console_backend():
+    with pytest.raises(RuntimeError, match="console is not allowed"):
+        _validate_password_reset_email_config(
+            **_valid_production_email_config(email_backend="console")
+        )
+
+
+def test_non_production_console_email_backend_remains_allowed():
+    _validate_password_reset_email_config(
+        app_env="development",
+        password_reset_enabled=True,
+        email_backend="console",
+        email_from="",
+        smtp_host="",
+        smtp_use_tls=False,
+        smtp_username=None,
+        smtp_password=None,
+    )
 
 
 def test_redis_url_cannot_override_application_connection_policy(monkeypatch):

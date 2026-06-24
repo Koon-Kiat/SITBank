@@ -362,10 +362,11 @@ Reset MFA policy:
 
 Production must use SMTP-backed reset email delivery with
 `PASSWORD_RESET_EMAIL_BACKEND=smtp`, an HTTPS `PASSWORD_RESET_BASE_URL`,
-`PASSWORD_RESET_EMAIL_FROM`, `SMTP_HOST`, and root-managed
+`PASSWORD_RESET_EMAIL_FROM`, `SMTP_HOST`, `SMTP_USE_TLS=true`, and root-managed
 `SMTP_USERNAME_FILE` / `SMTP_PASSWORD_FILE` secrets. Console reset email is
-allowed only outside production. Security alert webhooks are never used to
-deliver password reset links.
+allowed only outside production, and plaintext SMTP delivery is rejected in
+production. Security alert webhooks are never used to deliver password reset
+links.
 
 ## AWS OIDC and Systems Manager
 

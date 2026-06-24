@@ -40,9 +40,9 @@ Install `/etc/sitbank/secrets/security_alert_webhook_url` or
 operator-managed HTTPS alert webhook for that environment. Install
 `smtp_username` and `smtp_password` secret files for the reset email provider,
 and set `PASSWORD_RESET_EMAIL_BACKEND=smtp`, `PASSWORD_RESET_EMAIL_FROM`,
-`PASSWORD_RESET_BASE_URL`, `SMTP_HOST`, `SMTP_PORT`, and `SMTP_USE_TLS` in the
-container runtime environment. Production rejects console reset email and
-non-HTTPS reset base URLs.
+`PASSWORD_RESET_BASE_URL`, `SMTP_HOST`, `SMTP_PORT`, and `SMTP_USE_TLS=true` in
+the container runtime environment. Production rejects console reset email,
+non-HTTPS reset base URLs, and plaintext SMTP delivery.
 
 Deploy the signed image through the restricted wrapper so it runs
 `production-check`, `db upgrade`, `apply-runtime-db-privileges`,

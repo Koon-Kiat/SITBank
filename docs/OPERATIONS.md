@@ -188,6 +188,7 @@ Expected reset email configuration in production:
 - `PASSWORD_RESET_BASE_URL=https://sitbank.duckdns.org`
 - `PASSWORD_RESET_EMAIL_FROM=<approved sender>`
 - `SMTP_HOST=<approved provider host>`
+- `SMTP_USE_TLS=true`
 - `SMTP_USERNAME_FILE=/run/secrets/smtp_username`
 - `SMTP_PASSWORD_FILE=/run/secrets/smtp_password`
 
