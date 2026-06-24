@@ -14,7 +14,7 @@ from flask import Flask
 from sqlalchemy import text
 
 from app.extensions import db
-from app.models import User
+from app.models import RegistrationInvite, User
 from app.auth.registration_invites import (
     create_registration_invite,
     create_registration_invites_from_csv,
@@ -140,6 +140,32 @@ def register_ops_commands(app: Flask) -> None:
                 sort_keys=True,
             )
         )
+
+    @app.cli.command("list-registration-invites")
+    @click.option("--all", "include_all", is_flag=True, help="Include used, revoked, and expired invites.")
+    @click.option("--limit", type=click.IntRange(1, 500), default=50, show_default=True)
+    def list_registration_invites_command(include_all: bool, limit: int) -> None:
+        """List registration invites without exposing invite tokens or token hashes."""
+        now = datetime.now(timezone.utc)
+        statement = db.select(RegistrationInvite).order_by(
+            RegistrationInvite.expires_at.asc(),
+            RegistrationInvite.id.asc(),
+        )
+        if not include_all:
+            statement = statement.where(
+                RegistrationInvite.used_at.is_(None),
+                RegistrationInvite.revoked_at.is_(None),
+                RegistrationInvite.expires_at > now,
+            )
+        invites = list(db.session.execute(statement.limit(limit)).scalars())
+        payload = {
+            "count": len(invites),
+            "invites": [
+                _registration_invite_payload(invite, now=now)
+                for invite in invites
+            ],
+        }
+        click.echo(json.dumps(payload, separators=(",", ":"), sort_keys=True))
 
     @app.cli.command("verify-migration-baseline")
     def verify_migration_baseline() -> None:
@@ -563,6 +589,43 @@ def _parse_duration(value: str) -> timedelta:
     if unit == "h":
         return timedelta(hours=amount)
     return timedelta(days=amount)
+
+
+def _registration_invite_payload(invite: RegistrationInvite, *, now: datetime) -> dict[str, object]:
+    return {
+        "invite_id": invite.id,
+        "email": invite.intended_email_normalized,
+        "status": _registration_invite_status(invite, now=now),
+        "created_at": _utc_iso_or_none(invite.created_at),
+        "expires_at": _utc_iso_or_none(invite.expires_at),
+        "used_at": _utc_iso_or_none(invite.used_at),
+        "used_by_user_id": invite.used_by_user_id,
+        "revoked_at": _utc_iso_or_none(invite.revoked_at),
+        "revoked_by_user_id": invite.revoked_by_user_id,
+        "last_attempt_at": _utc_iso_or_none(invite.last_attempt_at),
+    }
+
+
+def _registration_invite_status(invite: RegistrationInvite, *, now: datetime) -> str:
+    if invite.used_at is not None:
+        return "used"
+    if invite.revoked_at is not None:
+        return "revoked"
+    if _aware_utc(invite.expires_at) <= _aware_utc(now):
+        return "expired"
+    return "pending"
+
+
+def _utc_iso_or_none(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    return _aware_utc(value).isoformat()
+
+
+def _aware_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _load_audit_anchor(anchor_path: Path) -> dict:
