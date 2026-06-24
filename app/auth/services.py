@@ -20,10 +20,10 @@ from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
 from app.models import User
-from app.auth.registration_invites import (
-    RegistrationInviteRejected,
-    mark_registration_invite_used,
-    require_registration_invite_for_email,
+from app.auth.registration_otp import (
+    RegistrationOtpError,
+    consume_verified_registration_email,
+    require_verified_registration_email,
 )
 from app.auth.mfa_policy import (
     PASSWORD_BOOTSTRAP_AUTH_CONTEXT,
@@ -194,8 +194,8 @@ def _generate_account_number() -> str:
 
 def register_user(data: dict[str, Any]) -> tuple[User, list[str]]:
     try:
-        invite = require_registration_invite_for_email(data.get("invite_token"), data["email"])
-    except RegistrationInviteRejected as exc:
+        normalized_email = require_verified_registration_email(data["email"])
+    except RegistrationOtpError as exc:
         raise AuthError(str(exc), exc.status_code) from exc
 
     if data.get("password") != data.get("confirm_password"):
@@ -208,13 +208,13 @@ def register_user(data: dict[str, Any]) -> tuple[User, list[str]]:
         audit_event("registration", "failure", metadata={"reason": "password_policy"})
         raise AuthError(str(exc), 400) from exc
 
-    if _find_user_by_registration_fields(data["username"], data["email"], data["phone_number"]):
+    if _find_user_by_registration_fields(data["username"], normalized_email, data["phone_number"]):
         audit_event("registration", "failure", metadata={"reason": "duplicate_identifier"})
         raise AuthError("Registration could not be completed with those details", 400)
 
     user = User(
         username=data["username"].strip(),
-        email=data["email"].strip().lower(),
+        email=normalized_email,
         password_hash=hash_password(data["password"]),
         full_name=data["full_name"].strip(),
         phone_number=data["phone_number"].strip(),
@@ -223,15 +223,12 @@ def register_user(data: dict[str, Any]) -> tuple[User, list[str]]:
     db.session.add(user)
     try:
         db.session.flush()
-        mark_registration_invite_used(invite, user)
         db.session.commit()
     except IntegrityError as exc:
         db.session.rollback()
         audit_event("registration", "failure", metadata={"reason": "integrity_error"})
         raise AuthError("Registration could not be completed with those details", 400) from exc
-    except RegistrationInviteRejected as exc:
-        db.session.rollback()
-        raise AuthError(str(exc), exc.status_code) from exc
+    consume_verified_registration_email(normalized_email)
     audit_event(
         "registration",
         "success",

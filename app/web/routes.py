@@ -26,6 +26,8 @@ from app.auth.forms import (
     PasswordResetForm,
     ProfileForm,
     RegisterForm,
+    RegistrationOtpRequestForm,
+    RegistrationOtpVerifyForm,
     TotpForm,
 )
 from app.auth.password_reset import (
@@ -36,8 +38,12 @@ from app.auth.password_reset import (
     request_password_reset,
     verify_reset_totp,
 )
-from app.auth.registration_invites import valid_registration_invite_for_form
 from app.auth.mfa_policy import enrolled_webauthn_credential_count, has_enrolled_mfa_method
+from app.auth.registration_otp import (
+    RegistrationOtpError,
+    request_registration_otp,
+    verify_registration_otp,
+)
 from app.auth.services import (
     AuthError,
     active_sessions_for_user,
@@ -138,6 +144,10 @@ def prevent_sensitive_page_caching(response):
             "web.reset_password_continue_submit",
             "web.account_recovery",
             "web.account_recovery_submit",
+            "web.register_form",
+            "web.register_submit",
+            "web.register_otp_request",
+            "web.register_otp_verify",
         }
     ):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
@@ -150,16 +160,47 @@ def prevent_sensitive_page_caching(response):
 def register_form():
     if getattr(g, "current_user", None) is not None:
         return redirect(url_for("web.dashboard"))
-    token = request.args.get("invite", "")
-    if not token:
-        return render_template("register_invite_required.html", invalid=False)
-    invite = valid_registration_invite_for_form(token)
-    if invite is None:
-        return render_template("register_invite_required.html", invalid=True), 403
-    form = RegisterForm()
-    form.invite_token.data = token
-    form.email.data = invite.intended_email_normalized
-    return render_template("register.html", form=form)
+    return _render_register_form(RegisterForm())
+
+
+@web_bp.post("/register/otp/request")
+@limiter.limit("10 per hour", key_func=get_remote_address)
+@limiter.limit("3 per 5 minutes", key_func=request_principal)
+def register_otp_request():
+    if getattr(g, "current_user", None) is not None:
+        return redirect(url_for("web.dashboard"))
+    form = RegistrationOtpRequestForm()
+    register_form = RegisterForm()
+    if not form.validate_on_submit():
+        return _render_register_form(register_form, otp_request_form=form), 400
+    try:
+        result = request_registration_otp(form.email.data)
+    except RegistrationOtpError as exc:
+        flash(exc.message, "error")
+        return _render_register_form(register_form, otp_request_form=form), exc.status_code
+    register_form.email.data = form.email.data
+    flash(result["message"], "info")
+    return _render_register_form(register_form, otp_request_form=form)
+
+
+@web_bp.post("/register/otp/verify")
+@limiter.limit("10 per hour", key_func=get_remote_address)
+@limiter.limit("10 per 5 minutes", key_func=request_principal)
+def register_otp_verify():
+    if getattr(g, "current_user", None) is not None:
+        return redirect(url_for("web.dashboard"))
+    form = RegistrationOtpVerifyForm()
+    register_form = RegisterForm()
+    if not form.validate_on_submit():
+        return _render_register_form(register_form, otp_verify_form=form), 400
+    try:
+        result = verify_registration_otp(form.email.data, form.otp_code.data)
+    except RegistrationOtpError as exc:
+        flash(exc.message, "error")
+        return _render_register_form(register_form, otp_verify_form=form), exc.status_code
+    register_form.email.data = form.email.data
+    flash(result["message"], "success")
+    return _render_register_form(register_form, otp_verify_form=form)
 
 
 @web_bp.post("/register")
@@ -171,12 +212,11 @@ def register_submit():
 
     form = RegisterForm()
     if not form.validate_on_submit():
-        return render_template("register.html", form=form), 400
+        return _render_register_form(form), 400
 
     try:
         _user, warnings = register_user(
             {
-                "invite_token": form.invite_token.data or request.args.get("invite", ""),
                 "username": form.username.data,
                 "full_name": form.full_name.data,
                 "phone_number": form.phone_number.data,
@@ -187,12 +227,26 @@ def register_submit():
         )
     except AuthError as exc:
         flash(exc.message, "error")
-        return render_template("register.html", form=form), exc.status_code
+        return _render_register_form(form), exc.status_code
 
     for warning in warnings:
         flash(warning, "warning")
     flash("Registration successful. Please log in.", "success")
     return redirect(url_for("web.login"))
+
+
+def _render_register_form(
+    form: RegisterForm,
+    *,
+    otp_request_form: RegistrationOtpRequestForm | None = None,
+    otp_verify_form: RegistrationOtpVerifyForm | None = None,
+):
+    return render_template(
+        "register.html",
+        form=form,
+        otp_request_form=otp_request_form or RegistrationOtpRequestForm(),
+        otp_verify_form=otp_verify_form or RegistrationOtpVerifyForm(),
+    )
 
 
 @web_bp.get("/login")

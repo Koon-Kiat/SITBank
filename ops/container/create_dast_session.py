@@ -7,7 +7,6 @@ import secrets
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pyotp
@@ -101,9 +100,15 @@ def create_authenticated_cookie(
     client = DastClient(base_url, allowed_hosts=allowed_hosts)
     suffix = secrets.token_hex(6)
     username = f"zap{suffix}"
-    email = f"{username}@example.test"
+    email = f"{username}@sit.singaporetech.edu.sg"
     password = f"DAST-{secrets.token_urlsafe(24)}-A9!"
-    invite_token = create_registration_invite_token(email)
+    create_dast_user(
+        username=username,
+        email=email,
+        password=password,
+        full_name=f"DAST User {suffix}",
+        phone_number=f"9{secrets.randbelow(9000000) + 1000000}",
+    )
 
     csrf_token = str(
         client.request(
@@ -111,21 +116,6 @@ def create_authenticated_cookie(
             "/auth/csrf-token",
             expected_status=200,
         )["csrf_token"]
-    )
-    client.request(
-        "POST",
-        "/auth/register",
-        payload={
-            "invite_token": invite_token,
-            "username": username,
-            "full_name": f"DAST User {suffix}",
-            "phone_number": f"9{secrets.randbelow(9000000) + 1000000}",
-            "email": email,
-            "password": password,
-            "confirm_password": password,
-        },
-        csrf_token=csrf_token,
-        expected_status=201,
     )
     client.request(
         "POST",
@@ -164,18 +154,42 @@ def create_authenticated_cookie(
     return f"__Host-sitbank_session={session_cookie}"
 
 
-def create_registration_invite_token(email: str) -> str:
+def create_dast_user(
+    *,
+    username: str,
+    email: str,
+    password: str,
+    full_name: str,
+    phone_number: str,
+) -> None:
     from app import create_app
-    from app.auth.registration_invites import create_registration_invite
+    from app.extensions import db
+    from app.models import User
+    from app.security.passwords import hash_password
 
     app = create_app()
     with app.app_context():
-        _invite, token = create_registration_invite(
-            email,
-            expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
-            audit=False,
+        if db.session.execute(db.select(User).where(User.username == username)).scalar_one_or_none():
+            return
+        account_number = None
+        for _attempt in range(10):
+            candidate = "012" + str(secrets.randbelow(1_000_000)).zfill(6)
+            if not db.session.execute(db.select(User).where(User.account_number == candidate)).scalar_one_or_none():
+                account_number = candidate
+                break
+        if account_number is None:
+            raise RuntimeError("Could not generate a unique DAST account number")
+        db.session.add(
+            User(
+                username=username,
+                email=email,
+                password_hash=hash_password(password),
+                full_name=full_name,
+                phone_number=phone_number,
+                account_number=account_number,
+            )
         )
-    return token
+        db.session.commit()
 
 
 def main() -> None:
