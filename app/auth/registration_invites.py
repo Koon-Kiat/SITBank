@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from app.extensions import db
 from app.models import RegistrationInvite, User
 from app.security.audit import audit_event, audit_event_required, audit_system_event, principal_reference
+from app.security.email import send_security_email
 
 
 INVITE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{16,256}$")
@@ -87,9 +88,17 @@ def create_registration_invites_from_csv(
     try:
         with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
             reader = csv.DictReader(handle)
-            if not reader.fieldnames or "email" not in {field.strip() for field in reader.fieldnames}:
+            email_field = next(
+                (field for field in (reader.fieldnames or []) if field.strip().casefold() == "email"),
+                None,
+            )
+            if email_field is None:
                 raise ValueError("CSV must include an email column")
-            emails = [str(row.get("email") or "").strip() for row in reader if str(row.get("email") or "").strip()]
+            emails = [
+                str(row.get(email_field) or "").strip()
+                for row in reader
+                if str(row.get(email_field) or "").strip()
+            ]
     except OSError as exc:
         raise ValueError(f"CSV could not be read: {type(exc).__name__}") from exc
 
@@ -110,6 +119,41 @@ def create_registration_invites_from_csv(
         metadata={"created_count": len(created), "created_by_user_id": created_by_user_id},
     )
     return created
+
+
+def send_registration_invite_email(
+    invite: RegistrationInvite,
+    token: str,
+    *,
+    base_url: str | None = None,
+) -> None:
+    invite_url = registration_invite_url(token, base_url=base_url)
+    expires_text = _ensure_aware_utc(invite.expires_at).strftime("%Y-%m-%d %H:%M UTC")
+    body = (
+        "You have been invited to register for SITBank.\n\n"
+        f"Use this one-time registration link:\n\n{invite_url}\n\n"
+        f"This link expires at {expires_text}. "
+        "It can only be used for the email address that received this message. "
+        "If you did not expect this invitation, ignore this email."
+    )
+    try:
+        send_security_email(
+            invite.intended_email_normalized,
+            "SITBank registration invitation",
+            body,
+        )
+    except Exception:
+        audit_system_event(
+            "registration_invite_email",
+            "failure",
+            metadata=_invite_metadata(invite),
+        )
+        raise
+    audit_system_event(
+        "registration_invite_email",
+        "sent",
+        metadata=_invite_metadata(invite),
+    )
 
 
 def revoke_registration_invite(

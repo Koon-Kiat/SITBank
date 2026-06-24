@@ -197,3 +197,110 @@ security alert payloads. Reset links belong only in customer recovery email.
 Manual recovery requests create pending records and audit events only; account
 freezing, unlocking, MFA removal, or re-enrollment must require a trusted
 future approval workflow.
+
+## Invite-Only Registration Operations
+
+Customer self-registration requires an unused invite token for the same email
+address the customer submits on the registration form. Invite tokens are stored
+only as HMAC hashes in the database. The raw invite link is available only at
+creation time or inside the outgoing invite email.
+
+Invite email delivery uses the same security email backend and SMTP settings as
+password reset email:
+
+- `PASSWORD_RESET_EMAIL_BACKEND=smtp`
+- `PASSWORD_RESET_EMAIL_FROM=<approved sender>`
+- `PASSWORD_RESET_BASE_URL=https://sitbank.duckdns.org`
+- `SMTP_HOST=<approved provider host>`
+- `SMTP_USE_TLS=true`
+- `SMTP_USERNAME_FILE=/run/secrets/smtp_username`
+- `SMTP_PASSWORD_FILE=/run/secrets/smtp_password`
+
+Create and email a single production invite:
+
+```bash
+sudo docker exec -it sitbank-app \
+  python -m flask --app wsgi:app create-registration-invite alice@example.com \
+    --expires-in 7d \
+    --base-url https://sitbank.duckdns.org \
+    --send-email
+```
+
+Without `--send-email`, the command prints a JSON object containing
+`invite_url` for manual delivery:
+
+```bash
+sudo docker exec -it sitbank-app \
+  python -m flask --app wsgi:app create-registration-invite alice@example.com \
+    --expires-in 7d \
+    --base-url https://sitbank.duckdns.org
+```
+
+List pending invites without exposing tokens or token hashes:
+
+```bash
+sudo docker exec -it sitbank-app \
+  python -m flask --app wsgi:app list-registration-invites
+```
+
+Include used, revoked, and expired invites when investigating history:
+
+```bash
+sudo docker exec -it sitbank-app \
+  python -m flask --app wsgi:app list-registration-invites --all --limit 100
+```
+
+Revoke an unused invite:
+
+```bash
+sudo docker exec -it sitbank-app \
+  python -m flask --app wsgi:app revoke-registration-invite 123
+```
+
+For bulk invites, prepare a CSV with an `email` header:
+
+```csv
+email
+alice@example.com
+bob@example.com
+```
+
+Bulk invite CSVs contain customer email addresses and must not be committed to
+the repository, pasted into tickets, or kept in long-lived shared folders. On
+the EC2 host, keep the operator copy as a temporary file such as
+`/tmp/sitbank-registration-invites.csv`, load it into the app container at
+`/tmp/registration-invites.csv`, run the CLI, then remove both temporary files.
+The app container has a writable `/tmp` tmpfs specifically for short-lived
+operator inputs; the rest of the container filesystem is read-only.
+
+Example production bulk-email run:
+
+```bash
+chmod 0600 /tmp/sitbank-registration-invites.csv
+sudo docker exec -i sitbank-app sh -c 'umask 077; cat > /tmp/registration-invites.csv' \
+  < /tmp/sitbank-registration-invites.csv
+sudo docker exec -it sitbank-app \
+  python -m flask --app wsgi:app create-registration-invites /tmp/registration-invites.csv \
+    --expires-in 7d \
+    --base-url https://sitbank.duckdns.org \
+    --send-email
+sudo docker exec -i sitbank-app rm -f /tmp/registration-invites.csv
+rm -f /tmp/sitbank-registration-invites.csv
+```
+
+Without `--send-email`, bulk creation prints a CSV result containing each
+`invite_url` for manual delivery. With `--send-email`, the command sends each
+link by email and prints `email,invite_id,expires_at,email_delivery` rows
+instead of raw links. If email delivery fails after creating an invite, the CLI
+exits non-zero and reports the invite ID so the operator can list, revoke, or
+recreate it without printing the token.
+
+Use `sitbank-staging-app` and the staging base URL for staging:
+
+```bash
+sudo docker exec -it sitbank-staging-app \
+  python -m flask --app wsgi:app create-registration-invite alice@example.com \
+    --expires-in 1d \
+    --base-url https://staging-sitbank.duckdns.org \
+    --send-email
+```
