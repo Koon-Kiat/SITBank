@@ -38,7 +38,7 @@
         </ul>
       </article>
     </div>
-  {% elif not user.mfa_enabled %}
+  {% elif not g.mfa_ready %}
     <div class="freeze-grid">
       <article class="freeze-panel">
         <div class="notice warning">
@@ -47,7 +47,7 @@
           </span>
           <div>
             <h2>MFA is required</h2>
-            <p class="muted">Account freeze requires an authenticator code before it can be used.</p>
+            <p class="muted">Account freeze requires an authenticator app, passkey, or security key before it can be used.</p>
           </div>
         </div>
         <div class="freeze-actions">
@@ -57,7 +57,7 @@
       </article>
       <article class="freeze-panel">
         <h2>Freeze readiness</h2>
-        <p class="muted">MFA protects this high-risk workflow by confirming the signed-in user with a current authenticator code.</p>
+        <p class="muted">MFA protects this high-risk workflow by confirming the signed-in user with a current authenticator code or passkey.</p>
         <ul class="freeze-list">
           <li>Enable MFA before attempting an emergency freeze.</li>
           <li>Review active sessions if you suspect unusual access.</li>

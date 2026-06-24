@@ -22,19 +22,19 @@
       </span>
       <div>
         <h2>Passkeys are optional</h2>
-        <p class="muted">Authenticator MFA is the baseline. Add a passkey if you want faster sign-in or passkey step-up for protected actions.</p>
+        <p class="muted">Add a passkey if you want faster sign-in or passkey step-up for protected actions.</p>
       </div>
     </div>
   {% endif %}
 
-  {% if not user.mfa_enabled %}
+  {% if not g.mfa_ready %}
     <div class="notice warning">
       <span class="notice-icon" aria-hidden="true">
         <svg class="icon" focusable="false"><use href="#icon-info"></use></svg>
       </span>
       <div>
-        <h2>Set up authenticator MFA first</h2>
-        <p class="muted">Passkey registration requires a recent normal MFA verification. Enable authenticator MFA, then return here to register your passkey.</p>
+        <h2>Set up MFA first</h2>
+        <p class="muted">Choose an authenticator app or passkey before normal account use.</p>
         <div class="actions">
           <a class="button secondary" href="{{ url_for('web.mfa_setup') }}">Set up MFA</a>
         </div>
@@ -47,15 +47,19 @@
       </span>
       <div>
         <h2>Recent MFA required</h2>
-        <p class="muted">Passkey registration and revocation require a recent MFA check. Enter your authenticator code to continue.</p>
-        <form class="compact-verification-form" method="post" action="{{ url_for('web.security_keys_mfa_refresh') }}">
-          {{ refresh_mfa_form.hidden_tag() }}
-          <div class="form-group compact">
-            <label for="security-keys-refresh-totp">Authenticator code</label>
-            {{ refresh_mfa_form.totp_code(id="security-keys-refresh-totp", inputmode="numeric", autocomplete="one-time-code", maxlength="6", placeholder="6-digit code") }}
-          </div>
-          <button class="button secondary" type="submit">Verify code</button>
-        </form>
+        {% if user.mfa_enabled %}
+          <p class="muted">Passkey registration and revocation require a recent MFA check. Enter your authenticator code to continue.</p>
+          <form class="compact-verification-form" method="post" action="{{ url_for('web.security_keys_mfa_refresh') }}">
+            {{ refresh_mfa_form.hidden_tag() }}
+            <div class="form-group compact">
+              <label for="security-keys-refresh-totp">Authenticator code</label>
+              {{ refresh_mfa_form.totp_code(id="security-keys-refresh-totp", inputmode="numeric", autocomplete="one-time-code", maxlength="6", placeholder="6-digit code") }}
+            </div>
+            <button class="button secondary" type="submit">Verify code</button>
+          </form>
+        {% else %}
+          <p class="muted">Sign in with your passkey again before adding or revoking another passkey.</p>
+        {% endif %}
       </div>
     </div>
   {% endif %}
@@ -74,7 +78,7 @@
           <input id="security-key-label" name="label" maxlength="80" autocomplete="off" placeholder="Windows Hello" required>
         </div>
         <p class="hint">The browser and installed passkey provider decide which prompt appears. Origin, RP ID, challenge, and user verification are checked server-side before the passkey is accepted.</p>
-        <button class="button full" type="submit"{% if not user.mfa_enabled or not recent_mfa %} disabled{% endif %}>Register passkey</button>
+        <button class="button full" type="submit"{% if not g.mfa_ready or not recent_mfa %} disabled{% endif %}>Register passkey</button>
         <p class="field-error" data-webauthn-register-error hidden></p>
       </form>
     </article>
@@ -115,7 +119,7 @@
       {% else %}
         <div class="empty-state compact">
           <h2>No passkeys registered</h2>
-          <p class="muted">Authenticator MFA is active without a passkey. Add one whenever you want optional passkey sign-in or step-up.</p>
+          <p class="muted">Add one whenever you want optional passkey sign-in or step-up.</p>
         </div>
       {% endif %}
     </article>

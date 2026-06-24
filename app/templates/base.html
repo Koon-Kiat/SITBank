@@ -149,7 +149,7 @@
                   </span>
                 </button>
                 <div class="account-panel" id="account-menu-panel" role="menu" aria-labelledby="account-menu-button" data-account-panel hidden>
-                  {% if g.current_user.mfa_enabled %}
+                  {% if g.mfa_ready %}
                     <a role="menuitem" href="{{ url_for('web.dashboard') }}">Dashboard</a>
                     <a role="menuitem" href="{{ url_for('web.profile') }}">Edit Profile</a>
                     {% if g.high_risk_ready %}
@@ -162,7 +162,7 @@
                   {% endif %}
                   <div class="account-menu-section-label" role="separator">Security Settings</div>
                   <a role="menuitem" href="{{ url_for('web.mfa_setup') }}">Authenticator MFA</a>
-                  {% if g.current_user.mfa_enabled %}
+                  {% if g.mfa_ready %}
                     <a role="menuitem" href="{{ url_for('web.security_keys') }}">Passkeys</a>
                     <a role="menuitem" href="{{ url_for('web.sessions_dashboard') }}">Active Sessions</a>
                     {% if g.high_risk_ready %}
@@ -231,7 +231,7 @@
           <h2 class="footer-heading">Sitemap</h2>
           <ul class="footer-links">
             {% if g.current_user %}
-              {% if g.current_user.mfa_enabled %}
+              {% if g.mfa_ready %}
                 <li><a href="{{ url_for('web.dashboard') }}">Dashboard</a></li>
                 <li><a href="{{ url_for('web.profile') }}">Profile</a></li>
                 {% if g.high_risk_ready %}
@@ -241,7 +241,7 @@
                 {% endif %}
               {% endif %}
               <li><a href="{{ url_for('web.mfa_setup') }}">MFA</a></li>
-              {% if g.current_user.mfa_enabled %}
+              {% if g.mfa_ready %}
                 <li><a href="{{ url_for('web.security_keys') }}">Passkeys</a></li>
                 <li><a href="{{ url_for('web.sessions_dashboard') }}">Sessions</a></li>
                 {% if g.high_risk_ready %}
@@ -262,13 +262,13 @@
           <h2 class="footer-heading">Account Security</h2>
           <ul class="footer-links">
             {% if g.current_user %}
-              {% if g.current_user.mfa_enabled and g.high_risk_ready %}
+              {% if g.mfa_ready and g.high_risk_ready %}
                 <li><a href="{{ url_for('web.password_change') }}">Change password</a></li>
               {% else %}
                 <li><a class="is-disabled" aria-disabled="true">Change password</a></li>
               {% endif %}
               <li><a href="{{ url_for('web.mfa_setup') }}">Manage authenticator MFA</a></li>
-              {% if g.current_user.mfa_enabled %}
+              {% if g.mfa_ready %}
                 <li><a href="{{ url_for('web.security_keys') }}">Manage passkeys</a></li>
                 <li><a href="{{ url_for('web.sessions_dashboard') }}">Review active sessions</a></li>
                 {% if g.high_risk_ready %}
