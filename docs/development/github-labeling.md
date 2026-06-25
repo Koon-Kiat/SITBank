@@ -1,0 +1,98 @@
+# GitHub Labeling
+
+This repository labels new issues and pull requests automatically, and provides
+a manual workflow for safely retagging historical issues and PRs.
+
+## Future Pull Requests
+
+`.github/workflows/pr-labeler.yml` runs on `pull_request_target` for opened,
+synchronized, reopened, and ready-for-review pull requests. It uses
+`actions/labeler@v6` with `.github/labeler.yml` and `sync-labels: false`.
+
+The PR workflow only adds computed labels. It does not remove existing labels,
+so Dependabot labels and any maintainer-applied labels remain in place during
+normal future PR labeling.
+
+Because `pull_request_target` is privileged, the workflow must stay label-only.
+Do not add `actions/checkout`, do not checkout PR branches, and do not execute
+scripts or code from pull requests in that workflow.
+
+## Future Issues
+
+`.github/workflows/issue-labeler.yml` runs when issues are opened, reopened, or
+edited. It reads the issue title and body from the GitHub event payload and adds
+matching labels. Every new or edited issue receives `needs-triage`.
+
+The issue labeler only adds computed labels. It does not remove existing labels.
+
+## Manual Historical Retag
+
+`.github/workflows/retag-labels.yml` is manual-only through
+`workflow_dispatch`. It can retag issues, pull requests, or both, for open,
+closed, or all items.
+
+Retagging is intentionally more aggressive than future auto-labeling:
+
+- It reads the current labels on each selected issue or PR.
+- It preserves protected labels.
+- It removes only unprotected labels from the individual issue or PR.
+- It recomputes labels using the standard issue or PR label rules.
+- It adds the recomputed labels.
+- It never deletes repository labels globally.
+
+The retag workflow defaults to dry-run mode. In dry-run mode it prints the
+current labels, protected labels that would be preserved, unprotected labels
+that would be removed, labels that would be added, and final expected labels.
+It does not edit issues, PRs, or repository label metadata.
+
+To dry-run a historical retag:
+
+```text
+Actions -> Retag issue and pull request labels -> Run workflow
+target: both
+state: all
+limit: 500
+dry_run: true
+```
+
+To apply a real retag:
+
+```text
+Actions -> Retag issue and pull request labels -> Run workflow
+target: both
+state: all
+limit: 500
+dry_run: false
+confirm_retag: RETAG
+```
+
+If `dry_run` is `false` and `confirm_retag` is not exactly `RETAG`, the workflow
+fails before changing labels.
+
+## Protected Labels
+
+Protected labels are preserved on each issue or PR during manual retagging.
+They are not automatically added to every issue or PR.
+
+The current protected labels come from `.github/dependabot.yml`:
+
+- `dependencies`
+- `docker`
+- `github-actions`
+- `python`
+
+These labels must stay protected so Dependabot PRs do not lose labels that
+identify their package ecosystem. The existing workflows were scanned before
+adding the labeler workflows, and no additional issue/PR labels used by GitHub
+Actions logic were found.
+
+If a future workflow depends on a label in conditions, `gh issue edit
+--add-label`, `gh issue edit --remove-label`, API calls, `labels:` blocks, or
+other issue/PR label checks, add that label to `PROTECTED_LABELS` in
+`.github/workflows/retag-labels.yml` before running a retag.
+
+## Label Setup
+
+The labeling workflows create or update the standard labels idempotently with
+`gh label create --force`. This keeps label names, descriptions, and colors
+available without deleting any repository labels.

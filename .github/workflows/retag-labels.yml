@@ -1,0 +1,550 @@
+name: Retag issue and pull request labels
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Issues, pull requests, or both.
+        required: true
+        type: choice
+        options:
+          - issues
+          - prs
+          - both
+        default: both
+      state:
+        description: Item state to retag.
+        required: true
+        type: choice
+        options:
+          - open
+          - closed
+          - all
+        default: all
+      limit:
+        description: Maximum issues and/or pull requests to inspect.
+        required: true
+        default: "500"
+      dry_run:
+        description: Print planned changes without editing issue or PR labels.
+        required: true
+        type: choice
+        options:
+          - "true"
+          - "false"
+        default: "true"
+      confirm_retag:
+        description: Type RETAG to allow label removal and retagging
+        required: false
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.target }}-${{ inputs.state }}
+  cancel-in-progress: false
+
+jobs:
+  retag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TARGET: ${{ inputs.target }}
+      STATE: ${{ inputs.state }}
+      LIMIT: ${{ inputs.limit }}
+      DRY_RUN: ${{ inputs.dry_run }}
+      CONFIRM_RETAG: ${{ inputs.confirm_retag }}
+      # Protected labels are preserved during retagging because Dependabot or
+      # GitHub Actions may depend on them. They are never removed from individual
+      # issues/PRs by this workflow, and they are not automatically added to
+      # every issue/PR. A scan of the existing workflows before adding this
+      # labeler found no additional issue/PR label dependencies, so only the
+      # current Dependabot labels are protected today.
+      PROTECTED_LABELS: |
+        dependencies
+        docker
+        github-actions
+        python
+    steps:
+      - name: Validate retag request
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          if [[ ! "${LIMIT}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::limit must be a positive integer."
+            exit 1
+          fi
+
+          if [[ "${DRY_RUN}" != "true" && "${CONFIRM_RETAG}" != "RETAG" ]]; then
+            echo "::error::dry_run=false requires confirm_retag to equal RETAG."
+            exit 1
+          fi
+
+          if [[ "${DRY_RUN}" == "true" ]]; then
+            echo "Dry-run mode is active; no issue, pull request, or repository labels will be changed."
+          else
+            echo "Apply mode confirmed; unprotected labels will be removed from matching items before recomputed labels are added."
+          fi
+
+      - name: Ensure standard labels exist
+        if: ${{ inputs.dry_run == 'false' }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          create_label() {
+            gh label create "$1" --description "$2" --color "$3" --force
+          }
+
+          create_label needs-triage "New issue awaiting maintainer triage." fbca04
+          create_label needs-review "Ready for maintainer review." 0e8a16
+          create_label security "Security controls, vulnerabilities, secrets, authn/authz, audit, sessions, crypto, or hardening." d73a4a
+          create_label admin "Admin portal, staff workflows, admin route isolation, or admin deployment boundary." b60205
+          create_label customer "Customer-facing routes, dashboard, profile, account pages, or portal UX." 1d76db
+          create_label banking "Accounts, transfers, payees, balances, freezes, funds, or transaction safety." 0052cc
+          create_label auth "Login, registration, password reset, OTP, sessions, decorators, or auth schemas." c5def5
+          create_label mfa "MFA, TOTP, WebAuthn, passkeys, security keys, recovery codes, or second factors." 5319e7
+          create_label session "Session state, cookies, HMAC, Redis namespace, logout, or active sessions." 0b7285
+          create_label audit "Audit logs, hash chains, HMAC, metadata, alerting, or audit events." d93f0b
+          create_label deployment "Deployment, Docker, compose, nginx, systemd, EC2, runtime, or operations." 006b75
+          create_label database "Database schema, migrations, Postgres, roles, privileges, or DB integrity." 531dab
+          create_label ci "GitHub Actions, CI policy, CodeQL, dependency audit, build, or pipeline changes." a2eeef
+          create_label dependencies "Dependency updates, lock files, package manager changes, or Dependabot PRs." 0366d6
+          create_label documentation "Docs, README, guides, instructions, or policy documents." 0075ca
+          create_label frontend "Templates, CSS, JavaScript, SVG, UI layout, browser-facing pages, or forms." c2e0c6
+          create_label tests "Tests, pytest, fixtures, coverage, or regression checks." fef2c0
+          create_label feature "Feature branch or feature-oriented change." 84b6eb
+          create_label fix "Fix, bugfix, or hotfix branch." d4c5f9
+          create_label docker "Dockerfile, image, compose, or Docker dependency updates." 0db7ed
+          create_label github-actions "GitHub Actions workflow dependency updates or CI workflow automation." 2088ff
+          create_label python "Python dependency or Python runtime/package updates." 3572a5
+
+      - name: Retag issues and prepare pull requests
+        id: retag
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          mapfile -t PROTECTED < <(printf '%s\n' "${PROTECTED_LABELS}" | sed '/^[[:space:]]*$/d')
+          processed_prs=()
+
+          add_unique() {
+            local -n values_ref="$1"
+            local value="$2"
+            local existing
+            for existing in "${values_ref[@]}"; do
+              if [[ "${existing}" == "${value}" ]]; then
+                return 0
+              fi
+            done
+            values_ref+=("${value}")
+          }
+
+          is_protected() {
+            local label="$1"
+            local protected
+            for protected in "${PROTECTED[@]}"; do
+              if [[ "${label}" == "${protected}" ]]; then
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          split_labels() {
+            preserved=()
+            removed=()
+            local label
+            for label in "$@"; do
+              if is_protected "${label}"; then
+                add_unique preserved "${label}"
+              else
+                add_unique removed "${label}"
+              fi
+            done
+          }
+
+          join_labels() {
+            if [[ "$#" -eq 0 ]]; then
+              printf '(none)'
+              return 0
+            fi
+
+            local output=""
+            local label
+            for label in "$@"; do
+              if [[ -z "${output}" ]]; then
+                output="${label}"
+              else
+                output="${output}, ${label}"
+              fi
+            done
+            printf '%s' "${output}"
+          }
+
+          MATCH_TEXT=""
+
+          contains_any() {
+            local term
+            for term in "$@"; do
+              if [[ "${MATCH_TEXT}" == *"${term}"* ]]; then
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          contains_regex() {
+            local pattern
+            for pattern in "$@"; do
+              if [[ "${MATCH_TEXT}" =~ ${pattern} ]]; then
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          compute_issue_labels() {
+            local title="$1"
+            local body="$2"
+            local labels=(needs-triage)
+            MATCH_TEXT="$(printf '%s\n%s\n' "${title}" "${body}" | tr '[:upper:]' '[:lower:]')"
+
+            if contains_any security vulnerability exploit "auth bypass" "authorization bypass" "authentication bypass" "session fixation" "session hijack" cookie csrf csp xss "sql injection" secret encryption hmac audit "rate limit" "admin isolation" "privilege escalation" owasp; then
+              add_unique labels security
+            fi
+            if contains_any admin administrator staff invite "staff invite" "admin portal" "admin route" "admin isolation" "admin session" "admin database" "admin deployment"; then
+              add_unique labels admin
+            fi
+            if contains_any customer "user portal" dashboard profile "account page" "customer route"; then
+              add_unique labels customer
+            fi
+            if contains_any banking account transaction transfer payee balance freeze money funds; then
+              add_unique labels banking
+            fi
+            if contains_any login register registration password "reset password" "forgot password" otp authentication session cookie || contains_regex '(^|[^a-z0-9])auth([^a-z0-9]|$)'; then
+              add_unique labels auth
+            fi
+            if contains_any mfa totp webauthn passkey "security key" "recovery code" authenticator "second factor" 2fa; then
+              add_unique labels mfa
+            fi
+            if contains_any session cookie "session hmac" "active session" logout "remember me" "redis session"; then
+              add_unique labels session
+            fi
+            if contains_any audit alert "security alert" "hash chain" "audit event" "audit log" "audit metadata"; then
+              add_unique labels audit
+            fi
+            if contains_any deploy deployment staging production ec2 nginx docker compose bootstrap systemd runtime "environment variable" "secret file"; then
+              add_unique labels deployment
+            fi
+            if contains_any database postgres migration schema role privilege alembic || contains_regex '(^|[^a-z0-9])db([^a-z0-9]|$)' '(^|[^a-z0-9])sql([^a-z0-9]|$)'; then
+              add_unique labels database
+            fi
+            if contains_any workflow "github actions" dependabot codeql "dependency audit" "pr title" "commit message" "pull request policy" build pipeline || contains_regex '(^|[^a-z0-9])ci([^a-z0-9]|$)'; then
+              add_unique labels ci
+            fi
+            if contains_any dependency dependencies package requirements pip "docker base image" dependabot "lock file" msgpack "library bump"; then
+              add_unique labels dependencies
+            fi
+            if contains_any test tests pytest coverage regression fixture; then
+              add_unique labels tests
+            fi
+            if contains_any docs documentation readme guide instructions "policy document"; then
+              add_unique labels documentation
+            fi
+            if contains_any css javascript template page form button "dashboard layout" browser || contains_regex '(^|[^a-z0-9])ui([^a-z0-9]|$)'; then
+              add_unique labels frontend
+            fi
+
+            printf '%s\n' "${labels[@]}"
+          }
+
+          PR_FILES=()
+          PR_HEAD=""
+
+          path_matches() {
+            local pattern="$1"
+            local file
+            for file in "${PR_FILES[@]}"; do
+              if [[ "${file}" == ${pattern} ]]; then
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          path_contains() {
+            local term
+            local file
+            for term in "$@"; do
+              for file in "${PR_FILES[@]}"; do
+                if [[ "${file}" == *"${term}"* ]]; then
+                  return 0
+                fi
+              done
+            done
+            return 1
+          }
+
+          branch_contains() {
+            local term
+            for term in "$@"; do
+              if [[ "${PR_HEAD}" == *"${term}"* ]]; then
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          branch_starts_with() {
+            local prefix
+            for prefix in "$@"; do
+              if [[ "${PR_HEAD}" == "${prefix}"* ]]; then
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          load_pr_files() {
+            local number="$1"
+            local diff_output
+            PR_FILES=()
+            if ! diff_output="$(gh pr diff "${number}" --name-only)"; then
+              return 1
+            fi
+
+            local file
+            while IFS= read -r file; do
+              if [[ -n "${file}" ]]; then
+                PR_FILES+=("${file,,}")
+              fi
+            done <<< "${diff_output}"
+          }
+
+          compute_pr_labels() {
+            local number="$1"
+            local head="$2"
+            local labels=()
+            PR_HEAD="${head,,}"
+            load_pr_files "${number}" || return 1
+
+            if path_matches 'app/admin/*' || path_matches 'admin_wsgi.py' || path_matches 'ops/*admin*' || path_matches 'tests/test_admin_*.py'; then
+              add_unique labels admin
+            fi
+            if path_matches 'app/web/*' || path_matches 'app/main/*' || path_matches 'app/templates/index.html' || path_matches 'app/templates/dashboard.html' || path_matches 'app/templates/profile.html' || path_matches 'tests/test_dashboard.py' || path_matches 'tests/test_authenticated_portal_ui.py'; then
+              add_unique labels customer
+            fi
+            if path_matches 'app/banking/*' || path_matches 'app/templates/add_payee.html' || path_matches 'app/templates/confirm_payee.html' || path_matches 'app/templates/freeze.html' || path_matches 'app/templates/payees.html' || path_matches 'app/templates/remove_payee.html' || path_matches 'app/static/js/account.js' || path_matches 'app/static/js/payees.js' || path_matches 'tests/test_banking_*.py' || path_matches 'tests/test_account_security_actions.py'; then
+              add_unique labels banking
+            fi
+            if path_matches 'app/auth/*' || path_matches 'app/templates/login.html' || path_matches 'app/templates/register.html' || path_matches 'app/templates/forgot_password.html' || path_matches 'app/templates/reset_password.html' || path_matches 'app/templates/password_change.html' || path_matches 'tests/test_auth_*.py' || path_matches 'tests/test_password*.py'; then
+              add_unique labels auth
+            fi
+            if path_matches 'app/auth/mfa_policy.py' || path_matches 'app/auth/recovery_codes.py' || path_matches 'app/auth/webauthn_services.py' || path_matches 'app/templates/mfa_*.html' || path_matches 'app/templates/security_keys.html' || path_contains mfa totp webauthn passkey security_key recovery_code; then
+              add_unique labels mfa
+            fi
+            if path_matches 'app/security/*' || path_matches 'docs/security/*' || path_matches 'security.md' || path_matches '.trivyignore' || path_matches 'ops/security/*' || path_matches 'ops/fido-*.json' || path_matches 'tests/test_*security*.py' || path_matches 'tests/test_audit_*.py' || path_matches 'tests/test_owasp_regressions.py' || path_matches 'tests/test_pentest_auth_bypass.py' || path_matches 'tests/test_route_inventory_security.py' || path_matches 'tests/test_secret_scanner.py' || path_matches 'tests/test_session_management.py' || path_contains csrf csp hmac crypto secret rate_limit || branch_contains security auth mfa csrf csp session audit admin-isolation webauthn passkey secret rate-limit; then
+              add_unique labels security
+            fi
+            if path_matches 'app/security/session_hmac.py' || path_matches 'app/security/sessions.py' || path_matches 'app/static/js/session-timeout.js' || path_matches 'app/templates/sessions.html' || path_matches 'tests/test_session_management.py' || path_contains session cookie; then
+              add_unique labels session
+            fi
+            if path_matches 'app/security/audit.py' || path_matches 'app/security/alerts.py' || path_matches 'tests/test_audit_*.py' || path_contains audit alert; then
+              add_unique labels audit
+            fi
+            if path_matches 'ops/*' || path_matches 'compose*.yml' || path_matches 'docker-compose*.yml' || path_matches 'dockerfile' || path_matches 'config.py' || path_matches 'docs/deployment.md' || path_matches 'docs/operations.md' || path_matches 'docs/archive/ec2_transition.md' || path_matches 'tests/test_deployment.py'; then
+              add_unique labels deployment
+            fi
+            if path_matches 'migrations/*' || path_matches 'app/models.py' || path_matches 'app/ops/db_privileges.py' || path_matches 'ops/postgres/*' || path_matches 'tests/test_db_session_integrity.py'; then
+              add_unique labels database
+            fi
+            if path_matches '.github/workflows/*' || path_matches '.github/dependabot.yml' || path_matches 'scripts/ci-local' || path_matches 'ops/security/check_dependency_locks.py' || path_matches 'ops/security/validate_pr_body.py' || path_matches 'tests/test_pr_body_policy.py'; then
+              add_unique labels ci
+            fi
+            if path_matches 'requirements.in' || path_matches 'requirements-dev.in' || path_matches 'requirements.lock' || path_matches 'requirements-dev.lock' || path_matches '.github/dependabot.yml' || path_matches 'ops/security/check_dependency_locks.py'; then
+              add_unique labels dependencies
+            fi
+            if path_matches 'docs/*' || path_matches 'readme*' || path_matches 'security.md' || path_matches '*.md' || path_contains .md; then
+              add_unique labels documentation
+            fi
+            if path_matches 'app/templates/*' || path_matches 'app/static/*' || path_matches '*.css' || path_matches '*.js' || path_matches '*.svg' || path_contains .css .js .svg; then
+              add_unique labels frontend
+            fi
+            if path_matches 'tests/*' || path_matches 'pytest.ini'; then
+              add_unique labels tests
+            fi
+            if branch_starts_with feature/ feat/; then
+              add_unique labels feature
+            fi
+            if branch_starts_with fix/ bugfix/ hotfix/; then
+              add_unique labels fix
+            fi
+
+            printf '%s\n' "${labels[@]}"
+          }
+
+          print_plan() {
+            local kind="$1"
+            local number="$2"
+            local current_text="$3"
+            local preserved_text="$4"
+            local removed_text="$5"
+            local computed_text="$6"
+            local final_text="$7"
+
+            echo "::group::${kind} #${number}"
+            echo "current labels: ${current_text}"
+            echo "protected labels preserved: ${preserved_text}"
+            echo "unprotected labels removed: ${removed_text}"
+            echo "computed labels added: ${computed_text}"
+            echo "final expected labels: ${final_text}"
+            echo "::endgroup::"
+          }
+
+          process_issues() {
+            echo "Loading issues with gh issue list --state ${STATE} --limit ${LIMIT}."
+            echo "gh issue list returns issues, not pull requests; PR retagging is handled separately."
+            mapfile -t issue_rows < <(
+              gh issue list \
+                --state "${STATE}" \
+                --limit "${LIMIT}" \
+                --json number,title,body,labels \
+                --jq '.[] | @base64'
+            )
+
+            local row issue_json number title body
+            local current computed final_labels
+            for row in "${issue_rows[@]}"; do
+              issue_json="$(printf '%s' "${row}" | base64 --decode)"
+              number="$(jq -r '.number' <<< "${issue_json}")"
+              title="$(jq -r '.title // ""' <<< "${issue_json}")"
+              body="$(jq -r '.body // ""' <<< "${issue_json}")"
+              mapfile -t current < <(jq -r '.labels[].name' <<< "${issue_json}")
+              mapfile -t computed < <(compute_issue_labels "${title}" "${body}")
+
+              split_labels "${current[@]}"
+              final_labels=()
+              local label
+              for label in "${preserved[@]}"; do
+                add_unique final_labels "${label}"
+              done
+              for label in "${computed[@]}"; do
+                add_unique final_labels "${label}"
+              done
+
+              print_plan \
+                "Issue" \
+                "${number}" \
+                "$(join_labels "${current[@]}")" \
+                "$(join_labels "${preserved[@]}")" \
+                "$(join_labels "${removed[@]}")" \
+                "$(join_labels "${computed[@]}")" \
+                "$(join_labels "${final_labels[@]}")"
+
+              if [[ "${DRY_RUN}" == "false" ]]; then
+                for label in "${removed[@]}"; do
+                  gh issue edit "${number}" --remove-label "${label}"
+                done
+                for label in "${computed[@]}"; do
+                  gh issue edit "${number}" --add-label "${label}"
+                done
+              fi
+            done
+          }
+
+          process_prs() {
+            echo "Loading pull requests with gh pr list --state ${STATE} --limit ${LIMIT}."
+            mapfile -t pr_rows < <(
+              gh pr list \
+                --state "${STATE}" \
+                --limit "${LIMIT}" \
+                --json number,title,body,headRefName,labels \
+                --jq '.[] | @base64'
+            )
+
+            local row pr_json number head
+            local current computed final_labels
+            for row in "${pr_rows[@]}"; do
+              pr_json="$(printf '%s' "${row}" | base64 --decode)"
+              number="$(jq -r '.number' <<< "${pr_json}")"
+              head="$(jq -r '.headRefName // ""' <<< "${pr_json}")"
+              mapfile -t current < <(jq -r '.labels[].name' <<< "${pr_json}")
+
+              if ! mapfile -t computed < <(compute_pr_labels "${number}" "${head}"); then
+                echo "::warning::Could not compute dry-run PR labels for #${number}; actions/labeler@v6 will compute them in apply mode."
+                computed=()
+              fi
+
+              split_labels "${current[@]}"
+              final_labels=()
+              local label
+              for label in "${preserved[@]}"; do
+                add_unique final_labels "${label}"
+              done
+              for label in "${computed[@]}"; do
+                add_unique final_labels "${label}"
+              done
+
+              echo "::group::Pull request #${number}"
+              echo "current labels: $(join_labels "${current[@]}")"
+              echo "protected labels preserved: $(join_labels "${preserved[@]}")"
+              echo "unprotected labels removed: $(join_labels "${removed[@]}")"
+              echo "computed labels added: $(join_labels "${computed[@]}")"
+              echo "actions/labeler@v6 would run for PR #${number} with sync-labels=false."
+              echo "final expected labels: $(join_labels "${final_labels[@]}")"
+              echo "::endgroup::"
+
+              add_unique processed_prs "${number}"
+
+              if [[ "${DRY_RUN}" == "false" ]]; then
+                for label in "${removed[@]}"; do
+                  gh pr edit "${number}" --remove-label "${label}"
+                done
+              fi
+            done
+          }
+
+          echo "Protected labels: $(join_labels "${PROTECTED[@]}")"
+
+          case "${TARGET}" in
+            issues)
+              process_issues
+              ;;
+            prs)
+              process_prs
+              ;;
+            both)
+              process_issues
+              process_prs
+              ;;
+            *)
+              echo "::error::Unsupported target: ${TARGET}"
+              exit 1
+              ;;
+          esac
+
+          {
+            echo "pr_numbers<<EOF"
+            if [[ "${DRY_RUN}" == "false" && "${#processed_prs[@]}" -gt 0 ]]; then
+              printf '%s\n' "${processed_prs[@]}"
+            fi
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
+
+      # This privileged manual workflow uses trusted workflow content only. It
+      # does not checkout PR branches or execute untrusted PR code; PR labels are
+      # reapplied through actions/labeler using GitHub API data and sync-labels=false.
+      # zizmor: ignore[unpinned-uses] actions/labeler@v6 is required by the repository labeling policy.
+      - name: Reapply pull request labels
+        if: ${{ inputs.dry_run == 'false' && (inputs.target == 'prs' || inputs.target == 'both') && steps.retag.outputs.pr_numbers != '' }}
+        uses: actions/labeler@v6
+        with:
+          configuration-path: .github/labeler.yml
+          sync-labels: false
+          pr-number: ${{ steps.retag.outputs.pr_numbers }}
