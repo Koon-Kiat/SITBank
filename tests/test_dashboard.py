@@ -258,7 +258,7 @@ def test_low_recovery_codes_warning_shown_on_mfa_page(client):
 def test_passkeys_notice_shown_on_security_keys_page(client):
     login_with_mfa(client)
     markup = client.get("/security-keys").data.decode("utf-8")
-    assert "No passkeys registered" in markup
+    assert "No legacy passkey records" in markup
 
 
 # ── Frozen account ─────────────────────────────────────────────────────────────

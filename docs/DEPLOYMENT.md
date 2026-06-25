@@ -2,7 +2,7 @@
 
 ## Current Architecture
 
-Only Flask/Gunicorn runs in the SITBank container. Nginx, TLS, PostgreSQL, Redis, and backups remain host-managed on EC2. Optional FIDO metadata files may remain on the host for lab inventory, but customer passkey registration no longer depends on an approved-AAGUID allow-list.
+Only Flask/Gunicorn runs in the SITBank container. Nginx, TLS, PostgreSQL, Redis, and backups remain host-managed on EC2. WebAuthn/passkeys are decommissioned because instructor review disallowed the high-level `webauthn` library, so production no longer requires WebAuthn RP or FIDO metadata configuration.
 
 - Production public host: `sitbank.duckdns.org`
 - Production admin host: `admin-sitbank.duckdns.org`
@@ -110,9 +110,9 @@ The reviewed production bootstrap installs and enables the production edge from 
   network control is configured.
 - Cloudflare or AWS WAF should sit in front of Nginx for managed common, SQL injection, XSS, bot, and protocol anomaly rules.
 - Cloudflare or AWS WAF rules and security-group allowlists are still infrastructure state and must be checked manually.
-- Admin WebAuthn/passkey authentication and admin step-up are Phase 2 and are
-  not implemented in this PR. The current admin app is not publicly usable and
-  must not expose password-only administrator login.
+- Admin auth remains fail-closed pending an approved MFA design and is not
+  implemented in this PR. The current admin app is not publicly usable and must
+  not expose password-only administrator login.
 
 Verification:
 

@@ -223,10 +223,6 @@ def build_container_environment(prefix: str = "PROD") -> dict[str, str]:
         "PASSWORD_RESET_EMAIL_FROM": _value(_prefixed(prefix, "PASSWORD_RESET_EMAIL_FROM")),
         "SESSION_HMAC_ACTIVE_KEY_ID": _active_key_id(prefix),
         "SMTP_HOST": _value(_prefixed(prefix, "SMTP_HOST")),
-        "WEBAUTHN_APPROVED_AAGUIDS_PATH": "/run/config/fido-approved-aaguids.json",
-        "WEBAUTHN_MDS_CACHE_PATH": "/run/config/fido-mds-cache.json",
-        "WEBAUTHN_RP_ID": public_host,
-        "WEBAUTHN_RP_ORIGIN": f"https://{public_host}",
     }
     for name, default in NON_SECRET_DEFAULTS.items():
         if prefix == "PROD" and name == "SECURITY_AUDIT_ANCHOR_PATH":

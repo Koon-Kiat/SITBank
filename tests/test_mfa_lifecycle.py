@@ -383,7 +383,7 @@ def test_mfa_replacement_keeps_old_secret_until_new_code_is_verified(client, mon
         "/mfa/setup",
         data={
             "action": "replace_start",
-            "stepup_token": mint_stepup_token(client, user, "mfa_replace_start"),
+            "totp_code": pyotp.TOTP(old_secret, digits=6, interval=30).at(start_time),
         },
     )
     db.session.refresh(user)

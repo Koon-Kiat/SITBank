@@ -93,8 +93,6 @@ NON_SECRET_DEFAULTS = {
 
 POLICY_CONFIG_PATHS = {
     "COMMON_PASSWORDS_PATH": "/run/config/common-passwords.txt",
-    "WEBAUTHN_APPROVED_AAGUIDS_PATH": "/run/config/fido-approved-aaguids.json",
-    "WEBAUTHN_MDS_CACHE_PATH": "/run/config/fido-mds-cache.json",
 }
 
 NON_SECRET_RUNTIME_ENVIRONMENT = tuple(
@@ -107,8 +105,6 @@ NON_SECRET_RUNTIME_ENVIRONMENT = tuple(
             "MFA_ISSUER_NAME",
             "SESSION_HMAC_ACTIVE_KEY_ID",
             "SMTP_HOST",
-            "WEBAUTHN_RP_ID",
-            "WEBAUTHN_RP_ORIGIN",
             *NON_SECRET_DEFAULTS,
             *POLICY_CONFIG_PATHS,
         }

@@ -12,7 +12,6 @@ from flask import current_app
 from pathlib import Path
 from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy.orm import Session
-from webauthn.helpers.structs import CredentialDeviceType
 
 from app.extensions import db
 from app.auth.registration_otp import (
@@ -154,7 +153,7 @@ def add_security_keys_for_user(user, count=2):
                 aaguid="11111111-1111-1111-1111-111111111111",
                 attestation_format="packed",
                 transports=["usb"],
-                credential_device_type=CredentialDeviceType.SINGLE_DEVICE.value,
+                credential_device_type="single_device",
                 credential_backed_up=False,
             )
         )
@@ -178,7 +177,7 @@ def mint_stepup_token(client, user, action):
                 "issued_at": int(time.time()),
             }
         ),
-        ex=current_app.config["WEBAUTHN_STEP_UP_TTL_SECONDS"],
+        ex=120,
     )
     return token
 

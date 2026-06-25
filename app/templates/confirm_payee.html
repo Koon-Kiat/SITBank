@@ -31,16 +31,14 @@
         <p class="eyebrow">Step-up verification</p>
         <h2>Verify with MFA</h2>
       </div>
-      <form method="post" action="{{ url_for('banking.payees_confirm_submit') }}" data-webauthn-step-up-form data-step-up-action="payee_add" novalidate>
+      <form method="post" action="{{ url_for('banking.payees_confirm_submit') }}" novalidate>
         {{ form.hidden_tag() }}
-        {{ form.stepup_token() }}
         <div class="form-group">
           <label for="{{ form.totp_code.id }}">Authenticator code</label>
           {{ form.totp_code(inputmode="numeric", autocomplete="one-time-code", maxlength="6", placeholder="6-digit code") }}
           {% for error in form.totp_code.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
-          <p class="hint">Enter your authenticator code, or leave blank to verify with a passkey.</p>
+          <p class="hint">Enter the current 6-digit code from your authenticator app.</p>
         </div>
-        <p class="field-error" data-webauthn-step-up-error hidden></p>
         <button class="button full" type="submit">Confirm and Add Payee</button>
       </form>
     </article>

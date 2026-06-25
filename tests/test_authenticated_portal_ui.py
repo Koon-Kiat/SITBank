@@ -33,16 +33,12 @@ def test_security_management_pages_use_polished_stepup_ui(client):
     assert 'class="mfa-step is-muted"' in mfa_markup
     assert ".mfa-step.is-muted .step-number" in css
     assert "background: var(--primary);" in css
-    assert 'class="compact-verification-form"' in keys_markup
     assert "AAGUID" not in keys_markup
     assert "11111111-1111-1111-1111-111111111111" not in keys_markup
-    assert "Last used: 05 Jun 2026 15:11 UTC" in keys_markup
     assert 'name="credential_kind"' not in keys_markup
-    assert "Passkey type" not in keys_markup
-    assert "browser and installed passkey provider decide which prompt appears" in keys_markup
-    assert "Verify and revoke" in keys_markup
-    assert 'class="button danger-button button-small key-revoke-button"' in keys_markup
-    assert "Revoke is disabled because at least two approved security keys must stay registered" not in keys_markup
+    assert "Passkeys are unavailable" in keys_markup
+    assert "Inactive legacy passkey record" in keys_markup
+    assert "Verify and revoke" not in keys_markup
     assert "Active Sessions" in sessions_markup
     assert "Past Sessions" in sessions_markup
     assert 'class="button danger-button full"' in freeze_markup
@@ -115,10 +111,10 @@ def test_authenticated_layout_contains_working_profile_menu_destinations(client)
     assert 'href="/password/change"' in markup
     assert "Authenticator MFA" in markup
     assert "Active Sessions" in markup
-    assert "Passkeys" in markup
+    assert "Passkeys" not in markup
     assert "Freeze Account" in markup
     assert "Log Out" in markup
-    assert markup.index('href="/mfa/setup"') < markup.index('href="/security-keys"') < markup.index('href="/sessions"')
+    assert markup.index('href="/mfa/setup"') < markup.index('href="/sessions"')
     assert "No passkeys are registered" not in markup
     assert "unused recovery codes remain" not in markup
     assert "Transaction-ready" not in markup
@@ -152,7 +148,7 @@ def test_security_key_page_redirects_unenrolled_users_to_mfa_setup(client):
     assert response.status_code == 302
     assert response.headers["Location"].endswith("/mfa/setup")
 
-def test_no_passkey_empty_state_lives_on_passkey_page_not_dashboard(client):
+def test_legacy_passkey_empty_state_lives_on_legacy_page_not_dashboard(client):
     register(client)
     login(client)
     user, _secret = enable_mfa_for_user()
@@ -165,9 +161,9 @@ def test_no_passkey_empty_state_lives_on_passkey_page_not_dashboard(client):
 
     assert dashboard_response.status_code == 200
     assert keys_response.status_code == 200
-    assert "No passkeys are registered" not in dashboard_markup
-    assert "No passkeys registered" in keys_markup
-    assert "Add one whenever you want optional passkey sign-in or step-up." in keys_markup
+    assert "No legacy passkey records" not in dashboard_markup
+    assert "No legacy passkey records" in keys_markup
+    assert "This account has no stored passkey credential records." in keys_markup
 
 def test_public_layout_does_not_expose_authenticated_account_actions(client):
     response = client.get("/login")
@@ -176,8 +172,8 @@ def test_public_layout_does_not_expose_authenticated_account_actions(client):
     assert response.status_code == 200
     assert "data-account-menu" not in markup
     assert "Edit Profile" not in markup
-    assert "data-webauthn-login-form" in markup
-    assert "Windows Hello" in markup
+    assert "data-webauthn-login-form" not in markup
+    assert "Windows Hello" not in markup
     assert 'href="/profile"' not in markup
     assert 'action="/logout"' not in markup
 
@@ -241,14 +237,8 @@ def test_authenticated_brand_link_targets_dashboard(client):
     assert response.status_code == 200
     assert '<a class="brand" href="/dashboard"' in markup
 
-def test_webauthn_browser_errors_are_sanitized_before_display():
-    source = Path("app/static/js/webauthn.js").read_text(encoding="utf-8")
-
-    assert "Security key verification was not completed. Try again." in source
-    assert "showError(errorNode, error.message)" not in source
-    assert "webAuthnErrorMessage(error)" in source
-    assert "credential_kind" not in source
-    assert 'querySelector(\'select[name="credential_kind"]' not in source
+def test_webauthn_browser_script_is_not_shipped():
+    assert not Path("app/static/js/webauthn.js").exists()
 
 def test_production_env_docs_require_pbkdf2_pepper_not_bcrypt():
     required = Path("ops/production-env.required").read_text(encoding="utf-8")

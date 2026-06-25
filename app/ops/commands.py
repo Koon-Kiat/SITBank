@@ -4,7 +4,6 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
 
 import click
 from alembic.autogenerate import compare_metadata
@@ -31,7 +30,6 @@ from app.security.crypto import (
     mfa_envelope_kek_id,
     rewrap_mfa_dek,
 )
-from app.security.fido_mds import validate_fido_metadata_config
 from app.security.passwords import validate_common_password_dictionary, validate_password_hash_config
 from app.security.session_hmac import validate_session_hmac_config
 from app.ops.db_privileges import (
@@ -116,13 +114,6 @@ def register_ops_commands(app: Flask) -> None:
             else:
                 click.echo(f"Configured MFA KEKs: {len(mfa_kek_keys)}")
 
-            try:
-                approved_aaguids = validate_fido_metadata_config()
-            except Exception as exc:
-                click.echo(f"Optional FIDO metadata configuration skipped: {exc}")
-            else:
-                click.echo(f"Optional FIDO authenticator AAGUIDs configured: {approved_aaguids}")
-
         try:
             alert_config = validate_security_alert_config(require_delivery=True)
         except Exception as exc:
@@ -165,14 +156,6 @@ def register_ops_commands(app: Flask) -> None:
             failures.append("TALISMAN_FORCE_HTTPS must be enabled")
         if str(app.config.get("RATELIMIT_STORAGE_URI", "")).startswith("memory://"):
             failures.append("Rate limiting must use Redis-backed storage in production")
-        if app_mode == "customer":
-            rp_origin = str(app.config.get("WEBAUTHN_RP_ORIGIN", ""))
-            rp_id = str(app.config.get("WEBAUTHN_RP_ID", ""))
-            parsed_origin = urlparse(rp_origin)
-            if parsed_origin.scheme != "https":
-                failures.append("WEBAUTHN_RP_ORIGIN must use HTTPS")
-            if parsed_origin.hostname != rp_id:
-                failures.append("WEBAUTHN_RP_ORIGIN hostname must match WEBAUTHN_RP_ID")
         if app_mode == "admin":
             if app.config.get("SESSION_COOKIE_NAME") != "__Host-sitbank_admin_session":
                 failures.append("Admin session cookie name must be isolated")
@@ -182,7 +165,7 @@ def register_ops_commands(app: Flask) -> None:
                 failures.append("Admin rate-limit key prefix must be isolated")
             if not str(app.config.get("SESSION_KEY_PREFIX", "")).startswith("admin-"):
                 failures.append("Admin session key prefix must be isolated")
-            click.echo("Admin auth is fail-closed; WebAuthn/passkey and step-up are Phase 2")
+            click.echo("Admin auth is fail-closed; admin login and step-up remain disabled")
         if int(app.config.get("TOTP_LOGIN_VALID_WINDOW", -1)) > 1:
             failures.append("TOTP_LOGIN_VALID_WINDOW must be 0 or 1")
         if int(app.config.get("TOTP_HIGH_RISK_VALID_WINDOW", -1)) != 0:

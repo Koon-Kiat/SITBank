@@ -301,7 +301,6 @@ def test_long_unicode_password_can_register_login_and_change(client, monkeypatch
     login_response = login(client, password=long_password)
     user, secret = enable_mfa_for_user()
     add_security_keys_for_user(user)
-    stepup_token = mint_stepup_token(client, user, "password_change")
     old_hash = user.password_hash
     change_time = int(time.time())
     monkeypatch.setattr("app.auth.services.time.time", lambda: change_time)
@@ -312,7 +311,7 @@ def test_long_unicode_password_can_register_login_and_change(client, monkeypatch
             "current_password": long_password,
             "new_password": new_password,
             "confirm_new_password": new_password,
-            "stepup_token": stepup_token,
+            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(change_time),
         },
     )
     db.session.refresh(user)

@@ -6,9 +6,9 @@ SITBank is a student cybersecurity project and demonstration site. Do not enter 
 
 ## Overview
 
-SITBank is a Flask/Gunicorn application deployed as hardened Docker containers behind host-managed Nginx, TLS, PostgreSQL, and Redis. Production customer traffic runs at `https://sitbank.duckdns.org`; the isolated production admin boundary is reserved at `https://admin-sitbank.duckdns.org` and is fail-closed until future WebAuthn/passkey and network allowlist controls are implemented. Staging runs separately at `https://staging-sitbank.duckdns.org` and does not include an admin service in this phase.
+SITBank is a Flask/Gunicorn application deployed as hardened Docker containers behind host-managed Nginx, TLS, PostgreSQL, and Redis. Production customer traffic runs at `https://sitbank.duckdns.org`; the isolated production admin boundary is reserved at `https://admin-sitbank.duckdns.org` and is fail-closed until a reviewed admin MFA design and network allowlist controls are implemented. Staging runs separately at `https://staging-sitbank.duckdns.org` and does not include an admin service in this phase.
 
-The app keeps password hashing PBKDF2+pepper only and MFA/TOTP seed encryption envelope-only using `MFA_KEK_ACTIVE_ID` plus `MFA_KEK_KEYS_JSON`. Authenticator TOTP is the required baseline MFA method. Passkeys, including Windows Hello, browser/password-manager passkeys such as Bitwarden, and external FIDO2 security keys, are optional add-ons for sign-in and step-up. Legacy one-key MFA AES compatibility and direct non-PBKDF2 password hash compatibility are intentionally removed because current users are test-only and environments must be reset before this change is deployed.
+The app keeps password hashing PBKDF2+pepper only and MFA/TOTP seed encryption envelope-only using `MFA_KEK_ACTIVE_ID` plus `MFA_KEK_KEYS_JSON`. Authenticator TOTP is the supported MFA and step-up method, with recovery codes only where the reset flow already allows TOTP recovery. WebAuthn/passkeys are decommissioned because instructor review disallowed the high-level `webauthn` library; legacy credential rows are retained only for audit and manual-recovery decisions. Legacy one-key MFA AES compatibility and direct non-PBKDF2 password hash compatibility are intentionally removed because current users are test-only and environments must be reset before this change is deployed.
 
 ## Local Development
 
@@ -40,7 +40,7 @@ Common local test commands:
 .\.venv\Scripts\python.exe -m pytest -q -m "not slow"
 ```
 
-The `not slow` and focused marker commands are for local iteration only. Pull requests and protected CI still run the full pytest suite, including security, deployment, Redis session integrity, CSRF, MFA, WebAuthn, route inventory, production guard, dependency lock, and secret-scanning checks.
+The `not slow` and focused marker commands are for local iteration only. Pull requests and protected CI still run the full pytest suite, including security, deployment, Redis session integrity, CSRF, MFA, legacy passkey decommission checks, route inventory, production guard, dependency lock, and secret-scanning checks.
 
 For a fuller local check, run `scripts/ci-local`. It runs the full pytest suite in parallel with timing output, then Python/package/security checks, Git Bash syntax checks, Docker/Compose checks when Docker is available, and contract checks around `ops/runtime_contract.py`.
 
@@ -92,13 +92,11 @@ Current required settings include:
 - `SECURITY_ALERT_STATE_PATH`
 - `HIBP_CIRCUIT_FAILURE_THRESHOLD`
 - `HIBP_CIRCUIT_OPEN_SECONDS`
-- `WEBAUTHN_RP_ID`
-- `WEBAUTHN_RP_ORIGIN`
 - `COMMON_PASSWORDS_PATH`
 
 See `ops/production-env.required` for the machine-readable checklist.
 
-`WEBAUTHN_APPROVED_AAGUIDS_PATH` and `WEBAUTHN_MDS_CACHE_PATH` may still be configured for local lab inventory and audit review, but optional passkey registration no longer requires direct attestation, approved AAGUID metadata, cross-platform attachment, or single-device status.
+WebAuthn RP and FIDO metadata settings are not part of the runtime contract because active passkey registration, login, reset, and step-up are retired.
 
 ## Customer Password Reset
 
@@ -111,9 +109,11 @@ token.
 Password reset changes only the password. It does not disable MFA, does not
 create a login session, and revokes active sessions after completion. Customers
 with TOTP must verify TOTP or a recovery code; passkeys do not replace TOTP
-recovery. Customers without MFA can reset but are sent through the existing MFA
-onboarding gate on next login. Admin-account reset is not implemented in the
-customer domain.
+recovery. Customers with only legacy passkey records must use manual account
+recovery before resetting the password, so passkey retirement does not create
+an email-link-only fallback. Customers without MFA can reset but are sent
+through the existing MFA onboarding gate on next login. Admin-account reset is
+not implemented in the customer domain.
 
 ## Documentation
 

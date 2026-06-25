@@ -4,7 +4,6 @@ from functools import wraps
 
 from flask import (
     Blueprint,
-    current_app,
     flash,
     g,
     redirect,
@@ -39,7 +38,7 @@ from app.auth.password_reset import (
     select_reset_mfa_method,
     verify_reset_totp,
 )
-from app.auth.mfa_policy import enrolled_webauthn_credential_count, has_enrolled_mfa_method
+from app.auth.mfa_policy import has_enrolled_mfa_method
 from app.auth.registration_otp import (
     GENERIC_OTP_ERROR,
     RegistrationOtpError,
@@ -64,23 +63,19 @@ from app.auth.services import (
     register_user,
     regenerate_totp_recovery_codes,
     update_profile_details,
-    verify_fresh_mfa_for_action,
     verify_high_risk_authorization,
     verify_mfa_replacement,
     verify_mfa_setup,
 )
 from app.auth.webauthn_services import (
     list_credentials_for_user,
-    revoke_credential,
     webauthn_credential_count,
 )
 from app.extensions import limiter
 from app.auth.recovery_codes import RECOVERY_CODE_LOW_THRESHOLD, unused_recovery_code_count
 from app.security.rate_limits import mfa_principal, request_principal
 from app.security.sessions import (
-    SESSION_RISK_REAUTH_REQUIRED_KEY,
     has_recent_fresh_mfa,
-    require_stable_session_for_sensitive_action,
 )
 
 
@@ -107,7 +102,7 @@ def enforce_mfa_onboarding():
         return None
     if request.endpoint in WEB_MFA_ONBOARDING_ALLOWED_ENDPOINTS:
         return None
-    flash("Set up an authenticator app or passkey before continuing.", "warning")
+    flash("Set up an authenticator app before continuing.", "warning")
     return redirect(url_for("web.mfa_setup"))
 
 
@@ -314,13 +309,13 @@ def login_submit():
         return render_template("login.html", form=form), exc.status_code
 
     if result.get("mfa_required"):
-        if result.get("webauthn_required"):
-            flash("Use your passkey to finish signing in.", "info")
-        else:
-            flash("Enter your authenticator code to finish signing in.", "info")
+        flash("Enter your authenticator code to finish signing in.", "info")
         return redirect(url_for("web.mfa_verify"))
     if result.get("mfa_setup_required"):
-        flash("Choose an MFA method before continuing.", "warning")
+        if result.get("legacy_passkey_migration_required"):
+            flash("Passkey sign-in is unavailable. Set up authenticator MFA or request account recovery.", "warning")
+        else:
+            flash("Set up authenticator MFA before continuing.", "warning")
         return redirect(url_for("web.mfa_setup"))
 
     flash("Login successful.", "success")
@@ -461,19 +456,9 @@ def mfa_verify():
     if not session.get("pending_mfa_user_id"):
         flash("Please log in first.", "warning")
         return redirect(url_for("web.login"))
-    from app.extensions import db
-    from app.models import User
-
-    pending_user = db.session.get(User, int(session["pending_mfa_user_id"]))
-    webauthn_required = bool(
-        pending_user is not None
-        and not pending_user.mfa_enabled
-        and enrolled_webauthn_credential_count(pending_user) > 0
-    )
     return render_template(
         "mfa_verify.html",
         form=AuthenticationCodeForm(),
-        webauthn_required=webauthn_required,
     )
 
 
@@ -516,17 +501,11 @@ def dashboard():
 @web_not_frozen_required
 def security_keys():
     credentials = list_credentials_for_user(g.current_user)
-    required_count = current_app.config.get("WEBAUTHN_REQUIRED_CREDENTIALS", 1)
     return render_template(
         "security_keys.html",
         user=g.current_user,
         credentials=credentials,
         credential_count=webauthn_credential_count(g.current_user),
-        required_count=required_count,
-        recent_mfa=has_recent_fresh_mfa(),
-        add_form=CsrfOnlyForm(),
-        refresh_mfa_form=TotpForm(),
-        revoke_form=MfaOrStepUpForm(),
     )
 
 
@@ -536,29 +515,7 @@ def security_keys():
 @limiter.limit("5 per 5 minutes", key_func=get_remote_address)
 @limiter.limit("5 per 5 minutes", key_func=mfa_principal)
 def security_keys_mfa_refresh():
-    if not g.current_user.mfa_enabled:
-        flash("Set up authenticator MFA before registering passkeys.", "warning")
-        return redirect(url_for("web.mfa_setup"))
-
-    form = TotpForm()
-    if not form.validate_on_submit():
-        flash("Enter a valid authenticator code to continue.", "error")
-        return redirect(url_for("web.security_keys"))
-
-    try:
-        require_stable_session_for_sensitive_action("webauthn_mfa_refresh")
-        verify_fresh_mfa_for_action(
-            g.current_user,
-            form.totp_code.data,
-            "webauthn_mfa_refresh",
-        )
-    except AuthError as exc:
-        flash(exc.message, "error")
-        if session.get(SESSION_RISK_REAUTH_REQUIRED_KEY):
-            return redirect(url_for("web.login"))
-        return redirect(url_for("web.security_keys"))
-
-    flash("Authenticator code verified. You can register or manage passkeys now.", "success")
+    flash("Passkey registration is unavailable. Use authenticator MFA.", "warning")
     return redirect(url_for("web.security_keys"))
 
 
@@ -566,31 +523,7 @@ def security_keys_mfa_refresh():
 @web_login_required
 @web_not_frozen_required
 def security_key_revoke(credential_id: str):
-    form = MfaOrStepUpForm()
-    if not form.validate_on_submit():
-        flash("Complete MFA verification before revoking a passkey.", "error")
-        return redirect(url_for("web.security_keys"))
-    try:
-        verify_high_risk_authorization(
-            g.current_user,
-            form.totp_code.data,
-            form.stepup_token.data,
-            "webauthn_revoke",
-            rotate_session_on_success=False,
-        )
-        result = revoke_credential(
-            g.current_user,
-            credential_id,
-            stepup_token=form.stepup_token.data,
-            stepup_already_consumed=True,
-        )
-    except AuthError as exc:
-        flash(exc.message, "error")
-        return redirect(url_for("web.security_keys"))
-    if result.get("current_session_revoked"):
-        flash("Security key revoked. Please sign in again.", "success")
-        return redirect(url_for("web.login"))
-    flash("Security key revoked.", "success")
+    flash("Legacy passkey records are removed through manual account recovery.", "warning")
     return redirect(url_for("web.security_keys"))
 
 
@@ -601,7 +534,7 @@ def profile():
     form = ProfileForm()
     form.username.data = g.current_user.username
     form.email.data = g.current_user.email
-    form.mfa_step_up_preference.data = g.current_user.mfa_step_up_preference
+    form.mfa_step_up_preference.data = "totp"
     return render_template(
         "profile.html",
         user=g.current_user,

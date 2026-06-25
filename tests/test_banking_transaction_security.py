@@ -72,8 +72,7 @@ def test_transfer_step_up_policy_distinguishes_normal_and_stronger_flows():
         TRANSFER_RISK_LARGE_TRANSFER,
         TRANSFER_RISK_NEW_PAYEE,
         TRANSFER_RISK_NORMAL,
-        TRANSFER_STEP_UP_PASSKEY,
-        TRANSFER_STEP_UP_STANDARD,
+        TRANSFER_STEP_UP_MFA,
         classify_transfer_risk,
         transfer_step_up_requirement,
     )
@@ -81,9 +80,9 @@ def test_transfer_step_up_policy_distinguishes_normal_and_stronger_flows():
     assert classify_transfer_risk() == TRANSFER_RISK_NORMAL
     assert classify_transfer_risk(new_payee=True) == TRANSFER_RISK_NEW_PAYEE
     assert classify_transfer_risk(large_transfer=True) == TRANSFER_RISK_LARGE_TRANSFER
-    assert transfer_step_up_requirement(TRANSFER_RISK_NORMAL) == TRANSFER_STEP_UP_STANDARD
-    assert transfer_step_up_requirement(TRANSFER_RISK_NEW_PAYEE) == TRANSFER_STEP_UP_PASSKEY
-    assert transfer_step_up_requirement(TRANSFER_RISK_LARGE_TRANSFER) == TRANSFER_STEP_UP_PASSKEY
+    assert transfer_step_up_requirement(TRANSFER_RISK_NORMAL) == TRANSFER_STEP_UP_MFA
+    assert transfer_step_up_requirement(TRANSFER_RISK_NEW_PAYEE) == TRANSFER_STEP_UP_MFA
+    assert transfer_step_up_requirement(TRANSFER_RISK_LARGE_TRANSFER) == TRANSFER_STEP_UP_MFA
     with pytest.raises(AuthError):
         transfer_step_up_requirement("unexpected")
 

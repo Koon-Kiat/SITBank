@@ -29,7 +29,6 @@ from .password_reset import (
     current_reset_transaction,
     request_manual_recovery,
     request_password_reset,
-    reset_transaction_user_and_id,
     select_reset_mfa_method,
     verify_reset_totp,
     exchange_reset_token,
@@ -49,15 +48,6 @@ from .schemas import (
     ResetTokenExchangeSchema,
     TerminateSessionSchema,
     TotpSchema,
-)
-from .schemas import (
-    WebAuthnAuthenticationOptionsSchema,
-    WebAuthnAuthenticationVerifySchema,
-    WebAuthnCredentialReferenceSchema,
-    WebAuthnRegistrationOptionsSchema,
-    WebAuthnRegistrationVerifySchema,
-    WebAuthnStepUpOptionsSchema,
-    WebAuthnStepUpVerifySchema,
 )
 from .services import (
     AuthError,
@@ -83,21 +73,13 @@ from .registration_otp import (
     request_registration_otp,
     verify_registration_otp,
 )
-from .webauthn_services import (
-    begin_step_up_options,
-    begin_authentication_options,
-    begin_password_reset_options,
-    begin_registration_options,
-    verify_step_up,
-    list_credentials_for_user,
-    revoke_credential,
-    verify_authentication,
-    verify_password_reset_assertion,
-    verify_registration,
-)
 
 
 auth_bp = Blueprint("auth", __name__, url_prefix="/auth")
+PASSKEY_DISABLED_MESSAGE = (
+    "Passkey authentication is no longer available. "
+    "Use authenticator MFA or manual account recovery."
+)
 
 AUTH_MFA_ONBOARDING_ALLOWED_ENDPOINTS = {
     "auth.csrf_token",
@@ -109,12 +91,8 @@ AUTH_MFA_ONBOARDING_ALLOWED_ENDPOINTS = {
     "auth.password_reset_transaction",
     "auth.password_reset_mfa_method",
     "auth.password_reset_totp",
-    "auth.password_reset_webauthn_options",
-    "auth.password_reset_webauthn_verify",
     "auth.password_reset_complete",
     "auth.manual_recovery_request",
-    "auth.webauthn_register_options",
-    "auth.webauthn_register_verify",
 }
 
 
@@ -265,17 +243,14 @@ def password_reset_totp():
 @limiter.limit("5 per 5 minutes", key_func=get_remote_address)
 @limiter.limit("5 per 5 minutes", key_func=mfa_principal)
 def password_reset_webauthn_options():
-    user, transaction_id = reset_transaction_user_and_id(required_method="webauthn")
-    return jsonify(begin_password_reset_options(user, transaction_id))
+    raise AuthError(PASSKEY_DISABLED_MESSAGE, 410)
 
 
 @auth_bp.post("/password-reset/mfa/webauthn/verify")
 @limiter.limit("5 per 5 minutes", key_func=get_remote_address)
 @limiter.limit("5 per 5 minutes", key_func=mfa_principal)
 def password_reset_webauthn_verify():
-    user, transaction_id = reset_transaction_user_and_id(required_method="webauthn")
-    data = WebAuthnAuthenticationVerifySchema().load(request.get_json(silent=False) or {})
-    return jsonify(verify_password_reset_assertion(user, transaction_id, data["credential"]))
+    raise AuthError(PASSKEY_DISABLED_MESSAGE, 410)
 
 
 @auth_bp.post("/password-reset/complete")
@@ -300,8 +275,7 @@ def manual_recovery_request():
 @limiter.limit("5 per 5 minutes", key_func=get_remote_address)
 @limiter.limit("5 per 5 minutes", key_func=mfa_principal)
 def webauthn_register_options():
-    data = WebAuthnRegistrationOptionsSchema().load(request.get_json(silent=False) or {})
-    return jsonify(begin_registration_options(g.current_user, data["label"]))
+    raise AuthError(PASSKEY_DISABLED_MESSAGE, 410)
 
 
 @auth_bp.post("/webauthn/register/verify")
@@ -310,24 +284,21 @@ def webauthn_register_options():
 @limiter.limit("5 per 5 minutes", key_func=get_remote_address)
 @limiter.limit("5 per 5 minutes", key_func=mfa_principal)
 def webauthn_register_verify():
-    data = WebAuthnRegistrationVerifySchema().load(request.get_json(silent=False) or {})
-    return jsonify(verify_registration(g.current_user, data["credential"]))
+    raise AuthError(PASSKEY_DISABLED_MESSAGE, 410)
 
 
 @auth_bp.post("/webauthn/authenticate/options")
 @limiter.limit("5 per 5 minutes", key_func=get_remote_address)
 @limiter.limit("5 per 5 minutes", key_func=request_principal)
 def webauthn_authenticate_options():
-    WebAuthnAuthenticationOptionsSchema().load(request.get_json(silent=True) or {})
-    return jsonify(begin_authentication_options())
+    raise AuthError(PASSKEY_DISABLED_MESSAGE, 410)
 
 
 @auth_bp.post("/webauthn/authenticate/verify")
 @limiter.limit("5 per 5 minutes", key_func=get_remote_address)
 @limiter.limit("5 per 5 minutes", key_func=request_principal)
 def webauthn_authenticate_verify():
-    data = WebAuthnAuthenticationVerifySchema().load(request.get_json(silent=False) or {})
-    return jsonify(verify_authentication(data["credential"]))
+    raise AuthError(PASSKEY_DISABLED_MESSAGE, 410)
 
 
 @auth_bp.post("/webauthn/step-up/options")
@@ -336,8 +307,7 @@ def webauthn_authenticate_verify():
 @limiter.limit("5 per 5 minutes", key_func=get_remote_address)
 @limiter.limit("5 per 5 minutes", key_func=mfa_principal)
 def webauthn_step_up_options():
-    data = WebAuthnStepUpOptionsSchema().load(request.get_json(silent=False) or {})
-    return jsonify(begin_step_up_options(g.current_user, data["action"]))
+    raise AuthError(PASSKEY_DISABLED_MESSAGE, 410)
 
 
 @auth_bp.post("/webauthn/step-up/verify")
@@ -346,38 +316,20 @@ def webauthn_step_up_options():
 @limiter.limit("5 per 5 minutes", key_func=get_remote_address)
 @limiter.limit("5 per 5 minutes", key_func=mfa_principal)
 def webauthn_step_up_verify():
-    data = WebAuthnStepUpVerifySchema().load(request.get_json(silent=False) or {})
-    return jsonify(verify_step_up(g.current_user, data["action"], data["credential"]))
+    raise AuthError(PASSKEY_DISABLED_MESSAGE, 410)
 
 
 @auth_bp.get("/webauthn/credentials")
 @login_required
 def webauthn_credentials():
-    return jsonify({"credentials": list_credentials_for_user(g.current_user)})
+    raise AuthError(PASSKEY_DISABLED_MESSAGE, 410)
 
 
 @auth_bp.delete("/webauthn/credentials/<credential_id>")
 @login_required
 @not_frozen_required
 def webauthn_revoke_credential(credential_id: str):
-    WebAuthnCredentialReferenceSchema().load({"credential_id": credential_id})
-    payload = request.get_json(silent=True) or {}
-    data = HighRiskTotpSchema().load(payload)
-    verify_high_risk_authorization(
-        g.current_user,
-        data.get("totp_code"),
-        data.get("stepup_token"),
-        "webauthn_revoke",
-        rotate_session_on_success=False,
-    )
-    return jsonify(
-        revoke_credential(
-            g.current_user,
-            credential_id,
-            stepup_token=data.get("stepup_token"),
-            stepup_already_consumed=True,
-        )
-    )
+    raise AuthError(PASSKEY_DISABLED_MESSAGE, 410)
 
 
 @auth_bp.post("/logout")

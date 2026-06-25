@@ -7,7 +7,6 @@
     <title>{% block title %}SITBank{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
     <script src="{{ url_for('static', filename='js/theme.js') }}" defer></script>
-    <script src="{{ url_for('static', filename='js/webauthn.js') }}" defer></script>
     <script src="{{ url_for('static', filename='js/account.js') }}" defer></script>
     {% if g.current_user %}
     <meta name="session-timeout" content="300">
@@ -163,7 +162,6 @@
                   <div class="account-menu-section-label" role="separator">Security Settings</div>
                   <a role="menuitem" href="{{ url_for('web.mfa_setup') }}">Authenticator MFA</a>
                   {% if g.mfa_ready %}
-                    <a role="menuitem" href="{{ url_for('web.security_keys') }}">Passkeys</a>
                     <a role="menuitem" href="{{ url_for('web.sessions_dashboard') }}">Active Sessions</a>
                     {% if g.high_risk_ready %}
                       <a role="menuitem" href="{{ url_for('web.freeze_account') }}">Freeze Account</a>
@@ -242,7 +240,6 @@
               {% endif %}
               <li><a href="{{ url_for('web.mfa_setup') }}">MFA</a></li>
               {% if g.mfa_ready %}
-                <li><a href="{{ url_for('web.security_keys') }}">Passkeys</a></li>
                 <li><a href="{{ url_for('web.sessions_dashboard') }}">Sessions</a></li>
                 {% if g.high_risk_ready %}
                   <li><a href="{{ url_for('web.freeze_account') }}">Freeze</a></li>
@@ -269,7 +266,6 @@
               {% endif %}
               <li><a href="{{ url_for('web.mfa_setup') }}">Manage authenticator MFA</a></li>
               {% if g.mfa_ready %}
-                <li><a href="{{ url_for('web.security_keys') }}">Manage passkeys</a></li>
                 <li><a href="{{ url_for('web.sessions_dashboard') }}">Review active sessions</a></li>
                 {% if g.high_risk_ready %}
                   <li><a href="{{ url_for('web.freeze_account') }}">Freeze account</a></li>
@@ -286,7 +282,7 @@
 
         <section class="footer-column" aria-label="Security posture">
           <h2 class="footer-heading">Security Posture</h2>
-          <p>Authenticator MFA, optional passkeys, CSRF-protected forms, safe session references, and session revocation are used to protect portal activity.</p>
+          <p>Authenticator MFA, CSRF-protected forms, safe session references, and session revocation are used to protect portal activity.</p>
         </section>
       </div>
     </footer>

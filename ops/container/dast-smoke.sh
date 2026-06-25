@@ -62,10 +62,6 @@ chmod 0444 "${work_dir}"/secrets/*
 
 seq -f 'blocked-password-%06g' 1 100000 \
     > "${work_dir}/config/common-passwords.txt"
-cp tests/fixtures/fido-approved-aaguids.json \
-    "${work_dir}/config/fido-approved-aaguids.json"
-cp tests/fixtures/fido-mds-cache.json \
-    "${work_dir}/config/fido-mds-cache.json"
 chmod 0444 "${work_dir}"/config/*
 
 docker_args=(
@@ -92,10 +88,6 @@ docker_args=(
     --env PASSWORD_PBKDF2_ITERATIONS=600000
     --env COMMON_PASSWORDS_PATH=/run/config/common-passwords.txt
     --env COMMON_PASSWORDS_MIN_ENTRIES=100000
-    --env WEBAUTHN_RP_ID="${PUBLIC_HOST}"
-    --env WEBAUTHN_RP_ORIGIN="https://${PUBLIC_HOST}"
-    --env WEBAUTHN_APPROVED_AAGUIDS_PATH=/run/config/fido-approved-aaguids.json
-    --env WEBAUTHN_MDS_CACHE_PATH=/run/config/fido-mds-cache.json
     --env TRUSTED_PROXY_COUNT=1
     --volume "${work_dir}/secrets:/run/secrets:ro"
     --volume "${work_dir}/config:/run/config:ro"

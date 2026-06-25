@@ -279,7 +279,6 @@ def _current_session_risk_message() -> str:
         _normalized_ip_context(request.remote_addr or ""),
         _user_agent_fingerprint(request.user_agent.string or "unknown"),
         str(session.get("auth_context") or ""),
-        str(session.get("webauthn_credential_id") or ""),
     ]
     return "|".join(parts)
 

@@ -102,16 +102,15 @@ def _normalize(value: str) -> str:
 
 def _normalize_step_up_preference(value: str | None) -> str:
     normalized = str(value or "totp").strip().casefold()
-    if normalized not in {"totp", "passkey"}:
+    if normalized == "passkey":
+        raise AuthError("Passkey verification preference is no longer available", 400)
+    if normalized != "totp":
         raise AuthError("Invalid verification preference", 400)
     return normalized
 
 
 def _ensure_step_up_preference_enrolled(user: User, preference: str) -> None:
     if preference == "totp" and not user.mfa_enabled:
-        audit_event("profile_update", "failure", user=user, metadata={"reason": "preferred_mfa_unavailable"})
-        raise AuthError("Choose an enrolled verification method", 400)
-    if preference == "passkey" and enrolled_webauthn_credential_count(user) <= 0:
         audit_event("profile_update", "failure", user=user, metadata={"reason": "preferred_mfa_unavailable"})
         raise AuthError("Choose an enrolled verification method", 400)
 
@@ -300,25 +299,28 @@ def authenticate_primary(identifier: str, password: str) -> dict[str, Any]:
             "mfa_required": True,
         }
 
-    if enrolled_webauthn_credential_count(user) > 0:
-        begin_password_authenticated_session(user.id)
-        audit_event("login_password", "success", user=user, metadata={"passkey_required": True})
-        return {
-            "message": "Passkey verification required",
-            "mfa_required": True,
-            "webauthn_required": True,
-        }
-
     session_id = establish_authenticated_session(
         user_id=user.id,
         mfa_verified=False,
         auth_context=PASSWORD_BOOTSTRAP_AUTH_CONTEXT,
     )
-    audit_event("login", "success", user=user, session_id=session_id, metadata={"mfa_required": False})
+    legacy_passkey_count = enrolled_webauthn_credential_count(user)
+    metadata = {"mfa_required": False}
+    if legacy_passkey_count > 0:
+        metadata["legacy_passkey_credentials"] = legacy_passkey_count
+        audit_event(
+            "legacy_passkey_mfa_migration_required",
+            "required",
+            user=user,
+            session_id=session_id,
+            metadata={"legacy_passkey_credentials": legacy_passkey_count},
+        )
+    audit_event("login", "success", user=user, session_id=session_id, metadata=metadata)
     return {
         "message": "MFA setup required",
         "mfa_required": False,
         "mfa_setup_required": True,
+        "legacy_passkey_migration_required": legacy_passkey_count > 0,
         "session_ref": public_session_reference(session_id),
         "user": _public_user(user),
     }
@@ -725,25 +727,22 @@ def verify_high_risk_authorization(
     *,
     rotate_session_on_success: bool = True,
 ) -> None:
-    from app.auth.webauthn_services import consume_step_up_token
-
     require_stable_session_for_sensitive_action(action)
     if not has_enrolled_mfa_method(user):
         audit_event(action, "failure", user=user, metadata={"reason": "mfa_not_enabled"})
         raise AuthError("MFA is required for this action", 403)
     if stepup_token:
-        consume_step_up_token(user, action, stepup_token)
-        audit_event(action, "passkey_success", user=user)
-    elif code:
-        if not user.mfa_enabled:
-            audit_event(action, "failure", user=user, metadata={"reason": "totp_not_enabled"})
-            raise AuthError("Use a passkey to verify this action", 403)
-        if not _verify_totp_for_user(user, code, action):
-            _handle_mfa_verification_failure(user, action)
-        audit_event(action, "mfa_success", user=user)
-    else:
+        audit_event(action, "failure", user=user, metadata={"reason": "passkey_step_up_disabled"})
+        raise AuthError("Enter an authenticator code to verify this action", 403)
+    if not code:
         audit_event(action, "failure", user=user, metadata={"reason": "missing_mfa_step_up"})
         raise AuthError("MFA verification is required for this action", 403)
+    if not user.mfa_enabled:
+        audit_event(action, "failure", user=user, metadata={"reason": "totp_not_enabled"})
+        raise AuthError("Authenticator MFA is required for this action", 403)
+    if not _verify_totp_for_user(user, code, action):
+        _handle_mfa_verification_failure(user, action)
+    audit_event(action, "mfa_success", user=user)
     if rotate_session_on_success and session.get("user_id") == user.id:
         rotate_authenticated_session_after_mfa(user.id)
 

@@ -361,8 +361,8 @@ def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypa
 
     assert set(environment) == set(PRODUCTION_NON_SECRET_RUNTIME_ENVIRONMENT)
     assert environment["APP_ENV"] == "production"
-    assert environment["WEBAUTHN_RP_ID"] == "sitbank.duckdns.org"
-    assert environment["WEBAUTHN_RP_ORIGIN"] == "https://sitbank.duckdns.org"
+    assert "WEBAUTHN_RP_ID" not in environment
+    assert "WEBAUTHN_RP_ORIGIN" not in environment
     assert environment["PASSWORD_RESET_BASE_URL"] == "https://sitbank.duckdns.org"
     assert environment["PASSWORD_RESET_EMAIL_BACKEND"] == "smtp"
     assert environment["PASSWORD_RESET_EMAIL_FROM"] == DEPLOYMENT_VALUES["PROD_PASSWORD_RESET_EMAIL_FROM"]
@@ -402,8 +402,8 @@ def test_container_bundle_accepts_staging_prefix(monkeypatch):
     environment, secrets = build_container_bundle("STAGING")
 
     assert environment["APP_ENV"] == "production"
-    assert environment["WEBAUTHN_RP_ID"] == "staging.sitbank.example"
-    assert environment["WEBAUTHN_RP_ORIGIN"] == "https://staging.sitbank.example"
+    assert "WEBAUTHN_RP_ID" not in environment
+    assert "WEBAUTHN_RP_ORIGIN" not in environment
     assert environment["PASSWORD_RESET_BASE_URL"] == "https://staging.sitbank.example"
     assert environment["SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06"
     assert environment["ADMIN_SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06-admin"
@@ -775,7 +775,8 @@ def test_environment_only_bundle_accepts_staging_prefix(monkeypatch, tmp_path):
     deployment = (output / "deployment.env").read_text(encoding="utf-8")
     assert "ADMIN_SESSION_HMAC_ACTIVE_KEY_ID='2026-06-admin'" in environment
     assert "MFA_KEK_ACTIVE_ID='2026-06-mfa'" in environment
-    assert "WEBAUTHN_RP_ID='staging.sitbank.example'" in environment
+    assert "WEBAUTHN_RP_ID" not in environment
+    assert "WEBAUTHN_RP_ORIGIN" not in environment
     assert "APP_BIND_PORT='5001'" in deployment
     assert "COMPOSE_PROJECT_NAME='sitbank-staging'" in deployment
     assert "CONFIG_ROOT='/etc/sitbank-staging'" in deployment
@@ -860,8 +861,6 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     admin_volume_by_target = {volume["target"]: volume for volume in admin["volumes"]}
     expected_prod_config_mounts = {
         "/run/config/common-passwords.txt": "/etc/sitbank/common-passwords.txt",
-        "/run/config/fido-approved-aaguids.json": "/etc/sitbank/fido-approved-aaguids.json",
-        "/run/config/fido-mds-cache.json": "/etc/sitbank/fido-mds-cache.json",
     }
     for target, source in expected_prod_config_mounts.items():
         assert app_volume_by_target[target]["source"] == source
@@ -1000,8 +999,6 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     }
     expected_staging_config_mounts = {
         "/run/config/common-passwords.txt": "/etc/sitbank-staging/common-passwords.txt",
-        "/run/config/fido-approved-aaguids.json": "/etc/sitbank-staging/fido-approved-aaguids.json",
-        "/run/config/fido-mds-cache.json": "/etc/sitbank-staging/fido-mds-cache.json",
     }
     for target, source in expected_staging_config_mounts.items():
         assert staging_volume_by_target[target]["source"] == source
@@ -2346,7 +2343,7 @@ def test_production_edge_runbook_documents_network_waf_and_verification_steps():
         "Nginx terminates TLS, redirects HTTP to HTTPS",
         "Gunicorn binds only to `127.0.0.1:5000`",
         "Admin Gunicorn binds only to `127.0.0.1:5002`",
-        "Admin WebAuthn/passkey authentication and admin step-up are Phase 2",
+        "Admin auth remains fail-closed pending an approved MFA design",
         "compose.prod.yml` publishes no",
         "`/health/ready` is for local deployment and load-balancer checks",
         "Cloudflare or AWS WAF should sit in front of Nginx",
