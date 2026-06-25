@@ -54,6 +54,82 @@ def test_register_requires_verified_sit_email(client):
     assert db.session.query(User).count() == 0
 
 
+def test_registration_step_one_has_single_email_input(client):
+    response = client.get("/register")
+    html = response.data.decode("utf-8")
+
+    assert response.status_code == 200
+    assert "Step 1 of 2" in html
+    assert html.count('name="email"') == 1
+    assert "Step 2 of 2" not in html
+    assert "data-password-strength" not in html
+
+
+def test_registration_step_two_uses_verified_email_text_not_input(client):
+    verify_registration_email(client, "verified@sit.singaporetech.edu.sg")
+
+    response = client.get("/register")
+    html = response.data.decode("utf-8")
+
+    assert response.status_code == 200
+    assert "Step 2 of 2" in html
+    assert "Verified email" in html
+    assert "verified@sit.singaporetech.edu.sg" in html
+    assert 'name="email"' not in html
+    assert "data-password-strength" in html
+
+
+def test_registration_ignores_forged_step_two_email_field(client):
+    verify_registration_email(client, "verified@sit.singaporetech.edu.sg")
+
+    response = client.post(
+        "/register",
+        data={
+            "username": "verified01",
+            "email": "attacker@sit.singaporetech.edu.sg",
+            "email_verified": "true",
+            "full_name": "Verified User",
+            "phone_number": "91234567",
+            "password": "correct horse battery staple",
+            "confirm_password": "correct horse battery staple",
+        },
+    )
+    user = db.session.execute(db.select(User).where(User.username == "verified01")).scalar_one()
+
+    assert response.status_code == 302
+    assert user.email == "verified@sit.singaporetech.edu.sg"
+
+
+def test_registration_consumes_verified_email_after_success(client):
+    verify_registration_email(client, "consume@sit.singaporetech.edu.sg")
+
+    created = client.post(
+        "/register",
+        data={
+            "username": "consume01",
+            "full_name": "Consume User",
+            "phone_number": "91234567",
+            "password": "correct horse battery staple",
+            "confirm_password": "correct horse battery staple",
+        },
+    )
+    reused = client.post(
+        "/register",
+        data={
+            "username": "consume02",
+            "full_name": "Consume User Two",
+            "phone_number": "91234568",
+            "password": "correct horse battery staple",
+            "confirm_password": "correct horse battery staple",
+        },
+    )
+
+    assert created.status_code == 302
+    assert reused.status_code == 400
+    assert b"Verify your SIT email before creating an account" in reused.data
+    assert db.session.query(User).count() == 1
+
+
 def test_registration_otp_rejects_non_sit_email_domain(client):
     response = client.post("/auth/register/otp/request", json={"email": "alice@example.com"})
 
@@ -248,6 +324,7 @@ def test_long_unicode_password_can_register_login_and_change(client, monkeypatch
     assert verify_password(new_password, user.password_hash)
 
 def test_password_templates_do_not_truncate_and_show_max_length_guidance(client):
+    verify_registration_email(client, "template@sit.singaporetech.edu.sg")
     register_response = client.get("/register")
     login_response = client.get("/login")
     register(client)
@@ -379,6 +456,7 @@ def test_oversized_api_login_password_fails_generically(client):
     assert response.get_json() == {"error": "Invalid username or password"}
 
 def test_registration_requires_matching_confirm_password(client):
+    verify_registration_email(client)
     response = client.post(
         "/register",
         data={
@@ -395,6 +473,7 @@ def test_registration_requires_matching_confirm_password(client):
     assert db.session.query(User).count() == 0
 
 def test_registration_requires_full_name_and_valid_phone_number(client):
+    verify_registration_email(client)
     missing_name = client.post(
         "/register",
         data={
@@ -421,6 +500,26 @@ def test_registration_requires_full_name_and_valid_phone_number(client):
     assert invalid_phone.status_code == 400
     assert b"Enter a valid Singapore phone number" in invalid_phone.data
     assert db.session.query(User).count() == 0
+
+
+def test_registration_rejects_unsafe_full_name(client):
+    verify_registration_email(client)
+
+    response = client.post(
+        "/register",
+        data={
+            "username": "alice01",
+            "full_name": "<script>alert(1)</script>",
+            "phone_number": "91234567",
+            "password": "correct horse battery staple",
+            "confirm_password": "correct horse battery staple",
+        },
+    )
+
+    assert response.status_code == 400
+    assert b"Full name contains invalid characters" in response.data
+    assert db.session.query(User).count() == 0
+
 
 def test_registration_rejects_duplicate_phone_with_generic_error(client):
     created = register(client)

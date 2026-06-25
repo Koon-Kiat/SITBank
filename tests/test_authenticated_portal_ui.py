@@ -182,6 +182,7 @@ def test_public_layout_does_not_expose_authenticated_account_actions(client):
     assert 'action="/logout"' not in markup
 
 def test_authentication_pages_have_password_helpers_and_mfa_back_link(client):
+    verify_registration_email(client, "helpers@sit.singaporetech.edu.sg")
     register_page = client.get("/register")
     login_page = client.get("/login")
     register(client)
