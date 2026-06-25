@@ -23,6 +23,7 @@ from app.models import User
 from app.auth.registration_otp import (
     RegistrationOtpError,
     consume_verified_registration_email,
+    require_current_verified_registration_email,
     require_verified_registration_email,
 )
 from app.auth.mfa_policy import (
@@ -203,7 +204,11 @@ def _generate_account_number() -> str:
 
 def register_user(data: dict[str, Any]) -> tuple[User, list[str]]:
     try:
-        normalized_email = require_verified_registration_email(data["email"])
+        normalized_email = (
+            require_verified_registration_email(data["email"])
+            if data.get("email")
+            else require_current_verified_registration_email()
+        )
     except RegistrationOtpError as exc:
         raise AuthError(str(exc), exc.status_code) from exc
 
