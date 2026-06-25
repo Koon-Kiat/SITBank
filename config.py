@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 from datetime import timedelta
 from pathlib import Path
 from urllib.parse import urlparse
@@ -154,6 +155,99 @@ def _configured_secret(
     if len(value) < min_length:
         raise RuntimeError(f"{name} must be at least {min_length} characters")
     return value
+
+
+def _configured_audit_anchor_path(name: str = "SECURITY_AUDIT_ANCHOR_PATH") -> str | None:
+    value = os.getenv(name)
+    if APP_ENV == "production" and not value:
+        raise RuntimeError(f"Missing required configuration: {name}")
+    if not value:
+        return None
+    return _validate_audit_anchor_path(name, value)
+
+
+def _validate_audit_anchor_path(
+    name: str,
+    value: str,
+    *,
+    database_url: str | None = None,
+) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise RuntimeError(f"{name} must not be empty")
+    if "\x00" in text or "\r" in text or "\n" in text:
+        raise RuntimeError(f"{name} contains unsupported control characters")
+
+    path = Path(text)
+    if not path.is_absolute():
+        raise RuntimeError(f"{name} must be an absolute path")
+    if path.is_symlink():
+        raise RuntimeError(f"{name} must not be a symlink")
+
+    try:
+        resolved = path.resolve(strict=path.exists())
+    except (OSError, RuntimeError) as exc:
+        raise RuntimeError(f"{name} could not be resolved") from exc
+    if path.exists() and not path.is_file():
+        raise RuntimeError(f"{name} must identify a regular file")
+
+    parent = path.parent
+    if parent.is_symlink():
+        raise RuntimeError(f"{name} parent directory must not be a symlink")
+    try:
+        resolved_parent = parent.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise RuntimeError(f"{name} parent directory must exist") from exc
+    if not resolved_parent.is_dir():
+        raise RuntimeError(f"{name} parent must be a directory")
+
+    _reject_unsafe_audit_anchor_location(name, resolved, database_url=database_url)
+    _reject_world_writable_path(name, resolved_parent, "parent directory")
+    if path.exists():
+        _reject_world_writable_path(name, resolved, "file")
+        if not os.access(resolved, os.R_OK | os.W_OK):
+            raise RuntimeError(f"{name} must be readable and writable by the runtime")
+    elif not os.access(resolved_parent, os.W_OK | os.X_OK):
+        raise RuntimeError(f"{name} parent directory must be writable by the runtime")
+    return str(resolved)
+
+
+def _reject_world_writable_path(name: str, path: Path, label: str) -> None:
+    if os.name == "nt":
+        return
+    if path.stat().st_mode & stat.S_IWOTH:
+        raise RuntimeError(f"{name} {label} must not be world-writable")
+
+
+def _reject_unsafe_audit_anchor_location(
+    name: str,
+    anchor_path: Path,
+    *,
+    database_url: str | None,
+) -> None:
+    repo_root = Path(__file__).resolve().parent
+    unsafe_roots = [repo_root, Path("/var/lib/postgresql"), Path("/var/lib/mysql")]
+    sqlite_root = _sqlite_database_directory(database_url or os.getenv("DATABASE_URL", ""))
+    if sqlite_root is not None:
+        unsafe_roots.append(sqlite_root)
+    for root in unsafe_roots:
+        try:
+            anchor_path.relative_to(root.resolve(strict=root.exists()))
+        except ValueError:
+            continue
+        raise RuntimeError(f"{name} must be outside the application and database directories")
+
+
+def _sqlite_database_directory(database_url: str) -> Path | None:
+    if database_url.startswith("sqlite+pysqlite:///"):
+        database_path = database_url.removeprefix("sqlite+pysqlite:///")
+    elif database_url.startswith("sqlite:///"):
+        database_path = database_url.removeprefix("sqlite:///")
+    else:
+        return None
+    if database_path in {"", "/", ":memory:"}:
+        return None
+    return Path(database_path).resolve().parent
 
 
 def _required_url(name: str, *, schemes: set[str], require_password: bool) -> str:
@@ -728,7 +822,7 @@ class Config:
         maximum=86400,
     )
     SECURITY_ALERT_STATE_PATH = os.getenv("SECURITY_ALERT_STATE_PATH")
-    SECURITY_AUDIT_ANCHOR_PATH = os.getenv("SECURITY_AUDIT_ANCHOR_PATH")
+    SECURITY_AUDIT_ANCHOR_PATH = _configured_audit_anchor_path()
     SECURITY_AUDIT_HMAC_KEY = _configured_secret(
         "SECURITY_AUDIT_HMAC_KEY",
         min_length=32,

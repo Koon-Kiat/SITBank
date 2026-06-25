@@ -24,6 +24,7 @@ from app.security.audit import (
     audit_system_event,
     validate_audit_integrity_config,
     verify_audit_hash_chain,
+    write_audit_log_anchor,
 )
 from app.security.crypto import (
     is_enveloped_mfa_secret,
@@ -278,7 +279,7 @@ def register_ops_commands(app: Flask) -> None:
         "--anchor",
         "anchor_path",
         type=click.Path(exists=True, dir_okay=False, path_type=Path),
-        help="Optional sanitized anchor JSON to compare against the current chain head.",
+        help="Sanitized anchor JSON to compare against the current chain head.",
     )
     @click.option(
         "--alert-on-failure",
@@ -287,6 +288,9 @@ def register_ops_commands(app: Flask) -> None:
     )
     def verify_audit_log_chain(anchor_path: Path | None, alert_on_failure: bool) -> None:
         """Verify the tamper-evident security audit hash chain."""
+        if anchor_path is None:
+            configured_anchor_path = str(app.config.get("SECURITY_AUDIT_ANCHOR_PATH") or "").strip()
+            anchor_path = Path(configured_anchor_path) if configured_anchor_path else None
         anchor = _load_audit_anchor(anchor_path) if anchor_path is not None else None
         result = verify_audit_hash_chain(anchor=anchor)
         if not result["valid"] and alert_on_failure:
@@ -302,14 +306,15 @@ def register_ops_commands(app: Flask) -> None:
         "--output",
         "output_path",
         type=click.Path(dir_okay=False, path_type=Path),
-        help="Optional path for the sanitized anchor JSON.",
+        help="Path for the sanitized anchor JSON. Defaults to SECURITY_AUDIT_ANCHOR_PATH when configured.",
     )
     def export_audit_log_anchor(output_path: Path | None) -> None:
         """Export a sanitized anchor for the current audit hash-chain head."""
-        anchor = audit_log_anchor()
+        if output_path is None:
+            configured_anchor_path = str(app.config.get("SECURITY_AUDIT_ANCHOR_PATH") or "").strip()
+            output_path = Path(configured_anchor_path) if configured_anchor_path else None
+        anchor = write_audit_log_anchor(output_path) if output_path is not None else audit_log_anchor()
         payload = json.dumps(anchor, separators=(",", ":"), sort_keys=True)
-        if output_path is not None:
-            output_path.write_text(payload + "\n", encoding="utf-8")
         click.echo(payload)
 
     @app.cli.command("check-security-alerts")

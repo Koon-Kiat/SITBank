@@ -80,18 +80,18 @@ change control, then verify the chain and export anchors on a schedule:
 
 ```bash
 python -m flask --app wsgi:app verify-audit-log-chain
-python -m flask --app wsgi:app verify-audit-log-chain --anchor /var/lib/sitbank/audit-anchor.json
+python -m flask --app wsgi:app verify-audit-log-chain --anchor /var/lib/sitbank/security-audit.anchor
 python -m flask --app wsgi:app export-audit-log-anchor
 ```
 
 Ship the sanitized anchor JSON to immutable storage, WORM object storage,
-signed release artifacts, or a separate SIEM/log archive. Set
-`SECURITY_AUDIT_ANCHOR_PATH=/var/lib/sitbank/audit-anchor.json` for automated
-alert checks once an exported anchor is available. `check-security-alerts`
-verifies the audit hash chain on every run and compares the current chain head
-with the configured anchor; without this path it still verifies the chain but
-skips anchor comparison. Do not store real cloud credentials, webhook URLs, or
-signing keys in the repository.
+signed release artifacts, or a separate SIEM/log archive. Production must set
+`SECURITY_AUDIT_ANCHOR_PATH=/var/lib/sitbank/security-audit.anchor` for the
+one-EC2 deployment. `verify-audit-log-chain` and `check-security-alerts` verify
+the audit hash chain against the configured anchor automatically; missing,
+unsafe, unreadable, or mismatched anchors fail closed or emit critical alerts.
+Do not store real cloud credentials, webhook URLs, signing keys, or audit
+anchors in the repository.
 
 Retain security audit records for 7 years. Do not silently auto-delete audit
 records from application code or scheduled jobs. Disposal after the retention
@@ -294,12 +294,12 @@ and long token-like strings. Set
 host-mounted alert state directory so `check-security-alerts` can compare
 current `users` and `security_audit_events` metrics against a baseline outside
 Postgres/Redis and alert on `database_table_regression` after a table rewind or
-wipe. Set `SECURITY_AUDIT_ANCHOR_PATH` to the latest
-exported anchor path to make `check-security-alerts` alert on anchor mismatch,
-chain rewind, or tail deletion detectable from the anchor. On mismatch, treat
-the database and host as incident evidence, stop routine anchor rotation,
-preserve the mismatched anchor, run `verify-audit-log-chain --anchor`, and
-investigate before resuming normal deployments.
+wipe. Keep `SECURITY_AUDIT_ANCHOR_PATH` set to the protected local anchor path
+to make `check-security-alerts` alert on anchor mismatch, chain rewind, or tail
+deletion detectable from the anchor. On mismatch, treat the database and host
+as incident evidence, stop routine anchor rotation, preserve the mismatched
+anchor, run `verify-audit-log-chain --anchor`, and investigate before resuming
+normal deployments.
 
 Alert immediately on any `security_audit_write_failed`, `account_lock`,
 `webauthn_clone_detected`, `session_integrity` failure,
