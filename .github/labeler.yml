@@ -1,0 +1,198 @@
+admin:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'app/admin/**'
+          - 'admin_wsgi.py'
+          - 'ops/**/admin*'
+          - 'ops/**/admin/**'
+          - 'tests/test_admin_*.py'
+
+customer:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'app/web/**'
+          - 'app/main/**'
+          - 'app/templates/index.html'
+          - 'app/templates/dashboard.html'
+          - 'app/templates/profile.html'
+          - 'tests/test_dashboard.py'
+          - 'tests/test_authenticated_portal_ui.py'
+
+banking:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'app/banking/**'
+          - 'app/templates/add_payee.html'
+          - 'app/templates/confirm_payee.html'
+          - 'app/templates/freeze.html'
+          - 'app/templates/payees.html'
+          - 'app/templates/remove_payee.html'
+          - 'app/static/js/account.js'
+          - 'app/static/js/payees.js'
+          - 'tests/test_banking_*.py'
+          - 'tests/test_account_security_actions.py'
+
+auth:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'app/auth/**'
+          - 'app/templates/login.html'
+          - 'app/templates/register.html'
+          - 'app/templates/forgot_password.html'
+          - 'app/templates/reset_password.html'
+          - 'app/templates/password_change.html'
+          - 'tests/test_auth_*.py'
+          - 'tests/test_password*.py'
+
+mfa:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'app/auth/mfa_policy.py'
+          - 'app/auth/recovery_codes.py'
+          - 'app/auth/webauthn_services.py'
+          - 'app/templates/mfa_*.html'
+          - 'app/templates/security_keys.html'
+          - 'migrations/versions/*mfa*'
+          - 'migrations/versions/*passkey*'
+          - 'migrations/versions/*webauthn*'
+          - 'tests/test_mfa_*.py'
+          - 'tests/test_webauthn_*.py'
+          - '**/*mfa*'
+          - '**/*totp*'
+          - '**/*webauthn*'
+          - '**/*passkey*'
+          - '**/*security_key*'
+          - '**/*recovery_code*'
+
+security:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'app/security/**'
+          - 'docs/security/**'
+          - 'SECURITY.md'
+          - '.trivyignore'
+          - 'ops/security/**'
+          - 'ops/fido-*.json'
+          - 'tests/test_*security*.py'
+          - 'tests/test_audit_*.py'
+          - 'tests/test_owasp_regressions.py'
+          - 'tests/test_pentest_auth_bypass.py'
+          - 'tests/test_route_inventory_security.py'
+          - 'tests/test_secret_scanner.py'
+          - 'tests/test_session_management.py'
+          - '**/*csrf*'
+          - '**/*csp*'
+          - '**/*hmac*'
+          - '**/*crypto*'
+          - '**/*secret*'
+          - '**/*rate_limit*'
+  - head-branch:
+      - 'security'
+      - 'auth'
+      - 'mfa'
+      - 'csrf'
+      - 'csp'
+      - 'session'
+      - 'audit'
+      - 'admin-isolation'
+      - 'webauthn'
+      - 'passkey'
+      - 'secret'
+      - 'rate-limit'
+
+session:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'app/security/session_hmac.py'
+          - 'app/security/sessions.py'
+          - 'app/static/js/session-timeout.js'
+          - 'app/templates/sessions.html'
+          - 'tests/test_session_management.py'
+          - '**/*session*'
+          - '**/*cookie*'
+
+audit:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'app/security/audit.py'
+          - 'app/security/alerts.py'
+          - 'migrations/versions/*audit*'
+          - 'tests/test_audit_*.py'
+          - '**/*audit*'
+          - '**/*alert*'
+
+deployment:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'ops/**'
+          - 'compose*.yml'
+          - 'docker-compose*.yml'
+          - 'Dockerfile'
+          - 'config.py'
+          - 'docs/DEPLOYMENT.md'
+          - 'docs/OPERATIONS.md'
+          - 'docs/archive/EC2_TRANSITION.md'
+          - 'tests/test_deployment.py'
+
+database:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'migrations/**'
+          - 'app/models.py'
+          - 'app/ops/db_privileges.py'
+          - 'ops/postgres/**'
+          - 'tests/test_db_session_integrity.py'
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '.github/workflows/**'
+          - '.github/dependabot.yml'
+          - 'scripts/ci-local'
+          - 'ops/security/check_dependency_locks.py'
+          - 'ops/security/validate_pr_body.py'
+          - 'tests/test_pr_body_policy.py'
+
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'requirements.in'
+          - 'requirements-dev.in'
+          - 'requirements.lock'
+          - 'requirements-dev.lock'
+          - '.github/dependabot.yml'
+          - 'ops/security/check_dependency_locks.py'
+
+documentation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'docs/**'
+          - 'README*'
+          - 'SECURITY.md'
+          - '**/*.md'
+
+frontend:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'app/templates/**'
+          - 'app/static/**'
+          - '**/*.css'
+          - '**/*.js'
+          - '**/*.svg'
+
+tests:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'tests/**'
+          - 'pytest.ini'
+
+feature:
+  - head-branch:
+      - '^feature/'
+      - '^feat/'
+
+fix:
+  - head-branch:
+      - '^fix/'
+      - '^bugfix/'
+      - '^hotfix/'
