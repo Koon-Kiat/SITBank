@@ -351,10 +351,7 @@ migration_run() {
         app "$@"
 }
 
-apply_staging_admin_runtime_db_privileges() {
-    if [[ "${target}" != "staging" ]]; then
-        return
-    fi
+apply_admin_runtime_db_privileges() {
     compose "${image}" run --rm --no-deps \
         --env DATABASE_MIGRATION_URL_FILE=/run/secrets/database_migration_url \
         --env ADMIN_DATABASE_URL_FILE=/run/secrets/admin_database_url \
@@ -699,7 +696,7 @@ migration_run \
     python -m flask --app wsgi:app db upgrade
 migration_run \
     python -m flask --app wsgi:app apply-runtime-db-privileges
-apply_staging_admin_runtime_db_privileges
+apply_admin_runtime_db_privileges
 migration_run \
     python -m flask --app wsgi:app verify-runtime-db-privileges
 compose "${image}" run --rm --no-deps app \
