@@ -747,25 +747,40 @@ jobs:
             exit 1
           fi
 
-      - name: Verify trusted staging deployment wrapper
+      - name: Verify trusted staging deployment files
         run: |
-          expected_hash="$(
+          expected_wrapper_hash="$(
             sha256sum ops/deploy/sitbank-container-deploy | awk '{print $1}'
+          )"
+          expected_compose_hash="$(
+            sha256sum compose.staging.yml | awk '{print $1}'
           )"
           if ! remote_output="$(
               ssh -p "${REMOTE_PORT}" -i ~/.ssh/deploy_key \
               -o BatchMode=yes -o IdentitiesOnly=yes \
               -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
               "${REMOTE_USER}@${REMOTE_HOST}" \
-              "sha256sum /usr/local/sbin/sitbank-container-deploy"
+              "sha256sum /usr/local/sbin/sitbank-container-deploy /opt/sitbank-staging/compose.yml"
             )"; then
-            echo "::error::The EC2 staging deployment wrapper is unavailable. Rerun the trusted staging bootstrap before deployment."
+            echo "::error::The EC2 staging deployment files are unavailable. Rerun the trusted staging bootstrap before deployment."
             exit 1
           fi
-          remote_hash="${remote_output%% *}"
-          if [[ ! "${remote_hash}" =~ ^[0-9a-f]{64}$ \
-              || "${remote_hash}" != "${expected_hash}" ]]; then
+          remote_wrapper_hash="$(
+            printf '%s\n' "${remote_output}" \
+              | awk '$2 == "/usr/local/sbin/sitbank-container-deploy" { print $1 }'
+          )"
+          remote_compose_hash="$(
+            printf '%s\n' "${remote_output}" \
+              | awk '$2 == "/opt/sitbank-staging/compose.yml" { print $1 }'
+          )"
+          if [[ ! "${remote_wrapper_hash}" =~ ^[0-9a-f]{64}$ \
+              || "${remote_wrapper_hash}" != "${expected_wrapper_hash}" ]]; then
             echo "::error::The EC2 staging deployment wrapper is missing or stale. Rerun the trusted staging bootstrap before deployment."
+            exit 1
+          fi
+          if [[ ! "${remote_compose_hash}" =~ ^[0-9a-f]{64}$ \
+              || "${remote_compose_hash}" != "${expected_compose_hash}" ]]; then
+            echo "::error::The EC2 staging compose file is missing or stale. Rerun the trusted staging bootstrap before deployment."
             exit 1
           fi
 
@@ -930,25 +945,40 @@ jobs:
             exit 1
           fi
 
-      - name: Verify trusted production deployment wrapper
+      - name: Verify trusted production deployment files
         run: |
-          expected_hash="$(
+          expected_wrapper_hash="$(
             sha256sum ops/deploy/sitbank-container-deploy | awk '{print $1}'
+          )"
+          expected_compose_hash="$(
+            sha256sum compose.prod.yml | awk '{print $1}'
           )"
           if ! remote_output="$(
               ssh -p "${REMOTE_PORT}" -i ~/.ssh/deploy_key \
               -o BatchMode=yes -o IdentitiesOnly=yes \
               -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
               "${REMOTE_USER}@${REMOTE_HOST}" \
-              "sha256sum /usr/local/sbin/sitbank-container-deploy"
+              "sha256sum /usr/local/sbin/sitbank-container-deploy /opt/sitbank/compose.yml"
             )"; then
-            echo "::error::The EC2 production deployment wrapper is unavailable. Rerun the trusted production bootstrap before deployment."
+            echo "::error::The EC2 production deployment files are unavailable. Rerun the trusted production bootstrap before deployment."
             exit 1
           fi
-          remote_hash="${remote_output%% *}"
-          if [[ ! "${remote_hash}" =~ ^[0-9a-f]{64}$ \
-              || "${remote_hash}" != "${expected_hash}" ]]; then
+          remote_wrapper_hash="$(
+            printf '%s\n' "${remote_output}" \
+              | awk '$2 == "/usr/local/sbin/sitbank-container-deploy" { print $1 }'
+          )"
+          remote_compose_hash="$(
+            printf '%s\n' "${remote_output}" \
+              | awk '$2 == "/opt/sitbank/compose.yml" { print $1 }'
+          )"
+          if [[ ! "${remote_wrapper_hash}" =~ ^[0-9a-f]{64}$ \
+              || "${remote_wrapper_hash}" != "${expected_wrapper_hash}" ]]; then
             echo "::error::The EC2 production deployment wrapper is missing or stale. Rerun the trusted production bootstrap before deployment."
+            exit 1
+          fi
+          if [[ ! "${remote_compose_hash}" =~ ^[0-9a-f]{64}$ \
+              || "${remote_compose_hash}" != "${expected_compose_hash}" ]]; then
+            echo "::error::The EC2 production compose file is missing or stale. Rerun the trusted production bootstrap before deployment."
             exit 1
           fi
 
