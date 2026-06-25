@@ -134,8 +134,11 @@ def test_session_references_survive_hmac_key_rotation(app, client):
     new_reference = public_session_reference(session_id)
 
     assert new_reference != old_reference
-    assert resolve_session_reference_for_user(user.id, old_reference) == session_id
-    assert resolve_session_reference_for_user(user.id, new_reference) == session_id
+    old_resolved = resolve_session_reference_for_user(user.id, old_reference)
+    new_resolved = resolve_session_reference_for_user(user.id, new_reference)
+    assert old_resolved is not None and old_resolved.startswith("lookup:")
+    assert new_resolved is not None and new_resolved.startswith("lookup:")
+    assert session_id not in {old_resolved, new_resolved}
 
 def test_terminate_other_session_by_public_reference_revokes_it(app, client):
     second_client = app.test_client()

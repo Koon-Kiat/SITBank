@@ -839,13 +839,14 @@ def test_security_alert_delivery_formats_discord_webhooks(monkeypatch):
     assert "example-secret-token" not in serialized_payload
     assert "example-secret-token" not in serialized_result
 
-def test_security_alert_config_validation_and_redis_dedupe(app, monkeypatch):
+def test_security_alert_config_validation_and_db_dedupe(app, monkeypatch):
     from app.security.alerts import (
         AlertConfigurationError,
         build_security_alert_report,
         validate_security_alert_config,
     )
     from app.security.audit import audit_event, principal_reference
+    from app.models import SecurityAlertDedupe
 
     captured_bodies = []
 
@@ -896,6 +897,7 @@ def test_security_alert_config_validation_and_redis_dedupe(app, monkeypatch):
     assert second_report["dedupe"]["suppressed"] >= 1
     assert third_report["delivery"]["attempted"] is True
     assert len(captured_bodies) == 2
+    assert db.session.query(SecurityAlertDedupe).count() >= 1
 
     with pytest.raises(AlertConfigurationError, match="WEBHOOK"):
         validate_security_alert_config(

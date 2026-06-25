@@ -34,34 +34,6 @@ services:
         max-size: 10m
         max-file: "5"
 
-  redis:
-    image: redis:7.4.5-alpine@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08
-    container_name: sitbank-staging-redis
-    restart: unless-stopped
-    command:
-      - redis-server
-      - /run/secrets/redis.conf
-    secrets:
-      - source: redis_conf
-        target: redis.conf
-    volumes:
-      - sitbank-staging-redis-data:/data
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - redis-cli ping 2>&1 | grep -Eq 'PONG|NOAUTH'
-      interval: 5s
-      timeout: 5s
-      retries: 12
-      start_period: 5s
-    networks:
-      - sitbank-staging
-    logging:
-      driver: local
-      options:
-        max-size: 10m
-        max-file: "5"
-
   app:
     image: ${SITBANK_IMAGE:?SITBANK_IMAGE must be an immutable digest reference}
     container_name: sitbank-staging-app
@@ -92,8 +64,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
     cap_drop:
       - ALL
     security_opt:
@@ -114,8 +84,8 @@ services:
       SECRET_KEY_FILE: /run/secrets/secret_key
       WTF_CSRF_SECRET_KEY_FILE: /run/secrets/wtf_csrf_secret_key
       SESSION_HMAC_KEYS_JSON_FILE: /run/secrets/session_hmac_keys_json
+      SESSION_LOOKUP_HMAC_KEY_FILE: /run/secrets/session_lookup_hmac_key
       DATABASE_URL_FILE: /run/secrets/database_url
-      REDIS_URL_FILE: /run/secrets/redis_url
       MFA_KEK_KEYS_JSON_FILE: /run/secrets/mfa_kek_keys_json
       PASSWORD_PEPPER_B64_FILE: /run/secrets/password_pepper_b64
       SECURITY_AUDIT_HMAC_KEY_FILE: /run/secrets/security_audit_hmac_key
@@ -129,10 +99,10 @@ services:
         target: wtf_csrf_secret_key
       - source: session_hmac_keys_json
         target: session_hmac_keys_json
+      - source: session_lookup_hmac_key
+        target: session_lookup_hmac_key
       - source: database_url
         target: database_url
-      - source: redis_url
-        target: redis_url
       - source: mfa_kek_keys_json
         target: mfa_kek_keys_json
       - source: password_pepper_b64
@@ -208,8 +178,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
     cap_drop:
       - ALL
     security_opt:
@@ -231,8 +199,8 @@ services:
       ADMIN_SECRET_KEY_FILE: /run/secrets/admin_secret_key
       ADMIN_WTF_CSRF_SECRET_KEY_FILE: /run/secrets/admin_wtf_csrf_secret_key
       ADMIN_SESSION_HMAC_KEYS_JSON_FILE: /run/secrets/admin_session_hmac_keys_json
+      ADMIN_SESSION_LOOKUP_HMAC_KEY_FILE: /run/secrets/admin_session_lookup_hmac_key
       ADMIN_DATABASE_URL_FILE: /run/secrets/admin_database_url
-      ADMIN_REDIS_URL_FILE: /run/secrets/admin_redis_url
       ADMIN_PASSWORD_PEPPER_B64_FILE: /run/secrets/admin_password_pepper_b64
       SECURITY_AUDIT_HMAC_KEY_FILE: /run/secrets/security_audit_hmac_key
       SECURITY_ALERT_WEBHOOK_URL_FILE: /run/secrets/security_alert_webhook_url
@@ -245,10 +213,10 @@ services:
         target: admin_wtf_csrf_secret_key
       - source: admin_session_hmac_keys_json
         target: admin_session_hmac_keys_json
+      - source: admin_session_lookup_hmac_key
+        target: admin_session_lookup_hmac_key
       - source: admin_database_url
         target: admin_database_url
-      - source: admin_redis_url
-        target: admin_redis_url
       - source: admin_password_pepper_b64
         target: admin_password_pepper_b64
       - source: security_audit_hmac_key
@@ -299,12 +267,12 @@ secrets:
     file: /etc/sitbank-staging/secrets/wtf_csrf_secret_key
   session_hmac_keys_json:
     file: /etc/sitbank-staging/secrets/session_hmac_keys_json
+  session_lookup_hmac_key:
+    file: /etc/sitbank-staging/secrets/session_lookup_hmac_key
   database_url:
     file: /etc/sitbank-staging/secrets/database_url
   database_migration_url:
     file: /etc/sitbank-staging/secrets/database_migration_url
-  redis_url:
-    file: /etc/sitbank-staging/secrets/redis_url
   mfa_kek_keys_json:
     file: /etc/sitbank-staging/secrets/mfa_kek_keys_json
   password_pepper_b64:
@@ -321,26 +289,22 @@ secrets:
     file: /etc/sitbank-staging/secrets/postgres_owner_password
   postgres_app_password:
     file: /etc/sitbank-staging/secrets/postgres_app_password
-  redis_conf:
-    file: /etc/sitbank-staging/secrets/redis.conf
   admin_secret_key:
     file: /etc/sitbank-staging/secrets/admin_secret_key
   admin_wtf_csrf_secret_key:
     file: /etc/sitbank-staging/secrets/admin_wtf_csrf_secret_key
   admin_session_hmac_keys_json:
     file: /etc/sitbank-staging/secrets/admin_session_hmac_keys_json
+  admin_session_lookup_hmac_key:
+    file: /etc/sitbank-staging/secrets/admin_session_lookup_hmac_key
   admin_database_url:
     file: /etc/sitbank-staging/secrets/admin_database_url
-  admin_redis_url:
-    file: /etc/sitbank-staging/secrets/admin_redis_url
   admin_password_pepper_b64:
     file: /etc/sitbank-staging/secrets/admin_password_pepper_b64
 
 volumes:
   sitbank-staging-postgres-data:
     name: sitbank-staging-postgres-data
-  sitbank-staging-redis-data:
-    name: sitbank-staging-redis-data
 
 networks:
   sitbank-staging:

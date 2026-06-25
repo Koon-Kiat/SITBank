@@ -31,7 +31,7 @@ def test_security_test_marker_inventory_covers_required_files():
         "tests/test_owasp_regressions.py",
         "tests/test_passwords.py",
         "tests/test_pentest_auth_bypass.py",
-        "tests/test_redis_session_integrity.py",
+        "tests/test_db_session_integrity.py",
         "tests/test_route_inventory_security.py",
         "tests/test_secret_scanner.py",
         "tests/test_session_management.py",

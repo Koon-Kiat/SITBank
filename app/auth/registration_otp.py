@@ -2,18 +2,18 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
 import secrets
 import time
-from typing import Any
+from datetime import datetime, timedelta, timezone
 
 from flask import current_app, session
 from sqlalchemy import func
 
 from app.extensions import db
-from app.models import User
+from app.models import RegistrationOtpChallenge, User
 from app.security.audit import audit_event, audit_reference
 from app.security.email import send_security_email
+from app.security.session_hmac import active_hmac_hex
 
 
 APPROVED_REGISTRATION_EMAIL_DOMAINS = frozenset(
@@ -72,12 +72,10 @@ def request_registration_otp(email: str) -> dict[str, str]:
         )
         return {"message": GENERIC_OTP_SENT_MESSAGE}
 
-    key = _otp_cache_key(normalized_email, create_session_binding=True)
-    now = int(time.time())
-    current_payload = _load_otp_payload(key)
-    if current_payload:
-        issued_at = int(current_payload.get("issued_at") or 0)
-        retry_after = REGISTRATION_OTP_RESEND_COOLDOWN_SECONDS - (now - issued_at)
+    now = _utcnow()
+    challenge = _load_otp_challenge(normalized_email, create_session_binding=True)
+    if challenge is not None:
+        retry_after = int((_as_utc(challenge.resend_available_at) - now).total_seconds())
         if retry_after > 0:
             audit_event(
                 "registration_otp",
@@ -92,13 +90,19 @@ def request_registration_otp(email: str) -> dict[str, str]:
 
     otp_code = f"{secrets.randbelow(1_000_000):06d}"
     _clear_registration_progress_state()
-    payload = {
-        "email": normalized_email,
-        "otp_hmac": _otp_hmac(normalized_email, otp_code),
-        "attempts": 0,
-        "issued_at": now,
-    }
-    _redis().set(key, json.dumps(payload, separators=(",", ":"), sort_keys=True), ex=REGISTRATION_OTP_TTL_SECONDS)
+    if challenge is None:
+        challenge = RegistrationOtpChallenge(
+            session_binding_hash=_session_binding_hash(create_session_binding=True),
+            email_hash=_email_hash(normalized_email),
+        )
+        db.session.add(challenge)
+    challenge.otp_hmac = _otp_hmac(normalized_email, otp_code)
+    challenge.attempt_count = 0
+    challenge.resend_available_at = now + timedelta(seconds=REGISTRATION_OTP_RESEND_COOLDOWN_SECONDS)
+    challenge.expires_at = now + timedelta(seconds=REGISTRATION_OTP_TTL_SECONDS)
+    challenge.used_at = None
+    challenge.updated_at = now
+    db.session.commit()
     try:
         send_security_email(
             normalized_email,
@@ -110,7 +114,8 @@ def request_registration_otp(email: str) -> dict[str, str]:
             ),
         )
     except Exception as exc:
-        _redis().delete(key)
+        db.session.delete(challenge)
+        db.session.commit()
         _clear_registration_progress_state()
         audit_event(
             "registration_otp",
@@ -135,9 +140,8 @@ def verify_registration_otp(email: str, otp_code: str) -> dict[str, str]:
         )
         raise RegistrationOtpError(GENERIC_OTP_ERROR, 400)
 
-    key = _otp_cache_key(normalized_email)
-    payload = _load_otp_payload(key)
-    if not payload:
+    challenge = _load_otp_challenge(normalized_email)
+    if challenge is None:
         audit_event(
             "registration_otp",
             "expired",
@@ -145,17 +149,18 @@ def verify_registration_otp(email: str, otp_code: str) -> dict[str, str]:
         )
         raise RegistrationOtpError(GENERIC_OTP_ERROR, 400)
 
-    attempts = int(payload.get("attempts") or 0) + 1
-    expected_hmac = str(payload.get("otp_hmac") or "")
+    attempts = int(challenge.attempt_count or 0) + 1
+    expected_hmac = str(challenge.otp_hmac or "")
     submitted_hmac = _otp_hmac(normalized_email, str(otp_code or "").strip())
     if not hmac.compare_digest(expected_hmac, submitted_hmac):
         if attempts >= REGISTRATION_OTP_MAX_ATTEMPTS:
-            _redis().delete(key)
+            db.session.delete(challenge)
             outcome = "locked"
         else:
-            payload["attempts"] = attempts
-            _redis().set(key, json.dumps(payload, separators=(",", ":"), sort_keys=True), ex=_remaining_ttl(key))
+            challenge.attempt_count = attempts
+            challenge.updated_at = _utcnow()
             outcome = "failed"
+        db.session.commit()
         audit_event(
             "registration_otp",
             outcome,
@@ -163,7 +168,8 @@ def verify_registration_otp(email: str, otp_code: str) -> dict[str, str]:
         )
         raise RegistrationOtpError(GENERIC_OTP_ERROR, 400)
 
-    _redis().delete(key)
+    db.session.delete(challenge)
+    db.session.commit()
     session[REGISTRATION_OTP_VERIFIED_EMAIL_KEY] = normalized_email
     session[REGISTRATION_OTP_VERIFIED_AT_KEY] = int(time.time())
     session.pop(REGISTRATION_OTP_PENDING_EMAIL_KEY, None)
@@ -216,10 +222,6 @@ def consume_verified_registration_email(email: str) -> None:
         _clear_registration_session_state()
 
 
-def _redis():
-    return current_app.extensions["redis"]
-
-
 def _session_reference(*, create_session_binding: bool = False) -> str:
     session_ref = str(session.get(REGISTRATION_OTP_SESSION_BINDING_KEY) or "")
     if not session_ref and create_session_binding:
@@ -228,12 +230,15 @@ def _session_reference(*, create_session_binding: bool = False) -> str:
     return session_ref or str(getattr(session, "sid", "") or "anonymous")
 
 
-def _otp_cache_key(email: str, *, create_session_binding: bool = False) -> str:
-    email_digest = hashlib.sha256(normalize_registration_email(email).encode("utf-8")).hexdigest()
-    session_digest = hashlib.sha256(
-        _session_reference(create_session_binding=create_session_binding).encode("utf-8")
-    ).hexdigest()
-    return f"ospbank:registration_otp:{session_digest}:{email_digest}"
+def _session_binding_hash(*, create_session_binding: bool = False) -> str:
+    return active_hmac_hex(
+        f"registration-otp-session:{_session_reference(create_session_binding=create_session_binding)}",
+        length=64,
+    )
+
+
+def _email_hash(email: str) -> str:
+    return active_hmac_hex(f"registration-otp-email:{normalize_registration_email(email)}", length=64)
 
 
 def _otp_hmac(email: str, otp_code: str) -> str:
@@ -242,24 +247,26 @@ def _otp_hmac(email: str, otp_code: str) -> str:
     return hmac.new(key, payload, hashlib.sha256).hexdigest()
 
 
-def _load_otp_payload(key: str) -> dict[str, Any] | None:
-    raw_payload = _redis().get(key)
-    if not raw_payload:
+def _load_otp_challenge(
+    email: str,
+    *,
+    create_session_binding: bool = False,
+) -> RegistrationOtpChallenge | None:
+    challenge = db.session.execute(
+        db.select(RegistrationOtpChallenge).where(
+            RegistrationOtpChallenge.session_binding_hash
+            == _session_binding_hash(create_session_binding=create_session_binding),
+            RegistrationOtpChallenge.email_hash == _email_hash(email),
+            RegistrationOtpChallenge.used_at.is_(None),
+        )
+    ).scalar_one_or_none()
+    if challenge is None:
         return None
-    try:
-        payload = json.loads(raw_payload)
-    except json.JSONDecodeError:
-        _redis().delete(key)
+    if _as_utc(challenge.expires_at) <= _utcnow():
+        db.session.delete(challenge)
+        db.session.commit()
         return None
-    if not isinstance(payload, dict):
-        _redis().delete(key)
-        return None
-    return payload
-
-
-def _remaining_ttl(key: str) -> int:
-    ttl = int(_redis().ttl(key) or 0)
-    return ttl if ttl > 0 else REGISTRATION_OTP_TTL_SECONDS
+    return challenge
 
 
 def _clear_registration_session_state() -> None:
@@ -277,3 +284,13 @@ def _user_by_email(email: str) -> User | None:
     return db.session.execute(
         db.select(User).where(func.lower(User.email) == normalize_registration_email(email))
     ).scalar_one_or_none()
+
+
+def _utcnow() -> datetime:
+    return datetime.fromtimestamp(time.time(), timezone.utc)
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)

@@ -31,8 +31,8 @@ CUSTOMER_RUNTIME_SECRET_ENV_NAMES = {
     "SECRET_KEY": "SECRET_KEY",
     "WTF_CSRF_SECRET_KEY": "WTF_CSRF_SECRET_KEY",
     "SESSION_HMAC_KEYS": "SESSION_HMAC_KEYS_JSON",
+    "SESSION_LOOKUP_HMAC_KEY": "SESSION_LOOKUP_HMAC_KEY",
     "SQLALCHEMY_DATABASE_URI": "DATABASE_URL",
-    "REDIS_URL": "REDIS_URL",
     "MFA_KEK_KEYS": "MFA_KEK_KEYS_JSON",
     "PASSWORD_PEPPER_B64": "PASSWORD_PEPPER_B64",
     "SECURITY_AUDIT_HMAC_KEY": "SECURITY_AUDIT_HMAC_KEY",
@@ -42,8 +42,8 @@ ADMIN_RUNTIME_SECRET_ENV_NAMES = {
     "SECRET_KEY": "ADMIN_SECRET_KEY",
     "WTF_CSRF_SECRET_KEY": "ADMIN_WTF_CSRF_SECRET_KEY",
     "SESSION_HMAC_KEYS": "ADMIN_SESSION_HMAC_KEYS_JSON",
+    "SESSION_LOOKUP_HMAC_KEY": "ADMIN_SESSION_LOOKUP_HMAC_KEY",
     "SQLALCHEMY_DATABASE_URI": "ADMIN_DATABASE_URL",
-    "REDIS_URL": "ADMIN_REDIS_URL",
     "PASSWORD_PEPPER_B64": "ADMIN_PASSWORD_PEPPER_B64",
     "SECURITY_AUDIT_HMAC_KEY": "SECURITY_AUDIT_HMAC_KEY",
 }
@@ -357,11 +357,6 @@ def _validate_url(name: str, value: str, *, schemes: set[str], require_password:
         not parsed.username or parsed.path in {"", "/"}
     ):
         raise RuntimeError(f"{name} must include username and database name")
-    if name in {"REDIS_URL", "ADMIN_REDIS_URL"} and (parsed.query or parsed.fragment):
-        raise RuntimeError(
-            f"{name} must not include query parameters or a fragment; "
-            "connection behavior is configured by the application"
-        )
     return value
 
 
@@ -393,6 +388,13 @@ def _required_b64_32_bytes(name: str) -> str:
     if len(decoded) != 32:
         raise RuntimeError(f"{name} must decode to exactly 32 bytes")
     return value
+
+
+def _required_b64_32_bytes_decoded(name: str) -> bytes:
+    import base64
+
+    value = _required_b64_32_bytes(name)
+    return base64.b64decode(value, validate=True)
 
 
 def _required_session_hmac_keys(name: str, *, active_key_id: str) -> dict[str, bytes]:
@@ -448,13 +450,6 @@ def _customer_runtime_overrides(config: dict) -> dict[str, object]:
             lambda: _required_env("MFA_KEK_ACTIVE_ID"),
         )
     )
-    redis_url = str(
-        _configured_value(
-            config,
-            "REDIS_URL",
-            lambda: _required_url("REDIS_URL", schemes={"redis", "rediss"}, require_password=True),
-        )
-    )
     return {
         "APP_MODE": "customer",
         "SECRET_ENV_NAMES": CUSTOMER_RUNTIME_SECRET_ENV_NAMES,
@@ -477,6 +472,11 @@ def _customer_runtime_overrides(config: dict) -> dict[str, object]:
                 active_key_id=session_hmac_active_key_id,
             ),
         ),
+        "SESSION_LOOKUP_HMAC_KEY": _configured_value(
+            config,
+            "SESSION_LOOKUP_HMAC_KEY",
+            lambda: _required_b64_32_bytes_decoded("SESSION_LOOKUP_HMAC_KEY"),
+        ),
         "SQLALCHEMY_DATABASE_URI": _configured_value(
             config,
             "SQLALCHEMY_DATABASE_URI",
@@ -495,7 +495,6 @@ def _customer_runtime_overrides(config: dict) -> dict[str, object]:
                 require_password=True,
             ),
         ),
-        "REDIS_URL": redis_url,
         "MFA_KEK_ACTIVE_ID": mfa_kek_active_id,
         "MFA_KEK_KEYS": _configured_value(
             config,
@@ -523,12 +522,8 @@ def _customer_runtime_overrides(config: dict) -> dict[str, object]:
         "SESSION_COOKIE_NAME": config.get("SESSION_COOKIE_NAME") or "__Host-sitbank_session",
         "PERMANENT_SESSION_LIFETIME": config.get("PERMANENT_SESSION_LIFETIME") or timedelta(minutes=5),
         "SESSION_INACTIVITY_SECONDS": config.get("SESSION_INACTIVITY_SECONDS") or 5 * 60,
-        "SESSION_METADATA_KEY_PREFIX": config.get("SESSION_METADATA_KEY_PREFIX") or "ospbank:session_meta:",
-        "USER_SESSIONS_KEY_PREFIX": config.get("USER_SESSIONS_KEY_PREFIX") or "ospbank:user_sessions:",
-        "PAST_SESSIONS_KEY_PREFIX": config.get("PAST_SESSIONS_KEY_PREFIX") or "ospbank:past_sessions:",
-        "REVOKED_SESSION_KEY_PREFIX": config.get("REVOKED_SESSION_KEY_PREFIX") or "ospbank:revoked_session:",
         "AUTH_FAILURE_KEY_PREFIX": config.get("AUTH_FAILURE_KEY_PREFIX") or "ospbank:authfail:",
-        "RATELIMIT_STORAGE_URI": config.get("RATELIMIT_STORAGE_URI") or redis_url,
+        "RATELIMIT_STORAGE_URI": config.get("RATELIMIT_STORAGE_URI") or "memory://",
         "RATELIMIT_KEY_PREFIX": config.get("RATELIMIT_KEY_PREFIX") or "ospbank:ratelimit:",
         "ADMIN_AUTH_ENABLED": False,
     }
@@ -540,13 +535,6 @@ def _admin_runtime_overrides(config: dict) -> dict[str, object]:
             config,
             "ADMIN_SESSION_HMAC_ACTIVE_KEY_ID",
             lambda: _required_env("ADMIN_SESSION_HMAC_ACTIVE_KEY_ID"),
-        )
-    )
-    redis_url = str(
-        _configured_value(
-            config,
-            "ADMIN_REDIS_URL",
-            lambda: _required_url("ADMIN_REDIS_URL", schemes={"redis", "rediss"}, require_password=True),
         )
     )
     return {
@@ -571,6 +559,11 @@ def _admin_runtime_overrides(config: dict) -> dict[str, object]:
                 active_key_id=session_hmac_active_key_id,
             ),
         ),
+        "SESSION_LOOKUP_HMAC_KEY": _configured_value(
+            config,
+            "ADMIN_SESSION_LOOKUP_HMAC_KEY",
+            lambda: _required_b64_32_bytes_decoded("ADMIN_SESSION_LOOKUP_HMAC_KEY"),
+        ),
         "SQLALCHEMY_DATABASE_URI": _configured_value(
             config,
             "ADMIN_SQLALCHEMY_DATABASE_URI",
@@ -581,7 +574,6 @@ def _admin_runtime_overrides(config: dict) -> dict[str, object]:
             ),
         ),
         "SQLALCHEMY_MIGRATION_DATABASE_URI": None,
-        "REDIS_URL": redis_url,
         "PASSWORD_PEPPER_B64": _configured_value(
             config,
             "ADMIN_PASSWORD_PEPPER_B64",
@@ -593,12 +585,8 @@ def _admin_runtime_overrides(config: dict) -> dict[str, object]:
         "PERMANENT_SESSION_LIFETIME": config.get("ADMIN_PERMANENT_SESSION_LIFETIME") or timedelta(minutes=5),
         "SESSION_INACTIVITY_SECONDS": config.get("ADMIN_SESSION_INACTIVITY_SECONDS") or 5 * 60,
         "PENDING_MFA_MAX_AGE_SECONDS": config.get("ADMIN_PENDING_MFA_MAX_AGE_SECONDS") or 60,
-        "SESSION_METADATA_KEY_PREFIX": config.get("ADMIN_SESSION_METADATA_KEY_PREFIX") or "ospbank:admin:session_meta:",
-        "USER_SESSIONS_KEY_PREFIX": config.get("ADMIN_USER_SESSIONS_KEY_PREFIX") or "ospbank:admin:user_sessions:",
-        "PAST_SESSIONS_KEY_PREFIX": config.get("ADMIN_PAST_SESSIONS_KEY_PREFIX") or "ospbank:admin:past_sessions:",
-        "REVOKED_SESSION_KEY_PREFIX": config.get("ADMIN_REVOKED_SESSION_KEY_PREFIX") or "ospbank:admin:revoked_session:",
         "AUTH_FAILURE_KEY_PREFIX": config.get("ADMIN_AUTH_FAILURE_KEY_PREFIX") or "ospbank:admin:authfail:",
-        "RATELIMIT_STORAGE_URI": config.get("ADMIN_RATELIMIT_STORAGE_URI") or redis_url,
+        "RATELIMIT_STORAGE_URI": config.get("ADMIN_RATELIMIT_STORAGE_URI") or "memory://",
         "RATELIMIT_KEY_PREFIX": config.get("ADMIN_RATELIMIT_KEY_PREFIX")
         or os.getenv("ADMIN_RATELIMIT_KEY_PREFIX", "ospbank:admin:ratelimit:"),
         "ADMIN_AUTH_ENABLED": False,
@@ -655,17 +643,11 @@ class Config:
     WTF_CSRF_SECRET_KEY = None
     SESSION_HMAC_ACTIVE_KEY_ID = None
     SESSION_HMAC_KEYS = None
+    SESSION_LOOKUP_HMAC_KEY = None
     SQLALCHEMY_DATABASE_URI = None
     SQLALCHEMY_MIGRATION_DATABASE_URI = None
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
-    REDIS_URL = None
-    REDIS_PROTOCOL = 2
-    REDIS_LEGACY_RESPONSES = True
-    REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS = 2.0
-    REDIS_SOCKET_TIMEOUT_SECONDS = 5.0
-    REDIS_HEALTH_CHECK_INTERVAL_SECONDS = 30
-    REDIS_MAX_CONNECTIONS = 100
     MFA_KEK_ACTIVE_ID = None
     MFA_KEK_KEYS = None
     PASSWORD_PEPPER_B64 = None
@@ -776,7 +758,7 @@ class Config:
         development_default="development-audit-hmac-key-change-before-production",
     )
 
-    SESSION_TYPE = "redis"
+    SESSION_TYPE = "database"
     SESSION_KEY_PREFIX = None
     SESSION_COOKIE_NAME = "__Host-sitbank_session"
     SESSION_COOKIE_SECURE = True
@@ -805,8 +787,14 @@ class Config:
     PAST_SESSIONS_KEY_PREFIX = None
     REVOKED_SESSION_KEY_PREFIX = None
     AUTH_FAILURE_KEY_PREFIX = None
+    SECURITY_STATE_CLEANUP_BATCH_SIZE = int(os.getenv("SECURITY_STATE_CLEANUP_BATCH_SIZE", "500"))
+    if SECURITY_STATE_CLEANUP_BATCH_SIZE < 1 or SECURITY_STATE_CLEANUP_BATCH_SIZE > 5000:
+        raise RuntimeError("SECURITY_STATE_CLEANUP_BATCH_SIZE must be between 1 and 5000")
+    SECURITY_STATE_RETENTION_DAYS = int(os.getenv("SECURITY_STATE_RETENTION_DAYS", "30"))
+    if SECURITY_STATE_RETENTION_DAYS < 1 or SECURITY_STATE_RETENTION_DAYS > 365:
+        raise RuntimeError("SECURITY_STATE_RETENTION_DAYS must be between 1 and 365")
 
-    RATELIMIT_STORAGE_URI = None
+    RATELIMIT_STORAGE_URI = "memory://"
     RATELIMIT_HEADERS_ENABLED = True
     RATELIMIT_STRATEGY = "fixed-window"
     RATELIMIT_KEY_PREFIX = None

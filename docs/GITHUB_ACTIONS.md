@@ -57,7 +57,7 @@ For staging admin, also set:
 `<PREFIX>_MFA_KEK_ACTIVE_ID` must match a key identifier in the root-managed `/etc/sitbank*/secrets/mfa_kek_keys_json` file on EC2. Do not put `MFA_KEK_KEYS_JSON` in GitHub Actions; the KEK keyring is a long-lived secret and remains host-managed.
 `<PREFIX>_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID` must match a key identifier in
 `/etc/sitbank*/secrets/admin_session_hmac_keys_json`. Do not put admin Flask,
-CSRF, session-HMAC, password-pepper, Redis, or database secret values in GitHub
+CSRF, session-HMAC, session-lookup HMAC, password-pepper, or database secret values in GitHub
 Actions; those remain root-managed EC2 secret files.
 `SECURITY_AUDIT_HMAC_KEY` is also a root-managed EC2 secret file and is not
 exported through GitHub Actions environment variables.

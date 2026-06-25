@@ -7,12 +7,12 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.error import URLError
 
-import fakeredis
 from flask import Flask
 
+from app.extensions import db
+from app.models import SecurityCircuitBreaker
 from app.security.passwords import (
-    HIBP_CIRCUIT_OPEN_KEY,
-    HIBP_FAILURE_KEY,
+    HIBP_CIRCUIT_SERVICE,
     HIBP_FALLBACK_WARNING,
     PASSWORD_MAX_CHARS,
     PASSWORD_MIN_LENGTH,
@@ -56,12 +56,17 @@ class PasswordPolicyTests(unittest.TestCase):
             HIBP_CIRCUIT_OPEN_SECONDS=300,
             PASSWORD_PEPPER_B64="MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE=",
             PASSWORD_PBKDF2_ITERATIONS=600000,
+            SQLALCHEMY_DATABASE_URI="sqlite:///:memory:",
+            SQLALCHEMY_TRACK_MODIFICATIONS=False,
         )
-        self.app.extensions["redis"] = fakeredis.FakeRedis(decode_responses=True)
+        db.init_app(self.app)
         self.context = self.app.app_context()
         self.context.push()
+        db.create_all()
 
     def tearDown(self) -> None:
+        db.session.remove()
+        db.drop_all()
         self.context.pop()
         self.password_file.unlink()
 
@@ -104,17 +109,33 @@ class PasswordPolicyTests(unittest.TestCase):
             )
 
         self.assertEqual(urlopen.call_count, 3)
-        self.assertTrue(self.app.extensions["redis"].exists(HIBP_CIRCUIT_OPEN_KEY))
+        breaker = db.session.execute(
+            db.select(SecurityCircuitBreaker).where(
+                SecurityCircuitBreaker.service_name == HIBP_CIRCUIT_SERVICE
+            )
+        ).scalar_one()
+        self.assertEqual(breaker.state, "open")
 
     @patch("app.security.passwords.urlopen")
     def test_successful_hibp_check_closes_failure_state(self, urlopen) -> None:
-        redis_client = self.app.extensions["redis"]
-        redis_client.set(HIBP_FAILURE_KEY, "2")
+        db.session.add(
+            SecurityCircuitBreaker(
+                service_name=HIBP_CIRCUIT_SERVICE,
+                state="closed",
+                failure_count=2,
+            )
+        )
+        db.session.commit()
         urlopen.return_value = FakeResponse(b"00000000000000000000000000000000000:0\r\n")
 
         self.assertEqual(validate_password_policy("not-in-local-list"), [])
-        self.assertFalse(redis_client.exists(HIBP_FAILURE_KEY))
-        self.assertFalse(redis_client.exists(HIBP_CIRCUIT_OPEN_KEY))
+        breaker = db.session.execute(
+            db.select(SecurityCircuitBreaker).where(
+                SecurityCircuitBreaker.service_name == HIBP_CIRCUIT_SERVICE
+            )
+        ).scalar_one()
+        self.assertEqual(breaker.failure_count, 0)
+        self.assertEqual(breaker.state, "closed")
 
     @patch("app.security.passwords._normalize_password")
     def test_rejects_oversized_password_before_normalization(self, normalize_password) -> None:

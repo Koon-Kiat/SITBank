@@ -6,9 +6,10 @@ Keep root-managed secret files in `/etc/sitbank/secrets` and `/etc/sitbank-stagi
 
 Production admin uses separate root-managed secret files in
 `/etc/sitbank/secrets`: `admin_secret_key`, `admin_wtf_csrf_secret_key`,
-`admin_session_hmac_keys_json`, `admin_database_url`, `admin_redis_url`, and
-`admin_password_pepper_b64`. These must not reuse customer Flask signing,
-CSRF, session-HMAC, Redis, password-pepper, or database runtime material.
+`admin_session_hmac_keys_json`, `admin_session_lookup_hmac_key`,
+`admin_database_url`, and `admin_password_pepper_b64`. These must not reuse
+customer Flask signing, CSRF, session-HMAC, session-lookup HMAC,
+password-pepper, or database runtime material.
 `admin_database_url` must use a dedicated admin runtime role, distinct from
 both the customer runtime role and the migration/schema-owner role.
 
@@ -107,7 +108,7 @@ python -m flask --app wsgi:app check-security-alerts --report-only
 ## Monitoring
 
 Forward journald, Docker container logs, Nginx logs, application security audit
-events, PostgreSQL events, and Redis events to protected centralized logging.
+events, and PostgreSQL events to protected centralized logging.
 Keep the Docker `local` log rotation settings in Compose as host-local
 backpressure protection.
 
@@ -124,14 +125,14 @@ sanitized by exception type and must not print webhook URLs or tokens. A final
 sanitization pass runs immediately before outbound webhook JSON serialization
 for both generic and Discord payloads; it redacts sensitive keys, bearer/basic
 credentials, cookies, session values, MFA/TOTP secrets, API keys,
-private-key-like text, database or Redis URLs with credentials, webhook URLs,
+private-key-like text, database URLs with credentials, legacy Redis URLs with credentials, webhook URLs,
 and long token-like strings while preserving harmless severity, event type, summary,
 timestamp, correlation ID, public session reference, and safe user references.
-Redis dedupe suppresses repeated delivery of the same alert for
+PostgreSQL alert-dedupe state suppresses repeated delivery of the same alert for
 `SECURITY_ALERT_DEDUPE_TTL_SECONDS` while keeping the active alert in the JSON
 report. Keep `SECURITY_ALERT_STATE_PATH=/run/state/security-alert-state.json`
 on the host-mounted alert state volume so `check-security-alerts` records table
-count and identity baselines outside Postgres/Redis and emits critical
+count and identity baselines outside the application database and emits critical
 `database_table_regression` alerts when `users` or `security_audit_events`
 rewind or shrink. Keep `SECURITY_AUDIT_ANCHOR_PATH` set to the protected local
 anchor so `check-security-alerts` emits critical
@@ -213,8 +214,8 @@ request a six-digit registration verification code from `/register`, receive it
 by email, verify it in the same browser session, and then complete account
 creation with the same normalized email address. Codes expire after 5 minutes,
 are one-time use, and requesting a new code invalidates the previous code. The
-application stores only an HMAC of the code in Redis; raw codes must never be
-recorded in runbooks, tickets, logs, Discord, Telegram, or screenshots.
+application stores only an HMAC of the code in PostgreSQL; raw codes must never
+be recorded in runbooks, tickets, logs, Discord, Telegram, or screenshots.
 
 Registration OTP delivery uses the same security email backend and SMTP
 settings as password reset email:
@@ -234,8 +235,8 @@ Operational checks:
 - Investigate `registration_otp` audit events by outcome
   (`requested`, `verified`, `failed`, `expired`, or `locked`) without expecting
   raw email addresses or codes in event metadata.
-- If registration email delivery fails, the request fails closed and the Redis
-  OTP record is deleted.
+- If registration email delivery fails, the request fails closed and the
+  PostgreSQL OTP challenge row is deleted.
 - Existing-account requests intentionally return the same generic response as
   eligible requests; do not treat the absence of an outgoing email as customer
   proof without independent identity checks.

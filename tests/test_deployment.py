@@ -45,10 +45,10 @@ PYTHON_SLIM_TRIXIE_DIGEST_RE = re.compile(
 DEPLOYMENT_VALUES = {
     "PROD_ADMIN_DATABASE_URL": "postgresql+psycopg2://bank_admin:secret@127.0.0.1/bank",
     "PROD_ADMIN_PASSWORD_PEPPER_B64": "ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg=",
-    "PROD_ADMIN_REDIS_URL": "redis://:admin-secret@127.0.0.1:6379/1",
     "PROD_ADMIN_SECRET_KEY": "admin-secret-key-with-enough-length-for-production",
     "PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_B64": "NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY=",
     "PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID": "2026-06-admin",
+    "PROD_ADMIN_SESSION_LOOKUP_HMAC_KEY": "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE=",
     "PROD_ADMIN_WTF_CSRF_SECRET_KEY": "admin-csrf-secret-with-enough-length-for-production",
     "PROD_DATABASE_MIGRATION_URL": "postgresql+psycopg2://bank_owner:secret@127.0.0.1/bank",
     "PROD_DATABASE_URL": "postgresql+psycopg2://bank:secret@127.0.0.1/bank",
@@ -56,12 +56,12 @@ DEPLOYMENT_VALUES = {
     "PROD_MFA_KEK_KEYS_JSON": '{"2026-06-mfa":"NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ="}',
     "PROD_PASSWORD_PEPPER_B64": "MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE=",
     "PROD_PUBLIC_HOST": "sitbank.duckdns.org",
-    "PROD_REDIS_URL": "redis://:secret@127.0.0.1:6379/0",
     "PROD_SECRET_KEY": "secret-key-with-$-and-enough-length-for-production",
     "PROD_SECURITY_AUDIT_HMAC_KEY": "audit-hmac-key-with-enough-length-for-production",
     "PROD_SECURITY_ALERT_WEBHOOK_URL": "https://hooks.example.test/sitbank-security-alerts",
     "PROD_SESSION_HMAC_ACTIVE_KEY_B64": "MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjI=",
     "PROD_SESSION_HMAC_ACTIVE_KEY_ID": "2026-06",
+    "PROD_SESSION_LOOKUP_HMAC_KEY": "OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk=",
     "PROD_PASSWORD_RESET_EMAIL_FROM": "security@sitbank.example",
     "PROD_SMTP_HOST": "smtp.example.test",
     "PROD_SMTP_USERNAME": "smtp-user",
@@ -197,6 +197,7 @@ def _config_secret_inputs() -> set[str]:
         "_optional_url",
         "_optional_env_or_file",
         "_required_b64_32_bytes",
+        "_required_b64_32_bytes_decoded",
         "_required_keyring",
         "_required_secret",
         "_configured_secret",
@@ -380,8 +381,9 @@ def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypa
     assert "DATABASE_MIGRATION_URL_FILE" not in environment
     assert secrets["secret_key"] == DEPLOYMENT_VALUES["PROD_SECRET_KEY"]
     assert secrets["database_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_URL"]
+    assert secrets["session_lookup_hmac_key"] == DEPLOYMENT_VALUES["PROD_SESSION_LOOKUP_HMAC_KEY"]
     assert secrets["admin_database_url"] == DEPLOYMENT_VALUES["PROD_ADMIN_DATABASE_URL"]
-    assert secrets["admin_redis_url"] == DEPLOYMENT_VALUES["PROD_ADMIN_REDIS_URL"]
+    assert secrets["admin_session_lookup_hmac_key"] == DEPLOYMENT_VALUES["PROD_ADMIN_SESSION_LOOKUP_HMAC_KEY"]
     assert secrets["admin_secret_key"] == DEPLOYMENT_VALUES["PROD_ADMIN_SECRET_KEY"]
     assert secrets["database_migration_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_MIGRATION_URL"]
     assert secrets["mfa_kek_keys_json"] == DEPLOYMENT_VALUES["PROD_MFA_KEK_KEYS_JSON"]
@@ -411,6 +413,7 @@ def test_container_bundle_accepts_staging_prefix(monkeypatch):
     assert environment["SECURITY_AUDIT_ANCHOR_PATH"] == "/run/state/security-audit.anchor"
     assert secrets["secret_key"] == DEPLOYMENT_VALUES["PROD_SECRET_KEY"]
     assert secrets["database_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_URL"]
+    assert secrets["session_lookup_hmac_key"] == DEPLOYMENT_VALUES["PROD_SESSION_LOOKUP_HMAC_KEY"]
     assert secrets["database_migration_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_MIGRATION_URL"]
     assert secrets["security_audit_hmac_key"] == DEPLOYMENT_VALUES["PROD_SECURITY_AUDIT_HMAC_KEY"]
 
@@ -438,7 +441,7 @@ def test_deployment_profiles_keep_production_and_staging_isolated(monkeypatch):
     assert production["ADMIN_APP_BIND_PORT"] == "5002"
     assert production["ADMIN_PUBLIC_HOST"] == "admin-sitbank.duckdns.org"
     assert production["POSTGRES_VOLUME_NAME"] == "none"
-    assert production["REDIS_VOLUME_NAME"] == "none"
+    assert "REDIS_VOLUME_NAME" not in production
 
     assert staging["DEPLOYMENT_TARGET"] == "staging"
     assert staging["CONFIG_ROOT"] == "/etc/sitbank-staging"
@@ -449,9 +452,9 @@ def test_deployment_profiles_keep_production_and_staging_isolated(monkeypatch):
     assert staging["APP_CONTAINER_NAME"] == "sitbank-staging-app"
     assert staging["APP_BIND_PORT"] == "5001"
     assert staging["POSTGRES_CONTAINER_NAME"] == "sitbank-staging-postgres"
-    assert staging["REDIS_CONTAINER_NAME"] == "sitbank-staging-redis"
     assert staging["POSTGRES_VOLUME_NAME"] == "sitbank-staging-postgres-data"
-    assert staging["REDIS_VOLUME_NAME"] == "sitbank-staging-redis-data"
+    assert "REDIS_CONTAINER_NAME" not in staging
+    assert "REDIS_VOLUME_NAME" not in staging
     assert staging["PUBLIC_HOST"] == "staging-sitbank.duckdns.org"
 
     for key in (
@@ -666,7 +669,8 @@ def test_smoke_fixture_and_deployment_wrapper_match_runtime_contract():
         in deploy_script
     )
     assert "show_dependency_diagnostics" in deploy_script
-    assert 'logs --no-color --tail 120 postgres redis' in deploy_script
+    assert 'logs --no-color --tail 120 postgres' in deploy_script
+    assert 'logs --no-color --tail 120 postgres redis' not in deploy_script
     assert "dependencies_prepared=1" in deploy_script
     assert 'if [[ "${target}" == "staging" ]]; then' in deploy_script
     assert re.search(
@@ -728,11 +732,11 @@ def test_environment_only_bundle_does_not_export_long_lived_secrets(
         "PROD_DATABASE_URL",
         "PROD_MFA_KEK_KEYS_JSON",
         "PROD_PASSWORD_PEPPER_B64",
-        "PROD_REDIS_URL",
         "PROD_SECRET_KEY",
         "PROD_SECURITY_AUDIT_HMAC_KEY",
         "PROD_SECURITY_ALERT_WEBHOOK_URL",
         "PROD_SESSION_HMAC_ACTIVE_KEY_B64",
+        "PROD_SESSION_LOOKUP_HMAC_KEY",
         "PROD_WTF_CSRF_SECRET_KEY",
     ):
         monkeypatch.delenv(name)
@@ -759,11 +763,11 @@ def test_environment_only_bundle_accepts_staging_prefix(monkeypatch, tmp_path):
         "STAGING_DATABASE_URL",
         "STAGING_MFA_KEK_KEYS_JSON",
         "STAGING_PASSWORD_PEPPER_B64",
-        "STAGING_REDIS_URL",
         "STAGING_SECRET_KEY",
         "STAGING_SECURITY_AUDIT_HMAC_KEY",
         "STAGING_SECURITY_ALERT_WEBHOOK_URL",
         "STAGING_SESSION_HMAC_ACTIVE_KEY_B64",
+        "STAGING_SESSION_LOOKUP_HMAC_KEY",
         "STAGING_WTF_CSRF_SECRET_KEY",
     ):
         monkeypatch.delenv(name)
@@ -906,14 +910,14 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     )
     assert "DATABASE_MIGRATION_URL_FILE" not in admin["environment"]
     assert "ADMIN_DATABASE_URL_FILE" in admin["environment"]
-    assert "ADMIN_REDIS_URL_FILE" in admin["environment"]
+    assert "ADMIN_SESSION_LOOKUP_HMAC_KEY_FILE" in admin["environment"]
     for smtp_env in ("SMTP_USERNAME_FILE", "SMTP_PASSWORD_FILE"):
         assert admin["environment"][smtp_env] == app["environment"][smtp_env]
     admin_secret_targets = _service_secret_targets(admin)
     assert admin_secret_targets["smtp_username"] == "smtp_username"
     assert admin_secret_targets["smtp_password"] == "smtp_password"
-    assert "/app/redis_compatibility_check.py:ro" in smoke_test
-    assert "python /app/redis_compatibility_check.py" in smoke_test
+    assert "/app/redis_compatibility_check.py:ro" not in smoke_test
+    assert "python /app/redis_compatibility_check.py" not in smoke_test
     assert "ci_owner" in smoke_test
     assert "ci_app" in smoke_test
     assert "ci_admin" in smoke_test
@@ -934,9 +938,10 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "postgresql+psycopg2://ci_app:ci-app-password@%s:5432/ci" in smoke_test
     assert "postgresql+psycopg2://ci_admin:ci-admin-password@%s:5432/ci" in smoke_test
     assert "postgresql+psycopg2://ci_owner:ci-owner-password@%s:5432/ci" in smoke_test
-    assert "redis://:ci-password@%s:6379/15" in smoke_test
+    assert "SESSION_LOOKUP_HMAC_KEY_FILE=/run/secrets/session_lookup_hmac_key" in smoke_test
+    assert "ADMIN_SESSION_LOOKUP_HMAC_KEY_FILE=/run/secrets/admin_session_lookup_hmac_key" in smoke_test
     assert '"${postgres_container}"' in smoke_test
-    assert '"${redis_container}"' in smoke_test
+    assert '"${redis_container}"' not in smoke_test
     assert '"${secrets_mount_source}:/run/secrets:ro"' in smoke_test
     assert '"${config_mount_source}:/run/config:ro"' in smoke_test
     assert '"${work_dir}/secrets:/run/secrets:ro"' not in smoke_test
@@ -953,7 +958,7 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "--publish 127.0.0.1::5432" not in smoke_test
     assert "--publish 127.0.0.1::6379" not in smoke_test
     assert 'wait_for_healthy "${postgres_container}"' in smoke_test
-    assert 'wait_for_healthy "${redis_container}"' in smoke_test
+    assert 'wait_for_healthy "${redis_container}"' not in smoke_test
     assert "wait_for_app_from_smoke_network" in smoke_test
     assert 'dast_base_url="http://${app_container}:5000"' in smoke_test
     assert '--base-url "${dast_base_url}"' in smoke_test
@@ -981,7 +986,7 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "56379" not in smoke_test
 
     assert staging_compose["name"] == "sitbank-staging"
-    assert set(staging_services) == {"app", "admin", "postgres", "redis"}
+    assert set(staging_services) == {"app", "admin", "postgres"}
     assert staging_app["container_name"] == "sitbank-staging-app"
     assert staging_app["ports"] == ["127.0.0.1:5001:5000"]
     assert "network_mode" not in staging_app
@@ -1062,9 +1067,7 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
         for volume in staging_services["postgres"]["volumes"]
         if isinstance(volume, dict)
     )
-    assert staging_services["redis"]["container_name"] == "sitbank-staging-redis"
     assert "ports" not in staging_services["postgres"]
-    assert "ports" not in staging_services["redis"]
     assert staging_app["command"][
         staging_app["command"].index("--bind") + 1
     ] == "0.0.0.0:5000"
@@ -1074,9 +1077,6 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     )
     assert staging_compose["volumes"]["sitbank-staging-postgres-data"]["name"] == (
         "sitbank-staging-postgres-data"
-    )
-    assert staging_compose["volumes"]["sitbank-staging-redis-data"]["name"] == (
-        "sitbank-staging-redis-data"
     )
     assert "/etc/sitbank-staging" not in compose_text
     assert "/etc/sitbank/" not in staging_compose_text
@@ -1092,14 +1092,14 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "Staging database URL must target only the staging PostgreSQL service" not in deploy_script
     assert "Staging admin runtime database URL must use only the staging admin role" in deploy_script
     assert "Staging admin runtime database URL must be distinct from app and migration URLs" in deploy_script
-    assert "Staging admin Redis URL must target only isolated staging admin Redis DB 14" in deploy_script
+    assert "Staging admin session lookup HMAC key must be distinct from the customer key" in deploy_script
     assert 'unquote(database.username or "") != "sitbank_app"' in deploy_script
     assert 'unquote(migration.username or "") != "sitbank_owner"' in deploy_script
     assert 'unquote(admin_database.username or "") != "sitbank_admin"' in deploy_script
     assert "postgres_app_password" in deploy_script
     assert "postgres_owner_password" in deploy_script
     assert "admin_database_url" in deploy_script
-    assert "admin_redis_url" in deploy_script
+    assert "admin_session_lookup_hmac_key" in deploy_script
     assert "apply-runtime-db-privileges" in deploy_script
     assert "apply-admin-runtime-db-privileges" in deploy_script
     assert "apply_staging_admin_runtime_db_privileges" in deploy_script
@@ -1586,10 +1586,9 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "/var/lib/sitbank-staging-container" in deploy_script
     assert "sitbank-staging-container.service" in deploy_script
     assert "sitbank-staging-postgres-data" in deploy_script
-    assert "sitbank-staging-redis-data" in deploy_script
     assert "Staging secret must not reuse the production" in deploy_script
     assert "hostname != \"postgres\"" in deploy_script
-    assert "hostname != \"redis\"" in deploy_script
+    assert "hostname != \"redis\"" not in deploy_script
     assert "sitbank-container-runtime staging up" in Path(
         "ops/systemd/sitbank-staging-container.service"
     ).read_text(encoding="utf-8")
@@ -2060,7 +2059,7 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     assert staging_compose["services"]["admin"]["ports"] == ["127.0.0.1:5003:5000"]
     assert "127.0.0.1:5002:5000" not in staging_compose["services"]["admin"]["ports"]
     assert "ports" not in staging_compose["services"]["postgres"]
-    assert "ports" not in staging_compose["services"]["redis"]
+    assert "redis" not in staging_compose["services"]
 
     assert "limit_req_zone $binary_remote_addr zone=sitbank_staging_login:10m rate=5r/m;" in rate_limits
     assert "limit_req_zone $binary_remote_addr zone=sitbank_staging_app:10m rate=10r/s;" in rate_limits
@@ -2369,7 +2368,7 @@ def test_production_edge_runbook_documents_network_waf_and_verification_steps():
         "Issue production Certbot files under",
         "Allow public inbound TCP `80` and `443` only.",
         "never allow TCP `22` from `0.0.0.0/0` or `::/0`",
-        "Do not expose Gunicorn, PostgreSQL, or Redis directly to the internet.",
+        "Do not expose Gunicorn or PostgreSQL directly to the internet.",
         "admin Gunicorn bound to",
         "`127.0.0.1:5002`",
         "Restrict `/health/ready` to loopback",

@@ -8,7 +8,7 @@ import io
 import re
 import secrets
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from cryptography.exceptions import InvalidTag
@@ -19,7 +19,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
-from app.models import User
+from app.models import AuthAttemptCounter, TotpReplayRecord, User
 from app.auth.registration_otp import (
     RegistrationOtpError,
     consume_verified_registration_email,
@@ -42,6 +42,7 @@ from app.security.passwords import (
     verify_password,
 )
 from app.security.rate_limits import AuthBackoffRequired, apply_exponential_backoff, clear_failures, record_failure
+from app.security.session_hmac import active_hmac_hex
 from app.security.sessions import (
     begin_password_authenticated_session,
     current_session_id,
@@ -90,10 +91,6 @@ class AuthError(ValueError):
 
 class FrozenAccountError(AuthError):
     pass
-
-
-def _redis():
-    return current_app.extensions["redis"]
 
 
 def _normalize(value: str) -> str:
@@ -810,15 +807,53 @@ def _send_mfa_recovery_code_used_notification(user: User) -> None:
 
 
 def _record_user_security_failure(user: User, scope: str, lock_reason: str) -> None:
-    key = f"ospbank:securityfail:{scope}:{user.id}"
-    attempts = int(_redis().incr(key))
-    _redis().expire(key, AUTH_LOCK_WINDOW_SECONDS)
+    now = datetime.now(timezone.utc)
+    counter_scope = f"user_security:{scope}"
+    principal_hash = active_hmac_hex(f"{counter_scope}:{user.id}", length=64)
+    statement = db.select(AuthAttemptCounter).where(
+        AuthAttemptCounter.scope == counter_scope,
+        AuthAttemptCounter.principal_hash == principal_hash,
+    )
+    if db.engine.dialect.name == "postgresql":
+        statement = statement.with_for_update()
+    counter = db.session.execute(statement).scalar_one_or_none()
+    if counter is None or _as_utc(counter.window_expires_at) <= now:
+        if counter is not None:
+            db.session.delete(counter)
+            db.session.flush()
+        counter = AuthAttemptCounter(
+            scope=counter_scope,
+            principal_hash=principal_hash,
+            user_id=user.id,
+            failure_count=0,
+            window_started_at=now,
+            window_expires_at=now + timedelta(seconds=AUTH_LOCK_WINDOW_SECONDS),
+            created_at=now,
+            updated_at=now,
+        )
+        db.session.add(counter)
+    counter.failure_count = int(counter.failure_count or 0) + 1
+    counter.last_failed_at = now
+    counter.updated_at = now
+    counter.window_expires_at = now + timedelta(seconds=AUTH_LOCK_WINDOW_SECONDS)
+    attempts = int(counter.failure_count)
+    db.session.commit()
     if attempts >= AUTH_LOCK_THRESHOLD:
         _lock_user_account(user, lock_reason, scope, attempts)
 
 
 def _clear_user_security_failures(user: User, scope: str) -> None:
-    _redis().delete(f"ospbank:securityfail:{scope}:{user.id}")
+    counter_scope = f"user_security:{scope}"
+    principal_hash = active_hmac_hex(f"{counter_scope}:{user.id}", length=64)
+    counter = db.session.execute(
+        db.select(AuthAttemptCounter).where(
+            AuthAttemptCounter.scope == counter_scope,
+            AuthAttemptCounter.principal_hash == principal_hash,
+        )
+    ).scalar_one_or_none()
+    if counter is not None:
+        db.session.delete(counter)
+        db.session.commit()
 
 
 def _lock_user_account(user: User, reason: str, scope: str, attempts: int) -> None:
@@ -877,16 +912,26 @@ def _verify_totp_secret_for_user(
         record_failure(scope, str(user.id))
         return False
 
-    code_digest = hashlib.sha256(code.encode("utf-8")).hexdigest()[:32]
-    replay_key = f"ospbank:totp_replay:{user.id}:{accepted_step}:{code_digest}"
+    code_digest = active_hmac_hex(
+        f"totp-replay:{user.id}:{scope}:{accepted_step}:{code}",
+        length=64,
+    )
     replay_ttl = max(30, (_totp_valid_window(scope, valid_window) * 2 + 2) * 30)
-
-    acquired = _redis().set(replay_key, "pending", nx=True, ex=replay_ttl)
-    if not acquired:
+    replay_record = TotpReplayRecord(
+        user_id=user.id,
+        scope=scope,
+        time_step=accepted_step,
+        code_digest=code_digest,
+        expires_at=datetime.now(timezone.utc) + timedelta(seconds=replay_ttl),
+    )
+    db.session.add(replay_record)
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
         record_failure(scope, str(user.id))
         return False
 
-    _redis().set(replay_key, "used", ex=replay_ttl)
     clear_failures(scope, str(user.id))
     _clear_user_security_failures(user, "mfa")
     mark_fresh_mfa()
@@ -980,3 +1025,9 @@ def _public_user(user: User) -> dict[str, Any]:
         "mfa_step_up_preference": user.mfa_step_up_preference,
         "is_frozen": user.is_frozen,
     }
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)

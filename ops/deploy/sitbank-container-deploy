@@ -36,8 +36,6 @@ case "${target}" in
         readonly APP_BIND_PORT="5000"
         readonly POSTGRES_CONTAINER="none"
         readonly POSTGRES_VOLUME="none"
-        readonly REDIS_CONTAINER="none"
-        readonly REDIS_VOLUME="none"
         readonly LOCK_FILE="/var/lock/sitbank-container-deploy.lock"
         readonly INPUT_PREFIX=""
         readonly AUDIT_TAG="sitbank-deploy"
@@ -60,8 +58,6 @@ case "${target}" in
         readonly APP_BIND_PORT="5001"
         readonly POSTGRES_CONTAINER="sitbank-staging-postgres"
         readonly POSTGRES_VOLUME="sitbank-staging-postgres-data"
-        readonly REDIS_CONTAINER="sitbank-staging-redis"
-        readonly REDIS_VOLUME="sitbank-staging-redis-data"
         readonly LOCK_FILE="/var/lock/sitbank-staging-container-deploy.lock"
         readonly INPUT_PREFIX="staging-"
         readonly AUDIT_TAG="sitbank-staging-deploy"
@@ -195,8 +191,6 @@ DEPLOYMENT_TARGET='${target}'
 POSTGRES_CONTAINER_NAME='${POSTGRES_CONTAINER}'
 POSTGRES_VOLUME_NAME='${POSTGRES_VOLUME}'
 PUBLIC_HOST='${PUBLIC_HOST}'
-REDIS_CONTAINER_NAME='${REDIS_CONTAINER}'
-REDIS_VOLUME_NAME='${REDIS_VOLUME}'
 SECRET_ROOT='${SECRET_DIR}'
 STATE_DIR='${STATE_DIR}'
 SYSTEMD_SERVICE='${SYSTEMD_SERVICE}'
@@ -216,8 +210,6 @@ DEPLOYMENT_TARGET='${target}'
 POSTGRES_CONTAINER_NAME='${POSTGRES_CONTAINER}'
 POSTGRES_VOLUME_NAME='${POSTGRES_VOLUME}'
 PUBLIC_HOST='${PUBLIC_HOST}'
-REDIS_CONTAINER_NAME='${REDIS_CONTAINER}'
-REDIS_VOLUME_NAME='${REDIS_VOLUME}'
 SECRET_ROOT='${SECRET_DIR}'
 STATE_DIR='${STATE_DIR}'
 SYSTEMD_SERVICE='${SYSTEMD_SERVICE}'
@@ -381,17 +373,17 @@ validate_staging_isolation() {
         secret_key \
         wtf_csrf_secret_key \
         session_hmac_keys_json \
+        session_lookup_hmac_key \
         database_url \
         database_migration_url \
-        redis_url \
         mfa_kek_keys_json \
         password_pepper_b64 \
         security_audit_hmac_key \
         admin_secret_key \
         admin_wtf_csrf_secret_key \
         admin_session_hmac_keys_json \
+        admin_session_lookup_hmac_key \
         admin_database_url \
-        admin_redis_url \
         admin_password_pepper_b64 \
         smtp_username \
         smtp_password; do
@@ -408,10 +400,9 @@ validate_staging_isolation() {
         "${SECRET_DIR}/database_migration_url" \
         "${SECRET_DIR}/postgres_app_password" \
         "${SECRET_DIR}/postgres_owner_password" \
-        "${SECRET_DIR}/redis_url" \
-        "${SECRET_DIR}/redis.conf" \
         "${SECRET_DIR}/admin_database_url" \
-        "${SECRET_DIR}/admin_redis_url" <<'PY'
+        "${SECRET_DIR}/session_lookup_hmac_key" \
+        "${SECRET_DIR}/admin_session_lookup_hmac_key" <<'PY'
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 import sys
@@ -420,10 +411,9 @@ database_url = Path(sys.argv[1]).read_text(encoding="utf-8")
 migration_url = Path(sys.argv[2]).read_text(encoding="utf-8")
 postgres_app_password = Path(sys.argv[3]).read_text(encoding="utf-8")
 postgres_owner_password = Path(sys.argv[4]).read_text(encoding="utf-8")
-redis_url = Path(sys.argv[5]).read_text(encoding="utf-8")
-redis_config = Path(sys.argv[6]).read_text(encoding="utf-8")
-admin_database_url = Path(sys.argv[7]).read_text(encoding="utf-8")
-admin_redis_url = Path(sys.argv[8]).read_text(encoding="utf-8")
+admin_database_url = Path(sys.argv[5]).read_text(encoding="utf-8")
+session_lookup_key = Path(sys.argv[6]).read_text(encoding="utf-8").strip()
+admin_session_lookup_key = Path(sys.argv[7]).read_text(encoding="utf-8").strip()
 
 database = urlsplit(database_url)
 if (
@@ -461,37 +451,8 @@ if (
     raise SystemExit("Staging admin runtime database URL must use only the staging admin role")
 if admin_database_url in {database_url, migration_url}:
     raise SystemExit("Staging admin runtime database URL must be distinct from app and migration URLs")
-
-redis = urlsplit(redis_url)
-if (
-    redis.scheme != "redis"
-    or redis.hostname != "redis"
-    or redis.port != 6379
-    or redis.path not in {"", "/", "/0"}
-):
-    raise SystemExit("Staging Redis URL must target only the staging Redis service")
-
-admin_redis = urlsplit(admin_redis_url)
-if (
-    admin_redis.scheme != "redis"
-    or admin_redis.hostname != "redis"
-    or admin_redis.port != 6379
-    or admin_redis.path != "/14"
-):
-    raise SystemExit("Staging admin Redis URL must target only isolated staging admin Redis DB 14")
-
-password_lines = [
-    line.split(None, 1)[1]
-    for line in redis_config.splitlines()
-    if line.strip() and not line.lstrip().startswith("#")
-    and line.split(None, 1)[0].casefold() == "requirepass"
-]
-if len(password_lines) != 1 or unquote(redis.password or "") != password_lines[0]:
-    raise SystemExit("Staging Redis URL and protected Redis configuration do not match")
-if unquote(admin_redis.password or "") != password_lines[0]:
-    raise SystemExit("Staging admin Redis URL and protected Redis configuration do not match")
-if admin_redis.path == redis.path:
-    raise SystemExit("Staging admin Redis URL must use an isolated Redis logical database")
+if session_lookup_key == admin_session_lookup_key:
+    raise SystemExit("Staging admin session lookup HMAC key must be distinct from the customer key")
 PY
 }
 
@@ -503,7 +464,9 @@ validate_production_admin_isolation() {
     python3 - \
         "${SECRET_DIR}/database_url" \
         "${SECRET_DIR}/admin_database_url" \
-        "${SECRET_DIR}/database_migration_url" <<'PY'
+        "${SECRET_DIR}/database_migration_url" \
+        "${SECRET_DIR}/session_lookup_hmac_key" \
+        "${SECRET_DIR}/admin_session_lookup_hmac_key" <<'PY'
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 import sys
@@ -511,6 +474,8 @@ import sys
 customer_url = Path(sys.argv[1]).read_text(encoding="utf-8")
 admin_url = Path(sys.argv[2]).read_text(encoding="utf-8")
 migration_url = Path(sys.argv[3]).read_text(encoding="utf-8")
+session_lookup_key = Path(sys.argv[4]).read_text(encoding="utf-8").strip()
+admin_session_lookup_key = Path(sys.argv[5]).read_text(encoding="utf-8").strip()
 
 customer = urlsplit(customer_url)
 admin = urlsplit(admin_url)
@@ -533,13 +498,15 @@ if customer_url == migration_url or customer_role == migration_role:
     raise SystemExit("Customer runtime database role must not be the migration/schema-owner role")
 if admin.hostname != customer.hostname or admin.path != customer.path:
     raise SystemExit("Admin runtime database URL must target the same production database with a distinct role")
+if session_lookup_key == admin_session_lookup_key:
+    raise SystemExit("Admin session lookup HMAC key must be distinct from customer session lookup HMAC key")
 PY
 }
 
 prepare_dependencies() {
     if [[ "${target}" == "staging" ]]; then
         dependencies_prepared=1
-        compose "${image}" up --detach --pull always --wait postgres redis
+        compose "${image}" up --detach --pull always --wait postgres
     fi
 }
 
@@ -575,8 +542,8 @@ show_dependency_diagnostics() {
         return
     fi
     echo "Staging dependency diagnostics:" >&2
-    compose "${image}" ps postgres redis >&2 || true
-    compose "${image}" logs --no-color --tail 120 postgres redis >&2 || true
+    compose "${image}" ps postgres >&2 || true
+    compose "${image}" logs --no-color --tail 120 postgres >&2 || true
 }
 
 rollback() {
@@ -669,9 +636,9 @@ required_secrets=(
     secret_key
     wtf_csrf_secret_key
     session_hmac_keys_json
+    session_lookup_hmac_key
     database_url
     database_migration_url
-    redis_url
     mfa_kek_keys_json
     password_pepper_b64
     security_audit_hmac_key
@@ -683,12 +650,11 @@ if [[ "${target}" == "staging" ]]; then
     required_secrets+=(
         postgres_owner_password
         postgres_app_password
-        redis.conf
         admin_secret_key
         admin_wtf_csrf_secret_key
         admin_session_hmac_keys_json
+        admin_session_lookup_hmac_key
         admin_database_url
-        admin_redis_url
         admin_password_pepper_b64
     )
 elif [[ "${target}" == "production" ]]; then
@@ -696,8 +662,8 @@ elif [[ "${target}" == "production" ]]; then
         admin_secret_key
         admin_wtf_csrf_secret_key
         admin_session_hmac_keys_json
+        admin_session_lookup_hmac_key
         admin_database_url
-        admin_redis_url
         admin_password_pepper_b64
     )
 fi
@@ -718,8 +684,7 @@ for secret_file in "${required_secrets[@]}"; do
         exit 1
     fi
     if [[ "${secret_file}" != "postgres_owner_password" \
-        && "${secret_file}" != "postgres_app_password" \
-        && "${secret_file}" != "redis.conf" ]] \
+        && "${secret_file}" != "postgres_app_password" ]] \
         && ! runuser -u sitbank-container -- \
             test -r "${SECRET_DIR}/${secret_file}"; then
         echo "Container account cannot read secret file: ${secret_file}" >&2

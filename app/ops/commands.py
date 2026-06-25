@@ -12,7 +12,7 @@ from flask import Flask
 from sqlalchemy import text
 
 from app.extensions import db
-from app.models import User
+from app.models import AuthAttemptCounter, ServerSideSession, User
 from app.security.alerts import (
     build_security_alert_report,
     deliver_security_alerts,
@@ -79,11 +79,6 @@ def register_ops_commands(app: Flask) -> None:
             failures.append(f"PostgreSQL check failed: {exc}")
 
         try:
-            app.extensions["redis"].ping()
-        except Exception as exc:
-            failures.append(f"Redis check failed: {exc}")
-
-        try:
             entries = validate_common_password_dictionary()
         except Exception as exc:
             failures.append(f"Common password dictionary check failed: {exc}")
@@ -103,6 +98,18 @@ def register_ops_commands(app: Flask) -> None:
             failures.append(f"Session HMAC configuration check failed: {exc}")
         else:
             click.echo(f"Configured session HMAC keys: {session_hmac_keys}")
+
+        lookup_key = app.config.get("SESSION_LOOKUP_HMAC_KEY")
+        if not isinstance(lookup_key, bytes) or len(lookup_key) != 32:
+            failures.append("SESSION_LOOKUP_HMAC_KEY must be configured as 32 bytes")
+        else:
+            click.echo("Session lookup HMAC key configured")
+
+        try:
+            db.session.execute(db.select(ServerSideSession.id).limit(1))
+            db.session.execute(db.select(AuthAttemptCounter.id).limit(1))
+        except Exception as exc:
+            failures.append(f"DB-backed security-state table check failed: {exc}")
 
         if app_mode == "customer":
             mfa_kek_keys = app.config.get("MFA_KEK_KEYS")
@@ -154,8 +161,8 @@ def register_ops_commands(app: Flask) -> None:
             failures.append("WTF_CSRF_CHECK_DEFAULT must be enabled")
         if not app.config.get("TALISMAN_FORCE_HTTPS"):
             failures.append("TALISMAN_FORCE_HTTPS must be enabled")
-        if str(app.config.get("RATELIMIT_STORAGE_URI", "")).startswith("memory://"):
-            failures.append("Rate limiting must use Redis-backed storage in production")
+        if not str(app.config.get("RATELIMIT_STORAGE_URI", "")).startswith("memory://"):
+            failures.append("Flask-Limiter storage must remain non-authoritative; DB-backed auth counters enforce security limits")
         if app_mode == "admin":
             if app.config.get("SESSION_COOKIE_NAME") != "__Host-sitbank_admin_session":
                 failures.append("Admin session cookie name must be isolated")
@@ -321,6 +328,15 @@ def register_ops_commands(app: Flask) -> None:
 
         expired_count = expire_manual_recovery_requests(limit=limit)
         click.echo(json.dumps({"expired_count": expired_count}, separators=(",", ":"), sort_keys=True))
+
+    @app.cli.command("cleanup-security-state")
+    @click.option("--limit", type=int, default=None, help="Maximum rows per state table to clean.")
+    def cleanup_security_state_command(limit: int | None) -> None:
+        """Clean expired DB-backed sessions and security state."""
+        from app.security.state_cleanup import cleanup_expired_security_state
+
+        result = cleanup_expired_security_state(limit=limit)
+        click.echo(json.dumps(result, separators=(",", ":"), sort_keys=True))
 
     @app.cli.command("rewrap-mfa-deks")
     @click.option("--from-kek-id", required=True, help="Existing KEK id wrapping the target DEKs.")

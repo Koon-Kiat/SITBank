@@ -6,7 +6,6 @@ import os
 from datetime import timedelta
 from pathlib import Path
 
-import fakeredis
 import pytest
 
 
@@ -20,6 +19,8 @@ TEST_ADMIN_SESSION_HMAC_KEYS = {
     "test-admin-current": b"6" * 32,
     "test-admin-previous": b"7" * 32,
 }
+TEST_SESSION_LOOKUP_HMAC_KEY = b"9" * 32
+TEST_ADMIN_SESSION_LOOKUP_HMAC_KEY = b"a" * 32
 TEST_MFA_KEK_ACTIVE_ID = "test-mfa-current"
 TEST_MFA_KEK_KEYS = {
     "test-mfa-current": b"4" * 32,
@@ -42,14 +43,14 @@ os.environ.setdefault("SECRET_KEY", "test-secret-key-that-is-long-enough-for-con
 os.environ.setdefault("WTF_CSRF_SECRET_KEY", "test-csrf-secret-that-is-long-enough-for-config")
 os.environ["SESSION_HMAC_ACTIVE_KEY_ID"] = TEST_SESSION_HMAC_ACTIVE_KEY_ID
 os.environ["SESSION_HMAC_KEYS_JSON"] = _encoded_keyring(TEST_SESSION_HMAC_KEYS)
+os.environ["SESSION_LOOKUP_HMAC_KEY"] = base64.b64encode(TEST_SESSION_LOOKUP_HMAC_KEY).decode("ascii")
 os.environ["ADMIN_SESSION_HMAC_ACTIVE_KEY_ID"] = TEST_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID
 os.environ["ADMIN_SESSION_HMAC_KEYS_JSON"] = _encoded_keyring(TEST_ADMIN_SESSION_HMAC_KEYS)
+os.environ["ADMIN_SESSION_LOOKUP_HMAC_KEY"] = base64.b64encode(TEST_ADMIN_SESSION_LOOKUP_HMAC_KEY).decode("ascii")
 os.environ.setdefault(
     "DATABASE_URL",
     "postgresql+psycopg2://user:pass@127.0.0.1:5432/sitbank_test",
 )
-os.environ.setdefault("REDIS_URL", "redis://:pass@127.0.0.1:6379/15")
-os.environ.setdefault("ADMIN_REDIS_URL", "redis://:admin-pass@127.0.0.1:6379/14")
 os.environ["MFA_KEK_ACTIVE_ID"] = TEST_MFA_KEK_ACTIVE_ID
 os.environ["MFA_KEK_KEYS_JSON"] = _encoded_keyring(TEST_MFA_KEK_KEYS)
 os.environ.setdefault(
@@ -78,22 +79,16 @@ class TestConfig:
     WTF_CSRF_SECRET_KEY = os.environ["WTF_CSRF_SECRET_KEY"]
     SESSION_HMAC_ACTIVE_KEY_ID = TEST_SESSION_HMAC_ACTIVE_KEY_ID
     SESSION_HMAC_KEYS = TEST_SESSION_HMAC_KEYS
+    SESSION_LOOKUP_HMAC_KEY = TEST_SESSION_LOOKUP_HMAC_KEY
     ADMIN_SECRET_KEY = os.environ["ADMIN_SECRET_KEY"]
     ADMIN_WTF_CSRF_SECRET_KEY = os.environ["ADMIN_WTF_CSRF_SECRET_KEY"]
     ADMIN_SESSION_HMAC_ACTIVE_KEY_ID = TEST_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID
     ADMIN_SESSION_HMAC_KEYS = TEST_ADMIN_SESSION_HMAC_KEYS
+    ADMIN_SESSION_LOOKUP_HMAC_KEY = TEST_ADMIN_SESSION_LOOKUP_HMAC_KEY
     ADMIN_SQLALCHEMY_DATABASE_URI = "sqlite+pysqlite:///:memory:"
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
     SQLALCHEMY_MIGRATION_DATABASE_URI = None
     SQLALCHEMY_TRACK_MODIFICATIONS = False
-    REDIS_URL = os.environ["REDIS_URL"]
-    ADMIN_REDIS_URL = os.environ["ADMIN_REDIS_URL"]
-    REDIS_PROTOCOL = 2
-    REDIS_LEGACY_RESPONSES = True
-    REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS = 2.0
-    REDIS_SOCKET_TIMEOUT_SECONDS = 5.0
-    REDIS_HEALTH_CHECK_INTERVAL_SECONDS = 30
-    REDIS_MAX_CONNECTIONS = 100
     MFA_KEK_ACTIVE_ID = TEST_MFA_KEK_ACTIVE_ID
     MFA_KEK_KEYS = TEST_MFA_KEK_KEYS
     PASSWORD_PEPPER_B64 = os.environ["PASSWORD_PEPPER_B64"]
@@ -129,7 +124,7 @@ class TestConfig:
     SECURITY_ALERT_STATE_PATH = None
     SECURITY_AUDIT_ANCHOR_PATH = None
     SECURITY_AUDIT_HMAC_KEY = os.environ["SECURITY_AUDIT_HMAC_KEY"]
-    SESSION_TYPE = "redis"
+    SESSION_TYPE = "database"
     SESSION_KEY_PREFIX = "session:"
     SESSION_COOKIE_NAME = "__Host-sitbank_session"
     ADMIN_SESSION_KEY_PREFIX = "admin-session:"
@@ -152,6 +147,8 @@ class TestConfig:
     ADMIN_PAST_SESSIONS_KEY_PREFIX = "ospbank:admin:past_sessions:"
     ADMIN_REVOKED_SESSION_KEY_PREFIX = "ospbank:admin:revoked_session:"
     ADMIN_AUTH_FAILURE_KEY_PREFIX = "ospbank:admin:authfail:"
+    SECURITY_STATE_CLEANUP_BATCH_SIZE = 500
+    SECURITY_STATE_RETENTION_DAYS = 30
     SESSION_HISTORY_LIMIT = 20
     PENDING_MFA_MAX_AGE_SECONDS = 5 * 60
     WTF_CSRF_ENABLED = False
@@ -194,7 +191,7 @@ SECURITY_TEST_FILES = frozenset(
         "tests/test_owasp_regressions.py",
         "tests/test_passwords.py",
         "tests/test_pentest_auth_bypass.py",
-        "tests/test_redis_session_integrity.py",
+        "tests/test_db_session_integrity.py",
         "tests/test_route_inventory_security.py",
         "tests/test_secret_scanner.py",
         "tests/test_session_management.py",
@@ -245,18 +242,10 @@ def pytest_collection_modifyitems(config, items):
 
 @pytest.fixture()
 def app(monkeypatch):
-    import app as app_module
     from app import create_app
     from app.extensions import db
     from app.security import passwords
 
-    fake_redis = fakeredis.FakeRedis(decode_responses=True)
-    fake_session_redis = fakeredis.FakeRedis(decode_responses=False)
-
-    def fake_from_url(url, decode_responses=False, **_options):
-        return fake_redis if decode_responses else fake_session_redis
-
-    monkeypatch.setattr(app_module, "Redis", type("FakeRedisFactory", (), {"from_url": staticmethod(fake_from_url)}))
     monkeypatch.setattr(passwords, "_is_password_pwned_by_hibp", lambda _password: False)
 
     flask_app = create_app(TestConfig)
