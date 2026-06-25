@@ -97,15 +97,10 @@ def apply_admin_runtime_database_privileges(
                     {"role": admin_role},
                 ).scalar_one()
             )
-            if role_exists:
-                connection.execute(
-                    text(f"ALTER ROLE {quoted_admin_role} LOGIN PASSWORD :password"),
-                    {"password": admin_password},
-                )
-            else:
-                connection.execute(
-                    text(f"CREATE ROLE {quoted_admin_role} LOGIN PASSWORD :password"),
-                    {"password": admin_password},
+            if not role_exists:
+                raise RuntimeError(
+                    "ADMIN_DATABASE_URL role must already exist; create or rotate it "
+                    "with a PostgreSQL administrator before deployment"
                 )
 
             connection.execute(
@@ -142,6 +137,26 @@ def apply_admin_runtime_database_privileges(
             )
     finally:
         migration_engine.dispose()
+
+    admin_engine = create_engine(admin_url)
+    try:
+        with admin_engine.connect() as admin_connection:
+            connected_admin_role = str(
+                admin_connection.execute(text("SELECT current_user")).scalar_one()
+            )
+            if connected_admin_role != admin_role:
+                raise RuntimeError(
+                    "ADMIN_DATABASE_URL did not authenticate as the configured role"
+                )
+            connected_database = str(
+                admin_connection.execute(text("SELECT current_database()")).scalar_one()
+            )
+            if connected_database != database:
+                raise RuntimeError(
+                    "ADMIN_DATABASE_URL did not authenticate to the configured database"
+                )
+    finally:
+        admin_engine.dispose()
 
     return AdminRuntimePrivilegeApplication(
         admin_role=admin_role,
