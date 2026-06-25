@@ -253,13 +253,11 @@ EOF
 chown root:root "${config_root}/deploy.conf"
 chmod 0644 "${config_root}/deploy.conf"
 
-for policy_file in \
-    common-passwords.txt; do
-    if [[ -f "${config_root}/${policy_file}" ]]; then
-        chown root:"${CONTAINER_GID}" "${config_root}/${policy_file}"
-        chmod 0640 "${config_root}/${policy_file}"
-    fi
-done
+policy_file="${config_root}/common-passwords.txt"
+if [[ -f "${policy_file}" ]]; then
+    chown root:"${CONTAINER_GID}" "${policy_file}"
+    chmod 0640 "${policy_file}"
+fi
 
 install_nginx_config() {
     local source_file="$1"
