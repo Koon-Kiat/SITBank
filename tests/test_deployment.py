@@ -1123,6 +1123,7 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert deploy_db_sequence_text.index("db upgrade") < deploy_db_sequence_text.index("apply-runtime-db-privileges")
     assert deploy_db_sequence_text.index("apply-runtime-db-privileges") < deploy_db_sequence_text.index("apply_staging_admin_runtime_db_privileges")
     assert deploy_db_sequence_text.index("apply_staging_admin_runtime_db_privileges") < deploy_db_sequence_text.index("verify-runtime-db-privileges")
+    assert deploy_db_sequence_text.index("verify-runtime-db-privileges") < deploy_db_sequence_text.index("production-check")
     assert "staging_migration_run" not in deploy_script
     assert deploy_script.count("migration_run \\") == 3
     assert (
