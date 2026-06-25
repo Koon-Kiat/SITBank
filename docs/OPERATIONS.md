@@ -90,11 +90,11 @@ TOTP-backed transaction authorization checks. There is no final ledger movement
 endpoint in this codebase, so final transfer execution is intentionally out of
 scope until such an endpoint exists.
 
-The Phase 1A admin boundary audits disabled/fail-closed admin login and access
-denied attempts with `admin_*` event types. Full admin audit coverage, including
-admin login success/failure, admin step-up, admin data access, and admin
-configuration changes, is Phase 2 after an approved admin MFA design and
-network controls exist.
+The admin boundary audits root-admin-controlled staff invite onboarding,
+admin login success/failure, TOTP verification, admin step-up, admin data
+access, and admin configuration changes with safe `admin_*` and
+`staff_*` event metadata. Admin sessions, credentials, cookies, and session
+HMAC keys remain separate from customer sessions.
 
 Useful checks:
 

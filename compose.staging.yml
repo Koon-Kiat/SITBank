@@ -201,6 +201,7 @@ services:
       ADMIN_SESSION_HMAC_KEYS_JSON_FILE: /run/secrets/admin_session_hmac_keys_json
       ADMIN_SESSION_LOOKUP_HMAC_KEY_FILE: /run/secrets/admin_session_lookup_hmac_key
       ADMIN_DATABASE_URL_FILE: /run/secrets/admin_database_url
+      MFA_KEK_KEYS_JSON_FILE: /run/secrets/mfa_kek_keys_json
       ADMIN_PASSWORD_PEPPER_B64_FILE: /run/secrets/admin_password_pepper_b64
       SECURITY_AUDIT_HMAC_KEY_FILE: /run/secrets/security_audit_hmac_key
       SECURITY_ALERT_WEBHOOK_URL_FILE: /run/secrets/security_alert_webhook_url
@@ -217,6 +218,8 @@ services:
         target: admin_session_lookup_hmac_key
       - source: admin_database_url
         target: admin_database_url
+      - source: mfa_kek_keys_json
+        target: mfa_kek_keys_json
       - source: admin_password_pepper_b64
         target: admin_password_pepper_b64
       - source: security_audit_hmac_key

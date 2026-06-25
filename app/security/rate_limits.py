@@ -31,6 +31,8 @@ def request_principal() -> str:
     value = (
         payload.get("username")
         or payload.get("email")
+        or payload.get("workplace_email")
+        or payload.get("personal_email")
         or payload.get("identifier")
         or session.get("pending_mfa_user_id")
         or getattr(getattr(g, "current_user", None), "id", None)

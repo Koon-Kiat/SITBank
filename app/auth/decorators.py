@@ -5,12 +5,16 @@ from time import time
 
 from flask import current_app, g, jsonify, session
 
+from app.admin.services import is_customer_user
+
 
 def login_required(view):
     @wraps(view)
     def wrapped(*args, **kwargs):
         if not session.get("user_id") or getattr(g, "current_user", None) is None:
             return jsonify({"error": "Authentication required"}), 401
+        if current_app.config.get("APP_MODE") == "customer" and not is_customer_user(g.current_user):
+            return jsonify({"error": "Forbidden"}), 403
         return view(*args, **kwargs)
 
     return wrapped

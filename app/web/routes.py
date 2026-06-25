@@ -29,6 +29,7 @@ from app.auth.forms import (
     RegistrationOtpRequestForm,
     TotpForm,
 )
+from app.admin.services import is_customer_user
 from app.auth.password_reset import (
     complete_password_reset,
     current_reset_transaction,
@@ -98,6 +99,10 @@ WEB_MFA_ONBOARDING_ALLOWED_ENDPOINTS = {
 @web_bp.before_request
 def enforce_mfa_onboarding():
     user = getattr(g, "current_user", None)
+    if user is not None and not is_customer_user(user):
+        session.clear()
+        flash("Please log in with a customer account.", "warning")
+        return redirect(url_for("web.login"))
     if user is None or has_enrolled_mfa_method(user):
         return None
     if request.endpoint in WEB_MFA_ONBOARDING_ALLOWED_ENDPOINTS:
@@ -111,6 +116,10 @@ def web_login_required(view):
     def wrapped(*args, **kwargs):
         if not session.get("user_id") or getattr(g, "current_user", None) is None:
             flash("Please log in to continue.", "warning")
+            return redirect(url_for("web.login"))
+        if not is_customer_user(g.current_user):
+            session.clear()
+            flash("Please log in with a customer account.", "warning")
             return redirect(url_for("web.login"))
         return view(*args, **kwargs)
 

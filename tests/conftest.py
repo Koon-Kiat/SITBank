@@ -166,6 +166,29 @@ class TestConfig:
     FRESH_MFA_SECONDS = 5 * 60
     TOTP_LOGIN_VALID_WINDOW = 1
     TOTP_HIGH_RISK_VALID_WINDOW = 0
+    SIT_WORKPLACE_EMAIL_DOMAINS = frozenset(
+        {"sit.singaporetech.edu.sg", "singaporetech.edu.sg"}
+    )
+    STAFF_INVITE_PERSONAL_EMAIL_DOMAINS = frozenset(
+        {"gmail.com", "outlook.com", "hotmail.com", "yahoo.com", "icloud.com", "proton.me", "protonmail.com"}
+    )
+    STAFF_INVITE_ALIAS_SEPARATORS = ("+",)
+    ROOT_ADMIN_EMAILS = frozenset(
+        {
+            "root1@sit.singaporetech.edu.sg",
+            "root2@sit.singaporetech.edu.sg",
+            "root3@sit.singaporetech.edu.sg",
+            "root4@sit.singaporetech.edu.sg",
+            "root5@sit.singaporetech.edu.sg",
+            "root6@sit.singaporetech.edu.sg",
+            "root7@sit.singaporetech.edu.sg",
+        }
+    )
+    STAFF_INVITE_TTL_SECONDS = 24 * 60 * 60
+    STAFF_WORKPLACE_VERIFICATION_TTL_SECONDS = 15 * 60
+    TURNSTILE_ENABLED = False
+    TURNSTILE_SECRET_KEY = None
+    TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
     TALISMAN_FORCE_HTTPS = False
     TALISMAN_CONTENT_SECURITY_POLICY = {
         "default-src": "'self'",
@@ -179,6 +202,7 @@ class TestConfig:
 SECURITY_TEST_FILES = frozenset(
     {
         "tests/test_account_security_actions.py",
+        "tests/test_admin_staff_invites.py",
         "tests/test_audit_alerting.py",
         "tests/test_auth_registration_login.py",
         "tests/test_authenticated_portal_ui.py",
@@ -202,6 +226,7 @@ DEPLOYMENT_TEST_FILES = frozenset({"tests/test_deployment.py"})
 SLOW_TEST_FILES = frozenset(
     {
         "tests/test_account_security_actions.py",
+        "tests/test_admin_staff_invites.py",
         "tests/test_audit_alerting.py",
         "tests/test_auth_registration_login.py",
         "tests/test_authenticated_portal_ui.py",

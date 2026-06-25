@@ -7,6 +7,7 @@ from marshmallow import Schema, ValidationError
 
 from app.extensions import limiter
 from app.auth.mfa_policy import has_enrolled_mfa_method
+from app.admin.services import is_customer_user
 from app.security.rate_limits import mfa_principal, request_principal
 
 from .decorators import login_required, not_frozen_required
@@ -99,6 +100,8 @@ AUTH_MFA_ONBOARDING_ALLOWED_ENDPOINTS = {
 @auth_bp.before_request
 def enforce_api_mfa_onboarding():
     user = getattr(g, "current_user", None)
+    if user is not None and not is_customer_user(user):
+        return jsonify({"error": "Forbidden"}), 403
     if user is None or has_enrolled_mfa_method(user):
         return None
     if request.endpoint in AUTH_MFA_ONBOARDING_ALLOWED_ENDPOINTS:

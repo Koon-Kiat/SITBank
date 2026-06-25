@@ -5,8 +5,9 @@ import logging
 from datetime import timedelta
 
 from app.extensions import db
-from app.models import SecurityAuditEvent, ServerSideSession
+from app.models import SecurityAuditEvent, ServerSideSession, User
 from app.security.audit import verify_audit_hash_chain
+from app.security.passwords import hash_password
 from conftest import TestConfig
 
 
@@ -37,7 +38,10 @@ def test_customer_and_admin_apps_have_isolated_route_surfaces(monkeypatch):
     assert "/dashboard" in customer_rules
     assert "/dashboard" not in admin_rules
     assert not any(rule.startswith("/banking") for rule in admin_rules)
-    assert admin_rules["/login"] == "admin.login_disabled"
+    assert admin_rules["/login"] == "admin.login"
+    assert admin_rules["/mfa/verify"] == "admin.mfa_verify"
+    assert "/invites" in admin_rules
+    assert "admin.invite_create" in set(admin_rules.values())
 
 
 def test_entrypoints_select_explicit_factory_modes(monkeypatch):
@@ -91,11 +95,13 @@ def test_admin_runtime_config_is_separate_and_stricter(monkeypatch):
     assert customer_app.config["AUTH_FAILURE_KEY_PREFIX"] != admin_app.config["AUTH_FAILURE_KEY_PREFIX"]
     assert customer_app.config["SQLALCHEMY_DATABASE_URI"] != admin_app.config["SQLALCHEMY_DATABASE_URI"]
     assert admin_app.config["SQLALCHEMY_MIGRATION_DATABASE_URI"] is None
+    assert admin_app.config["ADMIN_AUTH_ENABLED"] is True
+    assert admin_app.config["ADMIN_WEBAUTHN_PHASE"] == "disabled"
     assert admin_app.config["PERMANENT_SESSION_LIFETIME"] == timedelta(minutes=5)
     assert admin_app.config["PERMANENT_SESSION_LIFETIME"] < customer_app.config["PERMANENT_SESSION_LIFETIME"]
 
 
-def test_admin_auth_fails_closed_without_creating_sessions(monkeypatch):
+def test_admin_auth_rejects_bad_requests_without_creating_privileged_sessions(monkeypatch):
     from app import create_app
 
     admin_app = create_app(TestConfig, app_mode="admin")
@@ -108,10 +114,10 @@ def test_admin_auth_fails_closed_without_creating_sessions(monkeypatch):
         register = client.get("/register")
         customer_cookie = client.get("/", headers={"Cookie": "__Host-sitbank_session=customer"}).status_code
 
-        assert password_only.status_code == 403
-        assert username_only.status_code == 403
+        assert password_only.status_code == 400
+        assert username_only.status_code == 400
         assert register.status_code == 404
-        assert customer_cookie == 403
+        assert customer_cookie == 401
         assert db.session.query(ServerSideSession).count() == 0
         for response in (password_only, username_only, register):
             assert not any(
@@ -124,29 +130,40 @@ def test_admin_auth_fails_closed_without_creating_sessions(monkeypatch):
         db.drop_all()
 
 
-def test_disabled_admin_login_is_audited_and_redacted(monkeypatch):
+def test_admin_login_failures_are_audited_and_redacted(monkeypatch):
     from app import create_app
 
     admin_app = create_app(TestConfig, app_mode="admin")
     with admin_app.app_context():
         db.create_all()
+        db.session.add(
+            User(
+                username="root-admin",
+                email="root1@sit.singaporetech.edu.sg",
+                password_hash=hash_password("correct horse battery staple"),
+                account_type="root_admin",
+                account_status="active",
+                full_name="Root Admin",
+                phone_number="91234567",
+                account_number=None,
+                mfa_enabled=False,
+            )
+        )
+        db.session.commit()
         response = admin_app.test_client().post(
             "/login",
             json={
-                "username": "admin",
+                "workplace_email": "root1@sit.singaporetech.edu.sg",
                 "password": "plaintext-password",
-                "token": "bearer sensitive",
             },
         )
 
-        assert response.status_code == 403
+        assert response.status_code == 401
         event = db.session.query(SecurityAuditEvent).one()
-        assert event.event_type == "admin_login_disabled"
-        assert event.outcome == "fail_closed"
-        assert event.event_metadata["app_mode"] == "admin"
-        assert event.event_metadata["password"] == "[redacted]"
-        assert event.event_metadata["token"] == "[redacted]"
-        assert event.event_metadata["phase"] == "phase_1a_fail_closed"
+        assert event.event_type == "admin_login"
+        assert event.outcome == "failure"
+        assert event.event_metadata["principal_ref"]
+        assert "plaintext-password" not in str(event.event_metadata)
         assert verify_audit_hash_chain()["valid"] is True
 
         db.session.remove()

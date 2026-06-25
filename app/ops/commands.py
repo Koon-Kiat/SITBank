@@ -12,7 +12,7 @@ from flask import Flask
 from sqlalchemy import text
 
 from app.extensions import db
-from app.models import AuthAttemptCounter, ServerSideSession, User
+from app.models import AuthAttemptCounter, ServerSideSession, StaffInvite, User
 from app.security.alerts import (
     build_security_alert_report,
     deliver_security_alerts,
@@ -111,15 +111,14 @@ def register_ops_commands(app: Flask) -> None:
         except Exception as exc:
             failures.append(f"DB-backed security-state table check failed: {exc}")
 
-        if app_mode == "customer":
-            mfa_kek_keys = app.config.get("MFA_KEK_KEYS")
-            mfa_kek_active_id = app.config.get("MFA_KEK_ACTIVE_ID")
-            if not isinstance(mfa_kek_keys, dict) or not mfa_kek_keys:
-                failures.append("MFA_KEK_KEYS_JSON must configure at least one MFA KEK")
-            elif mfa_kek_active_id not in mfa_kek_keys:
-                failures.append("MFA_KEK_ACTIVE_ID must identify a configured MFA KEK")
-            else:
-                click.echo(f"Configured MFA KEKs: {len(mfa_kek_keys)}")
+        mfa_kek_keys = app.config.get("MFA_KEK_KEYS")
+        mfa_kek_active_id = app.config.get("MFA_KEK_ACTIVE_ID")
+        if not isinstance(mfa_kek_keys, dict) or not mfa_kek_keys:
+            failures.append("MFA_KEK_KEYS_JSON must configure at least one MFA KEK")
+        elif mfa_kek_active_id not in mfa_kek_keys:
+            failures.append("MFA_KEK_ACTIVE_ID must identify a configured MFA KEK")
+        else:
+            click.echo(f"Configured MFA KEKs: {len(mfa_kek_keys)}")
 
         try:
             alert_config = validate_security_alert_config(require_delivery=True)
@@ -166,13 +165,20 @@ def register_ops_commands(app: Flask) -> None:
         if app_mode == "admin":
             if app.config.get("SESSION_COOKIE_NAME") != "__Host-sitbank_admin_session":
                 failures.append("Admin session cookie name must be isolated")
-            if app.config.get("ADMIN_AUTH_ENABLED") is not False:
-                failures.append("Admin authentication must remain disabled in Phase 1A")
+            if app.config.get("ADMIN_AUTH_ENABLED") is not True:
+                failures.append("Admin authentication must be enabled for invite-only staff onboarding")
+            root_admin_emails = app.config.get("ROOT_ADMIN_EMAILS") or set()
+            if len(root_admin_emails) != 7:
+                failures.append("ROOT_ADMIN_EMAILS must configure exactly 7 root administrators")
             if not str(app.config.get("RATELIMIT_KEY_PREFIX", "")).startswith("ospbank:admin:"):
                 failures.append("Admin rate-limit key prefix must be isolated")
             if not str(app.config.get("SESSION_KEY_PREFIX", "")).startswith("admin-"):
                 failures.append("Admin session key prefix must be isolated")
-            click.echo("Admin auth is fail-closed; admin login and step-up remain disabled")
+            try:
+                db.session.execute(db.select(StaffInvite.id).limit(1))
+            except Exception as exc:
+                failures.append(f"Staff invite table check failed: {exc}")
+            click.echo("Admin auth enabled for root-admin invite-only TOTP onboarding")
         if int(app.config.get("TOTP_LOGIN_VALID_WINDOW", -1)) > 1:
             failures.append("TOTP_LOGIN_VALID_WINDOW must be 0 or 1")
         if int(app.config.get("TOTP_HIGH_RISK_VALID_WINDOW", -1)) != 0:

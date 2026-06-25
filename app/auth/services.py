@@ -226,6 +226,8 @@ def register_user(data: dict[str, Any]) -> tuple[User, list[str]]:
         username=data["username"].strip(),
         email=normalized_email,
         password_hash=hash_password(data["password"]),
+        account_type="customer",
+        account_status="active",
         full_name=data["full_name"].strip(),
         phone_number=data["phone_number"].strip(),
         account_number=_generate_account_number(),
@@ -264,6 +266,9 @@ def authenticate_primary(identifier: str, password: str) -> dict[str, Any]:
     if is_password_raw_length_safe(password):
         candidate_hash = user.password_hash if user else _dummy_password_hash()
         password_ok = verify_password(password, candidate_hash)
+
+    if user is not None and getattr(user, "account_type", "customer") != "customer":
+        password_ok = False
 
     if user is None or not password_ok:
         audit_event(
@@ -1021,6 +1026,7 @@ def _public_user(user: User) -> dict[str, Any]:
         "id": user.id,
         "username": user.username,
         "email": user.email,
+        "account_type": user.account_type,
         "mfa_enabled": user.mfa_enabled,
         "mfa_step_up_preference": user.mfa_step_up_preference,
         "is_frozen": user.is_frozen,

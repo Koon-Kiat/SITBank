@@ -2346,7 +2346,7 @@ def test_production_edge_runbook_documents_network_waf_and_verification_steps():
         "Nginx terminates TLS, redirects HTTP to HTTPS",
         "Gunicorn binds only to `127.0.0.1:5000`",
         "Admin Gunicorn binds only to `127.0.0.1:5002`",
-        "Admin auth remains fail-closed pending an approved MFA design",
+        "Flask admin auth is implemented only for root-admin-controlled invite",
         "compose.prod.yml` publishes no",
         "`/health/ready` is for local deployment and load-balancer checks",
         "Cloudflare or AWS WAF should sit in front of Nginx",

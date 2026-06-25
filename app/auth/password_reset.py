@@ -976,7 +976,8 @@ def _find_customer_user(identifier: str) -> User | None:
             or_(
                 func.lower(User.username) == normalized,
                 func.lower(User.email) == normalized,
-            )
+            ),
+            User.account_type == "customer",
         )
     ).scalar_one_or_none()
 
@@ -1020,6 +1021,8 @@ def _account_reset_blocked(user: User) -> bool:
 
 
 def _is_admin_like_user(user: User) -> bool:
+    if getattr(user, "account_type", "customer") != "customer":
+        return True
     username = str(user.username or "").strip().casefold()
     email = str(user.email or "").strip().casefold()
     local, _separator, domain = email.partition("@")
