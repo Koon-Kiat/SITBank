@@ -11,7 +11,11 @@ Production admin uses separate root-managed secret files in
 customer Flask signing, CSRF, session-HMAC, session-lookup HMAC,
 password-pepper, or database runtime material.
 `admin_database_url` must use a dedicated admin runtime role, distinct from
-both the customer runtime role and the migration/schema-owner role.
+both the customer runtime role and the migration/schema-owner role. Create that
+role, and rotate its password, with a PostgreSQL administrator or other
+approved role-management account; routine application deployments do not grant
+the migration/schema-owner role permission to create, alter, or rotate database
+roles.
 
 MFA/TOTP seed encryption uses envelope encryption. Keep old KEKs in `mfa_kek_keys_json` until `rewrap-mfa-deks` has moved stored records to the new active KEK. Then update `MFA_KEK_ACTIVE_ID` and the root-managed keyring together.
 

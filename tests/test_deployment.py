@@ -299,8 +299,11 @@ def test_runtime_privilege_verifier_quotes_create_probe_table_name():
     assert "apply_runtime_audit_table_privileges" in source
     assert "apply_admin_runtime_database_privileges" in source
     assert "ADMIN_DATABASE_URL is required for admin privilege application" in source
-    assert "CREATE ROLE" in source
-    assert "ALTER ROLE" in source
+    assert "ADMIN_DATABASE_URL role must already exist" in source
+    assert "CREATE ROLE" not in source
+    assert "ALTER ROLE" not in source
+    assert "create_engine(admin_url)" in source
+    assert "ADMIN_DATABASE_URL did not authenticate as the configured role" in source
     assert "GRANT SELECT, INSERT ON ALL TABLES" in source
     assert "ALTER DEFAULT PRIVILEGES FOR ROLE" in source
     assert "REVOKE UPDATE, DELETE, TRUNCATE ON TABLE" in source

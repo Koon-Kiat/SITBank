@@ -62,7 +62,11 @@ secret files under `/etc/sitbank/secrets`: `admin_secret_key`,
 `admin_session_lookup_hmac_key`, `admin_database_url`, and
 `admin_password_pepper_b64`.
 `admin_database_url` must use a dedicated admin runtime database role and must
-not reuse either `database_url` or `database_migration_url`.
+not reuse either `database_url` or `database_migration_url`. Provision that
+database role, and rotate its password, with a PostgreSQL administrator or
+other approved role-management account before deployment; the deployment
+wrapper only grants schema, table, sequence, and default privileges to the
+existing role after migrations run.
 `admin_session_lookup_hmac_key` must not reuse the customer
 `session_lookup_hmac_key`.
 
