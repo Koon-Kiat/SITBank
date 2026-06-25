@@ -22,36 +22,18 @@
       <h2>Create account</h2>
     </div>
 
+    {% if step == "details" %}
     <div class="stacked-panel">
       <div class="page-heading compact">
-        <p class="eyebrow">Email verification</p>
-        <h3>Verify your SIT email</h3>
+        <p class="eyebrow">Step 2 of 2</p>
+        <h3>Complete your account</h3>
       </div>
-      <form method="post" action="{{ url_for('web.register_otp_request') }}" novalidate>
-        {{ otp_request_form.hidden_tag() }}
-        <div class="form-group">
-          <label for="otp_request_email">SIT email</label>
-          {{ otp_request_form.email(id="otp_request_email", autocomplete="email", maxlength="255", placeholder="name@sit.singaporetech.edu.sg") }}
-          {% for error in otp_request_form.email.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+      <dl class="detail-list">
+        <div>
+          <dt>Verified email</dt>
+          <dd>{{ verified_email }}</dd>
         </div>
-        <button class="button secondary full" type="submit">Send verification code</button>
-      </form>
-
-      <form method="post" action="{{ url_for('web.register_otp_verify') }}" novalidate>
-        {{ otp_verify_form.hidden_tag() }}
-        <div class="form-group">
-          <label for="otp_verify_email">SIT email</label>
-          {{ otp_verify_form.email(id="otp_verify_email", autocomplete="email", maxlength="255", placeholder="name@sit.singaporetech.edu.sg") }}
-          {% for error in otp_verify_form.email.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
-        </div>
-        <div class="form-group">
-          <label for="otp_code">Verification code</label>
-          {{ otp_verify_form.otp_code(id="otp_code", inputmode="numeric", autocomplete="one-time-code", maxlength="6") }}
-          {% for error in otp_verify_form.otp_code.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
-          <p class="hint">Codes expire after 5 minutes. Requesting a new code invalidates the previous one.</p>
-        </div>
-        <button class="button secondary full" type="submit">Verify email</button>
-      </form>
+      </dl>
     </div>
 
     <form method="post" action="{{ url_for('web.register_submit') }}" novalidate>
@@ -77,12 +59,6 @@
       </div>
 
       <div class="form-group">
-        <label for="{{ form.email.id }}">Email</label>
-        {{ form.email(autocomplete="email", maxlength="255", placeholder="name@sit.singaporetech.edu.sg") }}
-        {% for error in form.email.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
-      </div>
-
-      <div class="form-group">
         <label for="{{ form.password.id }}">Password</label>
         <div class="password-input-wrap">
           {{ form.password(autocomplete="new-password", minlength=config["PASSWORD_MIN_LENGTH"], data_password_strength_input="registration-password") }}
@@ -105,6 +81,34 @@
       <p class="hint">Common passwords are rejected server-side.</p>
       <button class="button full" type="submit">Register account</button>
     </form>
+    {% else %}
+    <div class="stacked-panel">
+      <div class="page-heading compact">
+        <p class="eyebrow">Step 1 of 2</p>
+        <h3>Verify your SIT email</h3>
+      </div>
+      <form method="post" action="{{ url_for('web.register_otp_request') }}" novalidate>
+        {{ otp_request_form.hidden_tag() }}
+        <div class="form-group">
+          <label for="otp_request_email">SIT email</label>
+          {{ otp_request_form.email(id="otp_request_email", autocomplete="email", maxlength="255", placeholder="name@sit.singaporetech.edu.sg") }}
+          {% for error in otp_request_form.email.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+        </div>
+        <button class="button secondary full" type="submit">Send verification code</button>
+      </form>
+
+      <form method="post" action="{{ url_for('web.register_otp_verify') }}" novalidate>
+        {{ otp_verify_form.hidden_tag() }}
+        <div class="form-group">
+          <label for="otp_code">Verification code</label>
+          {{ otp_verify_form.otp_code(id="otp_code", inputmode="numeric", autocomplete="one-time-code", maxlength="6") }}
+          {% for error in otp_verify_form.otp_code.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+          <p class="hint">Codes expire after 5 minutes. Requesting a new code invalidates the previous one.</p>
+        </div>
+        <button class="button secondary full" type="submit">Verify email</button>
+      </form>
+    </div>
+    {% endif %}
     <p class="switch-link">Already registered? <a href="{{ url_for('web.login') }}">Login</a>.</p>
   </div>
 </section>

@@ -6,7 +6,7 @@ from wtforms.validators import Email, EqualTo, InputRequired, Length, Optional, 
 
 from app.security.passwords import PASSWORD_MIN_LENGTH, password_max_chars
 
-from .schemas import PHONE_RE, REGISTRATION_OTP_RE, STEP_UP_TOKEN_RE, TOTP_RE, USERNAME_RE
+from .schemas import FULL_NAME_RE, PHONE_RE, REGISTRATION_OTP_RE, STEP_UP_TOKEN_RE, TOTP_RE, USERNAME_RE
 
 
 def password_length(*, minimum: int | None = None):
@@ -30,7 +30,14 @@ class RegisterForm(FlaskForm):
             Regexp(USERNAME_RE, message="Username contains invalid characters"),
         ],
     )
-    full_name = StringField("Full name", validators=[InputRequired(), Length(min=1, max=120)])
+    full_name = StringField(
+        "Full name",
+        validators=[
+            InputRequired(),
+            Length(min=1, max=120),
+            Regexp(FULL_NAME_RE, message="Full name contains invalid characters"),
+        ],
+    )
     phone_number = StringField(
         "Phone number",
         validators=[
@@ -50,8 +57,53 @@ class RegisterForm(FlaskForm):
     )
 
 
+class RegisterDetailsForm(FlaskForm):
+    username = StringField(
+        "Username",
+        validators=[
+            InputRequired(),
+            Length(min=3, max=64),
+            Regexp(USERNAME_RE, message="Username contains invalid characters"),
+        ],
+    )
+    full_name = StringField(
+        "Full name",
+        validators=[
+            InputRequired(),
+            Length(min=1, max=120),
+            Regexp(FULL_NAME_RE, message="Full name contains invalid characters"),
+        ],
+    )
+    phone_number = StringField(
+        "Phone number",
+        validators=[
+            InputRequired(),
+            Regexp(PHONE_RE, message="Enter a valid Singapore phone number (8 digits starting with 8 or 9)"),
+        ],
+    )
+    password = PasswordField("Password", validators=[InputRequired(), password_length(minimum=PASSWORD_MIN_LENGTH)])
+    confirm_password = PasswordField(
+        "Confirm password",
+        validators=[
+            InputRequired(),
+            password_length(),
+            EqualTo("password", message="Passwords must match"),
+        ],
+    )
+
+
 class RegistrationOtpRequestForm(FlaskForm):
     email = StringField("SIT email", validators=[InputRequired(), Email(), Length(max=255)])
+
+
+class RegistrationOtpCodeForm(FlaskForm):
+    otp_code = StringField(
+        "Verification code",
+        validators=[
+            InputRequired(),
+            Regexp(REGISTRATION_OTP_RE, message="Verification code must be exactly 6 digits"),
+        ],
+    )
 
 
 class RegistrationOtpVerifyForm(FlaskForm):

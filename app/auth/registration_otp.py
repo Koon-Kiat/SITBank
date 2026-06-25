@@ -28,6 +28,7 @@ REGISTRATION_OTP_TTL_SECONDS = 5 * 60
 REGISTRATION_OTP_RESEND_COOLDOWN_SECONDS = 60
 REGISTRATION_OTP_MAX_ATTEMPTS = 5
 REGISTRATION_OTP_SESSION_BINDING_KEY = "registration_otp_session_ref"
+REGISTRATION_OTP_PENDING_EMAIL_KEY = "registration_otp_pending_email"
 REGISTRATION_OTP_VERIFIED_EMAIL_KEY = "registration_otp_verified_email"
 REGISTRATION_OTP_VERIFIED_AT_KEY = "registration_otp_verified_at"
 
@@ -69,7 +70,6 @@ def request_registration_otp(email: str) -> dict[str, str]:
             user=existing_user,
             metadata={"email_ref": email_ref, "eligible": False},
         )
-        _clear_verified_email(normalized_email)
         return {"message": GENERIC_OTP_SENT_MESSAGE}
 
     key = _otp_cache_key(normalized_email, create_session_binding=True)
@@ -91,6 +91,7 @@ def request_registration_otp(email: str) -> dict[str, str]:
             )
 
     otp_code = f"{secrets.randbelow(1_000_000):06d}"
+    _clear_registration_progress_state()
     payload = {
         "email": normalized_email,
         "otp_hmac": _otp_hmac(normalized_email, otp_code),
@@ -98,7 +99,6 @@ def request_registration_otp(email: str) -> dict[str, str]:
         "issued_at": now,
     }
     _redis().set(key, json.dumps(payload, separators=(",", ":"), sort_keys=True), ex=REGISTRATION_OTP_TTL_SECONDS)
-    _clear_verified_email(normalized_email)
     try:
         send_security_email(
             normalized_email,
@@ -111,6 +111,7 @@ def request_registration_otp(email: str) -> dict[str, str]:
         )
     except Exception as exc:
         _redis().delete(key)
+        _clear_registration_progress_state()
         audit_event(
             "registration_otp",
             "failed",
@@ -119,6 +120,7 @@ def request_registration_otp(email: str) -> dict[str, str]:
         raise RegistrationOtpError("Could not send verification code. Please try again later.", 503) from exc
 
     audit_event("registration_otp", "requested", metadata={"email_ref": email_ref, "eligible": True})
+    session[REGISTRATION_OTP_PENDING_EMAIL_KEY] = normalized_email
     return {"message": GENERIC_OTP_SENT_MESSAGE}
 
 
@@ -164,19 +166,38 @@ def verify_registration_otp(email: str, otp_code: str) -> dict[str, str]:
     _redis().delete(key)
     session[REGISTRATION_OTP_VERIFIED_EMAIL_KEY] = normalized_email
     session[REGISTRATION_OTP_VERIFIED_AT_KEY] = int(time.time())
+    session.pop(REGISTRATION_OTP_PENDING_EMAIL_KEY, None)
     audit_event("registration_otp", "verified", metadata={"email_ref": email_ref})
     return {"message": "Email verified. Complete registration to create your account."}
 
 
-def require_verified_registration_email(email: str) -> str:
-    normalized_email = normalize_registration_email(email)
+def pending_registration_email() -> str | None:
+    pending_email = normalize_registration_email(str(session.get(REGISTRATION_OTP_PENDING_EMAIL_KEY) or ""))
+    return pending_email or None
+
+
+def current_verified_registration_email() -> str | None:
     verified_email = normalize_registration_email(str(session.get(REGISTRATION_OTP_VERIFIED_EMAIL_KEY) or ""))
     verified_at = int(session.get(REGISTRATION_OTP_VERIFIED_AT_KEY) or 0)
-    if (
-        not verified_email
-        or verified_email != normalized_email
-        or int(time.time()) - verified_at > REGISTRATION_OTP_TTL_SECONDS
-    ):
+    if not verified_email or int(time.time()) - verified_at > REGISTRATION_OTP_TTL_SECONDS:
+        if verified_email:
+            _clear_registration_session_state()
+        return None
+    return verified_email
+
+
+def require_current_verified_registration_email() -> str:
+    verified_email = current_verified_registration_email()
+    if not verified_email:
+        audit_event("registration", "failure", metadata={"reason": "email_otp_required"})
+        raise RegistrationOtpError("Verify your SIT email before creating an account.", 400)
+    return verified_email
+
+
+def require_verified_registration_email(email: str) -> str:
+    normalized_email = normalize_registration_email(email)
+    verified_email = current_verified_registration_email()
+    if not verified_email or verified_email != normalized_email:
         audit_event(
             "registration",
             "failure",
@@ -192,9 +213,7 @@ def require_verified_registration_email(email: str) -> str:
 def consume_verified_registration_email(email: str) -> None:
     normalized_email = normalize_registration_email(email)
     if normalize_registration_email(str(session.get(REGISTRATION_OTP_VERIFIED_EMAIL_KEY) or "")) == normalized_email:
-        session.pop(REGISTRATION_OTP_VERIFIED_EMAIL_KEY, None)
-        session.pop(REGISTRATION_OTP_VERIFIED_AT_KEY, None)
-        session.pop(REGISTRATION_OTP_SESSION_BINDING_KEY, None)
+        _clear_registration_session_state()
 
 
 def _redis():
@@ -243,10 +262,15 @@ def _remaining_ttl(key: str) -> int:
     return ttl if ttl > 0 else REGISTRATION_OTP_TTL_SECONDS
 
 
-def _clear_verified_email(email: str) -> None:
-    if normalize_registration_email(str(session.get(REGISTRATION_OTP_VERIFIED_EMAIL_KEY) or "")) == normalize_registration_email(email):
-        session.pop(REGISTRATION_OTP_VERIFIED_EMAIL_KEY, None)
-        session.pop(REGISTRATION_OTP_VERIFIED_AT_KEY, None)
+def _clear_registration_session_state() -> None:
+    _clear_registration_progress_state()
+    session.pop(REGISTRATION_OTP_SESSION_BINDING_KEY, None)
+
+
+def _clear_registration_progress_state() -> None:
+    session.pop(REGISTRATION_OTP_PENDING_EMAIL_KEY, None)
+    session.pop(REGISTRATION_OTP_VERIFIED_EMAIL_KEY, None)
+    session.pop(REGISTRATION_OTP_VERIFIED_AT_KEY, None)
 
 
 def _user_by_email(email: str) -> User | None:

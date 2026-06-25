@@ -25,9 +25,9 @@ from app.auth.forms import (
     PasswordChangeForm,
     PasswordResetForm,
     ProfileForm,
-    RegisterForm,
+    RegisterDetailsForm,
+    RegistrationOtpCodeForm,
     RegistrationOtpRequestForm,
-    RegistrationOtpVerifyForm,
     TotpForm,
 )
 from app.auth.password_reset import (
@@ -41,7 +41,10 @@ from app.auth.password_reset import (
 )
 from app.auth.mfa_policy import enrolled_webauthn_credential_count, has_enrolled_mfa_method
 from app.auth.registration_otp import (
+    GENERIC_OTP_ERROR,
     RegistrationOtpError,
+    current_verified_registration_email,
+    pending_registration_email,
     request_registration_otp,
     verify_registration_otp,
 )
@@ -161,7 +164,10 @@ def prevent_sensitive_page_caching(response):
 def register_form():
     if getattr(g, "current_user", None) is not None:
         return redirect(url_for("web.dashboard"))
-    return _render_register_form(RegisterForm())
+    verified_email = current_verified_registration_email()
+    if verified_email:
+        return _render_register_details_form(RegisterDetailsForm(), verified_email=verified_email)
+    return _render_register_email_form()
 
 
 @web_bp.post("/register/otp/request")
@@ -171,17 +177,15 @@ def register_otp_request():
     if getattr(g, "current_user", None) is not None:
         return redirect(url_for("web.dashboard"))
     form = RegistrationOtpRequestForm()
-    register_form = RegisterForm()
     if not form.validate_on_submit():
-        return _render_register_form(register_form, otp_request_form=form), 400
+        return _render_register_email_form(otp_request_form=form), 400
     try:
         result = request_registration_otp(form.email.data)
     except RegistrationOtpError as exc:
         flash(exc.message, "error")
-        return _render_register_form(register_form, otp_request_form=form), exc.status_code
-    register_form.email.data = form.email.data
+        return _render_register_email_form(otp_request_form=form), exc.status_code
     flash(result["message"], "info")
-    return _render_register_form(register_form, otp_request_form=form)
+    return _render_register_email_form(otp_request_form=form)
 
 
 @web_bp.post("/register/otp/verify")
@@ -190,18 +194,23 @@ def register_otp_request():
 def register_otp_verify():
     if getattr(g, "current_user", None) is not None:
         return redirect(url_for("web.dashboard"))
-    form = RegistrationOtpVerifyForm()
-    register_form = RegisterForm()
+    form = RegistrationOtpCodeForm()
+    request_form = RegistrationOtpRequestForm()
+    pending_email = pending_registration_email()
+    if pending_email:
+        request_form.email.data = pending_email
     if not form.validate_on_submit():
-        return _render_register_form(register_form, otp_verify_form=form), 400
+        return _render_register_email_form(otp_request_form=request_form, otp_verify_form=form), 400
+    if not pending_email:
+        flash(GENERIC_OTP_ERROR, "error")
+        return _render_register_email_form(otp_verify_form=form), 400
     try:
-        result = verify_registration_otp(form.email.data, form.otp_code.data)
+        result = verify_registration_otp(pending_email, form.otp_code.data)
     except RegistrationOtpError as exc:
         flash(exc.message, "error")
-        return _render_register_form(register_form, otp_verify_form=form), exc.status_code
-    register_form.email.data = form.email.data
+        return _render_register_email_form(otp_request_form=request_form, otp_verify_form=form), exc.status_code
     flash(result["message"], "success")
-    return _render_register_form(register_form, otp_verify_form=form)
+    return redirect(url_for("web.register_form"))
 
 
 @web_bp.post("/register")
@@ -211,9 +220,14 @@ def register_submit():
     if getattr(g, "current_user", None) is not None:
         return redirect(url_for("web.dashboard"))
 
-    form = RegisterForm()
+    verified_email = current_verified_registration_email()
+    if not verified_email:
+        flash("Verify your SIT email before creating an account.", "error")
+        return _render_register_email_form(), 400
+
+    form = RegisterDetailsForm()
     if not form.validate_on_submit():
-        return _render_register_form(form), 400
+        return _render_register_details_form(form, verified_email=verified_email), 400
 
     try:
         _user, warnings = register_user(
@@ -221,14 +235,16 @@ def register_submit():
                 "username": form.username.data,
                 "full_name": form.full_name.data,
                 "phone_number": form.phone_number.data,
-                "email": form.email.data,
                 "password": form.password.data,
                 "confirm_password": form.confirm_password.data,
             }
         )
     except AuthError as exc:
         flash(exc.message, "error")
-        return _render_register_form(form), exc.status_code
+        verified_email = current_verified_registration_email()
+        if verified_email:
+            return _render_register_details_form(form, verified_email=verified_email), exc.status_code
+        return _render_register_email_form(), exc.status_code
 
     for warning in warnings:
         flash(warning, "warning")
@@ -236,17 +252,36 @@ def register_submit():
     return redirect(url_for("web.login"))
 
 
-def _render_register_form(
-    form: RegisterForm,
+def _render_register_email_form(
     *,
     otp_request_form: RegistrationOtpRequestForm | None = None,
-    otp_verify_form: RegistrationOtpVerifyForm | None = None,
+    otp_verify_form: RegistrationOtpCodeForm | None = None,
+):
+    request_form = otp_request_form or RegistrationOtpRequestForm()
+    if not request_form.email.data:
+        request_form.email.data = pending_registration_email()
+    return render_template(
+        "register.html",
+        step="email",
+        form=None,
+        verified_email=None,
+        otp_request_form=request_form,
+        otp_verify_form=otp_verify_form or RegistrationOtpCodeForm(),
+    )
+
+
+def _render_register_details_form(
+    form: RegisterDetailsForm,
+    *,
+    verified_email: str,
 ):
     return render_template(
         "register.html",
+        step="details",
         form=form,
-        otp_request_form=otp_request_form or RegistrationOtpRequestForm(),
-        otp_verify_form=otp_verify_form or RegistrationOtpVerifyForm(),
+        verified_email=verified_email,
+        otp_request_form=None,
+        otp_verify_form=None,
     )
 
 
