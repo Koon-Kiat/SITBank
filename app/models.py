@@ -14,9 +14,13 @@ class User(db.Model):
     username = db.Column(db.String(64), nullable=False)
     email = db.Column(db.String(255), nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
+    account_type = db.Column(db.String(32), nullable=False, default="customer", index=True)
+    account_status = db.Column(db.String(32), nullable=False, default="active", index=True)
     full_name = db.Column(db.String(128), nullable=False)
     phone_number = db.Column(db.String(8), nullable=False, unique=True)
-    account_number = db.Column(db.String(9), nullable=False, unique=True)
+    account_number = db.Column(db.String(9), nullable=True, unique=True)
+    staff_personal_email = db.Column(db.String(255), nullable=True)
+    workplace_email_verified_at = db.Column(db.DateTime(timezone=True), nullable=True)
 
     mfa_secret_ciphertext = db.Column(db.LargeBinary, nullable=True)
     mfa_secret_nonce = db.Column(db.LargeBinary(12), nullable=True)
@@ -44,6 +48,14 @@ class User(db.Model):
     __table_args__ = (
         Index("ix_users_username_lower", func.lower(username), unique=True),
         Index("ix_users_email_lower", func.lower(email), unique=True),
+        db.CheckConstraint(
+            "account_type IN ('customer', 'staff', 'admin', 'root_admin')",
+            name="ck_users_account_type",
+        ),
+        db.CheckConstraint(
+            "account_status IN ('active', 'setup_pending', 'revoked', 'locked')",
+            name="ck_users_account_status",
+        ),
     )
 
     def __repr__(self) -> str:
@@ -305,6 +317,77 @@ class RegistrationOtpChallenge(db.Model):
             "session_binding_hash",
             "email_hash",
             name="uq_registration_otp_challenges_session_email",
+        ),
+    )
+
+
+class StaffInvite(db.Model):
+    __tablename__ = "staff_invites"
+
+    id = db.Column(db.Integer, primary_key=True)
+    token_hash = db.Column(db.String(64), nullable=False, unique=True, index=True)
+    personal_email_normalized = db.Column(db.String(255), nullable=False, index=True)
+    workplace_email_normalized = db.Column(db.String(255), nullable=False, index=True)
+    role = db.Column(db.String(32), nullable=False)
+    status = db.Column(db.String(32), nullable=False, default="pending", index=True)
+    created_by_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    setup_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True, index=True)
+    used_by_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True, index=True)
+    revoked_by_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True, index=True)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+    )
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
+    used_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    revoked_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    last_attempt_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    workplace_verification_code_hmac = db.Column(db.String(64), nullable=True)
+    workplace_verification_sent_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    workplace_verification_expires_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    workplace_verified_at = db.Column(db.DateTime(timezone=True), nullable=True)
+
+    created_by = db.relationship("User", foreign_keys=[created_by_user_id], backref="created_staff_invites")
+    setup_user = db.relationship("User", foreign_keys=[setup_user_id], backref="pending_staff_invites")
+    used_by = db.relationship("User", foreign_keys=[used_by_user_id], backref="accepted_staff_invites")
+    revoked_by = db.relationship("User", foreign_keys=[revoked_by_user_id], backref="revoked_staff_invites")
+
+    __table_args__ = (
+        db.CheckConstraint("role IN ('staff', 'admin')", name="ck_staff_invites_role"),
+        db.CheckConstraint(
+            "status IN ('pending', 'totp_pending', 'accepted', 'revoked', 'expired')",
+            name="ck_staff_invites_status",
+        ),
+    )
+
+
+class PersonIdentityLink(db.Model):
+    __tablename__ = "person_identity_links"
+
+    id = db.Column(db.Integer, primary_key=True)
+    staff_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    customer_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    created_by_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True, index=True)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    verified_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    revoked_at = db.Column(db.DateTime(timezone=True), nullable=True, index=True)
+    notes = db.Column(db.String(512), nullable=False, default="")
+
+    staff_user = db.relationship("User", foreign_keys=[staff_user_id], backref="linked_customer_identities")
+    customer_user = db.relationship("User", foreign_keys=[customer_user_id], backref="linked_staff_identities")
+    created_by = db.relationship("User", foreign_keys=[created_by_user_id])
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "staff_user_id",
+            "customer_user_id",
+            name="uq_person_identity_links_staff_customer",
         ),
     )
 
