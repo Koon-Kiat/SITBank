@@ -22,7 +22,7 @@ def enrolled_webauthn_credential_count(user: User) -> int:
 
 
 def has_enrolled_mfa_method(user: User) -> bool:
-    return bool(user.mfa_enabled or enrolled_webauthn_credential_count(user) > 0)
+    return bool(user.mfa_enabled)
 
 
 def has_password_bootstrap_session(user: User) -> bool:

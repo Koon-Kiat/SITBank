@@ -16,8 +16,7 @@ from app.security.audit import audit_event, audit_event_required, audit_referenc
 TRANSFER_RISK_NORMAL = "normal"
 TRANSFER_RISK_NEW_PAYEE = "new_payee"
 TRANSFER_RISK_LARGE_TRANSFER = "large_transfer"
-TRANSFER_STEP_UP_STANDARD = "mfa_or_passkey"
-TRANSFER_STEP_UP_PASSKEY = "passkey"
+TRANSFER_STEP_UP_MFA = "mfa"
 TRANSFER_RISKS = frozenset(
     {
         TRANSFER_RISK_NORMAL,
@@ -97,10 +96,8 @@ def validate_public_transaction_payload(
 
 
 def transfer_step_up_requirement(transfer_risk: str) -> str:
-    normalized = _normalize_transfer_risk(transfer_risk)
-    if normalized == TRANSFER_RISK_NORMAL:
-        return TRANSFER_STEP_UP_STANDARD
-    return TRANSFER_STEP_UP_PASSKEY
+    _normalize_transfer_risk(transfer_risk)
+    return TRANSFER_STEP_UP_MFA
 
 
 def classify_transfer_risk(*, new_payee: bool = False, large_transfer: bool = False) -> str:
@@ -120,22 +117,10 @@ def verify_transfer_step_up(
     action: str = "transaction_authorization",
 ) -> None:
     from app.auth.services import verify_high_risk_authorization
-    from app.auth.webauthn_services import consume_step_up_token
-    from app.security.sessions import require_stable_session_for_sensitive_action
 
     ensure_outbound_transfer_allowed(user)
-    requirement = transfer_step_up_requirement(transfer_risk)
-    if requirement == TRANSFER_STEP_UP_STANDARD:
-        verify_high_risk_authorization(user, totp_code, stepup_token, action)
-        return
-
-    require_stable_session_for_sensitive_action(action)
-    consume_step_up_token(user, action, stepup_token)
-    audit_transaction_authorization(
-        user,
-        "passkey_step_up_success",
-        metadata={"transfer_risk": _normalize_transfer_risk(transfer_risk)},
-    )
+    transfer_step_up_requirement(transfer_risk)
+    verify_high_risk_authorization(user, totp_code, stepup_token, action)
 
 
 def public_transaction_payload_hash(payload: Mapping[str, object]) -> str:

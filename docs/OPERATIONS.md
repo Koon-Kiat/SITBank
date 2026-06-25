@@ -81,14 +81,14 @@ and investigate possible row tampering, chain rewind, or tail deletion before
 resuming routine deployments.
 
 The current banking implementation audits public transaction validation and
-WebAuthn transaction approval scaffolding only. There is no final ledger
-movement endpoint in this codebase, so final transfer execution is intentionally
-out of scope until such an endpoint exists.
+TOTP-backed transaction authorization checks. There is no final ledger movement
+endpoint in this codebase, so final transfer execution is intentionally out of
+scope until such an endpoint exists.
 
 The Phase 1A admin boundary audits disabled/fail-closed admin login and access
 denied attempts with `admin_*` event types. Full admin audit coverage, including
-admin login success/failure, admin WebAuthn/passkey, admin step-up, admin data
-access, and admin configuration changes, is Phase 2 after strong admin auth and
+admin login success/failure, admin step-up, admin data access, and admin
+configuration changes, is Phase 2 after an approved admin MFA design and
 network controls exist.
 
 Useful checks:
@@ -157,15 +157,17 @@ installed, followed by `systemctl daemon-reload`. Application-only alert code
 changes require the normal staging/production deploy path. A change to audit
 trigger migrations requires `db upgrade` and runtime privilege reapply/verify.
 
-Alert on any `security_audit_write_failed`, `account_lock`,
-`webauthn_clone_detected`, or `session_integrity` failure; 10 or more login
-failures for one `principal_ref` or IP in 5 minutes; 5 or more
+Alert on any `security_audit_write_failed`, `account_lock`, or
+`session_integrity` failure; 10 or more login failures for one `principal_ref`
+or IP in 5 minutes; 5 or more
 `auth_backoff`/`rate_limit` events from the same source in 10 minutes; 3 or more
 transaction failures for the same user/ref in 15 minutes; 10 transaction
 failures globally in 15 minutes; audit hash-chain verification failure; audit
 anchor mismatch; database table regression; failed deployments; signature or
-revision mismatches; unexpected image digests; security-key counter anomalies;
-and changes to root-managed secret or FIDO policy files.
+revision mismatches; unexpected image digests; and changes to root-managed
+secret files. Historical `webauthn_clone_detected` audit rows may still be
+reviewed for legacy incident context, but active WebAuthn/passkey ceremonies are
+retired.
 
 ## Password Reset Operations
 

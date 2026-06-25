@@ -49,11 +49,11 @@ so audit records are append-only to the running app. Rotate `database_url` and
 Production admin runtime uses a separate Flask app, Docker Compose service,
 Redis/session namespace, signing material, and database runtime role. The admin
 role must be distinct from both `sitbank_app` and `sitbank_owner`; it must not
-use migration/schema-owner credentials. Admin WebAuthn/passkey authentication,
-administrator step-up, VPN, Tailscale, WireGuard, and administrator IP allowlist
-setup are Phase 2 items. Until those controls exist, `admin-sitbank.duckdns.org`
-is fail-closed at Nginx with `deny all` and the Flask admin login route returns
-failure without creating a session.
+use migration/schema-owner credentials. Admin MFA, administrator step-up, VPN,
+Tailscale, WireGuard, and administrator IP allowlist setup are Phase 2 items
+pending an approved design. Until those controls exist,
+`admin-sitbank.duckdns.org` is fail-closed at Nginx with `deny all` and the
+Flask admin login route returns failure without creating a session.
 
 Staging secrets must never be copied from production. The staging deployment
 wrapper rejects identical application secret files when production secrets are
@@ -65,10 +65,10 @@ Compose service names.
 Security audit events are written to `security_audit_events` and emitted as
 sanitized structured application log lines for container and journald
 forwarding. Audit records must capture who, what, where, and when without
-storing plaintext passwords, TOTP codes, CSRF tokens, WebAuthn challenges,
-private keys, bearer tokens, MFA secrets, ciphertext, nonces, raw Redis session
-payloads, raw session IDs, raw attempted login identifiers, or full account
-numbers.
+storing plaintext passwords, TOTP codes, CSRF tokens, legacy WebAuthn challenge
+material, private keys, bearer tokens, MFA secrets, ciphertext, nonces, raw
+Redis session payloads, raw session IDs, raw attempted login identifiers, or
+full account numbers.
 
 New audit rows are chained with `previous_event_hash`, `event_hash`, and
 `hash_algorithm` using deterministic canonical JSON over stable audit fields.
@@ -208,8 +208,8 @@ checked manually.
   `127.0.0.1:5002`, and keep `compose.prod.yml` free of published app ports.
 - Restrict `/health/ready` to loopback and allow public `/health/live` only.
 - Keep admin routes denied by default. Do not make
-  `admin-sitbank.duckdns.org` usable until strong admin WebAuthn/passkey and
-  VPN or explicit IP allowlist controls are implemented.
+  `admin-sitbank.duckdns.org` usable until a reviewed admin MFA design and VPN
+  or explicit IP allowlist controls are implemented.
 - Enable WAF managed common, SQL injection, XSS, bot, and protocol anomaly
   rules.
 - Add WAF rate-based rules for `/login`, `/register`, `/mfa/verify`,
@@ -302,21 +302,21 @@ anchor, run `verify-audit-log-chain --anchor`, and investigate before resuming
 normal deployments.
 
 Alert immediately on any `security_audit_write_failed`, `account_lock`,
-`webauthn_clone_detected`, `session_integrity` failure,
-`audit_chain_verification_failed`, `audit_anchor_mismatch`,
-`audit_append_only_protection_failed`, or
+`session_integrity` failure, `audit_chain_verification_failed`,
+`audit_anchor_mismatch`, `audit_append_only_protection_failed`, or
 `runtime_db_privilege_verification_failed`. Password recovery monitoring also
-alerts on `password_reset_token_reused`, `password_reset_webauthn_failed`,
-`manual_recovery_requested`, 5 or more password reset or manual recovery
-requests from one source in 10 minutes, or 3 or more reset failures from one
-source in 10 minutes. Alert when there are
+alerts on `password_reset_token_reused`, `manual_recovery_requested`, 5 or more
+password reset or manual recovery requests from one source in 10 minutes, or 3
+or more reset failures from one source in 10 minutes. Alert when there are
 10 or more `login` failures for the same `principal_ref` or IP in 5 minutes, 5
 or more `auth_backoff` or `rate_limit` events from the same source in 10
 minutes, 3 or more transaction failures for the same user/ref in 15 minutes, or
 10 transaction failures globally in 15 minutes. Also alert on failed
-deployments, signature or revision mismatches, unexpected image digests,
-database table regression, security-key counter anomalies, and changes to
-root-managed secret or FIDO policy files.
+deployments, signature or revision mismatches, unexpected image digests, and
+database table regression. Historical WebAuthn/passkey alert names such as
+`webauthn_clone_detected` and `password_reset_webauthn_failed` remain queryable
+for legacy audit context, but active passkey ceremonies are retired because
+instructor review disallowed the high-level `webauthn` library.
 
 Production installs `sitbank-security-alerts.service` and
 `sitbank-security-alerts.timer` through the EC2 bootstrap path. The timer runs
@@ -349,9 +349,9 @@ Reset MFA policy:
 
 - TOTP customers must verify TOTP after the reset transaction is active.
   Recovery codes are accepted only as TOTP recovery factors.
-- Passkeys do not replace TOTP recovery. A passkey-only edge-case account must
-  complete a reset-bound WebAuthn assertion, then complete TOTP onboarding on
-  next login.
+- Passkeys do not replace TOTP recovery. A legacy passkey-only account cannot
+  use an email-link-only reset fallback and must complete manual customer
+  recovery before password reset or MFA re-enrollment.
 - No-MFA customers can set a new password but remain incomplete-security-state
   users and hit MFA onboarding on next login.
 - Recovery codes are stored HMACed, shown only by trusted authenticated

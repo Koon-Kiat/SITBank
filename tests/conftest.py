@@ -69,8 +69,6 @@ os.environ.setdefault(
 os.environ.setdefault("COMMON_PASSWORDS_PATH", str(Path(__file__).parent / "fixtures" / "common_passwords.txt"))
 os.environ.setdefault("COMMON_PASSWORDS_MIN_ENTRIES", "100000")
 os.environ.setdefault("PASSWORD_PBKDF2_ITERATIONS", "600000")
-os.environ.setdefault("WEBAUTHN_RP_ID", "sitbank.duckdns.org")
-os.environ.setdefault("WEBAUTHN_RP_ORIGIN", "https://sitbank.duckdns.org")
 os.environ.setdefault("SECURITY_AUDIT_HMAC_KEY", "test-audit-hmac-key-that-is-long-enough")
 
 
@@ -105,14 +103,6 @@ class TestConfig:
     PASSWORD_RECOMMENDED_MIN_LENGTH = 15
     PASSWORD_MAX_CHARS = 256
     MFA_ISSUER_NAME = "SITBank Test"
-    WEBAUTHN_RP_ID = os.environ["WEBAUTHN_RP_ID"]
-    WEBAUTHN_RP_ORIGIN = os.environ["WEBAUTHN_RP_ORIGIN"]
-    WEBAUTHN_RP_NAME = "SITBank Test"
-    WEBAUTHN_TIMEOUT_MS = 60_000
-    WEBAUTHN_REQUIRED_CREDENTIALS = 1
-    WEBAUTHN_ENFORCE_KEY_SETUP = False
-    WEBAUTHN_MDS_CACHE_PATH = str(Path(__file__).parent / "fixtures" / "fido-mds-cache.json")
-    WEBAUTHN_APPROVED_AAGUIDS_PATH = str(Path(__file__).parent / "fixtures" / "fido-approved-aaguids.json")
     COMMON_PASSWORDS_PATH = os.environ["COMMON_PASSWORDS_PATH"]
     COMMON_PASSWORDS_MIN_ENTRIES = 1
     HIBP_PASSWORD_CHECK_TIMEOUT_SECONDS = 0.25
@@ -179,7 +169,6 @@ class TestConfig:
     FRESH_MFA_SECONDS = 5 * 60
     TOTP_LOGIN_VALID_WINDOW = 1
     TOTP_HIGH_RISK_VALID_WINDOW = 0
-    WEBAUTHN_STEP_UP_TTL_SECONDS = 120
     TALISMAN_FORCE_HTTPS = False
     TALISMAN_CONTENT_SECURITY_POLICY = {
         "default-src": "'self'",
