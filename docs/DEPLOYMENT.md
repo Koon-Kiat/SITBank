@@ -2,7 +2,7 @@
 
 ## Current Architecture
 
-Only Flask/Gunicorn runs in the SITBank container. Nginx, TLS, PostgreSQL, and backups remain host-managed on EC2. Redis is not part of the runtime contract; sessions, authentication counters, OTP/reset state, alert dedupe, and breached-password circuit state live in application-owned PostgreSQL tables. WebAuthn/passkeys are decommissioned because instructor review disallowed the high-level `webauthn` library, so production no longer requires WebAuthn RP or FIDO metadata configuration.
+Only Flask/Gunicorn runs in the SITBank container. Nginx, TLS, PostgreSQL, and backups remain host-managed on EC2. Sessions, authentication counters, OTP/reset state, alert dedupe, and breached-password circuit state live in application-owned PostgreSQL tables.
 
 - Production public host: `sitbank.duckdns.org`
 - Production admin host: `admin-sitbank.duckdns.org`
@@ -118,7 +118,7 @@ The reviewed production bootstrap installs and enables the production edge from 
 - Cloudflare or AWS WAF should sit in front of Nginx for managed common, SQL injection, XSS, bot, and protocol anomaly rules.
 - Cloudflare or AWS WAF rules and security-group allowlists are still infrastructure state and must be checked manually.
 - Flask admin auth is implemented only for root-admin-controlled invite
-  onboarding with mandatory TOTP, separate admin sessions, and no WebAuthn or
+  onboarding with mandatory TOTP, separate admin sessions, and no
   password-only administrator login.
 
 Verification:

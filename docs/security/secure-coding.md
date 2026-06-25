@@ -58,7 +58,6 @@ Authentication code avoids common implementation failures:
 | Oversized passwords rejected before expensive hashing | `tests/test_auth_registration_login.py::test_oversized_login_password_uses_generic_failure_without_hashing` |
 | TOTP replay prevention | `app/auth/services.py`, `app/models.py::TotpReplayRecord`; `tests/test_mfa_lifecycle.py::test_mfa_setup_stores_encrypted_secret_and_rejects_replay` |
 | Recovery codes are one-time HMAC verifiers | `app/auth/recovery_codes.py`; `tests/test_password_reset.py::test_recovery_codes_are_hashed_single_use_reset_factors` |
-| Active passkey flows fail closed | `app/auth/webauthn_services.py`; `tests/test_webauthn_lifecycle.py` |
 
 Current gap: full password history is not implemented. The app rejects reuse of
 the current password during change/reset but does not store previous password
@@ -76,7 +75,7 @@ tests.
 | HMAC-signed payloads with key rotation | `app/security/session_hmac.py`, `tests/test_db_session_integrity.py` |
 | Secure, HttpOnly, SameSite Strict cookies | `config.py`, `tests/test_session_management.py::test_login_sets_secure_session_cookie_and_hides_raw_session_id` |
 | CSRF on unsafe customer routes | `app/extensions.py`, `app/__init__.py`, `tests/test_route_inventory_security.py::test_route_inventory_has_complete_security_decisions` |
-| Explicit CSRF regression tests | `tests/test_account_security_actions.py::test_profile_post_requires_csrf_when_enabled`, `tests/test_account_security_actions.py::test_json_auth_post_requires_global_csrf_header_when_enabled` |
+| Explicit CSRF regression tests | `tests/test_account_security_actions.py`, `tests/test_route_inventory_security.py` |
 
 Current gap: there is no hard absolute maximum lifetime for fully
 authenticated sessions independent of activity. Pending MFA sessions do have an
@@ -112,7 +111,7 @@ settings are missing.
 | Password reset base URL must be HTTPS in production | `tests/test_config.py::test_password_reset_base_url_must_be_https_in_production` |
 | Nginx rejects unknown hosts and redirects HTTP to HTTPS | `ops/nginx/sitbank-default.conf`, `ops/nginx/sitbank-production.conf` |
 | Docker runtime drops capabilities and runs read-only as UID/GID `10001:10001` | `Dockerfile`, `compose.prod.yml`, `tests/test_deployment.py::test_dockerfile_and_compose_enforce_hardened_runtime` |
-| Deployment contract keeps production and staging isolated | `compose.prod.yml`, `compose.staging.yml`, `tests/test_deployment.py::test_deployment_profiles_keep_production_and_staging_isolated` |
+| Deployment contract keeps production and staging isolated | `compose.prod.yml`, `compose.staging.yml`, `tests/test_deployment.py` |
 
 Current gap: Nginx does not pin an explicit `ssl_ciphers` list. The repo pins
 protocols to TLS 1.2 and TLS 1.3, but cipher selection depends on deployed
@@ -157,7 +156,7 @@ Actions.
 | A04 Insecure Design | MFA onboarding gates, password-reset token exchange, manual recovery pending-only public request, staff invite workflow, frozen-account behavior | Manual recovery completion exists as service code but no active admin route was found |
 | A05 Security Misconfiguration | Production config validation, Nginx default host rejection, Docker hardening, CSRF/Talisman defaults, deployment tests | Live host TLS cipher and certificate-renewal state must be verified outside the repo |
 | A06 Vulnerable And Outdated Components | Dependabot, pip-audit, Trivy, CodeQL, hashed lockfiles, pinned Docker base image | No JavaScript package manifest was found, so npm/yarn scanning is not applicable |
-| A07 Identification And Authentication Failures | Generic errors, dummy hash, rate/backoff counters, TOTP, recovery codes, reset verifier HMACs, disabled passkeys fail closed | No full password history |
+| A07 Identification And Authentication Failures | Generic errors, dummy hash, rate/backoff counters, TOTP, recovery codes, reset verifier HMACs, and MFA onboarding gates | No full password history |
 | A08 Software And Data Integrity Failures | Hash-locked dependencies, pinned actions, pinned images, cosign signing, audit hash chain, migration/DB privilege tests | Verify external runner and registry trust at deployment time |
 | A09 Security Logging And Monitoring Failures | Structured audit events, sanitization, alerts, append-only audit DB triggers, 500 handler logging | Alert delivery endpoint configuration is deployment-specific |
 | A10 Server-Side Request Forgery | No user-supplied arbitrary URL fetch flow found; fixed HIBP range endpoint sends only SHA-1 prefixes; Turnstile verification uses configured endpoint and redacts token data | New outbound integrations should add allowlists and SSRF tests |
