@@ -166,6 +166,232 @@ class ManualRecoveryRequest(db.Model):
     user = db.relationship("User", backref="manual_recovery_requests")
 
 
+class ServerSideSession(db.Model):
+    __tablename__ = "server_side_sessions"
+
+    id = db.Column(db.Integer, primary_key=True)
+    component = db.Column(db.String(32), nullable=False)
+    session_lookup_hash = db.Column(db.String(64), nullable=False)
+    session_ref = db.Column(db.String(32), nullable=True, index=True)
+    payload = db.Column(db.LargeBinary, nullable=True)
+    payload_format = db.Column(db.String(32), nullable=False, default="session-hmac-v2")
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True, index=True)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    last_activity_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
+    revoked_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    ended_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    ended_reason = db.Column(db.String(32), nullable=True)
+    ip_address = db.Column(db.String(64), nullable=False, default="")
+    user_agent = db.Column(db.String(256), nullable=False, default="")
+    risk_fingerprint = db.Column(db.String(64), nullable=False, default="")
+
+    user = db.relationship("User", backref="server_side_sessions")
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "component",
+            "session_lookup_hash",
+            name="uq_server_side_sessions_component_lookup_hash",
+        ),
+        Index(
+            "ix_server_side_sessions_component_user_active",
+            "component",
+            "user_id",
+            "revoked_at",
+            "expires_at",
+        ),
+        Index("ix_server_side_sessions_last_activity_at", "last_activity_at"),
+    )
+
+
+class AuthAttemptCounter(db.Model):
+    __tablename__ = "auth_attempt_counters"
+
+    id = db.Column(db.Integer, primary_key=True)
+    scope = db.Column(db.String(80), nullable=False)
+    principal_hash = db.Column(db.String(64), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True, index=True)
+    ip_hash = db.Column(db.String(64), nullable=True, index=True)
+    failure_count = db.Column(db.Integer, nullable=False, default=0)
+    window_started_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    window_expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
+    locked_until = db.Column(db.DateTime(timezone=True), nullable=True, index=True)
+    last_failed_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    user = db.relationship("User", backref="auth_attempt_counters")
+
+    __table_args__ = (
+        db.UniqueConstraint("scope", "principal_hash", name="uq_auth_attempt_counters_scope_principal"),
+    )
+
+
+class TotpReplayRecord(db.Model):
+    __tablename__ = "totp_replay_records"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    scope = db.Column(db.String(80), nullable=False)
+    time_step = db.Column(db.Integer, nullable=False)
+    code_digest = db.Column(db.String(64), nullable=False)
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    user = db.relationship("User", backref="totp_replay_records")
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "user_id",
+            "scope",
+            "time_step",
+            "code_digest",
+            name="uq_totp_replay_records_user_scope_step_digest",
+        ),
+    )
+
+
+class RegistrationOtpChallenge(db.Model):
+    __tablename__ = "registration_otp_challenges"
+
+    id = db.Column(db.Integer, primary_key=True)
+    session_binding_hash = db.Column(db.String(64), nullable=False)
+    email_hash = db.Column(db.String(64), nullable=False)
+    otp_hmac = db.Column(db.String(64), nullable=False)
+    attempt_count = db.Column(db.Integer, nullable=False, default=0)
+    resend_available_at = db.Column(db.DateTime(timezone=True), nullable=False)
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
+    used_at = db.Column(db.DateTime(timezone=True), nullable=True, index=True)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "session_binding_hash",
+            "email_hash",
+            name="uq_registration_otp_challenges_session_email",
+        ),
+    )
+
+
+class PasswordResetTransaction(db.Model):
+    __tablename__ = "password_reset_transactions"
+
+    id = db.Column(db.Integer, primary_key=True)
+    transaction_lookup_hash = db.Column(db.String(64), nullable=False, unique=True)
+    token_id = db.Column(db.Integer, db.ForeignKey("password_reset_tokens.id"), nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    purpose = db.Column(db.String(40), nullable=False, default="password_reset")
+    mfa_required = db.Column(db.String(40), nullable=False)
+    available_mfa_methods_json = db.Column(db.JSON, nullable=False, default=list)
+    preferred_mfa_method = db.Column(db.String(40), nullable=True)
+    default_mfa_method = db.Column(db.String(40), nullable=True)
+    mfa_verified = db.Column(db.Boolean, nullable=False, default=False)
+    recovery_code_verified = db.Column(db.Boolean, nullable=False, default=False)
+    no_mfa_user = db.Column(db.Boolean, nullable=False, default=False)
+    failure_count = db.Column(db.Integer, nullable=False, default=0)
+    last_failure_reason = db.Column(db.String(80), nullable=True)
+    mfa_verified_at = db.Column(db.Integer, nullable=True)
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
+    used_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    token = db.relationship("PasswordResetToken", backref="reset_transactions")
+    user = db.relationship("User", backref="password_reset_transactions")
+
+    __table_args__ = (
+        Index("ix_password_reset_transactions_user_expires_at", "user_id", "expires_at"),
+    )
+
+
+class SecurityAlertDedupe(db.Model):
+    __tablename__ = "security_alert_dedupe"
+
+    id = db.Column(db.Integer, primary_key=True)
+    dedupe_key_hash = db.Column(db.String(64), nullable=False, unique=True)
+    event_type = db.Column(db.String(80), nullable=False)
+    first_seen_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    last_seen_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
+    count = db.Column(db.Integer, nullable=False, default=1)
+
+
+class SecurityCircuitBreaker(db.Model):
+    __tablename__ = "security_circuit_breakers"
+
+    id = db.Column(db.Integer, primary_key=True)
+    service_name = db.Column(db.String(80), nullable=False, unique=True)
+    state = db.Column(db.String(16), nullable=False, default="closed")
+    failure_count = db.Column(db.Integer, nullable=False, default=0)
+    opened_until = db.Column(db.DateTime(timezone=True), nullable=True, index=True)
+    last_failure_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    last_success_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
 class SecurityAuditEvent(db.Model):
     __tablename__ = "security_audit_events"
 

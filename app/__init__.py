@@ -1,15 +1,10 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import Any
 
 from flask import Flask, g, jsonify, render_template, request
 from flask_wtf.csrf import CSRFError
-from redis import Redis
-from redis.backoff import NoBackoff
-from redis.retry import Retry
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from config import Config, apply_runtime_mode_config
@@ -23,22 +18,8 @@ from .main.routes import main_bp
 from .models import User
 from .ops.commands import register_ops_commands
 from .security.audit import register_correlation_id
-from .security.sessions import install_uuid_redis_sessions, register_session_hooks
+from .security.sessions import install_database_sessions, register_session_hooks
 from .web.routes import web_bp
-
-
-def redis_connection_options(config: Mapping[str, Any]) -> dict[str, Any]:
-    return {
-        "protocol": config["REDIS_PROTOCOL"],
-        "legacy_responses": config["REDIS_LEGACY_RESPONSES"],
-        "socket_connect_timeout": config["REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS"],
-        "socket_timeout": config["REDIS_SOCKET_TIMEOUT_SECONDS"],
-        "socket_keepalive": True,
-        "health_check_interval": config["REDIS_HEALTH_CHECK_INTERVAL_SECONDS"],
-        "max_connections": config["REDIS_MAX_CONNECTIONS"],
-        "retry_on_timeout": False,
-        "retry": Retry(NoBackoff(), retries=0),
-    }
 
 
 def create_app(config_object: type[Config] = Config, *, app_mode: str = "customer") -> Flask:
@@ -56,29 +37,9 @@ def create_app(config_object: type[Config] = Config, *, app_mode: str = "custome
             x_port=trusted_proxy_count,
         )
 
-    redis_client = Redis.from_url(
-        app.config["REDIS_URL"],
-        decode_responses=True,
-        client_name=f"sitbank-{app.config['APP_MODE']}-application",
-        **redis_connection_options(app.config),
-    )
-    redis_session_client = Redis.from_url(
-        app.config["REDIS_URL"],
-        decode_responses=False,
-        client_name=f"sitbank-{app.config['APP_MODE']}-session",
-        **redis_connection_options(app.config),
-    )
-    app.extensions["redis"] = redis_client
-    app.extensions["redis_session"] = redis_session_client
-
     db.init_app(app)
     migrate.init_app(app, db)
     csrf.init_app(app)
-    if app.config["RATELIMIT_STORAGE_URI"].startswith(("redis://", "rediss://")):
-        app.config["RATELIMIT_STORAGE_OPTIONS"] = {
-            **redis_connection_options(app.config),
-            "client_name": f"sitbank-{app.config['APP_MODE']}-rate-limiter",
-        }
     limiter.init_app(app)
     talisman.init_app(
         app,
@@ -88,7 +49,7 @@ def create_app(config_object: type[Config] = Config, *, app_mode: str = "custome
         session_cookie_http_only=app.config["SESSION_COOKIE_HTTPONLY"],
         session_cookie_samesite=app.config["SESSION_COOKIE_SAMESITE"],
     )
-    install_uuid_redis_sessions(app, redis_session_client)
+    install_database_sessions(app)
 
     register_correlation_id(app)
     register_session_hooks(app)

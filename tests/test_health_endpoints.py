@@ -12,12 +12,8 @@ def test_health_endpoints_report_liveness_and_dependency_readiness(app, client, 
     assert ready.status_code == 200
     assert ready.get_json() == {"status": "ready"}
 
-    monkeypatch.setattr(
-        app.extensions["redis"],
-        "ping",
-        lambda: (_ for _ in ()).throw(ConnectionError("offline")),
-    )
-    unavailable = client.get("/health/ready")
+    monkeypatch.setattr(db.session, "execute", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("offline")))
+    unavailable = app.test_client().get("/health/ready")
 
     assert unavailable.status_code == 503
     assert unavailable.get_json() == {"status": "unavailable"}

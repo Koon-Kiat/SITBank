@@ -6,7 +6,9 @@ SITBank is a student cybersecurity project and demonstration site. Do not enter 
 
 ## Overview
 
-SITBank is a Flask/Gunicorn application deployed as hardened Docker containers behind host-managed Nginx, TLS, PostgreSQL, and Redis. Production customer traffic runs at `https://sitbank.duckdns.org`; the isolated production admin boundary is reserved at `https://admin-sitbank.duckdns.org` and is fail-closed until a reviewed admin MFA design and network allowlist controls are implemented. Staging runs separately at `https://staging-sitbank.duckdns.org` and does not include an admin service in this phase.
+SITBank is a Flask/Gunicorn application deployed as hardened Docker containers behind host-managed Nginx, TLS, and PostgreSQL. Production customer traffic runs at `https://sitbank.duckdns.org`; the isolated production admin boundary is reserved at `https://admin-sitbank.duckdns.org` and is fail-closed until a reviewed admin MFA design and network allowlist controls are implemented. Staging runs separately at `https://staging-sitbank.duckdns.org` and does not include an admin service in this phase.
+
+Security-critical state is application-owned PostgreSQL data, not Redis data. Server-side sessions, authentication failure counters, TOTP replay markers, registration OTP challenges, password-reset transactions, security-alert dedupe windows, and breached-password circuit-breaker state are stored in dedicated tables. Browser cookies keep only opaque identifiers; lookup hashes are HMAC-derived with `SESSION_LOOKUP_HMAC_KEY` or `ADMIN_SESSION_LOOKUP_HMAC_KEY`, and stored session payloads remain signed with the session HMAC keyring.
 
 The app keeps password hashing PBKDF2+pepper only and MFA/TOTP seed encryption envelope-only using `MFA_KEK_ACTIVE_ID` plus `MFA_KEK_KEYS_JSON`. Authenticator TOTP is the supported MFA and step-up method, with recovery codes only where the reset flow already allows TOTP recovery. WebAuthn/passkeys are decommissioned because instructor review disallowed the high-level `webauthn` library; legacy credential rows are retained only for audit and manual-recovery decisions. Legacy one-key MFA AES compatibility and direct non-PBKDF2 password hash compatibility are intentionally removed because current users are test-only and environments must be reset before this change is deployed.
 
@@ -40,7 +42,7 @@ Common local test commands:
 .\.venv\Scripts\python.exe -m pytest -q -m "not slow"
 ```
 
-The `not slow` and focused marker commands are for local iteration only. Pull requests and protected CI still run the full pytest suite, including security, deployment, Redis session integrity, CSRF, MFA, legacy passkey decommission checks, route inventory, production guard, dependency lock, and secret-scanning checks.
+The `not slow` and focused marker commands are for local iteration only. Pull requests and protected CI still run the full pytest suite, including security, deployment, database session integrity, CSRF, MFA, legacy passkey decommission checks, route inventory, production guard, dependency lock, and secret-scanning checks.
 
 For a fuller local check, run `scripts/ci-local`. It runs the full pytest suite in parallel with timing output, then Python/package/security checks, Git Bash syntax checks, Docker/Compose checks when Docker is available, and contract checks around `ops/runtime_contract.py`.
 
@@ -55,15 +57,15 @@ Current required settings include:
 - `WTF_CSRF_SECRET_KEY` or `WTF_CSRF_SECRET_KEY_FILE`
 - `SESSION_HMAC_ACTIVE_KEY_ID`
 - `SESSION_HMAC_KEYS_JSON` or `SESSION_HMAC_KEYS_JSON_FILE`
+- `SESSION_LOOKUP_HMAC_KEY` or `SESSION_LOOKUP_HMAC_KEY_FILE`
 - `DATABASE_URL` or `DATABASE_URL_FILE`
 - `DATABASE_MIGRATION_URL` or `DATABASE_MIGRATION_URL_FILE`
-- `REDIS_URL` or `REDIS_URL_FILE`
 - `ADMIN_SECRET_KEY` or `ADMIN_SECRET_KEY_FILE`
 - `ADMIN_WTF_CSRF_SECRET_KEY` or `ADMIN_WTF_CSRF_SECRET_KEY_FILE`
 - `ADMIN_SESSION_HMAC_ACTIVE_KEY_ID`
 - `ADMIN_SESSION_HMAC_KEYS_JSON` or `ADMIN_SESSION_HMAC_KEYS_JSON_FILE`
+- `ADMIN_SESSION_LOOKUP_HMAC_KEY` or `ADMIN_SESSION_LOOKUP_HMAC_KEY_FILE`
 - `ADMIN_DATABASE_URL` or `ADMIN_DATABASE_URL_FILE`
-- `ADMIN_REDIS_URL` or `ADMIN_REDIS_URL_FILE`
 - `ADMIN_PASSWORD_PEPPER_B64` or `ADMIN_PASSWORD_PEPPER_B64_FILE`
 - `ADMIN_SESSION_KEY_PREFIX`
 - `ADMIN_RATELIMIT_KEY_PREFIX`
@@ -103,7 +105,7 @@ WebAuthn RP and FIDO metadata settings are not part of the runtime contract beca
 Customer forgot-password requests use generic responses and do not reveal
 whether an account exists. A reset email contains a short-lived one-time
 `selector.verifier` link. The server immediately exchanges that URL token for a
-tokenless Redis reset transaction, then rejects replay of the original URL
+tokenless PostgreSQL-backed reset transaction, then rejects replay of the original URL
 token.
 
 Password reset changes only the password. It does not disable MFA, does not

@@ -3,7 +3,6 @@ set -Eeuo pipefail
 
 readonly IMAGE="${1:-sitbank:smoke}"
 readonly POSTGRES_IMAGE="postgres:16.9-alpine@sha256:7c688148e5e156d0e86df7ba8ae5a05a2386aaec1e2ad8e6d11bdf10504b1fb7"
-readonly REDIS_IMAGE="redis:7.4.5-alpine@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08"
 readonly PUBLIC_HOST="sitbank.duckdns.org"
 
 work_dir="$(mktemp -d)"
@@ -11,7 +10,7 @@ chmod 2770 "${work_dir}"
 
 # shellcheck disable=SC2317
 cleanup() {
-    docker rm -f sitbank-dast dast-postgres dast-redis >/dev/null 2>&1 || true
+    docker rm -f sitbank-dast dast-postgres >/dev/null 2>&1 || true
     rm -rf -- "${work_dir}"
 }
 trap cleanup EXIT
@@ -24,22 +23,14 @@ docker run --detach --name dast-postgres \
     --env POSTGRES_PASSWORD=ci-password \
     --env POSTGRES_DB=ci \
     "${POSTGRES_IMAGE}" >/dev/null
-docker run --detach --name dast-redis \
-    --group-add "${runner_gid}" \
-    --publish 127.0.0.1:56380:6379 \
-    "${REDIS_IMAGE}" \
-    redis-server --requirepass ci-password >/dev/null
 
 for _ in $(seq 1 30); do
-    if docker exec dast-postgres pg_isready --username ci --dbname ci >/dev/null 2>&1 \
-        && docker exec dast-redis redis-cli -a ci-password ping 2>/dev/null \
-            | grep -q PONG; then
+    if docker exec dast-postgres pg_isready --username ci --dbname ci >/dev/null 2>&1; then
         break
     fi
     sleep 1
 done
 docker exec dast-postgres pg_isready --username ci --dbname ci >/dev/null
-docker exec dast-redis redis-cli -a ci-password ping 2>/dev/null | grep -q PONG
 
 install -d -m 0770 "${work_dir}/secrets" "${work_dir}/config"
 printf '%s' 'ci-secret-key-that-is-long-enough-for-dast-tests' \
@@ -48,10 +39,10 @@ printf '%s' 'ci-csrf-key-that-is-long-enough-for-dast-tests' \
     > "${work_dir}/secrets/wtf_csrf_secret_key"
 printf '%s' '{"ci":"MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjI="}' \
     > "${work_dir}/secrets/session_hmac_keys_json"
+printf '%s' 'OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk=' \
+    > "${work_dir}/secrets/session_lookup_hmac_key"
 printf '%s' 'postgresql+psycopg2://ci:ci-password@127.0.0.1:55433/ci' \
     > "${work_dir}/secrets/database_url"
-printf '%s' 'redis://:ci-password@127.0.0.1:56380/15' \
-    > "${work_dir}/secrets/redis_url"
 printf '%s' '{"ci-mfa":"NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ="}' \
     > "${work_dir}/secrets/mfa_kek_keys_json"
 printf '%s' 'MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE=' \
@@ -78,8 +69,8 @@ docker_args=(
     --env WTF_CSRF_SECRET_KEY_FILE=/run/secrets/wtf_csrf_secret_key
     --env SESSION_HMAC_ACTIVE_KEY_ID=ci
     --env SESSION_HMAC_KEYS_JSON_FILE=/run/secrets/session_hmac_keys_json
+    --env SESSION_LOOKUP_HMAC_KEY_FILE=/run/secrets/session_lookup_hmac_key
     --env DATABASE_URL_FILE=/run/secrets/database_url
-    --env REDIS_URL_FILE=/run/secrets/redis_url
     --env MFA_KEK_ACTIVE_ID=ci-mfa
     --env MFA_KEK_KEYS_JSON_FILE=/run/secrets/mfa_kek_keys_json
     --env PASSWORD_PEPPER_B64_FILE=/run/secrets/password_pepper_b64

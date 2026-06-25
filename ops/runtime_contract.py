@@ -4,8 +4,8 @@ CUSTOMER_APP_SECRET_INPUTS = {
     "SECRET_KEY": "secret_key",
     "WTF_CSRF_SECRET_KEY": "wtf_csrf_secret_key",
     "SESSION_HMAC_KEYS_JSON": "session_hmac_keys_json",
+    "SESSION_LOOKUP_HMAC_KEY": "session_lookup_hmac_key",
     "DATABASE_URL": "database_url",
-    "REDIS_URL": "redis_url",
     "MFA_KEK_KEYS_JSON": "mfa_kek_keys_json",
     "PASSWORD_PEPPER_B64": "password_pepper_b64",
     "SECURITY_AUDIT_HMAC_KEY": "security_audit_hmac_key",
@@ -18,8 +18,8 @@ ADMIN_APP_SECRET_INPUTS = {
     "ADMIN_SECRET_KEY": "admin_secret_key",
     "ADMIN_WTF_CSRF_SECRET_KEY": "admin_wtf_csrf_secret_key",
     "ADMIN_SESSION_HMAC_KEYS_JSON": "admin_session_hmac_keys_json",
+    "ADMIN_SESSION_LOOKUP_HMAC_KEY": "admin_session_lookup_hmac_key",
     "ADMIN_DATABASE_URL": "admin_database_url",
-    "ADMIN_REDIS_URL": "admin_redis_url",
     "ADMIN_PASSWORD_PEPPER_B64": "admin_password_pepper_b64",
 }
 
@@ -66,7 +66,6 @@ PRODUCTION_SECRET_FILES = tuple(CONFIG_SECRET_INPUTS.values())
 STAGING_DATA_SERVICE_SECRETS = {
     "postgres_owner_password": "postgres_owner_password",
     "postgres_app_password": "postgres_app_password",
-    "redis_conf": "redis.conf",
 }
 STAGING_DATA_SERVICE_SECRET_FILES = tuple(STAGING_DATA_SERVICE_SECRETS.values())
 
