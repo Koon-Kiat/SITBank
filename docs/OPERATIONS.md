@@ -104,7 +104,7 @@ psql "$DATABASE_MIGRATION_URL" --no-psqlrc --command \
 psql "$DATABASE_MIGRATION_URL" --no-psqlrc --command \
   "SELECT created_at, ip_address, event_metadata->>'principal_ref' AS principal_ref FROM security_audit_events WHERE event_type = 'login' AND outcome = 'failure' ORDER BY created_at DESC LIMIT 20;"
 psql "$DATABASE_MIGRATION_URL" --no-psqlrc --command \
-  "SELECT created_at, user_id, event_metadata->>'reason' AS reason FROM security_audit_events WHERE event_type IN ('account_lock', 'webauthn_clone_detected', 'session_integrity') ORDER BY created_at DESC LIMIT 20;"
+  "SELECT created_at, user_id, event_metadata->>'reason' AS reason FROM security_audit_events WHERE event_type IN ('account_lock', 'session_integrity') ORDER BY created_at DESC LIMIT 20;"
 journalctl -u sitbank-container.service --since -15m | grep security_audit_write_failed
 python -m flask --app wsgi:app check-security-alerts --report-only
 ```
@@ -129,7 +129,7 @@ sanitized by exception type and must not print webhook URLs or tokens. A final
 sanitization pass runs immediately before outbound webhook JSON serialization
 for both generic and Discord payloads; it redacts sensitive keys, bearer/basic
 credentials, cookies, session values, MFA/TOTP secrets, API keys,
-private-key-like text, database URLs with credentials, legacy Redis URLs with credentials, webhook URLs,
+private-key-like text, database URLs with credentials, credentialed service URLs, webhook URLs,
 and long token-like strings while preserving harmless severity, event type, summary,
 timestamp, correlation ID, public session reference, and safe user references.
 PostgreSQL alert-dedupe state suppresses repeated delivery of the same alert for
@@ -170,9 +170,7 @@ transaction failures for the same user/ref in 15 minutes; 10 transaction
 failures globally in 15 minutes; audit hash-chain verification failure; audit
 anchor mismatch; database table regression; failed deployments; signature or
 revision mismatches; unexpected image digests; and changes to root-managed
-secret files. Historical `webauthn_clone_detected` audit rows may still be
-reviewed for legacy incident context, but active WebAuthn/passkey ceremonies are
-retired.
+secret files.
 
 ## Password Reset Operations
 
