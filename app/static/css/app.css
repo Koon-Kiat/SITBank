@@ -1423,6 +1423,32 @@ select:focus {
   width: min(420px, 100%);
 }
 
+.reset-method-list {
+  display: grid;
+  gap: var(--space-4);
+  margin-top: var(--space-5);
+}
+
+.reset-method-option {
+  display: grid;
+  gap: var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--space-4);
+  background: var(--surface-raised);
+}
+
+.reset-method-option.is-selected {
+  border-color: color-mix(in srgb, var(--primary) 45%, var(--line));
+}
+
+.reset-method-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
 .mfa-grid {
   display: grid;
   grid-template-columns: minmax(240px, 1fr) minmax(280px, 390px);

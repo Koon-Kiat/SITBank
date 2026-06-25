@@ -36,6 +36,7 @@ from app.auth.password_reset import (
     exchange_reset_token,
     request_manual_recovery,
     request_password_reset,
+    select_reset_mfa_method,
     verify_reset_totp,
 )
 from app.auth.mfa_policy import enrolled_webauthn_credential_count, has_enrolled_mfa_method
@@ -358,6 +359,18 @@ def reset_password_continue_submit():
             flash(exc.message, "error")
             return _render_reset_continue(transaction, status_code=exc.status_code)
         flash("Authentication code verified.", "success")
+        return _render_reset_continue(transaction)
+
+    if action == "select_mfa_method":
+        form = CsrfOnlyForm()
+        if not form.validate_on_submit():
+            return _render_reset_continue(transaction, status_code=400)
+        try:
+            transaction = select_reset_mfa_method(request.form.get("mfa_method", ""))
+        except AuthError as exc:
+            flash(exc.message, "error")
+            return _render_reset_continue(transaction, status_code=exc.status_code)
+        flash("Verification method selected.", "success")
         return _render_reset_continue(transaction)
 
     if action == "complete":
