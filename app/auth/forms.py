@@ -144,8 +144,8 @@ class ProfileForm(FlaskForm):
         "Preferred verification",
         choices=[
             ("totp", "Authenticator code first"),
-            ("passkey", "Passkey first"),
         ],
+        validate_choice=False,
         validators=[InputRequired()],
     )
     totp_code = StringField(
@@ -158,7 +158,7 @@ class ProfileForm(FlaskForm):
     stepup_token = HiddenField(
         validators=[
             Optional(),
-            Regexp(STEP_UP_TOKEN_RE, message="Invalid security key step-up token"),
+            Regexp(STEP_UP_TOKEN_RE, message="Invalid step-up token"),
         ],
     )
 
@@ -174,7 +174,7 @@ class TotpForm(FlaskForm):
     stepup_token = HiddenField(
         validators=[
             Optional(),
-            Regexp(STEP_UP_TOKEN_RE, message="Invalid security key step-up token"),
+            Regexp(STEP_UP_TOKEN_RE, message="Invalid step-up token"),
         ],
     )
 
@@ -187,7 +187,7 @@ class StepUpTokenForm(FlaskForm):
     stepup_token = HiddenField(
         validators=[
             Optional(),
-            Regexp(STEP_UP_TOKEN_RE, message="Invalid security key step-up token"),
+            Regexp(STEP_UP_TOKEN_RE, message="Invalid step-up token"),
         ],
     )
 
@@ -203,7 +203,7 @@ class MfaOrStepUpForm(FlaskForm):
     stepup_token = HiddenField(
         validators=[
             Optional(),
-            Regexp(STEP_UP_TOKEN_RE, message="Invalid security key step-up token"),
+            Regexp(STEP_UP_TOKEN_RE, message="Invalid step-up token"),
         ],
     )
 
@@ -229,7 +229,7 @@ class PasswordChangeForm(FlaskForm):
     stepup_token = HiddenField(
         validators=[
             Optional(),
-            Regexp(STEP_UP_TOKEN_RE, message="Invalid security key step-up token"),
+            Regexp(STEP_UP_TOKEN_RE, message="Invalid step-up token"),
         ],
     )
 

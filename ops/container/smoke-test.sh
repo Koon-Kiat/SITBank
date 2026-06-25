@@ -288,10 +288,6 @@ chmod 0444 "${work_dir}"/secrets/*
 
 seq -f 'blocked-password-%06g' 1 100000 \
     > "${work_dir}/config/common-passwords.txt"
-cp tests/fixtures/fido-approved-aaguids.json \
-    "${work_dir}/config/fido-approved-aaguids.json"
-cp tests/fixtures/fido-mds-cache.json \
-    "${work_dir}/config/fido-mds-cache.json"
 chmod 0444 "${work_dir}"/config/*
 
 secrets_mount_source="$(docker_bind_source "${work_dir}/secrets")"
@@ -343,10 +339,6 @@ docker_args=(
     --env SMTP_USE_TLS=true
     --env COMMON_PASSWORDS_PATH=/run/config/common-passwords.txt
     --env COMMON_PASSWORDS_MIN_ENTRIES=100000
-    --env WEBAUTHN_RP_ID=sitbank.duckdns.org
-    --env WEBAUTHN_RP_ORIGIN=https://sitbank.duckdns.org
-    --env WEBAUTHN_APPROVED_AAGUIDS_PATH=/run/config/fido-approved-aaguids.json
-    --env WEBAUTHN_MDS_CACHE_PATH=/run/config/fido-mds-cache.json
     --env TRUSTED_PROXY_COUNT=1
     --volume "${secrets_mount_source}:/run/secrets:ro"
     --volume "${config_mount_source}:/run/config:ro"

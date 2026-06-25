@@ -254,9 +254,7 @@ chown root:root "${config_root}/deploy.conf"
 chmod 0644 "${config_root}/deploy.conf"
 
 for policy_file in \
-    common-passwords.txt \
-    fido-approved-aaguids.json \
-    fido-mds-cache.json; do
+    common-passwords.txt; do
     if [[ -f "${config_root}/${policy_file}" ]]; then
         chown root:"${CONTAINER_GID}" "${config_root}/${policy_file}"
         chmod 0640 "${config_root}/${policy_file}"

@@ -17,8 +17,6 @@ STEP_UP_DECISIONS = {
     "not_required",
     "required",
     "conditional",
-    "ceremony_endpoint",
-    "fresh_mfa",
     "already_authorized_continuation",
     "reset_mfa",
 }
@@ -198,8 +196,8 @@ ROUTE_SECURITY_INVENTORY = {
         "classification": "webauthn",
         "csrf": "required",
         "rate_limit": "per_route",
-        "step_up": "reset_mfa",
-        "public_justification": "Password-reset WebAuthn options are bound to the reset transaction, not a login session.",
+        "step_up": "not_required",
+        "public_justification": "Legacy password-reset WebAuthn compatibility endpoint fails closed before authentication.",
     },
     "auth.password_reset_webauthn_verify": {
         "endpoint": "auth.password_reset_webauthn_verify",
@@ -209,8 +207,8 @@ ROUTE_SECURITY_INVENTORY = {
         "classification": "webauthn",
         "csrf": "required",
         "rate_limit": "per_route",
-        "step_up": "reset_mfa",
-        "public_justification": "Password-reset WebAuthn assertions verify the reset transaction before login.",
+        "step_up": "not_required",
+        "public_justification": "Legacy password-reset WebAuthn compatibility endpoint fails closed before authentication.",
     },
     "auth.password_reset_complete": {
         "endpoint": "auth.password_reset_complete",
@@ -286,7 +284,7 @@ ROUTE_SECURITY_INVENTORY = {
         "classification": "webauthn",
         "csrf": "required",
         "rate_limit": "per_route",
-        "step_up": "ceremony_endpoint",
+        "step_up": "not_required",
         "public_justification": "",
     },
     "auth.webauthn_step_up_verify": {
@@ -297,7 +295,7 @@ ROUTE_SECURITY_INVENTORY = {
         "classification": "webauthn",
         "csrf": "required",
         "rate_limit": "per_route",
-        "step_up": "ceremony_endpoint",
+        "step_up": "not_required",
         "public_justification": "",
     },
     "auth.webauthn_credentials": {
@@ -319,7 +317,7 @@ ROUTE_SECURITY_INVENTORY = {
         "classification": "webauthn",
         "csrf": "required",
         "rate_limit": "edge_auth",
-        "step_up": "required",
+        "step_up": "not_required",
         "public_justification": "",
     },
     "auth.logout": {
@@ -649,7 +647,7 @@ ROUTE_SECURITY_INVENTORY = {
         "classification": "mfa",
         "csrf": "required",
         "rate_limit": "per_route",
-        "step_up": "fresh_mfa",
+        "step_up": "not_required",
         "public_justification": "",
     },
     "web.security_key_revoke": {
@@ -660,7 +658,7 @@ ROUTE_SECURITY_INVENTORY = {
         "classification": "webauthn",
         "csrf": "required",
         "rate_limit": "edge_app",
-        "step_up": "required",
+        "step_up": "not_required",
         "public_justification": "",
     },
     "web.profile": {
@@ -955,12 +953,10 @@ def test_route_inventory_has_complete_security_decisions(app):
         source = sources[endpoint]
         if entry["step_up"] == "required":
             assert "stepup_token" in source or "verify_high_risk_authorization" in source, (
-                f"{endpoint} is expected to require WebAuthn step-up"
+                f"{endpoint} is expected to require fresh MFA step-up"
             )
         if entry["step_up"] == "conditional":
             assert "stepup_token" in source, f"{endpoint} must document its conditional step-up branch"
-        if entry["step_up"] == "ceremony_endpoint":
-            assert endpoint.startswith("auth.webauthn_step_up_")
 
 
 def test_login_and_registration_have_method_level_security_decisions(app):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -17,11 +18,6 @@ from sqlalchemy import text
 from app.extensions import db
 from app.models import SecurityAuditEvent, User
 from app.security.session_hmac import active_hmac_hex
-
-try:
-    from webauthn.helpers import bytes_to_base64url
-except ImportError:  # pragma: no cover - dependency is required in production.
-    bytes_to_base64url = None
 
 
 SENSITIVE_KEY_PARTS = (
@@ -308,7 +304,7 @@ def audit_webauthn_event(
 ) -> None:
     credential_ref = None
     if isinstance(credential_id, bytes):
-        credential_value = bytes_to_base64url(credential_id) if bytes_to_base64url else credential_id.hex()
+        credential_value = _bytes_to_base64url(credential_id)
         credential_ref = audit_reference("webauthn_credential", credential_value) or "[unavailable]"
     elif credential_id:
         credential_ref = audit_reference("webauthn_credential", credential_id) or "[unavailable]"
@@ -330,6 +326,10 @@ def audit_webauthn_event(
         metadata=event_metadata,
         session_id=session_id,
     )
+
+
+def _bytes_to_base64url(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
 
 
 def verify_audit_hash_chain(*, anchor: Mapping[str, Any] | None = None) -> dict[str, Any]:

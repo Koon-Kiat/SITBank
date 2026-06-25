@@ -43,16 +43,13 @@ RESET_TRANSACTION_PREFIX = "ospbank:password_reset_transaction:"
 GENERIC_AUTHENTICATION_CODE_ERROR = "Invalid authentication code."
 GENERIC_VERIFICATION_METHOD_ERROR = "Invalid verification method."
 RESET_MFA_TOTP = "totp"
-RESET_MFA_WEBAUTHN = "webauthn"
+RESET_MFA_MANUAL_RECOVERY = "manual_recovery"
 RESET_MFA_NONE = "none"
-RESET_MFA_METHODS = frozenset({RESET_MFA_TOTP, RESET_MFA_WEBAUTHN})
+RESET_MFA_METHODS = frozenset({RESET_MFA_TOTP})
+RESET_MFA_PUBLIC_METHODS = frozenset({RESET_MFA_TOTP, RESET_MFA_MANUAL_RECOVERY})
 RESET_MFA_METHOD_ALIASES = {
     "authenticator": RESET_MFA_TOTP,
-    "passkey": RESET_MFA_WEBAUTHN,
-    "security-key": RESET_MFA_WEBAUTHN,
-    "security_key": RESET_MFA_WEBAUTHN,
     RESET_MFA_TOTP: RESET_MFA_TOTP,
-    RESET_MFA_WEBAUTHN: RESET_MFA_WEBAUTHN,
 }
 MANUAL_RECOVERY_STATUS_PENDING = "pending"
 MANUAL_RECOVERY_STATUS_UNDER_REVIEW = "under_review"
@@ -287,34 +284,13 @@ def _verify_reset_authentication_code(code: str, *, submitted_factor: str) -> di
     return _public_transaction(transaction)
 
 
-def mark_reset_webauthn_verified(transaction_id: str, user_id: int) -> dict[str, Any]:
-    transaction = _load_transaction(transaction_id)
-    user = db.session.get(User, int(user_id))
-    if user is None or int(transaction["user_id"]) != int(user_id):
-        audit_event("password_reset_webauthn_failed", "failure", user_id=user_id, metadata={"reason": "transaction_mismatch"})
-        raise AuthError("Security key verification failed", 401)
-    try:
-        _require_selected_reset_mfa_method(
-            transaction,
-            user,
-            RESET_MFA_WEBAUTHN,
-            submitted_factor=RESET_MFA_WEBAUTHN,
-            error_message="Security key verification failed",
-        )
-    except AuthError:
-        audit_event("password_reset_webauthn_failed", "failure", user_id=user_id, metadata={"reason": "transaction_mismatch"})
-        raise AuthError("Security key verification failed", 401)
-    transaction["mfa_verified"] = True
-    transaction["mfa_verified_at"] = _now_timestamp()
-    _store_transaction(transaction)
-    return _public_transaction(transaction)
-
-
 def complete_password_reset(new_password: str, confirm_new_password: str) -> dict[str, Any]:
     transaction = _load_current_transaction()
     user = _transaction_user(transaction)
     if transaction["mfa_required"] != "none" and not transaction.get("mfa_verified"):
         audit_event("password_reset_failed", "failure", user=user, metadata={"reason": "missing_mfa"})
+        if transaction["mfa_required"] == RESET_MFA_MANUAL_RECOVERY:
+            raise AuthError("Manual account recovery is required before resetting the password", 403)
         raise AuthError("MFA verification is required before resetting the password", 403)
     if new_password != confirm_new_password:
         audit_event("password_reset_failed", "failure", user=user, metadata={"reason": "password_mismatch"})
@@ -524,7 +500,7 @@ def complete_manual_recovery_request(request_id: int, *, reason: str | None = No
         "new_status": MANUAL_RECOVERY_STATUS_COMPLETED,
         "reason": reason,
         "revoked_sessions": revoked_sessions,
-        "removed_webauthn_credentials": len(removed_credentials),
+        "removed_legacy_passkey_credentials": len(removed_credentials),
         "mfa_reenrollment_required": True,
     }
     if has_request_context():
@@ -539,7 +515,7 @@ def complete_manual_recovery_request(request_id: int, *, reason: str | None = No
     result.update(
         {
             "revoked_sessions": revoked_sessions,
-            "removed_webauthn_credentials": len(removed_credentials),
+            "removed_legacy_passkey_credentials": len(removed_credentials),
             "mfa_reenrollment_required": True,
         }
     )
@@ -818,7 +794,6 @@ def _clear_reset_transaction(transaction: dict[str, Any]) -> None:
     tx_id = str(transaction.get("transaction_id") or "")
     if tx_id:
         _delete_transaction_id(tx_id)
-        _redis().delete(f"ospbank:password_reset_webauthn:{tx_id}")
 
 
 def _delete_transaction_id(transaction_id: str) -> None:
@@ -880,11 +855,19 @@ def _available_reset_mfa_methods_for_user(user: User) -> list[str]:
     methods: list[str] = []
     if user.mfa_enabled:
         methods.append(RESET_MFA_TOTP)
-    from app.auth.webauthn_services import webauthn_credential_count
-
-    if webauthn_credential_count(user) > 0:
-        methods.append(RESET_MFA_WEBAUTHN)
+    elif _legacy_passkey_credential_count(user) > 0:
+        methods.append(RESET_MFA_MANUAL_RECOVERY)
     return methods
+
+
+def _legacy_passkey_credential_count(user: User) -> int:
+    if user.id is None:
+        return 0
+    return int(
+        db.session.execute(
+            db.select(func.count(WebAuthnCredential.id)).where(WebAuthnCredential.user_id == user.id)
+        ).scalar_one()
+    )
 
 
 def _available_reset_mfa_methods_from_transaction(transaction: dict[str, Any]) -> list[str]:
@@ -893,18 +876,18 @@ def _available_reset_mfa_methods_from_transaction(transaction: dict[str, Any]) -
         methods: list[str] = []
         for raw_method in raw_methods:
             method = _public_reset_mfa_method(raw_method)
-            if method in RESET_MFA_METHODS and method not in methods:
+            if method in RESET_MFA_PUBLIC_METHODS and method not in methods:
                 methods.append(method)
         return methods
     required = _public_reset_mfa_method(transaction.get("mfa_required"))
-    return [required] if required in RESET_MFA_METHODS else []
+    return [required] if required in RESET_MFA_PUBLIC_METHODS else []
 
 
 def _fallback_reset_mfa_method(available_methods: list[str]) -> str:
-    if RESET_MFA_WEBAUTHN in available_methods:
-        return RESET_MFA_WEBAUTHN
     if RESET_MFA_TOTP in available_methods:
         return RESET_MFA_TOTP
+    if RESET_MFA_MANUAL_RECOVERY in available_methods:
+        return RESET_MFA_MANUAL_RECOVERY
     return RESET_MFA_NONE
 
 
@@ -922,6 +905,8 @@ def _normalize_reset_mfa_method(value: str | None) -> str:
 
 
 def _public_reset_mfa_method(value: Any) -> str | None:
+    if str(value or "").strip().casefold() == RESET_MFA_MANUAL_RECOVERY:
+        return RESET_MFA_MANUAL_RECOVERY
     method = _profile_preference_to_reset_method(str(value or ""))
     return method if method in RESET_MFA_METHODS else None
 

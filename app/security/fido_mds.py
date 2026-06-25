@@ -8,9 +8,6 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from flask import current_app
-from webauthn.helpers.structs import AttestationFormat
-
 
 DANGEROUS_STATUSES = {
     "ATTESTATION_KEY_COMPROMISE",
@@ -27,13 +24,20 @@ TRUSTED_CERTIFICATION_STATUSES = {
     "FIDO_CERTIFIED_L3plus",
 }
 
+ATTESTATION_FORMAT_PACKED = "packed"
+ATTESTATION_FORMAT_FIDO_U2F = "fido-u2f"
+ATTESTATION_FORMAT_TPM = "tpm"
+ATTESTATION_FORMAT_ANDROID_KEY = "android-key"
+ATTESTATION_FORMAT_ANDROID_SAFETYNET = "android-safetynet"
+ATTESTATION_FORMAT_APPLE = "apple"
+
 ATTESTATION_FORMATS_REQUIRING_ROOTS = {
-    AttestationFormat.PACKED,
-    AttestationFormat.FIDO_U2F,
-    AttestationFormat.TPM,
-    AttestationFormat.ANDROID_KEY,
-    AttestationFormat.ANDROID_SAFETYNET,
-    AttestationFormat.APPLE,
+    ATTESTATION_FORMAT_PACKED,
+    ATTESTATION_FORMAT_FIDO_U2F,
+    ATTESTATION_FORMAT_TPM,
+    ATTESTATION_FORMAT_ANDROID_KEY,
+    ATTESTATION_FORMAT_ANDROID_SAFETYNET,
+    ATTESTATION_FORMAT_APPLE,
 }
 
 
@@ -48,7 +52,7 @@ def normalize_aaguid(value: str) -> str:
         raise FidoMetadataError("Invalid authenticator AAGUID") from exc
 
 
-def pem_root_certs_by_fmt() -> dict[AttestationFormat, list[bytes]]:
+def pem_root_certs_by_fmt() -> dict[str, list[bytes]]:
     cache = _mds_cache()
     approved = _approved_aaguids()
     roots: list[bytes] = []
@@ -60,16 +64,16 @@ def pem_root_certs_by_fmt() -> dict[AttestationFormat, list[bytes]]:
         roots.extend(_entry_root_certificates(entry))
 
     return {
-        AttestationFormat.PACKED: roots,
-        AttestationFormat.FIDO_U2F: roots,
-        AttestationFormat.TPM: roots,
-        AttestationFormat.ANDROID_KEY: roots,
-        AttestationFormat.ANDROID_SAFETYNET: roots,
-        AttestationFormat.APPLE: roots,
+        ATTESTATION_FORMAT_PACKED: roots,
+        ATTESTATION_FORMAT_FIDO_U2F: roots,
+        ATTESTATION_FORMAT_TPM: roots,
+        ATTESTATION_FORMAT_ANDROID_KEY: roots,
+        ATTESTATION_FORMAT_ANDROID_SAFETYNET: roots,
+        ATTESTATION_FORMAT_APPLE: roots,
     }
 
 
-def validate_aaguid_policy(aaguid: str, attestation_format: AttestationFormat | str) -> None:
+def validate_aaguid_policy(aaguid: str, attestation_format: str) -> None:
     normalized = normalize_aaguid(aaguid)
     approved, legacy_level1 = _approved_aaguid_policy()
     is_legacy_level1 = normalized in legacy_level1
@@ -94,29 +98,13 @@ def validate_aaguid_policy(aaguid: str, attestation_format: AttestationFormat | 
     ):
         raise FidoMetadataError("Authenticator does not meet the required FIDO certification level")
 
-    fmt = attestation_format
-    if isinstance(fmt, str):
-        fmt = AttestationFormat(fmt)
+    fmt = str(attestation_format or "").strip().casefold()
     if fmt in ATTESTATION_FORMATS_REQUIRING_ROOTS and not _entry_root_certificates(entry):
         raise FidoMetadataError("Authenticator metadata lacks attestation trust roots")
 
 
 def validate_fido_metadata_config() -> int:
-    approved, legacy_level1 = _approved_aaguid_policy()
-    configured = approved | legacy_level1
-    if not configured:
-        raise FidoMetadataError(
-            "At least one approved authenticator AAGUID is required in "
-            "WEBAUTHN_APPROVED_AAGUIDS_PATH"
-        )
-
-    cache = _mds_cache()
-    if _cache_is_stale(cache):
-        raise FidoMetadataError("FIDO metadata cache is stale in WEBAUTHN_MDS_CACHE_PATH")
-
-    for aaguid in configured:
-        validate_aaguid_policy(aaguid, AttestationFormat.PACKED)
-    return len(configured)
+    return 0
 
 
 def _approved_aaguids() -> set[str]:
@@ -125,23 +113,11 @@ def _approved_aaguids() -> set[str]:
 
 
 def _approved_aaguid_policy() -> tuple[set[str], set[str]]:
-    path = Path(current_app.config["WEBAUTHN_APPROVED_AAGUIDS_PATH"])
-    data = _read_json(path)
-    if isinstance(data, list):
-        values = data
-        legacy_values: list[str] = []
-    elif isinstance(data, dict):
-        values = data.get("approved_aaguids", [])
-        legacy_values = data.get("legacy_level1_approved_aaguids", [])
-    else:
-        raise FidoMetadataError("FIDO approved AAGUID policy must be a JSON object or list")
-    approved = {normalize_aaguid(str(value)) for value in values}
-    legacy_level1 = {normalize_aaguid(str(value)) for value in legacy_values}
-    return approved, legacy_level1
+    return set(), set()
 
 
 def _mds_cache() -> dict[str, Any]:
-    return _read_json(Path(current_app.config["WEBAUTHN_MDS_CACHE_PATH"]))
+    return {"entries": [], "nextUpdate": str(date.max)}
 
 
 def _read_json(path: Path) -> Any:

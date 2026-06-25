@@ -9,7 +9,6 @@ from urllib.parse import parse_qs, urlparse
 import pyotp
 import pytest
 from sqlalchemy import func
-from webauthn.helpers import bytes_to_base64url
 
 from app.auth.password_reset import (
     complete_manual_recovery_request,
@@ -364,11 +363,13 @@ def test_passkey_only_user_cannot_fall_back_to_email_only_reset(app, client):
     )
 
     assert exchanged.status_code == 200
-    assert exchanged.get_json()["mfa_required"] == "webauthn"
+    assert exchanged.get_json()["mfa_required"] == "manual_recovery"
+    assert exchanged.get_json()["available_mfa_methods"] == ["manual_recovery"]
     assert totp_attempt.status_code == 400
     assert totp_attempt.get_json() == {"error": "Invalid authentication code."}
     assert "Authenticator code is not required" not in totp_attempt.get_data(as_text=True)
     assert completed.status_code == 403
+    assert completed.get_json() == {"error": "Manual account recovery is required before resetting the password"}
     with app.app_context():
         wrong_factor_event = db.session.execute(
             db.select(SecurityAuditEvent)
@@ -380,12 +381,10 @@ def test_passkey_only_user_cannot_fall_back_to_email_only_reset(app, client):
         assert wrong_factor_event.event_metadata["submitted_factor"] == "authentication_code"
 
 
-def test_password_reset_webauthn_options_require_transaction_before_allow_credentials(app, client):
+def test_password_reset_webauthn_options_fail_closed(app, client):
     with app.app_context():
         user = _create_user("resetwebauthn", "resetwebauthn@example.com")
-        other = _create_user("resetother", "resetother@example.com", phone_number="92345678")
         _add_webauthn_credential(user, credential_id=b"reset-user-passkey")
-        _add_webauthn_credential(other, credential_id=b"other-user-passkey")
 
     public_probe = client.post(
         "/auth/password-reset/mfa/webauthn/options",
@@ -400,16 +399,13 @@ def test_password_reset_webauthn_options_require_transaction_before_allow_creden
         json={"email": "resetother@example.com"},
         headers=ORIGIN,
     )
-    payload = transaction_response.get_json()
-    allowed_ids = {credential["id"] for credential in payload["allowCredentials"]}
 
-    assert public_probe.status_code == 401
-    assert public_probe.get_json() == {"error": "No active password reset transaction"}
+    assert public_probe.status_code == 410
+    assert public_probe.get_json()["error"].startswith("Passkey authentication is no longer available")
     assert exchanged.status_code == 200
-    assert exchanged.get_json()["mfa_required"] == "webauthn"
-    assert transaction_response.status_code == 200
-    assert allowed_ids == {bytes_to_base64url(b"reset-user-passkey")}
-    assert bytes_to_base64url(b"other-user-passkey") not in allowed_ids
+    assert exchanged.get_json()["mfa_required"] == "manual_recovery"
+    assert transaction_response.status_code == 410
+    assert transaction_response.get_json()["error"].startswith("Passkey authentication is no longer available")
 
 
 def test_totp_recovery_code_still_works_when_passkey_is_registered(app, client):
@@ -470,7 +466,7 @@ def test_password_reset_totp_only_ui_shows_authenticator_recovery_code_method(ap
     assert "Use passkey or security key" not in markup
 
 
-def test_password_reset_passkey_only_ui_shows_passkey_method(app, client):
+def test_password_reset_passkey_only_ui_requires_manual_recovery(app, client):
     with app.app_context():
         user = _create_user("resetpasskeyonly", "resetpasskeyonly@example.com")
         _add_webauthn_credential(user)
@@ -482,17 +478,19 @@ def test_password_reset_passkey_only_ui_shows_passkey_method(app, client):
     markup = page.get_data(as_text=True)
 
     assert exchanged.status_code == 200
-    assert exchanged.get_json()["mfa_required"] == "webauthn"
-    assert exchanged.get_json()["available_mfa_methods"] == ["webauthn"]
-    assert "Verify with passkey" in markup
+    assert exchanged.get_json()["mfa_required"] == "manual_recovery"
+    assert exchanged.get_json()["available_mfa_methods"] == ["manual_recovery"]
+    assert "Account recovery required" in markup
+    assert "Request account recovery" in markup
+    assert "Verify with passkey" not in markup
     assert "Authenticator code or recovery code" not in markup
 
 
 @pytest.mark.parametrize(
-    ("preference", "expected_method", "expected_button"),
+    ("preference", "expected_method"),
     [
-        ("totp", "totp", "Use passkey or security key"),
-        ("passkey", "webauthn", "Use authenticator app"),
+        ("totp", "totp"),
+        ("passkey", "totp"),
     ],
 )
 def test_password_reset_defaults_to_profile_preferred_method_for_dual_mfa_user(
@@ -500,7 +498,6 @@ def test_password_reset_defaults_to_profile_preferred_method_for_dual_mfa_user(
     client,
     preference,
     expected_method,
-    expected_button,
 ):
     with app.app_context():
         user, _secret = _create_totp_user(f"resetpref{preference}", f"resetpref{preference}@example.com")
@@ -516,14 +513,14 @@ def test_password_reset_defaults_to_profile_preferred_method_for_dual_mfa_user(
 
     payload = exchanged.get_json()
     assert payload["mfa_required"] == expected_method
-    assert payload["available_mfa_methods"] == ["totp", "webauthn"]
-    assert payload["preferred_mfa_method"] == expected_method
+    assert payload["available_mfa_methods"] == ["totp"]
+    assert payload["preferred_mfa_method"] in {expected_method, None}
     assert payload["default_mfa_method"] == expected_method
-    assert "Your preferred method" in markup
-    assert expected_button in markup
+    assert "Authenticator code or recovery code" in markup
+    assert "Use passkey or security key" not in markup
 
 
-def test_password_reset_dual_mfa_user_can_switch_to_totp_before_verifying(app, client):
+def test_password_reset_dual_mfa_user_uses_totp_even_with_legacy_passkey_preference(app, client):
     with app.app_context():
         user, secret = _create_totp_user("resetswitch", "resetswitch@example.com")
         user.mfa_step_up_preference = "passkey"
@@ -533,26 +530,18 @@ def test_password_reset_dual_mfa_user_can_switch_to_totp_before_verifying(app, c
     _request_reset(client, "resetswitch@example.com")
     token = _reset_token(app)
     exchanged = _exchange(client, token)
-    blocked_totp = client.post(
-        "/auth/password-reset/mfa/totp",
-        json={"totp_code": pyotp.TOTP(secret).now()},
-    )
-    selected = client.post("/auth/password-reset/mfa/method", json={"method": "totp"})
     verified = client.post(
         "/auth/password-reset/mfa/totp",
         json={"totp_code": pyotp.TOTP(secret).now()},
     )
 
-    assert exchanged.get_json()["mfa_required"] == "webauthn"
-    assert blocked_totp.status_code == 400
-    assert blocked_totp.get_json() == {"error": "Invalid authentication code."}
-    assert selected.status_code == 200
-    assert selected.get_json()["mfa_required"] == "totp"
+    assert exchanged.get_json()["mfa_required"] == "totp"
+    assert exchanged.get_json()["available_mfa_methods"] == ["totp"]
     assert verified.status_code == 200
     assert verified.get_json()["mfa_verified"] is True
 
 
-def test_recovery_code_cannot_satisfy_passkey_selected_password_reset(app, client):
+def test_recovery_code_satisfies_totp_reset_when_legacy_passkey_is_registered(app, client):
     with app.app_context():
         user, _secret = _create_totp_user("resetwrongfactor", "resetwrongfactor@example.com")
         user.mfa_step_up_preference = "passkey"
@@ -567,13 +556,13 @@ def test_recovery_code_cannot_satisfy_passkey_selected_password_reset(app, clien
     recovery_attempt = client.post("/auth/password-reset/mfa/totp", json={"totp_code": codes[0]})
     transaction = client.get("/auth/password-reset/transaction")
 
-    assert exchanged.get_json()["mfa_required"] == "webauthn"
-    assert recovery_attempt.status_code == 400
-    assert recovery_attempt.get_json() == {"error": "Invalid authentication code."}
-    assert transaction.get_json()["mfa_verified"] is False
+    assert exchanged.get_json()["mfa_required"] == "totp"
+    assert recovery_attempt.status_code == 200
+    assert recovery_attempt.get_json()["mfa_verified"] is True
+    assert transaction.get_json()["mfa_verified"] is True
     with app.app_context():
         recovery_record = db.session.execute(db.select(RecoveryCode)).scalar_one()
-        assert recovery_record.used_at is None
+        assert recovery_record.used_at is not None
 
 
 def test_webauthn_options_cannot_satisfy_totp_selected_password_reset(app, client):
@@ -591,14 +580,12 @@ def test_webauthn_options_cannot_satisfy_totp_selected_password_reset(app, clien
     allowed_options = client.post("/auth/password-reset/mfa/webauthn/options", json={}, headers=ORIGIN)
 
     assert exchanged.get_json()["mfa_required"] == "totp"
-    assert blocked_options.status_code == 400
-    assert blocked_options.get_json() == {"error": "Security key verification failed"}
-    assert selected.status_code == 200
-    assert selected.get_json()["mfa_required"] == "webauthn"
-    assert allowed_options.status_code == 200
-    assert {item["id"] for item in allowed_options.get_json()["allowCredentials"]} == {
-        bytes_to_base64url(b"blocked-default-passkey")
-    }
+    assert blocked_options.status_code == 410
+    assert blocked_options.get_json()["error"].startswith("Passkey authentication is no longer available")
+    assert selected.status_code == 400
+    assert selected.get_json() == {"error": "Invalid request"}
+    assert allowed_options.status_code == 410
+    assert allowed_options.get_json()["error"].startswith("Passkey authentication is no longer available")
 
 
 def test_admin_like_customer_domain_reset_fails_closed(app, client):

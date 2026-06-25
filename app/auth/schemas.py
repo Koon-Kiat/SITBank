@@ -10,9 +10,6 @@ FULL_NAME_RE = r"^[^\x00-\x1f\x7f<>]+$"
 PHONE_RE = r"^[89][0-9]{7}$"
 TOTP_RE = r"^[0-9]{6}$"
 SESSION_REFERENCE_RE = r"^[A-Fa-f0-9]{32}$"
-WEBAUTHN_CREDENTIAL_REFERENCE_RE = r"^[A-Za-z0-9_-]{16,4096}$"
-WEBAUTHN_LABEL_RE = r"^[A-Za-z0-9][A-Za-z0-9 ._()#:/+\-]{0,79}$"
-STEP_UP_ACTION_RE = r"^[a-z_]{3,64}$"
 STEP_UP_TOKEN_RE = r"^[A-Za-z0-9_-]{32,256}$"
 RESET_TOKEN_RE = r"^[A-Za-z0-9_-]{16,96}\.[A-Za-z0-9_-]{32,128}$"
 REGISTRATION_OTP_RE = r"^[0-9]{6}$"
@@ -117,7 +114,7 @@ class AuthenticationCodeSchema(Schema):
 class PasswordResetMfaMethodSchema(Schema):
     method = fields.Str(
         required=True,
-        validate=validate.OneOf(["totp", "authenticator", "webauthn", "passkey", "security-key", "security_key"]),
+        validate=validate.OneOf(["totp", "authenticator"]),
     )
 
 
@@ -151,9 +148,8 @@ class PasswordChangeSchema(Schema):
     stepup_token = fields.Str(
         required=False,
         load_only=True,
-        validate=validate.Regexp(STEP_UP_TOKEN_RE, error="Invalid security key step-up token"),
+        validate=validate.Regexp(STEP_UP_TOKEN_RE, error="Invalid step-up token"),
     )
-
     @validates_schema
     def validate_password_match(self, data, **_kwargs):
         if data.get("new_password") != data.get("confirm_new_password"):
@@ -176,53 +172,6 @@ class PasswordResetSchema(Schema):
             raise ValidationError("Passwords must match")
 
 
-class WebAuthnRegistrationOptionsSchema(Schema):
-    class Meta:
-        unknown = EXCLUDE
-
-    label = fields.Str(
-        required=True,
-        validate=[
-            validate.Length(min=1, max=80),
-            validate.Regexp(WEBAUTHN_LABEL_RE, error="Invalid security key label"),
-        ],
-    )
-
-
-class WebAuthnRegistrationVerifySchema(Schema):
-    credential = fields.Raw(required=True)
-
-
-class WebAuthnAuthenticationOptionsSchema(Schema):
-    class Meta:
-        unknown = EXCLUDE
-
-
-class WebAuthnAuthenticationVerifySchema(Schema):
-    credential = fields.Raw(required=True)
-
-
-class WebAuthnStepUpOptionsSchema(Schema):
-    action = fields.Str(
-        required=True,
-        validate=[
-            validate.Length(min=3, max=64),
-            validate.Regexp(STEP_UP_ACTION_RE, error="Invalid security key step-up action"),
-        ],
-    )
-
-
-class WebAuthnStepUpVerifySchema(Schema):
-    action = fields.Str(
-        required=True,
-        validate=[
-            validate.Length(min=3, max=64),
-            validate.Regexp(STEP_UP_ACTION_RE, error="Invalid security key step-up action"),
-        ],
-    )
-    credential = fields.Raw(required=True)
-
-
 class HighRiskTotpSchema(Schema):
     class Meta:
         unknown = EXCLUDE
@@ -235,26 +184,5 @@ class HighRiskTotpSchema(Schema):
     stepup_token = fields.Str(
         required=False,
         load_only=True,
-        validate=validate.Regexp(STEP_UP_TOKEN_RE, error="Invalid security key step-up token"),
-    )
-
-
-class StepUpTokenSchema(Schema):
-    class Meta:
-        unknown = EXCLUDE
-
-    stepup_token = fields.Str(
-        required=False,
-        load_only=True,
-        validate=validate.Regexp(STEP_UP_TOKEN_RE, error="Invalid security key step-up token"),
-    )
-
-
-class WebAuthnCredentialReferenceSchema(Schema):
-    credential_id = fields.Str(
-        required=True,
-        validate=[
-            validate.Length(min=16, max=4096),
-            validate.Regexp(WEBAUTHN_CREDENTIAL_REFERENCE_RE, error="Invalid credential reference"),
-        ],
+        validate=validate.Regexp(STEP_UP_TOKEN_RE, error="Invalid step-up token"),
     )

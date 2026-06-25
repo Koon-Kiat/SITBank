@@ -61,7 +61,7 @@ def index_disabled():
 def login_disabled():
     session.clear()
     _audit_admin_denial("admin_login_disabled", "fail_closed")
-    return jsonify({"error": "Admin login is disabled pending Phase 2 WebAuthn"}), 403
+    return jsonify({"error": "Admin login is disabled"}), 403
 
 
 @admin_bp.route("/step-up", methods=["GET", "POST"])
@@ -69,4 +69,4 @@ def login_disabled():
 def step_up_disabled():
     session.clear()
     _audit_admin_denial("admin_step_up_disabled", "fail_closed")
-    return jsonify({"error": "Admin step-up is disabled pending Phase 2 WebAuthn"}), 403
+    return jsonify({"error": "Admin step-up is disabled"}), 403
