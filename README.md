@@ -6,7 +6,7 @@ SITBank is a student cybersecurity project and demonstration site. Do not enter 
 
 ## Overview
 
-SITBank is a Flask/Gunicorn application deployed as hardened Docker containers behind host-managed Nginx, TLS, and PostgreSQL. Production customer traffic runs at `https://sitbank.duckdns.org`; the isolated production admin boundary is reserved at `https://admin-sitbank.duckdns.org` and is fail-closed until a reviewed admin MFA design and network allowlist controls are implemented. Staging runs separately at `https://staging-sitbank.duckdns.org` and does not include an admin service in this phase.
+SITBank is a Flask/Gunicorn application deployed as hardened Docker containers behind host-managed Nginx, TLS, and PostgreSQL. Production customer traffic runs at `https://sitbank.duckdns.org`; the isolated production admin boundary at `https://admin-sitbank.duckdns.org` uses a separate admin app, cookie, session keys, database role, root-admin-controlled staff invites, and mandatory TOTP. Staging runs separately at `https://staging-sitbank.duckdns.org`.
 
 Security-critical state is application-owned PostgreSQL data, not Redis data. Server-side sessions, authentication failure counters, TOTP replay markers, registration OTP challenges, password-reset transactions, security-alert dedupe windows, and breached-password circuit-breaker state are stored in dedicated tables. Browser cookies keep only opaque identifiers; lookup hashes are HMAC-derived with `SESSION_LOOKUP_HMAC_KEY` or `ADMIN_SESSION_LOOKUP_HMAC_KEY`, and stored session payloads remain signed with the session HMAC keyring.
 

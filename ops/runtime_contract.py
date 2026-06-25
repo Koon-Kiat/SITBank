@@ -20,6 +20,7 @@ ADMIN_APP_SECRET_INPUTS = {
     "ADMIN_SESSION_HMAC_KEYS_JSON": "admin_session_hmac_keys_json",
     "ADMIN_SESSION_LOOKUP_HMAC_KEY": "admin_session_lookup_hmac_key",
     "ADMIN_DATABASE_URL": "admin_database_url",
+    "MFA_KEK_KEYS_JSON": "mfa_kek_keys_json",
     "ADMIN_PASSWORD_PEPPER_B64": "admin_password_pepper_b64",
 }
 

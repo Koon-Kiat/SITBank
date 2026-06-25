@@ -55,8 +55,10 @@ runtime role. The admin role must be distinct from both `sitbank_app` and
 `sitbank_owner`; it must not use migration/schema-owner credentials. Admin MFA,
 administrator step-up, VPN, Tailscale, WireGuard, and administrator IP allowlist
 setup are Phase 2 items pending an approved design. Until those controls exist,
-`admin-sitbank.duckdns.org` is fail-closed at Nginx with `deny all` and the
-Flask admin login route returns failure without creating a session.
+`admin-sitbank.duckdns.org` remains isolated at the edge and should be protected
+with an explicit network allowlist. The Flask admin app uses a separate cookie,
+session HMAC keyring, database role, root-admin-controlled staff invites, and
+mandatory TOTP; WebAuthn/passkeys are not offered for staff/admin onboarding.
 
 Staging secrets must never be copied from production. The staging deployment
 wrapper rejects identical application secret files when production secrets are

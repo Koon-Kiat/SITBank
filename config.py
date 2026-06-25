@@ -44,6 +44,7 @@ ADMIN_RUNTIME_SECRET_ENV_NAMES = {
     "SESSION_HMAC_KEYS": "ADMIN_SESSION_HMAC_KEYS_JSON",
     "SESSION_LOOKUP_HMAC_KEY": "ADMIN_SESSION_LOOKUP_HMAC_KEY",
     "SQLALCHEMY_DATABASE_URI": "ADMIN_DATABASE_URL",
+    "MFA_KEK_KEYS": "MFA_KEK_KEYS_JSON",
     "PASSWORD_PEPPER_B64": "ADMIN_PASSWORD_PEPPER_B64",
     "SECURITY_AUDIT_HMAC_KEY": "SECURITY_AUDIT_HMAC_KEY",
 }
@@ -289,6 +290,32 @@ def _choice_env(name: str, *, default: str, choices: set[str]) -> str:
         allowed = ", ".join(sorted(choices))
         raise RuntimeError(f"{name} must be one of: {allowed}")
     return value
+
+
+def _csv_env_set(name: str, *, default: str) -> frozenset[str]:
+    raw_value = os.getenv(name, default)
+    values = frozenset(
+        item.strip().casefold()
+        for item in raw_value.split(",")
+        if item.strip()
+    )
+    if not values:
+        raise RuntimeError(f"{name} must contain at least one value")
+    return values
+
+
+def _optional_turnstile_secret() -> str | None:
+    direct_value = os.getenv("TURNSTILE_SECRET_KEY")
+    file_value = os.getenv("TURNSTILE_SECRET_KEY_FILE")
+    if direct_value and file_value:
+        raise RuntimeError("Configure either TURNSTILE_SECRET_KEY or TURNSTILE_SECRET_KEY_FILE, not both")
+    if file_value:
+        return _read_secret_file("TURNSTILE_SECRET_KEY", file_value)
+    if not direct_value:
+        return None
+    if _looks_placeholder(direct_value):
+        raise RuntimeError("TURNSTILE_SECRET_KEY contains a placeholder value")
+    return direct_value
 
 
 def _validate_password_reset_email_config(
@@ -537,6 +564,13 @@ def _admin_runtime_overrides(config: dict) -> dict[str, object]:
             lambda: _required_env("ADMIN_SESSION_HMAC_ACTIVE_KEY_ID"),
         )
     )
+    mfa_kek_active_id = str(
+        _configured_value(
+            config,
+            "MFA_KEK_ACTIVE_ID",
+            lambda: _required_env("MFA_KEK_ACTIVE_ID"),
+        )
+    )
     return {
         "APP_MODE": "admin",
         "SECRET_ENV_NAMES": ADMIN_RUNTIME_SECRET_ENV_NAMES,
@@ -574,6 +608,16 @@ def _admin_runtime_overrides(config: dict) -> dict[str, object]:
             ),
         ),
         "SQLALCHEMY_MIGRATION_DATABASE_URI": None,
+        "MFA_KEK_ACTIVE_ID": mfa_kek_active_id,
+        "MFA_KEK_KEYS": _configured_value(
+            config,
+            "MFA_KEK_KEYS",
+            lambda: _required_keyring(
+                "MFA_KEK_KEYS_JSON",
+                active_key_id=mfa_kek_active_id,
+                active_label="MFA_KEK_ACTIVE_ID",
+            ),
+        ),
         "PASSWORD_PEPPER_B64": _configured_value(
             config,
             "ADMIN_PASSWORD_PEPPER_B64",
@@ -589,9 +633,9 @@ def _admin_runtime_overrides(config: dict) -> dict[str, object]:
         "RATELIMIT_STORAGE_URI": config.get("ADMIN_RATELIMIT_STORAGE_URI") or "memory://",
         "RATELIMIT_KEY_PREFIX": config.get("ADMIN_RATELIMIT_KEY_PREFIX")
         or os.getenv("ADMIN_RATELIMIT_KEY_PREFIX", "ospbank:admin:ratelimit:"),
-        "ADMIN_AUTH_ENABLED": False,
-        "ADMIN_WEBAUTHN_PHASE": "phase_2",
-        "ADMIN_STEP_UP_PHASE": "phase_2",
+        "ADMIN_AUTH_ENABLED": True,
+        "ADMIN_WEBAUTHN_PHASE": "disabled",
+        "ADMIN_STEP_UP_PHASE": "totp",
     }
 
 
@@ -829,6 +873,52 @@ class Config:
 
     # 60 seconds (1 min) for testing — change to 43200 for 12h in production
     PAYEE_COOLDOWN_SECONDS = int(os.getenv("PAYEE_COOLDOWN_SECONDS", "60"))
+
+    SIT_WORKPLACE_EMAIL_DOMAINS = _csv_env_set(
+        "SIT_WORKPLACE_EMAIL_DOMAINS",
+        default="sit.singaporetech.edu.sg,singaporetech.edu.sg",
+    )
+    STAFF_INVITE_PERSONAL_EMAIL_DOMAINS = _csv_env_set(
+        "STAFF_INVITE_PERSONAL_EMAIL_DOMAINS",
+        default="gmail.com,outlook.com,hotmail.com,yahoo.com,icloud.com,proton.me,protonmail.com",
+    )
+    STAFF_INVITE_ALIAS_SEPARATORS = tuple(
+        item
+        for item in os.getenv("STAFF_INVITE_ALIAS_SEPARATORS", "+").split(",")
+        if item
+    )
+    ROOT_ADMIN_EMAILS = _csv_env_set(
+        "ROOT_ADMIN_EMAILS",
+        default=(
+            "root1@sit.singaporetech.edu.sg,"
+            "root2@sit.singaporetech.edu.sg,"
+            "root3@sit.singaporetech.edu.sg,"
+            "root4@sit.singaporetech.edu.sg,"
+            "root5@sit.singaporetech.edu.sg,"
+            "root6@sit.singaporetech.edu.sg,"
+            "root7@sit.singaporetech.edu.sg"
+        ),
+    )
+    if len(ROOT_ADMIN_EMAILS) != 7:
+        raise RuntimeError("ROOT_ADMIN_EMAILS must contain exactly 7 workplace email addresses")
+    STAFF_INVITE_TTL_SECONDS = _int_env(
+        "STAFF_INVITE_TTL_SECONDS",
+        default=str(24 * 60 * 60),
+        minimum=15 * 60,
+        maximum=48 * 60 * 60,
+    )
+    STAFF_WORKPLACE_VERIFICATION_TTL_SECONDS = _int_env(
+        "STAFF_WORKPLACE_VERIFICATION_TTL_SECONDS",
+        default="900",
+        minimum=300,
+        maximum=3600,
+    )
+    TURNSTILE_ENABLED = _optional_bool("TURNSTILE_ENABLED", default=False)
+    TURNSTILE_SECRET_KEY = _optional_turnstile_secret()
+    TURNSTILE_VERIFY_URL = os.getenv(
+        "TURNSTILE_VERIFY_URL",
+        "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+    ).strip()
 
 
 class TestingConfig(Config):

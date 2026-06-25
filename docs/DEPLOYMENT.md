@@ -112,14 +112,14 @@ The reviewed production bootstrap installs and enables the production edge from 
 - `compose.prod.yml` publishes no app ports.
 - `/health/ready` is for local deployment and load-balancer checks and should deny public traffic.
 - Admin `/` serves only a static Google verification and restricted-access
-  notice. Admin `/health/ready`, `/login`, and all other admin routes remain
-  denied by default until a future VPN, explicit IP allowlist, or equivalent
-  network control is configured.
+  notice at the public edge. Admin `/health/ready`, `/login`, and all other
+  admin routes should remain denied by default at Nginx until a VPN, explicit
+  IP allowlist, or equivalent network control is configured.
 - Cloudflare or AWS WAF should sit in front of Nginx for managed common, SQL injection, XSS, bot, and protocol anomaly rules.
 - Cloudflare or AWS WAF rules and security-group allowlists are still infrastructure state and must be checked manually.
-- Admin auth remains fail-closed pending an approved MFA design and is not
-  implemented in this PR. The current admin app is not publicly usable and must
-  not expose password-only administrator login.
+- Flask admin auth is implemented only for root-admin-controlled invite
+  onboarding with mandatory TOTP, separate admin sessions, and no WebAuthn or
+  password-only administrator login.
 
 Verification:
 
