@@ -9,6 +9,7 @@ from urllib.parse import parse_qs, urlparse
 import pyotp
 import pytest
 from sqlalchemy import func
+from webauthn.helpers import bytes_to_base64url
 
 from app.auth.password_reset import (
     complete_manual_recovery_request,
@@ -26,6 +27,7 @@ from app.security.passwords import PASSWORD_MAX_CHARS, PASSWORD_MIN_LENGTH, hash
 
 VALID_PASSWORD = "Correct-Horse-Battery-Staple-2026!"
 NEW_PASSWORD = "Reset-Correct-Horse-Battery-Staple-2026!"
+ORIGIN = {"Origin": "https://sitbank.duckdns.org"}
 
 
 def _create_user(username: str, email: str, password: str = VALID_PASSWORD,
@@ -49,11 +51,11 @@ def _create_totp_user(username: str, email: str, full_name: str = "Test User", p
     return user, secret
 
 
-def _add_webauthn_credential(user: User) -> None:
+def _add_webauthn_credential(user: User, credential_id: bytes = b"credential-id-0001") -> None:
     db.session.add(
         WebAuthnCredential(
             user_id=user.id,
-            credential_id=b"credential-id-0001",
+            credential_id=credential_id,
             credential_public_key=b"credential-public-key",
             sign_count=1,
             label="Primary key",
@@ -376,6 +378,38 @@ def test_passkey_only_user_cannot_fall_back_to_email_only_reset(app, client):
         assert wrong_factor_event is not None
         assert wrong_factor_event.event_metadata["reason"] == "wrong_factor"
         assert wrong_factor_event.event_metadata["submitted_factor"] == "authentication_code"
+
+
+def test_password_reset_webauthn_options_require_transaction_before_allow_credentials(app, client):
+    with app.app_context():
+        user = _create_user("resetwebauthn", "resetwebauthn@example.com")
+        other = _create_user("resetother", "resetother@example.com", phone_number="92345678")
+        _add_webauthn_credential(user, credential_id=b"reset-user-passkey")
+        _add_webauthn_credential(other, credential_id=b"other-user-passkey")
+
+    public_probe = client.post(
+        "/auth/password-reset/mfa/webauthn/options",
+        json={"email": "resetwebauthn@example.com"},
+        headers=ORIGIN,
+    )
+    _request_reset(client, "resetwebauthn@example.com")
+    token = _reset_token(app)
+    exchanged = _exchange(client, token)
+    transaction_response = client.post(
+        "/auth/password-reset/mfa/webauthn/options",
+        json={"email": "resetother@example.com"},
+        headers=ORIGIN,
+    )
+    payload = transaction_response.get_json()
+    allowed_ids = {credential["id"] for credential in payload["allowCredentials"]}
+
+    assert public_probe.status_code == 401
+    assert public_probe.get_json() == {"error": "No active password reset transaction"}
+    assert exchanged.status_code == 200
+    assert exchanged.get_json()["mfa_required"] == "webauthn"
+    assert transaction_response.status_code == 200
+    assert allowed_ids == {bytes_to_base64url(b"reset-user-passkey")}
+    assert bytes_to_base64url(b"other-user-passkey") not in allowed_ids
 
 
 def test_totp_recovery_code_still_works_when_passkey_is_registered(app, client):

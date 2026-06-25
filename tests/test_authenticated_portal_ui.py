@@ -143,7 +143,7 @@ def test_dashboard_bank_card_masks_account_details_and_loads_toggle_script(clien
     assert 'aria-label="Show balance"' in markup
     assert '/static/js/dashboard.js' in markup
 
-def test_security_key_setup_prompts_for_authenticator_mfa_first(client):
+def test_security_key_page_redirects_unenrolled_users_to_mfa_setup(client):
     register(client)
     login(client)
 

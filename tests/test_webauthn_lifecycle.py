@@ -12,7 +12,12 @@ from webauthn.helpers import bytes_to_base64url
 from webauthn.helpers.structs import AttestationFormat, CredentialDeviceType
 
 from _auth_flow_helpers import verify_registration_email
-from app.auth.webauthn_services import begin_transaction_security_key_challenge, stage_transaction_security_key_context
+from app.auth.mfa_policy import has_enrolled_mfa_method
+from app.auth.webauthn_services import (
+    begin_transaction_security_key_challenge,
+    stage_transaction_security_key_context,
+    webauthn_credential_count,
+)
 from app.extensions import db
 from app.models import SecurityAuditEvent, User, WebAuthnCredential
 from app.security.crypto import encrypt_mfa_secret
@@ -79,6 +84,35 @@ def enable_totp(user):
     return secret
 
 
+def attestation_payload(credential_id=b"credential-one"):
+    credential_ref = bytes_to_base64url(credential_id)
+    return {
+        "id": credential_ref,
+        "rawId": credential_ref,
+        "type": "public-key",
+        "response": {
+            "attestationObject": "AA",
+            "clientDataJSON": "AA",
+            "transports": ["internal"],
+        },
+    }
+
+
+def assertion_payload(credential_id=b"credential-one"):
+    credential_ref = bytes_to_base64url(credential_id)
+    return {
+        "id": credential_ref,
+        "rawId": credential_ref,
+        "type": "public-key",
+        "response": {
+            "authenticatorData": "AA",
+            "clientDataJSON": "AA",
+            "signature": "AA",
+            "userHandle": None,
+        },
+    }
+
+
 def authenticate_session(client, user, credential):
     with client.session_transaction() as sess:
         sess["user_id"] = user.id
@@ -131,6 +165,118 @@ def test_registration_allows_first_passkey_after_password_bootstrap(client):
     assert response.status_code == 200
     assert payload["authenticatorSelection"]["residentKey"] == "required"
     assert payload["authenticatorSelection"]["requireResidentKey"] is True
+
+
+def test_registration_rejects_first_passkey_without_authenticated_session(client):
+    response = client.post(
+        "/auth/webauthn/register/options",
+        json={"label": "Primary passkey"},
+        headers=ORIGIN,
+    )
+
+    assert response.status_code == 401
+    assert response.get_json() == {"error": "Authentication required"}
+
+
+def test_registration_rejects_first_passkey_without_password_bootstrap_context(client):
+    register(client)
+    user = user_by_name()
+    with client.session_transaction() as sess:
+        sess["user_id"] = user.id
+        sess["auth_context"] = "legacy_authenticated"
+
+    response = client.post(
+        "/auth/webauthn/register/options",
+        json={"label": "Primary passkey"},
+        headers=ORIGIN,
+    )
+
+    assert response.status_code == 403
+    assert response.get_json() == {
+        "error": "Recent MFA verification is required before managing security keys"
+    }
+
+
+def test_registration_completes_first_passkey_as_customer_mfa_method(client, monkeypatch):
+    register(client)
+    login(client)
+    user = user_by_name()
+    options_response = client.post(
+        "/auth/webauthn/register/options",
+        json={"label": "Laptop passkey"},
+        headers=ORIGIN,
+    )
+
+    def fake_verify_registration_response(**kwargs):
+        assert kwargs["expected_rp_id"] == "sitbank.duckdns.org"
+        assert kwargs["expected_origin"] == "https://sitbank.duckdns.org"
+        assert kwargs["require_user_verification"] is True
+        return SimpleNamespace(
+            credential_id=b"first-passkey",
+            credential_public_key=b"public-key",
+            sign_count=0,
+            aaguid="",
+            fmt="none",
+            credential_device_type=CredentialDeviceType.MULTI_DEVICE,
+            credential_backed_up=True,
+        )
+
+    monkeypatch.setattr(
+        "app.auth.webauthn_services.verify_registration_response",
+        fake_verify_registration_response,
+    )
+    verify_response = client.post(
+        "/auth/webauthn/register/verify",
+        json={"credential": attestation_payload(b"first-passkey")},
+        headers=ORIGIN,
+    )
+    db.session.refresh(user)
+    dashboard_response = client.get("/dashboard")
+
+    assert options_response.status_code == 200
+    assert verify_response.status_code == 200
+    assert user.mfa_enabled is False
+    assert has_enrolled_mfa_method(user) is True
+    assert webauthn_credential_count(user) == 1
+    assert dashboard_response.status_code == 200
+
+
+def test_registration_requires_fresh_mfa_for_additional_passkey(client):
+    register(client)
+    login(client)
+    user = user_by_name()
+    add_credential(user, credential_id=b"existing-passkey")
+
+    response = client.post(
+        "/auth/webauthn/register/options",
+        json={"label": "Second passkey"},
+        headers=ORIGIN,
+    )
+
+    assert response.status_code == 403
+    assert response.get_json() == {
+        "error": "Recent MFA verification is required before managing security keys"
+    }
+
+
+def test_mfa_policy_counts_totp_or_passkey_as_customer_enrollment(client):
+    register(client)
+    user = user_by_name()
+
+    assert has_enrolled_mfa_method(user) is False
+
+    enable_totp(user)
+    db.session.refresh(user)
+    assert has_enrolled_mfa_method(user) is True
+
+    user.mfa_enabled = False
+    user.mfa_secret_nonce = None
+    user.mfa_secret_ciphertext = None
+    db.session.commit()
+    add_credential(user, credential_id=b"only-passkey")
+    db.session.refresh(user)
+
+    assert has_enrolled_mfa_method(user) is True
 
 
 def test_webauthn_options_fail_closed_without_exact_origin(client):
@@ -416,6 +562,51 @@ def test_password_totp_login_allowed_after_security_key_enrollment(client):
     assert password_response.get_json()["mfa_required"] is True
     assert mfa_response.status_code == 200
     assert mfa_response.get_json()["message"] == "Login successful"
+
+
+def test_public_passkey_options_ignore_identifiers_and_do_not_query_users(client, monkeypatch):
+    register(client)
+    user = user_by_name()
+    add_credential(user, credential_id=b"alice-passkey")
+    client.post("/logout")
+
+    def fail_execute(*_args, **_kwargs):
+        raise AssertionError("public passkey options must not look up users or credentials")
+
+    monkeypatch.setattr("app.auth.webauthn_services.db.session.execute", fail_execute)
+    anonymous_response = client.post("/auth/webauthn/authenticate/options", json={}, headers=ORIGIN)
+    identifier_response = client.post(
+        "/auth/webauthn/authenticate/options",
+        json={
+            "identifier": "alice01",
+            "email": "alice@sit.singaporetech.edu.sg",
+            "account_number": user.account_number,
+        },
+        headers=ORIGIN,
+    )
+
+    assert anonymous_response.status_code == 200
+    assert identifier_response.status_code == 200
+    for payload in (anonymous_response.get_json(), identifier_response.get_json()):
+        assert payload["rpId"] == "sitbank.duckdns.org"
+        assert payload["userVerification"] == "required"
+        assert payload["timeout"] > 0
+        assert "challenge" in payload
+        assert "allowCredentials" not in payload
+
+
+def test_unknown_public_passkey_assertion_fails_generically(client):
+    register(client)
+    client.post("/auth/webauthn/authenticate/options", json={}, headers=ORIGIN)
+
+    response = client.post(
+        "/auth/webauthn/authenticate/verify",
+        json={"credential": assertion_payload(b"unknown-passkey")},
+        headers=ORIGIN,
+    )
+
+    assert response.status_code == 401
+    assert response.get_json() == {"error": "Security key verification failed"}
 
 
 def test_fully_enrolled_user_can_still_use_password_totp_login(client):

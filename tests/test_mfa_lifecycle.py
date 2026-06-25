@@ -492,7 +492,7 @@ def test_pending_api_mfa_expiry_returns_stable_error_code(app, client):
         "code": "mfa_challenge_expired",
     }
 
-def test_api_onboarding_requires_totp_before_authenticated_endpoints(client):
+def test_api_onboarding_requires_enrolled_mfa_before_authenticated_endpoints(client):
     register(client)
     login(client)
 
