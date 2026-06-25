@@ -1,7 +1,7 @@
 name: Pull request labeler
 
 on:
-  pull_request_target:
+  pull_request:
     types:
       - opened
       - synchronize
@@ -58,9 +58,9 @@ jobs:
           create_label github-actions "GitHub Actions workflow dependency updates or CI workflow automation." 2088ff
           create_label python "Python dependency or Python runtime/package updates." 3572a5
 
-      # pull_request_target is privileged and runs from trusted base-branch workflow
-      # content. Keep this workflow label-only: do not checkout or execute untrusted
-      # pull request code here.
+      # Keep this workflow label-only: do not checkout or execute pull request
+      # code here. The ordinary pull_request trigger avoids privileged PR
+      # trigger execution.
       # Pinned to the actions/labeler v6.1.0 commit.
       - name: Label pull request
         uses: actions/labeler@f27b608878404679385c85cfa523b85ccb86e213
