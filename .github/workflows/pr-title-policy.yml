@@ -9,21 +9,30 @@ on:
       - reopened
       - ready_for_review
 
-permissions: {}
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   pr-title-policy:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Check out validator
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
+
       - name: Validate PR title
         shell: bash
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -Eeuo pipefail
-
-          allowed_verbs='Add|Fix|Update|Remove|Refactor|Document|Improve|Secure|Configure|Align|Restore|Prevent|Validate|Enforce|Implement|Rename|Replace|Move|Create|Delete|Test'
 
           annotation_escape() {
             local value="$1"
@@ -33,37 +42,97 @@ jobs:
             printf '%s' "$value"
           }
 
-          fail() {
-            local message="$1"
-            local escaped_title
-            escaped_title="$(annotation_escape "${PR_TITLE}")"
-            echo "::error title=Invalid PR title::${message} Current title: ${escaped_title}"
-            exit 1
+          print_examples() {
+            cat <<'EXAMPLES'
+          Good examples:
+            Fix: staging admin secret wiring
+            Feat: add admin deployment boundary
+            Chore(deps): bump msgpack to 1.2.1
+            Docs: update deployment notes
+            Security: harden admin session validation
+            Fix staging admin secret wiring
+            Add commit subject validation
+            Harden admin session validation
+            Production deployment is manual only
+
+          Bad examples:
+            fix: staging admin secret wiring
+            feat: add admin deployment boundary
+            chore(deps): bump msgpack to 1.2.1
+            fix staging admin secret wiring
+            wip
+            update stuff
+            Fix bug.
+            minor changes
+          EXAMPLES
           }
 
-          title="${PR_TITLE}"
-          lower_title="${title,,}"
+          report_error() {
+            local message="$1"
+            local value="$2"
+            local escaped_value
+            escaped_value="$(annotation_escape "${value}")"
+            echo "::error title=Invalid PR title::${message} Value: ${escaped_value}"
+          }
 
-          if (( ${#title} < 12 )); then
-            fail "PR title must be at least 12 characters."
-          fi
+          validate_message() {
+            local value="$1"
+            local lower_value
 
-          if (( ${#title} > 72 )); then
-            fail "PR title must be at most 72 characters."
-          fi
+            if [[ -z "${value}" ]]; then
+              report_error "PR title must not be empty." "${value}"
+              return 1
+            fi
 
-          if [[ "${title}" == *. ]]; then
-            fail "PR title must not end with a full stop."
-          fi
+            if [[ "${value}" =~ ^[[:space:]] || "${value}" =~ [[:space:]]$ ]]; then
+              report_error "PR title must not have leading or trailing whitespace." "${value}"
+              return 1
+            fi
 
-          case "${lower_title}" in
-            fix|update|changes|change|wip|test|misc|stuff|done|bug|final|commit)
-              fail "PR title is too generic."
-              ;;
-          esac
+            if (( ${#value} < 12 )); then
+              report_error "PR title must be at least 12 characters." "${value}"
+              return 1
+            fi
 
-          if [[ ! "${title}" =~ ^(${allowed_verbs})[[:space:]] ]]; then
-            fail "PR title must start with an approved capitalized imperative verb."
+            if (( ${#value} > 72 )); then
+              report_error "PR title must be at most 72 characters." "${value}"
+              return 1
+            fi
+
+            if [[ ! "${value}" =~ ^[A-Z] ]]; then
+              report_error "PR title must start with a capital letter." "${value}"
+              return 1
+            fi
+
+            if [[ "${value}" == *. ]]; then
+              report_error "PR title must not end with a full stop." "${value}"
+              return 1
+            fi
+
+            lower_value="${value,,}"
+            case "${lower_value}" in
+              fix|update|updates|changes|change|wip|test|tests|misc|stuff|done|bug|bugs|final|commit|temp|tmp|work|progress)
+                report_error "PR title is too generic." "${value}"
+                return 1
+                ;;
+              "fix bug"|"fix bugs"|"fix issue"|"fix issues"|"update stuff"|"update things"|"make changes"|"minor changes")
+                report_error "PR title is too vague." "${value}"
+                return 1
+                ;;
+            esac
+          }
+
+          if ! validate_message "${PR_TITLE}"; then
+            print_examples
+            exit 1
           fi
 
           echo "PR title policy passed."
+
+      - name: Validate PR description
+        shell: bash
+        env:
+          EVENT_PATH: ${{ github.event_path }}
+        run: |
+          set -Eeuo pipefail
+          python ops/security/validate_pr_body.py --event-path "${EVENT_PATH}"
