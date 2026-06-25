@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import hashlib
 import hmac
-import json
 import secrets
 import time
 from datetime import datetime, timedelta, timezone
@@ -13,7 +11,7 @@ from flask import current_app, has_request_context, request, session
 from sqlalchemy import func, or_
 
 from app.extensions import db
-from app.models import ManualRecoveryRequest, PasswordResetToken, User, WebAuthnCredential
+from app.models import ManualRecoveryRequest, PasswordResetToken, PasswordResetTransaction, User, WebAuthnCredential
 from app.security.audit import (
     audit_event,
     audit_event_required,
@@ -39,7 +37,6 @@ GENERIC_FORGOT_PASSWORD_MESSAGE = "If an account exists for that email, a reset 
 GENERIC_MANUAL_RECOVERY_MESSAGE = "If the account can be reviewed, a recovery request has been recorded."
 GENERIC_RESET_ERROR = "Password reset link is invalid or expired"
 RESET_TRANSACTION_SESSION_KEY = "password_reset_transaction_id"
-RESET_TRANSACTION_PREFIX = "ospbank:password_reset_transaction:"
 GENERIC_AUTHENTICATION_CODE_ERROR = "Invalid authentication code."
 GENERIC_VERIFICATION_METHOD_ERROR = "Invalid verification method."
 RESET_MFA_TOTP = "totp"
@@ -761,7 +758,33 @@ def _create_reset_transaction(user: User, token: PasswordResetToken) -> dict[str
 
 def _store_transaction(transaction: dict[str, Any]) -> None:
     ttl = int(current_app.config["PASSWORD_RESET_TRANSACTION_TTL_SECONDS"])
-    _redis().set(_transaction_key(transaction["transaction_id"]), json.dumps(transaction, separators=(",", ":")), ex=ttl)
+    now = _utcnow()
+    lookup_hash = _transaction_lookup_hash(transaction["transaction_id"])
+    record = db.session.execute(
+        db.select(PasswordResetTransaction).where(
+            PasswordResetTransaction.transaction_lookup_hash == lookup_hash
+        )
+    ).scalar_one_or_none()
+    if record is None:
+        record = PasswordResetTransaction(transaction_lookup_hash=lookup_hash)
+        db.session.add(record)
+    record.token_id = int(transaction["token_id"])
+    record.user_id = int(transaction["user_id"])
+    record.purpose = str(transaction.get("purpose") or "password_reset")
+    record.mfa_required = str(transaction.get("mfa_required") or RESET_MFA_NONE)
+    record.available_mfa_methods_json = list(transaction.get("available_mfa_methods") or [])
+    record.preferred_mfa_method = transaction.get("preferred_mfa_method")
+    record.default_mfa_method = transaction.get("default_mfa_method")
+    record.mfa_verified = bool(transaction.get("mfa_verified"))
+    record.recovery_code_verified = bool(transaction.get("recovery_code_verified"))
+    record.no_mfa_user = bool(transaction.get("no_mfa_user"))
+    record.failure_count = int(transaction.get("failure_count") or 0)
+    record.last_failure_reason = transaction.get("last_failure_reason")
+    record.mfa_verified_at = transaction.get("mfa_verified_at")
+    record.expires_at = now + timedelta(seconds=ttl)
+    record.used_at = None
+    record.updated_at = now
+    db.session.commit()
 
 
 def _load_current_transaction() -> dict[str, Any]:
@@ -772,22 +795,22 @@ def _load_current_transaction() -> dict[str, Any]:
 
 
 def _load_transaction(transaction_id: str) -> dict[str, Any]:
-    raw = _redis().get(_transaction_key(transaction_id))
-    if not raw:
+    record = db.session.execute(
+        db.select(PasswordResetTransaction).where(
+            PasswordResetTransaction.transaction_lookup_hash == _transaction_lookup_hash(transaction_id)
+        )
+    ).scalar_one_or_none()
+    if record is None:
         clear_current_reset_transaction()
         raise AuthError("Password reset transaction expired", 401)
-    try:
-        transaction = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        _delete_transaction_id(transaction_id)
-        raise AuthError("Password reset transaction expired", 401) from exc
-    if not isinstance(transaction, dict) or transaction.get("purpose") != "password_reset":
-        _delete_transaction_id(transaction_id)
-        raise AuthError("Password reset transaction expired", 401)
-    if transaction.get("transaction_id") != transaction_id:
+    if (
+        record.purpose != "password_reset"
+        or record.used_at is not None
+        or _as_utc_datetime(record.expires_at) <= _utcnow()
+    ):
         _delete_transaction_id(transaction_id)
         raise AuthError("Password reset transaction expired", 401)
-    return transaction
+    return _transaction_from_record(record, transaction_id)
 
 
 def _clear_reset_transaction(transaction: dict[str, Any]) -> None:
@@ -797,7 +820,14 @@ def _clear_reset_transaction(transaction: dict[str, Any]) -> None:
 
 
 def _delete_transaction_id(transaction_id: str) -> None:
-    _redis().delete(_transaction_key(transaction_id))
+    record = db.session.execute(
+        db.select(PasswordResetTransaction).where(
+            PasswordResetTransaction.transaction_lookup_hash == _transaction_lookup_hash(transaction_id)
+        )
+    ).scalar_one_or_none()
+    if record is not None:
+        db.session.delete(record)
+        db.session.commit()
 
 
 def _record_transaction_failure(transaction: dict[str, Any], reason: str) -> None:
@@ -830,7 +860,7 @@ def _public_transaction(transaction: dict[str, Any]) -> dict[str, Any]:
         "mfa_verified": bool(transaction.get("mfa_verified")),
         "recovery_code_verified": bool(transaction.get("recovery_code_verified")),
         "no_mfa_user": bool(transaction.get("no_mfa_user")),
-        "expires_in": int(current_app.config["PASSWORD_RESET_TRANSACTION_TTL_SECONDS"]),
+        "expires_in": _transaction_expires_in(transaction),
     }
 
 
@@ -1038,13 +1068,37 @@ def _user_agent() -> str:
     return (request.user_agent.string or "unknown")[:256]
 
 
-def _redis():
-    return current_app.extensions["redis"]
+def _transaction_lookup_hash(transaction_id: str) -> str:
+    return active_hmac_hex(f"password-reset-transaction:{transaction_id}", length=64)
 
 
-def _transaction_key(transaction_id: str) -> str:
-    digest = hashlib.sha256(transaction_id.encode("utf-8")).hexdigest()
-    return f"{RESET_TRANSACTION_PREFIX}{digest}"
+def _transaction_from_record(record: PasswordResetTransaction, transaction_id: str) -> dict[str, Any]:
+    return {
+        "transaction_id": transaction_id,
+        "token_id": record.token_id,
+        "user_id": record.user_id,
+        "purpose": record.purpose,
+        "mfa_required": record.mfa_required,
+        "available_mfa_methods": list(record.available_mfa_methods_json or []),
+        "preferred_mfa_method": record.preferred_mfa_method,
+        "default_mfa_method": record.default_mfa_method,
+        "mfa_verified": bool(record.mfa_verified),
+        "recovery_code_verified": bool(record.recovery_code_verified),
+        "no_mfa_user": bool(record.no_mfa_user),
+        "failure_count": int(record.failure_count or 0),
+        "last_failure_reason": record.last_failure_reason,
+        "mfa_verified_at": record.mfa_verified_at,
+        "created_at": int(record.created_at.timestamp()),
+        "expires_at": int(_as_utc_datetime(record.expires_at).timestamp()),
+    }
+
+
+def _transaction_expires_in(transaction: dict[str, Any]) -> int:
+    expires_at = transaction.get("expires_at")
+    try:
+        return max(0, int(expires_at) - _now_timestamp())
+    except (TypeError, ValueError):
+        return int(current_app.config["PASSWORD_RESET_TRANSACTION_TTL_SECONDS"])
 
 
 def _utcnow() -> datetime:

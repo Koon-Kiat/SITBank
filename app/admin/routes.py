@@ -41,7 +41,6 @@ def health_live():
 def health_ready():
     try:
         db.session.execute(text("SELECT 1"))
-        current_app.extensions["redis"].ping()
     except Exception:
         current_app.logger.warning("Admin readiness dependency check failed", exc_info=True)
         db.session.rollback()

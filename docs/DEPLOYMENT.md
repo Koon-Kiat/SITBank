@@ -2,7 +2,7 @@
 
 ## Current Architecture
 
-Only Flask/Gunicorn runs in the SITBank container. Nginx, TLS, PostgreSQL, Redis, and backups remain host-managed on EC2. WebAuthn/passkeys are decommissioned because instructor review disallowed the high-level `webauthn` library, so production no longer requires WebAuthn RP or FIDO metadata configuration.
+Only Flask/Gunicorn runs in the SITBank container. Nginx, TLS, PostgreSQL, and backups remain host-managed on EC2. Redis is not part of the runtime contract; sessions, authentication counters, OTP/reset state, alert dedupe, and breached-password circuit state live in application-owned PostgreSQL tables. WebAuthn/passkeys are decommissioned because instructor review disallowed the high-level `webauthn` library, so production no longer requires WebAuthn RP or FIDO metadata configuration.
 
 - Production public host: `sitbank.duckdns.org`
 - Production admin host: `admin-sitbank.duckdns.org`
@@ -59,9 +59,12 @@ at the same EC2 edge, Certbot files under
 `/etc/letsencrypt/live/admin-sitbank.duckdns.org/`, and root-managed admin
 secret files under `/etc/sitbank/secrets`: `admin_secret_key`,
 `admin_wtf_csrf_secret_key`, `admin_session_hmac_keys_json`,
-`admin_database_url`, `admin_redis_url`, and `admin_password_pepper_b64`.
+`admin_session_lookup_hmac_key`, `admin_database_url`, and
+`admin_password_pepper_b64`.
 `admin_database_url` must use a dedicated admin runtime database role and must
 not reuse either `database_url` or `database_migration_url`.
+`admin_session_lookup_hmac_key` must not reuse the customer
+`session_lookup_hmac_key`.
 
 `SECURITY_AUDIT_HMAC_KEY` is mandatory for production audit integrity.
 `SECURITY_AUDIT_ANCHOR_PATH` is also mandatory in production; the one-EC2

@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timedelta, timezone
 
 from flask import current_app, g, request, session
 from flask_limiter.util import get_remote_address
+
+from app.extensions import db
+from app.models import AuthAttemptCounter
+from app.security.session_hmac import active_hmac_hex
 
 
 class AuthBackoffRequired(RuntimeError):
@@ -13,10 +18,6 @@ class AuthBackoffRequired(RuntimeError):
 
 
 LOGIN_BACKOFF_START_ATTEMPTS = 3
-
-
-def _redis():
-    return current_app.extensions["redis"]
 
 
 def _safe_identifier(value: str) -> str:
@@ -51,11 +52,6 @@ def mfa_principal() -> str:
     return principal
 
 
-def _failure_key(scope: str, principal: str) -> str:
-    prefix = str(current_app.config.get("AUTH_FAILURE_KEY_PREFIX") or "ospbank:authfail:")
-    return f"{prefix}{scope}:{_safe_identifier(principal)}"
-
-
 def _backoff_start_attempts(scope: str) -> int:
     if scope == "login":
         return LOGIN_BACKOFF_START_ATTEMPTS
@@ -63,7 +59,8 @@ def _backoff_start_attempts(scope: str) -> int:
 
 
 def apply_exponential_backoff(scope: str, principal: str) -> None:
-    attempts = int(_redis().get(_failure_key(scope, principal)) or 0)
+    counter = _load_counter(scope, principal)
+    attempts = int(counter.failure_count if counter is not None else 0)
     start_attempts = _backoff_start_attempts(scope)
     if attempts < start_attempts:
         return
@@ -72,11 +69,27 @@ def apply_exponential_backoff(scope: str, principal: str) -> None:
 
 
 def record_failure(scope: str, principal: str) -> int:
-    key = _failure_key(scope, principal)
-    attempts = _redis().incr(key)
-    _redis().expire(key, 5 * 60)
-    if attempts > 10:
-        _redis().expire(key, 15 * 60)
+    now = _utcnow()
+    counter = _load_counter(scope, principal, lock=True)
+    if counter is None:
+        counter = AuthAttemptCounter(
+            scope=scope,
+            principal_hash=_counter_hash(scope, principal),
+            ip_hash=_ip_hash_from_principal(principal),
+            failure_count=0,
+            window_started_at=now,
+            window_expires_at=now + timedelta(minutes=5),
+            created_at=now,
+            updated_at=now,
+        )
+        db.session.add(counter)
+
+    counter.failure_count = int(counter.failure_count or 0) + 1
+    counter.last_failed_at = now
+    counter.updated_at = now
+    counter.window_expires_at = now + timedelta(minutes=15 if counter.failure_count > 10 else 5)
+    attempts = int(counter.failure_count)
+    db.session.commit()
     if attempts in {2, 3, 5, 10} or attempts > 10:
         from app.security.audit import audit_event
 
@@ -89,4 +102,46 @@ def record_failure(scope: str, principal: str) -> int:
 
 
 def clear_failures(scope: str, principal: str) -> None:
-    _redis().delete(_failure_key(scope, principal))
+    counter = _load_counter(scope, principal, lock=True)
+    if counter is not None:
+        db.session.delete(counter)
+        db.session.commit()
+
+
+def _load_counter(scope: str, principal: str, *, lock: bool = False) -> AuthAttemptCounter | None:
+    now = _utcnow()
+    statement = db.select(AuthAttemptCounter).where(
+        AuthAttemptCounter.scope == scope,
+        AuthAttemptCounter.principal_hash == _counter_hash(scope, principal),
+    )
+    if lock and db.engine.dialect.name == "postgresql":
+        statement = statement.with_for_update()
+    counter = db.session.execute(statement).scalar_one_or_none()
+    if counter is None:
+        return None
+    if _as_utc(counter.window_expires_at) <= now:
+        db.session.delete(counter)
+        db.session.flush()
+        return None
+    return counter
+
+
+def _counter_hash(scope: str, principal: str) -> str:
+    return active_hmac_hex(f"auth-counter:{scope}:{principal}", length=64)
+
+
+def _ip_hash_from_principal(principal: str) -> str | None:
+    ip_text = str(principal).split(":", 1)[0].strip()
+    if not ip_text:
+        return None
+    return active_hmac_hex(f"auth-counter-ip:{ip_text}", length=64)
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)

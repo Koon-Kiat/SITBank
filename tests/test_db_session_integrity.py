@@ -11,13 +11,14 @@ from datetime import datetime, timezone
 import pytest
 
 from app.extensions import db
-from app.models import SecurityAuditEvent, User
+from app.models import SecurityAuditEvent, ServerSideSession, User
 from app.security.session_hmac import (
     SESSION_PAYLOAD_FORMAT_VERSION,
     SessionPayloadIntegrityError,
     sign_session_payload,
     verify_session_payload,
 )
+from app.security.sessions import session_lookup_hash
 
 
 def _create_user(username: str = "alice01", full_name: str = "Alice Test", phone_number: str = "91234567") -> int:
@@ -48,21 +49,27 @@ def _authenticate_session(client, user_id: int) -> str:
         return sess.sid
 
 
-def _session_key(app, session_id: str) -> str:
-    return f"{app.config['SESSION_KEY_PREFIX']}{session_id}"
+def _session_record(session_id: str) -> ServerSideSession:
+    record = db.session.execute(
+        db.select(ServerSideSession).where(
+            ServerSideSession.session_lookup_hash == session_lookup_hash(session_id)
+        )
+    ).scalar_one()
+    return record
 
 
 def _load_envelope(app, session_id: str) -> dict:
-    raw = app.extensions["redis_session"].get(_session_key(app, session_id))
+    del app
+    raw = _session_record(session_id).payload
     assert raw is not None
-    return json.loads(raw.decode("utf-8"))
+    return json.loads(bytes(raw).decode("utf-8"))
 
 
 def _store_envelope(app, session_id: str, envelope: dict) -> None:
-    app.extensions["redis_session"].set(
-        _session_key(app, session_id),
-        json.dumps(envelope, separators=(",", ":"), sort_keys=True).encode("utf-8"),
-    )
+    del app
+    record = _session_record(session_id)
+    record.payload = json.dumps(envelope, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    db.session.commit()
 
 
 def _session_payload(app, envelope: dict) -> dict:
@@ -111,7 +118,7 @@ def _assert_session_rejected(app, client) -> None:
     )
 
 
-def test_valid_redis_session_payload_continues_to_authenticate(app, client):
+def test_valid_db_session_payload_continues_to_authenticate(app, client):
     user_id = _create_user()
     session_id = _authenticate_session(client, user_id)
 
@@ -125,7 +132,7 @@ def test_valid_redis_session_payload_continues_to_authenticate(app, client):
     assert db.session.query(SecurityAuditEvent).filter_by(event_type="session_integrity").count() == 0
 
 
-def test_modified_redis_session_user_id_is_rejected(app, client):
+def test_modified_db_session_user_id_is_rejected(app, client):
     alice_id = _create_user("alice01")
     bob_id = _create_user("bob02", full_name="Bob Test", phone_number="81234567")
     session_id = _authenticate_session(client, alice_id)
@@ -135,7 +142,7 @@ def test_modified_redis_session_user_id_is_rejected(app, client):
     _assert_session_rejected(app, client)
 
 
-def test_modified_redis_session_privilege_flags_are_rejected(app, client):
+def test_modified_db_session_privilege_flags_are_rejected(app, client):
     user_id = _create_user()
     session_id = _authenticate_session(client, user_id)
 
@@ -148,7 +155,7 @@ def test_modified_redis_session_privilege_flags_are_rejected(app, client):
     _assert_session_rejected(app, client)
 
 
-def test_tampered_redis_session_payload_logs_only_safe_reference(app, client, caplog):
+def test_tampered_db_session_payload_logs_only_safe_reference(app, client, caplog):
     user_id = _create_user()
     session_id = _authenticate_session(client, user_id)
     secret_marker = "session-payload-secret-marker"
@@ -170,7 +177,7 @@ def test_tampered_redis_session_payload_logs_only_safe_reference(app, client, ca
     assert "totp_secret" not in log_text
 
 
-def test_missing_redis_session_signature_is_rejected(app, client):
+def test_missing_db_session_signature_is_rejected(app, client):
     user_id = _create_user()
     session_id = _authenticate_session(client, user_id)
     envelope = _load_envelope(app, session_id)
@@ -180,7 +187,7 @@ def test_missing_redis_session_signature_is_rejected(app, client):
     _assert_session_rejected(app, client)
 
 
-def test_invalid_redis_session_signature_is_rejected(app, client):
+def test_invalid_db_session_signature_is_rejected(app, client):
     user_id = _create_user()
     session_id = _authenticate_session(client, user_id)
     envelope = _load_envelope(app, session_id)
@@ -190,7 +197,7 @@ def test_invalid_redis_session_signature_is_rejected(app, client):
     _assert_session_rejected(app, client)
 
 
-def test_unknown_redis_session_hmac_key_id_is_rejected(app, client):
+def test_unknown_db_session_hmac_key_id_is_rejected(app, client):
     user_id = _create_user()
     session_id = _authenticate_session(client, user_id)
     envelope = _load_envelope(app, session_id)
@@ -200,7 +207,7 @@ def test_unknown_redis_session_hmac_key_id_is_rejected(app, client):
     _assert_session_rejected(app, client)
 
 
-def test_malformed_redis_session_payload_is_rejected(app, client):
+def test_malformed_db_session_payload_is_rejected(app, client):
     user_id = _create_user()
     session_id = _authenticate_session(client, user_id)
     envelope = _load_envelope(app, session_id)
@@ -209,36 +216,40 @@ def test_malformed_redis_session_payload_is_rejected(app, client):
         app,
         envelope["kid"],
         envelope["payload"],
-        _session_key(app, session_id),
+        f"db-session:{app.config['APP_MODE']}:{session_lookup_hash(session_id)}",
     )
     _store_envelope(app, session_id, envelope)
 
     _assert_session_rejected(app, client)
 
 
-def test_unsupported_redis_session_payload_format_is_rejected(app, client):
+def test_unsupported_db_session_payload_format_is_rejected(app, client):
     user_id = _create_user()
     session_id = _authenticate_session(client, user_id)
-    app.extensions["redis_session"].set(_session_key(app, session_id), b"legacy-raw-session")
+    record = _session_record(session_id)
+    record.payload = b"legacy-raw-session"
+    db.session.commit()
 
     _assert_session_rejected(app, client)
 
 
-def test_signed_redis_session_payload_copied_to_another_key_is_rejected(app, client):
+def test_signed_db_session_payload_copied_to_another_row_is_rejected(app, client):
     alice_id = _create_user("alice01")
     alice_session_id = _authenticate_session(client, alice_id)
-    signed_payload = app.extensions["redis_session"].get(_session_key(app, alice_session_id))
+    signed_payload = _session_record(alice_session_id).payload
     assert signed_payload is not None
 
     second_client = app.test_client()
     bob_id = _create_user("bob02", full_name="Bob Test", phone_number="81234567")
     bob_session_id = _authenticate_session(second_client, bob_id)
-    app.extensions["redis_session"].set(_session_key(app, bob_session_id), signed_payload)
+    bob_record = _session_record(bob_session_id)
+    bob_record.payload = signed_payload
+    db.session.commit()
 
     _assert_session_rejected(app, second_client)
 
 
-def test_redis_session_payload_survives_active_hmac_key_rotation(app, client):
+def test_db_session_payload_survives_active_hmac_key_rotation(app, client):
     user_id = _create_user()
     session_id = _authenticate_session(client, user_id)
     assert _load_envelope(app, session_id)["kid"] == "test-current"

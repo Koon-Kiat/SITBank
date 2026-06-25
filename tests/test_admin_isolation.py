@@ -4,30 +4,10 @@ import importlib
 import logging
 from datetime import timedelta
 
-import fakeredis
-
 from app.extensions import db
-from app.models import SecurityAuditEvent
+from app.models import SecurityAuditEvent, ServerSideSession
 from app.security.audit import verify_audit_hash_chain
 from conftest import TestConfig
-
-
-def _install_fake_redis(monkeypatch):
-    import app as app_module
-
-    clients = {}
-
-    def fake_from_url(url, decode_responses=False, **_options):
-        key = (url, decode_responses)
-        if key not in clients:
-            clients[key] = fakeredis.FakeRedis(decode_responses=decode_responses)
-        return clients[key]
-
-    monkeypatch.setattr(
-        app_module,
-        "Redis",
-        type("FakeRedisFactory", (), {"from_url": staticmethod(fake_from_url)}),
-    )
 
 
 def _rules(flask_app):
@@ -39,7 +19,6 @@ def _rules(flask_app):
 
 
 def test_customer_and_admin_apps_have_isolated_route_surfaces(monkeypatch):
-    _install_fake_redis(monkeypatch)
     from app import create_app
 
     customer_app = create_app(TestConfig, app_mode="customer")
@@ -62,8 +41,6 @@ def test_customer_and_admin_apps_have_isolated_route_surfaces(monkeypatch):
 
 
 def test_entrypoints_select_explicit_factory_modes(monkeypatch):
-    _install_fake_redis(monkeypatch)
-
     wsgi = importlib.reload(importlib.import_module("wsgi"))
     admin_wsgi = importlib.reload(importlib.import_module("admin_wsgi"))
 
@@ -72,7 +49,6 @@ def test_entrypoints_select_explicit_factory_modes(monkeypatch):
 
 
 def test_app_factory_reenables_shared_application_logger(monkeypatch):
-    _install_fake_redis(monkeypatch)
     from app import create_app
 
     logger = logging.getLogger("app")
@@ -85,7 +61,6 @@ def test_app_factory_reenables_shared_application_logger(monkeypatch):
 
 
 def test_admin_health_reports_liveness_and_dependency_readiness(monkeypatch):
-    _install_fake_redis(monkeypatch)
     from app import create_app
 
     admin_app = create_app(TestConfig, app_mode="admin")
@@ -99,19 +74,8 @@ def test_admin_health_reports_liveness_and_dependency_readiness(monkeypatch):
     assert ready.status_code == 200
     assert ready.get_json() == {"status": "ready", "app_mode": "admin"}
 
-    monkeypatch.setattr(
-        admin_app.extensions["redis"],
-        "ping",
-        lambda: (_ for _ in ()).throw(ConnectionError("offline")),
-    )
-    unavailable = client.get("/health/ready")
-
-    assert unavailable.status_code == 503
-    assert unavailable.get_json() == {"status": "unavailable", "app_mode": "admin"}
-
 
 def test_admin_runtime_config_is_separate_and_stricter(monkeypatch):
-    _install_fake_redis(monkeypatch)
     from app import create_app
 
     customer_app = create_app(TestConfig, app_mode="customer")
@@ -121,7 +85,7 @@ def test_admin_runtime_config_is_separate_and_stricter(monkeypatch):
     assert admin_app.config["SESSION_COOKIE_NAME"] == "__Host-sitbank_admin_session"
     assert customer_app.config["SECRET_ENV_NAMES"]["SECRET_KEY"] == "SECRET_KEY"
     assert admin_app.config["SECRET_ENV_NAMES"]["SECRET_KEY"] == "ADMIN_SECRET_KEY"
-    assert customer_app.config["REDIS_URL"] != admin_app.config["REDIS_URL"]
+    assert customer_app.config["SESSION_LOOKUP_HMAC_KEY"] != admin_app.config["SESSION_LOOKUP_HMAC_KEY"]
     assert customer_app.config["SESSION_KEY_PREFIX"] != admin_app.config["SESSION_KEY_PREFIX"]
     assert customer_app.config["RATELIMIT_KEY_PREFIX"] != admin_app.config["RATELIMIT_KEY_PREFIX"]
     assert customer_app.config["AUTH_FAILURE_KEY_PREFIX"] != admin_app.config["AUTH_FAILURE_KEY_PREFIX"]
@@ -132,7 +96,6 @@ def test_admin_runtime_config_is_separate_and_stricter(monkeypatch):
 
 
 def test_admin_auth_fails_closed_without_creating_sessions(monkeypatch):
-    _install_fake_redis(monkeypatch)
     from app import create_app
 
     admin_app = create_app(TestConfig, app_mode="admin")
@@ -149,7 +112,7 @@ def test_admin_auth_fails_closed_without_creating_sessions(monkeypatch):
         assert username_only.status_code == 403
         assert register.status_code == 404
         assert customer_cookie == 403
-        assert admin_app.extensions["redis_session"].keys(f"{admin_app.config['SESSION_KEY_PREFIX']}*") == []
+        assert db.session.query(ServerSideSession).count() == 0
         for response in (password_only, username_only, register):
             assert not any(
                 cookie.startswith(f"{admin_app.config['SESSION_COOKIE_NAME']}=")
@@ -162,7 +125,6 @@ def test_admin_auth_fails_closed_without_creating_sessions(monkeypatch):
 
 
 def test_disabled_admin_login_is_audited_and_redacted(monkeypatch):
-    _install_fake_redis(monkeypatch)
     from app import create_app
 
     admin_app = create_app(TestConfig, app_mode="admin")

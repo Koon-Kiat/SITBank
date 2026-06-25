@@ -150,13 +150,14 @@ def test_registration_otp_rejects_suffix_lookalike_domain(client):
 
 def test_registration_otp_hashes_code_and_verifies_email(client):
     from app.security.email import password_reset_outbox
+    from app.models import RegistrationOtpChallenge
 
     email = "alice@sit.singaporetech.edu.sg"
     request_response = client.post("/auth/register/otp/request", json={"email": email})
     raw_code = re.search(r"\b([0-9]{6})\b", password_reset_outbox()[-1]["body"]).group(1)
-    redis_payloads = [
-        current_app.extensions["redis"].get(key)
-        for key in current_app.extensions["redis"].scan_iter("ospbank:registration_otp:*")
+    stored_values = [
+        challenge.otp_hmac
+        for challenge in db.session.execute(db.select(RegistrationOtpChallenge)).scalars()
     ]
     verify_response = client.post("/auth/register/otp/verify", json={"email": email, "otp_code": raw_code})
 
@@ -164,7 +165,8 @@ def test_registration_otp_hashes_code_and_verifies_email(client):
     assert verify_response.status_code == 200
     assert password_reset_outbox()[-1]["to"] == "alice@sit.singaporetech.edu.sg"
     assert password_reset_outbox()[-1]["subject"] == "SITBank registration verification code"
-    assert all(raw_code not in str(payload) for payload in redis_payloads)
+    assert stored_values
+    assert all(raw_code not in str(value) for value in stored_values)
 
 
 def test_registration_otp_resend_invalidates_previous_code(client, monkeypatch):
@@ -221,6 +223,8 @@ def test_registration_otp_existing_account_response_is_generic(client):
 
 
 def test_registration_otp_email_failure_fails_closed_without_code(client, monkeypatch):
+    from app.models import RegistrationOtpChallenge
+
     def fail_delivery(*_args, **_kwargs):
         raise RuntimeError("smtp secret should not leak")
 
@@ -233,7 +237,7 @@ def test_registration_otp_email_failure_fails_closed_without_code(client, monkey
 
     assert response.status_code == 503
     assert response.get_json() == {"error": "Could not send verification code. Please try again later."}
-    assert list(current_app.extensions["redis"].scan_iter("ospbank:registration_otp:*")) == []
+    assert db.session.query(RegistrationOtpChallenge).count() == 0
 
 
 def test_registration_otp_audit_events_do_not_store_codes(client):

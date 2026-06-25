@@ -3,94 +3,196 @@ from __future__ import annotations
 import hashlib
 import hmac
 import ipaddress
-import json
 import time
 import uuid
-from datetime import datetime, timezone
 from collections.abc import Iterator
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from flask import Flask, current_app, flash, jsonify, redirect, request, session, url_for
-from redis import Redis
+from flask import Flask, current_app, flash, has_request_context, jsonify, redirect, request, session, url_for
+from flask.sessions import SessionInterface, SessionMixin, session_json_serializer
+from sqlalchemy.exc import IntegrityError
+from werkzeug.datastructures import CallbackDict
 
+from app.extensions import db
+from app.models import ServerSideSession
 from app.security.session_hmac import (
     SessionPayloadIntegrityError,
     active_hmac_hex,
+    candidate_hmac_hex,
     matches_hmac,
     sign_session_payload,
     verify_session_payload,
 )
 
-try:
-    from flask_session.redis import RedisSessionInterface
-except ImportError:  # Flask-Session keeps compatibility import paths across releases.
-    from flask_session.redis.redis import RedisSessionInterface
 
-
-SESSION_META_PREFIX = "ospbank:session_meta:"
-USER_SESSIONS_PREFIX = "ospbank:user_sessions:"
-PAST_SESSIONS_PREFIX = "ospbank:past_sessions:"
-REVOKED_SESSION_PREFIX = "ospbank:revoked_session:"
 SESSION_RISK_REAUTH_REQUIRED_KEY = "risk_reauth_required"
 SESSION_RISK_FINGERPRINT_KEY = "risk_fingerprint"
 SESSION_HISTORY_LIMIT_DEFAULT = 20
+SESSION_PAYLOAD_FORMAT = "session-hmac-v2"
 SESSION_END_REASON_LABELS = {
     "logout": "Logged out",
     "terminated": "Terminated",
     "revoked": "Revoked",
     "expired": "Expired",
     "rotated": "Session refreshed",
+    "integrity_failure": "Session integrity failure",
     "ended": "Ended",
 }
 
 
-def _configured_prefix(name: str, default: str) -> str:
-    return str(current_app.config.get(name) or default)
+class DatabaseSession(CallbackDict, SessionMixin):
+    def __init__(
+        self,
+        initial: dict[str, Any] | None = None,
+        *,
+        sid: str | None = None,
+        new: bool = False,
+    ) -> None:
+        def on_update(_session: DatabaseSession) -> None:
+            self.modified = True
+            self.accessed = True
+
+        super().__init__(initial, on_update)
+        self.sid = sid or _new_session_id()
+        self.new = new
+        self.modified = False
+        self.accessed = False
 
 
-class UuidRedisSessionInterface(RedisSessionInterface):
-    def _generate_sid(self, session_id_length: int | None = None) -> str:
-        return str(uuid.uuid4())
+class DatabaseSessionSerializer:
+    def encode(self, session_data: dict[str, Any]) -> bytes:
+        return session_json_serializer.dumps(dict(session_data)).encode("utf-8")
 
-    def _retrieve_session_data(self, store_id: str) -> dict | None:
-        serialized_session_data = self.client.get(store_id)
-        if not serialized_session_data:
-            return None
+    def decode(self, payload: bytes) -> dict[str, Any]:
+        decoded = session_json_serializer.loads(payload.decode("utf-8"))
+        if not isinstance(decoded, dict):
+            raise ValueError("Session payload must decode to an object")
+        return decoded
+
+
+class DatabaseSessionInterface(SessionInterface):
+    serializer = DatabaseSessionSerializer()
+    session_class = DatabaseSession
+
+    def open_session(self, app: Flask, request) -> DatabaseSession:
+        cookie_name = self.get_cookie_name(app)
+        session_id = request.cookies.get(cookie_name)
+        if not session_id:
+            return self.session_class(sid=_new_session_id(), new=True)
+
+        record = _session_record_for_sid(session_id)
+        if record is None:
+            return self.session_class(sid=_new_session_id(), new=True)
+
+        now = _utcnow()
+        if record.revoked_at is not None:
+            return self.session_class(sid=_new_session_id(), new=True)
+        if _as_utc_datetime(record.expires_at) <= now:
+            _end_session_record(record, ended_reason="expired", now=now)
+            _commit_quietly()
+            return self.session_class(sid=_new_session_id(), new=True)
+        if not record.payload:
+            _end_session_record(record, ended_reason="ended", now=now)
+            _commit_quietly()
+            return self.session_class(sid=_new_session_id(), new=True)
 
         try:
             payload = verify_session_payload(
-                serialized_session_data,
-                binding_context=store_id,
+                bytes(record.payload),
+                binding_context=_payload_binding_context(record.session_lookup_hash),
             )
             session_data = self.serializer.decode(payload)
         except SessionPayloadIntegrityError as exc:
-            self._handle_session_integrity_failure(store_id, exc.reason)
-            return None
+            self._handle_integrity_failure(record, reason=exc.reason)
+            return self.session_class(sid=_new_session_id(), new=True)
         except Exception:
-            self._handle_session_integrity_failure(store_id, "malformed_payload")
-            return None
+            self._handle_integrity_failure(record, reason="malformed_payload")
+            return self.session_class(sid=_new_session_id(), new=True)
 
-        if not isinstance(session_data, dict):
-            self._handle_session_integrity_failure(store_id, "malformed_payload")
-            return None
-        return session_data
+        record.last_activity_at = now
+        return self.session_class(session_data, sid=session_id)
 
-    def _upsert_session(self, session_lifetime, session, store_id: str) -> None:
-        serialized_session_data = self.serializer.encode(session)
-        signed_session_data = sign_session_payload(
-            serialized_session_data,
-            binding_context=store_id,
+    def save_session(self, app: Flask, session_obj: DatabaseSession, response) -> None:
+        domain = self.get_cookie_domain(app)
+        path = self.get_cookie_path(app)
+        secure = self.get_cookie_secure(app)
+        httponly = self.get_cookie_httponly(app)
+        samesite = self.get_cookie_samesite(app)
+        cookie_name = self.get_cookie_name(app)
+
+        if not session_obj:
+            if session_obj.modified:
+                _end_session_id(session_obj.sid, ended_reason="ended")
+                _commit_quietly()
+                response.delete_cookie(
+                    cookie_name,
+                    domain=domain,
+                    path=path,
+                    secure=secure,
+                    httponly=httponly,
+                    samesite=samesite,
+                )
+            return
+
+        session_obj.permanent = True
+        now = _utcnow()
+        expires_at = _session_expires_at(now)
+        lookup_hash = session_lookup_hash(session_obj.sid)
+        payload = self.serializer.encode(dict(session_obj))
+        signed_payload = sign_session_payload(
+            payload,
+            binding_context=_payload_binding_context(lookup_hash),
         )
-        self.client.set(
-            name=store_id,
-            value=signed_session_data,
-            ex=int(session_lifetime.total_seconds()),
-        )
+        user_id = _session_user_id(session_obj)
+        record = _session_record_for_lookup_hash(lookup_hash)
+        if record is None:
+            record = ServerSideSession(
+                component=_session_component(),
+                session_lookup_hash=lookup_hash,
+                created_at=now,
+                last_activity_at=now,
+                expires_at=expires_at,
+            )
+            db.session.add(record)
 
-    def _handle_session_integrity_failure(self, store_id: str, reason: str) -> None:
-        session_id = self._session_id_from_store_id(store_id)
-        store_ref = active_hmac_hex(f"session-store:{session_id or store_id}", length=16)
-        self.client.delete(store_id)
+        record.payload = signed_payload
+        record.payload_format = SESSION_PAYLOAD_FORMAT
+        record.session_ref = _public_reference_from_lookup_hash(lookup_hash)
+        record.user_id = user_id
+        record.last_activity_at = now
+        record.expires_at = expires_at
+        record.revoked_at = None
+        record.ended_at = None
+        record.ended_reason = None
+        record.ip_address = request.remote_addr or record.ip_address or ""
+        record.user_agent = ((request.user_agent.string or "")[:256] or record.user_agent or "unknown")
+        record.risk_fingerprint = str(session_obj.get(SESSION_RISK_FINGERPRINT_KEY) or "")
+        _commit_quietly()
+
+        response.set_cookie(
+            cookie_name,
+            session_obj.sid,
+            expires=self.get_expiration_time(app, session_obj),
+            httponly=httponly,
+            domain=domain,
+            path=path,
+            secure=secure,
+            samesite=samesite,
+        )
+        response.vary.add("Cookie")
+
+    def regenerate(self, session_obj: DatabaseSession) -> None:
+        old_session_id = getattr(session_obj, "sid", "")
+        if old_session_id:
+            _end_session_id(old_session_id, ended_reason="rotated")
+        session_obj.sid = _new_session_id()
+        session_obj.modified = True
+
+    def _handle_integrity_failure(self, record: ServerSideSession, *, reason: str) -> None:
+        now = _utcnow()
+        store_ref = active_hmac_hex(f"session-store:{record.session_lookup_hash}", length=16)
+        _end_session_record(record, ended_reason="integrity_failure", now=now)
         current_app.logger.warning(
             "session_integrity_failure reason=%s store_ref=%s",
             reason,
@@ -103,7 +205,7 @@ class UuidRedisSessionInterface(RedisSessionInterface):
                 "session_integrity",
                 "failure",
                 metadata={"reason": reason, "store_ref": store_ref},
-                session_id=session_id or None,
+                session_id=store_ref,
             )
         except Exception as exc:
             current_app.logger.warning(
@@ -111,70 +213,93 @@ class UuidRedisSessionInterface(RedisSessionInterface):
                 reason,
                 type(exc).__name__,
             )
-
-    def _session_id_from_store_id(self, store_id: str) -> str:
-        if store_id.startswith(self.key_prefix):
-            return store_id[len(self.key_prefix) :]
-        return ""
+            _commit_quietly()
 
 
-def install_uuid_redis_sessions(app: Flask, redis_client: Redis) -> None:
-    app.config["SESSION_REDIS"] = redis_client
-    app.session_interface = UuidRedisSessionInterface(
-        app,
-        client=redis_client,
-        key_prefix=app.config["SESSION_KEY_PREFIX"],
-        use_signer=False,
-        permanent=True,
-        sid_length=32,
-        serialization_format="msgpack",
-    )
+def install_database_sessions(app: Flask) -> None:
+    app.session_interface = DatabaseSessionInterface()
 
 
-def _redis() -> Redis:
-    return current_app.extensions["redis"]
-
-
-def _redis_session() -> Redis:
-    return current_app.extensions["redis_session"]
+def _new_session_id() -> str:
+    return str(uuid.uuid4())
 
 
 def _now() -> int:
     return int(time.time())
 
 
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return _utcnow().isoformat()
+
+
+def _as_utc_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def current_session_id() -> str | None:
+    if not has_request_context():
+        return None
     return getattr(session, "sid", None)
+
+
+def session_lookup_hash(session_id: str) -> str:
+    return hmac.new(
+        _lookup_hmac_key(),
+        str(session_id).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
 
 
 def public_session_reference(session_id: str | None) -> str:
     if not session_id:
         return ""
-    return active_hmac_hex(f"session-reference:{session_id}", length=32)
+    return _public_reference_from_lookup_hash(session_lookup_hash(session_id))
 
 
-def _session_storage_key(session_id: str) -> str:
-    return f"{current_app.config['SESSION_KEY_PREFIX']}{session_id}"
+def _public_reference_from_lookup_hash(lookup_hash: str) -> str:
+    return active_hmac_hex(f"session-reference:{lookup_hash}", length=32)
 
 
-def _session_meta_key(session_id: str) -> str:
-    return f"{_configured_prefix('SESSION_METADATA_KEY_PREFIX', SESSION_META_PREFIX)}{session_id}"
+def _candidate_public_references(lookup_hash: str) -> Iterator[str]:
+    yield from candidate_hmac_hex(f"session-reference:{lookup_hash}", length=32)
 
 
-def _user_sessions_key(user_id: int) -> str:
-    return f"{_configured_prefix('USER_SESSIONS_KEY_PREFIX', USER_SESSIONS_PREFIX)}{user_id}"
+def _lookup_hmac_key() -> bytes:
+    key = current_app.config.get("SESSION_LOOKUP_HMAC_KEY")
+    if isinstance(key, bytes):
+        return key
+    raise RuntimeError("SESSION_LOOKUP_HMAC_KEY must be configured as 32 bytes")
 
 
-def _past_sessions_key(user_id: int) -> str:
-    return f"{_configured_prefix('PAST_SESSIONS_KEY_PREFIX', PAST_SESSIONS_PREFIX)}{user_id}"
+def _session_component() -> str:
+    return str(current_app.config.get("APP_MODE") or "customer")
 
 
-def _revoked_key(session_id: str) -> str:
-    return f"{_configured_prefix('REVOKED_SESSION_KEY_PREFIX', REVOKED_SESSION_PREFIX)}{session_id}"
+def _payload_binding_context(lookup_hash: str) -> str:
+    return f"db-session:{_session_component()}:{lookup_hash}"
+
+
+def _session_record_for_sid(session_id: str) -> ServerSideSession | None:
+    return _session_record_for_lookup_hash(session_lookup_hash(session_id))
+
+
+def _session_record_for_lookup_hash(lookup_hash: str) -> ServerSideSession | None:
+    return db.session.execute(
+        db.select(ServerSideSession).where(
+            ServerSideSession.component == _session_component(),
+            ServerSideSession.session_lookup_hash == lookup_hash,
+        )
+    ).scalar_one_or_none()
+
+
+def _session_expires_at(now: datetime) -> datetime:
+    return now + timedelta(seconds=int(current_app.config["SESSION_INACTIVITY_SECONDS"]))
 
 
 def rotate_session_id() -> None:
@@ -230,32 +355,12 @@ def has_recent_fresh_mfa() -> bool:
 
 
 def rotate_authenticated_session_after_mfa(user_id: int) -> str:
-    old_session_id = current_session_id()
     login_time = session.get("login_at") or utc_now_iso()
     mark_fresh_mfa()
     rotate_session_id()
-    new_session_id = current_session_id()
-    if old_session_id and old_session_id != new_session_id:
-        redis_client = _redis()
-        metadata = redis_client.hgetall(_session_meta_key(old_session_id))
-        if metadata:
-            _record_past_session(
-                redis_client,
-                session_id=old_session_id,
-                user_id=user_id,
-                metadata=metadata,
-                ended_reason="rotated",
-            )
-        redis_client.delete(_session_meta_key(old_session_id))
-        redis_client.srem(_user_sessions_key(user_id), old_session_id)
-        redis_client.set(
-            _revoked_key(old_session_id),
-            "1",
-            ex=current_app.config["SESSION_INACTIVITY_SECONDS"],
-        )
     refresh_session_risk_fingerprint()
-    register_session_metadata(user_id=user_id, login_time=login_time)
-    return new_session_id or ""
+    register_session_metadata(user_id=user_id, login_time=str(login_time))
+    return current_session_id() or ""
 
 
 def refresh_session_risk_fingerprint() -> None:
@@ -265,9 +370,9 @@ def refresh_session_risk_fingerprint() -> None:
     session[SESSION_RISK_FINGERPRINT_KEY] = fingerprint
     session.pop(SESSION_RISK_REAUTH_REQUIRED_KEY, None)
     session.modified = True
-    session_id = current_session_id()
-    if session_id:
-        _redis().hset(_session_meta_key(session_id), SESSION_RISK_FINGERPRINT_KEY, fingerprint)
+    record = _current_session_record()
+    if record is not None:
+        record.risk_fingerprint = fingerprint
 
 
 def current_session_risk_fingerprint() -> str:
@@ -325,21 +430,26 @@ def register_session_metadata(user_id: int, login_time: str) -> None:
     session_id = current_session_id()
     if not session_id:
         return
-    ttl = current_app.config["SESSION_INACTIVITY_SECONDS"]
-    metadata = {
-        "session_id": session_id,
-        "user_id": str(user_id),
-        "ip_address": request.remote_addr or "",
-        "user_agent": (request.user_agent.string or "unknown")[:256],
-        "login_time": login_time,
-        "last_activity": utc_now_iso(),
-        SESSION_RISK_FINGERPRINT_KEY: session.get(SESSION_RISK_FINGERPRINT_KEY, ""),
-    }
-    redis_client = _redis()
-    redis_client.hset(_session_meta_key(session_id), mapping=metadata)
-    redis_client.expire(_session_meta_key(session_id), ttl)
-    redis_client.sadd(_user_sessions_key(user_id), session_id)
-    redis_client.expire(_user_sessions_key(user_id), 24 * 60 * 60)
+    record = _current_session_record()
+    now = _utcnow()
+    if record is None:
+        record = ServerSideSession(
+            component=_session_component(),
+            session_lookup_hash=session_lookup_hash(session_id),
+            expires_at=_session_expires_at(now),
+        )
+        db.session.add(record)
+    record.user_id = user_id
+    record.session_ref = public_session_reference(session_id)
+    record.ip_address = request.remote_addr or record.ip_address or ""
+    record.user_agent = ((request.user_agent.string or "")[:256] or record.user_agent or "unknown")
+    try:
+        record.created_at = _as_utc_datetime(datetime.fromisoformat(str(login_time)))
+    except ValueError:
+        record.created_at = now
+    record.last_activity_at = now
+    record.expires_at = _session_expires_at(now)
+    record.risk_fingerprint = str(session.get(SESSION_RISK_FINGERPRINT_KEY) or "")
 
 
 def update_session_activity() -> None:
@@ -347,105 +457,96 @@ def update_session_activity() -> None:
     user_id = session.get("user_id")
     if not session_id or not user_id:
         return
-    ttl = current_app.config["SESSION_INACTIVITY_SECONDS"]
-    redis_client = _redis()
-    redis_client.hset(_session_meta_key(session_id), "last_activity", utc_now_iso())
-    redis_client.expire(_session_meta_key(session_id), ttl)
-    _redis_session().expire(_session_storage_key(session_id), ttl)
-
-
-def _active_session_records(user_id: int) -> Iterator[tuple[str, dict[str, str]]]:
-    redis_client = _redis()
-    session_ids = list(redis_client.smembers(_user_sessions_key(user_id)))
-    if not session_ids:
+    record = _current_session_record()
+    if record is None:
         return
+    now = _utcnow()
+    record.last_activity_at = now
+    record.expires_at = _session_expires_at(now)
+    record.user_id = int(user_id)
+    record.session_ref = public_session_reference(session_id)
+    record.risk_fingerprint = str(session.get(SESSION_RISK_FINGERPRINT_KEY) or "")
 
-    storage_pipeline = _redis_session().pipeline()
-    metadata_pipeline = redis_client.pipeline()
-    for session_id in session_ids:
-        storage_pipeline.exists(_session_storage_key(session_id))
-        metadata_pipeline.hgetall(_session_meta_key(session_id))
 
-    storage_exists = storage_pipeline.execute()
-    metadata_records = metadata_pipeline.execute()
-    cleanup_pipeline = redis_client.pipeline()
-    cleanup_required = False
-    active_records: list[tuple[str, dict[str, str]]] = []
+def _current_session_record() -> ServerSideSession | None:
+    session_id = current_session_id()
+    if not session_id:
+        return None
+    return _session_record_for_sid(session_id)
 
-    for session_id, session_exists, metadata in zip(
-        session_ids,
-        storage_exists,
-        metadata_records,
-        strict=True,
-    ):
-        if not session_exists:
-            if metadata:
-                key, payload = _past_session_record(
-                    session_id=session_id,
-                    user_id=user_id,
-                    metadata=metadata,
-                    ended_reason="expired",
-                )
-                if key and payload:
-                    cleanup_pipeline.lpush(key, payload)
-                    cleanup_pipeline.ltrim(key, 0, _session_history_limit() - 1)
-            cleanup_pipeline.srem(_user_sessions_key(user_id), session_id)
-            cleanup_pipeline.delete(_session_meta_key(session_id))
-            cleanup_required = True
-            continue
-        if not metadata:
-            cleanup_pipeline.srem(_user_sessions_key(user_id), session_id)
-            cleanup_required = True
-            continue
-        active_records.append((session_id, metadata))
 
-    if cleanup_required:
-        cleanup_pipeline.execute()
-    yield from active_records
+def _active_session_records(user_id: int) -> list[ServerSideSession]:
+    now = _utcnow()
+    records = list(
+        db.session.execute(
+            db.select(ServerSideSession)
+            .where(
+                ServerSideSession.component == _session_component(),
+                ServerSideSession.user_id == user_id,
+                ServerSideSession.revoked_at.is_(None),
+                ServerSideSession.ended_at.is_(None),
+                ServerSideSession.expires_at > now,
+                ServerSideSession.payload.is_not(None),
+            )
+            .order_by(ServerSideSession.created_at.desc(), ServerSideSession.id.desc())
+        ).scalars()
+    )
+    _expire_stale_sessions(user_id=user_id, now=now)
+    return records
 
 
 def list_active_sessions(user_id: int) -> list[dict[str, Any]]:
+    current_lookup_hash = session_lookup_hash(current_session_id()) if current_session_id() else ""
     sessions: list[dict[str, Any]] = []
-    current_sid = current_session_id()
-    for session_id, metadata in _active_session_records(user_id):
+    for record in _active_session_records(user_id):
+        session_ref = _public_reference_from_lookup_hash(record.session_lookup_hash)
         public_metadata = {
-            "session_ref": public_session_reference(session_id),
-            "current": session_id == current_sid,
-            "ip_address": _display_ip_address(metadata.get("ip_address", "")),
-            "user_agent": _summarize_user_agent(metadata.get("user_agent", "")),
-            "login_time": metadata.get("login_time", ""),
-            "last_activity": metadata.get("last_activity", ""),
-            "login_time_display": _format_session_time(metadata.get("login_time", "")),
-            "last_activity_display": _format_session_time(metadata.get("last_activity", "")),
+            "session_ref": session_ref,
+            "current": record.session_lookup_hash == current_lookup_hash,
+            "ip_address": _display_ip_address(record.ip_address),
+            "user_agent": _summarize_user_agent(record.user_agent),
+            "login_time": _utc_iso(record.created_at),
+            "last_activity": _utc_iso(record.last_activity_at),
+            "login_time_display": _format_session_time(_utc_iso(record.created_at)),
+            "last_activity_display": _format_session_time(_utc_iso(record.last_activity_at)),
         }
         sessions.append(public_metadata)
-    return sorted(sessions, key=lambda item: item.get("login_time", ""), reverse=True)
+    return sessions
 
 
 def list_past_sessions(user_id: int, limit: int | None = None) -> list[dict[str, Any]]:
     count = _session_history_limit(limit)
     if count <= 0:
         return []
-
+    rows = list(
+        db.session.execute(
+            db.select(ServerSideSession)
+            .where(
+                ServerSideSession.component == _session_component(),
+                ServerSideSession.user_id == user_id,
+                ServerSideSession.ended_at.is_not(None),
+            )
+            .order_by(ServerSideSession.ended_at.desc(), ServerSideSession.id.desc())
+            .limit(count)
+        ).scalars()
+    )
     sessions: list[dict[str, Any]] = []
-    for payload in _redis().lrange(_past_sessions_key(user_id), 0, count - 1):
-        try:
-            record = json.loads(payload)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            continue
-
-        ended_reason = _normalize_session_end_reason(str(record.get("ended_reason", "")))
+    for record in rows:
+        ended_reason = _normalize_session_end_reason(str(record.ended_reason or ""))
+        login_time = _utc_iso(record.created_at)
+        last_activity = _utc_iso(record.last_activity_at)
+        ended_at = _utc_iso(record.ended_at)
         public_metadata = {
-            "session_ref": str(record.get("session_ref", "")),
-            "ip_address": _display_ip_address(str(record.get("ip_address", ""))),
-            "user_agent": _summarize_user_agent(str(record.get("user_agent", ""))),
-            "login_time": str(record.get("login_time", "")),
-            "last_activity": str(record.get("last_activity", "")),
-            "ended_at": str(record.get("ended_at", "")),
+            "session_ref": record.session_ref or _public_reference_from_lookup_hash(record.session_lookup_hash),
+            "ip_address": _display_ip_address(record.ip_address),
+            "user_agent": _summarize_user_agent(record.user_agent),
+            "login_time": login_time,
+            "last_activity": last_activity,
+            "ended_at": ended_at,
             "ended_reason": ended_reason,
-            "login_time_display": _format_session_time(str(record.get("login_time", ""))),
-            "last_activity_display": _format_session_time(str(record.get("last_activity", ""))),
-            "ended_at_display": _format_session_time(str(record.get("ended_at", ""))),
+            "login_time_display": _format_session_time(login_time),
+            "last_activity_display": _format_session_time(last_activity),
+            "ended_at_display": _format_session_time(ended_at),
             "ended_reason_display": SESSION_END_REASON_LABELS[ended_reason],
         }
         sessions.append(public_metadata)
@@ -453,13 +554,13 @@ def list_past_sessions(user_id: int, limit: int | None = None) -> list[dict[str,
 
 
 def resolve_session_reference_for_user(user_id: int, session_reference: str) -> str | None:
-    for session_id, _metadata in _active_session_records(user_id):
-        if matches_hmac(
-            session_reference,
-            f"session-reference:{session_id}",
-            length=32,
-        ):
-            return session_id
+    current_sid = current_session_id()
+    current_lookup_hash = session_lookup_hash(current_sid) if current_sid else ""
+    for record in _active_session_records(user_id):
+        if any(hmac.compare_digest(str(session_reference), candidate) for candidate in _candidate_public_references(record.session_lookup_hash)):
+            if record.session_lookup_hash == current_lookup_hash and current_sid:
+                return current_sid
+            return f"lookup:{record.session_lookup_hash}"
     return None
 
 
@@ -477,56 +578,6 @@ def _session_history_limit(limit: int | None = None) -> int:
 
 def _normalize_session_end_reason(value: str) -> str:
     return value if value in SESSION_END_REASON_LABELS else "ended"
-
-
-def _record_past_session(
-    redis_client: Redis,
-    *,
-    session_id: str,
-    user_id: int,
-    metadata: dict[str, str],
-    ended_reason: str,
-) -> None:
-    key, payload = _past_session_record(
-        session_id=session_id,
-        user_id=user_id,
-        metadata=metadata,
-        ended_reason=ended_reason,
-    )
-    if not key or not payload:
-        return
-
-    limit = _session_history_limit()
-    pipeline = redis_client.pipeline()
-    pipeline.lpush(key, payload)
-    pipeline.ltrim(key, 0, limit - 1)
-    pipeline.execute()
-
-
-def _past_session_record(
-    *,
-    session_id: str,
-    user_id: int,
-    metadata: dict[str, str],
-    ended_reason: str,
-) -> tuple[str, str]:
-    limit = _session_history_limit()
-    if limit <= 0:
-        return "", ""
-
-    reason = _normalize_session_end_reason(ended_reason)
-    record = {
-        "session_ref": public_session_reference(session_id),
-        "ip_address": metadata.get("ip_address", ""),
-        "user_agent": metadata.get("user_agent", ""),
-        "login_time": metadata.get("login_time", ""),
-        "last_activity": metadata.get("last_activity", ""),
-        "ended_at": utc_now_iso(),
-        "ended_reason": reason,
-    }
-    key = _past_sessions_key(user_id)
-    payload = json.dumps(record, separators=(",", ":"), sort_keys=True)
-    return key, payload
 
 
 def _display_ip_address(value: str) -> str:
@@ -550,7 +601,7 @@ def _format_session_time(value: str) -> str:
     if not value:
         return "Unknown"
     try:
-        parsed = datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return "Unknown"
     if parsed.tzinfo is None:
@@ -559,34 +610,37 @@ def _format_session_time(value: str) -> str:
     return local_time.strftime("%d %b %Y %H:%M")
 
 
+def _utc_iso(value: datetime | None) -> str:
+    if value is None:
+        return ""
+    return _as_utc_datetime(value).isoformat()
+
+
+def _session_user_id(session_obj: DatabaseSession) -> int | None:
+    user_id = session_obj.get("user_id") or session_obj.get("pending_mfa_user_id")
+    if not user_id:
+        return None
+    try:
+        return int(user_id)
+    except (TypeError, ValueError):
+        return None
+
+
+def _session_row_from_identifier(session_identifier: str) -> ServerSideSession | None:
+    if str(session_identifier).startswith("lookup:"):
+        lookup_hash = str(session_identifier).removeprefix("lookup:")
+    else:
+        lookup_hash = session_lookup_hash(session_identifier)
+    return _session_record_for_lookup_hash(lookup_hash)
+
+
 def revoke_session(session_id: str, user_id: int | None = None, *, ended_reason: str = "revoked") -> None:
-    redis_client = _redis()
-    metadata = redis_client.hgetall(_session_meta_key(session_id))
-    owner = user_id
-    if owner is None:
-        try:
-            owner = int(metadata.get("user_id") or 0) or None
-        except ValueError:
-            owner = None
-
-    if owner is not None and metadata:
-        _record_past_session(
-            redis_client,
-            session_id=session_id,
-            user_id=owner,
-            metadata=metadata,
-            ended_reason=ended_reason,
-        )
-
-    _redis_session().delete(_session_storage_key(session_id))
-    redis_client.delete(_session_meta_key(session_id))
-    redis_client.set(
-        _revoked_key(session_id),
-        "1",
-        ex=current_app.config["SESSION_INACTIVITY_SECONDS"],
-    )
-    if owner is not None:
-        redis_client.srem(_user_sessions_key(owner), session_id)
+    record = _session_row_from_identifier(session_id)
+    if record is None:
+        return
+    if user_id is not None and record.user_id not in {None, int(user_id)}:
+        return
+    _end_session_record(record, ended_reason=ended_reason, now=_utcnow())
 
 
 def revoke_current_session(*, ended_reason: str = "revoked") -> None:
@@ -598,41 +652,86 @@ def revoke_current_session(*, ended_reason: str = "revoked") -> None:
 
 
 def revoke_other_sessions(user_id: int, *, ended_reason: str = "revoked") -> int:
-    current_sid = current_session_id()
+    current_lookup_hash = session_lookup_hash(current_session_id()) if current_session_id() else ""
     revoked = 0
-    for session_id, _metadata in _active_session_records(user_id):
-        if session_id == current_sid:
+    for record in _active_session_records(user_id):
+        if record.session_lookup_hash == current_lookup_hash:
             continue
-        revoke_session(session_id, user_id, ended_reason=ended_reason)
+        _end_session_record(record, ended_reason=ended_reason, now=_utcnow())
         revoked += 1
     return revoked
 
 
 def revoke_all_sessions(user_id: int, *, ended_reason: str = "revoked") -> int:
     revoked = 0
-    for session_id, _metadata in list(_active_session_records(user_id)):
-        revoke_session(session_id, user_id, ended_reason=ended_reason)
+    for record in _active_session_records(user_id):
+        _end_session_record(record, ended_reason=ended_reason, now=_utcnow())
         revoked += 1
     return revoked
+
+
+def _end_session_id(session_id: str, *, ended_reason: str) -> None:
+    record = _session_record_for_sid(session_id)
+    if record is not None:
+        _end_session_record(record, ended_reason=ended_reason, now=_utcnow())
+
+
+def _end_session_record(record: ServerSideSession, *, ended_reason: str, now: datetime) -> None:
+    if record.ended_at is not None:
+        return
+    reason = _normalize_session_end_reason(ended_reason)
+    record.session_ref = record.session_ref or _public_reference_from_lookup_hash(record.session_lookup_hash)
+    record.payload = None
+    record.revoked_at = now
+    record.ended_at = now
+    record.ended_reason = reason
+
+
+def _expire_stale_sessions(*, user_id: int, now: datetime) -> None:
+    stale_records = list(
+        db.session.execute(
+            db.select(ServerSideSession).where(
+                ServerSideSession.component == _session_component(),
+                ServerSideSession.user_id == user_id,
+                ServerSideSession.revoked_at.is_(None),
+                ServerSideSession.ended_at.is_(None),
+                ServerSideSession.expires_at <= now,
+            )
+        ).scalars()
+    )
+    for record in stale_records:
+        _end_session_record(record, ended_reason="expired", now=now)
+
+
+def _commit_quietly() -> None:
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+    except Exception:
+        db.session.rollback()
+        raise
 
 
 def register_session_hooks(app: Flask) -> None:
     @app.before_request
     def enforce_session_activity():
         session_id = current_session_id()
-        if session_id and _redis().exists(_revoked_key(session_id)):
-            session.clear()
-            if not request.path.startswith("/auth/"):
-                if request.endpoint in {
-                    "main.index",
-                    "web.login",
-                    "web.login_submit",
-                    "web.register_form",
-                    "web.register_submit",
-                }:
-                    return None
-                return redirect(url_for("web.login"))
-            return jsonify({"error": "Session revoked"}), 401
+        if session_id and session:
+            record = _session_record_for_sid(session_id)
+            if record is not None and record.revoked_at is not None:
+                session.clear()
+                if not request.path.startswith("/auth/"):
+                    if request.endpoint in {
+                        "main.index",
+                        "web.login",
+                        "web.login_submit",
+                        "web.register_form",
+                        "web.register_submit",
+                    }:
+                        return None
+                    return redirect(url_for("web.login"))
+                return jsonify({"error": "Session revoked"}), 401
 
         principal_id = session.get("user_id") or session.get("pending_mfa_user_id")
         if not principal_id:

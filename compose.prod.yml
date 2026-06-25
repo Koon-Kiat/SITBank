@@ -32,8 +32,8 @@ services:
       SECRET_KEY_FILE: /run/secrets/secret_key
       WTF_CSRF_SECRET_KEY_FILE: /run/secrets/wtf_csrf_secret_key
       SESSION_HMAC_KEYS_JSON_FILE: /run/secrets/session_hmac_keys_json
+      SESSION_LOOKUP_HMAC_KEY_FILE: /run/secrets/session_lookup_hmac_key
       DATABASE_URL_FILE: /run/secrets/database_url
-      REDIS_URL_FILE: /run/secrets/redis_url
       MFA_KEK_KEYS_JSON_FILE: /run/secrets/mfa_kek_keys_json
       PASSWORD_PEPPER_B64_FILE: /run/secrets/password_pepper_b64
       SECURITY_AUDIT_HMAC_KEY_FILE: /run/secrets/security_audit_hmac_key
@@ -47,10 +47,10 @@ services:
         target: wtf_csrf_secret_key
       - source: session_hmac_keys_json
         target: session_hmac_keys_json
+      - source: session_lookup_hmac_key
+        target: session_lookup_hmac_key
       - source: database_url
         target: database_url
-      - source: redis_url
-        target: redis_url
       - source: mfa_kek_keys_json
         target: mfa_kek_keys_json
       - source: password_pepper_b64
@@ -147,8 +147,8 @@ services:
       ADMIN_SECRET_KEY_FILE: /run/secrets/admin_secret_key
       ADMIN_WTF_CSRF_SECRET_KEY_FILE: /run/secrets/admin_wtf_csrf_secret_key
       ADMIN_SESSION_HMAC_KEYS_JSON_FILE: /run/secrets/admin_session_hmac_keys_json
+      ADMIN_SESSION_LOOKUP_HMAC_KEY_FILE: /run/secrets/admin_session_lookup_hmac_key
       ADMIN_DATABASE_URL_FILE: /run/secrets/admin_database_url
-      ADMIN_REDIS_URL_FILE: /run/secrets/admin_redis_url
       ADMIN_PASSWORD_PEPPER_B64_FILE: /run/secrets/admin_password_pepper_b64
       SECURITY_AUDIT_HMAC_KEY_FILE: /run/secrets/security_audit_hmac_key
       SECURITY_ALERT_WEBHOOK_URL_FILE: /run/secrets/security_alert_webhook_url
@@ -161,10 +161,10 @@ services:
         target: admin_wtf_csrf_secret_key
       - source: admin_session_hmac_keys_json
         target: admin_session_hmac_keys_json
+      - source: admin_session_lookup_hmac_key
+        target: admin_session_lookup_hmac_key
       - source: admin_database_url
         target: admin_database_url
-      - source: admin_redis_url
-        target: admin_redis_url
       - source: admin_password_pepper_b64
         target: admin_password_pepper_b64
       - source: security_audit_hmac_key
@@ -223,12 +223,12 @@ secrets:
     file: /etc/sitbank/secrets/wtf_csrf_secret_key
   session_hmac_keys_json:
     file: /etc/sitbank/secrets/session_hmac_keys_json
+  session_lookup_hmac_key:
+    file: /etc/sitbank/secrets/session_lookup_hmac_key
   database_url:
     file: /etc/sitbank/secrets/database_url
   database_migration_url:
     file: /etc/sitbank/secrets/database_migration_url
-  redis_url:
-    file: /etc/sitbank/secrets/redis_url
   mfa_kek_keys_json:
     file: /etc/sitbank/secrets/mfa_kek_keys_json
   password_pepper_b64:
@@ -243,10 +243,10 @@ secrets:
     file: /etc/sitbank/secrets/admin_wtf_csrf_secret_key
   admin_session_hmac_keys_json:
     file: /etc/sitbank/secrets/admin_session_hmac_keys_json
+  admin_session_lookup_hmac_key:
+    file: /etc/sitbank/secrets/admin_session_lookup_hmac_key
   admin_database_url:
     file: /etc/sitbank/secrets/admin_database_url
-  admin_redis_url:
-    file: /etc/sitbank/secrets/admin_redis_url
   admin_password_pepper_b64:
     file: /etc/sitbank/secrets/admin_password_pepper_b64
   smtp_username:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -15,7 +14,8 @@ from urllib.parse import urlparse
 from flask import current_app, has_app_context
 
 from app.extensions import db
-from app.models import SecurityAuditEvent, User
+from app.models import SecurityAlertDedupe, SecurityAuditEvent, User
+from app.security.session_hmac import active_hmac_hex
 
 
 IMMEDIATE_ALERT_EVENT_TYPES = {
@@ -949,23 +949,48 @@ def _dedupe_alerts(
     *,
     ttl_seconds: int,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    if not has_app_context() or "redis" not in current_app.extensions:
-        raise AlertConfigurationError("Redis is required for security alert dedupe")
-    redis_client = current_app.extensions["redis"]
+    if not has_app_context():
+        raise AlertConfigurationError("Application context is required for security alert dedupe")
+    current_time = datetime.now(timezone.utc)
     deliverable: list[dict[str, Any]] = []
+    suppressed = 0
     for alert in alerts:
-        key = _alert_dedupe_key(alert)
-        try:
-            accepted = redis_client.set(key, "1", ex=ttl_seconds, nx=True)
-        except Exception as exc:
-            raise AlertConfigurationError("Redis security alert dedupe failed") from exc
-        if accepted:
-            deliverable.append(alert)
+        key_hash = _alert_dedupe_key_hash(alert)
+        record = db.session.execute(
+            db.select(SecurityAlertDedupe).where(SecurityAlertDedupe.dedupe_key_hash == key_hash)
+        ).scalar_one_or_none()
+        if record is not None and _as_utc(record.expires_at) > current_time:
+            record.count = int(record.count or 1) + 1
+            record.last_seen_at = current_time
+            suppressed += 1
+            continue
+        if record is None:
+            record = SecurityAlertDedupe(
+                dedupe_key_hash=key_hash,
+                first_seen_at=current_time,
+            )
+            db.session.add(record)
+        else:
+            record.first_seen_at = current_time
+            record.count = 1
+        record.event_type = _safe_text(alert.get("alert_type"), 80) or "security_alert"
+        record.last_seen_at = current_time
+        record.expires_at = current_time + timedelta(seconds=ttl_seconds)
+        deliverable.append(alert)
+    try:
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        raise AlertConfigurationError("DB security alert dedupe failed") from exc
     return deliverable, {
         "enabled": True,
         "ttl_seconds": ttl_seconds,
-        "suppressed": len(alerts) - len(deliverable),
+        "suppressed": suppressed,
     }
+
+
+def _alert_dedupe_key_hash(alert: Mapping[str, Any]) -> str:
+    return active_hmac_hex(_alert_dedupe_key(alert), length=64)
 
 
 def _alert_dedupe_key(alert: Mapping[str, Any]) -> str:
@@ -975,10 +1000,7 @@ def _alert_dedupe_key(alert: Mapping[str, Any]) -> str:
         "source": _safe_text(alert.get("source"), 160),
         "window_seconds": int(alert.get("window_seconds") or 0),
     }
-    digest = hashlib.sha256(
-        json.dumps(stable, separators=(",", ":"), sort_keys=True).encode("utf-8")
-    ).hexdigest()
-    return f"sitbank:security_alert:dedupe:{digest}"
+    return json.dumps(stable, separators=(",", ":"), sort_keys=True)
 
 
 def _recent_events(since: datetime) -> list[SecurityAuditEvent]:

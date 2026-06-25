@@ -13,8 +13,8 @@ from config import (
     _configured_secret,
     _password_reset_base_url,
     _required_b64_32_bytes,
+    _required_b64_32_bytes_decoded,
     _required_env_or_file,
-    _required_url,
     _required_session_hmac_keys,
     _validate_audit_anchor_path,
     _validate_password_reset_email_config,
@@ -105,43 +105,21 @@ def test_non_production_console_email_backend_remains_allowed():
     )
 
 
-def test_redis_url_cannot_override_application_connection_policy(monkeypatch):
+def test_session_lookup_hmac_key_decodes_to_32_bytes(monkeypatch):
+    encoded = base64.b64encode(b"l" * 32).decode("ascii")
     monkeypatch.setenv(
-        "REDIS_URL",
-        "redis://:secret@127.0.0.1:6379/0?protocol=3",
+        "SESSION_LOOKUP_HMAC_KEY",
+        encoded,
     )
 
-    with pytest.raises(RuntimeError, match="must not include query parameters"):
-        _required_url(
-            "REDIS_URL",
-            schemes={"redis", "rediss"},
-            require_password=True,
-        )
+    assert _required_b64_32_bytes_decoded("SESSION_LOOKUP_HMAC_KEY") == b"l" * 32
 
 
-def test_redis_connection_options_preserve_redis7_compatible_behavior():
-    from app import redis_connection_options
-
-    options = redis_connection_options(
-        {
-            "REDIS_PROTOCOL": 2,
-            "REDIS_LEGACY_RESPONSES": True,
-            "REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS": 2.0,
-            "REDIS_SOCKET_TIMEOUT_SECONDS": 5.0,
-            "REDIS_HEALTH_CHECK_INTERVAL_SECONDS": 30,
-            "REDIS_MAX_CONNECTIONS": 100,
-        }
-    )
-
-    assert options["protocol"] == 2
-    assert options["legacy_responses"] is True
-    assert options["socket_connect_timeout"] == 2.0
-    assert options["socket_timeout"] == 5.0
-    assert options["socket_keepalive"] is True
-    assert options["health_check_interval"] == 30
-    assert options["max_connections"] == 100
-    assert options["retry_on_timeout"] is False
-    assert options["retry"].get_retries() == 0
+def test_runtime_secret_maps_use_session_lookup_key_not_redis_url():
+    assert "SESSION_LOOKUP_HMAC_KEY" in config.CUSTOMER_RUNTIME_SECRET_ENV_NAMES
+    assert "SESSION_LOOKUP_HMAC_KEY" in config.ADMIN_RUNTIME_SECRET_ENV_NAMES
+    assert "REDIS_URL" not in config.CUSTOMER_RUNTIME_SECRET_ENV_NAMES
+    assert "REDIS_URL" not in config.ADMIN_RUNTIME_SECRET_ENV_NAMES
 
 
 def test_session_hmac_keyring_requires_active_32_byte_key(monkeypatch):

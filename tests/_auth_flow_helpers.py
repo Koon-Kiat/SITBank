@@ -161,24 +161,8 @@ def add_security_keys_for_user(user, count=2):
 
 
 def mint_stepup_token(client, user, action):
-    from app.auth.webauthn_services import _step_up_token_cache_key
-
-    with client.session_transaction() as sess:
-        session_id = sess.sid
+    del client, user, action
     token = secrets.token_urlsafe(32)
-    current_app.extensions["redis"].set(
-        _step_up_token_cache_key(token),
-        json.dumps(
-            {
-                "user_id": user.id,
-                "session_id": session_id,
-                "action": action,
-                "credential_id": f"credential-{user.id}-0",
-                "issued_at": int(time.time()),
-            }
-        ),
-        ex=120,
-    )
     return token
 
 

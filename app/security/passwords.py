@@ -6,12 +6,16 @@ import hashlib
 import hmac
 import os
 import unicodedata
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from flask import current_app
+
+from app.extensions import db
+from app.models import SecurityCircuitBreaker
 
 
 HIBP_RANGE_API_URL = "https://api.pwnedpasswords.com/range"
@@ -25,8 +29,7 @@ HIBP_FALLBACK_WARNING = (
     "the local password blocklist was applied."
 )
 COMMON_PASSWORD_ERROR = "Password is too common. Please try again"
-HIBP_FAILURE_KEY = "ospbank:hibp:failures"
-HIBP_CIRCUIT_OPEN_KEY = "ospbank:hibp:circuit_open"
+HIBP_CIRCUIT_SERVICE = "hibp_password_check"
 PASSWORD_MIN_LENGTH = 8
 PASSWORD_RECOMMENDED_MIN_LENGTH = 15
 PASSWORD_MAX_CHARS = 256
@@ -146,28 +149,85 @@ def validate_common_password_dictionary() -> int:
 
 
 def _hibp_circuit_is_open() -> bool:
-    redis_client = current_app.extensions.get("redis")
-    return bool(redis_client and redis_client.exists(HIBP_CIRCUIT_OPEN_KEY))
+    now = _utcnow()
+    try:
+        breaker = _hibp_breaker()
+        if breaker is None or breaker.state != "open" or breaker.opened_until is None:
+            return False
+        if _as_utc(breaker.opened_until) > now:
+            return True
+        breaker.state = "closed"
+        breaker.failure_count = 0
+        breaker.opened_until = None
+        breaker.updated_at = now
+        db.session.commit()
+        return False
+    except Exception as exc:
+        db.session.rollback()
+        current_app.logger.warning("hibp_circuit_state_unavailable error=%s", type(exc).__name__)
+        return True
 
 
 def _record_hibp_failure() -> None:
-    redis_client = current_app.extensions.get("redis")
-    if redis_client is None:
-        return
-    open_seconds = int(current_app.config.get("HIBP_CIRCUIT_OPEN_SECONDS", 300))
-    pipeline = redis_client.pipeline()
-    pipeline.incr(HIBP_FAILURE_KEY)
-    pipeline.expire(HIBP_FAILURE_KEY, open_seconds)
-    attempts, _expiry_set = pipeline.execute()
-    threshold = int(current_app.config.get("HIBP_CIRCUIT_FAILURE_THRESHOLD", 3))
-    if int(attempts) >= threshold:
-        redis_client.set(HIBP_CIRCUIT_OPEN_KEY, "1", ex=open_seconds)
+    now = _utcnow()
+    try:
+        breaker = _hibp_breaker(lock=True)
+        if breaker is None:
+            breaker = SecurityCircuitBreaker(
+                service_name=HIBP_CIRCUIT_SERVICE,
+                state="closed",
+                failure_count=0,
+                created_at=now,
+                updated_at=now,
+            )
+            db.session.add(breaker)
+        breaker.failure_count = int(breaker.failure_count or 0) + 1
+        breaker.last_failure_at = now
+        breaker.updated_at = now
+        threshold = int(current_app.config.get("HIBP_CIRCUIT_FAILURE_THRESHOLD", 3))
+        if breaker.failure_count >= threshold:
+            breaker.state = "open"
+            breaker.opened_until = now + timedelta(seconds=int(current_app.config.get("HIBP_CIRCUIT_OPEN_SECONDS", 300)))
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        current_app.logger.warning("hibp_circuit_failure_record_unavailable error=%s", type(exc).__name__)
 
 
 def _clear_hibp_failures() -> None:
-    redis_client = current_app.extensions.get("redis")
-    if redis_client is not None:
-        redis_client.delete(HIBP_FAILURE_KEY, HIBP_CIRCUIT_OPEN_KEY)
+    now = _utcnow()
+    try:
+        breaker = _hibp_breaker(lock=True)
+        if breaker is None:
+            return
+        breaker.state = "closed"
+        breaker.failure_count = 0
+        breaker.opened_until = None
+        breaker.last_success_at = now
+        breaker.updated_at = now
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        current_app.logger.warning("hibp_circuit_clear_unavailable error=%s", type(exc).__name__)
+
+
+def _hibp_breaker(*, lock: bool = False) -> SecurityCircuitBreaker | None:
+    statement = db.select(SecurityCircuitBreaker).where(
+        SecurityCircuitBreaker.service_name == HIBP_CIRCUIT_SERVICE
+    )
+    if lock and db.engine.dialect.name == "postgresql":
+        statement = statement.with_for_update()
+    return db.session.execute(statement).scalar_one_or_none()
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def hash_password(password: str) -> str:

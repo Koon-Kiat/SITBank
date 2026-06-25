@@ -17,8 +17,8 @@ log.
    `/etc/sitbank-staging/secrets` for staging.
 4. Restart through the restricted deployment/runtime command and run
    `production-check`.
-5. Revoke active sessions when rotating session-signing, Flask, CSRF, MFA KEK,
-   database, or Redis credentials as required by the incident.
+5. Revoke active sessions when rotating session-signing, session-lookup HMAC,
+   Flask, CSRF, MFA KEK, or database credentials as required by the incident.
 6. Remove the secret from Git history with a coordinated history rewrite when
    it was pushed. Treat the old value as compromised even after cleanup.
 
@@ -32,11 +32,14 @@ MFA/TOTP seed encryption uses envelope encryption only. Keep old KEKs in
 records, then update `MFA_KEK_ACTIVE_ID` and the root-managed keyring together.
 Non-envelope legacy MFA ciphertext is unsupported and fails closed.
 
-Redis session payloads are HMAC-wrapped with the session HMAC keyring before
-they are written to Redis. Tamper failures, missing signatures, unknown key
-IDs, malformed payloads, or unsupported legacy formats are logged as
+Database session payloads are HMAC-wrapped with the session HMAC keyring before
+they are written to PostgreSQL. Browser cookies carry only opaque session IDs;
+database lookup hashes are HMAC-derived with `SESSION_LOOKUP_HMAC_KEY` or
+`ADMIN_SESSION_LOOKUP_HMAC_KEY`. Tamper failures, missing signatures, unknown
+key IDs, malformed payloads, or unsupported legacy formats are logged as
 `session_integrity` security events and force a fresh unauthenticated session.
-Do not log or paste raw Redis session values during investigation.
+Do not log or paste raw session IDs or stored session payloads during
+investigation.
 
 PostgreSQL uses separate `sitbank_owner` and `sitbank_app` roles in staging
 and production. `sitbank_owner` is only for Alembic migrations and ownership;
@@ -47,18 +50,19 @@ so audit records are append-only to the running app. Rotate `database_url` and
 `database_migration_url` separately.
 
 Production admin runtime uses a separate Flask app, Docker Compose service,
-Redis/session namespace, signing material, and database runtime role. The admin
-role must be distinct from both `sitbank_app` and `sitbank_owner`; it must not
-use migration/schema-owner credentials. Admin MFA, administrator step-up, VPN,
-Tailscale, WireGuard, and administrator IP allowlist setup are Phase 2 items
-pending an approved design. Until those controls exist,
+session cookie, session-signing material, session-lookup HMAC key, and database
+runtime role. The admin role must be distinct from both `sitbank_app` and
+`sitbank_owner`; it must not use migration/schema-owner credentials. Admin MFA,
+administrator step-up, VPN, Tailscale, WireGuard, and administrator IP allowlist
+setup are Phase 2 items pending an approved design. Until those controls exist,
 `admin-sitbank.duckdns.org` is fail-closed at Nginx with `deny all` and the
 Flask admin login route returns failure without creating a session.
 
 Staging secrets must never be copied from production. The staging deployment
 wrapper rejects identical application secret files when production secrets are
-present and requires database and Redis URLs to resolve only to the staging
-Compose service names.
+present and requires runtime database URLs to resolve only to the staging
+Compose service name. Customer and admin session lookup HMAC keys must be
+distinct.
 
 ## Audit Logs
 
@@ -67,8 +71,8 @@ sanitized structured application log lines for container and journald
 forwarding. Audit records must capture who, what, where, and when without
 storing plaintext passwords, TOTP codes, CSRF tokens, legacy WebAuthn challenge
 material, private keys, bearer tokens, MFA secrets, ciphertext, nonces, raw
-Redis session payloads, raw session IDs, raw attempted login identifiers, or
-full account numbers.
+session payloads, raw session IDs, raw attempted login identifiers, or full
+account numbers.
 
 New audit rows are chained with `previous_event_hash`, `event_hash`, and
 `hash_algorithm` using deterministic canonical JSON over stable audit fields.
@@ -203,7 +207,7 @@ checked manually.
 - Allow public inbound TCP `80` and `443` only.
 - Restrict SSH to an administrator IP allowlist, AWS Systems Manager, a
   bastion, or VPN; never allow TCP `22` from `0.0.0.0/0` or `::/0`.
-- Do not expose Gunicorn, PostgreSQL, or Redis directly to the internet.
+- Do not expose Gunicorn or PostgreSQL directly to the internet.
 - Keep customer Gunicorn bound to `127.0.0.1:5000`, admin Gunicorn bound to
   `127.0.0.1:5002`, and keep `compose.prod.yml` free of published app ports.
 - Restrict `/health/ready` to loopback and allow public `/health/live` only.
@@ -254,7 +258,7 @@ Forward these sources to a protected centralized log destination:
 - `sitbank-admin` container logs after the admin boundary is enabled;
 - Nginx access/error and TLS events;
 - application security audit events;
-- PostgreSQL and Redis authentication/availability events.
+- PostgreSQL authentication/availability events.
 
 Operator verification commands:
 
@@ -281,20 +285,21 @@ repository. Discord incoming webhook URLs are supported directly and are sent
 Discord-compatible JSON with mention parsing disabled. The webhook URL itself
 is a secret and must be regenerated if exposed.
 `SECURITY_ALERT_TIMEOUT_SECONDS` bounds webhook delivery, and
-`SECURITY_ALERT_DEDUPE_TTL_SECONDS` uses Redis to suppress repeated deliveries
-of the same alert while preserving the alert in reports. Delivery failures are
+`SECURITY_ALERT_DEDUPE_TTL_SECONDS` uses PostgreSQL alert-dedupe state to
+suppress repeated deliveries of the same alert while preserving the alert in
+reports. Delivery failures are
 reported by type only and must not include webhook URLs, tokens, headers,
 request bodies, raw identifiers, passwords, session IDs, or full account
 numbers. Immediately before webhook delivery, both generic JSON payloads and
 Discord-formatted payloads pass through a final sanitizer that redacts
-sensitive keys, bearer/basic credentials, session or cookie values, database or
-Redis URLs with credentials, webhook URLs, API keys, private-key-like values,
-and long token-like strings. Set
+sensitive keys, bearer/basic credentials, session or cookie values, database URLs with
+credentials, legacy Redis URLs with credentials, webhook URLs, API keys,
+private-key-like values, and long token-like strings. Set
 `SECURITY_ALERT_STATE_PATH=/run/state/security-alert-state.json` on the
 host-mounted alert state directory so `check-security-alerts` can compare
 current `users` and `security_audit_events` metrics against a baseline outside
-Postgres/Redis and alert on `database_table_regression` after a table rewind or
-wipe. Keep `SECURITY_AUDIT_ANCHOR_PATH` set to the protected local anchor path
+the application database and alert on `database_table_regression` after a table
+rewind or wipe. Keep `SECURITY_AUDIT_ANCHOR_PATH` set to the protected local anchor path
 to make `check-security-alerts` alert on anchor mismatch, chain rewind, or tail
 deletion detectable from the anchor. On mismatch, treat the database and host
 as incident evidence, stop routine anchor rotation, preserve the mismatched

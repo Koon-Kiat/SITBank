@@ -214,8 +214,8 @@ jobs:
       WTF_CSRF_SECRET_KEY: ci-csrf-key-that-is-long-enough-for-tests
       SESSION_HMAC_ACTIVE_KEY_ID: ci-current
       SESSION_HMAC_KEYS_JSON: '{"ci-current":"MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjI=","ci-previous":"MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM="}'
+      SESSION_LOOKUP_HMAC_KEY: OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk=
       DATABASE_URL: postgresql+psycopg2://ci:ci@127.0.0.1:5432/ci
-      REDIS_URL: redis://:ci@127.0.0.1:6379/15
       MFA_KEK_ACTIVE_ID: ci-mfa
       MFA_KEK_KEYS_JSON: '{"ci-mfa":"NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ="}'
       PASSWORD_PEPPER_B64: MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE=
