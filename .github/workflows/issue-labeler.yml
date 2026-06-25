@@ -7,9 +7,7 @@ on:
       - reopened
       - edited
 
-permissions:
-  contents: read
-  issues: write
+permissions: {}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.issue.number }}
@@ -19,6 +17,9 @@ jobs:
   label:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
     steps:
       - name: Ensure standard labels exist
         shell: bash

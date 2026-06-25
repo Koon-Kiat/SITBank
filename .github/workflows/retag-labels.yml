@@ -37,10 +37,7 @@ on:
         description: Type RETAG to allow label removal and retagging
         required: false
 
-permissions:
-  contents: read
-  issues: write
-  pull-requests: write
+permissions: {}
 
 concurrency:
   group: ${{ github.workflow }}-${{ inputs.target }}-${{ inputs.state }}
@@ -50,6 +47,10 @@ jobs:
   retag:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
@@ -481,7 +482,7 @@ jobs:
               mapfile -t current < <(jq -r '.labels[].name' <<< "${pr_json}")
 
               if ! mapfile -t computed < <(compute_pr_labels "${number}" "${head}"); then
-                echo "::warning::Could not compute dry-run PR labels for #${number}; actions/labeler@v6 will compute them in apply mode."
+                echo "::warning::Could not compute dry-run PR labels for #${number}; the SHA-pinned actions/labeler v6 action will compute them in apply mode."
                 computed=()
               fi
 
@@ -500,7 +501,7 @@ jobs:
               echo "protected labels preserved: $(join_labels "${preserved[@]}")"
               echo "unprotected labels removed: $(join_labels "${removed[@]}")"
               echo "computed labels added: $(join_labels "${computed[@]}")"
-              echo "actions/labeler@v6 would run for PR #${number} with sync-labels=false."
+              echo "The SHA-pinned actions/labeler v6 action would run for PR #${number} with sync-labels=false."
               echo "final expected labels: $(join_labels "${final_labels[@]}")"
               echo "::endgroup::"
 
@@ -544,10 +545,10 @@ jobs:
       # This privileged manual workflow uses trusted workflow content only. It
       # does not checkout PR branches or execute untrusted PR code; PR labels are
       # reapplied through actions/labeler using GitHub API data and sync-labels=false.
-      # zizmor: ignore[unpinned-uses] actions/labeler@v6 is required by the repository labeling policy.
+      # Pinned to the actions/labeler v6.1.0 commit.
       - name: Reapply pull request labels
         if: ${{ inputs.dry_run == 'false' && (inputs.target == 'prs' || inputs.target == 'both') && steps.retag.outputs.pr_numbers != '' }}
-        uses: actions/labeler@v6
+        uses: actions/labeler@f27b608878404679385c85cfa523b85ccb86e213
         with:
           configuration-path: .github/labeler.yml
           sync-labels: false

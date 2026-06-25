@@ -7,7 +7,8 @@ a manual workflow for safely retagging historical issues and PRs.
 
 `.github/workflows/pr-labeler.yml` runs on `pull_request_target` for opened,
 synchronized, reopened, and ready-for-review pull requests. It uses
-`actions/labeler@v6` with `.github/labeler.yml` and `sync-labels: false`.
+the v6 `actions/labeler` action with `.github/labeler.yml` and
+`sync-labels: false`. The workflow pins the action to an immutable commit SHA.
 
 The PR workflow only adds computed labels. It does not remove existing labels,
 so Dependabot labels and any maintainer-applied labels remain in place during
