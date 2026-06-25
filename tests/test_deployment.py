@@ -1462,20 +1462,26 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert workflow_text.count(
         "sha256sum ops/deploy/sitbank-container-deploy"
     ) == 2
+    assert workflow_text.count("sha256sum compose.staging.yml") == 1
+    assert workflow_text.count("sha256sum compose.prod.yml") == 1
     assert workflow_text.count(
         "sha256sum /usr/local/sbin/sitbank-container-deploy"
     ) == 2
+    assert workflow_text.count("/opt/sitbank-staging/compose.yml") >= 2
+    assert workflow_text.count("/opt/sitbank/compose.yml") >= 2
     assert "EC2 staging deployment wrapper is missing or stale" in workflow_text
     assert "EC2 production deployment wrapper is missing or stale" in workflow_text
+    assert "EC2 staging compose file is missing or stale" in workflow_text
+    assert "EC2 production compose file is missing or stale" in workflow_text
     for job_name, wrapper_step_name, upload_step_name in (
         (
             "deploy-staging",
-            "Verify trusted staging deployment wrapper",
+            "Verify trusted staging deployment files",
             "Upload authenticated deployment inputs",
         ),
         (
             "deploy-production",
-            "Verify trusted production deployment wrapper",
+            "Verify trusted production deployment files",
             "Upload authenticated deployment inputs",
         ),
     ):
