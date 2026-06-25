@@ -204,6 +204,10 @@ install -d -o root -g "${CONTAINER_GID}" -m 0750 \
 install -d -o root -g root -m 0700 "${state_dir}" "${backup_dir}"
 install -d -o "${CONTAINER_ACCOUNT}" -g "${CONTAINER_GID}" -m 0750 \
     "${state_dir}/security-alert-state"
+if [[ "${target}" == "production" ]]; then
+    install -d -o "${CONTAINER_ACCOUNT}" -g "${CONTAINER_GID}" -m 0750 \
+        /var/lib/sitbank
+fi
 
 install -o root -g root -m 0644 \
     "${repo_root}/${compose_source}" "${compose_dir}/compose.yml"

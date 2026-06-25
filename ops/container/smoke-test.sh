@@ -304,6 +304,7 @@ docker_args=(
     --user 10001:10001
     --read-only
     --tmpfs "/tmp:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=1770"
+    --tmpfs "/run/state:rw,noexec,nosuid,nodev,size=16m,uid=10001,gid=10001,mode=0750"
     --cap-drop ALL
     --security-opt no-new-privileges:true
     --env APP_ENV=production
@@ -317,6 +318,7 @@ docker_args=(
     --env MFA_KEK_KEYS_JSON_FILE=/run/secrets/mfa_kek_keys_json
     --env PASSWORD_PEPPER_B64_FILE=/run/secrets/password_pepper_b64
     --env SECURITY_AUDIT_HMAC_KEY_FILE=/run/secrets/security_audit_hmac_key
+    --env SECURITY_AUDIT_ANCHOR_PATH=/run/state/security-audit.anchor
     --env SECURITY_ALERT_WEBHOOK_URL_FILE=/run/secrets/security_alert_webhook_url
     --env ADMIN_SECRET_KEY_FILE=/run/secrets/admin_secret_key
     --env ADMIN_WTF_CSRF_SECRET_KEY_FILE=/run/secrets/admin_wtf_csrf_secret_key

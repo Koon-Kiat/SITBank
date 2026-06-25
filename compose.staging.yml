@@ -278,6 +278,12 @@ services:
         read_only: true
         bind:
           create_host_path: false
+      - type: bind
+        source: /var/lib/sitbank-staging-container/security-alert-state
+        target: /run/state
+        read_only: false
+        bind:
+          create_host_path: false
     networks:
       - sitbank-staging
     logging:

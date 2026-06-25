@@ -3,10 +3,12 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import re
 import uuid
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from flask import current_app, g, has_app_context, has_request_context, request, session
@@ -409,6 +411,23 @@ def audit_log_anchor() -> dict[str, Any]:
         "latest_event_hash": verification["latest_event_hash"],
         "valid": verification["valid"],
     }
+
+
+def write_audit_log_anchor(path: Path) -> dict[str, Any]:
+    if path.exists() and not path.is_file():
+        raise RuntimeError("Audit anchor output must identify a regular file")
+    anchor = audit_log_anchor()
+    payload = json.dumps(anchor, separators=(",", ":"), sort_keys=True) + "\n"
+    temporary_path = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    try:
+        temporary_path.write_text(payload, encoding="utf-8")
+        temporary_path.chmod(0o600)
+        temporary_path.replace(path)
+        path.chmod(0o600)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+    return anchor
 
 
 def _sanitize_metadata(metadata: dict[str, Any]) -> dict[str, Any]:

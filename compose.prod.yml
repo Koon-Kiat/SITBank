@@ -88,6 +88,12 @@ services:
         read_only: false
         bind:
           create_host_path: false
+      - type: bind
+        source: /var/lib/sitbank
+        target: /var/lib/sitbank
+        read_only: false
+        bind:
+          create_host_path: false
     logging:
       driver: local
       options:
@@ -186,6 +192,12 @@ services:
         source: /etc/sitbank/fido-mds-cache.json
         target: /run/config/fido-mds-cache.json
         read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /var/lib/sitbank
+        target: /var/lib/sitbank
+        read_only: false
         bind:
           create_host_path: false
     healthcheck:

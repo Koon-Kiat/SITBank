@@ -85,6 +85,7 @@ NON_SECRET_DEFAULTS = {
     "SECURITY_ALERT_MIN_SEVERITY": "high",
     "SECURITY_ALERT_STATE_PATH": "/run/state/security-alert-state.json",
     "SECURITY_ALERT_TIMEOUT_SECONDS": "5.0",
+    "SECURITY_AUDIT_ANCHOR_PATH": "/run/state/security-audit.anchor",
     "SMTP_PORT": "587",
     "SMTP_USE_TLS": "true",
     "TRUSTED_PROXY_COUNT": "1",

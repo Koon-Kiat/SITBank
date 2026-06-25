@@ -303,6 +303,7 @@ install_runtime_bundle() {
         SECURITY_ALERT_MIN_SEVERITY
         SECURITY_ALERT_STATE_PATH
         SECURITY_ALERT_TIMEOUT_SECONDS
+        SECURITY_AUDIT_ANCHOR_PATH
         SESSION_HMAC_ACTIVE_KEY_ID
         SMTP_HOST
         SMTP_PORT
@@ -676,6 +677,9 @@ for host_file in \
         exit 1
     fi
 done
+if [[ "${target}" == "production" ]]; then
+    install -d -o sitbank-container -g 10001 -m 0750 /var/lib/sitbank
+fi
 required_secrets=(
     secret_key
     wtf_csrf_secret_key

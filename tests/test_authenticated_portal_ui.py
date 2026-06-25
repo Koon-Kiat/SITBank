@@ -261,6 +261,7 @@ def test_production_env_docs_require_pbkdf2_pepper_not_bcrypt():
         "PASSWORD_PEPPER_B64",
         "PASSWORD_PBKDF2_ITERATIONS",
         "SECURITY_AUDIT_HMAC_KEY",
+        "SECURITY_AUDIT_ANCHOR_PATH",
         "HIBP_CIRCUIT_FAILURE_THRESHOLD",
         "HIBP_CIRCUIT_OPEN_SECONDS",
         "SECURITY_ALERT_STATE_PATH",

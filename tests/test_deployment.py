@@ -374,6 +374,7 @@ def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypa
     assert environment["MFA_KEK_ACTIVE_ID"] == "2026-06-mfa"
     assert environment["COMMON_PASSWORDS_PATH"] == "/run/config/common-passwords.txt"
     assert environment["SECURITY_ALERT_STATE_PATH"] == "/run/state/security-alert-state.json"
+    assert environment["SECURITY_AUDIT_ANCHOR_PATH"] == "/var/lib/sitbank/security-audit.anchor"
     assert "SECRET_KEY" not in environment
     assert "DATABASE_MIGRATION_URL" not in environment
     assert "DATABASE_MIGRATION_URL_FILE" not in environment
@@ -407,6 +408,7 @@ def test_container_bundle_accepts_staging_prefix(monkeypatch):
     assert environment["SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06"
     assert environment["ADMIN_SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06-admin"
     assert environment["MFA_KEK_ACTIVE_ID"] == "2026-06-mfa"
+    assert environment["SECURITY_AUDIT_ANCHOR_PATH"] == "/run/state/security-audit.anchor"
     assert secrets["secret_key"] == DEPLOYMENT_VALUES["PROD_SECRET_KEY"]
     assert secrets["database_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_URL"]
     assert secrets["database_migration_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_MIGRATION_URL"]
@@ -637,6 +639,8 @@ def test_smoke_fixture_and_deployment_wrapper_match_runtime_contract():
         )
 
     assert "--env DATABASE_MIGRATION_URL_FILE=/run/secrets/database_migration_url" in smoke_test
+    assert "--env SECURITY_AUDIT_ANCHOR_PATH=/run/state/security-audit.anchor" in smoke_test
+    assert '--tmpfs "/run/state:rw,noexec,nosuid,nodev,size=16m,uid=10001,gid=10001,mode=0750"' in smoke_test
     assert ':/run/secrets/database_migration_url:ro' not in smoke_test
     assert '"${secrets_mount_source}:/run/secrets:ro"' in smoke_test
 
@@ -873,6 +877,10 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
         "/var/lib/sitbank-container/security-alert-state"
     )
     assert app_volume_by_target["/run/state"]["read_only"] is False
+    assert app_volume_by_target["/var/lib/sitbank"]["source"] == "/var/lib/sitbank"
+    assert app_volume_by_target["/var/lib/sitbank"]["read_only"] is False
+    assert admin_volume_by_target["/var/lib/sitbank"]["source"] == "/var/lib/sitbank"
+    assert admin_volume_by_target["/var/lib/sitbank"]["read_only"] is False
     assert all(set(secret) == {"source", "target"} for secret in app["secrets"])
     assert all(
         value.startswith("/run/secrets/")
@@ -1031,6 +1039,10 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
         "/var/lib/sitbank-staging-container/security-alert-state"
     )
     assert staging_volume_by_target["/run/state"]["read_only"] is False
+    assert staging_admin_volume_by_target["/run/state"]["source"] == (
+        "/var/lib/sitbank-staging-container/security-alert-state"
+    )
+    assert staging_admin_volume_by_target["/run/state"]["read_only"] is False
     assert all(
         secret["file"].startswith("/etc/sitbank-staging/secrets/")
         for secret in staging_compose["secrets"].values()
@@ -2118,6 +2130,7 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     bootstrap = Path("ops/deploy/bootstrap-container-ec2").read_text(
         encoding="utf-8"
     )
+    deploy_script = Path("ops/deploy/sitbank-container-deploy").read_text(encoding="utf-8")
     dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
     production_compose = yaml.safe_load(Path("compose.prod.yml").read_text(encoding="utf-8"))
     app = production_compose["services"]["app"]
@@ -2294,6 +2307,9 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     assert "ops/nginx/sitbank-production.conf" in bootstrap
     assert "ops/nginx/admin-verification.html" in bootstrap
     assert "/var/www/sitbank-admin-verification/index.html" in bootstrap
+    assert "install -d -o \"${CONTAINER_ACCOUNT}\" -g \"${CONTAINER_GID}\" -m 0750" in bootstrap
+    assert "/var/lib/sitbank" in bootstrap
+    assert "install -d -o sitbank-container -g 10001 -m 0750 /var/lib/sitbank" in deploy_script
     assert "Refusing to replace unsafe production Nginx rate-limit file" in bootstrap
     assert "Refusing to replace unsafe production Nginx config" in bootstrap
     assert "Conflicting Nginx production site is already enabled" in bootstrap
@@ -2561,8 +2577,9 @@ def test_audit_operations_runbook_and_append_only_privileges_are_present():
         "SECURITY_ALERT_STATE_PATH",
         "SECURITY_AUDIT_ANCHOR_PATH",
         "`SECURITY_AUDIT_HMAC_KEY` is mandatory",
-        "`SECURITY_AUDIT_ANCHOR_PATH` remains optional",
-        "setting at an untrusted or newly generated file",
+        "`SECURITY_AUDIT_HMAC_KEY` and `SECURITY_AUDIT_ANCHOR_PATH` are mandatory",
+        "/var/lib/sitbank/security-audit.anchor",
+        "outside the application and",
         "systemd timer",
         "database table regression",
         "immutable storage",

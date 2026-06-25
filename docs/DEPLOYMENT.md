@@ -64,12 +64,13 @@ secret files under `/etc/sitbank/secrets`: `admin_secret_key`,
 not reuse either `database_url` or `database_migration_url`.
 
 `SECURITY_AUDIT_HMAC_KEY` is mandatory for production audit integrity.
-`SECURITY_AUDIT_ANCHOR_PATH` remains optional until an operator has exported a
-trusted audit anchor. When a trusted audit anchor has been exported, set
-`SECURITY_AUDIT_ANCHOR_PATH=/var/lib/sitbank/audit-anchor.json` in the
-root-managed runtime configuration so `check-security-alerts` verifies the hash
-chain and compares the anchor during automated alert runs. Do not point the
-setting at an untrusted or newly generated file just to satisfy deployment.
+`SECURITY_AUDIT_ANCHOR_PATH` is also mandatory in production; the one-EC2
+runtime renders `SECURITY_AUDIT_ANCHOR_PATH=/var/lib/sitbank/security-audit.anchor`.
+The bootstrap creates `/var/lib/sitbank` outside the database volume with
+restrictive permissions and mounts it into the app/admin containers so
+`check-security-alerts` verifies the hash chain and compares the anchor during
+automated alert runs. Do not point the setting at an untrusted, world-writable,
+repository-local, or database-local path just to satisfy deployment.
 Audit trigger changes require `db upgrade`, then `apply-runtime-db-privileges`
 and `verify-runtime-db-privileges`; they do not require an EC2 edge bootstrap
 unless host-managed deployment, Nginx, or systemd files also changed.
