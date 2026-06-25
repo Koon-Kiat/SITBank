@@ -168,6 +168,17 @@ ROUTE_SECURITY_INVENTORY = {
         "step_up": "reset_mfa",
         "public_justification": "Reset transaction status is scoped to the tokenless reset cookie state.",
     },
+    "auth.password_reset_mfa_method": {
+        "endpoint": "auth.password_reset_mfa_method",
+        "rule": "/auth/password-reset/mfa/method",
+        "methods": {"POST"},
+        "access": "public",
+        "classification": "mfa",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "reset_mfa",
+        "public_justification": "Reset MFA method selection is bound to the tokenless reset transaction before login.",
+    },
     "auth.password_reset_totp": {
         "endpoint": "auth.password_reset_totp",
         "rule": "/auth/password-reset/mfa/totp",

@@ -30,6 +30,7 @@ from .password_reset import (
     request_manual_recovery,
     request_password_reset,
     reset_transaction_user_and_id,
+    select_reset_mfa_method,
     verify_reset_totp,
     exchange_reset_token,
 )
@@ -40,6 +41,7 @@ from .schemas import (
     LoginSchema,
     ManualRecoverySchema,
     PasswordChangeSchema,
+    PasswordResetMfaMethodSchema,
     PasswordResetSchema,
     RegisterSchema,
     RegistrationOtpRequestSchema,
@@ -105,6 +107,7 @@ AUTH_MFA_ONBOARDING_ALLOWED_ENDPOINTS = {
     "auth.password_reset_request",
     "auth.password_reset_exchange",
     "auth.password_reset_transaction",
+    "auth.password_reset_mfa_method",
     "auth.password_reset_totp",
     "auth.password_reset_webauthn_options",
     "auth.password_reset_webauthn_verify",
@@ -242,6 +245,14 @@ def password_reset_transaction():
     return jsonify(current_reset_transaction())
 
 
+@auth_bp.post("/password-reset/mfa/method")
+@limiter.limit("5 per 5 minutes", key_func=get_remote_address)
+@limiter.limit("5 per 5 minutes", key_func=mfa_principal)
+def password_reset_mfa_method():
+    data = PasswordResetMfaMethodSchema().load(request.get_json(silent=False) or {})
+    return jsonify(select_reset_mfa_method(data["method"]))
+
+
 @auth_bp.post("/password-reset/mfa/totp")
 @limiter.limit("5 per 5 minutes", key_func=get_remote_address)
 @limiter.limit("5 per 5 minutes", key_func=mfa_principal)
@@ -254,7 +265,7 @@ def password_reset_totp():
 @limiter.limit("5 per 5 minutes", key_func=get_remote_address)
 @limiter.limit("5 per 5 minutes", key_func=mfa_principal)
 def password_reset_webauthn_options():
-    user, transaction_id = reset_transaction_user_and_id()
+    user, transaction_id = reset_transaction_user_and_id(required_method="webauthn")
     return jsonify(begin_password_reset_options(user, transaction_id))
 
 
@@ -262,7 +273,7 @@ def password_reset_webauthn_options():
 @limiter.limit("5 per 5 minutes", key_func=get_remote_address)
 @limiter.limit("5 per 5 minutes", key_func=mfa_principal)
 def password_reset_webauthn_verify():
-    user, transaction_id = reset_transaction_user_and_id()
+    user, transaction_id = reset_transaction_user_and_id(required_method="webauthn")
     data = WebAuthnAuthenticationVerifySchema().load(request.get_json(silent=False) or {})
     return jsonify(verify_password_reset_assertion(user, transaction_id, data["credential"]))
 
