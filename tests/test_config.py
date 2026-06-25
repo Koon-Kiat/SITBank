@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 from pathlib import Path
 
 import pytest
 
 import config
 from config import (
+    _configured_audit_anchor_path,
     _configured_secret,
     _password_reset_base_url,
     _required_b64_32_bytes,
@@ -16,6 +18,7 @@ from config import (
     _required_session_hmac_keys,
     _required_webauthn_origin,
     _required_webauthn_rp_id,
+    _validate_audit_anchor_path,
     _validate_password_reset_email_config,
 )
 
@@ -238,6 +241,71 @@ def test_audit_hmac_key_is_required_and_strong_in_production(monkeypatch):
         min_length=32,
         development_default="development-audit-hmac-key-change-before-production",
     ) == "production-audit-hmac-key-that-is-long-enough"
+
+
+def test_production_audit_anchor_path_is_required_and_validated(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "APP_ENV", "production")
+    monkeypatch.delenv("SECURITY_AUDIT_ANCHOR_PATH", raising=False)
+
+    with pytest.raises(RuntimeError, match="SECURITY_AUDIT_ANCHOR_PATH"):
+        _configured_audit_anchor_path()
+
+    anchor_dir = tmp_path / "audit-anchor"
+    anchor_dir.mkdir()
+    anchor_path = anchor_dir / "security-audit.anchor"
+    monkeypatch.setenv("SECURITY_AUDIT_ANCHOR_PATH", str(anchor_path))
+
+    assert _configured_audit_anchor_path() == str(anchor_path.resolve())
+
+
+def test_audit_anchor_path_rejects_unsafe_locations(monkeypatch, tmp_path):
+    anchor_dir = tmp_path / "audit-anchor"
+    anchor_dir.mkdir()
+    anchor_path = anchor_dir / "security-audit.anchor"
+
+    assert _validate_audit_anchor_path("SECURITY_AUDIT_ANCHOR_PATH", str(anchor_path)) == str(
+        anchor_path.resolve()
+    )
+
+    with pytest.raises(RuntimeError, match="absolute"):
+        _validate_audit_anchor_path("SECURITY_AUDIT_ANCHOR_PATH", "relative-anchor.json")
+
+    repo_anchor = Path("security-audit.anchor").resolve()
+    with pytest.raises(RuntimeError, match="outside"):
+        _validate_audit_anchor_path("SECURITY_AUDIT_ANCHOR_PATH", str(repo_anchor))
+
+    database_dir = tmp_path / "database"
+    database_dir.mkdir()
+    database_anchor = database_dir / "security-audit.anchor"
+    database_url = f"sqlite:///{database_dir / 'app.sqlite'}"
+    with pytest.raises(RuntimeError, match="outside"):
+        _validate_audit_anchor_path(
+            "SECURITY_AUDIT_ANCHOR_PATH",
+            str(database_anchor),
+            database_url=database_url,
+        )
+
+    missing_parent = tmp_path / "missing" / "security-audit.anchor"
+    with pytest.raises(RuntimeError, match="parent directory"):
+        _validate_audit_anchor_path("SECURITY_AUDIT_ANCHOR_PATH", str(missing_parent))
+
+
+def test_audit_anchor_path_rejects_world_writable_parent(tmp_path):
+    if os.name == "nt":
+        pytest.skip("POSIX mode bit checks are not reliable on Windows")
+
+    world_writable_dir = tmp_path / "world-writable"
+    world_writable_dir.mkdir()
+    world_writable_dir.chmod(0o777)
+
+    try:
+        with pytest.raises(RuntimeError, match="world-writable"):
+            _validate_audit_anchor_path(
+                "SECURITY_AUDIT_ANCHOR_PATH",
+                str(world_writable_dir / "security-audit.anchor"),
+            )
+    finally:
+        world_writable_dir.chmod(0o700)
 
 
 def test_secret_file_rejects_empty_multiline_and_symlink(monkeypatch, tmp_path):

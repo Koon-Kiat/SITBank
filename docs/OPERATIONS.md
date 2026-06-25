@@ -49,14 +49,14 @@ schedule:
 
 ```bash
 python -m flask --app wsgi:app verify-audit-log-chain
-python -m flask --app wsgi:app verify-audit-log-chain --anchor /var/lib/sitbank/audit-anchor.json
+python -m flask --app wsgi:app verify-audit-log-chain --anchor /var/lib/sitbank/security-audit.anchor
 ```
 
 Export a sanitized anchor at least daily and after security-sensitive releases:
 
 ```bash
 python -m flask --app wsgi:app export-audit-log-anchor
-python -m flask --app wsgi:app export-audit-log-anchor --output /var/lib/sitbank/audit-anchor.json
+python -m flask --app wsgi:app export-audit-log-anchor --output /var/lib/sitbank/security-audit.anchor
 ```
 
 Operators are responsible for moving anchor JSON to immutable storage, WORM
@@ -64,18 +64,19 @@ object storage, signed release artifacts, or a separate SIEM/log archive. The
 application does not provision external immutable storage and no real secrets
 or cloud credentials belong in the repository.
 
-`SECURITY_AUDIT_HMAC_KEY` is mandatory in production. Keep
-`SECURITY_AUDIT_ANCHOR_PATH` unset until a trusted anchor has been exported and
-preserved outside normal application writes. After that, set
-`SECURITY_AUDIT_ANCHOR_PATH=/var/lib/sitbank/audit-anchor.json` in the runtime
-configuration. `check-security-alerts` then verifies the audit chain on every
-run and compares the current chain head with the configured anchor. If no anchor
-path is configured, the command still checks hash-chain integrity but does not
-compare an external anchor.
+`SECURITY_AUDIT_HMAC_KEY` and `SECURITY_AUDIT_ANCHOR_PATH` are mandatory in
+production. The one-EC2 runtime uses
+`SECURITY_AUDIT_ANCHOR_PATH=/var/lib/sitbank/security-audit.anchor`, a local
+host path outside the database volume and repository. The app validates that the
+configured path is absolute, non-world-writable, outside the application and
+database directories, and readable/writable by the runtime where the host can
+check it. `verify-audit-log-chain` and `check-security-alerts` use the
+configured anchor automatically and fail or alert when it is unreadable or does
+not match the current chain head.
 
 On an anchor mismatch, stop rotating anchors, preserve the current database and
 the mismatched anchor as incident evidence, run
-`python -m flask --app wsgi:app verify-audit-log-chain --anchor /var/lib/sitbank/audit-anchor.json`,
+`python -m flask --app wsgi:app verify-audit-log-chain --anchor /var/lib/sitbank/security-audit.anchor`,
 and investigate possible row tampering, chain rewind, or tail deletion before
 resuming routine deployments.
 
@@ -132,8 +133,8 @@ report. Keep `SECURITY_ALERT_STATE_PATH=/run/state/security-alert-state.json`
 on the host-mounted alert state volume so `check-security-alerts` records table
 count and identity baselines outside Postgres/Redis and emits critical
 `database_table_regression` alerts when `users` or `security_audit_events`
-rewind or shrink. `SECURITY_AUDIT_ANCHOR_PATH` remains optional until a trusted
-exported anchor is available; set it then so `check-security-alerts` emits critical
+rewind or shrink. Keep `SECURITY_AUDIT_ANCHOR_PATH` set to the protected local
+anchor so `check-security-alerts` emits critical
 `audit_chain_verification_failed` or `audit_anchor_mismatch` alerts for chain
 tampering, rewind, or tail deletion detectable from the anchor.
 

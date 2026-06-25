@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from _auth_flow_helpers import *
 
 
@@ -299,6 +301,11 @@ def test_audit_hash_chain_records_verifies_and_exports_anchor(app, tmp_path):
         args=["verify-audit-log-chain", "--anchor", str(stale_anchor_path)]
     )
     app.config["SECURITY_AUDIT_ANCHOR_PATH"] = str(anchor_path)
+    configured_anchor_cli = runner.invoke(args=["verify-audit-log-chain"])
+    configured_export_path = tmp_path / "configured-audit-anchor.json"
+    app.config["SECURITY_AUDIT_ANCHOR_PATH"] = str(configured_export_path)
+    configured_export_cli = runner.invoke(args=["export-audit-log-anchor"])
+    app.config["SECURITY_AUDIT_ANCHOR_PATH"] = str(anchor_path)
     matching_anchor_alert_cli = runner.invoke(
         args=["check-security-alerts", "--report-only", "--no-delivery"]
     )
@@ -332,6 +339,13 @@ def test_audit_hash_chain_records_verifies_and_exports_anchor(app, tmp_path):
     assert json.loads(verify_anchor_cli.output)["anchor_validated"] is True
     assert stale_anchor_cli.exit_code != 0
     assert "anchor_mismatch" in stale_anchor_cli.output
+    assert configured_anchor_cli.exit_code == 0, configured_anchor_cli.output
+    assert json.loads(configured_anchor_cli.output)["anchor_validated"] is True
+    assert configured_export_cli.exit_code == 0, configured_export_cli.output
+    assert configured_export_path.exists()
+    if os.name != "nt":
+        assert configured_export_path.stat().st_mode & 0o777 == 0o600
+    assert "top-secret-note" not in configured_export_cli.output
     assert matching_anchor_alert_cli.exit_code == 0, matching_anchor_alert_cli.output
     assert matching_anchor_report["audit_chain"]["anchor_validated"] is True
     assert not any(

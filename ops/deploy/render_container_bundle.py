@@ -229,6 +229,8 @@ def build_container_environment(prefix: str = "PROD") -> dict[str, str]:
         "WEBAUTHN_RP_ORIGIN": f"https://{public_host}",
     }
     for name, default in NON_SECRET_DEFAULTS.items():
+        if prefix == "PROD" and name == "SECURITY_AUDIT_ANCHOR_PATH":
+            default = "/var/lib/sitbank/security-audit.anchor"
         environment[name] = _value(_prefixed(prefix, name), default=default)
     environment["ADMIN_SESSION_HMAC_ACTIVE_KEY_ID"] = _admin_active_key_id(prefix)
     if prefix == "PROD":
