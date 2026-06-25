@@ -234,6 +234,18 @@ def test_invite_acceptance_requires_turnstile_when_enabled(admin_app, admin_clie
     assert calls == ["browser-token"]
 
 
+def test_turnstile_verifier_rejects_non_https_verify_url(admin_app):
+    from app.security.turnstile import TurnstileError, verify_turnstile_token
+
+    admin_app.config["TURNSTILE_ENABLED"] = True
+    admin_app.config["TURNSTILE_SECRET_KEY"] = "turnstile-secret"
+    admin_app.config["TURNSTILE_VERIFY_URL"] = "file:///tmp/not-a-verifier"
+
+    with admin_app.test_request_context("/invites/accept/token/start", method="POST"):
+        with pytest.raises(TurnstileError):
+            verify_turnstile_token("browser-token")
+
+
 def test_staff_invite_acceptance_activates_only_after_workplace_code_and_totp(admin_client):
     _root, root_secret = _create_staff_identity(
         username="root-admin",
