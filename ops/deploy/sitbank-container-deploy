@@ -695,12 +695,6 @@ validate_staging_isolation
 validate_production_admin_isolation
 prepare_dependencies
 
-compose "${image}" run --rm --no-deps app \
-    python -m flask --app wsgi:app production-check
-if [[ "${target}" == "production" ]]; then
-    compose "${image}" run --rm --no-deps admin \
-        python -m flask --app admin_wsgi:app production-check
-fi
 migration_run \
     python -m flask --app wsgi:app db upgrade
 migration_run \
@@ -708,6 +702,12 @@ migration_run \
 apply_staging_admin_runtime_db_privileges
 migration_run \
     python -m flask --app wsgi:app verify-runtime-db-privileges
+compose "${image}" run --rm --no-deps app \
+    python -m flask --app wsgi:app production-check
+if [[ "${target}" == "production" ]]; then
+    compose "${image}" run --rm --no-deps admin \
+        python -m flask --app admin_wsgi:app production-check
+fi
 if [[ "${target}" == "staging" ]]; then
     compose "${image}" run --rm --no-deps admin \
         python -m flask --app admin_wsgi:app production-check
