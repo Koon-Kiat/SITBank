@@ -178,6 +178,8 @@ setup before normal account access. Evidence: `app/auth/mfa_policy.py`,
 
 ### TOTP MFA And Recovery Codes
 
+The current MFA baseline is TOTP with recovery-code support.
+
 The repository implements authenticator-app TOTP. TOTP secrets are generated
 with `pyotp.random_base32(length=32)` and stored through AES-GCM envelope
 encryption. Verification records a replay digest in `totp_replay_records`, so
@@ -185,18 +187,6 @@ the same accepted TOTP step and code cannot be replayed for the same scope.
 
 Recovery codes are generated as random 16-byte values encoded as grouped hex,
 stored as HMACs, consumed once, and used only as TOTP recovery factors.
-
-### WebAuthn / Passkeys
-
-WebAuthn/passkey active ceremonies are not implemented in the current runtime.
-The compatibility routes return `410` with a disabled message. Legacy passkey
-records can be listed as inactive inventory, but they do not satisfy the MFA
-policy. Evidence: `app/auth/routes.py`, `app/auth/webauthn_services.py`, and
-`app/auth/mfa_policy.py`.
-
-Tests: `tests/test_webauthn_lifecycle.py::test_public_passkey_endpoints_fail_closed`,
-`tests/test_webauthn_lifecycle.py::test_authenticated_passkey_endpoints_fail_closed`,
-and `tests/test_webauthn_lifecycle.py::test_legacy_passkey_rows_do_not_satisfy_mfa_policy`.
 
 ### Password Reset
 
@@ -215,7 +205,7 @@ Evidence: `app/auth/password_reset.py`, `app/auth/routes.py`,
 Tests: `tests/test_password_reset.py::test_forgot_password_response_is_generic_and_token_is_hashed`,
 `tests/test_password_reset.py::test_reset_token_exchanges_once_into_tokenless_transaction`,
 `tests/test_password_reset.py::test_totp_user_must_verify_totp_before_password_reset`,
-`tests/test_password_reset.py::test_passkey_only_user_cannot_fall_back_to_email_only_reset`,
+`tests/test_password_reset.py::test_recovery_codes_are_hashed_single_use_reset_factors`,
 and `tests/test_password_reset.py::test_admin_like_customer_domain_reset_fails_closed`.
 
 ### Admin And Staff Authentication
@@ -298,7 +288,7 @@ Tests include
 `tests/test_deployment.py::test_smoke_fixture_and_deployment_wrapper_match_runtime_contract`,
 `tests/test_deployment.py::test_compose_secret_mounts_match_runtime_contract`,
 `tests/test_deployment.py::test_runtime_secret_inventory_matches_config_and_renderer`,
-`tests/test_deployment.py::test_deployment_profiles_keep_production_and_staging_isolated`,
+`tests/test_deployment.py`,
 `tests/test_audit_metadata_sanitization.py::test_audit_event_storage_and_logs_do_not_leak_sensitive_metadata`,
 and `tests/test_audit_alerting.py::test_audit_hash_chain_records_verifies_and_exports_anchor`.
 

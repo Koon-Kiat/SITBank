@@ -58,7 +58,7 @@ setup are Phase 2 items pending an approved design. Until those controls exist,
 `admin-sitbank.duckdns.org` remains isolated at the edge and should be protected
 with an explicit network allowlist. The Flask admin app uses a separate cookie,
 session HMAC keyring, database role, root-admin-controlled staff invites, and
-mandatory TOTP; WebAuthn/passkeys are not offered for staff/admin onboarding.
+mandatory TOTP.
 
 Staging secrets must never be copied from production. The staging deployment
 wrapper rejects identical application secret files when production secrets are
@@ -71,7 +71,7 @@ distinct.
 Security audit events are written to `security_audit_events` and emitted as
 sanitized structured application log lines for container and journald
 forwarding. Audit records must capture who, what, where, and when without
-storing plaintext passwords, TOTP codes, CSRF tokens, legacy WebAuthn challenge
+storing plaintext passwords, TOTP codes, CSRF tokens, authentication challenge
 material, private keys, bearer tokens, MFA secrets, ciphertext, nonces, raw
 session payloads, raw session IDs, raw attempted login identifiers, or full
 account numbers.
@@ -219,8 +219,7 @@ checked manually.
 - Enable WAF managed common, SQL injection, XSS, bot, and protocol anomaly
   rules.
 - Add WAF rate-based rules for `/login`, `/register`, `/mfa/verify`,
-  `/auth/`, `/auth/webauthn/`, `/password/`, `/sessions/`, `/security-keys/`,
-  `/profile`, and `/account/`.
+  `/auth/`, `/password/`, `/sessions/`, and account-management routes.
 - Block TRACE at the edge and preserve only the expected proxy headers:
   `Host`, `X-Real-IP`, `X-Forwarded-For`, and `X-Forwarded-Proto`.
 - If a CDN or WAF forwards traffic to Nginx, configure the trusted real-client
@@ -272,8 +271,6 @@ psql "$DATABASE_MIGRATION_URL" --no-psqlrc --command \
 psql "$DATABASE_MIGRATION_URL" --no-psqlrc --command \
   "SELECT created_at, user_id, event_metadata->>'reason' AS reason FROM security_audit_events WHERE event_type = 'account_lock' ORDER BY created_at DESC LIMIT 20;"
 psql "$DATABASE_MIGRATION_URL" --no-psqlrc --command \
-  "SELECT created_at, user_id, event_metadata->>'credential_id' AS credential_ref FROM security_audit_events WHERE event_type = 'webauthn_clone_detected' ORDER BY created_at DESC LIMIT 20;"
-psql "$DATABASE_MIGRATION_URL" --no-psqlrc --command \
   "SELECT created_at, ip_address, session_ref, event_metadata->>'reason' AS reason FROM security_audit_events WHERE event_type = 'session_integrity' AND outcome = 'failure' ORDER BY created_at DESC LIMIT 20;"
 journalctl -u sitbank-container.service --since -15m | grep security_audit_write_failed
 python -m flask --app wsgi:app check-security-alerts --report-only
@@ -295,7 +292,7 @@ request bodies, raw identifiers, passwords, session IDs, or full account
 numbers. Immediately before webhook delivery, both generic JSON payloads and
 Discord-formatted payloads pass through a final sanitizer that redacts
 sensitive keys, bearer/basic credentials, session or cookie values, database URLs with
-credentials, legacy Redis URLs with credentials, webhook URLs, API keys,
+credentials, credentialed service URLs, webhook URLs, API keys,
 private-key-like values, and long token-like strings. Set
 `SECURITY_ALERT_STATE_PATH=/run/state/security-alert-state.json` on the
 host-mounted alert state directory so `check-security-alerts` can compare
@@ -320,10 +317,7 @@ or more `auth_backoff` or `rate_limit` events from the same source in 10
 minutes, 3 or more transaction failures for the same user/ref in 15 minutes, or
 10 transaction failures globally in 15 minutes. Also alert on failed
 deployments, signature or revision mismatches, unexpected image digests, and
-database table regression. Historical WebAuthn/passkey alert names such as
-`webauthn_clone_detected` and `password_reset_webauthn_failed` remain queryable
-for legacy audit context, but active passkey ceremonies are retired because
-instructor review disallowed the high-level `webauthn` library.
+database table regression.
 
 Production installs `sitbank-security-alerts.service` and
 `sitbank-security-alerts.timer` through the EC2 bootstrap path. The timer runs
@@ -356,9 +350,8 @@ Reset MFA policy:
 
 - TOTP customers must verify TOTP after the reset transaction is active.
   Recovery codes are accepted only as TOTP recovery factors.
-- Passkeys do not replace TOTP recovery. A legacy passkey-only account cannot
-  use an email-link-only reset fallback and must complete manual customer
-  recovery before password reset or MFA re-enrollment.
+- Customers who cannot complete TOTP or recovery-code verification must
+  complete manual customer recovery before password reset or MFA re-enrollment.
 - No-MFA customers can set a new password but remain incomplete-security-state
   users and hit MFA onboarding on next login.
 - Recovery codes are stored HMACed, shown only by trusted authenticated

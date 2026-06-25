@@ -2,34 +2,28 @@
 
 This document describes the session management controls implemented in the
 SITBank repository. The implementation uses database-backed server-side
-sessions with an opaque browser cookie, not Redis or client-side session
-payloads.
+sessions identified by an opaque browser cookie.
 
 ## 2.1 Session Storage
 
 SITBank installs a custom `DatabaseSessionInterface` from
 `app/security/sessions.py` during application startup in `app/__init__.py`.
-Although `config.py` sets `SESSION_TYPE = "database"`, the repository does not
-use Flask-Session or Redis for production session storage. Browser cookies hold
-only an opaque session id. Session state is stored in the `server_side_sessions`
-table represented by `ServerSideSession` in `app/models.py`.
+Browser cookies hold only an opaque session id. Session state is stored in the
+`server_side_sessions` table represented by `ServerSideSession` in
+`app/models.py`.
 
 | Stored value | Implementation evidence | Protection |
 | --- | --- | --- |
-| Browser session id | `app/security/sessions.py::_generate_sid()` | Opaque id generated with `uuid.uuid4()`; not stored raw in the database |
+| Browser session id | `app/security/sessions.py::_new_session_id()` | Opaque id generated with `uuid.uuid4()`; not stored raw in the database |
 | Database lookup key | `app/security/sessions.py::session_lookup_hash()` | HMAC-SHA256 with `SESSION_LOOKUP_HMAC_KEY` |
-| Serialized session payload | `ServerSideSession.data` in `app/models.py` | Signed by `app/security/session_hmac.py` with a binding context that includes the component and lookup hash |
-| User/session metadata | `user_id`, `auth_level`, `created_at`, `last_seen_at`, `expires_at`, `revoked_at`, `ended_reason`, `risk_fingerprint` | Used for revocation, session inventory, inactivity timeout, and risk reauthentication |
+| Serialized session payload | `ServerSideSession.payload` in `app/models.py` | Signed by `app/security/session_hmac.py` with a binding context that includes the component and lookup hash |
+| User/session metadata | `user_id`, `created_at`, `last_activity_at`, `expires_at`, `revoked_at`, `ended_reason`, `risk_fingerprint` | Used for revocation, session inventory, inactivity timeout, and risk reauthentication |
 | Public session reference | `session_ref` and `_public_reference_from_lookup_hash()` | HMAC-derived public id for session-management actions; raw internal ids are rejected |
 
 The session payload signature is versioned and key-id aware. The active HMAC
 key signs new payloads, and old keys can remain configured so existing
 sessions survive key rotation. Evidence: `app/security/session_hmac.py` and
 `tests/test_db_session_integrity.py::test_db_session_payload_survives_active_hmac_key_rotation`.
-
-Current gap: Redis-backed session storage is not implemented. Any control that
-specifically requires Redis session persistence or Redis payload HMACs is not
-applicable to the current codebase unless the storage layer is changed.
 
 ## 2.2 Cookie Structure
 
@@ -62,7 +56,7 @@ Tests:
 | --- | --- |
 | `tests/test_session_management.py::test_login_sets_secure_session_cookie_and_hides_raw_session_id` | Checks secure cookie behavior and that the raw session id is not exposed in session management UI |
 | `tests/test_admin_staff_invites.py::test_admin_login_creates_only_admin_session_cookie` | Confirms admin login creates only the admin cookie |
-| `tests/test_config.py::test_runtime_secret_maps_use_session_lookup_key_not_redis_url` | Confirms runtime secret maps use the session lookup HMAC key and not Redis URL configuration |
+| `tests/test_config.py` runtime secret map checks | Confirms runtime secret maps include the required session lookup HMAC key |
 
 ## 2.3 Cookie Transmission
 

@@ -113,13 +113,12 @@ and `tests/test_password_reset.py` covers the service behavior, but
 ## 3.5 High-Risk Actions And Step-Up
 
 High-risk customer actions use `verify_high_risk_authorization()` in
-`app/auth/services.py`. The current active control is TOTP. Passkey step-up
-tokens are explicitly rejected because active WebAuthn ceremonies are disabled.
+`app/auth/services.py`. The current active control is TOTP.
 
 | Action | Step-up and access control | Evidence |
 | --- | --- | --- |
 | Password change | Authenticated user, MFA setup, current password, TOTP step-up, revoke other sessions | `app/auth/services.py::change_password()`, `tests/test_account_security_actions.py::test_password_change_succeeds_with_recent_mfa_and_revokes_other_sessions` |
-| Profile update | Authenticated user and TOTP step-up when email, phone, or other sensitive profile fields change | `app/auth/services.py::update_profile_details()`, `tests/test_account_security_actions.py::test_profile_update_requires_mfa_when_enabled` |
+| Account details update | Authenticated user and TOTP step-up when email, phone, or other sensitive account fields change | `app/auth/services.py`, `tests/test_account_security_actions.py` |
 | MFA replacement start | Fresh TOTP step-up before replacing an existing authenticator secret | `app/auth/services.py`, `tests/test_mfa_lifecycle.py::test_mfa_replacement_start_requires_fresh_mfa_stepup` |
 | Account freeze | Authenticated user, non-frozen state, TOTP step-up, revoke other sessions | `app/auth/services.py::freeze_own_account()`, `tests/test_account_security_actions.py::test_account_freeze_is_durable_and_blocks_group_a_sensitive_actions` |
 | Revoke other sessions | Authenticated user and TOTP step-up | `app/auth/routes.py::revoke_other_sessions()`, `tests/test_pentest_auth_bypass.py::test_revoke_others_requires_valid_mfa_code` |
@@ -145,7 +144,7 @@ new codes.
 | IDOR on session management | Public session references are scoped to current user and raw internal ids are rejected |
 | Staff/admin privilege creation through customer registration | Customer registration sets `account_type="customer"` and tests reject forged account-number and privileged fields |
 | Staff acting on their own linked customer identity | `app/admin/separation.py` guard and test coverage |
-| Pending MFA bypass | Pending sessions cannot access dashboard, profile, session list, MFA setup, or freeze actions |
+| Pending MFA bypass | Pending sessions cannot access dashboard, account details, session list, MFA setup, or freeze actions |
 | Frozen account bypass | Frozen accounts cannot create new login sessions or perform sensitive actions |
 
 Current gap: route-level authorization is well covered for the customer app,
