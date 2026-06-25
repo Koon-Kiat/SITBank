@@ -271,9 +271,13 @@ jobs:
             local pattern="$1"
             local file
             for file in "${PR_FILES[@]}"; do
-              if [[ "${file}" == ${pattern} ]]; then
-                return 0
-              fi
+              # pattern is a trusted workflow-defined glob, not user input.
+              # shellcheck disable=SC2254
+              case "${file}" in
+                ${pattern})
+                  return 0
+                  ;;
+              esac
             done
             return 1
           }
