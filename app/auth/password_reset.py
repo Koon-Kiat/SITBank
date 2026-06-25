@@ -41,6 +41,19 @@ GENERIC_RESET_ERROR = "Password reset link is invalid or expired"
 RESET_TRANSACTION_SESSION_KEY = "password_reset_transaction_id"
 RESET_TRANSACTION_PREFIX = "ospbank:password_reset_transaction:"
 GENERIC_AUTHENTICATION_CODE_ERROR = "Invalid authentication code."
+GENERIC_VERIFICATION_METHOD_ERROR = "Invalid verification method."
+RESET_MFA_TOTP = "totp"
+RESET_MFA_WEBAUTHN = "webauthn"
+RESET_MFA_NONE = "none"
+RESET_MFA_METHODS = frozenset({RESET_MFA_TOTP, RESET_MFA_WEBAUTHN})
+RESET_MFA_METHOD_ALIASES = {
+    "authenticator": RESET_MFA_TOTP,
+    "passkey": RESET_MFA_WEBAUTHN,
+    "security-key": RESET_MFA_WEBAUTHN,
+    "security_key": RESET_MFA_WEBAUTHN,
+    RESET_MFA_TOTP: RESET_MFA_TOTP,
+    RESET_MFA_WEBAUTHN: RESET_MFA_WEBAUTHN,
+}
 MANUAL_RECOVERY_STATUS_PENDING = "pending"
 MANUAL_RECOVERY_STATUS_UNDER_REVIEW = "under_review"
 MANUAL_RECOVERY_STATUS_APPROVED = "approved"
@@ -200,21 +213,52 @@ def verify_reset_totp(code: str) -> dict[str, Any]:
     return _verify_reset_authentication_code(code, submitted_factor="authentication_code")
 
 
-def _verify_reset_authentication_code(code: str, *, submitted_factor: str) -> dict[str, Any]:
+def select_reset_mfa_method(method: str) -> dict[str, Any]:
     transaction = _load_current_transaction()
     user = _transaction_user(transaction)
-    if transaction["mfa_required"] != "totp":
+    selected = _normalize_reset_mfa_method(method)
+    available_methods = _available_reset_mfa_methods_for_user(user)
+    if selected not in available_methods:
+        transaction["available_mfa_methods"] = available_methods
+        _store_transaction(transaction)
         audit_event(
             "password_reset_mfa_failed",
             "failure",
             user=user,
-            metadata={
-                "reason": "wrong_factor",
-                "submitted_factor": submitted_factor,
-                "required_factor": transaction["mfa_required"],
-            },
+            metadata={"reason": "unavailable_factor", "requested_factor": selected},
         )
-        raise AuthError(GENERIC_AUTHENTICATION_CODE_ERROR, 400)
+        raise AuthError(GENERIC_VERIFICATION_METHOD_ERROR, 400)
+
+    current_method = str(transaction.get("mfa_required") or RESET_MFA_NONE)
+    if transaction.get("mfa_verified") and current_method != selected:
+        audit_event(
+            "password_reset_mfa_failed",
+            "failure",
+            user=user,
+            metadata={"reason": "already_verified", "requested_factor": selected},
+        )
+        raise AuthError(GENERIC_VERIFICATION_METHOD_ERROR, 400)
+
+    transaction["available_mfa_methods"] = available_methods
+    transaction["mfa_required"] = selected
+    if current_method != selected:
+        transaction["mfa_verified"] = False
+        transaction["recovery_code_verified"] = False
+    _store_transaction(transaction)
+    audit_event("password_reset_mfa_method_selected", "success", user=user, metadata={"factor": selected})
+    return _public_transaction(transaction)
+
+
+def _verify_reset_authentication_code(code: str, *, submitted_factor: str) -> dict[str, Any]:
+    transaction = _load_current_transaction()
+    user = _transaction_user(transaction)
+    _require_selected_reset_mfa_method(
+        transaction,
+        user,
+        RESET_MFA_TOTP,
+        submitted_factor=submitted_factor,
+        error_message=GENERIC_AUTHENTICATION_CODE_ERROR,
+    )
 
     if _is_totp_code(code):
         if not _verify_totp_for_user(user, code, "password_reset_mfa"):
@@ -245,7 +289,19 @@ def _verify_reset_authentication_code(code: str, *, submitted_factor: str) -> di
 
 def mark_reset_webauthn_verified(transaction_id: str, user_id: int) -> dict[str, Any]:
     transaction = _load_transaction(transaction_id)
-    if int(transaction["user_id"]) != int(user_id) or transaction["mfa_required"] != "webauthn":
+    user = db.session.get(User, int(user_id))
+    if user is None or int(transaction["user_id"]) != int(user_id):
+        audit_event("password_reset_webauthn_failed", "failure", user_id=user_id, metadata={"reason": "transaction_mismatch"})
+        raise AuthError("Security key verification failed", 401)
+    try:
+        _require_selected_reset_mfa_method(
+            transaction,
+            user,
+            RESET_MFA_WEBAUTHN,
+            submitted_factor=RESET_MFA_WEBAUTHN,
+            error_message="Security key verification failed",
+        )
+    except AuthError:
         audit_event("password_reset_webauthn_failed", "failure", user_id=user_id, metadata={"reason": "transaction_mismatch"})
         raise AuthError("Security key verification failed", 401)
     transaction["mfa_verified"] = True
@@ -527,9 +583,18 @@ def expire_manual_recovery_requests(
     return len(expired_records)
 
 
-def reset_transaction_user_and_id() -> tuple[User, str]:
+def reset_transaction_user_and_id(*, required_method: str | None = None) -> tuple[User, str]:
     transaction = _load_current_transaction()
-    return _transaction_user(transaction), transaction["transaction_id"]
+    user = _transaction_user(transaction)
+    if required_method is not None:
+        _require_selected_reset_mfa_method(
+            transaction,
+            user,
+            required_method,
+            submitted_factor=required_method,
+            error_message="Security key verification failed",
+        )
+    return user, transaction["transaction_id"]
 
 
 def reset_transaction_id() -> str:
@@ -697,16 +762,20 @@ def _audit_manual_recovery_transition(
 
 
 def _create_reset_transaction(user: User, token: PasswordResetToken) -> dict[str, Any]:
-    mfa_required = _mfa_requirement(user)
+    mfa_policy = _reset_mfa_policy(user)
+    mfa_required = mfa_policy["default_method"]
     transaction = {
         "transaction_id": secrets.token_urlsafe(32),
         "token_id": token.id,
         "user_id": user.id,
         "purpose": "password_reset",
         "mfa_required": mfa_required,
-        "mfa_verified": mfa_required == "none",
+        "available_mfa_methods": mfa_policy["available_methods"],
+        "preferred_mfa_method": mfa_policy["preferred_method"],
+        "default_mfa_method": mfa_policy["default_method"],
+        "mfa_verified": mfa_required == RESET_MFA_NONE,
         "recovery_code_verified": False,
-        "no_mfa_user": mfa_required == "none",
+        "no_mfa_user": mfa_required == RESET_MFA_NONE,
         "created_at": _now_timestamp(),
         "failure_count": 0,
     }
@@ -776,9 +845,13 @@ def _transaction_user(transaction: dict[str, Any]) -> User:
 
 
 def _public_transaction(transaction: dict[str, Any]) -> dict[str, Any]:
+    available_methods = _available_reset_mfa_methods_from_transaction(transaction)
     return {
         "message": "Password reset transaction active",
         "mfa_required": transaction["mfa_required"],
+        "available_mfa_methods": available_methods,
+        "preferred_mfa_method": _public_reset_mfa_method(transaction.get("preferred_mfa_method")),
+        "default_mfa_method": _public_reset_mfa_method(transaction.get("default_mfa_method")),
         "mfa_verified": bool(transaction.get("mfa_verified")),
         "recovery_code_verified": bool(transaction.get("recovery_code_verified")),
         "no_mfa_user": bool(transaction.get("no_mfa_user")),
@@ -787,13 +860,96 @@ def _public_transaction(transaction: dict[str, Any]) -> dict[str, Any]:
 
 
 def _mfa_requirement(user: User) -> str:
+    return _reset_mfa_policy(user)["default_method"]
+
+
+def _reset_mfa_policy(user: User) -> dict[str, Any]:
+    available_methods = _available_reset_mfa_methods_for_user(user)
+    preferred_method = _profile_preference_to_reset_method(user.mfa_step_up_preference)
+    if preferred_method not in available_methods:
+        preferred_method = None
+    default_method = preferred_method or _fallback_reset_mfa_method(available_methods)
+    return {
+        "available_methods": available_methods,
+        "preferred_method": preferred_method,
+        "default_method": default_method,
+    }
+
+
+def _available_reset_mfa_methods_for_user(user: User) -> list[str]:
+    methods: list[str] = []
     if user.mfa_enabled:
-        return "totp"
+        methods.append(RESET_MFA_TOTP)
     from app.auth.webauthn_services import webauthn_credential_count
 
     if webauthn_credential_count(user) > 0:
-        return "webauthn"
-    return "none"
+        methods.append(RESET_MFA_WEBAUTHN)
+    return methods
+
+
+def _available_reset_mfa_methods_from_transaction(transaction: dict[str, Any]) -> list[str]:
+    raw_methods = transaction.get("available_mfa_methods")
+    if isinstance(raw_methods, list):
+        methods: list[str] = []
+        for raw_method in raw_methods:
+            method = _public_reset_mfa_method(raw_method)
+            if method in RESET_MFA_METHODS and method not in methods:
+                methods.append(method)
+        return methods
+    required = _public_reset_mfa_method(transaction.get("mfa_required"))
+    return [required] if required in RESET_MFA_METHODS else []
+
+
+def _fallback_reset_mfa_method(available_methods: list[str]) -> str:
+    if RESET_MFA_WEBAUTHN in available_methods:
+        return RESET_MFA_WEBAUTHN
+    if RESET_MFA_TOTP in available_methods:
+        return RESET_MFA_TOTP
+    return RESET_MFA_NONE
+
+
+def _profile_preference_to_reset_method(value: str | None) -> str | None:
+    normalized = str(value or "").strip().casefold()
+    return RESET_MFA_METHOD_ALIASES.get(normalized)
+
+
+def _normalize_reset_mfa_method(value: str | None) -> str:
+    normalized = str(value or "").strip().casefold()
+    method = RESET_MFA_METHOD_ALIASES.get(normalized)
+    if method not in RESET_MFA_METHODS:
+        raise AuthError(GENERIC_VERIFICATION_METHOD_ERROR, 400)
+    return method
+
+
+def _public_reset_mfa_method(value: Any) -> str | None:
+    method = _profile_preference_to_reset_method(str(value or ""))
+    return method if method in RESET_MFA_METHODS else None
+
+
+def _require_selected_reset_mfa_method(
+    transaction: dict[str, Any],
+    user: User,
+    required_method: str,
+    *,
+    submitted_factor: str,
+    error_message: str,
+) -> None:
+    selected = _normalize_reset_mfa_method(required_method)
+    available_methods = _available_reset_mfa_methods_for_user(user)
+    transaction["available_mfa_methods"] = available_methods
+    if selected not in available_methods or transaction.get("mfa_required") != selected:
+        _store_transaction(transaction)
+        audit_event(
+            "password_reset_mfa_failed",
+            "failure",
+            user=user,
+            metadata={
+                "reason": "wrong_factor",
+                "submitted_factor": submitted_factor,
+                "required_factor": transaction.get("mfa_required"),
+            },
+        )
+        raise AuthError(error_message, 400)
 
 
 def _find_customer_user(identifier: str) -> User | None:

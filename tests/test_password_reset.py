@@ -452,6 +452,155 @@ def test_totp_recovery_code_still_works_when_passkey_is_registered(app, client):
         assert codes[0] not in audit_text
 
 
+def test_password_reset_totp_only_ui_shows_authenticator_recovery_code_method(app, client):
+    with app.app_context():
+        _user, _secret = _create_totp_user("resettotponly", "resettotponly@example.com")
+
+    _request_reset(client, "resettotponly@example.com")
+    token = _reset_token(app)
+    exchanged = _exchange(client, token)
+    page = client.get("/reset-password/continue")
+    markup = page.get_data(as_text=True)
+
+    assert exchanged.status_code == 200
+    assert exchanged.get_json()["mfa_required"] == "totp"
+    assert exchanged.get_json()["available_mfa_methods"] == ["totp"]
+    assert "Authenticator code or recovery code" in markup
+    assert "Verify with passkey" not in markup
+    assert "Use passkey or security key" not in markup
+
+
+def test_password_reset_passkey_only_ui_shows_passkey_method(app, client):
+    with app.app_context():
+        user = _create_user("resetpasskeyonly", "resetpasskeyonly@example.com")
+        _add_webauthn_credential(user)
+
+    _request_reset(client, "resetpasskeyonly@example.com")
+    token = _reset_token(app)
+    exchanged = _exchange(client, token)
+    page = client.get("/reset-password/continue")
+    markup = page.get_data(as_text=True)
+
+    assert exchanged.status_code == 200
+    assert exchanged.get_json()["mfa_required"] == "webauthn"
+    assert exchanged.get_json()["available_mfa_methods"] == ["webauthn"]
+    assert "Verify with passkey" in markup
+    assert "Authenticator code or recovery code" not in markup
+
+
+@pytest.mark.parametrize(
+    ("preference", "expected_method", "expected_button"),
+    [
+        ("totp", "totp", "Use passkey or security key"),
+        ("passkey", "webauthn", "Use authenticator app"),
+    ],
+)
+def test_password_reset_defaults_to_profile_preferred_method_for_dual_mfa_user(
+    app,
+    client,
+    preference,
+    expected_method,
+    expected_button,
+):
+    with app.app_context():
+        user, _secret = _create_totp_user(f"resetpref{preference}", f"resetpref{preference}@example.com")
+        user.mfa_step_up_preference = preference
+        _add_webauthn_credential(user)
+        db.session.commit()
+
+    _request_reset(client, f"resetpref{preference}@example.com")
+    token = _reset_token(app)
+    exchanged = _exchange(client, token)
+    page = client.get("/reset-password/continue")
+    markup = page.get_data(as_text=True)
+
+    payload = exchanged.get_json()
+    assert payload["mfa_required"] == expected_method
+    assert payload["available_mfa_methods"] == ["totp", "webauthn"]
+    assert payload["preferred_mfa_method"] == expected_method
+    assert payload["default_mfa_method"] == expected_method
+    assert "Your preferred method" in markup
+    assert expected_button in markup
+
+
+def test_password_reset_dual_mfa_user_can_switch_to_totp_before_verifying(app, client):
+    with app.app_context():
+        user, secret = _create_totp_user("resetswitch", "resetswitch@example.com")
+        user.mfa_step_up_preference = "passkey"
+        _add_webauthn_credential(user)
+        db.session.commit()
+
+    _request_reset(client, "resetswitch@example.com")
+    token = _reset_token(app)
+    exchanged = _exchange(client, token)
+    blocked_totp = client.post(
+        "/auth/password-reset/mfa/totp",
+        json={"totp_code": pyotp.TOTP(secret).now()},
+    )
+    selected = client.post("/auth/password-reset/mfa/method", json={"method": "totp"})
+    verified = client.post(
+        "/auth/password-reset/mfa/totp",
+        json={"totp_code": pyotp.TOTP(secret).now()},
+    )
+
+    assert exchanged.get_json()["mfa_required"] == "webauthn"
+    assert blocked_totp.status_code == 400
+    assert blocked_totp.get_json() == {"error": "Invalid authentication code."}
+    assert selected.status_code == 200
+    assert selected.get_json()["mfa_required"] == "totp"
+    assert verified.status_code == 200
+    assert verified.get_json()["mfa_verified"] is True
+
+
+def test_recovery_code_cannot_satisfy_passkey_selected_password_reset(app, client):
+    with app.app_context():
+        user, _secret = _create_totp_user("resetwrongfactor", "resetwrongfactor@example.com")
+        user.mfa_step_up_preference = "passkey"
+        _add_webauthn_credential(user)
+        with app.test_request_context("/"):
+            codes = generate_recovery_codes_for_user(user, count=1)
+        db.session.commit()
+
+    _request_reset(client, "resetwrongfactor@example.com")
+    token = _reset_token(app)
+    exchanged = _exchange(client, token)
+    recovery_attempt = client.post("/auth/password-reset/mfa/totp", json={"totp_code": codes[0]})
+    transaction = client.get("/auth/password-reset/transaction")
+
+    assert exchanged.get_json()["mfa_required"] == "webauthn"
+    assert recovery_attempt.status_code == 400
+    assert recovery_attempt.get_json() == {"error": "Invalid authentication code."}
+    assert transaction.get_json()["mfa_verified"] is False
+    with app.app_context():
+        recovery_record = db.session.execute(db.select(RecoveryCode)).scalar_one()
+        assert recovery_record.used_at is None
+
+
+def test_webauthn_options_cannot_satisfy_totp_selected_password_reset(app, client):
+    with app.app_context():
+        user, _secret = _create_totp_user("resetwebauthnblocked", "resetwebauthnblocked@example.com")
+        user.mfa_step_up_preference = "totp"
+        _add_webauthn_credential(user, credential_id=b"blocked-default-passkey")
+        db.session.commit()
+
+    _request_reset(client, "resetwebauthnblocked@example.com")
+    token = _reset_token(app)
+    exchanged = _exchange(client, token)
+    blocked_options = client.post("/auth/password-reset/mfa/webauthn/options", json={}, headers=ORIGIN)
+    selected = client.post("/auth/password-reset/mfa/method", json={"method": "passkey"})
+    allowed_options = client.post("/auth/password-reset/mfa/webauthn/options", json={}, headers=ORIGIN)
+
+    assert exchanged.get_json()["mfa_required"] == "totp"
+    assert blocked_options.status_code == 400
+    assert blocked_options.get_json() == {"error": "Security key verification failed"}
+    assert selected.status_code == 200
+    assert selected.get_json()["mfa_required"] == "webauthn"
+    assert allowed_options.status_code == 200
+    assert {item["id"] for item in allowed_options.get_json()["allowCredentials"]} == {
+        bytes_to_base64url(b"blocked-default-passkey")
+    }
+
+
 def test_admin_like_customer_domain_reset_fails_closed(app, client):
     with app.app_context():
         _create_user("admin", "admin@example.com")

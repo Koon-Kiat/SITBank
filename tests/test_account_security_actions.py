@@ -335,6 +335,54 @@ def test_profile_email_update_accepts_totp_stepup_without_passkey(client):
     assert response.status_code == 302
     assert user.email == "alice.mfa@example.com"
 
+
+def test_profile_preference_rejects_passkey_when_not_enrolled(client):
+    register(client)
+    login(client)
+    user, secret = enable_mfa_for_user()
+    mark_recent_mfa(client, user)
+
+    response = client.post(
+        "/profile",
+        data={
+            "username": "alice01",
+            "email": "alice@sit.singaporetech.edu.sg",
+            "mfa_step_up_preference": "passkey",
+            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).now(),
+        },
+    )
+    db.session.refresh(user)
+
+    assert response.status_code == 400
+    assert user.mfa_step_up_preference == "totp"
+    assert b"Choose an enrolled verification method" in response.data
+
+
+def test_profile_preference_rejects_totp_when_not_enrolled(client):
+    register(client)
+    login(client)
+    user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
+    add_security_keys_for_user(user)
+    user.mfa_step_up_preference = "passkey"
+    db.session.commit()
+
+    response = client.post(
+        "/profile",
+        data={
+            "username": "alice01",
+            "email": "alice.passkey@example.com",
+            "mfa_step_up_preference": "totp",
+            "stepup_token": mint_stepup_token(client, user, "profile_update"),
+        },
+    )
+    db.session.refresh(user)
+
+    assert response.status_code == 400
+    assert user.email == "alice@sit.singaporetech.edu.sg"
+    assert user.mfa_step_up_preference == "passkey"
+    assert b"Choose an enrolled verification method" in response.data
+
+
 def test_profile_update_rejects_invalid_email(client):
     register(client)
     login(client)

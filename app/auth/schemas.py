@@ -107,6 +107,13 @@ class AuthenticationCodeSchema(Schema):
     totp_code = fields.Str(required=True, load_only=True, validate=validate.Length(min=1, max=80))
 
 
+class PasswordResetMfaMethodSchema(Schema):
+    method = fields.Str(
+        required=True,
+        validate=validate.OneOf(["totp", "authenticator", "webauthn", "passkey", "security-key", "security_key"]),
+    )
+
+
 class TerminateSessionSchema(Schema):
     session_id = fields.Str(
         required=True,

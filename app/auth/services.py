@@ -106,6 +106,15 @@ def _normalize_step_up_preference(value: str | None) -> str:
     return normalized
 
 
+def _ensure_step_up_preference_enrolled(user: User, preference: str) -> None:
+    if preference == "totp" and not user.mfa_enabled:
+        audit_event("profile_update", "failure", user=user, metadata={"reason": "preferred_mfa_unavailable"})
+        raise AuthError("Choose an enrolled verification method", 400)
+    if preference == "passkey" and enrolled_webauthn_credential_count(user) <= 0:
+        audit_event("profile_update", "failure", user=user, metadata={"reason": "preferred_mfa_unavailable"})
+        raise AuthError("Choose an enrolled verification method", 400)
+
+
 def _client_ip() -> str:
     return request.remote_addr or "unknown"
 
@@ -557,6 +566,7 @@ def update_profile_details(
         return False
 
     ensure_account_not_frozen(user, "profile update")
+    _ensure_step_up_preference_enrolled(user, normalized_preference)
 
     duplicate_user = db.session.execute(
         db.select(User).where(
