@@ -7,9 +7,15 @@ on:
       - synchronize
       - reopened
       - edited
+      - ready_for_review
 
 permissions:
   contents: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   commit-message-policy:
@@ -30,7 +36,6 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          allowed_verbs='Add|Fix|Update|Remove|Refactor|Document|Improve|Secure|Configure|Align|Restore|Prevent|Validate|Enforce|Implement|Rename|Replace|Move|Create|Delete|Test'
           failed=0
 
           annotation_escape() {
@@ -39,6 +44,31 @@ jobs:
             value="${value//$'\r'/'%0D'}"
             value="${value//$'\n'/'%0A'}"
             printf '%s' "$value"
+          }
+
+          print_examples() {
+            cat <<'EXAMPLES'
+          Good examples:
+            Fix: staging admin secret wiring
+            Feat: add admin deployment boundary
+            Chore(deps): bump msgpack to 1.2.1
+            Docs: update deployment notes
+            Security: harden admin session validation
+            Fix staging admin secret wiring
+            Add commit subject validation
+            Harden admin session validation
+            Production deployment is manual only
+
+          Bad examples:
+            fix: staging admin secret wiring
+            feat: add admin deployment boundary
+            chore(deps): bump msgpack to 1.2.1
+            fix staging admin secret wiring
+            wip
+            update stuff
+            Fix bug.
+            minor changes
+          EXAMPLES
           }
 
           report_error() {
@@ -51,45 +81,64 @@ jobs:
             failed=1
           }
 
-          while IFS= read -r line; do
-            sha="${line%% *}"
-            subject="${line#* }"
+          validate_message() {
+            local sha="$1"
+            local value="$2"
+            local lower_value
 
-            if [[ "${subject}" =~ ^Merge[[:space:]] ]] || [[ "${subject}" =~ ^Revert[[:space:]] ]]; then
-              continue
+            if [[ "${value}" =~ ^Merge[[:space:]] ]] || [[ "${value}" =~ ^Revert[[:space:]] ]]; then
+              return 0
             fi
 
-            lower_subject="${subject,,}"
-
-            if (( ${#subject} < 12 )); then
-              report_error "${sha}" "${subject}" "Commit subject must be at least 12 characters."
-              continue
+            if [[ -z "${value}" ]]; then
+              report_error "${sha}" "${value}" "Commit subject must not be empty."
+              return 1
             fi
 
-            if (( ${#subject} > 72 )); then
-              report_error "${sha}" "${subject}" "Commit subject must be at most 72 characters."
-              continue
+            if [[ "${value}" =~ ^[[:space:]] || "${value}" =~ [[:space:]]$ ]]; then
+              report_error "${sha}" "${value}" "Commit subject must not have leading or trailing whitespace."
+              return 1
             fi
 
-            if [[ "${subject}" == *. ]]; then
-              report_error "${sha}" "${subject}" "Commit subject must not end with a full stop."
-              continue
+            if (( ${#value} < 12 )); then
+              report_error "${sha}" "${value}" "Commit subject must be at least 12 characters."
+              return 1
             fi
 
-            case "${lower_subject}" in
-              fix|update|changes|change|wip|test|misc|stuff|done|bug|final|commit)
-                report_error "${sha}" "${subject}" "Commit subject is too generic."
-                continue
+            if (( ${#value} > 72 )); then
+              report_error "${sha}" "${value}" "Commit subject must be at most 72 characters."
+              return 1
+            fi
+
+            if [[ ! "${value}" =~ ^[A-Z] ]]; then
+              report_error "${sha}" "${value}" "Commit subject must start with a capital letter."
+              return 1
+            fi
+
+            if [[ "${value}" == *. ]]; then
+              report_error "${sha}" "${value}" "Commit subject must not end with a full stop."
+              return 1
+            fi
+
+            lower_value="${value,,}"
+            case "${lower_value}" in
+              fix|update|updates|changes|change|wip|test|tests|misc|stuff|done|bug|bugs|final|commit|temp|tmp|work|progress)
+                report_error "${sha}" "${value}" "Commit subject is too generic."
+                return 1
+                ;;
+              "fix bug"|"fix bugs"|"fix issue"|"fix issues"|"update stuff"|"update things"|"make changes"|"minor changes")
+                report_error "${sha}" "${value}" "Commit subject is too vague."
+                return 1
                 ;;
             esac
+          }
 
-            if [[ ! "${subject}" =~ ^(${allowed_verbs})[[:space:]] ]]; then
-              report_error "${sha}" "${subject}" "Commit subject must start with an approved capitalized imperative verb."
-              continue
-            fi
-          done < <(git log --format='%H %s' "${BASE_SHA}..${HEAD_SHA}")
+          while IFS= read -r -d '' sha && IFS= read -r -d '' subject; do
+            validate_message "${sha}" "${subject}" || true
+          done < <(git log --format='%H%x00%s%x00' "${BASE_SHA}..${HEAD_SHA}")
 
           if (( failed != 0 )); then
+            print_examples
             exit 1
           fi
 
