@@ -177,12 +177,14 @@ def test_password_change_succeeds_with_recent_mfa_and_revokes_other_sessions(app
     assert revoked_response.status_code == 401
     assert db.session.query(SecurityAuditEvent).filter_by(event_type="password_change", outcome="success").count() == 1
 
-def test_password_change_accepts_totp_stepup_without_passkey(client):
+def test_password_change_accepts_totp_stepup_without_passkey(client, monkeypatch):
     register(client)
     login(client)
     user, secret = enable_mfa_for_user()
     mark_recent_mfa(client, user)
     old_hash = user.password_hash
+    change_time = int(time.time())
+    monkeypatch.setattr("app.auth.services.time.time", lambda: change_time)
 
     response = client.post(
         "/password/change",
@@ -190,7 +192,7 @@ def test_password_change_accepts_totp_stepup_without_passkey(client):
             "current_password": "correct horse battery staple",
             "new_password": "new correct horse battery staple",
             "confirm_new_password": "new correct horse battery staple",
-            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).now(),
+            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(change_time),
         },
     )
     db.session.refresh(user)
