@@ -191,7 +191,10 @@ jobs:
               def offered:
                 (finding | test("offered|enabled"; "i")) and
                 ((finding | test("not offered|not enabled"; "i")) | not);
-              def severe: (.severity // "") | IN("HIGH"; "CRITICAL"; "FATAL");
+              def severe:
+                (.severity // "") as $severity
+                | ["HIGH", "CRITICAL", "FATAL"]
+                | index($severity) != null;
               select(
                 severe
                 or ((id == "SSLv2" or id == "SSLv3" or id == "TLS1" or id == "TLS1_1") and offered)

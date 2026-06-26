@@ -2011,7 +2011,7 @@ def test_live_tls_scan_workflow_collects_evidence_without_running_on_pull_reques
     assert "cert_expirationStatus" in workflow_text
     assert "cert_trust" in workflow_text
     assert "cert_chain_of_trust" in workflow_text
-    assert "IN(\"HIGH\"; \"CRITICAL\"; \"FATAL\")" in workflow_text
+    assert "index($severity) != null" in workflow_text
     assert "secrets." not in workflow_text
 
     uses = _workflow_uses(workflow_text)
