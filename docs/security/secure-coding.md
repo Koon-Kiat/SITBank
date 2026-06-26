@@ -74,12 +74,14 @@ tests.
 | Opaque browser session id; server-side payload | `app/security/sessions.py`, `app/models.py::ServerSideSession` |
 | HMAC-signed payloads with key rotation | `app/security/session_hmac.py`, `tests/test_db_session_integrity.py` |
 | Secure, HttpOnly, SameSite Strict cookies | `config.py`, `tests/test_session_management.py::test_login_sets_secure_session_cookie_and_hides_raw_session_id` |
+| Absolute authenticated session lifetime | `app/security/sessions.py`, `config.py`, `tests/test_session_absolute_lifetime.py` |
 | CSRF on unsafe customer routes | `app/extensions.py`, `app/__init__.py`, `tests/test_route_inventory_security.py::test_route_inventory_has_complete_security_decisions` |
 | Explicit CSRF regression tests | `tests/test_account_security_actions.py`, `tests/test_route_inventory_security.py` |
 
-Current gap: there is no hard absolute maximum lifetime for fully
-authenticated sessions independent of activity. Pending MFA sessions do have an
-absolute age check.
+Fully authenticated customer sessions default to a 12-hour absolute lifetime,
+and admin sessions default to a 4-hour absolute lifetime. The `auth_created_at`
+timestamp is stored server-side and is not refreshed by ordinary activity,
+CSRF requests, or high-risk TOTP step-up.
 
 ## 4.5 Access-Control Coding Practices
 
@@ -91,12 +93,14 @@ customer route inventory prevents silent addition of unclassified routes.
 | Customer/admin app surfaces are isolated | `app/__init__.py`, `tests/test_admin_isolation.py::test_customer_and_admin_apps_have_isolated_route_surfaces` |
 | Customer login rejects non-customer roles | `app/auth/services.py` |
 | Admin/staff login requires active staff role, workplace email verification, and TOTP | `app/admin/services.py` |
+| Admin routes use a generated route inventory | `tests/test_admin_route_inventory_security.py` |
 | High-risk customer actions use TOTP step-up | `app/auth/services.py::verify_high_risk_authorization()` |
 | Payee routes filter by current user id | `app/banking/routes.py` |
-| Session management uses public references and ownership checks | `app/auth/services.py::terminate_session_for_user()` |
+| Session management uses public references, ownership checks, and absolute lifetime enforcement | `app/auth/services.py::terminate_session_for_user()`, `app/security/sessions.py` |
 
-Current gap: the route-inventory matrix covers the customer app, but no
-equivalent generated matrix for admin routes was found.
+Customer and admin route-inventory matrices are intentionally separate so each
+runtime surface must classify its own authentication, CSRF, rate-limit, and
+step-up decisions.
 
 ## 4.6 Secure Configuration
 
@@ -109,6 +113,7 @@ settings are missing.
 | Production secret files must resolve beneath `/run/secrets`, not symlinks | `config.py::_read_secret_file()`, `tests/test_config.py::test_production_secret_file_must_resolve_beneath_run_secrets` |
 | SMTP password-reset backend requires TLS and credentials in production | `config.py`, `app/security/email.py`, `tests/test_config.py::test_production_smtp_email_requires_host_and_credentials_without_secret_leakage` |
 | Password reset base URL must be HTTPS in production | `tests/test_config.py::test_password_reset_base_url_must_be_https_in_production` |
+| Production payee activation delay must be at least 12 hours; short cooldowns are limited to development/test | `config.py::_validate_payee_cooldown_config()`, `app/ops/commands.py::production_check()`, `tests/test_config.py::test_production_payee_cooldown_rejects_short_value_without_secret_leakage` |
 | Nginx rejects unknown hosts and redirects HTTP to HTTPS | `ops/nginx/sitbank-default.conf`, `ops/nginx/sitbank-production.conf` |
 | Docker runtime drops capabilities and runs read-only as UID/GID `10001:10001` | `Dockerfile`, `compose.prod.yml`, `tests/test_deployment.py::test_dockerfile_and_compose_enforce_hardened_runtime` |
 | Deployment contract keeps production and staging isolated | `compose.prod.yml`, `compose.staging.yml`, `tests/test_deployment.py` |
@@ -150,13 +155,13 @@ Actions.
 
 | OWASP risk | SITBank controls | Gaps or notes |
 | --- | --- | --- |
-| A01 Broken Access Control | Customer route inventory, decorators/hooks, high-risk step-up, ownership filters, admin/customer runtime separation | Admin routes do not have an equivalent generated route-inventory matrix; payee IDOR has code-level owner filters but no dedicated IDOR test |
+| A01 Broken Access Control | Customer and admin route inventories, decorators/hooks, high-risk step-up, ownership filters, admin/customer runtime separation | Payee IDOR has code-level owner filters but no dedicated IDOR test |
 | A02 Cryptographic Failures | HTTPS, HSTS, AES-256-GCM MFA envelopes, HMAC session/audit integrity, PBKDF2 password storage, Docker secrets validation | No explicit Nginx cipher list; backup encryption is operationally documented but not automated in repo |
 | A03 Injection | SQLAlchemy query construction, WTForms/Marshmallow validation, payload allowlists, no arbitrary URL-like mass assignment | Continue adding focused injection tests as new query surfaces are added |
-| A04 Insecure Design | MFA onboarding gates, password-reset token exchange, manual recovery pending-only public request, staff invite workflow, frozen-account behavior | Manual recovery completion exists as service code but no active admin route was found |
+| A04 Insecure Design | MFA onboarding gates, password-reset token exchange, manual recovery pending-only public request, isolated admin manual-recovery completion, staff invite workflow, frozen-account behavior | Continue monitoring manual recovery operations and separation-of-duties assumptions |
 | A05 Security Misconfiguration | Production config validation, Nginx default host rejection, Docker hardening, CSRF/Talisman defaults, deployment tests | Live host TLS cipher and certificate-renewal state must be verified outside the repo |
 | A06 Vulnerable And Outdated Components | Dependabot, pip-audit, Trivy, CodeQL, hashed lockfiles, pinned Docker base image | No JavaScript package manifest was found, so npm/yarn scanning is not applicable |
-| A07 Identification And Authentication Failures | Generic errors, dummy hash, rate/backoff counters, TOTP, recovery codes, reset verifier HMACs, and MFA onboarding gates | No full password history |
+| A07 Identification And Authentication Failures | Generic errors, dummy hash, rate/backoff counters, TOTP, recovery codes, fresh TOTP step-up for recovery-code regeneration, reset verifier HMACs, and MFA onboarding gates | No full password history |
 | A08 Software And Data Integrity Failures | Hash-locked dependencies, pinned actions, pinned images, cosign signing, audit hash chain, migration/DB privilege tests | Verify external runner and registry trust at deployment time |
 | A09 Security Logging And Monitoring Failures | Structured audit events, sanitization, alerts, append-only audit DB triggers, 500 handler logging | Alert delivery endpoint configuration is deployment-specific |
 | A10 Server-Side Request Forgery | No user-supplied arbitrary URL fetch flow found; fixed HIBP range endpoint sends only SHA-1 prefixes; Turnstile verification uses configured endpoint and redacts token data | New outbound integrations should add allowlists and SSRF tests |
@@ -169,5 +174,4 @@ Actions.
 | No independent absolute lifetime for fully authenticated sessions | Long active sessions can continue as sliding sessions | Add a created-at maximum age check for authenticated sessions |
 | No explicit Nginx cipher list | Cipher selection depends on host defaults | Pin approved TLS 1.2 cipher suites and verify with a live TLS scan |
 | No generated admin route inventory | Admin route authorization coverage is less systematic than customer routes | Add admin-app inventory tests with auth, CSRF, rate-limit, and step-up decisions |
-| Recovery-code regeneration lacks fresh step-up | An already authenticated session can regenerate backup codes without re-entering TOTP | Require `verify_high_risk_authorization()` before regeneration |
 | Backup encryption not automated in repo | Database dump protection is operational rather than testable here | Add backup encryption scripts and restore/access tests if backups are in assessment scope |

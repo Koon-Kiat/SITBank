@@ -12,15 +12,18 @@ from app.security.rate_limits import request_principal
 from .services import (
     AuthError,
     authenticate_admin_primary,
+    complete_manual_recovery_request_as_admin,
     complete_admin_mfa_login,
     create_staff_invite,
     invite_info,
     logout_admin_session,
+    manual_recovery_requests_for_admin,
     public_invites_for_root_admin,
     require_root_admin_session,
     require_staff_session,
     revoke_staff_invite,
     start_invite_acceptance,
+    transition_manual_recovery_request_as_admin,
     verify_invite_acceptance,
 )
 
@@ -53,6 +56,28 @@ class StaffInviteCreateSchema(Schema):
 
 
 class StaffInviteRevokeSchema(Schema):
+    totp_code = fields.Str(
+        required=True,
+        load_only=True,
+        validate=validate.Regexp(r"^[0-9]{6}$", error="MFA code must be exactly 6 digits"),
+    )
+
+
+class ManualRecoveryTransitionSchema(Schema):
+    status = fields.Str(
+        required=True,
+        validate=validate.OneOf(["under_review", "approved", "denied"]),
+    )
+    reason = fields.Str(required=True, validate=validate.Length(min=1, max=512))
+    totp_code = fields.Str(
+        required=True,
+        load_only=True,
+        validate=validate.Regexp(r"^[0-9]{6}$", error="MFA code must be exactly 6 digits"),
+    )
+
+
+class ManualRecoveryCompleteSchema(Schema):
+    reason = fields.Str(required=True, validate=validate.Length(min=1, max=512))
     totp_code = fields.Str(
         required=True,
         load_only=True,
@@ -193,6 +218,45 @@ def invite_revoke(invite_id: int):
     actor = require_root_admin_session()
     data = _payload(StaffInviteRevokeSchema())
     return jsonify(revoke_staff_invite(actor, invite_id, data["totp_code"]))
+
+
+@admin_bp.get("/manual-recovery/requests")
+def manual_recovery_requests():
+    actor = require_root_admin_session()
+    return jsonify({"requests": manual_recovery_requests_for_admin(actor)})
+
+
+@admin_bp.post("/manual-recovery/requests/<int:request_id>/transition")
+@limiter.limit("10 per hour", key_func=get_remote_address)
+@limiter.limit("5 per 5 minutes", key_func=request_principal)
+def manual_recovery_transition(request_id: int):
+    actor = require_root_admin_session()
+    data = _payload(ManualRecoveryTransitionSchema())
+    return jsonify(
+        transition_manual_recovery_request_as_admin(
+            actor,
+            request_id,
+            data["status"],
+            data["reason"],
+            data["totp_code"],
+        )
+    )
+
+
+@admin_bp.post("/manual-recovery/requests/<int:request_id>/complete")
+@limiter.limit("10 per hour", key_func=get_remote_address)
+@limiter.limit("5 per 5 minutes", key_func=request_principal)
+def manual_recovery_complete(request_id: int):
+    actor = require_root_admin_session()
+    data = _payload(ManualRecoveryCompleteSchema())
+    return jsonify(
+        complete_manual_recovery_request_as_admin(
+            actor,
+            request_id,
+            data["reason"],
+            data["totp_code"],
+        )
+    )
 
 
 @admin_bp.get("/invites/accept/<token>")

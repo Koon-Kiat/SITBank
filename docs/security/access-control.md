@@ -46,6 +46,7 @@ account state.
 | JSON auth/account routes | Auth blueprint request hooks enforce login/MFA for protected endpoints | `app/auth/routes.py`, `tests/test_mfa_lifecycle.py::test_api_onboarding_requires_enrolled_mfa_before_authenticated_endpoints` |
 | Frozen accounts | Sensitive actions call `ensure_account_not_frozen()` or are blocked by route gates | `app/auth/services.py`, `app/web/routes.py`, `tests/test_account_security_actions.py::test_account_freeze_is_durable_and_blocks_group_a_sensitive_actions` |
 | Pending MFA sessions | Pending sessions cannot access authenticated resources | `tests/test_pentest_auth_bypass.py::test_pending_mfa_session_cannot_access_dashboard`, `tests/test_pentest_auth_bypass.py::test_pending_mfa_session_cannot_freeze_account` |
+| Absolute session lifetime | Customer and admin sessions expire from their original authenticated timestamp, independent of activity or TOTP step-up | `app/security/sessions.py`, `tests/test_session_absolute_lifetime.py` |
 | Session management | Public session refs are scoped to the current user | `app/auth/services.py::terminate_session_for_user()`, `tests/test_session_management.py::test_past_sessions_are_scoped_to_current_user` |
 
 The route inventory in `tests/test_route_inventory_security.py` records each
@@ -59,15 +60,23 @@ against registered Flask routes by:
 | `tests/test_route_inventory_security.py::test_route_inventory_has_complete_security_decisions` | Each route has explicit auth, CSRF, rate-limit, and step-up metadata |
 | `tests/test_route_inventory_security.py::test_login_and_registration_have_method_level_security_decisions` | Method-level decisions for login and registration |
 
-Current gap: this route inventory is for the customer app surface. Admin routes
-have separate isolation and invite-flow tests, but no equivalent admin
-route-inventory matrix was found.
+This route inventory is for the customer app surface. Admin routes use a
+separate generated inventory in
+`tests/test_admin_route_inventory_security.py`. The inventories are
+intentionally separate so customer routes and admin routes cannot satisfy each
+other's policy entries.
 
 ## 3.3 Banking And Payee Authorization
 
 Payee management lives in `app/banking/routes.py` and is registered only in the
 customer app. Routes use authenticated web decorators and high-risk TOTP step-up
 for payee creation confirmation and removal.
+
+New payees are not immediately usable for transfers. The activation delay is
+calculated server-side from the saved payee timestamp and
+`PAYEE_COOLDOWN_SECONDS`; clients only receive display timing. Development and
+test environments may keep the short default for usability, while production
+configuration fails closed unless the cooldown is at least 12 hours.
 
 | Action | Authorization control | Evidence |
 | --- | --- | --- |
@@ -91,6 +100,7 @@ Admin/staff access is invite-only and uses the admin runtime.
 
 | Control | Implementation evidence | Test evidence |
 | --- | --- | --- |
+| Generated admin route authorization inventory | `app/admin/routes.py`; explicit policy entries in `tests/test_admin_route_inventory_security.py` | `tests/test_admin_route_inventory_security.py::test_admin_route_inventory_matches_registered_flask_routes`, `tests/test_admin_route_inventory_security.py::test_admin_route_inventory_has_complete_security_decisions` |
 | Staff/admin login requires workplace email, password, active account, verified workplace email, and TOTP | `app/admin/services.py::authenticate_staff_primary()` and `complete_staff_mfa()` | `tests/test_admin_staff_invites.py::test_admin_login_creates_only_admin_session_cookie` |
 | Root admin is configured by role and email allowlist | `app/admin/services.py::is_root_admin()` and `config.py` `ROOT_ADMIN_EMAILS` | `tests/test_admin_staff_invites.py::test_only_root_admin_with_totp_stepup_can_create_invites` |
 | Root admin can invite only `staff` or `admin`, not `root_admin` | `StaffInvite` role constraint in `app/models.py`; role validation in `app/admin/services.py` | `tests/test_admin_staff_invites.py::test_invite_creation_validates_server_side_email_and_role_policy` |
@@ -104,11 +114,13 @@ admin paths with `deny all`. This keeps the admin app available for deployment
 health and future controlled exposure while preventing public browser access
 unless the edge policy is deliberately changed.
 
-Current gap: no active admin route was found for operator review or completion
-of manual recovery requests. `app/auth/password_reset.py` implements
-`transition_manual_recovery_request()` and `complete_manual_recovery_request()`,
-and `tests/test_password_reset.py` covers the service behavior, but
-`app/admin/routes.py` does not expose those functions.
+Manual recovery operator review is exposed only by the isolated admin app.
+`GET /manual-recovery/requests` lists public-safe request summaries for root
+admins. `POST /manual-recovery/requests/<id>/transition` and
+`POST /manual-recovery/requests/<id>/complete` require root-admin session
+authorization, CSRF, rate limiting, an operator reason, and a fresh TOTP code.
+The routes delegate to `app/auth/password_reset.py` so the manual recovery
+state machine remains centralized.
 
 ## 3.5 High-Risk Actions And Step-Up
 
@@ -120,6 +132,7 @@ High-risk customer actions use `verify_high_risk_authorization()` in
 | Password change | Authenticated user, MFA setup, current password, TOTP step-up, revoke other sessions | `app/auth/services.py::change_password()`, `tests/test_account_security_actions.py::test_password_change_succeeds_with_recent_mfa_and_revokes_other_sessions` |
 | Account details update | Authenticated user and TOTP step-up when email, phone, or other sensitive account fields change | `app/auth/services.py`, `tests/test_account_security_actions.py` |
 | MFA replacement start | Fresh TOTP step-up before replacing an existing authenticator secret | `app/auth/services.py`, `tests/test_mfa_lifecycle.py::test_mfa_replacement_start_requires_fresh_mfa_stepup` |
+| Recovery-code regeneration | Authenticated MFA-ready account, CSRF, fresh TOTP step-up, and audit logging before new recovery codes are issued | `app/auth/services.py::regenerate_totp_recovery_codes()`, `tests/test_mfa_lifecycle.py::test_recovery_code_regeneration_requires_fresh_totp_stepup` |
 | Account freeze | Authenticated user, non-frozen state, TOTP step-up, revoke other sessions | `app/auth/services.py::freeze_own_account()`, `tests/test_account_security_actions.py::test_account_freeze_is_durable_and_blocks_group_a_sensitive_actions` |
 | Revoke other sessions | Authenticated user and TOTP step-up | `app/auth/routes.py::revoke_other_sessions()`, `tests/test_pentest_auth_bypass.py::test_revoke_others_requires_valid_mfa_code` |
 | Terminate one session | Authenticated user, current-user ownership, public reference | `app/auth/services.py::terminate_session_for_user()`, `tests/test_pentest_auth_bypass.py::test_cannot_terminate_other_users_session` |
@@ -127,12 +140,8 @@ High-risk customer actions use `verify_high_risk_authorization()` in
 | Payee removal | Authenticated user, payee ownership check, TOTP step-up | `app/banking/routes.py::payees_remove_submit()` |
 | Staff invite create/revoke | Root admin session and TOTP code | `app/admin/services.py::create_staff_invite()`, `app/admin/services.py::revoke_staff_invite()` |
 | Manual recovery public request | No step-up because the caller is unauthenticated; it creates only a pending request and does not unlock or mutate the account | `app/auth/password_reset.py::request_manual_recovery()`, `tests/test_password_reset.py::test_manual_recovery_request_does_not_freeze_or_unlock_account` |
-
-Current gap: recovery-code regeneration requires an authenticated MFA-ready
-session and CSRF, but the service path `regenerate_totp_recovery_codes()` does
-not require a fresh TOTP step-up. If recovery-code regeneration is classified
-as high risk for assessment purposes, add explicit step-up before generating
-new codes.
+| Manual recovery admin review | Root admin session in the isolated admin app | `app/admin/routes.py::manual_recovery_requests()`, `tests/test_admin_manual_recovery.py` |
+| Manual recovery transition/completion | Root admin session, CSRF, rate limit, operator reason, and TOTP step-up | `app/admin/services.py::transition_manual_recovery_request_as_admin()`, `app/admin/services.py::complete_manual_recovery_request_as_admin()`, `tests/test_admin_manual_recovery.py` |
 
 ## 3.6 Broken Access Control Mitigations
 
@@ -147,6 +156,6 @@ new codes.
 | Pending MFA bypass | Pending sessions cannot access dashboard, account details, session list, MFA setup, or freeze actions |
 | Frozen account bypass | Frozen accounts cannot create new login sessions or perform sensitive actions |
 
-Current gap: route-level authorization is well covered for the customer app,
-but admin route authorization relies on targeted admin tests and service tests
-rather than a generated admin route-inventory policy.
+Admin route authorization is covered by the generated admin inventory plus
+targeted admin service and flow tests. New admin routes must be added to
+`tests/test_admin_route_inventory_security.py` before the suite passes.
