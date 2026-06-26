@@ -110,10 +110,11 @@ Admin/staff access is invite-only and uses the admin runtime.
 
 Production Nginx currently defines an admin hostname in
 `ops/nginx/sitbank-production.conf` but denies public access to the primary
-admin paths with `deny all`. This keeps the public admin hostname limited to
-the static verification page and denied health/app responses. The actual admin
-application access path is Tailscale/private operator access to the loopback
-admin listener, followed by the normal Flask admin login and TOTP controls.
+admin paths with `deny all` or explicit `403` responses. This keeps the public
+admin hostname limited to denied root, health, and app responses. The actual
+admin application access path is Tailscale/private operator access to the
+loopback admin listener, followed by the normal Flask admin login and TOTP
+controls.
 Do not enable Tailscale Funnel or expose admin through the customer app.
 
 Manual recovery operator review is exposed only by the isolated admin app.

@@ -69,7 +69,10 @@ def test_hybrid_cloudflare_staging_and_tailscale_admin_design_is_documented():
         "onboarding, offboarding, emergency lockout, rollback",
         "local readiness succeeds through loopback",
         "direct origin access",
+        "Cloudflare-managed zone/hostname or Cloudflare Tunnel",
         "Cloudflare Access and Tailscale decide whether a request may reach",
+        "old public admin verification page has been removed",
+        "Public admin `/` returns `403`",
         "Zero-trust and network-boundary work should use these repository labels",
     ):
         assert required in docs
@@ -91,7 +94,12 @@ def test_staging_nginx_blocks_direct_origin_bypass_but_keeps_local_health():
     assert "server_name staging-sitbank.duckdns.org;" in staging_nginx
     assert "ssl_client_certificate /etc/nginx/cloudflare-authenticated-origin-pull-ca.pem;" in staging_nginx
     assert "ssl_verify_client optional;" in staging_nginx
-    assert "auth_basic \"SITBank staging\";" in staging_nginx
+    staging_https_prelocation = _nginx_server_block(
+        staging_nginx,
+        "staging-sitbank.duckdns.org",
+    ).split("\n    location ", 1)[0]
+    assert "auth_basic \"SITBank staging\";" not in staging_https_prelocation
+    assert "auth_basic_user_file /etc/nginx/.htpasswd-sitbank-staging;" not in staging_https_prelocation
 
     for selector in (
         "= /health/live",
@@ -103,8 +111,17 @@ def test_staging_nginx_blocks_direct_origin_bypass_but_keeps_local_health():
     ):
         bodies = _nginx_location_bodies(staging_nginx, selector)
         assert bodies, f"Missing staging Nginx location {selector}"
-        assert any("$ssl_client_verify != SUCCESS" in body for body in bodies)
-        assert any("return 403;" in body for body in bodies)
+        protected_bodies = [
+            body for body in bodies if "$ssl_client_verify != SUCCESS" in body
+        ]
+        assert protected_bodies, f"Missing origin-pull gate for {selector}"
+        assert any("return 403;" in body for body in protected_bodies)
+        assert any("auth_basic \"SITBank staging\";" in body for body in protected_bodies)
+        assert any(
+            body.index("$ssl_client_verify != SUCCESS")
+            < body.index("auth_basic \"SITBank staging\";")
+            for body in protected_bodies
+        )
 
     ready_bodies = _nginx_location_bodies(staging_nginx, "= /health/ready")
     assert len(ready_bodies) == 1
@@ -134,6 +151,13 @@ def test_admin_public_routes_stay_denied_and_private_access_is_tailscale_only():
     assert "location ^~ /admin" in customer_server
     assert "return 404;" in customer_server
 
+    root_bodies = _nginx_location_bodies(admin_server, "= /")
+    assert len(root_bodies) == 1
+    assert "return 403;" in root_bodies[0]
+    assert "root /var/www/sitbank-admin-verification;" not in root_bodies[0]
+    assert "try_files /index.html =404;" not in root_bodies[0]
+    assert "proxy_pass" not in root_bodies[0]
+
     login_bodies = _nginx_location_bodies(admin_server, "= /login")
     assert len(login_bodies) == 1
     assert "deny all;" in login_bodies[0]
@@ -147,6 +171,7 @@ def test_admin_public_routes_stay_denied_and_private_access_is_tailscale_only():
 
     assert "Tailscale/private operator access" in docs
     assert "Do not enable Tailscale Funnel" in docs
+    assert "old public admin verification page has been removed" in docs
     assert "public admin Nginx app routes denied" in docs
 
 

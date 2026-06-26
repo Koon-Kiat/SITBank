@@ -33,7 +33,7 @@ Evidence:
 | Control | Evidence |
 | --- | --- |
 | TLS server block and certificate path | `ops/nginx/sitbank-production.conf`; `ops/nginx/sitbank-staging.conf` |
-| HTTP to HTTPS redirect | `return 301 https://sitbank.duckdns.org$request_uri;` and `return 301 https://admin-sitbank.duckdns.org$request_uri;` in `ops/nginx/sitbank-production.conf` |
+| HTTP handling | Customer HTTP redirects with `return 301 https://sitbank.duckdns.org$request_uri;`; public admin non-ACME HTTP returns `403` in `ops/nginx/sitbank-production.conf` |
 | Unknown host rejection | `ops/nginx/sitbank-default.conf` returns `444` for the default HTTP server and uses `ssl_reject_handshake on` for the default HTTPS server |
 | HSTS | Production uses `Strict-Transport-Security "max-age=31536000; includeSubDomains"`; staging uses `max-age=300` |
 | Proxy trust boundary | `ops/nginx-proxy-headers.conf` overwrites `Host`, `X-Real-IP`, `X-Forwarded-For`, and `X-Forwarded-Proto`; `app/__init__.py` applies `ProxyFix` using `TRUSTED_PROXY_COUNT` |

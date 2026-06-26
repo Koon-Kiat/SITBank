@@ -184,6 +184,30 @@ def _nginx_server_block(config: str, server_name: str) -> str:
     return blocks[0]
 
 
+def _nginx_http_server_block(config: str, server_name: str) -> str:
+    marker = f"server_name {server_name};"
+    blocks = []
+    search_from = 0
+    while True:
+        marker_index = config.find(marker, search_from)
+        if marker_index == -1:
+            break
+        start = config.rfind("\nserver {", 0, marker_index)
+        if start == -1:
+            start = 0
+        else:
+            start += 1
+        end = config.find("\nserver {", marker_index)
+        block = config[start:] if end == -1 else config[start:end]
+        blocks.append(block)
+        search_from = marker_index + len(marker)
+    assert blocks, f"Missing Nginx server block for {server_name}"
+    for block in blocks:
+        if "listen 80;" in block and "listen 443" not in block:
+            return block
+    raise AssertionError(f"Missing Nginx HTTP server block for {server_name}")
+
+
 def _nginx_https_server_prelocation(config: str, *, server_name: str | None = None) -> str:
     server = _nginx_server_block(config, server_name) if server_name else config
     https_start = server.index("listen 443 ssl http2;")
@@ -2332,6 +2356,10 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     bootstrap = Path("ops/deploy/bootstrap-container-ec2").read_text(
         encoding="utf-8"
     )
+    staging_http_nginx = _nginx_http_server_block(
+        nginx,
+        "staging-sitbank.duckdns.org",
+    )
 
     assert Path("ops/nginx/sitbank-default.conf").exists()
     assert Path("ops/nginx/sitbank-staging-rate-limits.conf").exists()
@@ -2346,7 +2374,6 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     assert "listen 80 default_server;" not in nginx
     assert "listen 443 ssl http2 default_server;" not in nginx
     assert "server_name _;" not in nginx
-    assert "return 301 https://$host$request_uri;" in nginx
     assert "listen 443 ssl http2;" in nginx
     assert "server_name staging-sitbank.duckdns.org;" in nginx
     assert "ssl_certificate /etc/letsencrypt/live/staging-sitbank.duckdns.org/fullchain.pem;" in nginx
@@ -2360,6 +2387,12 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     assert "preload" not in nginx
     assert 'auth_basic "SITBank staging";' in nginx
     assert "auth_basic_user_file /etc/nginx/.htpasswd-sitbank-staging;" in nginx
+    staging_https_prelocation = _nginx_https_server_prelocation(
+        nginx,
+        server_name="staging-sitbank.duckdns.org",
+    )
+    assert 'auth_basic "SITBank staging";' not in staging_https_prelocation
+    assert "auth_basic_user_file /etc/nginx/.htpasswd-sitbank-staging;" not in staging_https_prelocation
     assert not Path("ops/nginx/.htpasswd-sitbank-staging").exists()
     assert not re.search(
         r"^\S+:\$(?:apr1|2[aby]|5|6)\$",
@@ -2373,6 +2406,11 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
         assert "auth_basic off;" in acme_body
         assert "root /var/www/certbot;" in acme_body
         assert "limit_req" not in acme_body
+
+    staging_http_root_bodies = _nginx_location_bodies(staging_http_nginx, "/")
+    assert len(staging_http_root_bodies) == 1
+    assert "return 403;" in staging_http_root_bodies[0]
+    assert "return 301" not in staging_http_root_bodies[0]
 
     health_bodies = _nginx_location_bodies(nginx, "= /health/ready")
     assert len(health_bodies) == 1
@@ -2388,6 +2426,11 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     assert len(health_live_bodies) == 1
     assert "$ssl_client_verify != SUCCESS" in health_live_bodies[0]
     assert "return 403;" in health_live_bodies[0]
+    assert 'auth_basic "SITBank staging";' in health_live_bodies[0]
+    assert "auth_basic_user_file /etc/nginx/.htpasswd-sitbank-staging;" in health_live_bodies[0]
+    assert health_live_bodies[0].index("$ssl_client_verify != SUCCESS") < health_live_bodies[0].index(
+        'auth_basic "SITBank staging";'
+    )
     assert "limit_req zone=sitbank_staging_app" in health_live_bodies[0]
     assert "proxy_pass http://127.0.0.1:5001;" in health_live_bodies[0]
 
@@ -2412,10 +2455,19 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
         assert len(bodies) == 1
         assert "$ssl_client_verify != SUCCESS" in bodies[0]
         assert "return 403;" in bodies[0]
+        assert 'auth_basic "SITBank staging";' in bodies[0]
+        assert "auth_basic_user_file /etc/nginx/.htpasswd-sitbank-staging;" in bodies[0]
+        assert bodies[0].index("$ssl_client_verify != SUCCESS") < bodies[0].index(
+            'auth_basic "SITBank staging";'
+        )
         assert "limit_req zone=sitbank_staging_login" in bodies[0]
     assert any(
         "$ssl_client_verify != SUCCESS" in body
         and "return 403;" in body
+        and 'auth_basic "SITBank staging";' in body
+        and body.index("$ssl_client_verify != SUCCESS") < body.index(
+            'auth_basic "SITBank staging";'
+        )
         and "limit_req zone=sitbank_staging_app" in body
         for body in _nginx_location_bodies(nginx, "/")
     )
@@ -2463,9 +2515,6 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
 def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     default_nginx = Path("ops/nginx/sitbank-default.conf").read_text(encoding="utf-8")
     nginx = Path("ops/nginx/sitbank-production.conf").read_text(encoding="utf-8")
-    admin_verification = Path("ops/nginx/admin-verification.html").read_text(
-        encoding="utf-8"
-    )
     rate_limits = Path("ops/nginx/sitbank-production-rate-limits.conf").read_text(
         encoding="utf-8"
     )
@@ -2480,17 +2529,12 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     admin = production_compose["services"]["admin"]
     customer_nginx = _nginx_server_block(nginx, "sitbank.duckdns.org")
     admin_nginx = _nginx_server_block(nginx, "admin-sitbank.duckdns.org")
+    admin_http_nginx = _nginx_http_server_block(nginx, "admin-sitbank.duckdns.org")
 
     assert Path("ops/nginx/sitbank-default.conf").exists()
     assert Path("ops/nginx/sitbank-production.conf").exists()
-    assert Path("ops/nginx/admin-verification.html").exists()
+    assert not Path("ops/nginx/admin-verification.html").exists()
     assert Path("ops/nginx/sitbank-production-rate-limits.conf").exists()
-    assert (
-        '<meta name="google-site-verification" '
-        'content="TdWqsa4Ln9t_GIYl4Devi4rrU48Z7XNSue_PiImREJs">'
-        in admin_verification
-    )
-    assert admin_verification.index("google-site-verification") < admin_verification.index("</head>")
     assert "listen 80 default_server;" in default_nginx
     assert "listen [::]:80 default_server;" in default_nginx
     assert "listen 443 ssl http2 default_server;" in default_nginx
@@ -2500,7 +2544,7 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     assert "return 444;" in default_nginx
     assert "listen 80;" in nginx
     assert "return 301 https://sitbank.duckdns.org$request_uri;" in nginx
-    assert "return 301 https://admin-sitbank.duckdns.org$request_uri;" in nginx
+    assert "return 301 https://admin-sitbank.duckdns.org$request_uri;" not in nginx
     assert "listen 80 default_server;" not in nginx
     assert "listen 443 ssl http2 default_server;" not in nginx
     assert "server_name _;" not in nginx
@@ -2551,6 +2595,19 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     assert len(customer_admin_bodies) == 1
     assert "return 404;" in customer_admin_bodies[0]
 
+    admin_http_root_bodies = _nginx_location_bodies(admin_http_nginx, "/")
+    assert len(admin_http_root_bodies) == 1
+    assert "return 403;" in admin_http_root_bodies[0]
+    assert "return 301" not in admin_http_root_bodies[0]
+
+    admin_http_acme_bodies = _nginx_location_bodies(
+        admin_http_nginx,
+        "^~ /.well-known/acme-challenge/",
+    )
+    assert len(admin_http_acme_bodies) == 1
+    assert "root /var/www/certbot;" in admin_http_acme_bodies[0]
+    assert "try_files $uri =404;" in admin_http_acme_bodies[0]
+
     admin_health_ready_bodies = _nginx_location_bodies(admin_nginx, "= /health/ready")
     assert len(admin_health_ready_bodies) == 1
     assert "deny all;" in admin_health_ready_bodies[0]
@@ -2573,12 +2630,12 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     admin_exact_root_bodies = _nginx_location_bodies(admin_nginx, "= /")
     assert len(admin_exact_root_bodies) == 1
     admin_exact_root = admin_exact_root_bodies[0]
-    assert "root /var/www/sitbank-admin-verification;" in admin_exact_root
-    assert "try_files /index.html =404;" in admin_exact_root
-    assert "default_type text/html;" in admin_exact_root
-    assert "limit_req zone=sitbank_prod_admin" in admin_exact_root
+    assert "return 403;" in admin_exact_root
+    assert "root /var/www/sitbank-admin-verification;" not in admin_exact_root
+    assert "try_files /index.html =404;" not in admin_exact_root
+    assert "default_type text/html;" not in admin_exact_root
+    assert "limit_req zone=sitbank_prod_admin" not in admin_exact_root
     assert "proxy_pass" not in admin_exact_root
-    assert "deny all;" not in admin_exact_root
 
     admin_root_bodies = _nginx_location_bodies(admin_nginx, "/")
     assert any("deny all;" in body and "limit_req zone=sitbank_prod_admin" in body for body in admin_root_bodies)
@@ -2648,8 +2705,8 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     assert "ops/nginx/sitbank-default.conf" in bootstrap
     assert "ops/nginx/sitbank-production-rate-limits.conf" in bootstrap
     assert "ops/nginx/sitbank-production.conf" in bootstrap
-    assert "ops/nginx/admin-verification.html" in bootstrap
-    assert "/var/www/sitbank-admin-verification/index.html" in bootstrap
+    assert "ops/nginx/admin-verification.html" not in bootstrap
+    assert "/var/www/sitbank-admin-verification/index.html" not in bootstrap
     assert "install -d -o \"${CONTAINER_ACCOUNT}\" -g \"${CONTAINER_GID}\" -m 0750" in bootstrap
     assert "/var/lib/sitbank" in bootstrap
     assert "install -d -o sitbank-container -g 10001 -m 0750 /var/lib/sitbank" in deploy_script
@@ -2686,7 +2743,7 @@ def test_production_edge_runbook_documents_network_waf_and_verification_steps():
         "ops/nginx/sitbank-production-rate-limits.conf",
         "Public ingress is TCP `80` and `443` only.",
         "SSH is restricted to an administrator IP allowlist",
-        "Nginx terminates TLS, redirects HTTP to HTTPS",
+        "Nginx terminates TLS, redirects production customer HTTP to HTTPS",
         "Gunicorn binds only to `127.0.0.1:5000`",
         "Admin Gunicorn binds only to `127.0.0.1:5002`",
         "Flask admin auth is implemented only for root-admin-controlled invite",
@@ -2703,8 +2760,12 @@ def test_production_edge_runbook_documents_network_waf_and_verification_steps():
         "sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-admin",
         "curl --fail https://sitbank.duckdns.org/health/live",
         "curl -I https://sitbank.duckdns.org/health/ready",
+        "curl -I https://admin-sitbank.duckdns.org/",
         "curl -I https://admin-sitbank.duckdns.org/login",
+        "Admin `/`, `/health/ready`, `/login`, and all other admin routes remain",
+        "old public admin verification",
         "external `/health/ready` returns `403`",
+        "admin `/` returns `403`",
     ):
         assert required in docs
 
@@ -2719,7 +2780,7 @@ def test_production_edge_runbook_documents_network_waf_and_verification_steps():
         "admin Gunicorn bound to",
         "`127.0.0.1:5002`",
         "Restrict `/health/ready` to loopback",
-        "Keep public admin app routes denied by default",
+        "Keep public admin `/` and app routes denied by default",
         "Tailscale/private operator access only",
         "Do not enable Tailscale Funnel",
         "Require Cloudflare Access and Cloudflare Authenticated Origin Pulls",
@@ -2748,6 +2809,7 @@ def test_staging_edge_runbook_documents_operator_verification_steps():
         "sudo install -o root -g root -m 0644",
         "/etc/nginx/cloudflare-authenticated-origin-pull-ca.pem",
         "Do not store Cloudflare API tokens, tunnel credentials, Access IdP secrets, or",
+        "Cloudflare-managed zone/hostname or Cloudflare Tunnel",
         "sudo certbot --nginx -d staging-sitbank.duckdns.org",
         "sudo certbot certonly --webroot",
         "sudo certbot renew --dry-run",

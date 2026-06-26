@@ -30,7 +30,7 @@ References:
 | --- | --- | --- | --- |
 | Production customer | `https://sitbank.duckdns.org` | Public HTTPS edge, Flask customer login and MFA | Public |
 | Staging customer | `https://staging-sitbank.duckdns.org` | Cloudflare Access, Cloudflare Authenticated Origin Pull, staging Basic Auth, Flask login and MFA | Not directly public at the origin |
-| Production admin public host | `https://admin-sitbank.duckdns.org` | Nginx denial for app routes; static verification page only | Public verification page only |
+| Production admin public host | `https://admin-sitbank.duckdns.org` | Nginx denial for `/`, health, and app routes | Public `403` except ACME challenge paths |
 | Production admin app | Tailscale Serve or Tailscale SSH to `127.0.0.1:5002` | Tailscale ACLs, approved devices, Flask admin login and TOTP | Private tailnet only |
 | Staging admin app | Tailscale SSH or other approved private operator path to `127.0.0.1:5003` | Tailscale ACLs, approved devices, Flask admin login and TOTP | Private tailnet only |
 
@@ -39,19 +39,23 @@ through the customer app, and the customer Nginx server block continues to
 return `404` for `/admin`.
 
 `admin-sitbank.duckdns.org` exists in the production Nginx configuration today,
-but it is not the admin application access path. It serves only the Google
-verification page at `/`; `/login`, `/health/ready`, and other admin app paths
-remain denied at Nginx for non-private traffic.
+but it is not the admin application access path. The old public admin verification page has been removed from the edge bootstrap. Public admin `/`,
+`/login`, `/health/ready`, and other admin app paths remain denied at Nginx for
+non-private traffic. The ACME challenge path remains available for host-managed
+certificate renewal.
 
 ## Staging Cloudflare Access
 
 Configure Cloudflare for `staging-sitbank.duckdns.org` as a self-hosted Access
 application:
 
-1. Ensure the staging hostname is a proxied Cloudflare hostname. If the DuckDNS
-   hostname cannot be proxied in the current account model, do not make the EC2
-   origin public as a workaround. Move staging to an approved operator-owned
-   Cloudflare hostname and update this repository in a separate reviewed change.
+1. Ensure the staging hostname is a proxied Cloudflare hostname. The observed
+   DuckDNS hostname resolves directly to the EC2 origin, so Cloudflare Access
+   cannot fully protect it until traffic is routed through a Cloudflare-managed
+   zone/hostname or Cloudflare Tunnel. If the DuckDNS hostname cannot be
+   proxied in the current account model, do not make the EC2 origin public as
+   a workaround. Move staging to an approved operator-owned Cloudflare hostname
+   or tunnel and update this repository in a separate reviewed change.
 2. Add a Cloudflare Access application for `staging-sitbank.duckdns.org`.
 3. Add an Allow policy for approved staging operators only.
 4. Keep the default deny posture for everyone else.
@@ -80,8 +84,10 @@ Flask readiness on the EC2 host.
 
 Keep the existing staging Basic Auth file until a separate reviewed change
 removes it. Cloudflare Access is the identity-aware boundary; Basic Auth is a
-secondary staging control and its password or htpasswd hash must not be stored
-in the repository.
+secondary staging control after Authenticated Origin Pull succeeds. Direct
+origin requests without Cloudflare's origin-pull client certificate must
+receive `403` rather than a Basic Auth challenge. The Basic Auth password or
+htpasswd hash must not be stored in the repository.
 
 ## Admin Tailscale Access
 
@@ -191,7 +197,8 @@ Live Tailscale admin checks:
 3. A removed user or deleted device loses access.
 4. Admin Flask login and TOTP are still required after Tailscale access.
 5. Admin readiness endpoints remain private or restricted.
-6. `https://sitbank.duckdns.org` remains public.
+6. Public admin `/` returns `403`, not a static verification page.
+7. `https://sitbank.duckdns.org` remains public.
 
 ## Emergency Lockout
 
@@ -276,6 +283,7 @@ Readiness remains restricted:
 - Production customer `/health/ready` is loopback-only.
 - Staging `/health/ready` is loopback-only and bypasses the origin-pull client
   certificate check only for local deployment verification.
+- Public admin `/` returns `403`.
 - Public admin `/health/ready` returns `403`.
 - Admin `/health/live` is loopback-only in the public Nginx server block.
 
