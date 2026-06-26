@@ -20,6 +20,7 @@ from config import (
     _validate_audit_anchor_path,
     _validate_password_reset_email_config,
     _validate_payee_cooldown_config,
+    _validate_session_absolute_lifetime_config,
 )
 
 
@@ -142,6 +143,43 @@ def test_non_production_payee_cooldown_allows_short_value():
         cooldown_seconds=60,
         min_production_seconds=MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS,
     )
+
+
+def test_session_absolute_lifetimes_allow_documented_defaults():
+    _validate_session_absolute_lifetime_config(
+        customer_lifetime_seconds=12 * 60 * 60,
+        admin_lifetime_seconds=4 * 60 * 60,
+        customer_pending_mfa_seconds=5 * 60,
+        admin_pending_mfa_seconds=60,
+    )
+
+
+def test_session_absolute_lifetime_rejects_values_not_above_pending_mfa():
+    with pytest.raises(RuntimeError, match="CUSTOMER_SESSION_ABSOLUTE_LIFETIME_SECONDS"):
+        _validate_session_absolute_lifetime_config(
+            customer_lifetime_seconds=300,
+            admin_lifetime_seconds=240,
+            customer_pending_mfa_seconds=300,
+            admin_pending_mfa_seconds=60,
+        )
+
+    with pytest.raises(RuntimeError, match="ADMIN_SESSION_ABSOLUTE_LIFETIME_SECONDS"):
+        _validate_session_absolute_lifetime_config(
+            customer_lifetime_seconds=12 * 60 * 60,
+            admin_lifetime_seconds=60,
+            customer_pending_mfa_seconds=5 * 60,
+            admin_pending_mfa_seconds=60,
+        )
+
+
+def test_admin_absolute_lifetime_cannot_exceed_customer_lifetime():
+    with pytest.raises(RuntimeError, match="less than or equal"):
+        _validate_session_absolute_lifetime_config(
+            customer_lifetime_seconds=4 * 60 * 60,
+            admin_lifetime_seconds=12 * 60 * 60,
+            customer_pending_mfa_seconds=5 * 60,
+            admin_pending_mfa_seconds=60,
+        )
 
 
 def test_session_lookup_hmac_key_decodes_to_32_bytes(monkeypatch):

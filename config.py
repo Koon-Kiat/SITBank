@@ -17,6 +17,9 @@ if APP_ENV != "production":
 
 MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS = 12 * 60 * 60
 MAX_PAYEE_COOLDOWN_SECONDS = 30 * 24 * 60 * 60
+DEFAULT_CUSTOMER_SESSION_ABSOLUTE_LIFETIME_SECONDS = 12 * 60 * 60
+DEFAULT_ADMIN_SESSION_ABSOLUTE_LIFETIME_SECONDS = 4 * 60 * 60
+MAX_SESSION_ABSOLUTE_LIFETIME_SECONDS = 30 * 24 * 60 * 60
 
 
 PLACEHOLDER_TOKENS = {
@@ -405,6 +408,49 @@ def _validate_payee_cooldown_config(
         )
 
 
+def _validate_session_absolute_lifetime_config(
+    *,
+    customer_lifetime_seconds: object,
+    admin_lifetime_seconds: object,
+    customer_pending_mfa_seconds: object,
+    admin_pending_mfa_seconds: object,
+) -> None:
+    try:
+        customer_lifetime = int(customer_lifetime_seconds)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("CUSTOMER_SESSION_ABSOLUTE_LIFETIME_SECONDS must be an integer") from exc
+    try:
+        admin_lifetime = int(admin_lifetime_seconds)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("ADMIN_SESSION_ABSOLUTE_LIFETIME_SECONDS must be an integer") from exc
+    try:
+        customer_pending_mfa = int(customer_pending_mfa_seconds)
+        admin_pending_mfa = int(admin_pending_mfa_seconds)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("PENDING_MFA_MAX_AGE_SECONDS values must be integers") from exc
+
+    bounds_message = f"between 1 and {MAX_SESSION_ABSOLUTE_LIFETIME_SECONDS} seconds"
+    if customer_lifetime < 1 or customer_lifetime > MAX_SESSION_ABSOLUTE_LIFETIME_SECONDS:
+        raise RuntimeError(f"CUSTOMER_SESSION_ABSOLUTE_LIFETIME_SECONDS must be {bounds_message}")
+    if admin_lifetime < 1 or admin_lifetime > MAX_SESSION_ABSOLUTE_LIFETIME_SECONDS:
+        raise RuntimeError(f"ADMIN_SESSION_ABSOLUTE_LIFETIME_SECONDS must be {bounds_message}")
+    if customer_lifetime <= customer_pending_mfa:
+        raise RuntimeError(
+            "CUSTOMER_SESSION_ABSOLUTE_LIFETIME_SECONDS must be greater than "
+            "PENDING_MFA_MAX_AGE_SECONDS"
+        )
+    if admin_lifetime <= admin_pending_mfa:
+        raise RuntimeError(
+            "ADMIN_SESSION_ABSOLUTE_LIFETIME_SECONDS must be greater than "
+            "ADMIN_PENDING_MFA_MAX_AGE_SECONDS"
+        )
+    if admin_lifetime > customer_lifetime:
+        raise RuntimeError(
+            "ADMIN_SESSION_ABSOLUTE_LIFETIME_SECONDS must be less than or equal to "
+            "CUSTOMER_SESSION_ABSOLUTE_LIFETIME_SECONDS"
+        )
+
+
 def _validate_url(name: str, value: str, *, schemes: set[str], require_password: bool) -> str:
     parsed = urlparse(value)
     if parsed.scheme not in schemes:
@@ -583,6 +629,11 @@ def _customer_runtime_overrides(config: dict) -> dict[str, object]:
         "SESSION_COOKIE_NAME": config.get("SESSION_COOKIE_NAME") or "__Host-sitbank_session",
         "PERMANENT_SESSION_LIFETIME": config.get("PERMANENT_SESSION_LIFETIME") or timedelta(minutes=5),
         "SESSION_INACTIVITY_SECONDS": config.get("SESSION_INACTIVITY_SECONDS") or 5 * 60,
+        "PENDING_MFA_MAX_AGE_SECONDS": config.get("CUSTOMER_PENDING_MFA_MAX_AGE_SECONDS")
+        or config.get("PENDING_MFA_MAX_AGE_SECONDS")
+        or 5 * 60,
+        "SESSION_ABSOLUTE_LIFETIME_SECONDS": config.get("CUSTOMER_SESSION_ABSOLUTE_LIFETIME_SECONDS")
+        or DEFAULT_CUSTOMER_SESSION_ABSOLUTE_LIFETIME_SECONDS,
         "AUTH_FAILURE_KEY_PREFIX": config.get("AUTH_FAILURE_KEY_PREFIX") or "ospbank:authfail:",
         "RATELIMIT_STORAGE_URI": config.get("RATELIMIT_STORAGE_URI") or "memory://",
         "RATELIMIT_KEY_PREFIX": config.get("RATELIMIT_KEY_PREFIX") or "ospbank:ratelimit:",
@@ -663,6 +714,8 @@ def _admin_runtime_overrides(config: dict) -> dict[str, object]:
         "PERMANENT_SESSION_LIFETIME": config.get("ADMIN_PERMANENT_SESSION_LIFETIME") or timedelta(minutes=5),
         "SESSION_INACTIVITY_SECONDS": config.get("ADMIN_SESSION_INACTIVITY_SECONDS") or 5 * 60,
         "PENDING_MFA_MAX_AGE_SECONDS": config.get("ADMIN_PENDING_MFA_MAX_AGE_SECONDS") or 60,
+        "SESSION_ABSOLUTE_LIFETIME_SECONDS": config.get("ADMIN_SESSION_ABSOLUTE_LIFETIME_SECONDS")
+        or DEFAULT_ADMIN_SESSION_ABSOLUTE_LIFETIME_SECONDS,
         "AUTH_FAILURE_KEY_PREFIX": config.get("ADMIN_AUTH_FAILURE_KEY_PREFIX") or "ospbank:admin:authfail:",
         "RATELIMIT_STORAGE_URI": config.get("ADMIN_RATELIMIT_STORAGE_URI") or "memory://",
         "RATELIMIT_KEY_PREFIX": config.get("ADMIN_RATELIMIT_KEY_PREFIX")
@@ -851,6 +904,38 @@ class Config:
     PENDING_MFA_MAX_AGE_SECONDS = int(os.getenv("PENDING_MFA_MAX_AGE_SECONDS", "300"))
     if PENDING_MFA_MAX_AGE_SECONDS < 60 or PENDING_MFA_MAX_AGE_SECONDS > SESSION_INACTIVITY_SECONDS:
         raise RuntimeError("PENDING_MFA_MAX_AGE_SECONDS must be between 60 and SESSION_INACTIVITY_SECONDS")
+    CUSTOMER_PENDING_MFA_MAX_AGE_SECONDS = PENDING_MFA_MAX_AGE_SECONDS
+    ADMIN_SESSION_INACTIVITY_SECONDS = _int_env(
+        "ADMIN_SESSION_INACTIVITY_SECONDS",
+        default="300",
+        minimum=60,
+        maximum=60 * 60,
+    )
+    ADMIN_PENDING_MFA_MAX_AGE_SECONDS = _int_env(
+        "ADMIN_PENDING_MFA_MAX_AGE_SECONDS",
+        default="60",
+        minimum=60,
+        maximum=ADMIN_SESSION_INACTIVITY_SECONDS,
+    )
+    CUSTOMER_SESSION_ABSOLUTE_LIFETIME_SECONDS = _int_env(
+        "CUSTOMER_SESSION_ABSOLUTE_LIFETIME_SECONDS",
+        default=str(DEFAULT_CUSTOMER_SESSION_ABSOLUTE_LIFETIME_SECONDS),
+        minimum=1,
+        maximum=MAX_SESSION_ABSOLUTE_LIFETIME_SECONDS,
+    )
+    ADMIN_SESSION_ABSOLUTE_LIFETIME_SECONDS = _int_env(
+        "ADMIN_SESSION_ABSOLUTE_LIFETIME_SECONDS",
+        default=str(DEFAULT_ADMIN_SESSION_ABSOLUTE_LIFETIME_SECONDS),
+        minimum=1,
+        maximum=MAX_SESSION_ABSOLUTE_LIFETIME_SECONDS,
+    )
+    SESSION_ABSOLUTE_LIFETIME_SECONDS = CUSTOMER_SESSION_ABSOLUTE_LIFETIME_SECONDS
+    _validate_session_absolute_lifetime_config(
+        customer_lifetime_seconds=CUSTOMER_SESSION_ABSOLUTE_LIFETIME_SECONDS,
+        admin_lifetime_seconds=ADMIN_SESSION_ABSOLUTE_LIFETIME_SECONDS,
+        customer_pending_mfa_seconds=CUSTOMER_PENDING_MFA_MAX_AGE_SECONDS,
+        admin_pending_mfa_seconds=ADMIN_PENDING_MFA_MAX_AGE_SECONDS,
+    )
 
     WTF_CSRF_TIME_LIMIT = 15 * 60
     WTF_CSRF_SSL_STRICT = True

@@ -40,6 +40,7 @@ from app.ops.db_privileges import (
 from config import (
     MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS,
     _validate_payee_cooldown_config,
+    _validate_session_absolute_lifetime_config,
 )
 
 
@@ -204,6 +205,21 @@ def register_ops_commands(app: Flask) -> None:
                     "Payee cooldown minimum configured: "
                     f"{app.config.get('PAYEE_COOLDOWN_SECONDS')} seconds"
                 )
+        try:
+            _validate_session_absolute_lifetime_config(
+                customer_lifetime_seconds=app.config.get("CUSTOMER_SESSION_ABSOLUTE_LIFETIME_SECONDS"),
+                admin_lifetime_seconds=app.config.get("ADMIN_SESSION_ABSOLUTE_LIFETIME_SECONDS"),
+                customer_pending_mfa_seconds=app.config.get("CUSTOMER_PENDING_MFA_MAX_AGE_SECONDS"),
+                admin_pending_mfa_seconds=app.config.get("ADMIN_PENDING_MFA_MAX_AGE_SECONDS"),
+            )
+        except Exception as exc:
+            failures.append(f"Session absolute lifetime configuration check failed: {exc}")
+        else:
+            click.echo(
+                "Session absolute lifetime configured: "
+                f"customer={app.config.get('CUSTOMER_SESSION_ABSOLUTE_LIFETIME_SECONDS')}s "
+                f"admin={app.config.get('ADMIN_SESSION_ABSOLUTE_LIFETIME_SECONDS')}s"
+            )
 
         if failures:
             for failure in failures:

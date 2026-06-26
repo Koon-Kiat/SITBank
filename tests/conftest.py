@@ -134,8 +134,10 @@ class TestConfig:
     SESSION_COOKIE_SAMESITE = "Strict"
     SESSION_PERMANENT = True
     SESSION_INACTIVITY_SECONDS = 15 * 60
+    CUSTOMER_SESSION_ABSOLUTE_LIFETIME_SECONDS = 12 * 60 * 60
     ADMIN_PERMANENT_SESSION_LIFETIME = timedelta(minutes=5)
     ADMIN_SESSION_INACTIVITY_SECONDS = 5 * 60
+    ADMIN_SESSION_ABSOLUTE_LIFETIME_SECONDS = 4 * 60 * 60
     ADMIN_PENDING_MFA_MAX_AGE_SECONDS = 60
     SESSION_METADATA_KEY_PREFIX = "ospbank:session_meta:"
     USER_SESSIONS_KEY_PREFIX = "ospbank:user_sessions:"
@@ -151,6 +153,8 @@ class TestConfig:
     SECURITY_STATE_RETENTION_DAYS = 30
     SESSION_HISTORY_LIMIT = 20
     PENDING_MFA_MAX_AGE_SECONDS = 5 * 60
+    CUSTOMER_PENDING_MFA_MAX_AGE_SECONDS = PENDING_MFA_MAX_AGE_SECONDS
+    SESSION_ABSOLUTE_LIFETIME_SECONDS = CUSTOMER_SESSION_ABSOLUTE_LIFETIME_SECONDS
     WTF_CSRF_ENABLED = False
     WTF_CSRF_TIME_LIMIT = 15 * 60
     WTF_CSRF_SSL_STRICT = False
@@ -220,6 +224,7 @@ SECURITY_TEST_FILES = frozenset(
         "tests/test_db_session_integrity.py",
         "tests/test_route_inventory_security.py",
         "tests/test_secret_scanner.py",
+        "tests/test_session_absolute_lifetime.py",
         "tests/test_session_management.py",
         "tests/test_webauthn_lifecycle.py",
     }
@@ -238,6 +243,7 @@ SLOW_TEST_FILES = frozenset(
         "tests/test_mfa_lifecycle.py",
         "tests/test_pentest_auth_bypass.py",
         "tests/test_secret_scanner.py",
+        "tests/test_session_absolute_lifetime.py",
         "tests/test_session_management.py",
         "tests/test_webauthn_lifecycle.py",
     }

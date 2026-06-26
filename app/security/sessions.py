@@ -28,6 +28,7 @@ from app.security.session_hmac import (
 
 SESSION_RISK_REAUTH_REQUIRED_KEY = "risk_reauth_required"
 SESSION_RISK_FINGERPRINT_KEY = "risk_fingerprint"
+AUTH_CREATED_AT_KEY = "auth_created_at"
 SESSION_HISTORY_LIMIT_DEFAULT = 20
 SESSION_PAYLOAD_FORMAT = "session-hmac-v2"
 SESSION_END_REASON_LABELS = {
@@ -35,6 +36,7 @@ SESSION_END_REASON_LABELS = {
     "terminated": "Terminated",
     "revoked": "Revoked",
     "expired": "Expired",
+    "absolute_lifetime": "Session lifetime expired",
     "rotated": "Session refreshed",
     "integrity_failure": "Session integrity failure",
     "ended": "Ended",
@@ -323,14 +325,15 @@ def establish_authenticated_session(
     auth_context: str,
 ) -> str:
     login_time = utc_now_iso()
+    now = _now()
     session.clear()
     session.permanent = True
     session["user_id"] = user_id
     session["auth_context"] = auth_context
     session["login_at"] = login_time
-    session["last_activity_at"] = _now()
+    session[AUTH_CREATED_AT_KEY] = now
+    session["last_activity_at"] = now
     if mfa_verified:
-        now = _now()
         session["mfa_verified_at"] = now
         session["fresh_mfa_verified_at"] = now
     rotate_session_id()
@@ -763,6 +766,43 @@ def register_session_hooks(app: Flask) -> None:
                 flash("MFA challenge expired. Please log in again.", "warning")
                 rotate_session_id()
                 return redirect(url_for("web.login"))
+
+        authenticated_user_id = session.get("user_id")
+        if authenticated_user_id:
+            try:
+                absolute_lifetime = int(current_app.config["SESSION_ABSOLUTE_LIFETIME_SECONDS"])
+            except (KeyError, TypeError, ValueError):
+                current_app.logger.error("SESSION_ABSOLUTE_LIFETIME_SECONDS is invalid")
+                revoke_current_session(ended_reason="absolute_lifetime")
+                return jsonify({"error": "Session expired"}), 401
+
+            raw_auth_created_at = session.get(AUTH_CREATED_AT_KEY)
+            if raw_auth_created_at is None:
+                session[AUTH_CREATED_AT_KEY] = now
+                session.modified = True
+            else:
+                try:
+                    auth_created_at = int(raw_auth_created_at)
+                except (TypeError, ValueError):
+                    revoke_current_session(ended_reason="absolute_lifetime")
+                    return jsonify({"error": "Session expired"}), 401
+                if auth_created_at <= 0 or now - auth_created_at > absolute_lifetime:
+                    session_id = current_session_id()
+                    from app.security.audit import audit_event
+
+                    audit_event(
+                        "session_absolute_lifetime",
+                        "expired",
+                        user_id=int(authenticated_user_id),
+                        session_id=session_id,
+                        metadata={
+                            "app_mode": current_app.config.get("APP_MODE", "customer"),
+                            "age_seconds": max(0, now - auth_created_at),
+                            "lifetime_seconds": absolute_lifetime,
+                        },
+                    )
+                    revoke_current_session(ended_reason="absolute_lifetime")
+                    return jsonify({"error": "Session expired"}), 401
 
         last_activity = int(session.get("last_activity_at") or now)
         if now - last_activity > current_app.config["SESSION_INACTIVITY_SECONDS"]:

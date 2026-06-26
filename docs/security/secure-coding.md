@@ -74,12 +74,14 @@ tests.
 | Opaque browser session id; server-side payload | `app/security/sessions.py`, `app/models.py::ServerSideSession` |
 | HMAC-signed payloads with key rotation | `app/security/session_hmac.py`, `tests/test_db_session_integrity.py` |
 | Secure, HttpOnly, SameSite Strict cookies | `config.py`, `tests/test_session_management.py::test_login_sets_secure_session_cookie_and_hides_raw_session_id` |
+| Absolute authenticated session lifetime | `app/security/sessions.py`, `config.py`, `tests/test_session_absolute_lifetime.py` |
 | CSRF on unsafe customer routes | `app/extensions.py`, `app/__init__.py`, `tests/test_route_inventory_security.py::test_route_inventory_has_complete_security_decisions` |
 | Explicit CSRF regression tests | `tests/test_account_security_actions.py`, `tests/test_route_inventory_security.py` |
 
-Current gap: there is no hard absolute maximum lifetime for fully
-authenticated sessions independent of activity. Pending MFA sessions do have an
-absolute age check.
+Fully authenticated customer sessions default to a 12-hour absolute lifetime,
+and admin sessions default to a 4-hour absolute lifetime. The `auth_created_at`
+timestamp is stored server-side and is not refreshed by ordinary activity,
+CSRF requests, or high-risk TOTP step-up.
 
 ## 4.5 Access-Control Coding Practices
 
@@ -93,7 +95,7 @@ customer route inventory prevents silent addition of unclassified routes.
 | Admin/staff login requires active staff role, workplace email verification, and TOTP | `app/admin/services.py` |
 | High-risk customer actions use TOTP step-up | `app/auth/services.py::verify_high_risk_authorization()` |
 | Payee routes filter by current user id | `app/banking/routes.py` |
-| Session management uses public references and ownership checks | `app/auth/services.py::terminate_session_for_user()` |
+| Session management uses public references, ownership checks, and absolute lifetime enforcement | `app/auth/services.py::terminate_session_for_user()`, `app/security/sessions.py` |
 
 Current gap: the route-inventory matrix covers the customer app, but no
 equivalent generated matrix for admin routes was found.

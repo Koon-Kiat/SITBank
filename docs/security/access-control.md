@@ -46,6 +46,7 @@ account state.
 | JSON auth/account routes | Auth blueprint request hooks enforce login/MFA for protected endpoints | `app/auth/routes.py`, `tests/test_mfa_lifecycle.py::test_api_onboarding_requires_enrolled_mfa_before_authenticated_endpoints` |
 | Frozen accounts | Sensitive actions call `ensure_account_not_frozen()` or are blocked by route gates | `app/auth/services.py`, `app/web/routes.py`, `tests/test_account_security_actions.py::test_account_freeze_is_durable_and_blocks_group_a_sensitive_actions` |
 | Pending MFA sessions | Pending sessions cannot access authenticated resources | `tests/test_pentest_auth_bypass.py::test_pending_mfa_session_cannot_access_dashboard`, `tests/test_pentest_auth_bypass.py::test_pending_mfa_session_cannot_freeze_account` |
+| Absolute session lifetime | Customer and admin sessions expire from their original authenticated timestamp, independent of activity or TOTP step-up | `app/security/sessions.py`, `tests/test_session_absolute_lifetime.py` |
 | Session management | Public session refs are scoped to the current user | `app/auth/services.py::terminate_session_for_user()`, `tests/test_session_management.py::test_past_sessions_are_scoped_to_current_user` |
 
 The route inventory in `tests/test_route_inventory_security.py` records each
