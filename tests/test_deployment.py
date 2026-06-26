@@ -114,7 +114,7 @@ def _load_create_dast_session_module():
 def test_production_check_rejects_short_payee_cooldown(monkeypatch):
     from app import create_app
     from app.extensions import db
-    import app.ops.commands as ops_commands
+    import app.security.production_guard as production_guard
     from config import MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS
     from conftest import TestConfig
 
@@ -127,18 +127,19 @@ def test_production_check_rejects_short_payee_cooldown(monkeypatch):
         PAYEE_COOLDOWN_SECONDS=60,
         MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS=MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS,
     )
-    monkeypatch.setattr(ops_commands, "validate_common_password_dictionary", lambda: 100000)
-    monkeypatch.setattr(ops_commands, "validate_password_hash_config", lambda: None)
-    monkeypatch.setattr(ops_commands, "validate_session_hmac_config", lambda: ["current"])
+    monkeypatch.setattr(production_guard, "validate_common_password_dictionary", lambda: 100000)
+    monkeypatch.setattr(production_guard, "validate_password_hash_config", lambda: None)
+    monkeypatch.setattr(production_guard, "validate_session_hmac_config", lambda: 1)
     monkeypatch.setattr(
-        ops_commands,
+        production_guard,
         "validate_security_alert_config",
         lambda require_delivery=True: {
+            "enabled": True,
             "min_severity": "high",
             "dedupe_ttl_seconds": 300,
         },
     )
-    monkeypatch.setattr(ops_commands, "validate_audit_integrity_config", lambda: 32)
+    monkeypatch.setattr(production_guard, "validate_audit_integrity_config", lambda: 32)
 
     with flask_app.app_context():
         db.create_all()
@@ -1178,7 +1179,7 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
         in deploy_script
     )
     assert "DATABASE_MIGRATION_URL must not be configured for the runtime app" in Path(
-        "app/ops/commands.py"
+        "app/security/production_guard.py"
     ).read_text(encoding="utf-8")
     assert "adopt-existing)" in database_cutover
     assert "CUTOVER_MODE=adopt-existing" in database_cutover
@@ -2595,6 +2596,7 @@ def test_migration_baseline_and_existing_database_runbook_are_present():
 def test_audit_operations_runbook_and_append_only_privileges_are_present():
     docs = _project_docs_text()
     commands = Path("app/ops/commands.py").read_text(encoding="utf-8")
+    production_guard = Path("app/security/production_guard.py").read_text(encoding="utf-8")
     audit_source = Path("app/security/audit.py").read_text(encoding="utf-8")
     privileges = Path("app/ops/db_privileges.py").read_text(encoding="utf-8")
     append_only_migration = Path(
@@ -2648,7 +2650,7 @@ def test_audit_operations_runbook_and_append_only_privileges_are_present():
     assert "export-audit-log-anchor" in commands
     assert "check-security-alerts" in commands
     assert "build_security_alert_report" in commands
-    assert "validate_security_alert_config" in commands
+    assert "validate_security_alert_config" in production_guard
     assert "pg_advisory_xact_lock" in audit_source
     assert "AUDIT_CHAIN_ADVISORY_LOCK_ID" in audit_source
     assert ".with_for_update(" not in audit_source

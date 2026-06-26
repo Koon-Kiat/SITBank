@@ -9,38 +9,21 @@ import click
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
 from flask import Flask
-from sqlalchemy import text
 
 from app.extensions import db
-from app.models import AuthAttemptCounter, ServerSideSession, StaffInvite, User
-from app.security.alerts import (
-    build_security_alert_report,
-    deliver_security_alerts,
-    validate_security_alert_config,
-)
-from app.security.audit import (
-    audit_log_anchor,
-    audit_system_event,
-    validate_audit_integrity_config,
-    verify_audit_hash_chain,
-    write_audit_log_anchor,
-)
+from app.models import User
+from app.security.alerts import build_security_alert_report, deliver_security_alerts
+from app.security.audit import audit_log_anchor, audit_system_event, verify_audit_hash_chain, write_audit_log_anchor
 from app.security.crypto import (
     is_enveloped_mfa_secret,
     mfa_envelope_kek_id,
     rewrap_mfa_dek,
 )
-from app.security.passwords import validate_common_password_dictionary, validate_password_hash_config
-from app.security.session_hmac import validate_session_hmac_config
+from app.security.production_guard import validate_production_security_prerequisites
 from app.ops.db_privileges import (
     apply_admin_runtime_database_privileges,
     apply_runtime_audit_table_privileges,
     verify_runtime_database_privileges,
-)
-from config import (
-    MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS,
-    _validate_payee_cooldown_config,
-    _validate_session_absolute_lifetime_config,
 )
 
 
@@ -75,154 +58,13 @@ def register_ops_commands(app: Flask) -> None:
     @app.cli.command("production-check")
     def production_check() -> None:
         """Validate real production dependencies and security prerequisites."""
-        failures: list[str] = []
         app_mode = str(app.config.get("APP_MODE") or "customer")
+        result = validate_production_security_prerequisites(app, app_mode=app_mode)
 
-        try:
-            db.session.execute(text("SELECT 1"))
-        except Exception as exc:
-            failures.append(f"PostgreSQL check failed: {exc}")
-
-        try:
-            entries = validate_common_password_dictionary()
-        except Exception as exc:
-            failures.append(f"Common password dictionary check failed: {exc}")
-        else:
-            click.echo(f"Common password dictionary entries: {entries}")
-            if entries < 100000:
-                failures.append("Common password dictionary must contain at least 100000 entries")
-
-        try:
-            validate_password_hash_config()
-        except Exception as exc:
-            failures.append(f"Password hash configuration check failed: {exc}")
-
-        try:
-            session_hmac_keys = validate_session_hmac_config()
-        except Exception as exc:
-            failures.append(f"Session HMAC configuration check failed: {exc}")
-        else:
-            click.echo(f"Configured session HMAC keys: {session_hmac_keys}")
-
-        lookup_key = app.config.get("SESSION_LOOKUP_HMAC_KEY")
-        if not isinstance(lookup_key, bytes) or len(lookup_key) != 32:
-            failures.append("SESSION_LOOKUP_HMAC_KEY must be configured as 32 bytes")
-        else:
-            click.echo("Session lookup HMAC key configured")
-
-        try:
-            db.session.execute(db.select(ServerSideSession.id).limit(1))
-            db.session.execute(db.select(AuthAttemptCounter.id).limit(1))
-        except Exception as exc:
-            failures.append(f"DB-backed security-state table check failed: {exc}")
-
-        mfa_kek_keys = app.config.get("MFA_KEK_KEYS")
-        mfa_kek_active_id = app.config.get("MFA_KEK_ACTIVE_ID")
-        if not isinstance(mfa_kek_keys, dict) or not mfa_kek_keys:
-            failures.append("MFA_KEK_KEYS_JSON must configure at least one MFA KEK")
-        elif mfa_kek_active_id not in mfa_kek_keys:
-            failures.append("MFA_KEK_ACTIVE_ID must identify a configured MFA KEK")
-        else:
-            click.echo(f"Configured MFA KEKs: {len(mfa_kek_keys)}")
-
-        try:
-            alert_config = validate_security_alert_config(require_delivery=True)
-        except Exception as exc:
-            failures.append(f"Security alert configuration check failed: {exc}")
-        else:
-            click.echo(
-                "Security alerting configured: "
-                f"min_severity={alert_config['min_severity']} "
-                f"dedupe_ttl_seconds={alert_config['dedupe_ttl_seconds']}"
-            )
-
-        try:
-            audit_key_length = validate_audit_integrity_config()
-        except Exception as exc:
-            failures.append(f"Audit integrity configuration check failed: {exc}")
-        else:
-            click.echo(f"Audit HMAC integrity configured: key_length={audit_key_length}")
-
-        if int(app.config.get("PASSWORD_PBKDF2_ITERATIONS", 0)) < 600000:
-            failures.append("PASSWORD_PBKDF2_ITERATIONS must be 600000 or higher")
-        if app.config.get("APP_ENV") != "production":
-            failures.append("APP_ENV must be production")
-        if app.config.get("SQLALCHEMY_MIGRATION_DATABASE_URI"):
-            failures.append("DATABASE_MIGRATION_URL must not be configured for the runtime app")
-        if len(str(app.config.get("WTF_CSRF_SECRET_KEY", ""))) < 32:
-            failures.append("WTF_CSRF_SECRET_KEY must be at least 32 characters")
-        if int(app.config.get("TRUSTED_PROXY_COUNT", -1)) != 1:
-            failures.append("TRUSTED_PROXY_COUNT must be 1 for the single Nginx proxy boundary")
-        if not app.config.get("SESSION_COOKIE_SECURE"):
-            failures.append("SESSION_COOKIE_SECURE must be enabled")
-        if not app.config.get("SESSION_COOKIE_HTTPONLY"):
-            failures.append("SESSION_COOKIE_HTTPONLY must be enabled")
-        if app.config.get("SESSION_COOKIE_SAMESITE") != "Strict":
-            failures.append("SESSION_COOKIE_SAMESITE must be Strict")
-        if app.config.get("WTF_CSRF_ENABLED") is False:
-            failures.append("WTF_CSRF_ENABLED must not be disabled")
-        if app.config.get("WTF_CSRF_CHECK_DEFAULT") is False:
-            failures.append("WTF_CSRF_CHECK_DEFAULT must be enabled")
-        if not app.config.get("TALISMAN_FORCE_HTTPS"):
-            failures.append("TALISMAN_FORCE_HTTPS must be enabled")
-        if not str(app.config.get("RATELIMIT_STORAGE_URI", "")).startswith("memory://"):
-            failures.append("Flask-Limiter storage must remain non-authoritative; DB-backed auth counters enforce security limits")
-        if app_mode == "admin":
-            if app.config.get("SESSION_COOKIE_NAME") != "__Host-sitbank_admin_session":
-                failures.append("Admin session cookie name must be isolated")
-            if app.config.get("ADMIN_AUTH_ENABLED") is not True:
-                failures.append("Admin authentication must be enabled for invite-only staff onboarding")
-            root_admin_emails = app.config.get("ROOT_ADMIN_EMAILS") or set()
-            if len(root_admin_emails) != 7:
-                failures.append("ROOT_ADMIN_EMAILS must configure exactly 7 root administrators")
-            if not str(app.config.get("RATELIMIT_KEY_PREFIX", "")).startswith("ospbank:admin:"):
-                failures.append("Admin rate-limit key prefix must be isolated")
-            if not str(app.config.get("SESSION_KEY_PREFIX", "")).startswith("admin-"):
-                failures.append("Admin session key prefix must be isolated")
-            try:
-                db.session.execute(db.select(StaffInvite.id).limit(1))
-            except Exception as exc:
-                failures.append(f"Staff invite table check failed: {exc}")
-            click.echo("Admin auth enabled for root-admin invite-only TOTP onboarding")
-        if int(app.config.get("TOTP_LOGIN_VALID_WINDOW", -1)) > 1:
-            failures.append("TOTP_LOGIN_VALID_WINDOW must be 0 or 1")
-        if int(app.config.get("TOTP_HIGH_RISK_VALID_WINDOW", -1)) != 0:
-            failures.append("TOTP_HIGH_RISK_VALID_WINDOW must be 0")
-        try:
-            _validate_payee_cooldown_config(
-                app_env=str(app.config.get("APP_ENV") or ""),
-                cooldown_seconds=app.config.get("PAYEE_COOLDOWN_SECONDS"),
-                min_production_seconds=app.config.get(
-                    "MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS",
-                    MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS,
-                ),
-            )
-        except Exception as exc:
-            failures.append(f"Payee cooldown configuration check failed: {exc}")
-        else:
-            if app.config.get("APP_ENV") == "production":
-                click.echo(
-                    "Payee cooldown minimum configured: "
-                    f"{app.config.get('PAYEE_COOLDOWN_SECONDS')} seconds"
-                )
-        try:
-            _validate_session_absolute_lifetime_config(
-                customer_lifetime_seconds=app.config.get("CUSTOMER_SESSION_ABSOLUTE_LIFETIME_SECONDS"),
-                admin_lifetime_seconds=app.config.get("ADMIN_SESSION_ABSOLUTE_LIFETIME_SECONDS"),
-                customer_pending_mfa_seconds=app.config.get("CUSTOMER_PENDING_MFA_MAX_AGE_SECONDS"),
-                admin_pending_mfa_seconds=app.config.get("ADMIN_PENDING_MFA_MAX_AGE_SECONDS"),
-            )
-        except Exception as exc:
-            failures.append(f"Session absolute lifetime configuration check failed: {exc}")
-        else:
-            click.echo(
-                "Session absolute lifetime configured: "
-                f"customer={app.config.get('CUSTOMER_SESSION_ABSOLUTE_LIFETIME_SECONDS')}s "
-                f"admin={app.config.get('ADMIN_SESSION_ABSOLUTE_LIFETIME_SECONDS')}s"
-            )
-
-        if failures:
-            for failure in failures:
+        for name, value in sorted(result.details.items()):
+            click.echo(f"{name}: {value}")
+        if result.failures:
+            for failure in result.failures:
                 click.echo(failure, err=True)
             raise click.ClickException("Production readiness checks failed")
 
