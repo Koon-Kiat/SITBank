@@ -14,6 +14,11 @@ The PR workflow only adds computed labels. It does not remove existing labels,
 so Dependabot labels and any maintainer-applied labels remain in place during
 normal future PR labeling.
 
+The PR workflow uses a trusted shell step for title, body, branch, file path,
+and patch-text terms that `actions/labeler` does not cover directly. It does
+not checkout or execute pull request code. The SHA-pinned `actions/labeler`
+step still handles path-oriented labels from `.github/labeler.yml`.
+
 The workflow must stay label-only. Do not add `actions/checkout`, do not
 checkout PR branches, and do not execute scripts or code from pull requests in
 that workflow. This repository intentionally avoids `pull_request_target`.
@@ -25,6 +30,10 @@ edited. It reads the issue title and body from the GitHub event payload and adds
 matching labels. Every new or edited issue receives `needs-triage`.
 
 The issue labeler only adds computed labels. It does not remove existing labels.
+It applies `zero-trust`, `network-security`, and `staging` when titles or
+bodies mention Cloudflare Access, Tailscale, VPN/private access, origin
+bypass/protection, admin exposure, staging exposure, or staging deployment
+terms.
 
 ## Manual Historical Retag
 
@@ -97,3 +106,23 @@ other issue/PR label checks, add that label to `PROTECTED_LABELS` in
 The labeling workflows create or update the standard labels idempotently with
 `gh label create --force`. This keeps label names, descriptions, and colors
 available without deleting any repository labels.
+
+Security/network labels added for zero-trust work:
+
+- `zero-trust`: Identity-aware or private-network access boundary changes.
+- `network-security`: Firewall, VPN, origin access, private access, or network
+  boundary changes.
+- `staging`: Staging environment, staging deployment, or staging access
+  changes.
+
+Path rules:
+
+- `ops/nginx/**` receives `deployment`, `network-security`, and `security`.
+- `ops/deploy/**` receives `deployment`.
+- `compose.staging.yml`, staging env templates, and staging deployment files
+  receive `staging` and `deployment`.
+- `docs/security/**` receives `documentation` and `security`.
+- Admin deployment, admin Nginx, and admin isolation docs/tests receive
+  `admin` and `security`.
+- Zero-trust, Cloudflare, Tailscale, and private-access docs receive
+  `zero-trust`, `network-security`, `documentation`, and `security`.

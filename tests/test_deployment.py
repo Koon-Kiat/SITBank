@@ -2351,6 +2351,8 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     assert "server_name staging-sitbank.duckdns.org;" in nginx
     assert "ssl_certificate /etc/letsencrypt/live/staging-sitbank.duckdns.org/fullchain.pem;" in nginx
     assert "ssl_certificate_key /etc/letsencrypt/live/staging-sitbank.duckdns.org/privkey.pem;" in nginx
+    assert "ssl_client_certificate /etc/nginx/cloudflare-authenticated-origin-pull-ca.pem;" in nginx
+    assert "ssl_verify_client optional;" in nginx
     _assert_nginx_owns_duplicate_edge_security_headers(
         nginx,
         hsts_add_header='add_header Strict-Transport-Security "max-age=300" always;',
@@ -2384,6 +2386,8 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
 
     health_live_bodies = _nginx_location_bodies(nginx, "= /health/live")
     assert len(health_live_bodies) == 1
+    assert "$ssl_client_verify != SUCCESS" in health_live_bodies[0]
+    assert "return 403;" in health_live_bodies[0]
     assert "limit_req zone=sitbank_staging_app" in health_live_bodies[0]
     assert "proxy_pass http://127.0.0.1:5001;" in health_live_bodies[0]
 
@@ -2406,9 +2410,13 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     for selector in ("= /login", "= /register", "= /mfa/verify", "^~ /auth/"):
         bodies = _nginx_location_bodies(nginx, selector)
         assert len(bodies) == 1
+        assert "$ssl_client_verify != SUCCESS" in bodies[0]
+        assert "return 403;" in bodies[0]
         assert "limit_req zone=sitbank_staging_login" in bodies[0]
     assert any(
-        "limit_req zone=sitbank_staging_app" in body
+        "$ssl_client_verify != SUCCESS" in body
+        and "return 403;" in body
+        and "limit_req zone=sitbank_staging_app" in body
         for body in _nginx_location_bodies(nginx, "/")
     )
 
@@ -2421,6 +2429,9 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
         '${public_host_regex}([[:space:];]|$)" \\'
     ) in bootstrap
     assert "Missing required staging Basic Auth file" in bootstrap
+    assert "STAGING_CLOUDFLARE_ORIGIN_PULL_CA_FILE=\"/etc/nginx/cloudflare-authenticated-origin-pull-ca.pem\"" in bootstrap
+    assert "Missing required Cloudflare Authenticated Origin Pull CA file" in bootstrap
+    assert "Install the Cloudflare origin-pull CA certificate before rerunning staging bootstrap." in bootstrap
     assert "Missing required staging TLS file" in bootstrap
     assert "apache2-utils" in bootstrap
     assert "certbot" in bootstrap
@@ -2708,7 +2719,10 @@ def test_production_edge_runbook_documents_network_waf_and_verification_steps():
         "admin Gunicorn bound to",
         "`127.0.0.1:5002`",
         "Restrict `/health/ready` to loopback",
-        "Keep admin routes denied by default",
+        "Keep public admin app routes denied by default",
+        "Tailscale/private operator access only",
+        "Do not enable Tailscale Funnel",
+        "Require Cloudflare Access and Cloudflare Authenticated Origin Pulls",
         "Enable WAF managed common, SQL injection, XSS, bot, and protocol anomaly",
         "rules.",
         "Add WAF rate-based rules for `/login`, `/register`, `/mfa/verify`,",
@@ -2724,30 +2738,41 @@ def test_staging_edge_runbook_documents_operator_verification_steps():
     docs = _project_docs_text()
 
     for required in (
+        "Staging uses Cloudflare Access as the identity-aware boundary",
+        "Cloudflare Authenticated Origin Pulls",
+        "The production customer hostname remains public.",
         "sudo htpasswd -c /etc/nginx/.htpasswd-sitbank-staging",
         "sudo chown root:www-data /etc/nginx/.htpasswd-sitbank-staging",
         "sudo chmod 0640 /etc/nginx/.htpasswd-sitbank-staging",
         "Do not store the Basic Auth password or generated htpasswd hash in the repo.",
+        "sudo install -o root -g root -m 0644",
+        "/etc/nginx/cloudflare-authenticated-origin-pull-ca.pem",
+        "Do not store Cloudflare API tokens, tunnel credentials, Access IdP secrets, or",
         "sudo certbot --nginx -d staging-sitbank.duckdns.org",
         "sudo certbot certonly --webroot",
         "sudo certbot renew --dry-run",
         "ops/deploy/bootstrap-container-ec2",
         "staging-sitbank.duckdns.org",
         "Nginx proxy header snippet",
+        "Cloudflare origin-pull CA file",
         "rate-limit include",
         "sudo nginx -t",
         "sudo systemctl reload nginx",
-        "curl -k -I https://staging-sitbank.duckdns.org/",
-        'curl -k -I -u "$STAGING_BASIC_AUTH_USER:$STAGING_BASIC_AUTH_PASSWORD"',
-        "curl -k -I https://staging-sitbank.duckdns.org/health/ready",
+        "curl -I https://staging-sitbank.duckdns.org/",
+        'curl -I -u "$STAGING_BASIC_AUTH_USER:$STAGING_BASIC_AUTH_PASSWORD"',
+        "curl -I https://staging-sitbank.duckdns.org/health/ready",
         "curl -fsS http://127.0.0.1:5001/health/ready",
-        "unauthenticated `/` returns `401`",
+        "curl --fail --resolve staging-sitbank.duckdns.org:443:127.0.0.1",
+        "curl -I --resolve staging-sitbank.duckdns.org:443:<EC2_PUBLIC_IP>",
+        "unauthenticated browser traffic receives the Cloudflare Access",
+        "direct EC2-origin access to",
+        "returns `403` without Cloudflare's origin-pull client certificate",
         "external `/health/ready` returns `403`",
         "local app readiness",
         "separate from application deployment",
+        "docs/security/admin-and-staging-zero-trust-access.md",
     ):
         assert required in docs
-    assert re.search(r"authenticated `/` returns\s+`200`", docs)
 
 
 def test_dependency_manifests_have_one_hashed_lockfile_source_of_truth():

@@ -13,6 +13,7 @@ readonly TLS_POLICY_FILE="/etc/nginx/snippets/sitbank-tls-policy.conf"
 readonly PRODUCTION_RATE_LIMITS_FILE="/etc/nginx/conf.d/sitbank-production-rate-limits.conf"
 readonly STAGING_PUBLIC_HOST="staging-sitbank.duckdns.org"
 readonly STAGING_BASIC_AUTH_FILE="/etc/nginx/.htpasswd-sitbank-staging"
+readonly STAGING_CLOUDFLARE_ORIGIN_PULL_CA_FILE="/etc/nginx/cloudflare-authenticated-origin-pull-ca.pem"
 readonly STAGING_RATE_LIMITS_FILE="/etc/nginx/conf.d/sitbank-staging-rate-limits.conf"
 
 if [[ "${EUID}" -ne 0 ]]; then
@@ -416,6 +417,13 @@ if [[ "${target}" == "staging" ]]; then
         || ! -r "${STAGING_BASIC_AUTH_FILE}" ]]; then
         echo "Missing required staging Basic Auth file: ${STAGING_BASIC_AUTH_FILE}" >&2
         echo "Create it with htpasswd, owned by root:www-data and mode 0640, before rerunning bootstrap." >&2
+        exit 1
+    fi
+    if [[ ! -f "${STAGING_CLOUDFLARE_ORIGIN_PULL_CA_FILE}" \
+        || -L "${STAGING_CLOUDFLARE_ORIGIN_PULL_CA_FILE}" \
+        || ! -r "${STAGING_CLOUDFLARE_ORIGIN_PULL_CA_FILE}" ]]; then
+        echo "Missing required Cloudflare Authenticated Origin Pull CA file: ${STAGING_CLOUDFLARE_ORIGIN_PULL_CA_FILE}" >&2
+        echo "Install the Cloudflare origin-pull CA certificate before rerunning staging bootstrap." >&2
         exit 1
     fi
     for required_staging_file in \

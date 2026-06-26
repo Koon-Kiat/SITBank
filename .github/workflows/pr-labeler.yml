@@ -46,6 +46,9 @@ jobs:
           create_label session "Session state, cookies, HMAC, Redis namespace, logout, or active sessions." 0b7285
           create_label audit "Audit logs, hash chains, HMAC, metadata, alerting, or audit events." d93f0b
           create_label deployment "Deployment, Docker, compose, nginx, systemd, EC2, runtime, or operations." 006b75
+          create_label zero-trust "Identity-aware or private-network access boundary changes." 5319e7
+          create_label network-security "Firewall, VPN, origin access, private access, or network boundary changes." d73a4a
+          create_label staging "Staging environment, staging deployment, or staging access changes." 006b75
           create_label database "Database schema, migrations, Postgres, roles, privileges, or DB integrity." 531dab
           create_label ci "GitHub Actions, CI policy, CodeQL, dependency audit, build, or pipeline changes." a2eeef
           create_label dependencies "Dependency updates, lock files, package manager changes, or Dependabot PRs." 0366d6
@@ -61,6 +64,73 @@ jobs:
       # Keep this workflow label-only: do not checkout or execute pull request
       # code here. The ordinary pull_request trigger avoids privileged PR
       # trigger execution.
+      - name: Add computed pull request text labels
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -Eeuo pipefail
+
+          PR_NUMBER="$(jq -r '.pull_request.number' "${GITHUB_EVENT_PATH}")"
+          PR_TITLE="$(jq -r '.pull_request.title // ""' "${GITHUB_EVENT_PATH}")"
+          PR_BODY="$(jq -r '.pull_request.body // ""' "${GITHUB_EVENT_PATH}")"
+          PR_HEAD="$(jq -r '.pull_request.head.ref // ""' "${GITHUB_EVENT_PATH}")"
+          PR_PATHS=""
+          PR_PATCH=""
+          if ! PR_PATHS="$(gh pr diff "${PR_NUMBER}" --name-only 2>/dev/null)"; then
+            echo "::warning::Could not load changed file paths for PR #${PR_NUMBER}; path labels will still be handled by actions/labeler."
+            PR_PATHS=""
+          fi
+          if ! PR_PATCH="$(gh pr diff "${PR_NUMBER}" --patch 2>/dev/null)"; then
+            PR_PATCH=""
+          fi
+          TEXT="$(
+            printf '%s\n%s\n%s\n%s\n%s\n' \
+              "${PR_TITLE}" "${PR_BODY}" "${PR_HEAD}" "${PR_PATHS}" "${PR_PATCH}" \
+              | tr '[:upper:]' '[:lower:]'
+          )"
+
+          labels=()
+
+          add_label() {
+            local label="$1"
+            local existing
+            for existing in "${labels[@]}"; do
+              if [[ "${existing}" == "${label}" ]]; then
+                return 0
+              fi
+            done
+            labels+=("${label}")
+          }
+
+          contains_any() {
+            local term
+            for term in "$@"; do
+              if [[ "${TEXT}" == *"${term}"* ]]; then
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          if contains_any "zero trust" "zero-trust" "cloudflare zero trust" "cloudflare access" tailscale tailnet vpn "private access" "private-access" "identity-aware access" "access boundary" "origin bypass" "origin protection" "admin exposure" "staging exposure"; then
+            add_label zero-trust
+          fi
+          if contains_any firewall "security group" "nginx allowlist" "ip allowlist" vpn tailscale "cloudflare access" "origin bypass" "private network" "network boundary" "admin network" "staging network" "private access" "private-access"; then
+            add_label network-security
+          fi
+          if contains_any staging "staging-sitbank" "compose.staging" "ops/staging" "staging deployment" "staging access"; then
+            add_label staging
+          fi
+
+          if [[ "${#labels[@]}" -eq 0 ]]; then
+            exit 0
+          fi
+
+          IFS=,
+          gh pr edit "${PR_NUMBER}" --add-label "${labels[*]}"
+
       # Pinned to the actions/labeler v6.1.0 commit.
       - name: Label pull request
         uses: actions/labeler@f27b608878404679385c85cfa523b85ccb86e213

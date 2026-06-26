@@ -113,6 +113,9 @@ jobs:
           create_label session "Session state, cookies, HMAC, Redis namespace, logout, or active sessions." 0b7285
           create_label audit "Audit logs, hash chains, HMAC, metadata, alerting, or audit events." d93f0b
           create_label deployment "Deployment, Docker, compose, nginx, systemd, EC2, runtime, or operations." 006b75
+          create_label zero-trust "Identity-aware or private-network access boundary changes." 5319e7
+          create_label network-security "Firewall, VPN, origin access, private access, or network boundary changes." d73a4a
+          create_label staging "Staging environment, staging deployment, or staging access changes." 006b75
           create_label database "Database schema, migrations, Postgres, roles, privileges, or DB integrity." 531dab
           create_label ci "GitHub Actions, CI policy, CodeQL, dependency audit, build, or pipeline changes." a2eeef
           create_label dependencies "Dependency updates, lock files, package manager changes, or Dependabot PRs." 0366d6
@@ -222,6 +225,12 @@ jobs:
             if contains_any admin administrator staff invite "staff invite" "admin portal" "admin route" "admin isolation" "admin session" "admin database" "admin deployment"; then
               add_unique labels admin
             fi
+            if contains_any "zero trust" "zero-trust" "cloudflare zero trust" "cloudflare access" tailscale tailnet vpn "private access" "private-access" "identity-aware access" "access boundary" "origin bypass" "origin protection" "admin exposure" "staging exposure"; then
+              add_unique labels zero-trust
+            fi
+            if contains_any firewall "security group" "nginx allowlist" "ip allowlist" vpn tailscale "cloudflare access" "origin bypass" "private network" "network boundary" "admin network" "staging network" "private access" "private-access"; then
+              add_unique labels network-security
+            fi
             if contains_any customer "user portal" dashboard profile "account page" "customer route"; then
               add_unique labels customer
             fi
@@ -242,6 +251,9 @@ jobs:
             fi
             if contains_any deploy deployment staging production ec2 nginx docker compose bootstrap systemd runtime "environment variable" "secret file"; then
               add_unique labels deployment
+            fi
+            if contains_any staging "staging-sitbank" "compose.staging" "ops/staging" "staging deployment" "staging access"; then
+              add_unique labels staging
             fi
             if contains_any database postgres migration schema role privilege alembic || contains_regex '(^|[^a-z0-9])db([^a-z0-9]|$)' '(^|[^a-z0-9])sql([^a-z0-9]|$)'; then
               add_unique labels database
@@ -334,12 +346,25 @@ jobs:
 
           compute_pr_labels() {
             local number="$1"
-            local head="$2"
+            local title="$2"
+            local body="$3"
+            local head="$4"
+            local diff_patch=""
+            local path_text=""
             local labels=()
             PR_HEAD="${head,,}"
             load_pr_files "${number}" || return 1
+            if ! diff_patch="$(gh pr diff "${number}" --patch 2>/dev/null)"; then
+              diff_patch=""
+            fi
+            path_text="$(printf '%s\n' "${PR_FILES[@]}")"
+            MATCH_TEXT="$(
+              printf '%s\n%s\n%s\n%s\n%s\n' \
+                "${title}" "${body}" "${head}" "${path_text}" "${diff_patch}" \
+                | tr '[:upper:]' '[:lower:]'
+            )"
 
-            if path_matches 'app/admin/*' || path_matches 'admin_wsgi.py' || path_matches 'ops/*admin*' || path_matches 'tests/test_admin_*.py'; then
+            if path_matches 'app/admin/*' || path_matches 'admin_wsgi.py' || path_matches 'ops/*admin*' || path_matches 'docs/security/admin-and-staging-zero-trust-access.md' || path_matches 'docs/security/access-control.md' || path_matches 'docs/security/session-management.md' || path_matches 'tests/test_admin_*.py'; then
               add_unique labels admin
             fi
             if path_matches 'app/web/*' || path_matches 'app/main/*' || path_matches 'app/templates/index.html' || path_matches 'app/templates/dashboard.html' || path_matches 'app/templates/profile.html' || path_matches 'tests/test_dashboard.py' || path_matches 'tests/test_authenticated_portal_ui.py'; then
@@ -354,8 +379,14 @@ jobs:
             if path_matches 'app/auth/mfa_policy.py' || path_matches 'app/auth/recovery_codes.py' || path_matches 'app/auth/webauthn_services.py' || path_matches 'app/templates/mfa_*.html' || path_matches 'app/templates/security_keys.html' || path_contains mfa totp webauthn passkey security_key recovery_code; then
               add_unique labels mfa
             fi
-            if path_matches 'app/security/*' || path_matches 'docs/security/*' || path_matches 'security.md' || path_matches '.trivyignore' || path_matches 'ops/security/*' || path_matches 'ops/fido-*.json' || path_matches 'tests/test_*security*.py' || path_matches 'tests/test_audit_*.py' || path_matches 'tests/test_owasp_regressions.py' || path_matches 'tests/test_pentest_auth_bypass.py' || path_matches 'tests/test_route_inventory_security.py' || path_matches 'tests/test_secret_scanner.py' || path_matches 'tests/test_session_management.py' || path_contains csrf csp hmac crypto secret rate_limit || branch_contains security auth mfa csrf csp session audit admin-isolation webauthn passkey secret rate-limit; then
+            if path_matches 'app/security/*' || path_matches 'docs/security/*' || path_matches 'security.md' || path_matches '.trivyignore' || path_matches 'ops/nginx/*' || path_matches 'ops/security/*' || path_matches 'ops/fido-*.json' || path_matches 'tests/test_*security*.py' || path_matches 'tests/test_audit_*.py' || path_matches 'tests/test_owasp_regressions.py' || path_matches 'tests/test_pentest_auth_bypass.py' || path_matches 'tests/test_route_inventory_security.py' || path_matches 'tests/test_secret_scanner.py' || path_matches 'tests/test_session_management.py' || path_contains csrf csp hmac crypto secret rate_limit || branch_contains security auth mfa csrf csp session audit admin-isolation webauthn passkey secret rate-limit; then
               add_unique labels security
+            fi
+            if contains_any "zero trust" "zero-trust" "cloudflare zero trust" "cloudflare access" tailscale tailnet vpn "private access" "private-access" "identity-aware access" "access boundary" "origin bypass" "origin protection" "admin exposure" "staging exposure" || path_matches 'docs/security/admin-and-staging-zero-trust-access.md' || path_contains zero-trust zero_trust cloudflare tailscale private-access access-boundary || branch_contains zero-trust cloudflare tailscale private-access access-boundary; then
+              add_unique labels zero-trust
+            fi
+            if contains_any firewall "security group" "nginx allowlist" "ip allowlist" vpn tailscale "cloudflare access" "origin bypass" "private network" "network boundary" "admin network" "staging network" "private access" "private-access" || path_matches 'ops/nginx/*' || path_matches 'docs/security/admin-and-staging-zero-trust-access.md' || path_contains firewall allowlist vpn tailscale cloudflare origin-bypass private-network network-boundary || branch_contains network-security firewall vpn tailscale cloudflare origin-bypass private-network; then
+              add_unique labels network-security
             fi
             if path_matches 'app/security/session_hmac.py' || path_matches 'app/security/sessions.py' || path_matches 'app/static/js/session-timeout.js' || path_matches 'app/templates/sessions.html' || path_matches 'tests/test_session_management.py' || path_contains session cookie; then
               add_unique labels session
@@ -365,6 +396,9 @@ jobs:
             fi
             if path_matches 'ops/*' || path_matches 'compose*.yml' || path_matches 'docker-compose*.yml' || path_matches 'dockerfile' || path_matches 'config.py' || path_matches 'docs/deployment.md' || path_matches 'docs/operations.md' || path_matches 'docs/archive/ec2_transition.md' || path_matches 'tests/test_deployment.py'; then
               add_unique labels deployment
+            fi
+            if contains_any staging "staging-sitbank" "compose.staging" "ops/staging" "staging deployment" "staging access" || path_matches 'compose.staging.yml' || path_contains staging || branch_contains staging staging-sitbank; then
+              add_unique labels staging
             fi
             if path_matches 'migrations/*' || path_matches 'app/models.py' || path_matches 'app/ops/db_privileges.py' || path_matches 'ops/postgres/*' || path_matches 'tests/test_db_session_integrity.py'; then
               add_unique labels database
@@ -473,15 +507,17 @@ jobs:
                 --jq '.[] | @base64'
             )
 
-            local row pr_json number head
+            local row pr_json number title body head
             local current computed final_labels
             for row in "${pr_rows[@]}"; do
               pr_json="$(printf '%s' "${row}" | base64 --decode)"
               number="$(jq -r '.number' <<< "${pr_json}")"
+              title="$(jq -r '.title // ""' <<< "${pr_json}")"
+              body="$(jq -r '.body // ""' <<< "${pr_json}")"
               head="$(jq -r '.headRefName // ""' <<< "${pr_json}")"
               mapfile -t current < <(jq -r '.labels[].name' <<< "${pr_json}")
 
-              if ! mapfile -t computed < <(compute_pr_labels "${number}" "${head}"); then
+              if ! mapfile -t computed < <(compute_pr_labels "${number}" "${title}" "${body}" "${head}"); then
                 echo "::warning::Could not compute dry-run PR labels for #${number}; the SHA-pinned actions/labeler v6 action will compute them in apply mode."
                 computed=()
               fi

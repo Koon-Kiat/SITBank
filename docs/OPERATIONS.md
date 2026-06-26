@@ -19,6 +19,43 @@ roles.
 
 MFA/TOTP seed encryption uses envelope encryption. Keep old KEKs in `mfa_kek_keys_json` until `rewrap-mfa-deks` has moved stored records to the new active KEK. Then update `MFA_KEK_ACTIVE_ID` and the root-managed keyring together.
 
+## Admin And Staging Access Operations
+
+SITBank uses a hybrid private-access model:
+
+- Staging is protected by Cloudflare Access and Cloudflare Authenticated Origin
+  Pulls at `staging-sitbank.duckdns.org`.
+- Admin is protected by Tailscale/private operator access and remains denied
+  on the public `admin-sitbank.duckdns.org` app routes.
+- The production customer site `sitbank.duckdns.org` remains public.
+
+Cloudflare Access policy, IdP configuration, API tokens, tunnel credentials,
+origin certificate private keys, and origin-pull client credentials are
+operator-managed. Tailscale auth keys, API keys, tailnet policy, device
+approval state, and Serve state are also operator-managed. None of those values
+belong in the repository.
+
+Routine verification:
+
+```bash
+sudo test -r /etc/nginx/cloudflare-authenticated-origin-pull-ca.pem
+sudo nginx -t
+curl --fail --resolve staging-sitbank.duckdns.org:443:127.0.0.1 \
+  https://staging-sitbank.duckdns.org/health/ready
+curl -I --resolve staging-sitbank.duckdns.org:443:<EC2_PUBLIC_IP> \
+  https://staging-sitbank.duckdns.org/
+sudo tailscale serve status
+```
+
+Expected: local staging readiness succeeds, direct origin access to staging
+returns `403` without Cloudflare's origin-pull client certificate, and admin
+Serve status is present only when the approved tailnet path is intentionally
+enabled. Tailscale Funnel must stay disabled for SITBank admin.
+
+The detailed onboarding, offboarding, emergency lockout, rollback, and live
+operator verification steps are in
+`docs/security/admin-and-staging-zero-trust-access.md`.
+
 ## Trivy Exception
 
 The temporary `.trivyignore` exception covers only `CVE-2026-42496` and `CVE-2026-8376` inherited from the official python:3.12 slim-trixie / Debian Trixie base image.

@@ -7,6 +7,9 @@ Only Flask/Gunicorn runs in the SITBank container. Nginx, TLS, PostgreSQL, and b
 - Production public host: `sitbank.duckdns.org`
 - Production admin host: `admin-sitbank.duckdns.org`
 - Staging public host: `staging-sitbank.duckdns.org`
+- Production customer access: public HTTPS
+- Staging access boundary: Cloudflare Access plus Authenticated Origin Pull
+- Admin access boundary: Tailscale/private operator access only
 - Production image form: `ghcr.io/hetp88/sitbank@sha256:<digest>`
 - Repository identity: `hetp88/SITBank`
 - Production config root: `/etc/sitbank`
@@ -224,13 +227,16 @@ The reviewed production bootstrap installs and enables the production edge from 
   limits TLS 1.3 to its standard AEAD suites.
 - Gunicorn binds only to `127.0.0.1:5000`.
 - Admin Gunicorn binds only to `127.0.0.1:5002` and is reached only by the
-  `admin-sitbank.duckdns.org` Nginx server block.
+  public `admin-sitbank.duckdns.org` Nginx server block for denied health and
+  verification responses, or by a Tailscale/private operator path for the
+  actual admin application.
 - `compose.prod.yml` publishes no app ports.
 - `/health/ready` is for local deployment and load-balancer checks and should deny public traffic.
 - Admin `/` serves only a static Google verification and restricted-access
   notice at the public edge. Admin `/health/ready`, `/login`, and all other
-  admin routes should remain denied by default at Nginx until a VPN, explicit
-  IP allowlist, or equivalent network control is configured.
+  admin routes remain denied by default at the public Nginx edge. Admin app
+  access is through Tailscale/private operator access only; do not enable
+  Tailscale Funnel or expose the admin app through the customer host.
 - Cloudflare or AWS WAF should sit in front of Nginx for managed common, SQL injection, XSS, bot, and protocol anomaly rules.
 - Cloudflare or AWS WAF rules and security-group allowlists are still infrastructure state and must be checked manually.
 - Flask admin auth is implemented only for root-admin-controlled invite
@@ -265,15 +271,21 @@ Staging admin must follow the same boundary pattern as production. Do not expose
 admin routes publicly. The staging admin service must bind only to localhost
 and use a separate loopback port from production admin when both environments
 share one EC2 host. Production admin owns `127.0.0.1:5002`; staging admin owns
-`127.0.0.1:5003`. If a staging admin Nginx server block is added later, deny
-public admin traffic unless an
-approved access path such as VPN, SSH tunnel, or explicit allowlist is
-configured. Staging admin secrets must be root-managed under
-`/etc/sitbank-staging/secrets` and must not reuse customer runtime secrets.
+`127.0.0.1:5003`. Use Tailscale SSH, Tailscale Serve, or another approved
+private operator path for admin access; do not enable Tailscale Funnel and do
+not add a public staging admin Nginx server block. Staging admin secrets must
+be root-managed under `/etc/sitbank-staging/secrets` and must not reuse
+customer runtime secrets.
 
 ## Staging Edge Setup
 
-Create a staging Basic Auth file before running the staging bootstrap:
+Staging uses Cloudflare Access as the identity-aware boundary and Cloudflare
+Authenticated Origin Pulls to prevent direct EC2-origin bypass. The staging
+Nginx app paths require a verified Cloudflare origin-pull client certificate
+before proxying to Flask. The production customer hostname remains public.
+
+Create a staging Basic Auth file before running the staging bootstrap. This is
+a secondary staging control and must not replace Cloudflare Access:
 
 ```bash
 sudo htpasswd -c /etc/nginx/.htpasswd-sitbank-staging <username>
@@ -282,6 +294,20 @@ sudo chmod 0640 /etc/nginx/.htpasswd-sitbank-staging
 ```
 
 Do not store the Basic Auth password or generated htpasswd hash in the repo.
+
+Install the Cloudflare Authenticated Origin Pull CA certificate on the EC2
+host before running staging bootstrap:
+
+```bash
+sudo install -o root -g root -m 0644 \
+  cloudflare-authenticated-origin-pull-ca.pem \
+  /etc/nginx/cloudflare-authenticated-origin-pull-ca.pem
+```
+
+Do not store Cloudflare API tokens, tunnel credentials, Access IdP secrets, or
+origin certificate private keys in the repo. If the staging hostname cannot be
+proxied by Cloudflare in the current DNS model, stop and make an approved DNS
+change instead of disabling the origin-pull protection.
 
 Issue or renew staging TLS before bootstrap:
 
@@ -293,21 +319,32 @@ sudo /usr/local/sbin/verify-certbot-host-state staging
 sudo certbot renew --dry-run
 ```
 
-Then run `ops/deploy/bootstrap-container-ec2 staging hetp88/SITBank staging-sitbank.duckdns.org`. The bootstrap installs the Nginx proxy header snippet, TLS policy snippet, and rate-limit include, then runs `sudo nginx -t` before `sudo systemctl reload nginx`. This edge setup is separate from application deployment.
+Then run `ops/deploy/bootstrap-container-ec2 staging hetp88/SITBank staging-sitbank.duckdns.org`. The bootstrap installs the Nginx proxy header snippet, TLS policy snippet, and rate-limit include, verifies the staging Basic Auth file and Cloudflare origin-pull CA file, then runs `sudo nginx -t` before `sudo systemctl reload nginx`. This edge setup is separate from application deployment.
 
 Staging verification:
 
 ```bash
-curl -k -I https://staging-sitbank.duckdns.org/
-curl -k -I -u "$STAGING_BASIC_AUTH_USER:$STAGING_BASIC_AUTH_PASSWORD" \
+curl -I https://staging-sitbank.duckdns.org/
+curl -I -u "$STAGING_BASIC_AUTH_USER:$STAGING_BASIC_AUTH_PASSWORD" \
   https://staging-sitbank.duckdns.org/
-curl -k -I https://staging-sitbank.duckdns.org/health/ready
+curl -I https://staging-sitbank.duckdns.org/health/ready
 curl -fsS http://127.0.0.1:5001/health/ready
+curl --fail --resolve staging-sitbank.duckdns.org:443:127.0.0.1 \
+  https://staging-sitbank.duckdns.org/health/ready
+curl -I --resolve staging-sitbank.duckdns.org:443:<EC2_PUBLIC_IP> \
+  https://staging-sitbank.duckdns.org/
 sudo nginx -T | grep -E 'ssl_protocols|ssl_ciphers|ssl_ecdh_curve|ssl_conf_command|ssl_session_tickets'
 testssl.sh --warnings batch --color 0 https://staging-sitbank.duckdns.org
 ```
 
-Expected: unauthenticated `/` returns `401`, authenticated `/` returns `200`, external `/health/ready` returns `403`, and local app readiness succeeds.
+Expected: unauthenticated browser traffic receives the Cloudflare Access
+challenge before reaching staging, approved operators can pass Cloudflare
+Access and then reach the normal staging controls, direct EC2-origin access to
+`/` returns `403` without Cloudflare's origin-pull client certificate,
+external `/health/ready` returns `403`, and local app readiness succeeds.
+
+The complete operator runbook is
+`docs/security/admin-and-staging-zero-trust-access.md`.
 
 After the staging TLS check passes, validate both production HTTPS hostnames
 with `testssl.sh --warnings batch --color 0 https://sitbank.duckdns.org` and
