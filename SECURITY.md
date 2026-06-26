@@ -56,7 +56,7 @@ runtime role. The admin role must be distinct from both `sitbank_app` and
 access is private operator access only through Tailscale; do not enable
 Tailscale Funnel and do not expose admin through the customer app or public
 admin Nginx routes. `admin-sitbank.duckdns.org` remains isolated at the public
-edge with only the static verification page at `/`; app routes stay denied.
+edge with public `/` and app routes denied.
 The Flask admin app still uses a separate cookie, session HMAC keyring,
 database role, root-admin-controlled staff invites, and mandatory TOTP.
 
@@ -226,7 +226,7 @@ checked manually.
 - Keep customer Gunicorn bound to `127.0.0.1:5000`, admin Gunicorn bound to
   `127.0.0.1:5002`, and keep `compose.prod.yml` free of published app ports.
 - Restrict `/health/ready` to loopback and allow public `/health/live` only.
-- Keep public admin app routes denied by default. Admin application access is
+- Keep public admin `/` and app routes denied by default. Admin application access is
   Tailscale/private operator access only, followed by Flask admin login and
   TOTP. Do not enable Tailscale Funnel or make `admin-sitbank.duckdns.org`
   publicly usable for app routes.
@@ -257,6 +257,7 @@ sudo docker inspect --format '{{json .HostConfig.PortBindings}}' sitbank-app
 sudo docker inspect --format '{{json .HostConfig.PortBindings}}' sitbank-admin
 curl --fail https://sitbank.duckdns.org/health/live
 curl -I https://sitbank.duckdns.org/health/ready
+curl -I https://admin-sitbank.duckdns.org/
 curl -I https://admin-sitbank.duckdns.org/login
 curl --fail -H 'X-Forwarded-Proto: https' \
   http://127.0.0.1:5000/health/ready
@@ -267,7 +268,7 @@ curl --fail -H 'Host: admin-sitbank.duckdns.org' \
 
 Expected results: only `80` and `443` are publicly reachable, Gunicorn is
 loopback-only on `5000` and `5002`, Docker publishes no app ports, external
-customer readiness is denied, admin routes are denied, and local readiness
+customer readiness is denied, public admin `/` and admin routes are denied, and local readiness
 succeeds.
 In short, external readiness is denied.
 

@@ -33,7 +33,10 @@ Cloudflare Access policy, IdP configuration, API tokens, tunnel credentials,
 origin certificate private keys, and origin-pull client credentials are
 operator-managed. Tailscale auth keys, API keys, tailnet policy, device
 approval state, and Serve state are also operator-managed. None of those values
-belong in the repository.
+belong in the repository. The observed `staging-sitbank.duckdns.org` hostname
+resolves directly to EC2; Cloudflare Access cannot fully protect staging until
+traffic is routed through a Cloudflare-managed zone/hostname or Cloudflare
+Tunnel.
 
 Routine verification:
 
@@ -44,13 +47,15 @@ curl --fail --resolve staging-sitbank.duckdns.org:443:127.0.0.1 \
   https://staging-sitbank.duckdns.org/health/ready
 curl -I --resolve staging-sitbank.duckdns.org:443:<EC2_PUBLIC_IP> \
   https://staging-sitbank.duckdns.org/
+curl -I https://admin-sitbank.duckdns.org/
 sudo tailscale serve status
 ```
 
 Expected: local staging readiness succeeds, direct origin access to staging
-returns `403` without Cloudflare's origin-pull client certificate, and admin
-Serve status is present only when the approved tailnet path is intentionally
-enabled. Tailscale Funnel must stay disabled for SITBank admin.
+returns `403` without Cloudflare's origin-pull client certificate, public
+admin `/` returns `403`, and admin Serve status is present only when the
+approved tailnet path is intentionally enabled. Tailscale Funnel must stay
+disabled for SITBank admin.
 
 The detailed onboarding, offboarding, emergency lockout, rollback, and live
 operator verification steps are in
