@@ -813,17 +813,29 @@ jobs:
             "runtime-staging-${RELEASE_SHA}.sigstore.json" \
             "registry-staging-${RELEASE_SHA}.credentials"
 
+  verify-staging-tls:
+    if: >-
+      always() &&
+      needs.deploy-staging.result == 'success'
+    needs: deploy-staging
+    uses: ./.github/workflows/tls-scan.yml
+    with:
+      scan_scope: staging
+      staging_host: ${{ vars.STAGING_PUBLIC_HOST }}
+
   deploy-production:
     if: >-
       always() &&
       needs.release-verify.result == 'success' &&
       needs.deploy-staging.result == 'success' &&
+      needs.verify-staging-tls.result == 'success' &&
       github.event_name == 'push' &&
       github.ref == 'refs/heads/main' &&
       vars.PROD_DEPLOY_ENABLED == 'true'
     needs:
       - release-verify
       - deploy-staging
+      - verify-staging-tls
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -1010,3 +1022,13 @@ jobs:
             "runtime-${RELEASE_SHA}.sha256" \
             "runtime-${RELEASE_SHA}.sigstore.json" \
             "registry-${RELEASE_SHA}.credentials"
+
+  verify-production-tls:
+    if: >-
+      always() &&
+      needs.deploy-production.result == 'success'
+    needs: deploy-production
+    uses: ./.github/workflows/tls-scan.yml
+    with:
+      scan_scope: production
+      production_host: ${{ vars.PROD_PUBLIC_HOST }}

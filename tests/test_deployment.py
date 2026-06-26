@@ -279,6 +279,11 @@ def _workflow_uses(workflow_text: str) -> list[str]:
 def _assert_pinned_actions(actions: list[str], *, context: str) -> None:
     assert actions, f"{context} must use at least one pinned action"
     for action in actions:
+        if action.startswith("./.github/workflows/"):
+            assert action.endswith(".yml"), (
+                f"{context} has an invalid local reusable workflow reference: {action}"
+            )
+            continue
         assert ACTION_USES_PIN_RE.fullmatch(action), f"{context} is not pinned: {action}"
 
 
@@ -1240,7 +1245,9 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         "publish",
         "release-verify",
         "deploy-staging",
+        "verify-staging-tls",
         "deploy-production",
+        "verify-production-tls",
     }
     assert workflow["permissions"] == {}
     assert workflow["jobs"]["workflow-security"]["permissions"]["contents"] == "read"
@@ -1405,11 +1412,31 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "vars.PROD_DEPLOY_ENABLED == 'true'" in production_condition
     assert "needs.release-verify.result == 'success'" in production_condition
     assert "needs.deploy-staging.result == 'success'" in production_condition
+    assert "needs.verify-staging-tls.result == 'success'" in production_condition
     assert "vars.STAGING_DEPLOY_ENABLED != 'true'" not in production_condition
     assert workflow["jobs"]["deploy-production"]["needs"] == [
         "release-verify",
         "deploy-staging",
+        "verify-staging-tls",
     ]
+    staging_tls = workflow["jobs"]["verify-staging-tls"]
+    production_tls = workflow["jobs"]["verify-production-tls"]
+    assert staging_tls["uses"] == "./.github/workflows/tls-scan.yml"
+    assert staging_tls["needs"] == "deploy-staging"
+    assert "always()" in staging_tls["if"]
+    assert "needs.deploy-staging.result == 'success'" in staging_tls["if"]
+    assert staging_tls["with"] == {
+        "scan_scope": "staging",
+        "staging_host": "${{ vars.STAGING_PUBLIC_HOST }}",
+    }
+    assert production_tls["uses"] == "./.github/workflows/tls-scan.yml"
+    assert production_tls["needs"] == "deploy-production"
+    assert "always()" in production_tls["if"]
+    assert "needs.deploy-production.result == 'success'" in production_tls["if"]
+    assert production_tls["with"] == {
+        "scan_scope": "production",
+        "production_host": "${{ vars.PROD_PUBLIC_HOST }}",
+    }
     staging_deploy_env = workflow["jobs"]["deploy-staging"]["env"]
     production_deploy_env = workflow["jobs"]["deploy-production"]["env"]
     assert not any(name.startswith("PROD_") for name in staging_deploy_env)
@@ -1485,7 +1512,10 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     )
     assert "schedule" in workflow[True]
     assert "github.event_name == 'schedule'" not in workflow["jobs"]["publish"]["if"]
-    assert all(job["timeout-minutes"] > 0 for job in workflow["jobs"].values())
+    assert all(
+        "uses" in job or job["timeout-minutes"] > 0
+        for job in workflow["jobs"].values()
+    )
     assert "vars.PROD_DEPLOY_ENABLED == 'true'" in workflow_text
     assert "vars.STAGING_DEPLOY_ENABLED == 'true'" in workflow_text
     assert "workflow_dispatch" in workflow_text
@@ -1918,6 +1948,94 @@ def test_every_github_action_is_pinned_to_a_full_commit_sha():
 
     _assert_pinned_actions(uses, context="GitHub Actions workflow")
     assert "pull_request_target:" not in workflow_text
+
+
+def test_live_tls_scan_workflow_collects_evidence_without_running_on_pull_requests():
+    workflow_path = Path(".github/workflows/tls-scan.yml")
+    workflow_text = workflow_path.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(workflow_text)
+    triggers = workflow[True]
+
+    assert workflow["name"] == "Live TLS scan evidence"
+    assert set(triggers) == {"workflow_call", "workflow_dispatch", "schedule"}
+    assert "pull_request" not in workflow_text
+    assert workflow["permissions"] == {}
+    assert workflow["concurrency"] == {
+        "group": "live-tls-scan",
+        "cancel-in-progress": False,
+    }
+
+    inputs = triggers["workflow_dispatch"]["inputs"]
+    assert inputs["scan_scope"]["options"] == ["all", "staging", "production"]
+    assert inputs["staging_host"]["default"] == "staging-sitbank.duckdns.org"
+    assert inputs["production_host"]["default"] == "sitbank.duckdns.org"
+    assert inputs["admin_host"]["default"] == "admin-sitbank.duckdns.org"
+
+    call_inputs = triggers["workflow_call"]["inputs"]
+    assert call_inputs["scan_scope"] == {
+        "description": "Set of deployed endpoints to scan: all, staging, or production.",
+        "required": False,
+        "default": "all",
+        "type": "string",
+    }
+    assert call_inputs["staging_host"]["required"] is False
+    assert call_inputs["production_host"]["required"] is False
+    assert call_inputs["admin_host"]["required"] is False
+
+    resolver = workflow["jobs"]["resolve-targets"]
+    assert resolver["timeout-minutes"] == 5
+    assert resolver["outputs"]["matrix"] == "${{ steps.select.outputs.matrix }}"
+    select_step = resolver["steps"][0]
+    assert select_step["env"]["SCAN_SCOPE"] == "${{ inputs.scan_scope || 'all' }}"
+    assert "scan_scope must be all, staging, or production" in select_step["run"]
+    assert "tls-scan-staging-sitbank" in select_step["run"]
+    assert "tls-scan-prod-sitbank" in select_step["run"]
+    assert "tls-scan-admin-sitbank" in select_step["run"]
+
+    scan = workflow["jobs"]["scan"]
+    assert scan["needs"] == "resolve-targets"
+    assert scan["timeout-minutes"] == 35
+    assert scan["strategy"]["fail-fast"] is False
+    assert scan["strategy"]["max-parallel"] == 3
+    assert scan["strategy"]["matrix"] == "${{ fromJSON(needs.resolve-targets.outputs.matrix) }}"
+    assert "testssl.sh/archive/${commit}.tar.gz" in workflow_text
+    assert 'readonly commit="d2d9d2a04120033a7d1e01e52d9b409168544cc6"' in workflow_text
+    assert "d35d2454e2a86d1748381602fcc51783f79bf70263cd17f1b8030da49dfc0ef6" in workflow_text
+    assert "sha256sum --check --strict" in workflow_text
+    assert "--jsonfile" in workflow_text
+    assert "--logfile" in workflow_text
+    assert "--htmlfile" in workflow_text
+    assert "GITHUB_STEP_SUMMARY" in workflow_text
+    assert "TLS1_1" in workflow_text
+    assert "cipherlist_(NULL|aNULL|EXPORT|LOW|OBSOLETED|3DES|RC4)" in workflow_text
+    assert "cert_expirationStatus" in workflow_text
+    assert "cert_trust" in workflow_text
+    assert "cert_chain_of_trust" in workflow_text
+    assert "IN(\"HIGH\"; \"CRITICAL\"; \"FATAL\")" in workflow_text
+    assert "secrets." not in workflow_text
+
+    uses = _workflow_uses(workflow_text)
+    assert uses == [
+        "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+    ]
+    _assert_pinned_actions(uses, context="Live TLS scan workflow")
+
+    deployment_docs = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
+    operations_docs = Path("docs/OPERATIONS.md").read_text(encoding="utf-8")
+    crypto_docs = Path("docs/security/cryptography-and-authentication.md").read_text(
+        encoding="utf-8"
+    )
+    for docs in (deployment_docs, operations_docs, crypto_docs):
+        assert "live tls scan evidence" in docs.lower()
+        assert "staging-sitbank.duckdns.org" in docs
+        assert "sitbank.duckdns.org" in docs
+        assert "admin-sitbank.duckdns.org" in docs
+        assert "SSL Labs" in docs
+        assert re.search(r"HIGH,\s+CRITICAL,\s+or FATAL", docs)
+    assert "testssl.sh --warnings batch --color 0" in deployment_docs
+    assert "tls-scan-staging-sitbank" in deployment_docs
+    assert "tls-scan-prod-sitbank" in deployment_docs
+    assert "tls-scan-admin-sitbank" in deployment_docs
 
 
 def test_only_sitbank_container_deployment_units_are_active():
