@@ -410,6 +410,7 @@ def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypa
     assert environment["PASSWORD_RESET_BASE_URL"] == "https://sitbank.duckdns.org"
     assert environment["PASSWORD_RESET_EMAIL_BACKEND"] == "smtp"
     assert environment["PASSWORD_RESET_EMAIL_FROM"] == DEPLOYMENT_VALUES["PROD_PASSWORD_RESET_EMAIL_FROM"]
+    assert environment["PAYEE_COOLDOWN_SECONDS"] == "43200"
     assert environment["SMTP_HOST"] == DEPLOYMENT_VALUES["PROD_SMTP_HOST"]
     assert environment["SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06"
     assert environment["ADMIN_SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06-admin"
@@ -450,6 +451,7 @@ def test_container_bundle_accepts_staging_prefix(monkeypatch):
     assert "WEBAUTHN_RP_ID" not in environment
     assert "WEBAUTHN_RP_ORIGIN" not in environment
     assert environment["PASSWORD_RESET_BASE_URL"] == "https://staging.sitbank.example"
+    assert environment["PAYEE_COOLDOWN_SECONDS"] == "43200"
     assert environment["SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06"
     assert environment["ADMIN_SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06-admin"
     assert environment["MFA_KEK_ACTIVE_ID"] == "2026-06-mfa"
@@ -685,6 +687,7 @@ def test_smoke_fixture_and_deployment_wrapper_match_runtime_contract():
         )
 
     assert "--env DATABASE_MIGRATION_URL_FILE=/run/secrets/database_migration_url" in smoke_test
+    assert "--env PAYEE_COOLDOWN_SECONDS=43200" in smoke_test
     assert "--env SECURITY_AUDIT_ANCHOR_PATH=/run/state/security-audit.anchor" in smoke_test
     assert '--tmpfs "/run/state:rw,noexec,nosuid,nodev,size=16m,uid=10001,gid=10001,mode=0750"' in smoke_test
     assert ':/run/secrets/database_migration_url:ro' not in smoke_test
