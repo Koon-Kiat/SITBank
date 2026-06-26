@@ -99,6 +99,58 @@ sudo systemctl status sitbank-security-alerts.timer
 journalctl -u sitbank-security-alerts.service
 ```
 
+## Host-Managed TLS Certificate Lifecycle
+
+Certificates are issued and renewed on the EC2 host. Certbot's ACME account
+state, certificate archive, and TLS private keys are host-managed under
+`/etc/letsencrypt`; none of that material may be committed to this repository.
+The Flask application and its containers do not issue certificates and do not
+mount or read TLS private keys. Normal deployment must never generate or
+overwrite a private key.
+
+Before first bootstrap, issue the certificates using the approved host Certbot
+flow. The bootstrap retains its certificate-file preflight and installs
+`ops/deploy/verify-certbot-host-state` as
+`/usr/local/sbin/verify-certbot-host-state`. Once the required files exist, it
+runs the verifier before it installs or reloads Nginx; it does not attempt
+certificate issuance. A failed verification is a host remediation task, not an
+application deployment workaround.
+
+The verifier is read-only. It checks `certbot`, an enabled and active
+`certbot.timer`, every expected `fullchain.pem`, and each resolved
+`privkey.pem` target. The `live` private-key path is normally a symlink; the
+resolved target must remain below `/etc/letsencrypt`, be owned by `root`, be
+group-owned by `root`, be neither group-writable nor world-writable, and grant
+no permissions to other users. The normal state is `root:root` mode `0600` (or
+a stricter equivalent). A `0640` dedicated TLS-read-group design is allowed
+only after that group, its membership, and the Nginx privilege model are
+documented and the verifier's explicit group allowlist has been reviewed and
+updated. Do not use an application or container group for this purpose.
+
+Verify the host state after issuance, after renewal changes, and before an edge
+deployment:
+
+```bash
+sudo certbot certificates
+sudo systemctl status certbot.timer
+sudo /usr/local/sbin/verify-certbot-host-state production
+sudo /usr/local/sbin/verify-certbot-host-state staging
+sudo certbot renew --dry-run
+
+sudo readlink -f /etc/letsencrypt/live/sitbank.duckdns.org/privkey.pem
+sudo stat -c '%U %G %a %n' "$(sudo readlink -f /etc/letsencrypt/live/sitbank.duckdns.org/privkey.pem)"
+sudo readlink -f /etc/letsencrypt/live/admin-sitbank.duckdns.org/privkey.pem
+sudo stat -c '%U %G %a %n' "$(sudo readlink -f /etc/letsencrypt/live/admin-sitbank.duckdns.org/privkey.pem)"
+sudo readlink -f /etc/letsencrypt/live/staging-sitbank.duckdns.org/privkey.pem
+sudo stat -c '%U %G %a %n' "$(sudo readlink -f /etc/letsencrypt/live/staging-sitbank.duckdns.org/privkey.pem)"
+```
+
+When verifying directly from a reviewed checkout before bootstrap has installed
+the script, use `sudo ops/deploy/verify-certbot-host-state production` or
+`sudo ops/deploy/verify-certbot-host-state staging`. `certbot renew --dry-run`
+is the required manual renewal test; do not print or copy private-key contents
+while troubleshooting.
+
 ## Production Edge and Network Hardening
 
 The reviewed production bootstrap installs and enables the production edge from `ops/nginx/sitbank-default.conf`, `ops/nginx/sitbank-production.conf`, `ops/nginx/sitbank-production-rate-limits.conf`, `ops/nginx-proxy-headers.conf`, and `ops/nginx/sitbank-tls-policy.conf`. The shared default config owns unknown-host rejection so production and staging can run on the same EC2 without duplicate Nginx `default_server` listeners. Any change to those files requires a production bootstrap after merge.
@@ -128,6 +180,7 @@ Verification:
 
 ```bash
 sudo test -r /etc/letsencrypt/live/sitbank.duckdns.org/fullchain.pem
+sudo /usr/local/sbin/verify-certbot-host-state production
 sudo nginx -t
 sudo nginx -T | grep -E 'ssl_protocols|ssl_ciphers|ssl_ecdh_curve|ssl_conf_command|ssl_session_tickets'
 sudo ss -ltnp | grep -E ':(80|443|5000|5002)([[:space:]]|$)'
@@ -174,6 +227,8 @@ Issue or renew staging TLS before bootstrap:
 ```bash
 sudo certbot --nginx -d staging-sitbank.duckdns.org
 sudo certbot certonly --webroot -w /var/www/certbot -d staging-sitbank.duckdns.org
+sudo systemctl status certbot.timer
+sudo /usr/local/sbin/verify-certbot-host-state staging
 sudo certbot renew --dry-run
 ```
 
