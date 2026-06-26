@@ -198,11 +198,35 @@ Expected reset email configuration in production:
 - `SMTP_USERNAME_FILE=/run/secrets/smtp_username`
 - `SMTP_PASSWORD_FILE=/run/secrets/smtp_password`
 
+Payee activation cooldown in production:
+
+- `PAYEE_COOLDOWN_SECONDS` controls when a newly added payee becomes usable.
+- Development and test can keep the short default for demos and automated tests.
+- Production must set `PAYEE_COOLDOWN_SECONDS` to at least `43200` seconds
+  (12 hours), and `production-check` fails closed below that minimum.
+- The customer UI displays server-calculated availability timing; operators
+  should not ask users to supply or override activation timestamps.
+
 Do not paste reset links into Discord, Telegram, ntfy, tickets, audit logs, or
 security alert payloads. Reset links belong only in customer recovery email.
 Manual recovery requests create pending records and audit events only; account
-freezing, unlocking, MFA removal, or re-enrollment must require a trusted
-future approval workflow.
+freezing, unlocking, MFA removal, or re-enrollment requires the isolated admin
+manual recovery workflow.
+
+Manual recovery operator workflow:
+
+- Root admins review requests in the admin app with
+  `GET /manual-recovery/requests`.
+- Root admins move a request through `under_review`, `approved`, or `denied`
+  using `POST /manual-recovery/requests/<id>/transition` with an operator
+  reason and fresh TOTP code.
+- Completion uses `POST /manual-recovery/requests/<id>/complete` after
+  approval, again with an operator reason and fresh TOTP code.
+- Completion forces customer MFA re-enrollment, revokes active customer
+  sessions, sends the existing manual recovery completion notification, and
+  records `manual_recovery_completed` plus admin actor audit events.
+- Public account-recovery submission never unlocks, mutates, or completes an
+  account by itself.
 
 ## SIT Email OTP Registration Operations
 

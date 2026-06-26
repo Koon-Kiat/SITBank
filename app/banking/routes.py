@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta, timezone
+from math import ceil
 
 from flask import (
     Blueprint,
@@ -33,17 +34,45 @@ _ACCOUNT_RE = re.compile(r"^[0-9]{9}$")
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _format_cooldown_remaining(seconds: float) -> str:
+    total_seconds = max(0, int(ceil(seconds)))
+    days, remainder = divmod(total_seconds, 24 * 60 * 60)
+    hours, remainder = divmod(remainder, 60 * 60)
+    minutes, secs = divmod(remainder, 60)
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
 def _cooldown_status(payee: Payee, cooldown_seconds: int) -> dict:
     now = datetime.now(timezone.utc)
-    elapsed = (now - payee.created_at).total_seconds()
+    created_at = _as_utc(payee.created_at)
+    elapsed = (now - created_at).total_seconds()
     if elapsed >= cooldown_seconds:
-        return {"status": "active", "remaining": None, "expires_at": None}
+        return {
+            "status": "active",
+            "remaining": None,
+            "expires_at": None,
+            "available_at": None,
+        }
     remaining = cooldown_seconds - elapsed
-    expires_at = payee.created_at + timedelta(seconds=cooldown_seconds)
-    mins = int(remaining // 60)
-    secs = int(remaining % 60)
-    label = f"{mins}m {secs}s" if mins else f"{secs}s"
-    return {"status": "cooldown", "remaining": label, "expires_at": expires_at.isoformat()}
+    expires_at = created_at + timedelta(seconds=cooldown_seconds)
+    return {
+        "status": "cooldown",
+        "remaining": _format_cooldown_remaining(remaining),
+        "expires_at": expires_at.isoformat(),
+        "available_at": expires_at.strftime("%Y-%m-%d %H:%M UTC"),
+    }
 
 
 # ── Payee list ─────────────────────────────────────────────────────────────────
@@ -222,10 +251,7 @@ def payees_confirm_submit():
     )
 
     cooldown_seconds = current_app.config.get("PAYEE_COOLDOWN_SECONDS", 60)
-    if cooldown_seconds < 3600:
-        cooldown_label = f"{cooldown_seconds // 60} minute(s)"
-    else:
-        cooldown_label = f"{cooldown_seconds // 3600} hour(s)"
+    cooldown_label = _format_cooldown_remaining(cooldown_seconds)
     flash(f"Payee added. Transfers available in {cooldown_label}.", "success")
     return redirect(url_for("banking.payees"))
 

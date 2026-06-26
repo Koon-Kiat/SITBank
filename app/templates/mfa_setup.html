@@ -67,6 +67,11 @@
           <form method="post" action="{{ url_for('web.mfa_setup_submit') }}">
             {{ recovery_regenerate_form.hidden_tag() }}
             <input type="hidden" name="action" value="recovery_codes_regenerate">
+            <div class="form-group compact">
+              <label for="recovery-regenerate-totp-code">Authenticator code</label>
+              {{ recovery_regenerate_form.totp_code(id="recovery-regenerate-totp-code", inputmode="numeric", autocomplete="one-time-code", maxlength="6", placeholder="6-digit code") }}
+              {% for error in recovery_regenerate_form.totp_code.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+            </div>
             <button class="button full" type="submit">Regenerate recovery codes</button>
           </form>
         </div>

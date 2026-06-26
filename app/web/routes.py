@@ -599,7 +599,7 @@ def mfa_setup():
         verify_form=TotpForm(),
         replace_start_form=MfaOrStepUpForm(),
         replace_verify_form=TotpForm(),
-        recovery_regenerate_form=CsrfOnlyForm(),
+        recovery_regenerate_form=MfaOrStepUpForm(),
     )
 
 
@@ -615,7 +615,7 @@ def mfa_setup_submit():
     recent_mfa = has_recent_fresh_mfa()
     replace_start_form = MfaOrStepUpForm()
     replace_verify_form = TotpForm()
-    recovery_regenerate_form = CsrfOnlyForm()
+    recovery_regenerate_form = MfaOrStepUpForm()
 
     def render_mfa_management(status_code: int = 200):
         recovery_codes_remaining = unused_recovery_code_count(g.current_user) if g.current_user.mfa_enabled else 0
@@ -657,7 +657,7 @@ def mfa_setup_submit():
             verify_form=TotpForm(),
             replace_start_form=MfaOrStepUpForm(),
             replace_verify_form=TotpForm(),
-            recovery_regenerate_form=CsrfOnlyForm(),
+            recovery_regenerate_form=MfaOrStepUpForm(),
         )
 
     if action == "verify":
@@ -682,7 +682,7 @@ def mfa_setup_submit():
             verify_form=TotpForm(),
             replace_start_form=MfaOrStepUpForm(),
             replace_verify_form=TotpForm(),
-            recovery_regenerate_form=CsrfOnlyForm(),
+            recovery_regenerate_form=MfaOrStepUpForm(),
         )
 
     if action == "replace_start":
@@ -711,7 +711,7 @@ def mfa_setup_submit():
             verify_form=TotpForm(),
             replace_start_form=MfaOrStepUpForm(),
             replace_verify_form=TotpForm(),
-            recovery_regenerate_form=CsrfOnlyForm(),
+            recovery_regenerate_form=MfaOrStepUpForm(),
         )
 
     if action == "replace_verify":
@@ -736,14 +736,18 @@ def mfa_setup_submit():
             verify_form=TotpForm(),
             replace_start_form=MfaOrStepUpForm(),
             replace_verify_form=TotpForm(),
-            recovery_regenerate_form=CsrfOnlyForm(),
+            recovery_regenerate_form=MfaOrStepUpForm(),
         )
 
     if action == "recovery_codes_regenerate":
-        if not recovery_regenerate_form.validate_on_submit():
+        if not CsrfOnlyForm().validate_on_submit():
             return render_mfa_management(400)
         try:
-            result = regenerate_totp_recovery_codes(g.current_user)
+            result = regenerate_totp_recovery_codes(
+                g.current_user,
+                recovery_regenerate_form.totp_code.data,
+                recovery_regenerate_form.stepup_token.data,
+            )
         except AuthError as exc:
             flash(exc.message, "error")
             return render_mfa_management(exc.status_code)
@@ -761,7 +765,7 @@ def mfa_setup_submit():
             verify_form=TotpForm(),
             replace_start_form=MfaOrStepUpForm(),
             replace_verify_form=TotpForm(),
-            recovery_regenerate_form=CsrfOnlyForm(),
+            recovery_regenerate_form=MfaOrStepUpForm(),
         )
 
     flash("Invalid MFA setup action.", "error")

@@ -485,11 +485,21 @@ def complete_pending_mfa(code: str) -> dict[str, Any]:
     }
 
 
-def regenerate_totp_recovery_codes(user: User) -> dict[str, Any]:
+def regenerate_totp_recovery_codes(
+    user: User,
+    code: str | None,
+    stepup_token: str | None = None,
+) -> dict[str, Any]:
     ensure_account_not_frozen(user, "recovery code regeneration")
     if not user.mfa_enabled:
         audit_event("recovery_codes_regenerate", "failure", user=user, metadata={"reason": "mfa_not_enabled"})
         raise AuthError("MFA is not enabled", 403)
+    verify_high_risk_authorization(
+        user,
+        code,
+        stepup_token,
+        "recovery_codes_regenerate",
+    )
 
     recovery_codes = generate_recovery_codes_for_user(user, commit=False, audit=False)
     audit_event_required(

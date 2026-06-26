@@ -251,6 +251,7 @@ def test_production_env_docs_require_pbkdf2_pepper_not_bcrypt():
         "SESSION_HMAC_KEYS_JSON",
         "PASSWORD_PEPPER_B64",
         "PASSWORD_PBKDF2_ITERATIONS",
+        "PAYEE_COOLDOWN_SECONDS",
         "SECURITY_AUDIT_HMAC_KEY",
         "SECURITY_AUDIT_ANCHOR_PATH",
         "HIBP_CIRCUIT_FAILURE_THRESHOLD",

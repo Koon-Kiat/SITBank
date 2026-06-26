@@ -37,6 +37,11 @@ from app.ops.db_privileges import (
     apply_runtime_audit_table_privileges,
     verify_runtime_database_privileges,
 )
+from config import (
+    MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS,
+    _validate_payee_cooldown_config,
+    _validate_session_absolute_lifetime_config,
+)
 
 
 def register_ops_commands(app: Flask) -> None:
@@ -183,6 +188,38 @@ def register_ops_commands(app: Flask) -> None:
             failures.append("TOTP_LOGIN_VALID_WINDOW must be 0 or 1")
         if int(app.config.get("TOTP_HIGH_RISK_VALID_WINDOW", -1)) != 0:
             failures.append("TOTP_HIGH_RISK_VALID_WINDOW must be 0")
+        try:
+            _validate_payee_cooldown_config(
+                app_env=str(app.config.get("APP_ENV") or ""),
+                cooldown_seconds=app.config.get("PAYEE_COOLDOWN_SECONDS"),
+                min_production_seconds=app.config.get(
+                    "MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS",
+                    MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS,
+                ),
+            )
+        except Exception as exc:
+            failures.append(f"Payee cooldown configuration check failed: {exc}")
+        else:
+            if app.config.get("APP_ENV") == "production":
+                click.echo(
+                    "Payee cooldown minimum configured: "
+                    f"{app.config.get('PAYEE_COOLDOWN_SECONDS')} seconds"
+                )
+        try:
+            _validate_session_absolute_lifetime_config(
+                customer_lifetime_seconds=app.config.get("CUSTOMER_SESSION_ABSOLUTE_LIFETIME_SECONDS"),
+                admin_lifetime_seconds=app.config.get("ADMIN_SESSION_ABSOLUTE_LIFETIME_SECONDS"),
+                customer_pending_mfa_seconds=app.config.get("CUSTOMER_PENDING_MFA_MAX_AGE_SECONDS"),
+                admin_pending_mfa_seconds=app.config.get("ADMIN_PENDING_MFA_MAX_AGE_SECONDS"),
+            )
+        except Exception as exc:
+            failures.append(f"Session absolute lifetime configuration check failed: {exc}")
+        else:
+            click.echo(
+                "Session absolute lifetime configured: "
+                f"customer={app.config.get('CUSTOMER_SESSION_ABSOLUTE_LIFETIME_SECONDS')}s "
+                f"admin={app.config.get('ADMIN_SESSION_ABSOLUTE_LIFETIME_SECONDS')}s"
+            )
 
         if failures:
             for failure in failures:

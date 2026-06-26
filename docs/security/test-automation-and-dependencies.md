@@ -73,11 +73,11 @@ deployment.
 | Configuration and secret validation | `tests/test_config.py`, `tests/test_deployment.py` |
 | Registration, login, password policy, and rate limits | `tests/test_auth_registration_login.py`, `tests/test_passwords.py` |
 | MFA lifecycle and envelope encryption | `tests/test_mfa_lifecycle.py`, `tests/test_mfa_envelope_crypto.py` |
-| Password reset and manual recovery services | `tests/test_password_reset.py` |
+| Password reset and manual recovery services | `tests/test_password_reset.py`, `tests/test_admin_manual_recovery.py` |
 | Database session integrity | `tests/test_db_session_integrity.py` |
-| Session management UI/API | `tests/test_session_management.py` |
+| Session management UI/API | `tests/test_session_management.py`, `tests/test_session_absolute_lifetime.py` |
 | Auth bypass and pentest regressions | `tests/test_pentest_auth_bypass.py`, `tests/test_owasp_regressions.py` |
-| Route inventory | `tests/test_route_inventory_security.py` |
+| Route inventory | `tests/test_route_inventory_security.py`, `tests/test_admin_route_inventory_security.py` |
 | Admin isolation and staff invites | `tests/test_admin_isolation.py`, `tests/test_admin_staff_invites.py` |
 | Banking payload and transaction guardrails | `tests/test_banking_transaction_security.py` |
 | Audit, alerts, and redaction | `tests/test_audit_alerting.py`, `tests/test_audit_metadata_sanitization.py` |
@@ -88,9 +88,9 @@ Current test gap: payee ownership is enforced in `app/banking/routes.py`, and
 payee routes are in `tests/test_route_inventory_security.py`, but no dedicated
 payee IDOR regression test was found.
 
-Current test gap: admin route authorization has targeted tests, but no
-generated route-inventory matrix equivalent to the customer app inventory was
-found.
+Admin route authorization has a separate generated route-inventory matrix in
+`tests/test_admin_route_inventory_security.py`, plus targeted admin service
+tests for staff invites and manual recovery.
 
 ## 5.4 Local Security Commands
 

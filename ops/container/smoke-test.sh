@@ -299,6 +299,7 @@ docker_args=(
     --env DATABASE_URL_FILE=/run/secrets/database_url
     --env MFA_KEK_ACTIVE_ID=ci-mfa
     --env MFA_KEK_KEYS_JSON_FILE=/run/secrets/mfa_kek_keys_json
+    --env PAYEE_COOLDOWN_SECONDS=43200
     --env PASSWORD_PEPPER_B64_FILE=/run/secrets/password_pepper_b64
     --env SECURITY_AUDIT_HMAC_KEY_FILE=/run/secrets/security_audit_hmac_key
     --env SECURITY_AUDIT_ANCHOR_PATH=/run/state/security-audit.anchor

@@ -38,7 +38,7 @@
             {% if row.status == "active" %}
             <span class="badge">Ready</span>
             {% else %}
-            <span class="badge neutral" data-cooldown-expires="{{ row.expires_at }}">Cooldown: {{ row.remaining }}</span>
+            <span class="badge neutral" data-cooldown-expires="{{ row.expires_at }}" title="Available at {{ row.available_at }}">Available in {{ row.remaining }}</span>
             {% endif %}
           </td>
           <td>

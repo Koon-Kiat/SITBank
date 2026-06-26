@@ -13,13 +13,21 @@ from flask import current_app, request, session, url_for
 from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 
+from app.auth.password_reset import (
+    MANUAL_RECOVERY_ACTIVE_STATUSES,
+    MANUAL_RECOVERY_STATUS_APPROVED,
+    MANUAL_RECOVERY_STATUS_DENIED,
+    MANUAL_RECOVERY_STATUS_UNDER_REVIEW,
+    complete_manual_recovery_request,
+    transition_manual_recovery_request,
+)
 from app.auth.services import (
     AuthError,
     _dummy_password_hash,
     _verify_totp_for_user,
 )
 from app.extensions import db
-from app.models import StaffInvite, User
+from app.models import ManualRecoveryRequest, StaffInvite, User
 from app.security.audit import audit_event, audit_event_required, audit_reference, principal_reference
 from app.security.crypto import encrypt_mfa_secret
 from app.security.email import send_security_email
@@ -49,6 +57,13 @@ ACCOUNT_ROOT_ADMIN = "root_admin"
 STAFF_ACCOUNT_TYPES = frozenset({ACCOUNT_STAFF, ACCOUNT_ADMIN, ACCOUNT_ROOT_ADMIN})
 INVITABLE_ROLES = frozenset({ACCOUNT_STAFF, ACCOUNT_ADMIN})
 ACTIVE_INVITE_STATUSES = frozenset({"pending", "totp_pending"})
+MANUAL_RECOVERY_ADMIN_TRANSITION_STATUSES = frozenset(
+    {
+        MANUAL_RECOVERY_STATUS_UNDER_REVIEW,
+        MANUAL_RECOVERY_STATUS_APPROVED,
+        MANUAL_RECOVERY_STATUS_DENIED,
+    }
+)
 GENERIC_ADMIN_LOGIN_ERROR = "Invalid workplace email, password, or authentication code"
 GENERIC_INVITE_ERROR = "Invite link is invalid or expired"
 GENERIC_WORKPLACE_VERIFICATION_ERROR = "Workplace verification failed"
@@ -276,6 +291,98 @@ def revoke_staff_invite(actor: User, invite_id: int, totp_code: str | None) -> d
     return {"message": "Invite revoked", "invite": public_invite(invite)}
 
 
+def manual_recovery_requests_for_admin(actor: User) -> list[dict[str, Any]]:
+    if not is_root_admin(actor):
+        audit_event("manual_recovery_admin_review", "blocked", user=actor, metadata={"reason": "not_root_admin"})
+        raise AuthError("Forbidden", 403)
+    requests = list(
+        db.session.execute(
+            db.select(ManualRecoveryRequest).order_by(
+                ManualRecoveryRequest.created_at.desc(),
+                ManualRecoveryRequest.id.desc(),
+            )
+        ).scalars()
+    )
+    return [public_manual_recovery_request(item) for item in requests]
+
+
+def transition_manual_recovery_request_as_admin(
+    actor: User,
+    request_id: int,
+    status: str,
+    reason: str,
+    totp_code: str | None,
+) -> dict[str, Any]:
+    if not is_root_admin(actor):
+        audit_event("manual_recovery_admin_transition", "blocked", user=actor, metadata={"reason": "not_root_admin"})
+        raise AuthError("Forbidden", 403)
+    normalized_status = str(status or "").strip().casefold()
+    if normalized_status not in MANUAL_RECOVERY_ADMIN_TRANSITION_STATUSES:
+        audit_event(
+            "manual_recovery_admin_transition",
+            "failure",
+            user=actor,
+            metadata={"reason": "invalid_status"},
+        )
+        raise AuthError("Invalid manual recovery status", 400)
+    clean_reason = _require_manual_recovery_reason(reason, "manual_recovery_admin_transition", actor)
+    scope = f"manual_recovery_transition_{normalized_status}"
+    if not totp_code or not _verify_totp_for_user(actor, totp_code, scope):
+        audit_event(
+            "manual_recovery_admin_transition",
+            "failure",
+            user=actor,
+            metadata={"reason": "invalid_totp_step_up"},
+        )
+        raise AuthError("Fresh MFA verification is required", 403)
+
+    result = transition_manual_recovery_request(request_id, normalized_status, reason=clean_reason)
+    audit_event(
+        "manual_recovery_admin_transition",
+        "success",
+        user=actor,
+        metadata={
+            "request_ref": audit_reference("manual_recovery_request", request_id),
+            "new_status": result["status"],
+            "reason_recorded": True,
+        },
+    )
+    return {"message": "Manual recovery request updated", "request": result}
+
+
+def complete_manual_recovery_request_as_admin(
+    actor: User,
+    request_id: int,
+    reason: str,
+    totp_code: str | None,
+) -> dict[str, Any]:
+    if not is_root_admin(actor):
+        audit_event("manual_recovery_admin_complete", "blocked", user=actor, metadata={"reason": "not_root_admin"})
+        raise AuthError("Forbidden", 403)
+    clean_reason = _require_manual_recovery_reason(reason, "manual_recovery_admin_complete", actor)
+    if not totp_code or not _verify_totp_for_user(actor, totp_code, "manual_recovery_complete"):
+        audit_event(
+            "manual_recovery_admin_complete",
+            "failure",
+            user=actor,
+            metadata={"reason": "invalid_totp_step_up"},
+        )
+        raise AuthError("Fresh MFA verification is required", 403)
+
+    result = complete_manual_recovery_request(request_id, reason=clean_reason)
+    audit_event(
+        "manual_recovery_admin_complete",
+        "success",
+        user=actor,
+        metadata={
+            "request_ref": audit_reference("manual_recovery_request", request_id),
+            "mfa_reenrollment_required": bool(result.get("mfa_reenrollment_required")),
+            "revoked_sessions": int(result.get("revoked_sessions") or 0),
+        },
+    )
+    return {"message": "Manual recovery request completed", "request": result}
+
+
 def invite_info(token: str) -> dict[str, Any]:
     invite = _active_invite_by_token(token, audit_failures=True)
     return {
@@ -451,6 +558,21 @@ def public_invite(invite: StaffInvite) -> dict[str, Any]:
     }
 
 
+def public_manual_recovery_request(request_record: ManualRecoveryRequest) -> dict[str, Any]:
+    return {
+        "id": request_record.id,
+        "status": request_record.status,
+        "active": request_record.status in MANUAL_RECOVERY_ACTIVE_STATUSES,
+        "request_count": int(request_record.request_count or 0),
+        "created_at": _utc_iso(request_record.created_at),
+        "updated_at": _utc_iso(request_record.updated_at),
+        "expires_at": _utc_iso(request_record.expires_at),
+        "completed": request_record.completed_at is not None,
+        "completed_at": _utc_iso(request_record.completed_at) if request_record.completed_at else None,
+        "linked_customer": request_record.user_id is not None,
+    }
+
+
 def normalize_workplace_email(email: str) -> str:
     normalized = _normalize_email(email)
     local, separator, domain = normalized.partition("@")
@@ -596,6 +718,17 @@ def _reject_forged_invite_fields(request_fields: set[str]) -> None:
     if forged:
         audit_event("staff_invite_accept", "failure", metadata={"reason": "forged_fields", "fields": forged})
         raise AuthError("Invalid request", 400)
+
+
+def _require_manual_recovery_reason(reason: str, event_type: str, actor: User) -> str:
+    text = str(reason or "").strip()
+    if not text:
+        audit_event(event_type, "failure", user=actor, metadata={"reason": "missing_reason"})
+        raise AuthError("Reason is required", 400)
+    if len(text) > 512:
+        audit_event(event_type, "failure", user=actor, metadata={"reason": "reason_too_long"})
+        raise AuthError("Reason is too long", 400)
+    return text
 
 
 def _reject_existing_staff_identity(workplace_email: str) -> None:

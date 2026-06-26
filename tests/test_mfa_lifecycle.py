@@ -3,6 +3,15 @@ from __future__ import annotations
 from _auth_flow_helpers import *
 
 
+def _totp(secret: str) -> str:
+    return pyotp.TOTP(secret, digits=6, interval=30).now()
+
+
+def _invalid_totp(secret: str) -> str:
+    current = _totp(secret)
+    return "000000" if current != "000000" else "000001"
+
+
 def test_mfa_setup_stores_encrypted_secret_and_rejects_replay(client):
     register(client)
     login(client)
@@ -102,13 +111,20 @@ def test_recovery_code_ui_uses_full_width_card_and_readable_code_chips(client):
 
     register(client)
     login(client)
-    user, _secret = enable_mfa_for_user()
+    user, secret = enable_mfa_for_user()
     recovery_codes = generate_recovery_codes_for_user(user)
     stylesheet = Path("app/static/css/app.css").read_text(encoding="utf-8")
 
-    response = client.post("/mfa/setup", data={"action": "recovery_codes_regenerate"})
+    setup_page = client.get("/mfa/setup")
+    setup_markup = setup_page.data.decode("utf-8")
+    response = client.post(
+        "/mfa/setup",
+        data={"action": "recovery_codes_regenerate", "totp_code": _totp(secret)},
+    )
     markup = response.data.decode("utf-8")
 
+    assert setup_page.status_code == 200
+    assert "recovery-regenerate-totp-code" in setup_markup
     assert response.status_code == 200
     assert recovery_codes[0] not in markup
     assert 'class="notice recovery-code-notice"' in markup
@@ -181,15 +197,69 @@ def test_recovery_code_satisfies_totp_login_even_when_passkeys_are_registered(cl
     assert response.get_json()["message"] == "Login successful"
     assert db.session.query(RecoveryCode).filter_by(user_id=user.id).filter(RecoveryCode.used_at.is_not(None)).count() == 1
 
-def test_recovery_code_regeneration_revokes_old_unused_codes(client):
+def test_recovery_code_regeneration_requires_fresh_totp_stepup(client):
+    from app.auth.recovery_codes import generate_recovery_codes_for_user
+
+    register(client)
+    login(client)
+    user, secret = enable_mfa_for_user()
+    generate_recovery_codes_for_user(user, count=3)
+
+    missing = client.post("/auth/mfa/recovery-codes/regenerate", json={})
+    invalid = client.post(
+        "/auth/mfa/recovery-codes/regenerate",
+        json={"totp_code": _invalid_totp(secret)},
+    )
+
+    unused_codes = list(
+        db.session.execute(
+            db.select(RecoveryCode).where(
+                RecoveryCode.user_id == user.id,
+                RecoveryCode.used_at.is_(None),
+            )
+        ).scalars()
+    )
+    assert missing.status_code == 403
+    assert invalid.status_code == 401
+    assert "recovery_codes" not in missing.get_json()
+    assert "recovery_codes" not in invalid.get_json()
+    assert len(unused_codes) == 3
+    assert db.session.query(SecurityAuditEvent).filter_by(
+        event_type="recovery_codes_regenerate",
+        outcome="failure",
+    ).count() >= 2
+
+
+def test_recovery_code_regeneration_rejects_passkey_stepup_token(client):
     from app.auth.recovery_codes import generate_recovery_codes_for_user
 
     register(client)
     login(client)
     user, _secret = enable_mfa_for_user()
+    generate_recovery_codes_for_user(user, count=3)
+
+    response = client.post(
+        "/auth/mfa/recovery-codes/regenerate",
+        json={"stepup_token": "a" * 32},
+    )
+
+    assert response.status_code == 403
+    assert response.get_json()["error"] == "Enter an authenticator code to verify this action"
+    assert db.session.query(RecoveryCode).filter_by(user_id=user.id, used_at=None).count() == 3
+
+
+def test_recovery_code_regeneration_with_valid_totp_revokes_old_unused_codes(client):
+    from app.auth.recovery_codes import generate_recovery_codes_for_user
+
+    register(client)
+    login(client)
+    user, secret = enable_mfa_for_user()
     old_codes = generate_recovery_codes_for_user(user, count=3)
 
-    response = client.post("/auth/mfa/recovery-codes/regenerate")
+    response = client.post(
+        "/auth/mfa/recovery-codes/regenerate",
+        json={"totp_code": _totp(secret)},
+    )
     payload = response.get_json()
     used_count = db.session.query(RecoveryCode).filter_by(user_id=user.id).filter(RecoveryCode.used_at.is_not(None)).count()
     unused_count = db.session.query(RecoveryCode).filter_by(user_id=user.id, used_at=None).count()
@@ -199,6 +269,28 @@ def test_recovery_code_regeneration_revokes_old_unused_codes(client):
     assert old_codes[0] not in payload["recovery_codes"]
     assert used_count == 3
     assert unused_count == 10
+
+
+def test_web_recovery_code_regeneration_requires_totp(client):
+    from app.auth.recovery_codes import generate_recovery_codes_for_user
+
+    register(client)
+    login(client)
+    user, secret = enable_mfa_for_user()
+    generate_recovery_codes_for_user(user, count=3)
+
+    missing = client.post("/mfa/setup", data={"action": "recovery_codes_regenerate"})
+    invalid = client.post(
+        "/mfa/setup",
+        data={"action": "recovery_codes_regenerate", "totp_code": _invalid_totp(secret)},
+    )
+
+    assert missing.status_code == 403
+    assert invalid.status_code == 401
+    assert db.session.query(RecoveryCode).filter_by(user_id=user.id, used_at=None).count() == 3
+    assert "Recovery codes regenerated." not in missing.data.decode("utf-8")
+    assert "Recovery codes regenerated." not in invalid.data.decode("utf-8")
+
 
 def test_recovery_code_use_and_regeneration_use_required_audit_writer(client, monkeypatch):
     from app.auth import services as auth_services
@@ -214,13 +306,16 @@ def test_recovery_code_use_and_regeneration_use_required_audit_writer(client, mo
 
     register(client)
     login(client)
-    user, _secret = enable_mfa_for_user()
+    user, secret = enable_mfa_for_user()
     recovery_codes = generate_recovery_codes_for_user(user)
 
     client.post("/logout")
     login(client)
     verify_response = client.post("/auth/mfa/verify", json={"totp_code": recovery_codes[0]})
-    regenerate_response = client.post("/auth/mfa/recovery-codes/regenerate")
+    regenerate_response = client.post(
+        "/auth/mfa/recovery-codes/regenerate",
+        json={"totp_code": _totp(secret)},
+    )
 
     assert verify_response.status_code == 200
     assert regenerate_response.status_code == 200

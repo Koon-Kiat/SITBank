@@ -388,8 +388,14 @@ def mfa_replace_verify():
 @limiter.limit("5 per 15 minutes", key_func=get_remote_address)
 @limiter.limit("5 per 15 minutes", key_func=mfa_principal)
 def mfa_recovery_codes_regenerate():
-    CsrfOnlyForm().validate()
-    return jsonify(regenerate_totp_recovery_codes(g.current_user))
+    data = HighRiskTotpSchema().load(request.get_json(silent=False) or {})
+    return jsonify(
+        regenerate_totp_recovery_codes(
+            g.current_user,
+            data.get("totp_code"),
+            data.get("stepup_token"),
+        )
+    )
 
 
 @auth_bp.post("/mfa/verify")

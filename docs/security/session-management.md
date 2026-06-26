@@ -124,16 +124,21 @@ called from authentication services in `app/auth/services.py` and
 | Revoke other sessions | Requires high-risk TOTP authorization and keeps the current session after rotation | `tests/test_session_management.py::test_revoke_other_sessions_accepts_totp_stepup_and_rotates_session` |
 | Terminate one listed session | Uses public session references and ownership checks | `tests/test_session_management.py::test_terminate_other_session_by_public_reference_revokes_it` |
 | Inactivity expiry | Rejects sessions after `SESSION_INACTIVITY_SECONDS` | `tests/test_session_management.py::test_session_inactivity_expiry_revokes_session` |
+| Absolute authenticated lifetime | Rejects fully authenticated sessions after `SESSION_ABSOLUTE_LIFETIME_SECONDS` without refreshing the timestamp during activity or step-up | `tests/test_session_absolute_lifetime.py` |
 
 The customer and admin runtimes default to five minutes for
 `SESSION_INACTIVITY_SECONDS` and `PERMANENT_SESSION_LIFETIME` in `config.py`.
 The database record's `expires_at` is renewed on active requests and revoked
 when inactivity is detected.
 
-Current gap: the active authenticated session lifetime is sliding. No
-independent hard absolute maximum lifetime for a fully authenticated session
-was found. Pending MFA sessions do have an absolute age check covered by
-`tests/test_mfa_lifecycle.py::test_pending_mfa_session_expires_by_absolute_age`.
+Fully authenticated sessions also carry a server-side `auth_created_at`
+timestamp. Customer sessions default to a 12-hour absolute lifetime through
+`CUSTOMER_SESSION_ABSOLUTE_LIFETIME_SECONDS`; admin sessions default to a
+4-hour absolute lifetime through `ADMIN_SESSION_ABSOLUTE_LIFETIME_SECONDS`.
+Runtime mode maps the appropriate value to `SESSION_ABSOLUTE_LIFETIME_SECONDS`.
+Normal activity, CSRF requests, and TOTP step-up rotations do not refresh this
+timestamp. Pending MFA sessions keep their separate absolute age check covered
+by `tests/test_mfa_lifecycle.py::test_pending_mfa_session_expires_by_absolute_age`.
 
 ## 2.6 Session Attack Coverage
 
@@ -148,12 +153,12 @@ was found. Pending MFA sessions do have an absolute age check covered by
 | CSRF on session-changing routes | Global Flask-WTF CSRF plus route inventory checks | `tests/test_route_inventory_security.py::test_route_inventory_has_complete_security_decisions` |
 | Insecure transport | HTTPS-only Nginx and secure cookie flag | `ops/nginx/sitbank-production.conf`, `config.py`, `tests/test_deployment.py` |
 | Risk drift after login | IP/UA-derived risk fingerprint requires reauthentication before sensitive actions | `app/security/sessions.py`; `tests/test_account_security_actions.py::test_session_risk_drift_requires_reauth_before_sensitive_action` |
-| Stolen active cookie | Inactivity timeout, revocation, session inventory, and risk step-up reduce impact | `app/security/sessions.py`, `tests/test_session_management.py` |
+| Stolen active cookie | Inactivity timeout, absolute lifetime, revocation, session inventory, and risk step-up reduce impact | `app/security/sessions.py`, `tests/test_session_management.py`, `tests/test_session_absolute_lifetime.py` |
 
 Current gap: there is no concurrent-session count limit. Users can view and
 revoke sessions, but the repository does not cap the number of active sessions
 per user.
 
-Current gap: a stolen active cookie may remain usable until inactivity expiry,
-revocation, or risk-based reauthentication triggers. There is no cryptographic
-binding to a device key or client certificate.
+Current gap: a stolen active cookie is bounded by inactivity expiry, absolute
+lifetime, revocation, and risk-based reauthentication, but there is no
+cryptographic binding to a device key or client certificate.
