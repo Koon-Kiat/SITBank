@@ -37,7 +37,7 @@ Evidence:
 | Unknown host rejection | `ops/nginx/sitbank-default.conf` returns `444` for the default HTTP server and uses `ssl_reject_handshake on` for the default HTTPS server |
 | HSTS | Production uses `Strict-Transport-Security "max-age=31536000; includeSubDomains"`; staging uses `max-age=300` |
 | Proxy trust boundary | `ops/nginx-proxy-headers.conf` overwrites `Host`, `X-Real-IP`, `X-Forwarded-For`, and `X-Forwarded-Proto`; `app/__init__.py` applies `ProxyFix` using `TRUSTED_PROXY_COUNT` |
-| TLS policy and deployment validation | `ops/nginx/sitbank-tls-policy.conf` pins the shared TLS policy; `ops/deploy/bootstrap-container-ec2` requires the Certbot files and TLS snippet before installing the production or staging Nginx site, then runs `nginx -t` before reload |
+| TLS policy and deployment validation | `ops/nginx/sitbank-tls-policy.conf` pins the shared TLS policy; `ops/deploy/bootstrap-container-ec2` requires the Certbot files, invokes `ops/deploy/verify-certbot-host-state`, and installs the TLS snippet before installing the production or staging Nginx site, then runs `nginx -t` before reload |
 | Tests | `tests/test_deployment.py::test_nginx_default_server_is_shared_for_same_host_production_and_staging`, `tests/test_deployment.py::test_production_nginx_edge_config_enforces_network_boundary_and_limits`, `tests/test_deployment.py::test_staging_nginx_enforces_https_auth_health_and_rate_limits`, `tests/test_deployment.py::test_proxyfix_trusts_exactly_the_configured_nginx_hop` |
 
 Short evidence for unknown-host rejection:
@@ -51,9 +51,13 @@ server {
 }
 ```
 
-Current gap: certificate issuance and renewal are deployment operations. The
-repo checks that expected certificate files exist before bootstrap, but it does
-not contain ACME account state, private keys, or a certbot renewal timer.
+Certificate issuance and renewal are host-managed deployment operations. ACME
+account state, certificate archives, and private keys remain on the EC2 host;
+they are never stored in Git or mounted into application containers. The
+read-only `ops/deploy/verify-certbot-host-state` verifier checks that Certbot
+is installed, the expected host files exist, and `certbot.timer` is enabled and
+active. Operators must also run `sudo certbot renew --dry-run` as the manual
+renewal test.
 
 ## 1.2 HTTPS Cipher Suites
 
@@ -93,13 +97,20 @@ Certbot-managed paths, for example:
 
 The private key is not committed to Git. `ops/deploy/bootstrap-container-ec2`
 checks that the expected key files are readable before installing the Nginx
-site. The application containers in `compose.prod.yml` and `compose.staging.yml`
-mount application secrets from `/run/secrets`, but they do not mount
-`/etc/letsencrypt`; only host Nginx needs the TLS private key.
+site, then invokes `ops/deploy/verify-certbot-host-state` before Nginx changes.
+The verifier resolves each `live/.../privkey.pem` symlink with `readlink -f` and
+checks the real target rather than the symlink mode. It requires a target below
+`/etc/letsencrypt`, `root:root` ownership, no group write permission, and no
+permissions for other users; `0600` is the normal mode. The application
+containers in `compose.prod.yml` and `compose.staging.yml` mount application
+secrets from `/run/secrets`, but they do not mount `/etc/letsencrypt`; only host
+Nginx needs the TLS private key.
 
-Current gap: the repo does not set or verify the final filesystem mode or owner
-of `/etc/letsencrypt/.../privkey.pem`. That remains a Certbot/host hardening
-responsibility.
+If a dedicated TLS-read group is ever necessary, it is a host-hardening change:
+document its membership and Nginx privilege model, explicitly add it to the
+verifier's reviewed allowlist, and use at most mode `0640`. Application users,
+repository-owned paths, container mounts, world-readable keys, group-writable
+keys, and world-writable keys are not acceptable.
 
 ## 1.4 Key Establishment And Secret Key Derivation
 

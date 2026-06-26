@@ -206,6 +206,12 @@ checked manually.
   `/etc/letsencrypt/live/sitbank.duckdns.org/` before bootstrap.
 - Issue admin Certbot files under
   `/etc/letsencrypt/live/admin-sitbank.duckdns.org/` before bootstrap.
+- Keep Certbot ACME account state and TLS private keys on the EC2 host; never
+  commit them to the repository or mount them into application containers.
+- Require an enabled, active `certbot.timer` for host-managed renewal, and run
+  the read-only certificate verifier before an edge deployment. The resolved
+  `privkey.pem` targets must be `root:root`, not group-writable or
+  world-readable, and normally mode `0600`.
 - Allow public inbound TCP `80` and `443` only.
 - Restrict SSH to an administrator IP allowlist, AWS Systems Manager, a
   bastion, or VPN; never allow TCP `22` from `0.0.0.0/0` or `::/0`.
@@ -228,6 +234,10 @@ checked manually.
 Verification commands:
 
 ```bash
+sudo certbot certificates
+sudo systemctl status certbot.timer
+sudo /usr/local/sbin/verify-certbot-host-state production
+sudo certbot renew --dry-run
 sudo nginx -t
 sudo ss -ltnp | grep -E ':(80|443|5000|5002)([[:space:]]|$)'
 sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-app
