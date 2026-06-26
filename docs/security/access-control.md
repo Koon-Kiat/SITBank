@@ -110,11 +110,13 @@ admin paths with `deny all`. This keeps the admin app available for deployment
 health and future controlled exposure while preventing public browser access
 unless the edge policy is deliberately changed.
 
-Current gap: no active admin route was found for operator review or completion
-of manual recovery requests. `app/auth/password_reset.py` implements
-`transition_manual_recovery_request()` and `complete_manual_recovery_request()`,
-and `tests/test_password_reset.py` covers the service behavior, but
-`app/admin/routes.py` does not expose those functions.
+Manual recovery operator review is exposed only by the isolated admin app.
+`GET /manual-recovery/requests` lists public-safe request summaries for root
+admins. `POST /manual-recovery/requests/<id>/transition` and
+`POST /manual-recovery/requests/<id>/complete` require root-admin session
+authorization, CSRF, rate limiting, an operator reason, and a fresh TOTP code.
+The routes delegate to `app/auth/password_reset.py` so the manual recovery
+state machine remains centralized.
 
 ## 3.5 High-Risk Actions And Step-Up
 
@@ -133,6 +135,8 @@ High-risk customer actions use `verify_high_risk_authorization()` in
 | Payee removal | Authenticated user, payee ownership check, TOTP step-up | `app/banking/routes.py::payees_remove_submit()` |
 | Staff invite create/revoke | Root admin session and TOTP code | `app/admin/services.py::create_staff_invite()`, `app/admin/services.py::revoke_staff_invite()` |
 | Manual recovery public request | No step-up because the caller is unauthenticated; it creates only a pending request and does not unlock or mutate the account | `app/auth/password_reset.py::request_manual_recovery()`, `tests/test_password_reset.py::test_manual_recovery_request_does_not_freeze_or_unlock_account` |
+| Manual recovery admin review | Root admin session in the isolated admin app | `app/admin/routes.py::manual_recovery_requests()`, `tests/test_admin_manual_recovery.py` |
+| Manual recovery transition/completion | Root admin session, CSRF, rate limit, operator reason, and TOTP step-up | `app/admin/services.py::transition_manual_recovery_request_as_admin()`, `app/admin/services.py::complete_manual_recovery_request_as_admin()`, `tests/test_admin_manual_recovery.py` |
 
 Current gap: recovery-code regeneration requires an authenticated MFA-ready
 session and CSRF, but the service path `regenerate_totp_recovery_codes()` does
