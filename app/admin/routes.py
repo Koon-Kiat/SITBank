@@ -7,6 +7,11 @@ from marshmallow import Schema, ValidationError, fields, validate, validates_sch
 from sqlalchemy import text
 
 from app.extensions import db, limiter
+from app.security.production_guard import (
+    is_production_app,
+    log_production_readiness_failure,
+    validate_production_security_prerequisites,
+)
 from app.security.rate_limits import request_principal
 
 from .services import (
@@ -145,10 +150,16 @@ def health_live():
 
 @admin_bp.get("/health/ready")
 def health_ready():
+    if is_production_app(current_app):
+        result = validate_production_security_prerequisites(current_app, app_mode="admin")
+        if not result.ready:
+            log_production_readiness_failure(current_app, result)
+            return jsonify({"status": "unavailable", "app_mode": "admin"}), 503
+        return jsonify({"status": "ready", "app_mode": "admin"})
     try:
         db.session.execute(text("SELECT 1"))
     except Exception:
-        current_app.logger.warning("Admin readiness dependency check failed", exc_info=True)
+        current_app.logger.warning("Admin readiness dependency check failed")
         db.session.rollback()
         return jsonify({"status": "unavailable", "app_mode": "admin"}), 503
     return jsonify({"status": "ready", "app_mode": "admin"})
