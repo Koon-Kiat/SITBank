@@ -302,13 +302,6 @@ install_tls_policy() {
         "nginx-sitbank-tls-policy"
 }
 
-install_admin_verification_page() {
-    install -d -o root -g root -m 0755 /var/www/sitbank-admin-verification
-    install -o root -g root -m 0644 \
-        "${repo_root}/ops/nginx/admin-verification.html" \
-        /var/www/sitbank-admin-verification/index.html
-}
-
 refresh_enabled_sibling_site() {
     if [[ "${target}" == "production" \
         && -e /etc/nginx/sites-enabled/sitbank-staging ]]; then
@@ -366,7 +359,6 @@ if [[ "${target}" == "production" ]]; then
     install -d -o root -g root -m 0755 /var/www/certbot
     install_edge_default_site
     install_tls_policy
-    install_admin_verification_page
     install -o root -g root -m 0644 \
         "${repo_root}/ops/nginx-proxy-headers.conf" \
         /etc/nginx/snippets/sitbank-proxy-headers.conf
@@ -465,7 +457,6 @@ if [[ "${target}" == "staging" ]]; then
     install -d -o root -g root -m 0755 /var/www/certbot
     install_edge_default_site
     install_tls_policy
-    install_admin_verification_page
     install -o root -g root -m 0644 \
         "${repo_root}/ops/nginx-proxy-headers.conf" \
         /etc/nginx/snippets/sitbank-proxy-headers.conf

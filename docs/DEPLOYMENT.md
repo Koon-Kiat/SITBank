@@ -221,21 +221,22 @@ The reviewed production bootstrap installs and enables the production edge from 
 
 - Public ingress is TCP `80` and `443` only.
 - SSH is restricted to an administrator IP allowlist, AWS Systems Manager, a bastion, or VPN.
-- Nginx terminates TLS, redirects HTTP to HTTPS, and forwards only expected proxy headers.
+- Nginx terminates TLS, redirects production customer HTTP to HTTPS, returns
+  `403` for non-ACME staging/admin HTTP roots, and forwards only expected
+  proxy headers.
 - The shared TLS policy enables only TLS 1.2 and TLS 1.3, restricts TLS 1.2 to
   ECDHE+AEAD suites, pins the X25519/P-256/P-384 ECDHE curve preference, and
   limits TLS 1.3 to its standard AEAD suites.
 - Gunicorn binds only to `127.0.0.1:5000`.
 - Admin Gunicorn binds only to `127.0.0.1:5002` and is reached only by the
-  public `admin-sitbank.duckdns.org` Nginx server block for denied health and
-  verification responses, or by a Tailscale/private operator path for the
-  actual admin application.
+  public `admin-sitbank.duckdns.org` Nginx server block for denied responses,
+  or by a Tailscale/private operator path for the actual admin application.
 - `compose.prod.yml` publishes no app ports.
 - `/health/ready` is for local deployment and load-balancer checks and should deny public traffic.
-- Admin `/` serves only a static Google verification and restricted-access
-  notice at the public edge. Admin `/health/ready`, `/login`, and all other
-  admin routes remain denied by default at the public Nginx edge. Admin app
-  access is through Tailscale/private operator access only; do not enable
+- Admin `/`, `/health/ready`, `/login`, and all other admin routes remain
+  denied by default at the public Nginx edge. The old public admin verification
+  page is removed/denied as part of strict Tailscale-only admin access. Admin
+  app access is through Tailscale/private operator access only; do not enable
   Tailscale Funnel or expose the admin app through the customer host.
 - Cloudflare or AWS WAF should sit in front of Nginx for managed common, SQL injection, XSS, bot, and protocol anomaly rules.
 - Cloudflare or AWS WAF rules and security-group allowlists are still infrastructure state and must be checked manually.
@@ -255,17 +256,14 @@ sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-app
 sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-admin
 curl --fail https://sitbank.duckdns.org/health/live
 curl -I https://sitbank.duckdns.org/health/ready
-curl https://admin-sitbank.duckdns.org/ | grep google-site-verification
+curl -I https://admin-sitbank.duckdns.org/
 curl -I https://admin-sitbank.duckdns.org/health/ready
 curl -I https://admin-sitbank.duckdns.org/login
 ```
 
 Expected: local customer and admin readiness succeeds, external `/health/ready`
-returns `403`, admin `/` returns only the static verification page, and admin
-application routes return `403` or are otherwise denied by Nginx. The Google
-verification tag proves Search Console ownership only; dangerous-site removal
-still requires reviewing Security Issues in Search Console and requesting a
-Google review after the reported cause is resolved.
+returns `403`, admin `/` returns `403`, and admin application routes return
+`403` or are otherwise denied by Nginx.
 
 Staging admin must follow the same boundary pattern as production. Do not expose
 admin routes publicly. The staging admin service must bind only to localhost
@@ -307,7 +305,10 @@ sudo install -o root -g root -m 0644 \
 Do not store Cloudflare API tokens, tunnel credentials, Access IdP secrets, or
 origin certificate private keys in the repo. If the staging hostname cannot be
 proxied by Cloudflare in the current DNS model, stop and make an approved DNS
-change instead of disabling the origin-pull protection.
+change instead of disabling the origin-pull protection. The observed
+`staging-sitbank.duckdns.org` hostname resolves directly to EC2; Cloudflare
+Access cannot fully protect staging until traffic is routed through a
+Cloudflare-managed zone/hostname or Cloudflare Tunnel.
 
 Issue or renew staging TLS before bootstrap:
 
