@@ -44,6 +44,9 @@ jobs:
           create_label session "Session state, cookies, HMAC, Redis namespace, logout, or active sessions." 0b7285
           create_label audit "Audit logs, hash chains, HMAC, metadata, alerting, or audit events." d93f0b
           create_label deployment "Deployment, Docker, compose, nginx, systemd, EC2, runtime, or operations." 006b75
+          create_label zero-trust "Identity-aware or private-network access boundary changes." 5319e7
+          create_label network-security "Firewall, VPN, origin access, private access, or network boundary changes." d73a4a
+          create_label staging "Staging environment, staging deployment, or staging access changes." 006b75
           create_label database "Database schema, migrations, Postgres, roles, privileges, or DB integrity." 531dab
           create_label ci "GitHub Actions, CI policy, CodeQL, dependency audit, build, or pipeline changes." a2eeef
           create_label dependencies "Dependency updates, lock files, package manager changes, or Dependabot PRs." 0366d6
@@ -110,6 +113,12 @@ jobs:
           if contains_any admin administrator staff invite "staff invite" "admin portal" "admin route" "admin isolation" "admin session" "admin database" "admin deployment"; then
             add_label admin
           fi
+          if contains_any "zero trust" "zero-trust" "cloudflare zero trust" "cloudflare access" tailscale tailnet vpn "private access" "private-access" "identity-aware access" "access boundary" "origin bypass" "origin protection" "admin exposure" "staging exposure"; then
+            add_label zero-trust
+          fi
+          if contains_any firewall "security group" "nginx allowlist" "ip allowlist" vpn tailscale "cloudflare access" "origin bypass" "private network" "network boundary" "admin network" "staging network" "private access" "private-access"; then
+            add_label network-security
+          fi
           if contains_any customer "user portal" dashboard profile "account page" "customer route"; then
             add_label customer
           fi
@@ -130,6 +139,9 @@ jobs:
           fi
           if contains_any deploy deployment staging production ec2 nginx docker compose bootstrap systemd runtime "environment variable" "secret file"; then
             add_label deployment
+          fi
+          if contains_any staging "staging-sitbank" "compose.staging" "ops/staging" "staging deployment" "staging access"; then
+            add_label staging
           fi
           if contains_any database postgres migration schema role privilege alembic || contains_regex '(^|[^a-z0-9])db([^a-z0-9]|$)' '(^|[^a-z0-9])sql([^a-z0-9]|$)'; then
             add_label database

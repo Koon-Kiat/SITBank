@@ -110,9 +110,11 @@ Admin/staff access is invite-only and uses the admin runtime.
 
 Production Nginx currently defines an admin hostname in
 `ops/nginx/sitbank-production.conf` but denies public access to the primary
-admin paths with `deny all`. This keeps the admin app available for deployment
-health and future controlled exposure while preventing public browser access
-unless the edge policy is deliberately changed.
+admin paths with `deny all`. This keeps the public admin hostname limited to
+the static verification page and denied health/app responses. The actual admin
+application access path is Tailscale/private operator access to the loopback
+admin listener, followed by the normal Flask admin login and TOTP controls.
+Do not enable Tailscale Funnel or expose admin through the customer app.
 
 Manual recovery operator review is exposed only by the isolated admin app.
 `GET /manual-recovery/requests` lists public-safe request summaries for root
@@ -159,3 +161,20 @@ High-risk customer actions use `verify_high_risk_authorization()` in
 Admin route authorization is covered by the generated admin inventory plus
 targeted admin service and flow tests. New admin routes must be added to
 `tests/test_admin_route_inventory_security.py` before the suite passes.
+
+## 3.7 Staging And Admin Network Boundaries
+
+Network boundaries complement, but do not replace, Flask authorization:
+
+| Surface | Network boundary | Application controls that still apply |
+| --- | --- | --- |
+| Production customer | Public HTTPS at `sitbank.duckdns.org` | Customer login, MFA onboarding, CSRF, route inventory, rate limiting |
+| Staging customer | Cloudflare Access before Nginx, Cloudflare Authenticated Origin Pull at Nginx, staging Basic Auth | Customer login, MFA, CSRF, route inventory, rate limiting |
+| Production admin | Tailscale/private operator access to `127.0.0.1:5002`; public admin app routes denied | Staff/root-admin login, mandatory TOTP, CSRF, admin route inventory, admin rate limiting |
+| Staging admin | Tailscale/private operator access to `127.0.0.1:5003`; no public admin host | Staff/root-admin login, mandatory TOTP, CSRF, admin route inventory, admin rate limiting |
+
+The staging Nginx config uses Cloudflare Authenticated Origin Pulls so direct
+EC2-origin requests to staging browser/app paths return `403` unless
+Cloudflare's client certificate verifies successfully. Staging `/health/ready`
+remains loopback-only for deployment checks. The shared default Nginx config
+continues to reject unknown hostnames.
