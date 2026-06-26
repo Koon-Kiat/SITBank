@@ -93,12 +93,14 @@ customer route inventory prevents silent addition of unclassified routes.
 | Customer/admin app surfaces are isolated | `app/__init__.py`, `tests/test_admin_isolation.py::test_customer_and_admin_apps_have_isolated_route_surfaces` |
 | Customer login rejects non-customer roles | `app/auth/services.py` |
 | Admin/staff login requires active staff role, workplace email verification, and TOTP | `app/admin/services.py` |
+| Admin routes use a generated route inventory | `tests/test_admin_route_inventory_security.py` |
 | High-risk customer actions use TOTP step-up | `app/auth/services.py::verify_high_risk_authorization()` |
 | Payee routes filter by current user id | `app/banking/routes.py` |
 | Session management uses public references, ownership checks, and absolute lifetime enforcement | `app/auth/services.py::terminate_session_for_user()`, `app/security/sessions.py` |
 
-Current gap: the route-inventory matrix covers the customer app, but no
-equivalent generated matrix for admin routes was found.
+Customer and admin route-inventory matrices are intentionally separate so each
+runtime surface must classify its own authentication, CSRF, rate-limit, and
+step-up decisions.
 
 ## 4.6 Secure Configuration
 
@@ -153,10 +155,10 @@ Actions.
 
 | OWASP risk | SITBank controls | Gaps or notes |
 | --- | --- | --- |
-| A01 Broken Access Control | Customer route inventory, decorators/hooks, high-risk step-up, ownership filters, admin/customer runtime separation | Admin routes do not have an equivalent generated route-inventory matrix; payee IDOR has code-level owner filters but no dedicated IDOR test |
+| A01 Broken Access Control | Customer and admin route inventories, decorators/hooks, high-risk step-up, ownership filters, admin/customer runtime separation | Payee IDOR has code-level owner filters but no dedicated IDOR test |
 | A02 Cryptographic Failures | HTTPS, HSTS, AES-256-GCM MFA envelopes, HMAC session/audit integrity, PBKDF2 password storage, Docker secrets validation | No explicit Nginx cipher list; backup encryption is operationally documented but not automated in repo |
 | A03 Injection | SQLAlchemy query construction, WTForms/Marshmallow validation, payload allowlists, no arbitrary URL-like mass assignment | Continue adding focused injection tests as new query surfaces are added |
-| A04 Insecure Design | MFA onboarding gates, password-reset token exchange, manual recovery pending-only public request, staff invite workflow, frozen-account behavior | Manual recovery completion exists as service code but no active admin route was found |
+| A04 Insecure Design | MFA onboarding gates, password-reset token exchange, manual recovery pending-only public request, isolated admin manual-recovery completion, staff invite workflow, frozen-account behavior | Continue monitoring manual recovery operations and separation-of-duties assumptions |
 | A05 Security Misconfiguration | Production config validation, Nginx default host rejection, Docker hardening, CSRF/Talisman defaults, deployment tests | Live host TLS cipher and certificate-renewal state must be verified outside the repo |
 | A06 Vulnerable And Outdated Components | Dependabot, pip-audit, Trivy, CodeQL, hashed lockfiles, pinned Docker base image | No JavaScript package manifest was found, so npm/yarn scanning is not applicable |
 | A07 Identification And Authentication Failures | Generic errors, dummy hash, rate/backoff counters, TOTP, recovery codes, fresh TOTP step-up for recovery-code regeneration, reset verifier HMACs, and MFA onboarding gates | No full password history |

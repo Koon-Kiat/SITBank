@@ -156,6 +156,6 @@ High-risk customer actions use `verify_high_risk_authorization()` in
 | Pending MFA bypass | Pending sessions cannot access dashboard, account details, session list, MFA setup, or freeze actions |
 | Frozen account bypass | Frozen accounts cannot create new login sessions or perform sensitive actions |
 
-Current gap: route-level authorization is well covered for the customer app,
-but admin route authorization relies on targeted admin tests and service tests
-rather than a generated admin route-inventory policy.
+Admin route authorization is covered by the generated admin inventory plus
+targeted admin service and flow tests. New admin routes must be added to
+`tests/test_admin_route_inventory_security.py` before the suite passes.
