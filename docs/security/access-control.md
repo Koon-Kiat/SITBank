@@ -59,9 +59,11 @@ against registered Flask routes by:
 | `tests/test_route_inventory_security.py::test_route_inventory_has_complete_security_decisions` | Each route has explicit auth, CSRF, rate-limit, and step-up metadata |
 | `tests/test_route_inventory_security.py::test_login_and_registration_have_method_level_security_decisions` | Method-level decisions for login and registration |
 
-Current gap: this route inventory is for the customer app surface. Admin routes
-have separate isolation and invite-flow tests, but no equivalent admin
-route-inventory matrix was found.
+This route inventory is for the customer app surface. Admin routes use a
+separate generated inventory in
+`tests/test_admin_route_inventory_security.py`. The inventories are
+intentionally separate so customer routes and admin routes cannot satisfy each
+other's policy entries.
 
 ## 3.3 Banking And Payee Authorization
 
@@ -97,6 +99,7 @@ Admin/staff access is invite-only and uses the admin runtime.
 
 | Control | Implementation evidence | Test evidence |
 | --- | --- | --- |
+| Generated admin route authorization inventory | `app/admin/routes.py`; explicit policy entries in `tests/test_admin_route_inventory_security.py` | `tests/test_admin_route_inventory_security.py::test_admin_route_inventory_matches_registered_flask_routes`, `tests/test_admin_route_inventory_security.py::test_admin_route_inventory_has_complete_security_decisions` |
 | Staff/admin login requires workplace email, password, active account, verified workplace email, and TOTP | `app/admin/services.py::authenticate_staff_primary()` and `complete_staff_mfa()` | `tests/test_admin_staff_invites.py::test_admin_login_creates_only_admin_session_cookie` |
 | Root admin is configured by role and email allowlist | `app/admin/services.py::is_root_admin()` and `config.py` `ROOT_ADMIN_EMAILS` | `tests/test_admin_staff_invites.py::test_only_root_admin_with_totp_stepup_can_create_invites` |
 | Root admin can invite only `staff` or `admin`, not `root_admin` | `StaffInvite` role constraint in `app/models.py`; role validation in `app/admin/services.py` | `tests/test_admin_staff_invites.py::test_invite_creation_validates_server_side_email_and_role_policy` |
