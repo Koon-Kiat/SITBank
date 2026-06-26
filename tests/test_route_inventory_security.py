@@ -383,7 +383,7 @@ ROUTE_SECURITY_INVENTORY = {
         "classification": "mfa",
         "csrf": "required",
         "rate_limit": "per_route",
-        "step_up": "not_required",
+        "step_up": "required",
         "public_justification": "",
     },
     "auth.mfa_verify": {

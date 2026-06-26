@@ -157,7 +157,7 @@ Actions.
 | A04 Insecure Design | MFA onboarding gates, password-reset token exchange, manual recovery pending-only public request, staff invite workflow, frozen-account behavior | Manual recovery completion exists as service code but no active admin route was found |
 | A05 Security Misconfiguration | Production config validation, Nginx default host rejection, Docker hardening, CSRF/Talisman defaults, deployment tests | Live host TLS cipher and certificate-renewal state must be verified outside the repo |
 | A06 Vulnerable And Outdated Components | Dependabot, pip-audit, Trivy, CodeQL, hashed lockfiles, pinned Docker base image | No JavaScript package manifest was found, so npm/yarn scanning is not applicable |
-| A07 Identification And Authentication Failures | Generic errors, dummy hash, rate/backoff counters, TOTP, recovery codes, reset verifier HMACs, and MFA onboarding gates | No full password history |
+| A07 Identification And Authentication Failures | Generic errors, dummy hash, rate/backoff counters, TOTP, recovery codes, fresh TOTP step-up for recovery-code regeneration, reset verifier HMACs, and MFA onboarding gates | No full password history |
 | A08 Software And Data Integrity Failures | Hash-locked dependencies, pinned actions, pinned images, cosign signing, audit hash chain, migration/DB privilege tests | Verify external runner and registry trust at deployment time |
 | A09 Security Logging And Monitoring Failures | Structured audit events, sanitization, alerts, append-only audit DB triggers, 500 handler logging | Alert delivery endpoint configuration is deployment-specific |
 | A10 Server-Side Request Forgery | No user-supplied arbitrary URL fetch flow found; fixed HIBP range endpoint sends only SHA-1 prefixes; Turnstile verification uses configured endpoint and redacts token data | New outbound integrations should add allowlists and SSRF tests |
@@ -170,5 +170,4 @@ Actions.
 | No independent absolute lifetime for fully authenticated sessions | Long active sessions can continue as sliding sessions | Add a created-at maximum age check for authenticated sessions |
 | No explicit Nginx cipher list | Cipher selection depends on host defaults | Pin approved TLS 1.2 cipher suites and verify with a live TLS scan |
 | No generated admin route inventory | Admin route authorization coverage is less systematic than customer routes | Add admin-app inventory tests with auth, CSRF, rate-limit, and step-up decisions |
-| Recovery-code regeneration lacks fresh step-up | An already authenticated session can regenerate backup codes without re-entering TOTP | Require `verify_high_risk_authorization()` before regeneration |
 | Backup encryption not automated in repo | Database dump protection is operational rather than testable here | Add backup encryption scripts and restore/access tests if backups are in assessment scope |
