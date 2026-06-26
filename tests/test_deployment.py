@@ -2040,6 +2040,78 @@ def test_nginx_default_server_is_shared_for_same_host_production_and_staging():
     assert "server_name staging-sitbank.duckdns.org;" in combined
 
 
+def test_nginx_tls_policy_pins_strong_suites_curves_and_session_hardening():
+    tls_policy_path = Path("ops/nginx/sitbank-tls-policy.conf")
+    tls_policy = tls_policy_path.read_text(encoding="utf-8")
+    production_nginx = Path("ops/nginx/sitbank-production.conf").read_text(
+        encoding="utf-8"
+    )
+    staging_nginx = Path("ops/nginx/sitbank-staging.conf").read_text(encoding="utf-8")
+    bootstrap = Path("ops/deploy/bootstrap-container-ec2").read_text(encoding="utf-8")
+
+    assert tls_policy_path.exists()
+    assert "ssl_protocols TLSv1.2 TLSv1.3;" in tls_policy
+    assert "ssl_ecdh_curve X25519:prime256v1:secp384r1;" in tls_policy
+    assert "ssl_prefer_server_ciphers off;" in tls_policy
+    assert "ssl_session_tickets off;" in tls_policy
+
+    tls12_match = re.search(r"ssl_ciphers '([^']+)';", tls_policy)
+    assert tls12_match
+    assert tls12_match.group(1).split(":") == [
+        "ECDHE-ECDSA-AES128-GCM-SHA256",
+        "ECDHE-RSA-AES128-GCM-SHA256",
+        "ECDHE-ECDSA-AES256-GCM-SHA384",
+        "ECDHE-RSA-AES256-GCM-SHA384",
+        "ECDHE-ECDSA-CHACHA20-POLY1305",
+        "ECDHE-RSA-CHACHA20-POLY1305",
+    ]
+    for weak_cipher_family in (
+        "RC4",
+        "3DES",
+        "DES",
+        "CBC",
+        "MD5",
+        "aNULL",
+        "eNULL",
+        "EXPORT",
+        "TLS_RSA_",
+    ):
+        assert weak_cipher_family not in tls12_match.group(1)
+    assert not re.search(r"(?:^|:)DHE-", tls12_match.group(1))
+
+    tls13_match = re.search(r"ssl_conf_command Ciphersuites ([^;]+);", tls_policy)
+    assert tls13_match
+    assert tls13_match.group(1).split(":") == [
+        "TLS_AES_128_GCM_SHA256",
+        "TLS_AES_256_GCM_SHA384",
+        "TLS_CHACHA20_POLY1305_SHA256",
+    ]
+
+    policy_include = "include /etc/nginx/snippets/sitbank-tls-policy.conf;"
+    for nginx, server_name, session_cache in (
+        (production_nginx, "sitbank.duckdns.org", "shared:sitbank_prod_ssl:10m"),
+        (
+            production_nginx,
+            "admin-sitbank.duckdns.org",
+            "shared:sitbank_prod_admin_ssl:10m",
+        ),
+        (staging_nginx, "staging-sitbank.duckdns.org", "shared:sitbank_staging_ssl:10m"),
+    ):
+        https_server = _nginx_https_server_prelocation(nginx, server_name=server_name)
+        assert policy_include in https_server
+        assert session_cache in https_server
+        assert "ssl_session_timeout 1d;" in https_server
+
+    assert 'TLS_POLICY_FILE="/etc/nginx/snippets/sitbank-tls-policy.conf"' in bootstrap
+    assert '"${repo_root}/ops/nginx/sitbank-tls-policy.conf"' in bootstrap
+    assert '"${TLS_POLICY_FILE}"' in bootstrap
+    assert '"shared Nginx TLS policy"' in bootstrap
+    assert '"nginx-sitbank-tls-policy"' in bootstrap
+    assert bootstrap.count("    install_tls_policy\n") == 2
+    tls_policy_install = bootstrap.index("install_tls_policy", bootstrap.index("if [[ \"${target}\" == \"production\" ]]"))
+    assert tls_policy_install < bootstrap.index("nginx -t", tls_policy_install)
+
+
 def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     default_nginx = Path("ops/nginx/sitbank-default.conf").read_text(encoding="utf-8")
     nginx = Path("ops/nginx/sitbank-staging.conf").read_text(encoding="utf-8")

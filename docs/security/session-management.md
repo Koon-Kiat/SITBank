@@ -76,9 +76,11 @@ Transport protections:
 | Flask secure cookie enforcement | `SESSION_COOKIE_SECURE`, `SESSION_COOKIE_HTTPONLY`, and `SESSION_COOKIE_SAMESITE` in `config.py` |
 | Proxy trust boundary | `ops/nginx-proxy-headers.conf` and `tests/test_deployment.py::test_proxyfix_trusts_exactly_the_configured_nginx_hop` |
 
-Current gap: TLS cipher suite pinning is not explicit in Nginx. Session cookie
-transport depends on the deployed host's Nginx/OpenSSL cipher defaults in
-addition to the repository's `ssl_protocols TLSv1.2 TLSv1.3` setting.
+All configured HTTPS edges include `ops/nginx/sitbank-tls-policy.conf`, which
+pins TLS 1.2 to ECDHE+AEAD suites, TLS 1.3 to standard AEAD suites, and the
+ECDHE curve preference. TLS 1.0 and TLS 1.1, legacy weak cipher families, and
+session tickets remain disabled. Operators validate the loaded policy on the
+deployed Nginx/OpenSSL build before release.
 
 ## 2.4 Session Modification And Tamper Resistance
 
