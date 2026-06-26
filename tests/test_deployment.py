@@ -111,6 +111,46 @@ def _load_create_dast_session_module():
     return module
 
 
+def test_production_check_rejects_short_payee_cooldown(monkeypatch):
+    from app import create_app
+    from app.extensions import db
+    import app.ops.commands as ops_commands
+    from config import MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS
+    from conftest import TestConfig
+
+    flask_app = create_app(TestConfig)
+    flask_app.config.update(
+        APP_ENV="production",
+        TRUSTED_PROXY_COUNT=1,
+        WTF_CSRF_ENABLED=True,
+        TALISMAN_FORCE_HTTPS=True,
+        PAYEE_COOLDOWN_SECONDS=60,
+        MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS=MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS,
+    )
+    monkeypatch.setattr(ops_commands, "validate_common_password_dictionary", lambda: 100000)
+    monkeypatch.setattr(ops_commands, "validate_password_hash_config", lambda: None)
+    monkeypatch.setattr(ops_commands, "validate_session_hmac_config", lambda: ["current"])
+    monkeypatch.setattr(
+        ops_commands,
+        "validate_security_alert_config",
+        lambda require_delivery=True: {
+            "min_severity": "high",
+            "dedupe_ttl_seconds": 300,
+        },
+    )
+    monkeypatch.setattr(ops_commands, "validate_audit_integrity_config", lambda: 32)
+
+    with flask_app.app_context():
+        db.create_all()
+        result = flask_app.test_cli_runner().invoke(args=["production-check"])
+
+    assert result.exit_code != 0
+    assert "Payee cooldown configuration check failed" in result.output
+    assert "PAYEE_COOLDOWN_SECONDS" in result.output
+    assert str(MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS) in result.output
+    assert "DATABASE_URL" not in result.output
+
+
 def _nginx_location_bodies(config: str, selector: str) -> list[str]:
     return re.findall(
         rf"location\s+{re.escape(selector)}\s*\{{(.*?)\n\s*\}}",

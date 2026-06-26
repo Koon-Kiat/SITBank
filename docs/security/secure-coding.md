@@ -109,6 +109,7 @@ settings are missing.
 | Production secret files must resolve beneath `/run/secrets`, not symlinks | `config.py::_read_secret_file()`, `tests/test_config.py::test_production_secret_file_must_resolve_beneath_run_secrets` |
 | SMTP password-reset backend requires TLS and credentials in production | `config.py`, `app/security/email.py`, `tests/test_config.py::test_production_smtp_email_requires_host_and_credentials_without_secret_leakage` |
 | Password reset base URL must be HTTPS in production | `tests/test_config.py::test_password_reset_base_url_must_be_https_in_production` |
+| Production payee activation delay must be at least 12 hours; short cooldowns are limited to development/test | `config.py::_validate_payee_cooldown_config()`, `app/ops/commands.py::production_check()`, `tests/test_config.py::test_production_payee_cooldown_rejects_short_value_without_secret_leakage` |
 | Nginx rejects unknown hosts and redirects HTTP to HTTPS | `ops/nginx/sitbank-default.conf`, `ops/nginx/sitbank-production.conf` |
 | Docker runtime drops capabilities and runs read-only as UID/GID `10001:10001` | `Dockerfile`, `compose.prod.yml`, `tests/test_deployment.py::test_dockerfile_and_compose_enforce_hardened_runtime` |
 | Deployment contract keeps production and staging isolated | `compose.prod.yml`, `compose.staging.yml`, `tests/test_deployment.py` |

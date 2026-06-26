@@ -69,6 +69,12 @@ Payee management lives in `app/banking/routes.py` and is registered only in the
 customer app. Routes use authenticated web decorators and high-risk TOTP step-up
 for payee creation confirmation and removal.
 
+New payees are not immediately usable for transfers. The activation delay is
+calculated server-side from the saved payee timestamp and
+`PAYEE_COOLDOWN_SECONDS`; clients only receive display timing. Development and
+test environments may keep the short default for usability, while production
+configuration fails closed unless the cooldown is at least 12 hours.
+
 | Action | Authorization control | Evidence |
 | --- | --- | --- |
 | List payees | Query filters by `Payee.user_id == g.current_user.id` | `app/banking/routes.py::payees()` |

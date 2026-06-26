@@ -198,6 +198,15 @@ Expected reset email configuration in production:
 - `SMTP_USERNAME_FILE=/run/secrets/smtp_username`
 - `SMTP_PASSWORD_FILE=/run/secrets/smtp_password`
 
+Payee activation cooldown in production:
+
+- `PAYEE_COOLDOWN_SECONDS` controls when a newly added payee becomes usable.
+- Development and test can keep the short default for demos and automated tests.
+- Production must set `PAYEE_COOLDOWN_SECONDS` to at least `43200` seconds
+  (12 hours), and `production-check` fails closed below that minimum.
+- The customer UI displays server-calculated availability timing; operators
+  should not ask users to supply or override activation timestamps.
+
 Do not paste reset links into Discord, Telegram, ntfy, tickets, audit logs, or
 security alert payloads. Reset links belong only in customer recovery email.
 Manual recovery requests create pending records and audit events only; account

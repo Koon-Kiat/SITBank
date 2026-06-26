@@ -9,6 +9,7 @@ import pytest
 
 import config
 from config import (
+    MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS,
     _configured_audit_anchor_path,
     _configured_secret,
     _password_reset_base_url,
@@ -18,6 +19,7 @@ from config import (
     _required_session_hmac_keys,
     _validate_audit_anchor_path,
     _validate_password_reset_email_config,
+    _validate_payee_cooldown_config,
 )
 
 
@@ -102,6 +104,43 @@ def test_non_production_console_email_backend_remains_allowed():
         smtp_use_tls=False,
         smtp_username=None,
         smtp_password=None,
+    )
+
+
+def test_production_payee_cooldown_rejects_short_value_without_secret_leakage():
+    with pytest.raises(RuntimeError, match="PAYEE_COOLDOWN_SECONDS") as excinfo:
+        _validate_payee_cooldown_config(
+            app_env="production",
+            cooldown_seconds=60,
+            min_production_seconds=MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS,
+        )
+
+    message = str(excinfo.value)
+    assert str(MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS) in message
+    assert "secret" not in message.lower()
+    assert "DATABASE_URL" not in message
+
+
+@pytest.mark.parametrize(
+    "cooldown_seconds",
+    [
+        MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS,
+        MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS + 1,
+    ],
+)
+def test_production_payee_cooldown_allows_approved_minimum(cooldown_seconds):
+    _validate_payee_cooldown_config(
+        app_env="production",
+        cooldown_seconds=cooldown_seconds,
+        min_production_seconds=MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS,
+    )
+
+
+def test_non_production_payee_cooldown_allows_short_value():
+    _validate_payee_cooldown_config(
+        app_env="development",
+        cooldown_seconds=60,
+        min_production_seconds=MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS,
     )
 
 
