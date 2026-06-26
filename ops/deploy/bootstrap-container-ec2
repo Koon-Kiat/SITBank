@@ -92,6 +92,7 @@ linux_runtime_files=(
     "${repo_root}/ops/deploy/sitbank-container-deploy"
     "${repo_root}/ops/deploy/sitbank-container-runtime"
     "${repo_root}/ops/deploy/sitbank-database-cutover"
+    "${repo_root}/ops/deploy/verify-certbot-host-state"
     "${repo_root}/ops/nginx/sitbank-default.conf"
     "${repo_root}/ops/nginx/sitbank-tls-policy.conf"
     "${repo_root}/ops/sudoers/sitbank-container-deploy"
@@ -225,6 +226,9 @@ install -o root -g root -m 0755 \
 install -o root -g root -m 0755 \
     "${repo_root}/ops/deploy/sitbank-database-cutover" \
     /usr/local/sbin/sitbank-database-cutover
+install -o root -g root -m 0755 \
+    "${repo_root}/ops/deploy/verify-certbot-host-state" \
+    /usr/local/sbin/verify-certbot-host-state
 if [[ "${target}" == "staging" ]]; then
     install -d -o root -g root -m 0755 "${config_root}/postgres"
     install -o root -g root -m 0755 \
@@ -336,6 +340,7 @@ if [[ "${target}" == "production" ]]; then
             exit 1
         fi
     done
+    /usr/local/sbin/verify-certbot-host-state production
 
     nginx_conflict=0
     while IFS= read -r enabled_site; do
@@ -422,6 +427,7 @@ if [[ "${target}" == "staging" ]]; then
             exit 1
         fi
     done
+    /usr/local/sbin/verify-certbot-host-state staging
     if [[ "$(stat -c '%U:%G' -- "${STAGING_BASIC_AUTH_FILE}")" != "root:www-data" \
         || "$(stat -c '%a' -- "${STAGING_BASIC_AUTH_FILE}")" != "640" ]]; then
         echo "${STAGING_BASIC_AUTH_FILE} must be owned by root:www-data with mode 0640" >&2

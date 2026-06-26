@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# Verify host-managed Certbot state without changing certificates or permissions.
+set -Eeuo pipefail
+
+readonly LETSENCRYPT_ROOT="/etc/letsencrypt"
+readonly PRODUCTION_PUBLIC_HOST="sitbank.duckdns.org"
+readonly PRODUCTION_ADMIN_PUBLIC_HOST="admin-sitbank.duckdns.org"
+readonly STAGING_PUBLIC_HOST="staging-sitbank.duckdns.org"
+readonly -a APPROVED_TLS_KEY_GROUPS=(root)
+
+usage() {
+    echo "Usage: verify-certbot-host-state [production|staging]" >&2
+}
+
+if [[ "${EUID}" -ne 0 ]]; then
+    echo "Run this host verification as root, for example: sudo $0 production" >&2
+    exit 1
+fi
+
+target="${1:-}"
+if [[ "${target}" != "production" && "${target}" != "staging" ]]; then
+    usage
+    exit 2
+fi
+
+failures=0
+
+fail() {
+    echo "ERROR: $*" >&2
+    failures=1
+}
+
+verify_certbot() {
+    if ! command -v certbot >/dev/null 2>&1; then
+        fail "certbot is not installed"
+        return
+    fi
+    echo "OK: certbot is installed"
+}
+
+verify_renewal_timer() {
+    if ! command -v systemctl >/dev/null 2>&1; then
+        fail "systemctl is required to verify the host-managed certbot.timer"
+        return
+    fi
+    if ! systemctl cat certbot.timer >/dev/null 2>&1; then
+        fail "certbot.timer is not installed; configure and document an active Certbot renewal scheduler"
+        return
+    fi
+    if ! systemctl is-enabled --quiet certbot.timer; then
+        fail "certbot.timer is not enabled"
+    fi
+    if ! systemctl is-active --quiet certbot.timer; then
+        fail "certbot.timer is not active"
+    fi
+    if [[ "${failures}" -eq 0 ]]; then
+        echo "OK: certbot.timer is enabled and active"
+    fi
+}
+
+verify_certificate_file() {
+    local domain="$1"
+    local filename="$2"
+    local certificate_path="${LETSENCRYPT_ROOT}/live/${domain}/${filename}"
+    local resolved_path
+
+    if [[ ! -d "${LETSENCRYPT_ROOT}/live/${domain}" ]]; then
+        fail "missing expected certificate directory: ${LETSENCRYPT_ROOT}/live/${domain}"
+        return
+    fi
+    if [[ ! -e "${certificate_path}" || ! -f "${certificate_path}" ]]; then
+        fail "missing expected certificate file: ${certificate_path}"
+        return
+    fi
+    resolved_path="$(readlink -f -- "${certificate_path}" || true)"
+    if [[ -z "${resolved_path}" || ! -f "${resolved_path}" ]]; then
+        fail "certificate file does not resolve to a regular file: ${certificate_path}"
+        return
+    fi
+    # Certbot live paths normally resolve into /etc/letsencrypt/archive. Requiring
+    # that host-owned tree prevents repository-local or container-mounted material.
+    if [[ "${resolved_path}" != "${LETSENCRYPT_ROOT}/"* ]]; then
+        fail "certificate file resolves outside ${LETSENCRYPT_ROOT}: ${certificate_path}"
+        return
+    fi
+    echo "OK: ${certificate_path} resolves inside ${LETSENCRYPT_ROOT}"
+}
+
+is_approved_tls_key_group() {
+    local candidate_group="$1"
+    local approved_group
+
+    for approved_group in "${APPROVED_TLS_KEY_GROUPS[@]}"; do
+        if [[ "${candidate_group}" == "${approved_group}" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+verify_private_key() {
+    local domain="$1"
+    local key_path="${LETSENCRYPT_ROOT}/live/${domain}/privkey.pem"
+    local resolved_key_path
+    local owner
+    local group
+    local mode
+    local mode_value
+
+    if [[ ! -e "${key_path}" || ! -f "${key_path}" ]]; then
+        fail "missing expected private key: ${key_path}"
+        return
+    fi
+    resolved_key_path="$(readlink -f -- "${key_path}" || true)"
+    if [[ -z "${resolved_key_path}" || ! -f "${resolved_key_path}" ]]; then
+        fail "private key does not resolve to a regular file: ${key_path}"
+        return
+    fi
+    if [[ "${resolved_key_path}" != "${LETSENCRYPT_ROOT}/"* ]]; then
+        fail "private key resolves outside ${LETSENCRYPT_ROOT}: ${key_path}"
+        return
+    fi
+
+    owner="$(stat -c '%U' -- "${resolved_key_path}")"
+    group="$(stat -c '%G' -- "${resolved_key_path}")"
+    mode="$(stat -c '%a' -- "${resolved_key_path}")"
+    if [[ "${owner}" != "root" ]]; then
+        fail "private key must be owned by root: ${resolved_key_path} is owned by ${owner}"
+    fi
+    # This deployment uses host Nginx's privileged master process, so root is the
+    # only approved TLS-key group. Add a reviewed, dedicated TLS group to the
+    # explicit allowlist only when its membership and Nginx privilege model are documented.
+    if ! is_approved_tls_key_group "${group}"; then
+        fail "private key must be group-owned by an approved TLS group: ${resolved_key_path} is group-owned by ${group}"
+    fi
+    if [[ ! "${mode}" =~ ^[0-7]{3,4}$ ]]; then
+        fail "private key mode is not an octal mode: ${resolved_key_path} has ${mode}"
+        return
+    fi
+    mode_value=$((8#${mode}))
+    if (( (mode_value & 0007) != 0 )); then
+        fail "private key must not grant any permissions to other users (including world-readable or world-writable): ${resolved_key_path} has mode ${mode}"
+    fi
+    if (( (mode_value & 0022) != 0 )); then
+        fail "private key must not be group-writable or world-writable: ${resolved_key_path} has mode ${mode}"
+    fi
+    if (( (mode_value & 0010) != 0 )); then
+        fail "private key must not be group-executable: ${resolved_key_path} has mode ${mode}"
+    fi
+    if [[ "${failures}" -eq 0 ]]; then
+        echo "OK: ${key_path} resolves to root:root mode ${mode}"
+    fi
+}
+
+case "${target}" in
+    production)
+        domains=("${PRODUCTION_PUBLIC_HOST}" "${PRODUCTION_ADMIN_PUBLIC_HOST}")
+        ;;
+    staging)
+        domains=("${STAGING_PUBLIC_HOST}")
+        ;;
+esac
+
+verify_certbot
+verify_renewal_timer
+for domain in "${domains[@]}"; do
+    verify_certificate_file "${domain}" "fullchain.pem"
+    verify_private_key "${domain}"
+done
+
+if [[ "${failures}" -ne 0 ]]; then
+    echo "Certbot host-state verification failed for ${target}. No files were changed." >&2
+    exit 1
+fi
+
+echo "Certbot host-state verification passed for ${target}."
+echo "Manual renewal verification remains required: sudo certbot renew --dry-run"

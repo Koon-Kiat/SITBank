@@ -1947,6 +1947,7 @@ def test_linux_deployment_artifacts_are_forced_to_lf_and_reject_crlf():
         Path("ops/deploy/sitbank-container-deploy"),
         Path("ops/deploy/sitbank-container-runtime"),
         Path("ops/deploy/sitbank-database-cutover"),
+        Path("ops/deploy/verify-certbot-host-state"),
         Path("ops/nginx-proxy-headers.conf"),
         Path("ops/nginx/sitbank-default.conf"),
         Path("ops/nginx/sitbank-production.conf"),
@@ -1967,12 +1968,102 @@ def test_linux_deployment_artifacts_are_forced_to_lf_and_reject_crlf():
     assert "*.timer text eol=lf" in attributes
     assert "ops/deploy/bootstrap-container-ec2 text eol=lf" in attributes
     assert "ops/deploy/sitbank-container-bootstrap text eol=lf" in attributes
+    assert "ops/deploy/verify-certbot-host-state text eol=lf" in attributes
     assert "ops/sudoers/* text eol=lf" in attributes
     for path in linux_files:
         assert b"\r\n" not in path.read_bytes(), f"{path} must use LF line endings"
 
     assert "Refusing to install CRLF-formatted Linux file" in bootstrap
     assert "grep -q $'\\r$'" in bootstrap
+
+
+def test_certbot_host_state_verifier_enforces_host_managed_tls():
+    verifier_path = Path("ops/deploy/verify-certbot-host-state")
+    verifier = verifier_path.read_text(encoding="utf-8")
+    bootstrap = Path("ops/deploy/bootstrap-container-ec2").read_text(
+        encoding="utf-8"
+    )
+    production_nginx = Path("ops/nginx/sitbank-production.conf").read_text(
+        encoding="utf-8"
+    )
+    staging_nginx = Path("ops/nginx/sitbank-staging.conf").read_text(
+        encoding="utf-8"
+    )
+
+    assert verifier_path.exists()
+    assert verifier.startswith("#!/usr/bin/env bash\n")
+    assert 'LETSENCRYPT_ROOT="/etc/letsencrypt"' in verifier
+    assert 'PRODUCTION_PUBLIC_HOST="sitbank.duckdns.org"' in verifier
+    assert 'PRODUCTION_ADMIN_PUBLIC_HOST="admin-sitbank.duckdns.org"' in verifier
+    assert 'STAGING_PUBLIC_HOST="staging-sitbank.duckdns.org"' in verifier
+    assert 'readlink -f -- "${key_path}"' in verifier
+    assert "stat -c '%U'" in verifier
+    assert "stat -c '%G'" in verifier
+    assert "stat -c '%a'" in verifier
+    assert "world-readable or world-writable" in verifier
+    assert "group-writable or world-writable" in verifier
+    assert "mode_value & 0007" in verifier
+    assert "mode_value & 0022" in verifier
+    assert "certbot.timer" in verifier
+    assert "systemctl is-enabled --quiet certbot.timer" in verifier
+    assert "systemctl is-active --quiet certbot.timer" in verifier
+    assert "certbot renew --dry-run" in verifier
+    assert "chmod " not in verifier
+    assert "chown " not in verifier
+    assert "cat \"${key_path}\"" not in verifier
+
+    expected_key_paths = {
+        "/etc/letsencrypt/live/sitbank.duckdns.org/privkey.pem",
+        "/etc/letsencrypt/live/admin-sitbank.duckdns.org/privkey.pem",
+        "/etc/letsencrypt/live/staging-sitbank.duckdns.org/privkey.pem",
+    }
+    configured_key_paths = set(
+        re.findall(
+            r"^\s*ssl_certificate_key\s+([^;]+);$",
+            "\n".join([production_nginx, staging_nginx]),
+            flags=re.MULTILINE,
+        )
+    )
+    assert configured_key_paths == expected_key_paths
+    assert all(path.startswith("/etc/letsencrypt/live/") for path in configured_key_paths)
+    assert all("/opt/sitbank" not in path for path in configured_key_paths)
+
+    assert '"${repo_root}/ops/deploy/verify-certbot-host-state"' in bootstrap
+    assert "/usr/local/sbin/verify-certbot-host-state" in bootstrap
+    assert "/usr/local/sbin/verify-certbot-host-state production" in bootstrap
+    assert "/usr/local/sbin/verify-certbot-host-state staging" in bootstrap
+    assert "Missing required production TLS file" in bootstrap
+    assert "Missing required staging TLS file" in bootstrap
+
+
+def test_repository_keeps_acme_state_and_tls_private_keys_out_of_git():
+    result = subprocess.run(
+        ["git", "ls-files", "-z"],
+        check=True,
+        capture_output=True,
+    )
+    tracked_paths = [
+        Path(item.decode("utf-8")) for item in result.stdout.split(b"\0") if item
+    ]
+    forbidden_directories = (
+        Path(".well-known") / "acme-challenge",
+        Path("letsencrypt") / "accounts",
+        Path("letsencrypt") / "archive",
+        Path("letsencrypt") / "live",
+    )
+    private_key_marker = "-----BEGIN " + "PRIVATE KEY-----"
+
+    assert all(path.name != "privkey.pem" for path in tracked_paths)
+    for directory in forbidden_directories:
+        assert not any(path.is_relative_to(directory) for path in tracked_paths)
+    for path in tracked_paths:
+        if not path.is_file():
+            continue
+        try:
+            contents = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        assert private_key_marker not in contents, path
 
 
 def test_security_alert_scheduler_units_are_committed_and_safe():
