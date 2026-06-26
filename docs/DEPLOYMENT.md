@@ -49,9 +49,10 @@ Deploy the signed image through the restricted wrapper so it runs
 `verify-runtime-db-privileges`, and readiness checks before declaring success.
 
 Production deployment runs from the trusted `main` workflow only after release
-verification and staging deployment both succeed. Leave the repository variable
-`PROD_DEPLOY_ENABLED` unset or false until the production admin secret files and
-matching `PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID` are ready; when the flag is not
+verification, staging deployment, and the post-deployment staging TLS scan all
+succeed. Leave the repository variable `PROD_DEPLOY_ENABLED` unset or false
+until the production admin secret files and matching
+`PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID` are ready; when the flag is not
 explicitly true, production deployment is skipped.
 
 Production also requires a DNS record for `admin-sitbank.duckdns.org` pointing
@@ -116,11 +117,16 @@ configuration decide what Internet clients are actually offered. The **Live TLS
 scan evidence** GitHub Actions workflow records that external evidence with the
 checksum-verified `testssl.sh` 3.2.3 source release.
 
-The workflow runs weekly and can be started manually from the Actions tab. Run
-it after every Nginx, certificate, DNS, load-balancer, CDN/WAF, or host TLS
-change, and attach the successful workflow run to the staging or production
-release record. It deliberately does not run on pull requests: PRs do not
-create a separate public TLS endpoint.
+The workflow runs weekly, can be started manually from the Actions tab, and is
+called by the trusted deployment workflow. After a successful staging deploy it
+scans the staging customer endpoint; production deployment is blocked until
+that evidence passes. After a successful production deploy it scans both the
+production customer and admin endpoints, making the resulting artifacts the
+release's live TLS evidence. A production scan failure marks the deployment
+workflow failed and requires investigation before the release is accepted. Run
+the workflow manually after Nginx, certificate, DNS, load-balancer, CDN/WAF,
+or host TLS changes outside the normal deployment path. It deliberately does
+not run on pull requests: PRs do not create a separate public TLS endpoint.
 
 By default it scans these hostname-only targets, which can be overridden as
 manual workflow inputs when an approved endpoint changes:

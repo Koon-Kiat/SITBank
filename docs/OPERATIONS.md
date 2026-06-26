@@ -174,13 +174,17 @@ secret files.
 
 ## Live TLS Evidence Operations
 
-The **Live TLS scan evidence** workflow provides scheduled weekly and
-operator-dispatched evidence of the Internet-facing TLS posture for
+The **Live TLS scan evidence** workflow provides scheduled weekly,
+operator-dispatched, and post-deployment evidence of the Internet-facing TLS
+posture for
 `staging-sitbank.duckdns.org`, `sitbank.duckdns.org`, and
-`admin-sitbank.duckdns.org`. Dispatch it after edge, certificate, DNS,
-Nginx/OpenSSL, CDN/WAF, or load-balancer changes, then retain the successful
-run with the release or change record. Do not run a public-endpoint scan from
-ordinary pull requests.
+`admin-sitbank.duckdns.org`. The deployment workflow calls the staging scan
+after staging deploy and blocks production deployment until it passes; it calls
+the production scan after production deploy to complete the release evidence.
+Dispatch it after edge, certificate, DNS, Nginx/OpenSSL, CDN/WAF, or
+load-balancer changes outside deployment, then retain the successful run with
+the release or change record. Do not run a public-endpoint scan from ordinary
+pull requests.
 
 Each target artifact (`tls-scan-staging-sitbank`, `tls-scan-prod-sitbank`, or
 `tls-scan-admin-sitbank`) retains `testssl.sh` JSON, log, HTML, metadata, and
@@ -188,10 +192,12 @@ the policy-finding file for 90 days. The job summary records the target, UTC
 scan time, GitHub run, scanner revision, and result. No application credentials
 or secrets are needed or permitted.
 
-Treat a failed scan as a release/deployment verification failure. The automated
-gate blocks legacy TLS protocols, weak/NULL/anonymous/export/RC4/3DES ciphers,
-expired or mismatched certificates, missing/untrusted chains, all HIGH,
-CRITICAL, or FATAL `testssl.sh` findings, and scanner errors. Review
+Treat a failed scan as a release/deployment verification failure. A failed
+staging scan blocks production deployment, while a failed production scan
+marks the completed deployment workflow failed. The automated gate blocks
+legacy TLS protocols, weak/NULL/anonymous/export/RC4/3DES ciphers, expired or
+mismatched certificates, missing/untrusted chains, all HIGH, CRITICAL, or FATAL
+`testssl.sh` findings, and scanner errors. Review
 MEDIUM/LOW/INFO results in the retained evidence and create a security change
 or explicit risk decision where appropriate. SSL Labs is an optional manual
 second opinion; save its public report link or screenshot with the change

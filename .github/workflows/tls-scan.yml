@@ -1,8 +1,39 @@
 name: Live TLS scan evidence
 
 on:
+  workflow_call:
+    inputs:
+      scan_scope:
+        description: "Set of deployed endpoints to scan: all, staging, or production."
+        required: false
+        default: all
+        type: string
+      staging_host:
+        description: Staging HTTPS hostname to scan (hostname only).
+        required: false
+        default: staging-sitbank.duckdns.org
+        type: string
+      production_host:
+        description: Production customer HTTPS hostname to scan (hostname only).
+        required: false
+        default: sitbank.duckdns.org
+        type: string
+      admin_host:
+        description: Production admin HTTPS hostname to scan (hostname only).
+        required: false
+        default: admin-sitbank.duckdns.org
+        type: string
   workflow_dispatch:
     inputs:
+      scan_scope:
+        description: Set of endpoints to scan.
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - staging
+          - production
       staging_host:
         description: Staging HTTPS hostname to scan (hostname only).
         required: true
@@ -29,24 +60,48 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  resolve-targets:
+    name: Select TLS scan targets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - name: Select requested endpoints
+        id: select
+        shell: bash
+        env:
+          SCAN_SCOPE: ${{ inputs.scan_scope || 'all' }}
+        run: |
+          set -euo pipefail
+
+          case "${SCAN_SCOPE}" in
+            all)
+              targets='[{"label":"staging-sitbank","input":"staging","artifact":"tls-scan-staging-sitbank"},{"label":"prod-sitbank","input":"production","artifact":"tls-scan-prod-sitbank"},{"label":"admin-sitbank","input":"admin","artifact":"tls-scan-admin-sitbank"}]'
+              ;;
+            staging)
+              targets='[{"label":"staging-sitbank","input":"staging","artifact":"tls-scan-staging-sitbank"}]'
+              ;;
+            production)
+              targets='[{"label":"prod-sitbank","input":"production","artifact":"tls-scan-prod-sitbank"},{"label":"admin-sitbank","input":"admin","artifact":"tls-scan-admin-sitbank"}]'
+              ;;
+            *)
+              echo "::error::scan_scope must be all, staging, or production."
+              exit 1
+              ;;
+          esac
+
+          echo "matrix={\"target\":${targets}}" >> "${GITHUB_OUTPUT}"
+
   scan:
     name: Scan ${{ matrix.target.label }}
+    needs: resolve-targets
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     strategy:
       fail-fast: false
       max-parallel: 3
-      matrix:
-        target:
-          - label: staging-sitbank
-            input: staging
-            artifact: tls-scan-staging-sitbank
-          - label: prod-sitbank
-            input: production
-            artifact: tls-scan-prod-sitbank
-          - label: admin-sitbank
-            input: admin
-            artifact: tls-scan-admin-sitbank
+      matrix: ${{ fromJSON(needs.resolve-targets.outputs.matrix) }}
     env:
       STAGING_HOST: ${{ inputs.staging_host || 'staging-sitbank.duckdns.org' }}
       PRODUCTION_HOST: ${{ inputs.production_host || 'sitbank.duckdns.org' }}

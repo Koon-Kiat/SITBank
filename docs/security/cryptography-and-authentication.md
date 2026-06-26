@@ -85,14 +85,17 @@ must run `nginx -t` and inspect the loaded configuration on the target host
 before reload, then validate the externally offered suites after deployment.
 
 The `.github/workflows/tls-scan.yml` **Live TLS scan evidence** workflow is
-the primary automated external validation. It runs weekly and can be manually
-dispatched after a TLS-relevant deployment or infrastructure change. It scans
-`staging-sitbank.duckdns.org`, `sitbank.duckdns.org`, and
-`admin-sitbank.duckdns.org` with a checksum-verified `testssl.sh` release,
-retaining JSON, log, HTML, metadata, and policy findings as per-target GitHub
-Actions artifacts. The job summary records the UTC time, target, workflow run,
-and result. It intentionally does not run on ordinary pull requests because
-they do not create public TLS endpoints.
+the primary automated external validation. It runs weekly, can be manually
+dispatched after a TLS-relevant infrastructure change, and is called from the
+trusted deployment workflow. It verifies staging immediately after staging
+deploy (and blocks production deployment until that verification passes), then
+verifies both production endpoints after production deploy to complete the
+release evidence. It scans `staging-sitbank.duckdns.org`,
+`sitbank.duckdns.org`, and `admin-sitbank.duckdns.org` with a checksum-verified
+`testssl.sh` release, retaining JSON, log, HTML, metadata, and policy findings
+as per-target GitHub Actions artifacts. The job summary records the UTC time,
+target, workflow run, and result. It intentionally does not run on ordinary
+pull requests because they do not create public TLS endpoints.
 
 Verification fails for SSLv2/SSLv3/TLS 1.0/TLS 1.1, weak/NULL/anonymous/export/
 RC4/3DES cipher classes, expired certificates, hostname mismatches, untrusted or
