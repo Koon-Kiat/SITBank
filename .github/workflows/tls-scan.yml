@@ -194,8 +194,10 @@ jobs:
               def severe:
                 (.severity // "") as $severity
                 | ["HIGH", "CRITICAL", "FATAL"]
-                | index($severity) != null;
-              select(
+              | index($severity) != null;
+              .[]
+              | select(type == "object")
+              | select(
                 severe
                 or ((id == "SSLv2" or id == "SSLv3" or id == "TLS1" or id == "TLS1_1") and offered)
                 or ((id | test("^cipherlist_(NULL|aNULL|EXPORT|LOW|OBSOLETED|3DES|RC4)")) and ((finding | test("^not offered$"; "i")) | not))
