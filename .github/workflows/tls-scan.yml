@@ -1,0 +1,192 @@
+name: Live TLS scan evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      staging_host:
+        description: Staging HTTPS hostname to scan (hostname only).
+        required: true
+        default: staging-sitbank.duckdns.org
+        type: string
+      production_host:
+        description: Production customer HTTPS hostname to scan (hostname only).
+        required: true
+        default: sitbank.duckdns.org
+        type: string
+      admin_host:
+        description: Production admin HTTPS hostname to scan (hostname only).
+        required: true
+        default: admin-sitbank.duckdns.org
+        type: string
+  schedule:
+    # Weekly evidence collection. Manual runs should also follow every edge/TLS deployment.
+    - cron: "23 3 * * 1"
+
+permissions: {}
+
+concurrency:
+  group: live-tls-scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    name: Scan ${{ matrix.target.label }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        target:
+          - label: staging-sitbank
+            input: staging
+            artifact: tls-scan-staging-sitbank
+          - label: prod-sitbank
+            input: production
+            artifact: tls-scan-prod-sitbank
+          - label: admin-sitbank
+            input: admin
+            artifact: tls-scan-admin-sitbank
+    env:
+      STAGING_HOST: ${{ inputs.staging_host || 'staging-sitbank.duckdns.org' }}
+      PRODUCTION_HOST: ${{ inputs.production_host || 'sitbank.duckdns.org' }}
+      ADMIN_HOST: ${{ inputs.admin_host || 'admin-sitbank.duckdns.org' }}
+      TARGET_INPUT: ${{ matrix.target.input }}
+      TARGET_LABEL: ${{ matrix.target.label }}
+
+    steps:
+      - name: Download verified testssl.sh
+        shell: bash
+        run: |
+          set -euo pipefail
+          readonly version="3.2.3"
+          readonly commit="d2d9d2a04120033a7d1e01e52d9b409168544cc6"
+          readonly archive="${RUNNER_TEMP}/testssl.sh-${commit}.tar.gz"
+          readonly expected_sha256="d35d2454e2a86d1748381602fcc51783f79bf70263cd17f1b8030da49dfc0ef6"
+          readonly install_dir="${RUNNER_TEMP}/testssl.sh-${commit}"
+
+          curl --fail --location --retry 3 --proto '=https' --tlsv1.2 \
+            --output "${archive}" \
+            "https://github.com/testssl/testssl.sh/archive/${commit}.tar.gz"
+          printf '%s  %s\n' "${expected_sha256}" "${archive}" \
+            | sha256sum --check --strict
+          mkdir --parents "${install_dir}"
+          tar --extract --gzip --file "${archive}" \
+            --directory "${install_dir}" --strip-components=1
+          test -x "${install_dir}/testssl.sh"
+
+      - name: Scan live TLS endpoint and enforce policy
+        id: scan
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "${TARGET_INPUT}" in
+            staging) target_host="${STAGING_HOST}" ;;
+            production) target_host="${PRODUCTION_HOST}" ;;
+            admin) target_host="${ADMIN_HOST}" ;;
+            *)
+              echo "::error::Unknown TLS scan target '${TARGET_INPUT}'."
+              exit 1
+              ;;
+          esac
+
+          if [[ ! "${target_host}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$ ]]; then
+            echo "::error::TLS scan target must be a hostname, not a URL or command fragment."
+            exit 1
+          fi
+
+          readonly target_url="https://${target_host}"
+          readonly evidence_dir="tls-scan/${TARGET_LABEL}"
+          readonly json_file="${evidence_dir}/testssl.json"
+          readonly log_file="${evidence_dir}/testssl.log"
+          readonly html_file="${evidence_dir}/testssl.html"
+          readonly violations_file="${evidence_dir}/policy-violations.txt"
+          readonly metadata_file="${evidence_dir}/metadata.txt"
+          readonly started_at="$(date --utc --iso-8601=seconds)"
+          scan_failed=0
+
+          mkdir --parents "${evidence_dir}"
+          {
+            echo "scan_time_utc=${started_at}"
+            echo "target_host=${target_host}"
+            echo "target_url=${target_url}"
+            echo "workflow_run_id=${GITHUB_RUN_ID}"
+            echo "workflow_run_attempt=${GITHUB_RUN_ATTEMPT}"
+            echo "workflow_sha=${GITHUB_SHA}"
+            echo "testssl_version=3.2.3"
+            echo "testssl_commit=d2d9d2a04120033a7d1e01e52d9b409168544cc6"
+          } > "${metadata_file}"
+
+          if ! TERM_WIDTH=120 bash "${RUNNER_TEMP}/testssl.sh-d2d9d2a04120033a7d1e01e52d9b409168544cc6/testssl.sh" \
+            --quiet --warnings batch --color 0 \
+            --jsonfile "${json_file}" --logfile "${log_file}" --htmlfile "${html_file}" \
+            "${target_url}"; then
+            scan_failed=1
+            echo "testssl.sh did not complete successfully." > "${violations_file}"
+          fi
+
+          if [[ ! -s "${json_file}" ]] || ! jq empty "${json_file}" >/dev/null 2>&1; then
+            scan_failed=1
+            echo "testssl.sh did not produce valid JSON evidence." >> "${violations_file}"
+          else
+            jq -r '
+              def id: (.id // "");
+              def finding: (.finding // "");
+              def offered:
+                (finding | test("offered|enabled"; "i")) and
+                ((finding | test("not offered|not enabled"; "i")) | not);
+              def severe: (.severity // "") | IN("HIGH"; "CRITICAL"; "FATAL");
+              select(
+                severe
+                or ((id == "SSLv2" or id == "SSLv3" or id == "TLS1" or id == "TLS1_1") and offered)
+                or ((id | test("^cipherlist_(NULL|aNULL|EXPORT|LOW|OBSOLETED|3DES|RC4)")) and ((finding | test("^not offered$"; "i")) | not))
+                or (id == "RC4" and ((finding | test("not vulnerable"; "i")) | not))
+                or (id == "cert_expirationStatus" and (finding | test("^expired"; "i")))
+                or (id == "cert_trust" and (finding | test("does not match supplied uri|hostname mismatch"; "i")))
+                or (id == "cert_chain_of_trust" and (finding | test("not trusted|untrusted|incomplete|missing"; "i")))
+              )
+              | "[\(.severity // "UNKNOWN")] \(id): \(finding)"
+            ' "${json_file}" > "${violations_file}"
+
+            if [[ -s "${violations_file}" ]]; then
+              scan_failed=1
+            fi
+          fi
+
+          {
+            echo "## Live TLS scan - ${target_host}"
+            echo
+            echo "- Scan time (UTC): \`${started_at}\`"
+            echo "- Target: \`${target_url}\`"
+            echo "- Workflow run: [${GITHUB_RUN_ID}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}) (attempt ${GITHUB_RUN_ATTEMPT})"
+            echo "- Scanner: \`testssl.sh 3.2.3\` at \`d2d9d2a04120033a7d1e01e52d9b409168544cc6\`"
+            echo
+            if [[ "${scan_failed}" -eq 0 ]]; then
+              echo "Result: **passed** - no policy violations found."
+            else
+              echo "Result: **failed** - policy violations or a scan error were recorded."
+              echo
+              echo "### Findings that fail verification"
+              echo
+              echo '```text'
+              sed -n '1,100p' "${violations_file}"
+              echo '```'
+            fi
+            echo
+            echo "JSON, log, HTML, metadata, and policy findings are retained in the \`${TARGET_LABEL}\` artifact."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          if [[ "${scan_failed}" -ne 0 ]]; then
+            echo "::error::Live TLS verification failed for ${target_host}; see uploaded evidence."
+            exit 1
+          fi
+
+      - name: Upload TLS scan evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ matrix.target.artifact }}
+          path: tls-scan/${{ matrix.target.label }}
+          if-no-files-found: warn
+          retention-days: 90

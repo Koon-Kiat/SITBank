@@ -108,6 +108,61 @@ The Flask application and its containers do not issue certificates and do not
 mount or read TLS private keys. Normal deployment must never generate or
 overwrite a private key.
 
+## Live TLS Scan Evidence
+
+The host configuration is necessary but not sufficient evidence of the public
+TLS posture: the deployed certificate chain, Nginx/OpenSSL build, DNS, and edge
+configuration decide what Internet clients are actually offered. The **Live TLS
+scan evidence** GitHub Actions workflow records that external evidence with the
+checksum-verified `testssl.sh` 3.2.3 source release.
+
+The workflow runs weekly and can be started manually from the Actions tab. Run
+it after every Nginx, certificate, DNS, load-balancer, CDN/WAF, or host TLS
+change, and attach the successful workflow run to the staging or production
+release record. It deliberately does not run on pull requests: PRs do not
+create a separate public TLS endpoint.
+
+By default it scans these hostname-only targets, which can be overridden as
+manual workflow inputs when an approved endpoint changes:
+
+| Environment | Workflow input | Default target | Artifact |
+| --- | --- | --- | --- |
+| Staging customer | `staging_host` | `https://staging-sitbank.duckdns.org` | `tls-scan-staging-sitbank` |
+| Production customer | `production_host` | `https://sitbank.duckdns.org` | `tls-scan-prod-sitbank` |
+| Production admin | `admin_host` | `https://admin-sitbank.duckdns.org` | `tls-scan-admin-sitbank` |
+
+Each target produces JSON, text log, HTML, scan metadata, and a policy-finding
+file. They are retained as GitHub Actions artifacts for 90 days. The target job
+summary identifies the UTC scan time, host, run ID/attempt, scanner version,
+and pass/fail result. TLS scanning uses no application credentials and the
+workflow contains no application secrets.
+
+The verification gate fails for SSLv2, SSLv3, TLS 1.0, or TLS 1.1; weak, NULL,
+anonymous, export, RC4, or 3DES ciphers; expired certificates; hostname
+mismatches; untrusted, incomplete, or missing certificate chains; any
+`testssl.sh` HIGH, CRITICAL, or FATAL finding; and scan/JSON-generation errors.
+MEDIUM/LOW/INFO findings remain in the evidence and require operator review;
+they are not an automatic release block unless they match one of the explicit
+prohibited classes above.
+
+For a host-side/manual check, use the same full scan (do not use `-k` or supply
+application credentials):
+
+```bash
+testssl.sh --warnings batch --color 0 --jsonfile testssl.json \
+  --logfile testssl.log --htmlfile testssl.html \
+  https://staging-sitbank.duckdns.org
+testssl.sh --warnings batch --color 0 https://sitbank.duckdns.org
+testssl.sh --warnings batch --color 0 https://admin-sitbank.duckdns.org
+```
+
+SSL Labs remains optional, manual corroborating evidence. Use its public
+report when an independently rendered assessment is useful for a release,
+certificate renewal, CDN/WAF change, or incident record; retain a link or
+screenshot with the release evidence. Production deployment must not depend on
+SSL Labs automation because public API capacity and rate limits are external to
+this repository.
+
 Before first bootstrap, issue the certificates using the approved host Certbot
 flow. The bootstrap retains its certificate-file preflight and installs
 `ops/deploy/verify-certbot-host-state` as
@@ -243,13 +298,13 @@ curl -k -I -u "$STAGING_BASIC_AUTH_USER:$STAGING_BASIC_AUTH_PASSWORD" \
 curl -k -I https://staging-sitbank.duckdns.org/health/ready
 curl -fsS http://127.0.0.1:5001/health/ready
 sudo nginx -T | grep -E 'ssl_protocols|ssl_ciphers|ssl_ecdh_curve|ssl_conf_command|ssl_session_tickets'
-testssl.sh --fast --parallel https://staging-sitbank.duckdns.org
+testssl.sh --warnings batch --color 0 https://staging-sitbank.duckdns.org
 ```
 
 Expected: unauthenticated `/` returns `401`, authenticated `/` returns `200`, external `/health/ready` returns `403`, and local app readiness succeeds.
 
 After the staging TLS check passes, validate both production HTTPS hostnames
-with `testssl.sh --fast --parallel https://sitbank.duckdns.org` and
-`testssl.sh --fast --parallel https://admin-sitbank.duckdns.org`. The
+with `testssl.sh --warnings batch --color 0 https://sitbank.duckdns.org` and
+`testssl.sh --warnings batch --color 0 https://admin-sitbank.duckdns.org`. The
 `ssl_conf_command` TLS 1.3 setting is runtime-dependent, so `nginx -t` must
 pass on the deployed host before any reload.

@@ -1920,6 +1920,88 @@ def test_every_github_action_is_pinned_to_a_full_commit_sha():
     assert "pull_request_target:" not in workflow_text
 
 
+def test_live_tls_scan_workflow_collects_evidence_without_running_on_pull_requests():
+    workflow_path = Path(".github/workflows/tls-scan.yml")
+    workflow_text = workflow_path.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(workflow_text)
+    triggers = workflow[True]
+
+    assert workflow["name"] == "Live TLS scan evidence"
+    assert set(triggers) == {"workflow_dispatch", "schedule"}
+    assert "pull_request" not in workflow_text
+    assert workflow["permissions"] == {}
+    assert workflow["concurrency"] == {
+        "group": "live-tls-scan",
+        "cancel-in-progress": False,
+    }
+
+    inputs = triggers["workflow_dispatch"]["inputs"]
+    assert inputs["staging_host"]["default"] == "staging-sitbank.duckdns.org"
+    assert inputs["production_host"]["default"] == "sitbank.duckdns.org"
+    assert inputs["admin_host"]["default"] == "admin-sitbank.duckdns.org"
+
+    scan = workflow["jobs"]["scan"]
+    assert scan["timeout-minutes"] == 35
+    assert scan["strategy"]["fail-fast"] is False
+    assert scan["strategy"]["max-parallel"] == 3
+    targets = scan["strategy"]["matrix"]["target"]
+    assert targets == [
+        {
+            "label": "staging-sitbank",
+            "input": "staging",
+            "artifact": "tls-scan-staging-sitbank",
+        },
+        {
+            "label": "prod-sitbank",
+            "input": "production",
+            "artifact": "tls-scan-prod-sitbank",
+        },
+        {
+            "label": "admin-sitbank",
+            "input": "admin",
+            "artifact": "tls-scan-admin-sitbank",
+        },
+    ]
+    assert "testssl.sh/archive/${commit}.tar.gz" in workflow_text
+    assert 'readonly commit="d2d9d2a04120033a7d1e01e52d9b409168544cc6"' in workflow_text
+    assert "d35d2454e2a86d1748381602fcc51783f79bf70263cd17f1b8030da49dfc0ef6" in workflow_text
+    assert "sha256sum --check --strict" in workflow_text
+    assert "--jsonfile" in workflow_text
+    assert "--logfile" in workflow_text
+    assert "--htmlfile" in workflow_text
+    assert "GITHUB_STEP_SUMMARY" in workflow_text
+    assert "TLS1_1" in workflow_text
+    assert "cipherlist_(NULL|aNULL|EXPORT|LOW|OBSOLETED|3DES|RC4)" in workflow_text
+    assert "cert_expirationStatus" in workflow_text
+    assert "cert_trust" in workflow_text
+    assert "cert_chain_of_trust" in workflow_text
+    assert "IN(\"HIGH\"; \"CRITICAL\"; \"FATAL\")" in workflow_text
+    assert "secrets." not in workflow_text
+
+    uses = _workflow_uses(workflow_text)
+    assert uses == [
+        "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+    ]
+    _assert_pinned_actions(uses, context="Live TLS scan workflow")
+
+    deployment_docs = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
+    operations_docs = Path("docs/OPERATIONS.md").read_text(encoding="utf-8")
+    crypto_docs = Path("docs/security/cryptography-and-authentication.md").read_text(
+        encoding="utf-8"
+    )
+    for docs in (deployment_docs, operations_docs, crypto_docs):
+        assert "live tls scan evidence" in docs.lower()
+        assert "staging-sitbank.duckdns.org" in docs
+        assert "sitbank.duckdns.org" in docs
+        assert "admin-sitbank.duckdns.org" in docs
+        assert "SSL Labs" in docs
+        assert re.search(r"HIGH,\s+CRITICAL,\s+or FATAL", docs)
+    assert "testssl.sh --warnings batch --color 0" in deployment_docs
+    assert "tls-scan-staging-sitbank" in deployment_docs
+    assert "tls-scan-prod-sitbank" in deployment_docs
+    assert "tls-scan-admin-sitbank" in deployment_docs
+
+
 def test_only_sitbank_container_deployment_units_are_active():
     assert not Path("ops/deploy/bootstrap-ec2").exists()
     assert Path("ops/deploy/sitbank-container-bootstrap").exists()

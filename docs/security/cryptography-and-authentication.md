@@ -84,6 +84,23 @@ Session tickets remain disabled to reduce long-lived ticket-key exposure.
 must run `nginx -t` and inspect the loaded configuration on the target host
 before reload, then validate the externally offered suites after deployment.
 
+The `.github/workflows/tls-scan.yml` **Live TLS scan evidence** workflow is
+the primary automated external validation. It runs weekly and can be manually
+dispatched after a TLS-relevant deployment or infrastructure change. It scans
+`staging-sitbank.duckdns.org`, `sitbank.duckdns.org`, and
+`admin-sitbank.duckdns.org` with a checksum-verified `testssl.sh` release,
+retaining JSON, log, HTML, metadata, and policy findings as per-target GitHub
+Actions artifacts. The job summary records the UTC time, target, workflow run,
+and result. It intentionally does not run on ordinary pull requests because
+they do not create public TLS endpoints.
+
+Verification fails for SSLv2/SSLv3/TLS 1.0/TLS 1.1, weak/NULL/anonymous/export/
+RC4/3DES cipher classes, expired certificates, hostname mismatches, untrusted or
+incomplete chains, and every HIGH, CRITICAL, or FATAL `testssl.sh` finding.
+MEDIUM/LOW/INFO findings are retained for manual review. SSL Labs is optional
+manual corroboration for a release, certificate renewal, edge change, or
+incident record; it is not a release-blocking automation dependency.
+
 ## 1.3 Server Private Key Storage
 
 The TLS private key is expected to exist only on the deployment host under
