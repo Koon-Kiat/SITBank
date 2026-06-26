@@ -114,7 +114,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          readonly version="3.2.3"
           readonly commit="d2d9d2a04120033a7d1e01e52d9b409168544cc6"
           readonly archive="${RUNNER_TEMP}/testssl.sh-${commit}.tar.gz"
           readonly expected_sha256="d35d2454e2a86d1748381602fcc51783f79bf70263cd17f1b8030da49dfc0ef6"
@@ -158,7 +157,8 @@ jobs:
           readonly html_file="${evidence_dir}/testssl.html"
           readonly violations_file="${evidence_dir}/policy-violations.txt"
           readonly metadata_file="${evidence_dir}/metadata.txt"
-          readonly started_at="$(date --utc --iso-8601=seconds)"
+          started_at="$(date --utc --iso-8601=seconds)"
+          readonly started_at
           scan_failed=0
 
           mkdir --parents "${evidence_dir}"
