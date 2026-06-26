@@ -66,6 +66,14 @@ Gunicorn listeners. Nginx overwrites proxy headers in
 `ops/nginx-proxy-headers.conf`, and `app/__init__.py` applies `ProxyFix` with
 `TRUSTED_PROXY_COUNT`.
 
+Staging browser traffic must pass Cloudflare Access before the staging Nginx
+server reaches Flask, and the staging origin requires Cloudflare Authenticated
+Origin Pulls for browser/app paths. Admin browser traffic must use a
+Tailscale/private operator path before it can reach the loopback admin service.
+These network boundaries do not merge session state: customer and admin
+cookies, lookup HMAC keys, session key prefixes, rate-limit prefixes, and
+runtime database roles remain separate.
+
 Transport protections:
 
 | Control | Evidence |

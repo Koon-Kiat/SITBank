@@ -5,6 +5,9 @@ admin:
           - 'admin_wsgi.py'
           - 'ops/**/admin*'
           - 'ops/**/admin/**'
+          - 'docs/security/admin-and-staging-zero-trust-access.md'
+          - 'docs/security/access-control.md'
+          - 'docs/security/session-management.md'
           - 'tests/test_admin_*.py'
 
 customer:
@@ -71,6 +74,7 @@ security:
           - 'docs/security/**'
           - 'SECURITY.md'
           - '.trivyignore'
+          - 'ops/nginx/**'
           - 'ops/security/**'
           - 'ops/fido-*.json'
           - 'tests/test_*security*.py'
@@ -99,6 +103,58 @@ security:
       - 'passkey'
       - 'secret'
       - 'rate-limit'
+
+zero-trust:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'docs/security/admin-and-staging-zero-trust-access.md'
+          - '**/*zero-trust*'
+          - '**/*zero_trust*'
+          - '**/*cloudflare*'
+          - '**/*tailscale*'
+          - '**/*private-access*'
+          - '**/*access-boundary*'
+  - head-branch:
+      - 'zero-trust'
+      - 'cloudflare'
+      - 'tailscale'
+      - 'private-access'
+      - 'access-boundary'
+
+network-security:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'ops/nginx/**'
+          - 'docs/security/admin-and-staging-zero-trust-access.md'
+          - '**/*firewall*'
+          - '**/*allowlist*'
+          - '**/*vpn*'
+          - '**/*tailscale*'
+          - '**/*cloudflare*'
+          - '**/*origin-bypass*'
+          - '**/*private-network*'
+          - '**/*network-boundary*'
+  - head-branch:
+      - 'network-security'
+      - 'firewall'
+      - 'vpn'
+      - 'tailscale'
+      - 'cloudflare'
+      - 'origin-bypass'
+      - 'private-network'
+
+staging:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'compose.staging.yml'
+          - 'ops/**/staging*'
+          - 'ops/**/staging/**'
+          - 'ops/staging/**'
+          - 'docs/**/staging*'
+          - 'tests/**/*staging*.py'
+  - head-branch:
+      - 'staging'
+      - 'staging-sitbank'
 
 session:
   - changed-files:
