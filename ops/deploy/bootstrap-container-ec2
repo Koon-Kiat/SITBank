@@ -9,6 +9,7 @@ readonly COSIGN_SHA256="db15cc99e6e4837daabab023742aaddc3841ce57f193d11b7c3e06c8
 readonly PRODUCTION_PUBLIC_HOST="sitbank.duckdns.org"
 readonly PRODUCTION_ADMIN_PUBLIC_HOST="admin-sitbank.duckdns.org"
 readonly EDGE_DEFAULTS_FILE="/etc/nginx/conf.d/sitbank-default.conf"
+readonly TLS_POLICY_FILE="/etc/nginx/snippets/sitbank-tls-policy.conf"
 readonly PRODUCTION_RATE_LIMITS_FILE="/etc/nginx/conf.d/sitbank-production-rate-limits.conf"
 readonly STAGING_PUBLIC_HOST="staging-sitbank.duckdns.org"
 readonly STAGING_BASIC_AUTH_FILE="/etc/nginx/.htpasswd-sitbank-staging"
@@ -92,6 +93,7 @@ linux_runtime_files=(
     "${repo_root}/ops/deploy/sitbank-container-runtime"
     "${repo_root}/ops/deploy/sitbank-database-cutover"
     "${repo_root}/ops/nginx/sitbank-default.conf"
+    "${repo_root}/ops/nginx/sitbank-tls-policy.conf"
     "${repo_root}/ops/sudoers/sitbank-container-deploy"
 )
 if [[ "${target}" == "staging" ]]; then
@@ -287,6 +289,14 @@ install_edge_default_site() {
         "nginx-sitbank-default"
 }
 
+install_tls_policy() {
+    install_nginx_config \
+        "${repo_root}/ops/nginx/sitbank-tls-policy.conf" \
+        "${TLS_POLICY_FILE}" \
+        "shared Nginx TLS policy" \
+        "nginx-sitbank-tls-policy"
+}
+
 install_admin_verification_page() {
     install -d -o root -g root -m 0755 /var/www/sitbank-admin-verification
     install -o root -g root -m 0644 \
@@ -349,6 +359,7 @@ if [[ "${target}" == "production" ]]; then
     install -d -o root -g root -m 0755 /etc/nginx/conf.d
     install -d -o root -g root -m 0755 /var/www/certbot
     install_edge_default_site
+    install_tls_policy
     install_admin_verification_page
     install -o root -g root -m 0644 \
         "${repo_root}/ops/nginx-proxy-headers.conf" \
@@ -439,6 +450,7 @@ if [[ "${target}" == "staging" ]]; then
     install -d -o root -g root -m 0755 /etc/nginx/conf.d
     install -d -o root -g root -m 0755 /var/www/certbot
     install_edge_default_site
+    install_tls_policy
     install_admin_verification_page
     install -o root -g root -m 0644 \
         "${repo_root}/ops/nginx-proxy-headers.conf" \

@@ -114,13 +114,15 @@ settings are missing.
 | SMTP password-reset backend requires TLS and credentials in production | `config.py`, `app/security/email.py`, `tests/test_config.py::test_production_smtp_email_requires_host_and_credentials_without_secret_leakage` |
 | Password reset base URL must be HTTPS in production | `tests/test_config.py::test_password_reset_base_url_must_be_https_in_production` |
 | Production payee activation delay must be at least 12 hours; short cooldowns are limited to development/test | `config.py::_validate_payee_cooldown_config()`, `app/ops/commands.py::production_check()`, `tests/test_config.py::test_production_payee_cooldown_rejects_short_value_without_secret_leakage` |
-| Nginx rejects unknown hosts and redirects HTTP to HTTPS | `ops/nginx/sitbank-default.conf`, `ops/nginx/sitbank-production.conf` |
+| Nginx rejects unknown hosts, redirects HTTP to HTTPS, and pins TLS 1.2 ECDHE+AEAD suites, TLS 1.3 AEAD suites, and ECDHE curves | `ops/nginx/sitbank-default.conf`, `ops/nginx/sitbank-production.conf`, `ops/nginx/sitbank-tls-policy.conf` |
 | Docker runtime drops capabilities and runs read-only as UID/GID `10001:10001` | `Dockerfile`, `compose.prod.yml`, `tests/test_deployment.py::test_dockerfile_and_compose_enforce_hardened_runtime` |
 | Deployment contract keeps production and staging isolated | `compose.prod.yml`, `compose.staging.yml`, `tests/test_deployment.py` |
 
-Current gap: Nginx does not pin an explicit `ssl_ciphers` list. The repo pins
-protocols to TLS 1.2 and TLS 1.3, but cipher selection depends on deployed
-Nginx/OpenSSL defaults.
+Nginx uses the shared `ops/nginx/sitbank-tls-policy.conf` for all configured
+HTTPS edges. It permits only TLS 1.2 ECDHE+AEAD suites and standard TLS 1.3
+AEAD suites, with `X25519`, `prime256v1`, and `secp384r1` as the explicit ECDHE
+curve preference. Operators still validate the live Nginx/OpenSSL support with
+`nginx -t` before reload.
 
 ## 4.7 Logging, Auditing, And Error Handling
 

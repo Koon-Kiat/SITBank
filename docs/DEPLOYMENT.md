@@ -101,11 +101,14 @@ journalctl -u sitbank-security-alerts.service
 
 ## Production Edge and Network Hardening
 
-The reviewed production bootstrap installs and enables the production edge from `ops/nginx/sitbank-default.conf`, `ops/nginx/sitbank-production.conf`, `ops/nginx/sitbank-production-rate-limits.conf`, and `ops/nginx-proxy-headers.conf`. The shared default config owns unknown-host rejection so production and staging can run on the same EC2 without duplicate Nginx `default_server` listeners. Any change to those files requires a production bootstrap after merge.
+The reviewed production bootstrap installs and enables the production edge from `ops/nginx/sitbank-default.conf`, `ops/nginx/sitbank-production.conf`, `ops/nginx/sitbank-production-rate-limits.conf`, `ops/nginx-proxy-headers.conf`, and `ops/nginx/sitbank-tls-policy.conf`. The shared default config owns unknown-host rejection so production and staging can run on the same EC2 without duplicate Nginx `default_server` listeners. Any change to those files requires a production bootstrap after merge.
 
 - Public ingress is TCP `80` and `443` only.
 - SSH is restricted to an administrator IP allowlist, AWS Systems Manager, a bastion, or VPN.
 - Nginx terminates TLS, redirects HTTP to HTTPS, and forwards only expected proxy headers.
+- The shared TLS policy enables only TLS 1.2 and TLS 1.3, restricts TLS 1.2 to
+  ECDHE+AEAD suites, pins the X25519/P-256/P-384 ECDHE curve preference, and
+  limits TLS 1.3 to its standard AEAD suites.
 - Gunicorn binds only to `127.0.0.1:5000`.
 - Admin Gunicorn binds only to `127.0.0.1:5002` and is reached only by the
   `admin-sitbank.duckdns.org` Nginx server block.
@@ -126,6 +129,7 @@ Verification:
 ```bash
 sudo test -r /etc/letsencrypt/live/sitbank.duckdns.org/fullchain.pem
 sudo nginx -t
+sudo nginx -T | grep -E 'ssl_protocols|ssl_ciphers|ssl_ecdh_curve|ssl_conf_command|ssl_session_tickets'
 sudo ss -ltnp | grep -E ':(80|443|5000|5002)([[:space:]]|$)'
 sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-app
 sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-admin
@@ -173,7 +177,7 @@ sudo certbot certonly --webroot -w /var/www/certbot -d staging-sitbank.duckdns.o
 sudo certbot renew --dry-run
 ```
 
-Then run `ops/deploy/bootstrap-container-ec2 staging hetp88/SITBank staging-sitbank.duckdns.org`. The bootstrap installs the Nginx proxy header snippet and rate-limit include, then runs `sudo nginx -t` before `sudo systemctl reload nginx`. This edge setup is separate from application deployment.
+Then run `ops/deploy/bootstrap-container-ec2 staging hetp88/SITBank staging-sitbank.duckdns.org`. The bootstrap installs the Nginx proxy header snippet, TLS policy snippet, and rate-limit include, then runs `sudo nginx -t` before `sudo systemctl reload nginx`. This edge setup is separate from application deployment.
 
 Staging verification:
 
@@ -183,6 +187,14 @@ curl -k -I -u "$STAGING_BASIC_AUTH_USER:$STAGING_BASIC_AUTH_PASSWORD" \
   https://staging-sitbank.duckdns.org/
 curl -k -I https://staging-sitbank.duckdns.org/health/ready
 curl -fsS http://127.0.0.1:5001/health/ready
+sudo nginx -T | grep -E 'ssl_protocols|ssl_ciphers|ssl_ecdh_curve|ssl_conf_command|ssl_session_tickets'
+testssl.sh --fast --parallel https://staging-sitbank.duckdns.org
 ```
 
 Expected: unauthenticated `/` returns `401`, authenticated `/` returns `200`, external `/health/ready` returns `403`, and local app readiness succeeds.
+
+After the staging TLS check passes, validate both production HTTPS hostnames
+with `testssl.sh --fast --parallel https://sitbank.duckdns.org` and
+`testssl.sh --fast --parallel https://admin-sitbank.duckdns.org`. The
+`ssl_conf_command` TLS 1.3 setting is runtime-dependent, so `nginx -t` must
+pass on the deployed host before any reload.
