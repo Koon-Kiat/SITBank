@@ -24,7 +24,7 @@ files on the host:
 ```nginx
 ssl_certificate /etc/letsencrypt/live/sitbank.duckdns.org/fullchain.pem;
 ssl_certificate_key /etc/letsencrypt/live/sitbank.duckdns.org/privkey.pem;
-ssl_protocols TLSv1.2 TLSv1.3;
+include /etc/nginx/snippets/sitbank-tls-policy.conf;
 add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 ```
 
@@ -37,7 +37,7 @@ Evidence:
 | Unknown host rejection | `ops/nginx/sitbank-default.conf` returns `444` for the default HTTP server and uses `ssl_reject_handshake on` for the default HTTPS server |
 | HSTS | Production uses `Strict-Transport-Security "max-age=31536000; includeSubDomains"`; staging uses `max-age=300` |
 | Proxy trust boundary | `ops/nginx-proxy-headers.conf` overwrites `Host`, `X-Real-IP`, `X-Forwarded-For`, and `X-Forwarded-Proto`; `app/__init__.py` applies `ProxyFix` using `TRUSTED_PROXY_COUNT` |
-| Deployment validation | `ops/deploy/bootstrap-container-ec2` requires the Certbot files before installing the production or staging Nginx site and runs `nginx -t` before reload |
+| TLS policy and deployment validation | `ops/nginx/sitbank-tls-policy.conf` pins the shared TLS policy; `ops/deploy/bootstrap-container-ec2` requires the Certbot files and TLS snippet before installing the production or staging Nginx site, then runs `nginx -t` before reload |
 | Tests | `tests/test_deployment.py::test_nginx_default_server_is_shared_for_same_host_production_and_staging`, `tests/test_deployment.py::test_production_nginx_edge_config_enforces_network_boundary_and_limits`, `tests/test_deployment.py::test_staging_nginx_enforces_https_auth_health_and_rate_limits`, `tests/test_deployment.py::test_proxyfix_trusts_exactly_the_configured_nginx_hop` |
 
 Short evidence for unknown-host rejection:
@@ -57,22 +57,28 @@ not contain ACME account state, private keys, or a certbot renewal timer.
 
 ## 1.2 HTTPS Cipher Suites
 
-Production and staging Nginx explicitly enable only TLS 1.2 and TLS 1.3:
+Production, production-admin, and staging HTTPS server blocks include the shared
+`ops/nginx/sitbank-tls-policy.conf` policy. It explicitly enables only TLS 1.2
+and TLS 1.3, prefers modern ECDHE curves, and restricts TLS 1.2 to ECDHE with
+AEAD encryption:
 
 ```nginx
 ssl_protocols TLSv1.2 TLSv1.3;
+ssl_ecdh_curve X25519:prime256v1:secp384r1;
+ssl_ciphers 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305';
 ssl_prefer_server_ciphers off;
 ssl_session_tickets off;
+ssl_conf_command Ciphersuites TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256;
 ```
 
-This disables SSLv2, SSLv3, TLS 1.0, and TLS 1.1 by omission. TLS 1.2 and TLS
-1.3 are the only protocol versions configured in the repository. Session
-tickets are disabled to reduce long-lived ticket-key exposure.
+This excludes SSLv2, SSLv3, TLS 1.0, TLS 1.1, CBC, RC4, 3DES, DES, NULL,
+EXPORT, MD5, anonymous, static-RSA, and finite-field DHE cipher families.
+TLS 1.3 is limited to its standard AES-GCM and ChaCha20-Poly1305 AEAD suites.
+Session tickets remain disabled to reduce long-lived ticket-key exposure.
 
-Current gap: the repo does not explicitly configure `ssl_ciphers` or
-`ssl_ecdh_curve`. Cipher suite selection therefore depends on the installed
-Nginx/OpenSSL defaults on the host. The deployment documentation should verify
-the live host's cipher suites before release.
+`ssl_conf_command` depends on the deployed Nginx and OpenSSL build. Operators
+must run `nginx -t` and inspect the loaded configuration on the target host
+before reload, then validate the externally offered suites after deployment.
 
 ## 1.3 Server Private Key Storage
 
