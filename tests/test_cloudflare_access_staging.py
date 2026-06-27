@@ -28,6 +28,7 @@ class StagingAccessConfig(TestConfig):
     STAGING_CLOUDFLARE_ACCESS_AUD = AUDIENCE
     STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN = "sitbank.cloudflareaccess.com"
     STAGING_CLOUDFLARE_ACCESS_JWKS_CACHE_TTL_SECONDS = 300
+    TRUSTED_PROXY_COUNT = 1
 
 
 def _base64url(value: bytes) -> str:
@@ -208,6 +209,24 @@ def test_non_loopback_readiness_still_requires_access_assertion(staging_app):
     )
 
     assert response.status_code == 403
+
+
+def test_docker_published_loopback_readiness_uses_forwarded_client(staging_app):
+    client = staging_app.test_client()
+
+    bridge_only = client.get(
+        "/health/ready",
+        environ_base={"REMOTE_ADDR": "172.18.0.1"},
+    )
+    forwarded_loopback = client.get(
+        "/health/ready",
+        headers={"X-Forwarded-For": "127.0.0.1"},
+        environ_base={"REMOTE_ADDR": "172.18.0.1"},
+    )
+
+    assert bridge_only.status_code == 403
+    assert forwarded_loopback.status_code == 200
+    assert forwarded_loopback.get_json() == {"status": "ready"}
 
 
 def test_production_customer_and_admin_apps_are_not_affected():
