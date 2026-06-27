@@ -11,7 +11,7 @@ on:
       staging_host:
         description: Staging HTTPS hostname to scan (hostname only).
         required: false
-        default: staging-sitbank.pp.ua
+        default: staging-sitbank.duckdns.org
         type: string
       production_host:
         description: Production customer HTTPS hostname to scan (hostname only).
@@ -37,7 +37,7 @@ on:
       staging_host:
         description: Staging HTTPS hostname to scan (hostname only).
         required: true
-        default: staging-sitbank.pp.ua
+        default: staging-sitbank.duckdns.org
         type: string
       production_host:
         description: Production customer HTTPS hostname to scan (hostname only).
@@ -103,7 +103,7 @@ jobs:
       max-parallel: 3
       matrix: ${{ fromJSON(needs.resolve-targets.outputs.matrix) }}
     env:
-      STAGING_HOST: ${{ inputs.staging_host || 'staging-sitbank.pp.ua' }}
+      STAGING_HOST: ${{ inputs.staging_host || 'staging-sitbank.duckdns.org' }}
       PRODUCTION_HOST: ${{ inputs.production_host || 'sitbank.duckdns.org' }}
       ADMIN_HOST: ${{ inputs.admin_host || 'admin-sitbank.duckdns.org' }}
       TARGET_INPUT: ${{ matrix.target.input }}

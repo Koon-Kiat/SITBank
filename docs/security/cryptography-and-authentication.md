@@ -100,7 +100,7 @@ dispatched after a TLS-relevant infrastructure change, and is called from the
 trusted deployment workflow. It verifies staging immediately after staging
 deploy (and blocks production deployment until that verification passes), then
 verifies both production endpoints after production deploy to complete the
-release evidence. It scans `staging-sitbank.pp.ua`,
+release evidence. It scans `staging-sitbank.duckdns.org`,
 `sitbank.duckdns.org`, and `admin-sitbank.duckdns.org` with a checksum-verified
 `testssl.sh` release. Each per-target artifact retains untouched scanner JSON
 as `testssl.raw.json` and a separate `testssl.json` policy copy, along with the
@@ -111,6 +111,13 @@ Cloudflare Origin Pull CA subject as raw evidence without relaxing invalid-JSON
 or TLS findings generally. The job summary records the UTC time, target,
 workflow run, and result. It intentionally does not run on ordinary pull
 requests because they do not create public TLS endpoints.
+
+`staging-sitbank.pp.ua` is a manual post-rollout TLS evidence target during
+the transition. Run it with the workflow's `staging_host` override only after
+PR merge, staging bootstrap, Certbot certificate issuance, and Cloudflare
+Access/AOP verification. That sequencing avoids requiring the Cloudflare edge
+hostname before the origin TLS certificate and Authenticated Origin Pull path
+are ready.
 
 Verification fails for SSLv2/SSLv3/TLS 1.0/TLS 1.1, weak/NULL/anonymous/export/
 RC4/3DES cipher classes, missing, disabled, or too-short HSTS, expired
