@@ -209,16 +209,31 @@ runs the verifier before it installs or reloads Nginx; it does not attempt
 certificate issuance. A failed verification is a host remediation task, not an
 application deployment workaround.
 
-The verifier is read-only. It checks `certbot`, an enabled and active
-`certbot.timer`, every expected `fullchain.pem`, and each resolved
-`privkey.pem` target. The `live` private-key path is normally a symlink; the
-resolved target must remain below `/etc/letsencrypt`, be owned by `root`, be
-group-owned by `root`, be neither group-writable nor world-writable, and grant
-no permissions to other users. The normal state is `root:root` mode `0600` (or
-a stricter equivalent). A `0640` dedicated TLS-read-group design is allowed
-only after that group, its membership, and the Nginx privilege model are
-documented and the verifier's explicit group allowlist has been reviewed and
-updated. Do not use an application or container group for this purpose.
+The normal verifier mode is read-only. It checks `certbot`, OpenSSL, an enabled
+and active `certbot.timer`, and every expected Certbot certificate and key:
+
+| Hostname | Certificate | Private key |
+| --- | --- | --- |
+| `sitbank.duckdns.org` | `/etc/letsencrypt/live/sitbank.duckdns.org/fullchain.pem` | `/etc/letsencrypt/live/sitbank.duckdns.org/privkey.pem` |
+| `admin-sitbank.duckdns.org` | `/etc/letsencrypt/live/admin-sitbank.duckdns.org/fullchain.pem` | `/etc/letsencrypt/live/admin-sitbank.duckdns.org/privkey.pem` |
+| `staging-sitbank.duckdns.org` | `/etc/letsencrypt/live/staging-sitbank.duckdns.org/fullchain.pem` | `/etc/letsencrypt/live/staging-sitbank.duckdns.org/privkey.pem` |
+
+Each `fullchain.pem` symlink must resolve to a regular file below
+`/etc/letsencrypt`. OpenSSL must parse it, expose a valid `notAfter`, and confirm
+that it is neither expired nor due to expire within the minimum validity
+window. `CERTBOT_MIN_VALID_DAYS` configures that window and defaults to 14
+days; it must be an integer from 1 through 3650. The leaf certificate must
+contain an exact DNS SAN for its expected hostname. CN fallback and wildcard
+matching are intentionally not accepted.
+
+The `live` private-key path is normally a symlink; the resolved target must
+remain below `/etc/letsencrypt`, be owned by `root`, be group-owned by `root`,
+be neither group-writable nor world-writable, and grant no permissions to
+other users. The normal state is `root:root` mode `0600` (or a stricter
+equivalent). A `0640` dedicated TLS-read-group design is allowed only after
+that group, its membership, and the Nginx privilege model are documented and
+the verifier's explicit group allowlist has been reviewed and updated. Do not
+use an application or container group for this purpose.
 
 Verify the host state after issuance, after renewal changes, and before an edge
 deployment:
@@ -228,7 +243,7 @@ sudo certbot certificates
 sudo systemctl status certbot.timer
 sudo /usr/local/sbin/verify-certbot-host-state production
 sudo /usr/local/sbin/verify-certbot-host-state staging
-sudo certbot renew --dry-run
+sudo /usr/local/sbin/verify-certbot-host-state --renewal-dry-run production
 
 sudo readlink -f /etc/letsencrypt/live/sitbank.duckdns.org/privkey.pem
 sudo stat -c '%U %G %a %n' "$(sudo readlink -f /etc/letsencrypt/live/sitbank.duckdns.org/privkey.pem)"
@@ -240,9 +255,25 @@ sudo stat -c '%U %G %a %n' "$(sudo readlink -f /etc/letsencrypt/live/staging-sit
 
 When verifying directly from a reviewed checkout before bootstrap has installed
 the script, use `sudo ops/deploy/verify-certbot-host-state production` or
-`sudo ops/deploy/verify-certbot-host-state staging`. `certbot renew --dry-run`
-is the required manual renewal test; do not print or copy private-key contents
+`sudo ops/deploy/verify-certbot-host-state staging`. To use a reviewed
+non-default threshold, pass it explicitly, for example
+`sudo CERTBOT_MIN_VALID_DAYS=21 /usr/local/sbin/verify-certbot-host-state production`.
+
+Normal bootstrap and deployment verification does not contact an ACME service,
+so it does not claim to prove renewal readiness. The explicit
+`--renewal-dry-run` mode first performs all local checks and then runs
+`certbot renew --dry-run`; it may contact Let's Encrypt's staging service.
+Run it after initial issuance, changes to Certbot or ACME configuration, and
+renewal failures. Because `certbot renew` evaluates all configured renewal
+lineages, one successful invocation is sufficient even though a target is
+required for the local host checks. Do not print or copy private-key contents
 while troubleshooting.
+
+A failure is not a deployment bypass condition. Repair the path/ownership/mode,
+install the certificate for the exact hostname, or renew/replace an expired or
+near-expiry certificate, then rerun the verifier and `sudo nginx -t`. The live
+TLS scan remains required external evidence for the chain and behavior actually
+served through DNS and the deployed edge.
 
 ## Production Edge and Network Hardening
 
@@ -358,7 +389,7 @@ sudo certbot --nginx -d staging-sitbank.duckdns.org
 sudo certbot certonly --webroot -w /var/www/certbot -d staging-sitbank.duckdns.org
 sudo systemctl status certbot.timer
 sudo /usr/local/sbin/verify-certbot-host-state staging
-sudo certbot renew --dry-run
+sudo /usr/local/sbin/verify-certbot-host-state --renewal-dry-run staging
 ```
 
 Then run `ops/deploy/bootstrap-container-ec2 staging hetp88/SITBank staging-sitbank.duckdns.org`. The bootstrap installs the Nginx proxy header snippet, TLS policy snippet, and rate-limit include, verifies the staging Basic Auth file and Cloudflare origin-pull CA file, then runs `sudo nginx -t` before `sudo systemctl reload nginx`. This edge setup is separate from application deployment.

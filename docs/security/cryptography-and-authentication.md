@@ -58,9 +58,16 @@ Certificate issuance and renewal are host-managed deployment operations. ACME
 account state, certificate archives, and private keys remain on the EC2 host;
 they are never stored in Git or mounted into application containers. The
 read-only `ops/deploy/verify-certbot-host-state` verifier checks that Certbot
-is installed, the expected host files exist, and `certbot.timer` is enabled and
-active. Operators must also run `sudo certbot renew --dry-run` as the manual
-renewal test.
+and OpenSSL are installed, the expected host files resolve below
+`/etc/letsencrypt`, `certbot.timer` is enabled and active, and each certificate
+parses with a valid `notAfter`. It rejects expired certificates, certificates
+expiring within `CERTBOT_MIN_VALID_DAYS` (14 days by default), and certificates
+without an exact DNS SAN for the expected hostname. CN fallback and wildcard
+substitution are not accepted. Normal deployment uses this local,
+network-independent mode. Operators run
+`sudo /usr/local/sbin/verify-certbot-host-state --renewal-dry-run production`
+after issuance or Certbot/ACME changes to perform the local checks and then
+invoke the explicit network-dependent `certbot renew --dry-run`.
 
 ## HTTPS Cipher Suites
 

@@ -2183,7 +2183,22 @@ def test_certbot_host_state_verifier_enforces_host_managed_tls():
     assert "certbot.timer" in verifier
     assert "systemctl is-enabled --quiet certbot.timer" in verifier
     assert "systemctl is-active --quiet certbot.timer" in verifier
+    assert 'CERTBOT_MIN_VALID_DAYS="${CERTBOT_MIN_VALID_DAYS:-14}"' in verifier
+    assert "CERTBOT_MIN_VALID_DAYS * 86400" in verifier
+    assert "CERTBOT_MIN_VALID_DAYS must be an integer from 1 through 3650" in verifier
+    assert 'openssl x509 -in "${resolved_path}" -noout' in verifier
+    assert '-enddate 2>/dev/null' in verifier
+    assert "-checkend 0" in verifier
+    assert '-checkend "${CERTBOT_MIN_VALID_SECONDS}"' in verifier
+    assert "certificate is expired" in verifier
+    assert "certificate expires within ${CERTBOT_MIN_VALID_DAYS} days" in verifier
+    assert "certificate_covers_hostname" in verifier
+    assert '"${san_entry}" == "DNS:${expected_hostname}"' in verifier
+    assert "certificate SAN does not exactly cover expected hostname" in verifier
+    assert "do not fall back to the legacy" in verifier
+    assert "--renewal-dry-run" in verifier
     assert "certbot renew --dry-run" in verifier
+    assert "Renewal dry-run was not requested" in verifier
     assert "chmod " not in verifier
     assert "chown " not in verifier
     assert "cat \"${key_path}\"" not in verifier
