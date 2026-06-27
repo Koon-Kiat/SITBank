@@ -287,6 +287,40 @@ anchor mismatch; database table regression; failed deployments; signature or
 revision mismatches; unexpected image digests; and changes to root-managed
 secret files.
 
+## Certificate Lifecycle Operations
+
+Before bootstrap or an edge deployment, run the local host-state check for the
+environment:
+
+```bash
+sudo /usr/local/sbin/verify-certbot-host-state production
+sudo /usr/local/sbin/verify-certbot-host-state staging
+```
+
+It fails closed unless Certbot and OpenSSL are installed, `certbot.timer` is
+installed, enabled, and active, and each expected `fullchain.pem` and
+`privkey.pem` resolves below `/etc/letsencrypt`. It parses each leaf
+certificate, requires a valid `notAfter`, more than 14 days of remaining
+validity by default, and an exact DNS SAN for the expected hostname. It does
+not accept CN fallback or wildcard substitution. It also requires each
+resolved private key to use the approved root ownership/group and denies group
+write or any permissions for other users. Override the validity window only
+with a reviewed positive value such as
+`sudo CERTBOT_MIN_VALID_DAYS=21 /usr/local/sbin/verify-certbot-host-state production`.
+
+Normal verification is local and does not prove that ACME renewal can complete.
+After certificate issuance or changes to Certbot/ACME configuration, run the
+explicit network-dependent readiness check:
+
+```bash
+sudo /usr/local/sbin/verify-certbot-host-state --renewal-dry-run production
+```
+
+That mode performs the same local checks before invoking
+`certbot renew --dry-run`. On any failure, repair or renew the affected
+certificate and rerun the check; do not bypass it or expose private-key
+contents. Finally run `sudo nginx -t` before reload.
+
 ## Live TLS Evidence Operations
 
 The **Live TLS scan evidence** workflow provides scheduled weekly,
@@ -302,10 +336,15 @@ the release or change record. Do not run a public-endpoint scan from ordinary
 pull requests.
 
 Each target artifact (`tls-scan-staging-sitbank`, `tls-scan-prod-sitbank`, or
-`tls-scan-admin-sitbank`) retains `testssl.sh` JSON, log, HTML, metadata, and
-the policy-finding file for 90 days. The job summary records the target, UTC
-scan time, GitHub run, scanner revision, and result. No application credentials
-or secrets are needed or permitted.
+`tls-scan-admin-sitbank`) retains the untouched scanner output as
+`testssl.raw.json`, the policy-parsing copy as `testssl.json`, plus the log,
+HTML, metadata, and policy-finding file for 90 days. `testssl.sh` may emit the
+invalid JSON escape `\,` in certificate subject strings, including the
+Cloudflare Authenticated Origin Pull CA subject. The workflow changes only
+that escape to a literal comma in the policy copy, then still requires
+`jq empty` before applying every TLS policy check. The job summary records the
+target, UTC scan time, GitHub run, scanner revision, and result. No application
+credentials or secrets are needed or permitted.
 
 Treat a failed scan as a release/deployment verification failure. A failed
 staging scan blocks production deployment, while a failed production scan
@@ -317,6 +356,16 @@ MEDIUM/LOW/INFO results in the retained evidence and create a security change
 or explicit risk decision where appropriate. SSL Labs is an optional manual
 second opinion; save its public report link or screenshot with the change
 record, but do not make a production release depend on its API.
+
+Cloudflare Access rollout is separate from TLS evidence collection. An
+incomplete Access setup does not make the staging scan optional, and the JSON
+normalization does not relax Origin Pull, certificate, or TLS policy checks.
+
+The host-state verifier is the pre-deployment check of local certificate
+material and renewal scheduling. The live scan complements it by verifying the
+chain, hostname, expiry, protocols, ciphers, and HSTS actually served through
+the public DNS and edge. Retain both forms of evidence after certificate or
+edge changes.
 
 ## Password Reset Operations
 

@@ -38,6 +38,10 @@ from ops.runtime_contract import (
 
 
 ACTION_USES_PIN_RE = re.compile(r"[^@]+@[0-9a-f]{40}")
+KNOWN_NODE20_ACTION_USES = {
+    "actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48",
+    "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+}
 PYTHON_SLIM_TRIXIE_DIGEST_RE = re.compile(
     r"python:3\.12(?:\.\d+)?-slim-trixie@sha256:[0-9a-f]{64}"
 )
@@ -1994,6 +1998,10 @@ def test_every_github_action_is_pinned_to_a_full_commit_sha():
     uses = _workflow_uses(workflow_text)
 
     _assert_pinned_actions(uses, context="GitHub Actions workflow")
+    deprecated_actions = sorted(set(uses) & KNOWN_NODE20_ACTION_USES)
+    assert not deprecated_actions, (
+        f"GitHub Actions workflows use known Node.js 20 action pins: {deprecated_actions}"
+    )
     assert "pull_request_target:" not in workflow_text
 
 
@@ -2005,6 +2013,7 @@ def test_live_tls_scan_workflow_collects_evidence_without_running_on_pull_reques
 
     assert workflow["name"] == "Live TLS scan evidence"
     assert set(triggers) == {"workflow_call", "workflow_dispatch", "schedule"}
+    assert triggers["schedule"] == [{"cron": "23 3 * * 1"}]
     assert "pull_request" not in workflow_text
     assert workflow["permissions"] == {}
     assert workflow["concurrency"] == {
@@ -2052,23 +2061,67 @@ def test_live_tls_scan_workflow_collects_evidence_without_running_on_pull_reques
     assert "--jsonfile" in workflow_text
     assert "--logfile" in workflow_text
     assert "--htmlfile" in workflow_text
+    assert 'raw_json_file="${evidence_dir}/testssl.raw.json"' in workflow_text
+    assert 'json_file="${evidence_dir}/testssl.json"' in workflow_text
+    assert 'log_file="${evidence_dir}/testssl.log"' in workflow_text
+    assert 'html_file="${evidence_dir}/testssl.html"' in workflow_text
+    assert '--jsonfile "${raw_json_file}"' in workflow_text
+    assert 'python3 - "${raw_json_file}" "${json_file}"' in workflow_text
+    assert 'data = raw_path.read_text(encoding="utf-8")' in workflow_text
+    assert 'data = data.replace(r"\\,", ",")' in workflow_text
+    assert 'normalized_path.write_text(data, encoding="utf-8")' in workflow_text
+    assert 'jq empty "${json_file}"' in workflow_text
+    assert workflow_text.index('--jsonfile "${raw_json_file}"') < workflow_text.index(
+        'data = data.replace(r"\\,", ",")'
+    ) < workflow_text.index('jq empty "${json_file}"')
+    raw_client_auth_finding = (
+        r'{"id":"clientAuth_CA","severity":"INFO",'
+        r'"finding":"CN=origin-pull.cloudflare.net,O=CloudFlare\, Inc.,C=US"}'
+    )
+    assert raw_client_auth_finding.replace(r"\,", ",") == (
+        '{"id":"clientAuth_CA","severity":"INFO",'
+        '"finding":"CN=origin-pull.cloudflare.net,O=CloudFlare, Inc.,C=US"}'
+    )
     assert "GITHUB_STEP_SUMMARY" in workflow_text
     assert "TLS1_1" in workflow_text
     assert "cipherlist_(NULL|aNULL|EXPORT|LOW|OBSOLETED|3DES|RC4)" in workflow_text
     assert "cert_expirationStatus" in workflow_text
     assert "testssl_exit_failed=0" in workflow_text
-    assert 'id | test("^(HSTS|STS)$"; "i")' in workflow_text
+    assert 'id | test("HSTS|STS"; "i")' in workflow_text
     assert 'finding | test("too short|not offered|not sent|missing|disabled"; "i")' in workflow_text
     assert "cert_trust" in workflow_text
     assert "cert_chain_of_trust" in workflow_text
     assert "index($severity) != null" in workflow_text
+    assert 'policy-violations.txt"' in workflow_text
+    assert 'if [[ "${scan_failed}" -ne 0 ]]' in workflow_text
     assert '.[]\n              | select(type == "object")\n              | select(' in workflow_text
     assert "secrets." not in workflow_text
 
+    upload_steps = [
+        step for step in scan["steps"]
+        if step.get("name") == "Upload TLS scan evidence"
+    ]
+    assert len(upload_steps) == 1
+    upload_step = upload_steps[0]
+    assert upload_step == {
+        "name": "Upload TLS scan evidence",
+        "if": "${{ always() }}",
+        "uses": (
+            "actions/upload-artifact@"
+            "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+        ),
+        "with": {
+            "name": "${{ matrix.target.artifact }}",
+            "path": "tls-scan/${{ matrix.target.label }}",
+            "if-no-files-found": "warn",
+            "retention-days": 90,
+        },
+    }
     uses = _workflow_uses(workflow_text)
     assert uses == [
-        "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+        "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
     ]
+    assert not set(uses) & KNOWN_NODE20_ACTION_USES
     _assert_pinned_actions(uses, context="Live TLS scan workflow")
 
     deployment_docs = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
@@ -2182,7 +2235,22 @@ def test_certbot_host_state_verifier_enforces_host_managed_tls():
     assert "certbot.timer" in verifier
     assert "systemctl is-enabled --quiet certbot.timer" in verifier
     assert "systemctl is-active --quiet certbot.timer" in verifier
+    assert 'CERTBOT_MIN_VALID_DAYS="${CERTBOT_MIN_VALID_DAYS:-14}"' in verifier
+    assert "CERTBOT_MIN_VALID_DAYS * 86400" in verifier
+    assert "CERTBOT_MIN_VALID_DAYS must be an integer from 1 through 3650" in verifier
+    assert 'openssl x509 -in "${resolved_path}" -noout' in verifier
+    assert '-enddate 2>/dev/null' in verifier
+    assert "-checkend 0" in verifier
+    assert '-checkend "${CERTBOT_MIN_VALID_SECONDS}"' in verifier
+    assert "certificate is expired" in verifier
+    assert "certificate expires within ${CERTBOT_MIN_VALID_DAYS} days" in verifier
+    assert "certificate_covers_hostname" in verifier
+    assert '"${san_entry}" == "DNS:${expected_hostname}"' in verifier
+    assert "certificate SAN does not exactly cover expected hostname" in verifier
+    assert "do not fall back to the legacy" in verifier
+    assert "--renewal-dry-run" in verifier
     assert "certbot renew --dry-run" in verifier
+    assert "Renewal dry-run was not requested" in verifier
     assert "chmod " not in verifier
     assert "chown " not in verifier
     assert "cat \"${key_path}\"" not in verifier

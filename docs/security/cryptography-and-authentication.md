@@ -58,9 +58,16 @@ Certificate issuance and renewal are host-managed deployment operations. ACME
 account state, certificate archives, and private keys remain on the EC2 host;
 they are never stored in Git or mounted into application containers. The
 read-only `ops/deploy/verify-certbot-host-state` verifier checks that Certbot
-is installed, the expected host files exist, and `certbot.timer` is enabled and
-active. Operators must also run `sudo certbot renew --dry-run` as the manual
-renewal test.
+and OpenSSL are installed, the expected host files resolve below
+`/etc/letsencrypt`, `certbot.timer` is enabled and active, and each certificate
+parses with a valid `notAfter`. It rejects expired certificates, certificates
+expiring within `CERTBOT_MIN_VALID_DAYS` (14 days by default), and certificates
+without an exact DNS SAN for the expected hostname. CN fallback and wildcard
+substitution are not accepted. Normal deployment uses this local,
+network-independent mode. Operators run
+`sudo /usr/local/sbin/verify-certbot-host-state --renewal-dry-run production`
+after issuance or Certbot/ACME changes to perform the local checks and then
+invoke the explicit network-dependent `certbot renew --dry-run`.
 
 ## HTTPS Cipher Suites
 
@@ -95,10 +102,15 @@ deploy (and blocks production deployment until that verification passes), then
 verifies both production endpoints after production deploy to complete the
 release evidence. It scans `staging-sitbank.pp.ua`,
 `sitbank.duckdns.org`, and `admin-sitbank.duckdns.org` with a checksum-verified
-`testssl.sh` release, retaining JSON, log, HTML, metadata, and policy findings
-as per-target GitHub Actions artifacts. The job summary records the UTC time,
-target, workflow run, and result. It intentionally does not run on ordinary
-pull requests because they do not create public TLS endpoints.
+`testssl.sh` release. Each per-target artifact retains untouched scanner JSON
+as `testssl.raw.json` and a separate `testssl.json` policy copy, along with the
+log, HTML, metadata, and policy findings. The policy copy changes only
+testssl.sh's invalid `\,` escape in certificate subject strings to a literal
+comma, then must pass `jq empty` before policy evaluation. This preserves the
+Cloudflare Origin Pull CA subject as raw evidence without relaxing invalid-JSON
+or TLS findings generally. The job summary records the UTC time, target,
+workflow run, and result. It intentionally does not run on ordinary pull
+requests because they do not create public TLS endpoints.
 
 Verification fails for SSLv2/SSLv3/TLS 1.0/TLS 1.1, weak/NULL/anonymous/export/
 RC4/3DES cipher classes, missing, disabled, or too-short HSTS, expired
