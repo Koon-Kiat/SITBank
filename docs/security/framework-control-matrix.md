@@ -49,7 +49,7 @@ External framework references:
 | Security misconfiguration | Partially implemented | `config.py`, `app/security/production_guard.py`, `ops/ssh/99-sitbank-hardening.conf` | `tests/test_production_guard.py`, `tests/test_ec2_ssh_hardening_docs.py`, `tests/test_deployment.py` | Production fail-closed guard, Docker hardening, OpenSSH drop-in template | EC2 SSH/UFW/security-group rollout is an operator action |
 | Vulnerable and outdated components | Partially implemented | `.github/workflows/ci-deploy.yml`, `scripts/ci-local`, lockfiles | `tests/test_deployment.py`, `tests/test_secret_scanner.py` | Hash-locked Python deps, dependency review, pip-audit, Trivy, CodeQL, Bandit | Ordinary-PR authenticated DAST remains a policy tradeoff |
 | Identification and authentication failures | Partially implemented | `app/auth/services.py`, `app/auth/password_reset.py` | `tests/test_password_reset.py`, `tests/test_account_security_actions.py` | Reset token exchange, MFA onboarding, session revocation, generic errors | Full previous-password history is open |
-| Logging and monitoring failures | Partially implemented | `docs/security/audit-and-alerting.md`, `app/security/alerts.py` | `tests/test_audit_alerting.py` | Audit hash chain, alert scheduler, sanitized delivery | Dedicated incident response runbook and admin viewer are open |
+| Logging and monitoring failures | Partially implemented | `docs/security/audit-and-alerting.md`, `docs/security/incident-response.md`, `app/security/alerts.py` | `tests/test_audit_alerting.py`, `tests/test_privacy_pdpa_docs.py` | Audit hash chain, alert scheduler, sanitized delivery, incident workflows | Admin audit viewer UI remains open |
 
 ## NIST SP 800-218 SSDF
 
@@ -58,7 +58,7 @@ External framework references:
 | Prepare the organization | Partially implemented | `docs/security/security-gap-register.md`, `docs/security/framework-control-matrix.md` | `tests/test_framework_control_docs.py` | Framework matrix and centralized gap register exist | Formal ownership and recurring review cadence are documentation follow-up |
 | Protect the software | Implemented | `.github/workflows/ci-deploy.yml`, `ops/deploy/*`, `Dockerfile` | `tests/test_deployment.py` | Pinned actions/images, signed digests, protected main deployment, restricted wrappers | OIDC + SSM migration remains optional follow-up |
 | Produce well-secured software | Implemented | `app/`, `config.py`, `ops/security/*` | Full pytest, CodeQL, Bandit, dependency tests | Secure coding controls, route inventories, production guard, secret scanner | Continue adding tests for new features |
-| Respond to vulnerabilities | Partially implemented | `SECURITY.md`, `docs/OPERATIONS.md`, `.github/dependabot.yml` | `tests/test_deployment.py` | Dependabot review-only policy, vulnerability exception policy, monitoring commands | Dedicated incident response runbook is open |
+| Respond to vulnerabilities | Implemented | `SECURITY.md`, `docs/OPERATIONS.md`, `docs/security/incident-response.md`, `.github/dependabot.yml` | `tests/test_privacy_pdpa_docs.py`, `tests/test_deployment.py` | Dependabot review-only policy, vulnerability exception policy, monitoring commands, and incident workflows are documented | Keep incident playbooks updated after exercises |
 
 ## OWASP SAMM
 
@@ -74,9 +74,9 @@ External framework references:
 
 | Control area | Status | Relevant files | Relevant tests | Current evidence | Remaining gaps / follow-up |
 | --- | --- | --- | --- | --- | --- |
-| Protection obligation | Implemented | `app/security/audit.py`, `config.py`, `ops/backups/*` | `tests/test_audit_metadata_sanitization.py`, `tests/test_backup_security.py`, `tests/test_config.py` | Secret redaction, encrypted backups, root-managed secret files, TLS policy | Live host controls need operator evidence |
-| Retention limitation | Partially implemented | `docs/OPERATIONS.md`, `app/security/state_cleanup.py` | `tests/test_deployment.py` | Security audit rows are documented for 7-year retention; ephemeral security state cleanup exists | Full personal-data inventory and per-category retention schedule are open |
-| Access/correction and accountability | Partially implemented | `app/auth/services.py`, `docs/security/audit-and-alerting.md` | `tests/test_account_security_actions.py`, `tests/test_audit_alerting.py` | Account details update flow and audit trail exist | Formal PDPA privacy notice/data inventory is open |
+| Protection obligation | Implemented | `docs/security/privacy-and-pdpa.md`, `app/security/audit.py`, `config.py`, `ops/backups/*` | `tests/test_privacy_pdpa_docs.py`, `tests/test_audit_metadata_sanitization.py`, `tests/test_backup_security.py` | Personal-data categories, minimization, redaction, encrypted backups, root-managed secret files, and TLS policy are documented/tested | Live host controls need operator evidence |
+| Retention limitation | Partially implemented | `docs/security/data-retention-and-deactivation.md`, `docs/OPERATIONS.md`, `app/security/state_cleanup.py` | `tests/test_privacy_pdpa_docs.py`, `tests/test_deployment.py` | Audit retention, deactivation/deletion/anonymization distinction, and selected security-state cleanup are documented | Complete retention/disposal scheduler remains open |
+| Access/correction and accountability | Implemented | `docs/security/privacy-and-pdpa.md`, `app/auth/services.py`, `docs/security/audit-and-alerting.md` | `tests/test_privacy_pdpa_docs.py`, `tests/test_account_security_actions.py`, `tests/test_audit_alerting.py` | Account update expectations, audit trail, and breach escalation path are documented | Continue documenting new data categories as features are added |
 
 ## OWASP API Security Top 10
 
@@ -94,7 +94,7 @@ External framework references:
 | Control area | Status | Relevant files | Relevant tests | Current evidence | Remaining gaps / follow-up |
 | --- | --- | --- | --- | --- | --- |
 | Account and access management | Partially implemented | `app/admin/services.py`, `docs/security/admin-and-staging-zero-trust-access.md` | `tests/test_admin_staff_invites.py`, `tests/test_zero_trust_access_boundary.py` | Staff invites, root-admin TOTP, admin isolation, private-access runbook | Live Cloudflare/Tailscale state needs operator verification |
-| Data protection | Partially implemented | `ops/backups/*`, `docs/OPERATIONS.md` | `tests/test_backup_security.py` | Encrypted backups and audit retention rules | PDPA inventory/retention schedule is open |
+| Data protection | Partially implemented | `docs/security/privacy-and-pdpa.md`, `docs/security/data-retention-and-deactivation.md`, `ops/backups/*` | `tests/test_privacy_pdpa_docs.py`, `tests/test_backup_security.py` | Encrypted backups, personal-data inventory, and retention/deactivation expectations are documented | Complete retention/disposal scheduler remains open |
 | Secure configuration | Partially implemented | `config.py`, `ops/ssh/99-sitbank-hardening.conf`, `ops/nginx/*` | `tests/test_config.py`, `tests/test_ec2_ssh_hardening_docs.py`, `tests/test_deployment.py` | Production guard, Nginx TLS policy, SSH drop-in template | Host firewall/security-group rollout needs operator action |
 | Audit log management | Partially implemented | `app/security/audit.py`, `app/security/alerts.py` | `tests/test_audit_alerting.py` | HMAC chain, append-only triggers, alerts | Admin audit viewer UI is open |
 | Vulnerability management | Implemented | `.github/workflows/ci-deploy.yml`, `.github/dependabot.yml`, `scripts/ci-local` | `tests/test_deployment.py` | Dependency scans, image scans, CodeQL, Bandit, Dependabot policy | Keep scanner scope under review |
@@ -113,7 +113,7 @@ External framework references:
 | --- | --- | --- | --- | --- | --- |
 | Access control and MFA | Partially implemented | `docs/security/admin-and-staging-zero-trust-access.md`, `app/admin/services.py` | `tests/test_admin_staff_invites.py`, `tests/test_zero_trust_access_boundary.py` | Admin TOTP, private-access design, staff invite lifecycle | Live private-access state requires operator verification |
 | Patch and vulnerability management | Implemented | `.github/dependabot.yml`, `.github/workflows/ci-deploy.yml` | `tests/test_deployment.py` | Dependabot review, dependency scans, Trivy gates, pinned images | Continue review cadence |
-| Security monitoring and incident handling | Partially implemented | `app/security/alerts.py`, `docs/OPERATIONS.md` | `tests/test_audit_alerting.py` | Alert timer, audit chain, operational monitoring | Dedicated incident response runbook is open |
+| Security monitoring and incident handling | Implemented | `app/security/alerts.py`, `docs/OPERATIONS.md`, `docs/security/incident-response.md` | `tests/test_audit_alerting.py`, `tests/test_privacy_pdpa_docs.py` | Alert timer, audit chain, operational monitoring, and incident response workflows are documented | Keep live response evidence outside public issues |
 | Data and backup resilience | Implemented | `ops/backups/*`, `ops/deploy/sitbank-database-cutover` | `tests/test_backup_security.py` | Encrypted backup helper and restore preflight | Real backup schedules/restore exercises are operator evidence |
 
 ## CWE Top 25

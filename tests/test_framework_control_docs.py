@@ -78,9 +78,8 @@ def test_security_gap_register_is_single_source_with_required_fields():
     for open_gap in (
         "Password history beyond current-password reuse",
         "Admin audit-log viewer UI",
-        "PDPA data inventory and retention schedule",
+        "Automated retention and disposal jobs",
         "Threat model and design risk record",
-        "Dedicated incident response runbook",
         "Authenticated DAST on ordinary pull requests",
         "Active-session count cap",
         "Device-bound session proof",
@@ -96,6 +95,8 @@ def test_security_gap_register_is_single_source_with_required_fields():
         "production startup fail-closed security guard",
         "dedicated payee IDOR regression test missing",
         "backup encryption and restore access-control evidence missing",
+        "PDPA data inventory and retention schedule",
+        "Dedicated incident response runbook",
     ):
         assert fixed_item not in current_open
 
@@ -104,6 +105,8 @@ def test_security_gap_register_is_single_source_with_required_fields():
     assert "Generated admin route inventory" in implemented
     assert "Payee IDOR and enumeration regression tests" in implemented
     assert "Encrypted database backup tooling" in implemented
+    assert "Privacy and PDPA documentation" in implemented
+    assert "Incident response runbook" in implemented
 
 
 def test_requested_docs_link_to_matrix_and_gap_register():

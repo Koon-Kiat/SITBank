@@ -7,6 +7,8 @@ details, session identifiers, or production logs. Notify the repository owner
 and deployment administrator privately, preserve timestamps and affected
 commit/digest identifiers, and record the response in the project security
 log.
+Use `docs/security/incident-response.md` for incident workflows and
+`docs/security/privacy-and-pdpa.md` for personal-data handling expectations.
 
 ## Secret Rotation
 
@@ -88,6 +90,10 @@ Detailed audit and alert implementation evidence is maintained in
 closed documentation-sensitive items are centralized in
 `docs/security/security-gap-register.md`; framework coverage is mapped in
 `docs/security/framework-control-matrix.md`.
+Privacy, retention, and incident-response expectations are documented in
+`docs/security/privacy-and-pdpa.md`,
+`docs/security/data-retention-and-deactivation.md`, and
+`docs/security/incident-response.md`.
 
 New audit rows are chained with `previous_event_hash`, `event_hash`, and
 `hash_algorithm` using deterministic canonical JSON over stable audit fields.

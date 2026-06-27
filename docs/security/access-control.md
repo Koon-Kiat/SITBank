@@ -6,6 +6,10 @@ coverage notes and service-only flows.
 Framework coverage and current follow-up items are centralized in
 `docs/security/framework-control-matrix.md` and
 `docs/security/security-gap-register.md`.
+Privacy/deactivation expectations for customer and staff/admin records are in
+`docs/security/privacy-and-pdpa.md`,
+`docs/security/data-retention-and-deactivation.md`, and
+`docs/security/incident-response.md`.
 
 ## Access-Control Model
 

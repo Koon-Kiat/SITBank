@@ -149,6 +149,10 @@ record and a retained summary of the affected date range.
 The implementation-focused audit and alert reference is
 `docs/security/audit-and-alerting.md`; current open security gaps are tracked in
 `docs/security/security-gap-register.md`.
+Privacy, retention, deactivation, and incident response procedures are in
+`docs/security/privacy-and-pdpa.md`,
+`docs/security/data-retention-and-deactivation.md`, and
+`docs/security/incident-response.md`.
 
 After `db upgrade`, run `apply-runtime-db-privileges`, then
 `verify-runtime-db-privileges`. The runtime `sitbank_app` role must keep

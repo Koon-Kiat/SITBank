@@ -2,6 +2,10 @@
 
 This document describes the current SITBank audit logging and security alerting
 implementation. It is implementation evidence, not a future design note.
+Personal-data handling, retention/deactivation, and incident workflows are
+documented in `docs/security/privacy-and-pdpa.md`,
+`docs/security/data-retention-and-deactivation.md`, and
+`docs/security/incident-response.md`.
 
 ## Purpose
 
