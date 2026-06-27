@@ -1050,6 +1050,9 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "RUN_ZAP_DAST" in smoke_test
     assert "zaproxy/zap-stable:2.17.0@sha256:" in smoke_test
     assert "create_dast_session.py" in smoke_test
+    assert 'cat "${work_dir}/dast/auth-cookie"' not in smoke_test
+    assert '"${dast_mount_source}:/run/dast:ro"' in smoke_test
+    assert 'Path("/run/dast/auth-cookie").read_text(encoding="utf-8")' in smoke_test
     assert "docker compose" in compose_validation
     assert "SITBANK_IMAGE" in compose_validation
     assert "compose.prod.yml" in compose_validation

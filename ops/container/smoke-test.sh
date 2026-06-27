@@ -439,7 +439,16 @@ if [[ "${RUN_ZAP_DAST:-false}" == "true" ]]; then
             --base-url "${dast_base_url}" \
             --allow-host "${app_container}" \
             --output /run/dast/auth-cookie
-    dast_cookie="$(cat "${work_dir}/dast/auth-cookie")"
+    dast_cookie="$(
+        docker run --rm --interactive "${docker_args[@]}" \
+            --volume "${dast_mount_source}:/run/dast:ro" \
+            "${IMAGE}" \
+            python - <<'PY'
+from pathlib import Path
+
+print(Path("/run/dast/auth-cookie").read_text(encoding="utf-8"), end="")
+PY
+    )"
     if [[ ! "${dast_cookie}" =~ ^__Host-sitbank_session=[A-Za-z0-9._~-]+$ ]]; then
         echo "Authenticated DAST session cookie is malformed" >&2
         exit 1
