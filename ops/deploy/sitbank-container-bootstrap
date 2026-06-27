@@ -51,7 +51,7 @@ if [[ ! "${GITHUB_REPOSITORY:-}" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ \
     exit 1
 fi
 if [[ "${target}" == "staging" \
-    && "${PUBLIC_HOST}" != "staging-sitbank.duckdns.org" ]]; then
+    && "${PUBLIC_HOST}" != "staging-sitbank.pp.ua" ]]; then
     echo "Trusted staging public host is invalid" >&2
     exit 1
 fi

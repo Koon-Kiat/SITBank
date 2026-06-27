@@ -29,10 +29,10 @@ References:
 | Surface | Host or path | Boundary | Public exposure |
 | --- | --- | --- | --- |
 | Production customer | `https://sitbank.duckdns.org` | Public HTTPS edge, Flask customer login and MFA | Public |
-| Staging customer | `https://staging-sitbank.pp.ua` and `https://staging-sitbank.duckdns.org` | Cloudflare Access on `staging-sitbank.pp.ua`, Cloudflare Authenticated Origin Pull, staging Basic Auth, Flask login and MFA | Not directly public at the origin |
+| Staging customer | `https://staging-sitbank.pp.ua` | Cloudflare Access, Cloudflare Authenticated Origin Pull, staging Basic Auth, Flask login and MFA | Not directly public at the origin |
 | Production admin public host | `https://admin-sitbank.duckdns.org` | Nginx denial for `/`, health, and app routes | Public `403` except ACME challenge paths |
-| Production admin app | Tailscale Serve or Tailscale SSH to `127.0.0.1:5002` | Tailscale ACLs, approved devices, Flask admin login and TOTP | Private tailnet only |
-| Staging admin app | Tailscale SSH or other approved private operator path to `127.0.0.1:5003` | Tailscale ACLs, approved devices, Flask admin login and TOTP | Private tailnet only |
+| Production admin app | `https://sitbank-ec2.tailca101b.ts.net/` through Tailscale Serve | Tailscale ACLs, approved devices, Flask admin login and TOTP | Private tailnet only |
+| Staging admin app | Approved Tailscale/private operator path to `127.0.0.1:5003` | Tailscale ACLs, approved devices, Flask admin login and TOTP | Private tailnet only |
 
 The customer production site remains public. The admin app is not exposed
 through the customer app, and the customer Nginx server block continues to
@@ -47,14 +47,11 @@ certificate renewal.
 ## Staging Cloudflare Access
 
 Configure Cloudflare for `staging-sitbank.pp.ua` as a self-hosted Access
-application. Keep `staging-sitbank.duckdns.org` in the staging Nginx
-`server_name` so the existing staging hostname continues to work while the
-Cloudflare-managed hostname becomes the Access-protected browser entry point:
+application. The retired `staging-sitbank.duckdns.org` hostname is no longer
+an active staging deployment, Nginx, Certbot, or TLS-scan target:
 
-1. Ensure `staging-sitbank.pp.ua` is proxied through Cloudflare. The observed
-   DuckDNS hostname resolves directly to the EC2 origin, so Cloudflare Access
-   cannot fully protect DuckDNS-origin traffic. Do not make the EC2 origin
-   public as a workaround.
+1. Ensure `staging-sitbank.pp.ua` is proxied through Cloudflare. Do not make
+   the EC2 origin public as a workaround.
 2. Add a Cloudflare Access application for `staging-sitbank.pp.ua`.
 3. Add an Allow policy for approved staging operators only.
 4. Keep the default deny posture for everyone else.
@@ -67,8 +64,7 @@ Cloudflare-managed hostname becomes the Access-protected browser entry point:
    `/etc/nginx/cloudflare-authenticated-origin-pull-ca.pem`. This CA file is
    host-managed and is not committed to the repository.
 
-The staging Nginx server blocks accept both
-`staging-sitbank.duckdns.org` and `staging-sitbank.pp.ua`, then request a
+The staging Nginx server blocks accept `staging-sitbank.pp.ua`, then request a
 client certificate with:
 
 ```nginx
@@ -98,22 +94,25 @@ approved operator users, groups, or managed devices can reach the SITBank host
 and admin service ports. Do not rely on a shared password as the private
 network boundary.
 
-Recommended admin access path:
+Current admin access path:
 
 ```bash
-sudo tailscale up --ssh --advertise-tags=tag:sitbank-admin
+sudo tailscale up --advertise-tags=tag:sitbank-admin
 sudo tailscale serve --bg --https=443 127.0.0.1:5002
 sudo tailscale serve status
 ```
 
-The `tailscale serve` command exposes the local admin service inside the
-tailnet. It must not be paired with `tailscale funnel`; Funnel would publish
-the service to the public internet and is not approved for SITBank admin.
+Admins connect to the Tailscale VPN first, then open
+`https://sitbank-ec2.tailca101b.ts.net/`. The `tailscale serve` command exposes
+the local admin service inside the tailnet. It must not be paired with
+`tailscale funnel`; Funnel would publish the service to the public internet and
+is not approved for SITBank admin. Flask admin login and TOTP remain mandatory
+after the private network boundary is satisfied.
 
-If Tailscale Serve is not enabled in the tailnet, use Tailscale SSH or an
-operator-approved local port forward to reach `127.0.0.1:5002` on the EC2
-host. In all cases, the Flask admin login and TOTP remain mandatory after the
-private network boundary is satisfied.
+If Tailscale Serve is unavailable, use a separate reviewed private operator
+path rather than exposing the admin app publicly. In all cases, the Flask
+admin login and TOTP remain mandatory after the private network boundary is
+satisfied.
 
 ## Operator Onboarding
 
@@ -193,7 +192,7 @@ Live Cloudflare staging checks:
 
 Live Tailscale admin checks:
 
-1. An approved operator reaches admin only from an approved tailnet device.
+1. An approved operator reaches `https://sitbank-ec2.tailca101b.ts.net/` only from an approved tailnet device.
 2. A non-tailnet network cannot reach the admin app.
 3. A removed user or deleted device loses access.
 4. Admin Flask login and TOTP are still required after Tailscale access.

@@ -124,9 +124,9 @@ Production Nginx currently defines an admin hostname in
 `ops/nginx/sitbank-production.conf` but denies public access to the primary
 admin paths with `deny all` or explicit `403` responses. This keeps the public
 admin hostname limited to denied root, health, and app responses. The actual
-admin application access path is Tailscale/private operator access to the
-loopback admin listener, followed by the normal Flask admin login and TOTP
-controls.
+admin application access path is the Tailscale Serve URL
+`https://sitbank-ec2.tailca101b.ts.net/`, followed by the normal Flask admin
+login and TOTP controls.
 Do not enable Tailscale Funnel or expose admin through the customer app.
 
 Manual recovery operator review is exposed only by the isolated admin app.
@@ -190,7 +190,7 @@ Network boundaries complement, but do not replace, Flask authorization:
 | --- | --- | --- |
 | Production customer | Public HTTPS at `sitbank.duckdns.org` | Customer login, MFA onboarding, CSRF, route inventory, rate limiting |
 | Staging customer | Cloudflare Access before Nginx, Cloudflare Authenticated Origin Pull at Nginx, staging Basic Auth | Customer login, MFA, CSRF, route inventory, rate limiting |
-| Production admin | Tailscale/private operator access to `127.0.0.1:5002`; public admin app routes denied | Staff/root-admin login, mandatory TOTP, CSRF, admin route inventory, admin rate limiting |
+| Production admin | Tailscale Serve at `https://sitbank-ec2.tailca101b.ts.net/`; public admin app routes denied | Staff/root-admin login, mandatory TOTP, CSRF, admin route inventory, admin rate limiting |
 | Staging admin | Tailscale/private operator access to `127.0.0.1:5003`; no public admin host | Staff/root-admin login, mandatory TOTP, CSRF, admin route inventory, admin rate limiting |
 
 The staging Nginx config uses Cloudflare Authenticated Origin Pulls so direct
