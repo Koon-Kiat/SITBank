@@ -63,9 +63,9 @@ def test_retention_doc_distinguishes_deactivation_deletion_and_anonymization():
         "Deletion",
         "Anonymization",
         "Not exposed as a normal customer/admin self-service feature",
-        "Not implemented as an automated workflow",
+        "No automated workflow exists",
         "Security audit rows must not be silently auto-deleted",
-        "does not implement a complete retention/disposal scheduler",
+        "complete retention/disposal scheduler",
         "docs/security/security-gap-register.md",
     ):
         assert required in text

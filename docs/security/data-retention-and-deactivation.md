@@ -1,7 +1,7 @@
 # Data Retention And Deactivation
 
 This document records retention and deactivation expectations for SITBank.
-It does not claim deletion or anonymization automation that is not implemented.
+It only claims deletion or anonymization behavior supported by code or runbooks.
 
 ## Deactivation, Deletion, And Anonymization
 
@@ -9,7 +9,7 @@ It does not claim deletion or anonymization automation that is not implemented.
 | --- | --- | --- |
 | Deactivation | Prevent an account from authenticating or performing sensitive actions while retaining records | Supported through account status/freeze and staff/admin active-state checks |
 | Deletion | Remove database rows and related records | Not exposed as a normal customer/admin self-service feature |
-| Anonymization | Irreversibly remove or transform personal identifiers while retaining aggregate or audit-safe records | Not implemented as an automated workflow |
+| Anonymization | Irreversibly remove or transform personal identifiers while retaining aggregate or audit-safe records | No automated workflow exists |
 
 Use deactivation when the immediate goal is to stop access, contain a suspected
 compromise, or offboard staff/admin accounts while preserving audit and banking
@@ -72,11 +72,10 @@ summary of the deleted date range and approval.
 
 ## Current Retention Automation Gap
 
-The repository has expiry and cleanup for selected security state, but it does
-not implement a complete retention/disposal scheduler for all personal-data
-categories, manual recovery metadata, staff invites, password reset records,
-alert reports, or encrypted backup archives. This remains tracked in
-`docs/security/security-gap-register.md`.
+The repository expires and cleans up selected security state. A complete
+retention/disposal scheduler for all personal-data categories, manual recovery
+metadata, staff invites, password reset records, alert reports, or encrypted
+backup archives remains tracked in `docs/security/security-gap-register.md`.
 
 ## Backup Retention
 
