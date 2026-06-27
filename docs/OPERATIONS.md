@@ -131,6 +131,9 @@ database credentials.
 Retain `security_audit_events` for 7 years. The application must not auto-delete
 audit rows; disposal after retention requires an operator-approved maintenance
 record and a retained summary of the affected date range.
+The implementation-focused audit and alert reference is
+`docs/security/audit-and-alerting.md`; current open security gaps are tracked in
+`docs/security/security-gap-register.md`.
 
 After `db upgrade`, run `apply-runtime-db-privileges`, then
 `verify-runtime-db-privileges`. The runtime `sitbank_app` role must keep

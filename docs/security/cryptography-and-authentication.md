@@ -1,10 +1,10 @@
 # Cryptography And Authentication
 
 This document records the cryptography and authentication controls found in the
-SITBank repository. It cites repository evidence and calls out gaps where the
-repo delegates a control to deployment state or does not implement it.
+SITBank repository. It cites repository evidence and points to the central
+register when a control remains open or depends on deployment state.
 
-## 1.1 Server Authentication
+## Server Authentication
 
 The repository implements HTTPS termination at Nginx, not inside Flask or
 Gunicorn. The Flask apps run behind loopback Gunicorn listeners; Nginx is the
@@ -59,7 +59,7 @@ is installed, the expected host files exist, and `certbot.timer` is enabled and
 active. Operators must also run `sudo certbot renew --dry-run` as the manual
 renewal test.
 
-## 1.2 HTTPS Cipher Suites
+## HTTPS Cipher Suites
 
 Production, production-admin, and staging HTTPS server blocks include the shared
 `ops/nginx/sitbank-tls-policy.conf` policy. It explicitly enables only TLS 1.2
@@ -104,7 +104,7 @@ MEDIUM/LOW/INFO findings are retained for manual review. SSL Labs is optional
 manual corroboration for a release, certificate renewal, edge change, or
 incident record; it is not a release-blocking automation dependency.
 
-## 1.3 Server Private Key Storage
+## Server Private Key Storage
 
 The TLS private key is expected to exist only on the deployment host under
 Certbot-managed paths, for example:
@@ -132,14 +132,16 @@ verifier's reviewed allowlist, and use at most mode `0640`. Application users,
 repository-owned paths, container mounts, world-readable keys, group-writable
 keys, and world-writable keys are not acceptable.
 
-## 1.4 Key Establishment And Secret Key Derivation
+## Key Establishment And Secret Key Derivation
 
 Communication keys are established by TLS during the HTTPS handshake. The
 Flask application does not derive transport encryption keys and does not
 implement custom transport encryption. With TLS 1.3, modern Nginx/OpenSSL
-stacks use ephemeral key exchange for forward secrecy; the exact negotiated
-groups and ciphers are deployment-stack behavior because cipher suites are not
-explicitly pinned in this repo.
+stacks use ephemeral key exchange for forward secrecy. The repository pins the
+allowed Nginx TLS protocol and cipher policy in
+`ops/nginx/sitbank-tls-policy.conf`; operators still validate the loaded
+Nginx/OpenSSL behavior on the target host because the final negotiated suite is
+deployment-state evidence.
 
 Application-level secrets are loaded from environment variables or Docker
 secret files. In production, `_read_secret_file()` in `config.py` requires
@@ -167,7 +169,7 @@ Tests covering key validation include
 `tests/test_mfa_envelope_crypto.py::test_mfa_keyring_config_fails_closed`, and
 `tests/test_deployment.py::test_container_bundle_keyring_validation_normalizes_ids_and_rejects_duplicates`.
 
-## 1.5 Cryptographic Algorithms
+## Cryptographic Algorithms
 
 Communication encryption is provided by HTTPS/TLS at Nginx. The Flask app does
 not implement custom transport encryption. Internal cryptographic controls are
@@ -192,7 +194,7 @@ Tests include `tests/test_mfa_envelope_crypto.py`, `tests/test_db_session_integr
 `tests/test_passwords.py`, `tests/test_audit_alerting.py::test_audit_hash_chain_uses_hmac_key_and_reads_legacy_sha_rows`,
 and `tests/test_password_reset.py::test_recovery_codes_are_hashed_single_use_reset_factors`.
 
-## 1.6 User Authentication
+## User Authentication
 
 ### Customer Authentication
 
@@ -269,7 +271,7 @@ Tests: `tests/test_admin_staff_invites.py::test_root_admin_can_create_hashed_sta
 `tests/test_admin_staff_invites.py::test_customer_registration_cannot_create_staff_or_admin_roles`,
 and `tests/test_admin_isolation.py::test_customer_and_admin_apps_have_isolated_route_surfaces`.
 
-## 1.7 Password Storage
+## Password Storage
 
 Passwords are stored as custom PBKDF2-HMAC-SHA256 hashes in `User.password_hash`.
 The format includes algorithm, version, iteration count, salt, and derived hash:
@@ -303,11 +305,11 @@ Passwords are not logged in plaintext by the code paths inspected. Audit
 metadata sanitization redacts keys and values containing password, token,
 secret, session, credential URL, webhook URL, and private-key patterns.
 
-Current gap: full password history is not implemented. The code prevents reuse
-of the current password during change/reset, but no previous-password history
-table or retention policy was found.
+The code prevents reuse of the current password during change/reset. Full
+previous-password history is tracked as an open item in
+`docs/security/security-gap-register.md`.
 
-## 1.8 Protection Against Unauthorized Access To Stored Passwords
+## Protection Against Unauthorized Access To Stored Passwords
 
 The repository protects password hashes through application and deployment
 controls:
@@ -334,8 +336,8 @@ Backup and database dump encryption is implemented as host-managed operational
 tooling. `ops/backups/sitbank-backup-encrypted` creates custom-format
 PostgreSQL dumps, keeps plaintext only in a root-owned temporary directory,
 encrypts with an age public-recipient file, and writes mode `0600`
-`.pgdump.age` backups under the host backup directory. `ops/backups/sitbank-restore-preflight`
-checks approved operator context, explicit environment and target database,
-encrypted backup permissions, host-only decryption identity, and production
-confirmation before any restore is attempted. CI-level coverage lives in
-`tests/test_backup_security.py`.
+`.pgdump.age` backups under the host backup directory.
+`ops/backups/sitbank-restore-preflight` checks approved operator context,
+explicit environment and target database, encrypted backup permissions,
+host-only decryption identity, and production confirmation before any restore
+is attempted. CI-level coverage lives in `tests/test_backup_security.py`.

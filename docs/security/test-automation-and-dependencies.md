@@ -3,7 +3,7 @@
 This document records the SITBank dependency inventory, security automation,
 and test evidence found in the repository.
 
-## 5.1 Dependency Inventory
+## Dependency Inventory
 
 | Manifest or file | Purpose | Notes |
 | --- | --- | --- |
@@ -21,12 +21,12 @@ and test evidence found in the repository.
 | `.github/workflows/codeql.yml` | CodeQL static analysis | Python `security-extended` queries on pull requests, main pushes, and schedule when repository is public |
 | `.github/workflows/bootstrap-ec2.yml` | Bootstrap artifact workflow | Uses pinned actions and cosign blob signing |
 
-Current gap / not applicable: no `package.json`, `package-lock.json`,
-`yarn.lock`, `pnpm-lock.yaml`, `pyproject.toml`, `poetry.lock`, or Pipenv files
-were found in the repository snapshot inspected. JavaScript package auditing is
-therefore not applicable unless a frontend package manager is added.
+Not applicable to the current dependency inventory: no `package.json`,
+`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `pyproject.toml`,
+`poetry.lock`, or Pipenv files were found. JavaScript package auditing is not
+applicable unless a frontend package manager is added.
 
-## 5.2 Dependency And Vulnerability Checks
+## Dependency And Vulnerability Checks
 
 | Check | Location | What it verifies |
 | --- | --- | --- |
@@ -55,7 +55,7 @@ Tests for this automation include:
 | `tests/test_deployment.py::test_trivy_exception_is_narrow_documented_and_temporary` | Trivy ignore policy |
 | `tests/test_secret_scanner.py` | Secret scanner behavior |
 
-## 5.3 Test Automation Coverage
+## Test Automation Coverage
 
 The main Python test command is intentionally unscoped:
 
@@ -84,15 +84,15 @@ deployment.
 | Deployment, Nginx, Docker, workflows, and runtime contracts | `tests/test_deployment.py` |
 | UI security regressions | `tests/test_authenticated_portal_ui.py`, `tests/test_dashboard.py` |
 
-Current test gap: payee ownership is enforced in `app/banking/routes.py`, and
-payee routes are in `tests/test_route_inventory_security.py`, but no dedicated
-payee IDOR regression test was found.
+Payee ownership, direct banking MFA gating, pre-TOTP lookup blocking,
+duplicate/self-payee protections, expiry behavior, and removal IDOR are covered
+by `tests/test_payee_management_security.py`.
 
 Admin route authorization has a separate generated route-inventory matrix in
 `tests/test_admin_route_inventory_security.py`, plus targeted admin service
 tests for staff invites and manual recovery.
 
-## 5.4 Local Security Commands
+## Local Security Commands
 
 The preferred local wrapper is:
 
@@ -119,11 +119,11 @@ The GitHub workflow command block in `.github/workflows/ci-deploy.yml` runs the
 same core checks. Its Bandit command currently scans `app`, `ops`, `config.py`,
 and `wsgi.py`; the local wrapper additionally includes `admin_wsgi.py`.
 
-Current gap: `scripts/ci-local` skips Docker/Compose-only checks when Docker is
-unavailable. In that case, the skipped Docker result is explicit, but local CI
-does not prove the Compose model on that machine.
+Local Docker note: `scripts/ci-local` skips Docker/Compose-only checks when
+Docker is unavailable. The skipped result is explicit; Compose validation still
+runs in CI and on local machines with Docker available.
 
-## 5.5 CI/CD Security Automation
+## CI/CD Security Automation
 
 The main workflow in `.github/workflows/ci-deploy.yml` includes these security
 stages:
@@ -148,7 +148,7 @@ Tests in `tests/test_deployment.py` assert that these workflow controls remain
 present, including dependency review, action pinning, Trivy policy, cosign, and
 DAST policy.
 
-## 5.6 Authenticated DAST And Smoke Tests
+## Authenticated DAST And Smoke Tests
 
 Container smoke tests live in `ops/container/smoke-test.sh`. The script pins the
 ZAP image as `zaproxy/zap-stable:2.17.0@sha256:...` and runs authenticated DAST
@@ -168,11 +168,12 @@ Authenticated DAST session creation is handled by
 synthetic secrets and a synthetic local test user. No real customer, admin, or
 staff credentials are required by the DAST scripts in the repository.
 
-Current gap: authenticated DAST is conditional. Ordinary pull requests skip the
-full authenticated crawl; scheduled runs and release verification paths enable
-it according to workflow policy.
+Authenticated DAST is release-oriented. Ordinary pull requests skip the full
+authenticated crawl for runtime cost, while scheduled runs and release
+verification paths enable it according to workflow policy. The tradeoff is
+tracked in `docs/security/security-gap-register.md`.
 
-## 5.7 Dependency Update Workflow
+## Dependency Update Workflow
 
 Dependabot is configured in `.github/dependabot.yml`:
 

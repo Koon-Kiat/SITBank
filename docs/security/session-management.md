@@ -4,7 +4,7 @@ This document describes the session management controls implemented in the
 SITBank repository. The implementation uses database-backed server-side
 sessions identified by an opaque browser cookie.
 
-## 2.1 Session Storage
+## Session Storage
 
 SITBank installs a custom `DatabaseSessionInterface` from
 `app/security/sessions.py` during application startup in `app/__init__.py`.
@@ -25,7 +25,7 @@ key signs new payloads, and old keys can remain configured so existing
 sessions survive key rotation. Evidence: `app/security/session_hmac.py` and
 `tests/test_db_session_integrity.py::test_db_session_payload_survives_active_hmac_key_rotation`.
 
-## 2.2 Cookie Structure
+## Cookie Structure
 
 Customer and admin runtimes use different cookie names and separate secret
 material:
@@ -58,7 +58,7 @@ Tests:
 | `tests/test_admin_staff_invites.py::test_admin_login_creates_only_admin_session_cookie` | Confirms admin login creates only the admin cookie |
 | `tests/test_config.py` runtime secret map checks | Confirms runtime secret maps include the required session lookup HMAC key |
 
-## 2.3 Cookie Transmission
+## Cookie Transmission
 
 Cookies are transmitted by the browser on HTTPS requests to the configured
 hostname. Production and staging Nginx terminate HTTPS and forward to loopback
@@ -90,7 +90,7 @@ ECDHE curve preference. TLS 1.0 and TLS 1.1, legacy weak cipher families, and
 session tickets remain disabled. Operators validate the loaded policy on the
 deployed Nginx/OpenSSL build before release.
 
-## 2.4 Session Modification And Tamper Resistance
+## Session Modification And Tamper Resistance
 
 The browser cannot directly modify authenticated session state because the
 cookie contains only an opaque session id. The database payload is signed with
@@ -118,7 +118,7 @@ Relevant integrity tests:
 | `tests/test_db_session_integrity.py::test_tampered_db_session_payload_logs_only_safe_reference` | Logging does not expose raw session material |
 | `tests/test_db_session_integrity.py::test_session_payload_binding_context_is_required_and_checked` | Binding context enforcement |
 
-## 2.5 Session Lifecycle
+## Session Lifecycle
 
 Session creation and rotation are implemented in `app/security/sessions.py` and
 called from authentication services in `app/auth/services.py` and
@@ -150,7 +150,7 @@ Normal activity, CSRF requests, and TOTP step-up rotations do not refresh this
 timestamp. Pending MFA sessions keep their separate absolute age check covered
 by `tests/test_mfa_lifecycle.py::test_pending_mfa_session_expires_by_absolute_age`.
 
-## 2.6 Session Attack Coverage
+## Session Attack Coverage
 
 | Attack or risk | Implemented control | Evidence |
 | --- | --- | --- |
@@ -165,10 +165,6 @@ by `tests/test_mfa_lifecycle.py::test_pending_mfa_session_expires_by_absolute_ag
 | Risk drift after login | IP/UA-derived risk fingerprint requires reauthentication before sensitive actions | `app/security/sessions.py`; `tests/test_account_security_actions.py::test_session_risk_drift_requires_reauth_before_sensitive_action` |
 | Stolen active cookie | Inactivity timeout, absolute lifetime, revocation, session inventory, and risk step-up reduce impact | `app/security/sessions.py`, `tests/test_session_management.py`, `tests/test_session_absolute_lifetime.py` |
 
-Current gap: there is no concurrent-session count limit. Users can view and
-revoke sessions, but the repository does not cap the number of active sessions
-per user.
-
-Current gap: a stolen active cookie is bounded by inactivity expiry, absolute
-lifetime, revocation, and risk-based reauthentication, but there is no
-cryptographic binding to a device key or client certificate.
+Remaining session risk-reduction items, such as optional active-session count
+caps and stronger device-bound session proof, are tracked in
+`docs/security/security-gap-register.md`.

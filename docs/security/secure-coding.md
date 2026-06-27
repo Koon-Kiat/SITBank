@@ -4,7 +4,7 @@ This document maps SITBank's secure-coding practices to the implementation
 found in the repository, with emphasis on OWASP Proactive Controls and OWASP
 Top 10 risks.
 
-## 4.1 Input Validation
+## Input Validation
 
 The application validates input at the edge of each feature using WTForms,
 Marshmallow schemas, and service-level allowlists. Sensitive server-controlled
@@ -28,7 +28,7 @@ Examples of server-side validation:
 | Transaction payloads reject server-controlled fields and unsafe business values | `tests/test_banking_transaction_security.py::test_future_transaction_payload_guardrails_reject_server_controlled_fields`, `tests/test_banking_transaction_security.py::test_public_transaction_payload_business_rules_reject_unsafe_values` |
 | Route inventory records method-level auth, CSRF, rate-limit, and step-up decisions | `tests/test_route_inventory_security.py` |
 
-## 4.2 Output Encoding
+## Output Encoding
 
 The app uses Jinja templates, which autoescape HTML by default. The repository
 also contains a regression test that checks templates do not mark
@@ -46,7 +46,7 @@ Evidence: `app/security/audit.py`,
 `tests/test_audit_metadata_sanitization.py`, and
 `tests/test_audit_alerting.py::test_structured_audit_log_output_is_sanitized`.
 
-## 4.3 Authentication And Password Coding Practices
+## Authentication And Password Coding Practices
 
 Authentication code avoids common implementation failures:
 
@@ -60,11 +60,11 @@ Authentication code avoids common implementation failures:
 | TOTP replay prevention | `app/auth/services.py`, `app/models.py::TotpReplayRecord`; `tests/test_mfa_lifecycle.py::test_mfa_setup_stores_encrypted_secret_and_rejects_replay` |
 | Recovery codes are one-time HMAC verifiers | `app/auth/recovery_codes.py`; `tests/test_password_reset.py::test_recovery_codes_are_hashed_single_use_reset_factors` |
 
-Current gap: full password history is not implemented. The app rejects reuse of
-the current password during change/reset but does not store previous password
-hashes for history checks.
+The app rejects reuse of the current password during change/reset. Full
+previous-password history is tracked in
+`docs/security/security-gap-register.md`.
 
-## 4.4 Session And CSRF Coding Practices
+## Session And CSRF Coding Practices
 
 Session state is server-side, signed, and bound to a database row context.
 State-changing routes use global Flask-WTF CSRF protection plus route inventory
@@ -84,7 +84,7 @@ and admin sessions default to a 4-hour absolute lifetime. The `auth_created_at`
 timestamp is stored server-side and is not refreshed by ordinary activity,
 CSRF requests, or high-risk TOTP step-up.
 
-## 4.5 Access-Control Coding Practices
+## Access-Control Coding Practices
 
 Access control is implemented in decorators, request hooks, and services. The
 customer route inventory prevents silent addition of unclassified routes.
@@ -103,7 +103,7 @@ Customer and admin route-inventory matrices are intentionally separate so each
 runtime surface must classify its own authentication, CSRF, rate-limit, and
 step-up decisions.
 
-## 4.6 Secure Configuration
+## Secure Configuration
 
 Production configuration fails closed when critical secrets or deployment
 settings are missing.
@@ -125,7 +125,7 @@ AEAD suites, with `X25519`, `prime256v1`, and `secp384r1` as the explicit ECDHE
 curve preference. Operators still validate the live Nginx/OpenSSL support with
 `nginx -t` before reload.
 
-## 4.7 Logging, Auditing, And Error Handling
+## Logging, Auditing, And Error Handling
 
 SITBank records security-relevant events while redacting sensitive values.
 Audit integrity uses an HMAC-SHA256 hash chain.
@@ -139,7 +139,7 @@ Audit integrity uses an HMAC-SHA256 hash chain.
 | Runtime database privilege verifier checks append-only audit behavior | `app/ops/db_privileges.py`, `tests/test_deployment.py::test_audit_operations_runbook_and_append_only_privileges_are_present` |
 | 500 handler logs sanitized context | `tests/test_audit_alerting.py::test_500_handler_logs_sanitized_context` |
 
-## 4.8 Dependency And Build Integrity
+## Dependency And Build Integrity
 
 Dependency and build controls are implemented in scripts, lockfiles, and GitHub
 Actions.
@@ -154,26 +154,24 @@ Actions.
 | Pinned GitHub Actions and images | `.github/workflows/ci-deploy.yml`, `Dockerfile`, tests in `tests/test_deployment.py` |
 | Image signing and digest deployment | `.github/workflows/ci-deploy.yml`, `tests/test_deployment.py::test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest` |
 
-## 4.9 OWASP Top 10 Mapping
+## OWASP Top 10 Mapping
 
-| OWASP risk | SITBank controls | Gaps or notes |
+| OWASP risk | SITBank controls | Notes |
 | --- | --- | --- |
-| A01 Broken Access Control | Customer and admin route inventories, decorators/hooks, high-risk step-up, ownership filters, admin/customer runtime separation | Payee IDOR has code-level owner filters but no dedicated IDOR test |
-| A02 Cryptographic Failures | HTTPS, HSTS, AES-256-GCM MFA envelopes, HMAC session/audit integrity, PBKDF2 password storage, encrypted database backup tooling, Docker secrets validation | No explicit Nginx cipher list |
+| A01 Broken Access Control | Customer and admin route inventories, decorators/hooks, high-risk step-up, ownership filters, admin/customer runtime separation, payee IDOR regressions | Current open items are tracked in `docs/security/security-gap-register.md` |
+| A02 Cryptographic Failures | HTTPS, HSTS, AES-256-GCM MFA envelopes, HMAC session/audit integrity, PBKDF2 password storage, encrypted database backup tooling, Docker secrets validation | Live TLS evidence remains deployment-state validation |
 | A03 Injection | SQLAlchemy query construction, WTForms/Marshmallow validation, payload allowlists, no arbitrary URL-like mass assignment | Continue adding focused injection tests as new query surfaces are added |
 | A04 Insecure Design | MFA onboarding gates, password-reset token exchange, manual recovery pending-only public request, isolated admin manual-recovery completion, staff invite workflow, frozen-account behavior | Continue monitoring manual recovery operations and separation-of-duties assumptions |
-| A05 Security Misconfiguration | Production config validation, Nginx default host rejection, Docker hardening, CSRF/Talisman defaults, deployment tests | Live host TLS cipher and certificate-renewal state must be verified outside the repo |
-| A06 Vulnerable And Outdated Components | Dependabot, pip-audit, Trivy, CodeQL, hashed lockfiles, pinned Docker base image | No JavaScript package manifest was found, so npm/yarn scanning is not applicable |
-| A07 Identification And Authentication Failures | Generic errors, dummy hash, rate/backoff counters, TOTP, recovery codes, fresh TOTP step-up for recovery-code regeneration, reset verifier HMACs, and MFA onboarding gates | No full password history |
+| A05 Security Misconfiguration | Production config validation, Nginx default host rejection, Docker hardening, CSRF/Talisman defaults, deployment tests | Live host TLS and certificate-renewal state must be verified outside the repo |
+| A06 Vulnerable And Outdated Components | Dependabot, pip-audit, Trivy, CodeQL, hashed lockfiles, pinned Docker base image | JavaScript package scanning is not applicable because no JavaScript package manifest is present |
+| A07 Identification And Authentication Failures | Generic errors, dummy hash, rate/backoff counters, TOTP, recovery codes, fresh TOTP step-up for recovery-code regeneration, reset verifier HMACs, and MFA onboarding gates | Password-history follow-up is tracked in `docs/security/security-gap-register.md` |
 | A08 Software And Data Integrity Failures | Hash-locked dependencies, pinned actions, pinned images, cosign signing, audit hash chain, migration/DB privilege tests | Verify external runner and registry trust at deployment time |
 | A09 Security Logging And Monitoring Failures | Structured audit events, sanitization, alerts, append-only audit DB triggers, 500 handler logging | Alert delivery endpoint configuration is deployment-specific |
 | A10 Server-Side Request Forgery | No user-supplied arbitrary URL fetch flow found; fixed HIBP range endpoint sends only SHA-1 prefixes; Turnstile verification uses configured endpoint and redacts token data | New outbound integrations should add allowlists and SSRF tests |
 
-## 4.10 Current Secure-Coding Gaps
+## Security Gap Register
 
-| Gap | Impact | Suggested remediation |
-| --- | --- | --- |
-| No full password history | Users can change back to an older password if it is not the current password | Add a password-history table with pepper-aware hash metadata and retention policy |
-| No independent absolute lifetime for fully authenticated sessions | Long active sessions can continue as sliding sessions | Add a created-at maximum age check for authenticated sessions |
-| No explicit Nginx cipher list | Cipher selection depends on host defaults | Pin approved TLS 1.2 cipher suites and verify with a live TLS scan |
-| No generated admin route inventory | Admin route authorization coverage is less systematic than customer routes | Add admin-app inventory tests with auth, CSRF, rate-limit, and step-up decisions |
+Current open security items and recently closed documentation-sensitive gaps are
+centralized in `docs/security/security-gap-register.md`. This document should
+describe secure-coding controls; the register is the source of truth for
+assessment-relevant constraints and follow-up work.

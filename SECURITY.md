@@ -83,6 +83,11 @@ material, private keys, bearer tokens, MFA secrets, ciphertext, nonces, raw
 session payloads, raw session IDs, raw attempted login identifiers, or full
 account numbers.
 
+Detailed audit and alert implementation evidence is maintained in
+`docs/security/audit-and-alerting.md`. Current open security gaps and recently
+closed documentation-sensitive items are centralized in
+`docs/security/security-gap-register.md`.
+
 New audit rows are chained with `previous_event_hash`, `event_hash`, and
 `hash_algorithm` using deterministic canonical JSON over stable audit fields.
 The current hash chain uses keyed stdlib HMAC-SHA256 (`hmac-sha256-v1`) with

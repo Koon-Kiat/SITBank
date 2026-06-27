@@ -1,0 +1,166 @@
+# Audit And Alerting
+
+This document describes the current SITBank audit logging and security alerting
+implementation. It is implementation evidence, not a future design note.
+
+## Purpose
+
+Audit logging records security-relevant actions with enough context for
+incident review while avoiding secrets and raw identifiers. Alerting evaluates
+recent audit events and runtime signals for patterns that need operator
+attention.
+
+Primary implementation files:
+
+| Area | Evidence |
+| --- | --- |
+| Audit write, metadata sanitization, hash chain, anchor export | `app/security/audit.py` |
+| Alert rules, severity, dedupe, delivery sanitization | `app/security/alerts.py` |
+| CLI commands | `app/ops/commands.py` |
+| Audit model | `app/models.py::SecurityAuditEvent` |
+| Append-only database controls | `migrations/versions/20260618_0003_audit_append_only_triggers.py`, `migrations/versions/20260618_0004_audit_truncate_trigger.py`, `app/ops/db_privileges.py` |
+
+## Audited Events
+
+SITBank records events across customer, admin, banking, and operational flows.
+Representative event families include:
+
+| Event family | Examples | Evidence |
+| --- | --- | --- |
+| Authentication | `login_password`, `login`, `mfa_login_verify`, `admin_login_password`, `admin_mfa_login`, `logout` | `app/auth/services.py`, `app/admin/services.py` |
+| MFA lifecycle | `mfa_setup_generate`, `mfa_setup_verify`, `mfa_replace_start`, `mfa_replace_verify`, `mfa_recovery_code_verify`, `recovery_codes_regenerate` | `app/auth/services.py`, `app/auth/recovery_codes.py` |
+| Password reset and manual recovery | `password_reset_requested`, `password_reset_token_exchanged`, `password_reset_mfa_failed`, `password_reset_completed`, `manual_recovery_requested`, `manual_recovery_admin_transition`, `manual_recovery_completed` | `app/auth/password_reset.py`, `app/admin/services.py` |
+| Session management | `session_terminate`, `session_revoke_others`, `session_integrity`, `session_expired`, `session_risk` | `app/auth/services.py`, `app/security/sessions.py` |
+| Account security | `password_change`, account detail updates, `account_freeze` | `app/auth/services.py` |
+| Admin and staff operations | `staff_invite_create`, `staff_invite_revoked`, `staff_invite_accept`, `staff_account_activated`, `admin_access_denied` | `app/admin/services.py` |
+| Banking and payees | `payee_lookup`, `payee_add`, `payee_remove`, transaction validation events | `app/banking/routes.py`, `app/banking/services.py` |
+| Operations | `mfa_dek_rewrap`, audit chain verification/export, alert checks | `app/ops/commands.py`, `app/security/audit.py`, `app/security/alerts.py` |
+
+Some actions use `audit_event_required()` so a missing audit row fails the
+security-sensitive action rather than silently continuing.
+
+## Metadata Rules
+
+Audit metadata is sanitized before persistence and before structured log
+output. Sensitive keys and sensitive-looking values are redacted recursively in
+dicts and lists. Raw identifiers are represented with HMAC-derived references
+through `audit_reference()` and `principal_reference()`.
+
+Do not log or paste these values into audit metadata, application logs, alert
+payloads, tickets, or chat:
+
+- passwords and password confirmation values
+- TOTP codes
+- recovery codes
+- raw session IDs, cookies, and signed session payloads
+- CSRF tokens
+- password reset selectors, verifiers, and full reset URLs
+- MFA secrets, nonces, ciphertext, and KEK material
+- HMAC keys, Flask/CSRF secrets, database passwords, API tokens, webhook URLs,
+  and private keys
+- raw credential payloads or full request bodies containing secrets
+
+Relevant tests:
+
+| Test | Coverage |
+| --- | --- |
+| `tests/test_audit_metadata_sanitization.py` | Redacts nested metadata, URLs, tokens, session data, webhook URLs, and long sensitive values |
+| `tests/test_audit_alerting.py::test_structured_audit_log_output_is_sanitized` | Structured audit logs are safe for log forwarding |
+| `tests/test_password_reset.py` reset-token tests | Password reset tokens and recovery codes are not stored or logged raw |
+| `tests/test_payee_management_security.py::test_invalid_payee_lookup_is_generic_and_audited` | Payee lookup failures audit only safe account references |
+
+## Audit Integrity
+
+Each `SecurityAuditEvent` participates in an HMAC-SHA256 hash chain:
+
+- `previous_event_hash` links to the prior event.
+- `event_hash` covers canonical audit fields.
+- `hash_algorithm` identifies the active hash format.
+- `SECURITY_AUDIT_HMAC_KEY` is a production secret and is not stored in the
+  database.
+
+Operators verify and anchor the chain with:
+
+```bash
+python -m flask --app wsgi:app verify-audit-log-chain
+python -m flask --app wsgi:app verify-audit-log-chain --anchor /var/lib/sitbank/security-audit.anchor
+python -m flask --app wsgi:app export-audit-log-anchor --output /var/lib/sitbank/security-audit.anchor
+```
+
+`SECURITY_AUDIT_ANCHOR_PATH` points production checks and alerting at the
+host-protected anchor. Anchor mismatch, chain rewind, tail deletion, malformed
+rows, missing append-only controls, and runtime database privilege failures are
+treated as high-priority operational signals.
+
+## Alerting
+
+`check-security-alerts` builds a sanitized report from recent audit events and
+runtime state:
+
+```bash
+python -m flask --app wsgi:app check-security-alerts --report-only
+python -m flask --app wsgi:app check-security-alerts
+```
+
+Alert rules cover at least:
+
+- audit hash-chain verification failure
+- audit anchor mismatch
+- security audit write failures
+- append-only audit protection failures
+- runtime database privilege verification failures
+- session-integrity failures
+- account lock events
+- password reset and manual recovery abuse thresholds
+- login, auth backoff, transaction failure, and rate-limit bursts
+- alert table regression signals from `SECURITY_ALERT_STATE_PATH`
+- alert delivery failures
+
+Alert severity values are configured in `app/security/alerts.py` and filtered
+by `SECURITY_ALERT_MIN_SEVERITY`. Delivery supports HTTPS webhooks such as
+Discord incoming webhooks. Before delivery, the report passes through a final
+sanitizer that redacts secrets, bearer/basic credentials, cookies, database
+URLs with credentials, webhook URLs, API keys, private-key-like values, and
+long token-like strings.
+
+`SecurityAlertDedupe` in PostgreSQL suppresses repeated delivery of the same
+active alert for `SECURITY_ALERT_DEDUPE_TTL_SECONDS` while preserving the alert
+in the JSON report. Delivery failures are reported by error type only and must
+not include request bodies, webhook URLs, tokens, headers, passwords, session
+IDs, or account numbers.
+
+Production installs:
+
+```bash
+sudo systemctl enable --now sitbank-security-alerts.timer
+sudo systemctl status sitbank-security-alerts.timer
+journalctl -u sitbank-security-alerts.service
+```
+
+The timer runs `check-security-alerts` through the container runtime wrapper
+every five minutes.
+
+## Operator Expectations
+
+- Review active alerts promptly and preserve the report output in the incident
+  record.
+- Treat audit-chain or anchor mismatches as evidence-preservation events; stop
+  routine anchor rotation until investigation completes.
+- Keep webhook URLs, audit HMAC keys, alert state paths, and anchor files
+  host/operator-managed.
+- Do not use alerting channels to deliver password reset links, recovery
+  codes, MFA secrets, private keys, raw request bodies, or database dumps.
+- After migrations, run `apply-runtime-db-privileges` and
+  `verify-runtime-db-privileges` so append-only audit protections remain
+  enforced.
+
+## Test Coverage
+
+| Test file | Coverage |
+| --- | --- |
+| `tests/test_audit_alerting.py` | Audit hash chain, anchor export/verify, alert thresholds, delivery sanitization, dedupe, failure handling |
+| `tests/test_audit_metadata_sanitization.py` | Recursive metadata redaction and safe persistence/logging |
+| `tests/test_deployment.py` | Audit runbooks, append-only migrations, runtime DB privilege commands, alert timer installation |
+| `tests/test_password_reset.py` | Reset/manual-recovery audit flows and secret non-disclosure |
+| `tests/test_admin_manual_recovery.py` | Admin manual recovery audit and route authorization |
+| `tests/test_session_management.py`, `tests/test_session_absolute_lifetime.py` | Session revocation, expiry, and integrity audit behavior |

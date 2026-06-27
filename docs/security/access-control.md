@@ -1,10 +1,10 @@
 # Access Control
 
 This document records the access-control model implemented in the SITBank
-repository. It distinguishes implemented runtime enforcement from test gaps and
-service-only flows.
+repository. It distinguishes implemented runtime enforcement from test
+coverage notes and service-only flows.
 
-## 3.1 Access-Control Model
+## Access-Control Model
 
 SITBank uses role, account-state, MFA-state, and ownership checks. The primary
 role field is `User.account_type` in `app/models.py`, constrained to:
@@ -34,7 +34,7 @@ Tests:
 | `tests/test_admin_isolation.py::test_admin_auth_rejects_bad_requests_without_creating_privileged_sessions` | Admin malformed requests do not create privileged sessions |
 | `tests/test_pentest_auth_bypass.py` | Negative authentication and authorization bypass cases |
 
-## 3.2 Customer Access Controls
+## Customer Access Controls
 
 Customer authenticated pages use request hooks and decorators to require a
 valid authenticated customer session, MFA readiness where needed, and non-frozen
@@ -66,7 +66,7 @@ separate generated inventory in
 intentionally separate so customer routes and admin routes cannot satisfy each
 other's policy entries.
 
-## 3.3 Banking And Payee Authorization
+## Banking And Payee Authorization
 
 Payee management lives in `app/banking/routes.py` and is registered only in the
 customer app. Routes use authenticated web decorators, direct banking MFA
@@ -93,7 +93,7 @@ Payee IDOR and enumeration tests cover direct banking MFA gating, pre-TOTP
 recipient lookup blocking, ownership-scoped removal, duplicate/self-payee
 guards, and pending-payee expiry in `tests/test_payee_management_security.py`.
 
-## 3.4 Admin And Staff Controls
+## Admin And Staff Controls
 
 Admin/staff access is invite-only and uses the admin runtime.
 
@@ -124,7 +124,7 @@ authorization, CSRF, rate limiting, an operator reason, and a fresh TOTP code.
 The routes delegate to `app/auth/password_reset.py` so the manual recovery
 state machine remains centralized.
 
-## 3.5 High-Risk Actions And Step-Up
+## High-Risk Actions And Step-Up
 
 High-risk customer actions use `verify_high_risk_authorization()` in
 `app/auth/services.py`. The current active control is TOTP.
@@ -145,7 +145,7 @@ High-risk customer actions use `verify_high_risk_authorization()` in
 | Manual recovery admin review | Root admin session in the isolated admin app | `app/admin/routes.py::manual_recovery_requests()`, `tests/test_admin_manual_recovery.py` |
 | Manual recovery transition/completion | Root admin session, CSRF, rate limit, operator reason, and TOTP step-up | `app/admin/services.py::transition_manual_recovery_request_as_admin()`, `app/admin/services.py::complete_manual_recovery_request_as_admin()`, `tests/test_admin_manual_recovery.py` |
 
-## 3.6 Broken Access Control Mitigations
+## Broken Access Control Mitigations
 
 | OWASP broken-access-control risk | Repository control |
 | --- | --- |
@@ -162,7 +162,7 @@ Admin route authorization is covered by the generated admin inventory plus
 targeted admin service and flow tests. New admin routes must be added to
 `tests/test_admin_route_inventory_security.py` before the suite passes.
 
-## 3.7 Staging And Admin Network Boundaries
+## Staging And Admin Network Boundaries
 
 Network boundaries complement, but do not replace, Flask authorization:
 
