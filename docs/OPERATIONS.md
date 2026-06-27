@@ -326,7 +326,7 @@ contents. Finally run `sudo nginx -t` before reload.
 The **Live TLS scan evidence** workflow provides scheduled weekly,
 operator-dispatched, and post-deployment evidence of the Internet-facing TLS
 posture for
-`staging-sitbank.pp.ua`, `sitbank.duckdns.org`, and
+`staging-sitbank.duckdns.org`, `sitbank.duckdns.org`, and
 `admin-sitbank.duckdns.org`. The deployment workflow calls the staging scan
 after staging deploy and blocks production deployment until it passes; it calls
 the production scan after production deploy to complete the release evidence.
@@ -334,6 +334,14 @@ Dispatch it after edge, certificate, DNS, Nginx/OpenSSL, CDN/WAF, or
 load-balancer changes outside deployment, then retain the successful run with
 the release or change record. Do not run a public-endpoint scan from ordinary
 pull requests.
+
+During the `staging-sitbank.pp.ua` transition, leave the scheduled and
+deployment-gate staging scan on the currently deployed DuckDNS endpoint. Run
+`staging-sitbank.pp.ua` as a manual `staging_host` override only after PR
+merge, staging bootstrap, Certbot certificate issuance, and Cloudflare
+Access/AOP verification. Do not make the scan pass by switching Cloudflare to
+Flexible SSL, disabling TLS verification, disabling the Cloudflare proxy, or
+bypassing Authenticated Origin Pulls.
 
 Each target artifact (`tls-scan-staging-sitbank`, `tls-scan-prod-sitbank`, or
 `tls-scan-admin-sitbank`) retains the untouched scanner output as
