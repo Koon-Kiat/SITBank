@@ -80,3 +80,10 @@ Authenticated DAST still runs before staging/production deployment during releas
 Dependabot updates are review-only. Base-image updates must not be auto-merged. For dependency or image changes, maintainers should review release notes, regenerate hash-locked dependency files, and require the container smoke test, Compose validation, Trivy gates, dependency audits, and relevant application tests before merging.
 
 Base image updates must change the pinned Dockerfile digest and the deployment/security test constants in the same reviewed PR.
+
+Treat GitHub Actions runner-runtime deprecation warnings as CI maintenance
+issues. Keep JavaScript actions compatible with GitHub's current runner runtime
+by replacing deprecated pins with reviewed full commit SHAs; never change them
+to floating tags. Runtime updates to the live TLS scan must preserve its
+per-target JSON, log, and HTML evidence artifacts, names, failure behavior, and
+retention policy.
