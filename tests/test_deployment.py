@@ -2102,7 +2102,8 @@ def test_live_tls_scan_workflow_collects_evidence_without_running_on_pull_reques
     assert "index($severity) != null" in workflow_text
     assert 'policy-violations.txt"' in workflow_text
     assert 'if [[ "${scan_failed}" -ne 0 ]]' in workflow_text
-    assert '.[]\n              | select(type == "object")\n              | select(' in workflow_text
+    assert '$items[]\n                    | select(type == "object")' in workflow_text
+    assert '$items[]\n                  | select(type == "object")' in workflow_text
     assert "secrets." not in workflow_text
     assert "sitbank-ec2.tailca101b.ts.net" not in workflow_text
 
@@ -2155,6 +2156,50 @@ def test_live_tls_scan_workflow_collects_evidence_without_running_on_pull_reques
     assert "tls-scan-staging-sitbank" in deployment_docs
     assert "tls-scan-prod-sitbank" in deployment_docs
     assert "tls-scan-admin-sitbank" in deployment_docs
+
+
+def test_live_tls_scan_has_cloudflare_access_staging_acceptance_policy():
+    workflow_text = Path(".github/workflows/tls-scan.yml").read_text(encoding="utf-8")
+
+    for required in (
+        '--arg target_input "${TARGET_INPUT}" --arg target_host "${target_host}"',
+        "def staging_access_target:",
+        '$target_input == "staging" and $target_host == "staging-sitbank.pp.ua"',
+        "def staging_http_access_ok($items):",
+        '(.id // "") == "HTTP_status_code"',
+        'test("^302[[:space:]]+Found"; "i")',
+        "expected 302 Found Cloudflare Access challenge",
+        "def final_grade_ok($items):",
+        '(.id // "") == "overall_grade"',
+        'test("^A\\\\+?$")',
+        "missing or lower than A for Cloudflare Access staging",
+        "TLS1: missing TLS 1.0 evidence",
+        "TLS1_1: missing TLS 1.1 evidence",
+        "cert_trust: missing certificate hostname/trust evidence",
+        "cert_chain_of_trust: missing certificate chain evidence",
+        "def staging_access_violation:",
+        "def production_public_violation:",
+        "id == \"insecure_redirect\"",
+    ):
+        assert required in workflow_text
+
+    staging_policy = workflow_text[
+        workflow_text.index("def staging_access_violation:"):
+        workflow_text.index(". as $items")
+    ]
+    assert "severe" not in staging_policy
+    assert "cipherlist_(NULL|aNULL|EXPORT|LOW|OBSOLETED|3DES|RC4)" not in staging_policy
+    assert 'id == "TLS1" or id == "TLS1_1"' in staging_policy
+    assert 'id == "cert_trust"' in staging_policy
+    assert 'id == "cert_chain_of_trust"' in staging_policy
+
+    production_policy = workflow_text[
+        workflow_text.index("def production_public_violation:"):
+        workflow_text.index("def staging_access_violation:")
+    ]
+    assert "severe" in production_policy
+    assert "cipherlist_(NULL|aNULL|EXPORT|LOW|OBSOLETED|3DES|RC4)" in production_policy
+    assert 'id | test("HSTS|STS"; "i")' in production_policy
 
 
 def test_only_sitbank_container_deployment_units_are_active():
