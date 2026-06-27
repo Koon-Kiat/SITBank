@@ -2397,7 +2397,7 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     assert "ssl_verify_client optional;" in nginx
     _assert_nginx_owns_duplicate_edge_security_headers(
         nginx,
-        hsts_add_header='add_header Strict-Transport-Security "max-age=300" always;',
+        hsts_add_header='add_header Strict-Transport-Security "max-age=31536000" always;',
     )
     assert "preload" not in nginx
     assert 'auth_basic "SITBank staging";' in nginx
