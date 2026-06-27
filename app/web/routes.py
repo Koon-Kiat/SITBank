@@ -63,6 +63,8 @@ from app.auth.services import (
     pending_mfa_setup,
     register_user,
     regenerate_totp_recovery_codes,
+    terminate_other_sessions_for_user,
+    terminate_session_for_user,
     update_profile_details,
     verify_high_risk_authorization,
     verify_mfa_replacement,
@@ -827,7 +829,54 @@ def sessions_dashboard():
         "sessions.html",
         sessions=active_sessions_for_user(g.current_user),
         past_sessions=past_sessions_for_user(g.current_user),
+        revoke_form=MfaOrStepUpForm(),
     )
+
+
+@web_bp.post("/sessions/<session_ref>/terminate")
+@web_login_required
+@web_not_frozen_required
+def sessions_terminate_submit(session_ref: str):
+    if any(
+        item["current"] and item["session_ref"] == session_ref
+        for item in active_sessions_for_user(g.current_user)
+    ):
+        flash("Use Log Out to end the current browser session.", "warning")
+        return redirect(url_for("web.sessions_dashboard"))
+    form = CsrfOnlyForm()
+    if not form.validate_on_submit():
+        flash("Security token expired. Please try again.", "error")
+        return redirect(url_for("web.sessions_dashboard"))
+    try:
+        terminate_session_for_user(g.current_user, session_ref)
+    except AuthError as exc:
+        flash(exc.message, "error")
+        return redirect(url_for("web.sessions_dashboard")), exc.status_code
+    flash("Session terminated.", "success")
+    return redirect(url_for("web.sessions_dashboard"))
+
+
+@web_bp.post("/sessions/revoke-others")
+@web_login_required
+@web_not_frozen_required
+def sessions_revoke_others_submit():
+    form = MfaOrStepUpForm()
+    if not form.validate_on_submit():
+        flash("Security token expired. Please try again.", "error")
+        return redirect(url_for("web.sessions_dashboard"))
+    try:
+        verify_high_risk_authorization(
+            g.current_user,
+            form.totp_code.data,
+            form.stepup_token.data,
+            "session_revoke_others",
+        )
+        revoked = terminate_other_sessions_for_user(g.current_user)
+    except AuthError as exc:
+        flash(exc.message, "error")
+        return redirect(url_for("web.sessions_dashboard")), exc.status_code
+    flash(f"Terminated {revoked} other session(s).", "success")
+    return redirect(url_for("web.sessions_dashboard"))
 
 
 @web_bp.get("/account/freeze")

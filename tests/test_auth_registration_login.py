@@ -365,6 +365,81 @@ def test_password_at_minimum_length_can_register_and_login(client):
     assert login_response.status_code == 302
     assert db.session.query(User).count() == 1
 
+
+def test_browser_registration_uses_configured_password_minimum(app, client):
+    app.config["PASSWORD_MIN_LENGTH"] = 12
+    verify_registration_email(client, "minimum@sit.singaporetech.edu.sg")
+
+    too_short = client.post(
+        "/register",
+        data={
+            "username": "minimum01",
+            "full_name": "Minimum Test",
+            "phone_number": "91234567",
+            "password": "Abcdef12345",
+            "confirm_password": "Abcdef12345",
+        },
+        follow_redirects=False,
+    )
+
+    assert too_short.status_code == 400
+    assert b"Field must be at least 12 characters long." in too_short.data
+    assert db.session.query(User).count() == 0
+
+    accepted_password = "Abcdef123456"
+    response = client.post(
+        "/register",
+        data={
+            "username": "minimum01",
+            "full_name": "Minimum Test",
+            "phone_number": "91234567",
+            "password": accepted_password,
+            "confirm_password": accepted_password,
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert db.session.query(User).count() == 1
+
+
+def test_api_registration_uses_configured_password_minimum(app, client):
+    app.config["PASSWORD_MIN_LENGTH"] = 12
+    verify_registration_email(client, "minimum-api@sit.singaporetech.edu.sg")
+
+    too_short = client.post(
+        "/auth/register",
+        json={
+            "username": "minapi01",
+            "email": "minimum-api@sit.singaporetech.edu.sg",
+            "full_name": "Minimum Api",
+            "phone_number": "91234567",
+            "password": "Abcdef12345",
+            "confirm_password": "Abcdef12345",
+        },
+    )
+
+    assert too_short.status_code == 400
+    assert too_short.get_json() == {"error": "Invalid request"}
+    assert db.session.query(User).count() == 0
+
+    accepted_password = "Abcdef123456"
+    response = client.post(
+        "/auth/register",
+        json={
+            "username": "minapi01",
+            "email": "minimum-api@sit.singaporetech.edu.sg",
+            "full_name": "Minimum Api",
+            "phone_number": "91234567",
+            "password": accepted_password,
+            "confirm_password": accepted_password,
+        },
+    )
+
+    assert response.status_code == 201
+    assert db.session.query(User).count() == 1
+
+
 def test_password_at_configured_max_length_can_register_and_login(client):
     password = "A" * PASSWORD_MAX_CHARS
 

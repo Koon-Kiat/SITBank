@@ -7,6 +7,8 @@ details, session identifiers, or production logs. Notify the repository owner
 and deployment administrator privately, preserve timestamps and affected
 commit/digest identifiers, and record the response in the project security
 log.
+Use `docs/security/incident-response.md` for incident workflows and
+`docs/security/privacy-and-pdpa.md` for personal-data handling expectations.
 
 ## Secret Rotation
 
@@ -82,6 +84,19 @@ storing plaintext passwords, TOTP codes, CSRF tokens, authentication challenge
 material, private keys, bearer tokens, MFA secrets, ciphertext, nonces, raw
 session payloads, raw session IDs, raw attempted login identifiers, or full
 account numbers.
+
+Detailed audit and alert implementation evidence is maintained in
+`docs/security/audit-and-alerting.md`. Current open security gaps and recently
+closed documentation-sensitive items are centralized in
+`docs/security/security-gap-register.md`; framework coverage is mapped in
+`docs/security/framework-control-matrix.md`.
+Threat-driven design evidence is documented in
+`docs/security/threat-model.md` and
+`docs/security/design-risk-register.md`.
+Privacy, retention, and incident-response expectations are documented in
+`docs/security/privacy-and-pdpa.md`,
+`docs/security/data-retention-and-deactivation.md`, and
+`docs/security/incident-response.md`.
 
 New audit rows are chained with `previous_event_hash`, `event_hash`, and
 `hash_algorithm` using deterministic canonical JSON over stable audit fields.
@@ -197,6 +212,55 @@ readiness fails, the wrapper restores the previous digest and non-secret
 configuration. Database rollback follows the documented cutover procedure and
 must not be improvised during an incident.
 
+## Encrypted Database Backups
+
+Database dumps contain customer, authentication, audit, and banking data. Use
+the host-managed encrypted backup helper instead of writing persistent
+plaintext dumps:
+
+```bash
+sudo /usr/local/sbin/sitbank-backup-encrypted --environment staging
+sudo /usr/local/sbin/sitbank-backup-encrypted --environment production
+```
+
+The EC2 bootstrap installs `age`, `sitbank-backup-encrypted`, and
+`sitbank-restore-preflight`. Encrypted backups are written under
+`/var/backups/sitbank-staging` or `/var/backups/sitbank`, owned by
+`root:root`, with mode `0600` and filenames containing the environment,
+database name, and UTC timestamp. The plaintext `pg_dump --format=custom`
+output exists only in a root-owned temporary directory and is removed on
+success or failure.
+
+Configure age public recipients in
+`/etc/sitbank-staging/backup-age-recipients.txt` or
+`/etc/sitbank/backup-age-recipients.txt`, or set
+`SITBANK_BACKUP_AGE_RECIPIENTS_FILE`. These files must contain public
+recipients only. Age private identity files, decrypted dumps, database dumps,
+database URLs with credentials, and real backup archives must never be
+committed to the repository.
+
+Before any restore, run the preflight guard on the host:
+
+```bash
+sudo /usr/local/sbin/sitbank-restore-preflight \
+  --environment staging \
+  --backup-file /var/backups/sitbank-staging/<backup>.pgdump.age \
+  --target-database sitbank_db \
+  --identity-file /root/.config/sitbank-backups/age-identity.txt
+sudo /usr/local/sbin/sitbank-restore-preflight \
+  --environment production \
+  --backup-file /var/backups/sitbank/<backup>.pgdump.age \
+  --target-database sitbank_db \
+  --identity-file /root/.config/sitbank-backups/age-identity.txt \
+  --confirm-production-restore
+```
+
+The preflight is intentionally restore-only gating; it does not decrypt or
+restore data. It verifies the approved OS user, explicit environment, encrypted
+backup file, non-world-readable backup permissions, host-only age identity,
+explicit target database, and production confirmation. Backup and restore are
+not exposed by the customer Flask app or the admin Flask app.
+
 ## Production Edge and WAF Checklist
 
 Before exposing production, the administrator must verify the edge/network
@@ -220,8 +284,11 @@ checked manually.
   `privkey.pem` targets must be `root:root`, not group-writable or
   world-readable, and normally mode `0600`.
 - Allow public inbound TCP `80` and `443` only.
-- Restrict SSH to an administrator IP allowlist, AWS Systems Manager, a
-  bastion, or VPN; never allow TCP `22` from `0.0.0.0/0` or `::/0`.
+- Restricting SSH to an administrator IP allowlist, AWS Systems Manager, a
+  bastion, or VPN is still a target control, but this branch does not implement
+  the Issue 186 OpenSSH/UFW/security-group hardening package. Do not claim live
+  SSH hardening until the EC2 host and AWS security group are changed and
+  verified through a separate reviewed rollout.
 - Do not expose Gunicorn or PostgreSQL directly to the internet.
 - Keep customer Gunicorn bound to `127.0.0.1:5000`, admin Gunicorn bound to
   `127.0.0.1:5002`, and keep `compose.prod.yml` free of published app ports.
@@ -406,3 +473,6 @@ Manager Run Command:
 
 Remove the Base64-encoded EC2 SSH private-key secrets only after the OIDC/SSM
 path has passed rollback and incident-response testing.
+The detailed AWS IAM/EC2/SSM migration plan and any self-hosted runner,
+bastion, or VPN fallback remain deferred until the deployment impact is
+reviewed separately.

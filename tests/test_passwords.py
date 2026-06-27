@@ -20,6 +20,7 @@ from app.security.passwords import (
     PBKDF2_PREFIX,
     PasswordPolicyError,
     hash_password,
+    password_min_length,
     validate_password_policy,
     verify_password,
 )
@@ -154,7 +155,20 @@ class PasswordPolicyTests(unittest.TestCase):
 
         self.assertEqual(PASSWORD_MIN_LENGTH, 8)
         self.assertEqual(PASSWORD_RECOMMENDED_MIN_LENGTH, 15)
+        self.assertEqual(password_min_length(), 8)
         self.assertEqual(validate_password_policy("Abcdef12"), [])
+
+    @patch("app.security.passwords.urlopen")
+    def test_uses_configured_minimum_password_length(self, urlopen) -> None:
+        self.app.config["PASSWORD_MIN_LENGTH"] = 12
+        urlopen.return_value = FakeResponse(b"00000000000000000000000000000000000:0\r\n")
+
+        with self.assertRaisesRegex(PasswordPolicyError, "at least 12 characters"):
+            validate_password_policy("Abcdef12345")
+
+        urlopen.assert_not_called()
+        self.assertEqual(password_min_length(), 12)
+        self.assertEqual(validate_password_policy("A" * 12), [])
 
     def test_rejects_password_below_8_character_minimum(self) -> None:
         with self.assertRaisesRegex(PasswordPolicyError, "at least 8 characters"):

@@ -219,6 +219,7 @@ SECURITY_TEST_FILES = frozenset(
         "tests/test_mfa_envelope_crypto.py",
         "tests/test_mfa_lifecycle.py",
         "tests/test_owasp_regressions.py",
+        "tests/test_payee_management_security.py",
         "tests/test_passwords.py",
         "tests/test_pentest_auth_bypass.py",
         "tests/test_db_session_integrity.py",

@@ -26,6 +26,13 @@ Manual pre-merge staging:
 
 Feature-branch workflow and deployment scripts are never executed with environment secrets. The only accepted migration mode for existing EC2 deployment files is `adopt-existing`, and it must still pass wrapper hash validation before app deployment.
 
+The SSH deployment jobs assume the configured EC2 deploy user is reachable from
+an approved source. GitHub-hosted runners do not have stable source IPs, so
+repo-side Issue 186 SSH hardening is deferred to avoid accidentally breaking
+deployment. Move deployment behind an allowlisted self-hosted runner, bastion,
+VPN egress, or OIDC plus AWS Systems Manager only in a separate reviewed change
+that tests rollback and GitHub Actions reachability.
+
 ## Environment Variables
 
 GitHub environment variables provide only non-secret deployment settings. Keep

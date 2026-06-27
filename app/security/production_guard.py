@@ -30,7 +30,9 @@ from app.security.session_hmac import (
 )
 from config import (
     MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS,
+    MIN_PRODUCTION_PASSWORD_LENGTH,
     _validate_payee_cooldown_config,
+    _validate_password_length_config,
     _validate_session_absolute_lifetime_config,
 )
 
@@ -187,6 +189,22 @@ def _validate_database_connectivity_and_tables(
 
 
 def _validate_password_policy(app: Flask, result: ProductionReadinessResult) -> None:
+    try:
+        _validate_password_length_config(
+            app_env=str(app.config.get("APP_ENV") or ""),
+            minimum_length=app.config.get("PASSWORD_MIN_LENGTH"),
+            maximum_chars=app.config.get("PASSWORD_MAX_CHARS"),
+        )
+    except Exception as exc:
+        result.failures.append(f"Password length configuration check failed: {exc}")
+    else:
+        result.details["password_min_length"] = int(app.config["PASSWORD_MIN_LENGTH"])
+        if int(app.config["PASSWORD_MIN_LENGTH"]) < MIN_PRODUCTION_PASSWORD_LENGTH:
+            result.failures.append(
+                "PASSWORD_MIN_LENGTH must be at least "
+                f"{MIN_PRODUCTION_PASSWORD_LENGTH} in production"
+            )
+
     try:
         entries = validate_common_password_dictionary()
     except Exception as exc:
