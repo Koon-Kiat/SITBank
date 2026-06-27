@@ -29,7 +29,7 @@ References:
 | Surface | Host or path | Boundary | Public exposure |
 | --- | --- | --- | --- |
 | Production customer | `https://sitbank.duckdns.org` | Public HTTPS edge, Flask customer login and MFA | Public |
-| Staging customer | `https://staging-sitbank.duckdns.org` | Cloudflare Access, Cloudflare Authenticated Origin Pull, staging Basic Auth, Flask login and MFA | Not directly public at the origin |
+| Staging customer | `https://staging-sitbank.pp.ua` and `https://staging-sitbank.duckdns.org` | Cloudflare Access on `staging-sitbank.pp.ua`, Cloudflare Authenticated Origin Pull, staging Basic Auth, Flask login and MFA | Not directly public at the origin |
 | Production admin public host | `https://admin-sitbank.duckdns.org` | Nginx denial for `/`, health, and app routes | Public `403` except ACME challenge paths |
 | Production admin app | Tailscale Serve or Tailscale SSH to `127.0.0.1:5002` | Tailscale ACLs, approved devices, Flask admin login and TOTP | Private tailnet only |
 | Staging admin app | Tailscale SSH or other approved private operator path to `127.0.0.1:5003` | Tailscale ACLs, approved devices, Flask admin login and TOTP | Private tailnet only |
@@ -46,17 +46,16 @@ certificate renewal.
 
 ## Staging Cloudflare Access
 
-Configure Cloudflare for `staging-sitbank.duckdns.org` as a self-hosted Access
-application:
+Configure Cloudflare for `staging-sitbank.pp.ua` as a self-hosted Access
+application. Keep `staging-sitbank.duckdns.org` in the staging Nginx
+`server_name` so the existing staging hostname continues to work while the
+Cloudflare-managed hostname becomes the Access-protected browser entry point:
 
-1. Ensure the staging hostname is a proxied Cloudflare hostname. The observed
+1. Ensure `staging-sitbank.pp.ua` is proxied through Cloudflare. The observed
    DuckDNS hostname resolves directly to the EC2 origin, so Cloudflare Access
-   cannot fully protect it until traffic is routed through a Cloudflare-managed
-   zone/hostname or Cloudflare Tunnel. If the DuckDNS hostname cannot be
-   proxied in the current account model, do not make the EC2 origin public as
-   a workaround. Move staging to an approved operator-owned Cloudflare hostname
-   or tunnel and update this repository in a separate reviewed change.
-2. Add a Cloudflare Access application for `staging-sitbank.duckdns.org`.
+   cannot fully protect DuckDNS-origin traffic. Do not make the EC2 origin
+   public as a workaround.
+2. Add a Cloudflare Access application for `staging-sitbank.pp.ua`.
 3. Add an Allow policy for approved staging operators only.
 4. Keep the default deny posture for everyone else.
 5. Enable Cloudflare Authenticated Origin Pulls for staging. Prefer
@@ -68,7 +67,9 @@ application:
    `/etc/nginx/cloudflare-authenticated-origin-pull-ca.pem`. This CA file is
    host-managed and is not committed to the repository.
 
-The staging Nginx server requests a client certificate with:
+The staging Nginx server blocks accept both
+`staging-sitbank.duckdns.org` and `staging-sitbank.pp.ua`, then request a
+client certificate with:
 
 ```nginx
 ssl_client_certificate /etc/nginx/cloudflare-authenticated-origin-pull-ca.pem;
@@ -168,10 +169,10 @@ Host-side staging checks after bootstrap:
 sudo test -r /etc/nginx/cloudflare-authenticated-origin-pull-ca.pem
 sudo /usr/local/sbin/verify-certbot-host-state staging
 sudo nginx -t
-curl --fail --resolve staging-sitbank.duckdns.org:443:127.0.0.1 \
-  https://staging-sitbank.duckdns.org/health/ready
-curl -I --resolve staging-sitbank.duckdns.org:443:<EC2_PUBLIC_IP> \
-  https://staging-sitbank.duckdns.org/
+curl --fail --resolve staging-sitbank.pp.ua:443:127.0.0.1 \
+  https://staging-sitbank.pp.ua/health/ready
+curl -I --resolve staging-sitbank.pp.ua:443:<EC2_PUBLIC_IP> \
+  https://staging-sitbank.pp.ua/
 ```
 
 Expected: local readiness succeeds through loopback, and direct origin access
