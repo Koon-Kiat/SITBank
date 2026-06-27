@@ -55,7 +55,6 @@ def test_framework_control_matrix_covers_requested_frameworks_and_statuses():
         "tests/test_session_absolute_lifetime.py",
         "tests/test_admin_route_inventory_security.py",
         "tests/test_backup_security.py",
-        "tests/test_ec2_ssh_hardening_docs.py",
         "tests/test_audit_alerting.py",
     ):
         assert evidence in matrix
@@ -80,6 +79,7 @@ def test_security_gap_register_is_single_source_with_required_fields():
         "Admin audit-log viewer UI",
         "Automated retention and disposal jobs",
         "Authenticated DAST on ordinary pull requests",
+        "EC2 SSH/UFW/security-group hardening deferred",
         "Active-session count cap",
         "Device-bound session proof",
     ):
@@ -108,6 +108,23 @@ def test_security_gap_register_is_single_source_with_required_fields():
     assert "Privacy and PDPA documentation" in implemented
     assert "Incident response runbook" in implemented
     assert "Threat model and design risk register" in implemented
+
+
+def test_issue_186_ssh_hardening_is_deferred_without_stale_artifacts():
+    register = GAP_REGISTER.read_text(encoding="utf-8")
+    matrix = MATRIX.read_text(encoding="utf-8")
+    current_open = _section(register, "Current Open Gaps")
+    recently_closed = _section(register, "Recently Closed Gaps")
+
+    assert "EC2 SSH/UFW/security-group hardening deferred" in current_open
+    assert "Issue 186 is not implemented on this branch" in current_open
+    assert "EC2 SSH hardening lacked repository-side support" not in recently_closed
+    assert "tests/test_ec2_ssh_hardening_docs.py" not in matrix
+    assert "ops/ssh/99-sitbank-hardening.conf" not in matrix
+    assert "OpenSSH drop-in template" not in matrix
+    assert not Path("tests/test_ec2_ssh_hardening_docs.py").exists()
+    assert not Path("ops/ssh/99-sitbank-hardening.conf").exists()
+    assert not Path("docs/security/ec2-ssh-and-deployment-access.md").exists()
 
 
 def test_requested_docs_link_to_matrix_and_gap_register():

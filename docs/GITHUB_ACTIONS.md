@@ -28,10 +28,10 @@ Feature-branch workflow and deployment scripts are never executed with environme
 
 The SSH deployment jobs assume the configured EC2 deploy user is reachable from
 an approved source. GitHub-hosted runners do not have stable source IPs, so
-global EC2 SSH ingress must not be kept open just for these jobs. Use
-`docs/security/ec2-ssh-and-deployment-access.md` to move deployment behind an
-allowlisted self-hosted runner, bastion, VPN egress, or OIDC plus AWS Systems
-Manager path.
+repo-side Issue 186 SSH hardening is deferred to avoid accidentally breaking
+deployment. Move deployment behind an allowlisted self-hosted runner, bastion,
+VPN egress, or OIDC plus AWS Systems Manager only in a separate reviewed change
+that tests rollback and GitHub Actions reachability.
 
 ## Environment Variables
 

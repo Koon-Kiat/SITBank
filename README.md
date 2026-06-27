@@ -123,7 +123,6 @@ customer domain.
 - [Operations](docs/OPERATIONS.md)
 - [Security](SECURITY.md)
 - [Audit and alerting](docs/security/audit-and-alerting.md)
-- [EC2 SSH and deployment access](docs/security/ec2-ssh-and-deployment-access.md)
 - [Framework control matrix](docs/security/framework-control-matrix.md)
 - [Privacy and PDPA](docs/security/privacy-and-pdpa.md)
 - [Data retention and deactivation](docs/security/data-retention-and-deactivation.md)

@@ -249,9 +249,11 @@ while troubleshooting.
 The reviewed production bootstrap installs and enables the production edge from `ops/nginx/sitbank-default.conf`, `ops/nginx/sitbank-production.conf`, `ops/nginx/sitbank-production-rate-limits.conf`, `ops/nginx-proxy-headers.conf`, and `ops/nginx/sitbank-tls-policy.conf`. The shared default config owns unknown-host rejection so production and staging can run on the same EC2 without duplicate Nginx `default_server` listeners. Any change to those files requires a production bootstrap after merge.
 
 - Public ingress is TCP `80` and `443` only.
-- SSH is restricted to an administrator IP allowlist, AWS Systems Manager, a bastion, or VPN.
-  Follow `docs/security/ec2-ssh-and-deployment-access.md` for the OpenSSH
-  drop-in, UFW/security-group rollout, and deployment-source migration path.
+- SSH hardening is deferred in this branch. The Issue 186 OpenSSH drop-in,
+  UFW/security-group rollout, and deployment-source migration path are not
+  implemented here because they can affect GitHub Actions deployment access.
+  Treat live SSH posture as operator-owned infrastructure evidence until a
+  separate reviewed change lands.
 - Nginx terminates TLS, redirects production customer HTTP to HTTPS, returns
   `403` for non-ACME staging/admin HTTP roots, and forwards only expected
   proxy headers.

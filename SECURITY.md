@@ -284,10 +284,11 @@ checked manually.
   `privkey.pem` targets must be `root:root`, not group-writable or
   world-readable, and normally mode `0600`.
 - Allow public inbound TCP `80` and `443` only.
-- Restrict SSH to an administrator IP allowlist, AWS Systems Manager, a
-  bastion, or VPN; never allow TCP `22` from `0.0.0.0/0` or `::/0`.
-  The OpenSSH drop-in, UFW/security-group rollout, and deployment migration
-  path are documented in `docs/security/ec2-ssh-and-deployment-access.md`.
+- Restricting SSH to an administrator IP allowlist, AWS Systems Manager, a
+  bastion, or VPN is still a target control, but this branch does not implement
+  the Issue 186 OpenSSH/UFW/security-group hardening package. Do not claim live
+  SSH hardening until the EC2 host and AWS security group are changed and
+  verified through a separate reviewed rollout.
 - Do not expose Gunicorn or PostgreSQL directly to the internet.
 - Keep customer Gunicorn bound to `127.0.0.1:5000`, admin Gunicorn bound to
   `127.0.0.1:5002`, and keep `compose.prod.yml` free of published app ports.
@@ -472,5 +473,6 @@ Manager Run Command:
 
 Remove the Base64-encoded EC2 SSH private-key secrets only after the OIDC/SSM
 path has passed rollback and incident-response testing.
-The detailed AWS IAM/EC2/SSM prerequisites and the self-hosted runner/bastion
-fallback are tracked in `docs/security/ec2-ssh-and-deployment-access.md`.
+The detailed AWS IAM/EC2/SSM migration plan and any self-hosted runner,
+bastion, or VPN fallback remain deferred until the deployment impact is
+reviewed separately.

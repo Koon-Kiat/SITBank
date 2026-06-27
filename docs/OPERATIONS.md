@@ -73,18 +73,14 @@ operator verification steps are in
 
 ## EC2 SSH And Deployment Access Operations
 
-Manage OpenSSH, UFW, EC2 security-group ingress, and deployment-source
-allowlisting with `docs/security/ec2-ssh-and-deployment-access.md`. That
-runbook requires the OpenSSH drop-in at
-`/etc/ssh/sshd_config.d/99-sitbank-hardening.conf`, keeps root SSH disabled,
-requires public-key authentication, restricts `AllowUsers`, and reduces
-`MaxAuthTries` to `4`.
+Issue 186 EC2 SSH hardening is deferred and is not implemented by this branch.
+There is no repository OpenSSH drop-in, UFW rollout, security-group migration,
+or deployment-source allowlisting runbook to apply from this checkout.
 
-Do not close the current operator session until `sudo sshd -t`,
-`sudo systemctl reload ssh`, and a fresh SSH login for the allowed operator and
-`sitbank-deploy` accounts have succeeded. Remove `22/tcp ALLOW IN Anywhere`
-and `22/tcp (v6) ALLOW IN Anywhere (v6)` only after a trusted IP, VPN, bastion,
-self-hosted runner, or AWS Systems Manager path has been tested.
+Keep the existing approved deployment path in place until a separate reviewed
+change designs and tests the EC2 host, AWS security-group, GitHub Actions, and
+rollback impact together. Do not claim root SSH, password SSH, `AllowUsers`,
+UFW, or TCP `22` ingress has been hardened from repository evidence alone.
 
 ## Trivy Exception
 
