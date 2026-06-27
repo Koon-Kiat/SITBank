@@ -213,19 +213,28 @@ target job summary identifies the UTC scan time, host, run ID/attempt, scanner
 version, and pass/fail result. TLS scanning uses no application credentials
 and the workflow contains no application secrets.
 
-The verification gate fails for SSLv2, SSLv3, TLS 1.0, or TLS 1.1; weak, NULL,
-anonymous, export, RC4, or 3DES ciphers; missing, disabled, or too-short HSTS;
-expired certificates; hostname mismatches; untrusted, incomplete, or missing
-certificate chains; any `testssl.sh` HIGH, CRITICAL, or FATAL finding; and
-missing/invalid JSON evidence. MEDIUM/LOW/INFO findings remain in the evidence
-and require operator review; they are not an automatic release block unless
-they match one of the explicit prohibited classes above.
+The production customer and public-denied admin verification gate fails for
+SSLv2, SSLv3, TLS 1.0, or TLS 1.1; weak, NULL, anonymous, export, RC4, or 3DES
+ciphers; missing, disabled, or too-short HSTS; expired certificates; hostname
+mismatches; untrusted, incomplete, or missing certificate chains; any
+`testssl.sh` HIGH, CRITICAL, or FATAL finding; and missing/invalid JSON
+evidence. MEDIUM/LOW/INFO findings remain in the evidence and require operator
+review; they are not an automatic release block unless they match one of the
+explicit prohibited classes above.
+
+The Cloudflare Access-protected staging target `staging-sitbank.pp.ua` uses a
+staging-specific acceptance gate because unauthenticated HTTP requests should
+receive a `302 Found` Access challenge before the app. The staging scan still
+fails unless TLS 1.0 and TLS 1.1 are not offered, certificate hostname/trust
+and chain checks are OK, the certificate is not expired, insecure redirects
+are absent, and the final `overall_grade` is `A` or `A+`. Generic
+Cloudflare-managed CBC/LUCKY13 wording does not fail protected staging by
+itself when those hard requirements pass.
 
 Normalization does not suppress malformed JSON generally or change policy
-findings. All protocol, cipher, HSTS, certificate, chain, and severity gates
-run against the strictly validated policy copy. Cloudflare Access readiness is
-a separate zero-trust deployment concern and does not make staging TLS
-evidence optional.
+findings. All gates run against the strictly validated policy copy. Cloudflare
+Access readiness is a separate zero-trust deployment concern and does not make
+staging TLS evidence optional.
 
 For a host-side/manual check, use the same full scan (do not use `-k` or supply
 application credentials):

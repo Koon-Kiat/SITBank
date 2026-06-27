@@ -355,14 +355,24 @@ credentials or secrets are needed or permitted.
 
 Treat a failed scan as a release/deployment verification failure. A failed
 staging scan blocks production deployment, while a failed production scan
-marks the completed deployment workflow failed. The automated gate blocks
-legacy TLS protocols, weak/NULL/anonymous/export/RC4/3DES ciphers, expired or
-mismatched certificates, missing/untrusted chains, all HIGH, CRITICAL, or FATAL
-`testssl.sh` findings, and scanner errors. Review
-MEDIUM/LOW/INFO results in the retained evidence and create a security change
-or explicit risk decision where appropriate. SSL Labs is an optional manual
-second opinion; save its public report link or screenshot with the change
-record, but do not make a production release depend on its API.
+marks the completed deployment workflow failed. The production customer and
+public-denied admin automated gate blocks legacy TLS protocols,
+weak/NULL/anonymous/export/RC4/3DES ciphers, expired or mismatched
+certificates, missing/untrusted chains, all HIGH, CRITICAL, or FATAL
+`testssl.sh` findings, and scanner errors. Review MEDIUM/LOW/INFO results in
+the retained evidence and create a security change or explicit risk decision
+where appropriate. SSL Labs is an optional manual second opinion; save its
+public report link or screenshot with the change record, but do not make a
+production release depend on its API.
+
+For the Cloudflare Access-protected staging target, an unauthenticated
+`302 Found` response is the expected Access challenge and is accepted by the
+TLS evidence workflow. The staging gate still requires TLS 1.0 and TLS 1.1 to
+be not offered, certificate hostname/trust and chain checks to be OK, the
+certificate to be unexpired, no insecure redirect finding, and a final
+`overall_grade` of `A` or `A+`. Generic Cloudflare-managed CBC/LUCKY13 wording
+does not fail the protected staging scan by itself when those requirements
+pass.
 
 Cloudflare Access rollout is separate from TLS evidence collection. An
 incomplete Access setup does not make the staging scan optional, and the JSON

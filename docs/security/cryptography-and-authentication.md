@@ -112,13 +112,18 @@ or TLS findings generally. The job summary records the UTC time, target,
 workflow run, and result. It intentionally does not run on ordinary pull
 requests because they do not create public TLS endpoints.
 
-Verification fails for SSLv2/SSLv3/TLS 1.0/TLS 1.1, weak/NULL/anonymous/export/
-RC4/3DES cipher classes, missing, disabled, or too-short HSTS, expired
-certificates, hostname mismatches, untrusted or incomplete chains, and every
-HIGH, CRITICAL, or FATAL `testssl.sh` finding.
-MEDIUM/LOW/INFO findings are retained for manual review. SSL Labs is optional
-manual corroboration for a release, certificate renewal, edge change, or
-incident record; it is not a release-blocking automation dependency.
+Production customer and public-denied admin verification fails for SSLv2/SSLv3/
+TLS 1.0/TLS 1.1, weak/NULL/anonymous/export/RC4/3DES cipher classes, missing,
+disabled, or too-short HSTS, expired certificates, hostname mismatches,
+untrusted or incomplete chains, and every HIGH, CRITICAL, or FATAL
+`testssl.sh` finding. The Cloudflare Access-protected staging target accepts
+the expected unauthenticated `302 Found` Access challenge, but still requires
+TLS 1.0 and TLS 1.1 to be not offered, certificate hostname/trust and chain
+checks to be OK, no expiration or insecure redirect finding, and final
+`overall_grade` `A` or `A+`. MEDIUM/LOW/INFO findings are retained for manual
+review. SSL Labs is optional manual corroboration for a release, certificate
+renewal, edge change, or incident record; it is not a release-blocking
+automation dependency.
 
 ## Server Private Key Storage
 
