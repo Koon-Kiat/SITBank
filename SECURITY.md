@@ -90,6 +90,9 @@ Detailed audit and alert implementation evidence is maintained in
 closed documentation-sensitive items are centralized in
 `docs/security/security-gap-register.md`; framework coverage is mapped in
 `docs/security/framework-control-matrix.md`.
+Threat-driven design evidence is documented in
+`docs/security/threat-model.md` and
+`docs/security/design-risk-register.md`.
 Privacy, retention, and incident-response expectations are documented in
 `docs/security/privacy-and-pdpa.md`,
 `docs/security/data-retention-and-deactivation.md`, and

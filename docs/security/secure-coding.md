@@ -177,3 +177,6 @@ describe secure-coding controls; the register is the source of truth for
 assessment-relevant constraints and follow-up work.
 Framework-level coverage is mapped in
 `docs/security/framework-control-matrix.md`.
+Threat-driven design evidence is documented in
+`docs/security/threat-model.md` and
+`docs/security/design-risk-register.md`.

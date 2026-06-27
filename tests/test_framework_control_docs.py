@@ -79,7 +79,6 @@ def test_security_gap_register_is_single_source_with_required_fields():
         "Password history beyond current-password reuse",
         "Admin audit-log viewer UI",
         "Automated retention and disposal jobs",
-        "Threat model and design risk record",
         "Authenticated DAST on ordinary pull requests",
         "Active-session count cap",
         "Device-bound session proof",
@@ -97,6 +96,7 @@ def test_security_gap_register_is_single_source_with_required_fields():
         "backup encryption and restore access-control evidence missing",
         "PDPA data inventory and retention schedule",
         "Dedicated incident response runbook",
+        "Threat model and design risk record",
     ):
         assert fixed_item not in current_open
 
@@ -107,6 +107,7 @@ def test_security_gap_register_is_single_source_with_required_fields():
     assert "Encrypted database backup tooling" in implemented
     assert "Privacy and PDPA documentation" in implemented
     assert "Incident response runbook" in implemented
+    assert "Threat model and design risk register" in implemented
 
 
 def test_requested_docs_link_to_matrix_and_gap_register():
