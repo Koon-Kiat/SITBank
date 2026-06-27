@@ -18,7 +18,7 @@ proxy headers.
 | --- | --- | --- | --- |
 | Production customer | `sitbank.duckdns.org` | Nginx in `ops/nginx/sitbank-production.conf` | `http://127.0.0.1:5000` |
 | Production admin | `admin-sitbank.duckdns.org` | Nginx in `ops/nginx/sitbank-production.conf` | `http://127.0.0.1:5002` |
-| Staging customer | `staging-sitbank.duckdns.org` | Nginx in `ops/nginx/sitbank-staging.conf` | `http://127.0.0.1:5001` |
+| Staging customer | `staging-sitbank.duckdns.org`, `staging-sitbank.pp.ua` | Nginx in `ops/nginx/sitbank-staging.conf` | `http://127.0.0.1:5001` |
 
 The client authenticates the server through the normal browser TLS certificate
 chain for the relevant hostname. The repository expects Certbot/Let's Encrypt
@@ -93,7 +93,7 @@ dispatched after a TLS-relevant infrastructure change, and is called from the
 trusted deployment workflow. It verifies staging immediately after staging
 deploy (and blocks production deployment until that verification passes), then
 verifies both production endpoints after production deploy to complete the
-release evidence. It scans `staging-sitbank.duckdns.org`,
+release evidence. It scans `staging-sitbank.pp.ua`,
 `sitbank.duckdns.org`, and `admin-sitbank.duckdns.org` with a checksum-verified
 `testssl.sh` release, retaining JSON, log, HTML, metadata, and policy findings
 as per-target GitHub Actions artifacts. The job summary records the UTC time,
@@ -118,6 +118,7 @@ Certbot-managed paths, for example:
 | `sitbank.duckdns.org` | `/etc/letsencrypt/live/sitbank.duckdns.org/privkey.pem` |
 | `admin-sitbank.duckdns.org` | `/etc/letsencrypt/live/admin-sitbank.duckdns.org/privkey.pem` |
 | `staging-sitbank.duckdns.org` | `/etc/letsencrypt/live/staging-sitbank.duckdns.org/privkey.pem` |
+| `staging-sitbank.pp.ua` | Covered by the staging certificate under `/etc/letsencrypt/live/staging-sitbank.duckdns.org/privkey.pem` |
 
 The private key is not committed to Git. `ops/deploy/bootstrap-container-ec2`
 checks that the expected key files are readable before installing the Nginx

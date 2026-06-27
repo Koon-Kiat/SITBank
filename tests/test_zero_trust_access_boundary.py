@@ -22,18 +22,17 @@ def _nginx_location_bodies(config: str, selector: str) -> list[str]:
 
 
 def _nginx_server_block(config: str, server_name: str) -> str:
-    marker = f"server_name {server_name};"
+    marker = re.compile(
+        rf"server_name\s+[^;]*(?<![A-Za-z0-9.-]){re.escape(server_name)}"
+        r"(?![A-Za-z0-9.-])[^;]*;"
+    )
     blocks = []
-    search_from = 0
-    while True:
-        marker_index = config.find(marker, search_from)
-        if marker_index == -1:
-            break
+    for match in marker.finditer(config):
+        marker_index = match.start()
         start = config.rfind("\nserver {", 0, marker_index)
         start = 0 if start == -1 else start + 1
         end = config.find("\nserver {", marker_index)
         blocks.append(config[start:] if end == -1 else config[start:end])
-        search_from = marker_index + len(marker)
     assert blocks, f"Missing Nginx server block for {server_name}"
     for block in blocks:
         if "listen 443 ssl http2;" in block:
@@ -59,10 +58,11 @@ def test_hybrid_cloudflare_staging_and_tailscale_admin_design_is_documented():
         "Admin uses Tailscale private access.",
         "This intentionally uses both products because the surfaces have different",
         "Production customer | `https://sitbank.duckdns.org`",
-        "Staging customer | `https://staging-sitbank.duckdns.org`",
+        "Staging customer | `https://staging-sitbank.pp.ua`",
+        "`https://staging-sitbank.duckdns.org`",
         "Production admin app | Tailscale Serve or Tailscale SSH to `127.0.0.1:5002`",
         "The customer production site remains public.",
-        "Cloudflare Access application for `staging-sitbank.duckdns.org`",
+        "Cloudflare Access application for `staging-sitbank.pp.ua`",
         "Cloudflare Authenticated Origin Pulls",
         "Do not enable Tailscale Funnel",
         "Flask admin login and TOTP remain mandatory",
@@ -91,13 +91,20 @@ def test_staging_nginx_blocks_direct_origin_bypass_but_keeps_local_health():
     assert "ssl_reject_handshake on;" in default_nginx
     assert "return 444;" in default_nginx
 
-    assert "server_name staging-sitbank.duckdns.org;" in staging_nginx
+    assert (
+        "server_name staging-sitbank.duckdns.org staging-sitbank.pp.ua;"
+        in staging_nginx
+    )
     assert "ssl_client_certificate /etc/nginx/cloudflare-authenticated-origin-pull-ca.pem;" in staging_nginx
     assert "ssl_verify_client optional;" in staging_nginx
     staging_https_prelocation = _nginx_server_block(
         staging_nginx,
         "staging-sitbank.duckdns.org",
     ).split("\n    location ", 1)[0]
+    assert _nginx_server_block(
+        staging_nginx,
+        "staging-sitbank.pp.ua",
+    ) == _nginx_server_block(staging_nginx, "staging-sitbank.duckdns.org")
     assert "auth_basic \"SITBank staging\";" not in staging_https_prelocation
     assert "auth_basic_user_file /etc/nginx/.htpasswd-sitbank-staging;" not in staging_https_prelocation
 
@@ -146,7 +153,8 @@ def test_admin_public_routes_stay_denied_and_private_access_is_tailscale_only():
     customer_server = _nginx_server_block(production_nginx, "sitbank.duckdns.org")
 
     assert "server_name sitbank.duckdns.org;" in customer_server
-    assert "server_name staging-sitbank.duckdns.org;" not in customer_server
+    assert "staging-sitbank.duckdns.org" not in customer_server
+    assert "staging-sitbank.pp.ua" not in customer_server
     assert "server_name admin-sitbank.duckdns.org;" not in customer_server
     assert "location ^~ /admin" in customer_server
     assert "return 404;" in customer_server

@@ -6,7 +6,8 @@ Only Flask/Gunicorn runs in the SITBank container. Nginx, TLS, PostgreSQL, and b
 
 - Production public host: `sitbank.duckdns.org`
 - Production admin host: `admin-sitbank.duckdns.org`
-- Staging public host: `staging-sitbank.duckdns.org`
+- Staging public hosts: `staging-sitbank.duckdns.org`, `staging-sitbank.pp.ua`
+- Staging Cloudflare Access host: `staging-sitbank.pp.ua`
 - Production customer access: public HTTPS
 - Staging access boundary: Cloudflare Access plus Authenticated Origin Pull
 - Admin access boundary: Tailscale/private operator access only
@@ -165,7 +166,7 @@ manual workflow inputs when an approved endpoint changes:
 
 | Environment | Workflow input | Default target | Artifact |
 | --- | --- | --- | --- |
-| Staging customer | `staging_host` | `https://staging-sitbank.duckdns.org` | `tls-scan-staging-sitbank` |
+| Staging customer | `staging_host` | `https://staging-sitbank.pp.ua` | `tls-scan-staging-sitbank` |
 | Production customer | `production_host` | `https://sitbank.duckdns.org` | `tls-scan-prod-sitbank` |
 | Production admin | `admin_host` | `https://admin-sitbank.duckdns.org` | `tls-scan-admin-sitbank` |
 
@@ -189,7 +190,7 @@ application credentials):
 ```bash
 testssl.sh --warnings batch --color 0 --jsonfile testssl.json \
   --logfile testssl.log --htmlfile testssl.html \
-  https://staging-sitbank.duckdns.org
+  https://staging-sitbank.pp.ua
 testssl.sh --warnings batch --color 0 https://sitbank.duckdns.org
 testssl.sh --warnings batch --color 0 https://admin-sitbank.duckdns.org
 ```
@@ -346,45 +347,51 @@ sudo install -o root -g root -m 0644 \
 Do not store Cloudflare API tokens, tunnel credentials, Access IdP secrets, or
 origin certificate private keys in the repo. If the staging hostname cannot be
 proxied by Cloudflare in the current DNS model, stop and make an approved DNS
-change instead of disabling the origin-pull protection. The observed
-`staging-sitbank.duckdns.org` hostname resolves directly to EC2; Cloudflare
-Access cannot fully protect staging until traffic is routed through a
-Cloudflare-managed zone/hostname or Cloudflare Tunnel.
+change instead of disabling the origin-pull protection.
+`staging-sitbank.pp.ua` is the Cloudflare-managed staging hostname for Access.
+Use a Cloudflare-managed zone/hostname or Cloudflare Tunnel for this boundary;
+for this deployment, the approved Cloudflare-managed hostname is
+`staging-sitbank.pp.ua`.
+The existing `staging-sitbank.duckdns.org` hostname remains accepted by Nginx,
+but it resolves directly to EC2 and must not be treated as the Cloudflare
+Access boundary.
 
 Issue or renew staging TLS before bootstrap:
 
 ```bash
-sudo certbot --nginx -d staging-sitbank.duckdns.org
-sudo certbot certonly --webroot -w /var/www/certbot -d staging-sitbank.duckdns.org
+sudo certbot --nginx -d staging-sitbank.duckdns.org -d staging-sitbank.pp.ua --cert-name staging-sitbank.duckdns.org
+sudo certbot certonly --webroot -w /var/www/certbot -d staging-sitbank.duckdns.org -d staging-sitbank.pp.ua --cert-name staging-sitbank.duckdns.org
 sudo systemctl status certbot.timer
 sudo /usr/local/sbin/verify-certbot-host-state staging
 sudo certbot renew --dry-run
 ```
 
-Then run `ops/deploy/bootstrap-container-ec2 staging hetp88/SITBank staging-sitbank.duckdns.org`. The bootstrap installs the Nginx proxy header snippet, TLS policy snippet, and rate-limit include, verifies the staging Basic Auth file and Cloudflare origin-pull CA file, then runs `sudo nginx -t` before `sudo systemctl reload nginx`. This edge setup is separate from application deployment.
+Then run `ops/deploy/bootstrap-container-ec2 staging hetp88/SITBank staging-sitbank.duckdns.org`. The bootstrap installs the Nginx proxy header snippet, TLS policy snippet, rate-limit include, and staging Nginx server block for both `staging-sitbank.duckdns.org` and `staging-sitbank.pp.ua`; verifies the staging Basic Auth file and Cloudflare origin-pull CA file; then runs `sudo nginx -t` before `sudo systemctl reload nginx`. This edge setup is separate from application deployment.
 
 Staging verification:
 
 ```bash
-curl -I https://staging-sitbank.duckdns.org/
+curl -I https://staging-sitbank.pp.ua/
 curl -I -u "$STAGING_BASIC_AUTH_USER:$STAGING_BASIC_AUTH_PASSWORD" \
-  https://staging-sitbank.duckdns.org/
-curl -I https://staging-sitbank.duckdns.org/health/ready
+  https://staging-sitbank.pp.ua/
+curl -I https://staging-sitbank.pp.ua/health/ready
 curl -fsS http://127.0.0.1:5001/health/ready
-curl --fail --resolve staging-sitbank.duckdns.org:443:127.0.0.1 \
-  https://staging-sitbank.duckdns.org/health/ready
-curl -I --resolve staging-sitbank.duckdns.org:443:<EC2_PUBLIC_IP> \
-  https://staging-sitbank.duckdns.org/
+curl --fail --resolve staging-sitbank.pp.ua:443:127.0.0.1 \
+  https://staging-sitbank.pp.ua/health/ready
+curl -I --resolve staging-sitbank.pp.ua:443:<EC2_PUBLIC_IP> \
+  https://staging-sitbank.pp.ua/
 sudo nginx -T | grep -E 'ssl_protocols|ssl_ciphers|ssl_ecdh_curve|ssl_conf_command|ssl_session_tickets'
-curl -fsSI https://staging-sitbank.duckdns.org/ | grep -i '^strict-transport-security:'
-testssl.sh --warnings batch --color 0 https://staging-sitbank.duckdns.org
+curl -fsSI https://staging-sitbank.pp.ua/ | grep -i '^strict-transport-security:'
+testssl.sh --warnings batch --color 0 https://staging-sitbank.pp.ua
+curl -I https://staging-sitbank.duckdns.org/
 ```
 
 Expected: unauthenticated browser traffic receives the Cloudflare Access
-challenge before reaching staging, approved operators can pass Cloudflare
+challenge at `staging-sitbank.pp.ua` before reaching staging, approved operators can pass Cloudflare
 Access and then reach the normal staging controls, direct EC2-origin access to
 `/` returns `403` without Cloudflare's origin-pull client certificate,
-external `/health/ready` returns `403`, and local app readiness succeeds.
+external `/health/ready` returns `403`, local app readiness succeeds, and the
+existing DuckDNS staging hostname remains recognized by Nginx.
 
 The complete operator runbook is
 `docs/security/admin-and-staging-zero-trust-access.md`.
