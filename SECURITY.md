@@ -276,6 +276,8 @@ checked manually.
 - Allow public inbound TCP `80` and `443` only.
 - Restrict SSH to an administrator IP allowlist, AWS Systems Manager, a
   bastion, or VPN; never allow TCP `22` from `0.0.0.0/0` or `::/0`.
+  The OpenSSH drop-in, UFW/security-group rollout, and deployment migration
+  path are documented in `docs/security/ec2-ssh-and-deployment-access.md`.
 - Do not expose Gunicorn or PostgreSQL directly to the internet.
 - Keep customer Gunicorn bound to `127.0.0.1:5000`, admin Gunicorn bound to
   `127.0.0.1:5002`, and keep `compose.prod.yml` free of published app ports.
@@ -460,3 +462,5 @@ Manager Run Command:
 
 Remove the Base64-encoded EC2 SSH private-key secrets only after the OIDC/SSM
 path has passed rollback and incident-response testing.
+The detailed AWS IAM/EC2/SSM prerequisites and the self-hosted runner/bastion
+fallback are tracked in `docs/security/ec2-ssh-and-deployment-access.md`.

@@ -123,6 +123,7 @@ customer domain.
 - [Operations](docs/OPERATIONS.md)
 - [Security](SECURITY.md)
 - [Audit and alerting](docs/security/audit-and-alerting.md)
+- [EC2 SSH and deployment access](docs/security/ec2-ssh-and-deployment-access.md)
 - [Security gap register](docs/security/security-gap-register.md)
 - [Legacy and out-of-scope technology notes](docs/security/legacy-and-out-of-scope-technology.md)
 - [Archived EC2 transition notes](docs/archive/EC2_TRANSITION.md)

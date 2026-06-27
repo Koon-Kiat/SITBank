@@ -250,6 +250,8 @@ The reviewed production bootstrap installs and enables the production edge from 
 
 - Public ingress is TCP `80` and `443` only.
 - SSH is restricted to an administrator IP allowlist, AWS Systems Manager, a bastion, or VPN.
+  Follow `docs/security/ec2-ssh-and-deployment-access.md` for the OpenSSH
+  drop-in, UFW/security-group rollout, and deployment-source migration path.
 - Nginx terminates TLS, redirects production customer HTTP to HTTPS, returns
   `403` for non-ACME staging/admin HTTP roots, and forwards only expected
   proxy headers.
@@ -276,6 +278,8 @@ The reviewed production bootstrap installs and enables the production edge from 
 Verification:
 
 ```bash
+sudo sshd -t
+sudo ufw status numbered verbose
 sudo test -r /etc/letsencrypt/live/sitbank.duckdns.org/fullchain.pem
 sudo /usr/local/sbin/verify-certbot-host-state production
 sudo nginx -t
@@ -293,6 +297,12 @@ curl -I https://admin-sitbank.duckdns.org/login
 Expected: local customer and admin readiness succeeds, external `/health/ready`
 returns `403`, admin `/` returns `403`, and admin application routes return
 `403` or are otherwise denied by Nginx.
+
+GitHub-hosted runners do not have stable source IPs. The normal
+GitHub-hosted SSH deployment is acceptable only when the runner source is
+allowlisted by a reviewed path such as a self-hosted runner, bastion, VPN
+egress, or a time-boxed operator-approved maintenance window. Do not leave
+global SSH open to support deployment.
 
 Staging admin must follow the same boundary pattern as production. Do not expose
 admin routes publicly. The staging admin service must bind only to localhost

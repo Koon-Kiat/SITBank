@@ -71,6 +71,21 @@ The detailed onboarding, offboarding, emergency lockout, rollback, and live
 operator verification steps are in
 `docs/security/admin-and-staging-zero-trust-access.md`.
 
+## EC2 SSH And Deployment Access Operations
+
+Manage OpenSSH, UFW, EC2 security-group ingress, and deployment-source
+allowlisting with `docs/security/ec2-ssh-and-deployment-access.md`. That
+runbook requires the OpenSSH drop-in at
+`/etc/ssh/sshd_config.d/99-sitbank-hardening.conf`, keeps root SSH disabled,
+requires public-key authentication, restricts `AllowUsers`, and reduces
+`MaxAuthTries` to `4`.
+
+Do not close the current operator session until `sudo sshd -t`,
+`sudo systemctl reload ssh`, and a fresh SSH login for the allowed operator and
+`sitbank-deploy` accounts have succeeded. Remove `22/tcp ALLOW IN Anywhere`
+and `22/tcp (v6) ALLOW IN Anywhere (v6)` only after a trusted IP, VPN, bastion,
+self-hosted runner, or AWS Systems Manager path has been tested.
+
 ## Trivy Exception
 
 The temporary `.trivyignore` exception covers only `CVE-2026-42496` and `CVE-2026-8376` inherited from the official python:3.12 slim-trixie / Debian Trixie base image.
