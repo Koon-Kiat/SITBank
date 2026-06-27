@@ -83,6 +83,49 @@ This exception is temporary with a review/remove-by date: 2026-06-26. The full C
 
 Application rollback restores the previous signed image digest and runtime bundle. Database rollback requires an explicit backup/restore decision because Alembic migrations must remain backward-compatible and are not automatically reversed.
 
+## Encrypted Backup Operations
+
+Create database backups with the host-managed encrypted helper:
+
+```bash
+sudo /usr/local/sbin/sitbank-backup-encrypted --environment staging
+sudo /usr/local/sbin/sitbank-backup-encrypted --environment production
+```
+
+The helper runs `pg_dump --format=custom`, keeps plaintext only in a
+root-owned temporary directory, encrypts with age recipients from
+`/etc/sitbank-staging/backup-age-recipients.txt` or
+`/etc/sitbank/backup-age-recipients.txt`, writes root-owned mode `0600`
+`.pgdump.age` files under `/var/backups/sitbank-staging` or
+`/var/backups/sitbank`, and removes plaintext temporary files on success and
+failure. The recipients file contains public recipients only. Decryption
+identity files stay host-only, for example under
+`/root/.config/sitbank-backups/`, and must not be copied into the repo,
+application container, tickets, chat, or audit metadata.
+
+Run restore preflight before any restore operation:
+
+```bash
+sudo /usr/local/sbin/sitbank-restore-preflight \
+  --environment staging \
+  --backup-file /var/backups/sitbank-staging/<backup>.pgdump.age \
+  --target-database sitbank_db \
+  --identity-file /root/.config/sitbank-backups/age-identity.txt
+sudo /usr/local/sbin/sitbank-restore-preflight \
+  --environment production \
+  --backup-file /var/backups/sitbank/<backup>.pgdump.age \
+  --target-database sitbank_db \
+  --identity-file /root/.config/sitbank-backups/age-identity.txt \
+  --confirm-production-restore
+```
+
+The preflight is non-destructive. It checks the approved OS user, explicit
+environment, explicit target database, encrypted backup path, backup
+permissions, host-only age identity, and production confirmation. Do not run a
+production restore during normal verification. Do not commit `.dump`, `.sql`,
+`.backup`, `.pgdump`, decrypted dumps, age identity files, GPG private keys, or
+database credentials.
+
 ## Audit Operations
 
 Retain `security_audit_events` for 7 years. The application must not auto-delete

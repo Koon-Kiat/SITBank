@@ -330,7 +330,12 @@ Tests include
 `tests/test_audit_metadata_sanitization.py::test_audit_event_storage_and_logs_do_not_leak_sensitive_metadata`,
 and `tests/test_audit_alerting.py::test_audit_hash_chain_records_verifies_and_exports_anchor`.
 
-Current gap: backup and database dump encryption/access handling is described
-only at an operational level in `SECURITY.md`; the repo does not include an
-automated backup encryption implementation or backup restore access-control
-test.
+Backup and database dump encryption is implemented as host-managed operational
+tooling. `ops/backups/sitbank-backup-encrypted` creates custom-format
+PostgreSQL dumps, keeps plaintext only in a root-owned temporary directory,
+encrypts with an age public-recipient file, and writes mode `0600`
+`.pgdump.age` backups under the host backup directory. `ops/backups/sitbank-restore-preflight`
+checks approved operator context, explicit environment and target database,
+encrypted backup permissions, host-only decryption identity, and production
+confirmation before any restore is attempted. CI-level coverage lives in
+`tests/test_backup_security.py`.

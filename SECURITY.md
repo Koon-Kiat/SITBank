@@ -197,6 +197,55 @@ readiness fails, the wrapper restores the previous digest and non-secret
 configuration. Database rollback follows the documented cutover procedure and
 must not be improvised during an incident.
 
+## Encrypted Database Backups
+
+Database dumps contain customer, authentication, audit, and banking data. Use
+the host-managed encrypted backup helper instead of writing persistent
+plaintext dumps:
+
+```bash
+sudo /usr/local/sbin/sitbank-backup-encrypted --environment staging
+sudo /usr/local/sbin/sitbank-backup-encrypted --environment production
+```
+
+The EC2 bootstrap installs `age`, `sitbank-backup-encrypted`, and
+`sitbank-restore-preflight`. Encrypted backups are written under
+`/var/backups/sitbank-staging` or `/var/backups/sitbank`, owned by
+`root:root`, with mode `0600` and filenames containing the environment,
+database name, and UTC timestamp. The plaintext `pg_dump --format=custom`
+output exists only in a root-owned temporary directory and is removed on
+success or failure.
+
+Configure age public recipients in
+`/etc/sitbank-staging/backup-age-recipients.txt` or
+`/etc/sitbank/backup-age-recipients.txt`, or set
+`SITBANK_BACKUP_AGE_RECIPIENTS_FILE`. These files must contain public
+recipients only. Age private identity files, decrypted dumps, database dumps,
+database URLs with credentials, and real backup archives must never be
+committed to the repository.
+
+Before any restore, run the preflight guard on the host:
+
+```bash
+sudo /usr/local/sbin/sitbank-restore-preflight \
+  --environment staging \
+  --backup-file /var/backups/sitbank-staging/<backup>.pgdump.age \
+  --target-database sitbank_db \
+  --identity-file /root/.config/sitbank-backups/age-identity.txt
+sudo /usr/local/sbin/sitbank-restore-preflight \
+  --environment production \
+  --backup-file /var/backups/sitbank/<backup>.pgdump.age \
+  --target-database sitbank_db \
+  --identity-file /root/.config/sitbank-backups/age-identity.txt \
+  --confirm-production-restore
+```
+
+The preflight is intentionally restore-only gating; it does not decrypt or
+restore data. It verifies the approved OS user, explicit environment, encrypted
+backup file, non-world-readable backup permissions, host-only age identity,
+explicit target database, and production confirmation. Backup and restore are
+not exposed by the customer Flask app or the admin Flask app.
+
 ## Production Edge and WAF Checklist
 
 Before exposing production, the administrator must verify the edge/network

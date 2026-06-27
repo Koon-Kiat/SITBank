@@ -2072,6 +2072,8 @@ def test_live_tls_scan_workflow_collects_evidence_without_running_on_pull_reques
 
 def test_only_sitbank_container_deployment_units_are_active():
     assert not Path("ops/deploy/bootstrap-ec2").exists()
+    assert Path("ops/backups/sitbank-backup-encrypted").exists()
+    assert Path("ops/backups/sitbank-restore-preflight").exists()
     assert Path("ops/deploy/sitbank-container-bootstrap").exists()
     assert Path("ops/deploy/sitbank-container-deploy").exists()
     assert Path("ops/deploy/sitbank-container-runtime").exists()
@@ -2098,6 +2100,8 @@ def test_linux_deployment_artifacts_are_forced_to_lf_and_reject_crlf():
         Path("ops/deploy/sitbank-container-runtime"),
         Path("ops/deploy/sitbank-database-cutover"),
         Path("ops/deploy/verify-certbot-host-state"),
+        Path("ops/backups/sitbank-backup-encrypted"),
+        Path("ops/backups/sitbank-restore-preflight"),
         Path("ops/nginx-proxy-headers.conf"),
         Path("ops/nginx/sitbank-default.conf"),
         Path("ops/nginx/sitbank-production.conf"),
@@ -2119,6 +2123,7 @@ def test_linux_deployment_artifacts_are_forced_to_lf_and_reject_crlf():
     assert "ops/deploy/bootstrap-container-ec2 text eol=lf" in attributes
     assert "ops/deploy/sitbank-container-bootstrap text eol=lf" in attributes
     assert "ops/deploy/verify-certbot-host-state text eol=lf" in attributes
+    assert "ops/backups/* text eol=lf" in attributes
     assert "ops/sudoers/* text eol=lf" in attributes
     for path in linux_files:
         assert b"\r\n" not in path.read_bytes(), f"{path} must use LF line endings"

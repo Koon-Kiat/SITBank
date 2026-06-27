@@ -94,6 +94,8 @@ linux_runtime_files=(
     "${repo_root}/ops/deploy/sitbank-container-runtime"
     "${repo_root}/ops/deploy/sitbank-database-cutover"
     "${repo_root}/ops/deploy/verify-certbot-host-state"
+    "${repo_root}/ops/backups/sitbank-backup-encrypted"
+    "${repo_root}/ops/backups/sitbank-restore-preflight"
     "${repo_root}/ops/nginx/sitbank-default.conf"
     "${repo_root}/ops/nginx/sitbank-tls-policy.conf"
     "${repo_root}/ops/sudoers/sitbank-container-deploy"
@@ -128,7 +130,7 @@ if [[ "$(dpkg --print-architecture)" != "amd64" ]]; then
 fi
 
 apt-get update
-apt-get install -y ca-certificates curl gnupg
+apt-get install -y age ca-certificates curl gnupg
 if ! command -v docker >/dev/null 2>&1 \
     || ! docker compose version >/dev/null 2>&1; then
     install -m 0755 -d /etc/apt/keyrings
@@ -230,6 +232,12 @@ install -o root -g root -m 0755 \
 install -o root -g root -m 0755 \
     "${repo_root}/ops/deploy/verify-certbot-host-state" \
     /usr/local/sbin/verify-certbot-host-state
+install -o root -g root -m 0755 \
+    "${repo_root}/ops/backups/sitbank-backup-encrypted" \
+    /usr/local/sbin/sitbank-backup-encrypted
+install -o root -g root -m 0755 \
+    "${repo_root}/ops/backups/sitbank-restore-preflight" \
+    /usr/local/sbin/sitbank-restore-preflight
 if [[ "${target}" == "staging" ]]; then
     install -d -o root -g root -m 0755 "${config_root}/postgres"
     install -o root -g root -m 0755 \

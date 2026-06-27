@@ -159,7 +159,7 @@ Actions.
 | OWASP risk | SITBank controls | Gaps or notes |
 | --- | --- | --- |
 | A01 Broken Access Control | Customer and admin route inventories, decorators/hooks, high-risk step-up, ownership filters, admin/customer runtime separation | Payee IDOR has code-level owner filters but no dedicated IDOR test |
-| A02 Cryptographic Failures | HTTPS, HSTS, AES-256-GCM MFA envelopes, HMAC session/audit integrity, PBKDF2 password storage, Docker secrets validation | No explicit Nginx cipher list; backup encryption is operationally documented but not automated in repo |
+| A02 Cryptographic Failures | HTTPS, HSTS, AES-256-GCM MFA envelopes, HMAC session/audit integrity, PBKDF2 password storage, encrypted database backup tooling, Docker secrets validation | No explicit Nginx cipher list |
 | A03 Injection | SQLAlchemy query construction, WTForms/Marshmallow validation, payload allowlists, no arbitrary URL-like mass assignment | Continue adding focused injection tests as new query surfaces are added |
 | A04 Insecure Design | MFA onboarding gates, password-reset token exchange, manual recovery pending-only public request, isolated admin manual-recovery completion, staff invite workflow, frozen-account behavior | Continue monitoring manual recovery operations and separation-of-duties assumptions |
 | A05 Security Misconfiguration | Production config validation, Nginx default host rejection, Docker hardening, CSRF/Talisman defaults, deployment tests | Live host TLS cipher and certificate-renewal state must be verified outside the repo |
@@ -177,4 +177,3 @@ Actions.
 | No independent absolute lifetime for fully authenticated sessions | Long active sessions can continue as sliding sessions | Add a created-at maximum age check for authenticated sessions |
 | No explicit Nginx cipher list | Cipher selection depends on host defaults | Pin approved TLS 1.2 cipher suites and verify with a live TLS scan |
 | No generated admin route inventory | Admin route authorization coverage is less systematic than customer routes | Add admin-app inventory tests with auth, CSRF, rate-limit, and step-up decisions |
-| Backup encryption not automated in repo | Database dump protection is operational rather than testable here | Add backup encryption scripts and restore/access tests if backups are in assessment scope |

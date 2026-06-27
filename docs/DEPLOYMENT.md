@@ -62,6 +62,20 @@ and set `PASSWORD_RESET_EMAIL_BACKEND=smtp`, `PASSWORD_RESET_EMAIL_FROM`,
 the container runtime environment. Production rejects console reset email,
 non-HTTPS reset base URLs, and plaintext SMTP delivery.
 
+Install the host-managed backup encryption recipients file before running
+database cutover or scheduled backups:
+
+- production: `/etc/sitbank/backup-age-recipients.txt`
+- staging: `/etc/sitbank-staging/backup-age-recipients.txt`
+
+The recipients file contains age public recipients only. Decryption identities
+remain outside the repository and outside application containers. Bootstrap
+installs `age`, `/usr/local/sbin/sitbank-backup-encrypted`, and
+`/usr/local/sbin/sitbank-restore-preflight`; encrypted backups are stored under
+`/var/backups/sitbank` or `/var/backups/sitbank-staging` as root-owned mode
+`0600` `.pgdump.age` files. Restore checks are explicit operator preflights,
+not Flask routes or deployment defaults.
+
 Deploy the signed image through the restricted wrapper so it runs
 `production-check`, `db upgrade`, `apply-runtime-db-privileges`,
 `verify-runtime-db-privileges`, and readiness checks before declaring success.
