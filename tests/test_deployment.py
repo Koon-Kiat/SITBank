@@ -2030,7 +2030,7 @@ def test_live_tls_scan_workflow_collects_evidence_without_running_on_pull_reques
 
     inputs = triggers["workflow_dispatch"]["inputs"]
     assert inputs["scan_scope"]["options"] == ["all", "staging", "production"]
-    assert inputs["staging_host"]["default"] == "staging-sitbank.pp.ua"
+    assert inputs["staging_host"]["default"] == "staging-sitbank.duckdns.org"
     assert inputs["production_host"]["default"] == "sitbank.duckdns.org"
     assert inputs["admin_host"]["default"] == "admin-sitbank.duckdns.org"
 
@@ -2042,6 +2042,7 @@ def test_live_tls_scan_workflow_collects_evidence_without_running_on_pull_reques
         "type": "string",
     }
     assert call_inputs["staging_host"]["required"] is False
+    assert call_inputs["staging_host"]["default"] == "staging-sitbank.duckdns.org"
     assert call_inputs["production_host"]["required"] is False
     assert call_inputs["admin_host"]["required"] is False
 
@@ -2137,9 +2138,12 @@ def test_live_tls_scan_workflow_collects_evidence_without_running_on_pull_reques
         encoding="utf-8"
     )
     for docs in (deployment_docs, operations_docs, crypto_docs):
+        normalized_docs = re.sub(r"\s+", " ", docs)
         assert "live tls scan evidence" in docs.lower()
         assert "staging-sitbank.pp.ua" in docs
         assert "staging-sitbank.duckdns.org" in docs
+        assert "staging_host" in docs
+        assert "after PR merge, staging bootstrap, Certbot certificate issuance, and Cloudflare Access/AOP verification" in normalized_docs
         assert "sitbank.duckdns.org" in docs
         assert "admin-sitbank.duckdns.org" in docs
         assert "SSL Labs" in docs

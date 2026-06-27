@@ -198,9 +198,18 @@ manual workflow inputs when an approved endpoint changes:
 
 | Environment | Workflow input | Default target | Artifact |
 | --- | --- | --- | --- |
-| Staging customer | `staging_host` | `https://staging-sitbank.pp.ua` | `tls-scan-staging-sitbank` |
+| Staging customer | `staging_host` | `https://staging-sitbank.duckdns.org` | `tls-scan-staging-sitbank` |
 | Production customer | `production_host` | `https://sitbank.duckdns.org` | `tls-scan-prod-sitbank` |
 | Production admin | `admin_host` | `https://admin-sitbank.duckdns.org` | `tls-scan-admin-sitbank` |
+
+During the `staging-sitbank.pp.ua` transition, the scheduled and deployment
+gate staging scan stays on the currently deployed
+`staging-sitbank.duckdns.org` endpoint until the EC2 origin has been updated.
+`staging-sitbank.pp.ua` live TLS evidence must be run manually with
+`staging_host=staging-sitbank.pp.ua` after PR merge, staging bootstrap,
+Certbot certificate issuance, and Cloudflare Access/AOP verification. Do not
+use Cloudflare Flexible SSL, disable TLS verification, turn off the Cloudflare
+proxy, or bypass Authenticated Origin Pulls to make the scan pass.
 
 Each target preserves the scanner's original `testssl.raw.json` and produces a
 separate `testssl.json` for policy parsing, plus a text log, HTML report, scan
@@ -233,10 +242,16 @@ application credentials):
 ```bash
 testssl.sh --warnings batch --color 0 --jsonfile testssl.json \
   --logfile testssl.log --htmlfile testssl.html \
-  https://staging-sitbank.pp.ua
+  https://staging-sitbank.duckdns.org
 testssl.sh --warnings batch --color 0 https://sitbank.duckdns.org
 testssl.sh --warnings batch --color 0 https://admin-sitbank.duckdns.org
 ```
+
+After the staging bootstrap has installed the updated Nginx server block, the
+staging certificate includes `staging-sitbank.pp.ua`, and Cloudflare
+Access/AOP verification succeeds, run the same workflow manually with
+`scan_scope=staging` and `staging_host=staging-sitbank.pp.ua`, then retain the
+`tls-scan-staging-sitbank` artifact as the Cloudflare-managed staging evidence.
 
 SSL Labs remains optional, manual corroborating evidence. Use its public
 report when an independently rendered assessment is useful for a release,
