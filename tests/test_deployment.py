@@ -2059,7 +2059,7 @@ def test_live_tls_scan_workflow_collects_evidence_without_running_on_pull_reques
     assert "cipherlist_(NULL|aNULL|EXPORT|LOW|OBSOLETED|3DES|RC4)" in workflow_text
     assert "cert_expirationStatus" in workflow_text
     assert "testssl_exit_failed=0" in workflow_text
-    assert 'id | test("HSTS|STS"; "i")' in workflow_text
+    assert 'id | test("^(HSTS|STS)$"; "i")' in workflow_text
     assert 'finding | test("too short|not offered|not sent|missing|disabled"; "i")' in workflow_text
     assert "cert_trust" in workflow_text
     assert "cert_chain_of_trust" in workflow_text
