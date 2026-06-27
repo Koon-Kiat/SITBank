@@ -213,12 +213,14 @@ SECURITY_TEST_FILES = frozenset(
         "tests/test_auth_registration_login.py",
         "tests/test_authenticated_portal_ui.py",
         "tests/test_banking_transaction_security.py",
+        "tests/test_ci_local.py",
         "tests/test_config.py",
         "tests/test_deployment.py",
         "tests/test_health_endpoints.py",
         "tests/test_mfa_envelope_crypto.py",
         "tests/test_mfa_lifecycle.py",
         "tests/test_owasp_regressions.py",
+        "tests/test_payee_idor.py",
         "tests/test_payee_management_security.py",
         "tests/test_passwords.py",
         "tests/test_pentest_auth_bypass.py",
@@ -227,10 +229,16 @@ SECURITY_TEST_FILES = frozenset(
         "tests/test_secret_scanner.py",
         "tests/test_session_absolute_lifetime.py",
         "tests/test_session_management.py",
+        "tests/test_session_risk_binding.py",
         "tests/test_webauthn_lifecycle.py",
     }
 )
-DEPLOYMENT_TEST_FILES = frozenset({"tests/test_deployment.py"})
+DEPLOYMENT_TEST_FILES = frozenset(
+    {
+        "tests/test_ci_local.py",
+        "tests/test_deployment.py",
+    }
+)
 SLOW_TEST_FILES = frozenset(
     {
         "tests/test_account_security_actions.py",
@@ -246,6 +254,7 @@ SLOW_TEST_FILES = frozenset(
         "tests/test_secret_scanner.py",
         "tests/test_session_absolute_lifetime.py",
         "tests/test_session_management.py",
+        "tests/test_session_risk_binding.py",
         "tests/test_webauthn_lifecycle.py",
     }
 )

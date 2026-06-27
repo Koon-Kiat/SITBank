@@ -44,7 +44,7 @@ Common local test commands:
 
 The `not slow` and focused marker commands are for local iteration only. Pull requests and protected CI still run the full pytest suite, including security, deployment, database session integrity, CSRF, MFA, compatibility-route regression checks, route inventory, production guard, dependency lock, and secret-scanning checks.
 
-For a fuller local check, run `scripts/ci-local`. It runs the full pytest suite in parallel with timing output, then Python/package/security checks, Git Bash syntax checks, Docker/Compose checks when Docker is available, and contract checks around `ops/runtime_contract.py`.
+For a fuller local check, run `scripts/ci-local`. It runs the full pytest suite in parallel with timing output, then Python/package/security checks, Git Bash syntax checks, Docker/Compose checks when Docker is available, and contract checks around `ops/runtime_contract.py`. A Docker-less result is explicitly partial; use `scripts/ci-local --require-docker` before deployment-related changes to fail closed unless Docker/Compose validation runs.
 
 ## Required Configuration
 
@@ -118,6 +118,7 @@ customer domain.
 
 ## Documentation
 
+- [Contributing](docs/CONTRIBUTING.md)
 - [Deployment](docs/DEPLOYMENT.md)
 - [GitHub Actions](docs/GITHUB_ACTIONS.md)
 - [Operations](docs/OPERATIONS.md)
