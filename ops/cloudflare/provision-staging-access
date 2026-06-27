@@ -68,7 +68,7 @@ def _identifier(name: str) -> str:
 
 
 def _team_domain() -> str:
-    value = _required("STAGING_ACCESS_TEAM_DOMAIN").lower().rstrip("/")
+    value = _required("STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN").lower().rstrip("/")
     if value.startswith("https://"):
         value = value.removeprefix("https://")
     if (
@@ -78,7 +78,8 @@ def _team_domain() -> str:
         or not HOSTNAME_PATTERN.fullmatch(value)
     ):
         raise ConfigurationError(
-            "STAGING_ACCESS_TEAM_DOMAIN must be a *.cloudflareaccess.com hostname"
+            "STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN must be a "
+            "*.cloudflareaccess.com hostname"
         )
     return value
 
@@ -697,13 +698,10 @@ def _write_evidence(path: Path, config: Config, http: HTTPVerification) -> None:
 
 def _print_origin_environment(config: Config, audience: str) -> None:
     print("Origin JWT verification values (not secrets):")
-    print(f"CLOUDFLARE_ACCESS_AUD={audience}")
-    print(f"CLOUDFLARE_ACCESS_ISSUER={config.issuer}")
-    print(f"CLOUDFLARE_ACCESS_JWKS_URL={config.jwks_url}")
-    print(
-        "The current Flask/Nginx runtime does not consume these values yet; "
-        "do not trust Cloudflare identity headers until JWT validation is implemented."
-    )
+    print(f"STAGING_CLOUDFLARE_ACCESS_AUD={audience}")
+    print(f"STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN={config.team_domain}")
+    print(f"Cloudflare Access issuer: {config.issuer}")
+    print(f"Cloudflare Access JWKS URL: {config.jwks_url}")
 
 
 def plan(config: Config) -> None:
@@ -719,7 +717,7 @@ def plan(config: Config) -> None:
         "(origin value redacted)"
     )
     print(f"- use an Access session duration of {config.session_duration}")
-    print("- collect the application audience and team issuer for future JWT validation")
+    print("- collect the application audience and team domain for origin JWT validation")
     print("- preserve the repository-managed Authenticated Origin Pull gate")
     print(
         f"Apply requires --confirm {APPLY_CONFIRMATION} and an API token; "

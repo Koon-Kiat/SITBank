@@ -67,7 +67,7 @@ def test_hybrid_cloudflare_staging_and_tailscale_admin_design_is_documented():
         "Flask admin login and TOTP remain mandatory",
         "onboarding, offboarding, emergency lockout, rollback",
         "local readiness succeeds through loopback",
-        "direct origin access",
+        "direct Nginx origin access",
         "Cloudflare-managed zone/hostname or Cloudflare Tunnel",
         "Cloudflare Access and Tailscale decide whether a request may reach",
         "retired DuckDNS staging hostname is no longer",
@@ -87,6 +87,9 @@ def test_hybrid_cloudflare_staging_and_tailscale_admin_design_is_documented():
 def test_staging_nginx_blocks_direct_origin_bypass_but_keeps_local_health():
     default_nginx = Path("ops/nginx/sitbank-default.conf").read_text(encoding="utf-8")
     staging_nginx = Path("ops/nginx/sitbank-staging.conf").read_text(encoding="utf-8")
+    access_headers = Path(
+        "ops/nginx/sitbank-cloudflare-access-headers.conf"
+    ).read_text(encoding="utf-8")
     bootstrap = Path("ops/deploy/bootstrap-container-ec2").read_text(encoding="utf-8")
 
     assert "listen 80 default_server;" in default_nginx
@@ -126,6 +129,11 @@ def test_staging_nginx_blocks_direct_origin_bypass_but_keeps_local_health():
             < body.index("auth_basic \"SITBank staging\";")
             for body in protected_bodies
         )
+        assert any(
+            "include /etc/nginx/snippets/"
+            "sitbank-cloudflare-access-headers.conf;" in body
+            for body in protected_bodies
+        )
 
     ready_bodies = _nginx_location_bodies(staging_nginx, "= /health/ready")
     assert len(ready_bodies) == 1
@@ -135,8 +143,18 @@ def test_staging_nginx_blocks_direct_origin_bypass_but_keeps_local_health():
     assert "allow ::1;" in ready
     assert "deny all;" in ready
     assert "proxy_pass http://127.0.0.1:5001;" in ready
+    assert "sitbank-cloudflare-access-headers.conf" not in ready
+
+    assert (
+        "proxy_set_header Cf-Access-Jwt-Assertion "
+        "$http_cf_access_jwt_assertion;" in access_headers
+    )
+    assert 'proxy_set_header Cf-Access-Authenticated-User-Email "";' in access_headers
+    assert 'proxy_set_header Cf-Access-Client-Secret "";' in access_headers
 
     assert "STAGING_CLOUDFLARE_ORIGIN_PULL_CA_FILE" in bootstrap
+    assert "STAGING_ACCESS_HEADERS_FILE" in bootstrap
+    assert "install_staging_access_headers" in bootstrap
     assert "Missing required Cloudflare Authenticated Origin Pull CA file" in bootstrap
     assert "nginx -t" in bootstrap
 

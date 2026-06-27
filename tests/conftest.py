@@ -75,6 +75,12 @@ os.environ.setdefault("SECURITY_AUDIT_HMAC_KEY", "test-audit-hmac-key-that-is-lo
 
 class TestConfig:
     TESTING = True
+    APP_ENV = "testing"
+    DEPLOYMENT_TARGET = "testing"
+    STAGING_CLOUDFLARE_ACCESS_JWT_REQUIRED = False
+    STAGING_CLOUDFLARE_ACCESS_AUD = ""
+    STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN = ""
+    STAGING_CLOUDFLARE_ACCESS_JWKS_CACHE_TTL_SECONDS = 300
     SECRET_KEY = os.environ["SECRET_KEY"]
     WTF_CSRF_SECRET_KEY = os.environ["WTF_CSRF_SECRET_KEY"]
     SESSION_HMAC_ACTIVE_KEY_ID = TEST_SESSION_HMAC_ACTIVE_KEY_ID
@@ -214,6 +220,7 @@ SECURITY_TEST_FILES = frozenset(
         "tests/test_authenticated_portal_ui.py",
         "tests/test_banking_transaction_security.py",
         "tests/test_ci_local.py",
+        "tests/test_cloudflare_access_staging.py",
         "tests/test_config.py",
         "tests/test_deployment.py",
         "tests/test_health_endpoints.py",

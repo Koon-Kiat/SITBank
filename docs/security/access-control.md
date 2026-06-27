@@ -203,7 +203,10 @@ continues to reject unknown hostnames.
 provider-side self-hosted application, explicit email/group Allow policy,
 application audience, and proxied staging DNS record. Its live verification
 also checks the unauthenticated Access challenge and direct-origin denial.
-Cloudflare Access remains an outer network/identity boundary: Flask login, MFA,
-CSRF, ownership checks, rate limiting, audit logging, and Basic Auth still
-apply. Cloudflare identity headers are not authorization input unless the
-`Cf-Access-Jwt-Assertion` signature, issuer, and audience are validated.
+The staging customer Flask app also validates the
+`Cf-Access-Jwt-Assertion` RS256 signature, issuer, audience, expiry, and
+optional not-before time before routing the request. Cloudflare Access remains
+an outer network/identity boundary: Flask login, MFA, CSRF, ownership checks,
+rate limiting, audit logging, and Basic Auth still apply. Nginx strips
+Cloudflare email/service-token headers, and verified token identity remains
+metadata rather than SITBank authorization input.

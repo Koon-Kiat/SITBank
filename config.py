@@ -799,6 +799,25 @@ def _required_keyring(name: str, *, active_key_id: str, active_label: str) -> di
 
 class Config:
     APP_ENV = APP_ENV
+    DEPLOYMENT_TARGET = os.getenv("DEPLOYMENT_TARGET", "development").strip().lower()
+    STAGING_CLOUDFLARE_ACCESS_JWT_REQUIRED = _optional_bool(
+        "STAGING_CLOUDFLARE_ACCESS_JWT_REQUIRED",
+        default=False,
+    )
+    STAGING_CLOUDFLARE_ACCESS_AUD = os.getenv(
+        "STAGING_CLOUDFLARE_ACCESS_AUD",
+        "",
+    ).strip()
+    STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN = os.getenv(
+        "STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN",
+        "",
+    ).strip()
+    STAGING_CLOUDFLARE_ACCESS_JWKS_CACHE_TTL_SECONDS = _int_env(
+        "STAGING_CLOUDFLARE_ACCESS_JWKS_CACHE_TTL_SECONDS",
+        default="300",
+        minimum=60,
+        maximum=3600,
+    )
     SECRET_KEY = None
     WTF_CSRF_SECRET_KEY = None
     SESSION_HMAC_ACTIVE_KEY_ID = None

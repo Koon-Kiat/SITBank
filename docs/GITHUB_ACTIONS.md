@@ -61,6 +61,16 @@ For staging admin, also set:
 
 - `STAGING_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID`
 
+For the staging customer Access assertion gate, also set:
+
+- `STAGING_CLOUDFLARE_ACCESS_AUD`
+- `STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN`
+
+`ops/cloudflare/provision-staging-access --apply` prints both values after it
+creates or reconciles the Access application. They are identifiers rather than
+secrets, but keep them in the protected `staging` environment so deployment
+and provider configuration change together.
+
 `<PREFIX>_MFA_KEK_ACTIVE_ID` must match a key identifier in the root-managed `/etc/sitbank*/secrets/mfa_kek_keys_json` file on EC2. Do not put `MFA_KEK_KEYS_JSON` in GitHub Actions; the KEK keyring is a long-lived secret and remains host-managed.
 `<PREFIX>_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID` must match a key identifier in
 `/etc/sitbank*/secrets/admin_session_hmac_keys_json`. Do not put admin Flask,

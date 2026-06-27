@@ -20,6 +20,7 @@ from app.models import (
 )
 from app.security.alerts import validate_security_alert_config
 from app.security.audit import validate_audit_integrity_config
+from app.security.cloudflare_access import validate_cloudflare_access_config
 from app.security.passwords import (
     validate_common_password_dictionary,
     validate_password_hash_config,
@@ -313,6 +314,13 @@ def _validate_edge_policy(app: Flask, result: ProductionReadinessResult) -> None
         result.failures.append(
             "Flask-Limiter storage must remain non-authoritative; DB-backed auth counters enforce security limits"
         )
+    try:
+        validate_cloudflare_access_config(
+            app.config,
+            app_mode=str(app.config.get("APP_MODE") or ""),
+        )
+    except Exception as exc:
+        _failure(result, "Cloudflare Access assertion configuration check", exc)
 
 
 def _validate_lifetime_policy(app: Flask, result: ProductionReadinessResult) -> None:

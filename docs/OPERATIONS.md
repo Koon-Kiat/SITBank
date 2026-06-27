@@ -54,6 +54,8 @@ Routine verification:
 
 ```bash
 python ops/cloudflare/provision-staging-access --verify
+curl -I http://127.0.0.1:5001/
+curl --fail http://127.0.0.1:5001/health/ready
 sudo test -r /etc/nginx/cloudflare-authenticated-origin-pull-ca.pem
 sudo nginx -t
 curl --fail --resolve staging-sitbank.pp.ua:443:127.0.0.1 \
@@ -64,7 +66,8 @@ sudo tailscale serve status
 curl -I https://sitbank-ec2.tailca101b.ts.net/
 ```
 
-Expected: local staging readiness succeeds, direct origin access to staging
+Expected: the loopback Flask root returns `403` without an Access assertion,
+local staging readiness succeeds without one, direct Nginx origin access
 returns `403` without Cloudflare's origin-pull client certificate, and the
 private admin URL is reachable only from an approved tailnet path. Tailscale
 Funnel must stay disabled for SITBank admin.
@@ -78,6 +81,8 @@ replacement, updating the environment secret, and revoking the old token.
 The detailed onboarding, offboarding, emergency lockout, rollback, and live
 operator verification steps are in
 `docs/security/admin-and-staging-zero-trust-access.md`.
+Provider automation and origin assertion details are in
+`docs/security/cloudflare-staging-access.md`.
 
 ## EC2 SSH And Deployment Access Operations
 

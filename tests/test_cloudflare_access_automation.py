@@ -13,7 +13,8 @@ import yaml
 
 
 SCRIPT = Path("ops/cloudflare/provision-staging-access")
-README = Path("ops/cloudflare/README.md")
+README = Path("docs/security/cloudflare-staging-access.md")
+LOCAL_README = Path("ops/cloudflare/README.md")
 WORKFLOW = Path(".github/workflows/cloudflare-access-verify.yml")
 EXPECTED_HOST = "staging-sitbank.pp.ua"
 
@@ -27,7 +28,7 @@ def _base_environment() -> dict[str, str]:
         {
             "CLOUDFLARE_ACCOUNT_ID": "0123456789abcdef0123456789abcdef",
             "CLOUDFLARE_ZONE_ID": "abcdef0123456789abcdef0123456789",
-            "STAGING_ACCESS_TEAM_DOMAIN": "sitbank.cloudflareaccess.com",
+            "STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN": "sitbank.cloudflareaccess.com",
             "STAGING_ACCESS_ALLOWED_EMAILS": "operator@example.com",
             "STAGING_DNS_ORIGIN": "198.51.100.10",
         }
@@ -62,6 +63,7 @@ def _all_security_docs() -> str:
 def test_cloudflare_automation_files_and_modes_exist():
     assert SCRIPT.is_file()
     assert README.is_file()
+    assert LOCAL_README.is_file()
     assert WORKFLOW.is_file()
 
     script = SCRIPT.read_text(encoding="utf-8")
@@ -221,18 +223,18 @@ def test_documentation_covers_provider_state_secrets_and_jwt_boundary():
         "Access: Apps and Policies Write",
         "DNS Read",
         "DNS Write",
-        "CLOUDFLARE_ACCESS_AUD",
-        "CLOUDFLARE_ACCESS_ISSUER",
-        "CLOUDFLARE_ACCESS_JWKS_URL",
+        "STAGING_CLOUDFLARE_ACCESS_AUD",
+        "STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN",
+        "STAGING_CLOUDFLARE_ACCESS_JWT_REQUIRED",
         "Cf-Access-Jwt-Assertion",
-        "do not trust Cloudflare email/identity",
+        "email/service-token headers",
         "direct origin",
         "default deny",
         "service-token",
         "rotate",
         "revoke",
         "emergency staging lockout",
-        "current runtime does not consume",
+        "validates the",
     ):
         assert required.casefold() in docs.casefold()
 

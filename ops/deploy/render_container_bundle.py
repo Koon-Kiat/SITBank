@@ -101,6 +101,38 @@ def _validate_key_id(name: str, value: str) -> str:
     return value
 
 
+def _cloudflare_access_audience(prefix: str) -> str:
+    name = _prefixed(prefix, "CLOUDFLARE_ACCESS_AUD")
+    value = _value(name)
+    if not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", value):
+        raise RuntimeError(f"{name} is invalid")
+    return value
+
+
+def _cloudflare_access_team_domain(prefix: str) -> str:
+    name = _prefixed(prefix, "CLOUDFLARE_ACCESS_TEAM_DOMAIN")
+    value = _value(name).lower().rstrip(".")
+    if not re.fullmatch(
+        r"(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)"
+        r"+cloudflareaccess\.com",
+        value,
+    ):
+        raise RuntimeError(f"{name} is invalid")
+    return value
+
+
+def _cloudflare_access_cache_ttl(prefix: str) -> str:
+    name = _prefixed(prefix, "CLOUDFLARE_ACCESS_JWKS_CACHE_TTL_SECONDS")
+    value = _value(name, default="300")
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be an integer") from exc
+    if parsed < 60 or parsed > 3600:
+        raise RuntimeError(f"{name} must be between 60 and 3600")
+    return str(parsed)
+
+
 def _validate_keyring(name: str, value: str, *, active_key_id: str) -> str:
     try:
         payload = json.loads(value)
@@ -209,6 +241,7 @@ def build_container_environment(prefix: str = "PROD") -> dict[str, str]:
     environment = {
         "APP_ENV": "production",
         "COMMON_PASSWORDS_PATH": "/run/config/common-passwords.txt",
+        "DEPLOYMENT_TARGET": DEPLOYMENT_PROFILES[prefix]["DEPLOYMENT_TARGET"],
         "MFA_KEK_ACTIVE_ID": _validate_key_id(
             _prefixed(prefix, "MFA_KEK_ACTIVE_ID"),
             _value(_prefixed(prefix, "MFA_KEK_ACTIVE_ID")),
@@ -232,6 +265,17 @@ def build_container_environment(prefix: str = "PROD") -> dict[str, str]:
         environment["ADMIN_RATELIMIT_KEY_PREFIX"] = _value(
             _prefixed(prefix, "ADMIN_RATELIMIT_KEY_PREFIX"),
             default="ospbank:admin:ratelimit:",
+        )
+    else:
+        environment["STAGING_CLOUDFLARE_ACCESS_JWT_REQUIRED"] = "true"
+        environment["STAGING_CLOUDFLARE_ACCESS_AUD"] = (
+            _cloudflare_access_audience(prefix)
+        )
+        environment["STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN"] = (
+            _cloudflare_access_team_domain(prefix)
+        )
+        environment["STAGING_CLOUDFLARE_ACCESS_JWKS_CACHE_TTL_SECONDS"] = (
+            _cloudflare_access_cache_ttl(prefix)
         )
     return environment
 

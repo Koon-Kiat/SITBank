@@ -29,7 +29,7 @@ References:
 | Surface | Host or path | Boundary | Public exposure |
 | --- | --- | --- | --- |
 | Production customer | `https://sitbank.duckdns.org` | Public HTTPS edge, Flask customer login and MFA | Public |
-| Staging customer | `https://staging-sitbank.pp.ua` | Cloudflare Access, Cloudflare Authenticated Origin Pull, staging Basic Auth, Flask login and MFA | Not directly public at the origin |
+| Staging customer | `https://staging-sitbank.pp.ua` | Cloudflare Access, Cloudflare Authenticated Origin Pull, origin JWT validation, staging Basic Auth, Flask login and MFA | Not directly public at the origin |
 | Production admin app | `https://sitbank-ec2.tailca101b.ts.net/` through Tailscale Serve | Tailscale ACLs, approved devices, Flask admin login and TOTP | Private tailnet only |
 | Staging admin app | Approved Tailscale/private operator path to `127.0.0.1:5003` | Tailscale ACLs, approved devices, Flask admin login and TOTP | Private tailnet only |
 
@@ -65,7 +65,8 @@ Provider prerequisites and actions:
    corresponding Write permissions. Restrict it to the one account and zone.
 3. Set the account/zone IDs, team domain, approved email/group allowlist, DNS
    origin, and API token in the operator shell as described in
-   `ops/cloudflare/README.md`. Do not store them in repository `.env` files.
+   `docs/security/cloudflare-staging-access.md`. Do not store them in
+   repository `.env` files.
 4. Review the offline plan, then apply with the exact confirmation phrase:
 
    ```bash
@@ -83,13 +84,15 @@ Provider prerequisites and actions:
    `/etc/nginx/cloudflare-authenticated-origin-pull-ca.pem`. This CA file is
    host-managed and is not committed to the repository.
 
-Apply prints the Access application audience plus expected issuer and JWKS URL.
-These are non-secret inputs for the separate origin JWT-validation work:
-`CLOUDFLARE_ACCESS_AUD`, `CLOUDFLARE_ACCESS_ISSUER`, and
-`CLOUDFLARE_ACCESS_JWKS_URL`. The current runtime does not consume them. Never
-log `Cf-Access-Jwt-Assertion`, and do not trust Cloudflare email/identity
-headers until that JWT is verified against the signature, issuer, and
-application audience.
+Apply prints `STAGING_CLOUDFLARE_ACCESS_AUD` and
+`STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN`. Store them as protected GitHub
+`staging` environment variables. The staging deployment enables the
+repository-controlled Flask verifier, which checks the
+`Cf-Access-Jwt-Assertion` RS256 signature against current Cloudflare JWKS plus
+the exact issuer, audience, expiry, and optional not-before claim. Invalid or
+missing assertions return a generic `403`; the raw assertion is never logged.
+Cloudflare email/identity headers are stripped at Nginx and are not trusted for
+SITBank authorization.
 
 The staging Nginx server blocks accept `staging-sitbank.pp.ua`, then request a
 client certificate with:
@@ -105,6 +108,12 @@ staging app and `/health/live` while preserving loopback readiness checks.
 `/health/ready` remains loopback-only and does not require the Cloudflare
 client certificate so the deployment wrapper can still check local Nginx and
 Flask readiness on the EC2 host.
+
+These controls are independent and both are required: Authenticated Origin
+Pull proves the TLS client is Cloudflare, while Access JWT validation proves
+the request passed the configured staging Access application. A Cloudflare
+edge request without a valid Access assertion therefore still fails closed at
+Flask.
 
 Keep the existing staging Basic Auth file until a separate reviewed change
 removes it. Cloudflare Access is the identity-aware boundary; Basic Auth is a
@@ -213,11 +222,14 @@ curl --fail --resolve staging-sitbank.pp.ua:443:127.0.0.1 \
   https://staging-sitbank.pp.ua/health/ready
 curl -I --resolve staging-sitbank.pp.ua:443:<EC2_PUBLIC_IP> \
   https://staging-sitbank.pp.ua/
+curl -I http://127.0.0.1:5001/
+curl --fail http://127.0.0.1:5001/health/ready
 ```
 
-Expected: local readiness succeeds through loopback, and direct origin access
-to `/` returns `403` without Cloudflare's authenticated origin-pull client
-certificate.
+Expected: local readiness succeeds through loopback, a direct request to the
+Flask staging root returns `403` without an Access assertion, and direct Nginx
+origin access to `/` returns `403` without Cloudflare's authenticated
+origin-pull client certificate.
 
 The automated verification proves that the Access application and narrow
 policy match, DNS is proxied, the audience exists, unauthenticated edge traffic
