@@ -10,9 +10,10 @@ Only Flask/Gunicorn runs in the SITBank container. Nginx, TLS, PostgreSQL, and b
 - Staging Cloudflare Access host: `staging-sitbank.pp.ua`
 - Production customer access: public HTTPS
 - Staging access boundary: Cloudflare Access plus Authenticated Origin Pull
+  plus origin-side Access JWT validation
 - Admin access boundary: Tailscale/private operator access only
-- Production image form: `ghcr.io/hetp88/sitbank@sha256:<digest>`
-- Repository identity: `hetp88/SITBank`
+- Production image form: `ghcr.io/wenjiangg/sitbank@sha256:<digest>`
+- Repository identity: `WenJiangg/SITBank`
 - Production config root: `/etc/sitbank`
 - Production compose dir: `/opt/sitbank`
 - Production service: `sitbank-container.service`
@@ -408,6 +409,30 @@ Authenticated Origin Pulls to prevent direct EC2-origin bypass. The staging
 Nginx app paths require a verified Cloudflare origin-pull client certificate
 before proxying to Flask. The production customer hostname remains public.
 
+Provider-side desired state is repository-managed by
+`ops/cloudflare/provision-staging-access` using the Cloudflare-managed hostname
+model. From an operator shell with the variables documented in
+`docs/security/cloudflare-staging-access.md`, review and apply it before
+staging bootstrap:
+
+```bash
+python ops/cloudflare/provision-staging-access --plan
+python ops/cloudflare/provision-staging-access --apply \
+  --confirm APPLY-STAGING-ACCESS
+```
+
+Plan is offline and does not require a token. Apply needs a token limited to
+Account `Access: Apps and Policies Write` and Zone `DNS Write`; it refuses a
+broad or unmanaged Allow policy. The Access IdP, Authenticated Origin Pull
+enablement/client certificate, origin CA file, AWS ingress rules, and operator
+membership remain deliberate operator controls.
+
+Copy the apply output into protected GitHub `staging` environment variables
+`STAGING_CLOUDFLARE_ACCESS_AUD` and
+`STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN`. Staging deployment refuses to render
+without both. Its signed runtime bundle enables
+`STAGING_CLOUDFLARE_ACCESS_JWT_REQUIRED=true`; production does not.
+
 Create a staging Basic Auth file before running the staging bootstrap. This is
 a secondary staging control and must not replace Cloudflare Access:
 
@@ -427,6 +452,30 @@ sudo install -o root -g root -m 0644 \
   cloudflare-authenticated-origin-pull-ca.pem \
   /etc/nginx/cloudflare-authenticated-origin-pull-ca.pem
 ```
+
+The staging bootstrap installs
+`/usr/local/sbin/verify-cloudflare-origin-pull-ca` and the reviewed fingerprint
+allowlist at
+`/etc/sitbank-staging/cloudflare-origin-pull-ca-allowlist.json`. Before it
+installs or enables the staging Nginx site, it requires the CA path to be a
+root-owned regular non-symlink, permits only `root` or `www-data` as the group
+with an approved non-writable mode, parses exactly one currently valid CA with
+OpenSSL, and matches its SHA-256 fingerprint, subject, and issuer to the
+allowlist. The bootstrap does not download a CA or call Cloudflare.
+
+The repository allowlist initially approves only Cloudflare's global
+Authenticated Origin Pull CA. A change to a zone-level or per-hostname CA must
+first add its independently reviewed fingerprint and exact OpenSSL
+subject/issuer in a separate reviewed commit. For a CA rotation:
+
+1. Obtain the announced replacement from Cloudflare's official documentation
+   in a controlled operator session, outside bootstrap.
+2. Inspect it with `openssl x509 -noout -subject -issuer -fingerprint -sha256
+   -startdate -enddate -ext basicConstraints`.
+3. Independently confirm the source, `CA:TRUE`, validity, subject, issuer, and
+   fingerprint; then add the new entry alongside the old entry.
+4. Deploy the new CA and run the verifier and `nginx -t`. Remove the old entry
+   only after every staging origin has completed the rotation.
 
 Do not store Cloudflare API tokens, tunnel credentials, Access IdP secrets, or
 origin certificate private keys in the repo. If the staging hostname cannot be
@@ -448,11 +497,14 @@ sudo /usr/local/sbin/verify-certbot-host-state staging
 sudo /usr/local/sbin/verify-certbot-host-state --renewal-dry-run staging
 ```
 
-Then run `ops/deploy/bootstrap-container-ec2 staging hetp88/SITBank staging-sitbank.pp.ua`. The bootstrap installs the Nginx proxy header snippet, TLS policy snippet, rate-limit include, and staging Nginx server block for `staging-sitbank.pp.ua`; verifies the staging Basic Auth file and Cloudflare origin-pull CA file; then runs `sudo nginx -t` before `sudo systemctl reload nginx`. This edge setup is separate from application deployment.
+Then run `ops/deploy/bootstrap-container-ec2 staging WenJiangg/SITBank staging-sitbank.pp.ua`. The bootstrap installs the Nginx proxy header snippet, TLS policy snippet, rate-limit include, and staging Nginx server block for `staging-sitbank.pp.ua`; verifies the staging Basic Auth file and the pinned Cloudflare origin-pull CA; then runs `sudo nginx -t` before `sudo systemctl reload nginx`. This edge setup is separate from application deployment.
 
 Staging verification:
 
 ```bash
+python ops/cloudflare/provision-staging-access --verify \
+  --evidence-file cloudflare-access-evidence.local.json
+sudo /usr/local/sbin/verify-cloudflare-origin-pull-ca
 curl -I https://staging-sitbank.pp.ua/
 curl -I -u "$STAGING_BASIC_AUTH_USER:$STAGING_BASIC_AUTH_PASSWORD" \
   https://staging-sitbank.pp.ua/
@@ -462,6 +514,8 @@ curl --fail --resolve staging-sitbank.pp.ua:443:127.0.0.1 \
   https://staging-sitbank.pp.ua/health/ready
 curl -I --resolve staging-sitbank.pp.ua:443:<EC2_PUBLIC_IP> \
   https://staging-sitbank.pp.ua/
+curl -I http://127.0.0.1:5001/
+curl --fail http://127.0.0.1:5001/health/ready
 sudo nginx -T | grep -E 'ssl_protocols|ssl_ciphers|ssl_ecdh_curve|ssl_conf_command|ssl_session_tickets'
 curl -fsSI https://staging-sitbank.pp.ua/ | grep -i '^strict-transport-security:'
 testssl.sh --warnings batch --color 0 https://staging-sitbank.pp.ua
@@ -471,8 +525,21 @@ Expected: unauthenticated browser traffic receives the Cloudflare Access
 challenge at `staging-sitbank.pp.ua` before reaching staging, approved operators can pass Cloudflare
 Access and then reach the normal staging controls, direct EC2-origin access to
 `/` returns `403` without Cloudflare's origin-pull client certificate,
+direct loopback Flask access to `/` returns `403` without an Access assertion,
 external `/health/ready` returns `403`, local app readiness succeeds, and the
 retired DuckDNS staging hostname is no longer an active Nginx target.
+
+The script also verifies the live Access application and approved-operator
+policy, proxied DNS state, application audience, edge challenge, and direct
+origin denial. Flask consumes its printed
+`STAGING_CLOUDFLARE_ACCESS_AUD` and
+`STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN` values to validate the assertion's
+signature, issuer, audience, expiry, and optional not-before time. A
+missing/invalid assertion always receives a generic `403`; raw tokens are not
+logged. Authenticated Origin Pull remains a separate required check.
+The manual `cloudflare-access-verify.yml` workflow performs the same
+non-mutating check in the protected `staging` environment and uploads only
+sanitized evidence.
 
 The complete operator runbook is
 `docs/security/admin-and-staging-zero-trust-access.md`.

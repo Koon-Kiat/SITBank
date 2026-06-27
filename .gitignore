@@ -39,5 +39,6 @@ appendonly.aof*
 *scan-report*
 *.pem
 *.pdf
+cloudflare-access-evidence*.json
 .vscode/
 compose.dev.yml
