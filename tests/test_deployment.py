@@ -522,7 +522,7 @@ def test_deployment_profiles_keep_production_and_staging_isolated(monkeypatch):
     _set_prefixed_deployment_values(
         monkeypatch,
         "STAGING",
-        "staging-sitbank.duckdns.org",
+        "staging-sitbank.pp.ua",
     )
 
     production = build_deployment_environment("PROD")
@@ -554,7 +554,7 @@ def test_deployment_profiles_keep_production_and_staging_isolated(monkeypatch):
     assert staging["POSTGRES_VOLUME_NAME"] == "sitbank-staging-postgres-data"
     assert "REDIS_CONTAINER_NAME" not in staging
     assert "REDIS_VOLUME_NAME" not in staging
-    assert staging["PUBLIC_HOST"] == "staging-sitbank.duckdns.org"
+    assert staging["PUBLIC_HOST"] == "staging-sitbank.pp.ua"
 
     for key in (
         "CONFIG_ROOT",
@@ -2030,7 +2030,7 @@ def test_live_tls_scan_workflow_collects_evidence_without_running_on_pull_reques
 
     inputs = triggers["workflow_dispatch"]["inputs"]
     assert inputs["scan_scope"]["options"] == ["all", "staging", "production"]
-    assert inputs["staging_host"]["default"] == "staging-sitbank.duckdns.org"
+    assert inputs["staging_host"]["default"] == "staging-sitbank.pp.ua"
     assert inputs["production_host"]["default"] == "sitbank.duckdns.org"
     assert inputs["admin_host"]["default"] == "admin-sitbank.duckdns.org"
 
@@ -2042,7 +2042,7 @@ def test_live_tls_scan_workflow_collects_evidence_without_running_on_pull_reques
         "type": "string",
     }
     assert call_inputs["staging_host"]["required"] is False
-    assert call_inputs["staging_host"]["default"] == "staging-sitbank.duckdns.org"
+    assert call_inputs["staging_host"]["default"] == "staging-sitbank.pp.ua"
     assert call_inputs["production_host"]["required"] is False
     assert call_inputs["admin_host"]["required"] is False
 
@@ -2104,6 +2104,7 @@ def test_live_tls_scan_workflow_collects_evidence_without_running_on_pull_reques
     assert 'if [[ "${scan_failed}" -ne 0 ]]' in workflow_text
     assert '.[]\n              | select(type == "object")\n              | select(' in workflow_text
     assert "secrets." not in workflow_text
+    assert "sitbank-ec2.tailca101b.ts.net" not in workflow_text
 
     upload_steps = [
         step for step in scan["steps"]
@@ -2138,16 +2139,18 @@ def test_live_tls_scan_workflow_collects_evidence_without_running_on_pull_reques
         encoding="utf-8"
     )
     for docs in (deployment_docs, operations_docs, crypto_docs):
-        normalized_docs = re.sub(r"\s+", " ", docs)
         assert "live tls scan evidence" in docs.lower()
         assert "staging-sitbank.pp.ua" in docs
-        assert "staging-sitbank.duckdns.org" in docs
-        assert "staging_host" in docs
-        assert "after PR merge, staging bootstrap, Certbot certificate issuance, and Cloudflare Access/AOP verification" in normalized_docs
         assert "sitbank.duckdns.org" in docs
         assert "admin-sitbank.duckdns.org" in docs
         assert "SSL Labs" in docs
         assert re.search(r"HIGH,\s+CRITICAL,\s+or FATAL", docs)
+    assert "staging_host" in deployment_docs
+    assert "staging_host" in operations_docs
+    assert "retired `staging-sitbank.duckdns.org`" in deployment_docs
+    assert "retired `staging-sitbank.duckdns.org`" in operations_docs
+    assert "sitbank-ec2.tailca101b.ts.net" in operations_docs
+    assert "private Tailscale admin hostname" in operations_docs
     assert "testssl.sh --warnings batch --color 0" in deployment_docs
     assert "tls-scan-staging-sitbank" in deployment_docs
     assert "tls-scan-prod-sitbank" in deployment_docs
@@ -2234,7 +2237,7 @@ def test_certbot_host_state_verifier_enforces_host_managed_tls():
     assert 'LETSENCRYPT_ROOT="/etc/letsencrypt"' in verifier
     assert 'PRODUCTION_PUBLIC_HOST="sitbank.duckdns.org"' in verifier
     assert 'PRODUCTION_ADMIN_PUBLIC_HOST="admin-sitbank.duckdns.org"' in verifier
-    assert 'STAGING_PUBLIC_HOST="staging-sitbank.duckdns.org"' in verifier
+    assert 'STAGING_PUBLIC_HOST="staging-sitbank.pp.ua"' in verifier
     assert 'readlink -f -- "${key_path}"' in verifier
     assert "stat -c '%U'" in verifier
     assert "stat -c '%G'" in verifier
@@ -2269,7 +2272,7 @@ def test_certbot_host_state_verifier_enforces_host_managed_tls():
     expected_key_paths = {
         "/etc/letsencrypt/live/sitbank.duckdns.org/privkey.pem",
         "/etc/letsencrypt/live/admin-sitbank.duckdns.org/privkey.pem",
-        "/etc/letsencrypt/live/staging-sitbank.duckdns.org/privkey.pem",
+        "/etc/letsencrypt/live/staging-sitbank.pp.ua/privkey.pem",
     }
     configured_key_paths = set(
         re.findall(
@@ -2382,7 +2385,8 @@ def test_nginx_default_server_is_shared_for_same_host_production_and_staging():
     assert "listen 80 default_server;" not in staging_nginx
     assert "server_name sitbank.duckdns.org;" in combined
     assert "server_name admin-sitbank.duckdns.org;" in combined
-    assert "server_name staging-sitbank.duckdns.org staging-sitbank.pp.ua;" in combined
+    assert "server_name staging-sitbank.pp.ua;" in combined
+    assert "server_name staging-sitbank.duckdns.org" not in combined
 
 
 def test_nginx_tls_policy_pins_strong_suites_curves_and_session_hardening():
@@ -2440,7 +2444,7 @@ def test_nginx_tls_policy_pins_strong_suites_curves_and_session_hardening():
             "admin-sitbank.duckdns.org",
             "shared:sitbank_prod_admin_ssl:10m",
         ),
-        (staging_nginx, "staging-sitbank.duckdns.org", "shared:sitbank_staging_ssl:10m"),
+        (staging_nginx, "staging-sitbank.pp.ua", "shared:sitbank_staging_ssl:10m"),
     ):
         https_server = _nginx_https_server_prelocation(nginx, server_name=server_name)
         assert policy_include in https_server
@@ -2469,7 +2473,7 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     )
     staging_http_nginx = _nginx_http_server_block(
         nginx,
-        "staging-sitbank.duckdns.org",
+        "staging-sitbank.pp.ua",
     )
 
     assert Path("ops/nginx/sitbank-default.conf").exists()
@@ -2486,13 +2490,10 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     assert "listen 443 ssl http2 default_server;" not in nginx
     assert "server_name _;" not in nginx
     assert "listen 443 ssl http2;" in nginx
-    assert "server_name staging-sitbank.duckdns.org staging-sitbank.pp.ua;" in nginx
-    assert _nginx_server_block(nginx, "staging-sitbank.pp.ua") == _nginx_server_block(
-        nginx,
-        "staging-sitbank.duckdns.org",
-    )
-    assert "ssl_certificate /etc/letsencrypt/live/staging-sitbank.duckdns.org/fullchain.pem;" in nginx
-    assert "ssl_certificate_key /etc/letsencrypt/live/staging-sitbank.duckdns.org/privkey.pem;" in nginx
+    assert "server_name staging-sitbank.pp.ua;" in nginx
+    assert "staging-sitbank.duckdns.org" not in nginx
+    assert "ssl_certificate /etc/letsencrypt/live/staging-sitbank.pp.ua/fullchain.pem;" in nginx
+    assert "ssl_certificate_key /etc/letsencrypt/live/staging-sitbank.pp.ua/privkey.pem;" in nginx
     assert "ssl_client_certificate /etc/nginx/cloudflare-authenticated-origin-pull-ca.pem;" in nginx
     assert "ssl_verify_client optional;" in nginx
     _assert_nginx_owns_duplicate_edge_security_headers(
@@ -2504,7 +2505,7 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     assert "auth_basic_user_file /etc/nginx/.htpasswd-sitbank-staging;" in nginx
     staging_https_prelocation = _nginx_https_server_prelocation(
         nginx,
-        server_name="staging-sitbank.duckdns.org",
+        server_name="staging-sitbank.pp.ua",
     )
     assert 'auth_basic "SITBank staging";' not in staging_https_prelocation
     assert "auth_basic_user_file /etc/nginx/.htpasswd-sitbank-staging;" not in staging_https_prelocation
@@ -2590,12 +2591,13 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     assert "Conflicting Nginx staging site is already enabled" in bootstrap
     assert "Disable the duplicate staging server block" in bootstrap
     assert 'public_host_regex="${public_host//./\\\\.}"' in bootstrap
-    assert 'STAGING_CLOUDFLARE_PUBLIC_HOST="staging-sitbank.pp.ua"' in bootstrap
-    assert 'staging_cloudflare_public_host_regex="${STAGING_CLOUDFLARE_PUBLIC_HOST//./\\\\.}"' in bootstrap
+    assert 'STAGING_PUBLIC_HOST="staging-sitbank.pp.ua"' in bootstrap
+    assert "STAGING_CLOUDFLARE_PUBLIC_HOST" not in bootstrap
+    assert "staging_cloudflare_public_host_regex" not in bootstrap
     assert "grep -RlE \\" in bootstrap
     assert (
         '"^[[:space:]]*server_name[[:space:]].*(^|[[:space:]])'
-        '(${public_host_regex}|${staging_cloudflare_public_host_regex})([[:space:];]|$)" \\'
+        '${public_host_regex}([[:space:];]|$)" \\'
     ) in bootstrap
     assert "Missing required staging Basic Auth file" in bootstrap
     assert "STAGING_CLOUDFLARE_ORIGIN_PULL_CA_FILE=\"/etc/nginx/cloudflare-authenticated-origin-pull-ca.pem\"" in bootstrap
@@ -2942,11 +2944,14 @@ def test_staging_edge_runbook_documents_operator_verification_steps():
         "Do not store Cloudflare API tokens, tunnel credentials, Access IdP secrets, or",
         "Cloudflare-managed zone/hostname or Cloudflare Tunnel",
         "staging-sitbank.pp.ua",
-        "sudo certbot --nginx -d staging-sitbank.duckdns.org",
+        "sudo certbot --nginx -d staging-sitbank.pp.ua",
         "sudo certbot certonly --webroot",
         "sudo certbot renew --dry-run",
         "ops/deploy/bootstrap-container-ec2",
-        "staging-sitbank.duckdns.org",
+        "staging-sitbank.pp.ua",
+        "retired `staging-sitbank.duckdns.org`",
+        "https://sitbank-ec2.tailca101b.ts.net/",
+        "private Tailscale admin hostname",
         "Nginx proxy header snippet",
         "Cloudflare origin-pull CA file",
         "rate-limit include",

@@ -11,8 +11,7 @@ readonly PRODUCTION_ADMIN_PUBLIC_HOST="admin-sitbank.duckdns.org"
 readonly EDGE_DEFAULTS_FILE="/etc/nginx/conf.d/sitbank-default.conf"
 readonly TLS_POLICY_FILE="/etc/nginx/snippets/sitbank-tls-policy.conf"
 readonly PRODUCTION_RATE_LIMITS_FILE="/etc/nginx/conf.d/sitbank-production-rate-limits.conf"
-readonly STAGING_PUBLIC_HOST="staging-sitbank.duckdns.org"
-readonly STAGING_CLOUDFLARE_PUBLIC_HOST="staging-sitbank.pp.ua"
+readonly STAGING_PUBLIC_HOST="staging-sitbank.pp.ua"
 readonly STAGING_BASIC_AUTH_FILE="/etc/nginx/.htpasswd-sitbank-staging"
 readonly STAGING_CLOUDFLARE_ORIGIN_PULL_CA_FILE="/etc/nginx/cloudflare-authenticated-origin-pull-ca.pem"
 readonly STAGING_RATE_LIMITS_FILE="/etc/nginx/conf.d/sitbank-staging-rate-limits.conf"
@@ -42,7 +41,7 @@ if [[ -z "${public_host}" ]]; then
     if [[ "${target}" == "production" ]]; then
         public_host="sitbank.duckdns.org"
     else
-        public_host="staging-sitbank.duckdns.org"
+        public_host="staging-sitbank.pp.ua"
     fi
 fi
 if [[ ! "${public_host}" =~ ^[A-Za-z0-9.-]+$ ]]; then
@@ -51,7 +50,6 @@ if [[ ! "${public_host}" =~ ^[A-Za-z0-9.-]+$ ]]; then
 fi
 public_host_regex="${public_host//./\\.}"
 admin_public_host_regex="${PRODUCTION_ADMIN_PUBLIC_HOST//./\\.}"
-staging_cloudflare_public_host_regex="${STAGING_CLOUDFLARE_PUBLIC_HOST//./\\.}"
 if [[ "${target}" == "production" && "${public_host}" != "${PRODUCTION_PUBLIC_HOST}" ]]; then
     echo "Production PUBLIC_HOST must be ${PRODUCTION_PUBLIC_HOST}" >&2
     exit 2
@@ -453,7 +451,7 @@ if [[ "${target}" == "staging" ]]; then
         fi
     done < <(
         grep -RlE \
-            "^[[:space:]]*server_name[[:space:]].*(^|[[:space:]])(${public_host_regex}|${staging_cloudflare_public_host_regex})([[:space:];]|$)" \
+            "^[[:space:]]*server_name[[:space:]].*(^|[[:space:]])${public_host_regex}([[:space:];]|$)" \
             /etc/nginx/sites-enabled /etc/nginx/conf.d \
             2>/dev/null || true
     )

@@ -18,7 +18,7 @@ proxy headers.
 | --- | --- | --- | --- |
 | Production customer | `sitbank.duckdns.org` | Nginx in `ops/nginx/sitbank-production.conf` | `http://127.0.0.1:5000` |
 | Production admin | `admin-sitbank.duckdns.org` | Nginx in `ops/nginx/sitbank-production.conf` | `http://127.0.0.1:5002` |
-| Staging customer | `staging-sitbank.duckdns.org`, `staging-sitbank.pp.ua` | Nginx in `ops/nginx/sitbank-staging.conf` | `http://127.0.0.1:5001` |
+| Staging customer | `staging-sitbank.pp.ua` | Nginx in `ops/nginx/sitbank-staging.conf` | `http://127.0.0.1:5001` |
 
 The client authenticates the server through the normal browser TLS certificate
 chain for the relevant hostname. The repository expects Certbot/Let's Encrypt
@@ -100,7 +100,7 @@ dispatched after a TLS-relevant infrastructure change, and is called from the
 trusted deployment workflow. It verifies staging immediately after staging
 deploy (and blocks production deployment until that verification passes), then
 verifies both production endpoints after production deploy to complete the
-release evidence. It scans `staging-sitbank.duckdns.org`,
+release evidence. It scans `staging-sitbank.pp.ua`,
 `sitbank.duckdns.org`, and `admin-sitbank.duckdns.org` with a checksum-verified
 `testssl.sh` release. Each per-target artifact retains untouched scanner JSON
 as `testssl.raw.json` and a separate `testssl.json` policy copy, along with the
@@ -111,13 +111,6 @@ Cloudflare Origin Pull CA subject as raw evidence without relaxing invalid-JSON
 or TLS findings generally. The job summary records the UTC time, target,
 workflow run, and result. It intentionally does not run on ordinary pull
 requests because they do not create public TLS endpoints.
-
-`staging-sitbank.pp.ua` is a manual post-rollout TLS evidence target during
-the transition. Run it with the workflow's `staging_host` override only after
-PR merge, staging bootstrap, Certbot certificate issuance, and Cloudflare
-Access/AOP verification. That sequencing avoids requiring the Cloudflare edge
-hostname before the origin TLS certificate and Authenticated Origin Pull path
-are ready.
 
 Verification fails for SSLv2/SSLv3/TLS 1.0/TLS 1.1, weak/NULL/anonymous/export/
 RC4/3DES cipher classes, missing, disabled, or too-short HSTS, expired
@@ -136,8 +129,7 @@ Certbot-managed paths, for example:
 | --- | --- |
 | `sitbank.duckdns.org` | `/etc/letsencrypt/live/sitbank.duckdns.org/privkey.pem` |
 | `admin-sitbank.duckdns.org` | `/etc/letsencrypt/live/admin-sitbank.duckdns.org/privkey.pem` |
-| `staging-sitbank.duckdns.org` | `/etc/letsencrypt/live/staging-sitbank.duckdns.org/privkey.pem` |
-| `staging-sitbank.pp.ua` | Covered by the staging certificate under `/etc/letsencrypt/live/staging-sitbank.duckdns.org/privkey.pem` |
+| `staging-sitbank.pp.ua` | `/etc/letsencrypt/live/staging-sitbank.pp.ua/privkey.pem` |
 
 The private key is not committed to Git. `ops/deploy/bootstrap-container-ec2`
 checks that the expected key files are readable before installing the Nginx

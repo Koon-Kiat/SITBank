@@ -66,10 +66,11 @@ Production admin runtime uses a separate Flask app, Docker Compose service,
 session cookie, session-signing material, session-lookup HMAC key, and database
 runtime role. The admin role must be distinct from both `sitbank_app` and
 `sitbank_owner`; it must not use migration/schema-owner credentials. Admin
-access is private operator access only through Tailscale; do not enable
-Tailscale Funnel and do not expose admin through the customer app or public
-admin Nginx routes. `admin-sitbank.duckdns.org` remains isolated at the public
-edge with public `/` and app routes denied.
+access is private operator access only through Tailscale Serve at
+`https://sitbank-ec2.tailca101b.ts.net/`; do not enable Tailscale Funnel and
+do not expose admin through the customer app or public admin Nginx routes.
+`admin-sitbank.duckdns.org` remains isolated at the public edge with public `/`
+and app routes denied.
 The Flask admin app still uses a separate cookie, session HMAC keyring,
 database role, root-admin-controlled staff invites, and mandatory TOTP.
 
@@ -309,7 +310,7 @@ checked manually.
   TOTP. Do not enable Tailscale Funnel or make `admin-sitbank.duckdns.org`
   publicly usable for app routes.
 - Require Cloudflare Access and Cloudflare Authenticated Origin Pulls for
-  `staging-sitbank.duckdns.org`; do not disable the origin-pull check to make
+  `staging-sitbank.pp.ua`; do not disable the origin-pull check to make
   direct EC2-origin staging access work.
 - Enable WAF managed common, SQL injection, XSS, bot, and protocol anomaly
   rules.
