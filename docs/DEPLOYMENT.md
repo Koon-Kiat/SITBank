@@ -169,11 +169,16 @@ manual workflow inputs when an approved endpoint changes:
 | Production customer | `production_host` | `https://sitbank.duckdns.org` | `tls-scan-prod-sitbank` |
 | Production admin | `admin_host` | `https://admin-sitbank.duckdns.org` | `tls-scan-admin-sitbank` |
 
-Each target produces JSON, text log, HTML, scan metadata, and a policy-finding
-file. They are retained as GitHub Actions artifacts for 90 days. The target job
-summary identifies the UTC scan time, host, run ID/attempt, scanner version,
-and pass/fail result. TLS scanning uses no application credentials and the
-workflow contains no application secrets.
+Each target preserves the scanner's original `testssl.raw.json` and produces a
+separate `testssl.json` for policy parsing, plus a text log, HTML report, scan
+metadata, and policy-finding file. `testssl.sh` can emit the invalid JSON escape
+`\,` in certificate subject strings such as the Cloudflare Authenticated
+Origin Pull CA subject. The policy copy normalizes only that escape to a comma
+before strict `jq empty` validation; the raw file remains unchanged for audit
+evidence. All files are retained as GitHub Actions artifacts for 90 days. The
+target job summary identifies the UTC scan time, host, run ID/attempt, scanner
+version, and pass/fail result. TLS scanning uses no application credentials
+and the workflow contains no application secrets.
 
 The verification gate fails for SSLv2, SSLv3, TLS 1.0, or TLS 1.1; weak, NULL,
 anonymous, export, RC4, or 3DES ciphers; missing, disabled, or too-short HSTS;
@@ -182,6 +187,12 @@ certificate chains; any `testssl.sh` HIGH, CRITICAL, or FATAL finding; and
 missing/invalid JSON evidence. MEDIUM/LOW/INFO findings remain in the evidence
 and require operator review; they are not an automatic release block unless
 they match one of the explicit prohibited classes above.
+
+Normalization does not suppress malformed JSON generally or change policy
+findings. All protocol, cipher, HSTS, certificate, chain, and severity gates
+run against the strictly validated policy copy. Cloudflare Access readiness is
+a separate zero-trust deployment concern and does not make staging TLS
+evidence optional.
 
 For a host-side/manual check, use the same full scan (do not use `-k` or supply
 application credentials):

@@ -334,10 +334,15 @@ the release or change record. Do not run a public-endpoint scan from ordinary
 pull requests.
 
 Each target artifact (`tls-scan-staging-sitbank`, `tls-scan-prod-sitbank`, or
-`tls-scan-admin-sitbank`) retains `testssl.sh` JSON, log, HTML, metadata, and
-the policy-finding file for 90 days. The job summary records the target, UTC
-scan time, GitHub run, scanner revision, and result. No application credentials
-or secrets are needed or permitted.
+`tls-scan-admin-sitbank`) retains the untouched scanner output as
+`testssl.raw.json`, the policy-parsing copy as `testssl.json`, plus the log,
+HTML, metadata, and policy-finding file for 90 days. `testssl.sh` may emit the
+invalid JSON escape `\,` in certificate subject strings, including the
+Cloudflare Authenticated Origin Pull CA subject. The workflow changes only
+that escape to a literal comma in the policy copy, then still requires
+`jq empty` before applying every TLS policy check. The job summary records the
+target, UTC scan time, GitHub run, scanner revision, and result. No application
+credentials or secrets are needed or permitted.
 
 Treat a failed scan as a release/deployment verification failure. A failed
 staging scan blocks production deployment, while a failed production scan
@@ -349,6 +354,10 @@ MEDIUM/LOW/INFO results in the retained evidence and create a security change
 or explicit risk decision where appropriate. SSL Labs is an optional manual
 second opinion; save its public report link or screenshot with the change
 record, but do not make a production release depend on its API.
+
+Cloudflare Access rollout is separate from TLS evidence collection. An
+incomplete Access setup does not make the staging scan optional, and the JSON
+normalization does not relax Origin Pull, certificate, or TLS policy checks.
 
 The host-state verifier is the pre-deployment check of local certificate
 material and renewal scheduling. The live scan complements it by verifying the

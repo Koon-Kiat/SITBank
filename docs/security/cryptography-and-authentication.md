@@ -102,10 +102,15 @@ deploy (and blocks production deployment until that verification passes), then
 verifies both production endpoints after production deploy to complete the
 release evidence. It scans `staging-sitbank.duckdns.org`,
 `sitbank.duckdns.org`, and `admin-sitbank.duckdns.org` with a checksum-verified
-`testssl.sh` release, retaining JSON, log, HTML, metadata, and policy findings
-as per-target GitHub Actions artifacts. The job summary records the UTC time,
-target, workflow run, and result. It intentionally does not run on ordinary
-pull requests because they do not create public TLS endpoints.
+`testssl.sh` release. Each per-target artifact retains untouched scanner JSON
+as `testssl.raw.json` and a separate `testssl.json` policy copy, along with the
+log, HTML, metadata, and policy findings. The policy copy changes only
+testssl.sh's invalid `\,` escape in certificate subject strings to a literal
+comma, then must pass `jq empty` before policy evaluation. This preserves the
+Cloudflare Origin Pull CA subject as raw evidence without relaxing invalid-JSON
+or TLS findings generally. The job summary records the UTC time, target,
+workflow run, and result. It intentionally does not run on ordinary pull
+requests because they do not create public TLS endpoints.
 
 Verification fails for SSLv2/SSLv3/TLS 1.0/TLS 1.1, weak/NULL/anonymous/export/
 RC4/3DES cipher classes, missing, disabled, or too-short HSTS, expired
