@@ -34,8 +34,7 @@ maintenance record.
 SITBank uses a hybrid private-access model:
 
 - Staging is protected by Cloudflare Access and Cloudflare Authenticated Origin
-  Pulls at `staging-sitbank.pp.ua`; the existing
-  `staging-sitbank.duckdns.org` hostname remains accepted by Nginx.
+  Pulls at `staging-sitbank.pp.ua`.
 - Admin is protected by Tailscale/private operator access and remains denied
   on the public `admin-sitbank.duckdns.org` app routes.
 - The production customer site `sitbank.duckdns.org` remains public.
@@ -45,9 +44,9 @@ origin certificate private keys, and origin-pull client credentials are
 operator-managed. Tailscale auth keys, API keys, tailnet policy, device
 approval state, and Serve state are also operator-managed. None of those values
 belong in the repository. `staging-sitbank.pp.ua` is the Cloudflare-managed
-staging hostname for Access. The observed `staging-sitbank.duckdns.org`
-hostname resolves directly to EC2 and must not be treated as the Cloudflare
-Access boundary.
+staging hostname for Access. The retired `staging-sitbank.duckdns.org`
+hostname is not an active staging deployment, Nginx, Certbot, or TLS-scan
+target.
 
 Routine verification:
 
@@ -58,16 +57,15 @@ curl --fail --resolve staging-sitbank.pp.ua:443:127.0.0.1 \
   https://staging-sitbank.pp.ua/health/ready
 curl -I --resolve staging-sitbank.pp.ua:443:<EC2_PUBLIC_IP> \
   https://staging-sitbank.pp.ua/
-curl -I https://staging-sitbank.duckdns.org/
 curl -I https://admin-sitbank.duckdns.org/
 sudo tailscale serve status
+curl -I https://sitbank-ec2.tailca101b.ts.net/
 ```
 
 Expected: local staging readiness succeeds, direct origin access to staging
 returns `403` without Cloudflare's origin-pull client certificate, public
-admin `/` returns `403`, and admin Serve status is present only when the
-approved tailnet path is intentionally enabled. Tailscale Funnel must stay
-disabled for SITBank admin.
+admin `/` returns `403`, and the private admin URL is reachable only from an
+approved tailnet path. Tailscale Funnel must stay disabled for SITBank admin.
 
 The detailed onboarding, offboarding, emergency lockout, rollback, and live
 operator verification steps are in
@@ -326,22 +324,23 @@ contents. Finally run `sudo nginx -t` before reload.
 The **Live TLS scan evidence** workflow provides scheduled weekly,
 operator-dispatched, and post-deployment evidence of the Internet-facing TLS
 posture for
-`staging-sitbank.duckdns.org`, `sitbank.duckdns.org`, and
+`staging-sitbank.pp.ua`, `sitbank.duckdns.org`, and
 `admin-sitbank.duckdns.org`. The deployment workflow calls the staging scan
 after staging deploy and blocks production deployment until it passes; it calls
 the production scan after production deploy to complete the release evidence.
+The manual workflow input `staging_host` defaults to
+`staging-sitbank.pp.ua`.
 Dispatch it after edge, certificate, DNS, Nginx/OpenSSL, CDN/WAF, or
 load-balancer changes outside deployment, then retain the successful run with
 the release or change record. Do not run a public-endpoint scan from ordinary
 pull requests.
 
-During the `staging-sitbank.pp.ua` transition, leave the scheduled and
-deployment-gate staging scan on the currently deployed DuckDNS endpoint. Run
-`staging-sitbank.pp.ua` as a manual `staging_host` override only after PR
-merge, staging bootstrap, Certbot certificate issuance, and Cloudflare
-Access/AOP verification. Do not make the scan pass by switching Cloudflare to
-Flexible SSL, disabling TLS verification, disabling the Cloudflare proxy, or
-bypassing Authenticated Origin Pulls.
+The normal public TLS scan deliberately excludes the private Tailscale admin hostname
+`sitbank-ec2.tailca101b.ts.net`; a GitHub-hosted public runner cannot reach it
+unless a separate protected job joins the tailnet or uses a tailnet self-hosted
+runner. Do not make staging or admin verification pass by switching Cloudflare
+to Flexible SSL, disabling TLS verification, disabling the Cloudflare proxy,
+bypassing Authenticated Origin Pulls, or enabling Tailscale Funnel.
 
 Each target artifact (`tls-scan-staging-sitbank`, `tls-scan-prod-sitbank`, or
 `tls-scan-admin-sitbank`) retains the untouched scanner output as

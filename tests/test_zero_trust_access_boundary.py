@@ -59,8 +59,7 @@ def test_hybrid_cloudflare_staging_and_tailscale_admin_design_is_documented():
         "This intentionally uses both products because the surfaces have different",
         "Production customer | `https://sitbank.duckdns.org`",
         "Staging customer | `https://staging-sitbank.pp.ua`",
-        "`https://staging-sitbank.duckdns.org`",
-        "Production admin app | Tailscale Serve or Tailscale SSH to `127.0.0.1:5002`",
+        "Production admin app | `https://sitbank-ec2.tailca101b.ts.net/` through Tailscale Serve",
         "The customer production site remains public.",
         "Cloudflare Access application for `staging-sitbank.pp.ua`",
         "Cloudflare Authenticated Origin Pulls",
@@ -71,6 +70,9 @@ def test_hybrid_cloudflare_staging_and_tailscale_admin_design_is_documented():
         "direct origin access",
         "Cloudflare-managed zone/hostname or Cloudflare Tunnel",
         "Cloudflare Access and Tailscale decide whether a request may reach",
+        "retired `staging-sitbank.duckdns.org` hostname is no longer",
+        "Admins connect to the Tailscale VPN first, then open",
+        "https://sitbank-ec2.tailca101b.ts.net/",
         "old public admin verification page has been removed",
         "Public admin `/` returns `403`",
         "Zero-trust and network-boundary work should use these repository labels",
@@ -91,20 +93,14 @@ def test_staging_nginx_blocks_direct_origin_bypass_but_keeps_local_health():
     assert "ssl_reject_handshake on;" in default_nginx
     assert "return 444;" in default_nginx
 
-    assert (
-        "server_name staging-sitbank.duckdns.org staging-sitbank.pp.ua;"
-        in staging_nginx
-    )
+    assert "server_name staging-sitbank.pp.ua;" in staging_nginx
+    assert "staging-sitbank.duckdns.org" not in staging_nginx
     assert "ssl_client_certificate /etc/nginx/cloudflare-authenticated-origin-pull-ca.pem;" in staging_nginx
     assert "ssl_verify_client optional;" in staging_nginx
     staging_https_prelocation = _nginx_server_block(
         staging_nginx,
-        "staging-sitbank.duckdns.org",
-    ).split("\n    location ", 1)[0]
-    assert _nginx_server_block(
-        staging_nginx,
         "staging-sitbank.pp.ua",
-    ) == _nginx_server_block(staging_nginx, "staging-sitbank.duckdns.org")
+    ).split("\n    location ", 1)[0]
     assert "auth_basic \"SITBank staging\";" not in staging_https_prelocation
     assert "auth_basic_user_file /etc/nginx/.htpasswd-sitbank-staging;" not in staging_https_prelocation
 
@@ -178,6 +174,7 @@ def test_admin_public_routes_stay_denied_and_private_access_is_tailscale_only():
     assert "proxy_pass" not in ready_bodies[0]
 
     assert "Tailscale/private operator access" in docs
+    assert "https://sitbank-ec2.tailca101b.ts.net/" in docs
     assert "Do not enable Tailscale Funnel" in docs
     assert "old public admin verification page has been removed" in docs
     assert "public admin Nginx app routes denied" in docs
