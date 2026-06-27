@@ -2054,16 +2054,38 @@ def test_live_tls_scan_workflow_collects_evidence_without_running_on_pull_reques
     assert "--jsonfile" in workflow_text
     assert "--logfile" in workflow_text
     assert "--htmlfile" in workflow_text
+    assert 'raw_json_file="${evidence_dir}/testssl.raw.json"' in workflow_text
+    assert 'json_file="${evidence_dir}/testssl.json"' in workflow_text
+    assert '--jsonfile "${raw_json_file}"' in workflow_text
+    assert 'python3 - "${raw_json_file}" "${json_file}"' in workflow_text
+    assert 'data = raw_path.read_text(encoding="utf-8")' in workflow_text
+    assert 'data = data.replace(r"\\,", ",")' in workflow_text
+    assert 'normalized_path.write_text(data, encoding="utf-8")' in workflow_text
+    assert 'jq empty "${json_file}"' in workflow_text
+    assert workflow_text.index('--jsonfile "${raw_json_file}"') < workflow_text.index(
+        'data = data.replace(r"\\,", ",")'
+    ) < workflow_text.index('jq empty "${json_file}"')
+    raw_client_auth_finding = (
+        r'{"id":"clientAuth_CA","severity":"INFO",'
+        r'"finding":"CN=origin-pull.cloudflare.net,O=CloudFlare\, Inc.,C=US"}'
+    )
+    assert raw_client_auth_finding.replace(r"\,", ",") == (
+        '{"id":"clientAuth_CA","severity":"INFO",'
+        '"finding":"CN=origin-pull.cloudflare.net,O=CloudFlare, Inc.,C=US"}'
+    )
     assert "GITHUB_STEP_SUMMARY" in workflow_text
     assert "TLS1_1" in workflow_text
     assert "cipherlist_(NULL|aNULL|EXPORT|LOW|OBSOLETED|3DES|RC4)" in workflow_text
     assert "cert_expirationStatus" in workflow_text
     assert "testssl_exit_failed=0" in workflow_text
-    assert 'id | test("^(HSTS|STS)$"; "i")' in workflow_text
+    assert 'id | test("HSTS|STS"; "i")' in workflow_text
     assert 'finding | test("too short|not offered|not sent|missing|disabled"; "i")' in workflow_text
     assert "cert_trust" in workflow_text
     assert "cert_chain_of_trust" in workflow_text
     assert "index($severity) != null" in workflow_text
+    assert 'policy-violations.txt"' in workflow_text
+    assert 'if [[ "${scan_failed}" -ne 0 ]]' in workflow_text
+    assert "actions/upload-artifact@" in workflow_text
     assert '.[]\n              | select(type == "object")\n              | select(' in workflow_text
     assert "secrets." not in workflow_text
 
@@ -2183,7 +2205,22 @@ def test_certbot_host_state_verifier_enforces_host_managed_tls():
     assert "certbot.timer" in verifier
     assert "systemctl is-enabled --quiet certbot.timer" in verifier
     assert "systemctl is-active --quiet certbot.timer" in verifier
+    assert 'CERTBOT_MIN_VALID_DAYS="${CERTBOT_MIN_VALID_DAYS:-14}"' in verifier
+    assert "CERTBOT_MIN_VALID_DAYS * 86400" in verifier
+    assert "CERTBOT_MIN_VALID_DAYS must be an integer from 1 through 3650" in verifier
+    assert 'openssl x509 -in "${resolved_path}" -noout' in verifier
+    assert '-enddate 2>/dev/null' in verifier
+    assert "-checkend 0" in verifier
+    assert '-checkend "${CERTBOT_MIN_VALID_SECONDS}"' in verifier
+    assert "certificate is expired" in verifier
+    assert "certificate expires within ${CERTBOT_MIN_VALID_DAYS} days" in verifier
+    assert "certificate_covers_hostname" in verifier
+    assert '"${san_entry}" == "DNS:${expected_hostname}"' in verifier
+    assert "certificate SAN does not exactly cover expected hostname" in verifier
+    assert "do not fall back to the legacy" in verifier
+    assert "--renewal-dry-run" in verifier
     assert "certbot renew --dry-run" in verifier
+    assert "Renewal dry-run was not requested" in verifier
     assert "chmod " not in verifier
     assert "chown " not in verifier
     assert "cat \"${key_path}\"" not in verifier

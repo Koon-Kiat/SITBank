@@ -152,6 +152,7 @@ jobs:
 
           readonly target_url="https://${target_host}"
           readonly evidence_dir="tls-scan/${TARGET_LABEL}"
+          readonly raw_json_file="${evidence_dir}/testssl.raw.json"
           readonly json_file="${evidence_dir}/testssl.json"
           readonly log_file="${evidence_dir}/testssl.log"
           readonly html_file="${evidence_dir}/testssl.html"
@@ -176,17 +177,38 @@ jobs:
 
           if ! TERM_WIDTH=120 bash "${RUNNER_TEMP}/testssl.sh-d2d9d2a04120033a7d1e01e52d9b409168544cc6/testssl.sh" \
             --quiet --warnings batch --color 0 \
-            --jsonfile "${json_file}" --logfile "${log_file}" --htmlfile "${html_file}" \
+            --jsonfile "${raw_json_file}" --logfile "${log_file}" --htmlfile "${html_file}" \
             "${target_url}"; then
             testssl_exit_failed=1
           fi
 
-          if [[ ! -s "${json_file}" ]] || ! jq empty "${json_file}" >/dev/null 2>&1; then
+          normalization_failed=0
+          if [[ -s "${raw_json_file}" ]]; then
+            if ! python3 - "${raw_json_file}" "${json_file}" <<'PY'
+          from pathlib import Path
+          import sys
+
+          raw_path = Path(sys.argv[1])
+          normalized_path = Path(sys.argv[2])
+          data = raw_path.read_text(encoding="utf-8")
+          data = data.replace(r"\,", ",")
+          normalized_path.write_text(data, encoding="utf-8")
+          PY
+            then
+              normalization_failed=1
+            fi
+          else
+            normalization_failed=1
+          fi
+
+          if [[ "${normalization_failed}" -eq 1 ]] \
+            || [[ ! -s "${json_file}" ]] \
+            || ! jq empty "${json_file}" >/dev/null 2>&1; then
             scan_failed=1
             if [[ "${testssl_exit_failed}" -eq 1 ]]; then
               echo "testssl.sh did not complete successfully." > "${violations_file}"
             fi
-            echo "testssl.sh did not produce valid JSON evidence." >> "${violations_file}"
+            echo "testssl.sh did not produce JSON evidence that is valid after the narrowly scoped scanner-escape normalization." >> "${violations_file}"
           else
             jq -r '
               def id: (.id // "");
@@ -205,7 +227,7 @@ jobs:
                 or ((id == "SSLv2" or id == "SSLv3" or id == "TLS1" or id == "TLS1_1") and offered)
                 or ((id | test("^cipherlist_(NULL|aNULL|EXPORT|LOW|OBSOLETED|3DES|RC4)")) and ((finding | test("^not offered$"; "i")) | not))
                 or (id == "RC4" and ((finding | test("not vulnerable"; "i")) | not))
-                or ((id | test("^(HSTS|STS)$"; "i")) and (finding | test("too short|not offered|not sent|missing|disabled"; "i")))
+                or ((id | test("HSTS|STS"; "i")) and (finding | test("too short|not offered|not sent|missing|disabled"; "i")))
                 or (id == "cert_expirationStatus" and (finding | test("^expired"; "i")))
                 or (id == "cert_trust" and (finding | test("does not match supplied uri|hostname mismatch"; "i")))
                 or (id == "cert_chain_of_trust" and (finding | test("not trusted|untrusted|incomplete|missing"; "i")))
@@ -238,7 +260,7 @@ jobs:
               echo '```'
             fi
             echo
-            echo "JSON, log, HTML, metadata, and policy findings are retained in the \`${TARGET_LABEL}\` artifact."
+            echo "Raw and policy-normalized JSON, log, HTML, metadata, and policy findings are retained in the \`${TARGET_LABEL}\` artifact."
           } >> "${GITHUB_STEP_SUMMARY}"
 
           if [[ "${scan_failed}" -ne 0 ]]; then
