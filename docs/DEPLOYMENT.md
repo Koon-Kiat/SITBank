@@ -36,6 +36,21 @@ python -m flask --app wsgi:app db upgrade
 
 Do not run `db.create_all()` in deployment. For role cutover use `sitbank-database-cutover prepare`, review the generated SQL, and execute it only during an approved maintenance window.
 
+## Registration Schema Reset For Disposable Environments
+
+The registration schema requires verified email, full name, phone number, and a
+server-generated account number for new customers. Existing disposable
+development, staging, or demo databases with no real users may be reset or
+recreated before applying the registration migration so fake phone numbers and
+predictable account numbers are not preserved as long-lived data.
+
+Do not drop or recreate a production-like database automatically. Any reset must
+be an explicit operator action after confirming the environment has no real
+users and after taking any required backup. If an existing database must be
+preserved, the migration leaves unknown legacy phone numbers as `NULL`, keeps
+uniqueness only for real non-null phone numbers, and assigns non-enumerable
+server-generated account numbers to preserved rows.
+
 ## Deployment Prerequisites
 
 Install `/etc/sitbank/secrets/security_alert_webhook_url` or

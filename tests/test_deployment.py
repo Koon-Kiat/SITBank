@@ -412,19 +412,25 @@ def test_dast_session_creator_matches_registration_contract():
     assert "create_registration_invite" not in source
     assert '"invite_token"' not in source
     assert 'full_name=f"DAST User {suffix}"' in source
-    assert 'phone_number=f"9{secrets.randbelow(9000000) + 1000000}"' in source
+    assert "def _generate_synthetic_phone_number()" in source
+    assert "for attempt in range(20):" in source
+    assert "User.phone_number == candidate_phone" in source
     assert '"account_number"' not in source
+    assert "0o600" in source
+    assert "0o644" not in source
 
 
-def test_registration_field_migration_backfills_existing_users_deterministically():
+def test_registration_field_migration_preserves_unknown_phones_and_randomizes_accounts():
     migration = Path(
         "migrations/versions/20260622_0008_add_user_registration_fields.py"
     ).read_text(encoding="utf-8")
 
-    assert "SET phone_number = ''" not in migration
-    assert "floor(random()" not in migration
-    assert "abs(random())" not in migration
-    assert "row_number() OVER (ORDER BY id)" in migration
+    assert "SET phone_number = '9'" not in migration
+    assert "SET phone_number = NULL" in migration
+    assert "row_number() OVER (ORDER BY id)" not in migration
+    assert "secrets.randbelow" in migration
+    assert "postgresql_where=sa.text(\"phone_number IS NOT NULL\")" in migration
+    assert "sqlite_where=sa.text(\"phone_number IS NOT NULL\")" in migration
     assert "SET full_name = username" in migration
 
 

@@ -19,6 +19,16 @@ roles.
 
 MFA/TOTP seed encryption uses envelope encryption. Keep old KEKs in `mfa_kek_keys_json` until `rewrap-mfa-deks` has moved stored records to the new active KEK. Then update `MFA_KEK_ACTIVE_ID` and the root-managed keyring together.
 
+## Disposable Registration Data Reset
+
+If a development, staging, or demo database contains only seeded/test users from
+before the registration-field migration, prefer an explicit reset/recreate over
+preserving fake contact data. Confirm the target environment, confirm there are
+no real users, take any required backup, then run the normal bootstrap or
+deployment migration path for that environment. Production-like databases must
+not be reset by scripts or deployment automation without a separate approved
+maintenance record.
+
 ## Admin And Staging Access Operations
 
 SITBank uses a hybrid private-access model:
