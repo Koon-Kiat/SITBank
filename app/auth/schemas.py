@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from marshmallow import EXCLUDE, Schema, ValidationError, fields, validate, validates_schema
 
-from app.security.passwords import PASSWORD_MIN_LENGTH, password_max_chars
+from app.security.passwords import password_max_chars, password_min_length
 
 
 USERNAME_RE = r"^[A-Za-z0-9_.-]{3,64}$"
@@ -18,8 +18,9 @@ REGISTRATION_OTP_RE = r"^[0-9]{6}$"
 def password_length(*, minimum: int | None = None):
     def validate_password_length(value: str) -> bool:
         text = value or ""
-        if minimum is not None and len(text) < minimum:
-            raise ValidationError(f"Password must be at least {minimum} characters")
+        min_chars = password_min_length() if minimum is None else minimum
+        if len(text) < min_chars:
+            raise ValidationError(f"Password must be at least {min_chars} characters")
         max_chars = password_max_chars()
         if len(text) > max_chars:
             raise ValidationError(f"Password must be at most {max_chars} characters")
@@ -51,12 +52,12 @@ class RegisterSchema(Schema):
     password = fields.Str(
         required=True,
         load_only=True,
-        validate=password_length(minimum=PASSWORD_MIN_LENGTH),
+        validate=password_length(),
     )
     confirm_password = fields.Str(
         required=True,
         load_only=True,
-        validate=password_length(minimum=PASSWORD_MIN_LENGTH),
+        validate=password_length(),
     )
 
     @validates_schema
@@ -133,12 +134,12 @@ class PasswordChangeSchema(Schema):
     new_password = fields.Str(
         required=True,
         load_only=True,
-        validate=password_length(minimum=PASSWORD_MIN_LENGTH),
+        validate=password_length(),
     )
     confirm_new_password = fields.Str(
         required=True,
         load_only=True,
-        validate=password_length(minimum=PASSWORD_MIN_LENGTH),
+        validate=password_length(),
     )
     totp_code = fields.Str(
         required=False,

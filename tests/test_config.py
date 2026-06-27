@@ -9,7 +9,9 @@ import pytest
 
 import config
 from config import (
+    DEFAULT_DEVELOPMENT_PASSWORD_MIN_LENGTH,
     MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS,
+    MIN_PRODUCTION_PASSWORD_LENGTH,
     _configured_audit_anchor_path,
     _configured_secret,
     _password_reset_base_url,
@@ -20,6 +22,7 @@ from config import (
     _validate_audit_anchor_path,
     _validate_password_reset_email_config,
     _validate_payee_cooldown_config,
+    _validate_password_length_config,
     _validate_session_absolute_lifetime_config,
 )
 
@@ -106,6 +109,45 @@ def test_non_production_console_email_backend_remains_allowed():
         smtp_username=None,
         smtp_password=None,
     )
+
+
+def test_production_password_minimum_rejects_short_value_without_secret_leakage():
+    with pytest.raises(RuntimeError, match="PASSWORD_MIN_LENGTH") as excinfo:
+        _validate_password_length_config(
+            app_env="production",
+            minimum_length=DEFAULT_DEVELOPMENT_PASSWORD_MIN_LENGTH,
+            maximum_chars=256,
+        )
+
+    message = str(excinfo.value)
+    assert str(MIN_PRODUCTION_PASSWORD_LENGTH) in message
+    assert "secret" not in message.lower()
+    assert "DATABASE_URL" not in message
+
+
+def test_production_password_minimum_allows_approved_floor():
+    _validate_password_length_config(
+        app_env="production",
+        minimum_length=MIN_PRODUCTION_PASSWORD_LENGTH,
+        maximum_chars=256,
+    )
+
+
+def test_non_production_password_minimum_allows_explicit_short_override():
+    _validate_password_length_config(
+        app_env="development",
+        minimum_length=DEFAULT_DEVELOPMENT_PASSWORD_MIN_LENGTH,
+        maximum_chars=256,
+    )
+
+
+def test_password_maximum_must_not_be_below_minimum():
+    with pytest.raises(RuntimeError, match="PASSWORD_MAX_CHARS"):
+        _validate_password_length_config(
+            app_env="development",
+            minimum_length=80,
+            maximum_chars=64,
+        )
 
 
 def test_production_payee_cooldown_rejects_short_value_without_secret_leakage():

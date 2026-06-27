@@ -284,12 +284,13 @@ Implementation evidence:
 | --- | --- |
 | Per-password random salt | `hash_password()` uses `os.urandom(PBKDF2_SALT_BYTES)` in `app/security/passwords.py` |
 | Minimum iteration count | `PASSWORD_PBKDF2_ITERATIONS` must be at least `600000` in `config.py` and `app/security/passwords.py` |
+| Configured minimum length | `PASSWORD_MIN_LENGTH` defaults to 15 in production, may be explicitly lower in development/test, and is enforced by form/API validators plus `validate_password_policy()` |
 | Server-side pepper | `_pbkdf2_digest()` HMACs the normalized password with `PASSWORD_PEPPER_B64` before PBKDF2 |
 | Constant-time comparison | `verify_password()` uses `hmac.compare_digest()` |
 | Algorithm and cost metadata | Hash string contains prefix, version, `i=`, `s=`, and `h=` fields |
 | Rehash support | `password_hash_needs_rehash()` triggers rehash when stored iterations are below the current config |
 | Common-password checks | Local blocklist plus HIBP range API in `validate_password_policy()` |
-| Maximum length checks | `PASSWORD_MAX_CHARS` and schema/form validators reject oversized passwords before hashing |
+| Length checks before hashing | `PASSWORD_MIN_LENGTH`, `PASSWORD_MAX_CHARS`, and schema/form validators reject invalid passwords before hashing |
 
 Tests: `tests/test_auth_registration_login.py::test_registration_hashes_password_with_pbkdf2`,
 `tests/test_auth_registration_login.py::test_hash_password_uses_configured_pbkdf2_iterations`,

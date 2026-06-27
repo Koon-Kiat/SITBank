@@ -233,6 +233,29 @@ def test_password_change_rejects_over_limit_current_and_new_passwords(client):
     assert b"longer than 256 characters" in oversized_new.data
     assert user.password_hash == old_hash
 
+
+def test_password_change_uses_configured_new_password_minimum(app, client):
+    app.config["PASSWORD_MIN_LENGTH"] = 12
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    old_hash = user.password_hash
+
+    response = client.post(
+        "/password/change",
+        data={
+            "current_password": "correct horse battery staple",
+            "new_password": "Abcdef12345",
+            "confirm_new_password": "Abcdef12345",
+        },
+    )
+    db.session.refresh(user)
+
+    assert response.status_code == 400
+    assert b"Field must be at least 12 characters long." in response.data
+    assert user.password_hash == old_hash
+
+
 def test_password_change_rejects_common_or_reused_password(client):
     register(client)
     login(client)

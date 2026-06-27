@@ -55,6 +55,7 @@ Authentication code avoids common implementation failures:
 | Generic login errors | `app/auth/services.py`; `tests/test_auth_registration_login.py::test_login_errors_are_generic_for_unknown_and_wrong_password` |
 | Dummy password hash for unknown users | `app/auth/services.py`; `tests/test_auth_registration_login.py::test_dummy_password_hash_tracks_current_pbkdf2_configuration` |
 | Password hashing with PBKDF2-HMAC-SHA256, salt, pepper, and cost metadata | `app/security/passwords.py`; `tests/test_auth_registration_login.py::test_registration_hashes_password_with_pbkdf2` |
+| Production password minimum fails closed below 15 characters | `config.py::_validate_password_length_config()`, `app/security/production_guard.py`, `tests/test_production_guard.py::test_production_check_rejects_weak_password_minimum` |
 | Oversized passwords rejected before expensive hashing | `tests/test_auth_registration_login.py::test_oversized_login_password_uses_generic_failure_without_hashing` |
 | TOTP replay prevention | `app/auth/services.py`, `app/models.py::TotpReplayRecord`; `tests/test_mfa_lifecycle.py::test_mfa_setup_stores_encrypted_secret_and_rejects_replay` |
 | Recovery codes are one-time HMAC verifiers | `app/auth/recovery_codes.py`; `tests/test_password_reset.py::test_recovery_codes_are_hashed_single_use_reset_factors` |

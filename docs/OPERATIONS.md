@@ -281,6 +281,16 @@ Expected reset email configuration in production:
 - `SMTP_USERNAME_FILE=/run/secrets/smtp_username`
 - `SMTP_PASSWORD_FILE=/run/secrets/smtp_password`
 
+Password policy in production:
+
+- `PASSWORD_MIN_LENGTH` defaults to `15` when `APP_ENV=production`.
+- Development and test may keep the explicit shorter default for local workflows.
+- `production-check` and the production startup guard fail closed if a production
+  app is configured below `15`.
+- This length floor complements mandatory TOTP onboarding; password-authenticated
+  users still cannot use sensitive banking routes until current MFA setup is
+  complete.
+
 Payee activation cooldown in production:
 
 - `PAYEE_COOLDOWN_SECONDS` controls when a newly added payee becomes usable.

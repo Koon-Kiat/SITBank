@@ -115,7 +115,7 @@ def test_production_check_rejects_short_payee_cooldown(monkeypatch):
     from app import create_app
     from app.extensions import db
     import app.security.production_guard as production_guard
-    from config import MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS
+    from config import MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS, MIN_PRODUCTION_PASSWORD_LENGTH
     from conftest import TestConfig
 
     flask_app = create_app(TestConfig)
@@ -124,6 +124,7 @@ def test_production_check_rejects_short_payee_cooldown(monkeypatch):
         TRUSTED_PROXY_COUNT=1,
         WTF_CSRF_ENABLED=True,
         TALISMAN_FORCE_HTTPS=True,
+        PASSWORD_MIN_LENGTH=MIN_PRODUCTION_PASSWORD_LENGTH,
         PAYEE_COOLDOWN_SECONDS=60,
         MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS=MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS,
     )
