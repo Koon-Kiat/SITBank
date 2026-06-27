@@ -61,7 +61,7 @@ def test_hybrid_cloudflare_staging_and_tailscale_admin_design_is_documented():
         "Staging customer | `https://staging-sitbank.pp.ua`",
         "Production admin app | `https://sitbank-ec2.tailca101b.ts.net/` through Tailscale Serve",
         "The customer production site remains public.",
-        "Cloudflare Access application for `staging-sitbank.pp.ua`",
+        "self-hosted Access application",
         "Cloudflare Authenticated Origin Pulls",
         "Do not enable Tailscale Funnel",
         "Flask admin login and TOTP remain mandatory",
@@ -245,7 +245,16 @@ def test_required_zero_trust_labels_and_labelers_are_configured():
     assert "ops/nginx/**" in labeler_config["security"][0]["changed-files"][0][
         "any-glob-to-any-file"
     ]
+    assert "ops/cloudflare/**" in labeler_config["security"][0]["changed-files"][0][
+        "any-glob-to-any-file"
+    ]
+    assert "ops/cloudflare/**" in labeler_config["network-security"][0][
+        "changed-files"
+    ][0]["any-glob-to-any-file"]
     assert "compose.staging.yml" in labeler_config["staging"][0]["changed-files"][0][
+        "any-glob-to-any-file"
+    ]
+    assert "ops/cloudflare/**" in labeler_config["staging"][0]["changed-files"][0][
         "any-glob-to-any-file"
     ]
     assert "docs/security/admin-and-staging-zero-trust-access.md" in labeler

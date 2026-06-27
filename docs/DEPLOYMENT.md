@@ -408,6 +408,23 @@ Authenticated Origin Pulls to prevent direct EC2-origin bypass. The staging
 Nginx app paths require a verified Cloudflare origin-pull client certificate
 before proxying to Flask. The production customer hostname remains public.
 
+Provider-side desired state is repository-managed by
+`ops/cloudflare/provision-staging-access` using the Cloudflare-managed hostname
+model. From an operator shell with the variables documented in
+`ops/cloudflare/README.md`, review and apply it before staging bootstrap:
+
+```bash
+python ops/cloudflare/provision-staging-access --plan
+python ops/cloudflare/provision-staging-access --apply \
+  --confirm APPLY-STAGING-ACCESS
+```
+
+Plan is offline and does not require a token. Apply needs a token limited to
+Account `Access: Apps and Policies Write` and Zone `DNS Write`; it refuses a
+broad or unmanaged Allow policy. The Access IdP, Authenticated Origin Pull
+enablement/client certificate, origin CA file, AWS ingress rules, and operator
+membership remain deliberate operator controls.
+
 Create a staging Basic Auth file before running the staging bootstrap. This is
 a secondary staging control and must not replace Cloudflare Access:
 
@@ -453,6 +470,8 @@ Then run `ops/deploy/bootstrap-container-ec2 staging WenJiangg/SITBank staging-s
 Staging verification:
 
 ```bash
+python ops/cloudflare/provision-staging-access --verify \
+  --evidence-file cloudflare-access-evidence.local.json
 curl -I https://staging-sitbank.pp.ua/
 curl -I -u "$STAGING_BASIC_AUTH_USER:$STAGING_BASIC_AUTH_PASSWORD" \
   https://staging-sitbank.pp.ua/
@@ -473,6 +492,15 @@ Access and then reach the normal staging controls, direct EC2-origin access to
 `/` returns `403` without Cloudflare's origin-pull client certificate,
 external `/health/ready` returns `403`, local app readiness succeeds, and the
 retired DuckDNS staging hostname is no longer an active Nginx target.
+
+The script also verifies the live Access application and approved-operator
+policy, proxied DNS state, application audience, edge challenge, and direct
+origin denial. Its printed `CLOUDFLARE_ACCESS_AUD`,
+`CLOUDFLARE_ACCESS_ISSUER`, and `CLOUDFLARE_ACCESS_JWKS_URL` values are reserved
+for separate origin JWT validation; the current runtime does not consume them.
+The manual `cloudflare-access-verify.yml` workflow performs the same
+non-mutating check in the protected `staging` environment and uploads only
+sanitized evidence.
 
 The complete operator runbook is
 `docs/security/admin-and-staging-zero-trust-access.md`.

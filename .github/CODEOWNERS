@@ -12,6 +12,7 @@
 /requirements.lock @WenJiangg
 /requirements-dev.lock @WenJiangg
 /ops/container/ @WenJiangg
+/ops/cloudflare/ @WenJiangg
 /ops/deploy/ @WenJiangg
 /ops/nginx/ @WenJiangg
 /ops/nginx-proxy-headers.conf @WenJiangg

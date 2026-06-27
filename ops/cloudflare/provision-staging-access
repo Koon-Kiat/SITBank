@@ -1,0 +1,796 @@
+#!/usr/bin/env python3
+"""Plan, provision, and verify the SITBank staging Cloudflare Access boundary."""
+
+from __future__ import annotations
+
+import argparse
+import dataclasses
+import datetime as dt
+import ipaddress
+import json
+import os
+import re
+import subprocess
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+
+API_ROOT = "https://api.cloudflare.com/client/v4"
+EXPECTED_HOSTNAME = "staging-sitbank.pp.ua"
+APPLY_CONFIRMATION = "APPLY-STAGING-ACCESS"
+MANAGED_COMMENT = "Managed by SITBank ops/cloudflare/provision-staging-access"
+ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
+EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+HOSTNAME_PATTERN = re.compile(
+    r"^(?=.{1,253}\.?$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+"
+    r"[A-Za-z]{2,63}\.?$"
+)
+DURATION_PATTERN = re.compile(r"^(?:[1-9][0-9]*)(?:m|h)$")
+
+
+class ConfigurationError(ValueError):
+    """Raised when required fail-closed configuration is absent or invalid."""
+
+
+class VerificationError(RuntimeError):
+    """Raised when live Cloudflare or origin state violates the desired model."""
+
+
+class CloudflareAPIError(RuntimeError):
+    """Raised for a failed Cloudflare API operation."""
+
+
+def _csv(name: str) -> tuple[str, ...]:
+    values = {
+        item.strip()
+        for item in os.environ.get(name, "").split(",")
+        if item.strip()
+    }
+    return tuple(sorted(values, key=str.casefold))
+
+
+def _required(name: str) -> str:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise ConfigurationError(f"Missing required environment variable: {name}")
+    return value
+
+
+def _identifier(name: str) -> str:
+    value = _required(name)
+    if not ID_PATTERN.fullmatch(value):
+        raise ConfigurationError(f"{name} is not a valid Cloudflare identifier")
+    return value
+
+
+def _team_domain() -> str:
+    value = _required("STAGING_ACCESS_TEAM_DOMAIN").lower().rstrip("/")
+    if value.startswith("https://"):
+        value = value.removeprefix("https://")
+    if (
+        "/" in value
+        or ":" in value
+        or not value.endswith(".cloudflareaccess.com")
+        or not HOSTNAME_PATTERN.fullmatch(value)
+    ):
+        raise ConfigurationError(
+            "STAGING_ACCESS_TEAM_DOMAIN must be a *.cloudflareaccess.com hostname"
+        )
+    return value
+
+
+def _origin_record(origin: str) -> tuple[str, str]:
+    try:
+        parsed = ipaddress.ip_address(origin)
+    except ValueError:
+        normalized = origin.lower().rstrip(".")
+        if (
+            normalized == EXPECTED_HOSTNAME
+            or not HOSTNAME_PATTERN.fullmatch(normalized)
+        ):
+            raise ConfigurationError(
+                "STAGING_DNS_ORIGIN must be an IPv4/IPv6 address or a different hostname"
+            )
+        return "CNAME", normalized
+    return ("A" if parsed.version == 4 else "AAAA"), str(parsed)
+
+
+@dataclasses.dataclass(frozen=True)
+class Config:
+    account_id: str
+    zone_id: str
+    hostname: str
+    app_name: str
+    policy_name: str
+    session_duration: str
+    allowed_emails: tuple[str, ...]
+    allowed_group_ids: tuple[str, ...]
+    allowed_idp_ids: tuple[str, ...]
+    team_domain: str
+    dns_origin: str
+    dns_record_type: str
+    origin_ip: str | None
+
+    @classmethod
+    def from_environment(cls, *, require_origin_ip: bool) -> Config:
+        hostname = os.environ.get(
+            "STAGING_ACCESS_HOSTNAME", EXPECTED_HOSTNAME
+        ).strip().lower()
+        if hostname != EXPECTED_HOSTNAME:
+            raise ConfigurationError(
+                f"STAGING_ACCESS_HOSTNAME must be exactly {EXPECTED_HOSTNAME}; "
+                "this automation must not protect production or admin hosts"
+            )
+
+        emails = tuple(
+            email.lower() for email in _csv("STAGING_ACCESS_ALLOWED_EMAILS")
+        )
+        groups = _csv("STAGING_ACCESS_ALLOWED_GROUP_IDS")
+        if not emails and not groups:
+            raise ConfigurationError(
+                "Set STAGING_ACCESS_ALLOWED_EMAILS and/or "
+                "STAGING_ACCESS_ALLOWED_GROUP_IDS; allow-everyone is forbidden"
+            )
+        invalid_emails = [email for email in emails if not EMAIL_PATTERN.fullmatch(email)]
+        if invalid_emails:
+            raise ConfigurationError(
+                "STAGING_ACCESS_ALLOWED_EMAILS contains an invalid email address"
+            )
+        for name, values in (
+            ("STAGING_ACCESS_ALLOWED_GROUP_IDS", groups),
+            ("STAGING_ACCESS_ALLOWED_IDP_IDS", _csv("STAGING_ACCESS_ALLOWED_IDP_IDS")),
+        ):
+            if any(not ID_PATTERN.fullmatch(value) for value in values):
+                raise ConfigurationError(f"{name} contains an invalid identifier")
+
+        duration = os.environ.get("STAGING_ACCESS_SESSION_DURATION", "8h").strip()
+        if not DURATION_PATTERN.fullmatch(duration):
+            raise ConfigurationError(
+                "STAGING_ACCESS_SESSION_DURATION must use minutes or hours, such as 8h"
+            )
+        quantity = int(duration[:-1])
+        minutes = quantity if duration.endswith("m") else quantity * 60
+        if not 15 <= minutes <= 24 * 60:
+            raise ConfigurationError(
+                "STAGING_ACCESS_SESSION_DURATION must be between 15m and 24h"
+            )
+
+        origin_type, origin = _origin_record(_required("STAGING_DNS_ORIGIN"))
+        origin_ip = os.environ.get("STAGING_ORIGIN_IP", "").strip() or None
+        if require_origin_ip and not origin_ip:
+            raise ConfigurationError(
+                "STAGING_ORIGIN_IP is required for direct-origin bypass verification"
+            )
+        if origin_ip:
+            try:
+                parsed_origin_ip = ipaddress.ip_address(origin_ip)
+            except ValueError as exc:
+                raise ConfigurationError(
+                    "STAGING_ORIGIN_IP must be a literal public IP address"
+                ) from exc
+            if parsed_origin_ip.is_private or parsed_origin_ip.is_loopback:
+                raise ConfigurationError(
+                    "STAGING_ORIGIN_IP must be the public origin address"
+                )
+            origin_ip = str(parsed_origin_ip)
+
+        app_name = os.environ.get(
+            "STAGING_ACCESS_APP_NAME", "SITBank staging"
+        ).strip()
+        policy_name = os.environ.get(
+            "STAGING_ACCESS_POLICY_NAME",
+            "SITBank staging approved operators",
+        ).strip()
+        if not app_name or not policy_name:
+            raise ConfigurationError("Access application and policy names must not be empty")
+
+        idp_ids = _csv("STAGING_ACCESS_ALLOWED_IDP_IDS")
+        return cls(
+            account_id=_identifier("CLOUDFLARE_ACCOUNT_ID"),
+            zone_id=_identifier("CLOUDFLARE_ZONE_ID"),
+            hostname=hostname,
+            app_name=app_name,
+            policy_name=policy_name,
+            session_duration=duration,
+            allowed_emails=emails,
+            allowed_group_ids=groups,
+            allowed_idp_ids=idp_ids,
+            team_domain=_team_domain(),
+            dns_origin=origin,
+            dns_record_type=origin_type,
+            origin_ip=origin_ip,
+        )
+
+    @property
+    def issuer(self) -> str:
+        return f"https://{self.team_domain}"
+
+    @property
+    def jwks_url(self) -> str:
+        return f"{self.issuer}/cdn-cgi/access/certs"
+
+    @property
+    def application_payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "name": self.app_name,
+            "domain": self.hostname,
+            "type": "self_hosted",
+            "session_duration": self.session_duration,
+            "app_launcher_visible": False,
+            "destinations": [{"type": "public", "uri": self.hostname}],
+        }
+        if self.allowed_idp_ids:
+            payload["allowed_idps"] = list(self.allowed_idp_ids)
+        return payload
+
+    @property
+    def policy_payload(self) -> dict[str, Any]:
+        include = [
+            {"email": {"email": email}} for email in self.allowed_emails
+        ] + [{"group": {"id": group_id}} for group_id in self.allowed_group_ids]
+        return {
+            "name": self.policy_name,
+            "decision": "allow",
+            "precedence": 1,
+            "include": include,
+            "exclude": [],
+            "require": [],
+        }
+
+    @property
+    def dns_payload(self) -> dict[str, Any]:
+        return {
+            "type": self.dns_record_type,
+            "name": self.hostname,
+            "content": self.dns_origin,
+            "ttl": 1,
+            "proxied": True,
+            "comment": MANAGED_COMMENT,
+        }
+
+
+class CloudflareAPI:
+    def __init__(self, token: str) -> None:
+        if not token:
+            raise ConfigurationError(
+                "Missing required environment variable: CLOUDFLARE_API_TOKEN"
+            )
+        self._token = token
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        query: dict[str, str] | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> Any:
+        url = f"{API_ROOT}{path}"
+        if query:
+            url = f"{url}?{urllib.parse.urlencode(query)}"
+        body = None if payload is None else json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            url,
+            data=body,
+            method=method,
+            headers={
+                "Authorization": f"Bearer {self._token}",
+                "Content-Type": "application/json",
+                "User-Agent": "SITBank-Cloudflare-Access-Automation/1",
+            },
+        )
+        try:
+            # URL is built under the fixed HTTPS Cloudflare API root.
+            with urllib.request.urlopen(  # nosec B310
+                request, timeout=20
+            ) as response:
+                envelope = json.load(response)
+        except urllib.error.HTTPError as exc:
+            detail = exc.read(2048).decode("utf-8", errors="replace")
+            raise CloudflareAPIError(
+                f"Cloudflare API {method} {path} returned HTTP {exc.code}: {detail}"
+            ) from exc
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            raise CloudflareAPIError(
+                f"Cloudflare API {method} {path} failed: {exc}"
+            ) from exc
+
+        if not envelope.get("success"):
+            errors = envelope.get("errors") or [{"message": "unknown API error"}]
+            messages = "; ".join(str(item.get("message", item)) for item in errors)
+            raise CloudflareAPIError(
+                f"Cloudflare API {method} {path} rejected the request: {messages}"
+            )
+        return envelope.get("result")
+
+
+@dataclasses.dataclass(frozen=True)
+class ProviderState:
+    application: dict[str, Any] | None
+    policies: tuple[dict[str, Any], ...]
+    dns_record: dict[str, Any] | None
+
+
+def _one_or_none(items: list[dict[str, Any]], description: str) -> dict[str, Any] | None:
+    if len(items) > 1:
+        raise VerificationError(f"Multiple {description} objects match; refusing ambiguity")
+    return items[0] if items else None
+
+
+def read_provider_state(api: CloudflareAPI, config: Config) -> ProviderState:
+    app_path = f"/accounts/{config.account_id}/access/apps"
+    applications = api.request(
+        "GET",
+        app_path,
+        query={
+            "domain": config.hostname,
+            "exact": "true",
+            "per_page": "50",
+        },
+    )
+    application = _one_or_none(
+        [
+            app
+            for app in applications
+            if app.get("domain", "").casefold() == config.hostname.casefold()
+        ],
+        "Access application",
+    )
+
+    policies: tuple[dict[str, Any], ...] = ()
+    if application:
+        app_id = application.get("id")
+        if not app_id:
+            raise VerificationError("Cloudflare Access application has no ID")
+        policies = tuple(
+            api.request(
+                "GET",
+                f"/accounts/{config.account_id}/access/apps/{app_id}/policies",
+                query={"per_page": "50"},
+            )
+        )
+
+    dns_records = api.request(
+        "GET",
+        f"/zones/{config.zone_id}/dns_records",
+        query={"name": config.hostname, "per_page": "50"},
+    )
+    dns_record = _one_or_none(
+        [
+            record
+            for record in dns_records
+            if record.get("name", "").casefold() == config.hostname.casefold()
+        ],
+        "DNS record",
+    )
+    return ProviderState(application, policies, dns_record)
+
+
+def _normalized_rules(rules: Any) -> tuple[str, ...]:
+    if not isinstance(rules, list):
+        return ()
+    return tuple(
+        sorted(json.dumps(rule, sort_keys=True, separators=(",", ":")) for rule in rules)
+    )
+
+
+def _policy_is_unsafe(policy: dict[str, Any]) -> bool:
+    if policy.get("decision") in {"bypass", "non_identity"}:
+        return True
+    if policy.get("decision") != "allow":
+        return False
+    for rule in policy.get("include", []):
+        if "everyone" in rule or "any_valid_service_token" in rule:
+            return True
+    return False
+
+
+def _matching_policy(
+    policies: tuple[dict[str, Any], ...], config: Config
+) -> dict[str, Any] | None:
+    matches = [policy for policy in policies if policy.get("name") == config.policy_name]
+    return _one_or_none(matches, "managed Access policy")
+
+
+def _application_matches(application: dict[str, Any], config: Config) -> bool:
+    if any(
+        (
+            application.get("name") != config.app_name,
+            application.get("domain", "").casefold() != config.hostname.casefold(),
+            application.get("type") != "self_hosted",
+            application.get("session_duration") != config.session_duration,
+            application.get("app_launcher_visible") is not False,
+        )
+    ):
+        return False
+    destinations = application.get("destinations")
+    if destinations is not None:
+        if (
+            not isinstance(destinations, list)
+            or len(destinations) != 1
+            or destinations[0].get("type") != "public"
+            or str(destinations[0].get("uri", "")).casefold()
+            != config.hostname.casefold()
+        ):
+            return False
+    legacy_domains = application.get("self_hosted_domains")
+    if legacy_domains is not None:
+        if not isinstance(legacy_domains, list) or {
+            str(item).casefold() for item in legacy_domains
+        } != {config.hostname.casefold()}:
+            return False
+    if config.allowed_idp_ids:
+        return set(application.get("allowed_idps") or []) == set(config.allowed_idp_ids)
+    return True
+
+
+def _policy_matches(policy: dict[str, Any], config: Config) -> bool:
+    desired = config.policy_payload
+    return (
+        policy.get("decision") == "allow"
+        and policy.get("precedence") == 1
+        and _normalized_rules(policy.get("include"))
+        == _normalized_rules(desired["include"])
+        and _normalized_rules(policy.get("exclude")) == ()
+        and _normalized_rules(policy.get("require")) == ()
+    )
+
+
+def _dns_matches(record: dict[str, Any], config: Config) -> bool:
+    return (
+        record.get("type") == config.dns_record_type
+        and str(record.get("content", "")).casefold()
+        == config.dns_origin.casefold()
+        and record.get("proxied") is True
+    )
+
+
+def _assert_apply_safe(
+    policies: tuple[dict[str, Any], ...], config: Config
+) -> None:
+    for policy in policies:
+        if _policy_is_unsafe(policy):
+            raise VerificationError(
+                "Refusing to apply while an unsafe everyone/bypass policy exists"
+            )
+        if (
+            policy.get("decision") == "allow"
+            and policy.get("name") != config.policy_name
+        ):
+            raise VerificationError(
+                "Refusing to apply while an unmanaged Allow policy exists"
+            )
+
+
+def verify_provider_state(state: ProviderState, config: Config) -> str:
+    application = state.application
+    if not application:
+        raise VerificationError("Cloudflare Access application is missing")
+    if not _application_matches(application, config):
+        raise VerificationError("Cloudflare Access application configuration has drifted")
+    audience = application.get("aud")
+    if not isinstance(audience, str) or not audience:
+        raise VerificationError("Cloudflare Access application audience is missing")
+
+    target_policy = _matching_policy(state.policies, config)
+    if not target_policy:
+        raise VerificationError("Approved-operator Access policy is missing")
+    if not _policy_matches(target_policy, config):
+        raise VerificationError("Approved-operator Access policy has drifted")
+    for policy in state.policies:
+        if _policy_is_unsafe(policy):
+            raise VerificationError(
+                f"Unsafe Access policy detected: {policy.get('name', '<unnamed>')}"
+            )
+        if policy.get("decision") == "allow" and policy is not target_policy:
+            raise VerificationError(
+                "An unmanaged Allow policy could widen staging access"
+            )
+
+    if not state.dns_record:
+        raise VerificationError("Staging DNS record is missing")
+    if not _dns_matches(state.dns_record, config):
+        raise VerificationError("Staging DNS record is not the expected proxied record")
+    return audience
+
+
+def apply_provider_state(api: CloudflareAPI, config: Config) -> ProviderState:
+    state = read_provider_state(api, config)
+    _assert_apply_safe(state.policies, config)
+    application = state.application
+    app_path = f"/accounts/{config.account_id}/access/apps"
+
+    if application:
+        if not _application_matches(application, config):
+            print("Updating the staging Access application.")
+            application = api.request(
+                "PUT",
+                f"{app_path}/{application['id']}",
+                payload=config.application_payload,
+            )
+        else:
+            print("Staging Access application already matches.")
+    else:
+        print("Creating the staging Access application.")
+        application = api.request(
+            "POST", app_path, payload=config.application_payload
+        )
+
+    app_id = application.get("id")
+    if not app_id:
+        raise VerificationError("Cloudflare did not return an Access application ID")
+    policy_path = f"{app_path}/{app_id}/policies"
+    policies = tuple(
+        api.request("GET", policy_path, query={"per_page": "50"})
+    )
+    _assert_apply_safe(policies, config)
+    target_policy = _matching_policy(policies, config)
+    if target_policy:
+        if not _policy_matches(target_policy, config):
+            print("Updating the approved-operator Access policy.")
+            api.request(
+                "PUT",
+                f"{policy_path}/{target_policy['id']}",
+                payload=config.policy_payload,
+            )
+        else:
+            print("Approved-operator Access policy already matches.")
+    else:
+        print("Creating the approved-operator Access policy.")
+        api.request("POST", policy_path, payload=config.policy_payload)
+
+    dns_path = f"/zones/{config.zone_id}/dns_records"
+    if state.dns_record:
+        if not _dns_matches(state.dns_record, config):
+            print("Updating the proxied staging DNS record.")
+            api.request(
+                "PATCH",
+                f"{dns_path}/{state.dns_record['id']}",
+                payload=config.dns_payload,
+            )
+        else:
+            print("Proxied staging DNS record already matches.")
+    else:
+        print("Creating the proxied staging DNS record.")
+        api.request("POST", dns_path, payload=config.dns_payload)
+
+    return read_provider_state(api, config)
+
+
+@dataclasses.dataclass(frozen=True)
+class HTTPVerification:
+    edge_challenge: bool
+    direct_origin_blocked: bool
+    direct_origin_result: str
+
+
+def _curl_headers(arguments: list[str]) -> subprocess.CompletedProcess[str]:
+    try:
+        # The executable is fixed and every dynamic value is validated.
+        return subprocess.run(  # nosec B603
+            [
+                "curl",
+                "--silent",
+                "--show-error",
+                "--head",
+                "--max-time",
+                "20",
+                "--proto",
+                "=https",
+                "--dump-header",
+                "-",
+                "--output",
+                os.devnull,
+                *arguments,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=25,
+        )
+    except FileNotFoundError as exc:
+        raise VerificationError("curl is required for live HTTP verification") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise VerificationError("curl verification process timed out") from exc
+
+
+def verify_live_http(config: Config) -> HTTPVerification:
+    edge = _curl_headers([f"https://{config.hostname}/"])
+    if edge.returncode != 0:
+        raise VerificationError(
+            f"Cloudflare edge request failed with curl exit {edge.returncode}"
+        )
+    statuses = re.findall(r"^HTTP/\S+\s+(\d{3})", edge.stdout, flags=re.MULTILINE)
+    location_match = re.findall(
+        r"^location:\s*(\S+)", edge.stdout, flags=re.IGNORECASE | re.MULTILINE
+    )
+    server_is_cloudflare = bool(
+        re.search(r"^server:\s*cloudflare\s*$", edge.stdout, re.IGNORECASE | re.MULTILINE)
+    )
+    has_cf_ray = bool(re.search(r"^cf-ray:", edge.stdout, re.IGNORECASE | re.MULTILINE))
+    location = location_match[-1] if location_match else ""
+    if (
+        not statuses
+        or statuses[-1] not in {"302", "303"}
+        or config.team_domain not in location.casefold()
+        or "/cdn-cgi/access/" not in location.casefold()
+        or not server_is_cloudflare
+        or not has_cf_ray
+    ):
+        raise VerificationError(
+            "Unauthenticated staging request did not receive the expected "
+            "Cloudflare Access challenge"
+        )
+
+    assert config.origin_ip is not None
+    parsed_origin_ip = ipaddress.ip_address(config.origin_ip)
+    resolve_origin = (
+        f"[{config.origin_ip}]" if parsed_origin_ip.version == 6 else config.origin_ip
+    )
+    direct = _curl_headers(
+        [
+            "--resolve",
+            f"{config.hostname}:443:{resolve_origin}",
+            f"https://{config.hostname}/",
+        ]
+    )
+    direct_statuses = re.findall(
+        r"^HTTP/\S+\s+(\d{3})", direct.stdout, flags=re.MULTILINE
+    )
+    if direct.returncode == 0:
+        if not direct_statuses or direct_statuses[-1] != "403":
+            raise VerificationError(
+                "Direct origin request was not blocked with HTTP 403"
+            )
+        direct_result = "http_403"
+    elif direct.returncode in {7, 28, 35, 52, 56}:
+        direct_result = f"network_or_tls_block_curl_{direct.returncode}"
+    else:
+        raise VerificationError(
+            f"Direct origin check was inconclusive (curl exit {direct.returncode})"
+        )
+    return HTTPVerification(True, True, direct_result)
+
+
+def _verify_repository_origin_pull() -> None:
+    path = Path("ops/nginx/sitbank-staging.conf")
+    if not path.is_file():
+        raise VerificationError(
+            "Run verification from the repository root; staging Nginx config is missing"
+        )
+    config = path.read_text(encoding="utf-8")
+    required = (
+        "ssl_client_certificate /etc/nginx/cloudflare-authenticated-origin-pull-ca.pem;",
+        "ssl_verify_client optional;",
+        "if ($ssl_client_verify != SUCCESS) { return 403; }",
+    )
+    if any(item not in config for item in required):
+        raise VerificationError(
+            "Repository staging Nginx origin-pull enforcement is missing"
+        )
+
+
+def _write_evidence(path: Path, config: Config, http: HTTPVerification) -> None:
+    evidence = {
+        "schema": 1,
+        "verified_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "hostname": config.hostname,
+        "checks": {
+            "access_application": True,
+            "approved_operator_policy": True,
+            "implicit_default_deny": True,
+            "proxied_dns": True,
+            "application_audience_present": True,
+            "edge_access_challenge": http.edge_challenge,
+            "direct_origin_blocked": http.direct_origin_blocked,
+            "direct_origin_result": http.direct_origin_result,
+            "repository_origin_pull_gate": True,
+        },
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"{json.dumps(evidence, indent=2, sort_keys=True)}\n", encoding="utf-8")
+
+
+def _print_origin_environment(config: Config, audience: str) -> None:
+    print("Origin JWT verification values (not secrets):")
+    print(f"CLOUDFLARE_ACCESS_AUD={audience}")
+    print(f"CLOUDFLARE_ACCESS_ISSUER={config.issuer}")
+    print(f"CLOUDFLARE_ACCESS_JWKS_URL={config.jwks_url}")
+    print(
+        "The current Flask/Nginx runtime does not consume these values yet; "
+        "do not trust Cloudflare identity headers until JWT validation is implemented."
+    )
+
+
+def plan(config: Config) -> None:
+    print("Cloudflare staging Access plan (offline; no API calls):")
+    print(f"- ensure one self-hosted Access application for {config.hostname}")
+    print(
+        f"- enforce one Allow policy with {len(config.allowed_emails)} approved email(s) "
+        f"and {len(config.allowed_group_ids)} approved group(s)"
+    )
+    print("- reject everyone, bypass, non-identity, and unmanaged Allow policies")
+    print(
+        f"- ensure one proxied {config.dns_record_type} DNS record "
+        "(origin value redacted)"
+    )
+    print(f"- use an Access session duration of {config.session_duration}")
+    print("- collect the application audience and team issuer for future JWT validation")
+    print("- preserve the repository-managed Authenticated Origin Pull gate")
+    print(
+        f"Apply requires --confirm {APPLY_CONFIRMATION} and an API token; "
+        "this plan did not read or print a token."
+    )
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--plan", action="store_true", help="print desired state offline")
+    mode.add_argument("--apply", action="store_true", help="reconcile provider state")
+    mode.add_argument("--verify", action="store_true", help="verify provider and HTTP state")
+    parser.add_argument(
+        "--confirm",
+        metavar="PHRASE",
+        help=f"required for --apply; must equal {APPLY_CONFIRMATION}",
+    )
+    parser.add_argument(
+        "--evidence-file",
+        type=Path,
+        help="write sanitized JSON evidence after successful --verify",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+    try:
+        config = Config.from_environment(require_origin_ip=args.verify)
+        if args.plan:
+            if args.evidence_file:
+                raise ConfigurationError("--evidence-file is valid only with --verify")
+            plan(config)
+            return 0
+
+        if args.apply and args.confirm != APPLY_CONFIRMATION:
+            raise ConfigurationError(
+                f"--apply requires --confirm {APPLY_CONFIRMATION}"
+            )
+        token = _required("CLOUDFLARE_API_TOKEN")
+        api = CloudflareAPI(token)
+
+        if args.apply:
+            if args.evidence_file:
+                raise ConfigurationError("--evidence-file is valid only with --verify")
+            state = apply_provider_state(api, config)
+            audience = verify_provider_state(state, config)
+            print("Cloudflare provider state applied and read-back verification passed.")
+            _print_origin_environment(config, audience)
+            print("Run --verify after DNS propagation to test the live edge and origin.")
+            return 0
+
+        state = read_provider_state(api, config)
+        audience = verify_provider_state(state, config)
+        _verify_repository_origin_pull()
+        http = verify_live_http(config)
+        if args.evidence_file:
+            _write_evidence(args.evidence_file, config, http)
+            print(f"Sanitized evidence written to {args.evidence_file}.")
+        print("Cloudflare Access, proxied DNS, edge challenge, and origin bypass checks passed.")
+        _print_origin_environment(config, audience)
+        return 0
+    except (
+        CloudflareAPIError,
+        ConfigurationError,
+        VerificationError,
+    ) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

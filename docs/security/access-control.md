@@ -198,3 +198,12 @@ EC2-origin requests to staging browser/app paths return `403` unless
 Cloudflare's client certificate verifies successfully. Staging `/health/ready`
 remains loopback-only for deployment checks. The shared default Nginx config
 continues to reject unknown hostnames.
+
+`ops/cloudflare/provision-staging-access` manages and verifies the corresponding
+provider-side self-hosted application, explicit email/group Allow policy,
+application audience, and proxied staging DNS record. Its live verification
+also checks the unauthenticated Access challenge and direct-origin denial.
+Cloudflare Access remains an outer network/identity boundary: Flask login, MFA,
+CSRF, ownership checks, rate limiting, audit logging, and Basic Auth still
+apply. Cloudflare identity headers are not authorization input unless the
+`Cf-Access-Jwt-Assertion` signature, issuer, and audience are validated.
