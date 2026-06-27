@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# Verify host-managed Certbot state without changing certificates or permissions.
+# Verify host-managed Certbot state without changing certificate material.
 set -Eeuo pipefail
 
 readonly LETSENCRYPT_ROOT="/etc/letsencrypt"
 readonly PRODUCTION_PUBLIC_HOST="sitbank.duckdns.org"
 readonly PRODUCTION_ADMIN_PUBLIC_HOST="admin-sitbank.duckdns.org"
 readonly STAGING_PUBLIC_HOST="staging-sitbank.duckdns.org"
+readonly CERTBOT_MIN_VALID_DAYS="${CERTBOT_MIN_VALID_DAYS:-14}"
 readonly -a APPROVED_TLS_KEY_GROUPS=(root)
 
 usage() {
-    echo "Usage: verify-certbot-host-state [production|staging]" >&2
+    echo "Usage: verify-certbot-host-state [--renewal-dry-run] [production|staging]" >&2
 }
 
 if [[ "${EUID}" -ne 0 ]]; then
@@ -17,11 +18,42 @@ if [[ "${EUID}" -ne 0 ]]; then
     exit 1
 fi
 
-target="${1:-}"
-if [[ "${target}" != "production" && "${target}" != "staging" ]]; then
+target=""
+renewal_dry_run=0
+while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+        production|staging)
+            if [[ -n "${target}" ]]; then
+                usage
+                exit 2
+            fi
+            target="$1"
+            ;;
+        --renewal-dry-run)
+            renewal_dry_run=1
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            usage
+            exit 2
+            ;;
+    esac
+    shift
+done
+
+if [[ -z "${target}" ]]; then
     usage
     exit 2
 fi
+if [[ ! "${CERTBOT_MIN_VALID_DAYS}" =~ ^[1-9][0-9]{0,3}$ ]] \
+    || (( CERTBOT_MIN_VALID_DAYS > 3650 )); then
+    echo "CERTBOT_MIN_VALID_DAYS must be an integer from 1 through 3650" >&2
+    exit 2
+fi
+readonly CERTBOT_MIN_VALID_SECONDS=$((CERTBOT_MIN_VALID_DAYS * 86400))
 
 failures=0
 
@@ -58,11 +90,47 @@ verify_renewal_timer() {
     fi
 }
 
+verify_openssl() {
+    if ! command -v openssl >/dev/null 2>&1; then
+        fail "openssl is required to validate local TLS certificates"
+        return
+    fi
+    echo "OK: openssl is installed"
+}
+
+certificate_covers_hostname() {
+    local certificate_path="$1"
+    local expected_hostname="$2"
+    local san_output
+    local san_entry
+
+    if ! san_output="$(
+        openssl x509 \
+            -in "${certificate_path}" \
+            -noout \
+            -ext subjectAltName 2>/dev/null
+    )"; then
+        return 1
+    fi
+
+    # Require an exact DNS SAN. Deliberately do not fall back to the legacy
+    # subject CN and do not treat a wildcard as an exact hostname match.
+    while IFS= read -r san_entry; do
+        san_entry="${san_entry#"${san_entry%%[![:space:]]*}"}"
+        san_entry="${san_entry%"${san_entry##*[![:space:]]}"}"
+        if [[ "${san_entry}" == "DNS:${expected_hostname}" ]]; then
+            return 0
+        fi
+    done < <(printf '%s\n' "${san_output}" | tr ',' '\n')
+    return 1
+}
+
 verify_certificate_file() {
     local domain="$1"
     local filename="$2"
     local certificate_path="${LETSENCRYPT_ROOT}/live/${domain}/${filename}"
     local resolved_path
+    local not_after
 
     if [[ ! -d "${LETSENCRYPT_ROOT}/live/${domain}" ]]; then
         fail "missing expected certificate directory: ${LETSENCRYPT_ROOT}/live/${domain}"
@@ -83,7 +151,38 @@ verify_certificate_file() {
         fail "certificate file resolves outside ${LETSENCRYPT_ROOT}: ${certificate_path}"
         return
     fi
-    echo "OK: ${certificate_path} resolves inside ${LETSENCRYPT_ROOT}"
+    if ! command -v openssl >/dev/null 2>&1; then
+        return
+    fi
+    if ! openssl x509 -in "${resolved_path}" -noout >/dev/null 2>&1; then
+        fail "certificate is not parseable by openssl x509: ${certificate_path}"
+        return
+    fi
+    if ! not_after="$(
+        openssl x509 -in "${resolved_path}" -noout -enddate 2>/dev/null
+    )" || [[ ! "${not_after}" =~ ^notAfter=.+$ ]]; then
+        fail "certificate does not have a valid notAfter value: ${certificate_path}"
+        return
+    fi
+    if ! openssl x509 \
+        -in "${resolved_path}" \
+        -noout \
+        -checkend 0 >/dev/null 2>&1; then
+        fail "certificate is expired (${not_after}): ${certificate_path}"
+        return
+    fi
+    if ! openssl x509 \
+        -in "${resolved_path}" \
+        -noout \
+        -checkend "${CERTBOT_MIN_VALID_SECONDS}" >/dev/null 2>&1; then
+        fail "certificate expires within ${CERTBOT_MIN_VALID_DAYS} days (${not_after}): ${certificate_path}"
+        return
+    fi
+    if ! certificate_covers_hostname "${resolved_path}" "${domain}"; then
+        fail "certificate SAN does not exactly cover expected hostname ${domain}: ${certificate_path}"
+        return
+    fi
+    echo "OK: ${certificate_path} is parseable, covers ${domain}, and remains valid beyond ${CERTBOT_MIN_VALID_DAYS} days"
 }
 
 is_approved_tls_key_group() {
@@ -152,6 +251,15 @@ verify_private_key() {
     fi
 }
 
+verify_renewal_dry_run() {
+    echo "Running explicit Certbot renewal dry-run; this may contact the ACME staging service."
+    if ! certbot renew --dry-run; then
+        fail "certbot renewal dry-run failed"
+        return
+    fi
+    echo "OK: certbot renewal dry-run passed"
+}
+
 case "${target}" in
     production)
         domains=("${PRODUCTION_PUBLIC_HOST}" "${PRODUCTION_ADMIN_PUBLIC_HOST}")
@@ -162,11 +270,16 @@ case "${target}" in
 esac
 
 verify_certbot
+verify_openssl
 verify_renewal_timer
 for domain in "${domains[@]}"; do
     verify_certificate_file "${domain}" "fullchain.pem"
     verify_private_key "${domain}"
 done
+
+if [[ "${renewal_dry_run}" -eq 1 && "${failures}" -eq 0 ]]; then
+    verify_renewal_dry_run
+fi
 
 if [[ "${failures}" -ne 0 ]]; then
     echo "Certbot host-state verification failed for ${target}. No files were changed." >&2
@@ -174,4 +287,6 @@ if [[ "${failures}" -ne 0 ]]; then
 fi
 
 echo "Certbot host-state verification passed for ${target}."
-echo "Manual renewal verification remains required: sudo certbot renew --dry-run"
+if [[ "${renewal_dry_run}" -eq 0 ]]; then
+    echo "Renewal dry-run was not requested. Run: sudo $0 --renewal-dry-run ${target}"
+fi
