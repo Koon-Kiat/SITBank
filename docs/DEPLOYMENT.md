@@ -176,12 +176,12 @@ and pass/fail result. TLS scanning uses no application credentials and the
 workflow contains no application secrets.
 
 The verification gate fails for SSLv2, SSLv3, TLS 1.0, or TLS 1.1; weak, NULL,
-anonymous, export, RC4, or 3DES ciphers; expired certificates; hostname
-mismatches; untrusted, incomplete, or missing certificate chains; any
-`testssl.sh` HIGH, CRITICAL, or FATAL finding; and scan/JSON-generation errors.
-MEDIUM/LOW/INFO findings remain in the evidence and require operator review;
-they are not an automatic release block unless they match one of the explicit
-prohibited classes above.
+anonymous, export, RC4, or 3DES ciphers; missing, disabled, or too-short HSTS;
+expired certificates; hostname mismatches; untrusted, incomplete, or missing
+certificate chains; any `testssl.sh` HIGH, CRITICAL, or FATAL finding; and
+missing/invalid JSON evidence. MEDIUM/LOW/INFO findings remain in the evidence
+and require operator review; they are not an automatic release block unless
+they match one of the explicit prohibited classes above.
 
 For a host-side/manual check, use the same full scan (do not use `-k` or supply
 application credentials):
@@ -376,6 +376,7 @@ curl --fail --resolve staging-sitbank.duckdns.org:443:127.0.0.1 \
 curl -I --resolve staging-sitbank.duckdns.org:443:<EC2_PUBLIC_IP> \
   https://staging-sitbank.duckdns.org/
 sudo nginx -T | grep -E 'ssl_protocols|ssl_ciphers|ssl_ecdh_curve|ssl_conf_command|ssl_session_tickets'
+curl -fsSI https://staging-sitbank.duckdns.org/ | grep -i '^strict-transport-security:'
 testssl.sh --warnings batch --color 0 https://staging-sitbank.duckdns.org
 ```
 
@@ -393,3 +394,11 @@ with `testssl.sh --warnings batch --color 0 https://sitbank.duckdns.org` and
 `testssl.sh --warnings batch --color 0 https://admin-sitbank.duckdns.org`. The
 `ssl_conf_command` TLS 1.3 setting is runtime-dependent, so `nginx -t` must
 pass on the deployed host before any reload.
+
+Production HSTS validation should also confirm both public hostnames return the
+production edge header before the production live TLS scan is accepted:
+
+```bash
+curl -fsSI https://sitbank.duckdns.org/ | grep -i '^strict-transport-security:'
+curl -fsSI https://admin-sitbank.duckdns.org/ | grep -i '^strict-transport-security:'
+```

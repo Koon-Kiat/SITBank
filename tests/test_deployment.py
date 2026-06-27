@@ -220,9 +220,24 @@ def _assert_nginx_owns_duplicate_edge_security_headers(
     nginx: str,
     *,
     hsts_add_header: str,
+    referrer_policy: str = "strict-origin-when-cross-origin",
     server_name: str | None = None,
+    min_hsts_max_age_seconds: int = 15_552_000,
 ) -> None:
     https_server = _nginx_https_server_prelocation(nginx, server_name=server_name)
+    hsts_match = re.fullmatch(
+        r'add_header Strict-Transport-Security "([^"]+)" always;',
+        hsts_add_header,
+    )
+    assert hsts_match, f"Unexpected HSTS directive format: {hsts_add_header}"
+    max_age_match = re.search(
+        r"(?:^|;)\s*max-age=(\d+)(?:\s*;|$)",
+        hsts_match.group(1),
+        flags=re.IGNORECASE,
+    )
+    assert max_age_match, f"Missing HSTS max-age: {hsts_add_header}"
+    assert int(max_age_match.group(1)) >= min_hsts_max_age_seconds
+
     hide_directives = (
         "proxy_hide_header X-Content-Type-Options;",
         "proxy_hide_header X-Frame-Options;",
@@ -233,7 +248,7 @@ def _assert_nginx_owns_duplicate_edge_security_headers(
     add_header_directives = (
         'add_header X-Content-Type-Options "nosniff" always;',
         'add_header X-Frame-Options "DENY" always;',
-        'add_header Referrer-Policy "strict-origin-when-cross-origin" always;',
+        f'add_header Referrer-Policy "{referrer_policy}" always;',
         'add_header Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()" always;',
         hsts_add_header,
     )
@@ -2043,6 +2058,9 @@ def test_live_tls_scan_workflow_collects_evidence_without_running_on_pull_reques
     assert "TLS1_1" in workflow_text
     assert "cipherlist_(NULL|aNULL|EXPORT|LOW|OBSOLETED|3DES|RC4)" in workflow_text
     assert "cert_expirationStatus" in workflow_text
+    assert "testssl_exit_failed=0" in workflow_text
+    assert 'id | test("HSTS|STS"; "i")' in workflow_text
+    assert 'finding | test("too short|not offered|not sent|missing|disabled"; "i")' in workflow_text
     assert "cert_trust" in workflow_text
     assert "cert_chain_of_trust" in workflow_text
     assert "index($severity) != null" in workflow_text
@@ -2577,6 +2595,15 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
             'includeSubDomains" always;'
         ),
         server_name="sitbank.duckdns.org",
+    )
+    _assert_nginx_owns_duplicate_edge_security_headers(
+        nginx,
+        hsts_add_header=(
+            'add_header Strict-Transport-Security "max-age=31536000; '
+            'includeSubDomains" always;'
+        ),
+        referrer_policy="no-referrer",
+        server_name="admin-sitbank.duckdns.org",
     )
     assert "client_max_body_size 4m;" in nginx
     for timeout in (
