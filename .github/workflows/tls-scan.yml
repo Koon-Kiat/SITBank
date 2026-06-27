@@ -238,6 +238,20 @@ jobs:
                   and (.id // "") == "HTTP_status_code"
                   and ((.finding // "") | test("^302[[:space:]]+Found"; "i"))
                 );
+              def protocol_offered_ok($items; $wanted):
+                any(
+                  $items[];
+                  type == "object"
+                  and (.id // "") == $wanted
+                  and offered
+                );
+              def hsts_minimum_ok($items):
+                any(
+                  $items[];
+                  type == "object"
+                  and (.id // "") == "HSTS_time"
+                  and (.severity // "") == "OK"
+                );
               def production_public_violation:
                 severe
                 or ((id == "SSLv2" or id == "SSLv3" or id == "TLS1" or id == "TLS1_1") and offered)
@@ -249,6 +263,7 @@ jobs:
                 or (id == "cert_chain_of_trust" and (finding | test("not trusted|untrusted|incomplete|missing"; "i")));
               def staging_access_violation:
                 ((id == "SSLv2" or id == "SSLv3" or id == "TLS1" or id == "TLS1_1") and offered)
+                or ((id | test("HSTS|STS"; "i")) and (finding | test("too short|not offered|not sent|missing|disabled"; "i")))
                 or (id == "insecure_redirect")
                 or (id == "cert_expirationStatus" and (finding | test("^expired"; "i")))
                 or (
@@ -266,9 +281,12 @@ jobs:
                   ),
                   (if has_id($items; "TLS1") then empty else "[UNKNOWN] TLS1: missing TLS 1.0 evidence" end),
                   (if has_id($items; "TLS1_1") then empty else "[UNKNOWN] TLS1_1: missing TLS 1.1 evidence" end),
+                  (if protocol_offered_ok($items; "TLS1_2") then empty else "[UNKNOWN] TLS1_2: missing or not offered" end),
+                  (if protocol_offered_ok($items; "TLS1_3") then empty else "[UNKNOWN] TLS1_3: missing or not offered" end),
                   (if has_id($items; "HTTP_status_code") then
                     if staging_http_access_ok($items) then empty else "[UNKNOWN] HTTP_status_code: expected 302 Found Cloudflare Access challenge" end
                   else "[UNKNOWN] HTTP_status_code: missing Cloudflare Access challenge evidence" end),
+                  (if hsts_minimum_ok($items) then empty else "[UNKNOWN] HSTS_time: missing or below the required HSTS minimum" end),
                   (if has_id($items; "cert_trust") then empty else "[UNKNOWN] cert_trust: missing certificate hostname/trust evidence" end),
                   (if has_id($items; "cert_chain_of_trust") then empty else "[UNKNOWN] cert_chain_of_trust: missing certificate chain evidence" end),
                   (if final_grade_ok($items) then empty else "[UNKNOWN] overall_grade: missing or lower than A for Cloudflare Access staging" end)
