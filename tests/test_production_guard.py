@@ -11,7 +11,7 @@ from app.security.production_guard import (
     enforce_production_startup_guard,
     validate_production_security_prerequisites,
 )
-from config import MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS
+from config import MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS, MIN_PRODUCTION_PASSWORD_LENGTH
 from conftest import TestConfig
 
 
@@ -29,6 +29,7 @@ def _production_app(monkeypatch, *, app_mode: str = "customer"):
         TALISMAN_FORCE_HTTPS=True,
         PAYEE_COOLDOWN_SECONDS=MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS,
         MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS=MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS,
+        PASSWORD_MIN_LENGTH=MIN_PRODUCTION_PASSWORD_LENGTH,
         SECURITY_ALERT_ENABLED=True,
         SECURITY_ALERT_WEBHOOK_URL="https://hooks.example.test/sitbank-security-alerts",
     )
@@ -45,8 +46,31 @@ def test_shared_validator_accepts_safe_customer_production_configuration(monkeyp
     result = validate_production_security_prerequisites(app, app_mode="customer")
 
     assert result.ready
+    assert result.details["password_min_length"] == MIN_PRODUCTION_PASSWORD_LENGTH
     assert result.details["session_hmac_key_count"] == 2
     assert result.details["mfa_kek_count"] == 2
+
+
+def test_shared_validator_rejects_weak_production_password_minimum(monkeypatch):
+    app = _production_app(monkeypatch)
+    app.config["PASSWORD_MIN_LENGTH"] = MIN_PRODUCTION_PASSWORD_LENGTH - 1
+
+    result = validate_production_security_prerequisites(app, app_mode="customer")
+
+    assert not result.ready
+    assert any("PASSWORD_MIN_LENGTH" in failure for failure in result.failures)
+
+
+def test_production_check_rejects_weak_password_minimum(monkeypatch):
+    app = _production_app(monkeypatch)
+    app.config["PASSWORD_MIN_LENGTH"] = MIN_PRODUCTION_PASSWORD_LENGTH - 1
+
+    result = app.test_cli_runner().invoke(args=["production-check"])
+
+    assert result.exit_code != 0
+    assert "PASSWORD_MIN_LENGTH" in result.output
+    assert str(MIN_PRODUCTION_PASSWORD_LENGTH) in result.output
+    assert "password_pepper" not in result.output
 
 
 def test_startup_guard_fails_closed_and_logs_only_sanitized_reason(monkeypatch, caplog):

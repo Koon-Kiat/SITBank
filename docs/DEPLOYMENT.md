@@ -36,6 +36,21 @@ python -m flask --app wsgi:app db upgrade
 
 Do not run `db.create_all()` in deployment. For role cutover use `sitbank-database-cutover prepare`, review the generated SQL, and execute it only during an approved maintenance window.
 
+## Registration Schema Reset For Disposable Environments
+
+The registration schema requires verified email, full name, phone number, and a
+server-generated account number for new customers. Existing disposable
+development, staging, or demo databases with no real users may be reset or
+recreated before applying the registration migration so fake phone numbers and
+predictable account numbers are not preserved as long-lived data.
+
+Do not drop or recreate a production-like database automatically. Any reset must
+be an explicit operator action after confirming the environment has no real
+users and after taking any required backup. If an existing database must be
+preserved, the migration leaves unknown legacy phone numbers as `NULL`, keeps
+uniqueness only for real non-null phone numbers, and assigns non-enumerable
+server-generated account numbers to preserved rows.
+
 ## Deployment Prerequisites
 
 Install `/etc/sitbank/secrets/security_alert_webhook_url` or
@@ -46,6 +61,20 @@ and set `PASSWORD_RESET_EMAIL_BACKEND=smtp`, `PASSWORD_RESET_EMAIL_FROM`,
 `PASSWORD_RESET_BASE_URL`, `SMTP_HOST`, `SMTP_PORT`, and `SMTP_USE_TLS=true` in
 the container runtime environment. Production rejects console reset email,
 non-HTTPS reset base URLs, and plaintext SMTP delivery.
+
+Install the host-managed backup encryption recipients file before running
+database cutover or scheduled backups:
+
+- production: `/etc/sitbank/backup-age-recipients.txt`
+- staging: `/etc/sitbank-staging/backup-age-recipients.txt`
+
+The recipients file contains age public recipients only. Decryption identities
+remain outside the repository and outside application containers. Bootstrap
+installs `age`, `/usr/local/sbin/sitbank-backup-encrypted`, and
+`/usr/local/sbin/sitbank-restore-preflight`; encrypted backups are stored under
+`/var/backups/sitbank` or `/var/backups/sitbank-staging` as root-owned mode
+`0600` `.pgdump.age` files. Restore checks are explicit operator preflights,
+not Flask routes or deployment defaults.
 
 Deploy the signed image through the restricted wrapper so it runs
 `production-check`, `db upgrade`, `apply-runtime-db-privileges`,
@@ -220,7 +249,11 @@ while troubleshooting.
 The reviewed production bootstrap installs and enables the production edge from `ops/nginx/sitbank-default.conf`, `ops/nginx/sitbank-production.conf`, `ops/nginx/sitbank-production-rate-limits.conf`, `ops/nginx-proxy-headers.conf`, and `ops/nginx/sitbank-tls-policy.conf`. The shared default config owns unknown-host rejection so production and staging can run on the same EC2 without duplicate Nginx `default_server` listeners. Any change to those files requires a production bootstrap after merge.
 
 - Public ingress is TCP `80` and `443` only.
-- SSH is restricted to an administrator IP allowlist, AWS Systems Manager, a bastion, or VPN.
+- SSH hardening is deferred in this branch. The Issue 186 OpenSSH drop-in,
+  UFW/security-group rollout, and deployment-source migration path are not
+  implemented here because they can affect GitHub Actions deployment access.
+  Treat live SSH posture as operator-owned infrastructure evidence until a
+  separate reviewed change lands.
 - Nginx terminates TLS, redirects production customer HTTP to HTTPS, returns
   `403` for non-ACME staging/admin HTTP roots, and forwards only expected
   proxy headers.
@@ -247,6 +280,8 @@ The reviewed production bootstrap installs and enables the production edge from 
 Verification:
 
 ```bash
+sudo sshd -t
+sudo ufw status numbered verbose
 sudo test -r /etc/letsencrypt/live/sitbank.duckdns.org/fullchain.pem
 sudo /usr/local/sbin/verify-certbot-host-state production
 sudo nginx -t
@@ -264,6 +299,12 @@ curl -I https://admin-sitbank.duckdns.org/login
 Expected: local customer and admin readiness succeeds, external `/health/ready`
 returns `403`, admin `/` returns `403`, and admin application routes return
 `403` or are otherwise denied by Nginx.
+
+GitHub-hosted runners do not have stable source IPs. The normal
+GitHub-hosted SSH deployment is acceptable only when the runner source is
+allowlisted by a reviewed path such as a self-hosted runner, bastion, VPN
+egress, or a time-boxed operator-approved maintenance window. Do not leave
+global SSH open to support deployment.
 
 Staging admin must follow the same boundary pattern as production. Do not expose
 admin routes publicly. The staging admin service must bind only to localhost

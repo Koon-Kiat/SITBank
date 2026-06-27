@@ -113,7 +113,8 @@ with TOTP must verify TOTP or a recovery code. Accounts that cannot complete
 the supported reset verification flow must use manual account recovery before
 password reset or MFA re-enrollment. Customers without MFA can reset but are
 sent through the existing MFA onboarding gate on next login. Admin-account
-reset is not implemented in the customer domain.
+recovery belongs to the isolated admin/manual-recovery boundary, not the
+customer domain.
 
 ## Documentation
 
@@ -121,6 +122,14 @@ reset is not implemented in the customer domain.
 - [GitHub Actions](docs/GITHUB_ACTIONS.md)
 - [Operations](docs/OPERATIONS.md)
 - [Security](SECURITY.md)
+- [Audit and alerting](docs/security/audit-and-alerting.md)
+- [Framework control matrix](docs/security/framework-control-matrix.md)
+- [Privacy and PDPA](docs/security/privacy-and-pdpa.md)
+- [Data retention and deactivation](docs/security/data-retention-and-deactivation.md)
+- [Incident response](docs/security/incident-response.md)
+- [Threat model](docs/security/threat-model.md)
+- [Design risk register](docs/security/design-risk-register.md)
+- [Security gap register](docs/security/security-gap-register.md)
 - [Legacy and out-of-scope technology notes](docs/security/legacy-and-out-of-scope-technology.md)
 - [Archived EC2 transition notes](docs/archive/EC2_TRANSITION.md)
 

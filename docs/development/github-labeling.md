@@ -96,7 +96,7 @@ identify their package ecosystem. The existing workflows were scanned before
 adding the labeler workflows, and no additional issue/PR labels used by GitHub
 Actions logic were found.
 
-If a future workflow depends on a label in conditions, `gh issue edit
+If a later workflow depends on a label in conditions, `gh issue edit
 --add-label`, `gh issue edit --remove-label`, API calls, `labels:` blocks, or
 other issue/PR label checks, add that label to `PROTECTED_LABELS` in
 `.github/workflows/retag-labels.yml` before running a retag.

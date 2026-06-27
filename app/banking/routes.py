@@ -16,12 +16,13 @@ from flask import (
 )
 from sqlalchemy.exc import IntegrityError
 
-from app.auth.forms import MfaOrStepUpForm
+from app.auth.forms import CsrfOnlyForm, MfaOrStepUpForm
+from app.auth.mfa_policy import has_enrolled_mfa_method
 from app.auth.services import AuthError, verify_high_risk_authorization
 from app.banking.forms import AddPayeeForm
 from app.extensions import db, limiter
 from app.models import Payee, User
-from app.security.audit import audit_event
+from app.security.audit import audit_event, audit_reference
 from app.security.rate_limits import mfa_principal
 from app.web.routes import web_login_required, web_not_frozen_required
 
@@ -30,6 +31,15 @@ banking_bp = Blueprint("banking", __name__, url_prefix="/banking")
 
 _PENDING_PAYEE_TTL = 300  # seconds; user has 5 min to complete MFA after step 1
 _ACCOUNT_RE = re.compile(r"^[0-9]{9}$")
+
+
+@banking_bp.before_request
+def enforce_banking_mfa_onboarding():
+    user = getattr(g, "current_user", None)
+    if user is not None and not has_enrolled_mfa_method(user):
+        flash("Set up an authenticator app before using banking features.", "warning")
+        return redirect(url_for("web.mfa_setup"))
+    return None
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -123,10 +133,30 @@ def payees_add_submit():
         flash("You cannot add your own account as a payee.", "error")
         return render_template("add_payee.html", form=form), 400
 
-    # Server-side lookup — recipient name comes from DB, never from client input
+    # Authorize before lookup so recipient identity is not revealed pre-step-up.
+    try:
+        verify_high_risk_authorization(
+            g.current_user,
+            form.totp_code.data,
+            form.stepup_token.data,
+            "payee_add",
+        )
+    except AuthError as exc:
+        flash(exc.message, "error")
+        return render_template("add_payee.html", form=form), exc.status_code
+
     recipient = User.query.filter_by(account_number=account_number).first()
     if not recipient:
-        flash("Account not found. Please check the account number.", "error")
+        audit_event(
+            "payee_lookup",
+            "failure",
+            user=g.current_user,
+            metadata={
+                "reason": "recipient_not_found",
+                "account_ref": audit_reference("payee_account", account_number),
+            },
+        )
+        flash("Could not add that payee. Check the details and try again.", "error")
         return render_template("add_payee.html", form=form), 400
 
     existing = Payee.query.filter_by(
@@ -142,6 +172,8 @@ def payees_add_submit():
         "nickname": nickname,
         "account_number": account_number,
         "recipient_name": recipient.full_name,  # fetched from DB
+        "authorization_action": "payee_add",
+        "authorized_at": datetime.now(timezone.utc).isoformat(),
         "expires_at": (
             datetime.now(timezone.utc) + timedelta(seconds=_PENDING_PAYEE_TTL)
         ).isoformat(),
@@ -149,7 +181,7 @@ def payees_add_submit():
     return redirect(url_for("banking.payees_confirm"))
 
 
-# ── Add payee: step 2 — confirmation + MFA ──────────────────────────────────────
+# ── Add payee: step 2 — confirmation ───────────────────────────────────────────
 
 @banking_bp.get("/payees/confirm")
 @web_login_required
@@ -165,7 +197,7 @@ def payees_confirm():
         flash("Request expired. Please start again.", "warning")
         return redirect(url_for("banking.payees_add"))
 
-    return render_template("confirm_payee.html", form=MfaOrStepUpForm(), pending=pending)
+    return render_template("confirm_payee.html", form=CsrfOnlyForm(), pending=pending)
 
 
 @banking_bp.post("/payees/confirm")
@@ -173,7 +205,7 @@ def payees_confirm():
 @web_login_required
 @web_not_frozen_required
 def payees_confirm_submit():
-    form = MfaOrStepUpForm()
+    form = CsrfOnlyForm()
 
     # Consume pending payee now — prevents replay attacks
     pending = session.pop("pending_payee", None)
@@ -183,6 +215,10 @@ def payees_confirm_submit():
 
     if datetime.now(timezone.utc) > datetime.fromisoformat(pending["expires_at"]):
         flash("Request expired. Please start again.", "warning")
+        return redirect(url_for("banking.payees_add"))
+
+    if pending.get("authorization_action") != "payee_add" or not pending.get("authorized_at"):
+        flash("Payee authorization expired. Please start again.", "warning")
         return redirect(url_for("banking.payees_add"))
 
     if not form.validate_on_submit():
@@ -209,31 +245,12 @@ def payees_confirm_submit():
         flash("This payee is already in your list.", "error")
         return redirect(url_for("banking.payees"))
 
-    # MFA verified server-side
-    try:
-        verify_high_risk_authorization(
-            g.current_user,
-            form.totp_code.data,
-            form.stepup_token.data,
-            "payee_add",
-        )
-    except AuthError as exc:
-        flash(exc.message, "error")
-        # Put pending payee back so user can retry without re-entering account number
-        session["pending_payee"] = {
-            **pending,
-            "expires_at": (
-                datetime.now(timezone.utc) + timedelta(seconds=_PENDING_PAYEE_TTL)
-            ).isoformat(),
-        }
-        return render_template("confirm_payee.html", form=form, pending=pending), exc.status_code
-
     # Insert using server-fetched name — client never supplied this
     payee = Payee(
         user_id=g.current_user.id,
         nickname=pending["nickname"],
         account_number=account_number,
-        recipient_name=pending["recipient_name"],
+        recipient_name=recipient.full_name,
     )
     try:
         db.session.add(payee)

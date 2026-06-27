@@ -19,6 +19,16 @@ roles.
 
 MFA/TOTP seed encryption uses envelope encryption. Keep old KEKs in `mfa_kek_keys_json` until `rewrap-mfa-deks` has moved stored records to the new active KEK. Then update `MFA_KEK_ACTIVE_ID` and the root-managed keyring together.
 
+## Disposable Registration Data Reset
+
+If a development, staging, or demo database contains only seeded/test users from
+before the registration-field migration, prefer an explicit reset/recreate over
+preserving fake contact data. Confirm the target environment, confirm there are
+no real users, take any required backup, then run the normal bootstrap or
+deployment migration path for that environment. Production-like databases must
+not be reset by scripts or deployment automation without a separate approved
+maintenance record.
+
 ## Admin And Staging Access Operations
 
 SITBank uses a hybrid private-access model:
@@ -61,6 +71,17 @@ The detailed onboarding, offboarding, emergency lockout, rollback, and live
 operator verification steps are in
 `docs/security/admin-and-staging-zero-trust-access.md`.
 
+## EC2 SSH And Deployment Access Operations
+
+Issue 186 EC2 SSH hardening is deferred and is not implemented by this branch.
+There is no repository OpenSSH drop-in, UFW rollout, security-group migration,
+or deployment-source allowlisting runbook to apply from this checkout.
+
+Keep the existing approved deployment path in place until a separate reviewed
+change designs and tests the EC2 host, AWS security-group, GitHub Actions, and
+rollback impact together. Do not claim root SSH, password SSH, `AllowUsers`,
+UFW, or TCP `22` ingress has been hardened from repository evidence alone.
+
 ## Trivy Exception
 
 The temporary `.trivyignore` exception covers only `CVE-2026-42496` and `CVE-2026-8376` inherited from the official python:3.12 slim-trixie / Debian Trixie base image.
@@ -73,11 +94,61 @@ This exception is temporary with a review/remove-by date: 2026-06-26. The full C
 
 Application rollback restores the previous signed image digest and runtime bundle. Database rollback requires an explicit backup/restore decision because Alembic migrations must remain backward-compatible and are not automatically reversed.
 
+## Encrypted Backup Operations
+
+Create database backups with the host-managed encrypted helper:
+
+```bash
+sudo /usr/local/sbin/sitbank-backup-encrypted --environment staging
+sudo /usr/local/sbin/sitbank-backup-encrypted --environment production
+```
+
+The helper runs `pg_dump --format=custom`, keeps plaintext only in a
+root-owned temporary directory, encrypts with age recipients from
+`/etc/sitbank-staging/backup-age-recipients.txt` or
+`/etc/sitbank/backup-age-recipients.txt`, writes root-owned mode `0600`
+`.pgdump.age` files under `/var/backups/sitbank-staging` or
+`/var/backups/sitbank`, and removes plaintext temporary files on success and
+failure. The recipients file contains public recipients only. Decryption
+identity files stay host-only, for example under
+`/root/.config/sitbank-backups/`, and must not be copied into the repo,
+application container, tickets, chat, or audit metadata.
+
+Run restore preflight before any restore operation:
+
+```bash
+sudo /usr/local/sbin/sitbank-restore-preflight \
+  --environment staging \
+  --backup-file /var/backups/sitbank-staging/<backup>.pgdump.age \
+  --target-database sitbank_db \
+  --identity-file /root/.config/sitbank-backups/age-identity.txt
+sudo /usr/local/sbin/sitbank-restore-preflight \
+  --environment production \
+  --backup-file /var/backups/sitbank/<backup>.pgdump.age \
+  --target-database sitbank_db \
+  --identity-file /root/.config/sitbank-backups/age-identity.txt \
+  --confirm-production-restore
+```
+
+The preflight is non-destructive. It checks the approved OS user, explicit
+environment, explicit target database, encrypted backup path, backup
+permissions, host-only age identity, and production confirmation. Do not run a
+production restore during normal verification. Do not commit `.dump`, `.sql`,
+`.backup`, `.pgdump`, decrypted dumps, age identity files, GPG private keys, or
+database credentials.
+
 ## Audit Operations
 
 Retain `security_audit_events` for 7 years. The application must not auto-delete
 audit rows; disposal after retention requires an operator-approved maintenance
 record and a retained summary of the affected date range.
+The implementation-focused audit and alert reference is
+`docs/security/audit-and-alerting.md`; current open security gaps are tracked in
+`docs/security/security-gap-register.md`.
+Privacy, retention, deactivation, and incident response procedures are in
+`docs/security/privacy-and-pdpa.md`,
+`docs/security/data-retention-and-deactivation.md`, and
+`docs/security/incident-response.md`.
 
 After `db upgrade`, run `apply-runtime-db-privileges`, then
 `verify-runtime-db-privileges`. The runtime `sitbank_app` role must keep
@@ -270,6 +341,16 @@ Expected reset email configuration in production:
 - `SMTP_USE_TLS=true`
 - `SMTP_USERNAME_FILE=/run/secrets/smtp_username`
 - `SMTP_PASSWORD_FILE=/run/secrets/smtp_password`
+
+Password policy in production:
+
+- `PASSWORD_MIN_LENGTH` defaults to `15` when `APP_ENV=production`.
+- Development and test may keep the explicit shorter default for local workflows.
+- `production-check` and the production startup guard fail closed if a production
+  app is configured below `15`.
+- This length floor complements mandatory TOTP onboarding; password-authenticated
+  users still cannot use sensitive banking routes until current MFA setup is
+  complete.
 
 Payee activation cooldown in production:
 

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from flask_wtf import FlaskForm
-from wtforms import StringField
-from wtforms.validators import InputRequired, Length, Regexp
+from wtforms import HiddenField, StringField
+from wtforms.validators import InputRequired, Length, Optional, Regexp
+
+from app.auth.schemas import STEP_UP_TOKEN_RE, TOTP_RE
 
 
 ACCOUNT_NUMBER_RE = r"^[0-9]{9}$"
@@ -26,5 +28,18 @@ class AddPayeeForm(FlaskForm):
         validators=[
             InputRequired(),
             Regexp(ACCOUNT_NUMBER_RE, message="Account number must be exactly 9 digits"),
+        ],
+    )
+    totp_code = StringField(
+        "Authenticator code",
+        validators=[
+            InputRequired(),
+            Regexp(TOTP_RE, message="MFA code must be exactly 6 digits"),
+        ],
+    )
+    stepup_token = HiddenField(
+        validators=[
+            Optional(),
+            Regexp(STEP_UP_TOKEN_RE, message="Invalid step-up token"),
         ],
     )

@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+usage() {
+    cat >&2 <<'USAGE'
+Usage: sitbank-restore-preflight --environment staging|production --backup-file PATH --target-database NAME [options]
+
+Preflight-only restore guard. This script validates operator, target, encrypted
+backup, and host-only decryption identity assumptions. It does not decrypt or
+restore data.
+
+Options:
+  --environment VALUE              Required: staging or production.
+  --backup-file PATH               Required encrypted backup file.
+  --target-database NAME           Required target database name.
+  --identity-file PATH             age identity file; defaults to SITBANK_RESTORE_AGE_IDENTITY_FILE.
+  --confirm-production-restore     Required when environment is production.
+USAGE
+}
+
+fail() {
+    echo "$1" >&2
+    exit "${2:-1}"
+}
+
+validate_identifier() {
+    if [[ ! "$1" =~ ^[a-z_][a-z0-9_]{0,62}$ ]]; then
+        fail "Invalid PostgreSQL identifier" 2
+    fi
+}
+
+environment=""
+backup_file=""
+target_database=""
+identity_file="${SITBANK_RESTORE_AGE_IDENTITY_FILE:-}"
+confirm_production_restore=0
+
+while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+        --environment)
+            [[ "$#" -ge 2 ]] || fail "--environment requires a value" 2
+            environment="$2"
+            shift 2
+            ;;
+        --backup-file)
+            [[ "$#" -ge 2 ]] || fail "--backup-file requires a value" 2
+            backup_file="$2"
+            shift 2
+            ;;
+        --target-database)
+            [[ "$#" -ge 2 ]] || fail "--target-database requires a value" 2
+            target_database="$2"
+            shift 2
+            ;;
+        --identity-file)
+            [[ "$#" -ge 2 ]] || fail "--identity-file requires a value" 2
+            identity_file="$2"
+            shift 2
+            ;;
+        --confirm-production-restore)
+            confirm_production_restore=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            usage
+            fail "Unknown option: $1" 2
+            ;;
+    esac
+done
+
+case "${environment}" in
+    staging|production) ;;
+    "") fail "--environment is required; restore never defaults to production" 2 ;;
+    *) fail "Environment must be staging or production" 2 ;;
+esac
+if [[ "${environment}" == "production" && "${confirm_production_restore}" -ne 1 ]]; then
+    fail "Production restore requires --confirm-production-restore" 2
+fi
+
+allowed_users=",${SITBANK_RESTORE_ALLOWED_USERS:-root,sitbank-deploy},"
+current_user="$(id -un)"
+if [[ "${allowed_users}" != *",${current_user},"* ]]; then
+    fail "Restore preflight must run as an approved OS user or approved sudoers target" 1
+fi
+
+[[ -n "${backup_file}" ]] || fail "--backup-file is required" 2
+[[ -n "${target_database}" ]] || fail "--target-database is required" 2
+validate_identifier "${target_database}"
+[[ -n "${identity_file}" ]] || fail "SITBANK_RESTORE_AGE_IDENTITY_FILE or --identity-file is required" 2
+
+if [[ ! -f "${backup_file}" || -L "${backup_file}" ]]; then
+    fail "Encrypted backup file must be a regular file" 2
+fi
+if [[ "${backup_file}" != *.age ]]; then
+    fail "Encrypted backup file must use the .age suffix" 2
+fi
+backup_mode="$(stat -c '%a' -- "${backup_file}")"
+backup_other_digit="${backup_mode: -1}"
+if (( (10#${backup_other_digit} & 4) != 0 )); then
+    fail "Encrypted backup file must not be world-readable" 2
+fi
+
+if [[ ! -f "${identity_file}" || -L "${identity_file}" ]]; then
+    fail "Decryption identity must be a host-only regular file" 2
+fi
+identity_mode="$(stat -c '%a' -- "${identity_file}")"
+identity_group_digit="${identity_mode: -2:1}"
+identity_other_digit="${identity_mode: -1}"
+if (( (10#${identity_group_digit} & 4) != 0 || (10#${identity_other_digit} & 4) != 0 )); then
+    fail "Decryption identity must not be group-readable or world-readable" 2
+fi
+if ! grep -q "AGE-SECRET-KEY" "${identity_file}"; then
+    fail "Decryption identity file does not look like an age identity" 2
+fi
+
+echo "restore_preflight_passed environment=${environment} backup_file=${backup_file} target_database=${target_database} identity_file=host-managed"

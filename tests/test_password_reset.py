@@ -268,6 +268,24 @@ def test_password_reset_accepts_8_character_password(app, client, monkeypatch):
         assert verify_password(minimum_password, user.password_hash)
 
 
+def test_password_reset_uses_configured_password_minimum(app, client, monkeypatch):
+    monkeypatch.setattr("app.security.passwords._is_password_pwned_by_hibp", lambda _password: False)
+    app.config["PASSWORD_MIN_LENGTH"] = 12
+    user_id = _begin_no_mfa_reset(app, client, username="resetmincfg", email="resetmincfg@example.com")
+
+    too_short = client.post(
+        "/auth/password-reset/complete",
+        json={"new_password": "Abcdef12345", "confirm_new_password": "Abcdef12345"},
+    )
+
+    assert too_short.status_code == 400
+    assert too_short.get_json() == {"error": "Password must be at least 12 characters"}
+    with app.app_context():
+        user = db.session.get(User, user_id)
+        assert user is not None
+        assert verify_password(VALID_PASSWORD, user.password_hash)
+
+
 def test_password_reset_rejects_passwords_over_256_characters(app, client):
     user_id = _begin_no_mfa_reset(app, client, username="resettoo", email="resettoo@example.com")
     oversized_password = "A" * (PASSWORD_MAX_CHARS + 1)

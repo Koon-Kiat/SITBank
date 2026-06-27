@@ -1,10 +1,17 @@
 # Access Control
 
 This document records the access-control model implemented in the SITBank
-repository. It distinguishes implemented runtime enforcement from test gaps and
-service-only flows.
+repository. It distinguishes implemented runtime enforcement from test
+coverage notes and service-only flows.
+Framework coverage and current follow-up items are centralized in
+`docs/security/framework-control-matrix.md` and
+`docs/security/security-gap-register.md`.
+Privacy/deactivation expectations for customer and staff/admin records are in
+`docs/security/privacy-and-pdpa.md`,
+`docs/security/data-retention-and-deactivation.md`, and
+`docs/security/incident-response.md`.
 
-## 3.1 Access-Control Model
+## Access-Control Model
 
 SITBank uses role, account-state, MFA-state, and ownership checks. The primary
 role field is `User.account_type` in `app/models.py`, constrained to:
@@ -34,7 +41,7 @@ Tests:
 | `tests/test_admin_isolation.py::test_admin_auth_rejects_bad_requests_without_creating_privileged_sessions` | Admin malformed requests do not create privileged sessions |
 | `tests/test_pentest_auth_bypass.py` | Negative authentication and authorization bypass cases |
 
-## 3.2 Customer Access Controls
+## Customer Access Controls
 
 Customer authenticated pages use request hooks and decorators to require a
 valid authenticated customer session, MFA readiness where needed, and non-frozen
@@ -66,11 +73,11 @@ separate generated inventory in
 intentionally separate so customer routes and admin routes cannot satisfy each
 other's policy entries.
 
-## 3.3 Banking And Payee Authorization
+## Banking And Payee Authorization
 
 Payee management lives in `app/banking/routes.py` and is registered only in the
-customer app. Routes use authenticated web decorators and high-risk TOTP step-up
-for payee creation confirmation and removal.
+customer app. Routes use authenticated web decorators, direct banking MFA
+onboarding gates, and high-risk TOTP step-up before recipient lookup or removal.
 
 New payees are not immediately usable for transfers. The activation delay is
 calculated server-side from the saved payee timestamp and
@@ -81,20 +88,19 @@ configuration fails closed unless the cooldown is at least 12 hours.
 | Action | Authorization control | Evidence |
 | --- | --- | --- |
 | List payees | Query filters by `Payee.user_id == g.current_user.id` | `app/banking/routes.py::payees()` |
-| Add payee step 1 | Form validation, own-account rejection, duplicate payee check scoped to current user | `app/banking/forms.py`, `app/banking/routes.py::payees_add_submit()` |
-| Add payee confirmation | Pending payee state is consumed before MFA, recipient is reloaded from the database, duplicate check is repeated, and TOTP step-up is required | `app/banking/routes.py::payees_confirm_submit()` |
+| Add payee lookup | Form validation, own-account rejection, duplicate payee check scoped to current user, and `payee_add` TOTP step-up before recipient identity is looked up | `app/banking/forms.py`, `app/banking/routes.py::payees_add_submit()` |
+| Add payee confirmation | Pending payee state exists only after `payee_add` TOTP authorization, is consumed before insert, recipient is reloaded from the database, and duplicate checks are repeated | `app/banking/routes.py::payees_confirm_submit()` |
 | Remove payee | Payee is loaded with `id` and current `user_id`; TOTP step-up is required | `app/banking/routes.py::payees_remove_submit()` |
 
 Transfer payload validation and future transaction-risk primitives are in
 `app/banking/services.py` and `app/banking/schemas.py`, covered by
 `tests/test_banking_transaction_security.py`.
 
-Current test gap: no dedicated payee IDOR test file was found. The code uses
-current-user ownership filters, and payee routes are included in the route
-inventory, but there is no focused test that attempts to remove or view another
-user's payee.
+Payee IDOR and enumeration tests cover direct banking MFA gating, pre-TOTP
+recipient lookup blocking, ownership-scoped removal, duplicate/self-payee
+guards, and pending-payee expiry in `tests/test_payee_management_security.py`.
 
-## 3.4 Admin And Staff Controls
+## Admin And Staff Controls
 
 Admin/staff access is invite-only and uses the admin runtime.
 
@@ -125,7 +131,7 @@ authorization, CSRF, rate limiting, an operator reason, and a fresh TOTP code.
 The routes delegate to `app/auth/password_reset.py` so the manual recovery
 state machine remains centralized.
 
-## 3.5 High-Risk Actions And Step-Up
+## High-Risk Actions And Step-Up
 
 High-risk customer actions use `verify_high_risk_authorization()` in
 `app/auth/services.py`. The current active control is TOTP.
@@ -146,7 +152,7 @@ High-risk customer actions use `verify_high_risk_authorization()` in
 | Manual recovery admin review | Root admin session in the isolated admin app | `app/admin/routes.py::manual_recovery_requests()`, `tests/test_admin_manual_recovery.py` |
 | Manual recovery transition/completion | Root admin session, CSRF, rate limit, operator reason, and TOTP step-up | `app/admin/services.py::transition_manual_recovery_request_as_admin()`, `app/admin/services.py::complete_manual_recovery_request_as_admin()`, `tests/test_admin_manual_recovery.py` |
 
-## 3.6 Broken Access Control Mitigations
+## Broken Access Control Mitigations
 
 | OWASP broken-access-control risk | Repository control |
 | --- | --- |
@@ -163,7 +169,7 @@ Admin route authorization is covered by the generated admin inventory plus
 targeted admin service and flow tests. New admin routes must be added to
 `tests/test_admin_route_inventory_security.py` before the suite passes.
 
-## 3.7 Staging And Admin Network Boundaries
+## Staging And Admin Network Boundaries
 
 Network boundaries complement, but do not replace, Flask authorization:
 

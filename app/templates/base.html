@@ -9,7 +9,8 @@
     <script src="{{ url_for('static', filename='js/theme.js') }}" defer></script>
     <script src="{{ url_for('static', filename='js/account.js') }}" defer></script>
     {% if g.current_user %}
-    <meta name="session-timeout" content="300">
+    <meta name="session-timeout" content="{{ config['SESSION_INACTIVITY_SECONDS'] }}">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
     <script src="{{ url_for('static', filename='js/session-timeout.js') }}" defer></script>
     {% endif %}
   </head>
@@ -185,9 +186,9 @@
       {% if g.current_user %}
       <div id="session-timer" class="session-timer">
         <span class="session-timer-label">Session</span>
-        <span id="session-timer-value" class="session-timer-value">5:00</span>
+        <span id="session-timer-value" class="session-timer-value">{{ "%d:%02d"|format(config["SESSION_INACTIVITY_SECONDS"] // 60, config["SESSION_INACTIVITY_SECONDS"] % 60) }}</span>
       </div>
-      <div id="session-timeout-overlay" class="session-modal-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="session-timeout-title">
+      <div id="session-timeout-overlay" class="session-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="session-timeout-title" hidden>
         <div class="session-modal">
           <h2 class="session-modal-title" id="session-timeout-title">Session Expiring</h2>
           <div class="session-modal-countdown" id="session-timeout-countdown">60</div>

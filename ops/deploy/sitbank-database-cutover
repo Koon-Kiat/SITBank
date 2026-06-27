@@ -5,6 +5,8 @@ readonly DEPLOY_CONFIG="/etc/sitbank/deploy.conf"
 readonly STATE_DIR="/var/lib/sitbank-container/database-cutover"
 readonly STATE_FILE="${STATE_DIR}/state"
 readonly BACKUP_DIR="/var/backups/sitbank"
+readonly BACKUP_HELPER="${SITBANK_BACKUP_HELPER:-/usr/local/sbin/sitbank-backup-encrypted}"
+readonly BACKUP_ENVIRONMENT="${SITBANK_BACKUP_ENVIRONMENT:-production}"
 readonly TARGET_DATABASE="sitbank_db"
 readonly TARGET_OWNER_ROLE="sitbank_owner"
 readonly TARGET_APP_ROLE="sitbank_app"
@@ -56,6 +58,18 @@ terminate_database_connections() {
     sudo -u postgres psql --no-psqlrc --set ON_ERROR_STOP=1 \
         --command "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$1' AND pid <> pg_backend_pid();" \
         >/dev/null
+}
+
+create_encrypted_backup() {
+    local database_name="$1"
+    if [[ ! -x "${BACKUP_HELPER}" ]]; then
+        echo "Encrypted backup helper is missing or not executable" >&2
+        exit 1
+    fi
+    "${BACKUP_HELPER}" \
+        --environment "${BACKUP_ENVIRONMENT}" \
+        --database-name "${database_name}" \
+        --backup-dir "${BACKUP_DIR}"
 }
 
 restart_previous_services() {
@@ -258,16 +272,9 @@ CONTAINER_WAS_ACTIVE=0
 EOF
         chmod 0600 "${STATE_FILE}"
 
-        timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
-        temporary_backup="$(
-            sudo -u postgres mktemp /tmp/sitbank-db.XXXXXX.dump
-        )"
         trap prepare_failure ERR
-        trap 'rm -f -- "${temporary_backup}" "${owner_password_file}" "${app_password_file}"' EXIT
-        sudo -u postgres pg_dump --format=custom \
-            --file "${temporary_backup}" "${source_database}"
-        install -o root -g root -m 0600 "${temporary_backup}" \
-            "${BACKUP_DIR}/database-${timestamp}.dump"
+        trap 'rm -f -- "${owner_password_file}" "${app_password_file}"' EXIT
+        create_encrypted_backup "${source_database}"
 
         terminate_database_connections "${source_database}"
         sudo -u postgres psql --no-psqlrc --set ON_ERROR_STOP=1 <<SQL
@@ -296,7 +303,6 @@ GRANT CONNECT ON DATABASE "${TARGET_DATABASE}" TO "${TARGET_APP_ROLE}";
 SQL
         rm -f -- "${owner_password_file}" "${app_password_file}"
         trap - ERR EXIT
-        rm -f -- "${temporary_backup}"
         echo "Database cutover prepared; deploy the SITBank container now"
         ;;
     adopt-existing)
@@ -357,16 +363,9 @@ CONTAINER_WAS_ACTIVE=${container_was_active}
 EOF
         chmod 0600 "${STATE_FILE}"
 
-        timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
-        temporary_backup="$(
-            sudo -u postgres mktemp /tmp/sitbank-db.XXXXXX.dump
-        )"
         trap prepare_failure ERR
-        trap 'rm -f -- "${temporary_backup}" "${owner_password_file}" "${app_password_file}"' EXIT
-        sudo -u postgres pg_dump --format=custom \
-            --file "${temporary_backup}" "${TARGET_DATABASE}"
-        install -o root -g root -m 0600 "${temporary_backup}" \
-            "${BACKUP_DIR}/database-${timestamp}.dump"
+        trap 'rm -f -- "${owner_password_file}" "${app_password_file}"' EXIT
+        create_encrypted_backup "${TARGET_DATABASE}"
 
         if [[ "${container_was_active}" -eq 1 ]]; then
             systemctl stop "${CONTAINER_SERVICE}"
@@ -400,7 +399,6 @@ GRANT CONNECT ON DATABASE "${TARGET_DATABASE}" TO "${TARGET_APP_ROLE}";
 GRANT CONNECT ON DATABASE "${TARGET_DATABASE}" TO "${source_role}";
 SQL
         rm -f -- "${owner_password_file}" "${app_password_file}"
-        rm -f -- "${temporary_backup}"
         restart_previous_services
         trap - ERR EXIT
         echo "Existing SITBank database role split prepared; deploy the container now"

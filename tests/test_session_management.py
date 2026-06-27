@@ -66,6 +66,7 @@ def test_logout_records_session_as_past_session_on_management_page(client):
     assert f"/sessions/{original_ref}/terminate" not in markup
     assert f"/sessions/{current_ref}/terminate" not in markup
     assert "Current" in markup
+    assert "/sessions/revoke-others" in markup
 
 def test_incognito_logout_appears_in_past_sessions_for_existing_browser(app, client, monkeypatch):
     incognito_client = app.test_client()
@@ -186,6 +187,67 @@ def test_terminating_other_session_moves_it_to_past_sessions(app, client):
     assert other_session["session_ref"] in markup
     assert f"/sessions/{other_session['session_ref']}/terminate" not in markup
 
+
+def test_sessions_page_shows_web_revocation_controls_for_other_sessions(app, client):
+    second_client = app.test_client()
+    register(client)
+    login(client)
+    login(second_client)
+    user, _secret = enable_mfa_for_user()
+    mark_recent_mfa(client, user)
+
+    sessions = client.get("/auth/sessions").get_json()["sessions"]
+    current_ref = next(item["session_ref"] for item in sessions if item["current"])
+    other_ref = next(item["session_ref"] for item in sessions if not item["current"])
+    response = client.get("/sessions")
+    markup = response.data.decode("utf-8")
+
+    assert response.status_code == 200
+    assert f"/sessions/{other_ref}/terminate" in markup
+    assert f"/sessions/{current_ref}/terminate" not in markup
+    assert "/sessions/revoke-others" in markup
+    assert 'name="totp_code"' in markup
+    assert "webauthn" not in markup.casefold()
+    assert "passkey step-up" not in markup.casefold()
+
+
+def test_web_session_terminate_requires_csrf_when_enabled(app, client):
+    second_client = app.test_client()
+    register(client)
+    login(client)
+    login(second_client)
+    user, _secret = enable_mfa_for_user()
+    mark_recent_mfa(client, user)
+    other_ref = next(
+        item["session_ref"]
+        for item in client.get("/auth/sessions").get_json()["sessions"]
+        if not item["current"]
+    )
+    original = app.config["WTF_CSRF_ENABLED"]
+    app.config["WTF_CSRF_ENABLED"] = True
+
+    try:
+        response = client.post(f"/sessions/{other_ref}/terminate")
+    finally:
+        app.config["WTF_CSRF_ENABLED"] = original
+
+    assert response.status_code == 400
+
+
+def test_web_revoke_other_sessions_requires_totp_stepup(app, client):
+    second_client = app.test_client()
+    register(client)
+    login(client)
+    login(second_client)
+    user, _secret = enable_mfa_for_user()
+    mark_recent_mfa(client, user)
+
+    response = client.post("/sessions/revoke-others")
+    other_session_response = second_client.get("/auth/sessions")
+
+    assert response.status_code == 403
+    assert other_session_response.status_code == 200
+
 def test_past_sessions_are_scoped_to_current_user(app, client):
     second_client = app.test_client()
     register(client)
@@ -288,3 +350,87 @@ def test_session_inactivity_expiry_revokes_session(client):
 
     assert response.status_code == 401
     assert response.get_json()["error"] == "Session expired"
+
+
+def test_expired_browser_session_redirects_to_login(client):
+    register(client)
+    login(client)
+
+    with client.session_transaction() as sess:
+        sess["last_activity_at"] = 1
+
+    response = client.get("/dashboard")
+    login_response = client.get("/login?session_expired=1")
+
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/login?session_expired=1")
+    assert login_response.status_code == 200
+    assert b"Your session expired due to inactivity" in login_response.data
+
+
+def test_session_extension_endpoint_requires_authentication(client):
+    response = client.post("/auth/session/extend")
+
+    assert response.status_code == 401
+    assert response.get_json() == {"error": "Authentication required"}
+
+
+def test_session_extension_endpoint_extends_authenticated_session(client):
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    mark_recent_mfa(client, user)
+
+    response = client.post("/auth/session/extend")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["message"] == "Session extended"
+    assert payload["timeout_seconds"] > 0
+
+
+def test_session_extension_endpoint_requires_csrf_when_enabled(app, client):
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    mark_recent_mfa(client, user)
+    original = app.config["WTF_CSRF_ENABLED"]
+    app.config["WTF_CSRF_ENABLED"] = True
+
+    try:
+        token = client.get("/auth/csrf-token").get_json()["csrf_token"]
+        missing_token = client.post("/auth/session/extend")
+        valid_token = client.post("/auth/session/extend", headers={"X-CSRFToken": token})
+    finally:
+        app.config["WTF_CSRF_ENABLED"] = original
+
+    assert missing_token.status_code == 400
+    assert valid_token.status_code == 200
+
+
+def test_session_timeout_ui_uses_explicit_extension_and_csp_safe_toggling(client):
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    mark_recent_mfa(client, user)
+    response = client.get("/dashboard")
+    markup = response.data.decode("utf-8")
+    script = Path("app/static/js/session-timeout.js").read_text(encoding="utf-8")
+
+    assert response.status_code == 200
+    assert 'meta name="session-timeout" content="900"' in markup
+    assert 'style="' not in markup
+    assert "style.display" not in script
+    assert "/auth/session/extend" in script
+    assert "/auth/csrf-token" not in script
+    for passive_event in ("mousemove", "keydown", "scroll", "touchstart"):
+        assert passive_event not in script
+
+
+def test_security_warning_alerts_do_not_auto_dismiss():
+    script = Path("app/static/js/account.js").read_text(encoding="utf-8")
+
+    assert "alert-success" in script
+    assert "alert-info" in script
+    assert "alert-warning" not in script
+    assert "alert-error" not in script

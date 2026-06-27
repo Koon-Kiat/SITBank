@@ -17,7 +17,7 @@ class User(db.Model):
     account_type = db.Column(db.String(32), nullable=False, default="customer", index=True)
     account_status = db.Column(db.String(32), nullable=False, default="active", index=True)
     full_name = db.Column(db.String(128), nullable=False)
-    phone_number = db.Column(db.String(8), nullable=False, unique=True)
+    phone_number = db.Column(db.String(8), nullable=True, unique=True)
     account_number = db.Column(db.String(9), nullable=True, unique=True)
     staff_personal_email = db.Column(db.String(255), nullable=True)
     workplace_email_verified_at = db.Column(db.DateTime(timezone=True), nullable=True)

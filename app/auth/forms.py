@@ -4,7 +4,7 @@ from flask_wtf import FlaskForm
 from wtforms import HiddenField, PasswordField, SelectField, StringField
 from wtforms.validators import Email, EqualTo, InputRequired, Length, Optional, Regexp, ValidationError
 
-from app.security.passwords import PASSWORD_MIN_LENGTH, password_max_chars
+from app.security.passwords import password_max_chars, password_min_length
 
 from .schemas import FULL_NAME_RE, PHONE_RE, REGISTRATION_OTP_RE, STEP_UP_TOKEN_RE, TOTP_RE, USERNAME_RE
 
@@ -12,8 +12,9 @@ from .schemas import FULL_NAME_RE, PHONE_RE, REGISTRATION_OTP_RE, STEP_UP_TOKEN_
 def password_length(*, minimum: int | None = None):
     def validate_password_length(_form, field) -> None:
         value = field.data or ""
-        if minimum is not None and len(value) < minimum:
-            raise ValidationError(f"Field must be at least {minimum} characters long.")
+        min_chars = password_min_length() if minimum is None else minimum
+        if len(value) < min_chars:
+            raise ValidationError(f"Field must be at least {min_chars} characters long.")
         max_chars = password_max_chars()
         if len(value) > max_chars:
             raise ValidationError(f"Field cannot be longer than {max_chars} characters.")
@@ -46,7 +47,7 @@ class RegisterForm(FlaskForm):
         ],
     )
     email = StringField("Email", validators=[InputRequired(), Email(), Length(max=255)])
-    password = PasswordField("Password", validators=[InputRequired(), password_length(minimum=PASSWORD_MIN_LENGTH)])
+    password = PasswordField("Password", validators=[InputRequired(), password_length()])
     confirm_password = PasswordField(
         "Confirm password",
         validators=[
@@ -81,7 +82,7 @@ class RegisterDetailsForm(FlaskForm):
             Regexp(PHONE_RE, message="Enter a valid Singapore phone number (8 digits starting with 8 or 9)"),
         ],
     )
-    password = PasswordField("Password", validators=[InputRequired(), password_length(minimum=PASSWORD_MIN_LENGTH)])
+    password = PasswordField("Password", validators=[InputRequired(), password_length()])
     confirm_password = PasswordField(
         "Confirm password",
         validators=[
@@ -209,8 +210,8 @@ class MfaOrStepUpForm(FlaskForm):
 
 
 class PasswordChangeForm(FlaskForm):
-    current_password = PasswordField("Current password", validators=[InputRequired(), password_length()])
-    new_password = PasswordField("New password", validators=[InputRequired(), password_length(minimum=PASSWORD_MIN_LENGTH)])
+    current_password = PasswordField("Current password", validators=[InputRequired(), password_length(minimum=1)])
+    new_password = PasswordField("New password", validators=[InputRequired(), password_length()])
     confirm_new_password = PasswordField(
         "Confirm new password",
         validators=[

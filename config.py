@@ -17,6 +17,8 @@ if APP_ENV != "production":
 
 MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS = 12 * 60 * 60
 MAX_PAYEE_COOLDOWN_SECONDS = 30 * 24 * 60 * 60
+DEFAULT_DEVELOPMENT_PASSWORD_MIN_LENGTH = 8
+MIN_PRODUCTION_PASSWORD_LENGTH = 15
 DEFAULT_CUSTOMER_SESSION_ABSOLUTE_LIFETIME_SECONDS = 12 * 60 * 60
 DEFAULT_ADMIN_SESSION_ABSOLUTE_LIFETIME_SECONDS = 4 * 60 * 60
 MAX_SESSION_ABSOLUTE_LIFETIME_SECONDS = 30 * 24 * 60 * 60
@@ -375,6 +377,33 @@ def _int_env(name: str, *, default: str, minimum: int, maximum: int) -> int:
     if value < minimum or value > maximum:
         raise RuntimeError(f"{name} must be between {minimum} and {maximum}")
     return value
+
+
+def _validate_password_length_config(
+    *,
+    app_env: str,
+    minimum_length: object,
+    maximum_chars: object,
+) -> None:
+    try:
+        minimum = int(minimum_length)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("PASSWORD_MIN_LENGTH must be an integer") from exc
+    try:
+        maximum = int(maximum_chars)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("PASSWORD_MAX_CHARS must be an integer") from exc
+    if minimum < 1 or minimum > 1024:
+        raise RuntimeError("PASSWORD_MIN_LENGTH must be between 1 and 1024")
+    if maximum < 64 or maximum > 1024:
+        raise RuntimeError("PASSWORD_MAX_CHARS must be between 64 and 1024")
+    if maximum < minimum:
+        raise RuntimeError("PASSWORD_MAX_CHARS must be at least PASSWORD_MIN_LENGTH")
+    if str(app_env or "").strip().casefold() == "production" and minimum < MIN_PRODUCTION_PASSWORD_LENGTH:
+        raise RuntimeError(
+            "PASSWORD_MIN_LENGTH must be at least "
+            f"{MIN_PRODUCTION_PASSWORD_LENGTH} in production"
+        )
 
 
 def _validate_payee_cooldown_config(
@@ -785,11 +814,28 @@ class Config:
     PASSWORD_PBKDF2_ITERATIONS = int(os.getenv("PASSWORD_PBKDF2_ITERATIONS", "600000"))
     if PASSWORD_PBKDF2_ITERATIONS < 600000:
         raise RuntimeError("PASSWORD_PBKDF2_ITERATIONS must be 600000 or higher")
-    PASSWORD_MIN_LENGTH = 8
-    PASSWORD_RECOMMENDED_MIN_LENGTH = 15
-    PASSWORD_MAX_CHARS = int(os.getenv("PASSWORD_MAX_CHARS", "256"))
-    if PASSWORD_MAX_CHARS < 64 or PASSWORD_MAX_CHARS > 1024:
-        raise RuntimeError("PASSWORD_MAX_CHARS must be between 64 and 1024")
+    PASSWORD_MIN_LENGTH = _int_env(
+        "PASSWORD_MIN_LENGTH",
+        default=(
+            str(MIN_PRODUCTION_PASSWORD_LENGTH)
+            if APP_ENV == "production"
+            else str(DEFAULT_DEVELOPMENT_PASSWORD_MIN_LENGTH)
+        ),
+        minimum=1,
+        maximum=1024,
+    )
+    PASSWORD_RECOMMENDED_MIN_LENGTH = max(MIN_PRODUCTION_PASSWORD_LENGTH, PASSWORD_MIN_LENGTH)
+    PASSWORD_MAX_CHARS = _int_env(
+        "PASSWORD_MAX_CHARS",
+        default="256",
+        minimum=64,
+        maximum=1024,
+    )
+    _validate_password_length_config(
+        app_env=APP_ENV,
+        minimum_length=PASSWORD_MIN_LENGTH,
+        maximum_chars=PASSWORD_MAX_CHARS,
+    )
     MFA_ISSUER_NAME = os.getenv("MFA_ISSUER_NAME", "SITBank")
 
     COMMON_PASSWORDS_PATH = _required_env("COMMON_PASSWORDS_PATH")

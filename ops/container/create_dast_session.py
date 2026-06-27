@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import http.cookies
 import json
+import os
 import secrets
 import urllib.error
 import urllib.parse
@@ -10,6 +11,7 @@ import urllib.request
 from pathlib import Path
 
 import pyotp
+from sqlalchemy.exc import IntegrityError
 
 
 class DastClient:
@@ -107,7 +109,7 @@ def create_authenticated_cookie(
         email=email,
         password=password,
         full_name=f"DAST User {suffix}",
-        phone_number=f"9{secrets.randbelow(9000000) + 1000000}",
+        phone_number=_generate_synthetic_phone_number(),
     )
 
     csrf_token = str(
@@ -154,6 +156,14 @@ def create_authenticated_cookie(
     return f"__Host-sitbank_session={session_cookie}"
 
 
+def _generate_synthetic_phone_number() -> str:
+    return f"9{secrets.randbelow(9000000) + 1000000}"
+
+
+def _generate_synthetic_account_number() -> str:
+    return "012" + str(secrets.randbelow(1_000_000)).zfill(6)
+
+
 def create_dast_user(
     *,
     username: str,
@@ -171,25 +181,44 @@ def create_dast_user(
     with app.app_context():
         if db.session.execute(db.select(User).where(User.username == username)).scalar_one_or_none():
             return
-        account_number = None
-        for _attempt in range(10):
-            candidate = "012" + str(secrets.randbelow(1_000_000)).zfill(6)
-            if not db.session.execute(db.select(User).where(User.account_number == candidate)).scalar_one_or_none():
-                account_number = candidate
-                break
-        if account_number is None:
-            raise RuntimeError("Could not generate a unique DAST account number")
-        db.session.add(
-            User(
-                username=username,
-                email=email,
-                password_hash=hash_password(password),
-                full_name=full_name,
-                phone_number=phone_number,
-                account_number=account_number,
+        for attempt in range(20):
+            candidate_phone = phone_number if attempt == 0 else _generate_synthetic_phone_number()
+            if db.session.execute(db.select(User).where(User.phone_number == candidate_phone)).scalar_one_or_none():
+                continue
+            account_number = None
+            for _account_attempt in range(20):
+                candidate_account = _generate_synthetic_account_number()
+                if not db.session.execute(
+                    db.select(User).where(User.account_number == candidate_account)
+                ).scalar_one_or_none():
+                    account_number = candidate_account
+                    break
+            if account_number is None:
+                continue
+            db.session.add(
+                User(
+                    username=username,
+                    email=email,
+                    password_hash=hash_password(password),
+                    full_name=full_name,
+                    phone_number=candidate_phone,
+                    account_number=account_number,
+                )
             )
-        )
-        db.session.commit()
+            try:
+                db.session.commit()
+                return
+            except IntegrityError:
+                db.session.rollback()
+        raise RuntimeError("Could not create a unique synthetic DAST user")
+
+
+def write_cookie_output(path: Path, cookie: str) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    fd = os.open(path, flags, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+        handle.write(cookie)
+    path.chmod(0o600)
 
 
 def main() -> None:
@@ -208,8 +237,7 @@ def main() -> None:
         args.base_url,
         allowed_hosts=set(args.allow_host),
     )
-    args.output.write_text(cookie, encoding="utf-8", newline="")
-    args.output.chmod(0o644)
+    write_cookie_output(args.output, cookie)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+usage() {
+    cat >&2 <<'USAGE'
+Usage: sitbank-backup-encrypted --environment staging|production [options]
+
+Creates an encrypted PostgreSQL custom-format dump. Plaintext dump material is
+kept only in a root-owned temporary directory and is removed on success/failure.
+
+Options:
+  --environment VALUE       Required: staging or production.
+  --database-name VALUE     PostgreSQL database name for host-identity backup.
+  --database-url VALUE      Optional DATABASE_URL override; not printed.
+  --backup-dir VALUE        Directory for encrypted backups.
+  --recipients-file VALUE   age recipients file containing public recipients.
+USAGE
+}
+
+fail() {
+    echo "$1" >&2
+    exit "${2:-1}"
+}
+
+validate_environment() {
+    case "$1" in
+        staging|production) ;;
+        *) fail "Environment must be staging or production" 2 ;;
+    esac
+}
+
+validate_identifier() {
+    if [[ ! "$1" =~ ^[a-z_][a-z0-9_]{0,62}$ ]]; then
+        fail "Invalid PostgreSQL identifier" 2
+    fi
+}
+
+environment="${SITBANK_BACKUP_ENVIRONMENT:-}"
+database_name="${SITBANK_BACKUP_DATABASE_NAME:-sitbank_db}"
+database_url="${SITBANK_BACKUP_DATABASE_URL:-}"
+backup_dir="${SITBANK_BACKUP_DIR:-}"
+recipients_file="${SITBANK_BACKUP_AGE_RECIPIENTS_FILE:-}"
+tmp_root="${SITBANK_BACKUP_TMP_DIR:-/tmp}"
+
+while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+        --environment)
+            [[ "$#" -ge 2 ]] || fail "--environment requires a value" 2
+            environment="$2"
+            shift 2
+            ;;
+        --database-name)
+            [[ "$#" -ge 2 ]] || fail "--database-name requires a value" 2
+            database_name="$2"
+            shift 2
+            ;;
+        --database-url)
+            [[ "$#" -ge 2 ]] || fail "--database-url requires a value" 2
+            database_url="$2"
+            shift 2
+            ;;
+        --backup-dir)
+            [[ "$#" -ge 2 ]] || fail "--backup-dir requires a value" 2
+            backup_dir="$2"
+            shift 2
+            ;;
+        --recipients-file)
+            [[ "$#" -ge 2 ]] || fail "--recipients-file requires a value" 2
+            recipients_file="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            usage
+            fail "Unknown option: $1" 2
+            ;;
+    esac
+done
+
+if [[ "${EUID}" -ne 0 ]]; then
+    fail "Encrypted backup helper must run as root" 1
+fi
+[[ -n "${environment}" ]] || fail "--environment is required" 2
+validate_environment "${environment}"
+validate_identifier "${database_name}"
+
+if [[ -z "${backup_dir}" ]]; then
+    if [[ "${environment}" == "production" ]]; then
+        backup_dir="/var/backups/sitbank"
+    else
+        backup_dir="/var/backups/sitbank-staging"
+    fi
+fi
+if [[ -z "${recipients_file}" ]]; then
+    if [[ "${environment}" == "production" ]]; then
+        recipients_file="/etc/sitbank/backup-age-recipients.txt"
+    else
+        recipients_file="/etc/sitbank-staging/backup-age-recipients.txt"
+    fi
+fi
+
+if ! command -v pg_dump >/dev/null 2>&1; then
+    fail "pg_dump is required" 1
+fi
+if ! command -v age >/dev/null 2>&1; then
+    fail "age is required for recipient-based backup encryption" 1
+fi
+if [[ ! -f "${recipients_file}" || -L "${recipients_file}" || ! -s "${recipients_file}" ]]; then
+    fail "SITBANK_BACKUP_AGE_RECIPIENTS_FILE must be a non-empty regular file" 2
+fi
+if grep -q "AGE-SECRET-KEY" "${recipients_file}"; then
+    fail "Backup recipients file must contain public recipients only" 2
+fi
+
+install -d -o root -g root -m 0700 "${backup_dir}"
+if [[ -L "${tmp_root}" ]]; then
+    fail "Backup temporary root must not be a symlink" 2
+fi
+if [[ ! -d "${tmp_root}" ]]; then
+    install -d -o root -g root -m 0700 "${tmp_root}"
+fi
+temporary_dir="$(mktemp -d "${tmp_root%/}/sitbank-backup.XXXXXX")"
+chmod 0700 "${temporary_dir}"
+temporary_dump="${temporary_dir}/database.pgdump"
+temporary_encrypted="${temporary_dir}/database.pgdump.age"
+
+cleanup() {
+    rm -f -- "${temporary_dump:-}" "${temporary_encrypted:-}"
+    if [[ -n "${temporary_dir:-}" && -d "${temporary_dir}" ]]; then
+        rmdir -- "${temporary_dir}" 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT
+
+timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+destination="${backup_dir%/}/sitbank-${environment}-${database_name}-${timestamp}.pgdump.age"
+
+if [[ -n "${database_url}" ]]; then
+    pg_dump --format=custom --dbname="${database_url}" > "${temporary_dump}"
+else
+    sudo -u postgres pg_dump --format=custom "${database_name}" > "${temporary_dump}"
+fi
+chmod 0600 "${temporary_dump}"
+
+age --recipients-file "${recipients_file}" \
+    --output "${temporary_encrypted}" \
+    "${temporary_dump}"
+chmod 0600 "${temporary_encrypted}"
+rm -f -- "${temporary_dump}"
+
+install -o root -g root -m 0600 "${temporary_encrypted}" "${destination}"
+backup_size="$(stat -c '%s' -- "${destination}")"
+
+echo "encrypted_backup_created path=${destination} environment=${environment} database=${database_name} size_bytes=${backup_size} created_at=${timestamp}"

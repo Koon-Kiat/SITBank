@@ -74,8 +74,9 @@ def validate_password_policy(password: str) -> list[str]:
     _ensure_raw_password_length(password)
     normalized_password = _normalize_password(password)
     _ensure_normalized_password_length(normalized_password)
-    if len(normalized_password) < PASSWORD_MIN_LENGTH:
-        raise PasswordPolicyError(f"Password must be at least {PASSWORD_MIN_LENGTH} characters")
+    minimum_length = password_min_length()
+    if len(normalized_password) < minimum_length:
+        raise PasswordPolicyError(f"Password must be at least {minimum_length} characters")
 
     common_passwords = _load_common_passwords(current_app.config["COMMON_PASSWORDS_PATH"])
     if normalized_password.casefold() in common_passwords:
@@ -309,8 +310,18 @@ def _password_pepper() -> bytes:
 
 def password_max_chars() -> int:
     configured = int(current_app.config.get("PASSWORD_MAX_CHARS", PASSWORD_MAX_CHARS))
-    if configured < PASSWORD_MIN_LENGTH or configured > 1024:
-        raise RuntimeError("PASSWORD_MAX_CHARS must be between PASSWORD_MIN_LENGTH and 1024")
+    minimum_length = password_min_length()
+    if configured < 64 or configured > 1024:
+        raise RuntimeError("PASSWORD_MAX_CHARS must be between 64 and 1024")
+    if configured < minimum_length:
+        raise RuntimeError("PASSWORD_MAX_CHARS must be at least PASSWORD_MIN_LENGTH")
+    return configured
+
+
+def password_min_length() -> int:
+    configured = int(current_app.config.get("PASSWORD_MIN_LENGTH", PASSWORD_MIN_LENGTH))
+    if configured < 1 or configured > 1024:
+        raise RuntimeError("PASSWORD_MIN_LENGTH must be between 1 and 1024")
     return configured
 
 
