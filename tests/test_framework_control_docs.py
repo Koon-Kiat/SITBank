@@ -76,7 +76,6 @@ def test_security_gap_register_is_single_source_with_required_fields():
 
     for open_gap in (
         "Password history beyond current-password reuse",
-        "Admin audit-log viewer UI",
         "Automated retention and disposal jobs",
         "Authenticated DAST on ordinary pull requests",
         "EC2 SSH/UFW/security-group hardening deferred",
@@ -97,6 +96,7 @@ def test_security_gap_register_is_single_source_with_required_fields():
         "PDPA data inventory and retention schedule",
         "Dedicated incident response runbook",
         "Threat model and design risk record",
+        "Admin audit-log viewer UI",
     ):
         assert fixed_item not in current_open
 
@@ -105,9 +105,12 @@ def test_security_gap_register_is_single_source_with_required_fields():
     assert "Generated admin route inventory" in implemented
     assert "Payee IDOR and enumeration regression tests" in implemented
     assert "Encrypted database backup tooling" in implemented
+    assert "Audit review workflow" in implemented
     assert "Privacy and PDPA documentation" in implemented
     assert "Incident response runbook" in implemented
     assert "Threat model and design risk register" in implemented
+    recently_closed = _section(register, "Recently Closed Gaps")
+    assert "Admin audit-log viewer UI" in recently_closed
 
 
 def test_issue_186_ssh_hardening_is_deferred_without_stale_artifacts():

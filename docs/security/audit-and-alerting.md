@@ -36,7 +36,7 @@ Representative event families include:
 | Password reset and manual recovery | `password_reset_requested`, `password_reset_token_exchanged`, `password_reset_mfa_failed`, `password_reset_completed`, `manual_recovery_requested`, `manual_recovery_admin_transition`, `manual_recovery_completed` | `app/auth/password_reset.py`, `app/admin/services.py` |
 | Session management | `session_terminate`, `session_revoke_others`, `session_integrity`, `session_expired`, `session_risk` | `app/auth/services.py`, `app/security/sessions.py` |
 | Account security | `password_change`, account detail updates, `account_freeze` | `app/auth/services.py` |
-| Admin and staff operations | `staff_invite_create`, `staff_invite_revoked`, `staff_invite_accept`, `staff_account_activated`, `admin_access_denied` | `app/admin/services.py` |
+| Admin and staff operations | `admin_dashboard_access`, `staff_invite_create`, `staff_invite_revoked`, `staff_invite_accept`, `staff_account_activated`, `staff_account_deactivated`, `staff_account_reactivated`, `staff_activation_reset`, `audit_log_view`, `security_alert_review`, `admin_access_denied` | `app/admin/services.py`, `app/admin/routes.py` |
 | Banking and payees | `payee_lookup`, `payee_add`, `payee_remove`, transaction validation events | `app/banking/routes.py`, `app/banking/services.py` |
 | Operations | `mfa_dek_rewrap`, audit chain verification/export, alert checks | `app/ops/commands.py`, `app/security/audit.py`, `app/security/alerts.py` |
 
@@ -133,6 +133,17 @@ in the JSON report. Delivery failures are reported by error type only and must
 not include request bodies, webhook URLs, tokens, headers, passwords, session
 IDs, or account numbers.
 
+Authorized admin/root users can review a browser-rendered audit log viewer at
+`GET /audit-logs` in the isolated admin runtime. The viewer validates filter,
+sort, and pagination parameters server-side, renders safe event fields only,
+and audits both list and detail access. `staff` users and customers cannot
+access the viewer.
+
+Authorized admin/root users can review current security alert report output at
+`GET /alerts`. This dashboard route calls `build_security_alert_report()` with
+delivery disabled; it does not send, resend, or acknowledge alerts. Alert
+delivery remains an operator-controlled CLI/timer workflow.
+
 Production installs:
 
 ```bash
@@ -167,4 +178,5 @@ every five minutes.
 | `tests/test_deployment.py` | Audit runbooks, append-only migrations, runtime DB privilege commands, alert timer installation |
 | `tests/test_password_reset.py` | Reset/manual-recovery audit flows and secret non-disclosure |
 | `tests/test_admin_manual_recovery.py` | Admin manual recovery audit and route authorization |
+| `tests/test_admin_dashboard_operations.py` | Admin dashboard, audit viewer, alert review, staff lifecycle, and template secret-regression coverage |
 | `tests/test_session_management.py`, `tests/test_session_absolute_lifetime.py` | Session revocation, expiry, and integrity audit behavior |

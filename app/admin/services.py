@@ -10,7 +10,7 @@ from typing import Any
 
 import pyotp
 from flask import current_app, request, session, url_for
-from sqlalchemy import func, or_
+from sqlalchemy import String, cast, func, or_
 from sqlalchemy.exc import IntegrityError
 
 from app.auth.password_reset import (
@@ -27,7 +27,7 @@ from app.auth.services import (
     _verify_totp_for_user,
 )
 from app.extensions import db
-from app.models import ManualRecoveryRequest, StaffInvite, User
+from app.models import ManualRecoveryRequest, SecurityAuditEvent, StaffInvite, User
 from app.security.audit import audit_event, audit_event_required, audit_reference, principal_reference
 from app.security.crypto import encrypt_mfa_secret
 from app.security.email import send_security_email
@@ -45,6 +45,7 @@ from app.security.sessions import (
     begin_password_authenticated_session,
     establish_authenticated_session,
     public_session_reference,
+    revoke_all_sessions,
     revoke_current_session,
 )
 from app.security.turnstile import TurnstileError, verify_turnstile_token
@@ -56,6 +57,13 @@ ACCOUNT_ADMIN = "admin"
 ACCOUNT_ROOT_ADMIN = "root_admin"
 STAFF_ACCOUNT_TYPES = frozenset({ACCOUNT_STAFF, ACCOUNT_ADMIN, ACCOUNT_ROOT_ADMIN})
 INVITABLE_ROLES = frozenset({ACCOUNT_STAFF, ACCOUNT_ADMIN})
+ROLE_HIERARCHY = {
+    ACCOUNT_CUSTOMER: 0,
+    ACCOUNT_STAFF: 10,
+    ACCOUNT_ADMIN: 20,
+    ACCOUNT_ROOT_ADMIN: 30,
+}
+ADMIN_ACCOUNT_MANAGED_TYPES = frozenset({ACCOUNT_STAFF, ACCOUNT_ADMIN})
 ACTIVE_INVITE_STATUSES = frozenset({"pending", "totp_pending"})
 MANUAL_RECOVERY_ADMIN_TRANSITION_STATUSES = frozenset(
     {
@@ -111,6 +119,554 @@ def require_root_admin_session() -> User:
         audit_event("staff_invite_authorization", "blocked", user=user, metadata={"reason": "not_root_admin"})
         raise AuthError("Forbidden", 403)
     return user
+
+
+def require_admin_session() -> User:
+    user = require_staff_session()
+    if role_rank(user.account_type) < role_rank(ACCOUNT_ADMIN):
+        audit_event("admin_role_authorization", "blocked", user=user, metadata={"reason": "admin_role_required"})
+        raise AuthError("Forbidden", 403)
+    return user
+
+
+def role_rank(role: str | None) -> int:
+    return ROLE_HIERARCHY.get(str(role or ACCOUNT_CUSTOMER).strip().casefold(), -1)
+
+
+def role_label(role: str | None) -> str:
+    return {
+        ACCOUNT_ROOT_ADMIN: "Root admin",
+        ACCOUNT_ADMIN: "Admin",
+        ACCOUNT_STAFF: "Bank staff",
+        ACCOUNT_CUSTOMER: "Normal user",
+    }.get(str(role or "").strip().casefold(), "Unknown")
+
+
+def admin_navigation_for(user: User) -> list[dict[str, str]]:
+    items = [
+        {"label": "Dashboard", "href": url_for("admin.index"), "endpoint": "admin.index", "group": "overview"},
+    ]
+    if user.account_type == ACCOUNT_STAFF:
+        items.append(
+            {
+                "label": "Business operations",
+                "href": url_for("admin.index"),
+                "endpoint": "admin.index",
+                "group": "business",
+            }
+        )
+        return items
+    if role_rank(user.account_type) >= role_rank(ACCOUNT_ADMIN):
+        items.extend(
+            [
+                {
+                    "label": "Audit logs",
+                    "href": url_for("admin.audit_logs"),
+                    "endpoint": "admin.audit_logs",
+                    "group": "security",
+                },
+                {
+                    "label": "Alerts",
+                    "href": url_for("admin.alerts"),
+                    "endpoint": "admin.alerts",
+                    "group": "security",
+                },
+                {
+                    "label": "Staff/admin users",
+                    "href": url_for("admin.staff_accounts"),
+                    "endpoint": "admin.staff_accounts",
+                    "group": "admin",
+                },
+            ]
+        )
+    if is_root_admin(user):
+        items.extend(
+            [
+                {
+                    "label": "Staff invites",
+                    "href": url_for("admin.invites"),
+                    "endpoint": "admin.invites",
+                    "group": "root",
+                },
+                {
+                    "label": "Manual recovery",
+                    "href": url_for("admin.manual_recovery_requests"),
+                    "endpoint": "admin.manual_recovery_requests",
+                    "group": "root",
+                },
+            ]
+        )
+    return items
+
+
+def admin_dashboard_context(actor: User) -> dict[str, Any]:
+    audit_event(
+        "admin_dashboard_access",
+        "success",
+        user=actor,
+        metadata={"role": actor.account_type},
+    )
+    return {
+        "user": public_admin_user(actor),
+        "role_label": role_label(actor.account_type),
+        "navigation": admin_navigation_for(actor),
+        "responsibilities": _role_responsibilities(actor),
+        "security_notices": _admin_security_notices(actor),
+        "summary": _admin_dashboard_summary(actor),
+        "recent_audit_events": recent_audit_events_for_dashboard(actor),
+    }
+
+
+def staff_accounts_for_admin(actor: User) -> list[dict[str, Any]]:
+    if role_rank(actor.account_type) < role_rank(ACCOUNT_ADMIN):
+        audit_event("staff_account_view", "blocked", user=actor, metadata={"reason": "admin_role_required"})
+        raise AuthError("Forbidden", 403)
+    audit_event(
+        "staff_account_view",
+        "success",
+        user=actor,
+        metadata={"role": actor.account_type},
+    )
+    users = list(
+        db.session.execute(
+            db.select(User)
+            .where(User.account_type.in_(tuple(STAFF_ACCOUNT_TYPES)))
+            .order_by(User.account_type.desc(), User.email.asc())
+        ).scalars()
+    )
+    return [public_staff_account(user, actor) for user in users]
+
+
+def transition_staff_account_as_root_admin(
+    actor: User,
+    target_user_id: int,
+    action: str,
+    totp_code: str | None,
+) -> dict[str, Any]:
+    if not is_root_admin(actor):
+        audit_event("staff_account_lifecycle", "blocked", user=actor, metadata={"reason": "not_root_admin"})
+        raise AuthError("Forbidden", 403)
+    normalized_action = str(action or "").strip().casefold()
+    if normalized_action not in {"deactivate", "reactivate", "reset_activation"}:
+        audit_event("staff_account_lifecycle", "failure", user=actor, metadata={"reason": "invalid_action"})
+        raise AuthError("Invalid staff account action", 400)
+    target = db.session.get(User, int(target_user_id))
+    if target is not None and target.id == actor.id:
+        audit_event(
+            "staff_account_lifecycle",
+            "blocked",
+            user=actor,
+            metadata={"reason": "self_management_denied", "action": normalized_action},
+        )
+        raise AuthError("Forbidden", 403)
+    if target is None or target.account_type not in ADMIN_ACCOUNT_MANAGED_TYPES:
+        audit_event(
+            "staff_account_lifecycle",
+            "blocked",
+            user=actor,
+            metadata={"reason": "target_not_manageable", "action": normalized_action},
+        )
+        raise AuthError("Staff account not found", 404)
+    if not totp_code or not _verify_totp_for_user(actor, totp_code, f"staff_account_{normalized_action}"):
+        audit_event(
+            "staff_account_lifecycle",
+            "failure",
+            user=actor,
+            metadata={
+                "reason": "invalid_totp_step_up",
+                "action": normalized_action,
+                "target_staff_ref": audit_reference("staff_user", target.id),
+            },
+        )
+        raise AuthError("Fresh MFA verification is required", 403)
+
+    revoked_sessions = 0
+    if normalized_action == "deactivate":
+        target.account_status = "revoked"
+        revoked_sessions = revoke_all_sessions(target.id, ended_reason="revoked")
+        event_type = "staff_account_deactivated"
+    elif normalized_action == "reactivate":
+        if not target.mfa_enabled or target.workplace_email_verified_at is None:
+            audit_event(
+                "staff_account_reactivated",
+                "blocked",
+                user=actor,
+                metadata={
+                    "reason": "activation_prerequisites_missing",
+                    "target_staff_ref": audit_reference("staff_user", target.id),
+                },
+            )
+            raise AuthError("Staff account activation requirements are incomplete", 409)
+        target.account_status = "active"
+        event_type = "staff_account_reactivated"
+    else:
+        target.account_status = "setup_pending"
+        target.mfa_enabled = False
+        target.mfa_secret_nonce = None
+        target.mfa_secret_ciphertext = None
+        target.workplace_email_verified_at = None
+        revoked_sessions = revoke_all_sessions(target.id, ended_reason="revoked")
+        event_type = "staff_activation_reset"
+
+    audit_event_required(
+        event_type,
+        "success",
+        user=actor,
+        metadata={
+            "target_staff_ref": audit_reference("staff_user", target.id),
+            "target_role": target.account_type,
+            "target_status": target.account_status,
+            "revoked_sessions": revoked_sessions,
+        },
+    )
+    db.session.commit()
+    return {"message": "Staff account updated", "account": public_staff_account(target, actor)}
+
+
+def recent_audit_events_for_dashboard(actor: User, *, limit: int = 5) -> list[dict[str, Any]]:
+    if role_rank(actor.account_type) < role_rank(ACCOUNT_ADMIN):
+        return []
+    events = list(
+        db.session.execute(
+            db.select(SecurityAuditEvent).order_by(SecurityAuditEvent.created_at.desc(), SecurityAuditEvent.id.desc()).limit(limit)
+        ).scalars()
+    )
+    return [public_audit_event(event, include_metadata=False) for event in events]
+
+
+def query_audit_events_for_admin(actor: User, args: dict[str, Any]) -> dict[str, Any]:
+    if role_rank(actor.account_type) < role_rank(ACCOUNT_ADMIN):
+        audit_event("audit_log_view", "blocked", user=actor, metadata={"reason": "admin_role_required"})
+        raise AuthError("Forbidden", 403)
+    filters = _audit_filters(args)
+    page = _bounded_int(args.get("page"), default=1, minimum=1, maximum=10000)
+    per_page = _bounded_int(args.get("per_page"), default=25, minimum=1, maximum=100)
+    sort = _validated_choice(args.get("sort"), {"timestamp", "severity", "event_type", "actor"}, "timestamp")
+    direction = _validated_choice(args.get("direction"), {"asc", "desc"}, "desc")
+    statement = db.select(SecurityAuditEvent)
+    statement = _apply_audit_filters(statement, filters)
+    total = db.session.execute(db.select(func.count()).select_from(statement.subquery())).scalar_one()
+    order_column = {
+        "timestamp": SecurityAuditEvent.created_at,
+        "severity": cast(SecurityAuditEvent.event_metadata, String),
+        "event_type": SecurityAuditEvent.event_type,
+        "actor": SecurityAuditEvent.user_id,
+    }[sort]
+    if direction == "asc":
+        statement = statement.order_by(order_column.asc(), SecurityAuditEvent.id.asc())
+    else:
+        statement = statement.order_by(order_column.desc(), SecurityAuditEvent.id.desc())
+    events = list(
+        db.session.execute(statement.limit(per_page).offset((page - 1) * per_page)).scalars()
+    )
+    audit_event(
+        "audit_log_view",
+        "success",
+        user=actor,
+        metadata={
+            "filters_used": sorted(key for key, value in filters.items() if value not in {None, ""}),
+            "sort": sort,
+            "direction": direction,
+            "page": page,
+            "per_page": per_page,
+        },
+    )
+    return {
+        "events": [public_audit_event(event, include_metadata=False) for event in events],
+        "filters": filters,
+        "page": page,
+        "per_page": per_page,
+        "total": int(total or 0),
+        "sort": sort,
+        "direction": direction,
+    }
+
+
+def audit_event_detail_for_admin(actor: User, event_id: int) -> dict[str, Any]:
+    if role_rank(actor.account_type) < role_rank(ACCOUNT_ADMIN):
+        audit_event("audit_log_detail_view", "blocked", user=actor, metadata={"reason": "admin_role_required"})
+        raise AuthError("Forbidden", 403)
+    event = db.session.get(SecurityAuditEvent, int(event_id))
+    if event is None:
+        raise AuthError("Audit event not found", 404)
+    audit_event(
+        "audit_log_detail_view",
+        "success",
+        user=actor,
+        metadata={"audit_event_ref": audit_reference("security_audit_event", event.id)},
+    )
+    return public_audit_event(event, include_metadata=True)
+
+
+def public_staff_account(user: User, actor: User) -> dict[str, Any]:
+    return {
+        "id": user.id,
+        "name": user.full_name,
+        "workplace_email": user.email,
+        "role": user.account_type,
+        "role_label": role_label(user.account_type),
+        "account_status": user.account_status,
+        "totp_enrolled": bool(user.mfa_enabled),
+        "workplace_email_verified": bool(user.workplace_email_verified_at),
+        "created_at": _utc_iso(user.created_at),
+        "last_login_at": _utc_iso(user.last_login_at) if user.last_login_at else None,
+        "can_manage": bool(is_root_admin(actor) and user.account_type in ADMIN_ACCOUNT_MANAGED_TYPES and user.id != actor.id),
+    }
+
+
+def public_audit_event(event: SecurityAuditEvent, *, include_metadata: bool) -> dict[str, Any]:
+    payload = {
+        "id": event.id,
+        "event_type": event.event_type,
+        "outcome": event.outcome,
+        "actor_user_id": event.user_id,
+        "ip_address": event.ip_address,
+        "correlation_id": event.correlation_id,
+        "session_ref": event.session_ref,
+        "created_at": _utc_iso(event.created_at),
+    }
+    metadata = event.event_metadata if isinstance(event.event_metadata, dict) else {}
+    payload["severity"] = str(metadata.get("severity") or "").strip()[:24] if metadata else ""
+    if include_metadata:
+        payload["metadata"] = _safe_metadata_for_display(metadata)
+    return payload
+
+
+def _role_responsibilities(actor: User) -> list[str]:
+    if is_root_admin(actor):
+        return [
+            "Invite and revoke staff/admin onboarding records",
+            "Manage staff/admin account lifecycle state",
+            "Review audit, alert, and high-risk security events",
+        ]
+    if actor.account_type == ACCOUNT_ADMIN:
+        return [
+            "Review audit logs and security alerts",
+            "Monitor staff/admin account status with safe metadata",
+            "Handle technical security workflows without customer fund access",
+        ]
+    return [
+        "Use assigned business-operation tools only",
+        "Escalate suspicious or sensitive customer cases",
+        "No technical staff/admin management permissions",
+    ]
+
+
+def _admin_security_notices(actor: User) -> list[dict[str, str]]:
+    notices = [
+        {
+            "severity": "info",
+            "title": "Authenticator MFA required",
+            "message": "Staff/admin access uses workplace login plus TOTP; passkeys and WebAuthn are not offered in this workflow.",
+        },
+        {
+            "severity": "warning",
+            "title": "Separation of duties",
+            "message": "Privileged admin tools must not be used against the actor's own customer identity.",
+        },
+    ]
+    if not actor.mfa_enabled:
+        notices.insert(
+            0,
+            {
+                "severity": "danger",
+                "title": "TOTP not enrolled",
+                "message": "This staff/admin account cannot complete normal admin access until TOTP is enrolled.",
+            },
+        )
+    if is_root_admin(actor):
+        pending_invites = db.session.execute(
+            db.select(func.count())
+            .select_from(StaffInvite)
+            .where(StaffInvite.status.in_(tuple(ACTIVE_INVITE_STATUSES)))
+        ).scalar_one()
+        if int(pending_invites or 0) > 0:
+            notices.append(
+                {
+                    "severity": "warning",
+                    "title": "Pending staff invites",
+                    "message": f"{int(pending_invites)} staff/admin invite(s) are pending review.",
+                }
+            )
+    return notices
+
+
+def _admin_dashboard_summary(actor: User) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "current_role_rank": role_rank(actor.account_type),
+        "totp_enrolled": bool(actor.mfa_enabled),
+        "workplace_email_verified": bool(actor.workplace_email_verified_at),
+        "account_status": actor.account_status,
+        "pending_invites": None,
+        "staff_accounts": None,
+        "active_alerts": None,
+    }
+    if is_root_admin(actor):
+        summary["pending_invites"] = int(
+            db.session.execute(
+                db.select(func.count())
+                .select_from(StaffInvite)
+                .where(StaffInvite.status.in_(tuple(ACTIVE_INVITE_STATUSES)))
+            ).scalar_one()
+            or 0
+        )
+    if role_rank(actor.account_type) >= role_rank(ACCOUNT_ADMIN):
+        rows = db.session.execute(
+            db.select(User.account_type, User.account_status, func.count())
+            .where(User.account_type.in_(tuple(STAFF_ACCOUNT_TYPES)))
+            .group_by(User.account_type, User.account_status)
+        ).all()
+        summary["staff_accounts"] = [
+            {"role": role, "status": status, "count": int(count)}
+            for role, status, count in rows
+        ]
+    return summary
+
+
+def _audit_filters(args: dict[str, Any]) -> dict[str, str]:
+    return {
+        "event_type": _safe_filter(args.get("event_type"), 80),
+        "actor": _safe_filter(args.get("actor"), 32),
+        "target": _safe_filter(args.get("target"), 80),
+        "role": _validated_choice(args.get("role"), STAFF_ACCOUNT_TYPES | {ACCOUNT_CUSTOMER}, ""),
+        "severity": _validated_choice(args.get("severity"), {"low", "medium", "high", "critical"}, ""),
+        "outcome": _safe_filter(args.get("outcome") or args.get("status"), 24),
+        "ip_address": _safe_filter(args.get("ip_address"), 64),
+        "request_id": _safe_filter(args.get("request_id") or args.get("correlation_id"), 64),
+        "from": _safe_filter(args.get("from"), 40),
+        "to": _safe_filter(args.get("to"), 40),
+        "q": _safe_filter(args.get("q"), 80),
+    }
+
+
+def _apply_audit_filters(statement, filters: dict[str, str]):
+    if filters["event_type"]:
+        statement = statement.where(SecurityAuditEvent.event_type == filters["event_type"])
+    if filters["outcome"]:
+        statement = statement.where(SecurityAuditEvent.outcome == filters["outcome"])
+    if filters["actor"]:
+        try:
+            actor_id = int(filters["actor"])
+        except ValueError:
+            actor_id = None
+        if actor_id is not None:
+            statement = statement.where(SecurityAuditEvent.user_id == actor_id)
+    if filters["role"]:
+        statement = statement.join(User, User.id == SecurityAuditEvent.user_id).where(
+            User.account_type == filters["role"]
+        )
+    if filters["ip_address"]:
+        statement = statement.where(SecurityAuditEvent.ip_address == filters["ip_address"])
+    if filters["request_id"]:
+        statement = statement.where(SecurityAuditEvent.correlation_id == filters["request_id"])
+    since = _parse_filter_datetime(filters["from"])
+    until = _parse_filter_datetime(filters["to"])
+    if since is not None:
+        statement = statement.where(SecurityAuditEvent.created_at >= since)
+    if until is not None:
+        statement = statement.where(SecurityAuditEvent.created_at <= until)
+    metadata_text = cast(SecurityAuditEvent.event_metadata, String)
+    if filters["severity"]:
+        statement = statement.where(metadata_text.ilike(f"%severity%{filters['severity']}%"))
+    if filters["target"]:
+        statement = statement.where(metadata_text.ilike(f"%{_like_escape(filters['target'])}%", escape="\\"))
+    if filters["q"]:
+        pattern = f"%{_like_escape(filters['q'])}%"
+        statement = statement.where(
+            or_(
+                SecurityAuditEvent.event_type.ilike(pattern, escape="\\"),
+                SecurityAuditEvent.outcome.ilike(pattern, escape="\\"),
+                SecurityAuditEvent.correlation_id.ilike(pattern, escape="\\"),
+                metadata_text.ilike(pattern, escape="\\"),
+            )
+        )
+    return statement
+
+
+def _safe_metadata_for_display(metadata: dict[str, Any]) -> dict[str, Any]:
+    allowed: dict[str, Any] = {}
+    for key, value in list(metadata.items())[:30]:
+        key_text = _safe_filter(key, 64)
+        if not key_text or _display_key_is_sensitive(key_text):
+            continue
+        if isinstance(value, bool | int | float) or value is None:
+            allowed[key_text] = value
+            continue
+        if isinstance(value, list | tuple):
+            allowed[key_text] = [_safe_filter(item, 120) for item in list(value)[:10]]
+            continue
+        if isinstance(value, dict):
+            allowed[key_text] = {
+                _safe_filter(nested_key, 64): _safe_filter(nested_value, 120)
+                for nested_key, nested_value in list(value.items())[:10]
+                if _safe_filter(nested_key, 64)
+                and not _display_key_is_sensitive(_safe_filter(nested_key, 64))
+            }
+            continue
+        allowed[key_text] = _safe_filter(value, 160)
+    return allowed
+
+
+def _display_key_is_sensitive(key: str) -> bool:
+    lowered = key.casefold().replace("-", "_")
+    if lowered.endswith("_ref") or lowered in {"principal_ref", "session_ref"}:
+        return False
+    return any(
+        part in lowered
+        for part in (
+            "authorization",
+            "ciphertext",
+            "cookie",
+            "csrf",
+            "hmac",
+            "kek",
+            "mfa_secret",
+            "nonce",
+            "password",
+            "private_key",
+            "recovery_code",
+            "secret",
+            "session_id",
+            "token",
+            "totp",
+            "url",
+        )
+    )
+
+
+def _safe_filter(value: Any, limit: int) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    cleaned = "".join(char if (char >= " " and char != "\x7f") else " " for char in text)
+    return " ".join(cleaned.split())[:limit]
+
+
+def _validated_choice(value: Any, allowed: set[str] | frozenset[str], default: str) -> str:
+    text = str(value or "").strip().casefold()
+    return text if text in allowed else default
+
+
+def _bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return min(max(parsed, minimum), maximum)
+
+
+def _parse_filter_datetime(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return _as_utc(parsed)
+
+
+def _like_escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def authenticate_admin_primary(workplace_email: str, password: str) -> dict[str, Any]:
