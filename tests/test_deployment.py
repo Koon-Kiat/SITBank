@@ -1279,6 +1279,12 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "Admin runtime database role must be distinct from customer runtime role" in deploy_script
     assert "Admin runtime database role must not be the migration/schema-owner role" in deploy_script
     assert "python -m flask --app admin_wsgi:app production-check" in deploy_script
+    assert (
+        '--header "X-Forwarded-For: 127.0.0.1" \\\n'
+        '        --header "X-Forwarded-Proto: https" \\\n'
+        '        "http://${APP_BIND_HOST}:${APP_BIND_PORT}/health/ready"'
+        in deploy_script
+    )
     assert '"http://${APP_BIND_HOST}:5002/health/ready"' in deploy_script
     deploy_db_sequence = re.search(
         r"migration_run \\\n    python -m flask --app wsgi:app db upgrade"
