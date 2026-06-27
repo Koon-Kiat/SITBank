@@ -2169,12 +2169,18 @@ def test_live_tls_scan_has_cloudflare_access_staging_acceptance_policy():
         '(.id // "") == "HTTP_status_code"',
         'test("^302[[:space:]]+Found"; "i")',
         "expected 302 Found Cloudflare Access challenge",
+        "def protocol_offered_ok($items; $wanted):",
+        "def hsts_minimum_ok($items):",
+        '(.id // "") == "HSTS_time"',
+        "missing or below the required HSTS minimum",
         "def final_grade_ok($items):",
         '(.id // "") == "overall_grade"',
         'test("^A\\\\+?$")',
         "missing or lower than A for Cloudflare Access staging",
         "TLS1: missing TLS 1.0 evidence",
         "TLS1_1: missing TLS 1.1 evidence",
+        "TLS1_2: missing or not offered",
+        "TLS1_3: missing or not offered",
         "cert_trust: missing certificate hostname/trust evidence",
         "cert_chain_of_trust: missing certificate chain evidence",
         "def staging_access_violation:",
@@ -2189,6 +2195,7 @@ def test_live_tls_scan_has_cloudflare_access_staging_acceptance_policy():
     ]
     assert "severe" not in staging_policy
     assert "cipherlist_(NULL|aNULL|EXPORT|LOW|OBSOLETED|3DES|RC4)" not in staging_policy
+    assert 'id | test("HSTS|STS"; "i")' in staging_policy
     assert 'id == "TLS1" or id == "TLS1_1"' in staging_policy
     assert 'id == "cert_trust"' in staging_policy
     assert 'id == "cert_chain_of_trust"' in staging_policy

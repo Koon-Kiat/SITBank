@@ -119,11 +119,16 @@ untrusted or incomplete chains, and every HIGH, CRITICAL, or FATAL
 `testssl.sh` finding. The Cloudflare Access-protected staging target accepts
 the expected unauthenticated `302 Found` Access challenge, but still requires
 TLS 1.0 and TLS 1.1 to be not offered, certificate hostname/trust and chain
-checks to be OK, no expiration or insecure redirect finding, and final
-`overall_grade` `A` or `A+`. MEDIUM/LOW/INFO findings are retained for manual
-review. SSL Labs is optional manual corroboration for a release, certificate
-renewal, edge change, or incident record; it is not a release-blocking
-automation dependency.
+checks to be OK, TLS 1.2 and TLS 1.3 to be offered, HSTS to meet the scanner
+minimum, no expiration or insecure redirect finding, and final `overall_grade`
+`A` or `A+`. `HSTS: not offered` is a failure for staging because the public
+Cloudflare edge, not only origin Nginx, is part of the deployed HTTPS
+boundary. `cipherlist_OBSOLETED: offered` on Cloudflare Universal SSL is
+retained as review evidence; removing it requires Advanced Certificate
+Manager/custom cipher suite support.
+MEDIUM/LOW/INFO findings are retained for manual review. SSL Labs is optional
+manual corroboration for a release, certificate renewal, edge change, or
+incident record; it is not a release-blocking automation dependency.
 
 ## Server Private Key Storage
 
