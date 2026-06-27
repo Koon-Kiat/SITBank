@@ -35,8 +35,8 @@ SITBank uses a hybrid private-access model:
 
 - Staging is protected by Cloudflare Access and Cloudflare Authenticated Origin
   Pulls at `staging-sitbank.pp.ua`.
-- Admin is protected by Tailscale/private operator access and remains denied
-  on the public `admin-sitbank.duckdns.org` app routes.
+- Admin is protected by Tailscale/private operator access at
+  `https://sitbank-ec2.tailca101b.ts.net/`.
 - The production customer site `sitbank.duckdns.org` remains public.
 
 Cloudflare Access policy, IdP configuration, API tokens, tunnel credentials,
@@ -44,9 +44,8 @@ origin certificate private keys, and origin-pull client credentials are
 operator-managed. Tailscale auth keys, API keys, tailnet policy, device
 approval state, and Serve state are also operator-managed. None of those values
 belong in the repository. `staging-sitbank.pp.ua` is the Cloudflare-managed
-staging hostname for Access. The retired `staging-sitbank.duckdns.org`
-hostname is not an active staging deployment, Nginx, Certbot, or TLS-scan
-target.
+staging hostname for Access. The retired DuckDNS staging hostname is not an
+active staging deployment, Nginx, Certbot, or TLS-scan target.
 
 Routine verification:
 
@@ -57,15 +56,14 @@ curl --fail --resolve staging-sitbank.pp.ua:443:127.0.0.1 \
   https://staging-sitbank.pp.ua/health/ready
 curl -I --resolve staging-sitbank.pp.ua:443:<EC2_PUBLIC_IP> \
   https://staging-sitbank.pp.ua/
-curl -I https://admin-sitbank.duckdns.org/
 sudo tailscale serve status
 curl -I https://sitbank-ec2.tailca101b.ts.net/
 ```
 
 Expected: local staging readiness succeeds, direct origin access to staging
-returns `403` without Cloudflare's origin-pull client certificate, public
-admin `/` returns `403`, and the private admin URL is reachable only from an
-approved tailnet path. Tailscale Funnel must stay disabled for SITBank admin.
+returns `403` without Cloudflare's origin-pull client certificate, and the
+private admin URL is reachable only from an approved tailnet path. Tailscale
+Funnel must stay disabled for SITBank admin.
 
 The detailed onboarding, offboarding, emergency lockout, rollback, and live
 operator verification steps are in
@@ -323,9 +321,8 @@ contents. Finally run `sudo nginx -t` before reload.
 
 The **Live TLS scan evidence** workflow provides scheduled weekly,
 operator-dispatched, and post-deployment evidence of the Internet-facing TLS
-posture for
-`staging-sitbank.pp.ua`, `sitbank.duckdns.org`, and
-`admin-sitbank.duckdns.org`. The deployment workflow calls the staging scan
+posture for `staging-sitbank.pp.ua` and `sitbank.duckdns.org`. The deployment
+workflow calls the staging scan
 after staging deploy and blocks production deployment until it passes; it calls
 the production scan after production deploy to complete the release evidence.
 The manual workflow input `staging_host` defaults to
@@ -342,8 +339,8 @@ runner. Do not make staging or admin verification pass by switching Cloudflare
 to Flexible SSL, disabling TLS verification, disabling the Cloudflare proxy,
 bypassing Authenticated Origin Pulls, or enabling Tailscale Funnel.
 
-Each target artifact (`tls-scan-staging-sitbank`, `tls-scan-prod-sitbank`, or
-`tls-scan-admin-sitbank`) retains the untouched scanner output as
+Each target artifact (`tls-scan-staging-sitbank` or `tls-scan-prod-sitbank`)
+retains the untouched scanner output as
 `testssl.raw.json`, the policy-parsing copy as `testssl.json`, plus the log,
 HTML, metadata, and policy-finding file for 90 days. `testssl.sh` may emit the
 invalid JSON escape `\,` in certificate subject strings, including the
@@ -355,8 +352,8 @@ credentials or secrets are needed or permitted.
 
 Treat a failed scan as a release/deployment verification failure. A failed
 staging scan blocks production deployment, while a failed production scan
-marks the completed deployment workflow failed. The production customer and
-public-denied admin automated gate blocks legacy TLS protocols,
+marks the completed deployment workflow failed. The production customer
+automated gate blocks legacy TLS protocols,
 weak/NULL/anonymous/export/RC4/3DES ciphers, expired or mismatched
 certificates, missing/untrusted chains, all HIGH, CRITICAL, or FATAL
 `testssl.sh` findings, and scanner errors. Review MEDIUM/LOW/INFO results in

@@ -18,11 +18,6 @@ on:
         required: false
         default: sitbank.duckdns.org
         type: string
-      admin_host:
-        description: Production admin HTTPS hostname to scan (hostname only).
-        required: false
-        default: admin-sitbank.duckdns.org
-        type: string
   workflow_dispatch:
     inputs:
       scan_scope:
@@ -43,11 +38,6 @@ on:
         description: Production customer HTTPS hostname to scan (hostname only).
         required: true
         default: sitbank.duckdns.org
-        type: string
-      admin_host:
-        description: Production admin HTTPS hostname to scan (hostname only).
-        required: true
-        default: admin-sitbank.duckdns.org
         type: string
   schedule:
     # Weekly evidence collection. Manual runs should also follow every edge/TLS deployment.
@@ -77,13 +67,13 @@ jobs:
 
           case "${SCAN_SCOPE}" in
             all)
-              targets='[{"label":"staging-sitbank","input":"staging","artifact":"tls-scan-staging-sitbank"},{"label":"prod-sitbank","input":"production","artifact":"tls-scan-prod-sitbank"},{"label":"admin-sitbank","input":"admin","artifact":"tls-scan-admin-sitbank"}]'
+              targets='[{"label":"staging-sitbank","input":"staging","artifact":"tls-scan-staging-sitbank"},{"label":"prod-sitbank","input":"production","artifact":"tls-scan-prod-sitbank"}]'
               ;;
             staging)
               targets='[{"label":"staging-sitbank","input":"staging","artifact":"tls-scan-staging-sitbank"}]'
               ;;
             production)
-              targets='[{"label":"prod-sitbank","input":"production","artifact":"tls-scan-prod-sitbank"},{"label":"admin-sitbank","input":"admin","artifact":"tls-scan-admin-sitbank"}]'
+              targets='[{"label":"prod-sitbank","input":"production","artifact":"tls-scan-prod-sitbank"}]'
               ;;
             *)
               echo "::error::scan_scope must be all, staging, or production."
@@ -105,7 +95,6 @@ jobs:
     env:
       STAGING_HOST: ${{ inputs.staging_host || 'staging-sitbank.pp.ua' }}
       PRODUCTION_HOST: ${{ inputs.production_host || 'sitbank.duckdns.org' }}
-      ADMIN_HOST: ${{ inputs.admin_host || 'admin-sitbank.duckdns.org' }}
       TARGET_INPUT: ${{ matrix.target.input }}
       TARGET_LABEL: ${{ matrix.target.label }}
 
@@ -138,7 +127,6 @@ jobs:
           case "${TARGET_INPUT}" in
             staging) target_host="${STAGING_HOST}" ;;
             production) target_host="${PRODUCTION_HOST}" ;;
-            admin) target_host="${ADMIN_HOST}" ;;
             *)
               echo "::error::Unknown TLS scan target '${TARGET_INPUT}'."
               exit 1

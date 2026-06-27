@@ -30,7 +30,6 @@ References:
 | --- | --- | --- | --- |
 | Production customer | `https://sitbank.duckdns.org` | Public HTTPS edge, Flask customer login and MFA | Public |
 | Staging customer | `https://staging-sitbank.pp.ua` | Cloudflare Access, Cloudflare Authenticated Origin Pull, staging Basic Auth, Flask login and MFA | Not directly public at the origin |
-| Production admin public host | `https://admin-sitbank.duckdns.org` | Nginx denial for `/`, health, and app routes | Public `403` except ACME challenge paths |
 | Production admin app | `https://sitbank-ec2.tailca101b.ts.net/` through Tailscale Serve | Tailscale ACLs, approved devices, Flask admin login and TOTP | Private tailnet only |
 | Staging admin app | Approved Tailscale/private operator path to `127.0.0.1:5003` | Tailscale ACLs, approved devices, Flask admin login and TOTP | Private tailnet only |
 
@@ -38,17 +37,17 @@ The customer production site remains public. The admin app is not exposed
 through the customer app, and the customer Nginx server block continues to
 return `404` for `/admin`.
 
-`admin-sitbank.duckdns.org` exists in the production Nginx configuration today,
-but it is not the admin application access path. The old public admin verification page has been removed from the edge bootstrap. Public admin `/`,
-`/login`, `/health/ready`, and other admin app paths remain denied at Nginx for
-non-private traffic. The ACME challenge path remains available for host-managed
-certificate renewal.
+There is no public admin Nginx server block. The old public admin verification
+page has been removed from the edge bootstrap, and admin application access is
+only through the private Tailscale Serve path. If a retired public admin DNS
+record still points at the EC2 host, the shared unknown-host default server
+fails closed instead of proxying to the admin app.
 
 ## Staging Cloudflare Access
 
 Configure Cloudflare for `staging-sitbank.pp.ua` as a self-hosted Access
-application. The retired `staging-sitbank.duckdns.org` hostname is no longer
-an active staging deployment, Nginx, Certbot, or TLS-scan target:
+application. The retired DuckDNS staging hostname is no longer an active
+staging deployment, Nginx, Certbot, or TLS-scan target:
 
 1. Ensure `staging-sitbank.pp.ua` is proxied through Cloudflare. Do not make
    the EC2 origin public as a workaround.
@@ -197,7 +196,7 @@ Live Tailscale admin checks:
 3. A removed user or deleted device loses access.
 4. Admin Flask login and TOTP are still required after Tailscale access.
 5. Admin readiness endpoints remain private or restricted.
-6. Public admin `/` returns `403`, not a static verification page.
+6. No public admin hostname is required or scanned.
 7. `https://sitbank.duckdns.org` remains public.
 
 ## Emergency Lockout
@@ -220,7 +219,7 @@ For admin compromise or suspected unauthorized admin access:
    ```
 
 2. Remove the affected Tailscale devices or users from the tailnet.
-3. Keep the public admin Nginx app routes denied.
+3. Keep the public admin surface absent from Nginx.
 4. Revoke affected SITBank admin sessions and disable staff accounts as needed.
 5. Preserve Tailscale logs, Nginx logs, and SITBank admin audit logs.
 
@@ -243,7 +242,7 @@ If the Cloudflare staging setup fails after merge:
 If Tailscale admin setup fails:
 
 1. Disable Tailscale Serve or the private admin path.
-2. Leave the public admin Nginx app routes denied.
+2. Leave the public admin surface absent from Nginx.
 3. Use only approved break-glass host access to recover.
 4. Do not expose admin through the customer app or public Nginx routes.
 
@@ -283,9 +282,7 @@ Readiness remains restricted:
 - Production customer `/health/ready` is loopback-only.
 - Staging `/health/ready` is loopback-only and bypasses the origin-pull client
   certificate check only for local deployment verification.
-- Public admin `/` returns `403`.
-- Public admin `/health/ready` returns `403`.
-- Admin `/health/live` is loopback-only in the public Nginx server block.
+- Admin readiness is checked through loopback/private paths only.
 
 Unknown-host rejection remains in `ops/nginx/sitbank-default.conf`; direct
 origin requests with unexpected hostnames are rejected by the shared default

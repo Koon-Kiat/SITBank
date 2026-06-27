@@ -411,7 +411,7 @@ fi
 admin_ready=0
 for _ in $(seq 1 20); do
     if docker exec "${admin_container}" python -c \
-        "import urllib.request; request=urllib.request.Request('http://127.0.0.1:5002/health/ready', headers={'X-Forwarded-Proto':'https','Host':'admin-sitbank.duckdns.org'}); urllib.request.urlopen(request, timeout=4).read()" \
+        "import urllib.request; request=urllib.request.Request('http://127.0.0.1:5002/health/ready', headers={'X-Forwarded-Proto':'https','Host':'sitbank-admin.internal'}); urllib.request.urlopen(request, timeout=4).read()" \
         >/dev/null 2>&1; then
         admin_ready=1
         break
