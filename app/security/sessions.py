@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import ipaddress
+import re
 import time
 import uuid
 from collections.abc import Iterator
@@ -28,6 +29,8 @@ from app.security.session_hmac import (
 
 SESSION_RISK_REAUTH_REQUIRED_KEY = "risk_reauth_required"
 SESSION_RISK_FINGERPRINT_KEY = "risk_fingerprint"
+SESSION_RISK_CONTEXT_KEY = "risk_context"
+SESSION_RISK_CONTEXT_VERSION = 1
 AUTH_CREATED_AT_KEY = "auth_created_at"
 SESSION_HISTORY_LIMIT_DEFAULT = 20
 SESSION_PAYLOAD_FORMAT = "session-hmac-v2"
@@ -37,6 +40,7 @@ SESSION_END_REASON_LABELS = {
     "revoked": "Revoked",
     "expired": "Expired",
     "absolute_lifetime": "Session lifetime expired",
+    "risk_change": "Session context changed",
     "rotated": "Session refreshed",
     "integrity_failure": "Session integrity failure",
     "ended": "Ended",
@@ -371,6 +375,7 @@ def refresh_session_risk_fingerprint() -> None:
         return
     fingerprint = current_session_risk_fingerprint()
     session[SESSION_RISK_FINGERPRINT_KEY] = fingerprint
+    session[SESSION_RISK_CONTEXT_KEY] = _current_session_risk_context()
     session.pop(SESSION_RISK_REAUTH_REQUIRED_KEY, None)
     session.modified = True
     record = _current_session_record()
@@ -394,6 +399,9 @@ def _current_session_risk_message() -> str:
 def require_stable_session_for_sensitive_action(action: str) -> None:
     if not current_session_id():
         return
+    if session.get(SESSION_RISK_REAUTH_REQUIRED_KEY):
+        _raise_session_risk_reauthentication(action, audit=False)
+
     current = current_session_risk_fingerprint()
     stored = session.get(SESSION_RISK_FINGERPRINT_KEY)
     if not stored:
@@ -405,13 +413,212 @@ def require_stable_session_for_sensitive_action(action: str) -> None:
         refresh_session_risk_fingerprint()
         return
 
+    _mark_session_risk_reauthentication_required()
+    _raise_session_risk_reauthentication(action, audit=True)
+
+
+def _raise_session_risk_reauthentication(action: str, *, audit: bool) -> None:
+    from app.auth.services import AuthError
+
+    if audit:
+        from app.security.audit import audit_event
+
+        audit_event(
+            "session_risk",
+            "step_up_required",
+            user_id=_session_user_id(session),
+            metadata={"action": action},
+        )
+    raise AuthError("Session verification required. Please sign in again.", 401)
+
+
+def _mark_session_risk_reauthentication_required() -> None:
     session[SESSION_RISK_REAUTH_REQUIRED_KEY] = True
     session.modified = True
-    from app.auth.services import AuthError
+
+
+def _current_session_risk_context() -> dict[str, Any]:
+    ip_network = _normalized_ip_context(request.remote_addr or "")
+    user_agent = _normalized_user_agent(request.user_agent.string or "unknown")
+    user_agent_family = _user_agent_family(user_agent)
+    return {
+        "version": SESSION_RISK_CONTEXT_VERSION,
+        "ip_network_hash": _risk_context_hash("ip_network", ip_network),
+        "user_agent_family_hash": _risk_context_hash(
+            "user_agent_family",
+            user_agent_family,
+        ),
+        "user_agent_hash": _risk_context_hash("user_agent", user_agent),
+        "last_checked_at": _now(),
+    }
+
+
+def _risk_context_hash(label: str, value: str) -> str:
+    return active_hmac_hex(
+        f"session-risk-context:{label}:{value}",
+        length=32,
+    )
+
+
+def _risk_context_hash_matches(stored: Any, label: str, value: str) -> bool:
+    if not stored:
+        return False
+    return matches_hmac(
+        str(stored),
+        f"session-risk-context:{label}:{value}",
+        length=32,
+    )
+
+
+def _normalized_user_agent(value: str) -> str:
+    return " ".join((value or "unknown").split()).casefold()[:256]
+
+
+def _user_agent_family(value: str) -> str:
+    normalized = _normalized_user_agent(value)
+    known_families = (
+        ("edge", r"\bedg(?:e|a|ios)?/"),
+        ("opera", r"\b(?:opr|opera)/"),
+        ("chrome", r"\b(?:chrome|crios)/"),
+        ("firefox", r"\b(?:firefox|fxios)/"),
+        ("safari", r"\bsafari/"),
+    )
+    for family, pattern in known_families:
+        if re.search(pattern, normalized):
+            return family
+    product = re.search(r"\b([a-z][a-z0-9._-]{1,31})/", normalized)
+    if product:
+        return product.group(1)
+    token = re.search(r"\b([a-z][a-z0-9._-]{1,31})\b", normalized)
+    return token.group(1) if token else "unknown"
+
+
+def _legacy_session_risk_fingerprint_matches() -> bool:
+    stored = session.get(SESSION_RISK_FINGERPRINT_KEY)
+    if not stored:
+        return True
+    current = current_session_risk_fingerprint()
+    if hmac.compare_digest(str(stored), current):
+        return True
+    return matches_hmac(
+        str(stored),
+        _current_session_risk_message(),
+        length=32,
+    )
+
+
+def _session_risk_context_changes() -> set[str]:
+    stored = session.get(SESSION_RISK_CONTEXT_KEY)
+    if not isinstance(stored, dict) or stored.get("version") != SESSION_RISK_CONTEXT_VERSION:
+        return set() if _legacy_session_risk_fingerprint_matches() else {"legacy_context"}
+
+    ip_network = _normalized_ip_context(request.remote_addr or "")
+    user_agent = _normalized_user_agent(request.user_agent.string or "unknown")
+    user_agent_family = _user_agent_family(user_agent)
+    changes: set[str] = set()
+    if not _risk_context_hash_matches(
+        stored.get("ip_network_hash"),
+        "ip_network",
+        ip_network,
+    ):
+        changes.add("ip_network")
+    if not _risk_context_hash_matches(
+        stored.get("user_agent_family_hash"),
+        "user_agent_family",
+        user_agent_family,
+    ):
+        changes.add("user_agent_family")
+    if not _risk_context_hash_matches(
+        stored.get("user_agent_hash"),
+        "user_agent",
+        user_agent,
+    ):
+        changes.add("user_agent")
+    return changes
+
+
+def _session_risk_severity(changes: set[str]) -> str:
+    if not changes:
+        return "stable"
+    if current_app.config.get("APP_MODE") == "admin":
+        return "high"
+    if changes == {"user_agent"}:
+        return "low"
+    if {"ip_network", "user_agent_family"} <= changes:
+        return "high"
+    return "medium"
+
+
+def _store_current_session_risk_context(*, clear_reauth: bool) -> None:
+    session[SESSION_RISK_FINGERPRINT_KEY] = current_session_risk_fingerprint()
+    session[SESSION_RISK_CONTEXT_KEY] = _current_session_risk_context()
+    if clear_reauth:
+        session.pop(SESSION_RISK_REAUTH_REQUIRED_KEY, None)
+    session.modified = True
+
+
+def _touch_session_risk_context() -> None:
+    stored = session.get(SESSION_RISK_CONTEXT_KEY)
+    if not isinstance(stored, dict):
+        _store_current_session_risk_context(clear_reauth=False)
+        return
+    updated = dict(stored)
+    updated["last_checked_at"] = _now()
+    session[SESSION_RISK_CONTEXT_KEY] = updated
+    session.modified = True
+
+
+def enforce_authenticated_session_context() -> Any:
+    if not session.get("user_id") or not current_session_id():
+        return None
+
+    changes = _session_risk_context_changes()
+    severity = _session_risk_severity(changes)
+    if severity == "stable":
+        if not isinstance(session.get(SESSION_RISK_CONTEXT_KEY), dict):
+            _store_current_session_risk_context(clear_reauth=False)
+        else:
+            _touch_session_risk_context()
+        return None
+
+    app_mode = str(current_app.config.get("APP_MODE") or "customer")
+    metadata = {
+        "app_mode": app_mode,
+        "severity": severity,
+        "signals": sorted(changes),
+    }
     from app.security.audit import audit_event
 
-    audit_event("session_risk", "step_up_required", metadata={"action": action})
-    raise AuthError("Session verification required. Please sign in again.", 401)
+    if severity == "low":
+        audit_event(
+            "session_risk",
+            "changed",
+            user_id=_session_user_id(session),
+            metadata=metadata,
+        )
+        _store_current_session_risk_context(clear_reauth=True)
+        return None
+
+    if severity == "medium":
+        if not session.get(SESSION_RISK_REAUTH_REQUIRED_KEY):
+            audit_event(
+                "session_risk",
+                "reauth_required",
+                user_id=_session_user_id(session),
+                metadata=metadata,
+            )
+        _mark_session_risk_reauthentication_required()
+        _touch_session_risk_context()
+        return None
+
+    audit_event(
+        "session_risk",
+        "revoked",
+        user_id=_session_user_id(session),
+        metadata=metadata,
+    )
+    revoke_current_session(ended_reason="risk_change")
+    return _session_expired_response("Session verification required")
 
 
 def _normalized_ip_context(value: str) -> str:
@@ -829,6 +1036,10 @@ def register_session_hooks(app: Flask) -> None:
         if now - last_activity > current_app.config["SESSION_INACTIVITY_SECONDS"]:
             revoke_current_session(ended_reason="expired")
             return _session_expired_response()
+
+        context_response = enforce_authenticated_session_context()
+        if context_response is not None:
+            return context_response
 
         session["last_activity_at"] = now
         session.modified = True

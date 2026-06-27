@@ -43,6 +43,17 @@ key IDs, malformed payloads, or unsupported legacy formats are logged as
 Do not log or paste raw session IDs or stored session payloads during
 investigation.
 
+Authenticated sessions also carry HMAC-derived coarse-network and User-Agent
+context. This is risk-based stolen-cookie resistance, not cryptographic device
+binding: IP addresses and User-Agent strings are not proof of possession.
+Customer context drift requires full login before sensitive actions and
+combined network/browser-family drift revokes the session. Admin sessions use
+the stricter policy of revocation on any detected drift. Context checks do not
+refresh the absolute authenticated lifetime or replace idle expiry, CSRF, MFA,
+logout, or server-side revocation. See
+`docs/security/session-management.md` and
+`tests/test_session_risk_binding.py`.
+
 PostgreSQL uses separate `sitbank_owner` and `sitbank_app` roles in staging
 and production. `sitbank_owner` is only for Alembic migrations and ownership;
 `sitbank_app` is the Flask runtime role and must not own schema objects or have

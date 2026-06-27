@@ -810,12 +810,19 @@ def test_local_ci_command_documents_required_local_checks():
         "Python/test checks",
         "Git Bash syntax checks",
         "Docker/Compose checks",
-        "PASS:",
-        "SKIP:",
-        "No Docker result was recorded",
+        '"PASS"',
+        '"FAIL"',
+        '"SKIPPED"',
+        "--require-docker",
+        "CI_LOCAL_REQUIRE_DOCKER",
+        '"version"',
+        '"compose", "version"',
+        "Local validation is partial",
+        "OVERALL: PASS (PARTIAL",
+        "OVERALL: PASS (FULL",
+        "OVERALL: FAIL",
     ):
         assert expected in ci_local
-    assert "Docker is unavailable; skipped Docker/Compose-only local checks" in ci_local
     assert "scripts/ci-local" in readme
     assert "ops/runtime_contract.py" in readme
     assert "-m security" in readme
