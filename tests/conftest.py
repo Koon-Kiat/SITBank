@@ -213,6 +213,7 @@ SECURITY_TEST_FILES = frozenset(
         "tests/test_auth_registration_login.py",
         "tests/test_authenticated_portal_ui.py",
         "tests/test_banking_transaction_security.py",
+        "tests/test_ci_local.py",
         "tests/test_config.py",
         "tests/test_deployment.py",
         "tests/test_health_endpoints.py",
@@ -231,7 +232,12 @@ SECURITY_TEST_FILES = frozenset(
         "tests/test_webauthn_lifecycle.py",
     }
 )
-DEPLOYMENT_TEST_FILES = frozenset({"tests/test_deployment.py"})
+DEPLOYMENT_TEST_FILES = frozenset(
+    {
+        "tests/test_ci_local.py",
+        "tests/test_deployment.py",
+    }
+)
 SLOW_TEST_FILES = frozenset(
     {
         "tests/test_account_security_actions.py",

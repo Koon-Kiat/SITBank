@@ -24,6 +24,38 @@ Only Flask/Gunicorn runs in the SITBank container. Nginx, TLS, PostgreSQL, and b
 - Staging compose dir: `/opt/sitbank-staging`
 - Staging service: `sitbank-staging-container.service`
 
+## Local Deployment Validation
+
+The normal local CI command can run without Docker:
+
+```bash
+scripts/ci-local
+```
+
+If the Docker CLI or daemon is unavailable, normal mode marks Docker/Compose
+checks as `SKIPPED` and reports an overall partial pass. That result covers the
+non-Docker checks but does not prove the production or staging Compose model.
+
+Use strict mode before deployment-related pull requests:
+
+```bash
+scripts/ci-local --require-docker
+```
+
+Alternatively:
+
+```bash
+CI_LOCAL_REQUIRE_DOCKER=1 scripts/ci-local
+```
+
+Strict mode fails when Docker, the Docker daemon, or Docker Compose is
+unavailable. It runs `ops/container/validate-compose.sh`, which renders and
+validates both `compose.prod.yml` and `compose.staging.yml` with the local
+validation override. This checks the Compose service model, including the
+customer/admin separation and wiring enforced by deployment tests, without
+starting containers. CI/CD remains the source of truth for deployment
+validation and release evidence.
+
 ## Database Baseline
 
 Existing databases that already have the baseline tables must be adopted into Alembic instead of recreated.
