@@ -3,6 +3,9 @@
 This document records the access-control model implemented in the SITBank
 repository. It distinguishes implemented runtime enforcement from test
 coverage notes and service-only flows.
+Framework coverage and current follow-up items are centralized in
+`docs/security/framework-control-matrix.md` and
+`docs/security/security-gap-register.md`.
 
 ## Access-Control Model
 

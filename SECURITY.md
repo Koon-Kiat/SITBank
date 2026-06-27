@@ -86,7 +86,8 @@ account numbers.
 Detailed audit and alert implementation evidence is maintained in
 `docs/security/audit-and-alerting.md`. Current open security gaps and recently
 closed documentation-sensitive items are centralized in
-`docs/security/security-gap-register.md`.
+`docs/security/security-gap-register.md`; framework coverage is mapped in
+`docs/security/framework-control-matrix.md`.
 
 New audit rows are chained with `previous_event_hash`, `event_hash`, and
 `hash_algorithm` using deterministic canonical JSON over stable audit fields.

@@ -3,6 +3,9 @@
 This document records the cryptography and authentication controls found in the
 SITBank repository. It cites repository evidence and points to the central
 register when a control remains open or depends on deployment state.
+Framework coverage is mapped in
+`docs/security/framework-control-matrix.md`, and current follow-up items remain
+centralized in `docs/security/security-gap-register.md`.
 
 ## Server Authentication
 

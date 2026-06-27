@@ -1,49 +1,69 @@
 # Security Gap Register
 
 This register is the source of truth for current security gaps,
-assessment-relevant constraints, implemented controls that are often reviewed,
-and recently closed gaps. Other security documents should describe implemented
-behavior and link here instead of carrying separate stale gap tables.
+assessment-relevant constraints, partially implemented controls, implemented
+controls that are often reviewed, and recently closed gaps. Other security
+documents should describe implemented behavior and link here instead of
+carrying separate stale gap tables.
+
+Related mapping: `docs/security/framework-control-matrix.md`.
 
 ## Current Open Gaps
 
-| Title | Status | Affected area | Evidence or reason | Recommended next action |
-| --- | --- | --- | --- | --- |
-| Password history beyond current-password reuse | Open | Authentication and password reset | `app/auth/services.py::change_password()` and `app/auth/password_reset.py::complete_password_reset()` reject reuse of the current password, but there is no previous-password history table or retention policy | Add a password-history table with pepper-aware hash metadata, retention limits, and tests for change/reset history rejection |
-| Active-session count cap | Open | Session management | Users can view, terminate, and revoke sessions, but `app/security/sessions.py` does not cap total active sessions per user | Decide whether a numeric cap improves security/usability, then enforce it in session creation with tests |
-| Device-bound session proof | Open | Session management | Stolen cookies are bounded by idle expiry, absolute lifetime, revocation, inventory, and risk step-up, but sessions are not cryptographically bound to a client-held device key or mTLS certificate | Keep as defense-in-depth unless project scope adds device-bound proof; document operator tradeoffs before implementation |
-| Authenticated DAST on ordinary pull requests | Open policy tradeoff | CI/CD testing | `.github/workflows/ci-deploy.yml` reserves full authenticated DAST for scheduled/release paths to keep PR feedback fast | Revisit if CI budget allows PR DAST, or keep release-only with clear evidence collection |
-| Local Docker/Compose proof when Docker is unavailable | Open local-environment constraint | Local developer checks | `scripts/ci-local` reports Docker/Compose checks as skipped when Docker is unavailable; CI and Docker-enabled local runs still validate Compose | Keep explicit skip output; use CI or a Docker-enabled workstation for release validation |
+| Title | Affected area | Framework mapping | Risk level | Current evidence | Recommended fix | Relevant files/tests | Separate issue |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Password history beyond current-password reuse | Authentication and password reset | NIST SP 800-63B, OWASP ASVS, OWASP Top 10 identification/authentication | Medium | `change_password()` and `complete_password_reset()` reject reuse of the current password, but there is no previous-password history table or retention policy | Add a password-history table with pepper-aware hash metadata, retention limits, and tests for change/reset history rejection | `app/auth/services.py`, `app/auth/password_reset.py`, `tests/test_passwords.py` | No |
+| Admin audit-log viewer UI | Audit review and admin operations | OWASP ASVS logging, CIS audit log management, MAS monitoring | Medium | Audit CLI commands, alert reports, and database queries exist; no admin route exposes a reviewed audit-event viewer | Add a root-admin-only audit viewer with pagination, safe filters, redaction, authorization inventory coverage, and audit events for access | `app/security/audit.py`, `app/admin/routes.py`, `tests/test_audit_alerting.py` | No |
+| PDPA data inventory and retention schedule | Privacy and data governance | Singapore PDPA, CIS data protection, MAS data governance | Medium | Audit retention is documented; ephemeral security-state cleanup exists; no single personal-data inventory maps categories, purposes, retention, and disposal | Add privacy/data inventory and retention documentation covering user, banking, audit, security, backup, and email data | `docs/OPERATIONS.md`, `app/security/state_cleanup.py` | Planned in issue 194 |
+| Threat model and design risk record | Secure design and risk management | OWASP SAMM Design, NIST SSDF Prepare, OWASP Top 10 insecure design | Medium | Access-control, crypto, session, and operations docs exist, but no dedicated threat model/risk register records assets, trust boundaries, abuse cases, and decisions | Add a maintained threat model and design risk register with assumptions and accepted risks | `docs/security/access-control.md`, `docs/security/cryptography-and-authentication.md` | Planned in issue 195 |
+| Dedicated incident response runbook | Monitoring and response | NIST SSDF Respond, CIS incident response, MAS incident management | Medium | `SECURITY.md` and `docs/OPERATIONS.md` include reporting, alert, and rollback notes; there is no dedicated incident response playbook | Add severity levels, roles, containment steps, evidence handling, communication, recovery, and post-incident review | `SECURITY.md`, `docs/OPERATIONS.md`, `docs/security/audit-and-alerting.md` | No |
+| Authenticated DAST on ordinary pull requests | CI/CD testing | OWASP SAMM Verification, NIST SSDF Produce, OWASP Top 10 vulnerable components | Low | `.github/workflows/ci-deploy.yml` reserves full authenticated DAST for scheduled/release paths to keep PR feedback fast | Revisit if CI budget allows PR DAST, or keep release-only with explicit evidence collection | `.github/workflows/ci-deploy.yml`, `docs/security/test-automation-and-dependencies.md` | No |
+| Local Docker/Compose proof when Docker is unavailable | Local developer checks | CIS secure configuration, NIST SSDF Produce | Low | `scripts/ci-local` reports Docker/Compose checks as skipped when Docker is unavailable; CI and Docker-enabled local runs still validate Compose | Keep explicit skip output; use CI or a Docker-enabled workstation for release validation | `scripts/ci-local`, `tests/test_deployment.py` | No |
+| Active-session count cap | Session management | NIST SP 800-63B, OWASP ASVS session management | Low | Users can view, terminate, and revoke sessions, but `app/security/sessions.py` does not cap total active sessions per user | Decide whether a numeric cap improves security/usability, then enforce it in session creation with tests | `app/security/sessions.py`, `tests/test_session_management.py` | No |
+| Device-bound session proof | Session management | NIST SP 800-63B, OWASP ASVS session management | Low | Stolen cookies are bounded by idle expiry, absolute lifetime, revocation, inventory, and risk step-up, but sessions are not cryptographically bound to a client-held device key or mTLS certificate | Keep as defense-in-depth unless scope adds device-bound proof; document operator tradeoffs before implementation | `app/security/sessions.py`, `tests/test_session_absolute_lifetime.py` | No |
+
+## Partially Implemented Controls
+
+| Control | Status | Framework mapping | Current evidence | Remaining work | Relevant files/tests |
+| --- | --- | --- | --- | --- | --- |
+| EC2 SSH hardening | Repo support complete; live host action required | CIS secure configuration, MAS Cyber Hygiene, OWASP Top 10 security misconfiguration | OpenSSH drop-in template, safe rollout runbook, and tests exist | Operator must apply `/etc/ssh/sshd_config.d/99-sitbank-hardening.conf`, remove global SSH UFW/security-group ingress, and verify fresh login | `ops/ssh/99-sitbank-hardening.conf`, `docs/security/ec2-ssh-and-deployment-access.md`, `tests/test_ec2_ssh_hardening_docs.py` |
+| Zero-trust admin/staging access | Repository design and tests complete; live identity/network state needs verification | CIS account/access management, MAS access control, OWASP SAMM Operations | Cloudflare/Tailscale runbook, Nginx origin-pull config, admin public denial, and tests exist | Operators must verify live Cloudflare Access, Authenticated Origin Pull, Tailscale ACLs, and device state | `docs/security/admin-and-staging-zero-trust-access.md`, `tests/test_zero_trust_access_boundary.py`, `ops/nginx/sitbank-staging.conf` |
+| Live TLS evidence | Repository workflow and TLS policy complete; live endpoint evidence required | OWASP ASVS cryptography, CIS secure configuration, MAS Cyber Hygiene | TLS policy, live TLS scan workflow, Certbot verifier, and deployment gates exist | Operators must retain successful live scan artifacts after edge/cert changes | `.github/workflows/tls-scan.yml`, `ops/nginx/sitbank-tls-policy.conf`, `tests/test_deployment.py` |
+| Audit review workflow | CLI/report controls implemented; admin UI open | OWASP ASVS logging, CIS audit log management | Audit hash chain, export/verify CLI, alerts, and sanitized reports exist | Add root-admin UI if the project requires browser-based audit review | `app/security/audit.py`, `app/security/alerts.py`, `tests/test_audit_alerting.py` |
+| Privacy governance | Protective controls exist; inventory docs open | Singapore PDPA, CIS data protection | Secret redaction, encrypted backups, audit retention, and state cleanup exist | Add data inventory, privacy notice, and retention/disposal matrix | `docs/OPERATIONS.md`, `ops/backups/*`, `app/security/state_cleanup.py` |
 
 ## Implemented Controls
 
-| Control | Status | Key files | Key tests | Explanation |
-| --- | --- | --- | --- | --- |
-| Absolute authenticated session lifetime | Implemented and tested | `app/security/sessions.py`, `config.py` | `tests/test_session_absolute_lifetime.py` | Customer and admin sessions expire from the original authenticated timestamp; activity and TOTP step-up do not refresh that absolute age |
-| Generated admin route inventory | Implemented and tested | `tests/test_admin_route_inventory_security.py`, `app/admin/routes.py` | `tests/test_admin_route_inventory_security.py` | Admin routes have an inventory separate from the customer route inventory, including auth, CSRF, rate-limit, and step-up decisions |
-| Recovery-code regeneration fresh TOTP step-up | Implemented and tested | `app/auth/services.py::regenerate_totp_recovery_codes()` | `tests/test_mfa_lifecycle.py::test_recovery_code_regeneration_requires_fresh_totp_stepup` | Recovery-code regeneration requires an authenticated MFA-ready account and fresh TOTP authorization |
-| Admin manual recovery review and completion | Implemented and tested | `app/admin/routes.py`, `app/admin/services.py`, `app/auth/password_reset.py` | `tests/test_admin_manual_recovery.py` | Root admins can review, transition, and complete manual recovery requests only in the isolated admin app with TOTP and operator reason controls |
-| Production payee activation cooldown floor | Implemented and tested | `config.py::_validate_payee_cooldown_config()`, `app/ops/commands.py` | `tests/test_config.py`, `tests/test_deployment.py::test_production_check_rejects_short_payee_cooldown` | Production rejects payee cooldowns below 12 hours while development/test may use shorter explicit values |
-| Production startup security guard | Implemented and tested | `app/security/production_guard.py`, `wsgi.py`, `admin_wsgi.py` | `tests/test_production_guard.py` | Runtime WSGI entrypoints fail closed in production when shared production prerequisites are unsafe |
-| Payee IDOR and enumeration regression tests | Implemented and tested | `app/banking/routes.py`, `tests/test_payee_management_security.py` | `tests/test_payee_management_security.py` | Tests cover direct banking MFA gates, pre-TOTP recipient lookup blocking, ownership-scoped removal, self/duplicate rejection, and pending-payee expiry |
-| Encrypted database backup tooling | Implemented and tested | `ops/backups/sitbank-backup-encrypted`, `ops/backups/sitbank-restore-preflight` | `tests/test_backup_security.py` | Host-managed scripts create age-encrypted `.pgdump.age` backups and provide explicit restore preflight checks |
-| Audit hash-chain integrity and alerting | Implemented and tested | `app/security/audit.py`, `app/security/alerts.py`, `app/ops/commands.py` | `tests/test_audit_alerting.py`, `tests/test_audit_metadata_sanitization.py` | Audit rows are sanitized, HMAC-chained, verified/exported, and alert evaluation deduplicates and sanitizes delivery payloads |
+| Control | Status | Framework mapping | Key files | Key tests | Explanation |
+| --- | --- | --- | --- | --- | --- |
+| Absolute authenticated session lifetime | Implemented and tested | NIST SP 800-63B, OWASP ASVS session management | `app/security/sessions.py`, `config.py` | `tests/test_session_absolute_lifetime.py` | Customer and admin sessions expire from the original authenticated timestamp; activity and TOTP step-up do not refresh that absolute age |
+| Generated admin route inventory | Implemented and tested | OWASP ASVS access control, OWASP API function authorization | `tests/test_admin_route_inventory_security.py`, `app/admin/routes.py` | `tests/test_admin_route_inventory_security.py` | Admin routes have a generated inventory separate from the customer route inventory |
+| Recovery-code regeneration fresh TOTP step-up | Implemented and tested | NIST SP 800-63B authenticator lifecycle, OWASP ASVS MFA | `app/auth/services.py::regenerate_totp_recovery_codes()` | `tests/test_mfa_lifecycle.py::test_recovery_code_regeneration_requires_fresh_totp_stepup` | Recovery-code regeneration requires an authenticated MFA-ready account and fresh TOTP authorization |
+| Admin manual recovery review and completion | Implemented and tested | OWASP ASVS access control, MAS access control | `app/admin/routes.py`, `app/admin/services.py`, `app/auth/password_reset.py` | `tests/test_admin_manual_recovery.py` | Root admins can review, transition, and complete manual recovery requests only in the isolated admin app with TOTP and operator reason controls |
+| Production payee activation cooldown floor | Implemented and tested | OWASP API business-flow abuse, secure configuration | `config.py::_validate_payee_cooldown_config()`, `app/ops/commands.py` | `tests/test_config.py`, `tests/test_deployment.py::test_production_check_rejects_short_payee_cooldown` | Production rejects payee cooldowns below 12 hours while development/test may use shorter explicit values |
+| Production startup security guard | Implemented and tested | CIS secure configuration, MAS Cyber Hygiene | `app/security/production_guard.py`, `wsgi.py`, `admin_wsgi.py` | `tests/test_production_guard.py` | Runtime WSGI entrypoints fail closed in production when shared production prerequisites are unsafe |
+| Payee IDOR and enumeration regression tests | Implemented and tested | OWASP Top 10 broken access control, OWASP API BOLA | `app/banking/routes.py`, `tests/test_payee_management_security.py` | `tests/test_payee_management_security.py` | Tests cover direct banking MFA gates, pre-TOTP recipient lookup blocking, ownership-scoped removal, self/duplicate rejection, and pending-payee expiry |
+| Encrypted database backup tooling | Implemented and tested | CIS data protection, MAS resilience, PDPA protection | `ops/backups/sitbank-backup-encrypted`, `ops/backups/sitbank-restore-preflight` | `tests/test_backup_security.py` | Host-managed scripts create age-encrypted `.pgdump.age` backups and provide explicit restore preflight checks |
+| Audit hash-chain integrity and alerting | Implemented and tested | OWASP ASVS logging, CIS audit log management, MAS monitoring | `app/security/audit.py`, `app/security/alerts.py`, `app/ops/commands.py` | `tests/test_audit_alerting.py`, `tests/test_audit_metadata_sanitization.py` | Audit rows are sanitized, HMAC-chained, verified/exported, and alert evaluation deduplicates and sanitizes delivery payloads |
+| Framework control matrix | Implemented and tested | NIST SSDF Prepare, OWASP SAMM Governance | `docs/security/framework-control-matrix.md` | `tests/test_framework_control_docs.py` | Security posture is mapped to the requested frameworks with file/test evidence and remaining-work pointers |
 
 ## Not Applicable Or Out Of Scope
 
-| Item | Status | Reason |
-| --- | --- | --- |
-| JavaScript package-manager auditing | Not applicable | No `package.json`, lockfile, npm/yarn/pnpm workspace, or JavaScript package manifest is present |
-| Redis-backed session or security state | Out of scope | Current session, auth counter, alert dedupe, and security state are PostgreSQL-backed application-owned tables |
-| WebAuthn/passkey/security-key login or step-up | Out of scope / disabled legacy | Current MFA baseline is TOTP; legacy WebAuthn/passkey routes and services are disabled or compatibility-only |
-| OAuth or external high-level auth delegation | Out of scope | Authentication is application-owned with local password, TOTP, recovery-code, and admin invite flows |
+| Item | Status | Framework mapping | Reason |
+| --- | --- | --- | --- |
+| JavaScript package-manager auditing | Not applicable | OWASP Top 10 vulnerable/outdated components, NIST SSDF | No `package.json`, lockfile, npm/yarn/pnpm workspace, or JavaScript package manifest is present |
+| Redis-backed session or security state | Out of scope | ASVS session management | Current session, auth counter, alert dedupe, and security state are PostgreSQL-backed application-owned tables |
+| WebAuthn/passkey/security-key login or step-up | Out of scope / disabled legacy | NIST SP 800-63B, ASVS MFA | Current MFA baseline is TOTP; legacy WebAuthn/passkey routes and services are disabled or compatibility-only |
+| OAuth or external high-level auth delegation | Out of scope | NIST SP 800-63B federation | Authentication is application-owned with local password, TOTP, recovery-code, and admin invite flows |
 
 ## Recently Closed Gaps
 
-| Closed item | Closed by | Evidence |
-| --- | --- | --- |
-| Registration migration generated fake phones and predictable accounts | Issue 148 | `migrations/versions/20260622_0008_add_user_registration_fields.py`, `tests/test_deployment.py` |
-| Session timeout UX and web revocation controls were incomplete | Issue 149 | `app/static/js/session-timeout.js`, `app/web/routes.py`, `tests/test_session_management.py` |
-| Banking routes lacked direct MFA gate and payee lookup revealed recipient identity before TOTP | Issue 150 | `app/banking/routes.py`, `tests/test_payee_management_security.py` |
-| Production password minimum allowed 8-character passwords by default | Issue 156 | `config.py`, `app/security/passwords.py`, `tests/test_production_guard.py`, `tests/test_passwords.py` |
-| Backup encryption and restore access checks were only operational notes | Issue 167 | `ops/backups/sitbank-backup-encrypted`, `ops/backups/sitbank-restore-preflight`, `tests/test_backup_security.py` |
+| Closed item | Closed by | Framework mapping | Evidence |
+| --- | --- | --- | --- |
+| Registration migration generated fake phones and predictable accounts | Issue 148 | PDPA data minimization/protection, secure design | `migrations/versions/20260622_0008_add_user_registration_fields.py`, `tests/test_deployment.py` |
+| Session timeout UX and web revocation controls were incomplete | Issue 149 | NIST SP 800-63B session management, ASVS session management | `app/static/js/session-timeout.js`, `app/web/routes.py`, `tests/test_session_management.py` |
+| Banking routes lacked direct MFA gate and payee lookup revealed recipient identity before TOTP | Issue 150 | OWASP Top 10 broken access control, OWASP API BOLA | `app/banking/routes.py`, `tests/test_payee_management_security.py` |
+| Production password minimum allowed 8-character passwords by default | Issue 156 | NIST SP 800-63B memorized secrets, ASVS authentication | `config.py`, `app/security/passwords.py`, `tests/test_production_guard.py`, `tests/test_passwords.py` |
+| Backup encryption and restore access checks were only operational notes | Issue 167 | CIS data protection, MAS resilience, PDPA protection | `ops/backups/sitbank-backup-encrypted`, `ops/backups/sitbank-restore-preflight`, `tests/test_backup_security.py` |
+| Security docs carried stale scattered gap tables | Issue 183 | NIST SSDF Prepare, OWASP SAMM Governance | `docs/security/security-gap-register.md`, `docs/security/audit-and-alerting.md` |
+| EC2 SSH hardening lacked repository-side support | Issue 186 | CIS secure configuration, MAS Cyber Hygiene | `ops/ssh/99-sitbank-hardening.conf`, `docs/security/ec2-ssh-and-deployment-access.md`, `tests/test_ec2_ssh_hardening_docs.py` |

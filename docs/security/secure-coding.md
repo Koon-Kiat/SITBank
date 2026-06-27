@@ -175,3 +175,5 @@ Current open security items and recently closed documentation-sensitive gaps are
 centralized in `docs/security/security-gap-register.md`. This document should
 describe secure-coding controls; the register is the source of truth for
 assessment-relevant constraints and follow-up work.
+Framework-level coverage is mapped in
+`docs/security/framework-control-matrix.md`.
