@@ -368,11 +368,22 @@ production release depend on its API.
 For the Cloudflare Access-protected staging target, an unauthenticated
 `302 Found` response is the expected Access challenge and is accepted by the
 TLS evidence workflow. The staging gate still requires TLS 1.0 and TLS 1.1 to
-be not offered, certificate hostname/trust and chain checks to be OK, the
-certificate to be unexpired, no insecure redirect finding, and a final
-`overall_grade` of `A` or `A+`. Generic Cloudflare-managed CBC/LUCKY13 wording
-does not fail the protected staging scan by itself when those requirements
-pass.
+be not offered, TLS 1.2 and TLS 1.3 to be offered, certificate
+hostname/trust and chain checks to be OK, the certificate to be unexpired,
+HSTS to meet the scanner minimum, no insecure redirect finding, and a final
+`overall_grade` of `A` or `A+`. Generic LUCKY13 wording and
+`cipherlist_OBSOLETED: offered` on Cloudflare Universal SSL are retained as
+review evidence for protected staging, not automatic failures.
+
+If staging reports `HSTS: not offered`, fix the Cloudflare edge response for
+`staging-sitbank.pp.ua`; the unauthenticated Access challenge is generated
+before origin Nginx can add its own HSTS header. If staging reports
+`cipherlist_OBSOLETED: offered`, document it as a Cloudflare Universal SSL
+edge limitation. Removing that finding requires Advanced Certificate Manager
+with custom cipher suite support; do not claim it is fixed until that paid
+capability is enabled and verified. Do not make HSTS pass by disabling
+Cloudflare Access, turning off the proxy, changing SSL mode away from Full
+strict, or bypassing Authenticated Origin Pulls.
 
 Cloudflare Access rollout is separate from TLS evidence collection. An
 incomplete Access setup does not make the staging scan optional, and the JSON

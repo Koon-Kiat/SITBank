@@ -225,11 +225,22 @@ explicit prohibited classes above.
 The Cloudflare Access-protected staging target `staging-sitbank.pp.ua` uses a
 staging-specific acceptance gate because unauthenticated HTTP requests should
 receive a `302 Found` Access challenge before the app. The staging scan still
-fails unless TLS 1.0 and TLS 1.1 are not offered, certificate hostname/trust
-and chain checks are OK, the certificate is not expired, insecure redirects
-are absent, and the final `overall_grade` is `A` or `A+`. Generic
-Cloudflare-managed CBC/LUCKY13 wording does not fail protected staging by
-itself when those hard requirements pass.
+fails unless TLS 1.0 and TLS 1.1 are not offered, TLS 1.2 and TLS 1.3 are
+offered, certificate hostname/trust and chain checks are OK, the certificate
+is not expired, HSTS meets the scanner minimum, insecure redirects are absent,
+and the final `overall_grade` is `A` or `A+`. Generic LUCKY13 wording and
+`cipherlist_OBSOLETED: offered` on Cloudflare Universal SSL are retained as
+review evidence for protected staging, not automatic failures.
+
+Because Cloudflare Access can generate the unauthenticated `302 Found`
+response before traffic reaches origin Nginx, origin-side HSTS headers are not
+sufficient evidence for staging. Configure the Cloudflare edge response for
+`staging-sitbank.pp.ua` so the Access challenge includes
+`Strict-Transport-Security` with at least the scanner minimum. Removing
+Cloudflare Universal SSL obsolete CBC cipher offerings requires Advanced
+Certificate Manager/custom cipher suite support; do not claim that
+`cipherlist_OBSOLETED: offered` is fixed until that paid capability is enabled
+and verified.
 
 Normalization does not suppress malformed JSON generally or change policy
 findings. All gates run against the strictly validated policy copy. Cloudflare
