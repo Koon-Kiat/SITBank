@@ -127,6 +127,15 @@ request passed the specific staging application and policy. Missing,
 malformed, incorrectly signed, expired, not-yet-valid, wrong-issuer, and
 wrong-audience assertions all receive the same generic `403`.
 
+Staging bootstrap additionally runs the offline
+`verify-cloudflare-origin-pull-ca` helper before installing or enabling the
+site. It validates file type, ownership and mode, a single currently valid CA,
+and exact fingerprint/subject/issuer membership in the reviewed repository
+allowlist. The initial entry is Cloudflare's global AOP CA. Custom
+zone/per-hostname CAs and provider rotations require a reviewed allowlist
+change before deployment; bootstrap never fetches CA material or uses the
+Cloudflare API token.
+
 Only loopback `/health/ready` bypasses the assertion gate. A non-loopback
 readiness request still requires a valid assertion and remains blocked by
 Nginx. Production customer and admin runtimes do not install the staging

@@ -453,6 +453,30 @@ sudo install -o root -g root -m 0644 \
   /etc/nginx/cloudflare-authenticated-origin-pull-ca.pem
 ```
 
+The staging bootstrap installs
+`/usr/local/sbin/verify-cloudflare-origin-pull-ca` and the reviewed fingerprint
+allowlist at
+`/etc/sitbank-staging/cloudflare-origin-pull-ca-allowlist.json`. Before it
+installs or enables the staging Nginx site, it requires the CA path to be a
+root-owned regular non-symlink, permits only `root` or `www-data` as the group
+with an approved non-writable mode, parses exactly one currently valid CA with
+OpenSSL, and matches its SHA-256 fingerprint, subject, and issuer to the
+allowlist. The bootstrap does not download a CA or call Cloudflare.
+
+The repository allowlist initially approves only Cloudflare's global
+Authenticated Origin Pull CA. A change to a zone-level or per-hostname CA must
+first add its independently reviewed fingerprint and exact OpenSSL
+subject/issuer in a separate reviewed commit. For a CA rotation:
+
+1. Obtain the announced replacement from Cloudflare's official documentation
+   in a controlled operator session, outside bootstrap.
+2. Inspect it with `openssl x509 -noout -subject -issuer -fingerprint -sha256
+   -startdate -enddate -ext basicConstraints`.
+3. Independently confirm the source, `CA:TRUE`, validity, subject, issuer, and
+   fingerprint; then add the new entry alongside the old entry.
+4. Deploy the new CA and run the verifier and `nginx -t`. Remove the old entry
+   only after every staging origin has completed the rotation.
+
 Do not store Cloudflare API tokens, tunnel credentials, Access IdP secrets, or
 origin certificate private keys in the repo. If the staging hostname cannot be
 proxied by Cloudflare in the current DNS model, stop and make an approved DNS
@@ -473,13 +497,14 @@ sudo /usr/local/sbin/verify-certbot-host-state staging
 sudo /usr/local/sbin/verify-certbot-host-state --renewal-dry-run staging
 ```
 
-Then run `ops/deploy/bootstrap-container-ec2 staging WenJiangg/SITBank staging-sitbank.pp.ua`. The bootstrap installs the Nginx proxy header snippet, TLS policy snippet, rate-limit include, and staging Nginx server block for `staging-sitbank.pp.ua`; verifies the staging Basic Auth file and Cloudflare origin-pull CA file; then runs `sudo nginx -t` before `sudo systemctl reload nginx`. This edge setup is separate from application deployment.
+Then run `ops/deploy/bootstrap-container-ec2 staging WenJiangg/SITBank staging-sitbank.pp.ua`. The bootstrap installs the Nginx proxy header snippet, TLS policy snippet, rate-limit include, and staging Nginx server block for `staging-sitbank.pp.ua`; verifies the staging Basic Auth file and the pinned Cloudflare origin-pull CA; then runs `sudo nginx -t` before `sudo systemctl reload nginx`. This edge setup is separate from application deployment.
 
 Staging verification:
 
 ```bash
 python ops/cloudflare/provision-staging-access --verify \
   --evidence-file cloudflare-access-evidence.local.json
+sudo /usr/local/sbin/verify-cloudflare-origin-pull-ca
 curl -I https://staging-sitbank.pp.ua/
 curl -I -u "$STAGING_BASIC_AUTH_USER:$STAGING_BASIC_AUTH_PASSWORD" \
   https://staging-sitbank.pp.ua/

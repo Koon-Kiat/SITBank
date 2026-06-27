@@ -56,7 +56,7 @@ Routine verification:
 python ops/cloudflare/provision-staging-access --verify
 curl -I http://127.0.0.1:5001/
 curl --fail http://127.0.0.1:5001/health/ready
-sudo test -r /etc/nginx/cloudflare-authenticated-origin-pull-ca.pem
+sudo /usr/local/sbin/verify-cloudflare-origin-pull-ca
 sudo nginx -t
 curl --fail --resolve staging-sitbank.pp.ua:443:127.0.0.1 \
   https://staging-sitbank.pp.ua/health/ready
@@ -65,6 +65,28 @@ curl -I --resolve staging-sitbank.pp.ua:443:<EC2_PUBLIC_IP> \
 sudo tailscale serve status
 curl -I https://sitbank-ec2.tailca101b.ts.net/
 ```
+
+The origin-pull verifier is an offline host check. It rejects missing,
+symlinked, non-regular, incorrectly owned, or unsafely writable CA/allowlist
+files; malformed, multiple, expired, not-yet-valid, or non-CA certificates;
+and any fingerprint/subject/issuer not in the repository-reviewed allowlist.
+For manual diagnosis without changing state:
+
+```bash
+sudo stat -c '%F %U:%G %a %n' \
+  /etc/nginx/cloudflare-authenticated-origin-pull-ca.pem \
+  /etc/sitbank-staging/cloudflare-origin-pull-ca-allowlist.json
+sudo openssl x509 \
+  -in /etc/nginx/cloudflare-authenticated-origin-pull-ca.pem \
+  -noout -subject -issuer -fingerprint -sha256 \
+  -startdate -enddate -ext basicConstraints
+```
+
+Do not fetch or replace trust material during bootstrap. Review rotations from
+an official Cloudflare source, add the replacement fingerprint alongside the
+old one, deploy and verify it, and remove the old fingerprint only after
+rollout. Custom zone/per-hostname AOP CAs require their own reviewed allowlist
+entry before deployment.
 
 Expected: the loopback Flask root returns `403` without an Access assertion,
 local staging readiness succeeds without one, direct Nginx origin access

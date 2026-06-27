@@ -221,6 +221,7 @@ SECURITY_TEST_FILES = frozenset(
         "tests/test_banking_transaction_security.py",
         "tests/test_ci_local.py",
         "tests/test_cloudflare_access_staging.py",
+        "tests/test_cloudflare_origin_pull_ca.py",
         "tests/test_config.py",
         "tests/test_deployment.py",
         "tests/test_health_endpoints.py",
@@ -243,6 +244,7 @@ SECURITY_TEST_FILES = frozenset(
 DEPLOYMENT_TEST_FILES = frozenset(
     {
         "tests/test_ci_local.py",
+        "tests/test_cloudflare_origin_pull_ca.py",
         "tests/test_deployment.py",
     }
 )

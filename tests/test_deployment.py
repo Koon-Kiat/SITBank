@@ -2713,8 +2713,10 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     ) in bootstrap
     assert "Missing required staging Basic Auth file" in bootstrap
     assert "STAGING_CLOUDFLARE_ORIGIN_PULL_CA_FILE=\"/etc/nginx/cloudflare-authenticated-origin-pull-ca.pem\"" in bootstrap
-    assert "Missing required Cloudflare Authenticated Origin Pull CA file" in bootstrap
-    assert "Install the Cloudflare origin-pull CA certificate before rerunning staging bootstrap." in bootstrap
+    assert "STAGING_CLOUDFLARE_ORIGIN_PULL_CA_ALLOWLIST=\"/etc/sitbank-staging/cloudflare-origin-pull-ca-allowlist.json\"" in bootstrap
+    assert "if ! /usr/local/sbin/verify-cloudflare-origin-pull-ca" in bootstrap
+    assert "Cloudflare Authenticated Origin Pull CA validation failed." in bootstrap
+    assert "Install a reviewed CA certificate before rerunning staging bootstrap." in bootstrap
     assert "Missing required staging TLS file" in bootstrap
     assert "apache2-utils" in bootstrap
     assert "certbot" in bootstrap

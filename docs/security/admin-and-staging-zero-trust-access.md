@@ -83,6 +83,19 @@ Provider prerequisites and actions:
 6. Install the origin-pull CA certificate on the EC2 host at
    `/etc/nginx/cloudflare-authenticated-origin-pull-ca.pem`. This CA file is
    host-managed and is not committed to the repository.
+7. Run `sudo /usr/local/sbin/verify-cloudflare-origin-pull-ca` after bootstrap.
+   Bootstrap installs the repository-reviewed allowlist under
+   `/etc/sitbank-staging` and fails before enabling staging Nginx unless the
+   CA is a safe root-owned regular file containing exactly one currently valid
+   CA whose SHA-256 fingerprint, subject, and issuer are approved.
+
+The checked-in allowlist initially covers Cloudflare's global AOP CA only. For
+a custom zone/per-hostname CA or announced rotation, obtain the public CA from
+the official provider source outside bootstrap, inspect it with OpenSSL, and
+independently review its provenance and metadata. Add the new fingerprint and
+exact subject/issuer alongside the old entry, deploy and verify it, then remove
+the old entry only after rollout. Bootstrap never downloads CA material and
+does not need a Cloudflare token or origin private key.
 
 Apply prints `STAGING_CLOUDFLARE_ACCESS_AUD` and
 `STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN`. Store them as protected GitHub
@@ -194,9 +207,10 @@ Repository-side checks:
 
 ```bash
 git diff --check
-.\.venv\Scripts\python.exe -m pytest -q tests/test_cloudflare_access_automation.py
-.\.venv\Scripts\python.exe -m pytest -q tests/test_deployment.py tests/test_admin_isolation.py
-.\.venv\Scripts\python.exe -m pytest -q tests/test_zero_trust_access_boundary.py
+.\.venv\Scripts\python.exe -m pytest -q -n auto tests/test_cloudflare_access_automation.py
+.\.venv\Scripts\python.exe -m pytest -q -n auto tests/test_cloudflare_origin_pull_ca.py
+.\.venv\Scripts\python.exe -m pytest -q -n auto tests/test_deployment.py tests/test_admin_isolation.py
+.\.venv\Scripts\python.exe -m pytest -q -n auto tests/test_zero_trust_access_boundary.py
 ```
 
 Provider and live-boundary checks use the protected operator environment:
@@ -215,7 +229,7 @@ audience. It does not run on pull requests or mutate Cloudflare.
 Host-side staging checks after bootstrap:
 
 ```bash
-sudo test -r /etc/nginx/cloudflare-authenticated-origin-pull-ca.pem
+sudo /usr/local/sbin/verify-cloudflare-origin-pull-ca
 sudo /usr/local/sbin/verify-certbot-host-state staging
 sudo nginx -t
 curl --fail --resolve staging-sitbank.pp.ua:443:127.0.0.1 \

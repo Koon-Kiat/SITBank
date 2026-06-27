@@ -153,9 +153,11 @@ def test_staging_nginx_blocks_direct_origin_bypass_but_keeps_local_health():
     assert 'proxy_set_header Cf-Access-Client-Secret "";' in access_headers
 
     assert "STAGING_CLOUDFLARE_ORIGIN_PULL_CA_FILE" in bootstrap
+    assert "STAGING_CLOUDFLARE_ORIGIN_PULL_CA_ALLOWLIST" in bootstrap
     assert "STAGING_ACCESS_HEADERS_FILE" in bootstrap
     assert "install_staging_access_headers" in bootstrap
-    assert "Missing required Cloudflare Authenticated Origin Pull CA file" in bootstrap
+    assert "/usr/local/sbin/verify-cloudflare-origin-pull-ca" in bootstrap
+    assert "Cloudflare Authenticated Origin Pull CA validation failed." in bootstrap
     assert "nginx -t" in bootstrap
 
 
