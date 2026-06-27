@@ -72,7 +72,11 @@ Gunicorn listeners. Nginx overwrites proxy headers in
 
 Staging browser traffic must pass Cloudflare Access before the staging Nginx
 server reaches Flask, and the staging origin requires Cloudflare Authenticated
-Origin Pulls for browser/app paths. Admin browser traffic must use a
+Origin Pulls for browser/app paths. The staging customer Flask hook separately
+validates the Access assertion signature, issuer, audience, expiry, and
+not-before time before loading the normal SITBank session. It does not copy
+Cloudflare identity into the session, and only loopback readiness bypasses the
+assertion check. Admin browser traffic must use a
 Tailscale/private operator path before it can reach the loopback admin service.
 These network boundaries do not merge session state: customer and admin
 cookies, lookup HMAC keys, session key prefixes, rate-limit prefixes, and

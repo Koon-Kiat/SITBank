@@ -75,6 +75,7 @@ security:
           - 'SECURITY.md'
           - '.trivyignore'
           - 'ops/nginx/**'
+          - 'ops/cloudflare/**'
           - 'ops/security/**'
           - 'ops/fido-*.json'
           - 'tests/test_*security*.py'
@@ -125,6 +126,7 @@ network-security:
   - changed-files:
       - any-glob-to-any-file:
           - 'ops/nginx/**'
+          - 'ops/cloudflare/**'
           - 'docs/security/admin-and-staging-zero-trust-access.md'
           - '**/*firewall*'
           - '**/*allowlist*'
@@ -147,6 +149,7 @@ staging:
   - changed-files:
       - any-glob-to-any-file:
           - 'compose.staging.yml'
+          - 'ops/cloudflare/**'
           - 'ops/**/staging*'
           - 'ops/**/staging/**'
           - 'ops/staging/**'

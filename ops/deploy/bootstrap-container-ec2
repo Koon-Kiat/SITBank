@@ -9,10 +9,12 @@ readonly COSIGN_SHA256="db15cc99e6e4837daabab023742aaddc3841ce57f193d11b7c3e06c8
 readonly PRODUCTION_PUBLIC_HOST="sitbank.duckdns.org"
 readonly EDGE_DEFAULTS_FILE="/etc/nginx/conf.d/sitbank-default.conf"
 readonly TLS_POLICY_FILE="/etc/nginx/snippets/sitbank-tls-policy.conf"
+readonly STAGING_ACCESS_HEADERS_FILE="/etc/nginx/snippets/sitbank-cloudflare-access-headers.conf"
 readonly PRODUCTION_RATE_LIMITS_FILE="/etc/nginx/conf.d/sitbank-production-rate-limits.conf"
 readonly STAGING_PUBLIC_HOST="staging-sitbank.pp.ua"
 readonly STAGING_BASIC_AUTH_FILE="/etc/nginx/.htpasswd-sitbank-staging"
 readonly STAGING_CLOUDFLARE_ORIGIN_PULL_CA_FILE="/etc/nginx/cloudflare-authenticated-origin-pull-ca.pem"
+readonly STAGING_CLOUDFLARE_ORIGIN_PULL_CA_ALLOWLIST="/etc/sitbank-staging/cloudflare-origin-pull-ca-allowlist.json"
 readonly STAGING_RATE_LIMITS_FILE="/etc/nginx/conf.d/sitbank-staging-rate-limits.conf"
 
 if [[ "${EUID}" -ne 0 ]]; then
@@ -95,15 +97,18 @@ linux_runtime_files=(
     "${repo_root}/ops/backups/sitbank-backup-encrypted"
     "${repo_root}/ops/backups/sitbank-restore-preflight"
     "${repo_root}/ops/nginx/sitbank-default.conf"
+    "${repo_root}/ops/nginx/sitbank-cloudflare-access-headers.conf"
     "${repo_root}/ops/nginx/sitbank-tls-policy.conf"
     "${repo_root}/ops/sudoers/sitbank-container-deploy"
 )
 if [[ "${target}" == "staging" ]]; then
     linux_runtime_files+=(
+        "${repo_root}/ops/deploy/verify-cloudflare-origin-pull-ca"
         "${repo_root}/ops/nginx-proxy-headers.conf"
         "${repo_root}/ops/nginx/sitbank-staging.conf"
         "${repo_root}/ops/nginx/sitbank-staging-rate-limits.conf"
         "${repo_root}/ops/postgres/init-sitbank-staging-roles.sh"
+        "${repo_root}/ops/security/cloudflare-origin-pull-ca-allowlist.json"
     )
 else
     linux_runtime_files+=(
@@ -128,7 +133,7 @@ if [[ "$(dpkg --print-architecture)" != "amd64" ]]; then
 fi
 
 apt-get update
-apt-get install -y age ca-certificates curl gnupg
+apt-get install -y age ca-certificates curl gnupg openssl
 if ! command -v docker >/dev/null 2>&1 \
     || ! docker compose version >/dev/null 2>&1; then
     install -m 0755 -d /etc/apt/keyrings
@@ -237,6 +242,12 @@ install -o root -g root -m 0755 \
     "${repo_root}/ops/backups/sitbank-restore-preflight" \
     /usr/local/sbin/sitbank-restore-preflight
 if [[ "${target}" == "staging" ]]; then
+    install -o root -g root -m 0755 \
+        "${repo_root}/ops/deploy/verify-cloudflare-origin-pull-ca" \
+        /usr/local/sbin/verify-cloudflare-origin-pull-ca
+    install -o root -g root -m 0644 \
+        "${repo_root}/ops/security/cloudflare-origin-pull-ca-allowlist.json" \
+        "${STAGING_CLOUDFLARE_ORIGIN_PULL_CA_ALLOWLIST}"
     install -d -o root -g root -m 0755 "${config_root}/postgres"
     install -o root -g root -m 0755 \
         "${repo_root}/ops/postgres/init-sitbank-staging-roles.sh" \
@@ -308,6 +319,14 @@ install_tls_policy() {
         "nginx-sitbank-tls-policy"
 }
 
+install_staging_access_headers() {
+    install_nginx_config \
+        "${repo_root}/ops/nginx/sitbank-cloudflare-access-headers.conf" \
+        "${STAGING_ACCESS_HEADERS_FILE}" \
+        "staging Cloudflare Access header policy" \
+        "nginx-sitbank-cloudflare-access-headers"
+}
+
 refresh_enabled_sibling_site() {
     if [[ "${target}" == "production" \
         && -e /etc/nginx/sites-enabled/sitbank-staging ]]; then
@@ -362,6 +381,7 @@ if [[ "${target}" == "production" ]]; then
     install -d -o root -g root -m 0755 /var/www/certbot
     install_edge_default_site
     install_tls_policy
+    install_staging_access_headers
     install -o root -g root -m 0644 \
         "${repo_root}/ops/nginx-proxy-headers.conf" \
         /etc/nginx/snippets/sitbank-proxy-headers.conf
@@ -414,11 +434,11 @@ if [[ "${target}" == "staging" ]]; then
         echo "Create it with htpasswd, owned by root:www-data and mode 0640, before rerunning bootstrap." >&2
         exit 1
     fi
-    if [[ ! -f "${STAGING_CLOUDFLARE_ORIGIN_PULL_CA_FILE}" \
-        || -L "${STAGING_CLOUDFLARE_ORIGIN_PULL_CA_FILE}" \
-        || ! -r "${STAGING_CLOUDFLARE_ORIGIN_PULL_CA_FILE}" ]]; then
-        echo "Missing required Cloudflare Authenticated Origin Pull CA file: ${STAGING_CLOUDFLARE_ORIGIN_PULL_CA_FILE}" >&2
-        echo "Install the Cloudflare origin-pull CA certificate before rerunning staging bootstrap." >&2
+    if ! /usr/local/sbin/verify-cloudflare-origin-pull-ca \
+        --certificate "${STAGING_CLOUDFLARE_ORIGIN_PULL_CA_FILE}" \
+        --allowlist "${STAGING_CLOUDFLARE_ORIGIN_PULL_CA_ALLOWLIST}"; then
+        echo "Cloudflare Authenticated Origin Pull CA validation failed." >&2
+        echo "Install a reviewed CA certificate before rerunning staging bootstrap." >&2
         exit 1
     fi
     for required_staging_file in \
@@ -460,6 +480,7 @@ if [[ "${target}" == "staging" ]]; then
     install -d -o root -g root -m 0755 /var/www/certbot
     install_edge_default_site
     install_tls_policy
+    install_staging_access_headers
     install -o root -g root -m 0644 \
         "${repo_root}/ops/nginx-proxy-headers.conf" \
         /etc/nginx/snippets/sitbank-proxy-headers.conf

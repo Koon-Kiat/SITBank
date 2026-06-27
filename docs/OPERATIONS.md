@@ -39,18 +39,24 @@ SITBank uses a hybrid private-access model:
   `https://sitbank-ec2.tailca101b.ts.net/`.
 - The production customer site `sitbank.duckdns.org` remains public.
 
-Cloudflare Access policy, IdP configuration, API tokens, tunnel credentials,
-origin certificate private keys, and origin-pull client credentials are
-operator-managed. Tailscale auth keys, API keys, tailnet policy, device
-approval state, and Serve state are also operator-managed. None of those values
-belong in the repository. `staging-sitbank.pp.ua` is the Cloudflare-managed
-staging hostname for Access. The retired DuckDNS staging hostname is not an
-active staging deployment, Nginx, Certbot, or TLS-scan target.
+The Access application, narrow approved-operator policy, session duration, and
+proxied staging DNS desired state are managed by
+`ops/cloudflare/provision-staging-access`. IdP configuration/operator
+membership, API tokens, origin certificate private keys, origin-pull client
+credentials, and AWS ingress remain operator-managed. Tailscale auth keys, API
+keys, tailnet policy, device approval state, and Serve state are also
+operator-managed. None of those secret values belong in the repository.
+`staging-sitbank.pp.ua` is the Cloudflare-managed staging hostname for Access.
+The retired DuckDNS staging hostname is not an active staging deployment,
+Nginx, Certbot, or TLS-scan target.
 
 Routine verification:
 
 ```bash
-sudo test -r /etc/nginx/cloudflare-authenticated-origin-pull-ca.pem
+python ops/cloudflare/provision-staging-access --verify
+curl -I http://127.0.0.1:5001/
+curl --fail http://127.0.0.1:5001/health/ready
+sudo /usr/local/sbin/verify-cloudflare-origin-pull-ca
 sudo nginx -t
 curl --fail --resolve staging-sitbank.pp.ua:443:127.0.0.1 \
   https://staging-sitbank.pp.ua/health/ready
@@ -60,14 +66,45 @@ sudo tailscale serve status
 curl -I https://sitbank-ec2.tailca101b.ts.net/
 ```
 
-Expected: local staging readiness succeeds, direct origin access to staging
+The origin-pull verifier is an offline host check. It rejects missing,
+symlinked, non-regular, incorrectly owned, or unsafely writable CA/allowlist
+files; malformed, multiple, expired, not-yet-valid, or non-CA certificates;
+and any fingerprint/subject/issuer not in the repository-reviewed allowlist.
+For manual diagnosis without changing state:
+
+```bash
+sudo stat -c '%F %U:%G %a %n' \
+  /etc/nginx/cloudflare-authenticated-origin-pull-ca.pem \
+  /etc/sitbank-staging/cloudflare-origin-pull-ca-allowlist.json
+sudo openssl x509 \
+  -in /etc/nginx/cloudflare-authenticated-origin-pull-ca.pem \
+  -noout -subject -issuer -fingerprint -sha256 \
+  -startdate -enddate -ext basicConstraints
+```
+
+Do not fetch or replace trust material during bootstrap. Review rotations from
+an official Cloudflare source, add the replacement fingerprint alongside the
+old one, deploy and verify it, and remove the old fingerprint only after
+rollout. Custom zone/per-hostname AOP CAs require their own reviewed allowlist
+entry before deployment.
+
+Expected: the loopback Flask root returns `403` without an Access assertion,
+local staging readiness succeeds without one, direct Nginx origin access
 returns `403` without Cloudflare's origin-pull client certificate, and the
 private admin URL is reachable only from an approved tailnet path. Tailscale
 Funnel must stay disabled for SITBank admin.
 
+Run the manual **Verify staging Cloudflare Access** workflow before a staging
+release and after Access, DNS, IdP, token, origin address, or ingress changes.
+It uses protected `staging` environment secrets and retains only sanitized
+evidence. Rotate the Cloudflare API token by verifying a narrowly scoped
+replacement, updating the environment secret, and revoking the old token.
+
 The detailed onboarding, offboarding, emergency lockout, rollback, and live
 operator verification steps are in
 `docs/security/admin-and-staging-zero-trust-access.md`.
+Provider automation and origin assertion details are in
+`docs/security/cloudflare-staging-access.md`.
 
 ## EC2 SSH And Deployment Access Operations
 

@@ -33,6 +33,7 @@ from ops.runtime_contract import (
     PRODUCTION_NON_SECRET_RUNTIME_ENVIRONMENT,
     PRODUCTION_SECRET_INPUTS,
     PRODUCTION_SECRET_FILES,
+    STAGING_CLOUDFLARE_ACCESS_RUNTIME_ENVIRONMENT,
     STAGING_DATA_SERVICE_SECRETS,
 )
 
@@ -85,6 +86,15 @@ def _set_prefixed_deployment_values(monkeypatch, prefix: str, public_host: str):
         if name == "PROD_PUBLIC_HOST":
             value = public_host
         monkeypatch.setenv(target_name, value)
+    if prefix == "STAGING":
+        monkeypatch.setenv(
+            "STAGING_CLOUDFLARE_ACCESS_AUD",
+            "0123456789abcdef0123456789abcdef",
+        )
+        monkeypatch.setenv(
+            "STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN",
+            "sitbank.cloudflareaccess.com",
+        )
 
 
 def _load_db_privileges_module():
@@ -459,6 +469,7 @@ def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypa
 
     assert set(environment) == set(PRODUCTION_NON_SECRET_RUNTIME_ENVIRONMENT)
     assert environment["APP_ENV"] == "production"
+    assert environment["DEPLOYMENT_TARGET"] == "production"
     assert "WEBAUTHN_RP_ID" not in environment
     assert "WEBAUTHN_RP_ORIGIN" not in environment
     assert environment["PASSWORD_RESET_BASE_URL"] == "https://sitbank.duckdns.org"
@@ -502,6 +513,17 @@ def test_container_bundle_accepts_staging_prefix(monkeypatch):
     environment, secrets = build_container_bundle("STAGING")
 
     assert environment["APP_ENV"] == "production"
+    assert environment["DEPLOYMENT_TARGET"] == "staging"
+    assert environment["STAGING_CLOUDFLARE_ACCESS_JWT_REQUIRED"] == "true"
+    assert (
+        environment["STAGING_CLOUDFLARE_ACCESS_AUD"]
+        == "0123456789abcdef0123456789abcdef"
+    )
+    assert (
+        environment["STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN"]
+        == "sitbank.cloudflareaccess.com"
+    )
+    assert environment["STAGING_CLOUDFLARE_ACCESS_JWKS_CACHE_TTL_SECONDS"] == "300"
     assert "WEBAUTHN_RP_ID" not in environment
     assert "WEBAUTHN_RP_ORIGIN" not in environment
     assert environment["PASSWORD_RESET_BASE_URL"] == "https://staging.sitbank.example"
@@ -515,6 +537,39 @@ def test_container_bundle_accepts_staging_prefix(monkeypatch):
     assert secrets["session_lookup_hmac_key"] == DEPLOYMENT_VALUES["PROD_SESSION_LOOKUP_HMAC_KEY"]
     assert secrets["database_migration_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_MIGRATION_URL"]
     assert secrets["security_audit_hmac_key"] == DEPLOYMENT_VALUES["PROD_SECURITY_AUDIT_HMAC_KEY"]
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "message"),
+    [
+        ("STAGING_CLOUDFLARE_ACCESS_AUD", "", "CLOUDFLARE_ACCESS_AUD"),
+        (
+            "STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN",
+            "example.com",
+            "CLOUDFLARE_ACCESS_TEAM_DOMAIN",
+        ),
+        (
+            "STAGING_CLOUDFLARE_ACCESS_JWKS_CACHE_TTL_SECONDS",
+            "59",
+            "between 60 and 3600",
+        ),
+    ],
+)
+def test_staging_bundle_rejects_invalid_cloudflare_access_config(
+    monkeypatch,
+    name,
+    value,
+    message,
+):
+    _set_prefixed_deployment_values(
+        monkeypatch,
+        "STAGING",
+        "staging-sitbank.pp.ua",
+    )
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(RuntimeError, match=message):
+        build_container_environment("STAGING")
 
 
 def test_deployment_profiles_keep_production_and_staging_isolated(monkeypatch):
@@ -775,10 +830,13 @@ def test_smoke_fixture_and_deployment_wrapper_match_runtime_contract():
     assert 'if [[ "${target}" == "staging" ]]; then' in deploy_script
     assert re.search(
         r'\[\[ "\$\{target\}" == "staging" \]\].*?'
-        r"allowed_environment\+=\(\s*ADMIN_SESSION_HMAC_ACTIVE_KEY_ID\s*\)",
+        r"allowed_environment\+=\(\s*ADMIN_SESSION_HMAC_ACTIVE_KEY_ID.*?"
+        r"STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN\s*\)",
         deploy_script,
         flags=re.DOTALL,
     )
+    for staging_env in STAGING_CLOUDFLARE_ACCESS_RUNTIME_ENVIRONMENT:
+        assert staging_env in deploy_script
 
 
 def test_local_ci_command_documents_required_local_checks():
@@ -1516,6 +1574,14 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     )
     assert staging_deploy_env["STAGING_SMTP_HOST"] == "${{ vars.STAGING_SMTP_HOST }}"
     assert (
+        staging_deploy_env["STAGING_CLOUDFLARE_ACCESS_AUD"]
+        == "${{ vars.STAGING_CLOUDFLARE_ACCESS_AUD }}"
+    )
+    assert (
+        staging_deploy_env["STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN"]
+        == "${{ vars.STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN }}"
+    )
+    assert (
         production_deploy_env["IMAGE_DIGEST"]
         == "${{ needs.release-verify.outputs.digest }}"
     )
@@ -1538,6 +1604,8 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
             "Verify staging deployment configuration",
             {
                 "STAGING_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID",
+                "STAGING_CLOUDFLARE_ACCESS_AUD",
+                "STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN",
                 "STAGING_PASSWORD_RESET_EMAIL_FROM",
                 "STAGING_SMTP_HOST",
             },
@@ -2645,8 +2713,10 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     ) in bootstrap
     assert "Missing required staging Basic Auth file" in bootstrap
     assert "STAGING_CLOUDFLARE_ORIGIN_PULL_CA_FILE=\"/etc/nginx/cloudflare-authenticated-origin-pull-ca.pem\"" in bootstrap
-    assert "Missing required Cloudflare Authenticated Origin Pull CA file" in bootstrap
-    assert "Install the Cloudflare origin-pull CA certificate before rerunning staging bootstrap." in bootstrap
+    assert "STAGING_CLOUDFLARE_ORIGIN_PULL_CA_ALLOWLIST=\"/etc/sitbank-staging/cloudflare-origin-pull-ca-allowlist.json\"" in bootstrap
+    assert "if ! /usr/local/sbin/verify-cloudflare-origin-pull-ca" in bootstrap
+    assert "Cloudflare Authenticated Origin Pull CA validation failed." in bootstrap
+    assert "Install a reviewed CA certificate before rerunning staging bootstrap." in bootstrap
     assert "Missing required staging TLS file" in bootstrap
     assert "apache2-utils" in bootstrap
     assert "certbot" in bootstrap
@@ -2951,6 +3021,11 @@ def test_staging_edge_runbook_documents_operator_verification_steps():
         "local app readiness",
         "separate from application deployment",
         "docs/security/admin-and-staging-zero-trust-access.md",
+        "docs/security/cloudflare-staging-access.md",
+        "STAGING_CLOUDFLARE_ACCESS_JWT_REQUIRED",
+        "STAGING_CLOUDFLARE_ACCESS_AUD",
+        "STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN",
+        "Cf-Access-Jwt-Assertion",
     ):
         assert required in docs
 
@@ -3072,8 +3147,8 @@ def test_migration_baseline_and_existing_database_runbook_are_present():
     assert "verify-migration-baseline" in docs
     assert "db stamp 20260610_0001" in docs
     assert "Do not run `db.create_all()`" in docs
-    assert "hetp88/SITBank" in docs
-    assert "ghcr.io/hetp88/sitbank@sha256:<digest>" in docs
+    assert "WenJiangg/SITBank" in docs
+    assert "ghcr.io/wenjiangg/sitbank@sha256:<digest>" in docs
     assert "sitbank_db" in docs
     assert "sitbank_owner" in docs
     assert "sitbank_app" in docs

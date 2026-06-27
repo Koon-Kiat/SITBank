@@ -468,7 +468,7 @@ The current restricted SSH deployment remains supported. The preferred next
 step is GitHub OIDC federation to a narrowly scoped AWS IAM role and Systems
 Manager Run Command:
 
-- trust only `repo:hetp88/SITBank:environment:production`;
+- trust only `repo:WenJiangg/SITBank:environment:production`;
 - require the GitHub OIDC audience `sts.amazonaws.com`;
 - allow commands only on the tagged SITBank instance and approved SSM
   document;

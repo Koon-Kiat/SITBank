@@ -18,6 +18,7 @@ from .main.routes import main_bp
 from .models import User
 from .ops.commands import register_ops_commands
 from .security.audit import register_correlation_id
+from .security.cloudflare_access import register_cloudflare_access_guard
 from .security.sessions import install_database_sessions, register_session_hooks
 from .web.routes import web_bp
 
@@ -51,6 +52,7 @@ def create_app(config_object: type[Config] = Config, *, app_mode: str = "custome
     )
     install_database_sessions(app)
 
+    register_cloudflare_access_guard(app)
     register_correlation_id(app)
     register_session_hooks(app)
     register_current_user_loader(app)

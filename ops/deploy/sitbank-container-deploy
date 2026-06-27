@@ -277,6 +277,7 @@ install_runtime_bundle() {
         APP_ENV
         COMMON_PASSWORDS_MIN_ENTRIES
         COMMON_PASSWORDS_PATH
+        DEPLOYMENT_TARGET
         HIBP_CIRCUIT_FAILURE_THRESHOLD
         HIBP_CIRCUIT_OPEN_SECONDS
         HIBP_PASSWORD_CHECK_TIMEOUT_SECONDS
@@ -312,6 +313,10 @@ install_runtime_bundle() {
     if [[ "${target}" == "staging" ]]; then
         allowed_environment+=(
             ADMIN_SESSION_HMAC_ACTIVE_KEY_ID
+            STAGING_CLOUDFLARE_ACCESS_AUD
+            STAGING_CLOUDFLARE_ACCESS_JWKS_CACHE_TTL_SECONDS
+            STAGING_CLOUDFLARE_ACCESS_JWT_REQUIRED
+            STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN
         )
     fi
     if grep -Evq "^[A-Z][A-Z0-9_]*='[^']+'\$" \
