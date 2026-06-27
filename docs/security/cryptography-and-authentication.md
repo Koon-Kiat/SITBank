@@ -38,7 +38,7 @@ Evidence:
 | TLS server block and certificate path | `ops/nginx/sitbank-production.conf`; `ops/nginx/sitbank-staging.conf` |
 | HTTP handling | Customer HTTP redirects with `return 301 https://sitbank.duckdns.org$request_uri;`; public admin non-ACME HTTP returns `403` in `ops/nginx/sitbank-production.conf` |
 | Unknown host rejection | `ops/nginx/sitbank-default.conf` returns `444` for the default HTTP server and uses `ssl_reject_handshake on` for the default HTTPS server |
-| HSTS | Production uses `Strict-Transport-Security "max-age=31536000; includeSubDomains"`; staging uses `Strict-Transport-Security "max-age=31536000"` |
+| HSTS | Production customer and admin use `Strict-Transport-Security "max-age=31536000; includeSubDomains"`; staging uses `Strict-Transport-Security "max-age=31536000"`; all live TLS scan targets must stay above the scanner's 15552000-second minimum |
 | Proxy trust boundary | `ops/nginx-proxy-headers.conf` overwrites `Host`, `X-Real-IP`, `X-Forwarded-For`, and `X-Forwarded-Proto`; `app/__init__.py` applies `ProxyFix` using `TRUSTED_PROXY_COUNT` |
 | TLS policy and deployment validation | `ops/nginx/sitbank-tls-policy.conf` pins the shared TLS policy; `ops/deploy/bootstrap-container-ec2` requires the Certbot files, invokes `ops/deploy/verify-certbot-host-state`, and installs the TLS snippet before installing the production or staging Nginx site, then runs `nginx -t` before reload |
 | Tests | `tests/test_deployment.py::test_nginx_default_server_is_shared_for_same_host_production_and_staging`, `tests/test_deployment.py::test_production_nginx_edge_config_enforces_network_boundary_and_limits`, `tests/test_deployment.py::test_staging_nginx_enforces_https_auth_health_and_rate_limits`, `tests/test_deployment.py::test_proxyfix_trusts_exactly_the_configured_nginx_hop` |
@@ -101,8 +101,9 @@ target, workflow run, and result. It intentionally does not run on ordinary
 pull requests because they do not create public TLS endpoints.
 
 Verification fails for SSLv2/SSLv3/TLS 1.0/TLS 1.1, weak/NULL/anonymous/export/
-RC4/3DES cipher classes, expired certificates, hostname mismatches, untrusted or
-incomplete chains, and every HIGH, CRITICAL, or FATAL `testssl.sh` finding.
+RC4/3DES cipher classes, missing, disabled, or too-short HSTS, expired
+certificates, hostname mismatches, untrusted or incomplete chains, and every
+HIGH, CRITICAL, or FATAL `testssl.sh` finding.
 MEDIUM/LOW/INFO findings are retained for manual review. SSL Labs is optional
 manual corroboration for a release, certificate renewal, edge change, or
 incident record; it is not a release-blocking automation dependency.
