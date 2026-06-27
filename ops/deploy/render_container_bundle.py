@@ -34,7 +34,6 @@ DEPLOYMENT_PROFILES = {
         "ADMIN_APP_BIND_HOST": "127.0.0.1",
         "ADMIN_APP_BIND_PORT": "5002",
         "ADMIN_APP_CONTAINER_NAME": "sitbank-admin",
-        "ADMIN_PUBLIC_HOST": "admin-sitbank.duckdns.org",
         "APP_BIND_HOST": "127.0.0.1",
         "APP_BIND_PORT": "5000",
         "APP_CONTAINER_NAME": "sitbank-app",

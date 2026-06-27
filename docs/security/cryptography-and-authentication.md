@@ -17,7 +17,6 @@ proxy headers.
 | Environment | Hostname | TLS termination | Upstream |
 | --- | --- | --- | --- |
 | Production customer | `sitbank.duckdns.org` | Nginx in `ops/nginx/sitbank-production.conf` | `http://127.0.0.1:5000` |
-| Production admin | `admin-sitbank.duckdns.org` | Nginx in `ops/nginx/sitbank-production.conf` | `http://127.0.0.1:5002` |
 | Staging customer | `staging-sitbank.pp.ua` | Nginx in `ops/nginx/sitbank-staging.conf` | `http://127.0.0.1:5001` |
 
 The client authenticates the server through the normal browser TLS certificate
@@ -36,9 +35,9 @@ Evidence:
 | Control | Evidence |
 | --- | --- |
 | TLS server block and certificate path | `ops/nginx/sitbank-production.conf`; `ops/nginx/sitbank-staging.conf` |
-| HTTP handling | Customer HTTP redirects with `return 301 https://sitbank.duckdns.org$request_uri;`; public admin non-ACME HTTP returns `403` in `ops/nginx/sitbank-production.conf` |
+| HTTP handling | Customer HTTP redirects with `return 301 https://sitbank.duckdns.org$request_uri;`; unknown public hosts fail closed in `ops/nginx/sitbank-default.conf` |
 | Unknown host rejection | `ops/nginx/sitbank-default.conf` returns `444` for the default HTTP server and uses `ssl_reject_handshake on` for the default HTTPS server |
-| HSTS | Production customer and admin use `Strict-Transport-Security "max-age=31536000; includeSubDomains"`; staging uses `Strict-Transport-Security "max-age=31536000"`; all live TLS scan targets must stay above the scanner's 15552000-second minimum |
+| HSTS | Production customer uses `Strict-Transport-Security "max-age=31536000; includeSubDomains"`; staging uses `Strict-Transport-Security "max-age=31536000"` at origin and must also expose acceptable HSTS at the Cloudflare edge; all public live TLS scan targets must stay above the scanner's 15552000-second minimum |
 | Proxy trust boundary | `ops/nginx-proxy-headers.conf` overwrites `Host`, `X-Real-IP`, `X-Forwarded-For`, and `X-Forwarded-Proto`; `app/__init__.py` applies `ProxyFix` using `TRUSTED_PROXY_COUNT` |
 | TLS policy and deployment validation | `ops/nginx/sitbank-tls-policy.conf` pins the shared TLS policy; `ops/deploy/bootstrap-container-ec2` requires the Certbot files, invokes `ops/deploy/verify-certbot-host-state`, and installs the TLS snippet before installing the production or staging Nginx site, then runs `nginx -t` before reload |
 | Tests | `tests/test_deployment.py::test_nginx_default_server_is_shared_for_same_host_production_and_staging`, `tests/test_deployment.py::test_production_nginx_edge_config_enforces_network_boundary_and_limits`, `tests/test_deployment.py::test_staging_nginx_enforces_https_auth_health_and_rate_limits`, `tests/test_deployment.py::test_proxyfix_trusts_exactly_the_configured_nginx_hop` |
@@ -71,7 +70,7 @@ invoke the explicit network-dependent `certbot renew --dry-run`.
 
 ## HTTPS Cipher Suites
 
-Production, production-admin, and staging HTTPS server blocks include the shared
+Production and staging HTTPS server blocks include the shared
 `ops/nginx/sitbank-tls-policy.conf` policy. It explicitly enables only TLS 1.2
 and TLS 1.3, prefers modern ECDHE curves, and restricts TLS 1.2 to ECDHE with
 AEAD encryption:
@@ -99,10 +98,10 @@ the primary automated external validation. It runs weekly, can be manually
 dispatched after a TLS-relevant infrastructure change, and is called from the
 trusted deployment workflow. It verifies staging immediately after staging
 deploy (and blocks production deployment until that verification passes), then
-verifies both production endpoints after production deploy to complete the
-release evidence. It scans `staging-sitbank.pp.ua`,
-`sitbank.duckdns.org`, and `admin-sitbank.duckdns.org` with a checksum-verified
-`testssl.sh` release. Each per-target artifact retains untouched scanner JSON
+verifies the production customer endpoint after production deploy to complete
+the release evidence. It scans `staging-sitbank.pp.ua` and
+`sitbank.duckdns.org` with a checksum-verified `testssl.sh` release. Each
+per-target artifact retains untouched scanner JSON
 as `testssl.raw.json` and a separate `testssl.json` policy copy, along with the
 log, HTML, metadata, and policy findings. The policy copy changes only
 testssl.sh's invalid `\,` escape in certificate subject strings to a literal
@@ -112,7 +111,7 @@ or TLS findings generally. The job summary records the UTC time, target,
 workflow run, and result. It intentionally does not run on ordinary pull
 requests because they do not create public TLS endpoints.
 
-Production customer and public-denied admin verification fails for SSLv2/SSLv3/
+Production customer verification fails for SSLv2/SSLv3/
 TLS 1.0/TLS 1.1, weak/NULL/anonymous/export/RC4/3DES cipher classes, missing,
 disabled, or too-short HSTS, expired certificates, hostname mismatches,
 untrusted or incomplete chains, and every HIGH, CRITICAL, or FATAL
@@ -138,7 +137,6 @@ Certbot-managed paths, for example:
 | Hostname | Expected private key path |
 | --- | --- |
 | `sitbank.duckdns.org` | `/etc/letsencrypt/live/sitbank.duckdns.org/privkey.pem` |
-| `admin-sitbank.duckdns.org` | `/etc/letsencrypt/live/admin-sitbank.duckdns.org/privkey.pem` |
 | `staging-sitbank.pp.ua` | `/etc/letsencrypt/live/staging-sitbank.pp.ua/privkey.pem` |
 
 The private key is not committed to Git. `ops/deploy/bootstrap-container-ec2`

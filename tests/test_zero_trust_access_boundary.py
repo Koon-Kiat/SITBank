@@ -70,11 +70,12 @@ def test_hybrid_cloudflare_staging_and_tailscale_admin_design_is_documented():
         "direct origin access",
         "Cloudflare-managed zone/hostname or Cloudflare Tunnel",
         "Cloudflare Access and Tailscale decide whether a request may reach",
-        "retired `staging-sitbank.duckdns.org` hostname is no longer",
+        "retired DuckDNS staging hostname is no longer",
         "Admins connect to the Tailscale VPN first, then open",
         "https://sitbank-ec2.tailca101b.ts.net/",
-        "old public admin verification page has been removed",
-        "Public admin `/` returns `403`",
+        "old public admin verification",
+        "page has been removed from the edge bootstrap",
+        "No public admin hostname is required or scanned.",
         "Zero-trust and network-boundary work should use these repository labels",
     ):
         assert required in docs
@@ -94,7 +95,7 @@ def test_staging_nginx_blocks_direct_origin_bypass_but_keeps_local_health():
     assert "return 444;" in default_nginx
 
     assert "server_name staging-sitbank.pp.ua;" in staging_nginx
-    assert "staging-sitbank.duckdns.org" not in staging_nginx
+    assert "duckdns.org" not in staging_nginx
     assert "ssl_client_certificate /etc/nginx/cloudflare-authenticated-origin-pull-ca.pem;" in staging_nginx
     assert "ssl_verify_client optional;" in staging_nginx
     staging_https_prelocation = _nginx_server_block(
@@ -140,44 +141,26 @@ def test_staging_nginx_blocks_direct_origin_bypass_but_keeps_local_health():
     assert "nginx -t" in bootstrap
 
 
-def test_admin_public_routes_stay_denied_and_private_access_is_tailscale_only():
+def test_admin_public_surface_is_absent_and_private_access_is_tailscale_only():
     production_nginx = Path("ops/nginx/sitbank-production.conf").read_text(
         encoding="utf-8"
     )
     docs = _docs_text()
-    admin_server = _nginx_server_block(production_nginx, "admin-sitbank.duckdns.org")
     customer_server = _nginx_server_block(production_nginx, "sitbank.duckdns.org")
 
     assert "server_name sitbank.duckdns.org;" in customer_server
-    assert "staging-sitbank.duckdns.org" not in customer_server
     assert "staging-sitbank.pp.ua" not in customer_server
-    assert "server_name admin-sitbank.duckdns.org;" not in customer_server
     assert "location ^~ /admin" in customer_server
     assert "return 404;" in customer_server
-
-    root_bodies = _nginx_location_bodies(admin_server, "= /")
-    assert len(root_bodies) == 1
-    assert "return 403;" in root_bodies[0]
-    assert "root /var/www/sitbank-admin-verification;" not in root_bodies[0]
-    assert "try_files /index.html =404;" not in root_bodies[0]
-    assert "proxy_pass" not in root_bodies[0]
-
-    login_bodies = _nginx_location_bodies(admin_server, "= /login")
-    assert len(login_bodies) == 1
-    assert "deny all;" in login_bodies[0]
-    assert "proxy_pass http://127.0.0.1:5002;" in login_bodies[0]
-
-    ready_bodies = _nginx_location_bodies(admin_server, "= /health/ready")
-    assert len(ready_bodies) == 1
-    assert "deny all;" in ready_bodies[0]
-    assert "return 403;" in ready_bodies[0]
-    assert "proxy_pass" not in ready_bodies[0]
+    assert "server_name sitbank-" not in production_nginx
+    assert "proxy_pass http://127.0.0.1:5002;" not in production_nginx
 
     assert "Tailscale/private operator access" in docs
     assert "https://sitbank-ec2.tailca101b.ts.net/" in docs
     assert "Do not enable Tailscale Funnel" in docs
-    assert "old public admin verification page has been removed" in docs
-    assert "public admin Nginx app routes denied" in docs
+    assert "old public admin verification" in docs
+    assert "page has been removed from the edge bootstrap" in docs
+    assert "No public admin Nginx server block is configured." in docs
 
 
 def test_admin_customer_session_and_runtime_isolation_remains_covered():
@@ -208,11 +191,7 @@ def test_admin_customer_session_and_runtime_isolation_remains_covered():
     ):
         assert required in deploy_script
 
-    for required in (
-        "ADMIN_PUBLIC_HOST='admin-sitbank.duckdns.org'",
-        "127.0.0.1:5002",
-        "127.0.0.1:5003",
-    ):
+    for required in ("127.0.0.1:5002", "127.0.0.1:5003"):
         assert required in deployment_test
 
     assert "127.0.0.1:5002" in production_compose

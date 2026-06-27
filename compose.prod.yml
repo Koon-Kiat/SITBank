@@ -208,7 +208,7 @@ services:
         - CMD
         - python
         - -c
-        - "import urllib.request; request=urllib.request.Request('http://127.0.0.1:5002/health/ready', headers={'X-Forwarded-Proto':'https','Host':'admin-sitbank.duckdns.org'}); urllib.request.urlopen(request, timeout=4).read()"
+        - "import urllib.request; request=urllib.request.Request('http://127.0.0.1:5002/health/ready', headers={'X-Forwarded-Proto':'https','Host':'sitbank-admin.internal'}); urllib.request.urlopen(request, timeout=4).read()"
       interval: 15s
       timeout: 5s
       start_period: 20s
