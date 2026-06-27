@@ -96,9 +96,13 @@ Transfer payload validation and future transaction-risk primitives are in
 `app/banking/services.py` and `app/banking/schemas.py`, covered by
 `tests/test_banking_transaction_security.py`.
 
-Payee IDOR and enumeration tests cover direct banking MFA gating, pre-TOTP
-recipient lookup blocking, ownership-scoped removal, duplicate/self-payee
-guards, and pending-payee expiry in `tests/test_payee_management_security.py`.
+Focused payee IDOR regression tests in `tests/test_payee_idor.py` prove that the
+payee list is scoped to the current user and that removal lookups are scoped by
+both payee ID and current user ID. Cross-user view and remove attempts return
+`404` before MFA processing, do not delete the payee, and do not create a
+successful `payee_remove` audit event. Broader payee enumeration, direct banking
+MFA gating, duplicate/self-payee guards, and pending-payee expiry coverage
+remains in `tests/test_payee_management_security.py`.
 
 ## Admin And Staff Controls
 
