@@ -834,7 +834,7 @@ ROUTE_SECURITY_INVENTORY = {
         "classification": "payee_management",
         "csrf": "required",
         "rate_limit": "per_route",
-        "step_up": "not_required",
+        "step_up": "required",
         "public_justification": "",
     },
     "banking.payees_confirm": {
@@ -856,7 +856,7 @@ ROUTE_SECURITY_INVENTORY = {
         "classification": "payee_management",
         "csrf": "required",
         "rate_limit": "per_route",
-        "step_up": "required",
+        "step_up": "already_authorized_continuation",
         "public_justification": "",
     },
     "banking.payees_remove": {

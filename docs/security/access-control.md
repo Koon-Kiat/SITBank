@@ -69,8 +69,8 @@ other's policy entries.
 ## 3.3 Banking And Payee Authorization
 
 Payee management lives in `app/banking/routes.py` and is registered only in the
-customer app. Routes use authenticated web decorators and high-risk TOTP step-up
-for payee creation confirmation and removal.
+customer app. Routes use authenticated web decorators, direct banking MFA
+onboarding gates, and high-risk TOTP step-up before recipient lookup or removal.
 
 New payees are not immediately usable for transfers. The activation delay is
 calculated server-side from the saved payee timestamp and
@@ -81,18 +81,17 @@ configuration fails closed unless the cooldown is at least 12 hours.
 | Action | Authorization control | Evidence |
 | --- | --- | --- |
 | List payees | Query filters by `Payee.user_id == g.current_user.id` | `app/banking/routes.py::payees()` |
-| Add payee step 1 | Form validation, own-account rejection, duplicate payee check scoped to current user | `app/banking/forms.py`, `app/banking/routes.py::payees_add_submit()` |
-| Add payee confirmation | Pending payee state is consumed before MFA, recipient is reloaded from the database, duplicate check is repeated, and TOTP step-up is required | `app/banking/routes.py::payees_confirm_submit()` |
+| Add payee lookup | Form validation, own-account rejection, duplicate payee check scoped to current user, and `payee_add` TOTP step-up before recipient identity is looked up | `app/banking/forms.py`, `app/banking/routes.py::payees_add_submit()` |
+| Add payee confirmation | Pending payee state exists only after `payee_add` TOTP authorization, is consumed before insert, recipient is reloaded from the database, and duplicate checks are repeated | `app/banking/routes.py::payees_confirm_submit()` |
 | Remove payee | Payee is loaded with `id` and current `user_id`; TOTP step-up is required | `app/banking/routes.py::payees_remove_submit()` |
 
 Transfer payload validation and future transaction-risk primitives are in
 `app/banking/services.py` and `app/banking/schemas.py`, covered by
 `tests/test_banking_transaction_security.py`.
 
-Current test gap: no dedicated payee IDOR test file was found. The code uses
-current-user ownership filters, and payee routes are included in the route
-inventory, but there is no focused test that attempts to remove or view another
-user's payee.
+Payee IDOR and enumeration tests cover direct banking MFA gating, pre-TOTP
+recipient lookup blocking, ownership-scoped removal, duplicate/self-payee
+guards, and pending-payee expiry in `tests/test_payee_management_security.py`.
 
 ## 3.4 Admin And Staff Controls
 
