@@ -38,7 +38,7 @@ Evidence:
 | TLS server block and certificate path | `ops/nginx/sitbank-production.conf`; `ops/nginx/sitbank-staging.conf` |
 | HTTP handling | Customer HTTP redirects with `return 301 https://sitbank.duckdns.org$request_uri;`; public admin non-ACME HTTP returns `403` in `ops/nginx/sitbank-production.conf` |
 | Unknown host rejection | `ops/nginx/sitbank-default.conf` returns `444` for the default HTTP server and uses `ssl_reject_handshake on` for the default HTTPS server |
-| HSTS | Production uses `Strict-Transport-Security "max-age=31536000; includeSubDomains"`; staging uses `max-age=300` |
+| HSTS | Production uses `Strict-Transport-Security "max-age=31536000; includeSubDomains"`; staging uses `Strict-Transport-Security "max-age=31536000"` |
 | Proxy trust boundary | `ops/nginx-proxy-headers.conf` overwrites `Host`, `X-Real-IP`, `X-Forwarded-For`, and `X-Forwarded-Proto`; `app/__init__.py` applies `ProxyFix` using `TRUSTED_PROXY_COUNT` |
 | TLS policy and deployment validation | `ops/nginx/sitbank-tls-policy.conf` pins the shared TLS policy; `ops/deploy/bootstrap-container-ec2` requires the Certbot files, invokes `ops/deploy/verify-certbot-host-state`, and installs the TLS snippet before installing the production or staging Nginx site, then runs `nginx -t` before reload |
 | Tests | `tests/test_deployment.py::test_nginx_default_server_is_shared_for_same_host_production_and_staging`, `tests/test_deployment.py::test_production_nginx_edge_config_enforces_network_boundary_and_limits`, `tests/test_deployment.py::test_staging_nginx_enforces_https_auth_health_and_rate_limits`, `tests/test_deployment.py::test_proxyfix_trusts_exactly_the_configured_nginx_hop` |
