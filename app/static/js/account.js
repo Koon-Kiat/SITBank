@@ -40,7 +40,9 @@
       });
       var alert = button.closest(".alert");
       if (alert) {
-        setTimeout(function () { alert.remove(); }, 3000);
+        if (alert.classList.contains("alert-success") || alert.classList.contains("alert-info")) {
+          setTimeout(function () { alert.remove(); }, 3000);
+        }
       }
     });
 

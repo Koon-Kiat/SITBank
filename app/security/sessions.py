@@ -716,6 +716,29 @@ def _commit_quietly() -> None:
         raise
 
 
+def _wants_session_json_response() -> bool:
+    if current_app.config.get("APP_MODE") == "admin":
+        return True
+    if request.path.startswith("/auth/") or request.path.startswith("/admin/"):
+        return True
+    best = request.accept_mimetypes.best_match(["application/json", "text/html"])
+    return best == "application/json" and (
+        request.accept_mimetypes["application/json"] >= request.accept_mimetypes["text/html"]
+    )
+
+
+def _session_expired_response(message: str = "Session expired"):
+    if _wants_session_json_response():
+        return jsonify({"error": message}), 401
+    return redirect(url_for("web.login", session_expired=1))
+
+
+def _session_revoked_response():
+    if _wants_session_json_response():
+        return jsonify({"error": "Session revoked"}), 401
+    return redirect(url_for("web.login", session_expired=1))
+
+
 def register_session_hooks(app: Flask) -> None:
     @app.before_request
     def enforce_session_activity():
@@ -724,17 +747,15 @@ def register_session_hooks(app: Flask) -> None:
             record = _session_record_for_sid(session_id)
             if record is not None and record.revoked_at is not None:
                 session.clear()
-                if not request.path.startswith("/auth/"):
-                    if request.endpoint in {
-                        "main.index",
-                        "web.login",
-                        "web.login_submit",
-                        "web.register_form",
-                        "web.register_submit",
-                    }:
-                        return None
-                    return redirect(url_for("web.login"))
-                return jsonify({"error": "Session revoked"}), 401
+                if request.endpoint in {
+                    "main.index",
+                    "web.login",
+                    "web.login_submit",
+                    "web.register_form",
+                    "web.register_submit",
+                }:
+                    return None
+                return _session_revoked_response()
 
         principal_id = session.get("user_id") or session.get("pending_mfa_user_id")
         if not principal_id:
@@ -774,7 +795,7 @@ def register_session_hooks(app: Flask) -> None:
             except (KeyError, TypeError, ValueError):
                 current_app.logger.error("SESSION_ABSOLUTE_LIFETIME_SECONDS is invalid")
                 revoke_current_session(ended_reason="absolute_lifetime")
-                return jsonify({"error": "Session expired"}), 401
+                return _session_expired_response()
 
             raw_auth_created_at = session.get(AUTH_CREATED_AT_KEY)
             if raw_auth_created_at is None:
@@ -785,7 +806,7 @@ def register_session_hooks(app: Flask) -> None:
                     auth_created_at = int(raw_auth_created_at)
                 except (TypeError, ValueError):
                     revoke_current_session(ended_reason="absolute_lifetime")
-                    return jsonify({"error": "Session expired"}), 401
+                    return _session_expired_response()
                 if auth_created_at <= 0 or now - auth_created_at > absolute_lifetime:
                     session_id = current_session_id()
                     from app.security.audit import audit_event
@@ -802,12 +823,12 @@ def register_session_hooks(app: Flask) -> None:
                         },
                     )
                     revoke_current_session(ended_reason="absolute_lifetime")
-                    return jsonify({"error": "Session expired"}), 401
+                    return _session_expired_response()
 
         last_activity = int(session.get("last_activity_at") or now)
         if now - last_activity > current_app.config["SESSION_INACTIVITY_SECONDS"]:
             revoke_current_session(ended_reason="expired")
-            return jsonify({"error": "Session expired"}), 401
+            return _session_expired_response()
 
         session["last_activity_at"] = now
         session.modified = True

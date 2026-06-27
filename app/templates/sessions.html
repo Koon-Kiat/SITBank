@@ -28,6 +28,7 @@
             <th>User agent</th>
             <th>Login time</th>
             <th>Last activity</th>
+            <th>Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -43,11 +44,30 @@
               <td data-label="Device">{{ item.user_agent }}</td>
               <td data-label="Login time"><time datetime="{{ item.login_time }}">{{ item.login_time_display }}</time></td>
               <td data-label="Last activity"><time datetime="{{ item.last_activity }}">{{ item.last_activity_display }}</time></td>
+              <td data-label="Actions">
+                {% if item.current %}
+                  <span class="muted">Current session</span>
+                {% else %}
+                  <form method="post" action="{{ url_for('web.sessions_terminate_submit', session_ref=item.session_ref) }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" class="button-danger button-small">Terminate</button>
+                  </form>
+                {% endif %}
+              </td>
             </tr>
           {% endfor %}
         </tbody>
       </table>
     </div>
+    <form class="action-panel" method="post" action="{{ url_for('web.sessions_revoke_others_submit') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="field">
+        <label for="session-revoke-totp-code">Authenticator code</label>
+        {{ revoke_form.totp_code(id="session-revoke-totp-code", inputmode="numeric", autocomplete="one-time-code", maxlength="6", placeholder="6-digit code") }}
+      </div>
+      {{ revoke_form.stepup_token() }}
+      <button type="submit" class="button-danger">Revoke all other sessions</button>
+    </form>
   {% else %}
     <div class="empty-state">
       <h2>No active sessions found</h2>

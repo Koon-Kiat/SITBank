@@ -7,21 +7,20 @@
 
   var warningSeconds = 60;
   var timeoutMs = timeoutSeconds * 1000;
-  var warningMs = (timeoutSeconds - warningSeconds) * 1000;
-  var keepaliveThrottleMs = 30000;
+  var warningMs = Math.max(0, (timeoutSeconds - warningSeconds) * 1000);
 
   var expireTimer = null;
   var warningTimer = null;
   var countdownInterval = null;
   var displayInterval = null;
   var lastResetTime = Date.now();
-  var lastKeepalive = 0;
 
   var overlayEl = document.getElementById('session-timeout-overlay');
   var countdownEl = document.getElementById('session-timeout-countdown');
   var continueBtn = document.getElementById('session-continue-btn');
   var timerEl = document.getElementById('session-timer');
   var timerValueEl = document.getElementById('session-timer-value');
+  var csrfMeta = document.querySelector('meta[name="csrf-token"]');
 
   function formatTime(ms) {
     var totalSeconds = Math.max(0, Math.ceil(ms / 1000));
@@ -43,7 +42,7 @@
   }
 
   function hideOverlay() {
-    if (overlayEl) overlayEl.style.display = 'none';
+    if (overlayEl) overlayEl.hidden = true;
     clearInterval(countdownInterval);
     countdownInterval = null;
   }
@@ -52,7 +51,7 @@
     if (!overlayEl) return;
     var remaining = warningSeconds;
     if (countdownEl) countdownEl.textContent = remaining;
-    overlayEl.style.display = 'flex';
+    overlayEl.hidden = false;
     clearInterval(countdownInterval);
     countdownInterval = setInterval(function () {
       remaining -= 1;
@@ -78,30 +77,38 @@
     expireTimer = setTimeout(expire, timeoutMs);
   }
 
-  function sendKeepalive() {
-    var now = Date.now();
-    if (now - lastKeepalive < keepaliveThrottleMs) return;
-    lastKeepalive = now;
-    fetch('/auth/csrf-token', { credentials: 'same-origin' }).catch(function () {});
-  }
-
-  function onActivity() {
-    if (overlayEl && overlayEl.style.display === 'flex') return;
-    sendKeepalive();
-    resetTimers();
-  }
-
   if (continueBtn) {
     continueBtn.addEventListener('click', function () {
-      lastKeepalive = 0;
-      sendKeepalive();
-      resetTimers();
+      var headers = {
+        'Accept': 'application/json'
+      };
+      if (csrfMeta && csrfMeta.getAttribute('content')) {
+        headers['X-CSRFToken'] = csrfMeta.getAttribute('content');
+      }
+      continueBtn.disabled = true;
+      fetch('/auth/session/extend', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: headers
+      }).then(function (response) {
+        if (!response.ok) {
+          throw new Error('session extension failed');
+        }
+        return response.json().catch(function () { return {}; });
+      }).then(function (payload) {
+        if (payload.timeout_seconds && payload.timeout_seconds > 0) {
+          timeoutSeconds = parseInt(payload.timeout_seconds, 10);
+          timeoutMs = timeoutSeconds * 1000;
+          warningMs = Math.max(0, (timeoutSeconds - warningSeconds) * 1000);
+        }
+        resetTimers();
+      }).catch(function () {
+        expire();
+      }).finally(function () {
+        continueBtn.disabled = false;
+      });
     });
   }
-
-  ['mousemove', 'keydown', 'click', 'scroll', 'touchstart'].forEach(function (type) {
-    document.addEventListener(type, onActivity, { passive: true });
-  });
 
   displayInterval = setInterval(updateTimerDisplay, 1000);
   resetTimers();

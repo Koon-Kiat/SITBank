@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from flask import Blueprint, g, jsonify, request
+from flask import Blueprint, current_app, g, jsonify, request
 from flask_limiter.util import get_remote_address
 from flask_wtf.csrf import generate_csrf
 from marshmallow import Schema, ValidationError
@@ -85,6 +85,7 @@ PASSKEY_DISABLED_MESSAGE = (
 AUTH_MFA_ONBOARDING_ALLOWED_ENDPOINTS = {
     "auth.csrf_token",
     "auth.logout",
+    "auth.session_extend",
     "auth.mfa_setup",
     "auth.mfa_setup_verify",
     "auth.password_reset_request",
@@ -340,6 +341,17 @@ def logout():
     CsrfOnlyForm().validate()
     logout_current_session()
     return jsonify({"message": "Logged out"})
+
+
+@auth_bp.post("/session/extend")
+@login_required
+def session_extend():
+    return jsonify(
+        {
+            "message": "Session extended",
+            "timeout_seconds": int(current_app.config["SESSION_INACTIVITY_SECONDS"]),
+        }
+    )
 
 
 @auth_bp.post("/mfa/setup")
