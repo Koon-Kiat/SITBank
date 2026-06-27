@@ -4,7 +4,6 @@ set -Eeuo pipefail
 
 readonly LETSENCRYPT_ROOT="/etc/letsencrypt"
 readonly PRODUCTION_PUBLIC_HOST="sitbank.duckdns.org"
-readonly PRODUCTION_ADMIN_PUBLIC_HOST="admin-sitbank.duckdns.org"
 readonly STAGING_PUBLIC_HOST="staging-sitbank.pp.ua"
 readonly CERTBOT_MIN_VALID_DAYS="${CERTBOT_MIN_VALID_DAYS:-14}"
 readonly -a APPROVED_TLS_KEY_GROUPS=(root)
@@ -262,7 +261,7 @@ verify_renewal_dry_run() {
 
 case "${target}" in
     production)
-        domains=("${PRODUCTION_PUBLIC_HOST}" "${PRODUCTION_ADMIN_PUBLIC_HOST}")
+        domains=("${PRODUCTION_PUBLIC_HOST}")
         ;;
     staging)
         domains=("${STAGING_PUBLIC_HOST}")

@@ -68,9 +68,7 @@ runtime role. The admin role must be distinct from both `sitbank_app` and
 `sitbank_owner`; it must not use migration/schema-owner credentials. Admin
 access is private operator access only through Tailscale Serve at
 `https://sitbank-ec2.tailca101b.ts.net/`; do not enable Tailscale Funnel and
-do not expose admin through the customer app or public admin Nginx routes.
-`admin-sitbank.duckdns.org` remains isolated at the public edge with public `/`
-and app routes denied.
+do not expose admin through the customer app or any public admin Nginx route.
 The Flask admin app still uses a separate cookie, session HMAC keyring,
 database role, root-admin-controlled staff invites, and mandatory TOTP.
 
@@ -287,8 +285,6 @@ checked manually.
   `nginx -t` succeeds.
 - Issue production Certbot files under
   `/etc/letsencrypt/live/sitbank.duckdns.org/` before bootstrap.
-- Issue admin Certbot files under
-  `/etc/letsencrypt/live/admin-sitbank.duckdns.org/` before bootstrap.
 - Keep Certbot ACME account state and TLS private keys on the EC2 host; never
   commit them to the repository or mount them into application containers.
 - Require an enabled, active `certbot.timer` for host-managed renewal, and run
@@ -305,10 +301,9 @@ checked manually.
 - Keep customer Gunicorn bound to `127.0.0.1:5000`, admin Gunicorn bound to
   `127.0.0.1:5002`, and keep `compose.prod.yml` free of published app ports.
 - Restrict `/health/ready` to loopback and allow public `/health/live` only.
-- Keep public admin `/` and app routes denied by default. Admin application access is
-  Tailscale/private operator access only, followed by Flask admin login and
-  TOTP. Do not enable Tailscale Funnel or make `admin-sitbank.duckdns.org`
-  publicly usable for app routes.
+- Keep the admin application off public Nginx hostnames. Admin application
+  access is Tailscale/private operator access only, followed by Flask admin
+  login and TOTP. Do not enable Tailscale Funnel or add a public admin route.
 - Require Cloudflare Access and Cloudflare Authenticated Origin Pulls for
   `staging-sitbank.pp.ua`; do not disable the origin-pull check to make
   direct EC2-origin staging access work.
@@ -336,19 +331,17 @@ sudo docker inspect --format '{{json .HostConfig.PortBindings}}' sitbank-app
 sudo docker inspect --format '{{json .HostConfig.PortBindings}}' sitbank-admin
 curl --fail https://sitbank.duckdns.org/health/live
 curl -I https://sitbank.duckdns.org/health/ready
-curl -I https://admin-sitbank.duckdns.org/
-curl -I https://admin-sitbank.duckdns.org/login
 curl --fail -H 'X-Forwarded-Proto: https' \
   http://127.0.0.1:5000/health/ready
-curl --fail -H 'Host: admin-sitbank.duckdns.org' \
+curl --fail -H 'Host: sitbank-admin.internal' \
   -H 'X-Forwarded-Proto: https' \
   http://127.0.0.1:5002/health/ready
 ```
 
 Expected results: only `80` and `443` are publicly reachable, Gunicorn is
 loopback-only on `5000` and `5002`, Docker publishes no app ports, external
-customer readiness is denied, public admin `/` and admin routes are denied, and local readiness
-succeeds.
+customer readiness is denied, no public admin hostname is required, and local
+readiness succeeds.
 In short, external readiness is denied.
 
 ## Monitoring
@@ -437,8 +430,8 @@ journalctl -u sitbank-security-alerts.service
 
 The customer-domain forgot-password flow is deliberately separate from admin
 account recovery. Admin reset routes, templates, APIs, and customer-domain
-fallback behavior are out of scope; admin recovery belongs only in the future
-admin-sitbank domain.
+fallback behavior are out of scope; admin recovery belongs only in the private
+admin operator path.
 
 Customer reset links are short-lived one-time `selector.verifier` URLs. The raw
 verifier is never stored. On first use the token is atomically exchanged for a

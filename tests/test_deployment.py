@@ -538,7 +538,7 @@ def test_deployment_profiles_keep_production_and_staging_isolated(monkeypatch):
     assert production["ADMIN_APP_CONTAINER_NAME"] == "sitbank-admin"
     assert production["ADMIN_APP_BIND_HOST"] == "127.0.0.1"
     assert production["ADMIN_APP_BIND_PORT"] == "5002"
-    assert production["ADMIN_PUBLIC_HOST"] == "admin-sitbank.duckdns.org"
+    assert "ADMIN_PUBLIC_HOST" not in production
     assert production["POSTGRES_VOLUME_NAME"] == "none"
     assert "REDIS_VOLUME_NAME" not in production
 
@@ -1216,7 +1216,7 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "verify-runtime-db-privileges" in deploy_script
     assert "validate_production_admin_isolation" in deploy_script
     assert "ADMIN_APP_BIND_PORT='5002'" in deploy_script
-    assert "ADMIN_PUBLIC_HOST='admin-sitbank.duckdns.org'" in deploy_script
+    assert "ADMIN_PUBLIC_HOST" not in deploy_script
     assert "Admin runtime database URL is required for production" in deploy_script
     assert "Admin runtime database role must be distinct from customer runtime role" in deploy_script
     assert "Admin runtime database role must not be the migration/schema-owner role" in deploy_script
@@ -2032,7 +2032,7 @@ def test_live_tls_scan_workflow_collects_evidence_without_running_on_pull_reques
     assert inputs["scan_scope"]["options"] == ["all", "staging", "production"]
     assert inputs["staging_host"]["default"] == "staging-sitbank.pp.ua"
     assert inputs["production_host"]["default"] == "sitbank.duckdns.org"
-    assert inputs["admin_host"]["default"] == "admin-sitbank.duckdns.org"
+    assert "admin_host" not in inputs
 
     call_inputs = triggers["workflow_call"]["inputs"]
     assert call_inputs["scan_scope"] == {
@@ -2044,7 +2044,7 @@ def test_live_tls_scan_workflow_collects_evidence_without_running_on_pull_reques
     assert call_inputs["staging_host"]["required"] is False
     assert call_inputs["staging_host"]["default"] == "staging-sitbank.pp.ua"
     assert call_inputs["production_host"]["required"] is False
-    assert call_inputs["admin_host"]["required"] is False
+    assert "admin_host" not in call_inputs
 
     resolver = workflow["jobs"]["resolve-targets"]
     assert resolver["timeout-minutes"] == 5
@@ -2054,7 +2054,7 @@ def test_live_tls_scan_workflow_collects_evidence_without_running_on_pull_reques
     assert "scan_scope must be all, staging, or production" in select_step["run"]
     assert "tls-scan-staging-sitbank" in select_step["run"]
     assert "tls-scan-prod-sitbank" in select_step["run"]
-    assert "tls-scan-admin-sitbank" in select_step["run"]
+    assert "tls-scan-admin" not in select_step["run"]
 
     scan = workflow["jobs"]["scan"]
     assert scan["needs"] == "resolve-targets"
@@ -2143,19 +2143,20 @@ def test_live_tls_scan_workflow_collects_evidence_without_running_on_pull_reques
         assert "live tls scan evidence" in docs.lower()
         assert "staging-sitbank.pp.ua" in docs
         assert "sitbank.duckdns.org" in docs
-        assert "admin-sitbank.duckdns.org" in docs
         assert "SSL Labs" in docs
         assert re.search(r"HIGH,\s+CRITICAL,\s+or FATAL", docs)
+    for docs in (deployment_docs, operations_docs):
+        assert "https://sitbank-ec2.tailca101b.ts.net/" in docs
     assert "staging_host" in deployment_docs
     assert "staging_host" in operations_docs
-    assert "retired `staging-sitbank.duckdns.org`" in deployment_docs
-    assert "retired `staging-sitbank.duckdns.org`" in operations_docs
+    assert "retired DuckDNS staging hostname" in deployment_docs
+    assert "retired DuckDNS staging hostname" in operations_docs
     assert "sitbank-ec2.tailca101b.ts.net" in operations_docs
     assert "private Tailscale admin hostname" in operations_docs
     assert "testssl.sh --warnings batch --color 0" in deployment_docs
     assert "tls-scan-staging-sitbank" in deployment_docs
     assert "tls-scan-prod-sitbank" in deployment_docs
-    assert "tls-scan-admin-sitbank" in deployment_docs
+    assert "tls-scan-admin" not in deployment_docs
 
 
 def test_live_tls_scan_has_cloudflare_access_staging_acceptance_policy():
@@ -2288,7 +2289,6 @@ def test_certbot_host_state_verifier_enforces_host_managed_tls():
     assert verifier.startswith("#!/usr/bin/env bash\n")
     assert 'LETSENCRYPT_ROOT="/etc/letsencrypt"' in verifier
     assert 'PRODUCTION_PUBLIC_HOST="sitbank.duckdns.org"' in verifier
-    assert 'PRODUCTION_ADMIN_PUBLIC_HOST="admin-sitbank.duckdns.org"' in verifier
     assert 'STAGING_PUBLIC_HOST="staging-sitbank.pp.ua"' in verifier
     assert 'readlink -f -- "${key_path}"' in verifier
     assert "stat -c '%U'" in verifier
@@ -2323,7 +2323,6 @@ def test_certbot_host_state_verifier_enforces_host_managed_tls():
 
     expected_key_paths = {
         "/etc/letsencrypt/live/sitbank.duckdns.org/privkey.pem",
-        "/etc/letsencrypt/live/admin-sitbank.duckdns.org/privkey.pem",
         "/etc/letsencrypt/live/staging-sitbank.pp.ua/privkey.pem",
     }
     configured_key_paths = set(
@@ -2436,9 +2435,7 @@ def test_nginx_default_server_is_shared_for_same_host_production_and_staging():
     assert "listen 80 default_server;" not in production_nginx
     assert "listen 80 default_server;" not in staging_nginx
     assert "server_name sitbank.duckdns.org;" in combined
-    assert "server_name admin-sitbank.duckdns.org;" in combined
     assert "server_name staging-sitbank.pp.ua;" in combined
-    assert "server_name staging-sitbank.duckdns.org" not in combined
 
 
 def test_nginx_tls_policy_pins_strong_suites_curves_and_session_hardening():
@@ -2491,11 +2488,6 @@ def test_nginx_tls_policy_pins_strong_suites_curves_and_session_hardening():
     policy_include = "include /etc/nginx/snippets/sitbank-tls-policy.conf;"
     for nginx, server_name, session_cache in (
         (production_nginx, "sitbank.duckdns.org", "shared:sitbank_prod_ssl:10m"),
-        (
-            production_nginx,
-            "admin-sitbank.duckdns.org",
-            "shared:sitbank_prod_admin_ssl:10m",
-        ),
         (staging_nginx, "staging-sitbank.pp.ua", "shared:sitbank_staging_ssl:10m"),
     ):
         https_server = _nginx_https_server_prelocation(nginx, server_name=server_name)
@@ -2543,7 +2535,7 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     assert "server_name _;" not in nginx
     assert "listen 443 ssl http2;" in nginx
     assert "server_name staging-sitbank.pp.ua;" in nginx
-    assert "staging-sitbank.duckdns.org" not in nginx
+    assert "duckdns.org" not in nginx
     assert "ssl_certificate /etc/letsencrypt/live/staging-sitbank.pp.ua/fullchain.pem;" in nginx
     assert "ssl_certificate_key /etc/letsencrypt/live/staging-sitbank.pp.ua/privkey.pem;" in nginx
     assert "ssl_client_certificate /etc/nginx/cloudflare-authenticated-origin-pull-ca.pem;" in nginx
@@ -2699,8 +2691,6 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     app = production_compose["services"]["app"]
     admin = production_compose["services"]["admin"]
     customer_nginx = _nginx_server_block(nginx, "sitbank.duckdns.org")
-    admin_nginx = _nginx_server_block(nginx, "admin-sitbank.duckdns.org")
-    admin_http_nginx = _nginx_http_server_block(nginx, "admin-sitbank.duckdns.org")
 
     assert Path("ops/nginx/sitbank-default.conf").exists()
     assert Path("ops/nginx/sitbank-production.conf").exists()
@@ -2715,17 +2705,15 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     assert "return 444;" in default_nginx
     assert "listen 80;" in nginx
     assert "return 301 https://sitbank.duckdns.org$request_uri;" in nginx
-    assert "return 301 https://admin-sitbank.duckdns.org$request_uri;" not in nginx
     assert "listen 80 default_server;" not in nginx
     assert "listen 443 ssl http2 default_server;" not in nginx
     assert "server_name _;" not in nginx
     assert "listen 443 ssl http2;" in nginx
     assert "server_name sitbank.duckdns.org;" in nginx
-    assert "server_name admin-sitbank.duckdns.org;" in nginx
     assert "ssl_certificate /etc/letsencrypt/live/sitbank.duckdns.org/fullchain.pem;" in nginx
     assert "ssl_certificate_key /etc/letsencrypt/live/sitbank.duckdns.org/privkey.pem;" in nginx
-    assert "ssl_certificate /etc/letsencrypt/live/admin-sitbank.duckdns.org/fullchain.pem;" in nginx
-    assert "ssl_certificate_key /etc/letsencrypt/live/admin-sitbank.duckdns.org/privkey.pem;" in nginx
+    assert "sitbank-admin" not in nginx
+    assert "proxy_pass http://127.0.0.1:5002;" not in nginx
     _assert_nginx_owns_duplicate_edge_security_headers(
         nginx,
         hsts_add_header=(
@@ -2733,15 +2721,6 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
             'includeSubDomains" always;'
         ),
         server_name="sitbank.duckdns.org",
-    )
-    _assert_nginx_owns_duplicate_edge_security_headers(
-        nginx,
-        hsts_add_header=(
-            'add_header Strict-Transport-Security "max-age=31536000; '
-            'includeSubDomains" always;'
-        ),
-        referrer_policy="no-referrer",
-        server_name="admin-sitbank.duckdns.org",
     )
     assert "client_max_body_size 4m;" in nginx
     for timeout in (
@@ -2775,55 +2754,8 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     assert len(customer_admin_bodies) == 1
     assert "return 404;" in customer_admin_bodies[0]
 
-    admin_http_root_bodies = _nginx_location_bodies(admin_http_nginx, "/")
-    assert len(admin_http_root_bodies) == 1
-    assert "return 403;" in admin_http_root_bodies[0]
-    assert "return 301" not in admin_http_root_bodies[0]
-
-    admin_http_acme_bodies = _nginx_location_bodies(
-        admin_http_nginx,
-        "^~ /.well-known/acme-challenge/",
-    )
-    assert len(admin_http_acme_bodies) == 1
-    assert "root /var/www/certbot;" in admin_http_acme_bodies[0]
-    assert "try_files $uri =404;" in admin_http_acme_bodies[0]
-
-    admin_health_ready_bodies = _nginx_location_bodies(admin_nginx, "= /health/ready")
-    assert len(admin_health_ready_bodies) == 1
-    assert "deny all;" in admin_health_ready_bodies[0]
-    assert "return 403;" in admin_health_ready_bodies[0]
-    assert "proxy_pass" not in admin_health_ready_bodies[0]
-
-    admin_health_live_bodies = _nginx_location_bodies(admin_nginx, "= /health/live")
-    assert len(admin_health_live_bodies) == 1
-    assert "allow 127.0.0.1;" in admin_health_live_bodies[0]
-    assert "allow ::1;" in admin_health_live_bodies[0]
-    assert "deny all;" in admin_health_live_bodies[0]
-    assert "proxy_pass http://127.0.0.1:5002;" in admin_health_live_bodies[0]
-
-    admin_login_bodies = _nginx_location_bodies(admin_nginx, "= /login")
-    assert len(admin_login_bodies) == 1
-    assert "deny all;" in admin_login_bodies[0]
-    assert "limit_req zone=sitbank_prod_admin_auth" in admin_login_bodies[0]
-    assert "proxy_pass http://127.0.0.1:5002;" in admin_login_bodies[0]
-
-    admin_exact_root_bodies = _nginx_location_bodies(admin_nginx, "= /")
-    assert len(admin_exact_root_bodies) == 1
-    admin_exact_root = admin_exact_root_bodies[0]
-    assert "return 403;" in admin_exact_root
-    assert "root /var/www/sitbank-admin-verification;" not in admin_exact_root
-    assert "try_files /index.html =404;" not in admin_exact_root
-    assert "default_type text/html;" not in admin_exact_root
-    assert "limit_req zone=sitbank_prod_admin" not in admin_exact_root
-    assert "proxy_pass" not in admin_exact_root
-
-    admin_root_bodies = _nginx_location_bodies(admin_nginx, "/")
-    assert any("deny all;" in body and "limit_req zone=sitbank_prod_admin" in body for body in admin_root_bodies)
-
     customer_proxy_targets = set(re.findall(r"proxy_pass\s+([^;]+);", customer_nginx))
-    admin_proxy_targets = set(re.findall(r"proxy_pass\s+([^;]+);", admin_nginx))
     assert customer_proxy_targets == {"http://127.0.0.1:5000"}
-    assert admin_proxy_targets == {"http://127.0.0.1:5002"}
     assert "0.0.0.0:5000" not in nginx
     assert "0.0.0.0:5002" not in nginx
     assert "--bind\", \"127.0.0.1:5000" in dockerfile
@@ -2875,10 +2807,9 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     assert "$proxy_add_x_forwarded_for" not in proxy_headers
 
     assert 'PRODUCTION_PUBLIC_HOST="sitbank.duckdns.org"' in bootstrap
-    assert 'PRODUCTION_ADMIN_PUBLIC_HOST="admin-sitbank.duckdns.org"' in bootstrap
+    assert "PRODUCTION_ADMIN_PUBLIC_HOST" not in bootstrap
     assert "Production PUBLIC_HOST must be ${PRODUCTION_PUBLIC_HOST}" in bootstrap
     assert "Missing required production TLS file" in bootstrap
-    assert "/etc/letsencrypt/live/${PRODUCTION_ADMIN_PUBLIC_HOST}" in bootstrap
     assert "Issue the production Certbot certificate before rerunning bootstrap." in bootstrap
     assert "PRODUCTION_RATE_LIMITS_FILE=\"/etc/nginx/conf.d/sitbank-production-rate-limits.conf\"" in bootstrap
     assert "EDGE_DEFAULTS_FILE=\"/etc/nginx/conf.d/sitbank-default.conf\"" in bootstrap
@@ -2943,12 +2874,10 @@ def test_production_edge_runbook_documents_network_waf_and_verification_steps():
         "sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-admin",
         "curl --fail https://sitbank.duckdns.org/health/live",
         "curl -I https://sitbank.duckdns.org/health/ready",
-        "curl -I https://admin-sitbank.duckdns.org/",
-        "curl -I https://admin-sitbank.duckdns.org/login",
-        "Admin `/`, `/health/ready`, `/login`, and all other admin routes remain",
+        "No public admin Nginx server block is configured.",
         "old public admin verification",
         "external `/health/ready` returns `403`",
-        "admin `/` returns `403`",
+        "no public admin hostname is required",
     ):
         assert required in docs
 
@@ -2965,7 +2894,7 @@ def test_production_edge_runbook_documents_network_waf_and_verification_steps():
         "admin Gunicorn bound to",
         "`127.0.0.1:5002`",
         "Restrict `/health/ready` to loopback",
-        "Keep public admin `/` and app routes denied by default",
+        "Keep the admin application off public Nginx hostnames.",
         "Tailscale/private operator access only",
         "Do not enable Tailscale Funnel",
         "Require Cloudflare Access and Cloudflare Authenticated Origin Pulls",
@@ -3001,7 +2930,7 @@ def test_staging_edge_runbook_documents_operator_verification_steps():
         "sudo certbot renew --dry-run",
         "ops/deploy/bootstrap-container-ec2",
         "staging-sitbank.pp.ua",
-        "retired `staging-sitbank.duckdns.org`",
+        "retired DuckDNS staging hostname",
         "https://sitbank-ec2.tailca101b.ts.net/",
         "private Tailscale admin hostname",
         "Nginx proxy header snippet",

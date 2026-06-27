@@ -5,7 +5,7 @@
 Only Flask/Gunicorn runs in the SITBank container. Nginx, TLS, PostgreSQL, and backups remain host-managed on EC2. Sessions, authentication counters, OTP/reset state, alert dedupe, and breached-password circuit state live in application-owned PostgreSQL tables.
 
 - Production public host: `sitbank.duckdns.org`
-- Production admin host: `admin-sitbank.duckdns.org`
+- Production private admin URL: `https://sitbank-ec2.tailca101b.ts.net/`
 - Staging public host: `staging-sitbank.pp.ua`
 - Staging Cloudflare Access host: `staging-sitbank.pp.ua`
 - Production customer access: public HTTPS
@@ -120,9 +120,9 @@ until the production admin secret files and matching
 `PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID` are ready; when the flag is not
 explicitly true, production deployment is skipped.
 
-Production also requires a DNS record for `admin-sitbank.duckdns.org` pointing
-at the same EC2 edge, Certbot files under
-`/etc/letsencrypt/live/admin-sitbank.duckdns.org/`, and root-managed admin
+Production admin does not use a public DNS hostname. Keep admin access on the
+private Tailscale Serve URL `https://sitbank-ec2.tailca101b.ts.net/` and do
+not enable Tailscale Funnel. Production still requires root-managed admin
 secret files under `/etc/sitbank/secrets`: `admin_secret_key`,
 `admin_wtf_csrf_secret_key`, `admin_session_hmac_keys_json`,
 `admin_session_lookup_hmac_key`, `admin_database_url`, and
@@ -185,9 +185,9 @@ checksum-verified `testssl.sh` 3.2.3 source release.
 The workflow runs weekly, can be started manually from the Actions tab, and is
 called by the trusted deployment workflow. After a successful staging deploy it
 scans the staging customer endpoint; production deployment is blocked until
-that evidence passes. After a successful production deploy it scans both the
-production customer and admin endpoints, making the resulting artifacts the
-release's live TLS evidence. A production scan failure marks the deployment
+that evidence passes. After a successful production deploy it scans the
+production customer endpoint, making the resulting artifact the release's live
+TLS evidence. A production scan failure marks the deployment
 workflow failed and requires investigation before the release is accepted. Run
 the workflow manually after Nginx, certificate, DNS, load-balancer, CDN/WAF,
 or host TLS changes outside the normal deployment path. It deliberately does
@@ -200,7 +200,6 @@ manual workflow inputs when an approved endpoint changes:
 | --- | --- | --- | --- |
 | Staging customer | `staging_host` | `https://staging-sitbank.pp.ua` | `tls-scan-staging-sitbank` |
 | Production customer | `production_host` | `https://sitbank.duckdns.org` | `tls-scan-prod-sitbank` |
-| Production admin | `admin_host` | `https://admin-sitbank.duckdns.org` | `tls-scan-admin-sitbank` |
 
 Each target preserves the scanner's original `testssl.raw.json` and produces a
 separate `testssl.json` for policy parsing, plus a text log, HTML report, scan
@@ -213,7 +212,7 @@ target job summary identifies the UTC scan time, host, run ID/attempt, scanner
 version, and pass/fail result. TLS scanning uses no application credentials
 and the workflow contains no application secrets.
 
-The production customer and public-denied admin verification gate fails for
+The production customer verification gate fails for
 SSLv2, SSLv3, TLS 1.0, or TLS 1.1; weak, NULL, anonymous, export, RC4, or 3DES
 ciphers; missing, disabled, or too-short HSTS; expired certificates; hostname
 mismatches; untrusted, incomplete, or missing certificate chains; any
@@ -255,7 +254,6 @@ testssl.sh --warnings batch --color 0 --jsonfile testssl.json \
   --logfile testssl.log --htmlfile testssl.html \
   https://staging-sitbank.pp.ua
 testssl.sh --warnings batch --color 0 https://sitbank.duckdns.org
-testssl.sh --warnings batch --color 0 https://admin-sitbank.duckdns.org
 ```
 
 SSL Labs remains optional, manual corroborating evidence. Use its public
@@ -279,7 +277,6 @@ and active `certbot.timer`, and every expected Certbot certificate and key:
 | Hostname | Certificate | Private key |
 | --- | --- | --- |
 | `sitbank.duckdns.org` | `/etc/letsencrypt/live/sitbank.duckdns.org/fullchain.pem` | `/etc/letsencrypt/live/sitbank.duckdns.org/privkey.pem` |
-| `admin-sitbank.duckdns.org` | `/etc/letsencrypt/live/admin-sitbank.duckdns.org/fullchain.pem` | `/etc/letsencrypt/live/admin-sitbank.duckdns.org/privkey.pem` |
 | `staging-sitbank.pp.ua` | `/etc/letsencrypt/live/staging-sitbank.pp.ua/fullchain.pem` | `/etc/letsencrypt/live/staging-sitbank.pp.ua/privkey.pem` |
 
 Each `fullchain.pem` symlink must resolve to a regular file below
@@ -311,8 +308,6 @@ sudo /usr/local/sbin/verify-certbot-host-state --renewal-dry-run production
 
 sudo readlink -f /etc/letsencrypt/live/sitbank.duckdns.org/privkey.pem
 sudo stat -c '%U %G %a %n' "$(sudo readlink -f /etc/letsencrypt/live/sitbank.duckdns.org/privkey.pem)"
-sudo readlink -f /etc/letsencrypt/live/admin-sitbank.duckdns.org/privkey.pem
-sudo stat -c '%U %G %a %n' "$(sudo readlink -f /etc/letsencrypt/live/admin-sitbank.duckdns.org/privkey.pem)"
 sudo readlink -f /etc/letsencrypt/live/staging-sitbank.pp.ua/privkey.pem
 sudo stat -c '%U %G %a %n' "$(sudo readlink -f /etc/letsencrypt/live/staging-sitbank.pp.ua/privkey.pem)"
 ```
@@ -349,23 +344,21 @@ The reviewed production bootstrap installs and enables the production edge from 
   implemented here because they can affect GitHub Actions deployment access.
   Treat live SSH posture as operator-owned infrastructure evidence until a
   separate reviewed change lands.
-- Nginx terminates TLS, redirects production customer HTTP to HTTPS, returns
-  `403` for non-ACME staging/admin HTTP roots, and forwards only expected
+- Nginx terminates TLS, redirects production customer HTTP to HTTPS, rejects
+  unknown hosts with the shared default server, and forwards only expected
   proxy headers.
 - The shared TLS policy enables only TLS 1.2 and TLS 1.3, restricts TLS 1.2 to
   ECDHE+AEAD suites, pins the X25519/P-256/P-384 ECDHE curve preference, and
   limits TLS 1.3 to its standard AEAD suites.
 - Gunicorn binds only to `127.0.0.1:5000`.
 - Admin Gunicorn binds only to `127.0.0.1:5002` and is reached only by the
-  public `admin-sitbank.duckdns.org` Nginx server block for denied responses,
-  or by a Tailscale/private operator path for the actual admin application.
+  private Tailscale Serve operator path.
 - `compose.prod.yml` publishes no app ports.
 - `/health/ready` is for local deployment and load-balancer checks and should deny public traffic.
-- Admin `/`, `/health/ready`, `/login`, and all other admin routes remain
-  denied by default at the public Nginx edge. The old public admin verification
-  page is removed/denied as part of strict Tailscale-only admin access. Admin
-  app access is through Tailscale/private operator access only; do not enable
-  Tailscale Funnel or expose the admin app through the customer host.
+- No public admin Nginx server block is configured. The old public admin
+  verification page is removed as part of strict Tailscale-only admin access.
+  Admin app access is through Tailscale/private operator access only; do not
+  enable Tailscale Funnel or expose the admin app through the customer host.
 - Cloudflare or AWS WAF should sit in front of Nginx for managed common, SQL injection, XSS, bot, and protocol anomaly rules.
 - Cloudflare or AWS WAF rules and security-group allowlists are still infrastructure state and must be checked manually.
 - Flask admin auth is implemented only for root-admin-controlled invite
@@ -386,14 +379,10 @@ sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-app
 sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-admin
 curl --fail https://sitbank.duckdns.org/health/live
 curl -I https://sitbank.duckdns.org/health/ready
-curl -I https://admin-sitbank.duckdns.org/
-curl -I https://admin-sitbank.duckdns.org/health/ready
-curl -I https://admin-sitbank.duckdns.org/login
 ```
 
-Expected: local customer and admin readiness succeeds, external `/health/ready`
-returns `403`, admin `/` returns `403`, and admin application routes return
-`403` or are otherwise denied by Nginx.
+Expected: local customer and admin readiness succeeds, external customer
+`/health/ready` returns `403`, and no public admin hostname is required.
 
 GitHub-hosted runners do not have stable source IPs. The normal
 GitHub-hosted SSH deployment is acceptable only when the runner source is
@@ -446,8 +435,8 @@ change instead of disabling the origin-pull protection.
 `staging-sitbank.pp.ua` is the Cloudflare-managed staging hostname for Access.
 Use a Cloudflare-managed zone/hostname or Cloudflare Tunnel for this boundary;
 for this deployment, the approved Cloudflare-managed hostname is
-`staging-sitbank.pp.ua`. The retired `staging-sitbank.duckdns.org` hostname is
-not an active staging deployment, Nginx, Certbot, or TLS-scan target.
+`staging-sitbank.pp.ua`. The retired DuckDNS staging hostname is not an active
+staging deployment, Nginx, Certbot, or TLS-scan target.
 
 Issue or renew staging TLS before bootstrap:
 
@@ -488,16 +477,16 @@ retired DuckDNS staging hostname is no longer an active Nginx target.
 The complete operator runbook is
 `docs/security/admin-and-staging-zero-trust-access.md`.
 
-After the staging TLS check passes, validate both production HTTPS hostnames
-with `testssl.sh --warnings batch --color 0 https://sitbank.duckdns.org` and
-`testssl.sh --warnings batch --color 0 https://admin-sitbank.duckdns.org`. The
+After the staging TLS check passes, validate production customer HTTPS with
+`testssl.sh --warnings batch --color 0 https://sitbank.duckdns.org`. The
 `ssl_conf_command` TLS 1.3 setting is runtime-dependent, so `nginx -t` must
-pass on the deployed host before any reload.
+pass on the deployed host before any reload. Do not add the private Tailscale
+admin URL to public GitHub-hosted TLS scans.
 
-Production HSTS validation should also confirm both public hostnames return the
-production edge header before the production live TLS scan is accepted:
+Production HSTS validation should also confirm the public customer hostname
+returns the production edge header before the production live TLS scan is
+accepted:
 
 ```bash
 curl -fsSI https://sitbank.duckdns.org/ | grep -i '^strict-transport-security:'
-curl -fsSI https://admin-sitbank.duckdns.org/ | grep -i '^strict-transport-security:'
 ```

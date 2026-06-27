@@ -179,7 +179,6 @@ validate_deployment_profile() {
 ADMIN_APP_BIND_HOST='127.0.0.1'
 ADMIN_APP_BIND_PORT='5002'
 ADMIN_APP_CONTAINER_NAME='sitbank-admin'
-ADMIN_PUBLIC_HOST='admin-sitbank.duckdns.org'
 APP_BIND_HOST='${APP_BIND_HOST}'
 APP_BIND_PORT='${APP_BIND_PORT}'
 APP_CONTAINER_NAME='${APP_CONTAINER}'
@@ -521,7 +520,7 @@ wait_until_ready() {
     if [[ "${target}" == "production" ]]; then
         curl --fail --silent --show-error \
             --retry 15 --retry-delay 2 --retry-all-errors \
-            --header "Host: admin-sitbank.duckdns.org" \
+            --header "Host: sitbank-admin.internal" \
             --header "X-Forwarded-Proto: https" \
             "http://${APP_BIND_HOST}:5002/health/ready" >/dev/null
     fi
