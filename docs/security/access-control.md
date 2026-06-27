@@ -54,6 +54,7 @@ account state.
 | Frozen accounts | Sensitive actions call `ensure_account_not_frozen()` or are blocked by route gates | `app/auth/services.py`, `app/web/routes.py`, `tests/test_account_security_actions.py::test_account_freeze_is_durable_and_blocks_group_a_sensitive_actions` |
 | Pending MFA sessions | Pending sessions cannot access authenticated resources | `tests/test_pentest_auth_bypass.py::test_pending_mfa_session_cannot_access_dashboard`, `tests/test_pentest_auth_bypass.py::test_pending_mfa_session_cannot_freeze_account` |
 | Absolute session lifetime | Customer and admin sessions expire from their original authenticated timestamp, independent of activity or TOTP step-up | `app/security/sessions.py`, `tests/test_session_absolute_lifetime.py` |
+| Session context risk | Coarse network or browser-family drift marks customer sessions for full reauthentication before sensitive actions; simultaneous drift revokes the session | `app/security/sessions.py`, `tests/test_session_risk_binding.py` |
 | Session management | Public session refs are scoped to the current user | `app/auth/services.py::terminate_session_for_user()`, `tests/test_session_management.py::test_past_sessions_are_scoped_to_current_user` |
 
 The route inventory in `tests/test_route_inventory_security.py` records each
@@ -117,6 +118,7 @@ Admin/staff access is invite-only and uses the admin runtime.
 | Invite acceptance rejects forged privileged fields | `_reject_forged_invite_fields()` in `app/admin/services.py` | `tests/test_admin_staff_invites.py` |
 | Staff invite acceptance activates only after workplace verification and TOTP setup | `start_invite_acceptance()` and `verify_invite_acceptance()` | `tests/test_admin_staff_invites.py::test_staff_invite_acceptance_activates_only_after_workplace_code_and_totp` |
 | Staff/customer self-action guard | `app/admin/separation.py::assert_not_self_customer_action()` | `tests/test_admin_staff_invites.py::test_separation_guard_blocks_linked_staff_acting_on_own_customer` |
+| Admin session context drift | Any detected coarse-network, browser-family, or detailed User-Agent drift revokes the admin session and requires full login | `app/security/sessions.py`, `tests/test_session_risk_binding.py::test_admin_context_change_revokes_session_under_stricter_policy` |
 
 Production Nginx currently defines an admin hostname in
 `ops/nginx/sitbank-production.conf` but denies public access to the primary
@@ -134,6 +136,13 @@ admins. `POST /manual-recovery/requests/<id>/transition` and
 authorization, CSRF, rate limiting, an operator reason, and a fresh TOTP code.
 The routes delegate to `app/auth/password_reset.py` so the manual recovery
 state machine remains centralized.
+
+Session context is a risk signal, not cryptographic device binding. IP
+networks and User-Agent values do not prove possession of a client-held key.
+Customer policy preserves ordinary navigation after one suspicious context
+change but blocks sensitive actions pending full login; admin policy revokes on
+any detected drift. Context checks run after idle and absolute-lifetime
+enforcement and do not replace CSRF, MFA, logout, or server-side revocation.
 
 ## High-Risk Actions And Step-Up
 
