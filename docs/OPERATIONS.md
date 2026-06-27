@@ -34,7 +34,8 @@ maintenance record.
 SITBank uses a hybrid private-access model:
 
 - Staging is protected by Cloudflare Access and Cloudflare Authenticated Origin
-  Pulls at `staging-sitbank.duckdns.org`.
+  Pulls at `staging-sitbank.pp.ua`; the existing
+  `staging-sitbank.duckdns.org` hostname remains accepted by Nginx.
 - Admin is protected by Tailscale/private operator access and remains denied
   on the public `admin-sitbank.duckdns.org` app routes.
 - The production customer site `sitbank.duckdns.org` remains public.
@@ -43,20 +44,21 @@ Cloudflare Access policy, IdP configuration, API tokens, tunnel credentials,
 origin certificate private keys, and origin-pull client credentials are
 operator-managed. Tailscale auth keys, API keys, tailnet policy, device
 approval state, and Serve state are also operator-managed. None of those values
-belong in the repository. The observed `staging-sitbank.duckdns.org` hostname
-resolves directly to EC2; Cloudflare Access cannot fully protect staging until
-traffic is routed through a Cloudflare-managed zone/hostname or Cloudflare
-Tunnel.
+belong in the repository. `staging-sitbank.pp.ua` is the Cloudflare-managed
+staging hostname for Access. The observed `staging-sitbank.duckdns.org`
+hostname resolves directly to EC2 and must not be treated as the Cloudflare
+Access boundary.
 
 Routine verification:
 
 ```bash
 sudo test -r /etc/nginx/cloudflare-authenticated-origin-pull-ca.pem
 sudo nginx -t
-curl --fail --resolve staging-sitbank.duckdns.org:443:127.0.0.1 \
-  https://staging-sitbank.duckdns.org/health/ready
-curl -I --resolve staging-sitbank.duckdns.org:443:<EC2_PUBLIC_IP> \
-  https://staging-sitbank.duckdns.org/
+curl --fail --resolve staging-sitbank.pp.ua:443:127.0.0.1 \
+  https://staging-sitbank.pp.ua/health/ready
+curl -I --resolve staging-sitbank.pp.ua:443:<EC2_PUBLIC_IP> \
+  https://staging-sitbank.pp.ua/
+curl -I https://staging-sitbank.duckdns.org/
 curl -I https://admin-sitbank.duckdns.org/
 sudo tailscale serve status
 ```
@@ -324,7 +326,7 @@ contents. Finally run `sudo nginx -t` before reload.
 The **Live TLS scan evidence** workflow provides scheduled weekly,
 operator-dispatched, and post-deployment evidence of the Internet-facing TLS
 posture for
-`staging-sitbank.duckdns.org`, `sitbank.duckdns.org`, and
+`staging-sitbank.pp.ua`, `sitbank.duckdns.org`, and
 `admin-sitbank.duckdns.org`. The deployment workflow calls the staging scan
 after staging deploy and blocks production deployment until it passes; it calls
 the production scan after production deploy to complete the release evidence.

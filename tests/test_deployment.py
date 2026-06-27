@@ -166,13 +166,13 @@ def _nginx_location_bodies(config: str, selector: str) -> list[str]:
 
 
 def _nginx_server_block(config: str, server_name: str) -> str:
-    marker = f"server_name {server_name};"
+    marker = re.compile(
+        rf"server_name\s+[^;]*(?<![A-Za-z0-9.-]){re.escape(server_name)}"
+        r"(?![A-Za-z0-9.-])[^;]*;"
+    )
     blocks = []
-    search_from = 0
-    while True:
-        marker_index = config.find(marker, search_from)
-        if marker_index == -1:
-            break
+    for match in marker.finditer(config):
+        marker_index = match.start()
         start = config.rfind("\nserver {", 0, marker_index)
         if start == -1:
             start = 0
@@ -181,7 +181,6 @@ def _nginx_server_block(config: str, server_name: str) -> str:
         end = config.find("\nserver {", marker_index)
         block = config[start:] if end == -1 else config[start:end]
         blocks.append(block)
-        search_from = marker_index + len(marker)
     assert blocks, f"Missing Nginx server block for {server_name}"
     for block in blocks:
         if "listen 443 ssl http2;" in block:
@@ -190,13 +189,13 @@ def _nginx_server_block(config: str, server_name: str) -> str:
 
 
 def _nginx_http_server_block(config: str, server_name: str) -> str:
-    marker = f"server_name {server_name};"
+    marker = re.compile(
+        rf"server_name\s+[^;]*(?<![A-Za-z0-9.-]){re.escape(server_name)}"
+        r"(?![A-Za-z0-9.-])[^;]*;"
+    )
     blocks = []
-    search_from = 0
-    while True:
-        marker_index = config.find(marker, search_from)
-        if marker_index == -1:
-            break
+    for match in marker.finditer(config):
+        marker_index = match.start()
         start = config.rfind("\nserver {", 0, marker_index)
         if start == -1:
             start = 0
@@ -205,7 +204,6 @@ def _nginx_http_server_block(config: str, server_name: str) -> str:
         end = config.find("\nserver {", marker_index)
         block = config[start:] if end == -1 else config[start:end]
         blocks.append(block)
-        search_from = marker_index + len(marker)
     assert blocks, f"Missing Nginx server block for {server_name}"
     for block in blocks:
         if "listen 80;" in block and "listen 443" not in block:
@@ -2032,7 +2030,7 @@ def test_live_tls_scan_workflow_collects_evidence_without_running_on_pull_reques
 
     inputs = triggers["workflow_dispatch"]["inputs"]
     assert inputs["scan_scope"]["options"] == ["all", "staging", "production"]
-    assert inputs["staging_host"]["default"] == "staging-sitbank.duckdns.org"
+    assert inputs["staging_host"]["default"] == "staging-sitbank.pp.ua"
     assert inputs["production_host"]["default"] == "sitbank.duckdns.org"
     assert inputs["admin_host"]["default"] == "admin-sitbank.duckdns.org"
 
@@ -2140,6 +2138,7 @@ def test_live_tls_scan_workflow_collects_evidence_without_running_on_pull_reques
     )
     for docs in (deployment_docs, operations_docs, crypto_docs):
         assert "live tls scan evidence" in docs.lower()
+        assert "staging-sitbank.pp.ua" in docs
         assert "staging-sitbank.duckdns.org" in docs
         assert "sitbank.duckdns.org" in docs
         assert "admin-sitbank.duckdns.org" in docs
@@ -2379,7 +2378,7 @@ def test_nginx_default_server_is_shared_for_same_host_production_and_staging():
     assert "listen 80 default_server;" not in staging_nginx
     assert "server_name sitbank.duckdns.org;" in combined
     assert "server_name admin-sitbank.duckdns.org;" in combined
-    assert "server_name staging-sitbank.duckdns.org;" in combined
+    assert "server_name staging-sitbank.duckdns.org staging-sitbank.pp.ua;" in combined
 
 
 def test_nginx_tls_policy_pins_strong_suites_curves_and_session_hardening():
@@ -2483,7 +2482,11 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     assert "listen 443 ssl http2 default_server;" not in nginx
     assert "server_name _;" not in nginx
     assert "listen 443 ssl http2;" in nginx
-    assert "server_name staging-sitbank.duckdns.org;" in nginx
+    assert "server_name staging-sitbank.duckdns.org staging-sitbank.pp.ua;" in nginx
+    assert _nginx_server_block(nginx, "staging-sitbank.pp.ua") == _nginx_server_block(
+        nginx,
+        "staging-sitbank.duckdns.org",
+    )
     assert "ssl_certificate /etc/letsencrypt/live/staging-sitbank.duckdns.org/fullchain.pem;" in nginx
     assert "ssl_certificate_key /etc/letsencrypt/live/staging-sitbank.duckdns.org/privkey.pem;" in nginx
     assert "ssl_client_certificate /etc/nginx/cloudflare-authenticated-origin-pull-ca.pem;" in nginx
@@ -2583,10 +2586,12 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     assert "Conflicting Nginx staging site is already enabled" in bootstrap
     assert "Disable the duplicate staging server block" in bootstrap
     assert 'public_host_regex="${public_host//./\\\\.}"' in bootstrap
+    assert 'STAGING_CLOUDFLARE_PUBLIC_HOST="staging-sitbank.pp.ua"' in bootstrap
+    assert 'staging_cloudflare_public_host_regex="${STAGING_CLOUDFLARE_PUBLIC_HOST//./\\\\.}"' in bootstrap
     assert "grep -RlE \\" in bootstrap
     assert (
         '"^[[:space:]]*server_name[[:space:]].*(^|[[:space:]])'
-        '${public_host_regex}([[:space:];]|$)" \\'
+        '(${public_host_regex}|${staging_cloudflare_public_host_regex})([[:space:];]|$)" \\'
     ) in bootstrap
     assert "Missing required staging Basic Auth file" in bootstrap
     assert "STAGING_CLOUDFLARE_ORIGIN_PULL_CA_FILE=\"/etc/nginx/cloudflare-authenticated-origin-pull-ca.pem\"" in bootstrap
@@ -2932,6 +2937,7 @@ def test_staging_edge_runbook_documents_operator_verification_steps():
         "/etc/nginx/cloudflare-authenticated-origin-pull-ca.pem",
         "Do not store Cloudflare API tokens, tunnel credentials, Access IdP secrets, or",
         "Cloudflare-managed zone/hostname or Cloudflare Tunnel",
+        "staging-sitbank.pp.ua",
         "sudo certbot --nginx -d staging-sitbank.duckdns.org",
         "sudo certbot certonly --webroot",
         "sudo certbot renew --dry-run",
@@ -2942,12 +2948,12 @@ def test_staging_edge_runbook_documents_operator_verification_steps():
         "rate-limit include",
         "sudo nginx -t",
         "sudo systemctl reload nginx",
-        "curl -I https://staging-sitbank.duckdns.org/",
+        "curl -I https://staging-sitbank.pp.ua/",
         'curl -I -u "$STAGING_BASIC_AUTH_USER:$STAGING_BASIC_AUTH_PASSWORD"',
-        "curl -I https://staging-sitbank.duckdns.org/health/ready",
+        "curl -I https://staging-sitbank.pp.ua/health/ready",
         "curl -fsS http://127.0.0.1:5001/health/ready",
-        "curl --fail --resolve staging-sitbank.duckdns.org:443:127.0.0.1",
-        "curl -I --resolve staging-sitbank.duckdns.org:443:<EC2_PUBLIC_IP>",
+        "curl --fail --resolve staging-sitbank.pp.ua:443:127.0.0.1",
+        "curl -I --resolve staging-sitbank.pp.ua:443:<EC2_PUBLIC_IP>",
         "unauthenticated browser traffic receives the Cloudflare Access",
         "direct EC2-origin access to",
         "returns `403` without Cloudflare's origin-pull client certificate",
