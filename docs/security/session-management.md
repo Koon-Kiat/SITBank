@@ -21,6 +21,7 @@ Browser cookies hold only an opaque session id. Session state is stored in the
 | Database lookup key | `app/security/sessions.py::session_lookup_hash()` | HMAC-SHA256 with `SESSION_LOOKUP_HMAC_KEY` |
 | Serialized session payload | `ServerSideSession.payload` in `app/models.py` | Signed by `app/security/session_hmac.py` with a binding context that includes the component and lookup hash |
 | User/session metadata | `user_id`, `created_at`, `last_activity_at`, `expires_at`, `revoked_at`, `ended_reason`, `risk_fingerprint` | Used for revocation, session inventory, inactivity timeout, and risk reauthentication |
+| Signed session risk context | HMAC-derived coarse network, User-Agent family, and normalized User-Agent hashes plus the last check time | Detects context drift without storing raw IP or User-Agent values in the risk-context payload |
 | Public session reference | `session_ref` and `_public_reference_from_lookup_hash()` | HMAC-derived public id for session-management actions; raw internal ids are rejected |
 
 The session payload signature is versioned and key-id aware. The active HMAC
@@ -153,6 +154,56 @@ Normal activity, CSRF requests, and TOTP step-up rotations do not refresh this
 timestamp. Pending MFA sessions keep their separate absolute age check covered
 by `tests/test_mfa_lifecycle.py::test_pending_mfa_session_expires_by_absolute_age`.
 
+## Stolen-Cookie Resistance And Session Context
+
+SITBank does not implement cryptographic device-bound sessions. A copied active
+cookie remains a bearer credential: public browsers do not expose a suitable
+per-request private key to this application, and IP addresses or User-Agent
+strings are not proof of possession. Device-held keys, browser proof-of-
+possession, and mTLS for public customer sessions remain outside the current
+architecture.
+
+The practical control is a risk-based context layer in
+`app/security/sessions.py`. At full customer or admin authentication it stores,
+inside the signed server-side payload:
+
+- an HMAC of the coarse client network (`/24` for IPv4 or `/64` for IPv6);
+- an HMAC of the parsed User-Agent family;
+- an HMAC of the normalized User-Agent; and
+- the last context-check timestamp.
+
+These values use the runtime's session HMAC keyring, so customer and admin
+contexts are cryptographically separated. The payload does not store a raw IP
+address or raw User-Agent in the risk-context object. Existing session
+inventory/audit records retain their separately documented request metadata.
+
+Authenticated requests compare the current context after absolute-lifetime and
+idle-timeout enforcement, so a context check cannot refresh or bypass either
+lifetime:
+
+| Change | Customer policy | Admin policy |
+| --- | --- | --- |
+| No change | Continue and update only the last context-check time | Continue |
+| Same browser family, changed detailed User-Agent such as a version update | Audit the low-risk change and refresh the context baseline | Revoke and require full admin login |
+| Coarse network or browser family changes | Allow ordinary customer navigation, mark the session for full reauthentication, and reject sensitive actions before TOTP processing | Revoke and require full admin login |
+| Coarse network and browser family both change | Revoke and require full customer login | Revoke and require full admin login |
+
+Risk audit metadata contains only the runtime, severity, and changed signal
+names. It does not contain cookies, raw session ids, raw context values, or
+session payloads. Standard audit request columns remain governed by
+`docs/security/audit-and-alerting.md`.
+
+Legacy authenticated sessions without the structured context are migrated on
+their next request. A matching legacy `risk_fingerprint` is accepted and
+upgraded; a mismatch requires customer reauthentication or revokes an admin
+session. A session with no prior fingerprint is initialized without pretending
+that historical context was verified.
+
+Focused coverage is in `tests/test_session_risk_binding.py`. It verifies
+customer/admin context creation, low/medium/high handling, strict admin
+revocation, lifetime precedence, CSRF behavior, audit safety, and runtime/key
+isolation.
+
 ## Session Attack Coverage
 
 | Attack or risk | Implemented control | Evidence |
@@ -165,8 +216,8 @@ by `tests/test_mfa_lifecycle.py::test_pending_mfa_session_expires_by_absolute_ag
 | Pending MFA bypass | Pending sessions cannot access authenticated pages or sensitive APIs | `tests/test_pentest_auth_bypass.py::test_pending_mfa_session_cannot_access_dashboard`, `tests/test_pentest_auth_bypass.py::test_pending_mfa_session_cannot_freeze_account` |
 | CSRF on session-changing routes | Global Flask-WTF CSRF plus route inventory checks | `tests/test_route_inventory_security.py::test_route_inventory_has_complete_security_decisions` |
 | Insecure transport | HTTPS-only Nginx and secure cookie flag | `ops/nginx/sitbank-production.conf`, `config.py`, `tests/test_deployment.py` |
-| Risk drift after login | IP/UA-derived risk fingerprint requires reauthentication before sensitive actions | `app/security/sessions.py`; `tests/test_account_security_actions.py::test_session_risk_drift_requires_reauth_before_sensitive_action` |
-| Stolen active cookie | Inactivity timeout, absolute lifetime, revocation, session inventory, and risk step-up reduce impact | `app/security/sessions.py`, `tests/test_session_management.py`, `tests/test_session_absolute_lifetime.py` |
+| Risk drift after login | HMAC-derived coarse network and User-Agent context triggers customer reauthentication or revocation; admin drift revokes the session | `app/security/sessions.py`; `tests/test_session_risk_binding.py` |
+| Stolen active cookie | Inactivity timeout, absolute lifetime, revocation, session inventory, and risk-based reauthentication reduce impact, but the cookie is not cryptographically device-bound | `app/security/sessions.py`, `tests/test_session_risk_binding.py`, `tests/test_session_management.py`, `tests/test_session_absolute_lifetime.py` |
 
 Remaining session risk-reduction items, such as optional active-session count
 caps and stronger device-bound session proof, are tracked in
