@@ -69,6 +69,7 @@ def test_design_risk_register_links_sonar_backup_and_zero_trust_tracking():
 
 def test_zero_trust_docs_use_current_architecture_and_issue_set():
     docs = ZERO_TRUST.read_text(encoding="utf-8")
+    normalized_docs = " ".join(docs.split())
 
     assert "Issue #184" not in docs
     assert "SITBank uses a hybrid zero-trust access model" in docs
@@ -78,6 +79,7 @@ def test_zero_trust_docs_use_current_architecture_and_issue_set():
     assert "Admins connect to the Tailscale VPN first, then open" in docs
     assert "Funnel would publish the service to the public internet" in docs
     assert "admin login, TOTP, CSRF, route authorization, and audit logging" in docs
+    assert "does not replace Flask admin login, TOTP, CSRF protection" in normalized_docs
     assert "Protected GitHub CI tailnet verification is not implemented in normal public CI" in docs
 
 

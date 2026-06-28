@@ -7,6 +7,10 @@ SITBank uses a hybrid zero-trust access model:
 - Admin access is private through Tailscale and remains protected by Flask
   admin login, TOTP, CSRF, route authorization, and audit logging.
 
+Tailscale is the private network/device boundary for admin access; it does not
+replace Flask admin login, TOTP, CSRF protection, route authorization, or audit
+logging.
+
 This intentionally uses both products because the surfaces have different
 access patterns. Staging must stay browser-accessible at the staging hostname
 for approved operators, and Cloudflare Access can challenge the operator before

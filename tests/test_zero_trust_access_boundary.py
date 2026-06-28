@@ -51,6 +51,7 @@ def _tracked_files() -> list[Path]:
 
 def test_hybrid_cloudflare_staging_and_tailscale_admin_design_is_documented():
     docs = _docs_text()
+    normalized_docs = " ".join(docs.split())
 
     for required in (
         "SITBank uses a hybrid zero-trust access model",
@@ -84,6 +85,7 @@ def test_hybrid_cloudflare_staging_and_tailscale_admin_design_is_documented():
     ):
         assert required in docs
 
+    assert "does not replace Flask admin login, TOTP, CSRF protection" in normalized_docs
     assert "staging is documented/configured as public-only" not in docs.lower()
     assert "admin is documented/configured as public-only" not in docs.lower()
 

@@ -99,6 +99,9 @@ local staging readiness succeeds without one, direct Nginx origin access
 returns `403` without Cloudflare's origin-pull client certificate, and the
 private admin URL is reachable only from an approved tailnet path. Tailscale
 Funnel must stay disabled for SITBank admin.
+Tailscale is the private network/device boundary for admin access; it does not
+replace Flask admin login, TOTP, CSRF protection, route authorization, or audit
+logging.
 Tailscale admin host preflight/provisioning and the private admin boundary
 decision are tracked by #200, #211, and #218.
 
