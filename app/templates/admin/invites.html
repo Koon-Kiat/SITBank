@@ -1,0 +1,79 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Staff Invites | SITBank Admin{% endblock %}
+
+{% block content %}
+<section class="dashboard admin-dashboard">
+  <div class="section-header">
+    <h1>Staff Invites</h1>
+  </div>
+
+  <section class="panel">
+    <div class="section-header">
+      <h2>Create Invite</h2>
+    </div>
+    <form class="admin-form-grid" method="post" action="{{ url_for('admin.invite_create') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label for="invite-personal-email">Personal email</label>
+      <input id="invite-personal-email" name="personal_email" type="email" autocomplete="email" required>
+      <label for="invite-workplace-email">Workplace email</label>
+      <input id="invite-workplace-email" name="workplace_email" type="email" autocomplete="email" required>
+      <label for="invite-role">Role</label>
+      <select id="invite-role" name="role" required>
+        <option value="staff">Bank staff</option>
+        <option value="admin">Admin</option>
+      </select>
+      <label for="invite-totp-code">Authenticator code</label>
+      <input id="invite-totp-code" name="totp_code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required>
+      <button type="submit">Create invite</button>
+    </form>
+  </section>
+
+  <section class="panel">
+    <div class="section-header">
+      <h2>Invite Status</h2>
+    </div>
+    <div class="admin-table-wrap">
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th scope="col">Workplace email</th>
+            <th scope="col">Role</th>
+            <th scope="col">Status</th>
+            <th scope="col">Created</th>
+            <th scope="col">Expires</th>
+            <th scope="col">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for invite in invites %}
+          <tr>
+            <td>{{ invite.workplace_email }}</td>
+            <td>{{ invite.role }}</td>
+            <td>{{ invite.status }}</td>
+            <td>{{ invite.created_at }}</td>
+            <td>{{ invite.expires_at }}</td>
+            <td>
+              {% if invite.status in ["pending", "totp_pending"] %}
+              <form method="post" action="{{ url_for('admin.invite_revoke', invite_id=invite.id) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <label class="sr-only" for="revoke-totp-{{ invite.id }}">Authenticator code</label>
+                <input id="revoke-totp-{{ invite.id }}" name="totp_code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required>
+                <button class="button-danger" type="submit">Revoke</button>
+              </form>
+              {% else %}
+              <span class="badge neutral">Closed</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="6">No staff/admin invites found.</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+</section>
+{% endblock %}

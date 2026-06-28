@@ -1,0 +1,78 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Audit Logs | SITBank Admin{% endblock %}
+
+{% block content %}
+<section class="dashboard admin-dashboard">
+  <div class="section-header">
+    <h1>Audit Logs</h1>
+  </div>
+  <section class="panel">
+    <form class="admin-filter-grid" method="get" action="{{ url_for('admin.audit_logs') }}">
+      <label for="audit-event-type">Event type</label>
+      <input id="audit-event-type" name="event_type" value="{{ filters.event_type }}">
+      <label for="audit-actor">Actor user ID</label>
+      <input id="audit-actor" name="actor" value="{{ filters.actor }}">
+      <label for="audit-outcome">Outcome</label>
+      <input id="audit-outcome" name="outcome" value="{{ filters.outcome }}">
+      <label for="audit-role">Role</label>
+      <select id="audit-role" name="role">
+        <option value="">Any</option>
+        {% for role in ["staff", "admin", "root_admin", "customer"] %}
+        <option value="{{ role }}"{% if filters.role == role %} selected{% endif %}>{{ role }}</option>
+        {% endfor %}
+      </select>
+      <label for="audit-sort">Sort</label>
+      <select id="audit-sort" name="sort">
+        {% for option in ["timestamp", "severity", "event_type", "actor"] %}
+        <option value="{{ option }}"{% if sort == option %} selected{% endif %}>{{ option }}</option>
+        {% endfor %}
+      </select>
+      <label for="audit-direction">Direction</label>
+      <select id="audit-direction" name="direction">
+        <option value="desc"{% if direction == "desc" %} selected{% endif %}>desc</option>
+        <option value="asc"{% if direction == "asc" %} selected{% endif %}>asc</option>
+      </select>
+      <button type="submit">Filter</button>
+      <a class="button secondary" href="{{ url_for('admin.audit_logs') }}">Reset</a>
+    </form>
+  </section>
+
+  <section class="panel">
+    <div class="section-header">
+      <h2>Events</h2>
+      <p class="muted">{{ total }} result(s)</p>
+    </div>
+    <div class="admin-table-wrap">
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th scope="col">Time</th>
+            <th scope="col">Event</th>
+            <th scope="col">Outcome</th>
+            <th scope="col">Actor</th>
+            <th scope="col">IP</th>
+            <th scope="col">Detail</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for event in events %}
+          <tr>
+            <td>{{ event.created_at }}</td>
+            <td>{{ event.event_type }}</td>
+            <td>{{ event.outcome }}</td>
+            <td>{{ event.actor_user_id or "system" }}</td>
+            <td>{{ event.ip_address }}</td>
+            <td><a href="{{ url_for('admin.audit_log_detail', event_id=event.id) }}">Open</a></td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="6">No audit events match the current filters.</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+</section>
+{% endblock %}

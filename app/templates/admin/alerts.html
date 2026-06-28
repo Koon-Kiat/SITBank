@@ -1,0 +1,50 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Security Alerts | SITBank Admin{% endblock %}
+
+{% block content %}
+<section class="dashboard admin-dashboard">
+  <div class="section-header">
+    <h1>Security Alerts</h1>
+  </div>
+  <section class="panel">
+    <dl class="admin-metadata-grid">
+      <div><dt>Generated</dt><dd>{{ report.generated_at }}</dd></div>
+      <div><dt>Active alerts</dt><dd>{{ report.alert_count }}</dd></div>
+      <div><dt>Audit chain</dt><dd>{% if report.audit_chain.valid %}Valid{% else %}Attention required{% endif %}</dd></div>
+      <div><dt>Delivery</dt><dd>{% if report.delivery.enabled %}Enabled{% else %}Disabled{% endif %}</dd></div>
+    </dl>
+  </section>
+  <section class="panel">
+    <div class="section-header">
+      <h2>Current Alerts</h2>
+    </div>
+    <div class="admin-table-wrap">
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th scope="col">Type</th>
+            <th scope="col">Severity</th>
+            <th scope="col">Count</th>
+            <th scope="col">Source</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for alert in report.alerts %}
+          <tr>
+            <td>{{ alert.alert_type }}</td>
+            <td>{{ alert.severity }}</td>
+            <td>{{ alert.count }}</td>
+            <td>{{ alert.source }}</td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="4">No active alert report findings.</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+</section>
+{% endblock %}

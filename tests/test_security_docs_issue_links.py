@@ -85,10 +85,11 @@ def test_zero_trust_docs_use_current_architecture_and_issue_set():
 
 def test_staging_domain_docs_match_implemented_active_cloudflare_hostname():
     docs = _docs_text()
+    retired_staging = "staging-sitbank" + ".duckdns.org"
 
     assert "staging-sitbank.pp.ua" in docs
     assert "retired DuckDNS staging hostname is not an active" in docs
-    assert "staging-sitbank.duckdns.org remains the active" not in docs
+    assert f"{retired_staging} remains the active" not in docs
     assert "staging-sitbank.pp.ua` is the Cloudflare-managed staging hostname" in docs
 
 

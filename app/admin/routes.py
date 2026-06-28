@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, current_app, flash, jsonify, redirect, render_template, request, url_for
 from flask_limiter.util import get_remote_address
 from flask_wtf.csrf import generate_csrf
 from marshmallow import Schema, ValidationError, fields, validate, validates_schema
 from sqlalchemy import text
 
 from app.extensions import db, limiter
+from app.security.alerts import build_security_alert_report
 from app.security.production_guard import (
     is_production_app,
     log_production_readiness_failure,
@@ -16,18 +17,26 @@ from app.security.rate_limits import request_principal
 
 from .services import (
     AuthError,
+    admin_navigation_for,
+    admin_dashboard_context,
     authenticate_admin_primary,
     complete_manual_recovery_request_as_admin,
     complete_admin_mfa_login,
     create_staff_invite,
+    audit_event_detail_for_admin,
+    query_audit_events_for_admin,
     invite_info,
     logout_admin_session,
     manual_recovery_requests_for_admin,
     public_invites_for_root_admin,
+    public_admin_user,
+    require_admin_session,
     require_root_admin_session,
     require_staff_session,
     revoke_staff_invite,
+    staff_accounts_for_admin,
     start_invite_acceptance,
+    transition_staff_account_as_root_admin,
     transition_manual_recovery_request_as_admin,
     verify_invite_acceptance,
 )
@@ -61,6 +70,14 @@ class StaffInviteCreateSchema(Schema):
 
 
 class StaffInviteRevokeSchema(Schema):
+    totp_code = fields.Str(
+        required=True,
+        load_only=True,
+        validate=validate.Regexp(r"^[0-9]{6}$", error="MFA code must be exactly 6 digits"),
+    )
+
+
+class StaffAccountActionSchema(Schema):
     totp_code = fields.Str(
         required=True,
         load_only=True,
@@ -143,6 +160,15 @@ def _request_fields() -> set[str]:
     return {str(key) for key in request.form.keys()}
 
 
+def _wants_json() -> bool:
+    if request.is_json:
+        return True
+    best = request.accept_mimetypes.best_match(["application/json", "text/html"])
+    return best == "application/json" and (
+        request.accept_mimetypes["application/json"] >= request.accept_mimetypes["text/html"]
+    )
+
+
 @admin_bp.get("/health/live")
 def health_live():
     return jsonify({"status": "ok", "app_mode": "admin"})
@@ -173,7 +199,9 @@ def csrf_token():
 @admin_bp.get("/")
 def index():
     user = require_staff_session()
-    return jsonify({"message": "Admin access granted", "user": {"id": user.id, "role": user.account_type}})
+    if _wants_json():
+        return jsonify({"message": "Admin access granted", "user": {"id": user.id, "role": user.account_type}})
+    return render_template("admin/dashboard.html", **admin_dashboard_context(user))
 
 
 @admin_bp.post("/login")
@@ -202,8 +230,17 @@ def logout():
 
 @admin_bp.get("/invites")
 def invites():
-    require_root_admin_session()
-    return jsonify({"invites": public_invites_for_root_admin()})
+    actor = require_root_admin_session()
+    payload = {"invites": public_invites_for_root_admin()}
+    if _wants_json():
+        return jsonify(payload)
+    return render_template(
+        "admin/invites.html",
+        **payload,
+        actor=actor,
+        user=public_admin_user(actor),
+        navigation=admin_navigation_for(actor),
+    )
 
 
 @admin_bp.post("/invites")
@@ -212,15 +249,17 @@ def invites():
 def invite_create():
     actor = require_root_admin_session()
     data = _payload(StaffInviteCreateSchema())
-    return jsonify(
-        create_staff_invite(
-            actor,
-            personal_email=data["personal_email"],
-            workplace_email=data["workplace_email"],
-            role=data["role"],
-            totp_code=data["totp_code"],
-        )
-    ), 201
+    result = create_staff_invite(
+        actor,
+        personal_email=data["personal_email"],
+        workplace_email=data["workplace_email"],
+        role=data["role"],
+        totp_code=data["totp_code"],
+    )
+    if _wants_json():
+        return jsonify(result), 201
+    flash("Staff/admin invite created.", "success")
+    return redirect(url_for("admin.invites")), 303
 
 
 @admin_bp.post("/invites/<int:invite_id>/revoke")
@@ -228,7 +267,118 @@ def invite_create():
 def invite_revoke(invite_id: int):
     actor = require_root_admin_session()
     data = _payload(StaffInviteRevokeSchema())
-    return jsonify(revoke_staff_invite(actor, invite_id, data["totp_code"]))
+    result = revoke_staff_invite(actor, invite_id, data["totp_code"])
+    if _wants_json():
+        return jsonify(result)
+    flash("Staff/admin invite revoked.", "success")
+    return redirect(url_for("admin.invites")), 303
+
+
+@admin_bp.get("/staff")
+def staff_accounts():
+    actor = require_admin_session()
+    accounts = staff_accounts_for_admin(actor)
+    if _wants_json():
+        return jsonify({"accounts": accounts})
+    return render_template(
+        "admin/staff_accounts.html",
+        accounts=accounts,
+        actor=actor,
+        user=public_admin_user(actor),
+        navigation=admin_navigation_for(actor),
+    )
+
+
+@admin_bp.post("/staff/<int:user_id>/deactivate")
+@limiter.limit("10 per hour", key_func=get_remote_address)
+@limiter.limit("5 per 5 minutes", key_func=request_principal)
+def staff_account_deactivate(user_id: int):
+    actor = require_root_admin_session()
+    data = _payload(StaffAccountActionSchema())
+    result = transition_staff_account_as_root_admin(actor, user_id, "deactivate", data["totp_code"])
+    if _wants_json():
+        return jsonify(result)
+    flash("Staff/admin account deactivated.", "success")
+    return redirect(url_for("admin.staff_accounts")), 303
+
+
+@admin_bp.post("/staff/<int:user_id>/reactivate")
+@limiter.limit("10 per hour", key_func=get_remote_address)
+@limiter.limit("5 per 5 minutes", key_func=request_principal)
+def staff_account_reactivate(user_id: int):
+    actor = require_root_admin_session()
+    data = _payload(StaffAccountActionSchema())
+    result = transition_staff_account_as_root_admin(actor, user_id, "reactivate", data["totp_code"])
+    if _wants_json():
+        return jsonify(result)
+    flash("Staff/admin account reactivated.", "success")
+    return redirect(url_for("admin.staff_accounts")), 303
+
+
+@admin_bp.post("/staff/<int:user_id>/reset-activation")
+@limiter.limit("10 per hour", key_func=get_remote_address)
+@limiter.limit("5 per 5 minutes", key_func=request_principal)
+def staff_account_reset_activation(user_id: int):
+    actor = require_root_admin_session()
+    data = _payload(StaffAccountActionSchema())
+    result = transition_staff_account_as_root_admin(actor, user_id, "reset_activation", data["totp_code"])
+    if _wants_json():
+        return jsonify(result)
+    flash("Staff/admin activation state reset.", "success")
+    return redirect(url_for("admin.staff_accounts")), 303
+
+
+@admin_bp.get("/audit-logs")
+def audit_logs():
+    actor = require_admin_session()
+    payload = query_audit_events_for_admin(actor, request.args.to_dict(flat=True))
+    if _wants_json():
+        return jsonify(payload)
+    return render_template(
+        "admin/audit_logs.html",
+        **payload,
+        actor=actor,
+        user=public_admin_user(actor),
+        navigation=admin_navigation_for(actor),
+    )
+
+
+@admin_bp.get("/audit-logs/<int:event_id>")
+def audit_log_detail(event_id: int):
+    actor = require_admin_session()
+    event = audit_event_detail_for_admin(actor, event_id)
+    if _wants_json():
+        return jsonify({"event": event})
+    return render_template(
+        "admin/audit_log_detail.html",
+        event=event,
+        actor=actor,
+        user=public_admin_user(actor),
+        navigation=admin_navigation_for(actor),
+    )
+
+
+@admin_bp.get("/alerts")
+def alerts():
+    actor = require_admin_session()
+    report = build_security_alert_report(deliver=False)
+    from app.security.audit import audit_event
+
+    audit_event(
+        "security_alert_review",
+        "success",
+        user=actor,
+        metadata={"alert_count": int(report.get("alert_count") or 0)},
+    )
+    if _wants_json():
+        return jsonify(report)
+    return render_template(
+        "admin/alerts.html",
+        report=report,
+        actor=actor,
+        user=public_admin_user(actor),
+        navigation=admin_navigation_for(actor),
+    )
 
 
 @admin_bp.get("/manual-recovery/requests")

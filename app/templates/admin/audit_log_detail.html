@@ -1,0 +1,34 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Audit Event | SITBank Admin{% endblock %}
+
+{% block content %}
+<section class="dashboard admin-dashboard">
+  <div class="section-header">
+    <h1>Audit Event {{ event.id }}</h1>
+    <a class="button secondary" href="{{ url_for('admin.audit_logs') }}">Back</a>
+  </div>
+  <section class="panel">
+    <dl class="admin-metadata-grid">
+      <div><dt>Time</dt><dd>{{ event.created_at }}</dd></div>
+      <div><dt>Event</dt><dd>{{ event.event_type }}</dd></div>
+      <div><dt>Outcome</dt><dd>{{ event.outcome }}</dd></div>
+      <div><dt>Actor</dt><dd>{{ event.actor_user_id or "system" }}</dd></div>
+      <div><dt>IP address</dt><dd>{{ event.ip_address }}</dd></div>
+      <div><dt>Request ID</dt><dd>{{ event.correlation_id }}</dd></div>
+    </dl>
+  </section>
+  <section class="panel">
+    <div class="section-header">
+      <h2>Safe Metadata</h2>
+    </div>
+    <dl class="admin-metadata-grid">
+      {% for key, value in event.metadata.items() %}
+      <div><dt>{{ key }}</dt><dd>{{ value }}</dd></div>
+      {% else %}
+      <div><dt>Status</dt><dd>No displayable metadata.</dd></div>
+      {% endfor %}
+    </dl>
+  </section>
+</section>
+{% endblock %}
