@@ -50,14 +50,23 @@ def upgrade() -> None:
         )
 
     with op.batch_alter_table("transactions") as batch_op:
+        batch_op.add_column(sa.Column("transaction_hash", sa.String(64), nullable=True))
         batch_op.create_check_constraint(
             "ck_transactions_amount_positive",
             "amount > 0",
         )
+    op.create_index(
+        "ix_transactions_transaction_hash",
+        "transactions",
+        ["transaction_hash"],
+        unique=True,
+    )
 
 
 def downgrade() -> None:
+    op.drop_index("ix_transactions_transaction_hash", table_name="transactions")
     with op.batch_alter_table("transactions") as batch_op:
+        batch_op.drop_column("transaction_hash")
         batch_op.drop_constraint("ck_transactions_amount_positive", type_="check")
 
     with op.batch_alter_table("users") as batch_op:

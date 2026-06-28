@@ -541,6 +541,7 @@ class Transaction(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     transaction_ref = db.Column(db.String(36), nullable=False, unique=True, index=True)
+    transaction_hash = db.Column(db.String(64), nullable=False, unique=True, index=True)
     sender_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
     recipient_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
     payee_id = db.Column(db.Integer, db.ForeignKey("payees.id"), nullable=True, index=True)

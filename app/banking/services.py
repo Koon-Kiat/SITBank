@@ -436,17 +436,23 @@ def execute_local_transfer(
         raise AuthError("Insufficient funds.", 400)
 
     txn_ref = str(uuid.uuid4())
+    txn_created_at = datetime.now(timezone.utc)
+    txn_hash = _transaction_hash(
+        txn_ref, locked_sender.id, locked_recipient.id, amount, reference, txn_created_at
+    )
     locked_sender.balance -= amount
     locked_recipient.balance += amount
     db.session.add(
         Transaction(
             transaction_ref=txn_ref,
+            transaction_hash=txn_hash,
             sender_id=locked_sender.id,
             recipient_id=locked_recipient.id,
             payee_id=payee.id,
             amount=amount,
             reference=reference,
             status="completed",
+            created_at=txn_created_at,
         )
     )
     pending_tfr.consumed_transaction_ref = txn_ref
@@ -465,6 +471,30 @@ def execute_local_transfer(
         payee_account=audit_reference("payee_account", payee.account_number),
     )
     return txn_ref
+
+
+def _transaction_hash(
+    transaction_ref: str,
+    sender_id: int,
+    recipient_id: int,
+    amount: Decimal,
+    reference: str,
+    created_at: datetime,
+) -> str:
+    """SHA-256 of the canonical transaction fields for tamper-evidence."""
+    canonical = json.dumps(
+        {
+            "amount": str(amount),
+            "created_at": created_at.isoformat(),
+            "recipient_id": recipient_id,
+            "reference": reference,
+            "sender_id": sender_id,
+            "transaction_ref": transaction_ref,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _requires_durable_audit(action: str, outcome: str) -> bool:

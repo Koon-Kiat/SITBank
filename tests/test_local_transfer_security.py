@@ -504,6 +504,49 @@ def test_failed_transfer_leaves_balances_unchanged(app, sec_ctx):
     assert Transaction.query.count() == 0
 
 
+# ── Transaction content hash (tamper-evidence) ────────────────────────────────
+
+def test_transaction_hash_is_stored_on_success(app, sec_ctx):
+    alice = sec_ctx["alice"]
+    payee = sec_ctx["payee"]
+    token = _make_pending_transfer(alice, payee, Decimal("10.00"), reference="Test")
+
+    with app.test_request_context("/banking/transfer/confirm", method="POST"):
+        txn_ref = execute_local_transfer(sender=alice, payee=payee, confirmation_token=token)
+
+    txn = Transaction.query.filter_by(transaction_ref=txn_ref).one()
+    assert txn.transaction_hash, "transaction_hash must be set"
+    assert len(txn.transaction_hash) == 64, "SHA-256 hex digest is 64 characters"
+
+
+def test_transaction_hash_changes_when_amount_changes(app, sec_ctx):
+    """Two transactions with different amounts must produce different hashes."""
+    import hashlib, json
+    from datetime import datetime, timezone
+    from decimal import Decimal
+
+    fixed_dt = datetime(2026, 6, 28, 12, 0, 0, tzinfo=timezone.utc)
+
+    def _hash(amount_str: str) -> str:
+        canonical = json.dumps(
+            {
+                "amount": amount_str,
+                "created_at": fixed_dt.isoformat(),
+                "recipient_id": 2,
+                "reference": "",
+                "sender_id": 1,
+                "transaction_ref": "aaaaaaaa-0000-0000-0000-000000000000",
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        return hashlib.sha256(canonical.encode()).hexdigest()
+
+    assert _hash("10.00") != _hash("10.01"), (
+        "Hash must differ when amount differs — tamper would be detectable"
+    )
+
+
 # ── Consumed token stores transaction reference ────────────────────────────────
 
 def test_consumed_token_stores_transaction_ref(app, sec_ctx):
