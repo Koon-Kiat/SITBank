@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -123,6 +124,107 @@ def test_service_rejects_payee_not_owned_by_sender(app, sec_ctx):
 
     assert exc_info.value.status_code == 403
     assert Transaction.query.count() == 0
+
+
+def test_ownership_mismatch_is_audited(app, sec_ctx):
+    alice = sec_ctx["alice"]
+    bob = sec_ctx["bob"]
+
+    stranger_payee = Payee(
+        user_id=bob.id,
+        nickname="Eve",
+        account_number="901000004",
+        recipient_name="Eve",
+        created_at=datetime.now(timezone.utc) - timedelta(days=2),
+    )
+    db.session.add(stranger_payee)
+    db.session.commit()
+
+    token = _make_pending_transfer(alice, stranger_payee, Decimal("10.00"))
+    before_count = SecurityAuditEvent.query.count()
+
+    with app.test_request_context("/banking/transfer/confirm", method="POST"):
+        with pytest.raises(AuthError):
+            execute_local_transfer(sender=alice, payee=stranger_payee, confirmation_token=token)
+
+    events = SecurityAuditEvent.query.filter(
+        SecurityAuditEvent.id > before_count,
+        SecurityAuditEvent.event_type == "banking_outbound_transfer",
+        SecurityAuditEvent.outcome == "failure",
+    ).all()
+    assert len(events) == 1, "ownership mismatch must produce exactly one audit event"
+    meta = events[0].event_metadata
+    assert meta.get("reason") == "payee_ownership_mismatch"
+
+
+def test_ownership_mismatch_audit_uses_safe_metadata(app, sec_ctx):
+    alice = sec_ctx["alice"]
+    bob = sec_ctx["bob"]
+
+    stranger_payee = Payee(
+        user_id=bob.id,
+        nickname="Eve",
+        account_number="901000005",
+        recipient_name="Eve",
+        created_at=datetime.now(timezone.utc) - timedelta(days=2),
+    )
+    db.session.add(stranger_payee)
+    db.session.commit()
+
+    token = _make_pending_transfer(alice, stranger_payee, Decimal("10.00"))
+    before_count = SecurityAuditEvent.query.count()
+
+    with app.test_request_context("/banking/transfer/confirm", method="POST"):
+        with pytest.raises(AuthError):
+            execute_local_transfer(sender=alice, payee=stranger_payee, confirmation_token=token)
+
+    events = SecurityAuditEvent.query.filter(
+        SecurityAuditEvent.id > before_count,
+        SecurityAuditEvent.event_type == "banking_outbound_transfer",
+    ).all()
+    assert events, "expected at least one audit event"
+    for event in events:
+        meta = event.event_metadata
+        meta_str = str(meta)
+        # Raw sensitive values must not appear in audit metadata
+        assert stranger_payee.account_number not in meta_str, "raw account number must not be logged"
+        assert token not in meta_str, "raw pending transfer token must not be logged"
+        assert stranger_payee.recipient_name not in meta_str, "raw payee name must not be logged"
+        assert bob.email not in meta_str, "raw recipient email must not be logged"
+
+
+def test_ownership_mismatch_error_is_generic(app, sec_ctx):
+    alice = sec_ctx["alice"]
+    bob = sec_ctx["bob"]
+
+    stranger_payee = Payee(
+        user_id=bob.id,
+        nickname="Eve",
+        account_number="901000006",
+        recipient_name="Eve",
+        created_at=datetime.now(timezone.utc) - timedelta(days=2),
+    )
+    db.session.add(stranger_payee)
+    db.session.commit()
+
+    token = _make_pending_transfer(alice, stranger_payee, Decimal("10.00"))
+
+    with app.test_request_context("/banking/transfer/confirm", method="POST"):
+        with pytest.raises(AuthError) as exc_info:
+            execute_local_transfer(sender=alice, payee=stranger_payee, confirmation_token=token)
+
+    msg = exc_info.value.message.lower()
+    assert "payee" not in msg or "denied" in msg, "error must not expose IDOR detail"
+    assert stranger_payee.account_number not in msg
+    assert "901000006" not in msg
+
+
+def test_docs_describe_local_transfer_execution():
+    ops = (Path(__file__).parent.parent / "docs" / "OPERATIONS.md").read_text(encoding="utf-8")
+    assert "Local transfer performs final ledger movement" in ops
+    assert "single-use confirmation token" in ops
+    assert "payee ownership" in ops.lower()
+    assert "There is no final ledger" not in ops
 
 
 # ── Self-transfer ──────────────────────────────────────────────────────────────
