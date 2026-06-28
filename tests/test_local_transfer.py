@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import Mock
@@ -9,8 +10,30 @@ import pytest
 from _auth_flow_helpers import enable_mfa_for_user, login, mark_recent_mfa, register
 from app.banking.services import execute_local_transfer
 from app.extensions import db
-from app.models import Payee, SecurityAuditEvent, Transaction, User
+from app.models import Payee, PendingTransfer, SecurityAuditEvent, Transaction, User
 from app.security.passwords import hash_password
+
+
+def _make_pending_transfer(
+    user: User,
+    payee: Payee,
+    amount: Decimal,
+    reference: str = "",
+    *,
+    expires_in: int = 300,
+) -> str:
+    token = os.urandom(32).hex()
+    pending = PendingTransfer(
+        token=token,
+        user_id=user.id,
+        payee_id=payee.id,
+        amount=amount,
+        reference=reference,
+        expires_at=datetime.now(timezone.utc) + timedelta(seconds=expires_in),
+    )
+    db.session.add(pending)
+    db.session.commit()
+    return token
 
 
 def _make_active_payee(owner: User, account_number: str, recipient_name: str) -> Payee:
@@ -175,11 +198,13 @@ def test_transfer_fails_on_insufficient_funds(app, transfer_context):
     alice.balance = Decimal("5.00")
     db.session.commit()
 
+    token = _make_pending_transfer(alice, payee, Decimal("100.00"))
+
     from app.auth.services import AuthError
 
     with app.test_request_context("/banking/transfer/confirm", method="POST"):
         with pytest.raises(AuthError) as exc_info:
-            execute_local_transfer(sender=alice, payee=payee, amount=Decimal("100.00"))
+            execute_local_transfer(sender=alice, payee=payee, confirmation_token=token)
 
     assert "insufficient" in exc_info.value.message.lower()
     assert Transaction.query.count() == 0
@@ -192,11 +217,13 @@ def test_insufficient_funds_writes_failure_audit(app, transfer_context):
     alice.balance = Decimal("1.00")
     db.session.commit()
 
+    token = _make_pending_transfer(alice, payee, Decimal("999.00"))
+
     from app.auth.services import AuthError
 
     with app.test_request_context("/banking/transfer/confirm", method="POST"):
         with pytest.raises(AuthError):
-            execute_local_transfer(sender=alice, payee=payee, amount=Decimal("999.00"))
+            execute_local_transfer(sender=alice, payee=payee, confirmation_token=token)
 
     event = db.session.execute(
         db.select(SecurityAuditEvent).where(
@@ -219,9 +246,10 @@ def test_successful_transfer_debits_sender_and_credits_recipient(app, transfer_c
     alice_before = Decimal(str(alice.balance))
     bob_before = Decimal(str(bob.balance))
     amount = Decimal("250.00")
+    token = _make_pending_transfer(alice, payee, amount, reference="Rent")
 
     with app.test_request_context("/banking/transfer/confirm", method="POST"):
-        txn_ref = execute_local_transfer(sender=alice, payee=payee, amount=amount, reference="Rent")
+        txn_ref = execute_local_transfer(sender=alice, payee=payee, confirmation_token=token)
 
     db.session.expire_all()
     alice_after = db.session.get(User, alice.id)
@@ -244,8 +272,10 @@ def test_successful_transfer_writes_durable_audit_and_redacts_pii(app, transfer_
     alice = transfer_context["alice"]
     payee = transfer_context["payee"]
 
+    token = _make_pending_transfer(alice, payee, Decimal("50.00"))
+
     with app.test_request_context("/banking/transfer/confirm", method="POST"):
-        txn_ref = execute_local_transfer(sender=alice, payee=payee, amount=Decimal("50.00"))
+        txn_ref = execute_local_transfer(sender=alice, payee=payee, confirmation_token=token)
 
     event = db.session.execute(
         db.select(SecurityAuditEvent).where(

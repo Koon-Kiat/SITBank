@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from math import ceil
@@ -25,7 +26,7 @@ from app.banking.forms import AddPayeeForm, TransferForm
 from app.banking.schemas import MAX_TRANSACTION_AMOUNT, MIN_TRANSACTION_AMOUNT
 from app.banking.services import execute_local_transfer
 from app.extensions import db, limiter
-from app.models import Payee, User
+from app.models import Payee, PendingTransfer, User
 from app.security.audit import audit_event, audit_reference
 from app.security.rate_limits import mfa_principal
 from app.web.routes import web_login_required, web_not_frozen_required
@@ -371,7 +372,7 @@ def transfer_submit(payee_id: int):
         )
         return render_template("transfer.html", form=form, payee=payee), 400
 
-    # A07: MFA step-up required before pending state is stored
+    # A07: MFA step-up required before pending state is created
     try:
         verify_high_risk_authorization(
             g.current_user,
@@ -383,19 +384,21 @@ def transfer_submit(payee_id: int):
         flash(exc.message, "error")
         return render_template("transfer.html", form=form, payee=payee), exc.status_code
 
-    # A08: all sensitive fields sourced from DB, not client; pending state stored server-side
-    session["pending_transfer"] = {
-        "payee_id": payee_id,
-        "payee_account_number": payee.account_number,
-        "recipient_name": payee.recipient_name,
-        "amount": str(amount),
-        "reference": (form.reference.data or "").strip()[:128],
-        "authorization_action": "transfer",
-        "authorized_at": datetime.now(timezone.utc).isoformat(),
-        "expires_at": (
-            datetime.now(timezone.utc) + timedelta(seconds=_PENDING_TRANSFER_TTL)
-        ).isoformat(),
-    }
+    # A08: create a server-side pending transfer record bound to this user, payee,
+    # amount, and reference. Store only the opaque token in the session so the
+    # client never controls the transfer parameters.
+    token = os.urandom(32).hex()
+    pending_tfr = PendingTransfer(
+        token=token,
+        user_id=g.current_user.id,
+        payee_id=payee_id,
+        amount=amount,
+        reference=(form.reference.data or "").strip()[:128],
+        expires_at=datetime.now(timezone.utc) + timedelta(seconds=_PENDING_TRANSFER_TTL),
+    )
+    db.session.add(pending_tfr)
+    db.session.commit()
+    session["pending_transfer_token"] = token
     return redirect(url_for("banking.transfer_confirm", payee_id=payee_id))
 
 
@@ -405,14 +408,39 @@ def transfer_submit(payee_id: int):
 @web_login_required
 @web_not_frozen_required
 def transfer_confirm(payee_id: int):
-    pending = session.get("pending_transfer")
-    if not pending or pending.get("payee_id") != payee_id:
+    token = session.get("pending_transfer_token")
+    if not token:
         flash("No pending transfer. Please start again.", "warning")
         return redirect(url_for("banking.payees"))
-    if datetime.now(timezone.utc) > datetime.fromisoformat(pending["expires_at"]):
-        session.pop("pending_transfer", None)
+
+    pending_tfr = PendingTransfer.query.filter_by(
+        token=token,
+        user_id=g.current_user.id,
+        payee_id=payee_id,
+        consumed_at=None,
+    ).first()
+    if not pending_tfr:
+        session.pop("pending_transfer_token", None)
+        flash("No pending transfer. Please start again.", "warning")
+        return redirect(url_for("banking.payees"))
+
+    expires_at = (
+        pending_tfr.expires_at
+        if pending_tfr.expires_at.tzinfo
+        else pending_tfr.expires_at.replace(tzinfo=timezone.utc)
+    )
+    if expires_at < datetime.now(timezone.utc):
+        session.pop("pending_transfer_token", None)
         flash("Request expired. Please start again.", "warning")
         return redirect(url_for("banking.payees"))
+
+    pending = {
+        "payee_id": payee_id,
+        "recipient_name": pending_tfr.payee.recipient_name,
+        "payee_account_number": pending_tfr.payee.account_number,
+        "amount": str(pending_tfr.amount),
+        "reference": pending_tfr.reference,
+    }
     return render_template("confirm_transfer.html", form=CsrfOnlyForm(), pending=pending)
 
 
@@ -423,48 +451,34 @@ def transfer_confirm(payee_id: int):
 def transfer_confirm_submit(payee_id: int):
     form = CsrfOnlyForm()
 
-    # A04: consume pending state immediately — prevents replay even if commit fails
-    pending = session.pop("pending_transfer", None)
-    if not pending or pending.get("payee_id") != payee_id:
+    # A04: consume session token immediately — prevents session-layer replay
+    token = session.pop("pending_transfer_token", None)
+    if not token:
         flash("No pending transfer. Please start again.", "warning")
-        return redirect(url_for("banking.payees"))
-    if datetime.now(timezone.utc) > datetime.fromisoformat(pending["expires_at"]):
-        flash("Request expired. Please start again.", "warning")
-        return redirect(url_for("banking.payees"))
-    if pending.get("authorization_action") != "transfer" or not pending.get("authorized_at"):
-        flash("Transfer authorization missing. Please start again.", "warning")
         return redirect(url_for("banking.payees"))
 
     if not form.validate_on_submit():
-        session["pending_transfer"] = pending
-        return render_template("confirm_transfer.html", form=form, pending=pending), 400
-
-    try:
-        amount = Decimal(pending["amount"])
-    except (InvalidOperation, KeyError):
-        flash("Invalid transfer amount. Please start again.", "error")
+        flash("Request validation failed. Please start again.", "error")
         return redirect(url_for("banking.payees"))
 
-    # A01: re-fetch payee server-side — re-validates ownership and cooldown at execution time
+    # A01: re-fetch payee server-side — re-validates ownership at execution time
     payee = Payee.query.filter_by(id=payee_id, user_id=g.current_user.id).first_or_404()
-    cooldown_seconds = current_app.config.get("PAYEE_COOLDOWN_SECONDS", 60)
-    if _cooldown_status(payee, cooldown_seconds)["status"] != "active":
-        flash("Payee is still in cooldown.", "error")
-        return redirect(url_for("banking.payees"))
 
     try:
         txn_ref = execute_local_transfer(
             sender=g.current_user,
             payee=payee,
-            amount=amount,
-            reference=pending.get("reference", ""),
+            confirmation_token=token,
         )
     except AuthError as exc:
         flash(exc.message, "error")
         return redirect(url_for("banking.payees"))
 
+    amount_display = PendingTransfer.query.filter_by(
+        consumed_transaction_ref=txn_ref,
+    ).with_entities(PendingTransfer.amount).scalar() or ""
     flash(
-        f"Transfer of SGD {amount:.2f} to {payee.recipient_name} is complete. Ref: {txn_ref[:8].upper()}",
+        f"Transfer of SGD {amount_display} to {payee.recipient_name} is complete. Ref: {txn_ref[:8].upper()}",
         "success",
     )
     return redirect(url_for("banking.payees"))

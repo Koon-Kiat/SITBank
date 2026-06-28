@@ -239,6 +239,7 @@ SECURITY_TEST_FILES = frozenset(
         "tests/test_session_absolute_lifetime.py",
         "tests/test_session_management.py",
         "tests/test_session_risk_binding.py",
+        "tests/test_local_transfer_security.py",
         "tests/test_webauthn_lifecycle.py",
     }
 )
