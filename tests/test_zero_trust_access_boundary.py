@@ -51,23 +51,28 @@ def _tracked_files() -> list[Path]:
 
 def test_hybrid_cloudflare_staging_and_tailscale_admin_design_is_documented():
     docs = _docs_text()
+    normalized_docs = " ".join(docs.split())
 
     for required in (
-        "Issue #184 uses a hybrid access boundary",
-        "Staging uses Cloudflare Zero Trust Access.",
-        "Admin uses Tailscale private access.",
+        "SITBank uses a hybrid zero-trust access model",
+        "Staging uses a Cloudflare-managed public hostname with Cloudflare Access",
+        "Admin access is private through Tailscale",
+        "#198: origin-side Cloudflare Access assertion validation for staging.",
+        "#215: CI/CD and deployment migration to the Cloudflare-managed staging",
+        "#218: Tailscale private access as the admin device/network boundary decision.",
+        "Protected GitHub CI tailnet verification is not implemented in normal public CI.",
         "This intentionally uses both products because the surfaces have different",
         "Production customer | `https://sitbank.duckdns.org`",
         "Staging customer | `https://staging-sitbank.pp.ua`",
         "Production admin app | `https://sitbank-ec2.tailca101b.ts.net/` through Tailscale Serve",
         "The customer production site remains public.",
-        "Cloudflare Access application for `staging-sitbank.pp.ua`",
+        "self-hosted Access application",
         "Cloudflare Authenticated Origin Pulls",
         "Do not enable Tailscale Funnel",
         "Flask admin login and TOTP remain mandatory",
         "onboarding, offboarding, emergency lockout, rollback",
         "local readiness succeeds through loopback",
-        "direct origin access",
+        "direct Nginx origin access",
         "Cloudflare-managed zone/hostname or Cloudflare Tunnel",
         "Cloudflare Access and Tailscale decide whether a request may reach",
         "retired DuckDNS staging hostname is no longer",
@@ -80,6 +85,7 @@ def test_hybrid_cloudflare_staging_and_tailscale_admin_design_is_documented():
     ):
         assert required in docs
 
+    assert "does not replace Flask admin login, TOTP, CSRF protection" in normalized_docs
     assert "staging is documented/configured as public-only" not in docs.lower()
     assert "admin is documented/configured as public-only" not in docs.lower()
 
@@ -87,6 +93,9 @@ def test_hybrid_cloudflare_staging_and_tailscale_admin_design_is_documented():
 def test_staging_nginx_blocks_direct_origin_bypass_but_keeps_local_health():
     default_nginx = Path("ops/nginx/sitbank-default.conf").read_text(encoding="utf-8")
     staging_nginx = Path("ops/nginx/sitbank-staging.conf").read_text(encoding="utf-8")
+    access_headers = Path(
+        "ops/nginx/sitbank-cloudflare-access-headers.conf"
+    ).read_text(encoding="utf-8")
     bootstrap = Path("ops/deploy/bootstrap-container-ec2").read_text(encoding="utf-8")
 
     assert "listen 80 default_server;" in default_nginx
@@ -126,6 +135,11 @@ def test_staging_nginx_blocks_direct_origin_bypass_but_keeps_local_health():
             < body.index("auth_basic \"SITBank staging\";")
             for body in protected_bodies
         )
+        assert any(
+            "include /etc/nginx/snippets/"
+            "sitbank-cloudflare-access-headers.conf;" in body
+            for body in protected_bodies
+        )
 
     ready_bodies = _nginx_location_bodies(staging_nginx, "= /health/ready")
     assert len(ready_bodies) == 1
@@ -135,9 +149,21 @@ def test_staging_nginx_blocks_direct_origin_bypass_but_keeps_local_health():
     assert "allow ::1;" in ready
     assert "deny all;" in ready
     assert "proxy_pass http://127.0.0.1:5001;" in ready
+    assert "sitbank-cloudflare-access-headers.conf" not in ready
+
+    assert (
+        "proxy_set_header Cf-Access-Jwt-Assertion "
+        "$http_cf_access_jwt_assertion;" in access_headers
+    )
+    assert 'proxy_set_header Cf-Access-Authenticated-User-Email "";' in access_headers
+    assert 'proxy_set_header Cf-Access-Client-Secret "";' in access_headers
 
     assert "STAGING_CLOUDFLARE_ORIGIN_PULL_CA_FILE" in bootstrap
-    assert "Missing required Cloudflare Authenticated Origin Pull CA file" in bootstrap
+    assert "STAGING_CLOUDFLARE_ORIGIN_PULL_CA_ALLOWLIST" in bootstrap
+    assert "STAGING_ACCESS_HEADERS_FILE" in bootstrap
+    assert "install_staging_access_headers" in bootstrap
+    assert "/usr/local/sbin/verify-cloudflare-origin-pull-ca" in bootstrap
+    assert "Cloudflare Authenticated Origin Pull CA validation failed." in bootstrap
     assert "nginx -t" in bootstrap
 
 
@@ -245,7 +271,16 @@ def test_required_zero_trust_labels_and_labelers_are_configured():
     assert "ops/nginx/**" in labeler_config["security"][0]["changed-files"][0][
         "any-glob-to-any-file"
     ]
+    assert "ops/cloudflare/**" in labeler_config["security"][0]["changed-files"][0][
+        "any-glob-to-any-file"
+    ]
+    assert "ops/cloudflare/**" in labeler_config["network-security"][0][
+        "changed-files"
+    ][0]["any-glob-to-any-file"]
     assert "compose.staging.yml" in labeler_config["staging"][0]["changed-files"][0][
+        "any-glob-to-any-file"
+    ]
+    assert "ops/cloudflare/**" in labeler_config["staging"][0]["changed-files"][0][
         "any-glob-to-any-file"
     ]
     assert "docs/security/admin-and-staging-zero-trust-access.md" in labeler
@@ -304,8 +339,8 @@ def test_repository_identity_ghcr_cosign_and_bootstrap_references_are_consistent
         assert old_owner not in lowered, path
         assert old_repo not in lowered, path
 
-    assert "Repository identity: `hetp88/SITBank`" in docs
-    assert "Production image form: `ghcr.io/hetp88/sitbank@sha256:<digest>`" in docs
+    assert "Repository identity: `WenJiangg/SITBank`" in docs
+    assert "Production image form: `ghcr.io/wenjiangg/sitbank@sha256:<digest>`" in docs
     assert 'repository="ghcr.io/${GITHUB_REPOSITORY,,}"' in workflow
     assert "GITHUB_REPOSITORY=${github_repository}" in bootstrap
     assert "GHCR_REPOSITORY=ghcr.io/${repository_lower}" in bootstrap

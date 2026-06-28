@@ -61,6 +61,16 @@ For staging admin, also set:
 
 - `STAGING_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID`
 
+For the staging customer Access assertion gate, also set:
+
+- `STAGING_CLOUDFLARE_ACCESS_AUD`
+- `STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN`
+
+`ops/cloudflare/provision-staging-access --apply` prints both values after it
+creates or reconciles the Access application. They are identifiers rather than
+secrets, but keep them in the protected `staging` environment so deployment
+and provider configuration change together.
+
 `<PREFIX>_MFA_KEK_ACTIVE_ID` must match a key identifier in the root-managed `/etc/sitbank*/secrets/mfa_kek_keys_json` file on EC2. Do not put `MFA_KEK_KEYS_JSON` in GitHub Actions; the KEK keyring is a long-lived secret and remains host-managed.
 `<PREFIX>_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID` must match a key identifier in
 `/etc/sitbank*/secrets/admin_session_hmac_keys_json`. Do not put admin Flask,
@@ -74,6 +84,16 @@ exported through GitHub Actions environment variables.
 Ordinary pull requests skip the full authenticated DAST crawl to keep feedback fast. They still run unit tests, compile checks, `pip check`, Bandit, dependency audits, dependency lock validation, repository secret scan, Docker image build, container smoke test, Compose validation, and Trivy gates.
 
 Authenticated DAST still runs before staging/production deployment during release verification. Manual staging can enable or disable DAST with `run_dast`; scheduled scans keep regular full DAST coverage. This means release verification retains that coverage while PRs stay responsive.
+
+Synthetic DAST users remain the only authenticated scan identities. The smoke
+helper writes the authenticated session cookie and ZAP replacer configuration to
+temporary `0600` files created under `umask 077`; the DAST cookie is not passed
+as a raw process argument. ZAP loads the authenticated-cookie replacer from a
+restricted `-configfile` path, and the cookie/config directory is removed by the
+smoke-test cleanup trap on success or failure. Do not upload `auth-cookie` or
+`zap-replacer.properties`, do not print environment dumps or shell-expanded
+secret values, and investigate immediately if either file or a session value
+appears in logs, summaries, or artifacts.
 
 ## Dependency Updates
 

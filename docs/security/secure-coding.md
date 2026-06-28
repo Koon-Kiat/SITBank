@@ -4,6 +4,10 @@ This document maps SITBank's secure-coding practices to the implementation
 found in the repository, with emphasis on OWASP Proactive Controls and OWASP
 Top 10 risks.
 
+Security ownership, review cadence, accepted-risk handling, and stale
+documentation prevention are tracked in
+`docs/security/security-governance.md`.
+
 ## Input Validation
 
 The application validates input at the edge of each feature using WTForms,

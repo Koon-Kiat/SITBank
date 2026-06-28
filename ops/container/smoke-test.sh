@@ -12,16 +12,52 @@ readonly postgres_container="smoke-postgres"
 readonly app_container="sitbank-smoke"
 readonly admin_container="sitbank-admin-smoke"
 
-docker_bind_source() {
-    local path="$1"
+running_on_windows_shell() {
     case "$(uname -s)" in
         MINGW* | MSYS* | CYGWIN*)
-            cygpath -w "${path}"
+            return 0
             ;;
         *)
-            printf '%s' "${path}"
+            return 1
             ;;
     esac
+}
+
+if running_on_windows_shell; then
+    # Docker receives container paths such as /run/secrets/... in --env and
+    # --tmpfs arguments. Keep those POSIX paths intact; bind mounts are
+    # converted explicitly by docker_bind_source below.
+    export MSYS_NO_PATHCONV=1
+fi
+
+docker_bind_source() {
+    local path="$1"
+    if running_on_windows_shell; then
+        cygpath -w "${path}"
+    else
+        printf '%s' "${path}"
+    fi
+}
+
+install_host_dir() {
+    local mode="$1"
+    shift
+    if running_on_windows_shell; then
+        mkdir -p "$@"
+        chmod "${mode}" "$@" 2>/dev/null || true
+    else
+        install -d -m "${mode}" "$@"
+    fi
+}
+
+chmod_host_path() {
+    local mode="$1"
+    shift
+    if running_on_windows_shell; then
+        chmod "${mode}" "$@" 2>/dev/null || true
+    else
+        chmod "${mode}" "$@"
+    fi
 }
 
 dump_container_diagnostics() {
@@ -232,7 +268,7 @@ fi
 echo "Admin connection test: passed"
 echo "Postgres smoke DB host: ${postgres_container}"
 
-install -d -m 0755 "${work_dir}/secrets" "${work_dir}/config"
+install_host_dir 0755 "${work_dir}/secrets" "${work_dir}/config"
 printf '%s' 'ci-secret-key-that-is-long-enough-for-container-tests' \
     > "${work_dir}/secrets/secret_key"
 printf '%s' 'ci-csrf-key-that-is-long-enough-for-container-tests' \
@@ -272,11 +308,11 @@ printf '%s' 'smtp-user' \
     > "${work_dir}/secrets/smtp_username"
 printf '%s' 'smtp-password' \
     > "${work_dir}/secrets/smtp_password"
-chmod 0444 "${work_dir}"/secrets/*
+chmod_host_path 0444 "${work_dir}"/secrets/*
 
 seq -f 'blocked-password-%06g' 1 100000 \
     > "${work_dir}/config/common-passwords.txt"
-chmod 0444 "${work_dir}"/config/*
+chmod_host_path 0444 "${work_dir}"/config/*
 
 secrets_mount_source="$(docker_bind_source "${work_dir}/secrets")"
 config_mount_source="$(docker_bind_source "${work_dir}/config")"
@@ -429,7 +465,11 @@ if [[ "${RUN_ZAP_DAST:-false}" == "true" ]]; then
         echo "SITBank application was not reachable from the DAST smoke network" >&2
         false
     fi
-    install -d -m 0777 "${work_dir}/dast"
+    umask 077
+    install_host_dir 0700 "${work_dir}/dast"
+    # Bind-mounted Docker directories need broad traversal for container UIDs;
+    # the cookie and ZAP config files inside remain 0600.
+    chmod_host_path 0777 "${work_dir}/dast"
     dast_mount_source="$(docker_bind_source "${work_dir}/dast")"
     docker run --rm "${docker_args[@]}" \
         --volume "${create_dast_session_source}:/app/create_dast_session.py:ro" \
@@ -438,25 +478,37 @@ if [[ "${RUN_ZAP_DAST:-false}" == "true" ]]; then
         python /app/create_dast_session.py \
             --base-url "${dast_base_url}" \
             --allow-host "${app_container}" \
-            --output /run/dast/auth-cookie
-    dast_cookie="$(
-        docker run --rm --interactive "${docker_args[@]}" \
-            --volume "${dast_mount_source}:/run/dast:ro" \
-            "${IMAGE}" \
-            python - <<'PY'
+            --output /run/dast/auth-cookie \
+            --zap-replacer-config-output /run/dast/zap-replacer.properties
+    docker run --rm --interactive "${docker_args[@]}" \
+        --volume "${dast_mount_source}:/run/dast:ro" \
+        "${IMAGE}" \
+        python - <<'PY'
+import re
+import stat
 from pathlib import Path
 
-print(Path("/run/dast/auth-cookie").read_text(encoding="utf-8"), end="")
+cookie_path = Path("/run/dast/auth-cookie")
+zap_config_path = Path("/run/dast/zap-replacer.properties")
+cookie = cookie_path.read_text(encoding="utf-8")
+if not re.fullmatch(r"__Host-sitbank_session=[A-Za-z0-9._~-]+", cookie):
+    raise SystemExit("Authenticated DAST session cookie is malformed")
+for path in (cookie_path, zap_config_path):
+    mode = stat.S_IMODE(path.stat().st_mode)
+    if mode & 0o077:
+        raise SystemExit(f"{path.name} permissions are too broad: {mode:o}")
 PY
-    )"
-    if [[ ! "${dast_cookie}" =~ ^__Host-sitbank_session=[A-Za-z0-9._~-]+$ ]]; then
-        echo "Authenticated DAST session cookie is malformed" >&2
-        exit 1
-    fi
-    install -d -m 0777 "${work_dir}/zap"
-    zap_mount_source="$(docker_bind_source "${work_dir}/zap")"
+    # ZAP derives an unusable home such as /zap/?/.ZAP for this unknown UID.
+    # Keep the UID aligned with the 0600 DAST config owner and provide a
+    # writable tmpfs-backed ZAP home with -dir instead of relaxing cookie files.
+    # Keeping ZAP caches and reports off the host avoids root-owned cleanup
+    # failures after a successful GitHub Actions scan.
     docker run --rm --network "${network_name}" \
-        --volume "${zap_mount_source}:/zap/wrk:rw" \
+        --user 10001:10001 \
+        --env HOME=/zap/wrk \
+        --workdir /zap/wrk \
+        --tmpfs "/zap/wrk:rw,nosuid,nodev,size=1g,uid=10001,gid=10001,mode=1770" \
+        --volume "${dast_mount_source}:/run/dast:ro" \
         "${ZAP_IMAGE}" \
         zap-full-scan.py \
             -t "http://${app_container}:5000/dashboard" \
@@ -464,15 +516,5 @@ PY
             -m 2 \
             -r zap-report.html \
             -J zap-report.json \
-            -z "-config replacer.full_list(0).description=authenticated-session \
--config replacer.full_list(0).enabled=true \
--config replacer.full_list(0).matchtype=REQ_HEADER \
--config replacer.full_list(0).matchstr=Cookie \
--config replacer.full_list(0).replacement=${dast_cookie} \
--config replacer.full_list(1).description=trusted-https-proxy \
--config replacer.full_list(1).enabled=true \
--config replacer.full_list(1).matchtype=REQ_HEADER \
--config replacer.full_list(1).matchstr=X-Forwarded-Proto \
--config replacer.full_list(1).replacement=https"
-    unset dast_cookie
+            -z "-dir /zap/wrk/.ZAP -configfile /run/dast/zap-replacer.properties"
 fi

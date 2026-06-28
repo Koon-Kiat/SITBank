@@ -12,6 +12,12 @@ Security-critical state is stored in application-owned PostgreSQL tables. Server
 
 The app keeps password hashing PBKDF2+pepper only and MFA/TOTP seed encryption envelope-only using `MFA_KEK_ACTIVE_ID` plus `MFA_KEK_KEYS_JSON`. The current MFA baseline is authenticator TOTP with recovery-code support for reset flows. Legacy one-key MFA AES compatibility and direct non-PBKDF2 password hash compatibility are intentionally removed because current users are test-only and environments must be reset before this change is deployed.
 
+Security governance, role-based ownership, review cadence, accepted-risk
+handling, and stale-documentation prevention are documented in
+`docs/security/security-governance.md`. Current gaps live in
+`docs/security/security-gap-register.md`, and framework evidence is mapped in
+`docs/security/framework-control-matrix.md`.
+
 ## Local Development
 
 ```powershell
@@ -136,7 +142,7 @@ customer domain.
 
 ## Deployment Snapshot
 
-Images are published as immutable signed digests under `ghcr.io/hetp88/sitbank@sha256:<digest>` from the `hetp88/SITBank` repository. The workflow derives the package path from `GITHUB_REPOSITORY` so future owner changes need only docs, CODEOWNERS, EC2 deploy config, and bootstrap inputs updated. Production uses `/etc/sitbank`, `/opt/sitbank`, `sitbank-container.service`, `sitbank_db`, `sitbank_owner`, `sitbank_app`, and a distinct admin runtime DB role such as `sitbank_admin`. Staging uses separate `/etc/sitbank-staging`, `/opt/sitbank-staging`, isolated Compose services, and isolated Docker volumes.
+Images are published as immutable signed digests under `ghcr.io/wenjiangg/sitbank@sha256:<digest>` from the `WenJiangg/SITBank` repository. The workflow derives the package path from `GITHUB_REPOSITORY` so future owner changes need only docs, CODEOWNERS, EC2 deploy config, and bootstrap inputs updated. Production uses `/etc/sitbank`, `/opt/sitbank`, `sitbank-container.service`, `sitbank_db`, `sitbank_owner`, `sitbank_app`, and a distinct admin runtime DB role such as `sitbank_admin`. Staging uses separate `/etc/sitbank-staging`, `/opt/sitbank-staging`, isolated Compose services, and isolated Docker volumes.
 
 Database migrations use Alembic. Existing databases that predate Alembic must first pass `verify-migration-baseline`, then be stamped with `db stamp 20260610_0001`. Do not run `db.create_all()` in deployment.
 

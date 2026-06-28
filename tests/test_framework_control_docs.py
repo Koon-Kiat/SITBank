@@ -6,6 +6,7 @@ GAP_REGISTER = Path("docs/security/security-gap-register.md")
 LINKED_DOCS = [
     Path("README.md"),
     Path("SECURITY.md"),
+    Path("docs/security/security-governance.md"),
     Path("docs/security/secure-coding.md"),
     Path("docs/security/access-control.md"),
     Path("docs/security/session-management.md"),
@@ -65,12 +66,14 @@ def test_security_gap_register_is_single_source_with_required_fields():
     current_open = _section(register, "Current Open Gaps")
 
     for required_column in (
+        "Owner role",
+        "Status / tracking",
         "Framework mapping",
         "Risk level",
         "Current evidence",
-        "Recommended fix",
+        "Recommended fix / next action",
         "Relevant files/tests",
-        "Separate issue",
+        "Review trigger",
     ):
         assert required_column in current_open
 
@@ -84,6 +87,11 @@ def test_security_gap_register_is_single_source_with_required_fields():
     ):
         assert open_gap in current_open
 
+    for issue_ref in ("#166", "#197", "#209", "#218"):
+        assert issue_ref in current_open
+
+    assert "Local Docker/Compose proof when Docker is unavailable" not in current_open
+
     for fixed_item in (
         "independent absolute maximum lifetime",
         "generated admin route authorization inventory policy",
@@ -96,7 +104,6 @@ def test_security_gap_register_is_single_source_with_required_fields():
         "PDPA data inventory and retention schedule",
         "Dedicated incident response runbook",
         "Threat model and design risk record",
-        "Admin audit-log viewer UI",
     ):
         assert fixed_item not in current_open
 
@@ -109,6 +116,8 @@ def test_security_gap_register_is_single_source_with_required_fields():
     assert "Privacy and PDPA documentation" in implemented
     assert "Incident response runbook" in implemented
     assert "Threat model and design risk register" in implemented
+    assert "Security governance process" in implemented
+    assert "Strict Docker/Compose local CI mode" in implemented
     recently_closed = _section(register, "Recently Closed Gaps")
     assert "Admin audit-log viewer UI" in recently_closed
 

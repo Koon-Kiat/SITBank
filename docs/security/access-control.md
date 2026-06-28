@@ -214,3 +214,19 @@ EC2-origin requests to staging browser/app paths return `403` unless
 Cloudflare's client certificate verifies successfully. Staging `/health/ready`
 remains loopback-only for deployment checks. The shared default Nginx config
 continues to reject unknown hostnames.
+Bootstrap also validates the configured origin-pull CA before enabling the
+site: safe root-owned file metadata, exactly one currently valid CA, and an
+exact SHA-256 fingerprint/subject/issuer match against the repository-reviewed
+allowlist are required. Trust material is never fetched during bootstrap.
+
+`ops/cloudflare/provision-staging-access` manages and verifies the corresponding
+provider-side self-hosted application, explicit email/group Allow policy,
+application audience, and proxied staging DNS record. Its live verification
+also checks the unauthenticated Access challenge and direct-origin denial.
+The staging customer Flask app also validates the
+`Cf-Access-Jwt-Assertion` RS256 signature, issuer, audience, expiry, and
+optional not-before time before routing the request. Cloudflare Access remains
+an outer network/identity boundary: Flask login, MFA, CSRF, ownership checks,
+rate limiting, audit logging, and Basic Auth still apply. Nginx strips
+Cloudflare email/service-token headers, and verified token identity remains
+metadata rather than SITBank authorization input.

@@ -72,7 +72,11 @@ Gunicorn listeners. Nginx overwrites proxy headers in
 
 Staging browser traffic must pass Cloudflare Access before the staging Nginx
 server reaches Flask, and the staging origin requires Cloudflare Authenticated
-Origin Pulls for browser/app paths. Admin browser traffic must use a
+Origin Pulls for browser/app paths. The staging customer Flask hook separately
+validates the Access assertion signature, issuer, audience, expiry, and
+not-before time before loading the normal SITBank session. It does not copy
+Cloudflare identity into the session, and only loopback readiness bypasses the
+assertion check. Admin browser traffic must use a
 Tailscale/private operator path before it can reach the loopback admin service.
 These network boundaries do not merge session state: customer and admin
 cookies, lookup HMAC keys, session key prefixes, rate-limit prefixes, and
@@ -219,6 +223,9 @@ isolation.
 | Risk drift after login | HMAC-derived coarse network and User-Agent context triggers customer reauthentication or revocation; admin drift revokes the session | `app/security/sessions.py`; `tests/test_session_risk_binding.py` |
 | Stolen active cookie | Inactivity timeout, absolute lifetime, revocation, session inventory, and risk-based reauthentication reduce impact, but the cookie is not cryptographically device-bound | `app/security/sessions.py`, `tests/test_session_risk_binding.py`, `tests/test_session_management.py`, `tests/test_session_absolute_lifetime.py` |
 
-Remaining session risk-reduction items, such as optional active-session count
-caps and stronger device-bound session proof, are tracked in
-`docs/security/security-gap-register.md`.
+Remaining session risk-reduction items are tracked in
+`docs/security/security-gap-register.md`: optional active-session count caps are
+`needs-triage`, while stronger cryptographic device-bound proof remains an
+accepted defense-in-depth gap. Issue #218 records the current decision to use
+Tailscale private access as the admin device/network boundary rather than
+claiming cryptographic device binding for browser sessions.

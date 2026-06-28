@@ -4,6 +4,7 @@ import argparse
 import http.cookies
 import json
 import os
+import re
 import secrets
 import urllib.error
 import urllib.parse
@@ -12,6 +13,9 @@ from pathlib import Path
 
 import pyotp
 from sqlalchemy.exc import IntegrityError
+
+
+DAST_COOKIE_RE = re.compile(r"^__Host-sitbank_session=[A-Za-z0-9._~-]+$")
 
 
 class DastClient:
@@ -214,11 +218,44 @@ def create_dast_user(
 
 
 def write_cookie_output(path: Path, cookie: str) -> None:
+    _validate_cookie_header(cookie)
+    _write_secret_file(path, cookie)
+
+
+def write_zap_replacer_config(path: Path, cookie: str) -> None:
+    _validate_cookie_header(cookie)
+    config = "\n".join(
+        (
+            "replacer.full_list(0).description=authenticated-session",
+            "replacer.full_list(0).enabled=true",
+            "replacer.full_list(0).matchtype=REQ_HEADER",
+            "replacer.full_list(0).matchstr=Cookie",
+            f"replacer.full_list(0).replacement={cookie}",
+            "replacer.full_list(1).description=trusted-https-proxy",
+            "replacer.full_list(1).enabled=true",
+            "replacer.full_list(1).matchtype=REQ_HEADER",
+            "replacer.full_list(1).matchstr=X-Forwarded-Proto",
+            "replacer.full_list(1).replacement=https",
+        )
+    )
+    _write_secret_file(path, f"{config}\n")
+
+
+def _validate_cookie_header(cookie: str) -> None:
+    if not DAST_COOKIE_RE.fullmatch(cookie):
+        raise RuntimeError("Authenticated DAST session cookie is malformed")
+
+
+def _write_secret_file(path: Path, contents: str) -> None:
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-    fd = os.open(path, flags, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
-        handle.write(cookie)
-    path.chmod(0o600)
+    previous_umask = os.umask(0o077)
+    try:
+        fd = os.open(path, flags, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            handle.write(contents)
+        path.chmod(0o600)
+    finally:
+        os.umask(previous_umask)
 
 
 def main() -> None:
@@ -231,6 +268,7 @@ def main() -> None:
         help="additional exact HTTP host allowed for Docker-network smoke tests",
     )
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--zap-replacer-config-output", type=Path, required=True)
     args = parser.parse_args()
 
     cookie = create_authenticated_cookie(
@@ -238,6 +276,7 @@ def main() -> None:
         allowed_hosts=set(args.allow_host),
     )
     write_cookie_output(args.output, cookie)
+    write_zap_replacer_config(args.zap_replacer_config_output, cookie)
 
 
 if __name__ == "__main__":
