@@ -498,16 +498,16 @@ for path in (cookie_path, zap_config_path):
     if mode & 0o077:
         raise SystemExit(f"{path.name} permissions are too broad: {mode:o}")
 PY
-    install_host_dir 0777 "${work_dir}/zap"
-    zap_mount_source="$(docker_bind_source "${work_dir}/zap")"
     # ZAP derives an unusable home such as /zap/?/.ZAP for this unknown UID.
     # Keep the UID aligned with the 0600 DAST config owner and provide a
-    # writable non-secret ZAP home with -dir instead of relaxing cookie files.
+    # writable tmpfs-backed ZAP home with -dir instead of relaxing cookie files.
+    # Keeping ZAP caches and reports off the host avoids root-owned cleanup
+    # failures after a successful GitHub Actions scan.
     docker run --rm --network "${network_name}" \
         --user 10001:10001 \
         --env HOME=/zap/wrk \
         --workdir /zap/wrk \
-        --volume "${zap_mount_source}:/zap/wrk:rw" \
+        --tmpfs "/zap/wrk:rw,nosuid,nodev,size=1g,uid=10001,gid=10001,mode=1770" \
         --volume "${dast_mount_source}:/run/dast:ro" \
         "${ZAP_IMAGE}" \
         zap-full-scan.py \

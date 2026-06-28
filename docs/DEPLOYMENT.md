@@ -229,6 +229,9 @@ scanner home option `-dir /zap/wrk/.ZAP` plus
 `-configfile /run/dast/zap-replacer.properties`; it must not include a raw cookie
 value or `replacement=${...}` argument. Do not retain the DAST temporary
 directory, upload it as an artifact, or paste its contents into release notes.
+ZAP's own cache, browser profile, and report workspace run on container tmpfs
+so scanner-owned files disappear with the container instead of breaking host
+cleanup.
 
 The production customer verification gate fails for
 SSLv2, SSLv3, TLS 1.0, or TLS 1.1; weak, NULL, anonymous, export, RC4, or 3DES
