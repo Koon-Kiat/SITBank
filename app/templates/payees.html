@@ -42,6 +42,9 @@
             {% endif %}
           </td>
           <td>
+            {% if row.status == "active" %}
+            <a class="button small" href="{{ url_for('banking.transfer', payee_id=row.payee.id) }}">Transfer</a>
+            {% endif %}
             <a class="button secondary small" href="{{ url_for('banking.payees_remove', payee_id=row.payee.id) }}">Remove</a>
           </td>
         </tr>
