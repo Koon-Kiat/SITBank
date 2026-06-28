@@ -12,7 +12,7 @@
     if (/[a-z]/.test(value) && /[A-Z]/.test(value)) {
       score += 1;
     }
-    if (/[0-9]/.test(value)) {
+    if (/\d/.test(value)) {
       score += 1;
     }
     if (/[^A-Za-z0-9]/.test(value)) {
@@ -45,27 +45,6 @@
     }
   }
 
-  function fallbackCopy(text, status) {
-    const textarea = document.createElement("textarea");
-    textarea.value = text;
-    textarea.setAttribute("readonly", "readonly");
-    textarea.style.position = "fixed";
-    textarea.style.left = "-9999px";
-    document.body.appendChild(textarea);
-    textarea.select();
-    try {
-      if (document.execCommand("copy")) {
-        setRecoveryStatus(status, "Recovery codes copied.");
-      } else {
-        setRecoveryStatus(status, "Copy was not available. Download the codes instead.");
-      }
-    } catch (error) {
-      setRecoveryStatus(status, "Copy was not available. Download the codes instead.");
-    } finally {
-      textarea.remove();
-    }
-  }
-
   function copyRecoveryCodes(list, status) {
     const text = recoveryCodesText(list);
     if (!text) {
@@ -79,7 +58,7 @@
       });
       return;
     }
-    fallbackCopy(text, status);
+    setRecoveryStatus(status, "Copy was not available. Download the codes instead.");
   }
 
   function downloadRecoveryCodes(list, status) {

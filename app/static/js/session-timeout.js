@@ -41,7 +41,7 @@
   }
 
   function hideOverlay() {
-    if (overlayEl) overlayEl.hidden = true;
+    if (overlayEl?.open) overlayEl.close();
     clearInterval(countdownInterval);
     countdownInterval = null;
   }
@@ -50,7 +50,7 @@
     if (!overlayEl) return;
     let remaining = warningSeconds;
     if (countdownEl) countdownEl.textContent = remaining;
-    overlayEl.hidden = false;
+    if (!overlayEl.open) overlayEl.showModal();
     clearInterval(countdownInterval);
     countdownInterval = setInterval(function () {
       remaining -= 1;

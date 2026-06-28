@@ -28,6 +28,8 @@ from app.security.session_hmac import (
 
 
 SESSION_RISK_REAUTH_REQUIRED_KEY = "risk_reauth_required"
+JSON_MIME_TYPE = "application/json"
+WEB_LOGIN_ENDPOINT = "web.login"
 SESSION_RISK_FINGERPRINT_KEY = "risk_fingerprint"
 SESSION_RISK_CONTEXT_KEY = "risk_context"
 SESSION_RISK_CONTEXT_VERSION = 1
@@ -928,22 +930,22 @@ def _wants_session_json_response() -> bool:
         return True
     if request.path.startswith(("/auth/", "/admin/")):
         return True
-    best = request.accept_mimetypes.best_match(["application/json", "text/html"])
-    return best == "application/json" and (
-        request.accept_mimetypes["application/json"] >= request.accept_mimetypes["text/html"]
+    best = request.accept_mimetypes.best_match([JSON_MIME_TYPE, "text/html"])
+    return best == JSON_MIME_TYPE and (
+        request.accept_mimetypes[JSON_MIME_TYPE] >= request.accept_mimetypes["text/html"]
     )
 
 
 def _session_expired_response(message: str = "Session expired"):
     if _wants_session_json_response():
         return jsonify({"error": message}), 401
-    return redirect(url_for("web.login", session_expired=1))
+    return redirect(url_for(WEB_LOGIN_ENDPOINT, session_expired=1))
 
 
 def _session_revoked_response():
     if _wants_session_json_response():
         return jsonify({"error": "Session revoked"}), 401
-    return redirect(url_for("web.login", session_expired=1))
+    return redirect(url_for(WEB_LOGIN_ENDPOINT, session_expired=1))
 
 
 def register_session_hooks(app: Flask) -> None:
@@ -956,7 +958,7 @@ def register_session_hooks(app: Flask) -> None:
                 session.clear()
                 if request.endpoint in {
                     "main.index",
-                    "web.login",
+                    WEB_LOGIN_ENDPOINT,
                     "web.login_submit",
                     "web.register_form",
                     "web.register_submit",
@@ -993,7 +995,7 @@ def register_session_hooks(app: Flask) -> None:
                     ), 401
                 flash("MFA challenge expired. Please log in again.", "warning")
                 rotate_session_id()
-                return redirect(url_for("web.login"))
+                return redirect(url_for(WEB_LOGIN_ENDPOINT))
 
         authenticated_user_id = session.get("user_id")
         if authenticated_user_id:

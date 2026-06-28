@@ -7,6 +7,8 @@ from sqlalchemy import Index, func
 
 from .extensions import db
 
+_USER_ID_FOREIGN_KEY = "users.id"
+
 
 class User(db.Model):
     __tablename__ = "users"
@@ -75,7 +77,7 @@ class WebAuthnCredential(db.Model):
     __tablename__ = "webauthn_credentials"
 
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
     credential_id = db.Column(db.LargeBinary, nullable=False, unique=True)
     credential_public_key = db.Column(db.LargeBinary, nullable=False)
     sign_count = db.Column(db.Integer, nullable=False, default=0)
@@ -116,7 +118,7 @@ class PasswordResetToken(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     selector = db.Column(db.String(64), nullable=False, unique=True, index=True)
     verifier_hmac = db.Column(db.String(64), nullable=False)
-    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
     purpose = db.Column(db.String(40), nullable=False, default="password_reset")
     created_at = db.Column(
         db.DateTime(timezone=True),
@@ -136,7 +138,7 @@ class RecoveryCode(db.Model):
     __tablename__ = "recovery_codes"
 
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
     code_hmac = db.Column(db.String(64), nullable=False, unique=True)
     purpose = db.Column(db.String(40), nullable=False, default="totp_recovery")
     created_at = db.Column(
@@ -154,7 +156,7 @@ class ManualRecoveryRequest(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     identifier_ref = db.Column(db.String(64), nullable=False, index=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=True, index=True)
     status = db.Column(db.String(32), nullable=False, default="pending")
     requested_ip = db.Column(db.String(64), nullable=False, default="")
     requested_user_agent = db.Column(db.String(256), nullable=False, default="")
@@ -196,7 +198,7 @@ class ServerSideSession(db.Model):
     session_ref = db.Column(db.String(32), nullable=True, index=True)
     payload = db.Column(db.LargeBinary, nullable=True)
     payload_format = db.Column(db.String(32), nullable=False, default="session-hmac-v2")
-    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=True, index=True)
     created_at = db.Column(
         db.DateTime(timezone=True),
         nullable=False,
@@ -240,7 +242,7 @@ class AuthAttemptCounter(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     scope = db.Column(db.String(80), nullable=False)
     principal_hash = db.Column(db.String(64), nullable=False)
-    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=True, index=True)
     ip_hash = db.Column(db.String(64), nullable=True, index=True)
     failure_count = db.Column(db.Integer, nullable=False, default=0)
     window_started_at = db.Column(
@@ -274,7 +276,7 @@ class TotpReplayRecord(db.Model):
     __tablename__ = "totp_replay_records"
 
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
     scope = db.Column(db.String(80), nullable=False)
     time_step = db.Column(db.Integer, nullable=False)
     code_digest = db.Column(db.String(64), nullable=False)
@@ -339,10 +341,10 @@ class StaffInvite(db.Model):
     workplace_email_normalized = db.Column(db.String(255), nullable=False, index=True)
     role = db.Column(db.String(32), nullable=False)
     status = db.Column(db.String(32), nullable=False, default="pending", index=True)
-    created_by_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
-    setup_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True, index=True)
-    used_by_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True, index=True)
-    revoked_by_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True, index=True)
+    created_by_user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
+    setup_user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=True, index=True)
+    used_by_user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=True, index=True)
+    revoked_by_user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=True, index=True)
     created_at = db.Column(
         db.DateTime(timezone=True),
         nullable=False,
@@ -376,9 +378,9 @@ class PersonIdentityLink(db.Model):
     __tablename__ = "person_identity_links"
 
     id = db.Column(db.Integer, primary_key=True)
-    staff_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
-    customer_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
-    created_by_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True, index=True)
+    staff_user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
+    customer_user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
+    created_by_user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=True, index=True)
     created_at = db.Column(
         db.DateTime(timezone=True),
         nullable=False,
@@ -407,7 +409,7 @@ class PasswordResetTransaction(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     transaction_lookup_hash = db.Column(db.String(64), nullable=False, unique=True)
     token_id = db.Column(db.Integer, db.ForeignKey("password_reset_tokens.id"), nullable=False, index=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
     purpose = db.Column(db.String(40), nullable=False, default="password_reset")
     mfa_required = db.Column(db.String(40), nullable=False)
     available_mfa_methods_json = db.Column(db.JSON, nullable=False, default=list)
@@ -490,7 +492,7 @@ class SecurityAuditEvent(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     event_type = db.Column(db.String(80), nullable=False, index=True)
     outcome = db.Column(db.String(24), nullable=False, index=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=True, index=True)
     ip_address = db.Column(db.String(64), nullable=False, default="")
     user_agent = db.Column(db.String(256), nullable=False, default="")
     correlation_id = db.Column(db.String(36), nullable=False, index=True)
@@ -513,7 +515,7 @@ class Payee(db.Model):
     __tablename__ = "payees"
 
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
     nickname = db.Column(db.String(64), nullable=False)
     account_number = db.Column(db.String(9), nullable=False)
     recipient_name = db.Column(db.String(128), nullable=False)
@@ -542,8 +544,8 @@ class Transaction(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     transaction_ref = db.Column(db.String(36), nullable=False, unique=True, index=True)
     transaction_hash = db.Column(db.String(64), nullable=False, unique=True, index=True)
-    sender_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
-    recipient_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    sender_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
+    recipient_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
     payee_id = db.Column(db.Integer, db.ForeignKey("payees.id"), nullable=True, index=True)
     amount = db.Column(db.Numeric(12, 2), nullable=False)
     reference = db.Column(db.String(128), nullable=False, default="")
@@ -584,7 +586,7 @@ class PendingTransfer(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     token = db.Column(db.String(64), nullable=False, unique=True, index=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
     payee_id = db.Column(db.Integer, db.ForeignKey("payees.id"), nullable=False, index=True)
     amount = db.Column(db.Numeric(12, 5), nullable=False)
     reference = db.Column(db.String(128), nullable=False, default="", server_default="")

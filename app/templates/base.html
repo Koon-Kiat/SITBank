@@ -188,7 +188,7 @@
         <span class="session-timer-label">Session</span>
         <span id="session-timer-value" class="session-timer-value">{{ "%d:%02d"|format(config["SESSION_INACTIVITY_SECONDS"] // 60, config["SESSION_INACTIVITY_SECONDS"] % 60) }}</span>
       </div>
-      <div id="session-timeout-overlay" class="session-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="session-timeout-title" hidden>
+      <dialog id="session-timeout-overlay" class="session-modal-overlay" aria-labelledby="session-timeout-title">
         <div class="session-modal">
           <h2 class="session-modal-title" id="session-timeout-title">Session Expiring</h2>
           <div class="session-modal-countdown" id="session-timeout-countdown">60</div>
@@ -201,7 +201,7 @@
             <button type="button" id="session-continue-btn">Continue Session</button>
           </div>
         </div>
-      </div>
+      </dialog>
       {% endif %}
       {% with messages = get_flashed_messages(with_categories=true) %}
         {% if messages %}

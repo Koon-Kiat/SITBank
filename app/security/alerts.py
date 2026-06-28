@@ -150,6 +150,9 @@ class AlertConfigurationError(RuntimeError):
     pass
 
 
+REDACTED_VALUE = "[redacted]"
+
+
 def evaluate_security_alerts(*, now: datetime | None = None) -> list[dict[str, Any]]:
     current_time = _as_utc(now or datetime.now(timezone.utc))
     longest_window = timedelta(minutes=15)
@@ -792,7 +795,7 @@ def _sanitize_alert_for_delivery(alert: Mapping[str, Any]) -> dict[str, Any]:
         key_text = _safe_text(key, 80) or "field"
         key_lower = key_text.casefold()
         if _is_sensitive_delivery_key(key_lower):
-            clean[key_text] = "[redacted]"
+            clean[key_text] = REDACTED_VALUE
             continue
         clean[key_text] = _sanitize_delivery_value(value, key_lower, depth=0)
     return clean
@@ -807,7 +810,7 @@ def _sanitize_delivery_value(value: Any, key_lower: str, *, depth: int) -> Any:
             nested_key_text = _safe_text(nested_key, 80) or "field"
             nested_key_lower = nested_key_text.casefold()
             nested[nested_key_text] = (
-                "[redacted]"
+                REDACTED_VALUE
                 if _is_sensitive_delivery_key(nested_key_lower)
                 else _sanitize_delivery_value(nested_value, nested_key_lower, depth=depth + 1)
             )
@@ -820,7 +823,7 @@ def _sanitize_delivery_value(value: Any, key_lower: str, *, depth: int) -> Any:
 
     text = _safe_text(value, 512)
     if _looks_like_sensitive_delivery_value(text):
-        return "[redacted]"
+        return REDACTED_VALUE
     return text
 
 
@@ -835,7 +838,7 @@ def _looks_like_sensitive_delivery_value(text: str) -> bool:
     if not text:
         return False
     lowered = text.casefold()
-    if lowered == "[redacted]":
+    if lowered == REDACTED_VALUE:
         return True
     if lowered.startswith(("bearer ", "basic ", "token ")):
         return True
@@ -1050,9 +1053,7 @@ def _add_login_failure_alerts(
     by_principal: Counter[str] = Counter()
     by_ip: Counter[str] = Counter()
     for event in events:
-        if _as_utc(event.created_at) < window_start:
-            continue
-        if event.event_type != "login" or event.outcome != "failure":
+        if not _is_recent_login_failure(event, window_start):
             continue
         metadata = _metadata(event)
         principal_ref = _safe_ref(metadata.get("principal_ref"))
@@ -1061,7 +1062,36 @@ def _add_login_failure_alerts(
         if event.ip_address:
             by_ip[_safe_text(event.ip_address, 64)] += 1
 
-    for principal_ref, count in by_principal.items():
+    _append_login_failure_bursts(
+        alerts,
+        by_principal,
+        source_prefix="principal_ref",
+        current_time=current_time,
+    )
+    _append_login_failure_bursts(
+        alerts,
+        by_ip,
+        source_prefix="ip",
+        current_time=current_time,
+    )
+
+
+def _is_recent_login_failure(event: SecurityAuditEvent, window_start: datetime) -> bool:
+    return (
+        _as_utc(event.created_at) >= window_start
+        and event.event_type == "login"
+        and event.outcome == "failure"
+    )
+
+
+def _append_login_failure_bursts(
+    alerts: list[dict[str, Any]],
+    counts: Counter[str],
+    *,
+    source_prefix: str,
+    current_time: datetime,
+) -> None:
+    for source, count in counts.items():
         if count >= 10:
             alerts.append(
                 _alert(
@@ -1070,19 +1100,7 @@ def _add_login_failure_alerts(
                     severity="high",
                     count=count,
                     window_seconds=5 * 60,
-                    source=f"principal_ref:{principal_ref}",
-                )
-            )
-    for ip_address, count in by_ip.items():
-        if count >= 10:
-            alerts.append(
-                _alert(
-                    "login_failure_burst",
-                    current_time=current_time,
-                    severity="high",
-                    count=count,
-                    window_seconds=5 * 60,
-                    source=f"ip:{ip_address}",
+                    source=f"{source_prefix}:{source}",
                 )
             )
 
@@ -1287,7 +1305,7 @@ def _safe_text(value: Any, limit: int) -> str:
     compact = " ".join(cleaned.split())[:limit]
     lowered = compact.casefold()
     if lowered.startswith(("bearer ", "basic ", "token ")):
-        return "[redacted]"
+        return REDACTED_VALUE
     return compact
 
 

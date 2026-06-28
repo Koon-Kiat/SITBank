@@ -7,13 +7,15 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+DEPLOYMENT_IMPACT_SECTION = "Deployment impact"
+
 
 REQUIRED_SECTIONS = (
     "Summary",
     "Why",
     "What changed",
     "Security impact",
-    "Deployment impact",
+    DEPLOYMENT_IMPACT_SECTION,
     "Verification",
     "Notes",
 )
@@ -117,8 +119,8 @@ def validate_body(body: str) -> list[ValidationError]:
                 )
             )
 
-    deployment_impact = sections.get("Deployment impact", "")
-    if "Deployment impact" in sections and not _has_deployment_impact(deployment_impact):
+    deployment_impact = sections.get(DEPLOYMENT_IMPACT_SECTION, "")
+    if DEPLOYMENT_IMPACT_SECTION in sections and not _has_deployment_impact(deployment_impact):
         errors.append(
             ValidationError(
                 "Deployment impact must state at least one concrete deployment impact.",

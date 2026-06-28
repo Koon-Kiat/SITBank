@@ -28,7 +28,7 @@
         allDone = false;
       } else {
         // Cooldown just expired — reload so server re-renders "Ready" status
-        window.location.reload();
+        globalThis.location.reload();
       }
     });
     if (allDone) clearInterval(timer);

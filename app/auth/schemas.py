@@ -13,6 +13,9 @@ SESSION_REFERENCE_RE = r"^[A-Fa-f0-9]{32}$"
 STEP_UP_TOKEN_RE = r"^[A-Za-z0-9_-]{32,256}$"
 RESET_TOKEN_RE = r"^[A-Za-z0-9_-]{16,96}\.[A-Za-z0-9_-]{32,128}$"
 REGISTRATION_OTP_RE = r"^[0-9]{6}$"
+INVALID_USERNAME_MESSAGE = "Username contains invalid characters"
+PASSWORDS_MUST_MATCH_MESSAGE = "Passwords must match"
+MFA_CODE_ERROR = "MFA code must be exactly 6 digits"
 
 
 def password_length(*, minimum: int | None = None):
@@ -34,7 +37,7 @@ class RegisterSchema(Schema):
         required=True,
         validate=[
             validate.Length(min=3, max=64),
-            validate.Regexp(USERNAME_RE, error="Username contains invalid characters"),
+            validate.Regexp(USERNAME_RE, error=INVALID_USERNAME_MESSAGE),
         ],
     )
     full_name = fields.Str(
@@ -63,7 +66,7 @@ class RegisterSchema(Schema):
     @validates_schema
     def validate_password_match(self, data, **_kwargs):
         if data.get("password") != data.get("confirm_password"):
-            raise ValidationError("Passwords must match")
+            raise ValidationError(PASSWORDS_MUST_MATCH_MESSAGE)
 
 
 class RegistrationOtpRequestSchema(Schema):
@@ -104,7 +107,7 @@ class TotpSchema(Schema):
     totp_code = fields.Str(
         required=True,
         load_only=True,
-        validate=validate.Regexp(TOTP_RE, error="MFA code must be exactly 6 digits"),
+        validate=validate.Regexp(TOTP_RE, error=MFA_CODE_ERROR),
     )
 
 
@@ -144,7 +147,7 @@ class PasswordChangeSchema(Schema):
     totp_code = fields.Str(
         required=False,
         load_only=True,
-        validate=validate.Regexp(TOTP_RE, error="MFA code must be exactly 6 digits"),
+        validate=validate.Regexp(TOTP_RE, error=MFA_CODE_ERROR),
     )
     stepup_token = fields.Str(
         required=False,
@@ -154,7 +157,7 @@ class PasswordChangeSchema(Schema):
     @validates_schema
     def validate_password_match(self, data, **_kwargs):
         if data.get("new_password") != data.get("confirm_new_password"):
-            raise ValidationError("Passwords must match")
+            raise ValidationError(PASSWORDS_MUST_MATCH_MESSAGE)
 
 
 class PasswordResetSchema(Schema):
@@ -170,7 +173,7 @@ class PasswordResetSchema(Schema):
     @validates_schema
     def validate_password_match(self, data, **_kwargs):
         if data.get("new_password") != data.get("confirm_new_password"):
-            raise ValidationError("Passwords must match")
+            raise ValidationError(PASSWORDS_MUST_MATCH_MESSAGE)
 
 
 class HighRiskTotpSchema(Schema):
@@ -180,7 +183,7 @@ class HighRiskTotpSchema(Schema):
     totp_code = fields.Str(
         required=False,
         load_only=True,
-        validate=validate.Regexp(TOTP_RE, error="MFA code must be exactly 6 digits"),
+        validate=validate.Regexp(TOTP_RE, error=MFA_CODE_ERROR),
     )
     stepup_token = fields.Str(
         required=False,

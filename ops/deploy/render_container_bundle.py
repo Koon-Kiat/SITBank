@@ -28,6 +28,7 @@ CUSTOMER_SECRET_INPUTS = dict(CUSTOMER_APP_SECRET_INPUTS)
 ADMIN_SECRET_INPUTS = dict(ADMIN_APP_SECRET_INPUTS)
 
 DEPLOYMENT_PREFIXES = {"PROD", "STAGING"}
+KEY_ID_PATTERN = r"[A-Za-z0-9._-]{1,32}"
 
 DEPLOYMENT_PROFILES = {
     "PROD": {
@@ -96,7 +97,7 @@ def _validate_b64_key(name: str, value: str) -> str:
 
 
 def _validate_key_id(name: str, value: str) -> str:
-    if not re.fullmatch(r"[A-Za-z0-9._-]{1,32}", value):
+    if not re.fullmatch(KEY_ID_PATTERN, value):
         raise RuntimeError(f"{name} is invalid")
     return value
 
@@ -140,7 +141,10 @@ def _root_admin_emails(prefix: str) -> str:
     if len(emails) != 7 or len(set(emails)) != 7:
         raise RuntimeError(f"{name} must contain exactly 7 unique workplace email addresses")
     for email in emails:
-        if not re.fullmatch(r"[^@\s\x00-\x1f\x7f]{1,128}@[^@\s\x00-\x1f\x7f]{1,253}", email):
+        if not re.fullmatch(
+            r"(?=\S{1,128}@\S{1,253}$)[^@\x00-\x1f\x7f]+@[^@\x00-\x1f\x7f]+",
+            email,
+        ):
             raise RuntimeError(f"{name} contains an invalid email address")
         domain = email.rsplit("@", 1)[1]
         if domain not in {"sit.singaporetech.edu.sg", "singaporetech.edu.sg"}:
@@ -176,7 +180,7 @@ def _quote_environment_value(name: str, value: str) -> str:
 def _active_key_id(prefix: str) -> str:
     active_id_name = _prefixed(prefix, "SESSION_HMAC_ACTIVE_KEY_ID")
     active_id = _value(active_id_name)
-    if not re.fullmatch(r"[A-Za-z0-9._-]{1,32}", active_id):
+    if not re.fullmatch(KEY_ID_PATTERN, active_id):
         raise RuntimeError(f"{active_id_name} is invalid")
     return active_id
 
@@ -199,7 +203,7 @@ def _session_keyring(prefix: str) -> tuple[str, str]:
             f"{previous_id_name} and {previous_key_name} must be configured together"
         )
     if previous_id:
-        if not re.fullmatch(r"[A-Za-z0-9._-]{1,32}", previous_id):
+        if not re.fullmatch(KEY_ID_PATTERN, previous_id):
             raise RuntimeError(f"{previous_id_name} is invalid")
         if previous_id == active_id:
             raise RuntimeError("Session HMAC key identifiers must be unique")
@@ -213,7 +217,7 @@ def _session_keyring(prefix: str) -> tuple[str, str]:
 def _admin_active_key_id(prefix: str) -> str:
     active_id_name = _prefixed(prefix, "ADMIN_SESSION_HMAC_ACTIVE_KEY_ID")
     active_id = _value(active_id_name)
-    if not re.fullmatch(r"[A-Za-z0-9._-]{1,32}", active_id):
+    if not re.fullmatch(KEY_ID_PATTERN, active_id):
         raise RuntimeError(f"{active_id_name} is invalid")
     return active_id
 
@@ -236,7 +240,7 @@ def _admin_session_keyring(prefix: str) -> tuple[str, str]:
             f"{previous_id_name} and {previous_key_name} must be configured together"
         )
     if previous_id:
-        if not re.fullmatch(r"[A-Za-z0-9._-]{1,32}", previous_id):
+        if not re.fullmatch(KEY_ID_PATTERN, previous_id):
             raise RuntimeError(f"{previous_id_name} is invalid")
         if previous_id == active_id:
             raise RuntimeError("Admin session HMAC key identifiers must be unique")

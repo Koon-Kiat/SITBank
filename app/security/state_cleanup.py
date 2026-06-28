@@ -91,12 +91,11 @@ def _mark_expired_sessions(now: datetime, limit: int) -> int:
 
 
 def _delete_rows(model: Any, *criteria: Any, limit: int) -> int:
-    ids = [
-        row_id
-        for row_id in db.session.execute(
+    ids = list(
+        db.session.execute(
             db.select(model.id).where(*criteria).order_by(model.id.asc()).limit(limit)
         ).scalars()
-    ]
+    )
     if not ids:
         return 0
     db.session.execute(db.delete(model).where(model.id.in_(ids)))

@@ -23,6 +23,9 @@ from .security.sessions import install_database_sessions, register_session_hooks
 from .web.routes import web_bp
 
 
+JSON_MIME_TYPE = "application/json"
+
+
 def create_app(config_object: type[Config] = Config, *, app_mode: str = "customer") -> Flask:
     app = Flask(__name__)
     app.logger.disabled = False
@@ -111,9 +114,9 @@ def register_error_handlers(app: Flask) -> None:
     def wants_json() -> bool:
         if request.path.startswith("/auth/"):
             return True
-        best = request.accept_mimetypes.best_match(["application/json", "text/html"])
-        return best == "application/json" and (
-            request.accept_mimetypes["application/json"] >= request.accept_mimetypes["text/html"]
+        best = request.accept_mimetypes.best_match([JSON_MIME_TYPE, "text/html"])
+        return best == JSON_MIME_TYPE and (
+            request.accept_mimetypes[JSON_MIME_TYPE] >= request.accept_mimetypes["text/html"]
         )
 
     def respond(message: str, status_code: int):
