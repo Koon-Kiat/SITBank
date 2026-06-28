@@ -1136,6 +1136,7 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert '"${dast_mount_source}:/run/dast:ro"' in smoke_test
     assert "--zap-replacer-config-output /run/dast/zap-replacer.properties" in smoke_test
     assert "-configfile /run/dast/zap-replacer.properties" in smoke_test
+    assert "--workdir /zap/wrk" in smoke_test
     assert "replacer.full_list(0).replacement=${" not in smoke_test
     assert "dast_cookie=" not in smoke_test
     assert "docker compose" in compose_validation
