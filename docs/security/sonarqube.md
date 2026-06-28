@@ -74,7 +74,7 @@ The `test` job in `.github/workflows/ci-deploy.yml` installs
 `requirements-dev.lock` with hashes and runs the full suite once:
 
 ```text
-python -m pytest -q -n auto --cov=app --cov-report=xml:coverage.xml --cov-report=term --durations=30 --durations-min=0.5
+python -m pytest -q -n auto --cov=app --cov=ops --cov-report=xml:coverage.xml --cov-report=term --durations=30 --durations-min=0.5
 ```
 
 After all test and security checks pass, that job uploads only `coverage.xml`

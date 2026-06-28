@@ -88,6 +88,7 @@ def test_ci_runs_pytest_once_and_hands_coverage_to_sonarqube():
     assert ci_text.count("python -m pytest") == 1
     assert "python -m pytest -q -n auto" in test_command
     assert "--cov=app" in test_command
+    assert "--cov=ops" in test_command
     assert "--cov-report=xml:coverage.xml" in test_command
 
     upload = next(
