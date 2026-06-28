@@ -95,6 +95,36 @@ smoke-test cleanup trap on success or failure. Do not upload `auth-cookie` or
 secret values, and investigate immediately if either file or a session value
 appears in logs, summaries, or artifacts.
 
+## SonarQube Cloud
+
+The `test` job in `.github/workflows/ci-deploy.yml` runs the complete pytest
+suite once with `pytest-cov`, writes `coverage.xml`, and uploads that file as a
+short-lived artifact. After the test job succeeds on pull requests, pushes to
+`main`, and manual runs, the downstream `sonarqube` job calls the reusable
+`.github/workflows/sonarqube.yml`. That job checks out the same immutable
+source commit, downloads `coverage.xml`, and invokes only the SHA-pinned
+official SonarQube scanner; it does not install dependencies, rerun pytest, or
+hold any write permission.
+
+The reusable scanner job has only `contents: read`. It requires the GitHub
+Actions secret `SONAR_TOKEN`; it does not use production environments,
+deployment credentials, or `SONAR_HOST_URL`. Scheduled CI runs skip the
+SonarQube job.
+
+The initial SonarQube quality gate is reporting-only and is not a release or
+deployment dependency. After a successful trusted internal pull-request scan,
+the separate `sonarqube-comment` job uses SHA-pinned, Node.js 24
+`actions/github-script` to create or update one informational summary with
+workflow and dashboard links. The comment job has only `contents: read` and
+`pull-requests: write`; the scanner never receives that write capability. A
+hidden marker keeps reruns from creating duplicates.
+Fork and Dependabot pull requests receive neither the secret-backed cloud scan
+nor the write-permission comment; after safe coverage steps, the workflow emits
+a notice explaining the skip. Trusted runs fail clearly if the token is absent.
+Inline review comments are intentionally not implemented. Setup, private-project
+plan eligibility, source processing, exclusions, rotation, and triage are in
+`docs/security/sonarqube.md`. CodeQL behavior remains unchanged.
+
 ## Dependency Updates
 
 Dependabot updates are review-only. Base-image updates must not be auto-merged. For dependency or image changes, maintainers should review release notes, regenerate hash-locked dependency files, and require the container smoke test, Compose validation, Trivy gates, dependency audits, and relevant application tests before merging.

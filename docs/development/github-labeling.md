@@ -115,6 +115,19 @@ Security/network labels added for zero-trust work:
 - `staging`: Staging environment, staging deployment, or staging access
   changes.
 
+Code-quality work uses:
+
+- `code-quality`: Static analysis, maintainability, coverage, or quality-gate
+  work.
+- `ci`, `security`, `documentation`, `tests`, and `python` remain additive
+  when the changed paths or issue/PR text match those areas.
+
+Issue, PR, and manual-retag text rules add `code-quality` for `SonarQube`,
+`Sonar`, `quality gate`, `code quality`, `maintainability`, `coverage`,
+`duplication`, and `technical debt`. Path rules cover the SonarQube workflow,
+configuration, tests, and documentation. The existing `.github/workflows/**`
+rule also adds `ci`.
+
 Path rules:
 
 - `ops/nginx/**` receives `deployment`, `network-security`, and `security`.
@@ -126,3 +139,6 @@ Path rules:
   `admin` and `security`.
 - Zero-trust, Cloudflare, Tailscale, and private-access docs receive
   `zero-trust`, `network-security`, `documentation`, and `security`.
+- `.github/workflows/sonarqube.yml`, `sonar-project.properties`, the SonarQube
+  policy test, and its documentation receive `code-quality`; Python files and
+  Python dependency manifests receive `python`.
