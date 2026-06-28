@@ -101,16 +101,22 @@ appears in logs, summaries, or artifacts.
 `main`, pushes to `main`, and manual dispatch. It installs the hash-locked
 development dependencies, runs the complete pytest suite with `pytest-cov`,
 writes `coverage.xml`, and invokes the SHA-pinned official SonarQube scanner
-with only `contents: read`. It requires the GitHub Actions secret
-`SONAR_TOKEN`; it does not use production environments, deployment
-credentials, or `SONAR_HOST_URL`.
+and SHA-pinned `actions/github-script`. The job has `contents: read`,
+`pull-requests: read`, and `issues: write`; pull requests are issue comments in
+the GitHub API, and no other write permission is granted. It requires the
+GitHub Actions secret `SONAR_TOKEN`; it does not use production environments,
+deployment credentials, or `SONAR_HOST_URL`.
 
 The initial SonarQube quality gate is reporting-only and is not a release or
-deployment dependency. Trusted runs fail clearly if the token is absent;
-untrusted fork pull requests cannot receive the token, so the workflow emits a
-notice and skips only the cloud upload after coverage succeeds. Setup,
-private-project plan eligibility, source processing, exclusions, rotation, and
-triage are in `docs/security/sonarqube.md`. CodeQL behavior remains unchanged.
+deployment dependency. After a successful trusted internal pull-request scan,
+the workflow creates or updates one informational summary comment with workflow
+and dashboard links. A hidden marker keeps reruns from creating duplicates.
+Fork and Dependabot pull requests receive neither the secret-backed cloud scan
+nor the write-permission comment; after safe coverage steps, the workflow emits
+a notice explaining the skip. Trusted runs fail clearly if the token is absent.
+Inline review comments are intentionally not implemented. Setup, private-project
+plan eligibility, source processing, exclusions, rotation, and triage are in
+`docs/security/sonarqube.md`. CodeQL behavior remains unchanged.
 
 ## Dependency Updates
 

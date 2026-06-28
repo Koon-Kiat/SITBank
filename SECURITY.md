@@ -173,11 +173,14 @@ before rerunning.
 The separate SonarQube Cloud workflow generates full-suite Python coverage and
 reports maintainability, duplication, reliability, and security findings for
 the private repository. Its initial quality gate is reporting-only and does not
-participate in deployment. Setup, source-processing implications, token
-rotation, scan scope, triage, and current plan eligibility are documented in
-`docs/security/sonarqube.md`. SonarQube complements and does not replace
-CodeQL, Semgrep, Bandit, secret scanning, dependency checks, or deployment
-tests; existing CodeQL private-repository behavior is unchanged.
+participate in deployment. Successful trusted internal PR scans create or
+update one informational summary comment; fork and Dependabot PRs receive
+neither secret-backed analysis nor that comment, and inline review comments are
+not implemented. Setup, source-processing implications, token rotation, scan
+scope, triage, comment behavior, and current plan eligibility are documented in
+`docs/security/sonarqube.md`. SonarQube complements and does not replace CodeQL,
+Semgrep, Bandit, secret scanning, dependency checks, or deployment tests;
+existing CodeQL private-repository behavior is unchanged.
 
 Critical advisories require immediate triage. High advisories require an owner
 and target date. A runtime upgrade is kept separate from ordinary package

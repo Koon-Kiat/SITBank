@@ -66,7 +66,7 @@ compromised. Disable analysis safely by revoking/deleting the token and
 disabling the workflow; a missing token intentionally fails trusted runs with
 a clear error. Fork and Dependabot pull requests cannot receive ordinary
 repository secrets, so they run the coverage step and emit an explicit notice
-that the cloud scan was skipped.
+that both the cloud scan and PR comment were skipped.
 
 ## Coverage, Scope, And Evidence
 
@@ -92,13 +92,38 @@ Semgrep inspect security patterns, dependency tools inspect known component
 risk, secret scanners look for credentials, and deployment checks validate
 runtime and infrastructure contracts.
 
+## Pull-Request Summary Comment
+
+After a successful analysis for a trusted internal pull request, the workflow
+creates one informational `SonarQube Cloud Analysis` issue comment. It includes
+the workflow run, a dashboard link constructed from the validated
+`sonar.organization` and `sonar.projectKey` properties, the reporting-only
+status, and a reminder that the quality gate is not blocking. Full findings
+remain in the SonarQube Cloud dashboard.
+
+The comment contains the hidden marker
+`<!-- sitbank-sonarqube-summary -->`. Reruns paginate existing comments and
+update the marker-bearing `github-actions[bot]` comment instead of creating
+duplicates. Fork pull requests and Dependabot pull requests do not receive
+secret-backed analysis or this write-permission comment; they receive a
+workflow notice explaining the security skip. The workflow does not use
+`pull_request_target`.
+
+Inline review comments are intentionally not implemented. Mapping findings to
+changed diff lines, controlling false-positive noise, and granting review
+comment permissions require a separate reviewed design. The single sticky
+summary does not replace pytest, CodeQL, Semgrep, Bandit, secret scanning,
+dependency auditing, Trivy, ShellCheck, Hadolint, Syft, deployment tests, or
+production guard tests.
+
 ## Initial Quality-Gate And Triage Policy
 
 The rollout is reporting-only. `sonar.qualitygate.wait=false` means the
 workflow uploads analysis but does not wait for or enforce the Sonar quality
 gate, and SonarQube is not part of the production deployment job. Scanner,
 test, credential, or upload failures still fail the workflow; only the remote
-quality-gate result is non-blocking.
+quality-gate result is non-blocking. The PR summary comment is informational
+and does not change that policy.
 
 Maintainers should triage critical/high-confidence security and reliability
 findings promptly, assign maintainability and duplication work by impact, and
@@ -111,5 +136,6 @@ CodeQL, Semgrep, dependency scanning, and deployment gates is documented.
 
 Current limitations are the external plan/organization prerequisite, the
 manual `SONAR_TOKEN` setup, absent secret-backed analysis on fork pull
-requests, and the deliberately non-blocking quality gate. Existing CodeQL
-private-repository behavior is unchanged.
+requests and Dependabot pull requests, no summary comments for those untrusted
+events, intentionally absent inline comments, and the deliberately non-blocking
+quality gate. Existing CodeQL private-repository behavior is unchanged.

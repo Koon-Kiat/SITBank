@@ -127,7 +127,7 @@ customer domain.
 - [Contributing](docs/CONTRIBUTING.md)
 - [Deployment](docs/DEPLOYMENT.md)
 - [GitHub Actions](docs/GITHUB_ACTIONS.md)
-- [SonarQube Cloud analysis](docs/security/sonarqube.md)
+- [SonarQube Cloud analysis and PR summary policy](docs/security/sonarqube.md)
 - [Operations](docs/OPERATIONS.md)
 - [Security](SECURITY.md)
 - [Audit and alerting](docs/security/audit-and-alerting.md)

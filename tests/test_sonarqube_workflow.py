@@ -37,7 +37,12 @@ def test_sonarqube_workflow_has_required_triggers_and_least_privilege():
         "reopened",
     ]
     assert workflow["on"]["push"]["branches"] == ["main"]
-    assert workflow["permissions"] == {"contents": "read"}
+    assert workflow["permissions"] == {}
+    assert workflow["jobs"]["analyze"]["permissions"] == {
+        "contents": "read",
+        "issues": "write",
+        "pull-requests": "read",
+    }
     assert "environment:" not in text
 
 
@@ -75,7 +80,8 @@ def test_sonarqube_workflow_handles_token_without_deployment_secrets():
 
     assert "SONAR_TOKEN" in credential_step["env"]
     assert "is not configured" in credential_step["run"]
-    assert "untrusted fork or Dependabot pull request" in credential_step["run"]
+    assert "fork or Dependabot PRs" in credential_step["run"]
+    assert "PR comment are skipped" in credential_step["run"]
     assert "dependabot[bot]" in text
     assert "echo \"${SONAR_TOKEN}\"" not in text
     assert "printenv" not in lowered
