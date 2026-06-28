@@ -9,6 +9,13 @@ from app.security.passwords import password_max_chars, password_min_length
 from .schemas import FULL_NAME_RE, PHONE_RE, REGISTRATION_OTP_RE, STEP_UP_TOKEN_RE, TOTP_RE, USERNAME_RE
 
 
+_INVALID_USERNAME_MESSAGE = "Username contains invalid characters"
+_PASSWORDS_MUST_MATCH_MESSAGE = "Passwords must match"
+_INVALID_STEP_UP_TOKEN_MESSAGE = "Invalid step-up token"
+_AUTHENTICATOR_CODE_LABEL = "Authenticator code"
+_MFA_CODE_ERROR = "MFA code must be exactly 6 digits"
+
+
 def password_length(*, minimum: int | None = None):
     def validate_password_length(_form, field) -> None:
         value = field.data or ""
@@ -28,7 +35,7 @@ class RegisterForm(FlaskForm):
         validators=[
             InputRequired(),
             Length(min=3, max=64),
-            Regexp(USERNAME_RE, message="Username contains invalid characters"),
+            Regexp(USERNAME_RE, message=_INVALID_USERNAME_MESSAGE),
         ],
     )
     full_name = StringField(
@@ -53,7 +60,7 @@ class RegisterForm(FlaskForm):
         validators=[
             InputRequired(),
             password_length(),
-            EqualTo("password", message="Passwords must match"),
+            EqualTo("password", message=_PASSWORDS_MUST_MATCH_MESSAGE),
         ],
     )
 
@@ -64,7 +71,7 @@ class RegisterDetailsForm(FlaskForm):
         validators=[
             InputRequired(),
             Length(min=3, max=64),
-            Regexp(USERNAME_RE, message="Username contains invalid characters"),
+            Regexp(USERNAME_RE, message=_INVALID_USERNAME_MESSAGE),
         ],
     )
     full_name = StringField(
@@ -88,7 +95,7 @@ class RegisterDetailsForm(FlaskForm):
         validators=[
             InputRequired(),
             password_length(),
-            EqualTo("password", message="Passwords must match"),
+            EqualTo("password", message=_PASSWORDS_MUST_MATCH_MESSAGE),
         ],
     )
 
@@ -137,7 +144,7 @@ class ProfileForm(FlaskForm):
         validators=[
             InputRequired(),
             Length(min=3, max=64),
-            Regexp(USERNAME_RE, message="Username contains invalid characters"),
+            Regexp(USERNAME_RE, message=_INVALID_USERNAME_MESSAGE),
         ],
     )
     email = StringField("Email address", validators=[InputRequired(), Email(), Length(max=255)])
@@ -150,16 +157,16 @@ class ProfileForm(FlaskForm):
         validators=[InputRequired()],
     )
     totp_code = StringField(
-        "Authenticator code",
+        _AUTHENTICATOR_CODE_LABEL,
         validators=[
             Optional(),
-            Regexp(TOTP_RE, message="MFA code must be exactly 6 digits"),
+            Regexp(TOTP_RE, message=_MFA_CODE_ERROR),
         ],
     )
     stepup_token = HiddenField(
         validators=[
             Optional(),
-            Regexp(STEP_UP_TOKEN_RE, message="Invalid step-up token"),
+            Regexp(STEP_UP_TOKEN_RE, message=_INVALID_STEP_UP_TOKEN_MESSAGE),
         ],
     )
 
@@ -169,13 +176,13 @@ class TotpForm(FlaskForm):
         "MFA code",
         validators=[
             InputRequired(),
-            Regexp(TOTP_RE, message="MFA code must be exactly 6 digits"),
+            Regexp(TOTP_RE, message=_MFA_CODE_ERROR),
         ],
     )
     stepup_token = HiddenField(
         validators=[
             Optional(),
-            Regexp(STEP_UP_TOKEN_RE, message="Invalid step-up token"),
+            Regexp(STEP_UP_TOKEN_RE, message=_INVALID_STEP_UP_TOKEN_MESSAGE),
         ],
     )
 
@@ -188,23 +195,23 @@ class StepUpTokenForm(FlaskForm):
     stepup_token = HiddenField(
         validators=[
             Optional(),
-            Regexp(STEP_UP_TOKEN_RE, message="Invalid step-up token"),
+            Regexp(STEP_UP_TOKEN_RE, message=_INVALID_STEP_UP_TOKEN_MESSAGE),
         ],
     )
 
 
 class MfaOrStepUpForm(FlaskForm):
     totp_code = StringField(
-        "Authenticator code",
+        _AUTHENTICATOR_CODE_LABEL,
         validators=[
             Optional(),
-            Regexp(TOTP_RE, message="MFA code must be exactly 6 digits"),
+            Regexp(TOTP_RE, message=_MFA_CODE_ERROR),
         ],
     )
     stepup_token = HiddenField(
         validators=[
             Optional(),
-            Regexp(STEP_UP_TOKEN_RE, message="Invalid step-up token"),
+            Regexp(STEP_UP_TOKEN_RE, message=_INVALID_STEP_UP_TOKEN_MESSAGE),
         ],
     )
 
@@ -217,20 +224,20 @@ class PasswordChangeForm(FlaskForm):
         validators=[
             InputRequired(),
             password_length(),
-            EqualTo("new_password", message="Passwords must match"),
+            EqualTo("new_password", message=_PASSWORDS_MUST_MATCH_MESSAGE),
         ],
     )
     totp_code = StringField(
-        "Authenticator code",
+        _AUTHENTICATOR_CODE_LABEL,
         validators=[
             Optional(),
-            Regexp(TOTP_RE, message="MFA code must be exactly 6 digits"),
+            Regexp(TOTP_RE, message=_MFA_CODE_ERROR),
         ],
     )
     stepup_token = HiddenField(
         validators=[
             Optional(),
-            Regexp(STEP_UP_TOKEN_RE, message="Invalid step-up token"),
+            Regexp(STEP_UP_TOKEN_RE, message=_INVALID_STEP_UP_TOKEN_MESSAGE),
         ],
     )
 
@@ -241,7 +248,7 @@ class PasswordResetForm(FlaskForm):
         "Confirm new password",
         validators=[
             InputRequired(),
-            EqualTo("new_password", message="Passwords must match"),
+            EqualTo("new_password", message=_PASSWORDS_MUST_MATCH_MESSAGE),
         ],
     )
 

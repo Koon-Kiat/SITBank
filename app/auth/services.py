@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import binascii
 import hashlib
 import hmac
 import io
@@ -91,6 +90,9 @@ class AuthError(ValueError):
 
 class FrozenAccountError(AuthError):
     pass
+
+
+MFA_NOT_ENABLED_ERROR = "MFA is not enabled"
 
 
 def _normalize(value: str) -> str:
@@ -257,10 +259,7 @@ def register_user(data: dict[str, Any]) -> tuple[User, list[str]]:
 def authenticate_primary(identifier: str, password: str) -> dict[str, Any]:
     principal = _auth_principal(identifier)
     user = _find_user_by_identifier(identifier)
-    try:
-        _enforce_auth_backoff("login", principal)
-    except AuthError:
-        raise
+    _enforce_auth_backoff("login", principal)
 
     password_ok = False
     if is_password_raw_length_safe(password):
@@ -384,7 +383,7 @@ def generate_mfa_replacement(user: User, code: str | None, stepup_token: str | N
     ensure_account_not_frozen(user, "MFA replacement")
     if not user.mfa_enabled:
         audit_event("mfa_replace_start", "failure", user=user, metadata={"reason": "mfa_not_enabled"})
-        raise AuthError("MFA is not enabled", 403)
+        raise AuthError(MFA_NOT_ENABLED_ERROR, 403)
 
     verify_high_risk_authorization(
         user,
@@ -416,7 +415,7 @@ def verify_mfa_replacement(user: User, code: str) -> dict[str, Any]:
     ensure_account_not_frozen(user, "MFA replacement")
     if not user.mfa_enabled:
         audit_event("mfa_replace_verify", "failure", user=user, metadata={"reason": "mfa_not_enabled"})
-        raise AuthError("MFA is not enabled", 403)
+        raise AuthError(MFA_NOT_ENABLED_ERROR, 403)
 
     secret = _pending_mfa_replacement_secret(user)
     if secret is None:
@@ -493,7 +492,7 @@ def regenerate_totp_recovery_codes(
     ensure_account_not_frozen(user, "recovery code regeneration")
     if not user.mfa_enabled:
         audit_event("recovery_codes_regenerate", "failure", user=user, metadata={"reason": "mfa_not_enabled"})
-        raise AuthError("MFA is not enabled", 403)
+        raise AuthError(MFA_NOT_ENABLED_ERROR, 403)
     verify_high_risk_authorization(
         user,
         code,
@@ -912,7 +911,7 @@ def _verify_totp_secret_for_user(
     *,
     valid_window: int | None = None,
 ) -> bool:
-    if not re.fullmatch(r"[0-9]{6}", code or ""):
+    if not re.fullmatch(r"\d{6}", code or ""):
         record_failure(scope, str(user.id))
         return False
 
@@ -1003,7 +1002,7 @@ def _pending_mfa_replacement_secret(user: User) -> str | None:
         return None
     try:
         return decrypt_mfa_secret(_b64decode(str(nonce)), _b64decode(str(ciphertext)), user.id)
-    except (binascii.Error, InvalidTag, ValueError):
+    except (InvalidTag, ValueError):
         _clear_pending_mfa_replacement()
         return None
 

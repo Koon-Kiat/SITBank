@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import binascii
 import json
 from datetime import date
 from pathlib import Path
@@ -180,7 +179,7 @@ def _entry_root_certificates(entry: dict[str, Any]) -> list[bytes]:
 def _base64_der_to_pem(value: str) -> bytes:
     try:
         der = base64.b64decode(value, validate=True)
-    except (binascii.Error, ValueError) as exc:
+    except ValueError as exc:
         raise FidoMetadataError("Authenticator metadata contains an invalid attestation root certificate") from exc
     encoded = base64.b64encode(der).decode("ascii")
     lines = [encoded[index : index + 64] for index in range(0, len(encoded), 64)]

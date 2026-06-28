@@ -419,6 +419,9 @@ def test_session_timeout_ui_uses_explicit_extension_and_csp_safe_toggling(client
 
     assert response.status_code == 200
     assert 'meta name="session-timeout" content="900"' in markup
+    assert '<dialog id="session-timeout-overlay"' in markup
+    assert "showModal()" in script
+    assert ".close()" in script
     assert 'style="' not in markup
     assert "style.display" not in script
     assert "/auth/session/extend" in script

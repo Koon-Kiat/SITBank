@@ -22,6 +22,10 @@ MIN_PRODUCTION_PASSWORD_LENGTH = 15
 DEFAULT_CUSTOMER_SESSION_ABSOLUTE_LIFETIME_SECONDS = 12 * 60 * 60
 DEFAULT_ADMIN_SESSION_ABSOLUTE_LIFETIME_SECONDS = 4 * 60 * 60
 MAX_SESSION_ABSOLUTE_LIFETIME_SECONDS = 30 * 24 * 60 * 60
+MEMORY_RATE_LIMIT_STORAGE = "memory://"
+POSTGRESQL_PSYCOPG2_SCHEME = "postgresql+psycopg2"
+CSP_SELF = "'self'"
+CSP_NONE = "'none'"
 
 
 PLACEHOLDER_TOKENS = {
@@ -181,25 +185,36 @@ def _validate_audit_anchor_path(
     *,
     database_url: str | None = None,
 ) -> str:
+    path, resolved = _resolved_audit_anchor_path(name, value)
+    resolved_parent = _resolved_audit_anchor_parent(name, path)
+
+    _reject_unsafe_audit_anchor_location(name, resolved, database_url=database_url)
+    _reject_world_writable_path(name, resolved_parent, "parent directory")
+    _validate_audit_anchor_access(name, path, resolved, resolved_parent)
+    return str(resolved)
+
+
+def _resolved_audit_anchor_path(name: str, value: str) -> tuple[Path, Path]:
     text = str(value or "").strip()
     if not text:
         raise RuntimeError(f"{name} must not be empty")
-    if "\x00" in text or "\r" in text or "\n" in text:
+    if any(character in text for character in ("\x00", "\r", "\n")):
         raise RuntimeError(f"{name} contains unsupported control characters")
-
     path = Path(text)
     if not path.is_absolute():
         raise RuntimeError(f"{name} must be an absolute path")
     if path.is_symlink():
         raise RuntimeError(f"{name} must not be a symlink")
-
     try:
         resolved = path.resolve(strict=path.exists())
     except (OSError, RuntimeError) as exc:
         raise RuntimeError(f"{name} could not be resolved") from exc
     if path.exists() and not path.is_file():
         raise RuntimeError(f"{name} must identify a regular file")
+    return path, resolved
 
+
+def _resolved_audit_anchor_parent(name: str, path: Path) -> Path:
     parent = path.parent
     if parent.is_symlink():
         raise RuntimeError(f"{name} parent directory must not be a symlink")
@@ -209,16 +224,21 @@ def _validate_audit_anchor_path(
         raise RuntimeError(f"{name} parent directory must exist") from exc
     if not resolved_parent.is_dir():
         raise RuntimeError(f"{name} parent must be a directory")
+    return resolved_parent
 
-    _reject_unsafe_audit_anchor_location(name, resolved, database_url=database_url)
-    _reject_world_writable_path(name, resolved_parent, "parent directory")
+
+def _validate_audit_anchor_access(
+    name: str,
+    path: Path,
+    resolved: Path,
+    resolved_parent: Path,
+) -> None:
     if path.exists():
         _reject_world_writable_path(name, resolved, "file")
         if not os.access(resolved, os.R_OK | os.W_OK):
             raise RuntimeError(f"{name} must be readable and writable by the runtime")
     elif not os.access(resolved_parent, os.W_OK | os.X_OK):
         raise RuntimeError(f"{name} parent directory must be writable by the runtime")
-    return str(resolved)
 
 
 def _reject_world_writable_path(name: str, path: Path, label: str) -> None:
@@ -618,7 +638,7 @@ def _customer_runtime_overrides(config: dict) -> dict[str, object]:
             "SQLALCHEMY_DATABASE_URI",
             lambda: _required_url(
                 "DATABASE_URL",
-                schemes={"postgresql", "postgresql+psycopg2"},
+                schemes={"postgresql", POSTGRESQL_PSYCOPG2_SCHEME},
                 require_password=True,
             ),
         ),
@@ -627,7 +647,7 @@ def _customer_runtime_overrides(config: dict) -> dict[str, object]:
             "SQLALCHEMY_MIGRATION_DATABASE_URI",
             lambda: _optional_url(
                 "DATABASE_MIGRATION_URL",
-                schemes={"postgresql", "postgresql+psycopg2"},
+                schemes={"postgresql", POSTGRESQL_PSYCOPG2_SCHEME},
                 require_password=True,
             ),
         ),
@@ -664,7 +684,7 @@ def _customer_runtime_overrides(config: dict) -> dict[str, object]:
         "SESSION_ABSOLUTE_LIFETIME_SECONDS": config.get("CUSTOMER_SESSION_ABSOLUTE_LIFETIME_SECONDS")
         or DEFAULT_CUSTOMER_SESSION_ABSOLUTE_LIFETIME_SECONDS,
         "AUTH_FAILURE_KEY_PREFIX": config.get("AUTH_FAILURE_KEY_PREFIX") or "ospbank:authfail:",
-        "RATELIMIT_STORAGE_URI": config.get("RATELIMIT_STORAGE_URI") or "memory://",
+        "RATELIMIT_STORAGE_URI": config.get("RATELIMIT_STORAGE_URI") or MEMORY_RATE_LIMIT_STORAGE,
         "RATELIMIT_KEY_PREFIX": config.get("RATELIMIT_KEY_PREFIX") or "ospbank:ratelimit:",
         "ADMIN_AUTH_ENABLED": False,
     }
@@ -717,7 +737,7 @@ def _admin_runtime_overrides(config: dict) -> dict[str, object]:
             "ADMIN_SQLALCHEMY_DATABASE_URI",
             lambda: _required_url(
                 "ADMIN_DATABASE_URL",
-                schemes={"postgresql", "postgresql+psycopg2"},
+                schemes={"postgresql", POSTGRESQL_PSYCOPG2_SCHEME},
                 require_password=True,
             ),
         ),
@@ -746,7 +766,7 @@ def _admin_runtime_overrides(config: dict) -> dict[str, object]:
         "SESSION_ABSOLUTE_LIFETIME_SECONDS": config.get("ADMIN_SESSION_ABSOLUTE_LIFETIME_SECONDS")
         or DEFAULT_ADMIN_SESSION_ABSOLUTE_LIFETIME_SECONDS,
         "AUTH_FAILURE_KEY_PREFIX": config.get("ADMIN_AUTH_FAILURE_KEY_PREFIX") or "ospbank:admin:authfail:",
-        "RATELIMIT_STORAGE_URI": config.get("ADMIN_RATELIMIT_STORAGE_URI") or "memory://",
+        "RATELIMIT_STORAGE_URI": config.get("ADMIN_RATELIMIT_STORAGE_URI") or MEMORY_RATE_LIMIT_STORAGE,
         "RATELIMIT_KEY_PREFIX": config.get("ADMIN_RATELIMIT_KEY_PREFIX")
         or os.getenv("ADMIN_RATELIMIT_KEY_PREFIX", "ospbank:admin:ratelimit:"),
         "ADMIN_AUTH_ENABLED": True,
@@ -1022,7 +1042,7 @@ class Config:
     if SECURITY_STATE_RETENTION_DAYS < 1 or SECURITY_STATE_RETENTION_DAYS > 365:
         raise RuntimeError("SECURITY_STATE_RETENTION_DAYS must be between 1 and 365")
 
-    RATELIMIT_STORAGE_URI = "memory://"
+    RATELIMIT_STORAGE_URI = MEMORY_RATE_LIMIT_STORAGE
     RATELIMIT_HEADERS_ENABLED = True
     RATELIMIT_STRATEGY = "fixed-window"
     RATELIMIT_KEY_PREFIX = None
@@ -1036,19 +1056,19 @@ class Config:
         raise RuntimeError("TOTP_HIGH_RISK_VALID_WINDOW must be 0")
     TALISMAN_FORCE_HTTPS = True
     TALISMAN_CONTENT_SECURITY_POLICY = {
-        "default-src": "'self'",
-        "base-uri": "'self'",
-        "object-src": "'none'",
-        "frame-ancestors": "'none'",
-        "form-action": "'self'",
-        "img-src": ["'self'", "data:"],
-        "script-src": "'self'",
-        "script-src-attr": "'none'",
-        "style-src": "'self'",
-        "style-src-attr": "'none'",
-        "connect-src": "'self'",
-        "font-src": "'self'",
-        "manifest-src": "'self'",
+        "default-src": CSP_SELF,
+        "base-uri": CSP_SELF,
+        "object-src": CSP_NONE,
+        "frame-ancestors": CSP_NONE,
+        "form-action": CSP_SELF,
+        "img-src": [CSP_SELF, "data:"],
+        "script-src": CSP_SELF,
+        "script-src-attr": CSP_NONE,
+        "style-src": CSP_SELF,
+        "style-src-attr": CSP_NONE,
+        "connect-src": CSP_SELF,
+        "font-src": CSP_SELF,
+        "manifest-src": CSP_SELF,
     }
 
     TRUSTED_PROXY_COUNT = int(os.getenv("TRUSTED_PROXY_COUNT", "1"))

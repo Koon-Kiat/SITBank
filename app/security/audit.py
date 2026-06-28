@@ -66,7 +66,7 @@ SENSITIVE_CREDENTIAL_URL_RE = re.compile(
     re.IGNORECASE,
 )
 SENSITIVE_WEBHOOK_URL_RE = re.compile(
-    r"https://(?:[^/\s]*hooks[^/\s]*|(?:discord(?:app)?\.com))/(?:api/)?(?:webhooks|services)/\S+",
+    r"https://(?:[^/\s]*hooks[^/\s]*|discord(?:app)?\.com)/(?:api/)?(?:webhooks|services)/\S+",
     re.IGNORECASE,
 )
 SENSITIVE_PRIVATE_KEY_RE = re.compile(
@@ -87,6 +87,9 @@ AUDIT_CHAIN_ADVISORY_LOCK_ID = 6151467082736394621
 
 class AuditWriteError(RuntimeError):
     """Raised when a protected action cannot write its required audit event."""
+
+
+REDACTED_VALUE = "[redacted]"
 
 
 def register_correlation_id(app) -> None:
@@ -348,32 +351,14 @@ def verify_audit_hash_chain(*, anchor: Mapping[str, Any] | None = None) -> dict[
 
     for event in events:
         if not event.event_hash:
-            if chain_started:
-                _append_chain_error(errors, event.id, "missing_event_hash")
-            else:
-                legacy_unhashed_event_count += 1
-            continue
-
-        chain_started = True
-        event_algorithm = event.hash_algorithm or LEGACY_AUDIT_HASH_ALGORITHM
-        if event_algorithm not in SUPPORTED_AUDIT_HASH_ALGORITHMS:
-            _append_chain_error(
-                errors,
-                event.id,
-                "unsupported_hash_algorithm",
-                algorithm=event_algorithm,
+            legacy_unhashed_event_count += _record_missing_event_hash(
+                event,
+                chain_started=chain_started,
+                errors=errors,
             )
-        if event.previous_event_hash != previous_hash:
-            _append_chain_error(errors, event.id, "previous_hash_mismatch")
-
-        try:
-            expected_hash = _compute_audit_event_hash(event)
-        except Exception as exc:  # pragma: no cover - defensive around legacy data.
-            _append_chain_error(errors, event.id, "hash_compute_failed", error_type=type(exc).__name__)
-        else:
-            if not hmac.compare_digest(str(event.event_hash), expected_hash):
-                _append_chain_error(errors, event.id, "event_hash_mismatch")
-
+            continue
+        chain_started = True
+        _verify_hashed_audit_event(event, previous_hash=previous_hash, errors=errors)
         previous_hash = str(event.event_hash)
         latest_event_id = int(event.id)
         latest_event_hash = str(event.event_hash)
@@ -395,6 +380,48 @@ def verify_audit_hash_chain(*, anchor: Mapping[str, Any] | None = None) -> dict[
     if anchor is not None:
         _compare_audit_anchor(result, anchor)
     return result
+
+
+def _record_missing_event_hash(
+    event: SecurityAuditEvent,
+    *,
+    chain_started: bool,
+    errors: list[dict[str, Any]],
+) -> int:
+    if chain_started:
+        _append_chain_error(errors, event.id, "missing_event_hash")
+        return 0
+    return 1
+
+
+def _verify_hashed_audit_event(
+    event: SecurityAuditEvent,
+    *,
+    previous_hash: str,
+    errors: list[dict[str, Any]],
+) -> None:
+    event_algorithm = event.hash_algorithm or LEGACY_AUDIT_HASH_ALGORITHM
+    if event_algorithm not in SUPPORTED_AUDIT_HASH_ALGORITHMS:
+        _append_chain_error(
+            errors,
+            event.id,
+            "unsupported_hash_algorithm",
+            algorithm=event_algorithm,
+        )
+    if event.previous_event_hash != previous_hash:
+        _append_chain_error(errors, event.id, "previous_hash_mismatch")
+    try:
+        expected_hash = _compute_audit_event_hash(event)
+    except Exception as exc:  # pragma: no cover - defensive around legacy data.
+        _append_chain_error(
+            errors,
+            event.id,
+            "hash_compute_failed",
+            error_type=type(exc).__name__,
+        )
+        return
+    if not hmac.compare_digest(str(event.event_hash), expected_hash):
+        _append_chain_error(errors, event.id, "event_hash_mismatch")
 
 
 def audit_log_anchor() -> dict[str, Any]:
@@ -436,7 +463,7 @@ def _sanitize_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
         key_text = _clean_audit_text(key, 64)
         key_lower = key_text.casefold()
         if _is_sensitive_key(key_lower):
-            clean[key_text] = "[redacted]"
+            clean[key_text] = REDACTED_VALUE
             continue
         clean[key_text] = _sanitize_metadata_value(value, key_lower, depth=0)
     return clean
@@ -451,7 +478,7 @@ def _sanitize_metadata_value(value: Any, key_lower: str, *, depth: int) -> Any:
             nested_key_text = _clean_audit_text(nested_key, 64)
             nested_key_lower = nested_key_text.casefold()
             nested[nested_key_text] = (
-                "[redacted]"
+                REDACTED_VALUE
                 if _is_sensitive_key(nested_key_lower)
                 else _sanitize_metadata_value(nested_value, nested_key_lower, depth=depth + 1)
             )
@@ -461,7 +488,7 @@ def _sanitize_metadata_value(value: Any, key_lower: str, *, depth: int) -> Any:
 
     text = _clean_audit_text(value, 256)
     if _looks_like_sensitive_value(text) or _looks_like_account_value(key_lower, text):
-        return "[redacted]"
+        return REDACTED_VALUE
     return text
 
 

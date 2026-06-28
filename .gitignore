@@ -9,6 +9,7 @@ __pycache__/
 .pytest-tmp/
 .coverage
 coverage.xml
+coverage/
 htmlcov/
 .mypy_cache/
 instance/

@@ -73,15 +73,23 @@ MANUAL_RECOVERY_ADMIN_TRANSITION_STATUSES = frozenset(
     }
 )
 GENERIC_ADMIN_LOGIN_ERROR = "Invalid workplace email, password, or authentication code"
+ADMIN_INDEX_ENDPOINT = "admin.index"
+FRESH_MFA_REQUIRED_ERROR = "Fresh MFA verification is required"
+INVITE_CREATE_ERROR = "Invite could not be created"
+INVITE_ACCEPTANCE_ERROR = "Invite acceptance failed"
+INVALID_WORKPLACE_EMAIL_ERROR = "Invalid workplace email"
+INVALID_PERSONAL_EMAIL_ERROR = "Invalid personal email"
 GENERIC_INVITE_ERROR = "Invite link is invalid or expired"
 GENERIC_WORKPLACE_VERIFICATION_ERROR = "Workplace verification failed"
 ADMIN_AUTH_BACKOFF_ERROR = "Too many attempts. Please try again later."
 STAFF_USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{3,64}$")
 FULL_NAME_RE = re.compile(r"^[^\x00-\x1f\x7f<>]{1,120}$")
 PHONE_RE = re.compile(r"^[89][0-9]{7}$")
-EMAIL_RE = re.compile(r"^[^@\s\x00-\x1f\x7f]{1,128}@[^@\s\x00-\x1f\x7f]{1,253}$")
-TOTP_RE = re.compile(r"^[0-9]{6}$")
-WORKPLACE_CODE_RE = re.compile(r"^[0-9]{6}$")
+EMAIL_RE = re.compile(
+    r"^(?=\S{1,128}@\S{1,253}$)[^@\x00-\x1f\x7f]+@[^@\x00-\x1f\x7f]+$"
+)
+TOTP_RE = re.compile(r"^\d{6}$")
+WORKPLACE_CODE_RE = re.compile(r"^\d{6}$")
 
 
 def is_customer_user(user: User | None) -> bool:
@@ -144,14 +152,14 @@ def role_label(role: str | None) -> str:
 
 def admin_navigation_for(user: User) -> list[dict[str, str]]:
     items = [
-        {"label": "Dashboard", "href": url_for("admin.index"), "endpoint": "admin.index", "group": "overview"},
+        {"label": "Dashboard", "href": url_for(ADMIN_INDEX_ENDPOINT), "endpoint": ADMIN_INDEX_ENDPOINT, "group": "overview"},
     ]
     if user.account_type == ACCOUNT_STAFF:
         items.append(
             {
                 "label": "Business operations",
-                "href": url_for("admin.index"),
-                "endpoint": "admin.index",
+                "href": url_for(ADMIN_INDEX_ENDPOINT),
+                "endpoint": ADMIN_INDEX_ENDPOINT,
                 "group": "business",
             }
         )
@@ -278,7 +286,7 @@ def transition_staff_account_as_root_admin(
                 "target_staff_ref": audit_reference("staff_user", target.id),
             },
         )
-        raise AuthError("Fresh MFA verification is required", 403)
+        raise AuthError(FRESH_MFA_REQUIRED_ERROR, 403)
 
     revoked_sessions = 0
     if normalized_action == "deactivate":
@@ -672,10 +680,7 @@ def _like_escape(value: str) -> str:
 def authenticate_admin_primary(workplace_email: str, password: str) -> dict[str, Any]:
     normalized_email = normalize_workplace_email(workplace_email)
     principal = _auth_principal(normalized_email)
-    try:
-        _enforce_auth_backoff("admin_login", principal)
-    except AuthError:
-        raise
+    _enforce_auth_backoff("admin_login", principal)
 
     user = _staff_user_by_workplace_email(normalized_email)
     password_ok = False
@@ -759,7 +764,7 @@ def create_staff_invite(
         raise AuthError("Forbidden", 403)
     if not totp_code:
         audit_event("staff_invite_create", "failure", user=actor, metadata={"reason": "missing_totp_step_up"})
-        raise AuthError("Fresh MFA verification is required", 403)
+        raise AuthError(FRESH_MFA_REQUIRED_ERROR, 403)
 
     normalized_personal = normalize_personal_email(personal_email)
     normalized_workplace = normalize_workplace_email(workplace_email)
@@ -773,7 +778,7 @@ def create_staff_invite(
     _reject_active_invite(normalized_workplace, normalized_personal)
     if not _verify_totp_for_user(actor, totp_code, "staff_invite_create"):
         audit_event("staff_invite_create", "failure", user=actor, metadata={"reason": "invalid_totp_step_up"})
-        raise AuthError("Fresh MFA verification is required", 403)
+        raise AuthError(FRESH_MFA_REQUIRED_ERROR, 403)
 
     token = secrets.token_urlsafe(32)
     now = _utcnow()
@@ -800,7 +805,7 @@ def create_staff_invite(
     except IntegrityError as exc:
         db.session.rollback()
         audit_event("staff_invite_create", "failure", user=actor, metadata={"reason": "integrity_error"})
-        raise AuthError("Invite could not be created", 400) from exc
+        raise AuthError(INVITE_CREATE_ERROR, 400) from exc
 
     invite_url = url_for("admin.invite_accept_info", token=token, _external=True)
     try:
@@ -835,7 +840,7 @@ def revoke_staff_invite(actor: User, invite_id: int, totp_code: str | None) -> d
         raise AuthError("Forbidden", 403)
     if not totp_code or not _verify_totp_for_user(actor, totp_code, "staff_invite_revoke"):
         audit_event("staff_invite_revoked", "failure", user=actor, metadata={"reason": "invalid_totp_step_up"})
-        raise AuthError("Fresh MFA verification is required", 403)
+        raise AuthError(FRESH_MFA_REQUIRED_ERROR, 403)
     invite = db.session.get(StaffInvite, int(invite_id))
     if invite is None or invite.status not in ACTIVE_INVITE_STATUSES:
         raise AuthError("Invite not found", 404)
@@ -890,7 +895,7 @@ def transition_manual_recovery_request_as_admin(
             user=actor,
             metadata={"reason": "invalid_totp_step_up"},
         )
-        raise AuthError("Fresh MFA verification is required", 403)
+        raise AuthError(FRESH_MFA_REQUIRED_ERROR, 403)
 
     result = transition_manual_recovery_request(request_id, normalized_status, reason=clean_reason)
     audit_event(
@@ -923,7 +928,7 @@ def complete_manual_recovery_request_as_admin(
             user=actor,
             metadata={"reason": "invalid_totp_step_up"},
         )
-        raise AuthError("Fresh MFA verification is required", 403)
+        raise AuthError(FRESH_MFA_REQUIRED_ERROR, 403)
 
     result = complete_manual_recovery_request(request_id, reason=clean_reason)
     audit_event(
@@ -967,7 +972,7 @@ def start_invite_acceptance(
         verify_turnstile_token(turnstile_token)
     except TurnstileError as exc:
         audit_event("staff_invite_accept", "failure", metadata={"reason": "turnstile_failed"})
-        raise AuthError("Invite acceptance failed", 400) from exc
+        raise AuthError(INVITE_ACCEPTANCE_ERROR, 400) from exc
 
     invite = _active_invite_by_token(token, lock=True, audit_failures=True)
     name = validate_full_name(full_name)
@@ -1031,7 +1036,7 @@ def start_invite_acceptance(
         db.session.rollback()
         current_app.logger.warning("staff_workplace_verification_email_failed error=%s", type(exc).__name__)
         audit_event("staff_workplace_verification_sent", "failure", metadata={"reason": "email_delivery_failed"})
-        raise AuthError("Invite acceptance failed", 503) from exc
+        raise AuthError(INVITE_ACCEPTANCE_ERROR, 503) from exc
     return {
         "message": "TOTP setup required",
         "invite": {
@@ -1133,11 +1138,11 @@ def normalize_workplace_email(email: str) -> str:
     normalized = _normalize_email(email)
     local, separator, domain = normalized.partition("@")
     if not _valid_email_parts(local, separator, domain):
-        raise AuthError("Invalid workplace email", 400)
+        raise AuthError(INVALID_WORKPLACE_EMAIL_ERROR, 400)
     if domain.casefold() not in _workplace_domains():
-        raise AuthError("Invalid workplace email", 400)
+        raise AuthError(INVALID_WORKPLACE_EMAIL_ERROR, 400)
     if _contains_alias_separator(local):
-        raise AuthError("Invalid workplace email", 400)
+        raise AuthError(INVALID_WORKPLACE_EMAIL_ERROR, 400)
     return f"{local}@{domain.casefold()}"
 
 
@@ -1145,12 +1150,12 @@ def normalize_personal_email(email: str) -> str:
     normalized = _normalize_email(email)
     local, separator, domain = normalized.partition("@")
     if not _valid_email_parts(local, separator, domain):
-        raise AuthError("Invalid personal email", 400)
+        raise AuthError(INVALID_PERSONAL_EMAIL_ERROR, 400)
     domain_lower = domain.casefold()
     if domain_lower in _workplace_domains() or domain_lower not in _personal_domains():
-        raise AuthError("Invalid personal email", 400)
+        raise AuthError(INVALID_PERSONAL_EMAIL_ERROR, 400)
     if _contains_alias_separator(local):
-        raise AuthError("Invalid personal email", 400)
+        raise AuthError(INVALID_PERSONAL_EMAIL_ERROR, 400)
     return f"{local}@{domain_lower}"
 
 
@@ -1184,8 +1189,7 @@ def _active_invite_by_token(
     try:
         token_hash = invite_token_hash(token)
     except AuthError:
-        if audit_failures:
-            audit_event("staff_invite_invalid_attempt", "failure", metadata={"reason": "malformed_token"})
+        _audit_invalid_invite_attempt("malformed_token", enabled=audit_failures)
         raise
     statement = db.select(StaffInvite).where(StaffInvite.token_hash == token_hash)
     if lock and db.engine.dialect.name == "postgresql":
@@ -1193,8 +1197,7 @@ def _active_invite_by_token(
     invite = db.session.execute(statement).scalar_one_or_none()
     now = _utcnow()
     if invite is None:
-        if audit_failures:
-            audit_event("staff_invite_invalid_attempt", "failure", metadata={"reason": "missing"})
+        _audit_invalid_invite_attempt("missing", enabled=audit_failures)
         raise AuthError(GENERIC_INVITE_ERROR, 401)
     invite.last_attempt_at = now
     if _as_utc(invite.expires_at) <= now:
@@ -1203,16 +1206,23 @@ def _active_invite_by_token(
         audit_event("staff_invite_expired", "expired", metadata=_invite_audit_metadata(invite))
         raise AuthError(GENERIC_INVITE_ERROR, 401)
     if invite.revoked_at is not None or invite.status == "revoked":
-        if audit_failures:
-            audit_event("staff_invite_invalid_attempt", "failure", metadata={"reason": "revoked"})
+        _audit_invalid_invite_attempt("revoked", enabled=audit_failures)
         raise AuthError(GENERIC_INVITE_ERROR, 401)
     if invite.used_at is not None or invite.status == "accepted":
-        if audit_failures:
-            audit_event("staff_invite_invalid_attempt", "failure", metadata={"reason": "used"})
+        _audit_invalid_invite_attempt("used", enabled=audit_failures)
         raise AuthError(GENERIC_INVITE_ERROR, 401)
     if invite.status not in ACTIVE_INVITE_STATUSES:
         raise AuthError(GENERIC_INVITE_ERROR, 401)
     return invite
+
+
+def _audit_invalid_invite_attempt(reason: str, *, enabled: bool) -> None:
+    if enabled:
+        audit_event(
+            "staff_invite_invalid_attempt",
+            "failure",
+            metadata={"reason": reason},
+        )
 
 
 def _send_invite_email(invite: StaffInvite, invite_url: str) -> None:
@@ -1295,7 +1305,7 @@ def _reject_existing_staff_identity(workplace_email: str) -> None:
         )
     ).scalar_one_or_none()
     if existing is not None:
-        raise AuthError("Invite could not be created", 400)
+        raise AuthError(INVITE_CREATE_ERROR, 400)
 
 
 def _reject_duplicate_staff_signup(workplace_email: str, phone_number: str) -> None:
@@ -1308,7 +1318,7 @@ def _reject_duplicate_staff_signup(workplace_email: str, phone_number: str) -> N
         )
     ).scalar_one_or_none()
     if existing is not None:
-        raise AuthError("Invite acceptance failed", 400)
+        raise AuthError(INVITE_ACCEPTANCE_ERROR, 400)
 
 
 def _reject_active_invite(workplace_email: str, personal_email: str) -> None:
@@ -1326,7 +1336,7 @@ def _reject_active_invite(workplace_email: str, personal_email: str) -> None:
         )
     ).scalar_one_or_none()
     if existing is not None:
-        raise AuthError("Invite could not be created", 400)
+        raise AuthError(INVITE_CREATE_ERROR, 400)
 
 
 def _staff_user_by_workplace_email(email: str) -> User | None:
