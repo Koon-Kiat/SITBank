@@ -12,16 +12,52 @@ readonly postgres_container="smoke-postgres"
 readonly app_container="sitbank-smoke"
 readonly admin_container="sitbank-admin-smoke"
 
-docker_bind_source() {
-    local path="$1"
+running_on_windows_shell() {
     case "$(uname -s)" in
         MINGW* | MSYS* | CYGWIN*)
-            cygpath -w "${path}"
+            return 0
             ;;
         *)
-            printf '%s' "${path}"
+            return 1
             ;;
     esac
+}
+
+if running_on_windows_shell; then
+    # Docker receives container paths such as /run/secrets/... in --env and
+    # --tmpfs arguments. Keep those POSIX paths intact; bind mounts are
+    # converted explicitly by docker_bind_source below.
+    export MSYS_NO_PATHCONV=1
+fi
+
+docker_bind_source() {
+    local path="$1"
+    if running_on_windows_shell; then
+        cygpath -w "${path}"
+    else
+        printf '%s' "${path}"
+    fi
+}
+
+install_host_dir() {
+    local mode="$1"
+    shift
+    if running_on_windows_shell; then
+        mkdir -p "$@"
+        chmod "${mode}" "$@" 2>/dev/null || true
+    else
+        install -d -m "${mode}" "$@"
+    fi
+}
+
+chmod_host_path() {
+    local mode="$1"
+    shift
+    if running_on_windows_shell; then
+        chmod "${mode}" "$@" 2>/dev/null || true
+    else
+        chmod "${mode}" "$@"
+    fi
 }
 
 dump_container_diagnostics() {
@@ -232,7 +268,7 @@ fi
 echo "Admin connection test: passed"
 echo "Postgres smoke DB host: ${postgres_container}"
 
-install -d -m 0755 "${work_dir}/secrets" "${work_dir}/config"
+install_host_dir 0755 "${work_dir}/secrets" "${work_dir}/config"
 printf '%s' 'ci-secret-key-that-is-long-enough-for-container-tests' \
     > "${work_dir}/secrets/secret_key"
 printf '%s' 'ci-csrf-key-that-is-long-enough-for-container-tests' \
@@ -272,11 +308,11 @@ printf '%s' 'smtp-user' \
     > "${work_dir}/secrets/smtp_username"
 printf '%s' 'smtp-password' \
     > "${work_dir}/secrets/smtp_password"
-chmod 0444 "${work_dir}"/secrets/*
+chmod_host_path 0444 "${work_dir}"/secrets/*
 
 seq -f 'blocked-password-%06g' 1 100000 \
     > "${work_dir}/config/common-passwords.txt"
-chmod 0444 "${work_dir}"/config/*
+chmod_host_path 0444 "${work_dir}"/config/*
 
 secrets_mount_source="$(docker_bind_source "${work_dir}/secrets")"
 config_mount_source="$(docker_bind_source "${work_dir}/config")"
@@ -430,10 +466,10 @@ if [[ "${RUN_ZAP_DAST:-false}" == "true" ]]; then
         false
     fi
     umask 077
-    install -d -m 0700 "${work_dir}/dast"
+    install_host_dir 0700 "${work_dir}/dast"
     # Bind-mounted Docker directories need broad traversal for container UIDs;
     # the cookie and ZAP config files inside remain 0600.
-    chmod 0777 "${work_dir}/dast"
+    chmod_host_path 0777 "${work_dir}/dast"
     dast_mount_source="$(docker_bind_source "${work_dir}/dast")"
     docker run --rm "${docker_args[@]}" \
         --volume "${create_dast_session_source}:/app/create_dast_session.py:ro" \
@@ -462,8 +498,11 @@ for path in (cookie_path, zap_config_path):
     if mode & 0o077:
         raise SystemExit(f"{path.name} permissions are too broad: {mode:o}")
 PY
-    install -d -m 0777 "${work_dir}/zap"
+    install_host_dir 0777 "${work_dir}/zap"
     zap_mount_source="$(docker_bind_source "${work_dir}/zap")"
+    # ZAP derives an unusable home such as /zap/?/.ZAP for this unknown UID.
+    # Keep the UID aligned with the 0600 DAST config owner and provide a
+    # writable non-secret ZAP home with -dir instead of relaxing cookie files.
     docker run --rm --network "${network_name}" \
         --user 10001:10001 \
         --env HOME=/zap/wrk \
@@ -477,5 +516,5 @@ PY
             -m 2 \
             -r zap-report.html \
             -J zap-report.json \
-            -z "-configfile /run/dast/zap-replacer.properties"
+            -z "-dir /zap/wrk/.ZAP -configfile /run/dast/zap-replacer.properties"
 fi

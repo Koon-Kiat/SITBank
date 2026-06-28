@@ -1112,6 +1112,9 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert '"${work_dir}/secrets:/run/secrets:ro"' not in smoke_test
     assert '"${work_dir}/secrets/database_migration_url"' in smoke_test
     assert ':/run/secrets/database_migration_url:ro' not in smoke_test
+    assert "install_host_dir 0755 \"${work_dir}/secrets\" \"${work_dir}/config\"" in smoke_test
+    assert "install_host_dir 0700 \"${work_dir}/dast\"" in smoke_test
+    assert "chmod_host_path 0777 \"${work_dir}/dast\"" in smoke_test
     assert "apply-runtime-db-privileges" in smoke_test
     assert "verify-runtime-db-privileges" in smoke_test
     assert "python -m flask --app admin_wsgi:app production-check" in smoke_test
@@ -1136,7 +1139,11 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert '"${dast_mount_source}:/run/dast:ro"' in smoke_test
     assert "--zap-replacer-config-output /run/dast/zap-replacer.properties" in smoke_test
     assert "-configfile /run/dast/zap-replacer.properties" in smoke_test
+    assert "-dir /zap/wrk/.ZAP -configfile /run/dast/zap-replacer.properties" in smoke_test
     assert "--workdir /zap/wrk" in smoke_test
+    assert "Keep the UID aligned with the 0600 DAST config owner" in smoke_test
+    assert "export MSYS_NO_PATHCONV=1" in smoke_test
+    assert "converted explicitly by docker_bind_source" in smoke_test
     assert "replacer.full_list(0).replacement=${" not in smoke_test
     assert "dast_cookie=" not in smoke_test
     assert "docker compose" in compose_validation
