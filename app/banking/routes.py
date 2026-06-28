@@ -36,7 +36,15 @@ banking_bp = Blueprint("banking", __name__, url_prefix="/banking")
 
 _PENDING_PAYEE_TTL = 300  # seconds; user has 5 min to complete MFA after step 1
 _PENDING_TRANSFER_TTL = 300  # seconds; user has 5 min to confirm after MFA step-up
-_ACCOUNT_RE = re.compile(r"^[0-9]{9}$")
+_ACCOUNT_RE = re.compile(r"^\d{9}$")
+_REQUEST_EXPIRED_MESSAGE = "Request expired. Please start again."
+_NO_PENDING_TRANSFER_MESSAGE = "No pending transfer. Please start again."
+_PAYEES_ENDPOINT = "banking.payees"
+_PAYEES_ADD_ENDPOINT = "banking.payees_add"
+_TRANSFER_TEMPLATE = "transfer.html"
+_ADD_PAYEE_TEMPLATE = "add_payee.html"
+_REMOVE_PAYEE_TEMPLATE = "remove_payee.html"
+_DUPLICATE_PAYEE_MESSAGE = "This payee is already in your list."
 
 
 @banking_bp.before_request
@@ -115,7 +123,7 @@ def payees():
 @web_login_required
 @web_not_frozen_required
 def payees_add():
-    return render_template("add_payee.html", form=AddPayeeForm())
+    return render_template(_ADD_PAYEE_TEMPLATE, form=AddPayeeForm())
 
 
 @banking_bp.post("/payees/add")
@@ -125,7 +133,7 @@ def payees_add():
 def payees_add_submit():
     form = AddPayeeForm()
     if not form.validate_on_submit():
-        return render_template("add_payee.html", form=form), 400
+        return render_template(_ADD_PAYEE_TEMPLATE, form=form), 400
 
     nickname = form.nickname.data.strip()[:64]
     account_number = form.account_number.data.strip()
@@ -133,11 +141,11 @@ def payees_add_submit():
     # Belt-and-suspenders: re-check format server-side even after WTForms
     if not _ACCOUNT_RE.fullmatch(account_number):
         flash("Invalid account number format.", "error")
-        return render_template("add_payee.html", form=form), 400
+        return render_template(_ADD_PAYEE_TEMPLATE, form=form), 400
 
     if account_number == g.current_user.account_number:
         flash("You cannot add your own account as a payee.", "error")
-        return render_template("add_payee.html", form=form), 400
+        return render_template(_ADD_PAYEE_TEMPLATE, form=form), 400
 
     # Authorize before lookup so recipient identity is not revealed pre-step-up.
     try:
@@ -149,7 +157,7 @@ def payees_add_submit():
         )
     except AuthError as exc:
         flash(exc.message, "error")
-        return render_template("add_payee.html", form=form), exc.status_code
+        return render_template(_ADD_PAYEE_TEMPLATE, form=form), exc.status_code
 
     recipient = User.query.filter_by(account_number=account_number).first()
     if not recipient:
@@ -163,15 +171,15 @@ def payees_add_submit():
             },
         )
         flash("Could not add that payee. Check the details and try again.", "error")
-        return render_template("add_payee.html", form=form), 400
+        return render_template(_ADD_PAYEE_TEMPLATE, form=form), 400
 
     existing = Payee.query.filter_by(
         user_id=g.current_user.id,
         account_number=account_number,
     ).first()
     if existing:
-        flash("This payee is already in your list.", "error")
-        return render_template("add_payee.html", form=form), 400
+        flash(_DUPLICATE_PAYEE_MESSAGE, "error")
+        return render_template(_ADD_PAYEE_TEMPLATE, form=form), 400
 
     # Store pending state server-side; client never controls the recipient name
     session["pending_payee"] = {
@@ -196,12 +204,12 @@ def payees_confirm():
     pending = session.get("pending_payee")
     if not pending:
         flash("No pending payee. Please start again.", "warning")
-        return redirect(url_for("banking.payees_add"))
+        return redirect(url_for(_PAYEES_ADD_ENDPOINT))
 
     if datetime.now(timezone.utc) > datetime.fromisoformat(pending["expires_at"]):
         session.pop("pending_payee", None)
-        flash("Request expired. Please start again.", "warning")
-        return redirect(url_for("banking.payees_add"))
+        flash(_REQUEST_EXPIRED_MESSAGE, "warning")
+        return redirect(url_for(_PAYEES_ADD_ENDPOINT))
 
     return render_template("confirm_payee.html", form=CsrfOnlyForm(), pending=pending)
 
@@ -217,15 +225,15 @@ def payees_confirm_submit():
     pending = session.pop("pending_payee", None)
     if not pending:
         flash("No pending payee. Please start again.", "warning")
-        return redirect(url_for("banking.payees_add"))
+        return redirect(url_for(_PAYEES_ADD_ENDPOINT))
 
     if datetime.now(timezone.utc) > datetime.fromisoformat(pending["expires_at"]):
-        flash("Request expired. Please start again.", "warning")
-        return redirect(url_for("banking.payees_add"))
+        flash(_REQUEST_EXPIRED_MESSAGE, "warning")
+        return redirect(url_for(_PAYEES_ADD_ENDPOINT))
 
     if pending.get("authorization_action") != "payee_add" or not pending.get("authorized_at"):
         flash("Payee authorization expired. Please start again.", "warning")
-        return redirect(url_for("banking.payees_add"))
+        return redirect(url_for(_PAYEES_ADD_ENDPOINT))
 
     if not form.validate_on_submit():
         session["pending_payee"] = pending
@@ -236,20 +244,20 @@ def payees_confirm_submit():
 
     if account_number == g.current_user.account_number:
         flash("Cannot add your own account.", "error")
-        return redirect(url_for("banking.payees_add"))
+        return redirect(url_for(_PAYEES_ADD_ENDPOINT))
 
     recipient = User.query.filter_by(account_number=account_number).first()
     if not recipient:
         flash("Account no longer found. Please start again.", "error")
-        return redirect(url_for("banking.payees_add"))
+        return redirect(url_for(_PAYEES_ADD_ENDPOINT))
 
     existing = Payee.query.filter_by(
         user_id=g.current_user.id,
         account_number=account_number,
     ).first()
     if existing:
-        flash("This payee is already in your list.", "error")
-        return redirect(url_for("banking.payees"))
+        flash(_DUPLICATE_PAYEE_MESSAGE, "error")
+        return redirect(url_for(_PAYEES_ENDPOINT))
 
     # Insert using server-fetched name — client never supplied this
     payee = Payee(
@@ -263,8 +271,8 @@ def payees_confirm_submit():
         db.session.commit()
     except IntegrityError:
         db.session.rollback()
-        flash("This payee is already in your list.", "error")
-        return redirect(url_for("banking.payees"))
+        flash(_DUPLICATE_PAYEE_MESSAGE, "error")
+        return redirect(url_for(_PAYEES_ENDPOINT))
 
     audit_event(
         "payee_add",
@@ -276,7 +284,7 @@ def payees_confirm_submit():
     cooldown_seconds = current_app.config.get("PAYEE_COOLDOWN_SECONDS", 60)
     cooldown_label = _format_cooldown_remaining(cooldown_seconds)
     flash(f"Payee added. Transfers available in {cooldown_label}.", "success")
-    return redirect(url_for("banking.payees"))
+    return redirect(url_for(_PAYEES_ENDPOINT))
 
 
 # ── Remove payee ────────────────────────────────────────────────────────────────
@@ -287,7 +295,7 @@ def payees_confirm_submit():
 def payees_remove(payee_id: int):
     # Ownership check — prevents IDOR
     payee = Payee.query.filter_by(id=payee_id, user_id=g.current_user.id).first_or_404()
-    return render_template("remove_payee.html", form=MfaOrStepUpForm(), payee=payee)
+    return render_template(_REMOVE_PAYEE_TEMPLATE, form=MfaOrStepUpForm(), payee=payee)
 
 
 @banking_bp.post("/payees/<int:payee_id>/remove")
@@ -300,7 +308,7 @@ def payees_remove_submit(payee_id: int):
 
     form = MfaOrStepUpForm()
     if not form.validate_on_submit():
-        return render_template("remove_payee.html", form=form, payee=payee), 400
+        return render_template(_REMOVE_PAYEE_TEMPLATE, form=form, payee=payee), 400
 
     try:
         verify_high_risk_authorization(
@@ -311,7 +319,7 @@ def payees_remove_submit(payee_id: int):
         )
     except AuthError as exc:
         flash(exc.message, "error")
-        return render_template("remove_payee.html", form=form, payee=payee), exc.status_code
+        return render_template(_REMOVE_PAYEE_TEMPLATE, form=form, payee=payee), exc.status_code
 
     audit_event(
         "payee_remove",
@@ -323,7 +331,7 @@ def payees_remove_submit(payee_id: int):
     db.session.commit()
 
     flash("Payee removed.", "success")
-    return redirect(url_for("banking.payees"))
+    return redirect(url_for(_PAYEES_ENDPOINT))
 
 
 # ── Local Transfer: step 1 — amount + MFA step-up ──────────────────────────────
@@ -338,8 +346,8 @@ def transfer(payee_id: int):
     status = _cooldown_status(payee, cooldown_seconds)
     if status["status"] != "active":
         flash(f"This payee is still in cooldown. Available in {status['remaining']}.", "warning")
-        return redirect(url_for("banking.payees"))
-    return render_template("transfer.html", form=TransferForm(), payee=payee)
+        return redirect(url_for(_PAYEES_ENDPOINT))
+    return render_template(_TRANSFER_TEMPLATE, form=TransferForm(), payee=payee)
 
 
 @banking_bp.post("/transfer/<int:payee_id>")
@@ -352,25 +360,25 @@ def transfer_submit(payee_id: int):
     cooldown_seconds = current_app.config.get("PAYEE_COOLDOWN_SECONDS", 60)
     if _cooldown_status(payee, cooldown_seconds)["status"] != "active":
         flash("Payee is still in cooldown.", "error")
-        return redirect(url_for("banking.payees"))
+        return redirect(url_for(_PAYEES_ENDPOINT))
 
     form = TransferForm()
     if not form.validate_on_submit():
-        return render_template("transfer.html", form=form, payee=payee), 400
+        return render_template(_TRANSFER_TEMPLATE, form=form, payee=payee), 400
 
     # A03: parse as Decimal — never float — to avoid precision errors
     try:
         amount = Decimal(form.amount.data.strip())
     except InvalidOperation:
         flash("Invalid amount.", "error")
-        return render_template("transfer.html", form=form, payee=payee), 400
+        return render_template(_TRANSFER_TEMPLATE, form=form, payee=payee), 400
 
     if amount < MIN_TRANSACTION_AMOUNT or amount > MAX_TRANSACTION_AMOUNT:
         flash(
             f"Amount must be between SGD {MIN_TRANSACTION_AMOUNT} and SGD {MAX_TRANSACTION_AMOUNT}.",
             "error",
         )
-        return render_template("transfer.html", form=form, payee=payee), 400
+        return render_template(_TRANSFER_TEMPLATE, form=form, payee=payee), 400
 
     # A07: MFA step-up required before pending state is created
     try:
@@ -382,7 +390,7 @@ def transfer_submit(payee_id: int):
         )
     except AuthError as exc:
         flash(exc.message, "error")
-        return render_template("transfer.html", form=form, payee=payee), exc.status_code
+        return render_template(_TRANSFER_TEMPLATE, form=form, payee=payee), exc.status_code
 
     # A08: create a server-side pending transfer record bound to this user, payee,
     # amount, and reference. Store only the opaque token in the session so the
@@ -410,8 +418,8 @@ def transfer_submit(payee_id: int):
 def transfer_confirm(payee_id: int):
     token = session.get("pending_transfer_token")
     if not token:
-        flash("No pending transfer. Please start again.", "warning")
-        return redirect(url_for("banking.payees"))
+        flash(_NO_PENDING_TRANSFER_MESSAGE, "warning")
+        return redirect(url_for(_PAYEES_ENDPOINT))
 
     pending_tfr = PendingTransfer.query.filter_by(
         token=token,
@@ -421,8 +429,8 @@ def transfer_confirm(payee_id: int):
     ).first()
     if not pending_tfr:
         session.pop("pending_transfer_token", None)
-        flash("No pending transfer. Please start again.", "warning")
-        return redirect(url_for("banking.payees"))
+        flash(_NO_PENDING_TRANSFER_MESSAGE, "warning")
+        return redirect(url_for(_PAYEES_ENDPOINT))
 
     expires_at = (
         pending_tfr.expires_at
@@ -431,8 +439,8 @@ def transfer_confirm(payee_id: int):
     )
     if expires_at < datetime.now(timezone.utc):
         session.pop("pending_transfer_token", None)
-        flash("Request expired. Please start again.", "warning")
-        return redirect(url_for("banking.payees"))
+        flash(_REQUEST_EXPIRED_MESSAGE, "warning")
+        return redirect(url_for(_PAYEES_ENDPOINT))
 
     pending = {
         "payee_id": payee_id,
@@ -454,12 +462,12 @@ def transfer_confirm_submit(payee_id: int):
     # A04: consume session token immediately — prevents session-layer replay
     token = session.pop("pending_transfer_token", None)
     if not token:
-        flash("No pending transfer. Please start again.", "warning")
-        return redirect(url_for("banking.payees"))
+        flash(_NO_PENDING_TRANSFER_MESSAGE, "warning")
+        return redirect(url_for(_PAYEES_ENDPOINT))
 
     if not form.validate_on_submit():
         flash("Request validation failed. Please start again.", "error")
-        return redirect(url_for("banking.payees"))
+        return redirect(url_for(_PAYEES_ENDPOINT))
 
     # A01: re-fetch payee server-side — re-validates ownership at execution time
     payee = Payee.query.filter_by(id=payee_id, user_id=g.current_user.id).first_or_404()
@@ -472,7 +480,7 @@ def transfer_confirm_submit(payee_id: int):
         )
     except AuthError as exc:
         flash(exc.message, "error")
-        return redirect(url_for("banking.payees"))
+        return redirect(url_for(_PAYEES_ENDPOINT))
 
     amount_display = PendingTransfer.query.filter_by(
         consumed_transaction_ref=txn_ref,
@@ -481,4 +489,4 @@ def transfer_confirm_submit(payee_id: int):
         f"Transfer of SGD {amount_display} to {payee.recipient_name} is complete. Ref: {txn_ref[:8].upper()}",
         "success",
     )
-    return redirect(url_for("banking.payees"))
+    return redirect(url_for(_PAYEES_ENDPOINT))

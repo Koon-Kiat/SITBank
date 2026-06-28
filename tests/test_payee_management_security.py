@@ -13,6 +13,7 @@ from _auth_flow_helpers import (
 )
 from app.extensions import db
 from app.models import Payee, SecurityAuditEvent, User
+from app.security.rate_limits import clear_failures
 
 
 def _user(username: str) -> User:
@@ -313,3 +314,141 @@ def test_payee_removal_enforces_ownership_and_totp(app, client):
     assert get_response.status_code == 404
     assert post_response.status_code == 404
     assert db.session.get(Payee, payee.id) is not None
+
+
+def test_payee_routes_cover_missing_expired_and_unauthorized_pending_state(client):
+    alice = _register_customer(
+        client,
+        username="alice01",
+        email="alice@sit.singaporetech.edu.sg",
+        phone="91234567",
+        account="012345678",
+    )
+    _login_mfa_customer(client)
+
+    add_page = client.get("/banking/payees/add")
+    invalid_add = client.post("/banking/payees/add", data={})
+    missing_get = client.get("/banking/payees/confirm")
+    missing_post = client.post("/banking/payees/confirm")
+
+    with client.session_transaction() as session_state:
+        session_state["pending_payee"] = {
+            "nickname": "Expired",
+            "account_number": "012000999",
+            "authorization_action": "payee_add",
+            "authorized_at": datetime.now(timezone.utc).isoformat(),
+            "expires_at": (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(),
+        }
+    expired = client.get("/banking/payees/confirm")
+
+    with client.session_transaction() as session_state:
+        session_state["pending_payee"] = {
+            "nickname": "Unauthorized",
+            "account_number": "012000999",
+            "authorization_action": "other",
+            "authorized_at": datetime.now(timezone.utc).isoformat(),
+            "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+        }
+    unauthorized = client.post("/banking/payees/confirm")
+
+    with client.session_transaction() as session_state:
+        session_state["pending_payee"] = {
+            "nickname": "Self",
+            "account_number": alice.account_number,
+            "authorization_action": "payee_add",
+            "authorized_at": datetime.now(timezone.utc).isoformat(),
+            "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+        }
+    self_payee = client.post("/banking/payees/confirm")
+
+    assert add_page.status_code == 200
+    assert invalid_add.status_code == 400
+    assert missing_get.status_code == 302
+    assert missing_post.status_code == 302
+    assert expired.status_code == 302
+    assert unauthorized.status_code == 302
+    assert self_payee.status_code == 302
+
+
+def test_payee_confirmation_handles_missing_duplicate_and_removal_paths(
+    app,
+    client,
+    monkeypatch,
+):
+    from app.banking import routes as banking_routes
+
+    bob_client = app.test_client()
+    alice = _register_customer(
+        client,
+        username="alice01",
+        email="alice@sit.singaporetech.edu.sg",
+        phone="91234567",
+        account="012345678",
+    )
+    bob = _register_customer(
+        bob_client,
+        username="bob02",
+        email="bob@sit.singaporetech.edu.sg",
+        phone="81234567",
+        account="012555999",
+    )
+    _alice, secret = _login_mfa_customer(client)
+
+    def pending(account_number: str, nickname: str = "Payee") -> dict[str, str]:
+        return {
+            "nickname": nickname,
+            "account_number": account_number,
+            "authorization_action": "payee_add",
+            "authorized_at": datetime.now(timezone.utc).isoformat(),
+            "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+        }
+
+    with client.session_transaction() as session_state:
+        session_state["pending_payee"] = pending("012000999", "Missing")
+    missing = client.post("/banking/payees/confirm")
+
+    existing = Payee(
+        user_id=alice.id,
+        nickname="Existing",
+        account_number=bob.account_number,
+        recipient_name=bob.full_name,
+    )
+    db.session.add(existing)
+    db.session.commit()
+    with client.session_transaction() as session_state:
+        session_state["pending_payee"] = pending(bob.account_number, "Duplicate")
+    duplicate = client.post("/banking/payees/confirm")
+
+    remove_page = client.get(f"/banking/payees/{existing.id}/remove")
+    real_remove_form = banking_routes.MfaOrStepUpForm
+    real_render_template = banking_routes.render_template
+    monkeypatch.setattr(
+        banking_routes,
+        "MfaOrStepUpForm",
+        lambda: type("InvalidForm", (), {"validate_on_submit": lambda self: False})(),
+    )
+    monkeypatch.setattr(
+        banking_routes,
+        "render_template",
+        lambda *_args, **_kwargs: "invalid form",
+    )
+    invalid_remove = client.post(f"/banking/payees/{existing.id}/remove", data={})
+    monkeypatch.setattr(banking_routes, "MfaOrStepUpForm", real_remove_form)
+    monkeypatch.setattr(banking_routes, "render_template", real_render_template)
+    denied_remove = client.post(
+        f"/banking/payees/{existing.id}/remove",
+        data={"totp_code": "000000"},
+    )
+    clear_failures("payee_remove", str(alice.id))
+    successful_remove = client.post(
+        f"/banking/payees/{existing.id}/remove",
+        data={"totp_code": _current_totp(secret)},
+    )
+
+    assert missing.status_code == 302
+    assert duplicate.status_code == 302
+    assert remove_page.status_code == 200
+    assert invalid_remove.status_code == 400
+    assert denied_remove.status_code == 401
+    assert successful_remove.status_code == 302
+    assert db.session.get(Payee, existing.id) is None

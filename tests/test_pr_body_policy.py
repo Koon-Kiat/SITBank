@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from ops.security.validate_pr_body import load_body_from_event, validate_body
 
 
@@ -107,4 +109,14 @@ def test_event_payload_body_is_loaded(tmp_path):
     event_path = tmp_path / "event.json"
     event_path.write_text(json.dumps({"pull_request": {"body": VALID_BODY}}), encoding="utf-8")
 
-    assert load_body_from_event(event_path) == VALID_BODY
+    assert load_body_from_event(event_path, tmp_path) == VALID_BODY
+
+
+def test_event_payload_path_must_stay_within_trusted_root(tmp_path):
+    allowed_root = tmp_path / "events"
+    allowed_root.mkdir()
+    outside = tmp_path / "outside.json"
+    outside.write_text(json.dumps({"pull_request": {"body": VALID_BODY}}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="escapes"):
+        load_body_from_event(outside, allowed_root)

@@ -13,6 +13,7 @@ from flask import (
     url_for,
 )
 from flask_limiter.util import get_remote_address
+from flask_wtf import FlaskForm
 
 from app.auth.forms import (
     AuthenticationCodeForm,
@@ -84,15 +85,29 @@ from app.security.sessions import (
 
 web_bp = Blueprint("web", __name__)
 
+_FORGOT_PASSWORD_ENDPOINT = "web.forgot_password"
+_RESET_PASSWORD_CONTINUE_ENDPOINT = "web.reset_password_continue"
+_MFA_SETUP_ENDPOINT = "web.mfa_setup"
+_LOGIN_ENDPOINT = "web.login"
+_DASHBOARD_ENDPOINT = "web.dashboard"
+_SESSIONS_ENDPOINT = "web.sessions_dashboard"
+_MFA_VERIFY_TEMPLATE = "mfa_verify.html"
+_MFA_SETUP_TEMPLATE = "mfa_setup.html"
+_LOGIN_TEMPLATE = "login.html"
+_PROFILE_TEMPLATE = "profile.html"
+_PASSWORD_CHANGE_TEMPLATE = "password_change.html"
+_FREEZE_TEMPLATE = "freeze.html"
+_SECURITY_TOKEN_EXPIRED_MESSAGE = "Security token expired. Please try again."
+
 WEB_MFA_ONBOARDING_ALLOWED_ENDPOINTS = {
-    "web.forgot_password",
+    _FORGOT_PASSWORD_ENDPOINT,
     "web.forgot_password_submit",
     "web.reset_password_exchange",
-    "web.reset_password_continue",
+    _RESET_PASSWORD_CONTINUE_ENDPOINT,
     "web.reset_password_continue_submit",
     "web.account_recovery",
     "web.account_recovery_submit",
-    "web.mfa_setup",
+    _MFA_SETUP_ENDPOINT,
     "web.mfa_setup_submit",
     "web.logout",
 }
@@ -104,13 +119,13 @@ def enforce_mfa_onboarding():
     if user is not None and not is_customer_user(user):
         session.clear()
         flash("Please log in with a customer account.", "warning")
-        return redirect(url_for("web.login"))
+        return redirect(url_for(_LOGIN_ENDPOINT))
     if user is None or has_enrolled_mfa_method(user):
         return None
     if request.endpoint in WEB_MFA_ONBOARDING_ALLOWED_ENDPOINTS:
         return None
     flash("Set up an authenticator app before continuing.", "warning")
-    return redirect(url_for("web.mfa_setup"))
+    return redirect(url_for(_MFA_SETUP_ENDPOINT))
 
 
 def web_login_required(view):
@@ -118,11 +133,11 @@ def web_login_required(view):
     def wrapped(*args, **kwargs):
         if not session.get("user_id") or getattr(g, "current_user", None) is None:
             flash("Please log in to continue.", "warning")
-            return redirect(url_for("web.login"))
+            return redirect(url_for(_LOGIN_ENDPOINT))
         if not is_customer_user(g.current_user):
             session.clear()
             flash("Please log in with a customer account.", "warning")
-            return redirect(url_for("web.login"))
+            return redirect(url_for(_LOGIN_ENDPOINT))
         return view(*args, **kwargs)
 
     return wrapped
@@ -134,7 +149,7 @@ def web_not_frozen_required(view):
         user = getattr(g, "current_user", None)
         if user is not None and (user.is_frozen or user.security_locked_at is not None):
             flash("Account is frozen. This action is blocked pending review.", "error")
-            return redirect(url_for("web.dashboard"))
+            return redirect(url_for(_DASHBOARD_ENDPOINT))
         return view(*args, **kwargs)
 
     return wrapped
@@ -147,10 +162,10 @@ def prevent_sensitive_page_caching(response):
         or session.get("pending_mfa_user_id")
         or request.endpoint
         in {
-            "web.forgot_password",
+            _FORGOT_PASSWORD_ENDPOINT,
             "web.forgot_password_submit",
             "web.reset_password_exchange",
-            "web.reset_password_continue",
+            _RESET_PASSWORD_CONTINUE_ENDPOINT,
             "web.reset_password_continue_submit",
             "web.account_recovery",
             "web.account_recovery_submit",
@@ -169,7 +184,7 @@ def prevent_sensitive_page_caching(response):
 @web_bp.get("/register")
 def register_form():
     if getattr(g, "current_user", None) is not None:
-        return redirect(url_for("web.dashboard"))
+        return redirect(url_for(_DASHBOARD_ENDPOINT))
     verified_email = current_verified_registration_email()
     if verified_email:
         return _render_register_details_form(RegisterDetailsForm(), verified_email=verified_email)
@@ -181,7 +196,7 @@ def register_form():
 @limiter.limit("3 per 5 minutes", key_func=request_principal)
 def register_otp_request():
     if getattr(g, "current_user", None) is not None:
-        return redirect(url_for("web.dashboard"))
+        return redirect(url_for(_DASHBOARD_ENDPOINT))
     form = RegistrationOtpRequestForm()
     if not form.validate_on_submit():
         return _render_register_email_form(otp_request_form=form), 400
@@ -199,7 +214,7 @@ def register_otp_request():
 @limiter.limit("10 per 5 minutes", key_func=request_principal)
 def register_otp_verify():
     if getattr(g, "current_user", None) is not None:
-        return redirect(url_for("web.dashboard"))
+        return redirect(url_for(_DASHBOARD_ENDPOINT))
     form = RegistrationOtpCodeForm()
     request_form = RegistrationOtpRequestForm()
     pending_email = pending_registration_email()
@@ -224,7 +239,7 @@ def register_otp_verify():
 @limiter.limit("5 per 5 minutes", key_func=request_principal)
 def register_submit():
     if getattr(g, "current_user", None) is not None:
-        return redirect(url_for("web.dashboard"))
+        return redirect(url_for(_DASHBOARD_ENDPOINT))
 
     verified_email = current_verified_registration_email()
     if not verified_email:
@@ -255,7 +270,7 @@ def register_submit():
     for warning in warnings:
         flash(warning, "warning")
     flash("Registration successful. Please log in.", "success")
-    return redirect(url_for("web.login"))
+    return redirect(url_for(_LOGIN_ENDPOINT))
 
 
 def _render_register_email_form(
@@ -294,10 +309,10 @@ def _render_register_details_form(
 @web_bp.get("/login")
 def login():
     if getattr(g, "current_user", None) is not None:
-        return redirect(url_for("web.dashboard"))
+        return redirect(url_for(_DASHBOARD_ENDPOINT))
     if request.args.get("session_expired"):
         flash("Your session expired due to inactivity. Please log in again.", "warning")
-    return render_template("login.html", form=LoginForm())
+    return render_template(_LOGIN_TEMPLATE, form=LoginForm())
 
 
 @web_bp.post("/login")
@@ -307,17 +322,17 @@ def login():
 @limiter.limit("5 per minute", key_func=request_principal)
 def login_submit():
     if getattr(g, "current_user", None) is not None:
-        return redirect(url_for("web.dashboard"))
+        return redirect(url_for(_DASHBOARD_ENDPOINT))
 
     form = LoginForm()
     if not form.validate_on_submit():
-        return render_template("login.html", form=form), 400
+        return render_template(_LOGIN_TEMPLATE, form=form), 400
 
     try:
         result = authenticate_primary(form.identifier.data, form.password.data)
     except AuthError as exc:
         flash(exc.message, "error")
-        return render_template("login.html", form=form), exc.status_code
+        return render_template(_LOGIN_TEMPLATE, form=form), exc.status_code
 
     if result.get("mfa_required"):
         flash("Enter your authenticator code to finish signing in.", "info")
@@ -327,16 +342,16 @@ def login_submit():
             flash("Passkey sign-in is unavailable. Set up authenticator MFA or request account recovery.", "warning")
         else:
             flash("Set up authenticator MFA before continuing.", "warning")
-        return redirect(url_for("web.mfa_setup"))
+        return redirect(url_for(_MFA_SETUP_ENDPOINT))
 
     flash("Login successful.", "success")
-    return redirect(url_for("web.dashboard"))
+    return redirect(url_for(_DASHBOARD_ENDPOINT))
 
 
 @web_bp.get("/forgot-password")
 def forgot_password():
     if getattr(g, "current_user", None) is not None:
-        return redirect(url_for("web.dashboard"))
+        return redirect(url_for(_DASHBOARD_ENDPOINT))
     return render_template("forgot_password.html", form=ForgotPasswordForm())
 
 
@@ -349,7 +364,7 @@ def forgot_password_submit():
         return render_template("forgot_password.html", form=form), 400
     result = request_password_reset(form.email.data)
     flash(result["message"], "success")
-    return redirect(url_for("web.login"))
+    return redirect(url_for(_LOGIN_ENDPOINT))
 
 
 @web_bp.get("/reset-password")
@@ -360,8 +375,8 @@ def reset_password_exchange():
         exchange_reset_token(token)
     except AuthError as exc:
         flash(exc.message, "error")
-        return redirect(url_for("web.forgot_password"))
-    return redirect(url_for("web.reset_password_continue"))
+        return redirect(url_for(_FORGOT_PASSWORD_ENDPOINT))
+    return redirect(url_for(_RESET_PASSWORD_CONTINUE_ENDPOINT))
 
 
 @web_bp.get("/reset-password/continue")
@@ -370,7 +385,7 @@ def reset_password_continue():
         transaction = current_reset_transaction()
     except AuthError as exc:
         flash(exc.message, "error")
-        return redirect(url_for("web.forgot_password"))
+        return redirect(url_for(_FORGOT_PASSWORD_ENDPOINT))
     return render_template(
         "reset_password.html",
         transaction=transaction,
@@ -388,48 +403,62 @@ def reset_password_continue_submit():
         transaction = current_reset_transaction()
     except AuthError as exc:
         flash(exc.message, "error")
-        return redirect(url_for("web.forgot_password"))
+        return redirect(url_for(_FORGOT_PASSWORD_ENDPOINT))
 
-    if action == "verify_totp":
-        form = AuthenticationCodeForm()
-        if not form.validate_on_submit():
-            return _render_reset_continue(transaction, status_code=400)
-        try:
-            transaction = verify_reset_totp(form.totp_code.data)
-        except AuthError as exc:
-            flash(exc.message, "error")
-            return _render_reset_continue(transaction, status_code=exc.status_code)
-        flash("Authentication code verified.", "success")
-        return _render_reset_continue(transaction)
-
-    if action == "select_mfa_method":
-        form = CsrfOnlyForm()
-        if not form.validate_on_submit():
-            return _render_reset_continue(transaction, status_code=400)
-        try:
-            transaction = select_reset_mfa_method(request.form.get("mfa_method", ""))
-        except AuthError as exc:
-            flash(exc.message, "error")
-            return _render_reset_continue(transaction, status_code=exc.status_code)
-        flash("Verification method selected.", "success")
-        return _render_reset_continue(transaction)
-
-    if action == "complete":
-        form = PasswordResetForm()
-        if not form.validate_on_submit():
-            return _render_reset_continue(transaction, status_code=400)
-        try:
-            result = complete_password_reset(form.new_password.data, form.confirm_new_password.data)
-        except AuthError as exc:
-            flash(exc.message, "error")
-            return _render_reset_continue(transaction, status_code=exc.status_code)
-        for warning in result.get("warnings", []):
-            flash(warning, "warning")
-        flash(result["message"], "success")
-        return redirect(url_for("web.login"))
-
+    handlers = {
+        "verify_totp": _handle_reset_totp,
+        "select_mfa_method": _handle_reset_mfa_selection,
+        "complete": _handle_reset_completion,
+    }
+    handler = handlers.get(action)
+    if handler is not None:
+        return handler(transaction)
     flash("Invalid password reset action.", "error")
     return _render_reset_continue(transaction, status_code=400)
+
+
+def _handle_reset_totp(transaction: dict):
+    form = AuthenticationCodeForm()
+    if not form.validate_on_submit():
+        return _render_reset_continue(transaction, status_code=400)
+    try:
+        transaction = verify_reset_totp(form.totp_code.data)
+    except AuthError as exc:
+        flash(exc.message, "error")
+        return _render_reset_continue(transaction, status_code=exc.status_code)
+    flash("Authentication code verified.", "success")
+    return _render_reset_continue(transaction)
+
+
+def _handle_reset_mfa_selection(transaction: dict):
+    form = CsrfOnlyForm()
+    if not form.validate_on_submit():
+        return _render_reset_continue(transaction, status_code=400)
+    try:
+        transaction = select_reset_mfa_method(request.form.get("mfa_method", ""))
+    except AuthError as exc:
+        flash(exc.message, "error")
+        return _render_reset_continue(transaction, status_code=exc.status_code)
+    flash("Verification method selected.", "success")
+    return _render_reset_continue(transaction)
+
+
+def _handle_reset_completion(transaction: dict):
+    form = PasswordResetForm()
+    if not form.validate_on_submit():
+        return _render_reset_continue(transaction, status_code=400)
+    try:
+        result = complete_password_reset(
+            form.new_password.data,
+            form.confirm_new_password.data,
+        )
+    except AuthError as exc:
+        flash(exc.message, "error")
+        return _render_reset_continue(transaction, status_code=exc.status_code)
+    for warning in result.get("warnings", []):
+        flash(warning, "warning")
+    flash(result["message"], "success")
+    return redirect(url_for(_LOGIN_ENDPOINT))
 
 
 def _render_reset_continue(transaction: dict, *, status_code: int = 200):
@@ -444,7 +473,7 @@ def _render_reset_continue(transaction: dict, *, status_code: int = 200):
 @web_bp.get("/account-recovery")
 def account_recovery():
     if getattr(g, "current_user", None) is not None:
-        return redirect(url_for("web.dashboard"))
+        return redirect(url_for(_DASHBOARD_ENDPOINT))
     return render_template("account_recovery.html", form=ManualRecoveryForm())
 
 
@@ -457,18 +486,18 @@ def account_recovery_submit():
         return render_template("account_recovery.html", form=form), 400
     result = request_manual_recovery(form.identifier.data)
     flash(result["message"], "success")
-    return redirect(url_for("web.login"))
+    return redirect(url_for(_LOGIN_ENDPOINT))
 
 
 @web_bp.get("/mfa/verify")
 def mfa_verify():
     if getattr(g, "current_user", None) is not None:
-        return redirect(url_for("web.dashboard"))
+        return redirect(url_for(_DASHBOARD_ENDPOINT))
     if not session.get("pending_mfa_user_id"):
         flash("Please log in first.", "warning")
-        return redirect(url_for("web.login"))
+        return redirect(url_for(_LOGIN_ENDPOINT))
     return render_template(
-        "mfa_verify.html",
+        _MFA_VERIFY_TEMPLATE,
         form=AuthenticationCodeForm(),
     )
 
@@ -479,20 +508,20 @@ def mfa_verify():
 def mfa_verify_submit():
     if not session.get("pending_mfa_user_id"):
         flash("Please log in first.", "warning")
-        return redirect(url_for("web.login"))
+        return redirect(url_for(_LOGIN_ENDPOINT))
 
     form = AuthenticationCodeForm()
     if not form.validate_on_submit():
-        return render_template("mfa_verify.html", form=form), 400
+        return render_template(_MFA_VERIFY_TEMPLATE, form=form), 400
 
     try:
         complete_pending_mfa(form.totp_code.data)
     except AuthError as exc:
         flash(exc.message, "error")
-        return render_template("mfa_verify.html", form=form), exc.status_code
+        return render_template(_MFA_VERIFY_TEMPLATE, form=form), exc.status_code
 
     flash("Login successful.", "success")
-    return redirect(url_for("web.dashboard"))
+    return redirect(url_for(_DASHBOARD_ENDPOINT))
 
 
 @web_bp.get("/dashboard")
@@ -547,7 +576,7 @@ def profile():
     form.email.data = g.current_user.email
     form.mfa_step_up_preference.data = "totp"
     return render_template(
-        "profile.html",
+        _PROFILE_TEMPLATE,
         user=g.current_user,
         form=form,
         recent_mfa=has_recent_fresh_mfa(),
@@ -561,7 +590,7 @@ def profile_submit():
     form = ProfileForm()
     recent_mfa = has_recent_fresh_mfa()
     if not form.validate_on_submit():
-        return render_template("profile.html", user=g.current_user, form=form, recent_mfa=recent_mfa), 400
+        return render_template(_PROFILE_TEMPLATE, user=g.current_user, form=form, recent_mfa=recent_mfa), 400
 
     try:
         updated = update_profile_details(
@@ -574,7 +603,7 @@ def profile_submit():
         )
     except AuthError as exc:
         flash(exc.message, "error")
-        return render_template("profile.html", user=g.current_user, form=form, recent_mfa=recent_mfa), exc.status_code
+        return render_template(_PROFILE_TEMPLATE, user=g.current_user, form=form, recent_mfa=recent_mfa), exc.status_code
 
     flash("Profile updated." if updated else "No profile changes were needed.", "success")
     return redirect(url_for("web.profile"))
@@ -589,7 +618,7 @@ def mfa_setup():
     recent_mfa = has_recent_fresh_mfa()
     recovery_codes_remaining = unused_recovery_code_count(g.current_user) if g.current_user.mfa_enabled else 0
     return render_template(
-        "mfa_setup.html",
+        _MFA_SETUP_TEMPLATE,
         user=g.current_user,
         setup=setup,
         replacement=replacement,
@@ -611,167 +640,164 @@ def mfa_setup():
 @limiter.limit("5 per 5 minutes", key_func=get_remote_address)
 @limiter.limit("5 per 5 minutes", key_func=mfa_principal)
 def mfa_setup_submit():
+    """Dispatch MFA actions; replacement handlers validate conditional stepup_token."""
     action = request.form.get("action")
-    start_form = CsrfOnlyForm()
-    verify_form = TotpForm()
-    recent_mfa = has_recent_fresh_mfa()
-    replace_start_form = MfaOrStepUpForm()
-    replace_verify_form = TotpForm()
-    recovery_regenerate_form = MfaOrStepUpForm()
+    forms = _mfa_management_forms()
+    handlers = {
+        "start": _handle_mfa_setup_start,
+        "verify": _handle_mfa_setup_verify,
+        "replace_start": _handle_mfa_replace_start,
+        "replace_verify": _handle_mfa_replace_verify,
+        "recovery_codes_regenerate": _handle_recovery_code_regeneration,
+    }
+    handler = handlers.get(action)
+    if handler is not None:
+        return handler(forms)
+    flash("Invalid MFA setup action.", "error")
+    return redirect(url_for(_MFA_SETUP_ENDPOINT))
 
-    def render_mfa_management(status_code: int = 200):
-        recovery_codes_remaining = unused_recovery_code_count(g.current_user) if g.current_user.mfa_enabled else 0
-        return render_template(
-            "mfa_setup.html",
-            user=g.current_user,
-            setup=pending_mfa_setup(g.current_user),
-            replacement=pending_mfa_replacement(g.current_user),
-            recent_mfa=has_recent_fresh_mfa(),
-            recovery_codes=None,
-            recovery_codes_remaining=recovery_codes_remaining,
-            recovery_codes_low=recovery_codes_remaining <= RECOVERY_CODE_LOW_THRESHOLD,
-            start_form=start_form,
-            verify_form=verify_form,
-            replace_start_form=replace_start_form,
-            replace_verify_form=replace_verify_form,
-            recovery_regenerate_form=recovery_regenerate_form,
-        ), status_code
 
-    if action == "start":
-        if not start_form.validate_on_submit():
-            return render_mfa_management(400)
-        try:
-            setup = generate_mfa_setup(g.current_user)
-        except AuthError as exc:
-            flash(exc.message, "error")
-            return redirect(url_for("web.dashboard"))
-        flash("Scan the QR code, then enter the current code to enable MFA.", "info")
-        return render_template(
-            "mfa_setup.html",
+def _mfa_management_forms() -> dict[str, FlaskForm]:
+    return {
+        "start": CsrfOnlyForm(),
+        "verify": TotpForm(),
+        "replace_start": MfaOrStepUpForm(),
+        "replace_verify": TotpForm(),
+        "recovery_regenerate": MfaOrStepUpForm(),
+    }
+
+
+def _render_mfa_management(
+    forms: dict[str, FlaskForm],
+    *,
+    status_code: int = 200,
+    setup=None,
+    replacement=None,
+    recovery_codes=None,
+    recovery_codes_remaining: int | None = None,
+):
+    if setup is None:
+        setup = pending_mfa_setup(g.current_user)
+    if replacement is None:
+        replacement = pending_mfa_replacement(g.current_user)
+    if recovery_codes_remaining is None:
+        recovery_codes_remaining = (
+            unused_recovery_code_count(g.current_user)
+            if g.current_user.mfa_enabled
+            else 0
+        )
+    return (
+        render_template(
+            _MFA_SETUP_TEMPLATE,
             user=g.current_user,
             setup=setup,
-            replacement=pending_mfa_replacement(g.current_user),
-            recent_mfa=has_recent_fresh_mfa(),
-            recovery_codes=None,
-            recovery_codes_remaining=0,
-            recovery_codes_low=False,
-            start_form=CsrfOnlyForm(),
-            verify_form=TotpForm(),
-            replace_start_form=MfaOrStepUpForm(),
-            replace_verify_form=TotpForm(),
-            recovery_regenerate_form=MfaOrStepUpForm(),
-        )
-
-    if action == "verify":
-        if not verify_form.validate_on_submit():
-            return render_mfa_management(400)
-        try:
-            result = verify_mfa_setup(g.current_user, verify_form.totp_code.data)
-        except AuthError as exc:
-            flash(exc.message, "error")
-            return render_mfa_management(exc.status_code)
-        flash("MFA is now enabled.", "success")
-        return render_template(
-            "mfa_setup.html",
-            user=g.current_user,
-            setup=None,
-            replacement=None,
-            recent_mfa=has_recent_fresh_mfa(),
-            recovery_codes=result["recovery_codes"],
-            recovery_codes_remaining=result["recovery_codes_remaining"],
-            recovery_codes_low=result["recovery_codes_low"],
-            start_form=CsrfOnlyForm(),
-            verify_form=TotpForm(),
-            replace_start_form=MfaOrStepUpForm(),
-            replace_verify_form=TotpForm(),
-            recovery_regenerate_form=MfaOrStepUpForm(),
-        )
-
-    if action == "replace_start":
-        if not replace_start_form.validate_on_submit():
-            return render_mfa_management(400)
-        try:
-            replacement = generate_mfa_replacement(
-                g.current_user,
-                replace_start_form.totp_code.data,
-                replace_start_form.stepup_token.data,
-            )
-        except AuthError as exc:
-            flash(exc.message, "error")
-            return render_mfa_management(exc.status_code)
-        flash("Scan the replacement QR code, then verify the new authenticator code.", "info")
-        return render_template(
-            "mfa_setup.html",
-            user=g.current_user,
-            setup=pending_mfa_setup(g.current_user),
             replacement=replacement,
             recent_mfa=has_recent_fresh_mfa(),
-            recovery_codes=None,
-            recovery_codes_remaining=unused_recovery_code_count(g.current_user),
-            recovery_codes_low=unused_recovery_code_count(g.current_user) <= RECOVERY_CODE_LOW_THRESHOLD,
-            start_form=CsrfOnlyForm(),
-            verify_form=TotpForm(),
-            replace_start_form=MfaOrStepUpForm(),
-            replace_verify_form=TotpForm(),
-            recovery_regenerate_form=MfaOrStepUpForm(),
-        )
+            recovery_codes=recovery_codes,
+            recovery_codes_remaining=recovery_codes_remaining,
+            recovery_codes_low=(
+                recovery_codes_remaining <= RECOVERY_CODE_LOW_THRESHOLD
+            ),
+            start_form=forms["start"],
+            verify_form=forms["verify"],
+            replace_start_form=forms["replace_start"],
+            replace_verify_form=forms["replace_verify"],
+            recovery_regenerate_form=forms["recovery_regenerate"],
+        ),
+        status_code,
+    )
 
-    if action == "replace_verify":
-        if not replace_verify_form.validate_on_submit():
-            return render_mfa_management(400)
-        try:
-            result = verify_mfa_replacement(g.current_user, replace_verify_form.totp_code.data)
-        except AuthError as exc:
-            flash(exc.message, "error")
-            return render_mfa_management(exc.status_code)
-        flash("Authenticator MFA replaced. Other sessions were revoked.", "success")
-        return render_template(
-            "mfa_setup.html",
-            user=g.current_user,
-            setup=None,
-            replacement=None,
-            recent_mfa=has_recent_fresh_mfa(),
-            recovery_codes=result["recovery_codes"],
-            recovery_codes_remaining=result["recovery_codes_remaining"],
-            recovery_codes_low=result["recovery_codes_low"],
-            start_form=CsrfOnlyForm(),
-            verify_form=TotpForm(),
-            replace_start_form=MfaOrStepUpForm(),
-            replace_verify_form=TotpForm(),
-            recovery_regenerate_form=MfaOrStepUpForm(),
-        )
 
-    if action == "recovery_codes_regenerate":
-        if not CsrfOnlyForm().validate_on_submit():
-            return render_mfa_management(400)
-        try:
-            result = regenerate_totp_recovery_codes(
-                g.current_user,
-                recovery_regenerate_form.totp_code.data,
-                recovery_regenerate_form.stepup_token.data,
-            )
-        except AuthError as exc:
-            flash(exc.message, "error")
-            return render_mfa_management(exc.status_code)
-        flash("Recovery codes regenerated.", "success")
-        return render_template(
-            "mfa_setup.html",
-            user=g.current_user,
-            setup=None,
-            replacement=pending_mfa_replacement(g.current_user),
-            recent_mfa=has_recent_fresh_mfa(),
-            recovery_codes=result["recovery_codes"],
-            recovery_codes_remaining=result["recovery_codes_remaining"],
-            recovery_codes_low=result["recovery_codes_low"],
-            start_form=CsrfOnlyForm(),
-            verify_form=TotpForm(),
-            replace_start_form=MfaOrStepUpForm(),
-            replace_verify_form=TotpForm(),
-            recovery_regenerate_form=MfaOrStepUpForm(),
-        )
+def _handle_mfa_setup_start(forms: dict[str, FlaskForm]):
+    if not forms["start"].validate_on_submit():
+        return _render_mfa_management(forms, status_code=400)
+    try:
+        setup = generate_mfa_setup(g.current_user)
+    except AuthError as exc:
+        flash(exc.message, "error")
+        return redirect(url_for(_DASHBOARD_ENDPOINT))
+    flash("Scan the QR code, then enter the current code to enable MFA.", "info")
+    return _render_mfa_management(
+        _mfa_management_forms(),
+        setup=setup,
+        recovery_codes_remaining=0,
+    )
 
-    flash("Invalid MFA setup action.", "error")
-    return redirect(url_for("web.mfa_setup"))
+
+def _handle_mfa_setup_verify(forms: dict[str, FlaskForm]):
+    verify_form = forms["verify"]
+    if not verify_form.validate_on_submit():
+        return _render_mfa_management(forms, status_code=400)
+    try:
+        result = verify_mfa_setup(g.current_user, verify_form.totp_code.data)
+    except AuthError as exc:
+        flash(exc.message, "error")
+        return _render_mfa_management(forms, status_code=exc.status_code)
+    flash("MFA is now enabled.", "success")
+    return _render_mfa_result(result)
+
+
+def _handle_mfa_replace_start(forms: dict[str, FlaskForm]):
+    replace_form = forms["replace_start"]
+    if not replace_form.validate_on_submit():
+        return _render_mfa_management(forms, status_code=400)
+    try:
+        replacement = generate_mfa_replacement(
+            g.current_user,
+            replace_form.totp_code.data,
+            replace_form.stepup_token.data,
+        )
+    except AuthError as exc:
+        flash(exc.message, "error")
+        return _render_mfa_management(forms, status_code=exc.status_code)
+    flash("Scan the replacement QR code, then verify the new authenticator code.", "info")
+    return _render_mfa_management(
+        _mfa_management_forms(),
+        replacement=replacement,
+    )
+
+
+def _handle_mfa_replace_verify(forms: dict[str, FlaskForm]):
+    verify_form = forms["replace_verify"]
+    if not verify_form.validate_on_submit():
+        return _render_mfa_management(forms, status_code=400)
+    try:
+        result = verify_mfa_replacement(g.current_user, verify_form.totp_code.data)
+    except AuthError as exc:
+        flash(exc.message, "error")
+        return _render_mfa_management(forms, status_code=exc.status_code)
+    flash("Authenticator MFA replaced. Other sessions were revoked.", "success")
+    return _render_mfa_result(result)
+
+
+def _handle_recovery_code_regeneration(forms: dict[str, FlaskForm]):
+    if not CsrfOnlyForm().validate_on_submit():
+        return _render_mfa_management(forms, status_code=400)
+    regenerate_form = forms["recovery_regenerate"]
+    try:
+        result = regenerate_totp_recovery_codes(
+            g.current_user,
+            regenerate_form.totp_code.data,
+            regenerate_form.stepup_token.data,
+        )
+    except AuthError as exc:
+        flash(exc.message, "error")
+        return _render_mfa_management(forms, status_code=exc.status_code)
+    flash("Recovery codes regenerated.", "success")
+    return _render_mfa_result(
+        result,
+        replacement=pending_mfa_replacement(g.current_user),
+    )
+
+
+def _render_mfa_result(result: dict, *, replacement=None):
+    return _render_mfa_management(
+        _mfa_management_forms(),
+        setup=False,
+        replacement=replacement or False,
+        recovery_codes=result["recovery_codes"],
+        recovery_codes_remaining=result["recovery_codes_remaining"],
+    )
 
 
 @web_bp.get("/password/change")
@@ -780,9 +806,9 @@ def mfa_setup_submit():
 def password_change():
     if not has_enrolled_mfa_method(g.current_user):
         flash("Set up MFA before changing your password.", "warning")
-        return redirect(url_for("web.mfa_setup"))
+        return redirect(url_for(_MFA_SETUP_ENDPOINT))
     return render_template(
-        "password_change.html",
+        _PASSWORD_CHANGE_TEMPLATE,
         form=PasswordChangeForm(),
         recent_mfa=has_recent_fresh_mfa(),
     )
@@ -796,12 +822,12 @@ def password_change():
 def password_change_submit():
     if not has_enrolled_mfa_method(g.current_user):
         flash("Set up MFA before changing your password.", "warning")
-        return redirect(url_for("web.mfa_setup"))
+        return redirect(url_for(_MFA_SETUP_ENDPOINT))
 
     form = PasswordChangeForm()
     recent_mfa = has_recent_fresh_mfa()
     if not form.validate_on_submit():
-        return render_template("password_change.html", form=form, recent_mfa=recent_mfa), 400
+        return render_template(_PASSWORD_CHANGE_TEMPLATE, form=form, recent_mfa=recent_mfa), 400
 
     try:
         result = change_password(
@@ -814,7 +840,7 @@ def password_change_submit():
         )
     except AuthError as exc:
         flash(exc.message, "error")
-        return render_template("password_change.html", form=form, recent_mfa=recent_mfa), exc.status_code
+        return render_template(_PASSWORD_CHANGE_TEMPLATE, form=form, recent_mfa=recent_mfa), exc.status_code
 
     for warning in result.get("warnings", []):
         flash(warning, "warning")
@@ -842,18 +868,18 @@ def sessions_terminate_submit(session_ref: str):
         for item in active_sessions_for_user(g.current_user)
     ):
         flash("Use Log Out to end the current browser session.", "warning")
-        return redirect(url_for("web.sessions_dashboard"))
+        return redirect(url_for(_SESSIONS_ENDPOINT))
     form = CsrfOnlyForm()
     if not form.validate_on_submit():
-        flash("Security token expired. Please try again.", "error")
-        return redirect(url_for("web.sessions_dashboard"))
+        flash(_SECURITY_TOKEN_EXPIRED_MESSAGE, "error")
+        return redirect(url_for(_SESSIONS_ENDPOINT))
     try:
         terminate_session_for_user(g.current_user, session_ref)
     except AuthError as exc:
         flash(exc.message, "error")
-        return redirect(url_for("web.sessions_dashboard")), exc.status_code
+        return redirect(url_for(_SESSIONS_ENDPOINT)), exc.status_code
     flash("Session terminated.", "success")
-    return redirect(url_for("web.sessions_dashboard"))
+    return redirect(url_for(_SESSIONS_ENDPOINT))
 
 
 @web_bp.post("/sessions/revoke-others")
@@ -862,8 +888,8 @@ def sessions_terminate_submit(session_ref: str):
 def sessions_revoke_others_submit():
     form = MfaOrStepUpForm()
     if not form.validate_on_submit():
-        flash("Security token expired. Please try again.", "error")
-        return redirect(url_for("web.sessions_dashboard"))
+        flash(_SECURITY_TOKEN_EXPIRED_MESSAGE, "error")
+        return redirect(url_for(_SESSIONS_ENDPOINT))
     try:
         verify_high_risk_authorization(
             g.current_user,
@@ -874,16 +900,16 @@ def sessions_revoke_others_submit():
         revoked = terminate_other_sessions_for_user(g.current_user)
     except AuthError as exc:
         flash(exc.message, "error")
-        return redirect(url_for("web.sessions_dashboard")), exc.status_code
+        return redirect(url_for(_SESSIONS_ENDPOINT)), exc.status_code
     flash(f"Terminated {revoked} other session(s).", "success")
-    return redirect(url_for("web.sessions_dashboard"))
+    return redirect(url_for(_SESSIONS_ENDPOINT))
 
 
 @web_bp.get("/account/freeze")
 @web_login_required
 @web_not_frozen_required
 def freeze_account():
-    return render_template("freeze.html", user=g.current_user, form=MfaOrStepUpForm())
+    return render_template(_FREEZE_TEMPLATE, user=g.current_user, form=MfaOrStepUpForm())
 
 
 @web_bp.post("/account/freeze")
@@ -894,24 +920,24 @@ def freeze_account():
 def freeze_account_submit():
     form = MfaOrStepUpForm()
     if not form.validate_on_submit():
-        return render_template("freeze.html", user=g.current_user, form=form), 400
+        return render_template(_FREEZE_TEMPLATE, user=g.current_user, form=form), 400
 
     try:
         freeze_own_account(g.current_user, form.totp_code.data, form.stepup_token.data)
     except AuthError as exc:
         flash(exc.message, "error")
-        return render_template("freeze.html", user=g.current_user, form=form), exc.status_code
+        return render_template(_FREEZE_TEMPLATE, user=g.current_user, form=form), exc.status_code
 
     flash("Account frozen. Unfreeze requires manual support review.", "success")
-    return redirect(url_for("web.dashboard"))
+    return redirect(url_for(_DASHBOARD_ENDPOINT))
 
 
 @web_bp.post("/logout")
 def logout():
     form = CsrfOnlyForm()
     if not form.validate_on_submit():
-        flash("Security token expired. Please try again.", "error")
+        flash(_SECURITY_TOKEN_EXPIRED_MESSAGE, "error")
         return redirect(url_for("main.index"))
 
     logout_current_session()
-    return redirect(url_for("web.login"))
+    return redirect(url_for(_LOGIN_ENDPOINT))

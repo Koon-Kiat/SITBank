@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-import binascii
 import re
 import subprocess
 from pathlib import Path
@@ -32,7 +31,7 @@ MIN_PRIVATE_KEY_PAYLOAD_BYTES = 48
 
 SECRET_PATTERNS = {
     "GitHub token": re.compile(rb"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}\b"),
-    "GitHub fine-grained token": re.compile(rb"\bgithub_pat_[A-Za-z0-9_]{40,}\b"),
+    "GitHub fine-grained token": re.compile(rb"\bgithub_pat_\w{40,}\b"),
     "AWS access key": re.compile(rb"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
     "Slack token": re.compile(rb"\bxox[baprs]-[A-Za-z0-9-]{20,}\b"),
     "Google API key": re.compile(rb"\bAIza[0-9A-Za-z_-]{35}\b"),
@@ -42,33 +41,39 @@ SECRET_PATTERNS = {
 
 def contains_private_key(content: bytes) -> bool:
     for match in PRIVATE_KEY_BLOCK_PATTERN.finditer(content):
-        payload_lines: list[bytes] = []
-        in_metadata = True
-        metadata_seen = False
-        normalized_body = match.group("body").replace(b"\r\n", b"\n").replace(
-            b"\r", b"\n"
-        )
-        for raw_line in normalized_body.split(b"\n"):
-            line = raw_line.strip()
-            if not line:
-                if metadata_seen:
-                    in_metadata = False
-                continue
-            if in_metadata and re.fullmatch(rb"[A-Za-z0-9-]+:.*", line):
-                metadata_seen = True
-                continue
-            in_metadata = False
-            payload_lines.append(line)
-        encoded_payload = b"".join(payload_lines)
-        if not re.fullmatch(rb"[A-Za-z0-9+/]+={0,2}", encoded_payload):
-            continue
-        try:
-            decoded_payload = base64.b64decode(encoded_payload, validate=True)
-        except (binascii.Error, ValueError):
-            continue
-        if len(decoded_payload) >= MIN_PRIVATE_KEY_PAYLOAD_BYTES:
+        if _private_key_payload_is_substantial(match.group("body")):
             return True
     return False
+
+
+def _private_key_payload_is_substantial(body: bytes) -> bool:
+    encoded_payload = _private_key_payload(body)
+    if not re.fullmatch(rb"[A-Za-z0-9+/]+={0,2}", encoded_payload):
+        return False
+    try:
+        decoded_payload = base64.b64decode(encoded_payload, validate=True)
+    except ValueError:
+        return False
+    return len(decoded_payload) >= MIN_PRIVATE_KEY_PAYLOAD_BYTES
+
+
+def _private_key_payload(body: bytes) -> bytes:
+    payload_lines: list[bytes] = []
+    in_metadata = True
+    metadata_seen = False
+    normalized_body = body.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    for raw_line in normalized_body.split(b"\n"):
+        line = raw_line.strip()
+        if not line:
+            if metadata_seen:
+                in_metadata = False
+            continue
+        if in_metadata and re.fullmatch(rb"[A-Za-z0-9-]+:.*", line):
+            metadata_seen = True
+            continue
+        in_metadata = False
+        payload_lines.append(line)
+    return b"".join(payload_lines)
 
 
 def tracked_files() -> list[Path]:

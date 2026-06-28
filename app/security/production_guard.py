@@ -75,11 +75,11 @@ def validate_production_security_prerequisites(
 
     with app.app_context():
         _validate_mode_and_route_isolation(app, requested_mode, result)
-        _validate_database_connectivity_and_tables(app, requested_mode, result)
+        _validate_database_connectivity_and_tables(requested_mode, result)
         _validate_password_policy(app, result)
         _validate_session_policy(app, requested_mode, result)
         _validate_mfa_policy(app, result)
-        _validate_alert_and_audit_policy(app, result)
+        _validate_alert_and_audit_policy(result)
         _validate_edge_policy(app, result)
         _validate_lifetime_policy(app, result)
         _validate_runtime_database_privileges(app, result)
@@ -158,7 +158,6 @@ def _validate_mode_and_route_isolation(
 
 
 def _validate_database_connectivity_and_tables(
-    app: Flask,
     app_mode: str,
     result: ProductionReadinessResult,
 ) -> None:
@@ -271,7 +270,7 @@ def _validate_mfa_policy(app: Flask, result: ProductionReadinessResult) -> None:
         result.failures.append("FRESH_MFA_SECONDS must be between 60 and 900")
 
 
-def _validate_alert_and_audit_policy(app: Flask, result: ProductionReadinessResult) -> None:
+def _validate_alert_and_audit_policy(result: ProductionReadinessResult) -> None:
     try:
         alert_config = validate_security_alert_config(require_delivery=True)
     except Exception as exc:

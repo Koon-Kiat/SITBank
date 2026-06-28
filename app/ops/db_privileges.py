@@ -14,6 +14,7 @@ from sqlalchemy.exc import DBAPIError
 
 
 PRIVILEGE_DENIED_SQLSTATE = "42501"
+CURRENT_USER_QUERY = "SELECT current_user"
 KNOWN_EXTENSION_PROBES = ("pg_trgm", "hstore", "citext", "pgcrypto")
 AUDIT_HASH_ALGORITHM = "hmac-sha256-v1"
 LEGACY_AUDIT_HASH_ALGORITHM = "sha256-v1"
@@ -80,7 +81,7 @@ def apply_admin_runtime_database_privileges(
     migration_engine = create_engine(migration_url)
     try:
         with migration_engine.begin() as connection:
-            migration_role = str(connection.execute(text("SELECT current_user")).scalar_one())
+            migration_role = str(connection.execute(text(CURRENT_USER_QUERY)).scalar_one())
             if admin_role == migration_role:
                 raise RuntimeError("Admin runtime and migration connections are using the same role")
             current_database = str(connection.execute(text("SELECT current_database()")).scalar_one())
@@ -152,7 +153,7 @@ def apply_admin_runtime_database_privileges(
     try:
         with admin_engine.connect() as admin_connection:
             connected_admin_role = str(
-                admin_connection.execute(text("SELECT current_user")).scalar_one()
+                admin_connection.execute(text(CURRENT_USER_QUERY)).scalar_one()
             )
             if connected_admin_role != admin_role:
                 raise RuntimeError(
@@ -261,9 +262,9 @@ def apply_runtime_audit_table_privileges(
     migration_engine = create_engine(migration_url)
     try:
         with runtime_engine.connect() as runtime_connection:
-            runtime_role = str(runtime_connection.execute(text("SELECT current_user")).scalar_one())
+            runtime_role = str(runtime_connection.execute(text(CURRENT_USER_QUERY)).scalar_one())
         with migration_engine.begin() as migration_connection:
-            migration_role = str(migration_connection.execute(text("SELECT current_user")).scalar_one())
+            migration_role = str(migration_connection.execute(text(CURRENT_USER_QUERY)).scalar_one())
             if runtime_role == migration_role:
                 raise RuntimeError("Runtime and migration connections are using the same role")
             qualified_table = _qualified_table_name(schema, audit_table)
@@ -310,14 +311,14 @@ def verify_runtime_database_privileges(
     try:
         with migration_engine.begin() as migration_connection:
             migration_role = str(
-                migration_connection.execute(text("SELECT current_user")).scalar_one()
+                migration_connection.execute(text(CURRENT_USER_QUERY)).scalar_one()
             )
             _assert_audit_append_only_triggers_installed(migration_connection, schema=schema)
             migration_connection.execute(text(create_probe_table))
 
         try:
             with runtime_engine.connect() as runtime_connection:
-                runtime_role = str(runtime_connection.execute(text("SELECT current_user")).scalar_one())
+                runtime_role = str(runtime_connection.execute(text(CURRENT_USER_QUERY)).scalar_one())
                 if runtime_role == migration_role:
                     raise RuntimeError("Runtime and migration connections are using the same role")
                 _assert_runtime_role_owns_no_schema_objects(runtime_connection, runtime_role, schema)

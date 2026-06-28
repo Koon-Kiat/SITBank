@@ -1077,7 +1077,7 @@ def test_environment_only_bundle_does_not_export_long_lived_secrets(
 
     environment = build_container_environment()
     output = tmp_path / "runtime"
-    write_container_bundle(output, include_secrets=False)
+    write_container_bundle(output, include_secrets=False, allowed_root=tmp_path)
 
     assert environment["SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06"
     assert environment["MFA_KEK_ACTIVE_ID"] == "2026-06-mfa"
@@ -1107,7 +1107,12 @@ def test_environment_only_bundle_accepts_staging_prefix(monkeypatch, tmp_path):
         monkeypatch.delenv(name)
 
     output = tmp_path / "runtime"
-    write_container_bundle(output, "STAGING", include_secrets=False)
+    write_container_bundle(
+        output,
+        "STAGING",
+        include_secrets=False,
+        allowed_root=tmp_path,
+    )
 
     environment = (output / "container.env").read_text(encoding="utf-8")
     deployment = (output / "deployment.env").read_text(encoding="utf-8")
@@ -1129,7 +1134,7 @@ def test_container_bundle_writer_quotes_dollar_values_and_separates_files(
     _set_deployment_values(monkeypatch)
     output = tmp_path / "runtime"
 
-    write_container_bundle(output)
+    write_container_bundle(output, allowed_root=tmp_path)
 
     environment = (output / "container.env").read_text(encoding="utf-8")
     assert "MFA_ISSUER_NAME='SITBank'" in environment
@@ -1138,6 +1143,21 @@ def test_container_bundle_writer_quotes_dollar_values_and_separates_files(
     assert (output / "secrets" / "secret_key").read_text(encoding="utf-8") == (
         DEPLOYMENT_VALUES["PROD_SECRET_KEY"]
     )
+
+
+def test_container_bundle_writer_rejects_output_outside_allowed_root(
+    monkeypatch,
+    tmp_path,
+):
+    _set_deployment_values(monkeypatch)
+    allowed_root = tmp_path / "allowed"
+    allowed_root.mkdir()
+    outside = tmp_path / "escaped"
+
+    with pytest.raises(ValueError, match="escapes"):
+        write_container_bundle(outside, allowed_root=allowed_root)
+
+    assert not outside.exists()
 
 
 def test_dockerfile_and_compose_enforce_hardened_runtime():
@@ -1271,9 +1291,24 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "docker network create" in smoke_test
     assert '--network "${network_name}"' in smoke_test
     assert "host.docker.internal" not in smoke_test
-    assert "postgresql+psycopg2://ci_app:ci-app-password@%s:5432/ci" in smoke_test
-    assert "postgresql+psycopg2://ci_admin:ci-admin-password@%s:5432/ci" in smoke_test
-    assert "postgresql+psycopg2://ci_owner:ci-owner-password@%s:5432/ci" in smoke_test
+    assert "postgres_password=\"$(random_test_secret)\"" in smoke_test
+    assert "owner_password=\"$(random_test_secret)\"" in smoke_test
+    assert "app_password=\"$(random_test_secret)\"" in smoke_test
+    assert "admin_password=\"$(random_test_secret)\"" in smoke_test
+    assert (
+        "readonly postgres_password owner_password app_password admin_password"
+        in smoke_test
+    )
+    assert "postgresql+psycopg2://ci_app:%s@%s:5432/ci" in smoke_test
+    assert "postgresql+psycopg2://ci_admin:%s@%s:5432/ci" in smoke_test
+    assert "postgresql+psycopg2://ci_owner:%s@%s:5432/ci" in smoke_test
+    for committed_password in (
+        "ci-postgres-password",
+        "ci-owner-password",
+        "ci-app-password",
+        "ci-admin-password",
+    ):
+        assert committed_password not in smoke_test
     assert "SESSION_LOOKUP_HMAC_KEY_FILE=/run/secrets/session_lookup_hmac_key" in smoke_test
     assert "ADMIN_SESSION_LOOKUP_HMAC_KEY_FILE=/run/secrets/admin_session_lookup_hmac_key" in smoke_test
     assert '"${postgres_container}"' in smoke_test

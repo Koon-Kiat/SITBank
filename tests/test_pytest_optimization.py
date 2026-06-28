@@ -65,7 +65,7 @@ def test_ci_keeps_full_parallel_pytest_and_locked_dependency_checks():
     ]
 
     assert pytest_lines == [
-        "python -m pytest -q -n auto --cov=app --cov=ops "
+        "python -m pytest -q -n auto --cov=. --cov-config=.coveragerc "
         "--cov-report=xml:coverage.xml --cov-report=term "
         "--durations=30 --durations-min=0.5"
     ]

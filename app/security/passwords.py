@@ -9,7 +9,6 @@ import unicodedata
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
-from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from flask import current_app
@@ -124,7 +123,7 @@ def _is_password_pwned_by_hibp(password: str) -> bool:
             if status != 200:
                 raise LivePasswordCheckUnavailable(f"HIBP returned HTTP {status}")
             payload = response.read(HIBP_MAX_RESPONSE_BYTES + 1)
-    except (OSError, TimeoutError, URLError) as exc:
+    except OSError as exc:
         raise LivePasswordCheckUnavailable("HIBP request failed") from exc
 
     if len(payload) > HIBP_MAX_RESPONSE_BYTES:
@@ -253,7 +252,7 @@ def verify_password(password: str, password_hash: str) -> bool:
         expected = _parse_b64_part(parts[4], "h")
         candidate = _pbkdf2_digest(password, salt, iterations)
         return hmac.compare_digest(candidate, expected)
-    except (AttributeError, TypeError, ValueError, binascii.Error):
+    except (AttributeError, TypeError, ValueError):
         return False
 
 

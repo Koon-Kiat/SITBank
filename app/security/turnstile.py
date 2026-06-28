@@ -11,13 +11,16 @@ class TurnstileError(ValueError):
     pass
 
 
+_CHALLENGE_FAILED_MESSAGE = "Challenge verification failed"
+
+
 def verify_turnstile_token(token: str | None) -> None:
     if not current_app.config.get("TURNSTILE_ENABLED", False):
         return
     token_text = str(token or "").strip()
     secret_key = str(current_app.config.get("TURNSTILE_SECRET_KEY") or "").strip()
     if not token_text or not secret_key:
-        raise TurnstileError("Challenge verification failed")
+        raise TurnstileError(_CHALLENGE_FAILED_MESSAGE)
 
     payload = parse.urlencode(
         {
@@ -42,17 +45,17 @@ def verify_turnstile_token(token: str | None) -> None:
             connection.close()
         result = json.loads(body.decode("utf-8"))
     except Exception as exc:
-        raise TurnstileError("Challenge verification failed") from exc
+        raise TurnstileError(_CHALLENGE_FAILED_MESSAGE) from exc
     if not isinstance(result, dict) or result.get("success") is not True:
-        raise TurnstileError("Challenge verification failed")
+        raise TurnstileError(_CHALLENGE_FAILED_MESSAGE)
 
 
 def _turnstile_verify_target() -> tuple[str, int | None, str]:
     raw_url = str(current_app.config["TURNSTILE_VERIFY_URL"])
     parsed = parse.urlsplit(raw_url)
     if parsed.scheme != "https" or not parsed.hostname:
-        raise TurnstileError("Challenge verification failed")
+        raise TurnstileError(_CHALLENGE_FAILED_MESSAGE)
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
-        raise TurnstileError("Challenge verification failed")
+        raise TurnstileError(_CHALLENGE_FAILED_MESSAGE)
     path = parsed.path or "/"
     return parsed.hostname, parsed.port, path

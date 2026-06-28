@@ -1,0 +1,17 @@
+[run]
+source = .
+omit =
+    .venv/*
+    venv/*
+    migrations/*
+    tests/*
+
+[report]
+omit =
+    .venv/*
+    venv/*
+    migrations/*
+    tests/*
+
+[xml]
+output = coverage.xml

@@ -74,10 +74,12 @@ The `test` job in `.github/workflows/ci-deploy.yml` installs
 `requirements-dev.lock` with hashes and runs the full suite once:
 
 ```text
-python -m pytest -q -n auto --cov=app --cov=ops --cov-report=xml:coverage.xml --cov-report=term --durations=30 --durations-min=0.5
+python -m pytest -q -n auto --cov=. --cov-config=.coveragerc --cov-report=xml:coverage.xml --cov-report=term --durations=30 --durations-min=0.5
+node tests/js/collect-browser-coverage.mjs
 ```
 
-After all test and security checks pass, that job uploads only `coverage.xml`
+After all test and security checks pass, that job uploads `coverage.xml` and
+`coverage/lcov.info`
 as a one-day artifact. Its downstream `sonarqube` job calls the reusable
 `.github/workflows/sonarqube.yml`, checks out the same resolved source commit,
 downloads the coverage artifact, and runs the scanner without rerunning pytest.
@@ -88,7 +90,8 @@ separate trusted-PR-only comment job holds the narrowly scoped
 
 `sonar-project.properties` sends `app`, deployment/security material under
 `ops`, and `config.py`, `wsgi.py`, and `admin_wsgi.py` as sources.
-`tests` is test code, and `coverage.xml` supplies application coverage. Test
+`tests` is test code, `coverage.xml` supplies Python coverage, and
+`coverage/lcov.info` supplies browser JavaScript coverage. Test
 fixtures and generated, local, secret-bearing, database, dump, key, and
 certificate patterns are excluded. Security-sensitive Flask, admin, auth,
 banking, session, audit, production guard, and deployment-adjacent Python code
@@ -129,6 +132,27 @@ comment permissions require a separate reviewed design. The single sticky
 summary does not replace pytest, CodeQL, Semgrep, Bandit, secret scanning,
 dependency auditing, Trivy, ShellCheck, Hadolint, Syft, deployment tests, or
 production guard tests.
+
+## Reviewed Finding Dispositions
+
+The baseline remediation treats credential-like configuration names and
+generated synthetic DAST credentials as false positives only after confirming
+that no reusable credential value is committed. HTTP used solely between
+ephemeral containers on an isolated smoke-test network is also a reviewed
+false positive; production and external traffic remain HTTPS-only.
+
+Four cognitive-complexity findings are accepted maintainability debt in
+central registration and security-boundary functions:
+
+- Flask CLI command registration;
+- database-backed session-hook registration;
+- production-readiness validation; and
+- the transactional admin database-privilege applicator.
+
+These findings are not security defects, and splitting the functions without a
+dedicated design review would increase control-flow and rollback risk. Other
+cognitive-complexity findings were reduced with tested helper extraction.
+Accepted findings remain visible in SonarQube and are not suppressed in source.
 
 ## Initial Quality-Gate And Triage Policy
 

@@ -217,12 +217,12 @@ def create_dast_user(
         raise RuntimeError("Could not create a unique synthetic DAST user")
 
 
-def write_cookie_output(path: Path, cookie: str) -> None:
+def write_cookie_output(path: Path, cookie: str, *, allowed_root: Path) -> None:
     _validate_cookie_header(cookie)
-    _write_secret_file(path, cookie)
+    _write_secret_file(path, cookie, allowed_root=allowed_root)
 
 
-def write_zap_replacer_config(path: Path, cookie: str) -> None:
+def write_zap_replacer_config(path: Path, cookie: str, *, allowed_root: Path) -> None:
     _validate_cookie_header(cookie)
     config = "\n".join(
         (
@@ -238,7 +238,7 @@ def write_zap_replacer_config(path: Path, cookie: str) -> None:
             "replacer.full_list(1).replacement=https",
         )
     )
-    _write_secret_file(path, f"{config}\n")
+    _write_secret_file(path, f"{config}\n", allowed_root=allowed_root)
 
 
 def _validate_cookie_header(cookie: str) -> None:
@@ -246,8 +246,20 @@ def _validate_cookie_header(cookie: str) -> None:
         raise RuntimeError("Authenticated DAST session cookie is malformed")
 
 
-def _write_secret_file(path: Path, contents: str) -> None:
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+def _validated_output_path(path: Path, allowed_root: Path) -> Path:
+    root = allowed_root.resolve(strict=True)
+    if not root.is_dir():
+        raise ValueError("DAST output root must be a directory")
+    parent = path.parent.resolve(strict=True)
+    candidate = parent / path.name
+    if candidate == root or not candidate.is_relative_to(root):
+        raise ValueError("DAST output path escapes the allowed output root")
+    return candidate
+
+
+def _write_secret_file(path: Path, contents: str, *, allowed_root: Path) -> None:
+    path = _validated_output_path(path, allowed_root)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
     previous_umask = os.umask(0o077)
     try:
         fd = os.open(path, flags, 0o600)
@@ -269,14 +281,19 @@ def main() -> None:
     )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--zap-replacer-config-output", type=Path, required=True)
+    parser.add_argument("--output-root", type=Path, required=True)
     args = parser.parse_args()
 
     cookie = create_authenticated_cookie(
         args.base_url,
         allowed_hosts=set(args.allow_host),
     )
-    write_cookie_output(args.output, cookie)
-    write_zap_replacer_config(args.zap_replacer_config_output, cookie)
+    write_cookie_output(args.output, cookie, allowed_root=args.output_root)
+    write_zap_replacer_config(
+        args.zap_replacer_config_output,
+        cookie,
+        allowed_root=args.output_root,
+    )
 
 
 if __name__ == "__main__":

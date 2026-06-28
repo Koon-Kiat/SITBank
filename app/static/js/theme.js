@@ -1,27 +1,27 @@
 (function () {
   "use strict";
 
-  var storageKey = "sitbank-theme";
-  var root = document.documentElement;
+  const storageKey = "sitbank-theme";
+  const root = document.documentElement;
 
   function preferredTheme() {
-    var stored = window.localStorage.getItem(storageKey);
+    const stored = globalThis.localStorage.getItem(storageKey);
     if (stored === "dark" || stored === "light") {
       return stored;
     }
-    if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
+    if (globalThis.matchMedia?.("(prefers-color-scheme: dark)")?.matches) {
       return "dark";
     }
     return "light";
   }
 
   function applyTheme(theme) {
-    root.setAttribute("data-theme", theme);
-    var toggle = document.querySelector("[data-theme-toggle]");
-    var label = document.querySelector("[data-theme-toggle-label]");
-    var icon = document.querySelector("[data-theme-toggle-icon]");
-    var isDark = theme === "dark";
-    var actionLabel = isDark ? "Switch to light mode" : "Switch to dark mode";
+    root.dataset.theme = theme;
+    const toggle = document.querySelector("[data-theme-toggle]");
+    const label = document.querySelector("[data-theme-toggle-label]");
+    const icon = document.querySelector("[data-theme-toggle-icon]");
+    const isDark = theme === "dark";
+    const actionLabel = isDark ? "Switch to light mode" : "Switch to dark mode";
     if (toggle) {
       toggle.setAttribute("aria-pressed", isDark ? "true" : "false");
       toggle.setAttribute("aria-label", actionLabel);
@@ -31,8 +31,8 @@
       label.textContent = actionLabel;
     }
     if (icon) {
-      icon.setAttribute("data-icon", isDark ? "sun" : "moon");
-      var iconUse = icon.querySelector("use");
+      icon.dataset.icon = isDark ? "sun" : "moon";
+      const iconUse = icon.querySelector("use");
       if (iconUse) {
         iconUse.setAttribute("href", isDark ? "#icon-theme-sun" : "#icon-theme-moon");
       }
@@ -40,7 +40,7 @@
   }
 
   function closestElement(target, selector) {
-    if (!target || !target.closest) {
+    if (!target?.closest) {
       return null;
     }
     return target.closest(selector);
@@ -48,13 +48,13 @@
 
   applyTheme(preferredTheme());
 
-  window.addEventListener("DOMContentLoaded", function () {
-    var toggle = document.querySelector("[data-theme-toggle]");
-    var navToggle = document.querySelector("[data-nav-toggle]");
-    var navMenu = document.querySelector("[data-nav-menu]");
-    var accountMenu = document.querySelector("[data-account-menu]");
-    var accountTrigger = document.querySelector("[data-account-trigger]");
-    var accountPanel = document.querySelector("[data-account-panel]");
+  globalThis.addEventListener("DOMContentLoaded", function () {
+    const toggle = document.querySelector("[data-theme-toggle]");
+    const navToggle = document.querySelector("[data-nav-toggle]");
+    const navMenu = document.querySelector("[data-nav-menu]");
+    const accountMenu = document.querySelector("[data-account-menu]");
+    const accountTrigger = document.querySelector("[data-account-trigger]");
+    const accountPanel = document.querySelector("[data-account-panel]");
 
     function accountItems() {
       if (!accountPanel) {
@@ -73,7 +73,7 @@
     }
 
     function focusAccountItem(index) {
-      var items = accountItems();
+      const items = accountItems();
       if (!items.length) {
         return;
       }
@@ -84,14 +84,14 @@
       return;
     }
     toggle.addEventListener("click", function () {
-      var nextTheme = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
-      window.localStorage.setItem(storageKey, nextTheme);
+      const nextTheme = root.dataset.theme === "dark" ? "light" : "dark";
+      globalThis.localStorage.setItem(storageKey, nextTheme);
       applyTheme(nextTheme);
     });
 
     if (navToggle && navMenu) {
       navToggle.addEventListener("click", function () {
-        var isOpen = navMenu.classList.toggle("is-open");
+        const isOpen = navMenu.classList.toggle("is-open");
         navToggle.setAttribute("aria-expanded", isOpen ? "true" : "false");
       });
 
@@ -117,8 +117,8 @@
       });
 
       accountPanel.addEventListener("keydown", function (event) {
-        var items = accountItems();
-        var currentIndex = items.indexOf(document.activeElement);
+        const items = accountItems();
+        const currentIndex = items.indexOf(document.activeElement);
         if (event.key === "Escape") {
           event.preventDefault();
           setAccountOpen(false);

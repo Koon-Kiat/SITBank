@@ -36,6 +36,7 @@ from .services import AuthError, _verify_totp_for_user
 GENERIC_FORGOT_PASSWORD_MESSAGE = "If an account exists for that email, a reset link has been sent."
 GENERIC_MANUAL_RECOVERY_MESSAGE = "If the account can be reviewed, a recovery request has been recorded."
 GENERIC_RESET_ERROR = "Password reset link is invalid or expired"
+RESET_TRANSACTION_EXPIRED_ERROR = "Password reset transaction expired"
 RESET_TRANSACTION_SESSION_KEY = "password_reset_transaction_id"
 GENERIC_AUTHENTICATION_CODE_ERROR = "Invalid authentication code."
 GENERIC_VERIFICATION_METHOD_ERROR = "Invalid verification method."
@@ -802,14 +803,14 @@ def _load_transaction(transaction_id: str) -> dict[str, Any]:
     ).scalar_one_or_none()
     if record is None:
         clear_current_reset_transaction()
-        raise AuthError("Password reset transaction expired", 401)
+        raise AuthError(RESET_TRANSACTION_EXPIRED_ERROR, 401)
     if (
         record.purpose != "password_reset"
         or record.used_at is not None
         or _as_utc_datetime(record.expires_at) <= _utcnow()
     ):
         _delete_transaction_id(transaction_id)
-        raise AuthError("Password reset transaction expired", 401)
+        raise AuthError(RESET_TRANSACTION_EXPIRED_ERROR, 401)
     return _transaction_from_record(record, transaction_id)
 
 
@@ -837,7 +838,7 @@ def _record_transaction_failure(transaction: dict[str, Any], reason: str) -> Non
         _clear_reset_transaction(transaction)
         session.pop(RESET_TRANSACTION_SESSION_KEY, None)
         session.modified = True
-        raise AuthError("Password reset transaction expired", 401)
+        raise AuthError(RESET_TRANSACTION_EXPIRED_ERROR, 401)
     _store_transaction(transaction)
 
 
@@ -845,7 +846,7 @@ def _transaction_user(transaction: dict[str, Any]) -> User:
     user = db.session.get(User, int(transaction["user_id"]))
     if user is None or _is_admin_like_user(user) or _account_reset_blocked(user):
         _clear_reset_transaction(transaction)
-        raise AuthError("Password reset transaction expired", 401)
+        raise AuthError(RESET_TRANSACTION_EXPIRED_ERROR, 401)
     return user
 
 

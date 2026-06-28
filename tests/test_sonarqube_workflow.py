@@ -87,9 +87,10 @@ def test_ci_runs_pytest_once_and_hands_coverage_to_sonarqube():
     )["run"]
     assert ci_text.count("python -m pytest") == 1
     assert "python -m pytest -q -n auto" in test_command
-    assert "--cov=app" in test_command
-    assert "--cov=ops" in test_command
     assert "--cov-report=xml:coverage.xml" in test_command
+    assert "--cov=." in test_command
+    assert "--cov-config=.coveragerc" in test_command
+    assert "node tests/js/collect-browser-coverage.mjs" in test_command
 
     upload = next(
         step
@@ -102,7 +103,7 @@ def test_ci_runs_pytest_once_and_hands_coverage_to_sonarqube():
     )
     assert upload["with"] == {
         "name": "sonarqube-coverage-${{ github.run_id }}",
-        "path": "coverage.xml",
+        "path": "coverage.xml\ncoverage/lcov.info\n",
         "if-no-files-found": "error",
         "retention-days": "1",
     }
@@ -178,12 +179,17 @@ def test_sonarqube_properties_define_scope_coverage_and_reporting_policy():
     ]
     assert properties["sonar.tests"] == "tests"
     assert properties["sonar.python.coverage.reportPaths"] == "coverage.xml"
+    assert properties["sonar.javascript.lcov.reportPaths"] == "coverage/lcov.info"
     assert properties["sonar.qualitygate.wait"] == "false"
     assert "**/.env" in properties["sonar.exclusions"]
     assert "**/*.dump" in properties["sonar.exclusions"]
     assert properties["sonar.test.exclusions"] == "tests/fixtures/**"
     assert ".coverage" in gitignore
     assert "coverage.xml" in gitignore
+    assert "coverage/" in gitignore
+    coverage_config = Path(".coveragerc").read_text(encoding="utf-8")
+    assert "source = ." in coverage_config
+    assert "tests/*" in coverage_config
 
 
 def test_sonarqube_docs_record_cloud_private_repo_and_nonblocking_policy():

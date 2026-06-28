@@ -44,6 +44,11 @@ from .services import (
 
 admin_bp = Blueprint("admin", __name__)
 
+_TOTP_PATTERN = r"^[0-9]{6}$"
+_MFA_CODE_ERROR = "MFA code must be exactly 6 digits"
+_JSON_MIME_TYPE = "application/json"
+_STAFF_ACCOUNTS_ENDPOINT = "admin.staff_accounts"
+
 
 class AdminLoginSchema(Schema):
     workplace_email = fields.Email(required=True, validate=validate.Length(max=255))
@@ -54,7 +59,7 @@ class AdminTotpSchema(Schema):
     totp_code = fields.Str(
         required=True,
         load_only=True,
-        validate=validate.Regexp(r"^[0-9]{6}$", error="MFA code must be exactly 6 digits"),
+        validate=validate.Regexp(_TOTP_PATTERN, error=_MFA_CODE_ERROR),
     )
 
 
@@ -65,7 +70,7 @@ class StaffInviteCreateSchema(Schema):
     totp_code = fields.Str(
         required=True,
         load_only=True,
-        validate=validate.Regexp(r"^[0-9]{6}$", error="MFA code must be exactly 6 digits"),
+        validate=validate.Regexp(_TOTP_PATTERN, error=_MFA_CODE_ERROR),
     )
 
 
@@ -73,7 +78,7 @@ class StaffInviteRevokeSchema(Schema):
     totp_code = fields.Str(
         required=True,
         load_only=True,
-        validate=validate.Regexp(r"^[0-9]{6}$", error="MFA code must be exactly 6 digits"),
+        validate=validate.Regexp(_TOTP_PATTERN, error=_MFA_CODE_ERROR),
     )
 
 
@@ -81,7 +86,7 @@ class StaffAccountActionSchema(Schema):
     totp_code = fields.Str(
         required=True,
         load_only=True,
-        validate=validate.Regexp(r"^[0-9]{6}$", error="MFA code must be exactly 6 digits"),
+        validate=validate.Regexp(_TOTP_PATTERN, error=_MFA_CODE_ERROR),
     )
 
 
@@ -94,7 +99,7 @@ class ManualRecoveryTransitionSchema(Schema):
     totp_code = fields.Str(
         required=True,
         load_only=True,
-        validate=validate.Regexp(r"^[0-9]{6}$", error="MFA code must be exactly 6 digits"),
+        validate=validate.Regexp(_TOTP_PATTERN, error=_MFA_CODE_ERROR),
     )
 
 
@@ -103,7 +108,7 @@ class ManualRecoveryCompleteSchema(Schema):
     totp_code = fields.Str(
         required=True,
         load_only=True,
-        validate=validate.Regexp(r"^[0-9]{6}$", error="MFA code must be exactly 6 digits"),
+        validate=validate.Regexp(_TOTP_PATTERN, error=_MFA_CODE_ERROR),
     )
 
 
@@ -124,12 +129,12 @@ class StaffInviteVerifySchema(Schema):
     totp_code = fields.Str(
         required=True,
         load_only=True,
-        validate=validate.Regexp(r"^[0-9]{6}$", error="MFA code must be exactly 6 digits"),
+        validate=validate.Regexp(_TOTP_PATTERN, error=_MFA_CODE_ERROR),
     )
     workplace_verification_code = fields.Str(
         required=True,
         load_only=True,
-        validate=validate.Regexp(r"^[0-9]{6}$", error="Verification code must be exactly 6 digits"),
+        validate=validate.Regexp(_TOTP_PATTERN, error="Verification code must be exactly 6 digits"),
     )
 
 
@@ -163,9 +168,9 @@ def _request_fields() -> set[str]:
 def _wants_json() -> bool:
     if request.is_json:
         return True
-    best = request.accept_mimetypes.best_match(["application/json", "text/html"])
-    return best == "application/json" and (
-        request.accept_mimetypes["application/json"] >= request.accept_mimetypes["text/html"]
+    best = request.accept_mimetypes.best_match([_JSON_MIME_TYPE, "text/html"])
+    return best == _JSON_MIME_TYPE and (
+        request.accept_mimetypes[_JSON_MIME_TYPE] >= request.accept_mimetypes["text/html"]
     )
 
 
@@ -299,7 +304,7 @@ def staff_account_deactivate(user_id: int):
     if _wants_json():
         return jsonify(result)
     flash("Staff/admin account deactivated.", "success")
-    return redirect(url_for("admin.staff_accounts")), 303
+    return redirect(url_for(_STAFF_ACCOUNTS_ENDPOINT)), 303
 
 
 @admin_bp.post("/staff/<int:user_id>/reactivate")
@@ -312,7 +317,7 @@ def staff_account_reactivate(user_id: int):
     if _wants_json():
         return jsonify(result)
     flash("Staff/admin account reactivated.", "success")
-    return redirect(url_for("admin.staff_accounts")), 303
+    return redirect(url_for(_STAFF_ACCOUNTS_ENDPOINT)), 303
 
 
 @admin_bp.post("/staff/<int:user_id>/reset-activation")
@@ -325,7 +330,7 @@ def staff_account_reset_activation(user_id: int):
     if _wants_json():
         return jsonify(result)
     flash("Staff/admin activation state reset.", "success")
-    return redirect(url_for("admin.staff_accounts")), 303
+    return redirect(url_for(_STAFF_ACCOUNTS_ENDPOINT)), 303
 
 
 @admin_bp.get("/audit-logs")

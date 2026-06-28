@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import base64
-import binascii
 import ipaddress
 import json
 import math
 import re
 import threading
 import time
-import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, Mapping
@@ -125,7 +123,7 @@ def _decode_base64url(segment: str, *, label: str) -> bytes:
         raise CloudflareAccessVerificationError(f"Invalid JWT {label}")
     try:
         return base64.urlsafe_b64decode(segment + ("=" * (-len(segment) % 4)))
-    except (ValueError, binascii.Error) as exc:
+    except ValueError as exc:
         raise CloudflareAccessVerificationError(f"Invalid JWT {label}") from exc
 
 
@@ -171,7 +169,7 @@ def _parse_jwks(document: Any) -> dict[str, rsa.RSAPublicKey]:
             exponent = _integer_from_base64url(item.get("e"), label="exponent")
             modulus = _integer_from_base64url(item.get("n"), label="modulus")
             key = rsa.RSAPublicNumbers(exponent, modulus).public_key()
-        except (TypeError, ValueError, CloudflareAccessVerificationError):
+        except (TypeError, ValueError):
             continue
         if key.key_size < 2048:
             continue
@@ -198,7 +196,7 @@ def _fetch_jwks_document(url: str) -> dict[str, Any]:
             timeout=5,
         ) as response:
             raw = response.read(_MAX_JWKS_BYTES + 1)
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+    except OSError as exc:
         raise CloudflareAccessVerificationError(
             "Cloudflare Access signing keys are unavailable"
         ) from exc
