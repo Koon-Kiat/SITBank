@@ -1,12 +1,12 @@
 (function () {
   function makeToggle(btnId, maskedId, fullId, iconId, labelShow, labelHide) {
-    var btn    = document.getElementById(btnId);
-    var masked = document.getElementById(maskedId);
-    var full   = document.getElementById(fullId);
-    var icon   = document.getElementById(iconId);
+    const btn = document.getElementById(btnId);
+    const masked = document.getElementById(maskedId);
+    const full = document.getElementById(fullId);
+    const icon = document.getElementById(iconId);
     if (!btn || !masked || !full || !icon) return;
     btn.addEventListener('click', function () {
-      var revealing = full.hidden;
+      const revealing = full.hidden;
       masked.hidden = revealing;
       full.hidden   = !revealing;
       icon.setAttribute('href', revealing ? '#icon-eye' : '#icon-eye-off');

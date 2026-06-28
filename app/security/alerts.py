@@ -132,11 +132,11 @@ DELIVERY_CREDENTIAL_URL_RE = re.compile(
     re.IGNORECASE,
 )
 DELIVERY_WEBHOOK_URL_RE = re.compile(
-    r"https://(?:[^/\s]*hooks[^/\s]*|(?:discord(?:app)?\.com))/(?:api/)?(?:webhooks|services)/\S+",
+    r"https://(?:[^/\s]*hooks[^/\s]*|discord(?:app)?\.com)/(?:api/)?(?:webhooks|services)/\S+",
     re.IGNORECASE,
 )
 DELIVERY_PRIVATE_KEY_RE = re.compile(
-    r"BEGIN (?:RSA |EC |OPENSSH |)PRIVATE KEY",
+    r"BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY",
     re.IGNORECASE,
 )
 DELIVERY_LONG_TOKEN_RE = re.compile(r"(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9_+/=-]{40,}")

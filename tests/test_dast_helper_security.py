@@ -66,14 +66,29 @@ def test_dast_secret_files_are_restricted_and_cleaned_up_by_contract():
     assert "path.chmod(0o600)" in creator
 
 
+def test_container_smoke_databases_use_per_run_test_credentials():
+    for script_path in (
+        Path("ops/container/dast-smoke.sh"),
+        Path("ops/container/smoke-test.sh"),
+    ):
+        script = script_path.read_text(encoding="utf-8")
+        assert "random_test_secret" in script
+        assert "/dev/urandom" in script
+        assert "ci-password" not in script
+
+
 def test_dast_session_helper_writes_restricted_cookie_and_zap_config(tmp_path):
     create_dast_session = _load_create_dast_session_module()
     cookie = "__Host-sitbank_session=Abc123._~-"
     cookie_path = tmp_path / "auth-cookie"
     config_path = tmp_path / "zap-replacer.properties"
 
-    create_dast_session.write_cookie_output(cookie_path, cookie)
-    create_dast_session.write_zap_replacer_config(config_path, cookie)
+    create_dast_session.write_cookie_output(cookie_path, cookie, allowed_root=tmp_path)
+    create_dast_session.write_zap_replacer_config(
+        config_path,
+        cookie,
+        allowed_root=tmp_path,
+    )
 
     assert cookie_path.read_text(encoding="utf-8") == cookie
     zap_config = config_path.read_text(encoding="utf-8")
@@ -96,11 +111,32 @@ def test_dast_session_helper_rejects_malformed_cookie_outputs(tmp_path):
             create_dast_session.write_zap_replacer_config(
                 tmp_path / "zap-replacer.properties",
                 bad_cookie,
+                allowed_root=tmp_path,
             )
         except RuntimeError as exc:
             assert "malformed" in str(exc)
         else:
             raise AssertionError(f"Accepted malformed DAST cookie: {bad_cookie!r}")
+
+
+def test_dast_session_helper_rejects_output_outside_allowed_root(tmp_path):
+    create_dast_session = _load_create_dast_session_module()
+    allowed_root = tmp_path / "allowed"
+    allowed_root.mkdir()
+    outside = tmp_path / "escaped-cookie"
+
+    try:
+        create_dast_session.write_cookie_output(
+            outside,
+            "__Host-sitbank_session=Abc123._~-",
+            allowed_root=allowed_root,
+        )
+    except ValueError as exc:
+        assert "escapes" in str(exc)
+    else:
+        raise AssertionError("Accepted DAST output outside the allowed root")
+
+    assert not outside.exists()
 
 
 def test_github_workflow_does_not_upload_dast_secret_material():

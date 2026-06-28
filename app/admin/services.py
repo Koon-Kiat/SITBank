@@ -79,9 +79,11 @@ ADMIN_AUTH_BACKOFF_ERROR = "Too many attempts. Please try again later."
 STAFF_USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{3,64}$")
 FULL_NAME_RE = re.compile(r"^[^\x00-\x1f\x7f<>]{1,120}$")
 PHONE_RE = re.compile(r"^[89][0-9]{7}$")
-EMAIL_RE = re.compile(r"^[^@\s\x00-\x1f\x7f]{1,128}@[^@\s\x00-\x1f\x7f]{1,253}$")
-TOTP_RE = re.compile(r"^[0-9]{6}$")
-WORKPLACE_CODE_RE = re.compile(r"^[0-9]{6}$")
+EMAIL_RE = re.compile(
+    r"^(?=\S{1,128}@\S{1,253}$)[^@\x00-\x1f\x7f]+@[^@\x00-\x1f\x7f]+$"
+)
+TOTP_RE = re.compile(r"^\d{6}$")
+WORKPLACE_CODE_RE = re.compile(r"^\d{6}$")
 
 
 def is_customer_user(user: User | None) -> bool:

@@ -926,7 +926,7 @@ def _commit_quietly() -> None:
 def _wants_session_json_response() -> bool:
     if current_app.config.get("APP_MODE") == "admin":
         return True
-    if request.path.startswith("/auth/") or request.path.startswith("/admin/"):
+    if request.path.startswith(("/auth/", "/admin/")):
         return True
     best = request.accept_mimetypes.best_match(["application/json", "text/html"])
     return best == "application/json" and (

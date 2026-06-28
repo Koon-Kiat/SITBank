@@ -55,8 +55,23 @@ def annotation_escape(value: str) -> str:
     return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
 
 
-def load_body_from_event(path: Path) -> str:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+def _validated_input_path(path: Path, allowed_root: Path) -> Path:
+    root = allowed_root.resolve(strict=True)
+    candidate = path.resolve(strict=True)
+    if not root.is_dir():
+        raise ValueError("PR body input root must be a directory")
+    if candidate == root or not candidate.is_relative_to(root) or not candidate.is_file():
+        raise ValueError("PR body input path escapes the allowed input root")
+    return candidate
+
+
+def _read_text_file(path: Path, allowed_root: Path) -> str:
+    candidate = _validated_input_path(path, allowed_root)
+    return candidate.read_text(encoding="utf-8")
+
+
+def load_body_from_event(path: Path, allowed_root: Path) -> str:
+    payload = json.loads(_read_text_file(path, allowed_root))
     body = (payload.get("pull_request") or {}).get("body") or ""
     return str(body)
 
@@ -196,12 +211,18 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Validate a GitHub pull request description.")
     parser.add_argument("--event-path", type=Path, help="Path to a GitHub pull_request event JSON payload.")
     parser.add_argument("--body-file", type=Path, help="Path to a text file containing a PR body.")
+    parser.add_argument(
+        "--input-root",
+        type=Path,
+        required=True,
+        help="Trusted directory containing the selected input file.",
+    )
     args = parser.parse_args(argv)
 
     if args.body_file:
-        body = args.body_file.read_text(encoding="utf-8")
+        body = _read_text_file(args.body_file, args.input_root)
     elif args.event_path:
-        body = load_body_from_event(args.event_path)
+        body = load_body_from_event(args.event_path, args.input_root)
     else:
         parser.error("Provide --event-path or --body-file.")
 

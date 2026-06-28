@@ -1,36 +1,35 @@
 (function () {
-  var meta = document.querySelector('meta[name="session-timeout"]');
+  const meta = document.querySelector('meta[name="session-timeout"]');
   if (!meta) return;
 
-  var timeoutSeconds = parseInt(meta.getAttribute('content'), 10);
+  let timeoutSeconds = Number.parseInt(meta.getAttribute('content'), 10);
   if (!timeoutSeconds || timeoutSeconds <= 0) return;
 
-  var warningSeconds = 60;
-  var timeoutMs = timeoutSeconds * 1000;
-  var warningMs = Math.max(0, (timeoutSeconds - warningSeconds) * 1000);
+  const warningSeconds = 60;
+  let timeoutMs = timeoutSeconds * 1000;
+  let warningMs = Math.max(0, (timeoutSeconds - warningSeconds) * 1000);
 
-  var expireTimer = null;
-  var warningTimer = null;
-  var countdownInterval = null;
-  var displayInterval = null;
-  var lastResetTime = Date.now();
+  let expireTimer = null;
+  let warningTimer = null;
+  let countdownInterval = null;
+  let lastResetTime = Date.now();
 
-  var overlayEl = document.getElementById('session-timeout-overlay');
-  var countdownEl = document.getElementById('session-timeout-countdown');
-  var continueBtn = document.getElementById('session-continue-btn');
-  var timerEl = document.getElementById('session-timer');
-  var timerValueEl = document.getElementById('session-timer-value');
-  var csrfMeta = document.querySelector('meta[name="csrf-token"]');
+  const overlayEl = document.getElementById('session-timeout-overlay');
+  const countdownEl = document.getElementById('session-timeout-countdown');
+  const continueBtn = document.getElementById('session-continue-btn');
+  const timerEl = document.getElementById('session-timer');
+  const timerValueEl = document.getElementById('session-timer-value');
+  const csrfMeta = document.querySelector('meta[name="csrf-token"]');
 
   function formatTime(ms) {
-    var totalSeconds = Math.max(0, Math.ceil(ms / 1000));
-    var m = Math.floor(totalSeconds / 60);
-    var s = totalSeconds % 60;
+    const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+    const m = Math.floor(totalSeconds / 60);
+    const s = totalSeconds % 60;
     return m + ':' + (s < 10 ? '0' + s : s);
   }
 
   function updateTimerDisplay() {
-    var remaining = timeoutMs - (Date.now() - lastResetTime);
+    const remaining = timeoutMs - (Date.now() - lastResetTime);
     if (timerValueEl) timerValueEl.textContent = formatTime(remaining);
     if (timerEl) {
       if (remaining <= warningMs) {
@@ -49,7 +48,7 @@
 
   function showOverlay() {
     if (!overlayEl) return;
-    var remaining = warningSeconds;
+    let remaining = warningSeconds;
     if (countdownEl) countdownEl.textContent = remaining;
     overlayEl.hidden = false;
     clearInterval(countdownInterval);
@@ -64,7 +63,7 @@
   }
 
   function expire() {
-    window.location.href = '/login?session_expired=1';
+    globalThis.location.href = '/login?session_expired=1';
   }
 
   function resetTimers() {
@@ -79,10 +78,10 @@
 
   if (continueBtn) {
     continueBtn.addEventListener('click', function () {
-      var headers = {
+      const headers = {
         'Accept': 'application/json'
       };
-      if (csrfMeta && csrfMeta.getAttribute('content')) {
+      if (csrfMeta?.getAttribute('content')) {
         headers['X-CSRFToken'] = csrfMeta.getAttribute('content');
       }
       continueBtn.disabled = true;
@@ -97,7 +96,7 @@
         return response.json().catch(function () { return {}; });
       }).then(function (payload) {
         if (payload.timeout_seconds && payload.timeout_seconds > 0) {
-          timeoutSeconds = parseInt(payload.timeout_seconds, 10);
+          timeoutSeconds = Number.parseInt(payload.timeout_seconds, 10);
           timeoutMs = timeoutSeconds * 1000;
           warningMs = Math.max(0, (timeoutSeconds - warningSeconds) * 1000);
         }
@@ -110,6 +109,6 @@
     });
   }
 
-  displayInterval = setInterval(updateTimerDisplay, 1000);
+  setInterval(updateTimerDisplay, 1000);
   resetTimers();
 })();

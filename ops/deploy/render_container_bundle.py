@@ -347,6 +347,7 @@ def write_container_bundle(
     prefix: str = "PROD",
     *,
     include_secrets: bool = True,
+    allowed_root: Path,
 ) -> None:
     if include_secrets:
         environment, secrets = build_container_bundle(prefix)
@@ -354,7 +355,13 @@ def write_container_bundle(
         environment = build_container_environment(prefix)
         secrets = {}
 
-    output_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
+    root = allowed_root.resolve(strict=True)
+    output_dir = output_dir.resolve(strict=False)
+    if not root.is_dir():
+        raise ValueError("Container bundle output root must be a directory")
+    if output_dir == root or not output_dir.is_relative_to(root):
+        raise ValueError("Container bundle output path escapes the allowed output root")
+    output_dir.mkdir(mode=0o700, parents=False, exist_ok=False)
 
     environment_text = "".join(
         f"{name}={_quote_environment_value(name, value)}\n"
@@ -384,6 +391,7 @@ def write_container_bundle(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--prefix", choices=sorted(DEPLOYMENT_PREFIXES), default="PROD")
     parser.add_argument(
         "--environment-only",
@@ -395,6 +403,7 @@ def main() -> None:
         args.output,
         prefix=args.prefix,
         include_secrets=not args.environment_only,
+        allowed_root=args.output_root,
     )
 
 

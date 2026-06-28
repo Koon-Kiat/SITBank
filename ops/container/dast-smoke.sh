@@ -5,6 +5,12 @@ readonly IMAGE="${1:-sitbank:smoke}"
 readonly POSTGRES_IMAGE="postgres:16.9-alpine@sha256:7c688148e5e156d0e86df7ba8ae5a05a2386aaec1e2ad8e6d11bdf10504b1fb7"
 readonly PUBLIC_HOST="sitbank.duckdns.org"
 
+random_test_secret() {
+    od -An -N24 -tx1 /dev/urandom | tr -d '[:space:]'
+}
+
+readonly postgres_password="$(random_test_secret)"
+
 work_dir="$(mktemp -d)"
 chmod 2770 "${work_dir}"
 
@@ -20,7 +26,7 @@ docker run --detach --name dast-postgres \
     --group-add "${runner_gid}" \
     --publish 127.0.0.1:55433:5432 \
     --env POSTGRES_USER=ci \
-    --env POSTGRES_PASSWORD=ci-password \
+    --env POSTGRES_PASSWORD="${postgres_password}" \
     --env POSTGRES_DB=ci \
     "${POSTGRES_IMAGE}" >/dev/null
 
@@ -41,7 +47,7 @@ printf '%s' '{"ci":"MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjI="}' \
     > "${work_dir}/secrets/session_hmac_keys_json"
 printf '%s' 'OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk=' \
     > "${work_dir}/secrets/session_lookup_hmac_key"
-printf '%s' 'postgresql+psycopg2://ci:ci-password@127.0.0.1:55433/ci' \
+printf 'postgresql+psycopg2://ci:%s@127.0.0.1:55433/ci' "${postgres_password}" \
     > "${work_dir}/secrets/database_url"
 printf '%s' '{"ci-mfa":"NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ="}' \
     > "${work_dir}/secrets/mfa_kek_keys_json"

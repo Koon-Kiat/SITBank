@@ -135,4 +135,6 @@ jobs:
           EVENT_PATH: ${{ github.event_path }}
         run: |
           set -Eeuo pipefail
-          python ops/security/validate_pr_body.py --event-path "${EVENT_PATH}"
+          python ops/security/validate_pr_body.py \
+            --input-root "$(dirname "${EVENT_PATH}")" \
+            --event-path "${EVENT_PATH}"

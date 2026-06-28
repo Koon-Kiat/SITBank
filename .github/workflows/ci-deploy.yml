@@ -830,6 +830,7 @@ jobs:
           python ops/deploy/render_container_bundle.py \
             --prefix STAGING \
             --environment-only \
+            --output-root "${GITHUB_WORKSPACE}" \
             --output "runtime-staging-${RELEASE_SHA}"
           tar --create --file "runtime-staging-${RELEASE_SHA}.tar" \
             --directory "runtime-staging-${RELEASE_SHA}" .
@@ -1042,6 +1043,7 @@ jobs:
           python ops/deploy/render_container_bundle.py \
             --prefix PROD \
             --environment-only \
+            --output-root "${GITHUB_WORKSPACE}" \
             --output "runtime-${RELEASE_SHA}"
           tar --create --file "runtime-${RELEASE_SHA}.tar" \
             --directory "runtime-${RELEASE_SHA}" .

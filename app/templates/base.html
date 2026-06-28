@@ -155,19 +155,19 @@
                     {% if g.high_risk_ready %}
                       <a role="menuitem" href="{{ url_for('web.password_change') }}">Change Password</a>
                     {% else %}
-                      <a role="menuitem" class="is-disabled" aria-disabled="true">Change Password</a>
+                      <span role="menuitem" class="is-disabled" aria-disabled="true">Change Password</span>
                     {% endif %}
                   {% else %}
-                    <a role="menuitem" class="is-disabled" aria-disabled="true">Change Password</a>
+                    <span role="menuitem" class="is-disabled" aria-disabled="true">Change Password</span>
                   {% endif %}
-                  <div class="account-menu-section-label" role="separator">Security Settings</div>
+                  <div class="account-menu-section-label">Security Settings</div>
                   <a role="menuitem" href="{{ url_for('web.mfa_setup') }}">Authenticator MFA</a>
                   {% if g.mfa_ready %}
                     <a role="menuitem" href="{{ url_for('web.sessions_dashboard') }}">Active Sessions</a>
                     {% if g.high_risk_ready %}
                       <a role="menuitem" href="{{ url_for('web.freeze_account') }}">Freeze Account</a>
                     {% else %}
-                      <a role="menuitem" class="is-disabled" aria-disabled="true">Freeze Account</a>
+                      <span role="menuitem" class="is-disabled" aria-disabled="true">Freeze Account</span>
                     {% endif %}
                   {% endif %}
                   <form class="account-menu-form" method="post" action="{{ url_for('web.logout') }}">

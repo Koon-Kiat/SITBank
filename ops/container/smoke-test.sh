@@ -12,6 +12,15 @@ readonly postgres_container="smoke-postgres"
 readonly app_container="sitbank-smoke"
 readonly admin_container="sitbank-admin-smoke"
 
+random_test_secret() {
+    od -An -N24 -tx1 /dev/urandom | tr -d '[:space:]'
+}
+
+readonly postgres_password="$(random_test_secret)"
+readonly owner_password="$(random_test_secret)"
+readonly app_password="$(random_test_secret)"
+readonly admin_password="$(random_test_secret)"
+
 running_on_windows_shell() {
     case "$(uname -s)" in
         MINGW* | MSYS* | CYGWIN*)
@@ -80,7 +89,7 @@ dump_container_diagnostics() {
 
 on_error() {
     local exit_code=$?
-    echo "::error::Container smoke test failed with exit code ${exit_code}"
+    echo "::error::Container smoke test failed with exit code ${exit_code}" >&2
     dump_container_diagnostics
     exit "${exit_code}"
 }
@@ -101,6 +110,8 @@ wait_for_healthy() {
             exited | dead | unhealthy)
                 echo "${container} entered unexpected state: ${status}" >&2
                 return 1
+                ;;
+            *)
                 ;;
         esac
         sleep 1
@@ -134,7 +145,7 @@ docker network create "${network_name}" >/dev/null
 docker run --detach --name "${postgres_container}" \
     --network "${network_name}" \
     --env POSTGRES_USER=postgres \
-    --env POSTGRES_PASSWORD=ci-postgres-password \
+    --env POSTGRES_PASSWORD="${postgres_password}" \
     --env POSTGRES_DB=ci \
     --health-cmd "pg_isready --username postgres --dbname ci" \
     --health-interval 1s \
@@ -146,20 +157,20 @@ docker run --detach --name "${postgres_container}" \
 wait_for_healthy "${postgres_container}"
 
 psql_admin() {
-    docker exec -i -e PGPASSWORD=ci-postgres-password "${postgres_container}" \
+    docker exec -i -e PGPASSWORD="${postgres_password}" "${postgres_container}" \
         psql --no-psqlrc --set ON_ERROR_STOP=1 \
         --username postgres --dbname ci "$@"
 }
 
-psql_admin --set owner_password=ci-owner-password <<'SQL'
+psql_admin --set owner_password="${owner_password}" <<'SQL'
 CREATE ROLE ci_owner LOGIN PASSWORD :'owner_password';
 SQL
 
-psql_admin --set app_password=ci-app-password <<'SQL'
+psql_admin --set app_password="${app_password}" <<'SQL'
 CREATE ROLE ci_app LOGIN PASSWORD :'app_password';
 SQL
 
-psql_admin --set admin_password=ci-admin-password <<'SQL'
+psql_admin --set admin_password="${admin_password}" <<'SQL'
 CREATE ROLE ci_admin LOGIN PASSWORD :'admin_password';
 SQL
 
@@ -185,7 +196,7 @@ ALTER DEFAULT PRIVILEGES FOR ROLE ci_owner IN SCHEMA public
 SQL
 
 roles="$(
-    docker exec -e PGPASSWORD=ci-postgres-password "${postgres_container}" \
+    docker exec -e PGPASSWORD="${postgres_password}" "${postgres_container}" \
         psql --no-psqlrc --set ON_ERROR_STOP=1 \
         --username postgres --dbname ci \
         --tuples-only --no-align \
@@ -211,7 +222,7 @@ fi
 echo "Runtime role exists: yes"
 owner_database="$(
     docker run --rm --network "${network_name}" \
-        --env PGPASSWORD=ci-owner-password \
+        --env PGPASSWORD="${owner_password}" \
         "${POSTGRES_IMAGE}" \
         psql --no-psqlrc --set ON_ERROR_STOP=1 \
         --host "${postgres_container}" --username ci_owner --dbname ci \
@@ -225,7 +236,7 @@ fi
 echo "Owner connection test: passed"
 runtime_database="$(
     docker run --rm --network "${network_name}" \
-        --env PGPASSWORD=ci-app-password \
+        --env PGPASSWORD="${app_password}" \
         "${POSTGRES_IMAGE}" \
         psql --no-psqlrc --set ON_ERROR_STOP=1 \
         --host "${postgres_container}" --username ci_app --dbname ci \
@@ -238,7 +249,7 @@ if [[ "${runtime_database}" != "${owner_database}" ]]; then
 fi
 runtime_user="$(
     docker run --rm --network "${network_name}" \
-        --env PGPASSWORD=ci-app-password \
+        --env PGPASSWORD="${app_password}" \
         "${POSTGRES_IMAGE}" \
         psql --no-psqlrc --set ON_ERROR_STOP=1 \
         --host "${postgres_container}" --username ci_app --dbname ci \
@@ -253,7 +264,7 @@ fi
 echo "Runtime connection test: passed"
 admin_user="$(
     docker run --rm --network "${network_name}" \
-        --env PGPASSWORD=ci-admin-password \
+        --env PGPASSWORD="${admin_password}" \
         "${POSTGRES_IMAGE}" \
         psql --no-psqlrc --set ON_ERROR_STOP=1 \
         --host "${postgres_container}" --username ci_admin --dbname ci \
@@ -277,11 +288,11 @@ printf '%s' '{"ci":"MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjI="}' \
     > "${work_dir}/secrets/session_hmac_keys_json"
 printf '%s' 'OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk=' \
     > "${work_dir}/secrets/session_lookup_hmac_key"
-printf 'postgresql+psycopg2://ci_app:ci-app-password@%s:5432/ci' \
-    "${postgres_container}" \
+printf 'postgresql+psycopg2://ci_app:%s@%s:5432/ci' \
+    "${app_password}" "${postgres_container}" \
     > "${work_dir}/secrets/database_url"
-printf 'postgresql+psycopg2://ci_owner:ci-owner-password@%s:5432/ci' \
-    "${postgres_container}" \
+printf 'postgresql+psycopg2://ci_owner:%s@%s:5432/ci' \
+    "${owner_password}" "${postgres_container}" \
     > "${work_dir}/secrets/database_migration_url"
 printf '%s' '{"ci-mfa":"NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ="}' \
     > "${work_dir}/secrets/mfa_kek_keys_json"
@@ -299,8 +310,8 @@ printf '%s' '{"ci-admin":"NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY="}' \
     > "${work_dir}/secrets/admin_session_hmac_keys_json"
 printf '%s' 'YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE=' \
     > "${work_dir}/secrets/admin_session_lookup_hmac_key"
-printf 'postgresql+psycopg2://ci_admin:ci-admin-password@%s:5432/ci' \
-    "${postgres_container}" \
+printf 'postgresql+psycopg2://ci_admin:%s@%s:5432/ci' \
+    "${admin_password}" "${postgres_container}" \
     > "${work_dir}/secrets/admin_database_url"
 printf '%s' 'ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg=' \
     > "${work_dir}/secrets/admin_password_pepper_b64"
@@ -479,6 +490,7 @@ if [[ "${RUN_ZAP_DAST:-false}" == "true" ]]; then
         python /app/create_dast_session.py \
             --base-url "${dast_base_url}" \
             --allow-host "${app_container}" \
+            --output-root /run/dast \
             --output /run/dast/auth-cookie \
             --zap-replacer-config-output /run/dast/zap-replacer.properties
     docker run --rm --interactive "${docker_args[@]}" \

@@ -66,7 +66,7 @@ SENSITIVE_CREDENTIAL_URL_RE = re.compile(
     re.IGNORECASE,
 )
 SENSITIVE_WEBHOOK_URL_RE = re.compile(
-    r"https://(?:[^/\s]*hooks[^/\s]*|(?:discord(?:app)?\.com))/(?:api/)?(?:webhooks|services)/\S+",
+    r"https://(?:[^/\s]*hooks[^/\s]*|discord(?:app)?\.com)/(?:api/)?(?:webhooks|services)/\S+",
     re.IGNORECASE,
 )
 SENSITIVE_PRIVATE_KEY_RE = re.compile(
