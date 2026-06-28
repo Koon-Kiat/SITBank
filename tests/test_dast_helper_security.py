@@ -34,6 +34,7 @@ def test_smoke_test_keeps_dast_cookie_out_of_host_command_arguments():
     assert "--volume \"${dast_mount_source}:/run/dast:ro\"" in smoke_test
     assert "--user 10001:10001" in smoke_test
     assert "--env HOME=/zap/wrk" in smoke_test
+    assert "--workdir /zap/wrk" in smoke_test
 
 
 def test_dast_secret_files_are_restricted_and_cleaned_up_by_contract():

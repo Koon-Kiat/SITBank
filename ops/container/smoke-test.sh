@@ -467,6 +467,7 @@ PY
     docker run --rm --network "${network_name}" \
         --user 10001:10001 \
         --env HOME=/zap/wrk \
+        --workdir /zap/wrk \
         --volume "${zap_mount_source}:/zap/wrk:rw" \
         --volume "${dast_mount_source}:/run/dast:ro" \
         "${ZAP_IMAGE}" \
