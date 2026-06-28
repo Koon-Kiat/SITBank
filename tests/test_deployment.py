@@ -3395,7 +3395,9 @@ def test_audit_operations_runbook_and_append_only_privileges_are_present():
         "10 or more `login` failures",
         "`auth_backoff`",
         "3 or more transaction failures",
-        "There is no final ledger",
+        "local transfer performs final ledger movement",
+        "single-use confirmation token",
+        "payee ownership mismatches",
         "Docker `local` log rotation",
     ):
         assert required in docs

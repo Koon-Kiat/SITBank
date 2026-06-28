@@ -309,10 +309,20 @@ the mismatched anchor as incident evidence, run
 and investigate possible row tampering, chain rewind, or tail deletion before
 resuming routine deployments.
 
-The current banking implementation audits public transaction validation and
-TOTP-backed transaction authorization checks. There is no final ledger movement
-endpoint in this codebase, so final transfer execution is intentionally out of
-scope until such an endpoint exists.
+The current banking implementation audits public transaction validation,
+TOTP-backed transaction authorization checks, and local transfer execution.
+Local transfer performs final ledger movement: the sender balance is debited,
+the recipient balance is credited, and a `Transaction` record is created in a
+single atomic commit. The two-step transfer flow requires MFA step-up before a
+DB-backed `PendingTransfer` record is created; the single-use confirmation token
+is consumed atomically with `SELECT FOR UPDATE` to prevent concurrent
+double-submit replay. Row locks are acquired in ascending `id` order to prevent
+deadlocks. Payee ownership and cooldown are enforced at the service layer
+independently of the route layer. Transfer amounts are validated to at most two
+decimal places. Recipient account state is checked before funds move.
+Blocked authorization failures, including payee ownership mismatches, are
+audited safely using opaque references so raw account numbers, payee details,
+and pending transfer tokens do not appear in the audit log.
 
 The admin boundary audits root-admin-controlled staff invite onboarding,
 admin login success/failure, TOTP verification, admin step-up, admin data
