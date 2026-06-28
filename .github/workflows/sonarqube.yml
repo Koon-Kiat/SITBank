@@ -1,0 +1,80 @@
+name: SonarQube Cloud
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sonarqube-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PYTHON_VERSION: "3.12"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONDONTWRITEBYTECODE: "1"
+  APP_ENV: testing
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.lock
+            requirements-dev.lock
+
+      - name: Install locked dependencies
+        run: python -m pip install --require-hashes -r requirements-dev.lock
+
+      - name: Run full tests with coverage
+        run: >-
+          python -m pytest -q -n auto
+          --cov=app
+          --cov-report=xml:coverage.xml
+          --cov-report=term
+          --durations=30
+          --durations-min=0.5
+
+      - name: Check SonarQube Cloud credentials
+        id: sonar
+        shell: bash
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          TRUSTED_EVENT: ${{ github.event_name != 'pull_request' || (github.actor != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository) }}
+        run: |
+          set -Eeuo pipefail
+          if [[ "${TRUSTED_EVENT}" != "true" ]]; then
+            echo "::notice::SonarQube Cloud analysis is skipped for an untrusted fork or Dependabot pull request because GitHub does not expose SONAR_TOKEN."
+            echo "should_scan=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          if [[ -z "${SONAR_TOKEN}" ]]; then
+            echo "::error::SONAR_TOKEN is not configured. Add the SonarQube Cloud analysis token as a GitHub Actions repository or organization secret."
+            exit 1
+          fi
+          echo "should_scan=true" >> "${GITHUB_OUTPUT}"
+
+      # Pinned to SonarSource/sonarqube-scan-action v8.1.0.
+      - name: Run reporting-only SonarQube Cloud analysis
+        if: steps.sonar.outputs.should_scan == 'true'
+        uses: SonarSource/sonarqube-scan-action@7006c4492b2e0ee0f816d36501671557c97f5995
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

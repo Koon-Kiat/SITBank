@@ -43,3 +43,14 @@ The final summary labels individual checks `PASS`, `FAIL`, or `SKIPPED` and
 labels the overall result as full, partial, or failed. CI/CD remains the source
 of truth for deployment validation; local strict mode is the closest
 contributor-side parity check, not a replacement for protected CI.
+
+## SonarQube Cloud
+
+Pull requests to `main` also generate `coverage.xml` from the full pytest suite
+and send the configured source/test scope to SonarQube Cloud when the trusted
+workflow can access `SONAR_TOKEN`. The initial quality gate is reporting-only,
+so review the maintainability, duplication, reliability, security, and
+coverage dashboard without treating its gate as a merge or deployment
+approval. Fork pull requests run coverage but explicitly skip the secret-backed
+upload. See `docs/security/sonarqube.md` for scope, exclusions, private-project
+plan prerequisites, triage, and false-positive handling.

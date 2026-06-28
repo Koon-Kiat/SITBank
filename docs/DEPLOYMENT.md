@@ -58,6 +58,12 @@ customer/admin separation and wiring enforced by deployment tests, without
 starting containers. CI/CD remains the source of truth for deployment
 validation and release evidence.
 
+SonarQube Cloud analysis is a separate reporting workflow, not a deployment
+stage or production prerequisite. It receives no EC2, SSH, AWS, database, or
+application runtime credentials and does not run bootstrap, publish, or deploy
+commands. A SonarQube dashboard result must not be represented as deployed
+runtime evidence. See `docs/security/sonarqube.md`.
+
 ## Database Baseline
 
 Existing databases that already have the baseline tables must be adopted into Alembic instead of recreated.

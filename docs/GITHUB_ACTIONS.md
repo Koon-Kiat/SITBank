@@ -95,6 +95,23 @@ smoke-test cleanup trap on success or failure. Do not upload `auth-cookie` or
 secret values, and investigate immediately if either file or a session value
 appears in logs, summaries, or artifacts.
 
+## SonarQube Cloud
+
+`.github/workflows/sonarqube.yml` runs independently on pull requests to
+`main`, pushes to `main`, and manual dispatch. It installs the hash-locked
+development dependencies, runs the complete pytest suite with `pytest-cov`,
+writes `coverage.xml`, and invokes the SHA-pinned official SonarQube scanner
+with only `contents: read`. It requires the GitHub Actions secret
+`SONAR_TOKEN`; it does not use production environments, deployment
+credentials, or `SONAR_HOST_URL`.
+
+The initial SonarQube quality gate is reporting-only and is not a release or
+deployment dependency. Trusted runs fail clearly if the token is absent;
+untrusted fork pull requests cannot receive the token, so the workflow emits a
+notice and skips only the cloud upload after coverage succeeds. Setup,
+private-project plan eligibility, source processing, exclusions, rotation, and
+triage are in `docs/security/sonarqube.md`. CodeQL behavior remains unchanged.
+
 ## Dependency Updates
 
 Dependabot updates are review-only. Base-image updates must not be auto-merged. For dependency or image changes, maintainers should review release notes, regenerate hash-locked dependency files, and require the container smoke test, Compose validation, Trivy gates, dependency audits, and relevant application tests before merging.

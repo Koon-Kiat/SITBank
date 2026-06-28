@@ -154,6 +154,7 @@ Actions.
 | Lockfile policy check | `ops/security/check_dependency_locks.py`, `tests/test_deployment.py::test_dependency_manifests_have_one_hashed_lockfile_source_of_truth` |
 | Vulnerability scans | `pip-audit` in `scripts/ci-local` and `.github/workflows/ci-deploy.yml`; Trivy image scans in CI |
 | Static analysis | Bandit, CodeQL, actionlint, zizmor in CI/local workflows |
+| Code-quality analysis | Reporting-only SonarQube Cloud analysis with full-suite `coverage.xml`, maintainability, duplication, reliability, and security dashboard evidence; see `docs/security/sonarqube.md` |
 | Secret scanning | `ops/security/scan_repository_secrets.py`, `tests/test_secret_scanner.py` |
 | Pinned GitHub Actions and images | `.github/workflows/ci-deploy.yml`, `Dockerfile`, tests in `tests/test_deployment.py` |
 | Image signing and digest deployment | `.github/workflows/ci-deploy.yml`, `tests/test_deployment.py::test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest` |
