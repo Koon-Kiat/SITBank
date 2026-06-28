@@ -47,6 +47,10 @@ PYTHON_SLIM_TRIXIE_DIGEST_RE = re.compile(
     r"python:3\.12(?:\.\d+)?-slim-trixie@sha256:[0-9a-f]{64}"
 )
 
+ROOT_ADMIN_EMAILS_VALUE = ",".join(
+    f"root{index}@sit.singaporetech.edu.sg" for index in range(1, 8)
+)
+
 DEPLOYMENT_VALUES = {
     "PROD_ADMIN_DATABASE_URL": "postgresql+psycopg2://bank_admin:secret@127.0.0.1/bank",
     "PROD_ADMIN_PASSWORD_PEPPER_B64": "ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg=",
@@ -68,6 +72,7 @@ DEPLOYMENT_VALUES = {
     "PROD_SESSION_HMAC_ACTIVE_KEY_ID": "2026-06",
     "PROD_SESSION_LOOKUP_HMAC_KEY": "OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk=",
     "PROD_PASSWORD_RESET_EMAIL_FROM": "security@sitbank.example",
+    "PROD_ROOT_ADMIN_EMAILS": ROOT_ADMIN_EMAILS_VALUE,
     "PROD_SMTP_HOST": "smtp.example.test",
     "PROD_SMTP_USERNAME": "smtp-user",
     "PROD_SMTP_PASSWORD": "smtp-password",
@@ -476,6 +481,7 @@ def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypa
     assert environment["PASSWORD_RESET_EMAIL_BACKEND"] == "smtp"
     assert environment["PASSWORD_RESET_EMAIL_FROM"] == DEPLOYMENT_VALUES["PROD_PASSWORD_RESET_EMAIL_FROM"]
     assert environment["PAYEE_COOLDOWN_SECONDS"] == "43200"
+    assert environment["ROOT_ADMIN_EMAILS"] == ROOT_ADMIN_EMAILS_VALUE
     assert environment["SMTP_HOST"] == DEPLOYMENT_VALUES["PROD_SMTP_HOST"]
     assert environment["SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06"
     assert environment["ADMIN_SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06-admin"
@@ -528,6 +534,7 @@ def test_container_bundle_accepts_staging_prefix(monkeypatch):
     assert "WEBAUTHN_RP_ORIGIN" not in environment
     assert environment["PASSWORD_RESET_BASE_URL"] == "https://staging.sitbank.example"
     assert environment["PAYEE_COOLDOWN_SECONDS"] == "43200"
+    assert environment["ROOT_ADMIN_EMAILS"] == ROOT_ADMIN_EMAILS_VALUE
     assert environment["SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06"
     assert environment["ADMIN_SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06-admin"
     assert environment["MFA_KEK_ACTIVE_ID"] == "2026-06-mfa"
@@ -567,6 +574,49 @@ def test_staging_bundle_rejects_invalid_cloudflare_access_config(
         "staging-sitbank.pp.ua",
     )
     monkeypatch.setenv(name, value)
+
+    with pytest.raises(RuntimeError, match=message):
+        build_container_environment("STAGING")
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ("", "STAGING_ROOT_ADMIN_EMAILS"),
+        (
+            "root1@sit.singaporetech.edu.sg,root2@sit.singaporetech.edu.sg",
+            "exactly 7 unique",
+        ),
+        (
+            ",".join(["root1@sit.singaporetech.edu.sg"] * 7),
+            "exactly 7 unique",
+        ),
+        (
+            "root1@example.com,"
+            "root2@sit.singaporetech.edu.sg,"
+            "root3@sit.singaporetech.edu.sg,"
+            "root4@sit.singaporetech.edu.sg,"
+            "root5@sit.singaporetech.edu.sg,"
+            "root6@sit.singaporetech.edu.sg,"
+            "root7@sit.singaporetech.edu.sg",
+            "SIT workplace",
+        ),
+    ],
+)
+def test_staging_bundle_requires_valid_root_admin_allowlist(
+    monkeypatch,
+    value,
+    message,
+):
+    _set_prefixed_deployment_values(
+        monkeypatch,
+        "STAGING",
+        "staging-sitbank.pp.ua",
+    )
+    if value:
+        monkeypatch.setenv("STAGING_ROOT_ADMIN_EMAILS", value)
+    else:
+        monkeypatch.delenv("STAGING_ROOT_ADMIN_EMAILS")
 
     with pytest.raises(RuntimeError, match=message):
         build_container_environment("STAGING")
@@ -797,6 +847,7 @@ def test_smoke_fixture_and_deployment_wrapper_match_runtime_contract():
 
     assert "--env DATABASE_MIGRATION_URL_FILE=/run/secrets/database_migration_url" in smoke_test
     assert "--env PAYEE_COOLDOWN_SECONDS=43200" in smoke_test
+    assert '--env "ROOT_ADMIN_EMAILS=root1@sit.singaporetech.edu.sg' in smoke_test
     assert "--env SECURITY_AUDIT_ANCHOR_PATH=/run/state/security-audit.anchor" in smoke_test
     assert '--tmpfs "/run/state:rw,noexec,nosuid,nodev,size=16m,uid=10001,gid=10001,mode=0750"' in smoke_test
     assert ':/run/secrets/database_migration_url:ro' not in smoke_test
@@ -944,6 +995,7 @@ def test_environment_only_bundle_accepts_staging_prefix(monkeypatch, tmp_path):
     deployment = (output / "deployment.env").read_text(encoding="utf-8")
     assert "ADMIN_SESSION_HMAC_ACTIVE_KEY_ID='2026-06-admin'" in environment
     assert "MFA_KEK_ACTIVE_ID='2026-06-mfa'" in environment
+    assert f"ROOT_ADMIN_EMAILS='{ROOT_ADMIN_EMAILS_VALUE}'" in environment
     assert "WEBAUTHN_RP_ID" not in environment
     assert "WEBAUTHN_RP_ORIGIN" not in environment
     assert "APP_BIND_PORT='5001'" in deployment
@@ -963,6 +1015,7 @@ def test_container_bundle_writer_quotes_dollar_values_and_separates_files(
 
     environment = (output / "container.env").read_text(encoding="utf-8")
     assert "MFA_ISSUER_NAME='SITBank'" in environment
+    assert f"ROOT_ADMIN_EMAILS='{ROOT_ADMIN_EMAILS_VALUE}'" in environment
     assert "PROD_SECRET_KEY" not in environment
     assert (output / "secrets" / "secret_key").read_text(encoding="utf-8") == (
         DEPLOYMENT_VALUES["PROD_SECRET_KEY"]
@@ -1599,6 +1652,10 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         staging_deploy_env["STAGING_PASSWORD_RESET_EMAIL_FROM"]
         == "${{ vars.STAGING_PASSWORD_RESET_EMAIL_FROM }}"
     )
+    assert (
+        staging_deploy_env["STAGING_ROOT_ADMIN_EMAILS"]
+        == "${{ vars.ROOT_ADMIN_EMAILS }}"
+    )
     assert staging_deploy_env["STAGING_SMTP_HOST"] == "${{ vars.STAGING_SMTP_HOST }}"
     assert (
         staging_deploy_env["STAGING_CLOUDFLARE_ACCESS_AUD"]
@@ -1624,6 +1681,10 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         production_deploy_env["PROD_PASSWORD_RESET_EMAIL_FROM"]
         == "${{ vars.PROD_PASSWORD_RESET_EMAIL_FROM }}"
     )
+    assert (
+        production_deploy_env["PROD_ROOT_ADMIN_EMAILS"]
+        == "${{ vars.ROOT_ADMIN_EMAILS }}"
+    )
     assert production_deploy_env["PROD_SMTP_HOST"] == "${{ vars.PROD_SMTP_HOST }}"
     for job_name, verify_step_name, required_names in (
         (
@@ -1634,6 +1695,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
                 "STAGING_CLOUDFLARE_ACCESS_AUD",
                 "STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN",
                 "STAGING_PASSWORD_RESET_EMAIL_FROM",
+                "STAGING_ROOT_ADMIN_EMAILS",
                 "STAGING_SMTP_HOST",
             },
         ),
@@ -1643,6 +1705,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
             {
                 "PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID",
                 "PROD_PASSWORD_RESET_EMAIL_FROM",
+                "PROD_ROOT_ADMIN_EMAILS",
                 "PROD_SMTP_HOST",
             },
         ),
@@ -1792,6 +1855,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "--environment-only" in workflow_text
     assert "--prefix STAGING" in workflow_text
     assert "--prefix PROD" in workflow_text
+    assert "bootstrap-root" not in workflow_text
     assert "sitbank-container-deploy" in workflow_text
     assert "runtime-staging-${RELEASE_SHA}" in workflow_text
     assert "registry-staging-${RELEASE_SHA}.credentials" in workflow_text

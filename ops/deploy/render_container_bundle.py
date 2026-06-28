@@ -133,6 +133,21 @@ def _cloudflare_access_cache_ttl(prefix: str) -> str:
     return str(parsed)
 
 
+def _root_admin_emails(prefix: str) -> str:
+    name = _prefixed(prefix, "ROOT_ADMIN_EMAILS")
+    value = _value(name)
+    emails = [item.strip().casefold() for item in value.split(",") if item.strip()]
+    if len(emails) != 7 or len(set(emails)) != 7:
+        raise RuntimeError(f"{name} must contain exactly 7 unique workplace email addresses")
+    for email in emails:
+        if not re.fullmatch(r"[^@\s\x00-\x1f\x7f]{1,128}@[^@\s\x00-\x1f\x7f]{1,253}", email):
+            raise RuntimeError(f"{name} contains an invalid email address")
+        domain = email.rsplit("@", 1)[1]
+        if domain not in {"sit.singaporetech.edu.sg", "singaporetech.edu.sg"}:
+            raise RuntimeError(f"{name} must contain only SIT workplace email addresses")
+    return ",".join(emails)
+
+
 def _validate_keyring(name: str, value: str, *, active_key_id: str) -> str:
     try:
         payload = json.loads(value)
@@ -249,6 +264,7 @@ def build_container_environment(prefix: str = "PROD") -> dict[str, str]:
         "MFA_ISSUER_NAME": _value(_prefixed(prefix, "MFA_ISSUER_NAME"), default="SITBank"),
         "PASSWORD_RESET_BASE_URL": f"https://{public_host}",
         "PASSWORD_RESET_EMAIL_FROM": _value(_prefixed(prefix, "PASSWORD_RESET_EMAIL_FROM")),
+        "ROOT_ADMIN_EMAILS": _root_admin_emails(prefix),
         "SESSION_HMAC_ACTIVE_KEY_ID": _active_key_id(prefix),
         "SMTP_HOST": _value(_prefixed(prefix, "SMTP_HOST")),
     }

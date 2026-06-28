@@ -4,6 +4,7 @@ import json
 import re
 import secrets
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 import pyotp
@@ -16,6 +17,7 @@ from app.auth.password_reset import (
     generate_recovery_codes_for_user,
     transition_manual_recovery_request,
 )
+import app.auth.services as auth_services
 from app.auth.services import AuthError
 from app.extensions import db
 from app.models import ManualRecoveryRequest, PasswordResetToken, RecoveryCode, SecurityAuditEvent, User, WebAuthnCredential
@@ -27,6 +29,7 @@ from app.security.passwords import PASSWORD_MAX_CHARS, PASSWORD_MIN_LENGTH, hash
 VALID_PASSWORD = "Correct-Horse-Battery-Staple-2026!"
 NEW_PASSWORD = "Reset-Correct-Horse-Battery-Staple-2026!"
 ORIGIN = {"Origin": "https://sitbank.duckdns.org"}
+TOTP_TEST_TIMESTAMP = 1_803_988_800
 
 
 def _create_user(username: str, email: str, password: str = VALID_PASSWORD,
@@ -66,6 +69,15 @@ def _add_webauthn_credential(user: User, credential_id: bytes = b"credential-id-
         )
     )
     db.session.commit()
+
+
+def _totp_code_at_frozen_time(monkeypatch, secret: str) -> str:
+    monkeypatch.setattr(
+        auth_services,
+        "time",
+        SimpleNamespace(time=lambda: TOTP_TEST_TIMESTAMP),
+    )
+    return pyotp.TOTP(secret).at(TOTP_TEST_TIMESTAMP)
 
 
 def _request_reset(client, email: str):
@@ -338,7 +350,7 @@ def test_password_reset_rejects_live_breached_password(app, client, monkeypatch)
     assert "Password is too common. Please try again" in completed.get_data(as_text=True)
 
 
-def test_totp_user_must_verify_totp_before_password_reset(app, client):
+def test_totp_user_must_verify_totp_before_password_reset(app, client, monkeypatch):
     with app.app_context():
         _user, secret = _create_totp_user("reset04", "reset04@example.com")
 
@@ -351,7 +363,7 @@ def test_totp_user_must_verify_totp_before_password_reset(app, client):
     )
     verified = client.post(
         "/auth/password-reset/mfa/totp",
-        json={"totp_code": pyotp.TOTP(secret).now()},
+        json={"totp_code": _totp_code_at_frozen_time(monkeypatch, secret)},
     )
     completed = client.post(
         "/auth/password-reset/complete",
@@ -538,7 +550,11 @@ def test_password_reset_defaults_to_profile_preferred_method_for_dual_mfa_user(
     assert "Use passkey or security key" not in markup
 
 
-def test_password_reset_dual_mfa_user_uses_totp_even_with_legacy_passkey_preference(app, client):
+def test_password_reset_dual_mfa_user_uses_totp_even_with_legacy_passkey_preference(
+    app,
+    client,
+    monkeypatch,
+):
     with app.app_context():
         user, secret = _create_totp_user("resetswitch", "resetswitch@example.com")
         user.mfa_step_up_preference = "passkey"
@@ -550,7 +566,7 @@ def test_password_reset_dual_mfa_user_uses_totp_even_with_legacy_passkey_prefere
     exchanged = _exchange(client, token)
     verified = client.post(
         "/auth/password-reset/mfa/totp",
-        json={"totp_code": pyotp.TOTP(secret).now()},
+        json={"totp_code": _totp_code_at_frozen_time(monkeypatch, secret)},
     )
 
     assert exchanged.get_json()["mfa_required"] == "totp"

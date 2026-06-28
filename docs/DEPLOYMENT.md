@@ -154,6 +154,14 @@ documented. Existing staging and production deployment variables remain scoped
 to their protected GitHub environments and are validated before deployment;
 do not move secret values into repository variables.
 
+Set `ROOT_ADMIN_EMAILS` in both protected GitHub environments before deploying
+admin bootstrap support. It is a non-secret allowlist, but it is
+security-critical: the value must be exactly 7 comma-separated SIT workplace
+email addresses. The deployment workflow renders it into
+`/etc/sitbank*/container.env` so `sitbank-admin` and `sitbank-staging-admin`
+can enforce the fixed root-admin group. Root-admin bootstrap remains manual
+over SSH inside the admin container; it is not a GitHub Actions workflow.
+
 Production admin does not use a public DNS hostname. Keep admin access on the
 private Tailscale Serve URL `https://sitbank-ec2.tailca101b.ts.net/` and do
 not enable Tailscale Funnel. Production still requires root-managed admin

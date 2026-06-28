@@ -50,6 +50,13 @@ matching GitHub environment. For both `staging` and `production`, set:
 - `<PREFIX>_MFA_ISSUER_NAME`
 - `<PREFIX>_PASSWORD_RESET_EMAIL_FROM`
 - `<PREFIX>_SMTP_HOST`
+- `ROOT_ADMIN_EMAILS`
+
+`ROOT_ADMIN_EMAILS` is scoped by GitHub environment rather than prefix: set it
+separately in both the `staging` and `production` environments. It must be a
+comma-separated list of exactly 7 SIT workplace email addresses. The deployment
+workflow maps it into the prefixed renderer input for the target environment
+and writes `ROOT_ADMIN_EMAILS` into the signed runtime `container.env`.
 
 For production only, also set:
 
@@ -78,6 +85,10 @@ CSRF, session-HMAC, session-lookup HMAC, password-pepper, or database secret val
 Actions; those remain root-managed EC2 secret files.
 `SECURITY_AUDIT_HMAC_KEY` is also a root-managed EC2 secret file and is not
 exported through GitHub Actions environment variables.
+Do not pass root-admin passwords, TOTP secrets, QR codes, provisioning URIs, or
+TOTP setup values through GitHub Actions. Root-admin bootstrap remains a manual
+operator command run over SSH inside the private admin container after
+deployment.
 
 ## DAST Policy
 
