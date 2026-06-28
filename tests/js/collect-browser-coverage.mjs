@@ -271,8 +271,14 @@ async function exerciseAccount() {
   const passwordToggle = new MockElement({
     attributes: { "data-password-toggle": "password" },
   });
+  const missingPasswordToggle = new MockElement({
+    attributes: { "data-password-toggle": "missing-password" },
+  });
   const strengthInput = new MockElement({
     attributes: { "data-password-strength-input": "primary" },
+  });
+  const missingStrengthInput = new MockElement({
+    attributes: { "data-password-strength-input": "missing" },
   });
   strengthInput.value = "LongPasswordValue123!";
   const strengthMeter = new MockElement();
@@ -286,8 +292,14 @@ async function exerciseAccount() {
 
   document.idMap.set("password", passwordInput);
   document.selectorAllMap.set("[data-alert-dismiss]", [dismiss]);
-  document.selectorAllMap.set("[data-password-toggle]", [passwordToggle]);
-  document.selectorAllMap.set("[data-password-strength-input]", [strengthInput]);
+  document.selectorAllMap.set(
+    "[data-password-toggle]",
+    [passwordToggle, missingPasswordToggle],
+  );
+  document.selectorAllMap.set(
+    "[data-password-strength-input]",
+    [strengthInput, missingStrengthInput],
+  );
   document.selectorAllMap.set("[data-recovery-code-list]", [recoveryList]);
   document.selectorMap.set('[data-password-strength="primary"]', strengthMeter);
   document.selectorMap.set("[data-recovery-code-status]", recoveryStatus);
@@ -300,10 +312,26 @@ async function exerciseAccount() {
   await dismiss.emit("click");
   for (const callback of context.__timeoutCallbacks) callback();
   await passwordToggle.emit("click");
-  await strengthInput.emit("input");
+  await missingPasswordToggle.emit("click");
+  for (const value of ["", "short", "LongPassword123", "LongPasswordValue123!"]) {
+    strengthInput.value = value;
+    await strengthInput.emit("input");
+  }
   await copyButton.emit("click");
   await Promise.resolve();
   await Promise.resolve();
+  context.navigator.clipboard.writeText = async () => {
+    throw new Error("clipboard denied");
+  };
+  await copyButton.emit("click");
+  await Promise.resolve();
+  await Promise.resolve();
+  context.navigator.clipboard = null;
+  await copyButton.emit("click");
+  recoveryCode.textContent = "";
+  await copyButton.emit("click");
+  await downloadButton.emit("click");
+  recoveryCode.textContent = "abcd-efgh";
   await downloadButton.emit("click");
 
   assert.equal(passwordInput.type, "text");
@@ -369,7 +397,13 @@ async function exerciseSessionTimeout() {
   const context = createBrowserContext(document);
   runScript("app/static/js/session-timeout.js", context);
   for (const callback of context.__timeoutCallbacks) callback();
-  for (const callback of context.__intervalCallbacks) callback();
+  for (const callback of [...context.__intervalCallbacks]) callback();
+  for (let index = 0; index < 65; index += 1) {
+    for (const callback of [...context.__intervalCallbacks]) callback();
+  }
+  await continueButton.emit("click");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  context.fetch = async () => ({ ok: false });
   await continueButton.emit("click");
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(continueButton.disabled, false);
@@ -421,11 +455,32 @@ async function exerciseTheme() {
   }
   const link = Object.assign(new MockElement(), { tagName: "A" });
   await accountPanel.emit("click", { target: link });
+  await accountPanel.emit("click", { target: {} });
+  accountPanel.selectorAllMap.set("a, button", []);
+  await accountTrigger.emit("keydown", { key: "ArrowDown" });
   await document.emit("click", { target: new MockElement() });
   await document.emit("keydown", { key: "Escape" });
 
   assert.equal(document.documentElement.dataset.theme, "light");
   assert.equal(label.textContent, "Switch to dark mode");
+
+  const noToggleDocument = new MockDocument();
+  const noToggleContext = createBrowserContext(noToggleDocument);
+  runScript("app/static/js/theme.js", noToggleContext);
+  for (const callback of noToggleContext.__domReadyListeners) callback();
+
+  const incompleteMenuDocument = new MockDocument();
+  const incompleteToggle = new MockElement();
+  const incompleteTrigger = new MockElement();
+  const incompletePanel = new MockElement();
+  incompleteMenuDocument.selectorMap.set("[data-theme-toggle]", incompleteToggle);
+  incompleteMenuDocument.selectorMap.set("[data-account-trigger]", incompleteTrigger);
+  incompleteMenuDocument.selectorMap.set("[data-account-panel]", incompletePanel);
+  const incompleteContext = createBrowserContext(incompleteMenuDocument);
+  incompleteContext.localStorage.setItem("sitbank-theme", "light");
+  runScript("app/static/js/theme.js", incompleteContext);
+  for (const callback of incompleteContext.__domReadyListeners) callback();
+  await incompleteTrigger.emit("keydown", { key: "ArrowDown" });
 }
 
 function post(session, method, params = {}) {

@@ -54,7 +54,7 @@
       navigator.clipboard.writeText(text).then(function () {
         setRecoveryStatus(status, "Recovery codes copied.");
       }).catch(function () {
-        fallbackCopy(text, status);
+        setRecoveryStatus(status, "Copy was not available. Download the codes instead.");
       });
       return;
     }

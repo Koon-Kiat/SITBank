@@ -6,8 +6,10 @@ from decimal import Decimal
 from unittest.mock import Mock
 
 import pytest
+import pyotp
 
 from _auth_flow_helpers import enable_mfa_for_user, login, mark_recent_mfa, register
+from app.auth.services import AuthError
 from app.banking.services import execute_local_transfer
 from app.extensions import db
 from app.models import Payee, PendingTransfer, SecurityAuditEvent, Transaction, User
@@ -311,6 +313,108 @@ def test_confirm_get_without_pending_session_redirects(client, transfer_context)
 
     assert response.status_code == 302
     assert Transaction.query.count() == 0
+
+
+def test_complete_transfer_route_flow(client, transfer_context):
+    payee = transfer_context["payee"]
+    totp_code = pyotp.TOTP(
+        transfer_context["alice_secret"],
+        digits=6,
+        interval=30,
+    ).now()
+
+    form_response = client.get(f"/banking/transfer/{payee.id}")
+    submit_response = client.post(
+        f"/banking/transfer/{payee.id}",
+        data={"amount": "25.00", "reference": "Coverage", "totp_code": totp_code},
+    )
+    confirm_response = client.get(f"/banking/transfer/{payee.id}/confirm")
+    complete_response = client.post(f"/banking/transfer/{payee.id}/confirm")
+
+    assert form_response.status_code == 200
+    assert submit_response.status_code == 302
+    assert confirm_response.status_code == 200
+    assert complete_response.status_code == 302
+    assert Transaction.query.filter_by(reference="Coverage").count() == 1
+
+
+def test_transfer_route_handles_invalid_form_and_mfa_error(
+    client,
+    transfer_context,
+):
+    payee = transfer_context["payee"]
+
+    invalid_form = client.post(f"/banking/transfer/{payee.id}", data={})
+    invalid_mfa = client.post(
+        f"/banking/transfer/{payee.id}",
+        data={"amount": "25.00", "totp_code": "000000"},
+    )
+
+    assert invalid_form.status_code == 400
+    assert invalid_mfa.status_code == 401
+
+
+def test_transfer_confirmation_rejects_missing_and_expired_records(
+    client,
+    transfer_context,
+):
+    alice = transfer_context["alice"]
+    payee = transfer_context["payee"]
+
+    with client.session_transaction() as session_state:
+        session_state["pending_transfer_token"] = "missing-token"
+    missing = client.get(f"/banking/transfer/{payee.id}/confirm")
+
+    expired_token = _make_pending_transfer(
+        alice,
+        payee,
+        Decimal("10.00"),
+        expires_in=-1,
+    )
+    with client.session_transaction() as session_state:
+        session_state["pending_transfer_token"] = expired_token
+    expired = client.get(f"/banking/transfer/{payee.id}/confirm")
+
+    assert missing.status_code == 302
+    assert expired.status_code == 302
+
+
+def test_transfer_confirmation_handles_validation_and_service_errors(
+    client,
+    transfer_context,
+    monkeypatch,
+):
+    from app.banking import routes as banking_routes
+
+    class InvalidForm:
+        def validate_on_submit(self):
+            return False
+
+    alice = transfer_context["alice"]
+    payee = transfer_context["payee"]
+    invalid_token = _make_pending_transfer(alice, payee, Decimal("10.00"))
+    with client.session_transaction() as session_state:
+        session_state["pending_transfer_token"] = invalid_token
+    monkeypatch.setattr(banking_routes, "CsrfOnlyForm", InvalidForm)
+    invalid = client.post(f"/banking/transfer/{payee.id}/confirm")
+
+    error_token = _make_pending_transfer(alice, payee, Decimal("10.00"))
+    with client.session_transaction() as session_state:
+        session_state["pending_transfer_token"] = error_token
+    monkeypatch.setattr(
+        banking_routes,
+        "CsrfOnlyForm",
+        lambda: type("ValidForm", (), {"validate_on_submit": lambda self: True})(),
+    )
+    monkeypatch.setattr(
+        banking_routes,
+        "execute_local_transfer",
+        lambda **_kwargs: (_ for _ in ()).throw(AuthError("Transfer denied", 403)),
+    )
+    denied = client.post(f"/banking/transfer/{payee.id}/confirm")
+
+    assert invalid.status_code == 302
+    assert denied.status_code == 302
 
 
 # ── A03: server-side amount range validation ───────────────────────────────────

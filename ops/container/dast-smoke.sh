@@ -9,7 +9,8 @@ random_test_secret() {
     od -An -N24 -tx1 /dev/urandom | tr -d '[:space:]'
 }
 
-readonly postgres_password="$(random_test_secret)"
+postgres_password="$(random_test_secret)"
+readonly postgres_password
 
 work_dir="$(mktemp -d)"
 chmod 2770 "${work_dir}"

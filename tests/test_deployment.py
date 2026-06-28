@@ -1291,10 +1291,14 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "docker network create" in smoke_test
     assert '--network "${network_name}"' in smoke_test
     assert "host.docker.internal" not in smoke_test
-    assert "readonly postgres_password=\"$(random_test_secret)\"" in smoke_test
-    assert "readonly owner_password=\"$(random_test_secret)\"" in smoke_test
-    assert "readonly app_password=\"$(random_test_secret)\"" in smoke_test
-    assert "readonly admin_password=\"$(random_test_secret)\"" in smoke_test
+    assert "postgres_password=\"$(random_test_secret)\"" in smoke_test
+    assert "owner_password=\"$(random_test_secret)\"" in smoke_test
+    assert "app_password=\"$(random_test_secret)\"" in smoke_test
+    assert "admin_password=\"$(random_test_secret)\"" in smoke_test
+    assert (
+        "readonly postgres_password owner_password app_password admin_password"
+        in smoke_test
+    )
     assert "postgresql+psycopg2://ci_app:%s@%s:5432/ci" in smoke_test
     assert "postgresql+psycopg2://ci_admin:%s@%s:5432/ci" in smoke_test
     assert "postgresql+psycopg2://ci_owner:%s@%s:5432/ci" in smoke_test
