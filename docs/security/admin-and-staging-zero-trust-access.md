@@ -304,7 +304,7 @@ If the Cloudflare staging setup fails after merge:
 2. Keep the staging app unavailable externally rather than removing the
    origin-pull requirement.
 3. Roll back the staging Nginx file through the reviewed bootstrap only after a
-   security owner approves the temporary exposure decision.
+   Security Owner approves the temporary exposure decision.
 4. Redeploy staging and verify readiness before allowing production to proceed
    through the normal pipeline.
 

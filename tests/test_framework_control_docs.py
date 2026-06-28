@@ -6,6 +6,7 @@ GAP_REGISTER = Path("docs/security/security-gap-register.md")
 LINKED_DOCS = [
     Path("README.md"),
     Path("SECURITY.md"),
+    Path("docs/security/security-governance.md"),
     Path("docs/security/secure-coding.md"),
     Path("docs/security/access-control.md"),
     Path("docs/security/session-management.md"),
@@ -65,12 +66,14 @@ def test_security_gap_register_is_single_source_with_required_fields():
     current_open = _section(register, "Current Open Gaps")
 
     for required_column in (
+        "Owner role",
+        "Status / tracking",
         "Framework mapping",
         "Risk level",
         "Current evidence",
-        "Recommended fix",
+        "Recommended fix / next action",
         "Relevant files/tests",
-        "Separate issue",
+        "Review trigger",
     ):
         assert required_column in current_open
 
@@ -80,6 +83,7 @@ def test_security_gap_register_is_single_source_with_required_fields():
         "Automated retention and disposal jobs",
         "Authenticated DAST on ordinary pull requests",
         "EC2 SSH/UFW/security-group hardening deferred",
+        "Local Docker/Compose proof when Docker is unavailable",
         "Active-session count cap",
         "Device-bound session proof",
     ):
@@ -108,6 +112,7 @@ def test_security_gap_register_is_single_source_with_required_fields():
     assert "Privacy and PDPA documentation" in implemented
     assert "Incident response runbook" in implemented
     assert "Threat model and design risk register" in implemented
+    assert "Security governance process" in implemented
 
 
 def test_issue_186_ssh_hardening_is_deferred_without_stale_artifacts():

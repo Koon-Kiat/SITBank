@@ -2,7 +2,9 @@
 
 This runbook covers suspected SITBank security and privacy incidents. It
 complements `SECURITY.md`, `docs/OPERATIONS.md`, and
-`docs/security/audit-and-alerting.md`.
+`docs/security/audit-and-alerting.md`. Role-based escalation and post-incident
+documentation review expectations are defined in
+`docs/security/security-governance.md`.
 
 ## First Response
 
@@ -36,7 +38,7 @@ Contain:
 - disable unsafe public access paths rather than weakening authentication or
   audit controls.
 
-Escalate privately to the repository owner/deployment administrator. Public
+Escalate privately to the Security Owner and Deployment Owner. Public
 issues must not include personal data, exploit details, credentials, session
 identifiers, or production logs.
 

@@ -3,11 +3,11 @@
 ## Reporting
 
 Do not open a public issue containing credentials, personal data, exploit
-details, session identifiers, or production logs. Notify the repository owner
-and deployment administrator privately, preserve timestamps and affected
-commit/digest identifiers, and record the response in the project security
-log.
-Use `docs/security/incident-response.md` for incident workflows and
+details, session identifiers, or production logs. Notify the Security Owner and
+Deployment Owner privately, preserve timestamps and affected commit/digest
+identifiers, and record the response in the project security log.
+Use `docs/security/incident-response.md` for incident workflows,
+`docs/security/security-governance.md` for owner roles and escalation, and
 `docs/security/privacy-and-pdpa.md` for personal-data handling expectations.
 
 ## Secret Rotation

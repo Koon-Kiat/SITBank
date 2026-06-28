@@ -12,6 +12,12 @@ Security-critical state is stored in application-owned PostgreSQL tables. Server
 
 The app keeps password hashing PBKDF2+pepper only and MFA/TOTP seed encryption envelope-only using `MFA_KEK_ACTIVE_ID` plus `MFA_KEK_KEYS_JSON`. The current MFA baseline is authenticator TOTP with recovery-code support for reset flows. Legacy one-key MFA AES compatibility and direct non-PBKDF2 password hash compatibility are intentionally removed because current users are test-only and environments must be reset before this change is deployed.
 
+Security governance, role-based ownership, review cadence, accepted-risk
+handling, and stale-documentation prevention are documented in
+`docs/security/security-governance.md`. Current gaps live in
+`docs/security/security-gap-register.md`, and framework evidence is mapped in
+`docs/security/framework-control-matrix.md`.
+
 ## Local Development
 
 ```powershell

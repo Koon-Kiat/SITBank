@@ -2,8 +2,10 @@
 
 This matrix maps SITBank's current repository evidence to common security
 frameworks. It is not a certification claim; it is an evidence index for code,
-tests, deployment controls, and follow-up work. Current open items are tracked
-only in `docs/security/security-gap-register.md`.
+tests, deployment controls, governance documents, and follow-up work. Current
+open items are tracked only in `docs/security/security-gap-register.md`; role
+ownership and review cadence are defined in
+`docs/security/security-governance.md`.
 
 External framework references:
 
@@ -55,7 +57,7 @@ External framework references:
 
 | Control area | Status | Relevant files | Relevant tests | Current evidence | Remaining gaps / follow-up |
 | --- | --- | --- | --- | --- | --- |
-| Prepare the organization | Partially implemented | `docs/security/security-gap-register.md`, `docs/security/framework-control-matrix.md` | `tests/test_framework_control_docs.py` | Framework matrix and centralized gap register exist | Formal ownership and recurring review cadence are documentation follow-up |
+| Prepare the organization | Implemented | `docs/security/security-governance.md`, `docs/security/security-gap-register.md`, `docs/security/framework-control-matrix.md`, `docs/security/design-risk-register.md` | `tests/test_security_governance_docs.py`, `tests/test_framework_control_docs.py` | Role-based ownership, recurring review cadence, accepted-risk handling, off-repo ownership, remediation tracking, and stale-documentation prevention are documented | Keep owner/status/review fields current during milestone and release reviews |
 | Protect the software | Implemented | `.github/workflows/ci-deploy.yml`, `ops/deploy/*`, `Dockerfile` | `tests/test_deployment.py` | Pinned actions/images, signed digests, protected main deployment, restricted wrappers | OIDC + SSM migration remains optional follow-up |
 | Produce well-secured software | Implemented | `app/`, `config.py`, `ops/security/*` | Full pytest, CodeQL, Bandit, dependency tests | Secure coding controls, route inventories, production guard, secret scanner | Continue adding tests for new features |
 | Respond to vulnerabilities | Implemented | `SECURITY.md`, `docs/OPERATIONS.md`, `docs/security/incident-response.md`, `.github/dependabot.yml` | `tests/test_privacy_pdpa_docs.py`, `tests/test_deployment.py` | Dependabot review-only policy, vulnerability exception policy, monitoring commands, and incident workflows are documented | Keep incident playbooks updated after exercises |
@@ -64,7 +66,7 @@ External framework references:
 
 | Control area | Status | Relevant files | Relevant tests | Current evidence | Remaining gaps / follow-up |
 | --- | --- | --- | --- | --- | --- |
-| Governance | Partially implemented | `docs/security/security-gap-register.md`, `docs/CONTRIBUTION_MESSAGE_POLICY.md` | `tests/test_framework_control_docs.py`, `tests/test_deployment.py` | Gap register, commit/PR policy, release gates | Assign recurring risk owners outside the repo |
+| Governance | Implemented | `docs/security/security-governance.md`, `docs/security/security-gap-register.md`, `docs/security/design-risk-register.md`, `docs/CONTRIBUTION_MESSAGE_POLICY.md` | `tests/test_security_governance_docs.py`, `tests/test_framework_control_docs.py`, `tests/test_deployment.py` | Gap register, design-risk owner fields, role-based review cadence, commit/PR policy, and release gates | Off-repo owner evidence still has to be reviewed from the external system that owns it |
 | Design | Implemented | `docs/security/threat-model.md`, `docs/security/design-risk-register.md`, `docs/security/access-control.md`, `docs/security/cryptography-and-authentication.md` | `tests/test_threat_model_docs.py`, `tests/test_route_inventory_security.py`, `tests/test_admin_route_inventory_security.py` | Threat model, design risk register, access-control docs, and crypto architecture docs | Keep model/register updated when architecture changes |
 | Implementation | Implemented | `app/`, `ops/security/*`, lockfiles | `tests/test_owasp_regressions.py`, `tests/test_deployment.py` | Input validation, output encoding, SAST, dependency locks, secret scanner | Continue feature-specific tests |
 | Verification | Partially implemented | `tests/`, `.github/workflows/ci-deploy.yml`, `scripts/ci-local`, `ops/container/smoke-test.sh` | `tests/test_deployment.py`, `tests/test_dast_helper_security.py` | Full pytest, DAST on release/schedule, smoke tests, and restricted ZAP `-configfile` cookie handling | Authenticated DAST on ordinary PRs remains a policy tradeoff |

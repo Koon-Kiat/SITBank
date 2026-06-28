@@ -1,5 +1,9 @@
 # Operations
 
+Security owner roles, milestone/release review cadence, accepted-risk handling,
+and off-repo evidence expectations are defined in
+`docs/security/security-governance.md`.
+
 ## Runtime Secrets
 
 Keep root-managed secret files in `/etc/sitbank/secrets` and `/etc/sitbank-staging/secrets`. The container reads only mounted files under `/run/secrets`; long-lived application secrets are not exported into the Compose process environment.
