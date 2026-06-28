@@ -1,0 +1,108 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import yaml
+
+
+WORKFLOW_DIR = Path(".github/workflows")
+CI_WORKFLOW_PATH = WORKFLOW_DIR / "ci-deploy.yml"
+
+
+def _load_workflow(path: Path) -> dict:
+    return yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+
+
+def _local_reusable_calls() -> list[tuple[str, dict, Path]]:
+    workflow = _load_workflow(CI_WORKFLOW_PATH)
+    calls = []
+    for job_name, job in workflow["jobs"].items():
+        uses = job.get("uses", "")
+        if uses.startswith("./.github/workflows/"):
+            calls.append((job_name, job, Path(uses.removeprefix("./"))))
+    return calls
+
+
+def test_ci_local_reusable_workflows_exist_and_accept_caller_inputs():
+    calls = _local_reusable_calls()
+
+    assert {job_name for job_name, _, _ in calls} == {
+        "sonarqube",
+        "verify-staging-tls",
+        "verify-production-tls",
+    }
+    for job_name, caller, called_path in calls:
+        assert called_path.is_file(), (job_name, called_path)
+        called = _load_workflow(called_path)
+        assert "workflow_call" in called["on"], (job_name, called_path)
+
+        contract = called["on"]["workflow_call"] or {}
+        required_inputs = {
+            name
+            for name, config in (contract.get("inputs") or {}).items()
+            if config.get("required") == "true"
+        }
+        assert required_inputs <= set(caller.get("with") or {}), job_name
+
+        required_secrets = {
+            name
+            for name, config in (contract.get("secrets") or {}).items()
+            if config.get("required") == "true"
+        }
+        caller_secrets = caller.get("secrets") or {}
+        if caller_secrets != "inherit":
+            assert required_secrets <= set(caller_secrets), job_name
+
+
+def test_workflow_yaml_parses_and_avoids_unsafe_triggers_and_permissions():
+    workflow_paths = sorted(WORKFLOW_DIR.glob("*.yml"))
+
+    assert workflow_paths
+    for path in workflow_paths:
+        text = path.read_text(encoding="utf-8")
+        workflow = _load_workflow(path)
+        assert isinstance(workflow, dict), path
+        assert "pull_request_target" not in text, path
+        assert "permissions: write-all" not in text, path
+
+
+def test_ci_variables_have_explicit_safe_defaults():
+    text = CI_WORKFLOW_PATH.read_text(encoding="utf-8")
+
+    assert "vars.ENABLE_GITHUB_CODE_SECURITY" not in text
+    assert "vars.STAGING_PUBLIC_HOST" not in text
+    assert "vars.PROD_PUBLIC_HOST" not in text
+    assert "(vars['ENABLE_GITHUB_CODE_SECURITY'] || 'false') == 'true'" in text
+    assert (
+        "vars['STAGING_PUBLIC_HOST'] || 'staging-sitbank.pp.ua'"
+        in text
+    )
+    assert "vars['PROD_PUBLIC_HOST'] || 'sitbank.duckdns.org'" in text
+
+
+def test_tls_workflow_rejects_invalid_hosts_and_has_reviewed_defaults():
+    text = (WORKFLOW_DIR / "tls-scan.yml").read_text(encoding="utf-8")
+
+    assert "default: staging-sitbank.pp.ua" in text
+    assert "default: sitbank.duckdns.org" in text
+    assert "TLS scan target must be a hostname, not a URL or command fragment." in text
+    assert 'readonly target_url="https://${target_host}"' in text
+
+
+def test_github_actions_variables_and_secret_boundary_are_documented():
+    deployment = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
+    operations = Path("docs/OPERATIONS.md").read_text(encoding="utf-8")
+    combined = f"{deployment}\n{operations}"
+
+    for required in (
+        "ENABLE_GITHUB_CODE_SECURITY",
+        "STAGING_PUBLIC_HOST",
+        "PROD_PUBLIC_HOST",
+        "staging-sitbank.pp.ua",
+        "sitbank.duckdns.org",
+        "repository variables",
+        "not secrets",
+        "protected environment secrets",
+    ):
+        assert required in combined
+    assert "Defaults to `false`" in deployment

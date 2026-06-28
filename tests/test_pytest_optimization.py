@@ -65,7 +65,9 @@ def test_ci_keeps_full_parallel_pytest_and_locked_dependency_checks():
     ]
 
     assert pytest_lines == [
-        "python -m pytest -q -n auto --durations=30 --durations-min=0.5"
+        "python -m pytest -q -n auto --cov=app "
+        "--cov-report=xml:coverage.xml --cov-report=term "
+        "--durations=30 --durations-min=0.5"
     ]
     pytest_args = pytest_lines[0].split("pytest", 1)[1]
     assert re.search(r"\s-m\s", pytest_args) is None

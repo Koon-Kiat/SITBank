@@ -1377,6 +1377,8 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         "workflow-security",
         "dependency-review",
         "test",
+        "sonarqube",
+        "sonarqube-comment",
         "image-test",
         "deployment-preflight",
         "publish",
@@ -1564,7 +1566,9 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "needs.deploy-staging.result == 'success'" in staging_tls["if"]
     assert staging_tls["with"] == {
         "scan_scope": "staging",
-        "staging_host": "${{ vars.STAGING_PUBLIC_HOST }}",
+        "staging_host": (
+            "${{ vars['STAGING_PUBLIC_HOST'] || 'staging-sitbank.pp.ua' }}"
+        ),
     }
     assert production_tls["uses"] == "./.github/workflows/tls-scan.yml"
     assert production_tls["needs"] == "deploy-production"
@@ -1572,7 +1576,9 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "needs.deploy-production.result == 'success'" in production_tls["if"]
     assert production_tls["with"] == {
         "scan_scope": "production",
-        "production_host": "${{ vars.PROD_PUBLIC_HOST }}",
+        "production_host": (
+            "${{ vars['PROD_PUBLIC_HOST'] || 'sitbank.duckdns.org' }}"
+        ),
     }
     staging_deploy_env = workflow["jobs"]["deploy-staging"]["env"]
     production_deploy_env = workflow["jobs"]["deploy-production"]["env"]
@@ -1751,7 +1757,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         action for action in _workflow_uses(workflow_text)
         if action.startswith("actions/setup-python@")
     ]
-    assert len(checkout_uses) == 10
+    assert len(checkout_uses) == 11
     assert workflow_text.count("persist-credentials: false") == len(checkout_uses)
     _assert_pinned_actions(checkout_uses, context="actions/checkout")
     _assert_pinned_actions(
@@ -1767,7 +1773,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert workflow_text.count("ref: ${{ github.workflow_sha }}") == 4
     assert workflow_text.count(
         "ref: ${{ needs.resolve-source.outputs.source_sha }}"
-    ) == 2
+    ) == 3
     assert "ref: ${{ needs.publish.outputs.revision }}" in workflow_text
     assert "candidate-source/ops/container/smoke-test.sh" in workflow_text
     assert "RELEASE_SHA: ${{ github.sha }}" not in workflow_text

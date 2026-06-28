@@ -51,6 +51,7 @@ jobs:
           create_label staging "Staging environment, staging deployment, or staging access changes." 006b75
           create_label database "Database schema, migrations, Postgres, roles, privileges, or DB integrity." 531dab
           create_label ci "GitHub Actions, CI policy, CodeQL, dependency audit, build, or pipeline changes." a2eeef
+          create_label code-quality "Static analysis, maintainability, coverage, or quality-gate work" 1f6feb
           create_label dependencies "Dependency updates, lock files, package manager changes, or Dependabot PRs." 0366d6
           create_label documentation "Docs, README, guides, instructions, or policy documents." 0075ca
           create_label frontend "Templates, CSS, JavaScript, SVG, UI layout, browser-facing pages, or forms." c2e0c6
@@ -122,6 +123,12 @@ jobs:
           fi
           if contains_any staging "staging-sitbank" "compose.staging" "ops/staging" "staging deployment" "staging access"; then
             add_label staging
+          fi
+          if contains_any sonarqube sonar "quality gate" "code quality" "code-quality" maintainability coverage duplication "technical debt"; then
+            add_label code-quality
+          fi
+          if contains_any python flask pytest pip requirements; then
+            add_label python
           fi
 
           if [[ "${#labels[@]}" -eq 0 ]]; then

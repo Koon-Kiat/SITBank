@@ -212,6 +212,18 @@ ci:
           - 'ops/security/validate_pr_body.py'
           - 'tests/test_pr_body_policy.py'
 
+code-quality:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '.github/workflows/sonarqube.yml'
+          - 'sonar-project.properties'
+          - 'requirements-dev.in'
+          - 'requirements-dev.lock'
+          - 'docs/security/sonarqube.md'
+          - 'docs/security/secure-coding.md'
+          - 'docs/security/test-automation-and-dependencies.md'
+          - 'tests/test_sonarqube_workflow.py'
+
 dependencies:
   - changed-files:
       - any-glob-to-any-file:
@@ -244,6 +256,15 @@ tests:
       - any-glob-to-any-file:
           - 'tests/**'
           - 'pytest.ini'
+
+python:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '**/*.py'
+          - 'requirements.in'
+          - 'requirements-dev.in'
+          - 'requirements.lock'
+          - 'requirements-dev.lock'
 
 feature:
   - head-branch:

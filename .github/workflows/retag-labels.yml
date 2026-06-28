@@ -118,6 +118,7 @@ jobs:
           create_label staging "Staging environment, staging deployment, or staging access changes." 006b75
           create_label database "Database schema, migrations, Postgres, roles, privileges, or DB integrity." 531dab
           create_label ci "GitHub Actions, CI policy, CodeQL, dependency audit, build, or pipeline changes." a2eeef
+          create_label code-quality "Static analysis, maintainability, coverage, or quality-gate work" 1f6feb
           create_label dependencies "Dependency updates, lock files, package manager changes, or Dependabot PRs." 0366d6
           create_label documentation "Docs, README, guides, instructions, or policy documents." 0075ca
           create_label frontend "Templates, CSS, JavaScript, SVG, UI layout, browser-facing pages, or forms." c2e0c6
@@ -261,6 +262,9 @@ jobs:
             if contains_any workflow "github actions" dependabot codeql "dependency audit" "pr title" "commit message" "pull request policy" build pipeline || contains_regex '(^|[^a-z0-9])ci([^a-z0-9]|$)'; then
               add_unique labels ci
             fi
+            if contains_any sonarqube sonar "quality gate" "code quality" "code-quality" maintainability coverage duplication "technical debt"; then
+              add_unique labels code-quality
+            fi
             if contains_any dependency dependencies package requirements pip "docker base image" dependabot "lock file" msgpack "library bump"; then
               add_unique labels dependencies
             fi
@@ -272,6 +276,9 @@ jobs:
             fi
             if contains_any css javascript template page form button "dashboard layout" browser || contains_regex '(^|[^a-z0-9])ui([^a-z0-9]|$)'; then
               add_unique labels frontend
+            fi
+            if contains_any python flask pytest pip requirements; then
+              add_unique labels python
             fi
 
             printf '%s\n' "${labels[@]}"
@@ -406,6 +413,9 @@ jobs:
             if path_matches '.github/workflows/*' || path_matches '.github/dependabot.yml' || path_matches 'scripts/ci-local' || path_matches 'ops/security/check_dependency_locks.py' || path_matches 'ops/security/validate_pr_body.py' || path_matches 'tests/test_pr_body_policy.py'; then
               add_unique labels ci
             fi
+            if contains_any sonarqube sonar "quality gate" "code quality" "code-quality" maintainability coverage duplication "technical debt" || path_matches '.github/workflows/sonarqube.yml' || path_matches 'sonar-project.properties' || path_matches 'docs/security/sonarqube.md' || path_matches 'tests/test_sonarqube_workflow.py' || branch_contains sonarqube sonar code-quality maintainability coverage; then
+              add_unique labels code-quality
+            fi
             if path_matches 'requirements.in' || path_matches 'requirements-dev.in' || path_matches 'requirements.lock' || path_matches 'requirements-dev.lock' || path_matches '.github/dependabot.yml' || path_matches 'ops/security/check_dependency_locks.py'; then
               add_unique labels dependencies
             fi
@@ -417,6 +427,9 @@ jobs:
             fi
             if path_matches 'tests/*' || path_matches 'pytest.ini'; then
               add_unique labels tests
+            fi
+            if contains_any python flask pytest pip requirements || path_matches '*.py' || path_matches 'app/*.py' || path_matches 'app/*/*.py' || path_matches 'tests/*.py' || path_matches 'requirements.in' || path_matches 'requirements-dev.in' || path_matches 'requirements.lock' || path_matches 'requirements-dev.lock' || branch_contains python; then
+              add_unique labels python
             fi
             if branch_starts_with feature/ feat/; then
               add_unique labels feature

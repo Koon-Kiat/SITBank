@@ -21,6 +21,22 @@ approved role-management account; routine application deployments do not grant
 the migration/schema-owner role permission to create, alter, or rotate database
 roles.
 
+`SONAR_TOKEN` is a GitHub Actions/SonarQube Cloud analysis credential, not an
+EC2 runtime secret. Store and rotate it only through GitHub Actions and
+SonarQube Cloud; never copy it into `/etc/sitbank`, staging, Compose, or
+deployment environments. The analysis workflow has no production access.
+Setup, revocation, rotation, evidence, and incident steps are in
+`docs/security/sonarqube.md`.
+
+GitHub Actions repository variables are non-secret configuration. The CI
+workflow treats an unset `ENABLE_GITHUB_CODE_SECURITY` as `false` and uses the
+reviewed public-host fallbacks `staging-sitbank.pp.ua` and
+`sitbank.duckdns.org` when `STAGING_PUBLIC_HOST` or `PROD_PUBLIC_HOST` is
+unset. Configure overrides under Actions variables only after the matching
+DNS, certificate, and edge change is reviewed. The complete variable table and
+secret-placement boundary are in `docs/DEPLOYMENT.md`; never copy credentials
+or application secrets into repository variables.
+
 MFA/TOTP seed encryption uses envelope encryption. Keep old KEKs in `mfa_kek_keys_json` until `rewrap-mfa-deks` has moved stored records to the new active KEK. Then update `MFA_KEK_ACTIVE_ID` and the root-managed keyring together.
 
 ## Disposable Registration Data Reset

@@ -9,7 +9,7 @@ and test evidence found in the repository.
 | --- | --- | --- |
 | `requirements.in` | Top-level runtime Python dependencies | Flask, SQLAlchemy, Flask-WTF, Flask-Limiter, Flask-Talisman, PyOTP, Marshmallow, Cryptography, and related runtime packages |
 | `requirements.lock` | Runtime Python lockfile | Generated with hashes and consumed by `pip-audit --require-hashes` |
-| `requirements-dev.in` | Development/test dependencies | Includes `-r requirements.in`, `pytest`, `pytest-xdist`, `pip-audit`, `bandit`, and `pip-tools` |
+| `requirements-dev.in` | Development/test dependencies | Includes `-r requirements.in`, `pytest`, `pytest-cov`, `pytest-xdist`, `pip-audit`, `bandit`, and `pip-tools` |
 | `requirements-dev.lock` | Development/test lockfile | Generated with hashes and audited separately |
 | `Dockerfile` | Runtime image | Uses pinned Python base image digest and creates non-root UID/GID `10001:10001` |
 | `compose.prod.yml` | Production deployment model | Uses Docker secrets, read-only app containers, loopback bindings, and separate customer/admin secret sets |
@@ -19,6 +19,7 @@ and test evidence found in the repository.
 | `.github/dependabot.yml` | Dependency update automation | Weekly Docker, GitHub Actions, and pip updates with limits and labels |
 | `.github/workflows/ci-deploy.yml` | Main CI, image, smoke, scan, sign, and deploy workflow | Runs tests, audits, scans, DAST paths, Trivy, and cosign |
 | `.github/workflows/codeql.yml` | CodeQL static analysis | Python `security-extended` queries on pull requests, main pushes, and schedule when repository is public |
+| `.github/workflows/sonarqube.yml` | SonarQube Cloud code-quality analysis | Full pytest coverage plus reporting-only maintainability, duplication, reliability, and security dashboard analysis |
 | `.github/workflows/bootstrap-ec2.yml` | Bootstrap artifact workflow | Uses pinned actions and cosign blob signing |
 
 Not applicable to the current dependency inventory: no `package.json`,
@@ -38,6 +39,7 @@ applicable unless a frontend package manager is added.
 | GitHub dependency review | `.github/workflows/ci-deploy.yml` | Reviews dependency changes in pull requests |
 | Trivy image scans | `.github/workflows/ci-deploy.yml` | Scans built images and repository filesystem paths; `.trivyignore` exceptions are tested |
 | CodeQL | `.github/workflows/codeql.yml` | Runs Python security-extended static analysis when the repository is public |
+| SonarQube Cloud | `.github/workflows/ci-deploy.yml`, `.github/workflows/sonarqube.yml`, `sonar-project.properties` | Reuses the CI test job's `coverage.xml` artifact to report private-repository code quality, duplication, maintainability, and security findings without rerunning pytest; initial quality gate is non-blocking |
 | Bandit | `scripts/ci-local`, `.github/workflows/ci-deploy.yml` | Runs a high-confidence Python security scan |
 | Secret scanner | `ops/security/scan_repository_secrets.py` | Scans tracked files and, in CI/local CI, git history for private keys and common token formats |
 | Action hygiene | `.github/workflows/ci-deploy.yml` | Runs actionlint and zizmor; tests require actions to be SHA-pinned |
@@ -54,6 +56,7 @@ Tests for this automation include:
 | `tests/test_deployment.py::test_every_github_action_is_pinned_to_a_full_commit_sha` | GitHub Actions pinning |
 | `tests/test_deployment.py::test_trivy_exception_is_narrow_documented_and_temporary` | Trivy ignore policy |
 | `tests/test_secret_scanner.py` | Secret scanner behavior |
+| `tests/test_sonarqube_workflow.py` | SonarQube trigger, permission, pinning, coverage, scope, secret, label, and documentation policy |
 
 ## Test Automation Coverage
 
@@ -148,6 +151,15 @@ The separate `.github/workflows/codeql.yml` runs CodeQL Python
 `security-extended` queries for public repository events. The separate
 `.github/workflows/bootstrap-ec2.yml` signs bootstrap artifacts with cosign and
 is covered by deployment tests.
+
+The CI test job runs full-suite coverage once and uploads `coverage.xml`; its
+downstream job calls reusable `.github/workflows/sonarqube.yml` to perform
+reporting-only SonarQube Cloud analysis for the private repository. The
+reusable job requires only `SONAR_TOKEN`, does not use deployment secrets or
+rerun pytest, and does not change the existing CodeQL policy. Plan eligibility,
+cloud source processing, scope,
+exclusions, token rotation, triage, and limitations are documented in
+`docs/security/sonarqube.md`.
 
 Tests in `tests/test_deployment.py` assert that these workflow controls remain
 present, including dependency review, action pinning, Trivy policy, cosign, and
