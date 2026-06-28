@@ -572,6 +572,19 @@ def test_registration_field_migration_preserves_unknown_phones_and_randomizes_ac
     assert "SET full_name = username" in migration
 
 
+def test_privileged_user_contact_field_migration_repairs_production_schema_drift():
+    migration = Path(
+        "migrations/versions/20260629_0017_relax_privileged_user_contact_fields.py"
+    ).read_text(encoding="utf-8")
+
+    assert 'revision = "20260629_0017"' in migration
+    assert 'down_revision = "20260628_0016"' in migration
+    assert "ALTER TABLE users ALTER COLUMN phone_number DROP NOT NULL" in migration
+    assert "ALTER TABLE users ALTER COLUMN account_number DROP NOT NULL" in migration
+    assert "SET phone_number" not in migration
+    assert "SET account_number" not in migration
+
+
 def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypatch):
     _set_deployment_values(monkeypatch)
 
