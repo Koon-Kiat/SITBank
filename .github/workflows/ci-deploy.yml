@@ -185,7 +185,7 @@ jobs:
     if: >-
       github.event_name == 'pull_request' &&
       (github.event.repository.private == false ||
-        vars.ENABLE_GITHUB_CODE_SECURITY == 'true')
+        (vars['ENABLE_GITHUB_CODE_SECURITY'] || 'false') == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -755,14 +755,14 @@ jobs:
       packages: read
     environment:
       name: staging
-      url: https://${{ vars.STAGING_PUBLIC_HOST }}
+      url: https://${{ vars['STAGING_PUBLIC_HOST'] || 'staging-sitbank.pp.ua' }}
     env:
       RELEASE_SHA: ${{ needs.release-verify.outputs.revision }}
       IMAGE_DIGEST: ${{ needs.release-verify.outputs.digest }}
       REMOTE_HOST: ${{ vars.STAGING_EC2_HOST }}
       REMOTE_PORT: ${{ vars.STAGING_EC2_PORT }}
       REMOTE_USER: ${{ vars.STAGING_EC2_DEPLOY_USER }}
-      STAGING_PUBLIC_HOST: ${{ vars.STAGING_PUBLIC_HOST }}
+      STAGING_PUBLIC_HOST: ${{ vars['STAGING_PUBLIC_HOST'] || 'staging-sitbank.pp.ua' }}
       STAGING_MFA_KEK_ACTIVE_ID: ${{ vars.STAGING_MFA_KEK_ACTIVE_ID }}
       STAGING_SESSION_HMAC_ACTIVE_KEY_ID: ${{ vars.STAGING_SESSION_HMAC_ACTIVE_KEY_ID }}
       STAGING_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID: ${{ vars.STAGING_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID }}
@@ -946,7 +946,7 @@ jobs:
     uses: ./.github/workflows/tls-scan.yml
     with:
       scan_scope: staging
-      staging_host: ${{ vars.STAGING_PUBLIC_HOST }}
+      staging_host: ${{ vars['STAGING_PUBLIC_HOST'] || 'staging-sitbank.pp.ua' }}
 
   deploy-production:
     if: >-
@@ -969,14 +969,14 @@ jobs:
       packages: read
     environment:
       name: production
-      url: https://${{ vars.PROD_PUBLIC_HOST }}
+      url: https://${{ vars['PROD_PUBLIC_HOST'] || 'sitbank.duckdns.org' }}
     env:
       RELEASE_SHA: ${{ needs.release-verify.outputs.revision }}
       IMAGE_DIGEST: ${{ needs.release-verify.outputs.digest }}
       REMOTE_HOST: ${{ vars.PROD_EC2_HOST }}
       REMOTE_PORT: ${{ vars.PROD_EC2_PORT }}
       REMOTE_USER: ${{ vars.PROD_EC2_DEPLOY_USER }}
-      PROD_PUBLIC_HOST: ${{ vars.PROD_PUBLIC_HOST }}
+      PROD_PUBLIC_HOST: ${{ vars['PROD_PUBLIC_HOST'] || 'sitbank.duckdns.org' }}
       PROD_MFA_KEK_ACTIVE_ID: ${{ vars.PROD_MFA_KEK_ACTIVE_ID }}
       PROD_SESSION_HMAC_ACTIVE_KEY_ID: ${{ vars.PROD_SESSION_HMAC_ACTIVE_KEY_ID }}
       PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID: ${{ vars.PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID }}
@@ -1156,4 +1156,4 @@ jobs:
     uses: ./.github/workflows/tls-scan.yml
     with:
       scan_scope: production
-      production_host: ${{ vars.PROD_PUBLIC_HOST }}
+      production_host: ${{ vars['PROD_PUBLIC_HOST'] || 'sitbank.duckdns.org' }}

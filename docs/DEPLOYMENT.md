@@ -127,6 +127,33 @@ until the production admin secret files and matching
 `PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID` are ready; when the flag is not
 explicitly true, production deployment is skipped.
 
+### GitHub Actions Variables
+
+Configure these non-secret repository variables under **Settings > Secrets and
+variables > Actions > Variables** when their reviewed defaults are not
+appropriate:
+
+| Variable | Safe behavior when unset | Workflow consumer |
+| --- | --- | --- |
+| `ENABLE_GITHUB_CODE_SECURITY` | Defaults to `false`; private-repository dependency review runs only when the value is exactly `true` | `dependency-review` in `.github/workflows/ci-deploy.yml` |
+| `STAGING_PUBLIC_HOST` | Defaults to the reviewed staging hostname `staging-sitbank.pp.ua` | Staging deployment URL/configuration and post-deployment staging TLS verification |
+| `PROD_PUBLIC_HOST` | Defaults to the reviewed production hostname `sitbank.duckdns.org` | Production deployment URL/configuration and post-deployment production TLS verification |
+| `PROD_DEPLOY_ENABLED` | Defaults to disabled unless exactly `true` | Production deployment gate |
+
+The host fallbacks are explicit repository conventions, not discovery
+mechanisms. If DNS, certificates, or the public edge move, update the matching
+repository variable in the same reviewed change; do not point verification at
+an unrelated host. The reusable TLS workflow rejects empty values, URLs, and
+command fragments and scans only HTTPS.
+
+These values are hostnames and feature flags, so they are not secrets.
+Credentials such as `SONAR_TOKEN`, SSH private keys, known-hosts material,
+Cloudflare API tokens, database URLs, signing material, and application keys
+must remain GitHub Actions secrets or protected environment secrets as already
+documented. Existing staging and production deployment variables remain scoped
+to their protected GitHub environments and are validated before deployment;
+do not move secret values into repository variables.
+
 Production admin does not use a public DNS hostname. Keep admin access on the
 private Tailscale Serve URL `https://sitbank-ec2.tailca101b.ts.net/` and do
 not enable Tailscale Funnel. Production still requires root-managed admin

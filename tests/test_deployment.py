@@ -1566,7 +1566,9 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "needs.deploy-staging.result == 'success'" in staging_tls["if"]
     assert staging_tls["with"] == {
         "scan_scope": "staging",
-        "staging_host": "${{ vars.STAGING_PUBLIC_HOST }}",
+        "staging_host": (
+            "${{ vars['STAGING_PUBLIC_HOST'] || 'staging-sitbank.pp.ua' }}"
+        ),
     }
     assert production_tls["uses"] == "./.github/workflows/tls-scan.yml"
     assert production_tls["needs"] == "deploy-production"
@@ -1574,7 +1576,9 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "needs.deploy-production.result == 'success'" in production_tls["if"]
     assert production_tls["with"] == {
         "scan_scope": "production",
-        "production_host": "${{ vars.PROD_PUBLIC_HOST }}",
+        "production_host": (
+            "${{ vars['PROD_PUBLIC_HOST'] || 'sitbank.duckdns.org' }}"
+        ),
     }
     staging_deploy_env = workflow["jobs"]["deploy-staging"]["env"]
     production_deploy_env = workflow["jobs"]["deploy-production"]["env"]
