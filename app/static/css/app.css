@@ -1874,6 +1874,143 @@ th {
 
 /* ── End banking dashboard ─────────────────────────── */
 
+/* Admin dashboard */
+.admin-page {
+  display: grid;
+  gap: var(--space-7);
+}
+
+.admin-dashboard {
+  display: grid;
+  gap: var(--space-6);
+}
+
+.admin-identity-card {
+  background:
+    linear-gradient(135deg, rgba(7, 89, 133, 0.96), rgba(22, 101, 52, 0.92)),
+    var(--surface-strong);
+}
+
+.admin-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-5);
+}
+
+.admin-nav-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.admin-list {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+  padding-left: 1.1rem;
+  color: var(--muted-strong);
+}
+
+.admin-notice-list {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.admin-form-grid,
+.admin-filter-grid {
+  display: grid;
+  grid-template-columns: minmax(140px, 0.28fr) minmax(0, 1fr);
+  gap: var(--space-3) var(--space-4);
+  align-items: center;
+}
+
+.admin-filter-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.admin-form-grid label,
+.admin-filter-grid label {
+  color: var(--muted-strong);
+  font-weight: 700;
+}
+
+.admin-table-wrap {
+  overflow-x: auto;
+}
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 760px;
+}
+
+.admin-table th,
+.admin-table td {
+  border-bottom: 1px solid var(--line);
+  padding: var(--space-3);
+  text-align: left;
+  vertical-align: top;
+}
+
+.admin-table th {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.admin-table td {
+  overflow-wrap: anywhere;
+}
+
+.admin-inline-actions {
+  display: grid;
+  grid-template-columns: minmax(7.5rem, 1fr) auto;
+  gap: var(--space-2);
+  align-items: center;
+  margin-bottom: var(--space-2);
+}
+
+.admin-inline-actions:last-child {
+  margin-bottom: 0;
+}
+
+.admin-inline-actions input {
+  max-width: 9rem;
+}
+
+.admin-metadata-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-4);
+  margin: 0;
+}
+
+.admin-metadata-grid div {
+  display: grid;
+  gap: var(--space-1);
+  border-top: 1px solid var(--line);
+  padding-top: var(--space-3);
+}
+
+.admin-metadata-grid dt {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.admin-metadata-grid dd {
+  margin: 0;
+  color: var(--text);
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.admin-logout-form {
+  margin: 0;
+}
+
+/* End admin dashboard */
+
 /* ── Session timer indicator ───────────────────────── */
 .session-timer {
   position: fixed;
@@ -2008,6 +2145,12 @@ th {
     min-height: 0;
   }
 
+  .admin-summary-grid,
+  .admin-metadata-grid,
+  .admin-nav-grid {
+    grid-template-columns: 1fr;
+  }
+
   .quick-card {
     min-height: 0;
   }
@@ -2072,6 +2215,12 @@ th {
     display: flex;
   }
 
+  .admin-shell .nav {
+    position: static;
+    display: flex;
+    box-shadow: none;
+  }
+
   .nav-links,
   .nav-actions {
     flex-direction: column;
@@ -2082,6 +2231,16 @@ th {
   .nav .button,
   .nav button {
     width: 100%;
+  }
+
+  .admin-form-grid,
+  .admin-filter-grid,
+  .admin-inline-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-inline-actions input {
+    max-width: none;
   }
 
   .account-menu {

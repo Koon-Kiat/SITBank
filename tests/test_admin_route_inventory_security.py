@@ -10,8 +10,8 @@ from conftest import TestConfig
 UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 ADMIN_ROUTE_MODULE = Path("app/admin/routes.py")
 
-ACCESS_DECISIONS = {"public", "public_token", "staff_session", "root_admin_session"}
-ROLE_DECISIONS = {"none", "invite_token_holder", "staff", "root_admin"}
+ACCESS_DECISIONS = {"public", "public_token", "staff_session", "admin_session", "root_admin_session"}
+ROLE_DECISIONS = {"none", "invite_token_holder", "staff", "admin", "root_admin"}
 CSRF_DECISIONS = {"required", "not_applicable"}
 RATE_LIMIT_DECISIONS = {
     "per_route",
@@ -30,6 +30,7 @@ STEP_UP_DECISIONS = {
 GUARD_DECISIONS = {
     "none",
     "require_staff_session",
+    "require_admin_session",
     "require_root_admin_session",
     "invite_token_validation",
     "pending_admin_mfa_session",
@@ -175,6 +176,104 @@ ADMIN_ROUTE_SECURITY_INVENTORY = {
         "step_up": "required",
         "state_changing": True,
         "expected_guard": "require_root_admin_session",
+        "public_justification": "",
+    },
+    "admin.staff_accounts": {
+        "endpoint": "admin.staff_accounts",
+        "rule": "/staff",
+        "methods": {"GET"},
+        "access": "admin_session",
+        "role": "admin",
+        "classification": "staff_account",
+        "csrf": "not_applicable",
+        "rate_limit": "admin_session",
+        "step_up": "not_required",
+        "state_changing": False,
+        "expected_guard": "require_admin_session",
+        "public_justification": "",
+    },
+    "admin.staff_account_deactivate": {
+        "endpoint": "admin.staff_account_deactivate",
+        "rule": "/staff/<int:user_id>/deactivate",
+        "methods": {"POST"},
+        "access": "root_admin_session",
+        "role": "root_admin",
+        "classification": "staff_account",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "required",
+        "state_changing": True,
+        "expected_guard": "require_root_admin_session",
+        "public_justification": "",
+    },
+    "admin.staff_account_reactivate": {
+        "endpoint": "admin.staff_account_reactivate",
+        "rule": "/staff/<int:user_id>/reactivate",
+        "methods": {"POST"},
+        "access": "root_admin_session",
+        "role": "root_admin",
+        "classification": "staff_account",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "required",
+        "state_changing": True,
+        "expected_guard": "require_root_admin_session",
+        "public_justification": "",
+    },
+    "admin.staff_account_reset_activation": {
+        "endpoint": "admin.staff_account_reset_activation",
+        "rule": "/staff/<int:user_id>/reset-activation",
+        "methods": {"POST"},
+        "access": "root_admin_session",
+        "role": "root_admin",
+        "classification": "staff_account",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "required",
+        "state_changing": True,
+        "expected_guard": "require_root_admin_session",
+        "public_justification": "",
+    },
+    "admin.audit_logs": {
+        "endpoint": "admin.audit_logs",
+        "rule": "/audit-logs",
+        "methods": {"GET"},
+        "access": "admin_session",
+        "role": "admin",
+        "classification": "audit",
+        "csrf": "not_applicable",
+        "rate_limit": "admin_session",
+        "step_up": "not_required",
+        "state_changing": False,
+        "expected_guard": "require_admin_session",
+        "public_justification": "",
+    },
+    "admin.audit_log_detail": {
+        "endpoint": "admin.audit_log_detail",
+        "rule": "/audit-logs/<int:event_id>",
+        "methods": {"GET"},
+        "access": "admin_session",
+        "role": "admin",
+        "classification": "audit",
+        "csrf": "not_applicable",
+        "rate_limit": "admin_session",
+        "step_up": "not_required",
+        "state_changing": False,
+        "expected_guard": "require_admin_session",
+        "public_justification": "",
+    },
+    "admin.alerts": {
+        "endpoint": "admin.alerts",
+        "rule": "/alerts",
+        "methods": {"GET"},
+        "access": "admin_session",
+        "role": "admin",
+        "classification": "alerts",
+        "csrf": "not_applicable",
+        "rate_limit": "admin_session",
+        "step_up": "not_required",
+        "state_changing": False,
+        "expected_guard": "require_admin_session",
         "public_justification": "",
     },
     "admin.manual_recovery_requests": {
@@ -367,6 +466,8 @@ def test_admin_route_inventory_has_complete_security_decisions():
 
         if entry["expected_guard"] == "require_staff_session":
             assert "require_staff_session" in source, f"{endpoint} must call require_staff_session"
+        if entry["expected_guard"] == "require_admin_session":
+            assert "require_admin_session" in source, f"{endpoint} must call require_admin_session"
         if entry["expected_guard"] == "require_root_admin_session":
             assert "require_root_admin_session" in source, f"{endpoint} must call require_root_admin_session"
         if entry["expected_guard"] == "pending_admin_mfa_session":

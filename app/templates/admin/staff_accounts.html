@@ -1,0 +1,68 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Staff Accounts | SITBank Admin{% endblock %}
+
+{% block content %}
+<section class="dashboard admin-dashboard">
+  <div class="section-header">
+    <h1>Staff/Admin Users</h1>
+  </div>
+  <section class="panel">
+    <div class="admin-table-wrap">
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th scope="col">Name</th>
+            <th scope="col">Workplace email</th>
+            <th scope="col">Role</th>
+            <th scope="col">Status</th>
+            <th scope="col">TOTP</th>
+            <th scope="col">Last login</th>
+            <th scope="col">Lifecycle</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for account in accounts %}
+          <tr>
+            <td>{{ account.name }}</td>
+            <td>{{ account.workplace_email }}</td>
+            <td>{{ account.role_label }}</td>
+            <td>{{ account.account_status }}</td>
+            <td>{% if account.totp_enrolled %}Enrolled{% else %}Pending{% endif %}</td>
+            <td>{{ account.last_login_at or "Never" }}</td>
+            <td>
+              {% if account.can_manage %}
+              <form class="admin-inline-actions" method="post" action="{{ url_for('admin.staff_account_deactivate', user_id=account.id) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <label class="sr-only" for="staff-action-totp-{{ account.id }}">Authenticator code</label>
+                <input id="staff-action-totp-{{ account.id }}" name="totp_code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required>
+                <button class="button-danger" type="submit">Deactivate</button>
+              </form>
+              <form class="admin-inline-actions" method="post" action="{{ url_for('admin.staff_account_reactivate', user_id=account.id) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <label class="sr-only" for="staff-reactivate-totp-{{ account.id }}">Authenticator code</label>
+                <input id="staff-reactivate-totp-{{ account.id }}" name="totp_code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required>
+                <button class="secondary" type="submit">Reactivate</button>
+              </form>
+              <form class="admin-inline-actions" method="post" action="{{ url_for('admin.staff_account_reset_activation', user_id=account.id) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <label class="sr-only" for="staff-reset-totp-{{ account.id }}">Authenticator code</label>
+                <input id="staff-reset-totp-{{ account.id }}" name="totp_code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required>
+                <button class="secondary" type="submit">Reset setup</button>
+              </form>
+              {% else %}
+              <span class="badge neutral">Read only</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="7">No staff/admin accounts found.</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+</section>
+{% endblock %}

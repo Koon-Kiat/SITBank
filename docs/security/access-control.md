@@ -107,7 +107,18 @@ remains in `tests/test_payee_management_security.py`.
 
 ## Admin And Staff Controls
 
-Admin/staff access is invite-only and uses the admin runtime.
+Admin/staff access is invite-only and uses the admin runtime. The implemented
+role hierarchy is:
+
+```text
+root_admin > admin > staff > customer
+```
+
+`staff` users receive assigned business-operation navigation only. `admin`
+users can review audit logs, security alerts, and safe staff/admin status
+metadata. `root_admin` users keep the most privileged invite and staff/admin
+lifecycle controls. Customer accounts remain normal users and cannot satisfy
+admin runtime authorization checks.
 
 | Control | Implementation evidence | Test evidence |
 | --- | --- | --- |
@@ -117,6 +128,10 @@ Admin/staff access is invite-only and uses the admin runtime.
 | Root admin can invite only `staff` or `admin`, not `root_admin` | `StaffInvite` role constraint in `app/models.py`; role validation in `app/admin/services.py` | `tests/test_admin_staff_invites.py::test_invite_creation_validates_server_side_email_and_role_policy` |
 | Invite acceptance rejects forged privileged fields | `_reject_forged_invite_fields()` in `app/admin/services.py` | `tests/test_admin_staff_invites.py` |
 | Staff invite acceptance activates only after workplace verification and TOTP setup | `start_invite_acceptance()` and `verify_invite_acceptance()` | `tests/test_admin_staff_invites.py::test_staff_invite_acceptance_activates_only_after_workplace_code_and_totp` |
+| Admin dashboard navigation is role-rendered and backend-enforced | `app/admin/routes.py::index()`, `app/admin/services.py::admin_navigation_for()` | `tests/test_admin_dashboard_operations.py::test_dashboard_renders_role_navigation_and_audits_access`, `tests/test_admin_route_inventory_security.py` |
+| Admin/root audit viewer supports bounded filters, sorting, pagination, and safe detail display | `app/admin/routes.py::audit_logs()`, `app/admin/services.py::query_audit_events_for_admin()` | `tests/test_admin_dashboard_operations.py::test_audit_viewer_filters_bounds_and_redacts_detail_metadata` |
+| Admin/root alert review uses the existing report path without sending alerts | `app/admin/routes.py::alerts()`, `app/security/alerts.py::build_security_alert_report()` | `tests/test_admin_dashboard_operations.py::test_alert_review_is_admin_only_and_does_not_send_alerts` |
+| Root-admin staff/admin lifecycle actions require TOTP and audit logging | `app/admin/routes.py`, `app/admin/services.py::transition_staff_account_as_root_admin()` | `tests/test_admin_dashboard_operations.py::test_root_manages_staff_lifecycle_with_totp_and_safe_audit` |
 | Staff/customer self-action guard | `app/admin/separation.py::assert_not_self_customer_action()` | `tests/test_admin_staff_invites.py::test_separation_guard_blocks_linked_staff_acting_on_own_customer` |
 | Admin session context drift | Any detected coarse-network, browser-family, or detailed User-Agent drift revokes the admin session and requires full login | `app/security/sessions.py`, `tests/test_session_risk_binding.py::test_admin_context_change_revokes_session_under_stricter_policy` |
 
@@ -161,6 +176,7 @@ High-risk customer actions use `verify_high_risk_authorization()` in
 | Payee add confirmation | Authenticated user, pending payee state, recipient revalidation, TOTP step-up | `app/banking/routes.py::payees_confirm_submit()` |
 | Payee removal | Authenticated user, payee ownership check, TOTP step-up | `app/banking/routes.py::payees_remove_submit()` |
 | Staff invite create/revoke | Root admin session and TOTP code | `app/admin/services.py::create_staff_invite()`, `app/admin/services.py::revoke_staff_invite()` |
+| Staff/admin account lifecycle | Root admin session, CSRF, rate limit, TOTP step-up, no self-management, and safe audit metadata | `app/admin/services.py::transition_staff_account_as_root_admin()`, `tests/test_admin_dashboard_operations.py` |
 | Manual recovery public request | No step-up because the caller is unauthenticated; it creates only a pending request and does not unlock or mutate the account | `app/auth/password_reset.py::request_manual_recovery()`, `tests/test_password_reset.py::test_manual_recovery_request_does_not_freeze_or_unlock_account` |
 | Manual recovery admin review | Root admin session in the isolated admin app | `app/admin/routes.py::manual_recovery_requests()`, `tests/test_admin_manual_recovery.py` |
 | Manual recovery transition/completion | Root admin session, CSRF, rate limit, operator reason, and TOTP step-up | `app/admin/services.py::transition_manual_recovery_request_as_admin()`, `app/admin/services.py::complete_manual_recovery_request_as_admin()`, `tests/test_admin_manual_recovery.py` |

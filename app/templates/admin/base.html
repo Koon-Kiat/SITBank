@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}SITBank Admin{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+    <script src="{{ url_for('static', filename='js/theme.js') }}" defer></script>
+    {% if g.current_user %}
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    {% endif %}
+  </head>
+  <body class="admin-shell">
+    <svg class="icon-sprite" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
+      <symbol id="icon-theme-sun" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="4"></circle>
+        <path d="M12 2v2"></path>
+        <path d="M12 20v2"></path>
+        <path d="m4.93 4.93 1.41 1.41"></path>
+        <path d="m17.66 17.66 1.41 1.41"></path>
+        <path d="M2 12h2"></path>
+        <path d="M20 12h2"></path>
+        <path d="m6.34 17.66-1.41 1.41"></path>
+        <path d="m19.07 4.93-1.41 1.41"></path>
+      </symbol>
+      <symbol id="icon-theme-moon" viewBox="0 0 24 24">
+        <path d="M21 12.8A8.5 8.5 0 1 1 11.2 3a6.8 6.8 0 0 0 9.8 9.8Z"></path>
+      </symbol>
+    </svg>
+    <a class="skip-link" href="#main-content">Skip to main content</a>
+    <header class="site-header">
+      <div class="header-inner">
+        <a class="brand" href="{{ url_for('admin.index') }}" aria-label="SITBank admin dashboard">
+          <img class="brand-mark" src="{{ url_for('static', filename='img/sitbank-mark.svg') }}" alt="" aria-hidden="true">
+          <span class="brand-copy">
+            <span class="brand-name">SITBank</span>
+            <span class="brand-subtitle">Staff and admin operations</span>
+          </span>
+        </a>
+        <nav class="nav" aria-label="Admin navigation">
+          <div class="nav-links">
+            {% for item in navigation|default([]) %}
+            <a href="{{ item.href }}"{% if request.endpoint == item.endpoint %} aria-current="page"{% endif %}>{{ item.label }}</a>
+            {% endfor %}
+          </div>
+          <div class="nav-actions">
+            <button class="theme-toggle icon-button" type="button" data-theme-toggle aria-pressed="false" aria-label="Switch to dark mode" title="Switch to dark mode">
+              <span class="theme-icon" aria-hidden="true" data-theme-toggle-icon>
+                <svg class="icon" focusable="false"><use href="#icon-theme-moon"></use></svg>
+              </span>
+              <span class="sr-only" data-theme-toggle-label>Switch to dark mode</span>
+            </button>
+            {% if g.current_user %}
+            <form class="admin-logout-form" method="post" action="{{ url_for('admin.logout') }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button class="button secondary small" type="submit">Log out</button>
+            </form>
+            {% endif %}
+          </div>
+        </nav>
+      </div>
+    </header>
+
+    <main class="page admin-page" id="main-content">
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          <section class="alerts" aria-label="Status messages">
+            {% for category, message in messages %}
+              <div class="alert alert-{{ category }}">
+                <span>{{ message }}</span>
+              </div>
+            {% endfor %}
+          </section>
+        {% endif %}
+      {% endwith %}
+      {% block content %}{% endblock %}
+    </main>
+
+    <footer class="site-footer">
+      <div class="footer-inner">
+        <section class="footer-brand" aria-label="Service information">
+          <h2 class="footer-heading">SITBank Admin</h2>
+          <p>Staff access is separate from customer banking sessions and requires workplace authentication plus TOTP.</p>
+        </section>
+        <section class="footer-column" aria-label="Security posture">
+          <h2 class="footer-heading">Security Posture</h2>
+          <p>Admin actions use server-side authorization, CSRF-protected forms, TOTP step-up for high-risk changes, and audit logging.</p>
+        </section>
+      </div>
+    </footer>
+  </body>
+</html>

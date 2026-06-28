@@ -1,0 +1,115 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Admin Dashboard | SITBank{% endblock %}
+
+{% block content %}
+<section class="dashboard admin-dashboard">
+  <div class="bank-account-card admin-identity-card">
+    <div class="bank-account-card-inner">
+      <div class="bank-account-identity">
+        <p class="bank-card-eyebrow">Staff/Admin Identity</p>
+        <h1 class="bank-card-name">{{ user.email }}</h1>
+        <p class="bank-card-number">{{ role_label }} · {{ user.account_status }}</p>
+      </div>
+      <div class="bank-account-balance">
+        <p class="bank-card-eyebrow">Session Control</p>
+        <p class="balance-amount">TOTP {% if user.mfa_enabled %}enrolled{% else %}pending{% endif %}</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="admin-summary-grid">
+    <section class="panel">
+      <div class="section-header">
+        <h2>Role Boundary</h2>
+      </div>
+      <ul class="admin-list">
+        {% for item in responsibilities %}
+        <li>{{ item }}</li>
+        {% endfor %}
+      </ul>
+    </section>
+
+    <section class="panel">
+      <div class="section-header">
+        <h2>Security Status</h2>
+      </div>
+      <dl class="admin-metadata-grid">
+        <div>
+          <dt>Workplace email</dt>
+          <dd>{% if summary.workplace_email_verified %}Verified{% else %}Pending{% endif %}</dd>
+        </div>
+        <div>
+          <dt>Authenticator MFA</dt>
+          <dd>{% if summary.totp_enrolled %}Enabled{% else %}Required{% endif %}</dd>
+        </div>
+        <div>
+          <dt>Role rank</dt>
+          <dd>{{ summary.current_role_rank }}</dd>
+        </div>
+      </dl>
+    </section>
+  </div>
+
+  <section class="panel">
+    <div class="section-header">
+      <h2>Allowed Operations</h2>
+    </div>
+    <div class="bank-quick-grid admin-nav-grid">
+      {% for item in navigation %}
+      <a class="bank-quick-btn" href="{{ item.href }}">
+        <span>{{ item.label }}</span>
+        <span class="badge neutral">{{ item.group }}</span>
+      </a>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="section-header">
+      <h2>Security Notices</h2>
+    </div>
+    <div class="admin-notice-list">
+      {% for notice in security_notices %}
+      <article class="notice {{ notice.severity }}">
+        <div>
+          <p><strong>{{ notice.title }}</strong></p>
+          <p>{{ notice.message }}</p>
+        </div>
+      </article>
+      {% endfor %}
+    </div>
+  </section>
+
+  {% if recent_audit_events %}
+  <section class="panel">
+    <div class="section-header">
+      <h2>Recent Audit Events</h2>
+      <a class="muted" href="{{ url_for('admin.audit_logs') }}">Review all</a>
+    </div>
+    <div class="admin-table-wrap">
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th scope="col">Time</th>
+            <th scope="col">Event</th>
+            <th scope="col">Outcome</th>
+            <th scope="col">Actor</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for event in recent_audit_events %}
+          <tr>
+            <td>{{ event.created_at }}</td>
+            <td>{{ event.event_type }}</td>
+            <td>{{ event.outcome }}</td>
+            <td>{{ event.actor_user_id or "system" }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {% endif %}
+</section>
+{% endblock %}
