@@ -106,6 +106,7 @@ def test_bootstrap_root_admin_cli_creates_allowlisted_active_totp_root(admin_app
     assert user.workplace_email_verified_at is not None
     assert user.mfa_enabled is True
     assert user.mfa_secret_ciphertext is not None
+    assert user.phone_number is None
     assert user.account_number is None
     assert db.session.query(User).filter_by(account_type="root_admin").count() == 1
 
