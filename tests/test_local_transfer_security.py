@@ -28,11 +28,15 @@ def _make_user(
     balance: Decimal = Decimal("1000.00"),
     account_status: str = "active",
 ) -> User:
+    # Derive a unique 8-digit SG-format phone from the account number
+    # so multiple users within the same test DB never collide on the UNIQUE constraint.
+    suffix = int(account_number[-7:]) % 10_000_000
+    phone = f"9{suffix:07d}"
     user = User(
         username=username,
         email=f"{username}@sit.singaporetech.edu.sg",
         full_name=username.capitalize(),
-        phone_number="91234567",
+        phone_number=phone,
         account_number=account_number,
         account_type="customer",
         account_status=account_status,
