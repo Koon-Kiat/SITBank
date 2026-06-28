@@ -1,5 +1,9 @@
 # Operations
 
+Security owner roles, milestone/release review cadence, accepted-risk handling,
+and off-repo evidence expectations are defined in
+`docs/security/security-governance.md`.
+
 ## Runtime Secrets
 
 Keep root-managed secret files in `/etc/sitbank/secrets` and `/etc/sitbank-staging/secrets`. The container reads only mounted files under `/run/secrets`; long-lived application secrets are not exported into the Compose process environment.
@@ -49,6 +53,8 @@ operator-managed. None of those secret values belong in the repository.
 `staging-sitbank.pp.ua` is the Cloudflare-managed staging hostname for Access.
 The retired DuckDNS staging hostname is not an active staging deployment,
 Nginx, Certbot, or TLS-scan target.
+Issue #215 tracks the staging domain and CI/CD migration history; related
+Cloudflare Access/origin protection work is tracked by #198, #199, and #210.
 
 Routine verification:
 
@@ -93,6 +99,11 @@ local staging readiness succeeds without one, direct Nginx origin access
 returns `403` without Cloudflare's origin-pull client certificate, and the
 private admin URL is reachable only from an approved tailnet path. Tailscale
 Funnel must stay disabled for SITBank admin.
+Tailscale is the private network/device boundary for admin access; it does not
+replace Flask admin login, TOTP, CSRF protection, route authorization, or audit
+logging.
+Tailscale admin host preflight/provisioning and the private admin boundary
+decision are tracked by #200, #211, and #218.
 
 Run the manual **Verify staging Cloudflare Access** workflow before a staging
 release and after Access, DNS, IdP, token, origin address, or ingress changes.
@@ -386,6 +397,16 @@ that escape to a literal comma in the policy copy, then still requires
 `jq empty` before applying every TLS policy check. The job summary records the
 target, UTC scan time, GitHub run, scanner revision, and result. No application
 credentials or secrets are needed or permitted.
+
+Authenticated DAST release evidence is separate from live TLS evidence. The DAST
+smoke helper creates synthetic customer identities only, writes `auth-cookie`
+and `zap-replacer.properties` as temporary `0600` files under `umask 077`, and
+passes only `-configfile /run/dast/zap-replacer.properties` to ZAP. The cookie
+is not passed as a raw process argument, and neither file belongs in GitHub
+artifacts, job summaries, chat, screenshots, or issue comments. If a DAST cookie
+or full replacer config is exposed, cancel the run, remove the artifact, treat
+the synthetic session as compromised until the run cleanup completes, and review
+the workflow/script change before retrying.
 
 Treat a failed scan as a release/deployment verification failure. A failed
 staging scan blocks production deployment, while a failed production scan

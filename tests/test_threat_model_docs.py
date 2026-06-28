@@ -64,6 +64,9 @@ def test_design_risk_register_covers_required_decisions():
         "Security impact",
         "Accepted risk",
         "Related framework controls",
+        "Owner role",
+        "Status / tracking",
+        "Review trigger",
     ):
         assert required in text
 
@@ -74,6 +77,7 @@ def test_framework_and_gap_docs_reference_threat_model_and_design_risks():
         Path("docs/security/secure-coding.md"),
         FRAMEWORK,
         GAP_REGISTER,
+        Path("docs/security/security-governance.md"),
     ):
         text = path.read_text(encoding="utf-8")
         assert "docs/security/threat-model.md" in text, path

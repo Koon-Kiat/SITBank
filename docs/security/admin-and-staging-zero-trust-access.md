@@ -1,9 +1,15 @@
 # Admin And Staging Zero-Trust Access
 
-Issue #184 uses a hybrid access boundary:
+SITBank uses a hybrid zero-trust access model:
 
-- Staging uses Cloudflare Zero Trust Access.
-- Admin uses Tailscale private access.
+- Staging uses a Cloudflare-managed public hostname with Cloudflare Access,
+  Authenticated Origin Pulls, and Flask-side Access JWT validation.
+- Admin access is private through Tailscale and remains protected by Flask
+  admin login, TOTP, CSRF, route authorization, and audit logging.
+
+Tailscale is the private network/device boundary for admin access; it does not
+replace Flask admin login, TOTP, CSRF protection, route authorization, or audit
+logging.
 
 This intentionally uses both products because the surfaces have different
 access patterns. Staging must stay browser-accessible at the staging hostname
@@ -11,6 +17,21 @@ for approved operators, and Cloudflare Access can challenge the operator before
 traffic reaches Nginx or Flask. Admin is an operator-only surface and should
 not be reachable from the public internet at all, so the admin app remains
 behind Tailscale/private device access.
+
+Current tracking references:
+
+- #198: origin-side Cloudflare Access assertion validation for staging.
+- #199: Cloudflare Authenticated Origin Pull CA integrity checks.
+- #200: Tailscale admin host preflight and Funnel-disabled verification.
+- #210: Cloudflare Access staging provisioning and verification automation.
+- #211: Tailscale admin access provisioning and verification automation.
+- #215: CI/CD and deployment migration to the Cloudflare-managed staging
+  hostname and private Tailscale admin model.
+- #218: Tailscale private access as the admin device/network boundary decision.
+
+Protected GitHub CI tailnet verification is not implemented in normal public CI.
+Track it as a future protected-runner/tailnet workflow if the project wants CI
+to verify the private admin hostname from inside the tailnet.
 
 References:
 
@@ -304,7 +325,7 @@ If the Cloudflare staging setup fails after merge:
 2. Keep the staging app unavailable externally rather than removing the
    origin-pull requirement.
 3. Roll back the staging Nginx file through the reviewed bootstrap only after a
-   security owner approves the temporary exposure decision.
+   Security Owner approves the temporary exposure decision.
 4. Redeploy staging and verify readiness before allowing production to proceed
    through the normal pipeline.
 

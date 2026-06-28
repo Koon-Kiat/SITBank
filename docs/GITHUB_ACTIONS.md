@@ -85,6 +85,16 @@ Ordinary pull requests skip the full authenticated DAST crawl to keep feedback f
 
 Authenticated DAST still runs before staging/production deployment during release verification. Manual staging can enable or disable DAST with `run_dast`; scheduled scans keep regular full DAST coverage. This means release verification retains that coverage while PRs stay responsive.
 
+Synthetic DAST users remain the only authenticated scan identities. The smoke
+helper writes the authenticated session cookie and ZAP replacer configuration to
+temporary `0600` files created under `umask 077`; the DAST cookie is not passed
+as a raw process argument. ZAP loads the authenticated-cookie replacer from a
+restricted `-configfile` path, and the cookie/config directory is removed by the
+smoke-test cleanup trap on success or failure. Do not upload `auth-cookie` or
+`zap-replacer.properties`, do not print environment dumps or shell-expanded
+secret values, and investigate immediately if either file or a session value
+appears in logs, summaries, or artifacts.
+
 ## Dependency Updates
 
 Dependabot updates are review-only. Base-image updates must not be auto-merged. For dependency or image changes, maintainers should review release notes, regenerate hash-locked dependency files, and require the container smoke test, Compose validation, Trivy gates, dependency audits, and relevant application tests before merging.
