@@ -223,6 +223,9 @@ isolation.
 | Risk drift after login | HMAC-derived coarse network and User-Agent context triggers customer reauthentication or revocation; admin drift revokes the session | `app/security/sessions.py`; `tests/test_session_risk_binding.py` |
 | Stolen active cookie | Inactivity timeout, absolute lifetime, revocation, session inventory, and risk-based reauthentication reduce impact, but the cookie is not cryptographically device-bound | `app/security/sessions.py`, `tests/test_session_risk_binding.py`, `tests/test_session_management.py`, `tests/test_session_absolute_lifetime.py` |
 
-Remaining session risk-reduction items, such as optional active-session count
-caps and stronger device-bound session proof, are tracked in
-`docs/security/security-gap-register.md`.
+Remaining session risk-reduction items are tracked in
+`docs/security/security-gap-register.md`: optional active-session count caps are
+`needs-triage`, while stronger cryptographic device-bound proof remains an
+accepted defense-in-depth gap. Issue #218 records the current decision to use
+Tailscale private access as the admin device/network boundary rather than
+claiming cryptographic device binding for browser sessions.

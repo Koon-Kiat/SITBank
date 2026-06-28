@@ -51,11 +51,16 @@ def _tracked_files() -> list[Path]:
 
 def test_hybrid_cloudflare_staging_and_tailscale_admin_design_is_documented():
     docs = _docs_text()
+    normalized_docs = " ".join(docs.split())
 
     for required in (
-        "Issue #184 uses a hybrid access boundary",
-        "Staging uses Cloudflare Zero Trust Access.",
-        "Admin uses Tailscale private access.",
+        "SITBank uses a hybrid zero-trust access model",
+        "Staging uses a Cloudflare-managed public hostname with Cloudflare Access",
+        "Admin access is private through Tailscale",
+        "#198: origin-side Cloudflare Access assertion validation for staging.",
+        "#215: CI/CD and deployment migration to the Cloudflare-managed staging",
+        "#218: Tailscale private access as the admin device/network boundary decision.",
+        "Protected GitHub CI tailnet verification is not implemented in normal public CI.",
         "This intentionally uses both products because the surfaces have different",
         "Production customer | `https://sitbank.duckdns.org`",
         "Staging customer | `https://staging-sitbank.pp.ua`",
@@ -80,6 +85,7 @@ def test_hybrid_cloudflare_staging_and_tailscale_admin_design_is_documented():
     ):
         assert required in docs
 
+    assert "does not replace Flask admin login, TOTP, CSRF protection" in normalized_docs
     assert "staging is documented/configured as public-only" not in docs.lower()
     assert "admin is documented/configured as public-only" not in docs.lower()
 
