@@ -224,9 +224,10 @@ credentials out of the scan path.
 DAST cookie handling is intentionally file-based. `auth-cookie` and
 `zap-replacer.properties` are created under `umask 077`, written as `0600`
 temporary files, mounted read-only into ZAP, and removed by the cleanup trap when
-the smoke test exits. The host-visible ZAP command receives only
-`-configfile /run/dast/zap-replacer.properties`; it must not include a raw
-cookie value or `replacement=${...}` argument. Do not retain the DAST temporary
+the smoke test exits. The host-visible ZAP command receives the non-secret
+scanner home option `-dir /zap/wrk/.ZAP` plus
+`-configfile /run/dast/zap-replacer.properties`; it must not include a raw cookie
+value or `replacement=${...}` argument. Do not retain the DAST temporary
 directory, upload it as an artifact, or paste its contents into release notes.
 
 The production customer verification gate fails for

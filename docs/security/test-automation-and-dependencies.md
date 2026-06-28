@@ -179,10 +179,11 @@ The authenticated release/scheduled DAST path stores `auth-cookie` and
 `zap-replacer.properties` only in the smoke-test temporary directory. The helper
 sets `umask 077`, writes each secret file as `0600`, validates the cookie shape
 inside the container, mounts the DAST directory read-only into ZAP, and passes
-only `-configfile /run/dast/zap-replacer.properties` on the host-visible ZAP
-command line. ZAP loads the authenticated-cookie replacer from a restricted
-file, so the DAST cookie is not passed as a raw process argument. The temporary
-directory is removed by the smoke-test cleanup trap on success and failure.
+the non-secret scanner home option `-dir /zap/wrk/.ZAP` plus
+`-configfile /run/dast/zap-replacer.properties` on the host-visible ZAP command
+line. ZAP loads the authenticated-cookie replacer from a restricted file, so the
+DAST cookie is not passed as a raw process argument. The temporary directory is
+removed by the smoke-test cleanup trap on success and failure.
 
 The DAST bind-mount directory is relaxed for container UID compatibility, but
 the secret files inside remain owner-only and are not uploaded as GitHub
