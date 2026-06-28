@@ -117,6 +117,41 @@ operator verification steps are in
 Provider automation and origin assertion details are in
 `docs/security/cloudflare-staging-access.md`.
 
+## Root Admin Bootstrap
+
+Root admins remain a fixed allowlisted group. `ROOT_ADMIN_EMAILS` must contain
+the approved workplace email before any database user can become `root_admin`;
+normal customer registration and staff invites must not create `root_admin`
+accounts.
+
+When no usable root admin exists, run the shell-only bootstrap command from the
+already deployed private admin container:
+
+```bash
+sudo docker exec -it sitbank-admin \
+  python -m flask --app admin_wsgi:app admin bootstrap-root
+```
+
+For staging, use the staging admin container:
+
+```bash
+sudo docker exec -it sitbank-staging-admin \
+  python -m flask --app admin_wsgi:app admin bootstrap-root
+```
+
+The command prompts for the workplace email, username, full name, and password.
+Do not pass the password on the command line. The workplace email must already
+be listed in `ROOT_ADMIN_EMAILS`, or the command fails without creating a user.
+If the allowlisted account already exists, rerun only with `--reset-existing`
+when you intentionally want to rotate its password and TOTP seed.
+
+The command prints one-time sensitive TOTP setup output: a manual-entry secret
+and provisioning URI. Add it to an authenticator app immediately. Do not paste
+that output into logs, tickets, chat, shell history, or committed files. The
+bootstrap stores only the protected password hash and envelope-encrypted TOTP
+secret, sets the account active, marks the workplace email verified, and records
+a safe `root_admin_bootstrap` audit event without the password or TOTP secret.
+
 ## EC2 SSH And Deployment Access Operations
 
 Issue 186 EC2 SSH hardening is deferred and is not implemented by this branch.
