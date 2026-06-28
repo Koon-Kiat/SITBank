@@ -221,7 +221,7 @@ def test_ownership_mismatch_error_is_generic(app, sec_ctx):
 
 def test_docs_describe_local_transfer_execution():
     ops = (Path(__file__).parent.parent / "docs" / "OPERATIONS.md").read_text(encoding="utf-8")
-    assert "local transfer performs final ledger movement" in ops
+    assert "Local transfer performs final ledger movement" in ops
     assert "single-use confirmation token" in ops
     assert "payee ownership" in ops.lower()
     assert "There is no final ledger" not in ops
