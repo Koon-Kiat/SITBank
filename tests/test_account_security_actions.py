@@ -257,8 +257,12 @@ def test_password_change_uses_configured_new_password_minimum(app, client):
 
 
 def test_password_change_rejects_common_or_reused_password(client):
-    register(client)
-    login(client)
+    current_password = "correct horse battery staple"
+    register_response = register(client, password=current_password)
+    login_response = login(client, password=current_password)
+    assert register_response.status_code == 302
+    assert login_response.status_code == 302
+
     user, secret = enable_mfa_for_user()
     add_security_keys_for_user(user)
     mark_recent_mfa(client, user)
@@ -266,15 +270,15 @@ def test_password_change_rejects_common_or_reused_password(client):
     reused_response = client.post(
         "/password/change",
         data={
-            "current_password": "correct horse battery staple",
-            "new_password": "correct horse battery staple",
-            "confirm_new_password": "correct horse battery staple",
+            "current_password": current_password,
+            "new_password": current_password,
+            "confirm_new_password": current_password,
         },
     )
     common_response = client.post(
         "/password/change",
         data={
-            "current_password": "correct horse battery staple",
+            "current_password": current_password,
             "new_password": "password",
             "confirm_new_password": "password",
             "totp_code": pyotp.TOTP(secret, digits=6, interval=30).now(),

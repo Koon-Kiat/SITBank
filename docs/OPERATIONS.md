@@ -404,12 +404,14 @@ and `zap-replacer.properties` as temporary `0600` files under `umask 077`, and
 passes only non-secret startup options plus
 `-configfile /run/dast/zap-replacer.properties` to ZAP. The non-secret
 `-dir /zap/wrk/.ZAP` option gives the scanner UID a writable ZAP home without
-relaxing cookie-file permissions. The cookie is not passed as a raw process
-argument, and neither file belongs in GitHub artifacts, job summaries, chat,
-screenshots, or issue comments. If a DAST cookie or full replacer config is
-exposed, cancel the run, remove the artifact, treat the synthetic session as
-compromised until the run cleanup completes, and review the workflow/script
-change before retrying.
+relaxing cookie-file permissions. ZAP's cache, browser profile, and report
+workspace run on container tmpfs and are discarded with the scanner container, so
+host cleanup does not depend on deleting scanner-owned cache files. The cookie is
+not passed as a raw process argument, and neither file belongs in GitHub
+artifacts, job summaries, chat, screenshots, or issue comments. If a DAST cookie
+or full replacer config is exposed, cancel the run, remove the artifact, treat
+the synthetic session as compromised until the run cleanup completes, and review
+the workflow/script change before retrying.
 
 Treat a failed scan as a release/deployment verification failure. A failed
 staging scan blocks production deployment, while a failed production scan

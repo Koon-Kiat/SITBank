@@ -1141,7 +1141,11 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "-configfile /run/dast/zap-replacer.properties" in smoke_test
     assert "-dir /zap/wrk/.ZAP -configfile /run/dast/zap-replacer.properties" in smoke_test
     assert "--workdir /zap/wrk" in smoke_test
+    assert "--tmpfs \"/zap/wrk:rw,nosuid,nodev,size=1g,uid=10001,gid=10001,mode=1770\"" in smoke_test
+    assert 'zap_mount_source="$(docker_bind_source "${work_dir}/zap")"' not in smoke_test
+    assert '"${zap_mount_source}:/zap/wrk:rw"' not in smoke_test
     assert "Keep the UID aligned with the 0600 DAST config owner" in smoke_test
+    assert "Keeping ZAP caches and reports off the host" in smoke_test
     assert "export MSYS_NO_PATHCONV=1" in smoke_test
     assert "converted explicitly by docker_bind_source" in smoke_test
     assert "replacer.full_list(0).replacement=${" not in smoke_test
