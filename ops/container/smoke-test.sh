@@ -358,6 +358,7 @@ docker_args=(
     --env PASSWORD_RESET_EMAIL_BACKEND=smtp
     --env PASSWORD_RESET_EMAIL_FROM=security@sitbank.example
     --env PASSWORD_RESET_BASE_URL=https://sitbank.duckdns.org
+    --env "ROOT_ADMIN_EMAILS=root1@sit.singaporetech.edu.sg,root2@sit.singaporetech.edu.sg,root3@sit.singaporetech.edu.sg,root4@sit.singaporetech.edu.sg,root5@sit.singaporetech.edu.sg,root6@sit.singaporetech.edu.sg,root7@sit.singaporetech.edu.sg"
     --env SMTP_HOST=smtp.example.test
     --env SMTP_PORT=587
     --env SMTP_USE_TLS=true

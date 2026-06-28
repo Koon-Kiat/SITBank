@@ -136,9 +136,20 @@ Provider automation and origin assertion details are in
 ## Root Admin Bootstrap
 
 Root admins remain a fixed allowlisted group. `ROOT_ADMIN_EMAILS` must contain
-the approved workplace email before any database user can become `root_admin`;
-normal customer registration and staff invites must not create `root_admin`
-accounts.
+exactly 7 approved SIT workplace email addresses before any database user can
+become `root_admin`; normal customer registration and staff invites must not
+create `root_admin` accounts. Configure `ROOT_ADMIN_EMAILS` as a protected
+GitHub environment variable in both `staging` and `production` before deploying
+this command. Do not commit the allowlist to the repository.
+
+After deployment, verify the admin container received the allowlist:
+
+```bash
+sudo docker exec sitbank-admin printenv ROOT_ADMIN_EMAILS
+```
+
+The output must be the configured comma-separated 7-email allowlist before you
+run bootstrap.
 
 When no usable root admin exists, run the shell-only bootstrap command from the
 already deployed private admin container:
@@ -160,6 +171,9 @@ Do not pass the password on the command line. The workplace email must already
 be listed in `ROOT_ADMIN_EMAILS`, or the command fails without creating a user.
 If the allowlisted account already exists, rerun only with `--reset-existing`
 when you intentionally want to rotate its password and TOTP seed.
+Do not create a GitHub Actions workflow for root bootstrap, and do not pass the
+root-admin password, TOTP secret, QR code, provisioning URI, or setup values
+through Actions inputs or secrets.
 
 The command prints one-time sensitive TOTP setup output: a manual-entry secret
 and provisioning URI. Add it to an authenticator app immediately. Do not paste

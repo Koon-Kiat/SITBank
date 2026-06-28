@@ -245,7 +245,7 @@ jobs:
 
       - name: Run tests and security checks
         run: |
-          python -m pytest -q -n auto --cov=app --cov-report=xml:coverage.xml --cov-report=term --durations=30 --durations-min=0.5
+          python -m pytest -q -n auto --cov=app --cov=ops --cov-report=xml:coverage.xml --cov-report=term --durations=30 --durations-min=0.5
           python -m compileall app config.py wsgi.py admin_wsgi.py
           python -m pip check
           python -m bandit -q -ll -r app ops config.py wsgi.py
@@ -769,6 +769,7 @@ jobs:
       STAGING_PASSWORD_PBKDF2_ITERATIONS: ${{ vars.STAGING_PASSWORD_PBKDF2_ITERATIONS }}
       STAGING_MFA_ISSUER_NAME: ${{ vars.STAGING_MFA_ISSUER_NAME }}
       STAGING_PASSWORD_RESET_EMAIL_FROM: ${{ vars.STAGING_PASSWORD_RESET_EMAIL_FROM }}
+      STAGING_ROOT_ADMIN_EMAILS: ${{ vars.ROOT_ADMIN_EMAILS }}
       STAGING_SMTP_HOST: ${{ vars.STAGING_SMTP_HOST }}
       STAGING_CLOUDFLARE_ACCESS_AUD: ${{ vars.STAGING_CLOUDFLARE_ACCESS_AUD }}
       STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN: ${{ vars.STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN }}
@@ -796,6 +797,7 @@ jobs:
             STAGING_PASSWORD_PBKDF2_ITERATIONS
             STAGING_MFA_ISSUER_NAME
             STAGING_PASSWORD_RESET_EMAIL_FROM
+            STAGING_ROOT_ADMIN_EMAILS
             STAGING_SMTP_HOST
             STAGING_CLOUDFLARE_ACCESS_AUD
             STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN
@@ -983,6 +985,7 @@ jobs:
       PROD_PASSWORD_PBKDF2_ITERATIONS: ${{ vars.PROD_PASSWORD_PBKDF2_ITERATIONS }}
       PROD_MFA_ISSUER_NAME: ${{ vars.PROD_MFA_ISSUER_NAME }}
       PROD_PASSWORD_RESET_EMAIL_FROM: ${{ vars.PROD_PASSWORD_RESET_EMAIL_FROM }}
+      PROD_ROOT_ADMIN_EMAILS: ${{ vars.ROOT_ADMIN_EMAILS }}
       PROD_SMTP_HOST: ${{ vars.PROD_SMTP_HOST }}
     steps:
       - name: Check out repository
@@ -1008,6 +1011,7 @@ jobs:
             PROD_PASSWORD_PBKDF2_ITERATIONS
             PROD_MFA_ISSUER_NAME
             PROD_PASSWORD_RESET_EMAIL_FROM
+            PROD_ROOT_ADMIN_EMAILS
             PROD_SMTP_HOST
             PROD_EC2_KNOWN_HOSTS
             PROD_EC2_SSH_PRIVATE_KEY_B64

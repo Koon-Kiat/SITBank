@@ -105,6 +105,7 @@ NON_SECRET_RUNTIME_ENVIRONMENT = tuple(
             "PASSWORD_RESET_EMAIL_FROM",
             "MFA_KEK_ACTIVE_ID",
             "MFA_ISSUER_NAME",
+            "ROOT_ADMIN_EMAILS",
             "SESSION_HMAC_ACTIVE_KEY_ID",
             "SMTP_HOST",
             *NON_SECRET_DEFAULTS,
