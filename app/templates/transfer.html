@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+
+{% block title %}Local Transfer | SITBank{% endblock %}
+
+{% block content %}
+<section class="security-page profile-page">
+  <div class="dashboard-header">
+    <div class="page-heading">
+      <p class="eyebrow">Local Transfer</p>
+      <h1>Transfer to {{ payee.recipient_name }}</h1>
+      <p class="muted">Sending to •••-•••-{{ payee.account_number[-3:] }} ({{ payee.nickname }}). Your MFA code is required before the transfer is confirmed.</p>
+    </div>
+    <div class="button-row">
+      <a class="button secondary" href="{{ url_for('banking.payees') }}">Cancel</a>
+    </div>
+  </div>
+
+  <div class="profile-grid">
+    <article class="profile-panel profile-summary">
+      <div class="profile-panel-title">
+        <p class="eyebrow">Recipient</p>
+        <h2>{{ payee.recipient_name }}</h2>
+      </div>
+      <p class="muted">Account: •••-•••-{{ payee.account_number[-3:] }}</p>
+      <p class="muted">Nickname: {{ payee.nickname }}</p>
+      <p class="muted">Transfers are in SGD. Maximum single transfer: SGD 50,000.00.</p>
+    </article>
+
+    <article class="profile-panel profile-card">
+      <div class="profile-panel-title">
+        <p class="eyebrow">Transfer details</p>
+        <h2>Enter amount</h2>
+      </div>
+      <form method="post" action="{{ url_for('banking.transfer_submit', payee_id=payee.id) }}" novalidate>
+        {{ form.hidden_tag() }}
+        <div class="form-group">
+          <label for="{{ form.amount.id }}">Amount (SGD)</label>
+          {{ form.amount(autocomplete="off", maxlength="13", placeholder="0.00", inputmode="decimal") }}
+          {% for error in form.amount.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+          <p class="hint">Enter the amount to transfer (e.g. 100.00). Min: 0.01, Max: 50,000.00.</p>
+        </div>
+        <div class="form-group">
+          <label for="{{ form.reference.id }}">Reference (optional)</label>
+          {{ form.reference(autocomplete="off", maxlength="128", placeholder="e.g. Rent payment") }}
+          {% for error in form.reference.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+          <p class="hint">A short note for your records (max 128 characters).</p>
+        </div>
+        <div class="form-group">
+          <label for="{{ form.totp_code.id }}">Authenticator code</label>
+          {{ form.totp_code(inputmode="numeric", autocomplete="one-time-code", maxlength="6", placeholder="6-digit code") }}
+          {% for error in form.totp_code.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+          {{ form.stepup_token() }}
+          <p class="hint">Required to authorise this transfer.</p>
+        </div>
+        <button class="button full" type="submit">Review Transfer</button>
+      </form>
+    </article>
+  </div>
+</section>
+{% endblock %}

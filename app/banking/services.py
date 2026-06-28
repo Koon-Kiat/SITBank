@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from collections.abc import Mapping, MutableMapping
+from decimal import Decimal
 
 from marshmallow import ValidationError
 
 from app.auth.services import AuthError, ensure_account_not_frozen
 from app.extensions import db
-from app.banking.schemas import PublicTransactionSchema
-from app.models import User
+from app.banking.schemas import MAX_TRANSACTION_AMOUNT, MIN_TRANSACTION_AMOUNT, PublicTransactionSchema
+from app.models import Payee, Transaction, User
 from app.security.audit import audit_event, audit_event_required, audit_reference
 
 
@@ -274,6 +276,77 @@ def _record_idempotency_key_use(
         return
     if existing_hash != payload_hash:
         raise AuthError("Idempotency key already used for a different transaction request", 409)
+
+
+def execute_local_transfer(
+    *,
+    sender: User,
+    payee: Payee,
+    amount: Decimal,
+    reference: str = "",
+) -> str:
+    """Atomically debit sender and credit recipient. Returns transaction_ref."""
+    ensure_outbound_transfer_allowed(sender)
+
+    if amount < MIN_TRANSACTION_AMOUNT or amount > MAX_TRANSACTION_AMOUNT:
+        raise AuthError("Transfer amount is out of the allowed range.", 400)
+
+    recipient_user = User.query.filter_by(account_number=payee.account_number).first()
+    if not recipient_user:
+        audit_outbound_transfer(
+            sender,
+            "failure",
+            metadata={"reason": "recipient_not_found"},
+            payee_account=audit_reference("payee_account", payee.account_number),
+        )
+        db.session.commit()
+        raise AuthError("Recipient account not found.", 400)
+
+    # Lock rows in consistent ID order to prevent deadlocks
+    lock_ids = sorted([sender.id, recipient_user.id])
+    locked = {
+        u.id: u
+        for u in User.query.filter(User.id.in_(lock_ids)).with_for_update().all()
+    }
+    locked_sender = locked[sender.id]
+    locked_recipient = locked[recipient_user.id]
+
+    if locked_sender.balance < amount:
+        audit_outbound_transfer(
+            sender,
+            "failure",
+            metadata={"reason": "insufficient_funds", "amount": str(amount)},
+            payee_account=audit_reference("payee_account", payee.account_number),
+        )
+        db.session.commit()
+        raise AuthError("Insufficient funds.", 400)
+
+    txn_ref = str(uuid.uuid4())
+    safe_reference = (reference or "")[:128]
+    locked_sender.balance -= amount
+    locked_recipient.balance += amount
+    db.session.add(
+        Transaction(
+            transaction_ref=txn_ref,
+            sender_id=locked_sender.id,
+            recipient_id=locked_recipient.id,
+            payee_id=payee.id,
+            amount=amount,
+            reference=safe_reference,
+            status="completed",
+        )
+    )
+
+    # audit_outbound_transfer with "success" triggers audit_event_required then commits
+    # all pending session changes (balance updates + transaction row) atomically
+    audit_outbound_transfer(
+        sender,
+        "success",
+        metadata={"amount": str(amount), "reference": safe_reference},
+        transaction_reference=audit_reference("transaction_reference", txn_ref),
+        payee_account=audit_reference("payee_account", payee.account_number),
+    )
+    return txn_ref
 
 
 def _requires_durable_audit(action: str, outcome: str) -> bool:

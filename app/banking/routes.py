@@ -16,10 +16,14 @@ from flask import (
 )
 from sqlalchemy.exc import IntegrityError
 
+from decimal import Decimal, InvalidOperation
+
 from app.auth.forms import CsrfOnlyForm, MfaOrStepUpForm
 from app.auth.mfa_policy import has_enrolled_mfa_method
 from app.auth.services import AuthError, verify_high_risk_authorization
-from app.banking.forms import AddPayeeForm
+from app.banking.forms import AddPayeeForm, TransferForm
+from app.banking.schemas import MAX_TRANSACTION_AMOUNT, MIN_TRANSACTION_AMOUNT
+from app.banking.services import execute_local_transfer
 from app.extensions import db, limiter
 from app.models import Payee, User
 from app.security.audit import audit_event, audit_reference
@@ -30,6 +34,7 @@ from app.web.routes import web_login_required, web_not_frozen_required
 banking_bp = Blueprint("banking", __name__, url_prefix="/banking")
 
 _PENDING_PAYEE_TTL = 300  # seconds; user has 5 min to complete MFA after step 1
+_PENDING_TRANSFER_TTL = 300  # seconds; user has 5 min to confirm after MFA step-up
 _ACCOUNT_RE = re.compile(r"^[0-9]{9}$")
 
 
@@ -317,4 +322,149 @@ def payees_remove_submit(payee_id: int):
     db.session.commit()
 
     flash("Payee removed.", "success")
+    return redirect(url_for("banking.payees"))
+
+
+# ── Local Transfer: step 1 — amount + MFA step-up ──────────────────────────────
+
+@banking_bp.get("/transfer/<int:payee_id>")
+@web_login_required
+@web_not_frozen_required
+def transfer(payee_id: int):
+    # A01: ownership check prevents IDOR
+    payee = Payee.query.filter_by(id=payee_id, user_id=g.current_user.id).first_or_404()
+    cooldown_seconds = current_app.config.get("PAYEE_COOLDOWN_SECONDS", 60)
+    status = _cooldown_status(payee, cooldown_seconds)
+    if status["status"] != "active":
+        flash(f"This payee is still in cooldown. Available in {status['remaining']}.", "warning")
+        return redirect(url_for("banking.payees"))
+    return render_template("transfer.html", form=TransferForm(), payee=payee)
+
+
+@banking_bp.post("/transfer/<int:payee_id>")
+@limiter.limit("5 per hour", key_func=mfa_principal)
+@web_login_required
+@web_not_frozen_required
+def transfer_submit(payee_id: int):
+    # A01: ownership check before processing anything
+    payee = Payee.query.filter_by(id=payee_id, user_id=g.current_user.id).first_or_404()
+    cooldown_seconds = current_app.config.get("PAYEE_COOLDOWN_SECONDS", 60)
+    if _cooldown_status(payee, cooldown_seconds)["status"] != "active":
+        flash("Payee is still in cooldown.", "error")
+        return redirect(url_for("banking.payees"))
+
+    form = TransferForm()
+    if not form.validate_on_submit():
+        return render_template("transfer.html", form=form, payee=payee), 400
+
+    # A03: parse as Decimal — never float — to avoid precision errors
+    try:
+        amount = Decimal(form.amount.data.strip())
+    except InvalidOperation:
+        flash("Invalid amount.", "error")
+        return render_template("transfer.html", form=form, payee=payee), 400
+
+    if amount < MIN_TRANSACTION_AMOUNT or amount > MAX_TRANSACTION_AMOUNT:
+        flash(
+            f"Amount must be between SGD {MIN_TRANSACTION_AMOUNT} and SGD {MAX_TRANSACTION_AMOUNT}.",
+            "error",
+        )
+        return render_template("transfer.html", form=form, payee=payee), 400
+
+    # A07: MFA step-up required before pending state is stored
+    try:
+        verify_high_risk_authorization(
+            g.current_user,
+            form.totp_code.data,
+            form.stepup_token.data,
+            "transfer",
+        )
+    except AuthError as exc:
+        flash(exc.message, "error")
+        return render_template("transfer.html", form=form, payee=payee), exc.status_code
+
+    # A08: all sensitive fields sourced from DB, not client; pending state stored server-side
+    session["pending_transfer"] = {
+        "payee_id": payee_id,
+        "payee_account_number": payee.account_number,
+        "recipient_name": payee.recipient_name,
+        "amount": str(amount),
+        "reference": (form.reference.data or "").strip()[:128],
+        "authorization_action": "transfer",
+        "authorized_at": datetime.now(timezone.utc).isoformat(),
+        "expires_at": (
+            datetime.now(timezone.utc) + timedelta(seconds=_PENDING_TRANSFER_TTL)
+        ).isoformat(),
+    }
+    return redirect(url_for("banking.transfer_confirm", payee_id=payee_id))
+
+
+# ── Local Transfer: step 2 — confirmation ──────────────────────────────────────
+
+@banking_bp.get("/transfer/<int:payee_id>/confirm")
+@web_login_required
+@web_not_frozen_required
+def transfer_confirm(payee_id: int):
+    pending = session.get("pending_transfer")
+    if not pending or pending.get("payee_id") != payee_id:
+        flash("No pending transfer. Please start again.", "warning")
+        return redirect(url_for("banking.payees"))
+    if datetime.now(timezone.utc) > datetime.fromisoformat(pending["expires_at"]):
+        session.pop("pending_transfer", None)
+        flash("Request expired. Please start again.", "warning")
+        return redirect(url_for("banking.payees"))
+    return render_template("confirm_transfer.html", form=CsrfOnlyForm(), pending=pending)
+
+
+@banking_bp.post("/transfer/<int:payee_id>/confirm")
+@limiter.limit("5 per 15 minutes", key_func=mfa_principal)
+@web_login_required
+@web_not_frozen_required
+def transfer_confirm_submit(payee_id: int):
+    form = CsrfOnlyForm()
+
+    # A04: consume pending state immediately — prevents replay even if commit fails
+    pending = session.pop("pending_transfer", None)
+    if not pending or pending.get("payee_id") != payee_id:
+        flash("No pending transfer. Please start again.", "warning")
+        return redirect(url_for("banking.payees"))
+    if datetime.now(timezone.utc) > datetime.fromisoformat(pending["expires_at"]):
+        flash("Request expired. Please start again.", "warning")
+        return redirect(url_for("banking.payees"))
+    if pending.get("authorization_action") != "transfer" or not pending.get("authorized_at"):
+        flash("Transfer authorization missing. Please start again.", "warning")
+        return redirect(url_for("banking.payees"))
+
+    if not form.validate_on_submit():
+        session["pending_transfer"] = pending
+        return render_template("confirm_transfer.html", form=form, pending=pending), 400
+
+    try:
+        amount = Decimal(pending["amount"])
+    except (InvalidOperation, KeyError):
+        flash("Invalid transfer amount. Please start again.", "error")
+        return redirect(url_for("banking.payees"))
+
+    # A01: re-fetch payee server-side — re-validates ownership and cooldown at execution time
+    payee = Payee.query.filter_by(id=payee_id, user_id=g.current_user.id).first_or_404()
+    cooldown_seconds = current_app.config.get("PAYEE_COOLDOWN_SECONDS", 60)
+    if _cooldown_status(payee, cooldown_seconds)["status"] != "active":
+        flash("Payee is still in cooldown.", "error")
+        return redirect(url_for("banking.payees"))
+
+    try:
+        txn_ref = execute_local_transfer(
+            sender=g.current_user,
+            payee=payee,
+            amount=amount,
+            reference=pending.get("reference", ""),
+        )
+    except AuthError as exc:
+        flash(exc.message, "error")
+        return redirect(url_for("banking.payees"))
+
+    flash(
+        f"Transfer of SGD {amount:.2f} to {payee.recipient_name} is complete. Ref: {txn_ref[:8].upper()}",
+        "success",
+    )
     return redirect(url_for("banking.payees"))

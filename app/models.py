@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from sqlalchemy import Index, func
 
@@ -26,6 +27,13 @@ class User(db.Model):
     mfa_secret_nonce = db.Column(db.LargeBinary(12), nullable=True)
     mfa_enabled = db.Column(db.Boolean, nullable=False, default=False)
     mfa_step_up_preference = db.Column(db.String(32), nullable=False, default="totp")
+
+    balance = db.Column(
+        db.Numeric(12, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default="0.00",
+    )
 
     is_frozen = db.Column(db.Boolean, nullable=False, default=False)
     failed_login_count = db.Column(db.Integer, nullable=False, default=0)
@@ -525,3 +533,44 @@ class Payee(db.Model):
 
     def __repr__(self) -> str:
         return f"<Payee id={self.id!r} user_id={self.user_id!r} nickname={self.nickname!r}>"
+
+
+class Transaction(db.Model):
+    __tablename__ = "transactions"
+
+    id = db.Column(db.Integer, primary_key=True)
+    transaction_ref = db.Column(db.String(36), nullable=False, unique=True, index=True)
+    sender_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    recipient_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    payee_id = db.Column(db.Integer, db.ForeignKey("payees.id"), nullable=True, index=True)
+    amount = db.Column(db.Numeric(12, 2), nullable=False)
+    reference = db.Column(db.String(128), nullable=False, default="")
+    status = db.Column(db.String(32), nullable=False, default="completed")
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+    )
+
+    sender = db.relationship(
+        "User",
+        foreign_keys=[sender_id],
+        backref=db.backref("sent_transactions", lazy="selectin"),
+    )
+    recipient = db.relationship(
+        "User",
+        foreign_keys=[recipient_id],
+        backref=db.backref("received_transactions", lazy="selectin"),
+    )
+    payee = db.relationship("Payee", backref="transactions")
+
+    __table_args__ = (
+        db.CheckConstraint(
+            "status IN ('completed', 'failed')",
+            name="ck_transactions_status",
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return f"<Transaction id={self.id!r} ref={self.transaction_ref!r} amount={self.amount!r}>"
