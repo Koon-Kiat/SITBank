@@ -109,10 +109,20 @@ def apply_admin_runtime_database_privileges(
             connection.execute(
                 text(f"GRANT USAGE ON SCHEMA {qualified_schema} TO {quoted_admin_role}")
             )
+            qualified_audit_table = _qualified_table_name(schema, "security_audit_events")
             connection.execute(
                 text(
-                    f"GRANT SELECT, INSERT ON ALL TABLES IN SCHEMA {qualified_schema} "
+                    f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA {qualified_schema} "
                     f"TO {quoted_admin_role}"
+                )
+            )
+            connection.execute(
+                text(f"GRANT SELECT, INSERT ON TABLE {qualified_audit_table} TO {quoted_admin_role}")
+            )
+            connection.execute(
+                text(
+                    f"REVOKE UPDATE, DELETE, TRUNCATE ON TABLE {qualified_audit_table} "
+                    f"FROM {quoted_admin_role}"
                 )
             )
             connection.execute(
@@ -124,7 +134,7 @@ def apply_admin_runtime_database_privileges(
             connection.execute(
                 text(
                     f"ALTER DEFAULT PRIVILEGES FOR ROLE {quoted_migration_role} "
-                    f"IN SCHEMA {qualified_schema} GRANT SELECT, INSERT ON TABLES "
+                    f"IN SCHEMA {qualified_schema} GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES "
                     f"TO {quoted_admin_role}"
                 )
             )
@@ -155,6 +165,10 @@ def apply_admin_runtime_database_privileges(
                 raise RuntimeError(
                     "ADMIN_DATABASE_URL did not authenticate to the configured database"
                 )
+            _assert_admin_runtime_database_privileges(
+                admin_connection,
+                schema=schema,
+            )
     finally:
         admin_engine.dispose()
 
@@ -164,6 +178,69 @@ def apply_admin_runtime_database_privileges(
         database=database,
         schema=schema,
     )
+
+
+def _assert_admin_runtime_database_privileges(connection, *, schema: str) -> None:
+    required_table_privileges = {
+        "users": ("SELECT", "INSERT", "UPDATE"),
+        "staff_invites": ("SELECT", "INSERT", "UPDATE"),
+        "manual_recovery_requests": ("SELECT", "UPDATE"),
+        "auth_attempt_counters": ("SELECT", "INSERT", "UPDATE", "DELETE"),
+        "totp_replay_records": ("SELECT", "INSERT"),
+        "server_side_sessions": ("SELECT", "INSERT", "UPDATE", "DELETE"),
+        "security_audit_events": ("SELECT", "INSERT"),
+    }
+    for table_name, privileges in required_table_privileges.items():
+        qualified_table = f"{schema}.{table_name}"
+        for privilege in privileges:
+            has_privilege = bool(
+                connection.execute(
+                    text(
+                        "SELECT has_table_privilege("
+                        "current_user, :table_name, :privilege"
+                        ")"
+                    ),
+                    {"table_name": qualified_table, "privilege": privilege},
+                ).scalar_one()
+            )
+            if not has_privilege:
+                raise RuntimeError(
+                    f"ADMIN_DATABASE_URL role is missing {privilege} on {qualified_table}"
+                )
+
+    audit_table = f"{schema}.security_audit_events"
+    for privilege in ("UPDATE", "DELETE", "TRUNCATE"):
+        has_privilege = bool(
+            connection.execute(
+                text(
+                    "SELECT has_table_privilege("
+                    "current_user, :table_name, :privilege"
+                    ")"
+                ),
+                {"table_name": audit_table, "privilege": privilege},
+            ).scalar_one()
+        )
+        if has_privilege:
+            raise RuntimeError(
+                f"ADMIN_DATABASE_URL role must not have {privilege} on {audit_table}"
+            )
+
+    for sequence_name in ("users_id_seq", "security_audit_events_id_seq"):
+        qualified_sequence = f"{schema}.{sequence_name}"
+        has_usage = bool(
+            connection.execute(
+                text(
+                    "SELECT has_sequence_privilege("
+                    "current_user, :sequence_name, 'USAGE'"
+                    ")"
+                ),
+                {"sequence_name": qualified_sequence},
+            ).scalar_one()
+        )
+        if not has_usage:
+            raise RuntimeError(
+                f"ADMIN_DATABASE_URL role is missing USAGE on {qualified_sequence}"
+            )
 
 
 def apply_runtime_audit_table_privileges(
