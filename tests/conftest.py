@@ -212,6 +212,7 @@ class TestConfig:
 SECURITY_TEST_FILES = frozenset(
     {
         "tests/test_account_security_actions.py",
+        "tests/test_admin_bootstrap_root.py",
         "tests/test_admin_manual_recovery.py",
         "tests/test_admin_route_inventory_security.py",
         "tests/test_admin_staff_invites.py",

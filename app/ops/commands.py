@@ -10,6 +10,7 @@ from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
 from flask import Flask
 
+from app.admin.bootstrap_root import RootAdminBootstrapError, bootstrap_root_admin
 from app.extensions import db
 from app.models import User
 from app.security.alerts import build_security_alert_report, deliver_security_alerts
@@ -28,6 +29,71 @@ from app.ops.db_privileges import (
 
 
 def register_ops_commands(app: Flask) -> None:
+    @app.cli.group("admin")
+    def admin_cli() -> None:
+        """Admin-only management commands."""
+
+    @admin_cli.command("bootstrap-root")
+    @click.option(
+        "--email",
+        "workplace_email",
+        prompt="Root admin workplace email",
+        help="Allowlisted workplace email from ROOT_ADMIN_EMAILS.",
+    )
+    @click.option(
+        "--username",
+        prompt="Username",
+        help="Root admin username to create or set.",
+    )
+    @click.option(
+        "--full-name",
+        prompt="Full name",
+        help="Root admin display name.",
+    )
+    @click.option(
+        "--reset-existing",
+        is_flag=True,
+        help="Rotate password and TOTP for an existing allowlisted root admin.",
+    )
+    def bootstrap_root_admin_command(
+        workplace_email: str,
+        username: str,
+        full_name: str,
+        reset_existing: bool,
+    ) -> None:
+        """Create the first allowlisted root admin from the server shell."""
+
+        password = click.prompt(
+            "Root admin password",
+            hide_input=True,
+            confirmation_prompt=True,
+        )
+        try:
+            result = bootstrap_root_admin(
+                workplace_email=workplace_email,
+                username=username,
+                full_name=full_name,
+                password=password,
+                reset_existing=reset_existing,
+            )
+        except RootAdminBootstrapError as exc:
+            raise click.ClickException(str(exc)) from exc
+
+        action = "created" if result.created else "updated"
+        click.echo(f"Root admin account {action}: {result.workplace_email}")
+        click.echo("")
+        click.secho(
+            "ONE-TIME SENSITIVE TOTP SETUP OUTPUT",
+            fg="yellow",
+            bold=True,
+            err=True,
+        )
+        click.echo("Add this account to an authenticator app now. Do not store this output in logs, tickets, or chat.")
+        click.echo(f"Manual entry secret: {result.manual_entry_secret}")
+        click.echo(f"Provisioning URI: {result.otpauth_uri}")
+        click.echo("")
+        click.echo("The password was accepted from a hidden prompt and was not printed.")
+
     @app.cli.command("verify-migration-baseline")
     def verify_migration_baseline() -> None:
         """Verify an existing schema before adopting the initial revision."""
