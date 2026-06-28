@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+
+{% block title %}Confirm Transfer | SITBank{% endblock %}
+
+{% block content %}
+<section class="security-page profile-page">
+  <div class="dashboard-header">
+    <div class="page-heading">
+      <p class="eyebrow">Local Transfer</p>
+      <h1>Confirm Transfer</h1>
+      <p class="muted">Review the details below before confirming. This action cannot be undone.</p>
+    </div>
+    <div class="button-row">
+      <a class="button secondary" href="{{ url_for('banking.payees') }}">Cancel</a>
+    </div>
+  </div>
+
+  <div class="profile-grid">
+    <article class="profile-panel profile-summary">
+      <div class="profile-panel-title">
+        <p class="eyebrow">Transfer summary</p>
+        <h2>SGD {{ "%.2f"|format(pending.amount|float) }}</h2>
+      </div>
+      <p class="muted">To: {{ pending.recipient_name }}</p>
+      <p class="muted">Account: •••-•••-{{ pending.payee_account_number[-3:] }}</p>
+      {% if pending.reference %}
+      <p class="muted">Reference: {{ pending.reference }}</p>
+      {% endif %}
+      <p class="muted">Once confirmed, the transfer is immediate and cannot be reversed.</p>
+    </article>
+
+    <article class="profile-panel profile-card">
+      <div class="profile-panel-title">
+        <p class="eyebrow">Authorised transfer</p>
+        <h2>Confirm and send</h2>
+      </div>
+      <form method="post" action="{{ url_for('banking.transfer_confirm_submit', payee_id=pending.payee_id) }}" novalidate>
+        {{ form.hidden_tag() }}
+        <button class="button full" type="submit">Confirm Transfer</button>
+      </form>
+    </article>
+  </div>
+</section>
+{% endblock %}
