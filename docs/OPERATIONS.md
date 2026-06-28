@@ -401,12 +401,15 @@ credentials or secrets are needed or permitted.
 Authenticated DAST release evidence is separate from live TLS evidence. The DAST
 smoke helper creates synthetic customer identities only, writes `auth-cookie`
 and `zap-replacer.properties` as temporary `0600` files under `umask 077`, and
-passes only `-configfile /run/dast/zap-replacer.properties` to ZAP. The cookie
-is not passed as a raw process argument, and neither file belongs in GitHub
-artifacts, job summaries, chat, screenshots, or issue comments. If a DAST cookie
-or full replacer config is exposed, cancel the run, remove the artifact, treat
-the synthetic session as compromised until the run cleanup completes, and review
-the workflow/script change before retrying.
+passes only non-secret startup options plus
+`-configfile /run/dast/zap-replacer.properties` to ZAP. The non-secret
+`-dir /zap/wrk/.ZAP` option gives the scanner UID a writable ZAP home without
+relaxing cookie-file permissions. The cookie is not passed as a raw process
+argument, and neither file belongs in GitHub artifacts, job summaries, chat,
+screenshots, or issue comments. If a DAST cookie or full replacer config is
+exposed, cancel the run, remove the artifact, treat the synthetic session as
+compromised until the run cleanup completes, and review the workflow/script
+change before retrying.
 
 Treat a failed scan as a release/deployment verification failure. A failed
 staging scan blocks production deployment, while a failed production scan

@@ -31,10 +31,14 @@ def test_smoke_test_keeps_dast_cookie_out_of_host_command_arguments():
     assert "replacer.full_list(0).replacement=${" not in smoke_test
     assert "cat \"${work_dir}/dast/auth-cookie\"" not in smoke_test
     assert "-configfile /run/dast/zap-replacer.properties" in smoke_test
+    assert "-dir /zap/wrk/.ZAP -configfile /run/dast/zap-replacer.properties" in smoke_test
     assert "--volume \"${dast_mount_source}:/run/dast:ro\"" in smoke_test
     assert "--user 10001:10001" in smoke_test
     assert "--env HOME=/zap/wrk" in smoke_test
     assert "--workdir /zap/wrk" in smoke_test
+    assert "Keep the UID aligned with the 0600 DAST config owner" in smoke_test
+    assert "export MSYS_NO_PATHCONV=1" in smoke_test
+    assert "converted explicitly by docker_bind_source" in smoke_test
 
 
 def test_dast_secret_files_are_restricted_and_cleaned_up_by_contract():
@@ -46,8 +50,10 @@ def test_dast_secret_files_are_restricted_and_cleaned_up_by_contract():
     assert "trap on_error ERR" in smoke_test
     assert "rm -rf -- \"${work_dir}\"" in smoke_test
     assert "umask 077" in smoke_test
-    assert "install -d -m 0700 \"${work_dir}/dast\"" in smoke_test
-    assert "chmod 0777 \"${work_dir}/dast\"" in smoke_test
+    assert "install_host_dir 0700 \"${work_dir}/dast\"" in smoke_test
+    assert "chmod_host_path 0777 \"${work_dir}/dast\"" in smoke_test
+    assert "install -d -m \"${mode}\" \"$@\"" in smoke_test
+    assert "chmod \"${mode}\" \"$@\" 2>/dev/null || true" in smoke_test
     assert "the cookie and ZAP config files inside remain 0600" in smoke_test
     assert "--output /run/dast/auth-cookie" in smoke_test
     assert "--zap-replacer-config-output /run/dast/zap-replacer.properties" in smoke_test
