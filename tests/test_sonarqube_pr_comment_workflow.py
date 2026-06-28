@@ -7,6 +7,7 @@ import yaml
 
 
 WORKFLOW_PATH = Path(".github/workflows/sonarqube.yml")
+CI_WORKFLOW_PATH = Path(".github/workflows/ci-deploy.yml")
 
 
 def _workflow() -> tuple[str, dict]:
@@ -24,14 +25,25 @@ def _comment_step(workflow: dict) -> dict:
 
 def test_sonarqube_workflow_uses_safe_pr_trigger_and_least_privilege():
     text, workflow = _workflow()
+    ci_text = CI_WORKFLOW_PATH.read_text(encoding="utf-8")
+    ci = yaml.load(ci_text, Loader=yaml.BaseLoader)
 
     assert WORKFLOW_PATH.is_file()
-    assert "pull_request" in workflow["on"]
+    assert set(workflow["on"]) == {"workflow_call"}
+    assert "pull_request" in ci["on"]
+    assert "pull_request_target" not in ci["on"]
     assert "pull_request_target" not in workflow["on"]
     assert "pull_request_target" not in text
+    assert "pull_request_target" not in ci_text
     assert "permissions: write-all" not in text
+    assert "permissions: write-all" not in ci_text
     assert workflow["permissions"] == {}
     assert workflow["jobs"]["analyze"]["permissions"] == {
+        "contents": "read",
+        "issues": "write",
+        "pull-requests": "read",
+    }
+    assert ci["jobs"]["sonarqube"]["permissions"] == {
         "contents": "read",
         "issues": "write",
         "pull-requests": "read",

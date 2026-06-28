@@ -245,7 +245,7 @@ jobs:
 
       - name: Run tests and security checks
         run: |
-          python -m pytest -q -n auto --durations=30 --durations-min=0.5
+          python -m pytest -q -n auto --cov=app --cov-report=xml:coverage.xml --cov-report=term --durations=30 --durations-min=0.5
           python -m compileall app config.py wsgi.py admin_wsgi.py
           python -m pip check
           python -m bandit -q -ll -r app ops config.py wsgi.py
@@ -253,6 +253,29 @@ jobs:
           python -m pip_audit --disable-pip --require-hashes -r requirements-dev.lock
           python ops/security/check_dependency_locks.py
           python ops/security/scan_repository_secrets.py --history
+
+      # Pinned to actions/upload-artifact v6.0.0 (Node.js 24).
+      - name: Upload SonarQube coverage report
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: sonarqube-coverage-${{ github.run_id }}
+          path: coverage.xml
+          if-no-files-found: error
+          retention-days: 1
+
+  sonarqube:
+    if: github.event_name != 'schedule'
+    needs: [test, resolve-source]
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+    uses: ./.github/workflows/sonarqube.yml
+    with:
+      coverage_artifact: sonarqube-coverage-${{ github.run_id }}
+      source_sha: ${{ needs.resolve-source.outputs.source_sha }}
+    secrets:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
   image-test:
     if: github.event_name == 'pull_request' || github.event_name == 'schedule'

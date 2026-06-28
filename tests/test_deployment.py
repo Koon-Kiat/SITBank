@@ -1377,6 +1377,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         "workflow-security",
         "dependency-review",
         "test",
+        "sonarqube",
         "image-test",
         "deployment-preflight",
         "publish",

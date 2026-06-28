@@ -46,9 +46,10 @@ contributor-side parity check, not a replacement for protected CI.
 
 ## SonarQube Cloud
 
-Pull requests to `main` also generate `coverage.xml` from the full pytest suite
-and send the configured source/test scope to SonarQube Cloud when the trusted
-workflow can access `SONAR_TOKEN`. The initial quality gate is reporting-only,
+Pull requests to `main` generate `coverage.xml` during the existing CI pytest
+run and pass it to the downstream SonarQube job, so the full suite is not run
+twice. The configured source/test scope is sent to SonarQube Cloud when the
+trusted workflow can access `SONAR_TOKEN`. The initial quality gate is reporting-only,
 so review the maintainability, duplication, reliability, security, and
 coverage dashboard without treating its gate as a merge or deployment
 approval. Fork pull requests run coverage but explicitly skip the secret-backed

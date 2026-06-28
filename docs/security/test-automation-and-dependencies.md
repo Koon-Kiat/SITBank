@@ -39,7 +39,7 @@ applicable unless a frontend package manager is added.
 | GitHub dependency review | `.github/workflows/ci-deploy.yml` | Reviews dependency changes in pull requests |
 | Trivy image scans | `.github/workflows/ci-deploy.yml` | Scans built images and repository filesystem paths; `.trivyignore` exceptions are tested |
 | CodeQL | `.github/workflows/codeql.yml` | Runs Python security-extended static analysis when the repository is public |
-| SonarQube Cloud | `.github/workflows/sonarqube.yml`, `sonar-project.properties` | Reports private-repository code quality, duplication, maintainability, security findings, and `coverage.xml`; initial quality gate is non-blocking |
+| SonarQube Cloud | `.github/workflows/ci-deploy.yml`, `.github/workflows/sonarqube.yml`, `sonar-project.properties` | Reuses the CI test job's `coverage.xml` artifact to report private-repository code quality, duplication, maintainability, and security findings without rerunning pytest; initial quality gate is non-blocking |
 | Bandit | `scripts/ci-local`, `.github/workflows/ci-deploy.yml` | Runs a high-confidence Python security scan |
 | Secret scanner | `ops/security/scan_repository_secrets.py` | Scans tracked files and, in CI/local CI, git history for private keys and common token formats |
 | Action hygiene | `.github/workflows/ci-deploy.yml` | Runs actionlint and zizmor; tests require actions to be SHA-pinned |
@@ -152,10 +152,12 @@ The separate `.github/workflows/codeql.yml` runs CodeQL Python
 `.github/workflows/bootstrap-ec2.yml` signs bootstrap artifacts with cosign and
 is covered by deployment tests.
 
-The separate `.github/workflows/sonarqube.yml` runs full-suite coverage and
-reporting-only SonarQube Cloud analysis for the private repository. It requires
-only `SONAR_TOKEN`, does not use deployment secrets, and does not change the
-existing CodeQL policy. Plan eligibility, cloud source processing, scope,
+The CI test job runs full-suite coverage once and uploads `coverage.xml`; its
+downstream job calls reusable `.github/workflows/sonarqube.yml` to perform
+reporting-only SonarQube Cloud analysis for the private repository. The
+reusable job requires only `SONAR_TOKEN`, does not use deployment secrets or
+rerun pytest, and does not change the existing CodeQL policy. Plan eligibility,
+cloud source processing, scope,
 exclusions, token rotation, triage, and limitations are documented in
 `docs/security/sonarqube.md`.
 

@@ -97,15 +97,20 @@ appears in logs, summaries, or artifacts.
 
 ## SonarQube Cloud
 
-`.github/workflows/sonarqube.yml` runs independently on pull requests to
-`main`, pushes to `main`, and manual dispatch. It installs the hash-locked
-development dependencies, runs the complete pytest suite with `pytest-cov`,
-writes `coverage.xml`, and invokes the SHA-pinned official SonarQube scanner
-and SHA-pinned `actions/github-script`. The job has `contents: read`,
-`pull-requests: read`, and `issues: write`; pull requests are issue comments in
-the GitHub API, and no other write permission is granted. It requires the
-GitHub Actions secret `SONAR_TOKEN`; it does not use production environments,
-deployment credentials, or `SONAR_HOST_URL`.
+The `test` job in `.github/workflows/ci-deploy.yml` runs the complete pytest
+suite once with `pytest-cov`, writes `coverage.xml`, and uploads that file as a
+short-lived artifact. After the test job succeeds on pull requests, pushes to
+`main`, and manual runs, the downstream `sonarqube` job calls the reusable
+`.github/workflows/sonarqube.yml`. That job checks out the same immutable
+source commit, downloads `coverage.xml`, and invokes only the SHA-pinned
+official SonarQube scanner and SHA-pinned `actions/github-script`; it does not
+install dependencies or rerun pytest.
+
+The reusable job has `contents: read`, `pull-requests: read`, and
+`issues: write`; pull requests are issue comments in the GitHub API, and no
+other write permission is granted. It requires the GitHub Actions secret
+`SONAR_TOKEN`; it does not use production environments, deployment
+credentials, or `SONAR_HOST_URL`. Scheduled CI runs skip the SonarQube job.
 
 The initial SonarQube quality gate is reporting-only and is not a release or
 deployment dependency. After a successful trusted internal pull-request scan,

@@ -7,12 +7,19 @@ import yaml
 
 
 WORKFLOW_PATH = Path(".github/workflows/sonarqube.yml")
+CI_WORKFLOW_PATH = Path(".github/workflows/ci-deploy.yml")
 PROPERTIES_PATH = Path("sonar-project.properties")
 SONAR_DOC_PATH = Path("docs/security/sonarqube.md")
 
 
 def _workflow() -> tuple[str, dict]:
     text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    data = yaml.load(text, Loader=yaml.BaseLoader)
+    return text, data
+
+
+def _ci_workflow() -> tuple[str, dict]:
+    text = CI_WORKFLOW_PATH.read_text(encoding="utf-8")
     data = yaml.load(text, Loader=yaml.BaseLoader)
     return text, data
 
@@ -26,19 +33,28 @@ def _properties() -> dict[str, str]:
     return result
 
 
-def test_sonarqube_workflow_has_required_triggers_and_least_privilege():
+def test_sonarqube_workflow_is_reusable_and_has_least_privilege():
     text, workflow = _workflow()
+    ci_text, ci = _ci_workflow()
 
-    assert set(workflow["on"]) == {"pull_request", "push", "workflow_dispatch"}
-    assert workflow["on"]["pull_request"]["branches"] == ["main"]
-    assert workflow["on"]["pull_request"]["types"] == [
-        "opened",
-        "synchronize",
-        "reopened",
-    ]
-    assert workflow["on"]["push"]["branches"] == ["main"]
+    assert set(workflow["on"]) == {"workflow_call"}
+    workflow_call = workflow["on"]["workflow_call"]
+    assert set(workflow_call["inputs"]) == {"coverage_artifact", "source_sha"}
+    assert all(
+        config["required"] == "true"
+        for config in workflow_call["inputs"].values()
+    )
+    assert workflow_call["secrets"]["SONAR_TOKEN"]["required"] == "false"
+    assert "pull_request" in ci["on"]
+    assert "pull_request_target" not in ci["on"]
+    assert "pull_request_target" not in ci_text
     assert workflow["permissions"] == {}
     assert workflow["jobs"]["analyze"]["permissions"] == {
+        "contents": "read",
+        "issues": "write",
+        "pull-requests": "read",
+    }
+    assert ci["jobs"]["sonarqube"]["permissions"] == {
         "contents": "read",
         "issues": "write",
         "pull-requests": "read",
@@ -46,8 +62,10 @@ def test_sonarqube_workflow_has_required_triggers_and_least_privilege():
     assert "environment:" not in text
 
 
-def test_sonarqube_workflow_is_pinned_and_generates_full_suite_coverage():
+def test_ci_runs_pytest_once_and_hands_coverage_to_sonarqube():
+    ci_text, ci = _ci_workflow()
     text, workflow = _workflow()
+    test_steps = ci["jobs"]["test"]["steps"]
     steps = workflow["jobs"]["analyze"]["steps"]
     uses = [step["uses"] for step in steps if "uses" in step]
 
@@ -55,18 +73,62 @@ def test_sonarqube_workflow_is_pinned_and_generates_full_suite_coverage():
     assert any(
         action.startswith("SonarSource/sonarqube-scan-action@") for action in uses
     )
-    checkout = next(step for step in steps if step.get("name") == "Check out repository")
+    checkout = next(
+        step for step in steps if step.get("name") == "Check out analyzed source"
+    )
     assert checkout["with"]["fetch-depth"] == "0"
     assert checkout["with"]["persist-credentials"] == "false"
+    assert checkout["with"]["ref"] == "${{ inputs.source_sha }}"
 
-    coverage = next(
-        step for step in steps if step.get("name") == "Run full tests with coverage"
+    test_command = next(
+        step for step in test_steps if step.get("name") == "Run tests and security checks"
     )["run"]
-    assert "python -m pytest -q -n auto" in coverage
-    assert "--cov=app" in coverage
-    assert "--cov-report=xml:coverage.xml" in coverage
-    assert "tests/" not in coverage
-    assert "continue-on-error" not in text
+    assert ci_text.count("python -m pytest") == 1
+    assert "python -m pytest -q -n auto" in test_command
+    assert "--cov=app" in test_command
+    assert "--cov-report=xml:coverage.xml" in test_command
+
+    upload = next(
+        step
+        for step in test_steps
+        if step.get("name") == "Upload SonarQube coverage report"
+    )
+    assert (
+        upload["uses"]
+        == "actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f"
+    )
+    assert upload["with"] == {
+        "name": "sonarqube-coverage-${{ github.run_id }}",
+        "path": "coverage.xml",
+        "if-no-files-found": "error",
+        "retention-days": "1",
+    }
+
+    sonar_call = ci["jobs"]["sonarqube"]
+    assert "test" in sonar_call["needs"]
+    assert sonar_call["uses"] == "./.github/workflows/sonarqube.yml"
+    assert sonar_call["with"] == {
+        "coverage_artifact": "sonarqube-coverage-${{ github.run_id }}",
+        "source_sha": "${{ needs.resolve-source.outputs.source_sha }}",
+    }
+
+    download = next(
+        step
+        for step in steps
+        if step.get("name") == "Download SonarQube coverage report"
+    )
+    assert (
+        download["uses"]
+        == "actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53"
+    )
+    assert download["with"] == {
+        "name": "${{ inputs.coverage_artifact }}",
+        "path": ".",
+    }
+    assert "python -m pytest" not in text
+    assert "actions/setup-python@" not in text
+    assert "pip install" not in text
+    assert "continue-on-error" not in ci_text
 
 
 def test_sonarqube_workflow_handles_token_without_deployment_secrets():

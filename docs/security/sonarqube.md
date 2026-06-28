@@ -48,9 +48,9 @@ a reviewed follow-up instead.
 4. Store it as the GitHub Actions repository or organization secret
    `SONAR_TOKEN`. Never place it in a repository variable, environment file,
    workflow input, log, issue, or committed file.
-5. Run `.github/workflows/sonarqube.yml` manually from `main`, then retain the
-   successful workflow URL and SonarQube Cloud dashboard link as review
-   evidence.
+5. Run `.github/workflows/ci-deploy.yml` from a pull request, a push to `main`,
+   or a manual CI run, then retain the successful workflow URL and SonarQube
+   Cloud dashboard link as review evidence.
 
 Cloud mode does not use `SONAR_HOST_URL`. That setting is needed only for a
 future self-hosted deployment, where a GitHub-hosted runner would also need
@@ -70,12 +70,19 @@ that both the cloud scan and PR comment were skipped.
 
 ## Coverage, Scope, And Evidence
 
-The workflow installs `requirements-dev.lock` with hashes and runs the full
-suite:
+The `test` job in `.github/workflows/ci-deploy.yml` installs
+`requirements-dev.lock` with hashes and runs the full suite once:
 
 ```text
 python -m pytest -q -n auto --cov=app --cov-report=xml:coverage.xml --cov-report=term --durations=30 --durations-min=0.5
 ```
+
+After all test and security checks pass, that job uploads only `coverage.xml`
+as a one-day artifact. Its downstream `sonarqube` job calls the reusable
+`.github/workflows/sonarqube.yml`, checks out the same resolved source commit,
+downloads the coverage artifact, and runs the scanner without rerunning pytest.
+This keeps the authoritative test result and SonarQube coverage input in the
+same workflow run while isolating `issues: write` from the test job.
 
 `sonar-project.properties` sends `app`, deployment/security material under
 `ops`, and `config.py`, `wsgi.py`, and `admin_wsgi.py` as sources.
