@@ -83,11 +83,15 @@ def test_security_gap_register_is_single_source_with_required_fields():
         "Automated retention and disposal jobs",
         "Authenticated DAST on ordinary pull requests",
         "EC2 SSH/UFW/security-group hardening deferred",
-        "Local Docker/Compose proof when Docker is unavailable",
         "Active-session count cap",
         "Device-bound session proof",
     ):
         assert open_gap in current_open
+
+    for issue_ref in ("#166", "#197", "#209", "#218"):
+        assert issue_ref in current_open
+
+    assert "Local Docker/Compose proof when Docker is unavailable" not in current_open
 
     for fixed_item in (
         "independent absolute maximum lifetime",
@@ -113,6 +117,7 @@ def test_security_gap_register_is_single_source_with_required_fields():
     assert "Incident response runbook" in implemented
     assert "Threat model and design risk register" in implemented
     assert "Security governance process" in implemented
+    assert "Strict Docker/Compose local CI mode" in implemented
 
 
 def test_issue_186_ssh_hardening_is_deferred_without_stale_artifacts():

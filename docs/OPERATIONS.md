@@ -53,6 +53,8 @@ operator-managed. None of those secret values belong in the repository.
 `staging-sitbank.pp.ua` is the Cloudflare-managed staging hostname for Access.
 The retired DuckDNS staging hostname is not an active staging deployment,
 Nginx, Certbot, or TLS-scan target.
+Issue #215 tracks the staging domain and CI/CD migration history; related
+Cloudflare Access/origin protection work is tracked by #198, #199, and #210.
 
 Routine verification:
 
@@ -97,6 +99,8 @@ local staging readiness succeeds without one, direct Nginx origin access
 returns `403` without Cloudflare's origin-pull client certificate, and the
 private admin URL is reachable only from an approved tailnet path. Tailscale
 Funnel must stay disabled for SITBank admin.
+Tailscale admin host preflight/provisioning and the private admin boundary
+decision are tracked by #200, #211, and #218.
 
 Run the manual **Verify staging Cloudflare Access** workflow before a staging
 release and after Access, DNS, IdP, token, origin address, or ingress changes.

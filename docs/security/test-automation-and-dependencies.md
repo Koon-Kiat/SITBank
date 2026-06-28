@@ -119,9 +119,14 @@ The GitHub workflow command block in `.github/workflows/ci-deploy.yml` runs the
 same core checks. Its Bandit command currently scans `app`, `ops`, `config.py`,
 and `wsgi.py`; the local wrapper additionally includes `admin_wsgi.py`.
 
-Local Docker note: `scripts/ci-local` skips Docker/Compose-only checks when
-Docker is unavailable. The skipped result is explicit; Compose validation still
-runs in CI and on local machines with Docker available.
+Local Docker note: `scripts/ci-local` skips Docker/Compose-only checks in normal
+mode when Docker is unavailable. The skipped result is explicit and partial;
+Compose validation still runs in CI and on local machines with Docker available.
+For deployment-impacting local validation, use
+`scripts/ci-local --require-docker` or
+`CI_LOCAL_REQUIRE_DOCKER=1 scripts/ci-local`; strict mode fails closed unless
+Docker, Docker Compose, and the production/staging Compose model validation all
+run successfully.
 
 ## CI/CD Security Automation
 

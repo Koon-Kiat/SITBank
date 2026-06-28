@@ -501,7 +501,9 @@ change instead of disabling the origin-pull protection.
 Use a Cloudflare-managed zone/hostname or Cloudflare Tunnel for this boundary;
 for this deployment, the approved Cloudflare-managed hostname is
 `staging-sitbank.pp.ua`. The retired DuckDNS staging hostname is not an active
-staging deployment, Nginx, Certbot, or TLS-scan target.
+staging deployment, Nginx, Certbot, or TLS-scan target. Issue #215 tracks the
+staging domain and CI/CD migration history; Cloudflare Access and origin
+protection work is referenced from #198, #199, and #210.
 
 Issue or renew staging TLS before bootstrap:
 
