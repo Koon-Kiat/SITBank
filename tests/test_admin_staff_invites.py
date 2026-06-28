@@ -79,10 +79,17 @@ def _login_admin(client, secret: str, email: str = ROOT_EMAIL, password: str = R
     assert password_response.status_code == 200
     verify_response = client.post(
         "/mfa/verify",
-        json={"totp_code": pyotp.TOTP(secret, digits=6, interval=30).now()},
+        json={"totp_code": _stable_totp(secret)},
     )
     assert verify_response.status_code == 200
     return verify_response
+
+
+def _stable_totp(secret: str) -> str:
+    seconds_into_step = time.time() % 30
+    if seconds_into_step > 20:
+        time.sleep(30 - seconds_into_step + 0.25)
+    return pyotp.TOTP(secret, digits=6, interval=30).now()
 
 
 def _create_invite(client, secret: str, **overrides):
@@ -90,7 +97,7 @@ def _create_invite(client, secret: str, **overrides):
         "personal_email": "staff.person@gmail.com",
         "workplace_email": "staff.person@sit.singaporetech.edu.sg",
         "role": "staff",
-        "totp_code": pyotp.TOTP(secret, digits=6, interval=30).now(),
+        "totp_code": _stable_totp(secret),
     }
     payload.update(overrides)
     return client.post("/invites", json=payload)
@@ -286,7 +293,7 @@ def test_staff_invite_acceptance_activates_only_after_workplace_code_and_totp(ad
         json={"workplace_email": staff_user.email, "password": STAFF_PASSWORD},
     )
     workplace_code = _latest_workplace_code()
-    totp_code = pyotp.TOTP(setup["manual_entry_secret"], digits=6, interval=30).now()
+    totp_code = _stable_totp(setup["manual_entry_secret"])
     verify = admin_client.post(
         f"/invites/accept/{token}/verify",
         json={"totp_code": totp_code, "workplace_verification_code": workplace_code},
