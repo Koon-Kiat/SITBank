@@ -64,6 +64,7 @@ class User(db.Model):
             "account_status IN ('active', 'setup_pending', 'revoked', 'locked')",
             name="ck_users_account_status",
         ),
+        db.CheckConstraint("balance >= 0", name="ck_users_balance_non_negative"),
     )
 
     def __repr__(self) -> str:
@@ -570,7 +571,36 @@ class Transaction(db.Model):
             "status IN ('completed', 'failed')",
             name="ck_transactions_status",
         ),
+        db.CheckConstraint("amount > 0", name="ck_transactions_amount_positive"),
     )
 
     def __repr__(self) -> str:
         return f"<Transaction id={self.id!r} ref={self.transaction_ref!r} amount={self.amount!r}>"
+
+
+class PendingTransfer(db.Model):
+    __tablename__ = "pending_transfers"
+
+    id = db.Column(db.Integer, primary_key=True)
+    token = db.Column(db.String(64), nullable=False, unique=True, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    payee_id = db.Column(db.Integer, db.ForeignKey("payees.id"), nullable=False, index=True)
+    amount = db.Column(db.Numeric(12, 2), nullable=False)
+    reference = db.Column(db.String(128), nullable=False, default="", server_default="")
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
+    consumed_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    consumed_transaction_ref = db.Column(db.String(36), nullable=True)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    user = db.relationship(
+        "User",
+        backref=db.backref("pending_transfers", lazy="selectin"),
+    )
+    payee = db.relationship("Payee", backref=db.backref("pending_transfers", lazy="selectin"))
+
+    def __repr__(self) -> str:
+        return f"<PendingTransfer id={self.id!r} user_id={self.user_id!r} consumed={self.consumed_at is not None!r}>"
