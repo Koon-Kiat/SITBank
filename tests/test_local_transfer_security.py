@@ -461,13 +461,16 @@ def test_empty_reference_reflected_in_audit_metadata(app, sec_ctx):
 
 def test_service_rejects_payee_in_cooldown(app, sec_ctx):
     alice = sec_ctx["alice"]
-    bob = sec_ctx["bob"]
 
+    # Use a distinct recipient account so we don't collide with the existing
+    # alice -> bob payee that sec_ctx already created (unique constraint on
+    # payees.user_id + payees.account_number).
+    carol = _make_user("sec_carol", "901000099", balance=Decimal("1000.00"))
     cooldown_payee = Payee(
         user_id=alice.id,
         nickname="New Payee",
-        account_number=bob.account_number,
-        recipient_name="Bob",
+        account_number=carol.account_number,
+        recipient_name="Carol",
         created_at=datetime.now(timezone.utc),
     )
     db.session.add(cooldown_payee)

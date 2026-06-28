@@ -387,7 +387,10 @@ def execute_local_transfer(
         raise AuthError("Transfer confirmation has expired or was already used.", 409)
 
     pending_tfr.consumed_at = now
-    amount = Decimal(str(pending_tfr.amount))
+    # normalize() strips trailing zeros (e.g. Decimal("10.10000") -> Decimal("10.1"))
+    # so that the exponent check below correctly catches sub-cent amounts regardless
+    # of the DB column scale used to store PendingTransfer.amount.
+    amount = Decimal(str(pending_tfr.amount)).normalize()
     reference = (pending_tfr.reference or "")[:128]
 
     # Enforce two-decimal currency precision in the service.

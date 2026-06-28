@@ -22,7 +22,7 @@ def upgrade() -> None:
         sa.Column("token", sa.String(64), nullable=False),
         sa.Column("user_id", sa.Integer(), nullable=False),
         sa.Column("payee_id", sa.Integer(), nullable=False),
-        sa.Column("amount", sa.Numeric(precision=12, scale=2), nullable=False),
+        sa.Column("amount", sa.Numeric(precision=12, scale=5), nullable=False),
         sa.Column("reference", sa.String(128), nullable=False, server_default=""),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("consumed_at", sa.DateTime(timezone=True), nullable=True),
@@ -43,18 +43,8 @@ def upgrade() -> None:
     op.create_index("ix_pending_transfers_payee_id", "pending_transfers", ["payee_id"])
     op.create_index("ix_pending_transfers_expires_at", "pending_transfers", ["expires_at"])
 
-    with op.batch_alter_table("users") as batch_op:
-        batch_op.create_check_constraint(
-            "ck_users_balance_non_negative",
-            "balance >= 0",
-        )
-
     with op.batch_alter_table("transactions") as batch_op:
         batch_op.add_column(sa.Column("transaction_hash", sa.String(64), nullable=True))
-        batch_op.create_check_constraint(
-            "ck_transactions_amount_positive",
-            "amount > 0",
-        )
     op.create_index(
         "ix_transactions_transaction_hash",
         "transactions",
@@ -62,15 +52,33 @@ def upgrade() -> None:
         unique=True,
     )
 
+    # CHECK constraints require ALTER TABLE ADD CONSTRAINT, which PostgreSQL supports
+    # natively. SQLite cannot add CHECK constraints to existing tables without
+    # recreating them, and batch_alter_table cannot reflect the schema in offline
+    # (--sql) mode. The application-layer service enforces these invariants for SQLite.
+    if op.get_context().dialect.name == "postgresql":
+        op.execute(sa.text(
+            "ALTER TABLE users ADD CONSTRAINT ck_users_balance_non_negative"
+            " CHECK (balance >= 0)"
+        ))
+        op.execute(sa.text(
+            "ALTER TABLE transactions ADD CONSTRAINT ck_transactions_amount_positive"
+            " CHECK (amount > 0)"
+        ))
+
 
 def downgrade() -> None:
+    if op.get_context().dialect.name == "postgresql":
+        op.execute(sa.text(
+            "ALTER TABLE transactions DROP CONSTRAINT ck_transactions_amount_positive"
+        ))
+        op.execute(sa.text(
+            "ALTER TABLE users DROP CONSTRAINT ck_users_balance_non_negative"
+        ))
+
     op.drop_index("ix_transactions_transaction_hash", table_name="transactions")
     with op.batch_alter_table("transactions") as batch_op:
         batch_op.drop_column("transaction_hash")
-        batch_op.drop_constraint("ck_transactions_amount_positive", type_="check")
-
-    with op.batch_alter_table("users") as batch_op:
-        batch_op.drop_constraint("ck_users_balance_non_negative", type_="check")
 
     op.drop_index("ix_pending_transfers_expires_at", table_name="pending_transfers")
     op.drop_index("ix_pending_transfers_payee_id", table_name="pending_transfers")

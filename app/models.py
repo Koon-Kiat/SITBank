@@ -586,7 +586,7 @@ class PendingTransfer(db.Model):
     token = db.Column(db.String(64), nullable=False, unique=True, index=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
     payee_id = db.Column(db.Integer, db.ForeignKey("payees.id"), nullable=False, index=True)
-    amount = db.Column(db.Numeric(12, 2), nullable=False)
+    amount = db.Column(db.Numeric(12, 5), nullable=False)
     reference = db.Column(db.String(128), nullable=False, default="", server_default="")
     expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
     consumed_at = db.Column(db.DateTime(timezone=True), nullable=True)
