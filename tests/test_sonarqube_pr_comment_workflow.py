@@ -15,18 +15,22 @@ def _workflow() -> tuple[str, dict]:
     return text, yaml.load(text, Loader=yaml.BaseLoader)
 
 
-def _comment_step(workflow: dict) -> dict:
+def _ci_workflow() -> tuple[str, dict]:
+    text = CI_WORKFLOW_PATH.read_text(encoding="utf-8")
+    return text, yaml.load(text, Loader=yaml.BaseLoader)
+
+
+def _comment_step(ci: dict) -> dict:
     return next(
         step
-        for step in workflow["jobs"]["analyze"]["steps"]
+        for step in ci["jobs"]["sonarqube-comment"]["steps"]
         if step.get("name") == "Comment SonarQube summary on PR"
     )
 
 
 def test_sonarqube_workflow_uses_safe_pr_trigger_and_least_privilege():
     text, workflow = _workflow()
-    ci_text = CI_WORKFLOW_PATH.read_text(encoding="utf-8")
-    ci = yaml.load(ci_text, Loader=yaml.BaseLoader)
+    ci_text, ci = _ci_workflow()
 
     assert WORKFLOW_PATH.is_file()
     assert set(workflow["on"]) == {"workflow_call"}
@@ -38,28 +42,30 @@ def test_sonarqube_workflow_uses_safe_pr_trigger_and_least_privilege():
     assert "permissions: write-all" not in text
     assert "permissions: write-all" not in ci_text
     assert workflow["permissions"] == {}
-    assert workflow["jobs"]["analyze"]["permissions"] == {
+    assert workflow["jobs"]["analyze"]["permissions"] == {"contents": "read"}
+    assert ci["jobs"]["sonarqube"]["permissions"] == {"contents": "read"}
+    assert ci["jobs"]["sonarqube-comment"]["permissions"] == {
         "contents": "read",
-        "issues": "write",
-        "pull-requests": "read",
-    }
-    assert ci["jobs"]["sonarqube"]["permissions"] == {
-        "contents": "read",
-        "issues": "write",
-        "pull-requests": "read",
+        "pull-requests": "write",
     }
     assert {
         permission
-        for permission, level in workflow["jobs"]["analyze"]["permissions"].items()
+        for permission, level in ci["jobs"]["sonarqube-comment"]["permissions"].items()
         if level == "write"
-    } == {"issues"}
+    } == {"pull-requests"}
+    assert "issues: write" not in ci_text
+    assert "issues: write" not in text
 
 
 def test_pr_comment_step_is_pinned_sticky_and_updates_in_place():
-    _, workflow = _workflow()
-    step = _comment_step(workflow)
+    _, ci = _ci_workflow()
+    step = _comment_step(ci)
     script = step["with"]["script"]
 
+    assert (
+        step["uses"]
+        == "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3"
+    )
     assert re.fullmatch(r"actions/github-script@[0-9a-f]{40}", step["uses"])
     assert "<!-- sitbank-sonarqube-summary -->" in script
     assert "github.paginate(github.rest.issues.listComments" in script
@@ -70,10 +76,10 @@ def test_pr_comment_step_is_pinned_sticky_and_updates_in_place():
 
 
 def test_pr_comment_is_limited_to_trusted_internal_non_dependabot_prs():
-    _, workflow = _workflow()
-    condition = _comment_step(workflow)["if"]
+    _, ci = _ci_workflow()
+    condition = ci["jobs"]["sonarqube-comment"]["if"]
 
-    assert "steps.sonar.outputs.should_scan == 'true'" in condition
+    assert "needs.sonarqube.result == 'success'" in condition
     assert "github.event_name == 'pull_request'" in condition
     assert (
         "github.event.pull_request.head.repo.full_name == github.repository"
@@ -99,8 +105,8 @@ def test_untrusted_prs_skip_cloud_scan_and_comment_with_notice():
 
 
 def test_comment_body_is_informational_and_constructs_safe_links():
-    _, workflow = _workflow()
-    script = _comment_step(workflow)["with"]["script"]
+    _, ci = _ci_workflow()
+    script = _comment_step(ci)["with"]["script"]
     normalized = " ".join(script.split())
 
     for required in (
@@ -130,13 +136,14 @@ def test_comment_body_is_informational_and_constructs_safe_links():
 
 def test_comment_does_not_expose_secrets_or_add_inline_review_comments():
     text, workflow = _workflow()
-    script = _comment_step(workflow)["with"]["script"]
+    ci_text, ci = _ci_workflow()
+    script = _comment_step(ci)["with"]["script"]
     lowered_script = script.lower()
-    lowered_workflow = text.lower()
+    lowered_workflows = f"{text}\n{ci_text}".lower()
 
     assert "SONAR_TOKEN" not in script
     assert "secrets." not in lowered_script
     assert "printenv" not in lowered_script
     assert "process.env" not in lowered_script
-    assert "pulls.createreviewcomment" not in lowered_workflow
-    assert "createReviewComment" not in text
+    assert "pulls.createreviewcomment" not in lowered_workflows
+    assert "createReviewComment" not in f"{text}\n{ci_text}"

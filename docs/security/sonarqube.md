@@ -82,7 +82,9 @@ as a one-day artifact. Its downstream `sonarqube` job calls the reusable
 `.github/workflows/sonarqube.yml`, checks out the same resolved source commit,
 downloads the coverage artifact, and runs the scanner without rerunning pytest.
 This keeps the authoritative test result and SonarQube coverage input in the
-same workflow run while isolating `issues: write` from the test job.
+same workflow run. The test and reusable scanner jobs remain read-only; a
+separate trusted-PR-only comment job holds the narrowly scoped
+`pull-requests: write` permission.
 
 `sonar-project.properties` sends `app`, deployment/security material under
 `ops`, and `config.py`, `wsgi.py`, and `admin_wsgi.py` as sources.
@@ -115,6 +117,11 @@ duplicates. Fork pull requests and Dependabot pull requests do not receive
 secret-backed analysis or this write-permission comment; they receive a
 workflow notice explaining the security skip. The workflow does not use
 `pull_request_target`.
+
+Commenting is isolated from scanning: the reusable scanner job has only
+`contents: read`, while the caller workflow's trusted-PR-only comment job uses
+SHA-pinned, Node.js 24 `actions/github-script` with `contents: read` and
+`pull-requests: write`. No scanner or test step receives PR write access.
 
 Inline review comments are intentionally not implemented. Mapping findings to
 changed diff lines, controlling false-positive noise, and granting review

@@ -49,16 +49,18 @@ def test_sonarqube_workflow_is_reusable_and_has_least_privilege():
     assert "pull_request_target" not in ci["on"]
     assert "pull_request_target" not in ci_text
     assert workflow["permissions"] == {}
-    assert workflow["jobs"]["analyze"]["permissions"] == {
+    assert workflow["jobs"]["analyze"]["permissions"] == {"contents": "read"}
+    assert ci["jobs"]["sonarqube"]["permissions"] == {"contents": "read"}
+    assert ci["jobs"]["sonarqube-comment"]["permissions"] == {
         "contents": "read",
-        "issues": "write",
-        "pull-requests": "read",
+        "pull-requests": "write",
     }
-    assert ci["jobs"]["sonarqube"]["permissions"] == {
-        "contents": "read",
-        "issues": "write",
-        "pull-requests": "read",
-    }
+    assert "actions/github-script@" not in text
+    assert (
+        "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3"
+        in ci_text
+    )
+    assert "60a0d83039c74a4aee543508d2ffcb1c3799cdea" not in ci_text
     assert "environment:" not in text
 
 

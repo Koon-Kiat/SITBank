@@ -268,14 +268,112 @@ jobs:
     needs: [test, resolve-source]
     permissions:
       contents: read
-      issues: write
-      pull-requests: read
     uses: ./.github/workflows/sonarqube.yml
     with:
       coverage_artifact: sonarqube-coverage-${{ github.run_id }}
       source_sha: ${{ needs.resolve-source.outputs.source_sha }}
     secrets:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  sonarqube-comment:
+    if: >-
+      needs.sonarqube.result == 'success' &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]'
+    needs: [sonarqube, resolve-source]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Check out SonarQube project metadata
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
+          ref: ${{ needs.resolve-source.outputs.source_sha }}
+
+      # Pinned to actions/github-script v9.0.0 (Node.js 24). The live GitHub
+      # API response for PR comments accepted pull-requests: write.
+      - name: Comment SonarQube summary on PR
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- sitbank-sonarqube-summary -->';
+            const workflowUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            const properties = {};
+            try {
+              for (const rawLine of fs.readFileSync('sonar-project.properties', 'utf8').split(/\r?\n/)) {
+                const line = rawLine.trim();
+                if (!line || line.startsWith('#')) continue;
+                const separator = line.indexOf('=');
+                if (separator === -1) continue;
+                properties[line.slice(0, separator).trim()] = line.slice(separator + 1).trim();
+              }
+            } catch {
+              core.notice('SonarQube dashboard link omitted because project properties could not be read.');
+            }
+
+            const safeIdentifier = /^[A-Za-z0-9_.:-]+$/;
+            const organization = properties['sonar.organization'];
+            const projectKey = properties['sonar.projectKey'];
+            let findings = 'Full findings: check the SonarQube Cloud dashboard';
+            if (
+              safeIdentifier.test(organization || '') &&
+              safeIdentifier.test(projectKey || '')
+            ) {
+              const dashboardUrl = new URL('https://sonarcloud.io/project/overview');
+              dashboardUrl.searchParams.set('id', projectKey);
+              findings = `Full findings: [SonarQube Cloud dashboard](${dashboardUrl.toString()})`;
+            }
+
+            const body = `${marker}
+            ## SonarQube Cloud Analysis
+
+            SonarQube Cloud analysis has completed for this PR.
+
+            - Workflow run: [view this run](${workflowUrl})
+            - ${findings}
+            - Quality gate: reporting-only
+            - Blocking status: the quality gate is not currently blocking
+
+            SonarQube Cloud is reporting-only for now. Full findings are available in SonarQube Cloud.
+
+            SonarQube Cloud is an additional code-quality and security analysis layer. It does not replace pytest, CodeQL, Semgrep, Bandit, Gitleaks/repository secret scanning, dependency auditing, Trivy, ShellCheck, Hadolint, Syft, deployment tests, or production guard tests.
+            `;
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100
+            });
+            const existing = comments.find(comment =>
+              comment.user?.login === 'github-actions[bot]' &&
+              comment.body?.includes(marker)
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+                body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number,
+                body
+              });
+            }
 
   image-test:
     if: github.event_name == 'pull_request' || github.event_name == 'schedule'
