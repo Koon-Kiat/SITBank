@@ -299,6 +299,15 @@ def execute_local_transfer(
     # Defence-in-depth: service enforces payee ownership independently of the
     # route layer so direct callers and future refactors cannot bypass it.
     if payee.user_id != sender.id:
+        audit_outbound_transfer(
+            sender,
+            "failure",
+            metadata={
+                "reason": "payee_ownership_mismatch",
+                "payee_id_ref": audit_reference("payee_id", payee.id),
+            },
+        )
+        db.session.commit()
         raise AuthError("Transfer denied.", 403)
 
     recipient_user = User.query.filter_by(account_number=payee.account_number).first()
