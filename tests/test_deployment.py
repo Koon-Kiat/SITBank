@@ -116,6 +116,46 @@ def _load_db_privileges_module():
     return module
 
 
+class _ScalarResult:
+    def __init__(self, value: bool):
+        self.value = value
+
+    def scalar_one(self) -> bool:
+        return self.value
+
+
+class _FakeAdminPrivilegeConnection:
+    def __init__(
+        self,
+        *,
+        missing_table_privileges: set[tuple[str, str]] | None = None,
+        audit_mutation_privileges: set[str] | None = None,
+        missing_sequences: set[str] | None = None,
+    ):
+        self.missing_table_privileges = missing_table_privileges or set()
+        self.audit_mutation_privileges = audit_mutation_privileges or set()
+        self.missing_sequences = missing_sequences or set()
+        self.table_checks: list[tuple[str, str]] = []
+        self.sequence_checks: list[str] = []
+
+    def execute(self, _statement, params):
+        if "table_name" in params:
+            table_name = str(params["table_name"])
+            privilege = str(params["privilege"])
+            self.table_checks.append((table_name, privilege))
+            if (
+                table_name == "public.security_audit_events"
+                and privilege in {"UPDATE", "DELETE", "TRUNCATE"}
+            ):
+                return _ScalarResult(privilege in self.audit_mutation_privileges)
+            return _ScalarResult((table_name, privilege) not in self.missing_table_privileges)
+        if "sequence_name" in params:
+            sequence_name = str(params["sequence_name"])
+            self.sequence_checks.append(sequence_name)
+            return _ScalarResult(sequence_name not in self.missing_sequences)
+        raise AssertionError(f"Unexpected privilege query params: {params!r}")
+
+
 def _load_create_dast_session_module():
     module_path = Path("ops/container/create_dast_session.py")
     spec = importlib.util.spec_from_file_location("_create_dast_session_under_test", module_path)
@@ -407,13 +447,78 @@ def test_runtime_privilege_verifier_quotes_create_probe_table_name():
     assert "ALTER ROLE" not in source
     assert "create_engine(admin_url)" in source
     assert "ADMIN_DATABASE_URL did not authenticate as the configured role" in source
-    assert "GRANT SELECT, INSERT ON ALL TABLES" in source
+    assert "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES" in source
     assert "ALTER DEFAULT PRIVILEGES FOR ROLE" in source
+    assert "_assert_admin_runtime_database_privileges" in source
+    assert "has_table_privilege" in source
+    assert "has_sequence_privilege" in source
+    assert '"users": ("SELECT", "INSERT", "UPDATE")' in source
+    assert '"auth_attempt_counters": ("SELECT", "INSERT", "UPDATE", "DELETE")' in source
+    assert '"server_side_sessions": ("SELECT", "INSERT", "UPDATE", "DELETE")' in source
+    assert '"security_audit_events": ("SELECT", "INSERT")' in source
+    assert 'for privilege in ("UPDATE", "DELETE", "TRUNCATE")' in source
     assert "REVOKE UPDATE, DELETE, TRUNCATE ON TABLE" in source
     assert "GRANT SELECT, INSERT ON TABLE" in source
+    assert "FROM {quoted_admin_role}" in source
     assert "previous_event_hash" in source
     assert "event_hash" in source
     assert "hash_algorithm" in source
+
+
+def test_admin_runtime_privilege_verifier_accepts_required_dml_without_audit_mutation():
+    db_privileges = _load_db_privileges_module()
+    connection = _FakeAdminPrivilegeConnection()
+
+    db_privileges._assert_admin_runtime_database_privileges(connection, schema="public")
+
+    assert ("public.users", "UPDATE") in connection.table_checks
+    assert ("public.auth_attempt_counters", "DELETE") in connection.table_checks
+    assert ("public.security_audit_events", "INSERT") in connection.table_checks
+    assert ("public.security_audit_events", "TRUNCATE") in connection.table_checks
+    assert "public.users_id_seq" in connection.sequence_checks
+    assert "public.security_audit_events_id_seq" in connection.sequence_checks
+
+
+def test_admin_runtime_privilege_verifier_rejects_missing_bootstrap_update():
+    db_privileges = _load_db_privileges_module()
+    connection = _FakeAdminPrivilegeConnection(
+        missing_table_privileges={("public.users", "UPDATE")},
+    )
+
+    with pytest.raises(RuntimeError, match=r"missing UPDATE on public\.users"):
+        db_privileges._assert_admin_runtime_database_privileges(
+            connection,
+            schema="public",
+        )
+
+
+def test_admin_runtime_privilege_verifier_rejects_audit_table_mutation():
+    db_privileges = _load_db_privileges_module()
+    connection = _FakeAdminPrivilegeConnection(
+        audit_mutation_privileges={"DELETE"},
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"must not have DELETE on public\.security_audit_events",
+    ):
+        db_privileges._assert_admin_runtime_database_privileges(
+            connection,
+            schema="public",
+        )
+
+
+def test_admin_runtime_privilege_verifier_requires_insert_sequences():
+    db_privileges = _load_db_privileges_module()
+    connection = _FakeAdminPrivilegeConnection(
+        missing_sequences={"public.users_id_seq"},
+    )
+
+    with pytest.raises(RuntimeError, match=r"missing USAGE on public\.users_id_seq"):
+        db_privileges._assert_admin_runtime_database_privileges(
+            connection,
+            schema="public",
+        )
 
 
 def test_dast_session_creator_requires_loopback_or_explicit_smoke_host():
@@ -3315,6 +3420,10 @@ def test_audit_operations_runbook_and_append_only_privileges_are_present():
     assert "REVOKE UPDATE, DELETE, TRUNCATE ON TABLE" in privileges
     assert "TRUNCATE security_audit_events" in privileges
     assert "GRANT SELECT, INSERT ON TABLE" in privileges
+    assert "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES" in privileges
+    assert "_assert_admin_runtime_database_privileges" in privileges
+    assert "has_table_privilege" in privileges
+    assert "has_sequence_privilege" in privileges
     assert "_assert_audit_append_only_triggers_installed" in privileges
     assert "pg_advisory_xact_lock" in privileges
     assert "previous_event_hash" in privileges
