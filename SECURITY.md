@@ -161,7 +161,14 @@ hash-locked files, and require the full test, SAST, dependency review,
 container smoke, Compose validation, and image scan checks. Full authenticated
 DAST is intentionally reserved for scheduled scans and release verification;
 ordinary pull requests skip it to keep feedback timely without weakening the
-release gate.
+release gate. Authenticated DAST uses only synthetic users. The CI helper writes
+the session cookie and ZAP replacer properties as temporary `0600` files under
+`umask 077`, mounts them only into the scanner path that needs them, passes only
+`-configfile` to ZAP, and removes the temporary directory through the smoke-test
+cleanup trap. If `auth-cookie` or `zap-replacer.properties` appears in a log or
+artifact, treat it as a leaked session secret: cancel the run, delete the
+artifact, rotate/revoke the synthetic session, and investigate the workflow
+before rerunning.
 
 Critical advisories require immediate triage. High advisories require an owner
 and target date. A runtime upgrade is kept separate from ordinary package

@@ -213,6 +213,22 @@ target job summary identifies the UTC scan time, host, run ID/attempt, scanner
 version, and pass/fail result. TLS scanning uses no application credentials
 and the workflow contains no application secrets.
 
+## Release Smoke And DAST Evidence
+
+Release verification runs `ops/container/smoke-test.sh` against the exact image
+digest that will be deployed. When authenticated DAST is enabled, the helper
+creates only synthetic customer identities, restricts the target to loopback or
+the explicit smoke container host, and keeps real customer, staff, and admin
+credentials out of the scan path.
+
+DAST cookie handling is intentionally file-based. `auth-cookie` and
+`zap-replacer.properties` are created under `umask 077`, written as `0600`
+temporary files, mounted read-only into ZAP, and removed by the cleanup trap when
+the smoke test exits. The host-visible ZAP command receives only
+`-configfile /run/dast/zap-replacer.properties`; it must not include a raw
+cookie value or `replacement=${...}` argument. Do not retain the DAST temporary
+directory, upload it as an artifact, or paste its contents into release notes.
+
 The production customer verification gate fails for
 SSLv2, SSLv3, TLS 1.0, or TLS 1.1; weak, NULL, anonymous, export, RC4, or 3DES
 ciphers; missing, disabled, or too-short HSTS; expired certificates; hostname

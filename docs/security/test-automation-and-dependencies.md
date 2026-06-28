@@ -162,11 +162,30 @@ Authenticated DAST session creation is handled by
 | Target host restricted to loopback or explicit smoke host | `tests/test_deployment.py::test_dast_session_creator_requires_loopback_or_explicit_smoke_host` |
 | Synthetic account registration follows the real registration contract | `tests/test_deployment.py::test_dast_session_creator_matches_registration_contract` |
 | Generated credentials are synthetic and random | `ops/container/create_dast_session.py` |
-| The script emits an authenticated session cookie for ZAP rather than real user credentials | `ops/container/smoke-test.sh` |
+| The script emits an authenticated session cookie for ZAP rather than real user credentials | `ops/container/create_dast_session.py` |
+| DAST cookie is not passed as a raw process argument | `tests/test_dast_helper_security.py::test_smoke_test_keeps_dast_cookie_out_of_host_command_arguments` |
+| Temporary cookie and ZAP config files are created with restrictive permissions and cleanup | `tests/test_dast_helper_security.py::test_dast_secret_files_are_restricted_and_cleaned_up_by_contract` |
 
 `ops/container/dast-smoke.sh` provides a local smoke-oriented DAST path using
 synthetic secrets and a synthetic local test user. No real customer, admin, or
 staff credentials are required by the DAST scripts in the repository.
+
+The authenticated release/scheduled DAST path stores `auth-cookie` and
+`zap-replacer.properties` only in the smoke-test temporary directory. The helper
+sets `umask 077`, writes each secret file as `0600`, validates the cookie shape
+inside the container, mounts the DAST directory read-only into ZAP, and passes
+only `-configfile /run/dast/zap-replacer.properties` on the host-visible ZAP
+command line. ZAP loads the authenticated-cookie replacer from a restricted
+file, so the DAST cookie is not passed as a raw process argument. The temporary
+directory is removed by the smoke-test cleanup trap on success and failure.
+
+The DAST bind-mount directory is relaxed for container UID compatibility, but
+the secret files inside remain owner-only and are not uploaded as GitHub
+artifacts. GitHub Actions must not print environment dumps, cookie values, CSRF
+tokens, synthetic passwords, or full ZAP replacer contents. If `auth-cookie` or
+`zap-replacer.properties` appears in a log or artifact, cancel the run, delete
+the artifact, revoke the synthetic session by ending the run, and review the
+workflow/script diff before rerunning.
 
 Authenticated DAST is release-oriented. Ordinary pull requests skip the full
 authenticated crawl for runtime cost, while scheduled runs and release

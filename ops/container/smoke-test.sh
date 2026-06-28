@@ -429,7 +429,11 @@ if [[ "${RUN_ZAP_DAST:-false}" == "true" ]]; then
         echo "SITBank application was not reachable from the DAST smoke network" >&2
         false
     fi
-    install -d -m 0777 "${work_dir}/dast"
+    umask 077
+    install -d -m 0700 "${work_dir}/dast"
+    # Bind-mounted Docker directories need broad traversal for container UIDs;
+    # the cookie and ZAP config files inside remain 0600.
+    chmod 0777 "${work_dir}/dast"
     dast_mount_source="$(docker_bind_source "${work_dir}/dast")"
     docker run --rm "${docker_args[@]}" \
         --volume "${create_dast_session_source}:/app/create_dast_session.py:ro" \
@@ -438,25 +442,33 @@ if [[ "${RUN_ZAP_DAST:-false}" == "true" ]]; then
         python /app/create_dast_session.py \
             --base-url "${dast_base_url}" \
             --allow-host "${app_container}" \
-            --output /run/dast/auth-cookie
-    dast_cookie="$(
-        docker run --rm --interactive "${docker_args[@]}" \
-            --volume "${dast_mount_source}:/run/dast:ro" \
-            "${IMAGE}" \
-            python - <<'PY'
+            --output /run/dast/auth-cookie \
+            --zap-replacer-config-output /run/dast/zap-replacer.properties
+    docker run --rm --interactive "${docker_args[@]}" \
+        --volume "${dast_mount_source}:/run/dast:ro" \
+        "${IMAGE}" \
+        python - <<'PY'
+import re
+import stat
 from pathlib import Path
 
-print(Path("/run/dast/auth-cookie").read_text(encoding="utf-8"), end="")
+cookie_path = Path("/run/dast/auth-cookie")
+zap_config_path = Path("/run/dast/zap-replacer.properties")
+cookie = cookie_path.read_text(encoding="utf-8")
+if not re.fullmatch(r"__Host-sitbank_session=[A-Za-z0-9._~-]+", cookie):
+    raise SystemExit("Authenticated DAST session cookie is malformed")
+for path in (cookie_path, zap_config_path):
+    mode = stat.S_IMODE(path.stat().st_mode)
+    if mode & 0o077:
+        raise SystemExit(f"{path.name} permissions are too broad: {mode:o}")
 PY
-    )"
-    if [[ ! "${dast_cookie}" =~ ^__Host-sitbank_session=[A-Za-z0-9._~-]+$ ]]; then
-        echo "Authenticated DAST session cookie is malformed" >&2
-        exit 1
-    fi
     install -d -m 0777 "${work_dir}/zap"
     zap_mount_source="$(docker_bind_source "${work_dir}/zap")"
     docker run --rm --network "${network_name}" \
+        --user 10001:10001 \
+        --env HOME=/zap/wrk \
         --volume "${zap_mount_source}:/zap/wrk:rw" \
+        --volume "${dast_mount_source}:/run/dast:ro" \
         "${ZAP_IMAGE}" \
         zap-full-scan.py \
             -t "http://${app_container}:5000/dashboard" \
@@ -464,15 +476,5 @@ PY
             -m 2 \
             -r zap-report.html \
             -J zap-report.json \
-            -z "-config replacer.full_list(0).description=authenticated-session \
--config replacer.full_list(0).enabled=true \
--config replacer.full_list(0).matchtype=REQ_HEADER \
--config replacer.full_list(0).matchstr=Cookie \
--config replacer.full_list(0).replacement=${dast_cookie} \
--config replacer.full_list(1).description=trusted-https-proxy \
--config replacer.full_list(1).enabled=true \
--config replacer.full_list(1).matchtype=REQ_HEADER \
--config replacer.full_list(1).matchstr=X-Forwarded-Proto \
--config replacer.full_list(1).replacement=https"
-    unset dast_cookie
+            -z "-configfile /run/dast/zap-replacer.properties"
 fi
