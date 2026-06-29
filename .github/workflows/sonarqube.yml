@@ -55,7 +55,7 @@ jobs:
       # Pinned to actions/download-artifact v6.0.0 (Node.js 24).
       - name: Download SonarQube coverage report
         if: steps.sonar.outputs.should_scan == 'true'
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: ${{ inputs.coverage_artifact }}
           path: .
