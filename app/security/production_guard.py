@@ -54,6 +54,19 @@ class ProductionStartupSecurityError(RuntimeError):
     """Raised only when a production WSGI process is unsafe to start."""
 
 
+def _email_domain(value: object) -> str:
+    _local, separator, domain = str(value or "").strip().partition("@")
+    return domain.casefold() if separator else ""
+
+
+def _config_values(value: object) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return tuple(item.strip().casefold() for item in value.split(",") if item.strip())
+    return tuple(str(item).strip().casefold() for item in value if str(item).strip())
+
+
 def is_production_app(app: Flask) -> bool:
     return str(app.config.get("APP_ENV") or "").strip().casefold() == "production"
 
@@ -142,8 +155,17 @@ def _validate_mode_and_route_isolation(
         if not str(app.config.get("RATELIMIT_KEY_PREFIX") or "").startswith("ospbank:admin:"):
             result.failures.append("Admin rate-limit key prefix must be isolated")
         root_admin_emails = app.config.get("ROOT_ADMIN_EMAILS") or set()
-        if not isinstance(root_admin_emails, (set, frozenset, list, tuple)) or len(root_admin_emails) != 7:
+        root_admin_collection = isinstance(root_admin_emails, (set, frozenset, list, tuple))
+        if not root_admin_collection or len(root_admin_emails) != 7:
             result.failures.append("ROOT_ADMIN_EMAILS must configure exactly 7 root administrators")
+        admin_domains = set(
+            _config_values(
+                app.config.get("ADMIN_ALLOWED_EMAIL_DOMAINS")
+                or app.config.get("SIT_WORKPLACE_EMAIL_DOMAINS")
+            )
+        )
+        if root_admin_collection and any(_email_domain(item) not in admin_domains for item in root_admin_emails):
+            result.failures.append("ROOT_ADMIN_EMAILS must use approved admin workplace domains")
         if any(endpoint.startswith(("auth.", "web.", "banking.", "main.")) for endpoint in endpoints):
             result.failures.append("Admin runtime must not register customer routes")
     else:

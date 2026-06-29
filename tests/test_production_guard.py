@@ -109,6 +109,25 @@ def test_admin_validator_enforces_admin_isolation(monkeypatch):
     assert "Admin authentication must be enabled" in result.failures
 
 
+def test_admin_validator_rejects_root_admin_allowlist_outside_admin_domains(monkeypatch):
+    app = _production_app(monkeypatch, app_mode="admin")
+    app.config["ROOT_ADMIN_EMAILS"] = frozenset(
+        {
+            "root1@example.com",
+            "root2@sit.singaporetech.edu.sg",
+            "root3@sit.singaporetech.edu.sg",
+            "root4@sit.singaporetech.edu.sg",
+            "root5@sit.singaporetech.edu.sg",
+            "root6@sit.singaporetech.edu.sg",
+            "root7@sit.singaporetech.edu.sg",
+        }
+    )
+
+    result = validate_production_security_prerequisites(app, app_mode="admin")
+
+    assert "ROOT_ADMIN_EMAILS must use approved admin workplace domains" in result.failures
+
+
 def test_startup_guard_is_inactive_outside_production(monkeypatch):
     from app import create_app
 

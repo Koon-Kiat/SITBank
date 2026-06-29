@@ -7,12 +7,12 @@
   <div class="auth-intro">
     <p class="eyebrow">New customer profile</p>
     <h1>Create your online banking profile</h1>
-    <p class="lede">Use your SIT email address to verify your registration before creating a secure banking portal profile.</p>
+    <p class="lede">Use a personal customer email address to verify your registration before creating a secure banking portal profile.</p>
     <div class="notice">
       <span class="notice-icon" aria-hidden="true">
         <svg class="icon" focusable="false"><use href="#icon-info"></use></svg>
       </span>
-      <p class="muted">Registration is limited to sit.singaporetech.edu.sg and singaporetech.edu.sg email addresses. This simulated banking portal must not be used with real banking credentials.</p>
+      <p class="muted">SIT workplace email addresses are reserved for staff and admin access. This simulated banking portal must not be used with real banking credentials.</p>
     </div>
   </div>
 
@@ -85,13 +85,13 @@
     <div class="stacked-panel">
       <div class="page-heading compact">
         <p class="eyebrow">Step 1 of 2</p>
-        <h3>Verify your SIT email</h3>
+        <h3>Verify your customer email</h3>
       </div>
       <form method="post" action="{{ url_for('web.register_otp_request') }}" novalidate>
         {{ otp_request_form.hidden_tag() }}
         <div class="form-group">
-          <label for="otp_request_email">SIT email</label>
-          {{ otp_request_form.email(id="otp_request_email", autocomplete="email", maxlength="255", placeholder="name@sit.singaporetech.edu.sg") }}
+          <label for="otp_request_email">Customer email</label>
+          {{ otp_request_form.email(id="otp_request_email", autocomplete="email", maxlength="255", placeholder="name@example.com") }}
           {% for error in otp_request_form.email.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
         </div>
         <button class="button secondary full" type="submit">Send verification code</button>

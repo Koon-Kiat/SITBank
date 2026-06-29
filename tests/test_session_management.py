@@ -255,7 +255,7 @@ def test_past_sessions_are_scoped_to_current_user(app, client):
     alice, _alice_secret = enable_mfa_for_user()
     mark_recent_mfa(client, alice)
 
-    register(second_client, username="bob02", email="bob@sit.singaporetech.edu.sg", full_name="Bob Test", phone_number="81234567")
+    register(second_client, username="bob02", email="bob@example.com", full_name="Bob Test", phone_number="81234567")
     login(second_client, identifier="bob02")
     bob, _bob_secret = enable_mfa_for_user("bob02")
     mark_recent_mfa(second_client, bob)

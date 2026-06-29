@@ -13,6 +13,7 @@ from app.auth.services import AuthError
 from app.models import User
 from app.security.audit import audit_reference, audit_system_event
 from app.security.crypto import encrypt_mfa_secret
+from app.security.identity_policy import is_admin_workplace_email, root_admin_emails
 from app.security.passwords import PasswordPolicyError, hash_password, validate_password_policy
 
 from .services import (
@@ -133,10 +134,12 @@ def _require_admin_runtime() -> None:
 
 
 def _require_allowlisted_root_email(email: str) -> None:
-    root_emails = frozenset(str(item).casefold() for item in current_app.config["ROOT_ADMIN_EMAILS"])
-    if email.casefold() not in root_emails:
+    if email.casefold() not in root_admin_emails():
         _audit_bootstrap("blocked", email, reason="email_not_allowlisted")
         raise RootAdminBootstrapError("Root admin email is not listed in ROOT_ADMIN_EMAILS")
+    if not is_admin_workplace_email(email):
+        _audit_bootstrap("blocked", email, reason="email_domain_not_allowed")
+        raise RootAdminBootstrapError("Root admin email must use an approved admin workplace domain")
 
 
 def _validate_username(username: str) -> str:

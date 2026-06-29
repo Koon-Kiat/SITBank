@@ -88,14 +88,14 @@ def test_payee_lookup_does_not_reveal_recipient_before_totp(app, client):
     _register_customer(
         client,
         username="alice01",
-        email="alice@sit.singaporetech.edu.sg",
+        email="alice@example.com",
         phone="91234567",
         account="012345678",
     )
     bob = _register_customer(
         bob_client,
         username="bob02",
-        email="bob@sit.singaporetech.edu.sg",
+        email="bob@example.com",
         phone="81234567",
         account="012555999",
     )
@@ -121,14 +121,14 @@ def test_payee_lookup_requires_totp_before_confirmation(app, client):
     _register_customer(
         client,
         username="alice01",
-        email="alice@sit.singaporetech.edu.sg",
+        email="alice@example.com",
         phone="91234567",
         account="012345678",
     )
     bob = _register_customer(
         bob_client,
         username="bob02",
-        email="bob@sit.singaporetech.edu.sg",
+        email="bob@example.com",
         phone="81234567",
         account="012555999",
     )
@@ -160,14 +160,14 @@ def test_payee_add_rejects_passkey_stepup_token(app, client):
     _register_customer(
         client,
         username="alice01",
-        email="alice@sit.singaporetech.edu.sg",
+        email="alice@example.com",
         phone="91234567",
         account="012345678",
     )
     bob = _register_customer(
         bob_client,
         username="bob02",
-        email="bob@sit.singaporetech.edu.sg",
+        email="bob@example.com",
         phone="81234567",
         account="012555999",
     )
@@ -193,7 +193,7 @@ def test_invalid_payee_lookup_is_generic_and_audited(client):
     _register_customer(
         client,
         username="alice01",
-        email="alice@sit.singaporetech.edu.sg",
+        email="alice@example.com",
         phone="91234567",
         account="012345678",
     )
@@ -220,14 +220,14 @@ def test_self_and_duplicate_payee_are_rejected_before_pending_state(app, client)
     alice = _register_customer(
         client,
         username="alice01",
-        email="alice@sit.singaporetech.edu.sg",
+        email="alice@example.com",
         phone="91234567",
         account="012345678",
     )
     bob = _register_customer(
         bob_client,
         username="bob02",
-        email="bob@sit.singaporetech.edu.sg",
+        email="bob@example.com",
         phone="81234567",
         account="012555999",
     )
@@ -255,14 +255,14 @@ def test_pending_payee_confirmation_expires(app, client):
     _register_customer(
         client,
         username="alice01",
-        email="alice@sit.singaporetech.edu.sg",
+        email="alice@example.com",
         phone="91234567",
         account="012345678",
     )
     bob = _register_customer(
         bob_client,
         username="bob02",
-        email="bob@sit.singaporetech.edu.sg",
+        email="bob@example.com",
         phone="81234567",
         account="012555999",
     )
@@ -289,14 +289,14 @@ def test_payee_removal_enforces_ownership_and_totp(app, client):
     alice = _register_customer(
         client,
         username="alice01",
-        email="alice@sit.singaporetech.edu.sg",
+        email="alice@example.com",
         phone="91234567",
         account="012345678",
     )
     bob = _register_customer(
         bob_client,
         username="bob02",
-        email="bob@sit.singaporetech.edu.sg",
+        email="bob@example.com",
         phone="81234567",
         account="012555999",
     )
@@ -320,7 +320,7 @@ def test_payee_routes_cover_missing_expired_and_unauthorized_pending_state(clien
     alice = _register_customer(
         client,
         username="alice01",
-        email="alice@sit.singaporetech.edu.sg",
+        email="alice@example.com",
         phone="91234567",
         account="012345678",
     )
@@ -381,14 +381,14 @@ def test_payee_confirmation_handles_missing_duplicate_and_removal_paths(
     alice = _register_customer(
         client,
         username="alice01",
-        email="alice@sit.singaporetech.edu.sg",
+        email="alice@example.com",
         phone="91234567",
         account="012345678",
     )
     bob = _register_customer(
         bob_client,
         username="bob02",
-        email="bob@sit.singaporetech.edu.sg",
+        email="bob@example.com",
         phone="81234567",
         account="012555999",
     )

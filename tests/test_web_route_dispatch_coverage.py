@@ -16,7 +16,7 @@ class _StubForm:
         self.stepup_token = SimpleNamespace(data="")
         self.identifier = SimpleNamespace(data="alice01")
         self.password = SimpleNamespace(data="old-password")
-        self.email = SimpleNamespace(data="alice@sit.singaporetech.edu.sg")
+        self.email = SimpleNamespace(data="alice@example.com")
         self.current_password = SimpleNamespace(data="old-password")
         self.new_password = SimpleNamespace(data="new-password")
         self.confirm_new_password = SimpleNamespace(data="new-password")

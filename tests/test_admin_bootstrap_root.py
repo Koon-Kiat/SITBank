@@ -133,6 +133,26 @@ def test_bootstrap_root_admin_cli_requires_root_admin_allowlist(admin_app):
     assert db.session.query(User).count() == 0
 
 
+def test_bootstrap_root_admin_cli_rejects_non_admin_domain_allowlist_entry(admin_app):
+    root_emails = {
+        "root1@example.com",
+        "root2@sit.singaporetech.edu.sg",
+        "root3@sit.singaporetech.edu.sg",
+        "root4@sit.singaporetech.edu.sg",
+        "root5@sit.singaporetech.edu.sg",
+        "root6@sit.singaporetech.edu.sg",
+        "root7@sit.singaporetech.edu.sg",
+    }
+    admin_app.config["ROOT_ADMIN_EMAILS"] = frozenset(root_emails)
+    command_input = _command_input().replace(ROOT_EMAIL, "root1@example.com", 1)
+
+    result = admin_app.test_cli_runner().invoke(args=["admin", "bootstrap-root"], input=command_input)
+
+    assert result.exit_code != 0
+    assert "Invalid workplace email" in result.output
+    assert db.session.query(User).count() == 0
+
+
 def test_bootstrap_root_admin_cli_refuses_customer_account_conversion(admin_app):
     credential = _credential_input("Primary")
     customer = User(

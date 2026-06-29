@@ -96,7 +96,7 @@ def test_authenticated_user_can_open_own_edit_profile_page(client):
     assert response.status_code == 200
     assert b"Edit profile" in response.data
     assert b"alice01" in response.data
-    assert b"alice@sit.singaporetech.edu.sg" in response.data
+    assert b"alice@example.com" in response.data
     assert 'name="username"' in markup
     assert 'name="email"' in markup
     assert "Update profile details" in markup
@@ -342,7 +342,7 @@ def test_profile_email_update_rejects_passkey_stepup_token(client):
 
     assert response.status_code == 403
     assert session_after_update == session_before_update
-    assert user.email == "alice@sit.singaporetech.edu.sg"
+    assert user.email == "alice@example.com"
     assert b"Enter an authenticator code to verify this action" in response.data
 
 def test_profile_email_update_accepts_totp_stepup_without_passkey(client):
@@ -376,7 +376,7 @@ def test_profile_preference_rejects_passkey_when_not_enrolled(client):
         "/profile",
         data={
             "username": "alice01",
-            "email": "alice@sit.singaporetech.edu.sg",
+            "email": "alice@example.com",
             "mfa_step_up_preference": "passkey",
             "totp_code": pyotp.TOTP(secret, digits=6, interval=30).now(),
         },
@@ -409,7 +409,7 @@ def test_legacy_passkey_does_not_unlock_profile_without_totp(client):
 
     assert response.status_code == 302
     assert response.headers["Location"].endswith("/mfa/setup")
-    assert user.email == "alice@sit.singaporetech.edu.sg"
+    assert user.email == "alice@example.com"
     assert user.mfa_step_up_preference == "passkey"
 
 
@@ -426,7 +426,34 @@ def test_profile_update_rejects_invalid_email(client):
     db.session.refresh(user)
 
     assert response.status_code == 400
-    assert user.email == "alice@sit.singaporetech.edu.sg"
+    assert user.email == "alice@example.com"
+
+
+def test_profile_update_rejects_admin_domain_customer_email(client):
+    register(client)
+    login(client)
+    user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
+    mark_recent_mfa(client, user)
+
+    response = client.post(
+        "/profile",
+        data={
+            "username": "alice01",
+            "email": "alice@sit.singaporetech.edu.sg",
+            "mfa_step_up_preference": "totp",
+        },
+    )
+    db.session.refresh(user)
+    event = (
+        db.session.query(SecurityAuditEvent)
+        .filter_by(event_type="profile_update", outcome="blocked")
+        .one()
+    )
+
+    assert response.status_code == 400
+    assert user.email == "alice@example.com"
+    assert event.event_metadata["reason"] == "admin_email_domain"
+
 
 def test_profile_update_rejects_invalid_username(client):
     register(client)
@@ -435,7 +462,7 @@ def test_profile_update_rejects_invalid_username(client):
 
     response = client.post(
         "/profile",
-        data={"username": "bad user", "email": "alice@sit.singaporetech.edu.sg", "mfa_step_up_preference": "totp"},
+        data={"username": "bad user", "email": "alice@example.com", "mfa_step_up_preference": "totp"},
     )
     db.session.refresh(user)
 
@@ -444,13 +471,13 @@ def test_profile_update_rejects_invalid_username(client):
 
 def test_profile_update_rejects_duplicate_username(client):
     register(client)
-    register(client, username="bob02", email="bob@sit.singaporetech.edu.sg", full_name="Bob Test", phone_number="81234567")
+    register(client, username="bob02", email="bob@example.com", full_name="Bob Test", phone_number="81234567")
     login(client)
     user, _secret = enable_mfa_for_user()
 
     response = client.post(
         "/profile",
-        data={"username": "BOB02", "email": "alice@sit.singaporetech.edu.sg", "mfa_step_up_preference": "totp"},
+        data={"username": "BOB02", "email": "alice@example.com", "mfa_step_up_preference": "totp"},
     )
     db.session.refresh(user)
 
@@ -460,19 +487,19 @@ def test_profile_update_rejects_duplicate_username(client):
 
 def test_profile_update_rejects_duplicate_email(client):
     register(client)
-    register(client, username="bob02", email="bob@sit.singaporetech.edu.sg", full_name="Bob Test", phone_number="81234567")
+    register(client, username="bob02", email="bob@example.com", full_name="Bob Test", phone_number="81234567")
     login(client)
     user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
     mark_recent_mfa(client, user)
 
     response = client.post(
         "/profile",
-        data={"username": "alice01", "email": "bob@sit.singaporetech.edu.sg", "mfa_step_up_preference": "totp"},
+        data={"username": "alice01", "email": "bob@example.com", "mfa_step_up_preference": "totp"},
     )
     db.session.refresh(user)
 
     assert response.status_code == 400
-    assert user.email == "alice@sit.singaporetech.edu.sg"
+    assert user.email == "alice@example.com"
     assert db.session.query(SecurityAuditEvent).filter_by(event_type="profile_update", outcome="failure").count() == 1
 
 def test_profile_post_requires_csrf_when_enabled(app, client):
@@ -518,7 +545,7 @@ def test_json_auth_post_requires_global_csrf_header_when_enabled(app, client):
 
 def test_profile_submission_cannot_modify_privileged_fields(client):
     register(client)
-    register(client, username="bob02", email="bob@sit.singaporetech.edu.sg", full_name="Bob Test", phone_number="81234567")
+    register(client, username="bob02", email="bob@example.com", full_name="Bob Test", phone_number="81234567")
     login(client)
     user, secret = enable_mfa_for_user()
     other_user = db.session.execute(db.select(User).where(User.username == "bob02")).scalar_one()
@@ -548,7 +575,7 @@ def test_profile_submission_cannot_modify_privileged_fields(client):
     assert user.is_frozen is False
     assert user.password_hash == original_password_hash
     assert other_user.username == "bob02"
-    assert other_user.email == "bob@sit.singaporetech.edu.sg"
+    assert other_user.email == "bob@example.com"
 
 def test_high_risk_stepup_token_is_rejected(client):
     register(client)
@@ -568,7 +595,7 @@ def test_high_risk_stepup_token_is_rejected(client):
     db.session.refresh(user)
 
     assert response.status_code == 403
-    assert user.email == "alice@sit.singaporetech.edu.sg"
+    assert user.email == "alice@example.com"
     event = db.session.query(SecurityAuditEvent).filter_by(event_type="profile_update", outcome="failure").first()
     assert event is not None
     assert event.event_metadata["reason"] == "passkey_step_up_disabled"
@@ -683,5 +710,5 @@ def test_session_risk_drift_requires_reauth_before_sensitive_action(client):
 
     assert response.status_code == 401
     assert b"Session verification required. Please sign in again." in response.data
-    assert user.email == "alice@sit.singaporetech.edu.sg"
+    assert user.email == "alice@example.com"
     assert db.session.query(SecurityAuditEvent).filter_by(event_type="session_risk", outcome="step_up_required").count() == 1

@@ -260,11 +260,12 @@ Provider automation and origin assertion details are in
 ## Root Admin Bootstrap
 
 Root admins remain a fixed allowlisted group. `ROOT_ADMIN_EMAILS` must contain
-exactly 7 approved SIT workplace email addresses before any database user can
-become `root_admin`; normal customer registration and staff invites must not
-create `root_admin` accounts. Configure `ROOT_ADMIN_EMAILS` as a protected
-GitHub environment variable in both `staging` and `production` before deploying
-this command. Do not commit the allowlist to the repository.
+exactly 7 approved admin workplace email addresses from
+`ADMIN_ALLOWED_EMAIL_DOMAINS` before any database user can become `root_admin`;
+normal customer registration and staff invites must not create `root_admin`
+accounts. Configure `ROOT_ADMIN_EMAILS` as a protected GitHub environment
+variable in both `staging` and `production` before deploying this command. Do
+not commit the allowlist to the repository.
 
 After deployment, verify the admin container received the allowlist:
 
@@ -728,9 +729,12 @@ Manual recovery operator workflow:
 - Public account-recovery submission never unlocks, mutates, or completes an
   account by itself.
 
-## SIT Email OTP Registration Operations
+## Customer Email OTP Registration Operations
 
-Customer self-registration is limited to exact normalized SIT email domains:
+Customer self-registration uses personal/customer email addresses. The exact
+normalized domains in `ADMIN_ALLOWED_EMAIL_DOMAINS` are reserved for
+staff/admin/root-admin workplace identities and are blocked from customer
+registration:
 
 - `sit.singaporetech.edu.sg`
 - `singaporetech.edu.sg`
@@ -756,11 +760,11 @@ settings as password reset email:
 
 Operational checks:
 
-- Verify SMTP settings with a controlled staging registration using a test SIT
-  email address.
+- Verify SMTP settings with a controlled staging registration using a test
+  personal customer email address.
 - Investigate `registration_otp` audit events by outcome
-  (`requested`, `verified`, `failed`, `expired`, or `locked`) without expecting
-  raw email addresses or codes in event metadata.
+  (`requested`, `verified`, `blocked`, `failed`, `expired`, or `locked`)
+  without expecting raw email addresses or codes in event metadata.
 - If registration email delivery fails, the request fails closed and the
   PostgreSQL OTP challenge row is deleted.
 - Existing-account requests intentionally return the same generic response as

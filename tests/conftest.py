@@ -176,9 +176,10 @@ class TestConfig:
     FRESH_MFA_SECONDS = 5 * 60
     TOTP_LOGIN_VALID_WINDOW = 1
     TOTP_HIGH_RISK_VALID_WINDOW = 0
-    SIT_WORKPLACE_EMAIL_DOMAINS = frozenset(
+    ADMIN_ALLOWED_EMAIL_DOMAINS = frozenset(
         {"sit.singaporetech.edu.sg", "singaporetech.edu.sg"}
     )
+    SIT_WORKPLACE_EMAIL_DOMAINS = ADMIN_ALLOWED_EMAIL_DOMAINS
     STAFF_INVITE_PERSONAL_EMAIL_DOMAINS = frozenset(
         {"gmail.com", "outlook.com", "hotmail.com", "yahoo.com", "icloud.com", "proton.me", "protonmail.com"}
     )

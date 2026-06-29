@@ -31,6 +31,15 @@ from app.models import ManualRecoveryRequest, SecurityAuditEvent, StaffInvite, U
 from app.security.audit import audit_event, audit_event_required, audit_reference, principal_reference
 from app.security.crypto import encrypt_mfa_secret
 from app.security.email import send_security_email
+from app.security.identity_policy import (
+    IdentityPolicyError,
+    admin_allowed_email_domains,
+    is_admin_workplace_email,
+    normalize_identity_email,
+    require_admin_workplace_email,
+    root_admin_emails,
+    staff_personal_email_policy_violation,
+)
 from app.security.passwords import (
     PasswordPolicyError,
     hash_password,
@@ -135,13 +144,21 @@ def is_staff_user(user: User | None) -> bool:
 
 
 def is_active_staff_user(user: User | None) -> bool:
-    return bool(is_staff_user(user) and user.account_status == "active" and user.mfa_enabled)
+    return bool(
+        is_staff_user(user)
+        and user.account_status == "active"
+        and user.mfa_enabled
+        and is_admin_workplace_email(str(user.email or ""))
+    )
 
 
 def is_root_admin(user: User | None) -> bool:
     if user is None or user.account_type != ACCOUNT_ROOT_ADMIN:
         return False
-    return _normalize_email(user.email).casefold() in _root_admin_emails()
+    return (
+        is_admin_workplace_email(str(user.email or ""))
+        and _normalize_email(user.email).casefold() in _root_admin_emails()
+    )
 
 
 def require_staff_session() -> User:
@@ -769,7 +786,25 @@ def _like_escape(value: str) -> str:
 
 
 def authenticate_admin_primary(workplace_email: str, password: str) -> dict[str, Any]:
-    normalized_email = normalize_workplace_email(workplace_email)
+    try:
+        normalized_email = normalize_workplace_email(workplace_email)
+    except AuthError as exc:
+        normalized_email = _normalize_email(workplace_email)
+        principal = _auth_principal(normalized_email)
+        _enforce_auth_backoff("admin_login", principal)
+        if is_password_raw_length_safe(password):
+            verify_password(password, _dummy_password_hash())
+        audit_event(
+            "admin_login",
+            "failure",
+            metadata={
+                "known_user": False,
+                "reason": "invalid_workplace_email",
+                "principal_ref": principal_reference(normalized_email),
+            },
+        )
+        record_failure("admin_login", principal)
+        raise AuthError(GENERIC_ADMIN_LOGIN_ERROR, 401) from exc
     principal = _auth_principal(normalized_email)
     _enforce_auth_backoff("admin_login", principal)
 
@@ -791,6 +826,7 @@ def authenticate_admin_primary(workplace_email: str, password: str) -> dict[str,
             user=user,
             metadata={
                 "known_user": user is not None,
+                "reason": "invalid_credentials_or_ineligible_staff",
                 "principal_ref": principal_reference(normalized_email),
             },
         )
@@ -857,8 +893,16 @@ def create_staff_invite(
         audit_event("staff_invite_create", "failure", user=actor, metadata={"reason": "missing_totp_step_up"})
         raise AuthError(FRESH_MFA_REQUIRED_ERROR, 403)
 
-    normalized_personal = normalize_personal_email(personal_email)
-    normalized_workplace = normalize_workplace_email(workplace_email)
+    try:
+        normalized_workplace = normalize_workplace_email(workplace_email)
+        normalized_personal = normalize_personal_email(personal_email)
+    except AuthError:
+        audit_event("staff_invite_create", "blocked", user=actor, metadata={"reason": "email_policy"})
+        raise
+    personal_policy_reason = staff_personal_email_policy_violation(normalized_personal, normalized_workplace)
+    if personal_policy_reason:
+        audit_event("staff_invite_create", "blocked", user=actor, metadata={"reason": personal_policy_reason})
+        raise AuthError(INVALID_PERSONAL_EMAIL_ERROR, 400)
     normalized_role = str(role or "").strip().casefold()
     if normalized_role not in INVITABLE_ROLES:
         audit_event("staff_invite_create", "failure", user=actor, metadata={"reason": "invalid_role"})
@@ -988,6 +1032,7 @@ def transition_manual_recovery_request_as_admin(
         )
         raise AuthError(FRESH_MFA_REQUIRED_ERROR, 403)
 
+    _assert_not_self_manual_recovery_action(actor, request_id, "manual_recovery_transition")
     result = transition_manual_recovery_request(request_id, normalized_status, reason=clean_reason)
     audit_event(
         "manual_recovery_admin_transition",
@@ -1021,6 +1066,7 @@ def complete_manual_recovery_request_as_admin(
         )
         raise AuthError(FRESH_MFA_REQUIRED_ERROR, 403)
 
+    _assert_not_self_manual_recovery_action(actor, request_id, "manual_recovery_complete")
     result = complete_manual_recovery_request(request_id, reason=clean_reason)
     audit_event(
         "manual_recovery_admin_complete",
@@ -1037,6 +1083,7 @@ def complete_manual_recovery_request_as_admin(
 
 def invite_info(token: str) -> dict[str, Any]:
     invite = _active_invite_by_token(token, audit_failures=True)
+    _ensure_invite_identity_policy(invite, "staff_invite_info")
     return {
         "message": "Invite found",
         "invite": {
@@ -1066,6 +1113,7 @@ def start_invite_acceptance(
         raise AuthError(INVITE_ACCEPTANCE_ERROR, 400) from exc
 
     invite = _active_invite_by_token(token, lock=True, audit_failures=True)
+    _ensure_invite_identity_policy(invite, "staff_invite_accept")
     name = validate_full_name(full_name)
     phone = validate_phone_number(phone_number)
     if password != confirm_password:
@@ -1148,6 +1196,7 @@ def verify_invite_acceptance(
 ) -> dict[str, Any]:
     _reject_forged_invite_fields(request_fields)
     invite = _active_invite_by_token(token, lock=True, audit_failures=True)
+    _ensure_invite_identity_policy(invite, "staff_invite_accept")
     user = db.session.get(User, invite.setup_user_id) if invite.setup_user_id else None
     if user is None or user.account_status != "setup_pending" or user.account_type != invite.role:
         audit_event("staff_invite_accept", "failure", metadata={"reason": "setup_missing"})
@@ -1226,28 +1275,30 @@ def public_manual_recovery_request(request_record: ManualRecoveryRequest) -> dic
 
 
 def normalize_workplace_email(email: str) -> str:
-    normalized = _normalize_email(email)
-    local, separator, domain = normalized.partition("@")
-    if not _valid_email_parts(local, separator, domain):
-        raise AuthError(INVALID_WORKPLACE_EMAIL_ERROR, 400)
-    if domain.casefold() not in _workplace_domains():
-        raise AuthError(INVALID_WORKPLACE_EMAIL_ERROR, 400)
+    try:
+        normalized = require_admin_workplace_email(email)
+    except IdentityPolicyError as exc:
+        raise AuthError(INVALID_WORKPLACE_EMAIL_ERROR, 400) from exc
+    local = normalized.partition("@")[0]
     if _contains_alias_separator(local):
         raise AuthError(INVALID_WORKPLACE_EMAIL_ERROR, 400)
-    return f"{local}@{domain.casefold()}"
+    return normalized
 
 
 def normalize_personal_email(email: str) -> str:
-    normalized = _normalize_email(email)
+    try:
+        normalized = normalize_identity_email(email)
+    except IdentityPolicyError as exc:
+        raise AuthError(INVALID_PERSONAL_EMAIL_ERROR, 400) from exc
     local, separator, domain = normalized.partition("@")
     if not _valid_email_parts(local, separator, domain):
         raise AuthError(INVALID_PERSONAL_EMAIL_ERROR, 400)
     domain_lower = domain.casefold()
-    if domain_lower in _workplace_domains() or domain_lower not in _personal_domains():
+    if staff_personal_email_policy_violation(normalized) or domain_lower not in _personal_domains():
         raise AuthError(INVALID_PERSONAL_EMAIL_ERROR, 400)
     if _contains_alias_separator(local):
         raise AuthError(INVALID_PERSONAL_EMAIL_ERROR, 400)
-    return f"{local}@{domain_lower}"
+    return normalized
 
 
 def validate_full_name(full_name: str) -> str:
@@ -1314,6 +1365,19 @@ def _audit_invalid_invite_attempt(reason: str, *, enabled: bool) -> None:
             "failure",
             metadata={"reason": reason},
         )
+
+
+def _ensure_invite_identity_policy(invite: StaffInvite, event_type: str) -> None:
+    try:
+        normalized_workplace = normalize_workplace_email(invite.workplace_email_normalized)
+        normalized_personal = normalize_personal_email(invite.personal_email_normalized)
+    except AuthError:
+        audit_event(event_type, "blocked", metadata={**_invite_audit_metadata(invite), "reason": "email_policy"})
+        raise AuthError(GENERIC_INVITE_ERROR, 401)
+    policy_reason = staff_personal_email_policy_violation(normalized_personal, normalized_workplace)
+    if policy_reason:
+        audit_event(event_type, "blocked", metadata={**_invite_audit_metadata(invite), "reason": policy_reason})
+        raise AuthError(GENERIC_INVITE_ERROR, 401)
 
 
 def _send_invite_email(invite: StaffInvite, invite_url: str) -> None:
@@ -1386,6 +1450,18 @@ def _require_manual_recovery_reason(reason: str, event_type: str, actor: User) -
         audit_event(event_type, "failure", user=actor, metadata={"reason": "reason_too_long"})
         raise AuthError("Reason is too long", 400)
     return text
+
+
+def _assert_not_self_manual_recovery_action(actor: User, request_id: int, action_type: str) -> None:
+    from app.admin.separation import assert_not_self_customer_action
+
+    request_record = db.session.get(ManualRecoveryRequest, int(request_id))
+    if request_record is None or request_record.user_id is None:
+        return
+    target_customer = db.session.get(User, request_record.user_id)
+    if target_customer is None:
+        return
+    assert_not_self_customer_action(actor, target_customer, action_type)
 
 
 def _reject_existing_staff_identity(workplace_email: str) -> None:
@@ -1526,7 +1602,7 @@ def _contains_alias_separator(local: str) -> bool:
 
 
 def _workplace_domains() -> frozenset[str]:
-    return frozenset(str(item).casefold() for item in current_app.config["SIT_WORKPLACE_EMAIL_DOMAINS"])
+    return admin_allowed_email_domains()
 
 
 def _personal_domains() -> frozenset[str]:
@@ -1534,7 +1610,7 @@ def _personal_domains() -> frozenset[str]:
 
 
 def _root_admin_emails() -> frozenset[str]:
-    return frozenset(str(item).casefold() for item in current_app.config["ROOT_ADMIN_EMAILS"])
+    return root_admin_emails()
 
 
 def _utcnow() -> datetime:

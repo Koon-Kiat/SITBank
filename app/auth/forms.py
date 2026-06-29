@@ -101,7 +101,7 @@ class RegisterDetailsForm(FlaskForm):
 
 
 class RegistrationOtpRequestForm(FlaskForm):
-    email = StringField("SIT email", validators=[InputRequired(), Email(), Length(max=255)])
+    email = StringField("Customer email", validators=[InputRequired(), Email(), Length(max=255)])
 
 
 class RegistrationOtpCodeForm(FlaskForm):
@@ -115,7 +115,7 @@ class RegistrationOtpCodeForm(FlaskForm):
 
 
 class RegistrationOtpVerifyForm(FlaskForm):
-    email = StringField("SIT email", validators=[InputRequired(), Email(), Length(max=255)])
+    email = StringField("Customer email", validators=[InputRequired(), Email(), Length(max=255)])
     otp_code = StringField(
         "Verification code",
         validators=[
