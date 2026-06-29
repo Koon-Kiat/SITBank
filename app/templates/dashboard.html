@@ -29,7 +29,7 @@
       <div class="bank-account-balance">
         <p class="bank-card-eyebrow">Available Balance</p>
         <p class="balance-amount">
-          <span>SGD <span id="card-balance-masked">••••••</span><span id="card-balance-full" hidden>0.00</span></span>
+          <span>SGD <span id="card-balance-masked">••••••</span><span id="card-balance-full" hidden>{{ user.balance }}</span></span>
           <button id="bal-eye-btn" class="card-eye-btn" type="button" aria-label="Show balance" aria-pressed="false">
             <svg class="icon" focusable="false" aria-hidden="true"><use id="bal-eye-icon" href="#icon-eye-off"></use></svg>
           </button>
@@ -108,9 +108,50 @@
       <a href="#" class="muted dashboard-txn-more">More...</a>
     </div>
     {% if transactions %}
-      {% for txn in transactions[:5] %}
-      {# transaction rows go here #}
-      {% endfor %}
+    <div class="table-wrap">
+      <table aria-label="Recent transactions">
+        <thead>
+          <tr>
+            <th>Type</th>
+            <th>Party</th>
+            <th>Reference</th>
+            <th>Amount (SGD)</th>
+            <th>Date</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for txn in transactions %}
+          <tr>
+            <td>
+              {% if txn.sender_id == user.id %}
+              <span class="badge neutral">Sent</span>
+              {% else %}
+              <span class="badge">Received</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if txn.sender_id == user.id %}
+              {{ txn.recipient.full_name or txn.recipient.username }}
+              {% else %}
+              {{ txn.sender.full_name or txn.sender.username }}
+              {% endif %}
+            </td>
+            <td>{{ txn.reference or "—" }}</td>
+            <td>
+              {% if txn.sender_id == user.id %}
+              <span class="muted">−{{ txn.amount }}</span>
+              {% else %}
+              +{{ txn.amount }}
+              {% endif %}
+            </td>
+            <td><time datetime="{{ txn.created_at.isoformat() }}">{{ txn.created_at.strftime('%d %b %Y, %H:%M') }}</time></td>
+            <td><span class="badge {% if txn.status != 'completed' %}neutral{% endif %}">{{ txn.status|capitalize }}</span></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
     {% else %}
     <div class="empty-state dashboard-txn-empty">
       <p class="muted">No recent transactions to display.</p>

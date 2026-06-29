@@ -72,7 +72,9 @@
     hideOverlay();
     lastResetTime = Date.now();
     updateTimerDisplay();
-    warningTimer = setTimeout(showOverlay, warningMs);
+    if (warningMs > 0) {
+      warningTimer = setTimeout(showOverlay, warningMs);
+    }
     expireTimer = setTimeout(expire, timeoutMs);
   }
 
