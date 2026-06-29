@@ -39,16 +39,14 @@ def test_security_governance_doc_defines_roles_cadence_and_tracking():
         "Deployment Owner",
         "Documentation Owner",
         "Risk Owner",
-        "Issue Owner",
         "Reviewer",
         "External operator / outside repo",
         "at least once per milestone or release cycle",
-        "GitHub issues",
         "Accepted risks",
         "Off-Repo Ownership",
         "Stale Documentation Prevention",
         "Urgent Escalation",
-        "Closed security issues must",
+        "Each important open security gap must have an explicit status",
         "not a certification",
     ):
         assert required in text
@@ -77,7 +75,6 @@ def test_open_gap_register_rows_have_owner_status_and_review_tracking():
     status_index = header.index("Status / tracking")
     trigger_index = header.index("Review trigger")
     tracking_markers = (
-        "Issue",
         "needs-triage",
         "Accepted",
         "Deferred",
@@ -113,7 +110,7 @@ def test_design_risk_register_rows_have_owner_status_and_review_tracking():
     assert "Conditional accepted risk" in text
 
 
-def test_security_docs_explain_closed_issue_stale_doc_prevention():
+def test_security_docs_explain_closed_gap_stale_doc_prevention():
     combined = " ".join(
         path.read_text(encoding="utf-8")
         for path in (
@@ -128,8 +125,8 @@ def test_security_docs_explain_closed_issue_stale_doc_prevention():
     )
 
     for required in (
-        "Closed security issues must trigger a documentation review",
-        "Closing a security issue should update the gap register",
+        "Every security change or gap closure should check whether these docs need updates",
+        "Closing a security gap should update the gap register",
         "update the gap register, framework matrix, runbooks, and tests",
     ):
         assert required in normalized

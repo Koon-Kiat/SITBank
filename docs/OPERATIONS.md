@@ -76,8 +76,9 @@ operator-managed. None of those secret values belong in the repository.
 `staging-sitbank.pp.ua` is the Cloudflare-managed staging hostname for Access.
 The retired DuckDNS staging hostname is not an active staging deployment,
 Nginx, Certbot, or TLS-scan target.
-Issue #215 tracks the staging domain and CI/CD migration history; related
-Cloudflare Access/origin protection work is tracked by #198, #199, and #210.
+The staging domain and CI/CD migration are complete. Cloudflare Access and
+origin-protection automation are implemented, while live provider state
+remains operator-owned evidence.
 
 Routine verification:
 
@@ -125,12 +126,13 @@ Funnel must stay disabled for SITBank admin.
 Tailscale is the private network/device boundary for admin access; it does not
 replace Flask admin login, TOTP, CSRF protection, route authorization, or audit
 logging.
-Tailscale admin host preflight/provisioning and the private admin boundary
-decision are tracked by #200, #211, and #218.
+Tailscale admin host preflight/provisioning and the private admin boundary are
+implemented repository controls; live ACL, device, and Serve state still
+requires operator verification.
 
 The manual **Verify private Tailscale admin access** workflow is the only
-GitHub-hosted job approved to join the tailnet. It implements Option B with the
-protected `tailscale-private-admin-verification` environment and its
+GitHub-hosted job approved to join the tailnet. It uses the protected
+`tailscale-private-admin-verification` environment and its
 `TAILSCALE_AUTH_KEY` environment secret. The environment must require manual
 approval by trusted maintainers and restrict deployment branches to `main`.
 The key must create a reusable, ephemeral, pre-approved (when required), tagged
@@ -222,7 +224,7 @@ enter the private dashboard.
 
 ## EC2 SSH And Deployment Access Operations
 
-Issue 186 EC2 SSH hardening is deferred and is not implemented by this branch.
+EC2 SSH hardening is deferred and is not implemented by this branch.
 There is no repository OpenSSH drop-in, UFW rollout, security-group migration,
 or deployment-source allowlisting runbook to apply from this checkout.
 

@@ -439,7 +439,7 @@ jobs:
           exit-code: "0"
           ignore-unfixed: false
           severity: CRITICAL
-          version: v0.71.0
+          version: v0.71.2
 
       # zizmor: ignore[unpinned-tools] Trivy action is SHA-pinned; the action installs a pinned Trivy tool version.
       - name: Block unexpected critical vulnerabilities
@@ -451,7 +451,7 @@ jobs:
           ignore-unfixed: false
           severity: CRITICAL
           trivyignores: .trivyignore
-          version: v0.71.0
+          version: v0.71.2
 
       # zizmor: ignore[unpinned-tools] Trivy action is SHA-pinned; the action installs a pinned Trivy tool version.
       - name: Block fixable high and critical vulnerabilities
@@ -464,7 +464,7 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
           severity: HIGH,CRITICAL
-          version: v0.71.0
+          version: v0.71.2
 
   deployment-preflight:
     if: github.event_name != 'pull_request'
@@ -691,7 +691,7 @@ jobs:
           exit-code: "0"
           ignore-unfixed: false
           severity: CRITICAL
-          version: v0.71.0
+          version: v0.71.2
 
       # zizmor: ignore[unpinned-tools] Trivy action is SHA-pinned; the action installs a pinned Trivy tool version.
       - name: Block unexpected critical vulnerabilities in the published digest
@@ -703,7 +703,7 @@ jobs:
           ignore-unfixed: false
           severity: CRITICAL
           trivyignores: .trivyignore
-          version: v0.71.0
+          version: v0.71.2
 
       # zizmor: ignore[unpinned-tools] Trivy action is SHA-pinned; the action installs a pinned Trivy tool version.
       - name: Block fixable high and critical vulnerabilities in the published digest
@@ -716,7 +716,7 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
           severity: HIGH,CRITICAL
-          version: v0.71.0
+          version: v0.71.2
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6

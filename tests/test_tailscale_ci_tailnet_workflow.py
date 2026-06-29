@@ -130,7 +130,6 @@ def test_docs_describe_option_b_rotation_offboarding_and_scan_separation():
     )
 
     for required in (
-        "Option B",
         "GitHub-hosted runner",
         "tailscale-private-admin-verification",
         "TAILSCALE_AUTH_KEY",

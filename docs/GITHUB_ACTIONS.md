@@ -28,7 +28,7 @@ Feature-branch workflow and deployment scripts are never executed with environme
 
 The SSH deployment jobs assume the configured EC2 deploy user is reachable from
 an approved source. GitHub-hosted runners do not have stable source IPs, so
-repo-side Issue 186 SSH hardening is deferred to avoid accidentally breaking
+repo-side SSH hardening is deferred to avoid accidentally breaking
 deployment. Move deployment behind an allowlisted self-hosted runner, bastion,
 VPN egress, or OIDC plus AWS Systems Manager only in a separate reviewed change
 that tests rollback and GitHub Actions reachability.
@@ -93,8 +93,8 @@ deployment.
 ## Private Tailnet Verification
 
 `.github/workflows/tailscale-private-admin-verify.yml` is a separate manual
-Option B workflow. It is the only GitHub-hosted job permitted to join the
-tailnet and is not called by pull-request, deployment, or public TLS workflows.
+workflow. It is the only GitHub-hosted job permitted to join the tailnet and
+is not called by pull-request, deployment, or public TLS workflows.
 Its `tailscale-private-admin-verification` environment must require trusted
 maintainer approval, permit only `main`, and hold the sole
 `TAILSCALE_AUTH_KEY` secret. Configure that key as reusable, ephemeral,
@@ -145,7 +145,8 @@ hold any write permission.
 The reusable scanner job has only `contents: read`. It requires the GitHub
 Actions secret `SONAR_TOKEN`; it does not use production environments,
 deployment credentials, or `SONAR_HOST_URL`. Scheduled CI runs skip the
-SonarQube job.
+SonarQube job. Coverage retrieval uses the SHA-pinned
+`actions/download-artifact` v8.0.1 Node.js 24 action.
 
 The initial SonarQube quality gate is reporting-only and is not a release or
 deployment dependency. After a successful trusted internal pull-request scan,

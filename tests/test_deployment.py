@@ -41,6 +41,7 @@ from ops.runtime_contract import (
 ACTION_USES_PIN_RE = re.compile(r"[^@]+@[0-9a-f]{40}")
 KNOWN_NODE20_ACTION_USES = {
     "actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48",
+    "actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53",
     "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
 }
 PYTHON_SLIM_TRIXIE_IMAGE = (
@@ -1948,6 +1949,8 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert workflow_text.count('exit-code: "1"') == 4
     assert workflow_text.count("trivyignores: .trivyignore") == 2
     assert workflow_text.count("TRIVY_IGNOREFILE: /dev/null") == 4
+    assert workflow_text.count("version: v0.71.2") == 6
+    assert "version: v0.71.0" not in workflow_text
     assert "pull: ${{ github.event_name == 'schedule' }}" in workflow_text
     assert "no-cache: ${{ github.event_name == 'schedule' }}" in workflow_text
     assert "cosign sign --yes" in workflow_text
@@ -3173,7 +3176,7 @@ def test_production_edge_runbook_documents_network_waf_and_verification_steps():
         "ops/nginx/sitbank-production-rate-limits.conf",
         "Public ingress is TCP `80` and `443` only.",
         "SSH hardening is deferred in this branch.",
-        "Issue 186 OpenSSH drop-in",
+        "planned OpenSSH drop-in",
         "deployment-source migration path",
         "implemented here because they can affect GitHub Actions deployment access",
         "Nginx terminates TLS, redirects production customer HTTP to HTTPS",

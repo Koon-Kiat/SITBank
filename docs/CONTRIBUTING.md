@@ -5,8 +5,8 @@
 For security-sensitive changes, use
 `docs/security/security-governance.md` to identify the owner role, review
 trigger, accepted-risk handling, and documentation updates. Closing a security
-issue should update the gap register, framework matrix, threat model, design
-risk register, and runbooks when their claims changed.
+gap should update the gap register, framework matrix, threat model, design risk
+register, and runbooks when their claims changed.
 
 ## Local CI
 

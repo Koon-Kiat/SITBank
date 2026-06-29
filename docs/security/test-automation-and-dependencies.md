@@ -20,7 +20,7 @@ and test evidence found in the repository.
 | `.github/workflows/ci-deploy.yml` | Main CI, image, smoke, scan, sign, and deploy workflow | Runs tests, audits, scans, DAST paths, Trivy, and cosign |
 | `.github/workflows/codeql.yml` | CodeQL static analysis | Python `security-extended` queries on pull requests, main pushes, and schedule when repository is public |
 | `.github/workflows/sonarqube.yml` | SonarQube Cloud code-quality analysis | Full pytest coverage plus reporting-only maintainability, duplication, reliability, and security dashboard analysis |
-| `.github/workflows/tailscale-private-admin-verify.yml` | Protected private-tailnet verification | Manual Option B job joins with an ephemeral tagged identity, checks private admin reachability and public admin-route denial, and remains separate from PR/public TLS CI |
+| `.github/workflows/tailscale-private-admin-verify.yml` | Protected private-tailnet verification | A manual job joins with an ephemeral tagged identity, checks private admin reachability and public admin-route denial, and remains separate from PR/public TLS CI |
 | `.github/workflows/bootstrap-ec2.yml` | Bootstrap artifact workflow | Uses pinned actions and cosign blob signing |
 
 Not applicable to the current dependency inventory: no `package.json`,
@@ -38,7 +38,7 @@ applicable unless a frontend package manager is added.
 | Dependency lock validation | `ops/security/check_dependency_locks.py` | Enforces the hashed lockfile source of truth and rejects legacy dependency manifests |
 | Dependabot | `.github/dependabot.yml` | Opens controlled weekly updates for Docker, GitHub Actions, and pip dependencies |
 | GitHub dependency review | `.github/workflows/ci-deploy.yml` | Reviews dependency changes in pull requests |
-| Trivy image scans | `.github/workflows/ci-deploy.yml` | Scans built images and repository filesystem paths; `.trivyignore` exceptions are tested |
+| Trivy image scans | `.github/workflows/ci-deploy.yml` | Uses pinned Trivy `v0.71.2` for built-image and repository filesystem scans; `.trivyignore` exceptions are tested |
 | CodeQL | `.github/workflows/codeql.yml` | Runs Python security-extended static analysis when the repository is public |
 | SonarQube Cloud | `.github/workflows/ci-deploy.yml`, `.github/workflows/sonarqube.yml`, `sonar-project.properties` | Reuses the CI test job's `coverage.xml` artifact to report private-repository code quality, duplication, maintainability, and security findings without rerunning pytest; initial quality gate is non-blocking |
 | Bandit | `scripts/ci-local`, `.github/workflows/ci-deploy.yml` | Runs a high-confidence Python security scan |
@@ -150,9 +150,9 @@ stages:
 | Manual release DAST option | `workflow_dispatch` input `run_dast` controls authenticated DAST during release verification |
 
 Private admin reachability is intentionally outside the main workflow. The
-manual `.github/workflows/tailscale-private-admin-verify.yml` workflow uses
-Option B: a GitHub-hosted runner enters the protected
-`tailscale-private-admin-verification` environment after manual approval and
+manual `.github/workflows/tailscale-private-admin-verify.yml` workflow uses a
+GitHub-hosted runner that enters the protected
+`tailscale-private-admin-verification` environment after manual approval. It
 uses only its `TAILSCALE_AUTH_KEY` secret. The key must be reusable, ephemeral,
 tagged, pre-approved where needed, and limited by tailnet grants to the private
 admin HTTPS service. The job runs no pull-request code, checks the private URL

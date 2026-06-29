@@ -57,11 +57,8 @@ def test_hybrid_cloudflare_staging_and_tailscale_admin_design_is_documented():
         "SITBank uses a hybrid zero-trust access model",
         "Staging uses a Cloudflare-managed public hostname with Cloudflare Access",
         "Admin access is private through Tailscale",
-        "#198: origin-side Cloudflare Access assertion validation for staging.",
-        "#215: CI/CD and deployment migration to the Cloudflare-managed staging",
-        "#218: Tailscale private access as the admin device/network boundary decision.",
+        "Implemented repository controls include",
         "Protected GitHub CI tailnet verification is implemented only by",
-        "Option B: a GitHub-hosted runner joins the tailnet",
         "tailscale-private-admin-verification",
         "TAILSCALE_AUTH_KEY",
         "This intentionally uses both products because the surfaces have different",
@@ -88,6 +85,7 @@ def test_hybrid_cloudflare_staging_and_tailscale_admin_design_is_documented():
     ):
         assert required in docs
 
+    assert "temporarily joins a GitHub-hosted runner to the tailnet" in normalized_docs
     assert "does not replace Flask admin login, TOTP, CSRF protection" in normalized_docs
     assert "staging is documented/configured as public-only" not in docs.lower()
     assert "admin is documented/configured as public-only" not in docs.lower()

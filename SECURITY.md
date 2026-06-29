@@ -324,7 +324,7 @@ checked manually.
 - Allow public inbound TCP `80` and `443` only.
 - Restricting SSH to an administrator IP allowlist, AWS Systems Manager, a
   bastion, or VPN is still a target control, but this branch does not implement
-  the Issue 186 OpenSSH/UFW/security-group hardening package. Do not claim live
+  the planned OpenSSH/UFW/security-group hardening package. Do not claim live
   SSH hardening until the EC2 host and AWS security group are changed and
   verified through a separate reviewed rollout.
 - Do not expose Gunicorn or PostgreSQL directly to the internet.

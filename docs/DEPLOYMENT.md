@@ -156,8 +156,8 @@ do not move secret values into repository variables.
 
 ### Protected Private-Admin Verification Environment
 
-Option B uses a GitHub-hosted runner only for the manual
-`.github/workflows/tailscale-private-admin-verify.yml` workflow. Create a
+The manual `.github/workflows/tailscale-private-admin-verify.yml` workflow uses
+a GitHub-hosted runner that temporarily joins the tailnet. Create a
 GitHub Environment named `tailscale-private-admin-verification`, require manual
 approval by trusted maintainers, and restrict its deployment branches to
 `main`. Store `TAILSCALE_AUTH_KEY` only as that environment's secret. It must
@@ -431,7 +431,7 @@ served through DNS and the deployed edge.
 The reviewed production bootstrap installs and enables the production edge from `ops/nginx/sitbank-default.conf`, `ops/nginx/sitbank-production.conf`, `ops/nginx/sitbank-production-rate-limits.conf`, `ops/nginx-proxy-headers.conf`, and `ops/nginx/sitbank-tls-policy.conf`. The shared default config owns unknown-host rejection so production and staging can run on the same EC2 without duplicate Nginx `default_server` listeners. Any change to those files requires a production bootstrap after merge.
 
 - Public ingress is TCP `80` and `443` only.
-- SSH hardening is deferred in this branch. The Issue 186 OpenSSH drop-in,
+- SSH hardening is deferred in this branch. The planned OpenSSH drop-in,
   UFW/security-group rollout, and deployment-source migration path are not
   implemented here because they can affect GitHub Actions deployment access.
   Treat live SSH posture as operator-owned infrastructure evidence until a
@@ -577,9 +577,9 @@ change instead of disabling the origin-pull protection.
 Use a Cloudflare-managed zone/hostname or Cloudflare Tunnel for this boundary;
 for this deployment, the approved Cloudflare-managed hostname is
 `staging-sitbank.pp.ua`. The retired DuckDNS staging hostname is not an active
-staging deployment, Nginx, Certbot, or TLS-scan target. Issue #215 tracks the
-staging domain and CI/CD migration history; Cloudflare Access and origin
-protection work is referenced from #198, #199, and #210.
+staging deployment, Nginx, Certbot, or TLS-scan target. The staging domain and
+CI/CD migration are complete. Cloudflare Access and origin-protection
+automation are implemented separately from live operator verification.
 
 Issue or renew staging TLS before bootstrap:
 

@@ -18,16 +18,11 @@ traffic reaches Nginx or Flask. Admin is an operator-only surface and should
 not be reachable from the public internet at all, so the admin app remains
 behind Tailscale/private device access.
 
-Current tracking references:
-
-- #198: origin-side Cloudflare Access assertion validation for staging.
-- #199: Cloudflare Authenticated Origin Pull CA integrity checks.
-- #200: Tailscale admin host preflight and Funnel-disabled verification.
-- #210: Cloudflare Access staging provisioning and verification automation.
-- #211: Tailscale admin access provisioning and verification automation.
-- #215: CI/CD and deployment migration to the Cloudflare-managed staging
-  hostname and private Tailscale admin model.
-- #218: Tailscale private access as the admin device/network boundary decision.
+Implemented repository controls include origin-side Cloudflare Access assertion
+validation, Authenticated Origin Pull CA integrity checks, Cloudflare staging
+provisioning and verification automation, Tailscale admin host preflight, and
+the private-admin CI verification workflow. Live provider policy, device
+approval, and host-side Serve state remain operator-owned evidence.
 
 Protected GitHub CI tailnet verification is implemented only by
 `.github/workflows/tailscale-private-admin-verify.yml`. It is deliberately not
@@ -47,10 +42,10 @@ References:
 
 ## Protected GitHub CI Tailnet Verification
 
-The selected model is **Option B: a GitHub-hosted runner joins the tailnet**.
-The project accepts the narrower, temporary credential exposure because no
-trusted self-hosted tailnet runner is available. This exception applies only
-to the manual **Verify private Tailscale admin access** workflow. It does not
+The manual **Verify private Tailscale admin access** workflow temporarily joins
+a GitHub-hosted runner to the tailnet. The project accepts this narrow
+credential exposure because no trusted self-hosted tailnet runner is
+available. This exception applies only to that protected workflow. It does not
 put pull-request CI, deployment jobs, scheduled public TLS scans, or other
 GitHub-hosted jobs inside the tailnet.
 
