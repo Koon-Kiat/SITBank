@@ -66,9 +66,9 @@ issue, PR comment, screenshot, or log. Read it without echo, then export it
 only in the root shell used for the confirmed command:
 
 ```bash
+read -rp 'Tailscale OAuth client ID: ' TS_OAUTH_CLIENT_ID
 read -rsp 'Tailscale secret: ' TS_OAUTH_SECRET; echo
-export TS_OAUTH_SECRET
-export TS_OAUTH_CLIENT_ID='<client-id>'
+export TS_OAUTH_CLIENT_ID TS_OAUTH_SECRET
 sudo --preserve-env=TS_OAUTH_CLIENT_ID,TS_OAUTH_SECRET \
   /usr/local/sbin/sitbank-configure-tailscale-admin \
   --dry-run --auth-mode oauth
