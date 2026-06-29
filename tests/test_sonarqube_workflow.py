@@ -214,6 +214,9 @@ def test_sonarqube_docs_record_cloud_private_repo_and_nonblocking_policy():
         assert required in normalized
     assert "SONAR_HOST_URL" in normalized
     assert "sonar.qualitygate.wait=false" in normalized
+    assert "specific version tag" in normalized
+    assert "immutable digest" in normalized
+    assert "visible to Dependabot" in normalized
 
 
 def test_active_docs_do_not_claim_sonarqube_is_missing():
