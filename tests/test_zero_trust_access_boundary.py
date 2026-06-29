@@ -60,6 +60,7 @@ def test_hybrid_cloudflare_staging_and_tailscale_admin_design_is_documented():
         "Implemented repository controls include",
         "Protected GitHub CI tailnet verification is implemented only by",
         "EC2 Host-Side Tailscale Preflight",
+        "EC2 Tailscale Provisioning Automation",
         "verify-tailscale-admin-access --mode serve",
         "admin-tailscale",
         "TS_OAUTH_CLIENT_ID",

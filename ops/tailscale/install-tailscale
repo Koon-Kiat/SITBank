@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# Install Tailscale's authenticated stable package on Ubuntu 24.04.
+set -Eeuo pipefail
+
+readonly KEY_URL="https://pkgs.tailscale.com/stable/ubuntu/noble.noarmor.gpg"
+readonly LIST_URL="https://pkgs.tailscale.com/stable/ubuntu/noble.tailscale-keyring.list"
+readonly KEY_SHA256="5dde3fffc76b6eb5bf4e2327703990ffde02cb4f7f0df0dd16ee2e7f9a58b5d4"
+readonly LIST_SHA256="e95b581a3d0d34614731b867339b48e312c0db16e4b788b736d759f95669e7d9"
+readonly KEY_DESTINATION="/usr/share/keyrings/tailscale-archive-keyring.gpg"
+readonly LIST_DESTINATION="/etc/apt/sources.list.d/tailscale.list"
+
+usage() {
+    echo "Usage: install-tailscale (--dry-run | --confirm)" >&2
+}
+
+print_plan() {
+    cat <<EOF
+PLAN: install Tailscale from its stable Ubuntu 24.04 repository.
+- Download the repository key and source list over HTTPS.
+- Require pinned SHA-256 digests before installing either file.
+- Install the tailscale package with apt and enable tailscaled.
+- Do not authenticate a node or configure Serve/Funnel.
+Repository key: ${KEY_URL}
+Repository list: ${LIST_URL}
+EOF
+}
+
+dry_run=0
+confirm=0
+while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+        --dry-run)
+            dry_run=1
+            ;;
+        --confirm)
+            confirm=1
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            usage
+            exit 2
+            ;;
+    esac
+    shift
+done
+
+if [[ "${dry_run}" -eq "${confirm}" ]]; then
+    usage
+    echo "Choose exactly one of --dry-run or --confirm." >&2
+    exit 2
+fi
+print_plan
+if [[ "${dry_run}" -eq 1 ]]; then
+    exit 0
+fi
+if [[ "${EUID}" -ne 0 ]]; then
+    echo "ERROR: Run confirmed installation as root." >&2
+    exit 1
+fi
+
+for command_name in curl sha256sum install apt-get systemctl mktemp; do
+    if ! command -v "${command_name}" >/dev/null 2>&1; then
+        echo "ERROR: Required command is missing: ${command_name}" >&2
+        exit 1
+    fi
+done
+
+# /etc/os-release is host-managed root configuration on the supported target.
+# shellcheck disable=SC1091
+source /etc/os-release
+if [[ "${ID:-}" != "ubuntu" || "${VERSION_CODENAME:-}" != "noble" ]]; then
+    echo "ERROR: This installer supports only Ubuntu 24.04 (noble)." >&2
+    exit 1
+fi
+
+work_dir="$(mktemp -d)"
+cleanup() {
+    rm -f -- "${work_dir}/tailscale.gpg" "${work_dir}/tailscale.list"
+    rmdir -- "${work_dir}" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+curl --fail --silent --show-error --location \
+    --proto '=https' --tlsv1.2 \
+    --output "${work_dir}/tailscale.gpg" "${KEY_URL}"
+curl --fail --silent --show-error --location \
+    --proto '=https' --tlsv1.2 \
+    --output "${work_dir}/tailscale.list" "${LIST_URL}"
+
+printf '%s  %s\n' "${KEY_SHA256}" "${work_dir}/tailscale.gpg" \
+    | sha256sum --check --status -
+printf '%s  %s\n' "${LIST_SHA256}" "${work_dir}/tailscale.list" \
+    | sha256sum --check --status -
+
+install -d -o root -g root -m 0755 \
+    /usr/share/keyrings /etc/apt/sources.list.d
+install -o root -g root -m 0644 \
+    "${work_dir}/tailscale.gpg" "${KEY_DESTINATION}"
+install -o root -g root -m 0644 \
+    "${work_dir}/tailscale.list" "${LIST_DESTINATION}"
+apt-get update
+apt-get install --yes --no-install-recommends tailscale
+systemctl enable --now tailscaled
+
+echo "OK: Tailscale is installed and tailscaled is enabled."
+echo "NEXT: Run configure-admin-access --dry-run with an explicit auth mode."

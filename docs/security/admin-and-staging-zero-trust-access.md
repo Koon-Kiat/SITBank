@@ -20,9 +20,10 @@ behind Tailscale/private device access.
 
 Implemented repository controls include origin-side Cloudflare Access assertion
 validation, Authenticated Origin Pull CA integrity checks, Cloudflare staging
-provisioning and verification automation, Tailscale admin host preflight, and
-the private-admin CI verification workflow. Live provider policy, device
-approval, and host-side Serve state remain operator-owned evidence.
+provisioning and verification automation, confirmation-gated Tailscale
+installation/Serve configuration, Tailscale admin host preflight, and the
+private-admin CI verification workflow. Live provider policy, device approval,
+group membership, and executed host state remain operator-owned evidence.
 
 Protected GitHub CI tailnet verification is implemented only by
 `.github/workflows/tailscale-private-admin-verify.yml`. It is deliberately not
@@ -41,6 +42,8 @@ References:
   <https://tailscale.com/docs/features/tags>
 - Tailscale OAuth clients:
   <https://tailscale.com/docs/features/oauth-clients>
+- Tailscale auth keys:
+  <https://tailscale.com/docs/features/access-control/auth-keys>
 
 ## Protected GitHub CI Tailnet Verification
 
@@ -56,13 +59,14 @@ production workflow invoke the required gate after `deploy-production` and
 `verify-production-tls` both succeed. The reusable job uses the protected
 `admin-tailscale` GitHub Environment. Configure that environment to require
 manual approval by trusted maintainers, restrict deployment branches to
-`main`, and store `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET` only as
-environment secrets. Do not duplicate them as repository or organization
-secrets. The OAuth client must have **Keys > Auth Keys > Write** permission and
-be restricted to `tag:github-ci`. That tag must be unable to administer the
-tailnet or use broad SSH and may reach only `tag:admin-sitbank:443`. The
-workflow uses the official Tailscale action at an immutable commit, checks the
-private target before joining, and does not check out or run repository code.
+`main`. Production uses `auth_mode: oauth` with environment secrets
+`TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET`. Manual/reusable verification may
+select `auth_mode: authkey` and use `TAILSCALE_AUTH_KEY`. Do not duplicate any
+of them as repository or organization secrets. The OAuth client needs **Keys >
+Auth Keys > Write**; an auth key must be short-lived, one-off where possible,
+ephemeral, tagged, and pre-approved when required. Both modes are restricted
+to `tag:github-ci`, which may reach only `tag:admin-sitbank:443` and cannot
+administer the tailnet or use broad SSH. Each run selects exactly one mode.
 
 Each approved run:
 
@@ -110,12 +114,44 @@ client's tag/grant scope changes:
    after the job.
 3. Revoke the old OAuth client and remove any stale CI node from the tailnet.
 
-To remove CI tailnet access, delete both secrets from the environment, revoke
-the OAuth client in Tailscale, remove the dedicated CI tag grants and stale
-devices, and disable or delete the GitHub Environment. Environment approver
-and deployment-branch rules must be reviewed during maintainer offboarding.
-Retired private aliases must not be used. If the live tailnet hostname
-changes, update the workflow, documentation, and policy tests together.
+If `auth_mode: authkey` is used, rotate `TAILSCALE_AUTH_KEY` before expiry or
+after disclosure, validate one approved run, then revoke the old key. Revoking
+either credential does not remove enrolled nodes; remove stale nodes
+separately.
+
+To remove CI tailnet access, delete all three optional secrets from the
+environment, revoke the applicable OAuth client/auth key, remove the dedicated
+CI tag grants and stale devices, and disable or delete the GitHub Environment.
+Environment approver and deployment-branch rules must be reviewed during
+maintainer offboarding. Retired private aliases must not be used.
+
+### EC2 Tailscale Provisioning Automation
+
+`ops/tailscale/` implements the approved Model B private-HTTPS setup:
+
+- `install-tailscale` installs the authenticated Ubuntu 24.04 stable package
+  only after `--confirm`; `--dry-run` performs no network or package action.
+- `configure-admin-access` supports explicit `oauth`, `authkey`, and
+  `interactive` modes. It accepts no credential before `--confirm`, passes
+  secrets through an inherited file descriptor, and never prints or persists
+  them.
+- `verify-admin-access` delegates to the canonical EC2 verifier.
+- `acl-policy.hujson` is a non-secret least-privilege policy reference; it is
+  reviewed and applied manually to the live tailnet.
+
+Production bootstrap installs these scripts under `/usr/local/sbin`. The
+confirmed configure flow permits only private HTTPS `443` to
+`http://127.0.0.1:5002`, clears unsafe route/exit-node/SSH advertisement,
+refuses pre-existing Serve mappings, never enables Funnel, and requires the
+preflight before and after Serve changes. Staging admin is deliberately not
+configured; port `5003`, a staging private hostname, policy, verification, and
+docs require a separate approval.
+
+Normal CI performs static/contract tests only and never installs Tailscale,
+joins the tailnet, reads host credentials, or configures Serve. Live policy
+application, operator/device approval, and execution remain manually approved
+external actions. See `ops/tailscale/README.md` for safe secret input,
+onboarding, offboarding, quarterly review, rollback, and emergency disable.
 
 ### EC2 Host-Side Tailscale Preflight
 
@@ -272,20 +308,20 @@ htpasswd hash must not be stored in the repository.
 
 ## Admin Tailscale Access
 
-Install Tailscale on the EC2 host and enroll it as a tagged service node such
-as `tag:sitbank-admin`. Restrict access with the tailnet policy so only
-approved operator users, groups, or managed devices can reach the SITBank host
-and admin service ports. Do not rely on a shared password as the private
-network boundary.
+Use the confirmation-gated `ops/tailscale/` automation to install Tailscale
+and enroll the EC2 host as `tag:sitbank-admin`. Restrict access with the
+reviewed tailnet policy so only approved operator users/groups and the narrow
+CI identity can reach HTTPS `443`. Do not rely on a shared password as the
+private network boundary.
 
 Current admin access path:
 
 ```bash
-sudo tailscale up --advertise-tags=tag:sitbank-admin
-sudo tailscale set --hostname=admin-sitbank
-sudo tailscale serve --bg --https=443 127.0.0.1:5002
-sudo tailscale serve status
-sudo /usr/local/sbin/verify-tailscale-admin-access --mode serve
+sudo /usr/local/sbin/sitbank-install-tailscale --dry-run
+sudo /usr/local/sbin/sitbank-configure-tailscale-admin \
+  --dry-run --auth-mode oauth
+# After approval, repeat each with --confirm.
+sudo /usr/local/sbin/sitbank-verify-tailscale-admin
 ```
 
 Admins connect to the Tailscale VPN first, then open

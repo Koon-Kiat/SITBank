@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Delegate to the canonical non-mutating host-side verifier.
+set -Eeuo pipefail
+
+mode="serve"
+if [[ "$#" -gt 0 ]]; then
+    if [[ "$#" -ne 2 || "$1" != "--mode" ]]; then
+        echo "Usage: verify-admin-access [--mode serve|ssh]" >&2
+        exit 2
+    fi
+    mode="$2"
+fi
+case "${mode}" in
+    serve|ssh) ;;
+    *)
+        echo "Usage: verify-admin-access [--mode serve|ssh]" >&2
+        exit 2
+        ;;
+esac
+
+if [[ -x /usr/local/sbin/verify-tailscale-admin-access ]]; then
+    exec /usr/local/sbin/verify-tailscale-admin-access --mode "${mode}"
+fi
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+verifier="${repo_root}/ops/deploy/verify-tailscale-admin-access"
+if [[ ! -x "${verifier}" ]]; then
+    echo "ERROR: canonical host verifier is not installed or executable." >&2
+    exit 1
+fi
+exec "${verifier}" --mode "${mode}"

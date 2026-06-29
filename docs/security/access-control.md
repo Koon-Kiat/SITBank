@@ -145,11 +145,15 @@ the admin runtime.
 The protected manual/reusable workflow
 `.github/workflows/tailscale-private-admin-verify.yml` supplies reachability
 evidence from a temporary GitHub-hosted tailnet node. Its
-`admin-tailscale` environment and `TS_OAUTH_CLIENT_ID`/`TS_OAUTH_SECRET`
-do not replace Flask admin login, TOTP, CSRF, route authorization, or audit
-logging. Production calls it as a required gate only after deployment and
-public production TLS verification; normal public TLS/PR CI remains outside
-the tailnet. The EC2-local
+`admin-tailscale` environment uses OAuth by default and can explicitly select
+the optional protected `TAILSCALE_AUTH_KEY` compatibility mode. Neither mode
+replaces Flask admin login, TOTP, CSRF, route authorization, or audit logging.
+Production calls the workflow only after deployment and public TLS; normal
+public TLS/PR CI remains outside the tailnet.
+
+`ops/tailscale/` provides confirmation-gated package installation, production
+Serve configuration, a verifier wrapper, and a non-secret ACL reference. The
+EC2-local
 `/usr/local/sbin/verify-tailscale-admin-access --mode serve` preflight
 separately verifies the running node, disabled Funnel, loopback listener,
 local readiness, narrow Serve mapping, Nginx absence, and private HTTPS

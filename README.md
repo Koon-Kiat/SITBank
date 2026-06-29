@@ -22,6 +22,13 @@ HTTPS entrypoint, and absence of an admin upstream in Nginx. This host evidence
 complements the protected GitHub reachability gate; live tailnet policy,
 device approval, and operator membership remain externally managed.
 
+Repository-managed host setup lives under `ops/tailscale/`. Production
+bootstrap installs confirmation-gated install/configure commands, a wrapper
+around the canonical verifier, and a non-secret least-privilege ACL example.
+The configure flow supports OAuth, a tagged auth key, or interactive login;
+OAuth remains the production CI gate default. No mutating Tailscale command
+runs in normal CI.
+
 Security-critical state is stored in application-owned PostgreSQL tables. Server-side sessions, authentication failure counters, TOTP replay markers, registration OTP challenges, password-reset transactions, security-alert dedupe windows, and breached-password circuit-breaker state are stored in dedicated tables. Browser cookies keep only opaque identifiers; lookup hashes are HMAC-derived with `SESSION_LOOKUP_HMAC_KEY` or `ADMIN_SESSION_LOOKUP_HMAC_KEY`, and stored session payloads remain signed with the session HMAC keyring.
 
 The app keeps password hashing PBKDF2+pepper only and MFA/TOTP seed encryption envelope-only using `MFA_KEK_ACTIVE_ID` plus `MFA_KEK_KEYS_JSON`. The current MFA baseline is authenticator TOTP with recovery-code support for reset flows. Legacy one-key MFA AES compatibility and direct non-PBKDF2 password hash compatibility are intentionally removed because current users are test-only and environments must be reset before this change is deployed.

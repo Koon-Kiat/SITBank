@@ -8,12 +8,25 @@ on:
         required: false
         default: admin-sitbank.tailca101b.ts.net
         type: string
+      auth_mode:
+        description: Protected Tailscale credential mode.
+        required: true
+        default: oauth
+        type: choice
+        options:
+          - oauth
+          - authkey
   workflow_call:
     inputs:
       private_admin_host:
         description: Private Tailscale admin hostname.
         required: false
         default: admin-sitbank.tailca101b.ts.net
+        type: string
+      auth_mode:
+        description: Protected Tailscale credential mode (oauth or authkey).
+        required: false
+        default: oauth
         type: string
 
 permissions:
@@ -33,6 +46,7 @@ jobs:
       name: admin-tailscale
     env:
       TAILSCALE_PRIVATE_ADMIN_HOST: ${{ inputs.private_admin_host }}
+      TAILSCALE_AUTH_MODE: ${{ inputs.auth_mode }}
 
     steps:
       - name: Validate private target before joining the tailnet
@@ -42,6 +56,11 @@ jobs:
 
           if [[ ! "${TAILSCALE_PRIVATE_ADMIN_HOST}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$ ]]; then
             echo "::error::The admin verification target must be a hostname, not a URL or command fragment."
+            exit 1
+          fi
+          if [[ "${TAILSCALE_AUTH_MODE}" != "oauth" \
+            && "${TAILSCALE_AUTH_MODE}" != "authkey" ]]; then
+            echo "::error::auth_mode must be oauth or authkey."
             exit 1
           fi
 
@@ -59,12 +78,20 @@ jobs:
             echo "- Private admin is not reachable from the public runner context."
           } >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: Join the approved tailnet with an ephemeral tagged identity
+      - name: Join the approved tailnet with OAuth
+        if: inputs.auth_mode == 'oauth'
         uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:github-ci
+          ping: ${{ inputs.private_admin_host }}
+
+      - name: Join the approved tailnet with an auth key
+        if: inputs.auth_mode == 'authkey'
+        uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
           ping: ${{ inputs.private_admin_host }}
 
       - name: Verify private admin entrypoint

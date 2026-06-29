@@ -116,6 +116,7 @@ def test_security_gap_register_is_single_source_with_required_fields():
     assert "Security governance process" in implemented
     assert "Strict Docker/Compose local CI mode" in implemented
     assert "EC2 Tailscale admin host preflight" in implemented
+    assert "Tailscale production-admin provisioning automation" in implemented
     recently_closed = _section(register, "Recently Closed Gaps")
     assert "Admin audit-log viewer UI" in recently_closed
 

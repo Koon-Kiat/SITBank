@@ -85,7 +85,11 @@ tailnet. On the production host,
 verifies local Tailscale status, Funnel disablement, the loopback listener,
 Serve mapping, local readiness, private HTTPS response, and absence of an
 admin upstream in Nginx. The verifier is read-only and requires no Tailscale
-credential.
+credential. Confirmation-gated installation and private Serve configuration
+are maintained under `ops/tailscale/`; they support OAuth, tagged auth-key, or
+interactive host enrollment without committing credentials. The protected
+GitHub workflow supports OAuth and auth-key modes, with production explicitly
+defaulting to OAuth. Normal CI never runs those mutating host commands.
 
 Staging access is protected by Cloudflare Access before Nginx/Flask and by
 Cloudflare Authenticated Origin Pulls at the staging Nginx origin. Direct

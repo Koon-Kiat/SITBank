@@ -81,6 +81,8 @@ def test_zero_trust_docs_use_current_architecture_and_control_state():
     assert "### EC2 Host-Side Tailscale Preflight" in docs
     assert "ops/deploy/verify-tailscale-admin-access" in docs
     assert "The two controls answer different questions." in docs
+    assert "### EC2 Tailscale Provisioning Automation" in docs
+    assert "ops/tailscale/README.md" in docs
     assert "GitHub-hosted runner joins the tailnet" not in docs
     assert "temporarily joins a GitHub-hosted runner to the tailnet" in normalized_docs
 

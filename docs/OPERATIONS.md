@@ -92,9 +92,7 @@ curl --fail --resolve staging-sitbank.pp.ua:443:127.0.0.1 \
   https://staging-sitbank.pp.ua/health/ready
 curl -I --resolve staging-sitbank.pp.ua:443:<EC2_PUBLIC_IP> \
   https://staging-sitbank.pp.ua/
-sudo tailscale set --hostname=admin-sitbank
-sudo tailscale serve status
-curl -I https://admin-sitbank.tailca101b.ts.net/login
+sudo /usr/local/sbin/sitbank-verify-tailscale-admin
 ```
 
 The origin-pull verifier is an offline host check. It rejects missing,
@@ -127,9 +125,40 @@ Funnel must stay disabled for SITBank admin.
 Tailscale is the private network/device boundary for admin access; it does not
 replace Flask admin login, TOTP, CSRF protection, route authorization, or audit
 logging.
-The Tailscale admin host preflight and private admin boundary are implemented
-repository controls; live provisioning plus ACL, device, and Serve state still
-require operator verification.
+Tailscale installation, production Serve configuration, and host preflight are
+implemented as repository-managed scripts. Their execution, live ACL, device,
+group, and resulting Serve state still require operator approval and retained
+evidence.
+
+Production bootstrap installs the scripts documented in
+`ops/tailscale/README.md`. Start with non-mutating plans:
+
+```bash
+sudo /usr/local/sbin/sitbank-install-tailscale --dry-run
+sudo /usr/local/sbin/sitbank-configure-tailscale-admin \
+  --dry-run --auth-mode oauth
+```
+
+After change approval, run `sitbank-install-tailscale --confirm`, then run the
+configure command with `--confirm` and one explicit mode:
+
+- `oauth` reads `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET`;
+- `authkey` reads `TAILSCALE_AUTH_KEY`;
+- `interactive` uses approved browser authentication.
+
+OAuth is preferred. The OAuth client needs **Keys > Auth Keys > Write** and
+`tag:sitbank-admin`. Auth keys must be short-lived, one-off where possible,
+pre-approved where required, and tagged. Read a secret without echo, preserve
+only the required variable through `sudo`, and unset it immediately after the
+command. Never paste it into history, logs, tickets, screenshots, or files.
+Both mutating scripts require `--confirm`; normal CI runs neither.
+
+The configure script permits only private HTTPS `443` to
+`http://127.0.0.1:5002`, refuses existing non-empty Serve state, disables
+route/exit-node/Tailscale-SSH advertisement, never enables Funnel, and requires
+the canonical host preflight. It does not configure staging admin or customer
+services. Tailnet policy remains an operator-applied change based on the
+non-secret `ops/tailscale/acl-policy.hujson` reference.
 
 Production bootstrap installs the read-only host preflight at
 `/usr/local/sbin/verify-tailscale-admin-access`. Run it directly on EC2 after
@@ -182,12 +211,12 @@ The **Verify private Tailscale admin access** workflow is the only
 GitHub-hosted workflow approved to join the tailnet. It can run manually and is
 the required final production gate after deployment and public production TLS
 verification. It uses the protected `admin-tailscale` environment and its
-`TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET` environment secrets. The
-environment must require manual approval by trusted maintainers and restrict
-deployment branches to `main`. The OAuth client must have **Keys > Auth Keys >
-Write** permission and be restricted to `tag:github-ci`; that tag may access
-only `tag:admin-sitbank:443` and must not administer the tailnet or provide
-broad SSH access.
+Tailscale credential selected by `auth_mode`. Production selects `oauth` and
+uses `TS_OAUTH_CLIENT_ID`/`TS_OAUTH_SECRET`. A manual/reusable run may select
+`authkey` and use `TAILSCALE_AUTH_KEY`. The environment must require manual
+approval and restrict branches to `main`. Either credential must be restricted
+to `tag:github-ci`; that tag may access only `tag:admin-sitbank:443` and must
+not administer the tailnet or provide broad SSH access.
 
 Run the workflow after private DNS, certificates, Tailscale ACLs/tags, Serve
 configuration, or the admin edge changes. It first confirms the private URL is
@@ -199,13 +228,12 @@ Funnel nor Serve, uploads no Tailscale state, and logs out at completion.
 Flask admin login, TOTP, CSRF, route authorization, audit logging, and
 admin/customer isolation still apply.
 
-For credential rotation, create a replacement OAuth client with the same
-narrow scope and tag; update both protected environment secrets; approve and
-verify one `main` run; then revoke the old client and remove stale CI nodes.
+For rotation, replace and test both OAuth secrets before revoking the old
+client, or replace and test `TAILSCALE_AUTH_KEY` before revoking the old key.
 During maintainer offboarding, also review environment approvers and branch
-rules. To remove CI tailnet access entirely, delete both environment secrets,
-revoke the OAuth client, remove the dedicated CI tag grants/devices, and
-disable or delete the environment. The full runbook is in
+rules. To remove CI tailnet access entirely, delete all Tailscale environment
+secrets, revoke the selected credential, remove dedicated CI tag
+grants/devices, and disable or delete the environment. The full runbook is in
 `docs/security/admin-and-staging-zero-trust-access.md`.
 
 Run the manual **Verify staging Cloudflare Access** workflow before a staging
