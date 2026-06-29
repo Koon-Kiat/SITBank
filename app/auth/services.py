@@ -639,6 +639,12 @@ def change_password(
         audit_event("password_change", "failure", user=user, metadata={"reason": "password_reuse"})
         raise AuthError("New password must be different from the current password", 400)
 
+    try:
+        password_policy_warnings = validate_password_policy(new_password)
+    except PasswordPolicyError as exc:
+        audit_event("password_change", "failure", user=user, metadata={"reason": "password_policy"})
+        raise AuthError(str(exc), 400) from exc
+
     verify_high_risk_authorization(
         user,
         code,
@@ -646,12 +652,6 @@ def change_password(
         "password_change",
         rotate_session_on_success=False,
     )
-
-    try:
-        password_policy_warnings = validate_password_policy(new_password)
-    except PasswordPolicyError as exc:
-        audit_event("password_change", "failure", user=user, metadata={"reason": "password_policy"})
-        raise AuthError(str(exc), 400) from exc
 
     user.password_hash = hash_password(new_password)
     user.failed_login_count = 0
