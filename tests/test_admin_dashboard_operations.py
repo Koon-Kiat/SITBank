@@ -9,7 +9,7 @@ import pyotp
 import pytest
 
 from app.extensions import db
-from app.models import SecurityAuditEvent, User
+from app.models import SecurityAuditEvent, StaffInvite, User
 from app.security.crypto import encrypt_mfa_secret
 from app.security.passwords import hash_password
 from conftest import TestConfig
@@ -133,6 +133,51 @@ def test_admin_browser_login_and_mfa_reaches_dashboard(admin_app, admin_client):
     assert ROOT_EMAIL in dashboard.get_data(as_text=True)
 
 
+def test_admin_browser_login_pages_redirect_authenticated_admin(admin_client):
+    _root, root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    _login_admin(admin_client, root_secret)
+
+    login_page = admin_client.get("/login", follow_redirects=False)
+    mfa_page = admin_client.get("/mfa/verify", follow_redirects=False)
+
+    assert login_page.status_code == 302
+    assert login_page.headers["Location"].endswith("/")
+    assert mfa_page.status_code == 302
+    assert mfa_page.headers["Location"].endswith("/")
+
+
+def test_admin_login_form_renders_session_expired_message(admin_client):
+    response = admin_client.get("/login?session_expired=1")
+
+    assert response.status_code == 200
+    assert "Your admin session expired. Please log in again." in response.get_data(as_text=True)
+
+
+def test_admin_browser_login_rejects_invalid_form_and_schema(monkeypatch, admin_client):
+    invalid_form = admin_client.post("/login", data={})
+
+    def reject_schema(_self, _payload):
+        from marshmallow import ValidationError
+
+        raise ValidationError("forced schema rejection")
+
+    monkeypatch.setattr("app.admin.routes.AdminLoginSchema.load", reject_schema)
+    schema_rejected = admin_client.post(
+        "/login",
+        data={"workplace_email": ROOT_EMAIL, "password": ROOT_PASSWORD},
+    )
+
+    assert invalid_form.status_code == 400
+    assert "This field is required" in invalid_form.get_data(as_text=True)
+    assert schema_rejected.status_code == 400
+    assert "Invalid request" in schema_rejected.get_data(as_text=True)
+
+
 def test_admin_json_login_contract_remains_compatible(admin_client):
     _root, root_secret = _create_staff_identity(
         username="root-admin",
@@ -167,6 +212,69 @@ def test_admin_mfa_form_requires_pending_browser_challenge(admin_client):
     assert browser_response.headers["Location"].endswith("/login")
     assert json_response.status_code == 401
     assert json_response.get_json() == {"error": "No pending MFA challenge"}
+
+
+def test_admin_browser_mfa_post_requires_pending_challenge(admin_client):
+    response = admin_client.post(
+        "/mfa/verify",
+        data={"totp_code": "123456"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["Location"].endswith("/login")
+
+
+def test_admin_browser_mfa_rejects_invalid_form_and_bad_code(admin_client):
+    _root, root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    primary = admin_client.post(
+        "/login",
+        data={"workplace_email": ROOT_EMAIL, "password": ROOT_PASSWORD},
+    )
+
+    invalid_form = admin_client.post("/mfa/verify", data={"totp_code": "abc"})
+    bad_code = "000000"
+    if bad_code == _totp(root_secret):
+        bad_code = "111111"
+    bad_mfa = admin_client.post("/mfa/verify", data={"totp_code": bad_code})
+
+    assert primary.status_code == 303
+    assert invalid_form.status_code == 400
+    assert "MFA code must be exactly 6 digits" in invalid_form.get_data(as_text=True)
+    assert bad_mfa.status_code == 401
+    assert "Invalid workplace email, password, or authentication code" in bad_mfa.get_data(as_text=True)
+
+
+def test_admin_browser_form_payload_strips_csrf_token_for_invites(admin_client):
+    _root, root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    _login_admin(admin_client, root_secret)
+
+    response = admin_client.post(
+        "/invites",
+        data={
+            "personal_email": "staff.person@gmail.com",
+            "workplace_email": "staff.person@sit.singaporetech.edu.sg",
+            "role": "staff",
+            "totp_code": _totp(root_secret),
+            "csrf_token": "browser-form-token",
+        },
+        follow_redirects=False,
+    )
+    invite = db.session.execute(db.select(StaffInvite)).scalar_one()
+
+    assert response.status_code == 303
+    assert response.headers["Location"].endswith("/invites")
+    assert invite.workplace_email_normalized == "staff.person@sit.singaporetech.edu.sg"
 
 
 def test_admin_browser_login_rejects_customer_accounts_with_generic_error(admin_client):
