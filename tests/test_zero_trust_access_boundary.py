@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import re
 import subprocess
@@ -64,7 +64,7 @@ def test_hybrid_cloudflare_staging_and_tailscale_admin_design_is_documented():
         "This intentionally uses both products because the surfaces have different",
         "Production customer | `https://sitbank.duckdns.org`",
         "Staging customer | `https://staging-sitbank.pp.ua`",
-        "Production admin app | `https://sitbank-ec2.tailca101b.ts.net/` through Tailscale Serve",
+        "Production admin app | `https://admin-sitbank.tailca101b.ts.net/` through Tailscale Serve",
         "The customer production site remains public.",
         "self-hosted Access application",
         "Cloudflare Authenticated Origin Pulls",
@@ -77,7 +77,7 @@ def test_hybrid_cloudflare_staging_and_tailscale_admin_design_is_documented():
         "Cloudflare Access and Tailscale decide whether a request may reach",
         "retired DuckDNS staging hostname is no longer",
         "Admins connect to the Tailscale VPN first, then open",
-        "https://sitbank-ec2.tailca101b.ts.net/",
+        "https://admin-sitbank.tailca101b.ts.net/",
         "old public admin verification",
         "page has been removed from the edge bootstrap",
         "No public admin hostname is required or scanned.",
@@ -182,7 +182,7 @@ def test_admin_public_surface_is_absent_and_private_access_is_tailscale_only():
     assert "proxy_pass http://127.0.0.1:5002;" not in production_nginx
 
     assert "Tailscale/private operator access" in docs
-    assert "https://sitbank-ec2.tailca101b.ts.net/" in docs
+    assert "https://admin-sitbank.tailca101b.ts.net/" in docs
     assert "Do not enable Tailscale Funnel" in docs
     assert "old public admin verification" in docs
     assert "page has been removed from the edge bootstrap" in docs

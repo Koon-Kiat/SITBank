@@ -84,6 +84,126 @@ def _totp(secret: str) -> str:
     return pyotp.TOTP(secret, digits=6, interval=30).now()
 
 
+def test_admin_browser_login_and_mfa_reaches_dashboard(admin_app, admin_client):
+    _root, root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+
+    login_page = admin_client.get("/login")
+    primary = admin_client.post(
+        "/login",
+        data={"workplace_email": ROOT_EMAIL, "password": ROOT_PASSWORD},
+        follow_redirects=False,
+    )
+
+    with admin_client.session_transaction() as sess:
+        pending_user_id = sess.get("pending_mfa_user_id")
+
+    mfa_page = admin_client.get("/mfa/verify")
+    verify = admin_client.post(
+        "/mfa/verify",
+        data={"totp_code": _totp(root_secret)},
+        follow_redirects=False,
+    )
+    dashboard = admin_client.get("/")
+    verify_cookies = verify.headers.getlist("Set-Cookie")
+
+    assert login_page.status_code == 200
+    login_body = login_page.get_data(as_text=True)
+    assert 'action="/login"' in login_body
+    assert 'name="workplace_email"' in login_body
+    assert 'name="password"' in login_body
+    assert primary.status_code == 303
+    assert primary.headers["Location"].endswith("/mfa/verify")
+    assert pending_user_id is not None
+    assert mfa_page.status_code == 200
+    assert 'name="totp_code"' in mfa_page.get_data(as_text=True)
+    assert verify.status_code == 303
+    assert verify.headers["Location"].endswith("/")
+    assert any(
+        cookie.startswith(f"{admin_app.config['SESSION_COOKIE_NAME']}=")
+        and not cookie.startswith(f"{admin_app.config['SESSION_COOKIE_NAME']}=;")
+        for cookie in verify_cookies
+    )
+    assert not any(cookie.startswith("__Host-sitbank_session=") for cookie in verify_cookies)
+    assert dashboard.status_code == 200
+    assert ROOT_EMAIL in dashboard.get_data(as_text=True)
+
+
+def test_admin_json_login_contract_remains_compatible(admin_client):
+    _root, root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+
+    primary = admin_client.post(
+        "/login",
+        json={"workplace_email": ROOT_EMAIL, "password": ROOT_PASSWORD},
+    )
+    verify = admin_client.post(
+        "/mfa/verify",
+        json={"totp_code": _totp(root_secret)},
+    )
+
+    assert primary.status_code == 200
+    assert primary.get_json() == {"message": "MFA verification required", "mfa_required": True}
+    assert verify.status_code == 200
+    verify_payload = verify.get_json()
+    assert verify_payload["message"] == "Login successful"
+    assert verify_payload["session_ref"]
+    assert verify_payload["user"]["email"] == ROOT_EMAIL
+
+
+def test_admin_mfa_form_requires_pending_browser_challenge(admin_client):
+    browser_response = admin_client.get("/mfa/verify", follow_redirects=False)
+    json_response = admin_client.get("/mfa/verify", headers={"Accept": "application/json"})
+
+    assert browser_response.status_code == 303
+    assert browser_response.headers["Location"].endswith("/login")
+    assert json_response.status_code == 401
+    assert json_response.get_json() == {"error": "No pending MFA challenge"}
+
+
+def test_admin_browser_login_rejects_customer_accounts_with_generic_error(admin_client):
+    db.session.add(
+        User(
+            username="customer-admin-try",
+            email="customer.admin@sit.singaporetech.edu.sg",
+            password_hash=hash_password(ROOT_PASSWORD),
+            account_type="customer",
+            account_status="active",
+            full_name="Customer Admin Try",
+            phone_number="91234567",
+            account_number="100000001",
+            mfa_enabled=True,
+        )
+    )
+    db.session.commit()
+
+    response = admin_client.post(
+        "/login",
+        data={
+            "workplace_email": "customer.admin@sit.singaporetech.edu.sg",
+            "password": ROOT_PASSWORD,
+        },
+    )
+
+    with admin_client.session_transaction() as sess:
+        pending_user_id = sess.get("pending_mfa_user_id")
+        authenticated_user_id = sess.get("user_id")
+
+    body = response.get_data(as_text=True)
+    assert response.status_code == 401
+    assert "Invalid workplace email, password, or authentication code" in body
+    assert pending_user_id is None
+    assert authenticated_user_id is None
+
+
 def test_dashboard_renders_role_navigation_and_audits_access(admin_client):
     _staff, staff_secret = _create_staff_identity(
         username="bank-staff",

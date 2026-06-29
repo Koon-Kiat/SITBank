@@ -1,4 +1,4 @@
-# Access Control
+﻿# Access Control
 
 This document records the access-control model implemented in the SITBank
 repository. It distinguishes implemented runtime enforcement from test
@@ -107,8 +107,9 @@ remains in `tests/test_payee_management_security.py`.
 
 ## Admin And Staff Controls
 
-Admin/staff access is invite-only and uses the admin runtime. The implemented
-role hierarchy is:
+Admin/staff access uses the isolated admin runtime. Root admins are created or
+rotated only by the manual allowlisted bootstrap command; staff and admin users
+are invite-only after that. The implemented role hierarchy is:
 
 ```text
 root_admin > admin > staff > customer
@@ -123,7 +124,7 @@ admin runtime authorization checks.
 | Control | Implementation evidence | Test evidence |
 | --- | --- | --- |
 | Generated admin route authorization inventory | `app/admin/routes.py`; explicit policy entries in `tests/test_admin_route_inventory_security.py` | `tests/test_admin_route_inventory_security.py::test_admin_route_inventory_matches_registered_flask_routes`, `tests/test_admin_route_inventory_security.py::test_admin_route_inventory_has_complete_security_decisions` |
-| Staff/admin login requires workplace email, password, active account, verified workplace email, and TOTP | `app/admin/services.py::authenticate_staff_primary()` and `complete_staff_mfa()` | `tests/test_admin_staff_invites.py::test_admin_login_creates_only_admin_session_cookie` |
+| Staff/admin browser and JSON login requires workplace email, password, active account, verified workplace email, and TOTP | `app/admin/routes.py`, `app/admin/services.py::authenticate_admin_primary()` and `complete_admin_mfa_login()` | `tests/test_admin_dashboard_operations.py::test_admin_browser_login_and_mfa_reaches_dashboard`, `tests/test_admin_dashboard_operations.py::test_admin_json_login_contract_remains_compatible` |
 | Root admin is configured by role and email allowlist | `app/admin/services.py::is_root_admin()` and `config.py` `ROOT_ADMIN_EMAILS` | `tests/test_admin_staff_invites.py::test_only_root_admin_with_totp_stepup_can_create_invites` |
 | Root admin can invite only `staff` or `admin`, not `root_admin` | `StaffInvite` role constraint in `app/models.py`; role validation in `app/admin/services.py` | `tests/test_admin_staff_invites.py::test_invite_creation_validates_server_side_email_and_role_policy` |
 | Invite acceptance rejects forged privileged fields | `_reject_forged_invite_fields()` in `app/admin/services.py` | `tests/test_admin_staff_invites.py` |
@@ -135,14 +136,12 @@ admin runtime authorization checks.
 | Staff/customer self-action guard | `app/admin/separation.py::assert_not_self_customer_action()` | `tests/test_admin_staff_invites.py::test_separation_guard_blocks_linked_staff_acting_on_own_customer` |
 | Admin session context drift | Any detected coarse-network, browser-family, or detailed User-Agent drift revokes the admin session and requires full login | `app/security/sessions.py`, `tests/test_session_risk_binding.py::test_admin_context_change_revokes_session_under_stricter_policy` |
 
-Production Nginx currently defines an admin hostname in
-`ops/nginx/sitbank-production.conf` but denies public access to the primary
-admin paths with `deny all` or explicit `403` responses. This keeps the public
-admin hostname limited to denied root, health, and app responses. The actual
-admin application access path is the Tailscale Serve URL
-`https://sitbank-ec2.tailca101b.ts.net/`, followed by the normal Flask admin
-login and TOTP controls.
-Do not enable Tailscale Funnel or expose admin through the customer app.
+Production Nginx does not publish the admin app. The admin application access
+path is the Tailscale Serve URL `https://admin-sitbank.tailca101b.ts.net/`;
+operators open `/login`, complete the normal Flask admin password and TOTP
+controls, and then reach the dashboard. Do not enable Tailscale Funnel or
+expose admin through the customer app. Customer accounts cannot authenticate to
+the admin runtime.
 
 Manual recovery operator review is exposed only by the isolated admin app.
 `GET /manual-recovery/requests` lists public-safe request summaries for root
@@ -206,7 +205,7 @@ Network boundaries complement, but do not replace, Flask authorization:
 | --- | --- | --- |
 | Production customer | Public HTTPS at `sitbank.duckdns.org` | Customer login, MFA onboarding, CSRF, route inventory, rate limiting |
 | Staging customer | Cloudflare Access before Nginx, Cloudflare Authenticated Origin Pull at Nginx, staging Basic Auth | Customer login, MFA, CSRF, route inventory, rate limiting |
-| Production admin | Tailscale Serve at `https://sitbank-ec2.tailca101b.ts.net/`; public admin app routes denied | Staff/root-admin login, mandatory TOTP, CSRF, admin route inventory, admin rate limiting |
+| Production admin | Tailscale Serve at `https://admin-sitbank.tailca101b.ts.net/`; public admin app routes denied | Staff/root-admin login, mandatory TOTP, CSRF, admin route inventory, admin rate limiting |
 | Staging admin | Tailscale/private operator access to `127.0.0.1:5003`; no public admin host | Staff/root-admin login, mandatory TOTP, CSRF, admin route inventory, admin rate limiting |
 
 The staging Nginx config uses Cloudflare Authenticated Origin Pulls so direct
