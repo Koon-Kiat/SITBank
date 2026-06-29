@@ -39,6 +39,8 @@ References:
 - Tailscale ACLs and tags:
   <https://tailscale.com/docs/features/access-control/acls> and
   <https://tailscale.com/docs/features/tags>
+- Tailscale OAuth clients:
+  <https://tailscale.com/docs/features/oauth-clients>
 
 ## Protected GitHub CI Tailnet Verification
 
@@ -54,28 +56,25 @@ production workflow invoke the required gate after `deploy-production` and
 `verify-production-tls` both succeed. The reusable job uses the protected
 `admin-tailscale` GitHub Environment. Configure that environment to require
 manual approval by trusted maintainers, restrict deployment branches to
-`main`, and store `TAILSCALE_AUTH_KEY` only as an environment secret. Do not
-duplicate it as a repository or organization secret. The auth key must be
-reusable, ephemeral, pre-approved when device approval is enabled, tagged as
-`tag:github-ci`, unable to administer the tailnet or use broad SSH, and granted
-only `tag:admin-sitbank:443`. The workflow uses the official Tailscale action
-at an immutable commit, checks the targets before joining, and does not check
-out or run repository code.
+`main`, and store `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET` only as
+environment secrets. Do not duplicate them as repository or organization
+secrets. The OAuth client must have **Keys > Auth Keys > Write** permission and
+be restricted to `tag:github-ci`. That tag must be unable to administer the
+tailnet or use broad SSH and may reach only `tag:admin-sitbank:443`. The
+workflow uses the official Tailscale action at an immutable commit, checks the
+private target before joining, and does not check out or run repository code.
 
 Each approved run:
 
-1. Requires `https://admin-sitbank.duckdns.org/login` to return a documented
-   safe denial (`403`, `404`, `421`, or `444`) or have no public endpoint
-   (`000`). Any public login/dashboard response fails closed.
-2. Confirms `https://admin-sitbank.tailca101b.ts.net/login` cannot respond from
+1. Confirms `https://admin-sitbank.tailca101b.ts.net/login` cannot respond from
    the public runner before tailnet enrollment. An unexpected response fails
    closed because it may indicate Funnel or another public exposure.
-3. Joins the approved tailnet with the protected ephemeral tagged identity and
+2. Joins the approved tailnet with the protected ephemeral tagged identity and
    verifies tailnet connectivity to `admin-sitbank.tailca101b.ts.net`.
-4. Resolves the private hostname and requires the HTTPS login entrypoint to
+3. Resolves the private hostname and requires the HTTPS login entrypoint to
    return its documented unauthenticated `200` response with ordinary
    certificate and hostname validation.
-5. Logs out and relies on ephemeral-node cleanup; it uploads no artifacts or
+4. Logs out and relies on ephemeral-node cleanup; it uploads no artifacts or
    Tailscale state.
 
 This is reachability evidence, not an authenticated admin test. It uses no
@@ -89,10 +88,7 @@ remains forbidden.
 
 Normal public TLS scanning remains in `.github/workflows/tls-scan.yml` and
 covers only `staging-sitbank.pp.ua` and `sitbank.duckdns.org`. It must not
-depend on or include the private Tailscale hostname. Public admin checking in
-the protected workflow verifies denial or absence of the retired
-`admin-sitbank.duckdns.org` login path; it does not make the private admin URL
-a public TLS-scan target.
+depend on or include the private Tailscale hostname.
 
 After a trusted production deployment, the release order is
 `deploy-production` -> `verify-production-tls` ->
@@ -103,18 +99,19 @@ checks after Tailscale DNS, ACL/tag, certificate, Serve, or admin-edge changes.
 
 ### Credential Rotation And CI Offboarding
 
-Rotate `TAILSCALE_AUTH_KEY` before expiry, after suspected disclosure, after a
-maintainer with environment access is offboarded, or whenever its tag/grant
-scope changes:
+Rotate `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET` after suspected disclosure,
+after a maintainer with environment access is offboarded, or whenever the
+client's tag/grant scope changes:
 
-1. Create a replacement reusable, ephemeral, tagged, and narrowly scoped auth
-   key in Tailscale.
-2. Replace the protected environment secret, manually approve one verification
-   run from `main`, and confirm the ephemeral node is removed after the job.
-3. Revoke the old key and remove any stale CI node from the tailnet.
+1. Create a replacement OAuth client with **Keys > Auth Keys > Write**
+   permission restricted to `tag:github-ci`.
+2. Replace both protected environment secrets, manually approve one
+   verification run from `main`, and confirm the ephemeral node is removed
+   after the job.
+3. Revoke the old OAuth client and remove any stale CI node from the tailnet.
 
-To remove CI tailnet access, delete `TAILSCALE_AUTH_KEY` from the environment,
-revoke the key in Tailscale, remove the dedicated CI tag grants and stale
+To remove CI tailnet access, delete both secrets from the environment, revoke
+the OAuth client in Tailscale, remove the dedicated CI tag grants and stale
 devices, and disable or delete the GitHub Environment. Environment approver
 and deployment-branch rules must be reviewed during maintainer offboarding.
 Retired private aliases must not be used. If the live tailnet hostname

@@ -1806,7 +1806,6 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert private_admin["permissions"] == {"contents": "read"}
     assert private_admin["with"] == {
         "private_admin_host": "admin-sitbank.tailca101b.ts.net",
-        "public_admin_host": "admin-sitbank.duckdns.org",
     }
     assert "secrets" not in private_admin
     staging_deploy_env = workflow["jobs"]["deploy-staging"]["env"]

@@ -135,31 +135,30 @@ The **Verify private Tailscale admin access** workflow is the only
 GitHub-hosted workflow approved to join the tailnet. It can run manually and is
 the required final production gate after deployment and public production TLS
 verification. It uses the protected `admin-tailscale` environment and its
-`TAILSCALE_AUTH_KEY` environment secret. The environment must require manual
-approval by trusted maintainers and restrict deployment branches to `main`.
-The key must create a reusable, ephemeral, pre-approved (when required)
-`tag:github-ci` node with access only to `tag:admin-sitbank:443`; it must not
-administer the tailnet or provide broad SSH access.
+`TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET` environment secrets. The
+environment must require manual approval by trusted maintainers and restrict
+deployment branches to `main`. The OAuth client must have **Keys > Auth Keys >
+Write** permission and be restricted to `tag:github-ci`; that tag may access
+only `tag:admin-sitbank:443` and must not administer the tailnet or provide
+broad SSH access.
 
 Run the workflow after private DNS, certificates, Tailscale ACLs/tags, Serve
 configuration, or the admin edge changes. It first confirms the private URL is
 unreachable before joining, then requires
 `https://admin-sitbank.tailca101b.ts.net/login` to return the documented
-unauthenticated `200` response. Before joining, it also requires
-`https://admin-sitbank.duckdns.org/login` to return `403`, `404`, `421`, `444`,
-or no public endpoint (`000`). Any public login/dashboard response fails the
-gate. The job uses no admin login credentials, makes no deployment or provider
-configuration changes, enables neither Tailscale Funnel nor Serve, uploads no
-Tailscale state, and logs out at completion. Flask admin login, TOTP, CSRF,
-route authorization, audit logging, and admin/customer isolation still apply.
+unauthenticated `200` response. The job uses no admin login credentials, makes
+no deployment or provider configuration changes, enables neither Tailscale
+Funnel nor Serve, uploads no Tailscale state, and logs out at completion.
+Flask admin login, TOTP, CSRF, route authorization, audit logging, and
+admin/customer isolation still apply.
 
-For credential rotation, create a replacement reusable, ephemeral, tagged,
-narrowly scoped key; update the protected environment secret; approve and
-verify one `main` run; then revoke the old key and remove stale CI nodes.
+For credential rotation, create a replacement OAuth client with the same
+narrow scope and tag; update both protected environment secrets; approve and
+verify one `main` run; then revoke the old client and remove stale CI nodes.
 During maintainer offboarding, also review environment approvers and branch
-rules. To remove CI tailnet access entirely, delete the environment secret,
-revoke the key, remove the dedicated CI tag grants/devices, and disable or
-delete the environment. The full runbook is in
+rules. To remove CI tailnet access entirely, delete both environment secrets,
+revoke the OAuth client, remove the dedicated CI tag grants/devices, and
+disable or delete the environment. The full runbook is in
 `docs/security/admin-and-staging-zero-trust-access.md`.
 
 Run the manual **Verify staging Cloudflare Access** workflow before a staging

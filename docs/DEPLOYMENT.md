@@ -168,28 +168,26 @@ Environment named `admin-tailscale`, require manual approval by trusted
 maintainers, and restrict its deployment branches to `main`. Each production
 run pauses for that approval before the required private gate can access its
 secret. This is the required protected post-production-deploy gate and it runs
-after production public TLS verification. Store `TAILSCALE_AUTH_KEY` only as
-that environment's secret. It must
-be a reusable, ephemeral, pre-approved key when device approval applies and
-must assign a dedicated `tag:github-ci` identity whose tailnet grants reach
-only the `tag:admin-sitbank` service on TCP `443`.
+after production public TLS verification. Store `TS_OAUTH_CLIENT_ID` and
+`TS_OAUTH_SECRET` only as that environment's secrets. The OAuth client must
+have **Keys > Auth Keys > Write** permission and be restricted to the
+`tag:github-ci` identity, whose tailnet grants reach only the
+`tag:admin-sitbank` service on TCP `443`.
 
 Do not expose the secret as a repository variable or general repository
 secret, and do not permit pull requests, Dependabot, forks, or untrusted
-branches to use the environment. Inputs default to
-`admin-sitbank.tailca101b.ts.net` and the retired public admin hostname
-`admin-sitbank.duckdns.org`. The workflow checks the private admin URL before
-and after joining, validates the unauthenticated login response over TLS,
-requires the public admin login path to return a safe denial or have no public
-endpoint, and logs out. It neither deploys nor changes Flask, Nginx, EC2,
-tailnet policy, Tailscale Serve, or Tailscale Funnel.
+branches to use the environment. The private hostname input defaults to
+`admin-sitbank.tailca101b.ts.net`. The workflow checks the private admin URL
+before and after joining, validates the unauthenticated login response over
+TLS, and logs out. It neither deploys nor changes Flask, Nginx, EC2, tailnet
+policy, Tailscale Serve, or Tailscale Funnel.
 
-Rotate the credential by replacing the environment secret with a new narrowly
-scoped ephemeral tagged key, validating one manually approved `main` run, and
-then revoking the old key and stale node. Offboarding requires review of
-environment approvers/branch rules. To remove CI tailnet access, delete the
-environment secret, revoke the key, remove the CI tag grants and devices, and
-disable or delete the environment.
+Rotate the credentials by creating a replacement OAuth client with the same
+narrow scope and tag, replacing both environment secrets, validating one
+manually approved `main` run, and then revoking the old client and stale node.
+Offboarding requires review of environment approvers/branch rules. To remove
+CI tailnet access, delete both environment secrets, revoke the OAuth client,
+remove the CI tag grants and devices, and disable or delete the environment.
 
 Set `ROOT_ADMIN_EMAILS` in both protected GitHub environments before deploying
 admin bootstrap support. It is a non-secret allowlist, but it is
@@ -666,7 +664,8 @@ After the staging TLS check passes, validate production customer HTTPS with
 pass on the deployed host before any reload. Do not add the private Tailscale
 admin URL to public GitHub-hosted TLS scans. Private reachability belongs only
 to the separate manual, protected tailnet verification workflow; the public
-TLS scan and deployment workflows must never require `TAILSCALE_AUTH_KEY`.
+TLS scan and deployment workflows must never require `TS_OAUTH_CLIENT_ID` or
+`TS_OAUTH_SECRET`.
 
 Production HSTS validation should also confirm the public customer hostname
 returns the production edge header before the production live TLS scan is

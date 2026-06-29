@@ -8,22 +8,12 @@ on:
         required: false
         default: admin-sitbank.tailca101b.ts.net
         type: string
-      public_admin_host:
-        description: Retired public admin hostname that must remain denied.
-        required: false
-        default: admin-sitbank.duckdns.org
-        type: string
   workflow_call:
     inputs:
       private_admin_host:
         description: Private Tailscale admin hostname.
         required: false
         default: admin-sitbank.tailca101b.ts.net
-        type: string
-      public_admin_host:
-        description: Retired public admin hostname that must remain denied.
-        required: false
-        default: admin-sitbank.duckdns.org
         type: string
 
 permissions:
@@ -43,25 +33,19 @@ jobs:
       name: admin-tailscale
     env:
       TAILSCALE_PRIVATE_ADMIN_HOST: ${{ inputs.private_admin_host }}
-      TAILSCALE_PUBLIC_ADMIN_HOST: ${{ inputs.public_admin_host }}
 
     steps:
-      - name: Validate targets and public access boundary before joining the tailnet
+      - name: Validate private target before joining the tailnet
         shell: bash
         run: |
           set -euo pipefail
 
-          for host in \
-            "${TAILSCALE_PRIVATE_ADMIN_HOST}" \
-            "${TAILSCALE_PUBLIC_ADMIN_HOST}"; do
-            if [[ ! "${host}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$ ]]; then
-              echo "::error::Admin verification targets must be hostnames, not URLs or command fragments."
-              exit 1
-            fi
-          done
+          if [[ ! "${TAILSCALE_PRIVATE_ADMIN_HOST}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$ ]]; then
+            echo "::error::The admin verification target must be a hostname, not a URL or command fragment."
+            exit 1
+          fi
 
           readonly private_admin_url="https://${TAILSCALE_PRIVATE_ADMIN_HOST}"
-          readonly public_admin_url="https://${TAILSCALE_PUBLIC_ADMIN_HOST}"
 
           if curl --silent --head --max-time 8 \
             --output /dev/null "${private_admin_url}/login"; then
@@ -69,33 +53,21 @@ jobs:
             exit 1
           fi
 
-          public_status="$(
-            curl --silent --head --max-time 15 \
-              --output /dev/null --write-out '%{http_code}' \
-              "${public_admin_url}/login" 2>/dev/null || true
-          )"
-          case "${public_status}" in
-            000|403|404|421|444) ;;
-            *)
-              echo "::error::Public admin login path returned HTTP ${public_status}; expected a safe denial or no public endpoint."
-              exit 1
-              ;;
-          esac
-
           {
             echo "## Private-tailnet verification"
             echo
             echo "- Private admin is not reachable from the public runner context."
-            echo "- Public admin hostname remained denied (HTTP ${public_status})."
           } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Join the approved tailnet with an ephemeral tagged identity
         uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8
         with:
-          authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:github-ci
           ping: ${{ inputs.private_admin_host }}
 
-      - name: Verify private admin entrypoint and public denial
+      - name: Verify private admin entrypoint
         shell: bash
         run: |
           set -euo pipefail

@@ -131,28 +131,28 @@ The trusted production workflow calls it as the required final gate after both
 forks, Dependabot, staging, and the public TLS workflow do not call it.
 
 Its `admin-tailscale` environment must require trusted maintainer approval,
-permit only `main`, and hold the sole `TAILSCALE_AUTH_KEY` secret. Configure
-that key as reusable, ephemeral, pre-approved when needed, tagged as
-`tag:github-ci`, unable to administer the tailnet or use broad SSH, and allowed
-only to reach `tag:admin-sitbank:443`. The production caller neither inherits
-nor passes deployment secrets; the called job receives the Tailscale key only
-after its protected environment is approved.
+permit only `main`, and hold only `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET`.
+Configure the OAuth client with **Keys > Auth Keys > Write** permission and
+restrict it to `tag:github-ci`. That tag must be unable to administer the
+tailnet or use broad SSH and may reach only `tag:admin-sitbank:443`. The
+production caller neither inherits nor passes deployment secrets; the called
+job receives the Tailscale OAuth credentials only after its protected
+environment is approved.
 
 The workflow fails if the private URL responds before enrollment, then joins
 the tailnet, requires `https://admin-sitbank.tailca101b.ts.net/login` to return
-the documented unauthenticated `200`, requires
-`https://admin-sitbank.duckdns.org/login` to return a safe denial or have no
-public endpoint, and logs out. It checks no admin credentials, changes no
-deployment or tailnet state, and enables neither Tailscale Serve nor Funnel.
+the documented unauthenticated `200`, and logs out. It checks no admin
+credentials, changes no deployment or tailnet state, and enables neither
+Tailscale Serve nor Funnel.
 Failure marks the post-deploy workflow failed; production may already be
 deployed, so operators must investigate rather than rerun deployment blindly.
 
-Rotate the environment secret with a replacement key and one approved `main`
-test before revoking the old key. During offboarding, review environment
-approvers and branch rules and remove stale CI nodes. To withdraw CI tailnet
-access, remove the secret, revoke the key, remove the CI tag grants/devices,
-and disable or delete the environment. Normal public TLS scans continue to
-exclude the private hostname.
+Rotate both environment secrets with a replacement OAuth client and one
+approved `main` test before revoking the old client. During offboarding,
+review environment approvers and branch rules and remove stale CI nodes. To
+withdraw CI tailnet access, remove both secrets, revoke the OAuth client,
+remove the CI tag grants/devices, and disable or delete the environment.
+Normal public TLS scans continue to exclude the private hostname.
 
 ## DAST Policy
 
