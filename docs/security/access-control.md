@@ -121,6 +121,25 @@ metadata. `root_admin` users keep the most privileged invite and staff/admin
 lifecycle controls. Customer accounts remain normal users and cannot satisfy
 admin runtime authorization checks.
 
+The staff/admin/root separation requirement is implemented through this
+existing role model rather than by adding new roles. Current mapping:
+
+- `staff`: bank-staff business-operation responsibility. No customer support,
+  transaction review, or fraud review admin routes are registered yet, so the
+  dashboard renders a disabled staff business-operation placeholder instead of
+  linking to fake tools.
+- `admin`: technical/security administration, including audit review, alert
+  review, and safe staff/admin status visibility.
+- `root_admin`: privileged platform administration, including staff/admin
+  invites, invite revocation, staff/admin lifecycle state, and manual recovery
+  review/completion.
+
+Server-rendered navigation is only a usability layer. Every admin route also
+calls the appropriate `require_staff_session()`, `require_admin_session()`, or
+`require_root_admin_session()` guard and lower-role denial is audited with
+generic errors. Route inventory tests must be updated whenever that surface
+changes.
+
 | Control | Implementation evidence | Test evidence |
 | --- | --- | --- |
 | Generated admin route authorization inventory | `app/admin/routes.py`; explicit policy entries in `tests/test_admin_route_inventory_security.py` | `tests/test_admin_route_inventory_security.py::test_admin_route_inventory_matches_registered_flask_routes`, `tests/test_admin_route_inventory_security.py::test_admin_route_inventory_has_complete_security_decisions` |
@@ -129,8 +148,8 @@ admin runtime authorization checks.
 | Root admin can invite only `staff` or `admin`, not `root_admin` | `StaffInvite` role constraint in `app/models.py`; role validation in `app/admin/services.py` | `tests/test_admin_staff_invites.py::test_invite_creation_validates_server_side_email_and_role_policy` |
 | Invite acceptance rejects forged privileged fields | `_reject_forged_invite_fields()` in `app/admin/services.py` | `tests/test_admin_staff_invites.py` |
 | Staff invite acceptance activates only after workplace verification and TOTP setup | `start_invite_acceptance()` and `verify_invite_acceptance()` | `tests/test_admin_staff_invites.py::test_staff_invite_acceptance_activates_only_after_workplace_code_and_totp` |
-| Admin dashboard navigation is role-rendered and backend-enforced | `app/admin/routes.py::index()`, `app/admin/services.py::admin_navigation_for()` | `tests/test_admin_dashboard_operations.py::test_dashboard_renders_role_navigation_and_audits_access`, `tests/test_admin_route_inventory_security.py` |
-| Admin/root audit viewer supports bounded filters, sorting, pagination, and safe detail display | `app/admin/routes.py::audit_logs()`, `app/admin/services.py::query_audit_events_for_admin()` | `tests/test_admin_dashboard_operations.py::test_audit_viewer_filters_bounds_and_redacts_detail_metadata` |
+| Admin dashboard navigation is role-rendered and backend-enforced | `app/admin/routes.py::index()`, `app/admin/services.py::admin_navigation_for()` | `tests/test_admin_dashboard_operations.py::test_dashboard_renders_role_navigation_and_audits_access`, `tests/test_admin_dashboard_role_separation.py`, `tests/test_admin_route_inventory_security.py` |
+| Admin/root audit viewer supports bounded filters, safe field search, sorting, pagination, and redacted detail display | `app/admin/routes.py::audit_logs()`, `app/admin/services.py::query_audit_events_for_admin()` | `tests/test_admin_dashboard_operations.py::test_audit_viewer_filters_bounds_and_redacts_detail_metadata`, `tests/test_admin_audit_viewer.py` |
 | Admin/root alert review uses the existing report path without sending alerts | `app/admin/routes.py::alerts()`, `app/security/alerts.py::build_security_alert_report()` | `tests/test_admin_dashboard_operations.py::test_alert_review_is_admin_only_and_does_not_send_alerts` |
 | Root-admin staff/admin lifecycle actions require TOTP and audit logging | `app/admin/routes.py`, `app/admin/services.py::transition_staff_account_as_root_admin()` | `tests/test_admin_dashboard_operations.py::test_root_manages_staff_lifecycle_with_totp_and_safe_audit` |
 | Staff/customer self-action guard | `app/admin/separation.py::assert_not_self_customer_action()` | `tests/test_admin_staff_invites.py::test_separation_guard_blocks_linked_staff_acting_on_own_customer` |

@@ -12,7 +12,7 @@ def _invalid_totp(secret: str) -> str:
     return "000000" if current != "000000" else "000001"
 
 
-def test_mfa_setup_stores_encrypted_secret_and_rejects_replay(client):
+def test_mfa_setup_stores_encrypted_secret_and_rejects_replay(client, monkeypatch):
     register(client)
     login(client)
 
@@ -28,7 +28,9 @@ def test_mfa_setup_stores_encrypted_secret_and_rejects_replay(client):
     secret = decrypt_mfa_secret(user.mfa_secret_nonce, user.mfa_secret_ciphertext, user.id)
     setup_page = client.get("/mfa/setup")
     setup_markup = setup_page.data.decode("utf-8")
-    code = pyotp.TOTP(secret, digits=6, interval=30).now()
+    verification_time = int(time.time())
+    monkeypatch.setattr("app.auth.services.time.time", lambda: verification_time)
+    code = pyotp.TOTP(secret, digits=6, interval=30).at(verification_time)
 
     verify_response = client.post("/mfa/setup", data={"action": "verify", "totp_code": code})
     replay_response = client.post("/mfa/setup", data={"action": "verify", "totp_code": code})
@@ -40,14 +42,16 @@ def test_mfa_setup_stores_encrypted_secret_and_rejects_replay(client):
     assert verify_response.status_code == 200
     assert replay_response.status_code == 401
 
-def test_mfa_setup_generates_ten_hashed_recovery_codes_and_shows_once(client):
+def test_mfa_setup_generates_ten_hashed_recovery_codes_and_shows_once(client, monkeypatch):
     register(client)
     login(client)
     client.post("/mfa/setup", data={"action": "start"})
 
     user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
     secret = decrypt_test_mfa_secret(user)
-    code = pyotp.TOTP(secret, digits=6, interval=30).now()
+    verification_time = int(time.time())
+    monkeypatch.setattr("app.auth.services.time.time", lambda: verification_time)
+    code = pyotp.TOTP(secret, digits=6, interval=30).at(verification_time)
 
     response = client.post("/mfa/setup", data={"action": "verify", "totp_code": code})
     markup = response.data.decode("utf-8")

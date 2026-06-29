@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,6 +18,14 @@ from conftest import TestConfig
 
 ROOT_EMAIL = "root1@sit.singaporetech.edu.sg"
 ROOT_PASSWORD = "correct horse battery staple"
+_FIXED_TOTP_TIME = int(time.time())
+
+
+@pytest.fixture(autouse=True)
+def freeze_totp_verifier_time(monkeypatch):
+    global _FIXED_TOTP_TIME
+    _FIXED_TOTP_TIME = int(time.time())
+    monkeypatch.setattr("app.auth.services.time.time", lambda: _FIXED_TOTP_TIME)
 
 
 @pytest.fixture()
@@ -81,7 +90,7 @@ def _login_admin(client, secret: str, email: str = ROOT_EMAIL):
 
 
 def _totp(secret: str) -> str:
-    return pyotp.TOTP(secret, digits=6, interval=30).now()
+    return pyotp.TOTP(secret, digits=6, interval=30).at(_FIXED_TOTP_TIME)
 
 
 def test_admin_browser_login_and_mfa_reaches_dashboard(admin_app, admin_client):
