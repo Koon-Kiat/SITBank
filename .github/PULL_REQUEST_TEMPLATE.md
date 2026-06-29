@@ -1,22 +1,27 @@
-## Summary
+Summary
+---
 
 Briefly describe what this PR improves or fixes.
 
-## Why
+Why
+---
 
 Explain the problem, risk, or reason this change is needed.
 
-## What changed
+What changed
+---
 
 *
 *
 *
 
-## Security impact
+Security impact
+---
 
 Explain how this affects security controls, secrets, permissions, auth, CI/CD, deployment safety, or runtime behavior.
 
-## Deployment impact
+Deployment impact
+---
 
 Explain whether this PR requires:
 
@@ -27,12 +32,14 @@ Explain whether this PR requires:
 * secret changes
 * no deployment action
 
-## Verification
+Verification
+---
 
 *
 *
 *
 
-## Notes
+Notes
+---
 
 Add any follow-up work, limitations, or operator instructions.
