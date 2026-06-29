@@ -52,7 +52,7 @@ GitHub-hosted jobs inside the tailnet.
 `workflow_dispatch` supports on-demand checks. `workflow_call` lets the trusted
 production workflow invoke the required gate after `deploy-production` and
 `verify-production-tls` both succeed. The reusable job uses the protected
-`Admin-Tailscale` GitHub Environment. Configure that environment to require
+`admin-tailscale` GitHub Environment. Configure that environment to require
 manual approval by trusted maintainers, restrict deployment branches to
 `main`, and store `TAILSCALE_AUTH_KEY` only as an environment secret. Do not
 duplicate it as a repository or organization secret. The auth key must be
@@ -117,10 +117,8 @@ To remove CI tailnet access, delete `TAILSCALE_AUTH_KEY` from the environment,
 revoke the key in Tailscale, remove the dedicated CI tag grants and stale
 devices, and disable or delete the GitHub Environment. Environment approver
 and deployment-branch rules must be reviewed during maintainer offboarding.
-The retired hostnames `sitbank-ec2.tailca101b.ts.net` and
-`sitbank-admin.tailca101b.ts.net` must not be used. If the live tailnet
-hostname changes, update the workflow, documentation, and policy tests
-together.
+Retired private aliases must not be used. If the live tailnet hostname
+changes, update the workflow, documentation, and policy tests together.
 
 ## Protected Paths
 
@@ -153,6 +151,12 @@ allow-everyone, service-token browser access, bypass/non-identity policies, and
 unmanaged Allow policies. Cloudflare's no-match behavior remains the default
 deny. The retired DuckDNS staging hostname is no longer an active staging
 deployment, Nginx, Certbot, or TLS-scan target.
+The reviewed self-hosted application is named `SITBank staging` and uses
+`STAGING_ACCESS_SESSION_DURATION=6h`. Its policy membership must match the
+exact comma-separated email list stored in
+`STAGING_ACCESS_ALLOWED_EMAILS`. `Everyone`, wildcard domains, and broad
+allow-all rules are forbidden; group and IdP inputs remain optional unless
+those restrictions are intentionally configured.
 
 Provider prerequisites and actions:
 
@@ -329,9 +333,13 @@ python ops/cloudflare/provision-staging-access --verify \
 
 The same non-mutating check is available through the manual
 **Verify staging Cloudflare Access** workflow. It runs only in the protected
-`staging` GitHub environment and uploads a sanitized result with no token,
-account/zone IDs, operator identities, origin address, application ID, or
-audience. It does not run on pull requests or mutate Cloudflare.
+`staging` GitHub environment when dispatched from `main` and uploads a
+sanitized result with no token, account/zone IDs, operator identities, origin
+address, application ID, or audience. It explicitly passes the configured
+session duration and expected audience to the script. It does not run on pull
+requests or mutate Cloudflare. Application drift names safe fields and
+expected/actual values; allowlist drift exposes only counts, never the secret
+addresses.
 
 Host-side staging checks after bootstrap:
 

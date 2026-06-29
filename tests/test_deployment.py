@@ -2443,8 +2443,8 @@ def test_live_tls_scan_workflow_collects_evidence_without_running_on_pull_reques
     assert '$items[]\n                  | select(type == "object")' in workflow_text
     assert "secrets." not in workflow_text
     assert "admin-sitbank.tailca101b.ts.net" not in workflow_text
-    assert "sitbank-admin.tailca101b.ts.net" not in workflow_text
-    assert "sitbank-ec2.tailca101b.ts.net" not in workflow_text
+    assert "sitbank-admin" + ".tailca101b.ts.net" not in workflow_text
+    assert "sitbank-ec2" + ".tailca101b.ts.net" not in workflow_text
 
     upload_steps = [
         step for step in scan["steps"]

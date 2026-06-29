@@ -153,7 +153,7 @@ Private admin reachability is isolated in the reusable
 `.github/workflows/tailscale-private-admin-verify.yml` workflow. It can run
 manually, and the main production workflow requires it after production deploy
 and public production TLS succeed. Its GitHub-hosted runner enters the
-protected `Admin-Tailscale` environment after manual approval and uses only
+protected `admin-tailscale` environment after manual approval and uses only
 its `TAILSCALE_AUTH_KEY` secret. The key must be reusable, ephemeral,
 `tag:github-ci`, pre-approved where needed, and limited to
 `tag:admin-sitbank:443`. The job runs no pull-request code, checks the private

@@ -164,7 +164,7 @@ The manual/reusable `.github/workflows/tailscale-private-admin-verify.yml`
 workflow uses a GitHub-hosted runner that temporarily joins the tailnet. It can
 be dispatched on demand and is called by `.github/workflows/ci-deploy.yml`
 after `deploy-production` and `verify-production-tls` succeed. Create a GitHub
-Environment named `Admin-Tailscale`, require manual approval by trusted
+Environment named `admin-tailscale`, require manual approval by trusted
 maintainers, and restrict its deployment branches to `main`. Each production
 run pauses for that approval before the required private gate can access its
 secret. This is the required protected post-production-deploy gate and it runs
@@ -538,6 +538,11 @@ Copy the apply output into protected GitHub `staging` environment variables
 `STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN`. Staging deployment refuses to render
 without both. Its signed runtime bundle enables
 `STAGING_CLOUDFLARE_ACCESS_JWT_REQUIRED=true`; production does not.
+Set `STAGING_ACCESS_SESSION_DURATION=6h` in that environment so provider plan,
+apply, and verification all use the six-hour duration configured for the
+`SITBank staging` Access application. Keep the exact explicit-email policy in
+`STAGING_ACCESS_ALLOWED_EMAILS`; `Everyone`, wildcard domains, and broad
+allow-all rules are forbidden.
 
 Create a staging Basic Auth file before running the staging bootstrap. This is
 a secondary staging control and must not replace Cloudflare Access:
@@ -647,7 +652,10 @@ missing/invalid assertion always receives a generic `403`; raw tokens are not
 logged. Authenticated Origin Pull remains a separate required check.
 The manual `cloudflare-access-verify.yml` workflow performs the same
 non-mutating check in the protected `staging` environment and uploads only
-sanitized evidence.
+sanitized evidence. It maps `STAGING_ACCESS_SESSION_DURATION`,
+`STAGING_CLOUDFLARE_ACCESS_AUD`, and every other supported provider value
+explicitly, runs only when dispatched from `main`, and reports non-secret
+field drift without printing the email allowlist or raw provider responses.
 
 The complete operator runbook is
 `docs/security/admin-and-staging-zero-trust-access.md`.

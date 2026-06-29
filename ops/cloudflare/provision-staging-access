@@ -67,6 +67,15 @@ def _identifier(name: str) -> str:
     return value
 
 
+def _optional_identifier(name: str) -> str | None:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        return None
+    if not ID_PATTERN.fullmatch(value):
+        raise ConfigurationError(f"{name} is not a valid Cloudflare identifier")
+    return value
+
+
 def _team_domain() -> str:
     value = _required("STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN").lower().rstrip("/")
     if value.startswith("https://"):
@@ -112,6 +121,7 @@ class Config:
     allowed_group_ids: tuple[str, ...]
     allowed_idp_ids: tuple[str, ...]
     team_domain: str
+    access_audience: str | None
     dns_origin: str
     dns_record_type: str
     origin_ip: str | None
@@ -148,10 +158,10 @@ class Config:
             if any(not ID_PATTERN.fullmatch(value) for value in values):
                 raise ConfigurationError(f"{name} contains an invalid identifier")
 
-        duration = os.environ.get("STAGING_ACCESS_SESSION_DURATION", "8h").strip()
+        duration = os.environ.get("STAGING_ACCESS_SESSION_DURATION", "6h").strip()
         if not DURATION_PATTERN.fullmatch(duration):
             raise ConfigurationError(
-                "STAGING_ACCESS_SESSION_DURATION must use minutes or hours, such as 8h"
+                "STAGING_ACCESS_SESSION_DURATION must use minutes or hours, such as 6h"
             )
         quantity = int(duration[:-1])
         minutes = quantity if duration.endswith("m") else quantity * 60
@@ -179,15 +189,14 @@ class Config:
                 )
             origin_ip = str(parsed_origin_ip)
 
-        app_name = os.environ.get(
-            "STAGING_ACCESS_APP_NAME", "SITBank staging"
-        ).strip()
-        policy_name = os.environ.get(
-            "STAGING_ACCESS_POLICY_NAME",
-            "SITBank staging approved operators",
-        ).strip()
-        if not app_name or not policy_name:
-            raise ConfigurationError("Access application and policy names must not be empty")
+        app_name = (
+            os.environ.get("STAGING_ACCESS_APP_NAME", "").strip()
+            or "SITBank staging"
+        )
+        policy_name = (
+            os.environ.get("STAGING_ACCESS_POLICY_NAME", "").strip()
+            or "SITBank staging approved operators"
+        )
 
         idp_ids = _csv("STAGING_ACCESS_ALLOWED_IDP_IDS")
         return cls(
@@ -201,6 +210,9 @@ class Config:
             allowed_group_ids=groups,
             allowed_idp_ids=idp_ids,
             team_domain=_team_domain(),
+            access_audience=_optional_identifier(
+                "STAGING_CLOUDFLARE_ACCESS_AUD"
+            ),
             dns_origin=origin,
             dns_record_type=origin_type,
             origin_ip=origin_ip,
@@ -291,9 +303,8 @@ class CloudflareAPI:
             ) as response:
                 envelope = json.load(response)
         except urllib.error.HTTPError as exc:
-            detail = exc.read(2048).decode("utf-8", errors="replace")
             raise CloudflareAPIError(
-                f"Cloudflare API {method} {path} returned HTTP {exc.code}: {detail}"
+                f"Cloudflare API {method} {path} returned HTTP {exc.code}"
             ) from exc
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
             raise CloudflareAPIError(
@@ -302,9 +313,18 @@ class CloudflareAPI:
 
         if not envelope.get("success"):
             errors = envelope.get("errors") or [{"message": "unknown API error"}]
-            messages = "; ".join(str(item.get("message", item)) for item in errors)
+            codes = sorted(
+                {
+                    str(item["code"])
+                    for item in errors
+                    if isinstance(item, dict)
+                    and isinstance(item.get("code"), (int, str))
+                    and str(item["code"]).isalnum()
+                }
+            )
+            code_summary = f" (error codes: {', '.join(codes)})" if codes else ""
             raise CloudflareAPIError(
-                f"Cloudflare API {method} {path} rejected the request: {messages}"
+                f"Cloudflare API {method} {path} rejected the request{code_summary}"
             )
         return envelope.get("result")
 
@@ -397,17 +417,45 @@ def _matching_policy(
     return _one_or_none(matches, "managed Access policy")
 
 
-def _application_matches(application: dict[str, Any], config: Config) -> bool:
-    if any(
+def _diagnostic_value(value: Any) -> str:
+    if value is None:
+        return "<missing>"
+    if isinstance(value, bool):
+        return str(value).lower()
+    if not isinstance(value, (int, str)):
+        return f"<{type(value).__name__}>"
+    text = str(value)
+    if len(text) > 128 or any(ord(character) < 32 for character in text):
+        return "<invalid>"
+    return text
+
+
+def _application_drift(
+    application: dict[str, Any], config: Config
+) -> tuple[str, ...]:
+    drift: list[str] = []
+    fields = (
+        ("name", config.app_name, application.get("name")),
         (
-            application.get("name") != config.app_name,
-            application.get("domain", "").casefold() != config.hostname.casefold(),
-            application.get("type") != "self_hosted",
-            application.get("session_duration") != config.session_duration,
-            application.get("app_launcher_visible") is not False,
-        )
-    ):
-        return False
+            "domain",
+            config.hostname.casefold(),
+            str(application.get("domain", "")).casefold(),
+        ),
+        ("type", "self_hosted", application.get("type")),
+        (
+            "session_duration",
+            config.session_duration,
+            application.get("session_duration"),
+        ),
+        ("app_launcher_visible", False, application.get("app_launcher_visible")),
+    )
+    for name, expected, actual in fields:
+        if actual != expected:
+            drift.append(
+                f"{name} expected={_diagnostic_value(expected)} "
+                f"actual={_diagnostic_value(actual)}"
+            )
+
     destinations = application.get("destinations")
     if destinations is not None:
         if (
@@ -417,28 +465,86 @@ def _application_matches(application: dict[str, Any], config: Config) -> bool:
             or str(destinations[0].get("uri", "")).casefold()
             != config.hostname.casefold()
         ):
-            return False
+            drift.append("destinations mismatch=true")
+
     legacy_domains = application.get("self_hosted_domains")
     if legacy_domains is not None:
         if not isinstance(legacy_domains, list) or {
             str(item).casefold() for item in legacy_domains
         } != {config.hostname.casefold()}:
-            return False
-    if config.allowed_idp_ids:
-        return set(application.get("allowed_idps") or []) == set(config.allowed_idp_ids)
-    return True
+            drift.append("self_hosted_domains mismatch=true")
+
+    actual_idps = application.get("allowed_idps") or []
+    if not isinstance(actual_idps, list):
+        drift.append(
+            "allowed_idps expected_count="
+            f"{len(config.allowed_idp_ids)} actual_count=<invalid> mismatch=true"
+        )
+    elif set(actual_idps) != set(config.allowed_idp_ids):
+        drift.append(
+            "allowed_idps expected_count="
+            f"{len(config.allowed_idp_ids)} actual_count={len(actual_idps)} "
+            "mismatch=true"
+        )
+    return tuple(drift)
+
+
+def _application_matches(application: dict[str, Any], config: Config) -> bool:
+    return not _application_drift(application, config)
+
+
+def _policy_drift(policy: dict[str, Any], config: Config) -> tuple[str, ...]:
+    desired = config.policy_payload
+    drift: list[str] = []
+    if policy.get("decision") != "allow":
+        drift.append(
+            "decision expected=allow "
+            f"actual={_diagnostic_value(policy.get('decision'))}"
+        )
+    if policy.get("precedence") != 1:
+        drift.append(
+            "precedence expected=1 "
+            f"actual={_diagnostic_value(policy.get('precedence'))}"
+        )
+    if _normalized_rules(policy.get("include")) != _normalized_rules(
+        desired["include"]
+    ):
+        actual_rules = policy.get("include")
+        actual_email_count = 0
+        actual_group_count = 0
+        actual_rule_count: int | str = "<invalid>"
+        if isinstance(actual_rules, list):
+            actual_rule_count = len(actual_rules)
+            actual_email_count = sum(
+                1 for rule in actual_rules if isinstance(rule, dict) and "email" in rule
+            )
+            actual_group_count = sum(
+                1 for rule in actual_rules if isinstance(rule, dict) and "group" in rule
+            )
+        drift.extend(
+            (
+                "allowed_emails "
+                f"expected_count={len(config.allowed_emails)} "
+                f"actual_count={actual_email_count} mismatch=true",
+                "allowed_groups "
+                f"expected_count={len(config.allowed_group_ids)} "
+                f"actual_count={actual_group_count} mismatch=true",
+                "include_rules "
+                f"expected_count={len(desired['include'])} "
+                f"actual_count={actual_rule_count} mismatch=true",
+            )
+        )
+    for name in ("exclude", "require"):
+        normalized = _normalized_rules(policy.get(name))
+        if normalized:
+            drift.append(
+                f"{name}_rules expected_count=0 actual_count={len(normalized)}"
+            )
+    return tuple(drift)
 
 
 def _policy_matches(policy: dict[str, Any], config: Config) -> bool:
-    desired = config.policy_payload
-    return (
-        policy.get("decision") == "allow"
-        and policy.get("precedence") == 1
-        and _normalized_rules(policy.get("include"))
-        == _normalized_rules(desired["include"])
-        and _normalized_rules(policy.get("exclude")) == ()
-        and _normalized_rules(policy.get("require")) == ()
-    )
+    return not _policy_drift(policy, config)
 
 
 def _dns_matches(record: dict[str, Any], config: Config) -> bool:
@@ -471,17 +577,32 @@ def verify_provider_state(state: ProviderState, config: Config) -> str:
     application = state.application
     if not application:
         raise VerificationError("Cloudflare Access application is missing")
-    if not _application_matches(application, config):
-        raise VerificationError("Cloudflare Access application configuration has drifted")
+    application_drift = _application_drift(application, config)
+    if application_drift:
+        raise VerificationError(
+            "Cloudflare Access application configuration has drifted: "
+            + "; ".join(application_drift)
+        )
     audience = application.get("aud")
     if not isinstance(audience, str) or not audience:
         raise VerificationError("Cloudflare Access application audience is missing")
+    if config.access_audience and audience != config.access_audience:
+        raise VerificationError(
+            "Cloudflare Access application configuration has drifted: "
+            "audience "
+            f"expected={_diagnostic_value(config.access_audience)} "
+            f"actual={_diagnostic_value(audience)}"
+        )
 
     target_policy = _matching_policy(state.policies, config)
     if not target_policy:
         raise VerificationError("Approved-operator Access policy is missing")
-    if not _policy_matches(target_policy, config):
-        raise VerificationError("Approved-operator Access policy has drifted")
+    policy_drift = _policy_drift(target_policy, config)
+    if policy_drift:
+        raise VerificationError(
+            "Approved-operator Access policy has drifted: "
+            + "; ".join(policy_drift)
+        )
     for policy in state.policies:
         if _policy_is_unsafe(policy):
             raise VerificationError(
@@ -680,6 +801,7 @@ def _write_evidence(path: Path, config: Config, http: HTTPVerification) -> None:
         "schema": 1,
         "verified_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "hostname": config.hostname,
+        "session_duration": config.session_duration,
         "checks": {
             "access_application": True,
             "approved_operator_policy": True,

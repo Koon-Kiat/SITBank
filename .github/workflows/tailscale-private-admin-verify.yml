@@ -40,7 +40,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment:
-      name: Admin-Tailscale
+      name: admin-tailscale
     env:
       TAILSCALE_PRIVATE_ADMIN_HOST: ${{ inputs.private_admin_host }}
       TAILSCALE_PUBLIC_ADMIN_HOST: ${{ inputs.public_admin_host }}

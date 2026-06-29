@@ -145,7 +145,7 @@ the admin runtime.
 The protected manual/reusable workflow
 `.github/workflows/tailscale-private-admin-verify.yml` supplies reachability
 evidence from a temporary GitHub-hosted tailnet node. Its
-`Admin-Tailscale` environment and `TAILSCALE_AUTH_KEY`
+`admin-tailscale` environment and `TAILSCALE_AUTH_KEY`
 do not replace Flask admin login, TOTP, CSRF, route authorization, or audit
 logging. Production calls it as a required gate only after deployment and
 public production TLS verification; normal public TLS/PR CI remains outside

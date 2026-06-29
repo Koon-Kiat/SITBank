@@ -134,7 +134,7 @@ requires operator verification.
 The **Verify private Tailscale admin access** workflow is the only
 GitHub-hosted workflow approved to join the tailnet. It can run manually and is
 the required final production gate after deployment and public production TLS
-verification. It uses the protected `Admin-Tailscale` environment and its
+verification. It uses the protected `admin-tailscale` environment and its
 `TAILSCALE_AUTH_KEY` environment secret. The environment must require manual
 approval by trusted maintainers and restrict deployment branches to `main`.
 The key must create a reusable, ephemeral, pre-approved (when required)
@@ -167,6 +167,15 @@ release and after Access, DNS, IdP, token, origin address, or ingress changes.
 It uses protected `staging` environment secrets and retains only sanitized
 evidence. Rotate the Cloudflare API token by verifying a narrowly scoped
 replacement, updating the environment secret, and revoking the old token.
+Dispatch it from `main`. The expected Access application is `SITBank staging`
+at `staging-sitbank.pp.ua` with
+`STAGING_ACCESS_SESSION_DURATION=6h`, the configured team domain and audience,
+and the exact explicit-email membership from
+`STAGING_ACCESS_ALLOWED_EMAILS`. `Everyone`, wildcard domains, and broad
+allow-all policies are forbidden. A drift message names safe fields such as
+`session_duration`; membership drift reports counts only. Never copy tokens,
+email values, authorization headers, cookies, JWTs, Access assertions, or raw
+provider responses into a ticket or change record.
 
 The detailed onboarding, offboarding, emergency lockout, rollback, and live
 operator verification steps are in
@@ -503,7 +512,7 @@ pull requests.
 The normal public TLS scan deliberately excludes the private Tailscale admin hostname
 `admin-sitbank.tailca101b.ts.net`; a GitHub-hosted public runner cannot reach
 it. Private reachability is handled only by the separate, manually approved
-`Admin-Tailscale` environment job that joins the tailnet on demand or as the
+`admin-tailscale` environment job that joins the tailnet on demand or as the
 required final production gate.
 Do not make staging or admin verification pass by switching Cloudflare to
 Flexible SSL, disabling TLS verification, disabling the Cloudflare proxy,

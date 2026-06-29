@@ -79,6 +79,37 @@ creates or reconciles the Access application. They are identifiers rather than
 secrets, but keep them in the protected `staging` environment so deployment
 and provider configuration change together.
 
+The manual **Verify staging Cloudflare Access** workflow runs only from `main`
+in the protected `staging` environment. That shared environment requires:
+
+- `CLOUDFLARE_API_TOKEN`
+- `STAGING_ACCESS_ALLOWED_EMAILS`
+- `STAGING_DNS_ORIGIN`
+- `STAGING_ORIGIN_IP`
+- `STAGING_EC2_KNOWN_HOSTS`
+- `STAGING_EC2_SSH_PRIVATE_KEY_B64`
+
+The provider workflow consumes the first four values; the two EC2 credentials
+remain deployment-only. `STAGING_ACCESS_ALLOWED_GROUP_IDS` is optional when the policy uses only the
+exact explicit emails in `STAGING_ACCESS_ALLOWED_EMAILS`. Required environment
+variables are `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_ZONE_ID`,
+`STAGING_ACCESS_SESSION_DURATION`, `STAGING_CLOUDFLARE_ACCESS_AUD`,
+`STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN`, `STAGING_PUBLIC_HOST`,
+`STAGING_EC2_HOST`, `STAGING_EC2_DEPLOY_USER`, and `STAGING_EC2_PORT`.
+`STAGING_ACCESS_ALLOWED_IDP_IDS` is optional unless a reviewed IdP restriction
+is active. The provider workflow maps every supported Cloudflare value; the
+EC2 host, user, and port remain deployment-only.
+`STAGING_ACCESS_APP_NAME` and `STAGING_ACCESS_POLICY_NAME` are optional;
+leaving them empty uses the reviewed defaults.
+
+The reviewed provider values are `STAGING_ACCESS_SESSION_DURATION=6h`,
+`STAGING_PUBLIC_HOST=staging-sitbank.pp.ua`, application name `SITBank
+staging`, and policy name `SITBank staging approved operators`. `Everyone`,
+wildcard domains, and broad allow-all rules are forbidden. Run the workflow
+manually after any provider or environment change; safe drift output names
+non-secret fields and reports allowlist mismatches by count without printing
+emails, tokens, headers, cookies, JWTs, or Access assertions.
+
 `<PREFIX>_MFA_KEK_ACTIVE_ID` must match a key identifier in the root-managed `/etc/sitbank*/secrets/mfa_kek_keys_json` file on EC2. Do not put `MFA_KEK_KEYS_JSON` in GitHub Actions; the KEK keyring is a long-lived secret and remains host-managed.
 `<PREFIX>_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID` must match a key identifier in
 `/etc/sitbank*/secrets/admin_session_hmac_keys_json`. Do not put admin Flask,
@@ -99,7 +130,7 @@ The trusted production workflow calls it as the required final gate after both
 `deploy-production` and `verify-production-tls` succeed. Pull requests,
 forks, Dependabot, staging, and the public TLS workflow do not call it.
 
-Its `Admin-Tailscale` environment must require trusted maintainer approval,
+Its `admin-tailscale` environment must require trusted maintainer approval,
 permit only `main`, and hold the sole `TAILSCALE_AUTH_KEY` secret. Configure
 that key as reusable, ephemeral, pre-approved when needed, tagged as
 `tag:github-ci`, unable to administer the tailnet or use broad SSH, and allowed

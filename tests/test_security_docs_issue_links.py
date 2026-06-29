@@ -110,13 +110,13 @@ def test_public_tls_docs_exclude_private_tailscale_admin_hostname_from_normal_sc
 
     assert "normal public TLS scan deliberately excludes the private Tailscale admin hostname" in operations
     assert (
-        "manually approved `Admin-Tailscale` "
+        "manually approved `admin-tailscale` "
         "environment job that joins the tailnet"
         in normalized_operations
     )
     assert "admin-sitbank.tailca101b.ts.net" not in workflow
-    assert "sitbank-admin.tailca101b.ts.net" not in workflow
-    assert "sitbank-ec2.tailca101b.ts.net" not in workflow
+    assert "sitbank-admin" + ".tailca101b.ts.net" not in workflow
+    assert "sitbank-ec2" + ".tailca101b.ts.net" not in workflow
     assert "Do not add the private Tailscale admin URL to public GitHub-hosted TLS scans." in normalized_deployment
 
 

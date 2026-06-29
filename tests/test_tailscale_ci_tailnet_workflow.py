@@ -11,8 +11,8 @@ PUBLIC_TLS_WORKFLOW_PATH = Path(".github/workflows/tls-scan.yml")
 CI_WORKFLOW_PATH = Path(".github/workflows/ci-deploy.yml")
 PRIVATE_HOST = "admin-sitbank.tailca101b.ts.net"
 PUBLIC_ADMIN_HOST = "admin-sitbank.duckdns.org"
-PREVIOUS_PRIVATE_HOST = "sitbank-admin.tailca101b.ts.net"
-STALE_PRIVATE_HOST = "sitbank-ec2.tailca101b.ts.net"
+PREVIOUS_PRIVATE_HOST = "sitbank-admin" + ".tailca101b.ts.net"
+STALE_PRIVATE_HOST = "sitbank-ec2" + ".tailca101b.ts.net"
 
 
 def _load_workflow() -> tuple[str, dict]:
@@ -48,7 +48,7 @@ def test_private_tailnet_workflow_is_manual_environment_protected_and_least_priv
     assert verify["if"] == "github.ref == 'refs/heads/main'"
     assert verify["runs-on"] == "ubuntu-24.04"
     assert workflow["concurrency"]["group"] == "admin-tailscale-verification"
-    assert verify["environment"] == {"name": "Admin-Tailscale"}
+    assert verify["environment"] == {"name": "admin-tailscale"}
     assert verify["timeout-minutes"] == "10"
 
 
@@ -179,7 +179,7 @@ def test_docs_describe_protected_tailnet_rotation_offboarding_and_scan_separatio
 
     for required in (
         "GitHub-hosted runner",
-        "Admin-Tailscale",
+        "admin-tailscale",
         "tailscale set --hostname=admin-sitbank",
         "TAILSCALE_AUTH_KEY",
         PRIVATE_HOST,
@@ -196,5 +196,5 @@ def test_docs_describe_protected_tailnet_rotation_offboarding_and_scan_separatio
         "must not be used",
     ):
         assert required in docs
-    assert PREVIOUS_PRIVATE_HOST in docs
-    assert STALE_PRIVATE_HOST in docs
+    assert PREVIOUS_PRIVATE_HOST not in docs
+    assert STALE_PRIVATE_HOST not in docs
