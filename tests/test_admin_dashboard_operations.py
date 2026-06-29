@@ -321,6 +321,33 @@ def test_admin_browser_login_rejects_customer_accounts_with_generic_error(admin_
     assert authenticated_user_id is None
 
 
+def test_admin_browser_login_rejects_staff_outside_admin_email_domains(admin_client):
+    _staff, _secret = _create_staff_identity(
+        username="external-staff",
+        email="external.staff@example.com",
+        account_type="staff",
+        phone_number="91234567",
+    )
+
+    response = admin_client.post(
+        "/login",
+        data={
+            "workplace_email": "external.staff@example.com",
+            "password": ROOT_PASSWORD,
+        },
+    )
+
+    with admin_client.session_transaction() as sess:
+        pending_user_id = sess.get("pending_mfa_user_id")
+        authenticated_user_id = sess.get("user_id")
+
+    body = response.get_data(as_text=True)
+    assert response.status_code == 401
+    assert "Invalid workplace email, password, or authentication code" in body
+    assert pending_user_id is None
+    assert authenticated_user_id is None
+
+
 def test_dashboard_renders_role_navigation_and_audits_access(admin_client):
     _staff, staff_secret = _create_staff_identity(
         username="bank-staff",

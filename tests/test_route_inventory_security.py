@@ -98,7 +98,7 @@ ROUTE_SECURITY_INVENTORY = {
         "csrf": "required",
         "rate_limit": "per_route",
         "step_up": "not_required",
-        "public_justification": "Account creation must be reachable before authentication but requires a verified SIT email OTP.",
+        "public_justification": "Account creation must be reachable before authentication but requires a verified customer email OTP.",
     },
     "auth.register_otp_request": {
         "endpoint": "auth.register_otp_request",
@@ -109,7 +109,7 @@ ROUTE_SECURITY_INVENTORY = {
         "csrf": "required",
         "rate_limit": "per_route",
         "step_up": "not_required",
-        "public_justification": "Registration OTP requests must be reachable before account creation and are constrained to approved SIT email domains.",
+        "public_justification": "Registration OTP requests must be reachable before account creation and block configured admin workplace email domains.",
     },
     "auth.register_otp_verify": {
         "endpoint": "auth.register_otp_verify",
@@ -120,7 +120,7 @@ ROUTE_SECURITY_INVENTORY = {
         "csrf": "required",
         "rate_limit": "per_route",
         "step_up": "not_required",
-        "public_justification": "Registration OTP verification binds the approved SIT email to the caller's pre-authentication session.",
+        "public_justification": "Registration OTP verification binds the approved customer email to the caller's pre-authentication session.",
     },
     "auth.login": {
         "endpoint": "auth.login",
@@ -505,7 +505,7 @@ ROUTE_SECURITY_INVENTORY = {
         "csrf": "required",
         "rate_limit": "per_route",
         "step_up": "not_required",
-        "public_justification": "Account creation must be reachable before authentication but requires a verified SIT email OTP.",
+        "public_justification": "Account creation must be reachable before authentication but requires a verified customer email OTP.",
     },
     "web.login": {
         "endpoint": "web.login",
@@ -1050,4 +1050,4 @@ def test_login_and_registration_have_method_level_security_decisions(app):
     assert ROUTE_SECURITY_INVENTORY["web.register_form"]["csrf"] == "not_applicable"
     assert ROUTE_SECURITY_INVENTORY["web.register_submit"]["csrf"] == "required"
     assert ROUTE_SECURITY_INVENTORY["web.register_submit"]["rate_limit"] == "per_route"
-    assert "verified SIT email OTP" in ROUTE_SECURITY_INVENTORY["web.register_submit"]["public_justification"]
+    assert "verified customer email OTP" in ROUTE_SECURITY_INVENTORY["web.register_submit"]["public_justification"]

@@ -10,7 +10,7 @@ protected personal data.
 | Data category | Purpose | Minimization and handling |
 | --- | --- | --- |
 | Customer name | Account display, support, audit context | Required at registration; do not copy into alert payloads unless needed for a reviewed support workflow |
-| Customer email | SIT email verification, login identifier, reset/recovery email | Exact SIT domains only for registration; audit metadata uses references where possible |
+| Customer email | Customer email verification, login identifier, reset/recovery email | Staff/admin workplace domains are blocked for customer registration; audit metadata uses references where possible |
 | Customer phone | Registration contact metadata | Singapore phone format only; optional for preserved legacy rows; do not use as an authenticator |
 | Account identifiers | Customer account routing, payee setup, display | Generated server-side; UI masks account numbers where possible; audit events use references |
 | Payee records | Customer-managed payment recipients | Scoped to owner; recipient lookup occurs only after TOTP step-up; do not expose payee ownership across users |

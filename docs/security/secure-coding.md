@@ -18,7 +18,7 @@ fields are ignored or rejected rather than trusted from client payloads.
 | --- | --- | --- |
 | Customer registration and login | `app/auth/forms.py`, `app/auth/schemas.py`, `app/auth/services.py` | `tests/test_auth_registration_login.py` |
 | Password policy and length limits | `app/security/passwords.py` | `tests/test_passwords.py`, `tests/test_auth_registration_login.py::test_oversized_registration_password_rejected_before_policy_processing` |
-| SIT email OTP registration | `app/auth/registration_otp.py` | `tests/test_auth_registration_login.py::test_registration_otp_rejects_non_sit_email_domain`, `tests/test_auth_registration_login.py::test_registration_otp_rejects_suffix_lookalike_domain` |
+| Customer email OTP registration with admin-domain exclusion | `app/auth/registration_otp.py`, `app/security/identity_policy.py` | `tests/test_auth_registration_login.py::test_registration_otp_rejects_admin_and_root_allowlist_emails`, `tests/test_auth_registration_login.py::test_registration_service_rechecks_customer_email_policy` |
 | Admin invite acceptance | `app/admin/routes.py`, `app/admin/services.py` | `tests/test_admin_staff_invites.py` |
 | Banking and transaction payloads | `app/banking/forms.py`, `app/banking/schemas.py`, `app/banking/services.py` | `tests/test_banking_transaction_security.py` |
 | Open redirect and URL-like mass assignment | `app/auth/routes.py`, `app/web/routes.py` | `tests/test_owasp_regressions.py::test_external_next_parameter_cannot_create_an_open_redirect`, `tests/test_owasp_regressions.py::test_url_like_mass_assignment_field_is_rejected` |

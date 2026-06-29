@@ -16,14 +16,14 @@ def payee_idor_context(app, client):
     register(
         client,
         username="alice01",
-        email="alice@sit.singaporetech.edu.sg",
+        email="alice@example.com",
         full_name="Alice Customer",
         phone_number="91234567",
     )
     register(
         bob_client,
         username="bob02",
-        email="bob@sit.singaporetech.edu.sg",
+        email="bob@example.com",
         full_name="Bob Customer",
         phone_number="81234567",
     )

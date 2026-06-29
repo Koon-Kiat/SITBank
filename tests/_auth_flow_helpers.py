@@ -40,7 +40,7 @@ def _latest_registration_otp() -> str:
     return match.group(1)
 
 
-def verify_registration_email(client, email="alice@sit.singaporetech.edu.sg"):
+def verify_registration_email(client, email="alice@example.com"):
     normalized_email = normalize_registration_email(email)
     with client.session_transaction() as sess:
         already_verified = (
@@ -62,7 +62,7 @@ def verify_registration_email(client, email="alice@sit.singaporetech.edu.sg"):
     return request_response, verify_response
 
 
-def register(client, username="alice01", email="alice@sit.singaporetech.edu.sg", password="correct horse battery staple",
+def register(client, username="alice01", email="alice@example.com", password="correct horse battery staple",
              full_name="Alice Test", phone_number="91234567", verify_email=True):
     if verify_email:
         verify_registration_email(client, email)

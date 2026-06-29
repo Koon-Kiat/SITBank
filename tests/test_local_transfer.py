@@ -72,14 +72,14 @@ def transfer_context(app, client):
     register(
         client,
         username="alice01",
-        email="alice@sit.singaporetech.edu.sg",
+        email="alice@example.com",
         full_name="Alice Sender",
         phone_number="91234567",
     )
     register(
         bob_client,
         username="bob02",
-        email="bob@sit.singaporetech.edu.sg",
+        email="bob@example.com",
         full_name="Bob Recipient",
         phone_number="81234567",
     )
@@ -139,7 +139,7 @@ def test_transfer_submit_blocked_during_cooldown(client, transfer_context):
 def test_transfer_page_returns_404_for_other_users_payee(app, client, transfer_context):
     carol = User(
         username="carol03",
-        email="carol@sit.singaporetech.edu.sg",
+        email="carol@example.com",
         full_name="Carol Other",
         phone_number="71234567",
         account_number="555555555",
@@ -165,7 +165,7 @@ def test_transfer_submit_idor_check_runs_before_mfa(app, client, transfer_contex
 
     carol = User(
         username="carol04",
-        email="carol04@sit.singaporetech.edu.sg",
+        email="carol04@example.com",
         full_name="Carol Other",
         phone_number="61234567",
         account_number="777777777",

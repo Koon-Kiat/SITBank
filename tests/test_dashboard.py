@@ -11,7 +11,7 @@ from app.models import User
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-def register(client, username="alice01", email="alice@sit.singaporetech.edu.sg",
+def register(client, username="alice01", email="alice@example.com",
              password="correct horse battery staple",
              full_name="Alice Test", phone_number="91234567"):
     verify_registration_email(client, email)
