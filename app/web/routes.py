@@ -75,7 +75,10 @@ from app.auth.webauthn_services import (
     list_credentials_for_user,
     webauthn_credential_count,
 )
-from app.extensions import limiter
+from sqlalchemy import or_
+
+from app.extensions import db, limiter
+from app.models import Transaction
 from app.auth.recovery_codes import RECOVERY_CODE_LOW_THRESHOLD, unused_recovery_code_count
 from app.security.rate_limits import mfa_principal, request_principal
 from app.security.sessions import (
@@ -527,12 +530,28 @@ def mfa_verify_submit():
 @web_bp.get("/dashboard")
 @web_login_required
 def dashboard():
+    recent_txns = (
+        db.session.execute(
+            db.select(Transaction)
+            .where(
+                or_(
+                    Transaction.sender_id == g.current_user.id,
+                    Transaction.recipient_id == g.current_user.id,
+                )
+            )
+            .order_by(Transaction.created_at.desc())
+            .limit(5)
+        )
+        .scalars()
+        .all()
+    )
     return render_template(
         "dashboard.html",
         user=g.current_user,
         credential_count=g.webauthn_credential_count,
         required_count=g.webauthn_required_count,
         logout_form=CsrfOnlyForm(),
+        transactions=recent_txns,
     )
 
 
