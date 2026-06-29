@@ -294,7 +294,7 @@ def test_suspicious_customer_context_requires_reauth_for_sensitive_action(
 
     assert safe_response.status_code == 200
     assert sensitive_response.status_code == 401
-    assert user.email == "alice@sit.singaporetech.edu.sg"
+    assert user.email == "alice@example.com"
     events = db.session.query(SecurityAuditEvent).filter_by(
         event_type="session_risk",
         outcome="reauth_required",

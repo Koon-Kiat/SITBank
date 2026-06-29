@@ -36,12 +36,12 @@ def test_public_homepage_exposes_verification_and_student_disclaimer(client):
 
 
 def test_external_next_parameter_cannot_create_an_open_redirect(client):
-    verify_registration_email(client, "redirect@sit.singaporetech.edu.sg")
+    verify_registration_email(client, "redirect@example.com")
     register = client.post(
         "/register",
         data={
             "username": "redirect01",
-            "email": "redirect@sit.singaporetech.edu.sg",
+            "email": "redirect@example.com",
             "full_name": "Redirect User",
             "phone_number": "91234567",
             "password": VALID_PASSWORD,

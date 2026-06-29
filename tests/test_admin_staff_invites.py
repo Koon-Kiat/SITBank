@@ -188,12 +188,33 @@ def test_invite_creation_validates_server_side_email_and_role_policy(admin_clien
         {"workplace_email": "staff@gmail.com"},
         {"personal_email": "staff+tag@gmail.com"},
         {"personal_email": "staff@sit.singaporetech.edu.sg"},
+        {"personal_email": ROOT_EMAIL},
         {"role": "root_admin"},
     ]
     responses = [_create_invite(admin_client, secret, **case) for case in cases]
 
-    assert [response.status_code for response in responses] == [400, 400, 400, 400, 400]
+    assert [response.status_code for response in responses] == [400, 400, 400, 400, 400, 400]
     assert db.session.query(StaffInvite).count() == 0
+
+
+def test_invite_creation_accepts_configured_admin_email_domains(admin_client):
+    _root, secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    _login_admin(admin_client, secret)
+
+    response = _create_invite(
+        admin_client,
+        secret,
+        personal_email="staff.second-domain@gmail.com",
+        workplace_email="staff.second-domain@singaporetech.edu.sg",
+    )
+
+    assert response.status_code == 201
+    assert response.get_json()["invite"]["workplace_email"] == "staff.second-domain@singaporetech.edu.sg"
 
 
 def test_invite_acceptance_requires_turnstile_when_enabled(admin_app, admin_client, monkeypatch):

@@ -332,6 +332,15 @@ def _csv_env_set(name: str, *, default: str) -> frozenset[str]:
     return values
 
 
+def _email_domain(value: str) -> str:
+    _local, separator, domain = str(value or "").strip().partition("@")
+    return domain.casefold() if separator else ""
+
+
+def _all_email_domains_allowed(emails: frozenset[str], allowed_domains: frozenset[str]) -> bool:
+    return all(_email_domain(item) in allowed_domains for item in emails)
+
+
 def _optional_turnstile_secret() -> str | None:
     direct_value = os.getenv("TURNSTILE_SECRET_KEY")
     file_value = os.getenv("TURNSTILE_SECRET_KEY_FILE")
@@ -1089,10 +1098,14 @@ class Config:
         min_production_seconds=MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS,
     )
 
-    SIT_WORKPLACE_EMAIL_DOMAINS = _csv_env_set(
-        "SIT_WORKPLACE_EMAIL_DOMAINS",
-        default="sit.singaporetech.edu.sg,singaporetech.edu.sg",
+    ADMIN_ALLOWED_EMAIL_DOMAINS = _csv_env_set(
+        "ADMIN_ALLOWED_EMAIL_DOMAINS",
+        default=os.getenv(
+            "SIT_WORKPLACE_EMAIL_DOMAINS",
+            "sit.singaporetech.edu.sg,singaporetech.edu.sg",
+        ),
     )
+    SIT_WORKPLACE_EMAIL_DOMAINS = ADMIN_ALLOWED_EMAIL_DOMAINS
     STAFF_INVITE_PERSONAL_EMAIL_DOMAINS = _csv_env_set(
         "STAFF_INVITE_PERSONAL_EMAIL_DOMAINS",
         default="gmail.com,outlook.com,hotmail.com,yahoo.com,icloud.com,proton.me,protonmail.com",
@@ -1116,6 +1129,8 @@ class Config:
     )
     if len(ROOT_ADMIN_EMAILS) != 7:
         raise RuntimeError("ROOT_ADMIN_EMAILS must contain exactly 7 workplace email addresses")
+    if not _all_email_domains_allowed(ROOT_ADMIN_EMAILS, ADMIN_ALLOWED_EMAIL_DOMAINS):
+        raise RuntimeError("ROOT_ADMIN_EMAILS must contain only approved admin workplace email addresses")
     STAFF_INVITE_TTL_SECONDS = _int_env(
         "STAFF_INVITE_TTL_SECONDS",
         default=str(24 * 60 * 60),

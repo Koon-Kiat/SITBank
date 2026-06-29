@@ -257,6 +257,35 @@ def test_root_admin_transition_requires_totp_and_preserves_status(admin_client):
     assert request_record.status == "pending"
 
 
+def test_root_admin_cannot_transition_own_customer_manual_recovery(admin_client):
+    root, root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    customer, _customer_secret = _create_customer("recover-self-root")
+    root.staff_personal_email = customer.email
+    request_record = _create_manual_recovery_request(customer)
+    db.session.commit()
+    _login_admin(admin_client, root_secret)
+
+    response = admin_client.post(
+        f"/manual-recovery/requests/{request_record.id}/transition",
+        json={"status": "under_review", "reason": "identity review", "totp_code": _totp(root_secret)},
+    )
+    db.session.refresh(request_record)
+    event = db.session.query(SecurityAuditEvent).filter_by(
+        event_type="staff_self_customer_action_blocked",
+        outcome="blocked",
+    ).one()
+
+    assert response.status_code == 403
+    assert request_record.status == "pending"
+    assert event.user_id == root.id
+    assert event.event_metadata["action_type"] == "manual_recovery_transition"
+
+
 def test_root_admin_can_transition_manual_recovery_to_review_and_approval(admin_client):
     _root, root_secret = _create_staff_identity(
         username="root-admin",

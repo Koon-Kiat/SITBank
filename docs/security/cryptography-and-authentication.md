@@ -222,9 +222,13 @@ and `tests/test_password_reset.py::test_recovery_codes_are_hashed_single_use_res
 
 ### Customer Authentication
 
-Customer registration requires a verified SIT email OTP before `register_user`
-creates a customer account. Evidence: `app/auth/registration_otp.py`,
-`app/auth/services.py`, `app/auth/routes.py`, and `app/web/routes.py`.
+Customer registration requires a verified personal/customer email OTP before
+`register_user` creates a customer account. `app/security/identity_policy.py`
+reserves configured admin workplace domains and root-admin allowlisted emails
+for staff/admin/root-admin identities, so they cannot be used for customer
+registration or customer profile email changes. Evidence:
+`app/auth/registration_otp.py`, `app/auth/services.py`,
+`app/auth/routes.py`, and `app/web/routes.py`.
 
 Customer login uses username or email plus password. `authenticate_primary()`
 uses a dummy password hash for unknown users to reduce user-enumeration timing
@@ -276,7 +280,8 @@ and `tests/test_password_reset.py::test_admin_like_customer_domain_reset_fails_c
 The admin runtime is a separate Flask app mode selected by `admin_wsgi.py` and
 `create_app(app_mode="admin")`. Admin/staff users use workplace email,
 password, and mandatory TOTP. Active staff users must have `account_status`
-`active`, an allowed staff account type, `mfa_enabled`, and
+`active`, an allowed staff account type, an email domain in
+`ADMIN_ALLOWED_EMAIL_DOMAINS`, `mfa_enabled`, and
 `workplace_email_verified_at`.
 
 Staff onboarding is invite-based. Root admins create invites for `staff` or

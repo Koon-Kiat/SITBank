@@ -24,7 +24,7 @@ def test_registration_uses_local_fallback_when_live_password_check_is_unavailabl
         "/register",
         data={
             "username": "alice01",
-            "email": "alice@sit.singaporetech.edu.sg",
+            "email": "alice@example.com",
             "full_name": "Alice Test",
             "phone_number": "91234567",
             "password": "correct horse battery staple",
@@ -46,11 +46,11 @@ def test_registration_rejects_live_breached_password(client, monkeypatch):
     assert db.session.query(User).count() == 0
     assert b"Password is too common. Please try again" in response.data
 
-def test_register_requires_verified_sit_email(client):
+def test_register_requires_verified_customer_email(client):
     response = register(client, verify_email=False)
 
     assert response.status_code == 400
-    assert b"Verify your SIT email before creating an account" in response.data
+    assert b"Verify your customer email before creating an account" in response.data
     assert db.session.query(User).count() == 0
 
 
@@ -66,7 +66,7 @@ def test_registration_step_one_has_single_email_input(client):
 
 
 def test_registration_step_two_uses_verified_email_text_not_input(client):
-    verify_registration_email(client, "verified@sit.singaporetech.edu.sg")
+    verify_registration_email(client, "verified@example.com")
 
     response = client.get("/register")
     html = response.data.decode("utf-8")
@@ -74,19 +74,19 @@ def test_registration_step_two_uses_verified_email_text_not_input(client):
     assert response.status_code == 200
     assert "Step 2 of 2" in html
     assert "Verified email" in html
-    assert "verified@sit.singaporetech.edu.sg" in html
+    assert "verified@example.com" in html
     assert 'name="email"' not in html
     assert "data-password-strength" in html
 
 
 def test_registration_ignores_forged_step_two_email_field(client):
-    verify_registration_email(client, "verified@sit.singaporetech.edu.sg")
+    verify_registration_email(client, "verified@example.com")
 
     response = client.post(
         "/register",
         data={
             "username": "verified01",
-            "email": "attacker@sit.singaporetech.edu.sg",
+            "email": "attacker@example.com",
             "email_verified": "true",
             "full_name": "Verified User",
             "phone_number": "91234567",
@@ -97,11 +97,11 @@ def test_registration_ignores_forged_step_two_email_field(client):
     user = db.session.execute(db.select(User).where(User.username == "verified01")).scalar_one()
 
     assert response.status_code == 302
-    assert user.email == "verified@sit.singaporetech.edu.sg"
+    assert user.email == "verified@example.com"
 
 
 def test_registration_consumes_verified_email_after_success(client):
-    verify_registration_email(client, "consume@sit.singaporetech.edu.sg")
+    verify_registration_email(client, "consume@example.com")
 
     created = client.post(
         "/register",
@@ -126,33 +126,80 @@ def test_registration_consumes_verified_email_after_success(client):
 
     assert created.status_code == 302
     assert reused.status_code == 400
-    assert b"Verify your SIT email before creating an account" in reused.data
+    assert b"Verify your customer email before creating an account" in reused.data
     assert db.session.query(User).count() == 1
 
 
-def test_registration_otp_rejects_non_sit_email_domain(client):
+def test_registration_otp_allows_personal_customer_email(client):
     response = client.post("/auth/register/otp/request", json={"email": "alice@example.com"})
 
-    assert response.status_code == 400
-    assert response.get_json() == {"error": "Use your SIT email address to register."}
+    assert response.status_code == 200
+    assert response.get_json() == {"message": "If the email is eligible, a verification code has been sent."}
     assert db.session.query(User).count() == 0
 
 
-def test_registration_otp_rejects_suffix_lookalike_domain(client):
+def test_registration_otp_rejects_admin_and_root_allowlist_emails(client):
+    cases = [
+        ("staff@sit.singaporetech.edu.sg", "admin_email_domain"),
+        ("staff@singaporetech.edu.sg", "admin_email_domain"),
+        ("root1@sit.singaporetech.edu.sg", "root_admin_allowlisted_email"),
+    ]
+    responses = [
+        client.post("/auth/register/otp/request", json={"email": email})
+        for email, _reason in cases
+    ]
+    events = db.session.query(SecurityAuditEvent).filter_by(event_type="registration_otp").all()
+
+    assert [response.status_code for response in responses] == [400, 400, 400]
+    assert [response.get_json() for response in responses] == [
+        {"error": "Registration could not be started for that email."},
+        {"error": "Registration could not be started for that email."},
+        {"error": "Registration could not be started for that email."},
+    ]
+    assert [event.outcome for event in events] == ["blocked", "blocked", "blocked"]
+    assert {event.event_metadata["reason"] for event in events} == {reason for _email, reason in cases}
+
+
+def test_registration_otp_uses_exact_admin_domain_matching(client):
     response = client.post(
         "/auth/register/otp/request",
         json={"email": "alice@sit.singaporetech.edu.sg.example.com"},
     )
 
+    assert response.status_code == 200
+    assert response.get_json() == {"message": "If the email is eligible, a verification code has been sent."}
+
+
+def test_registration_service_rechecks_customer_email_policy(client):
+    with client.session_transaction() as sess:
+        sess[REGISTRATION_OTP_VERIFIED_EMAIL_KEY] = "root1@sit.singaporetech.edu.sg"
+        sess[REGISTRATION_OTP_VERIFIED_AT_KEY] = int(time.time())
+
+    response = client.post(
+        "/auth/register",
+        json={
+            "username": "root-as-customer",
+            "email": "root1@sit.singaporetech.edu.sg",
+            "full_name": "Root As Customer",
+            "phone_number": "91234567",
+            "password": "correct horse battery staple",
+            "confirm_password": "correct horse battery staple",
+        },
+    )
+    events = db.session.query(SecurityAuditEvent).filter_by(event_type="registration").all()
+
     assert response.status_code == 400
-    assert response.get_json() == {"error": "Use your SIT email address to register."}
+    assert response.get_json() == {"error": "Verify your customer email before creating an account."}
+    assert db.session.query(User).count() == 0
+    assert events[-1].outcome == "blocked"
+    assert events[-1].event_metadata["reason"] == "root_admin_allowlisted_email"
 
 
 def test_registration_otp_hashes_code_and_verifies_email(client):
     from app.security.email import password_reset_outbox
     from app.models import RegistrationOtpChallenge
 
-    email = "alice@sit.singaporetech.edu.sg"
+    email = "alice@example.com"
     request_response = client.post("/auth/register/otp/request", json={"email": email})
     raw_code = re.search(r"\b([0-9]{6})\b", password_reset_outbox()[-1]["body"]).group(1)
     stored_values = [
@@ -163,7 +210,7 @@ def test_registration_otp_hashes_code_and_verifies_email(client):
 
     assert request_response.status_code == 200
     assert verify_response.status_code == 200
-    assert password_reset_outbox()[-1]["to"] == "alice@sit.singaporetech.edu.sg"
+    assert password_reset_outbox()[-1]["to"] == "alice@example.com"
     assert password_reset_outbox()[-1]["subject"] == "SITBank registration verification code"
     assert stored_values
     assert all(raw_code not in str(value) for value in stored_values)
@@ -172,7 +219,7 @@ def test_registration_otp_hashes_code_and_verifies_email(client):
 def test_registration_otp_resend_invalidates_previous_code(client, monkeypatch):
     from app.security.email import password_reset_outbox
 
-    email = "alice@sit.singaporetech.edu.sg"
+    email = "alice@example.com"
     first = client.post("/auth/register/otp/request", json={"email": email})
     first_code = re.search(r"\b([0-9]{6})\b", password_reset_outbox()[-1]["body"]).group(1)
     resend_time = int(time.time()) + 61
@@ -192,7 +239,7 @@ def test_registration_otp_resend_invalidates_previous_code(client, monkeypatch):
 def test_registration_otp_attempt_limit_invalidates_code(client):
     from app.security.email import password_reset_outbox
 
-    email = "alice@sit.singaporetech.edu.sg"
+    email = "alice@example.com"
     client.post("/auth/register/otp/request", json={"email": email})
     code = re.search(r"\b([0-9]{6})\b", password_reset_outbox()[-1]["body"]).group(1)
     failures = [
@@ -213,7 +260,7 @@ def test_registration_otp_existing_account_response_is_generic(client):
     second_client = current_app.test_client()
     response = second_client.post(
         "/auth/register/otp/request",
-        json={"email": "alice@sit.singaporetech.edu.sg"},
+        json={"email": "alice@example.com"},
     )
 
     assert created.status_code == 302
@@ -232,7 +279,7 @@ def test_registration_otp_email_failure_fails_closed_without_code(client, monkey
 
     response = client.post(
         "/auth/register/otp/request",
-        json={"email": "alice@sit.singaporetech.edu.sg"},
+        json={"email": "alice@example.com"},
     )
 
     assert response.status_code == 503
@@ -284,8 +331,8 @@ def test_registration_hashes_password_with_pbkdf2(client):
     assert user.password_hash.startswith(f"{PBKDF2_PREFIX}$v1$i=600000$")
 
 def test_short_password_registration_retry_can_login(client):
-    rejected = register(client, username="retry01", email="retry@sit.singaporetech.edu.sg", password="short")
-    created = register(client, username="retry01", email="retry@sit.singaporetech.edu.sg")
+    rejected = register(client, username="retry01", email="retry@example.com", password="short")
+    created = register(client, username="retry01", email="retry@example.com")
     login_response = login(client, identifier="retry01")
     dashboard_response = client.get("/dashboard")
 
@@ -327,7 +374,7 @@ def test_long_unicode_password_can_register_login_and_change(client, monkeypatch
     assert verify_password(new_password, user.password_hash)
 
 def test_password_templates_do_not_truncate_and_show_max_length_guidance(client):
-    verify_registration_email(client, "template@sit.singaporetech.edu.sg")
+    verify_registration_email(client, "template@example.com")
     register_response = client.get("/register")
     login_response = client.get("/login")
     register(client)
@@ -368,7 +415,7 @@ def test_password_at_minimum_length_can_register_and_login(client):
 
 def test_browser_registration_uses_configured_password_minimum(app, client):
     app.config["PASSWORD_MIN_LENGTH"] = 12
-    verify_registration_email(client, "minimum@sit.singaporetech.edu.sg")
+    verify_registration_email(client, "minimum@example.com")
 
     too_short = client.post(
         "/register",
@@ -405,13 +452,13 @@ def test_browser_registration_uses_configured_password_minimum(app, client):
 
 def test_api_registration_uses_configured_password_minimum(app, client):
     app.config["PASSWORD_MIN_LENGTH"] = 12
-    verify_registration_email(client, "minimum-api@sit.singaporetech.edu.sg")
+    verify_registration_email(client, "minimum-api@example.com")
 
     too_short = client.post(
         "/auth/register",
         json={
             "username": "minapi01",
-            "email": "minimum-api@sit.singaporetech.edu.sg",
+            "email": "minimum-api@example.com",
             "full_name": "Minimum Api",
             "phone_number": "91234567",
             "password": "Abcdef12345",
@@ -428,7 +475,7 @@ def test_api_registration_uses_configured_password_minimum(app, client):
         "/auth/register",
         json={
             "username": "minapi01",
-            "email": "minimum-api@sit.singaporetech.edu.sg",
+            "email": "minimum-api@example.com",
             "full_name": "Minimum Api",
             "phone_number": "91234567",
             "password": accepted_password,
@@ -474,7 +521,7 @@ def test_oversized_api_registration_password_rejected_cleanly(client, monkeypatc
         "/auth/register",
         json={
             "username": "oversized01",
-            "email": "oversized@sit.singaporetech.edu.sg",
+            "email": "oversized@example.com",
             "full_name": "Oversized Test",
             "phone_number": "91234567",
             "password": password,
@@ -539,7 +586,7 @@ def test_registration_requires_matching_confirm_password(client):
         "/register",
         data={
             "username": "alice01",
-            "email": "alice@sit.singaporetech.edu.sg",
+            "email": "alice@example.com",
             "full_name": "Alice Test",
             "phone_number": "91234567",
             "password": "correct horse battery staple",
@@ -556,7 +603,7 @@ def test_registration_requires_full_name_and_valid_phone_number(client):
         "/register",
         data={
             "username": "alice01",
-            "email": "alice@sit.singaporetech.edu.sg",
+            "email": "alice@example.com",
             "phone_number": "91234567",
             "password": "correct horse battery staple",
             "confirm_password": "correct horse battery staple",
@@ -566,7 +613,7 @@ def test_registration_requires_full_name_and_valid_phone_number(client):
         "/register",
         data={
             "username": "alice01",
-            "email": "alice@sit.singaporetech.edu.sg",
+            "email": "alice@example.com",
             "full_name": "Alice Test",
             "phone_number": "71234567",
             "password": "correct horse battery staple",
@@ -604,7 +651,7 @@ def test_registration_rejects_duplicate_phone_with_generic_error(client):
     duplicate_phone = register(
         client,
         username="bob02",
-        email="bob@sit.singaporetech.edu.sg",
+        email="bob@example.com",
         full_name="Bob Test",
         phone_number="91234567",
     )
@@ -619,7 +666,7 @@ def test_api_registration_rejects_client_supplied_account_number(client):
         "/auth/register",
         json={
             "username": "alice01",
-            "email": "alice@sit.singaporetech.edu.sg",
+            "email": "alice@example.com",
             "full_name": "Alice Test",
             "phone_number": "91234567",
             "account_number": "999999999",

@@ -13,17 +13,18 @@ from app.extensions import db
 from app.models import RegistrationOtpChallenge, User
 from app.security.audit import audit_event, audit_reference
 from app.security.email import send_security_email
+from app.security.identity_policy import (
+    IdentityPolicyError,
+    customer_email_policy_violation,
+    require_customer_email,
+)
 from app.security.session_hmac import active_hmac_hex
 
 
-APPROVED_REGISTRATION_EMAIL_DOMAINS = frozenset(
-    {
-        "sit.singaporetech.edu.sg",
-        "singaporetech.edu.sg",
-    }
-)
 GENERIC_OTP_SENT_MESSAGE = "If the email is eligible, a verification code has been sent."
 GENERIC_OTP_ERROR = "Verification code expired or invalid. Please request a new code."
+GENERIC_REGISTRATION_EMAIL_ERROR = "Registration could not be started for that email."
+VERIFY_CUSTOMER_EMAIL_MESSAGE = "Verify your customer email before creating an account."
 REGISTRATION_OTP_TTL_SECONDS = 5 * 60
 REGISTRATION_OTP_RESEND_COOLDOWN_SECONDS = 60
 REGISTRATION_OTP_MAX_ATTEMPTS = 5
@@ -46,21 +47,22 @@ def normalize_registration_email(email: str) -> str:
 
 
 def is_approved_registration_email(email: str) -> bool:
-    normalized = normalize_registration_email(email)
-    local, separator, domain = normalized.partition("@")
-    return bool(local and separator and domain in APPROVED_REGISTRATION_EMAIL_DOMAINS)
+    return customer_email_policy_violation(email) is None
 
 
 def request_registration_otp(email: str) -> dict[str, str]:
-    normalized_email = normalize_registration_email(email)
-    email_ref = audit_reference("registration_email", normalized_email)
-    if not is_approved_registration_email(normalized_email):
+    try:
+        normalized_email = require_customer_email(email)
+    except IdentityPolicyError as exc:
+        normalized_email = normalize_registration_email(email)
+        email_ref = audit_reference("registration_email", normalized_email)
         audit_event(
             "registration_otp",
-            "failed",
-            metadata={"reason": "invalid_domain", "email_ref": email_ref},
+            "blocked",
+            metadata={"reason": exc.reason, "email_ref": email_ref},
         )
-        raise RegistrationOtpError("Use your SIT email address to register.", 400)
+        raise RegistrationOtpError(GENERIC_REGISTRATION_EMAIL_ERROR, 400) from exc
+    email_ref = audit_reference("registration_email", normalized_email)
 
     existing_user = _user_by_email(normalized_email)
     if existing_user is not None:
@@ -130,15 +132,18 @@ def request_registration_otp(email: str) -> dict[str, str]:
 
 
 def verify_registration_otp(email: str, otp_code: str) -> dict[str, str]:
-    normalized_email = normalize_registration_email(email)
-    email_ref = audit_reference("registration_email", normalized_email)
-    if not is_approved_registration_email(normalized_email):
+    try:
+        normalized_email = require_customer_email(email)
+    except IdentityPolicyError as exc:
+        normalized_email = normalize_registration_email(email)
+        email_ref = audit_reference("registration_email", normalized_email)
         audit_event(
             "registration_otp",
-            "failed",
-            metadata={"reason": "invalid_domain", "email_ref": email_ref},
+            "blocked",
+            metadata={"reason": exc.reason, "email_ref": email_ref},
         )
-        raise RegistrationOtpError(GENERIC_OTP_ERROR, 400)
+        raise RegistrationOtpError(GENERIC_OTP_ERROR, 400) from exc
+    email_ref = audit_reference("registration_email", normalized_email)
 
     challenge = _load_otp_challenge(normalized_email)
     if challenge is None:
@@ -185,7 +190,11 @@ def pending_registration_email() -> str | None:
 def current_verified_registration_email() -> str | None:
     verified_email = normalize_registration_email(str(session.get(REGISTRATION_OTP_VERIFIED_EMAIL_KEY) or ""))
     verified_at = int(session.get(REGISTRATION_OTP_VERIFIED_AT_KEY) or 0)
-    if not verified_email or int(time.time()) - verified_at > REGISTRATION_OTP_TTL_SECONDS:
+    if (
+        not verified_email
+        or customer_email_policy_violation(verified_email)
+        or int(time.time()) - verified_at > REGISTRATION_OTP_TTL_SECONDS
+    ):
         if verified_email:
             _clear_registration_session_state()
         return None
@@ -196,12 +205,24 @@ def require_current_verified_registration_email() -> str:
     verified_email = current_verified_registration_email()
     if not verified_email:
         audit_event("registration", "failure", metadata={"reason": "email_otp_required"})
-        raise RegistrationOtpError("Verify your SIT email before creating an account.", 400)
+        raise RegistrationOtpError(VERIFY_CUSTOMER_EMAIL_MESSAGE, 400)
     return verified_email
 
 
 def require_verified_registration_email(email: str) -> str:
-    normalized_email = normalize_registration_email(email)
+    try:
+        normalized_email = require_customer_email(email)
+    except IdentityPolicyError as exc:
+        normalized_email = normalize_registration_email(email)
+        audit_event(
+            "registration",
+            "blocked",
+            metadata={
+                "reason": exc.reason,
+                "email_ref": audit_reference("registration_email", normalized_email),
+            },
+        )
+        raise RegistrationOtpError(VERIFY_CUSTOMER_EMAIL_MESSAGE, 400) from exc
     verified_email = current_verified_registration_email()
     if not verified_email or verified_email != normalized_email:
         audit_event(
@@ -212,7 +233,7 @@ def require_verified_registration_email(email: str) -> str:
                 "email_ref": audit_reference("registration_email", normalized_email),
             },
         )
-        raise RegistrationOtpError("Verify your SIT email before creating an account.", 400)
+        raise RegistrationOtpError(VERIFY_CUSTOMER_EMAIL_MESSAGE, 400)
     return normalized_email
 
 

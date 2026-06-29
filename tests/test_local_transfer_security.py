@@ -35,7 +35,7 @@ def _make_user(
     phone = f"9{suffix:07d}"
     user = User(
         username=username,
-        email=f"{username}@sit.singaporetech.edu.sg",
+        email=f"{username}@example.com",
         full_name=username.capitalize(),
         phone_number=phone,
         account_number=account_number,

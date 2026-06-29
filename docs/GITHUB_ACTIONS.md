@@ -55,9 +55,10 @@ matching GitHub environment. For both `staging` and `production`, set:
 
 `ROOT_ADMIN_EMAILS` is scoped by GitHub environment rather than prefix: set it
 separately in both the `staging` and `production` environments. It must be a
-comma-separated list of exactly 7 SIT workplace email addresses. The deployment
-workflow maps it into the prefixed renderer input for the target environment
-and writes `ROOT_ADMIN_EMAILS` into the signed runtime `container.env`.
+comma-separated list of exactly 7 workplace email addresses from
+`ADMIN_ALLOWED_EMAIL_DOMAINS`. The deployment workflow maps it into the
+prefixed renderer input for the target environment and writes
+`ROOT_ADMIN_EMAILS` into the signed runtime `container.env`.
 
 For production only, also set:
 

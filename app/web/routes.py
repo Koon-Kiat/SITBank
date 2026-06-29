@@ -44,6 +44,7 @@ from app.auth.mfa_policy import has_enrolled_mfa_method
 from app.auth.registration_otp import (
     GENERIC_OTP_ERROR,
     RegistrationOtpError,
+    VERIFY_CUSTOMER_EMAIL_MESSAGE,
     current_verified_registration_email,
     pending_registration_email,
     request_registration_otp,
@@ -246,7 +247,7 @@ def register_submit():
 
     verified_email = current_verified_registration_email()
     if not verified_email:
-        flash("Verify your SIT email before creating an account.", "error")
+        flash(VERIFY_CUSTOMER_EMAIL_MESSAGE, "error")
         return _render_register_email_form(), 400
 
     form = RegisterDetailsForm()

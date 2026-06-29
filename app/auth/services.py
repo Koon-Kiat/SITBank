@@ -32,6 +32,7 @@ from app.auth.mfa_policy import (
 )
 from app.security.audit import audit_event, audit_event_required, principal_reference
 from app.security.crypto import decrypt_mfa_secret, encrypt_mfa_secret
+from app.security.identity_policy import IdentityPolicyError, require_customer_email
 from app.security.passwords import (
     PasswordPolicyError,
     hash_password,
@@ -260,6 +261,7 @@ def authenticate_primary(identifier: str, password: str) -> dict[str, Any]:
     principal = _auth_principal(identifier)
     user = _find_user_by_identifier(identifier)
     _enforce_auth_backoff("login", principal)
+    failure_reason = "invalid_credentials"
 
     password_ok = False
     if is_password_raw_length_safe(password):
@@ -268,6 +270,7 @@ def authenticate_primary(identifier: str, password: str) -> dict[str, Any]:
 
     if user is not None and getattr(user, "account_type", "customer") != "customer":
         password_ok = False
+        failure_reason = "not_customer_identity"
 
     if user is None or not password_ok:
         audit_event(
@@ -276,6 +279,7 @@ def authenticate_primary(identifier: str, password: str) -> dict[str, Any]:
             user=user,
             metadata={
                 "known_user": user is not None,
+                "reason": failure_reason,
                 "principal_ref": principal_reference(identifier),
             },
         )
@@ -574,7 +578,16 @@ def update_profile_details(
 ) -> bool:
     normalized_username = username.strip()
     username_lookup = _normalize(normalized_username)
-    normalized_email = email.strip().lower()
+    submitted_email = email.strip().lower()
+    email_changed = submitted_email != _normalize(user.email)
+    if email_changed:
+        try:
+            normalized_email = require_customer_email(email)
+        except IdentityPolicyError as exc:
+            audit_event("profile_update", "blocked", user=user, metadata={"reason": exc.reason})
+            raise AuthError("Profile could not be updated with those details", 400) from exc
+    else:
+        normalized_email = submitted_email
     normalized_preference = _normalize_step_up_preference(mfa_step_up_preference)
     if (
         username_lookup == _normalize(user.username)
