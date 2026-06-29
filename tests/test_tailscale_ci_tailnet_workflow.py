@@ -25,29 +25,21 @@ def test_private_tailnet_workflow_is_manual_environment_protected_and_least_priv
     verify = workflow["jobs"]["verify"]
 
     assert workflow["name"] == "Verify private Tailscale admin access"
-    assert set(triggers) == {"workflow_dispatch", "workflow_call"}
+    assert set(triggers) == {"workflow_dispatch"}
     dispatch_inputs = triggers["workflow_dispatch"]["inputs"]
-    call_inputs = triggers["workflow_call"]["inputs"]
-    for inputs in (dispatch_inputs, call_inputs):
-        assert inputs["private_admin_host"] == {
-            "description": "Private Tailscale admin hostname.",
-            "required": "false",
-            "default": PRIVATE_HOST,
-            "type": "string",
-        }
-        assert set(inputs) == {"private_admin_host", "auth_mode"}
+    assert dispatch_inputs["private_admin_host"] == {
+        "description": "Private Tailscale admin hostname.",
+        "required": "false",
+        "default": PRIVATE_HOST,
+        "type": "string",
+    }
+    assert set(dispatch_inputs) == {"private_admin_host", "auth_mode"}
     assert dispatch_inputs["auth_mode"] == {
         "description": "Protected Tailscale credential mode.",
         "required": "true",
         "default": "oauth",
         "type": "choice",
         "options": ["oauth", "authkey"],
-    }
-    assert call_inputs["auth_mode"] == {
-        "description": "Protected Tailscale credential mode (oauth or authkey).",
-        "required": "false",
-        "default": "oauth",
-        "type": "string",
     }
     assert "pull_request" not in text
     assert "pull_request_target" not in text
@@ -63,7 +55,6 @@ def test_private_tailnet_workflow_is_manual_environment_protected_and_least_priv
 def test_private_tailnet_workflow_supports_protected_oauth_and_auth_key_modes():
     text, workflow = _load_workflow()
 
-    assert "secrets" not in workflow["on"]["workflow_call"]
     assert "authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}" in text
     assert "oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}" in text
     assert "oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}" in text
@@ -80,6 +71,20 @@ def test_private_tailnet_workflow_supports_protected_oauth_and_auth_key_modes():
     assert "env |" not in text
     assert "set -x" not in text
     assert "actions/checkout" not in text
+    credential_check = next(
+        step
+        for step in workflow["jobs"]["verify"]["steps"]
+        if step["name"] == "Validate selected Tailscale credential"
+    )
+    assert set(credential_check["env"]) == {
+        "TAILSCALE_AUTH_KEY",
+        "TS_OAUTH_CLIENT_ID",
+        "TS_OAUTH_SECRET",
+    }
+    assert "OAuth mode requires TS_OAUTH_CLIENT_ID and TS_OAUTH_SECRET" in (
+        credential_check["run"]
+    )
+    assert "Auth-key mode requires TAILSCALE_AUTH_KEY" in credential_check["run"]
 
     uses = [
         step["uses"]
@@ -165,16 +170,33 @@ def test_production_workflow_requires_private_gate_after_deploy_and_public_tls()
     gate = ci["jobs"]["verify-private-admin-tailnet"]
 
     assert gate["name"] == "Required private admin post-deploy gate"
-    assert gate["uses"] == "./.github/workflows/tailscale-private-admin-verify.yml"
     assert gate["needs"] == ["deploy-production", "verify-production-tls"]
     assert "needs.deploy-production.result == 'success'" in gate["if"]
     assert "needs.verify-production-tls.result == 'success'" in gate["if"]
     assert gate["permissions"] == {"contents": "read"}
-    assert gate["with"] == {
-        "private_admin_host": PRIVATE_HOST,
-        "auth_mode": "oauth",
+    assert gate["environment"] == {"name": "admin-tailscale"}
+    assert gate["runs-on"] == "ubuntu-24.04"
+    assert gate["timeout-minutes"] == "10"
+    assert gate["env"] == {
+        "TAILSCALE_PRIVATE_ADMIN_HOST": PRIVATE_HOST,
     }
     assert "secrets" not in gate
+    validate = gate["steps"][0]
+    assert set(validate["env"]) == {"TS_OAUTH_CLIENT_ID", "TS_OAUTH_SECRET"}
+    assert "production gate requires TS_OAUTH_CLIENT_ID and TS_OAUTH_SECRET" in (
+        validate["run"]
+    )
+    join = gate["steps"][1]
+    assert join["uses"] == (
+        "tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8"
+    )
+    assert join["with"] == {
+        "oauth-client-id": "${{ secrets.TS_OAUTH_CLIENT_ID }}",
+        "oauth-secret": "${{ secrets.TS_OAUTH_SECRET }}",
+        "tags": "tag:github-ci",
+        "ping": "${{ env.TAILSCALE_PRIVATE_ADMIN_HOST }}",
+    }
+    assert "tailscale logout" in gate["steps"][-1]["run"]
     assert "continue-on-error" not in gate
     assert ci_text.index("verify-production-tls:") < ci_text.index(
         "verify-private-admin-tailnet:"

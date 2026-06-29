@@ -24,6 +24,17 @@ Use `docs/security/incident-response.md` for incident workflows,
 6. Remove the secret from Git history with a coordinated history rewrite when
    it was pushed. Treat the old value as compromised even after cleanup.
 
+The dedicated `.github/workflows/gitleaks.yml` Gitleaks 8.30.1 scan covers
+pull requests, protected-branch pushes, manual runs, and a weekly full Git
+history schedule. It complements, rather than replaces, the custom repository
+secret scanner in `ops/security/scan_repository_secrets.py`. Output is
+redacted; no SARIF or raw report is uploaded, and no production secrets are
+needed. Never allowlist a real leak. Privately verify a false positive before
+adding a narrow allowlist for a single fake/test value. For a real finding,
+revoke and rotate first, then remove current content and assess history
+rewriting. The complete procedure is in
+`docs/security/secret-scanning.md`.
+
 Session HMAC rotation must keep the old key in
 `session_hmac_keys_json` only for the approved overlap period, set the new
 `SESSION_HMAC_ACTIVE_KEY_ID`, then remove the previous key after all sessions

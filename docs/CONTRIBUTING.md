@@ -44,6 +44,20 @@ labels the overall result as full, partial, or failed. CI/CD remains the source
 of truth for deployment validation; local strict mode is the closest
 contributor-side parity check, not a replacement for protected CI.
 
+## Secret Scanning
+
+Pull requests and pushes to `main` run the dedicated Gitleaks workflow in
+addition to the custom repository secret scanner used by the main and local CI
+paths. Never commit a real secret; make examples obviously fake. Gitleaks scans
+full Git history with redacted output, uses no production secrets, and uploads
+no SARIF or report artifact.
+
+If Gitleaks fails, do not paste the matched value into a comment. Confirm false
+positives privately and prefer rewriting the example; any remaining exception
+must be a reviewed narrow allowlist for one fake/test value. Revoke and rotate
+a real credential immediately, including a finding that exists only in Git
+history. See `docs/security/secret-scanning.md` for the safe triage procedure.
+
 ## SonarQube Cloud
 
 Pull requests to `main` generate `coverage.xml` during the existing CI pytest

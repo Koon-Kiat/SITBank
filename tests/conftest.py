@@ -237,6 +237,7 @@ SECURITY_TEST_FILES = frozenset(
         "tests/test_passwords.py",
         "tests/test_pentest_auth_bypass.py",
         "tests/test_db_session_integrity.py",
+        "tests/test_gitleaks_workflow.py",
         "tests/test_route_inventory_security.py",
         "tests/test_secret_scanner.py",
         "tests/test_session_absolute_lifetime.py",

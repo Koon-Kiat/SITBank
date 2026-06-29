@@ -1793,9 +1793,6 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         ),
     }
     assert private_admin["name"] == "Required private admin post-deploy gate"
-    assert private_admin["uses"] == (
-        "./.github/workflows/tailscale-private-admin-verify.yml"
-    )
     assert private_admin["needs"] == [
         "deploy-production",
         "verify-production-tls",
@@ -1804,11 +1801,22 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "needs.deploy-production.result == 'success'" in private_admin["if"]
     assert "needs.verify-production-tls.result == 'success'" in private_admin["if"]
     assert private_admin["permissions"] == {"contents": "read"}
-    assert private_admin["with"] == {
-        "private_admin_host": "admin-sitbank.tailca101b.ts.net",
-        "auth_mode": "oauth",
+    assert private_admin["environment"] == {"name": "admin-tailscale"}
+    assert private_admin["env"] == {
+        "TAILSCALE_PRIVATE_ADMIN_HOST": "admin-sitbank.tailca101b.ts.net",
     }
     assert "secrets" not in private_admin
+    assert private_admin["runs-on"] == "ubuntu-24.04"
+    assert private_admin["timeout-minutes"] == 10
+    private_join = next(
+        step
+        for step in private_admin["steps"]
+        if step["name"] == "Join the approved tailnet with OAuth"
+    )
+    assert private_join["with"]["oauth-client-id"] == (
+        "${{ secrets.TS_OAUTH_CLIENT_ID }}"
+    )
+    assert private_join["with"]["oauth-secret"] == "${{ secrets.TS_OAUTH_SECRET }}"
     staging_deploy_env = workflow["jobs"]["deploy-staging"]["env"]
     production_deploy_env = workflow["jobs"]["deploy-production"]["env"]
     assert not any(name.startswith("PROD_") for name in staging_deploy_env)

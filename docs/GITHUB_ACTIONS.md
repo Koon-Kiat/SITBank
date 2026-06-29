@@ -125,17 +125,20 @@ deployment.
 
 ## Private Tailnet Verification
 
-`.github/workflows/tailscale-private-admin-verify.yml` is manual-runnable and
-reusable. It is the only GitHub-hosted workflow permitted to join the tailnet.
-The trusted production workflow calls it as the required final gate after both
-`deploy-production` and `verify-production-tls` succeed. Pull requests,
-forks, Dependabot, staging, and the public TLS workflow do not call it.
+`.github/workflows/tailscale-private-admin-verify.yml` is manual-runnable.
+The trusted production workflow implements the same protected check directly
+as its required final gate after both `deploy-production` and
+`verify-production-tls` succeed. A direct environment-bound job is required
+because GitHub did not expose `admin-tailscale` environment secrets to the
+previous reusable-workflow call, even though the manual environment job could
+use them. Pull requests, forks, Dependabot, staging, and the public TLS
+workflow do not join the tailnet.
 
 Its `admin-tailscale` environment must require trusted maintainer approval and
 permit only `main`. The production caller explicitly uses `auth_mode: oauth`;
 store `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET` in that environment.
 Configure the OAuth client with **Keys > Auth Keys > Write**, restricted to
-`tag:github-ci`. Manual/reusable runs may select `auth_mode: authkey` and use
+`tag:github-ci`. Manual runs may select `auth_mode: authkey` and use
 the environment's optional `TAILSCALE_AUTH_KEY`, which must be short-lived,
 tagged, ephemeral, and pre-approved when required. Each run selects exactly
 one mode. The tag cannot administer the tailnet or use broad SSH and may reach
@@ -168,11 +171,29 @@ Tailscale state.
 
 The separate `ops/tailscale/` host automation installs Tailscale and configures
 the production Serve mapping only after explicit operator confirmation. It is
-never called by this workflow, pull requests, or normal CI.
+never called by either verification job, pull requests, or normal CI.
+
+## Gitleaks
+
+`.github/workflows/gitleaks.yml` runs Gitleaks 8.30.1 on pull requests and
+pushes to `main`, manual dispatches, and a weekly schedule. It checks out full
+Git history with `persist-credentials: false`, installs the pinned standalone
+CLI after SHA-256 verification, and scans all refs with redacted output. The
+workflow has only `contents: read`; it uses no production secrets, uploads no
+SARIF or raw report, and does not run deployment commands.
+
+`.gitleaks.toml` extends the built-in rules and has only reviewed rule/path/
+line-shape allowlists for confirmed public or synthetic values; historical
+exceptions are also commit-bound. It has no baseline. The existing custom
+repository secret scanner remains in the main CI and `scripts/ci-local`. See
+`docs/security/secret-scanning.md` for safe local
+reproduction, false-positive handling, rotation/revocation, and history-leak
+response. After rollout, require `Gitleaks / Full-history secret scan` in
+`main` branch protection.
 
 ## DAST Policy
 
-Ordinary pull requests skip the full authenticated DAST crawl to keep feedback fast. They still run unit tests, compile checks, `pip check`, Bandit, dependency audits, dependency lock validation, repository secret scan, Docker image build, container smoke test, Compose validation, and Trivy gates.
+Ordinary pull requests skip the full authenticated DAST crawl to keep feedback fast. They still run unit tests, compile checks, `pip check`, Bandit, dependency audits, dependency lock validation, the custom repository secret scan, the separate Gitleaks workflow, Docker image build, container smoke test, Compose validation, and Trivy gates.
 
 Authenticated DAST still runs before staging/production deployment during release verification. Manual staging can enable or disable DAST with `run_dast`; scheduled scans keep regular full DAST coverage. This means release verification retains that coverage while PRs stay responsive.
 

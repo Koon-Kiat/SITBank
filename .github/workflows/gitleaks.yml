@@ -1,0 +1,63 @@
+name: Gitleaks
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "37 2 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gitleaks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    name: Full-history secret scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out complete repository history
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install checksum-verified Gitleaks 8.30.1
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          readonly version="8.30.1"
+          readonly archive="${RUNNER_TEMP}/gitleaks_${version}_linux_x64.tar.gz"
+          readonly install_dir="${RUNNER_TEMP}/gitleaks-bin"
+          readonly expected_sha256="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+
+          curl --fail --location --silent --show-error \
+            --proto '=https' --tlsv1.2 \
+            --output "${archive}" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${version}/gitleaks_${version}_linux_x64.tar.gz"
+          echo "${expected_sha256}  ${archive}" | sha256sum --check --status
+          mkdir -p "${install_dir}"
+          tar --extract --gzip --file "${archive}" --directory "${install_dir}" gitleaks
+          "${install_dir}/gitleaks" version
+
+      - name: Scan repository and all Git history with redacted output
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          "${RUNNER_TEMP}/gitleaks-bin/gitleaks" git \
+            --config .gitleaks.toml \
+            --log-opts=--all \
+            --redact \
+            --no-banner \
+            --no-color \
+            --verbose \
+            .

@@ -150,6 +150,7 @@ customer domain.
 - [Deployment](docs/DEPLOYMENT.md)
 - [GitHub Actions](docs/GITHUB_ACTIONS.md)
 - [SonarQube Cloud analysis and PR summary policy](docs/security/sonarqube.md)
+- [Repository secret scanning and Gitleaks triage](docs/security/secret-scanning.md)
 - [Operations](docs/OPERATIONS.md)
 - [Security](SECURITY.md)
 - [Audit and alerting](docs/security/audit-and-alerting.md)

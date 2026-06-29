@@ -155,7 +155,7 @@ Actions.
 | Vulnerability scans | `pip-audit` in `scripts/ci-local` and `.github/workflows/ci-deploy.yml`; Trivy image scans in CI |
 | Static analysis | Bandit, CodeQL, actionlint, zizmor in CI/local workflows |
 | Code-quality analysis | Reporting-only SonarQube Cloud analysis with full-suite `coverage.xml`, maintainability, duplication, reliability, and security dashboard evidence; see `docs/security/sonarqube.md` |
-| Secret scanning | `ops/security/scan_repository_secrets.py`, `tests/test_secret_scanner.py` |
+| Secret scanning | The custom repository secret scanner remains in main/local CI; the independent Gitleaks 8.30.1 workflow performs redacted full Git history scans with no production secrets or uploaded SARIF. Evidence: `ops/security/scan_repository_secrets.py`, `.github/workflows/gitleaks.yml`, `.gitleaks.toml`, `tests/test_secret_scanner.py`, `tests/test_gitleaks_workflow.py`, and `docs/security/secret-scanning.md` |
 | Pinned GitHub Actions and images | `.github/workflows/ci-deploy.yml`, `Dockerfile`, tests in `tests/test_deployment.py` |
 | Image signing and digest deployment | `.github/workflows/ci-deploy.yml`, `tests/test_deployment.py::test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest` |
 

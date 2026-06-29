@@ -207,13 +207,13 @@ evidence; the protected GitHub workflow below separately supplies
 tailnet-client reachability evidence. Operators must still retain live ACL,
 tag, device-approval, membership, and offboarding evidence.
 
-The **Verify private Tailscale admin access** workflow is the only
-GitHub-hosted workflow approved to join the tailnet. It can run manually and is
-the required final production gate after deployment and public production TLS
-verification. It uses the protected `admin-tailscale` environment and its
-Tailscale credential selected by `auth_mode`. Production selects `oauth` and
-uses `TS_OAUTH_CLIENT_ID`/`TS_OAUTH_SECRET`. A manual/reusable run may select
-`authkey` and use `TAILSCALE_AUTH_KEY`. The environment must require manual
+The manual **Verify private Tailscale admin access** workflow and the direct
+production post-deploy gate are the only GitHub-hosted jobs approved to join
+the tailnet. The direct production job runs after deployment and public
+production TLS verification because a reusable-workflow call did not receive
+the protected environment secrets. Both use the protected `admin-tailscale`
+environment. Production uses `TS_OAUTH_CLIENT_ID`/`TS_OAUTH_SECRET`; a manual
+run may select `authkey` and use `TAILSCALE_AUTH_KEY`. The environment must require manual
 approval and restrict branches to `main`. Either credential must be restricted
 to `tag:github-ci`; that tag may access only `tag:admin-sitbank:443` and must
 not administer the tailnet or provide broad SSH access.
@@ -320,6 +320,21 @@ Keep the existing approved deployment path in place until a separate reviewed
 change designs and tests the EC2 host, AWS security-group, GitHub Actions, and
 rollback impact together. Do not claim root SSH, password SSH, `AllowUsers`,
 UFW, or TCP `22` ingress has been hardened from repository evidence alone.
+
+## Repository Secret Scan Operations
+
+The independent `.github/workflows/gitleaks.yml` job runs Gitleaks 8.30.1 on
+pull requests, `main` pushes, manual dispatches, and its weekly full Git
+history schedule. It uses only repository read access, redacted logs, and no
+production secrets, SARIF, or report artifact. The custom repository secret
+scanner remains in the main and local CI paths.
+
+Treat a real finding as an incident: revoke and rotate before cleanup, verify
+the old credential no longer works, and assess a coordinated history rewrite.
+Never copy the matched value into an issue or allowlist. The checked-in
+allowlists are narrow reviewed false positives constrained by rule/path/line
+shape and historical commit. Follow
+`docs/security/secret-scanning.md` for safe reproduction and triage.
 
 ## Trivy Exception
 

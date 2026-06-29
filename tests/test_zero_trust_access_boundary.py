@@ -89,7 +89,7 @@ def test_hybrid_cloudflare_staging_and_tailscale_admin_design_is_documented():
     ):
         assert required in docs
 
-    assert "temporarily joins a GitHub-hosted runner to the tailnet" in normalized_docs
+    assert "temporarily join a GitHub-hosted runner to the tailnet" in normalized_docs
     assert "does not replace Flask admin login, TOTP, CSRF protection" in normalized_docs
     assert "staging is documented/configured as public-only" not in docs.lower()
     assert "admin is documented/configured as public-only" not in docs.lower()
@@ -298,6 +298,13 @@ def test_required_zero_trust_labels_and_labelers_are_configured():
 
 def test_provider_credentials_are_not_committed_or_required_by_ci():
     ci_workflow = Path(".github/workflows/ci-deploy.yml").read_text(encoding="utf-8")
+    workflow = yaml.safe_load(ci_workflow)
+    private_gate = workflow["jobs"]["verify-private-admin-tailnet"]
+    other_jobs = {
+        name: job
+        for name, job in workflow["jobs"].items()
+        if name != "verify-private-admin-tailnet"
+    }
     tracked_text = []
     for path in _tracked_files():
         if not path.is_file():
@@ -311,9 +318,12 @@ def test_provider_credentials_are_not_committed_or_required_by_ci():
     assert "CLOUDFLARE_API_TOKEN" not in ci_workflow
     assert "TAILSCALE_AUTH_KEY" not in ci_workflow
     assert "TS_AUTHKEY" not in ci_workflow
-    assert "TS_OAUTH_CLIENT_ID" not in ci_workflow
-    assert "TS_OAUTH_SECRET" not in ci_workflow
     assert "CF_API_TOKEN" not in ci_workflow
+    assert private_gate["environment"] == {"name": "admin-tailscale"}
+    assert "TS_OAUTH_CLIENT_ID" in str(private_gate)
+    assert "TS_OAUTH_SECRET" in str(private_gate)
+    assert "TS_OAUTH_CLIENT_ID" not in str(other_jobs)
+    assert "TS_OAUTH_SECRET" not in str(other_jobs)
 
     forbidden_patterns = (
         r"tskey-(?:auth|api)-[A-Za-z0-9_-]{12,}",
