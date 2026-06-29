@@ -115,8 +115,11 @@ def _create_root_admin() -> tuple[User, str]:
     return user, secret
 
 
-def _login_admin(client, secret: str, *, ip_address: str, user_agent: str) -> None:
+def _login_admin(client, secret: str, *, ip_address: str, user_agent: str, monkeypatch=None) -> None:
     context = _request_context(ip_address, user_agent)
+    mfa_time = int(time.time())
+    if monkeypatch is not None:
+        monkeypatch.setattr("app.auth.services.time.time", lambda: mfa_time)
     password_response = client.post(
         "/login",
         json={"workplace_email": ROOT_EMAIL, "password": ROOT_PASSWORD},
@@ -124,7 +127,7 @@ def _login_admin(client, secret: str, *, ip_address: str, user_agent: str) -> No
     )
     mfa_response = client.post(
         "/mfa/verify",
-        json={"totp_code": pyotp.TOTP(secret, digits=6, interval=30).now()},
+        json={"totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(mfa_time)},
         **context,
     )
     assert password_response.status_code == 200
@@ -172,13 +175,14 @@ def test_authenticated_customer_session_stores_hashed_context(client):
     assert CHROME_120 not in serialized
 
 
-def test_authenticated_admin_session_stores_hashed_context(admin_client):
+def test_authenticated_admin_session_stores_hashed_context(admin_client, monkeypatch):
     _root, secret = _create_root_admin()
     _login_admin(
         admin_client,
         secret,
         ip_address=CUSTOMER_IP,
         user_agent=CHROME_120,
+        monkeypatch=monkeypatch,
     )
 
     with admin_client.session_transaction() as sess:
@@ -302,6 +306,7 @@ def test_suspicious_customer_context_requires_reauth_for_sensitive_action(
 
 def test_admin_context_change_revokes_session_under_stricter_policy(
     admin_client,
+    monkeypatch,
 ):
     _root, secret = _create_root_admin()
     _login_admin(
@@ -309,6 +314,7 @@ def test_admin_context_change_revokes_session_under_stricter_policy(
         secret,
         ip_address=CUSTOMER_IP,
         user_agent=CHROME_120,
+        monkeypatch=monkeypatch,
     )
     session_id = _current_session_id(admin_client)
 

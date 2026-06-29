@@ -90,6 +90,40 @@ EMAIL_RE = re.compile(
 )
 TOTP_RE = re.compile(r"^\d{6}$")
 WORKPLACE_CODE_RE = re.compile(r"^\d{6}$")
+AUDIT_EVENT_TYPE_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
+AUDIT_REFERENCE_RE = re.compile(r"^[A-Za-z0-9_.:@/-]{1,80}$")
+AUDIT_SAFE_SEARCH_RE = re.compile(r"^[A-Za-z0-9_.:@/-]{1,80}$")
+AUDIT_ALLOWED_OUTCOMES = frozenset(
+    {
+        "blocked",
+        "expired",
+        "failure",
+        "locked",
+        "mfa_success",
+        "queued",
+        "requested",
+        "required",
+        "success",
+        "verified",
+    }
+)
+AUDIT_TARGET_METADATA_KEYS = (
+    "audit_event_ref",
+    "invite_ref",
+    "personal_email_ref",
+    "principal_ref",
+    "request_ref",
+    "target_customer_ref",
+    "target_role",
+    "target_staff_ref",
+    "workplace_email_ref",
+)
+DISPLAY_REDACTED_VALUE = "[redacted]"
+DISPLAY_SENSITIVE_VALUE_RE = re.compile(
+    r"(?i)(bearer\s+[A-Za-z0-9._~+/=-]+|basic\s+[A-Za-z0-9._~+/=-]+|"
+    r"BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY|"
+    r"(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9_+/=-]{48,})"
+)
 
 
 def is_customer_user(user: User | None) -> bool:
@@ -219,6 +253,7 @@ def admin_dashboard_context(actor: User) -> dict[str, Any]:
         "role_label": role_label(actor.account_type),
         "navigation": admin_navigation_for(actor),
         "responsibilities": _role_responsibilities(actor),
+        "business_operations": _staff_business_operations(actor),
         "security_notices": _admin_security_notices(actor),
         "summary": _admin_dashboard_summary(actor),
         "recent_audit_events": recent_audit_events_for_dashboard(actor),
@@ -367,6 +402,7 @@ def query_audit_events_for_admin(actor: User, args: dict[str, Any]) -> dict[str,
     events = list(
         db.session.execute(statement.limit(per_page).offset((page - 1) * per_page)).scalars()
     )
+    total_pages = max(1, (int(total or 0) + per_page - 1) // per_page)
     audit_event(
         "audit_log_view",
         "success",
@@ -384,6 +420,7 @@ def query_audit_events_for_admin(actor: User, args: dict[str, Any]) -> dict[str,
         "filters": filters,
         "page": page,
         "per_page": per_page,
+        "total_pages": total_pages,
         "total": int(total or 0),
         "sort": sort,
         "direction": direction,
@@ -460,6 +497,18 @@ def _role_responsibilities(actor: User) -> list[str]:
     ]
 
 
+def _staff_business_operations(actor: User) -> list[dict[str, str]]:
+    if actor.account_type != ACCOUNT_STAFF:
+        return []
+    return [
+        {
+            "label": "Customer support queues",
+            "status": "Not implemented",
+            "description": "No staff customer-support or review routes are registered yet.",
+        }
+    ]
+
+
 def _admin_security_notices(actor: User) -> list[dict[str, str]]:
     notices = [
         {
@@ -533,17 +582,17 @@ def _admin_dashboard_summary(actor: User) -> dict[str, Any]:
 
 def _audit_filters(args: dict[str, Any]) -> dict[str, str]:
     return {
-        "event_type": _safe_filter(args.get("event_type"), 80),
-        "actor": _safe_filter(args.get("actor"), 32),
-        "target": _safe_filter(args.get("target"), 80),
+        "event_type": _safe_identifier_filter(args.get("event_type"), AUDIT_EVENT_TYPE_RE),
+        "actor": _safe_actor_filter(args.get("actor")),
+        "target": _safe_identifier_filter(args.get("target"), AUDIT_REFERENCE_RE),
         "role": _validated_choice(args.get("role"), STAFF_ACCOUNT_TYPES | {ACCOUNT_CUSTOMER}, ""),
         "severity": _validated_choice(args.get("severity"), {"low", "medium", "high", "critical"}, ""),
-        "outcome": _safe_filter(args.get("outcome") or args.get("status"), 24),
-        "ip_address": _safe_filter(args.get("ip_address"), 64),
-        "request_id": _safe_filter(args.get("request_id") or args.get("correlation_id"), 64),
+        "outcome": _validated_choice(args.get("outcome") or args.get("status"), AUDIT_ALLOWED_OUTCOMES, ""),
+        "ip_address": _safe_identifier_filter(args.get("ip_address"), AUDIT_REFERENCE_RE),
+        "request_id": _safe_identifier_filter(args.get("request_id") or args.get("correlation_id"), AUDIT_REFERENCE_RE),
         "from": _safe_filter(args.get("from"), 40),
         "to": _safe_filter(args.get("to"), 40),
-        "q": _safe_filter(args.get("q"), 80),
+        "q": _safe_identifier_filter(args.get("q"), AUDIT_SAFE_SEARCH_RE),
     }
 
 
@@ -573,22 +622,39 @@ def _apply_audit_filters(statement, filters: dict[str, str]):
         statement = statement.where(SecurityAuditEvent.created_at >= since)
     if until is not None:
         statement = statement.where(SecurityAuditEvent.created_at <= until)
-    metadata_text = cast(SecurityAuditEvent.event_metadata, String)
     if filters["severity"]:
-        statement = statement.where(metadata_text.ilike(f"%severity%{filters['severity']}%"))
+        statement = _where_metadata_key_matches(statement, "severity", filters["severity"], exact=True)
     if filters["target"]:
-        statement = statement.where(metadata_text.ilike(f"%{_like_escape(filters['target'])}%", escape="\\"))
+        statement = _where_any_metadata_key_matches(statement, AUDIT_TARGET_METADATA_KEYS, filters["target"])
     if filters["q"]:
         pattern = f"%{_like_escape(filters['q'])}%"
-        statement = statement.where(
-            or_(
-                SecurityAuditEvent.event_type.ilike(pattern, escape="\\"),
-                SecurityAuditEvent.outcome.ilike(pattern, escape="\\"),
-                SecurityAuditEvent.correlation_id.ilike(pattern, escape="\\"),
-                metadata_text.ilike(pattern, escape="\\"),
-            )
-        )
+        search_fields = [
+            SecurityAuditEvent.event_type.ilike(pattern, escape="\\"),
+            SecurityAuditEvent.outcome.ilike(pattern, escape="\\"),
+            SecurityAuditEvent.correlation_id.ilike(pattern, escape="\\"),
+            SecurityAuditEvent.ip_address.ilike(pattern, escape="\\"),
+            SecurityAuditEvent.session_ref.ilike(pattern, escape="\\"),
+        ]
+        if filters["q"].isdigit():
+            search_fields.append(SecurityAuditEvent.user_id == int(filters["q"]))
+        statement = statement.where(or_(*search_fields))
     return statement
+
+
+def _where_metadata_key_matches(statement, key: str, value: str, *, exact: bool):
+    metadata_value = SecurityAuditEvent.event_metadata[key].as_string()
+    if exact:
+        return statement.where(metadata_value == value)
+    return statement.where(metadata_value.ilike(f"%{_like_escape(value)}%", escape="\\"))
+
+
+def _where_any_metadata_key_matches(statement, keys: tuple[str, ...], value: str):
+    pattern = f"%{_like_escape(value)}%"
+    return statement.where(
+        or_(
+            *(SecurityAuditEvent.event_metadata[key].as_string().ilike(pattern, escape="\\") for key in keys)
+        )
+    )
 
 
 def _safe_metadata_for_display(metadata: dict[str, Any]) -> dict[str, Any]:
@@ -601,18 +667,33 @@ def _safe_metadata_for_display(metadata: dict[str, Any]) -> dict[str, Any]:
             allowed[key_text] = value
             continue
         if isinstance(value, list | tuple):
-            allowed[key_text] = [_safe_filter(item, 120) for item in list(value)[:10]]
+            allowed[key_text] = [_safe_display_value(key_text, item, 120) for item in list(value)[:10]]
             continue
         if isinstance(value, dict):
             allowed[key_text] = {
-                _safe_filter(nested_key, 64): _safe_filter(nested_value, 120)
+                _safe_filter(nested_key, 64): _safe_display_value(nested_key, nested_value, 120)
                 for nested_key, nested_value in list(value.items())[:10]
                 if _safe_filter(nested_key, 64)
                 and not _display_key_is_sensitive(_safe_filter(nested_key, 64))
             }
             continue
-        allowed[key_text] = _safe_filter(value, 160)
+        allowed[key_text] = _safe_display_value(key_text, value, 160)
     return allowed
+
+
+def _safe_display_value(key: Any, value: Any, limit: int) -> str:
+    text = _safe_filter(value, limit)
+    if not text:
+        return ""
+    if _display_value_is_sensitive(str(key), text):
+        return DISPLAY_REDACTED_VALUE
+    return text
+
+
+def _display_value_is_sensitive(key: str, text: str) -> bool:
+    if _display_key_is_sensitive(key):
+        return True
+    return bool(DISPLAY_SENSITIVE_VALUE_RE.search(text))
 
 
 def _display_key_is_sensitive(key: str) -> bool:
@@ -648,6 +729,16 @@ def _safe_filter(value: Any, limit: int) -> str:
         return ""
     cleaned = "".join(char if (char >= " " and char != "\x7f") else " " for char in text)
     return " ".join(cleaned.split())[:limit]
+
+
+def _safe_identifier_filter(value: Any, pattern: re.Pattern[str]) -> str:
+    text = _safe_filter(value, 80)
+    return text if pattern.fullmatch(text) else ""
+
+
+def _safe_actor_filter(value: Any) -> str:
+    text = _safe_filter(value, 32)
+    return text if text.isdigit() else ""
 
 
 def _validated_choice(value: Any, allowed: set[str] | frozenset[str], default: str) -> str:

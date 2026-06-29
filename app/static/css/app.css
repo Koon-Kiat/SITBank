@@ -1844,6 +1844,18 @@ th {
   transform: translateY(-2px);
 }
 
+.bank-quick-btn.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.68;
+  pointer-events: none;
+}
+
+.bank-quick-btn.is-disabled:hover {
+  border-color: var(--line);
+  background: var(--surface);
+  transform: none;
+}
+
 .bank-quick-icon {
   display: inline-flex;
   align-items: center;

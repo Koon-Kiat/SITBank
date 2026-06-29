@@ -40,15 +40,23 @@ def test_open_gaps_use_current_status_without_tracker_numbers():
 
     for title, status in (
         ("Password history beyond current-password reuse", "Open gap"),
-        ("Admin audit-log viewer UI", "Open gap"),
         ("Automated retention and disposal jobs", "Open gap"),
+        ("Authenticated DAST on ordinary pull requests", "Accepted risk / policy tradeoff"),
+        ("EC2 SSH/UFW/security-group hardening deferred", "Deferred external prerequisite"),
         ("Device-bound session proof", "Accepted defense-in-depth gap"),
     ):
         row = next(line for line in current_open.splitlines() if title in line)
         assert status in row
 
+    recently_closed = _section(register, "Recently Closed Gaps")
+    for title in ("Admin dashboard role separation", "Admin audit-log viewer hardening"):
+        row = next(line for line in recently_closed.splitlines() if title in line)
+        assert "Solved" in row
+
+    assert "Separate issue: No" not in register
     assert "Local Docker/Compose proof when Docker is unavailable" not in current_open
     assert "Strict Docker/Compose local CI mode" in register
+    assert "Admin audit-log viewer UI hardening follow-up" not in current_open
 
 
 def test_design_risk_register_uses_current_follow_up_status():
