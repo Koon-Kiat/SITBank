@@ -168,28 +168,107 @@ Environment named `admin-tailscale`, require manual approval by trusted
 maintainers, and restrict its deployment branches to `main`. Each production
 run pauses for that approval before the required private gate can access its
 secret. This is the required protected post-production-deploy gate and it runs
-after production public TLS verification. Store `TAILSCALE_AUTH_KEY` only as
-that environment's secret. It must
-be a reusable, ephemeral, pre-approved key when device approval applies and
-must assign a dedicated `tag:github-ci` identity whose tailnet grants reach
-only the `tag:admin-sitbank` service on TCP `443`.
+after production public TLS verification. The production caller explicitly
+selects `auth_mode: oauth`. Store `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET`
+only as that environment's secrets. The OAuth client must have **Keys > Auth
+Keys > Write** permission and be restricted to `tag:github-ci`, whose tailnet
+grants reach only `tag:admin-sitbank:443`.
+
+Manual or reusable verification may instead select `auth_mode: authkey`, in
+which case the same environment must provide `TAILSCALE_AUTH_KEY`. That key
+must be short-lived, one-off where possible, ephemeral, pre-approved when
+device approval applies, and tagged `tag:github-ci`. Never configure both
+modes for one run. OAuth is the preferred/default mode; the auth-key mode is a
+compatibility path with separate rotation.
 
 Do not expose the secret as a repository variable or general repository
 secret, and do not permit pull requests, Dependabot, forks, or untrusted
-branches to use the environment. Inputs default to
-`admin-sitbank.tailca101b.ts.net` and the retired public admin hostname
-`admin-sitbank.duckdns.org`. The workflow checks the private admin URL before
-and after joining, validates the unauthenticated login response over TLS,
-requires the public admin login path to return a safe denial or have no public
-endpoint, and logs out. It neither deploys nor changes Flask, Nginx, EC2,
-tailnet policy, Tailscale Serve, or Tailscale Funnel.
+branches to use the environment. The private hostname input defaults to
+`admin-sitbank.tailca101b.ts.net`. The workflow checks the private admin URL
+before and after joining, validates the unauthenticated login response over
+TLS, and logs out. It neither deploys nor changes Flask, Nginx, EC2, tailnet
+policy, Tailscale Serve, or Tailscale Funnel.
 
-Rotate the credential by replacing the environment secret with a new narrowly
-scoped ephemeral tagged key, validating one manually approved `main` run, and
-then revoking the old key and stale node. Offboarding requires review of
-environment approvers/branch rules. To remove CI tailnet access, delete the
-environment secret, revoke the key, remove the CI tag grants and devices, and
-disable or delete the environment.
+Rotate the selected credential before expiry or after exposure. For OAuth,
+replace both OAuth secrets and revoke the old client after an approved run.
+For auth-key mode, replace `TAILSCALE_AUTH_KEY`, validate an approved run, and
+revoke the old key. Offboarding requires review of environment
+approvers/branch rules and stale nodes. To remove CI tailnet access, delete all
+three optional credential secrets, revoke the applicable client/key, remove
+CI tag grants/devices, and disable or delete the environment.
+
+### Production Tailscale Provisioning
+
+Production bootstrap installs the non-secret scripts from `ops/tailscale/`:
+
+- `/usr/local/sbin/sitbank-install-tailscale`
+- `/usr/local/sbin/sitbank-configure-tailscale-admin`
+- `/usr/local/sbin/sitbank-verify-tailscale-admin`
+
+Review plans before an approved host change:
+
+```bash
+sudo /usr/local/sbin/sitbank-install-tailscale --dry-run
+sudo /usr/local/sbin/sitbank-configure-tailscale-admin \
+  --dry-run --auth-mode oauth
+# Auth-key compatibility plan:
+sudo /usr/local/sbin/sitbank-configure-tailscale-admin \
+  --dry-run --auth-mode authkey
+```
+
+Mutating execution requires `--confirm`. Host configuration supports
+`oauth`, `authkey`, and `interactive` modes. OAuth reads
+`TS_OAUTH_CLIENT_ID`/`TS_OAUTH_SECRET`; auth-key mode reads
+`TAILSCALE_AUTH_KEY`. Secrets are supplied through protected operator
+environment handling and an inherited file descriptor, are never printed or
+written to a named file, and must be unset immediately afterward. Detailed
+commands, ACL review, onboarding/offboarding, and emergency disable steps are
+in `ops/tailscale/README.md`.
+
+The selected production model is private Serve HTTPS on port `443` with the
+sole backend `http://127.0.0.1:5002`. The configure script resets unsafe node
+advertisements, refuses existing non-empty Serve configuration, never enables
+Funnel, and requires pre/post verification. It intentionally does not
+configure staging admin, the customer app, tailnet ACLs, group membership, or
+device approval. Normal CI tests only the script contracts.
+
+### Production Host Tailscale Preflight
+
+Production bootstrap installs
+`ops/deploy/verify-tailscale-admin-access` as
+`/usr/local/sbin/verify-tailscale-admin-access` with root ownership and mode
+`0755`. Run it on the EC2 host after production deployment and after changes
+to Tailscale, Serve, Funnel, Nginx, or the admin listener:
+
+```bash
+sudo /usr/local/sbin/verify-tailscale-admin-access --mode serve
+```
+
+Serve mode succeeds only when the local Tailscale node reports `Running`,
+Funnel is disabled, the admin service has only the
+`127.0.0.1:5002` listener, loopback readiness returns `200`, Nginx contains
+neither an admin-port upstream nor the private Tailscale hostname, Serve
+exposes only `admin-sitbank.tailca101b.ts.net:443` to
+`http://127.0.0.1:5002`, and the private `/login` entrypoint returns `200`.
+The script reads local status and configuration only. It does not run
+`tailscale up`, change Serve or Funnel, modify policy, call a Tailscale API, or
+use OAuth/auth-key material.
+
+`--mode ssh` verifies the same local Tailscale, Funnel, listener, readiness,
+and Nginx prerequisites for a reviewed private port-forward diagnostic path,
+but does not claim that a remote tunnel or browser session was tested.
+`--mode documentation-only` validates arguments and emits a warning without
+performing live checks; it is for pre-rollout documentation review and is not
+deployment evidence. Any error from a live mode is a failed preflight. Keep
+the admin unavailable rather than weakening the listener, Nginx, or Funnel
+boundary.
+
+This EC2-local preflight complements rather than replaces the protected
+GitHub workflow. The host script proves local listener and Serve/Funnel
+posture; the protected workflow proves reachability from an approved
+ephemeral tailnet node. Neither control proves live ACL membership, device
+approval, or operator offboarding state, which remains operator-owned
+evidence.
 
 Set `ROOT_ADMIN_EMAILS` in both protected GitHub environments before deploying
 admin bootstrap support. It is a non-secret allowlist, but it is
@@ -666,7 +745,8 @@ After the staging TLS check passes, validate production customer HTTPS with
 pass on the deployed host before any reload. Do not add the private Tailscale
 admin URL to public GitHub-hosted TLS scans. Private reachability belongs only
 to the separate manual, protected tailnet verification workflow; the public
-TLS scan and deployment workflows must never require `TAILSCALE_AUTH_KEY`.
+TLS scan and deployment workflows must never require `TS_OAUTH_CLIENT_ID` or
+`TS_OAUTH_SECRET`.
 
 Production HSTS validation should also confirm the public customer hostname
 returns the production edge header before the production live TLS scan is

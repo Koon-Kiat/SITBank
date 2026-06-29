@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+# Join the production host and configure the approved private Serve mapping.
+set -Eeuo pipefail
+
+readonly ADMIN_HOSTNAME="admin-sitbank"
+readonly ADMIN_TAG="tag:sitbank-admin"
+readonly ADMIN_TARGET="http://127.0.0.1:5002"
+
+usage() {
+    cat >&2 <<'EOF'
+Usage:
+  configure-admin-access --dry-run --auth-mode (oauth|authkey|interactive)
+  configure-admin-access --confirm --auth-mode (oauth|authkey|interactive)
+
+Confirmed oauth mode reads TS_OAUTH_CLIENT_ID and TS_OAUTH_SECRET.
+Confirmed authkey mode reads TAILSCALE_AUTH_KEY.
+Secrets must be supplied outside shell history and are never printed.
+EOF
+}
+
+find_verifier() {
+    local repo_verifier
+    if [[ -x /usr/local/sbin/verify-tailscale-admin-access ]]; then
+        printf '%s\n' /usr/local/sbin/verify-tailscale-admin-access
+        return
+    fi
+    repo_verifier="$(
+        cd "$(dirname "${BASH_SOURCE[0]}")/../.." \
+            && pwd
+    )/ops/deploy/verify-tailscale-admin-access"
+    if [[ -x "${repo_verifier}" ]]; then
+        printf '%s\n' "${repo_verifier}"
+        return
+    fi
+    echo "ERROR: verify-tailscale-admin-access is not installed or executable." >&2
+    return 1
+}
+
+print_plan() {
+    local selected_mode="$1"
+    cat <<EOF
+PLAN: configure production admin private HTTPS with Tailscale Serve.
+- Authentication mode: ${selected_mode}
+- Node hostname: ${ADMIN_HOSTNAME}
+- Node tag: ${ADMIN_TAG}
+- Private HTTPS port: 443
+- Sole backend: ${ADMIN_TARGET}
+- Tailscale SSH, exit-node advertising, and subnet routes: disabled
+- Funnel: must already be disabled and is never enabled
+- Existing non-empty Serve configuration: refused
+- Post-change verification: mandatory
+No customer or staging service is exposed.
+EOF
+    case "${selected_mode}" in
+        oauth)
+            echo "Credential input: TS_OAUTH_CLIENT_ID plus TS_OAUTH_SECRET (not read during dry-run)."
+            ;;
+        authkey)
+            echo "Credential input: TAILSCALE_AUTH_KEY (not read during dry-run)."
+            ;;
+        interactive)
+            echo "Credential input: interactive browser login by an approved tag owner."
+            ;;
+    esac
+}
+
+validate_secret() {
+    local value="$1"
+    local label="$2"
+    if [[ -z "${value}" || "${value}" == *$'\n'* || "${value}" == *$'\r'* ]]; then
+        echo "ERROR: ${label} is missing or contains a newline." >&2
+        return 1
+    fi
+}
+
+dry_run=0
+confirm=0
+auth_mode=""
+while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+        --dry-run)
+            dry_run=1
+            ;;
+        --confirm)
+            confirm=1
+            ;;
+        --auth-mode)
+            shift
+            auth_mode="${1:-}"
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            usage
+            exit 2
+            ;;
+    esac
+    shift
+done
+
+if [[ "${dry_run}" -eq "${confirm}" ]]; then
+    usage
+    echo "ERROR: Choose exactly one of --dry-run or --confirm." >&2
+    exit 2
+fi
+case "${auth_mode}" in
+    oauth|authkey|interactive) ;;
+    *)
+        usage
+        echo "ERROR: --auth-mode must be oauth, authkey, or interactive." >&2
+        exit 2
+        ;;
+esac
+
+print_plan "${auth_mode}"
+if [[ "${dry_run}" -eq 1 ]]; then
+    exit 0
+fi
+if [[ "${EUID}" -ne 0 ]]; then
+    echo "ERROR: Run confirmed configuration as root." >&2
+    exit 1
+fi
+for command_name in tailscale python3; do
+    if ! command -v "${command_name}" >/dev/null 2>&1; then
+        echo "ERROR: Required command is missing: ${command_name}" >&2
+        exit 1
+    fi
+done
+verifier="$(find_verifier)"
+
+up_arguments=(
+    tailscale up
+    --reset
+    --hostname="${ADMIN_HOSTNAME}"
+    --advertise-tags="${ADMIN_TAG}"
+    --accept-dns=true
+    --accept-routes=false
+    --advertise-exit-node=false
+    --advertise-routes=
+    --exit-node=
+    --ssh=false
+    --timeout=2m
+)
+
+case "${auth_mode}" in
+    oauth)
+        client_id="${TS_OAUTH_CLIENT_ID:-}"
+        client_secret="${TS_OAUTH_SECRET:-}"
+        validate_secret "${client_id}" "TS_OAUTH_CLIENT_ID"
+        validate_secret "${client_secret}" "TS_OAUTH_SECRET"
+        unset TS_OAUTH_SECRET
+        "${up_arguments[@]}" \
+            --client-id="${client_id}" \
+            --client-secret=file:/dev/fd/3 \
+            3<<<"${client_secret}"
+        unset client_secret
+        ;;
+    authkey)
+        auth_key="${TAILSCALE_AUTH_KEY:-}"
+        validate_secret "${auth_key}" "TAILSCALE_AUTH_KEY"
+        unset TAILSCALE_AUTH_KEY
+        "${up_arguments[@]}" \
+            --auth-key=file:/dev/fd/3 \
+            3<<<"${auth_key}"
+        unset auth_key
+        ;;
+    interactive)
+        "${up_arguments[@]}"
+        ;;
+esac
+
+if "${verifier}" --mode serve >/dev/null 2>&1; then
+    echo "OK: Node settings and the approved Serve mapping are configured."
+    exit 0
+fi
+
+# This proves the daemon, Funnel, loopback listener, readiness, and Nginx
+# posture before Serve is changed.
+"${verifier}" --mode ssh
+
+serve_status="$(tailscale serve status --json)"
+if ! python3 -c \
+    'import json, sys; value=json.load(sys.stdin); raise SystemExit(0 if not value else 1)' \
+    <<<"${serve_status}"; then
+    echo "ERROR: Existing Serve configuration is non-empty; refusing to overwrite it." >&2
+    echo "Review 'tailscale serve status --json' and disable stale mappings explicitly." >&2
+    exit 1
+fi
+
+tailscale serve --bg --https=443 "${ADMIN_TARGET}"
+if ! "${verifier}" --mode serve; then
+    echo "ERROR: Post-configuration verification failed." >&2
+    echo "ROLLBACK: tailscale serve --https=443 off" >&2
+    exit 1
+fi
+
+echo "OK: Production admin is available only through private Tailscale Serve HTTPS."
+echo "ROLLBACK: tailscale serve --https=443 off"
+echo "EMERGENCY: revoke affected devices/users and confirm Funnel remains disabled."

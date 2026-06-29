@@ -86,6 +86,11 @@ def test_zero_trust_docs_use_current_architecture_and_control_state():
     assert "admin login, TOTP, CSRF, route authorization, and audit logging" in docs
     assert "does not replace Flask admin login, TOTP, CSRF protection" in normalized_docs
     assert "Protected GitHub CI tailnet verification is implemented only by" in docs
+    assert "### EC2 Host-Side Tailscale Preflight" in docs
+    assert "ops/deploy/verify-tailscale-admin-access" in docs
+    assert "The two controls answer different questions." in docs
+    assert "### EC2 Tailscale Provisioning Automation" in docs
+    assert "ops/tailscale/README.md" in docs
     assert "GitHub-hosted runner joins the tailnet" not in docs
     assert "temporarily joins a GitHub-hosted runner to the tailnet" in normalized_docs
 

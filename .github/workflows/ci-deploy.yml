@@ -1181,4 +1181,4 @@ jobs:
     uses: ./.github/workflows/tailscale-private-admin-verify.yml
     with:
       private_admin_host: admin-sitbank.tailca101b.ts.net
-      public_admin_host: admin-sitbank.duckdns.org
+      auth_mode: oauth

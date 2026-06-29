@@ -1,0 +1,34 @@
+// Non-secret reference policy. Replace example identities through review.
+// Do not apply this file without merging it into the live tailnet policy.
+{
+  "groups": {
+    "group:sitbank-production-admins": [
+      "operator-one@example.com",
+      "operator-two@example.com",
+    ],
+    "group:sitbank-tailnet-owners": [
+      "security-owner@example.com",
+    ],
+  },
+
+  "tagOwners": {
+    "tag:sitbank-admin": ["group:sitbank-tailnet-owners"],
+    "tag:github-ci": ["group:sitbank-tailnet-owners"],
+  },
+
+  "acls": [
+    {
+      "action": "accept",
+      "src": ["group:sitbank-production-admins"],
+      "dst": ["tag:sitbank-admin:443"],
+    },
+    {
+      "action": "accept",
+      "src": ["tag:github-ci"],
+      "dst": ["tag:sitbank-admin:443"],
+    },
+  ],
+
+  // Tailscale SSH is intentionally not granted by this reference policy.
+  "ssh": [],
+}
