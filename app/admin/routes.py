@@ -19,6 +19,7 @@ from app.security.production_guard import (
 from app.security.rate_limits import request_principal
 
 from .services import (
+    ADMIN_INDEX_ENDPOINT,
     AuthError,
     admin_navigation_for,
     admin_dashboard_context,
@@ -50,7 +51,6 @@ admin_bp = Blueprint("admin", __name__)
 _TOTP_PATTERN = r"^[0-9]{6}$"
 _MFA_CODE_ERROR = "MFA code must be exactly 6 digits"
 _JSON_MIME_TYPE = "application/json"
-_ADMIN_INDEX_ENDPOINT = "admin.index"
 _STAFF_ACCOUNTS_ENDPOINT = "admin.staff_accounts"
 _ADMIN_LOGIN_TEMPLATE = "admin/login.html"
 _ADMIN_MFA_VERIFY_TEMPLATE = "admin/mfa_verify.html"
@@ -246,7 +246,7 @@ def index():
 @admin_bp.get("/login")
 def login_form():
     if getattr(g, "current_user", None) is not None:
-        return redirect(url_for(_ADMIN_INDEX_ENDPOINT))
+        return redirect(url_for(ADMIN_INDEX_ENDPOINT))
     if request.args.get("session_expired"):
         flash("Your admin session expired. Please log in again.", "warning")
     return _render_login_form()[0]
@@ -288,7 +288,7 @@ def login():
 @admin_bp.get("/mfa/verify")
 def mfa_verify_form():
     if getattr(g, "current_user", None) is not None:
-        return redirect(url_for(_ADMIN_INDEX_ENDPOINT))
+        return redirect(url_for(ADMIN_INDEX_ENDPOINT))
     if not session.get("pending_mfa_user_id"):
         if _wants_json():
             return jsonify({"error": "No pending MFA challenge"}), 401
@@ -320,7 +320,7 @@ def mfa_verify():
         return _render_mfa_form(form, status_code=exc.status_code)
 
     flash("Login successful.", "success")
-    return redirect(url_for(_ADMIN_INDEX_ENDPOINT)), 303
+    return redirect(url_for(ADMIN_INDEX_ENDPOINT)), 303
 
 
 @admin_bp.post("/logout")
