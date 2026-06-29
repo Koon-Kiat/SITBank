@@ -11,7 +11,7 @@ and test evidence found in the repository.
 | `requirements.lock` | Runtime Python lockfile | Generated with hashes and consumed by `pip-audit --require-hashes` |
 | `requirements-dev.in` | Development/test dependencies | Includes `-r requirements.in`, `pytest`, `pytest-cov`, `pytest-xdist`, `pip-audit`, `bandit`, and `pip-tools` |
 | `requirements-dev.lock` | Development/test lockfile | Generated with hashes and audited separately |
-| `Dockerfile` | Runtime image | Uses pinned Python base image digest and creates non-root UID/GID `10001:10001` |
+| `Dockerfile` | Runtime image | Uses a version tag plus immutable Python base-image digest for Dependabot tracking and reproducible builds, keeps application code root-owned and read-only, and runs as non-root UID/GID `10001:10001` |
 | `compose.prod.yml` | Production deployment model | Uses Docker secrets, read-only app containers, loopback bindings, and separate customer/admin secret sets |
 | `compose.staging.yml` | Staging deployment model | Uses separate staging secrets and database roles |
 | `docker-compose.test.yml` | Test/CI compose model | Used by container smoke and validation flows |

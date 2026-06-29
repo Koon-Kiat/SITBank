@@ -141,6 +141,13 @@ that no reusable credential value is committed. HTTP used solely between
 ephemeral containers on an isolated smoke-test network is also a reviewed
 false positive; production and external traffic remain HTTPS-only.
 
+The Python base image intentionally retains both its specific version tag and
+its immutable digest. Docker resolves the image by digest, while the tag keeps
+the intended `3.12.13-slim-trixie` release line visible to Dependabot. A
+maintainability finding that asks for only one of those identifiers should be
+accepted with this rationale rather than removing reproducible pinning or
+automated version tracking.
+
 Four cognitive-complexity findings are accepted maintainability debt in
 central registration and security-boundary functions:
 

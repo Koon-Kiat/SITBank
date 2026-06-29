@@ -137,7 +137,7 @@ def _is_password_pwned_by_hibp(password: str) -> bool:
             count = int(count_text.strip())
             if hmac.compare_digest(candidate_suffix.strip().upper(), hash_suffix) and count > 0:
                 return True
-    except (UnicodeDecodeError, ValueError) as exc:
+    except ValueError as exc:
         raise LivePasswordCheckUnavailable("HIBP response could not be parsed") from exc
 
     return False
