@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 
@@ -75,7 +75,7 @@ def test_zero_trust_docs_use_current_architecture_and_issue_set():
     assert "SITBank uses a hybrid zero-trust access model" in docs
     for issue_ref in ("#198", "#199", "#200", "#210", "#211", "#215", "#218"):
         assert issue_ref in docs
-    assert "https://sitbank-ec2.tailca101b.ts.net/" in docs
+    assert "https://admin-sitbank.tailca101b.ts.net/" in docs
     assert "Admins connect to the Tailscale VPN first, then open" in docs
     assert "Funnel would publish the service to the public internet" in docs
     assert "admin login, TOTP, CSRF, route authorization, and audit logging" in docs
@@ -102,8 +102,24 @@ def test_public_tls_docs_exclude_private_tailscale_admin_hostname_from_normal_sc
 
     assert "normal public TLS scan deliberately excludes the private Tailscale admin hostname" in operations
     assert "job joins the tailnet or uses a tailnet self-hosted runner" in normalized_operations
-    assert "sitbank-ec2.tailca101b.ts.net" not in workflow
+    assert "admin-sitbank.tailca101b.ts.net" not in workflow
     assert "Do not add the private Tailscale admin URL to public GitHub-hosted TLS scans." in normalized_deployment
+
+
+def test_active_docs_tests_and_workflows_use_current_private_admin_hostname():
+    current_admin_host = "admin-sitbank.tailca101b.ts.net"
+    retired_ec2_host = "sitbank-ec2" + ".tailca101b.ts.net"
+    retired_admin_host = "sitbank-admin" + ".tailca101b.ts.net"
+    paths = [Path("README.md"), Path("SECURITY.md")]
+    paths.extend(path for path in sorted(Path("docs").rglob("*.md")) if "archive" not in path.parts)
+    paths.extend(sorted(Path("tests").glob("*.py")))
+    paths.extend(sorted(Path(".github/workflows").glob("*.yml")))
+
+    combined = "\n".join(path.read_text(encoding="utf-8") for path in paths)
+
+    assert current_admin_host in combined
+    assert retired_ec2_host not in combined
+    assert retired_admin_host not in combined
 
 
 def test_current_open_gap_rows_have_tracking_state():

@@ -1,4 +1,4 @@
-# Operations
+﻿# Operations
 
 Security owner roles, milestone/release review cadence, accepted-risk handling,
 and off-repo evidence expectations are defined in
@@ -56,8 +56,15 @@ SITBank uses a hybrid private-access model:
 - Staging is protected by Cloudflare Access and Cloudflare Authenticated Origin
   Pulls at `staging-sitbank.pp.ua`.
 - Admin is protected by Tailscale/private operator access at
-  `https://sitbank-ec2.tailca101b.ts.net/`.
+  `https://admin-sitbank.tailca101b.ts.net/`.
 - The production customer site `sitbank.duckdns.org` remains public.
+
+Bootstrapped root admins browse to
+`https://admin-sitbank.tailca101b.ts.net/login`, sign in with the existing
+admin workplace email and password, complete TOTP, and are redirected to the
+private dashboard at `https://admin-sitbank.tailca101b.ts.net/`. Customer
+accounts cannot authenticate to the admin app, and admin access remains
+Tailscale-only.
 
 The Access application, narrow approved-operator policy, session duration, and
 proxied staging DNS desired state are managed by
@@ -85,7 +92,7 @@ curl --fail --resolve staging-sitbank.pp.ua:443:127.0.0.1 \
 curl -I --resolve staging-sitbank.pp.ua:443:<EC2_PUBLIC_IP> \
   https://staging-sitbank.pp.ua/
 sudo tailscale serve status
-curl -I https://sitbank-ec2.tailca101b.ts.net/
+curl -I https://admin-sitbank.tailca101b.ts.net/login
 ```
 
 The origin-pull verifier is an offline host check. It rejects missing,
@@ -181,6 +188,9 @@ that output into logs, tickets, chat, shell history, or committed files. The
 bootstrap stores only the protected password hash and envelope-encrypted TOTP
 secret, sets the account active, marks the workplace email verified, and records
 a safe `root_admin_bootstrap` audit event without the password or TOTP secret.
+After bootstrap, open `https://admin-sitbank.tailca101b.ts.net/login` from an
+approved tailnet device and use that workplace email, password, and TOTP code to
+enter the private dashboard.
 
 ## EC2 SSH And Deployment Access Operations
 
@@ -456,7 +466,7 @@ the release or change record. Do not run a public-endpoint scan from ordinary
 pull requests.
 
 The normal public TLS scan deliberately excludes the private Tailscale admin hostname
-`sitbank-ec2.tailca101b.ts.net`; a GitHub-hosted public runner cannot reach it
+`admin-sitbank.tailca101b.ts.net`; a GitHub-hosted public runner cannot reach it
 unless a separate protected job joins the tailnet or uses a tailnet self-hosted
 runner. Do not make staging or admin verification pass by switching Cloudflare
 to Flexible SSL, disabling TLS verification, disabling the Cloudflare proxy,

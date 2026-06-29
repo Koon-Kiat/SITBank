@@ -45,6 +45,7 @@ HEADING_RE = re.compile(
     r"\s*:?\s*$",
     re.IGNORECASE,
 )
+SETEXT_UNDERLINE_RE = re.compile(r"^\s{0,3}(?:-{3,}|={3,})\s*$")
 
 
 @dataclass(frozen=True)
@@ -86,6 +87,8 @@ def parse_sections(body: str) -> dict[str, str]:
         if heading:
             current = _canonical_section_name(heading.group(1))
             sections.setdefault(current, [])
+            continue
+        if current is not None and SETEXT_UNDERLINE_RE.match(line):
             continue
         if current is not None:
             sections[current].append(line)
@@ -144,26 +147,33 @@ def print_examples() -> None:
     print(
         """Valid PR description example:
 Summary
+---
 Adds server-side Payee management required for Local Transfer.
 
 Why
+---
 Local Transfer needs trusted recipient records before transfer creation.
 
 What changed
+---
 * Added Payee model and routes
 * Added server-side validation
 * Added tests for invalid recipient input
 
 Security impact
+---
 Recipient names are loaded from the database and are not accepted from client input.
 
 Deployment impact
+---
 No deployment action required.
 
 Verification
+---
 * python -m pytest tests/test_payees.py
 
 Notes
+---
 No follow-up required.
 """.rstrip()
     )

@@ -1,0 +1,26 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Admin MFA Verification | SITBank{% endblock %}
+
+{% block content %}
+<section class="auth-card narrow">
+  <div class="page-heading">
+    <p class="eyebrow">Second step</p>
+    <h1>Authenticator code</h1>
+    <p class="muted">Enter the current six-digit code for this admin account.</p>
+  </div>
+
+  <form method="post" action="{{ url_for('admin.mfa_verify') }}" novalidate>
+    {{ form.hidden_tag() }}
+
+    <div class="form-group">
+      <label for="{{ form.totp_code.id }}">Authenticator code</label>
+      {{ form.totp_code(autocomplete="one-time-code", inputmode="numeric", maxlength="6") }}
+      {% for error in form.totp_code.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+    </div>
+
+    <button class="button full" type="submit">Verify</button>
+  </form>
+  <p class="switch-link"><a href="{{ url_for('admin.login_form') }}">Back to login</a></p>
+</section>
+{% endblock %}

@@ -1,4 +1,4 @@
-# SITBank Security Operations
+﻿# SITBank Security Operations
 
 ## Reporting
 
@@ -67,10 +67,15 @@ session cookie, session-signing material, session-lookup HMAC key, and database
 runtime role. The admin role must be distinct from both `sitbank_app` and
 `sitbank_owner`; it must not use migration/schema-owner credentials. Admin
 access is private operator access only through Tailscale Serve at
-`https://sitbank-ec2.tailca101b.ts.net/`; do not enable Tailscale Funnel and
+`https://admin-sitbank.tailca101b.ts.net/`; do not enable Tailscale Funnel and
 do not expose admin through the customer app or any public admin Nginx route.
 The Flask admin app still uses a separate cookie, session HMAC keyring,
-database role, root-admin-controlled staff invites, and mandatory TOTP.
+database role, manual root-admin bootstrap, browser password login, TOTP
+verification, root-admin-controlled staff invites, and mandatory TOTP.
+Bootstrapped root admins open `https://admin-sitbank.tailca101b.ts.net/login`,
+authenticate with the existing admin password and TOTP flow, and then reach the
+private dashboard at `https://admin-sitbank.tailca101b.ts.net/`. Customer
+accounts cannot authenticate to the admin runtime.
 
 Staging access is protected by Cloudflare Access before Nginx/Flask and by
 Cloudflare Authenticated Origin Pulls at the staging Nginx origin. Direct

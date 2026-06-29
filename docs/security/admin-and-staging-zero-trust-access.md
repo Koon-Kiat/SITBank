@@ -1,4 +1,4 @@
-# Admin And Staging Zero-Trust Access
+﻿# Admin And Staging Zero-Trust Access
 
 SITBank uses a hybrid zero-trust access model:
 
@@ -51,7 +51,7 @@ References:
 | --- | --- | --- | --- |
 | Production customer | `https://sitbank.duckdns.org` | Public HTTPS edge, Flask customer login and MFA | Public |
 | Staging customer | `https://staging-sitbank.pp.ua` | Cloudflare Access, Cloudflare Authenticated Origin Pull, origin JWT validation, staging Basic Auth, Flask login and MFA | Not directly public at the origin |
-| Production admin app | `https://sitbank-ec2.tailca101b.ts.net/` through Tailscale Serve | Tailscale ACLs, approved devices, Flask admin login and TOTP | Private tailnet only |
+| Production admin app | `https://admin-sitbank.tailca101b.ts.net/` through Tailscale Serve | Tailscale ACLs, approved devices, Flask admin login and TOTP | Private tailnet only |
 | Staging admin app | Approved Tailscale/private operator path to `127.0.0.1:5003` | Tailscale ACLs, approved devices, Flask admin login and TOTP | Private tailnet only |
 
 The customer production site remains public. The admin app is not exposed
@@ -173,11 +173,13 @@ sudo tailscale serve status
 ```
 
 Admins connect to the Tailscale VPN first, then open
-`https://sitbank-ec2.tailca101b.ts.net/`. The `tailscale serve` command exposes
-the local admin service inside the tailnet. It must not be paired with
+`https://admin-sitbank.tailca101b.ts.net/login`. The `tailscale serve` command
+exposes the local admin service inside the tailnet. It must not be paired with
 `tailscale funnel`; Funnel would publish the service to the public internet and
 is not approved for SITBank admin. Flask admin login and TOTP remain mandatory
-after the private network boundary is satisfied.
+after the private network boundary is satisfied. Successful browser login
+redirects the operator to the private dashboard at
+`https://admin-sitbank.tailca101b.ts.net/`.
 
 If Tailscale Serve is unavailable, use a separate reviewed private operator
 path rather than exposing the admin app publicly. In all cases, the Flask
@@ -281,10 +283,10 @@ live checks manually:
 
 Live Tailscale admin checks:
 
-1. An approved operator reaches `https://sitbank-ec2.tailca101b.ts.net/` only from an approved tailnet device.
+1. An approved operator reaches `https://admin-sitbank.tailca101b.ts.net/` only from an approved tailnet device.
 2. A non-tailnet network cannot reach the admin app.
 3. A removed user or deleted device loses access.
-4. Admin Flask login and TOTP are still required after Tailscale access.
+4. Admin browser login with workplace password and TOTP reaches the dashboard.
 5. Admin readiness endpoints remain private or restricted.
 6. No public admin hostname is required or scanned.
 7. `https://sitbank.duckdns.org` remains public.

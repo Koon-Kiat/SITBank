@@ -1,11 +1,11 @@
-# Deployment
+﻿# Deployment
 
 ## Current Architecture
 
 Only Flask/Gunicorn runs in the SITBank container. Nginx, TLS, PostgreSQL, and backups remain host-managed on EC2. Sessions, authentication counters, OTP/reset state, alert dedupe, and breached-password circuit state live in application-owned PostgreSQL tables.
 
 - Production public host: `sitbank.duckdns.org`
-- Production private admin URL: `https://sitbank-ec2.tailca101b.ts.net/`
+- Production private admin URL: `https://admin-sitbank.tailca101b.ts.net/`
 - Staging public host: `staging-sitbank.pp.ua`
 - Staging Cloudflare Access host: `staging-sitbank.pp.ua`
 - Production customer access: public HTTPS
@@ -163,9 +163,13 @@ can enforce the fixed root-admin group. Root-admin bootstrap remains manual
 over SSH inside the admin container; it is not a GitHub Actions workflow.
 
 Production admin does not use a public DNS hostname. Keep admin access on the
-private Tailscale Serve URL `https://sitbank-ec2.tailca101b.ts.net/` and do
-not enable Tailscale Funnel. Production still requires root-managed admin
-secret files under `/etc/sitbank/secrets`: `admin_secret_key`,
+private Tailscale Serve URL `https://admin-sitbank.tailca101b.ts.net/` and do
+not enable Tailscale Funnel. Bootstrapped root admins open
+`https://admin-sitbank.tailca101b.ts.net/login`, authenticate with the existing
+admin password and TOTP flow, and are redirected to the private dashboard at
+`https://admin-sitbank.tailca101b.ts.net/`. Customer accounts cannot access the
+admin runtime. Production still requires root-managed admin secret files under
+`/etc/sitbank/secrets`: `admin_secret_key`,
 `admin_wtf_csrf_secret_key`, `admin_session_hmac_keys_json`,
 `admin_session_lookup_hmac_key`, `admin_database_url`, and
 `admin_password_pepper_b64`.
@@ -423,9 +427,10 @@ The reviewed production bootstrap installs and enables the production edge from 
   enable Tailscale Funnel or expose the admin app through the customer host.
 - Cloudflare or AWS WAF should sit in front of Nginx for managed common, SQL injection, XSS, bot, and protocol anomaly rules.
 - Cloudflare or AWS WAF rules and security-group allowlists are still infrastructure state and must be checked manually.
-- Flask admin auth is implemented only for root-admin-controlled invite
-  onboarding with mandatory TOTP, separate admin sessions, and no
-  password-only administrator login.
+- Flask admin auth supports manual root-admin bootstrap plus
+  root-admin-controlled staff invite onboarding with mandatory password and
+  TOTP login, separate admin sessions, and no password-only administrator
+  login.
 
 Verification:
 
@@ -457,7 +462,7 @@ admin routes publicly. The staging admin service must bind only to localhost
 and use a separate loopback port from production admin when both environments
 share one EC2 host. Production admin owns `127.0.0.1:5002`; staging admin owns
 `127.0.0.1:5003`. Operators use Tailscale VPN before opening the private
-production admin URL `https://sitbank-ec2.tailca101b.ts.net/`; staging admin
+production admin URL `https://admin-sitbank.tailca101b.ts.net/`; staging admin
 must use the same private-network pattern through an approved tailnet path. Do
 not enable Tailscale Funnel and do not add a public staging admin Nginx server
 block. Staging admin secrets must be root-managed under

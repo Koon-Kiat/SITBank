@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-from flask import Blueprint, current_app, flash, jsonify, redirect, render_template, request, url_for
+from flask import Blueprint, current_app, flash, g, jsonify, redirect, render_template, request, session, url_for
 from flask_limiter.util import get_remote_address
+from flask_wtf import FlaskForm
 from flask_wtf.csrf import generate_csrf
 from marshmallow import Schema, ValidationError, fields, validate, validates_schema
 from sqlalchemy import text
+from wtforms import PasswordField, StringField
+from wtforms.validators import Email, InputRequired, Length, Regexp
 
 from app.extensions import db, limiter
 from app.security.alerts import build_security_alert_report
@@ -16,6 +19,7 @@ from app.security.production_guard import (
 from app.security.rate_limits import request_principal
 
 from .services import (
+    ADMIN_INDEX_ENDPOINT,
     AuthError,
     admin_navigation_for,
     admin_dashboard_context,
@@ -48,6 +52,8 @@ _TOTP_PATTERN = r"^[0-9]{6}$"
 _MFA_CODE_ERROR = "MFA code must be exactly 6 digits"
 _JSON_MIME_TYPE = "application/json"
 _STAFF_ACCOUNTS_ENDPOINT = "admin.staff_accounts"
+_ADMIN_LOGIN_TEMPLATE = "admin/login.html"
+_ADMIN_MFA_VERIFY_TEMPLATE = "admin/mfa_verify.html"
 
 
 class AdminLoginSchema(Schema):
@@ -60,6 +66,24 @@ class AdminTotpSchema(Schema):
         required=True,
         load_only=True,
         validate=validate.Regexp(_TOTP_PATTERN, error=_MFA_CODE_ERROR),
+    )
+
+
+class AdminLoginForm(FlaskForm):
+    workplace_email = StringField(
+        "Workplace email",
+        validators=[InputRequired(), Email(), Length(max=255)],
+    )
+    password = PasswordField("Password", validators=[InputRequired()])
+
+
+class AdminTotpForm(FlaskForm):
+    totp_code = StringField(
+        "Authenticator code",
+        validators=[
+            InputRequired(),
+            Regexp(_TOTP_PATTERN, message=_MFA_CODE_ERROR),
+        ],
     )
 
 
@@ -155,7 +179,9 @@ def handle_validation_error(_error: ValidationError):
 def _payload(schema: Schema) -> dict:
     if request.is_json:
         return schema.load(request.get_json(silent=False) or {})
-    return schema.load(dict(request.form))
+    payload = dict(request.form)
+    payload.pop("csrf_token", None)
+    return schema.load(payload)
 
 
 def _request_fields() -> set[str]:
@@ -172,6 +198,14 @@ def _wants_json() -> bool:
     return best == _JSON_MIME_TYPE and (
         request.accept_mimetypes[_JSON_MIME_TYPE] >= request.accept_mimetypes["text/html"]
     )
+
+
+def _render_login_form(form: AdminLoginForm | None = None, *, status_code: int = 200):
+    return render_template(_ADMIN_LOGIN_TEMPLATE, form=form or AdminLoginForm()), status_code
+
+
+def _render_mfa_form(form: AdminTotpForm | None = None, *, status_code: int = 200):
+    return render_template(_ADMIN_MFA_VERIFY_TEMPLATE, form=form or AdminTotpForm()), status_code
 
 
 @admin_bp.get("/health/live")
@@ -209,22 +243,84 @@ def index():
     return render_template("admin/dashboard.html", **admin_dashboard_context(user))
 
 
+@admin_bp.get("/login")
+def login_form():
+    if getattr(g, "current_user", None) is not None:
+        return redirect(url_for(ADMIN_INDEX_ENDPOINT))
+    if request.args.get("session_expired"):
+        flash("Your admin session expired. Please log in again.", "warning")
+    return _render_login_form()[0]
+
+
 @admin_bp.post("/login")
 @limiter.limit("50 per day", key_func=get_remote_address)
 @limiter.limit("50 per day", key_func=request_principal)
 @limiter.limit("5 per minute", key_func=get_remote_address)
 @limiter.limit("5 per minute", key_func=request_principal)
 def login():
-    data = _payload(AdminLoginSchema())
-    return jsonify(authenticate_admin_primary(data["workplace_email"], data["password"]))
+    if _wants_json():
+        data = _payload(AdminLoginSchema())
+        return jsonify(authenticate_admin_primary(data["workplace_email"], data["password"]))
+
+    form = AdminLoginForm()
+    if not form.validate_on_submit():
+        return _render_login_form(form, status_code=400)
+
+    try:
+        data = AdminLoginSchema().load(
+            {
+                "workplace_email": form.workplace_email.data,
+                "password": form.password.data,
+            }
+        )
+        authenticate_admin_primary(data["workplace_email"], data["password"])
+    except ValidationError:
+        flash("Invalid request", "error")
+        return _render_login_form(form, status_code=400)
+    except AuthError as exc:
+        flash(exc.message, "error")
+        return _render_login_form(form, status_code=exc.status_code)
+
+    flash("Enter your authenticator code to finish signing in.", "info")
+    return redirect(url_for("admin.mfa_verify_form")), 303
+
+
+@admin_bp.get("/mfa/verify")
+def mfa_verify_form():
+    if getattr(g, "current_user", None) is not None:
+        return redirect(url_for(ADMIN_INDEX_ENDPOINT))
+    if not session.get("pending_mfa_user_id"):
+        if _wants_json():
+            return jsonify({"error": "No pending MFA challenge"}), 401
+        flash("Please log in first.", "warning")
+        return redirect(url_for("admin.login_form")), 303
+    return _render_mfa_form()[0]
 
 
 @admin_bp.post("/mfa/verify")
 @limiter.limit("5 per 5 minutes", key_func=get_remote_address)
 @limiter.limit("5 per 5 minutes", key_func=request_principal)
 def mfa_verify():
-    data = _payload(AdminTotpSchema())
-    return jsonify(complete_admin_mfa_login(data["totp_code"]))
+    if _wants_json():
+        data = _payload(AdminTotpSchema())
+        return jsonify(complete_admin_mfa_login(data["totp_code"]))
+
+    if not session.get("pending_mfa_user_id"):
+        flash("Please log in first.", "warning")
+        return redirect(url_for("admin.login_form")), 303
+
+    form = AdminTotpForm()
+    if not form.validate_on_submit():
+        return _render_mfa_form(form, status_code=400)
+
+    try:
+        complete_admin_mfa_login(form.totp_code.data)
+    except AuthError as exc:
+        flash(exc.message, "error")
+        return _render_mfa_form(form, status_code=exc.status_code)
+
+    flash("Login successful.", "success")
+    return redirect(url_for(ADMIN_INDEX_ENDPOINT)), 303
 
 
 @admin_bp.post("/logout")
