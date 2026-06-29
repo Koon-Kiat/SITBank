@@ -20,6 +20,13 @@ def test_email_normalizers_reject_malformed_and_aliased_addresses(app):
             services.normalize_personal_email("not-an-email")
 
 
+def test_phone_validation_remains_ascii_only():
+    assert services.validate_phone_number("91234567") == "91234567"
+
+    with pytest.raises(AuthError, match="Invalid phone number"):
+        services.validate_phone_number("9１２３４５６７")
+
+
 def test_invalid_invite_token_records_audited_failure(app, monkeypatch):
     reasons: list[tuple[str, bool]] = []
     monkeypatch.setattr(

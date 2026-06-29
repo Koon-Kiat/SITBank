@@ -43,8 +43,9 @@ KNOWN_NODE20_ACTION_USES = {
     "actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48",
     "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
 }
-PYTHON_SLIM_TRIXIE_DIGEST_RE = re.compile(
-    r"python:3\.12(?:\.\d+)?-slim-trixie@sha256:[0-9a-f]{64}"
+PYTHON_SLIM_TRIXIE_IMAGE = (
+    "python:3.12.13-slim-trixie@sha256:"
+    "6c4dd321d176d61ea848dc8c73a4f7dbae8f70e0ee48bb411ea2f045b599fa8e"
 )
 
 ROOT_ADMIN_EMAILS_VALUE = ",".join(
@@ -1195,12 +1196,14 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     stage_images = _dockerfile_stage_images(dockerfile)
     assert set(stage_images) == {"builder", "runtime"}
     assert stage_images["builder"] == stage_images["runtime"]
-    assert PYTHON_SLIM_TRIXIE_DIGEST_RE.fullmatch(stage_images["runtime"]), (
-        "Dockerfile must use a Python 3.12 slim-trixie base image pinned by "
-        f"sha256 digest, got {stage_images['runtime']}"
-    )
+    assert stage_images["runtime"] == PYTHON_SLIM_TRIXIE_IMAGE
+    assert "Keep the version tag for Dependabot tracking" in dockerfile
     assert 'org.opencontainers.image.title="SITBank banking application"' in dockerfile
     assert "USER 10001:10001" in dockerfile
+    assert "install -d -o root -g 10001 -m 0750 /app" in dockerfile
+    assert dockerfile.count("COPY --chown=0:0") == 3
+    assert "--chown=10001:10001" not in dockerfile
+    assert "RUN chmod -R a-w /app" in dockerfile
     assert "--require-hashes" in dockerfile
     assert "/health/ready" in dockerfile
     assert "admin_wsgi.py" in dockerfile

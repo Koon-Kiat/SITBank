@@ -15,6 +15,7 @@ from flask import current_app, has_app_context
 
 from app.extensions import db
 from app.models import SecurityAlertDedupe, SecurityAuditEvent, User
+from app.security.sensitive_values import contains_sensitive_url
 from app.security.session_hmac import active_hmac_hex
 
 
@@ -126,14 +127,6 @@ DELIVERY_SENSITIVE_KEY_PARTS = (
     "token",
     "totp",
     "webhook",
-)
-DELIVERY_CREDENTIAL_URL_RE = re.compile(
-    r"\b(?:postgres(?:ql)?|redis)://[^\s/@]*:[^\s/@]*@",
-    re.IGNORECASE,
-)
-DELIVERY_WEBHOOK_URL_RE = re.compile(
-    r"https://(?:[^/\s]*hooks[^/\s]*|discord(?:app)?\.com)/(?:api/)?(?:webhooks|services)/\S+",
-    re.IGNORECASE,
 )
 DELIVERY_PRIVATE_KEY_RE = re.compile(
     r"BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY",
@@ -821,7 +814,10 @@ def _sanitize_delivery_value(value: Any, key_lower: str, *, depth: int) -> Any:
             for item in list(value)[:25]
         ]
 
-    text = _safe_text(value, 512)
+    raw_text = str(value)
+    if contains_sensitive_url(raw_text):
+        return REDACTED_VALUE
+    text = _safe_text(raw_text, 512)
     if _looks_like_sensitive_delivery_value(text):
         return REDACTED_VALUE
     return text
@@ -841,10 +837,6 @@ def _looks_like_sensitive_delivery_value(text: str) -> bool:
     if lowered == REDACTED_VALUE:
         return True
     if lowered.startswith(("bearer ", "basic ", "token ")):
-        return True
-    if DELIVERY_CREDENTIAL_URL_RE.search(text):
-        return True
-    if DELIVERY_WEBHOOK_URL_RE.search(text):
         return True
     if DELIVERY_PRIVATE_KEY_RE.search(text):
         return True

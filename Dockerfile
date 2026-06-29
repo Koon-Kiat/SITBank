@@ -1,4 +1,5 @@
-FROM python:3.12.13-slim-trixie@sha256:d764629ce0ddd8c71fd371e9901efb324a95789d2315a47db7e4d27e78f1b0e9 AS builder
+# Keep the version tag for Dependabot tracking; the digest controls the content.
+FROM python:3.12.13-slim-trixie@sha256:6c4dd321d176d61ea848dc8c73a4f7dbae8f70e0ee48bb411ea2f045b599fa8e AS builder
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -10,7 +11,7 @@ RUN /opt/venv/bin/python -m pip install \
     --require-hashes \
     --requirement /tmp/requirements.lock
 
-FROM python:3.12.13-slim-trixie@sha256:d764629ce0ddd8c71fd371e9901efb324a95789d2315a47db7e4d27e78f1b0e9 AS runtime
+FROM python:3.12.13-slim-trixie@sha256:6c4dd321d176d61ea848dc8c73a4f7dbae8f70e0ee48bb411ea2f045b599fa8e AS runtime
 
 ARG VCS_REF=unknown
 ARG SOURCE_URL=unknown
@@ -36,13 +37,14 @@ RUN apt-get update \
     && groupadd --gid 10001 sitbank \
     && useradd --uid 10001 --gid 10001 --no-create-home \
         --home-dir /nonexistent --shell /usr/sbin/nologin sitbank \
-    && install -d -o 10001 -g 10001 -m 0750 /app
+    && install -d -o root -g 10001 -m 0750 /app
 
 COPY --from=builder /opt/venv /opt/venv
 WORKDIR /app
-COPY --chown=10001:10001 app ./app
-COPY --chown=10001:10001 migrations ./migrations
-COPY --chown=10001:10001 config.py wsgi.py admin_wsgi.py ./
+COPY --chown=0:0 app ./app
+COPY --chown=0:0 migrations ./migrations
+COPY --chown=0:0 config.py wsgi.py admin_wsgi.py ./
+RUN chmod -R a-w /app
 
 USER 10001:10001
 

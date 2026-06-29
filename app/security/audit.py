@@ -17,6 +17,7 @@ from sqlalchemy import text
 
 from app.extensions import db
 from app.models import SecurityAuditEvent, User
+from app.security.sensitive_values import contains_sensitive_url
 from app.security.session_hmac import active_hmac_hex
 
 
@@ -61,14 +62,6 @@ ACCOUNT_KEY_PARTS = (
     "pan",
 )
 
-SENSITIVE_CREDENTIAL_URL_RE = re.compile(
-    r"\b(?:postgres(?:ql)?|redis)://[^\s/@]*:[^\s/@]*@",
-    re.IGNORECASE,
-)
-SENSITIVE_WEBHOOK_URL_RE = re.compile(
-    r"https://(?:[^/\s]*hooks[^/\s]*|discord(?:app)?\.com)/(?:api/)?(?:webhooks|services)/\S+",
-    re.IGNORECASE,
-)
 SENSITIVE_PRIVATE_KEY_RE = re.compile(
     r"BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY",
     re.IGNORECASE,
@@ -486,7 +479,10 @@ def _sanitize_metadata_value(value: Any, key_lower: str, *, depth: int) -> Any:
     if depth < 4 and isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
         return [_sanitize_metadata_value(item, key_lower, depth=depth + 1) for item in list(value)[:20]]
 
-    text = _clean_audit_text(value, 256)
+    raw_text = str(value)
+    if contains_sensitive_url(raw_text):
+        return REDACTED_VALUE
+    text = _clean_audit_text(raw_text, 256)
     if _looks_like_sensitive_value(text) or _looks_like_account_value(key_lower, text):
         return REDACTED_VALUE
     return text
@@ -510,10 +506,6 @@ def _is_sensitive_key(key_lower: str) -> bool:
 def _looks_like_sensitive_value(text: str) -> bool:
     lowered = text.casefold()
     if lowered.startswith(("bearer ", "basic ", "token ")):
-        return True
-    if SENSITIVE_CREDENTIAL_URL_RE.search(text):
-        return True
-    if SENSITIVE_WEBHOOK_URL_RE.search(text):
         return True
     if SENSITIVE_PRIVATE_KEY_RE.search(text):
         return True
