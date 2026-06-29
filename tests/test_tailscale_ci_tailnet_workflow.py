@@ -10,7 +10,6 @@ WORKFLOW_PATH = Path(".github/workflows/tailscale-private-admin-verify.yml")
 PUBLIC_TLS_WORKFLOW_PATH = Path(".github/workflows/tls-scan.yml")
 CI_WORKFLOW_PATH = Path(".github/workflows/ci-deploy.yml")
 PRIVATE_HOST = "admin-sitbank.tailca101b.ts.net"
-PUBLIC_ADMIN_HOST = "admin-sitbank.duckdns.org"
 PREVIOUS_PRIVATE_HOST = "sitbank-admin" + ".tailca101b.ts.net"
 STALE_PRIVATE_HOST = "sitbank-ec2" + ".tailca101b.ts.net"
 
@@ -27,20 +26,29 @@ def test_private_tailnet_workflow_is_manual_environment_protected_and_least_priv
 
     assert workflow["name"] == "Verify private Tailscale admin access"
     assert set(triggers) == {"workflow_dispatch", "workflow_call"}
-    for trigger_name in ("workflow_dispatch", "workflow_call"):
-        inputs = triggers[trigger_name]["inputs"]
+    dispatch_inputs = triggers["workflow_dispatch"]["inputs"]
+    call_inputs = triggers["workflow_call"]["inputs"]
+    for inputs in (dispatch_inputs, call_inputs):
         assert inputs["private_admin_host"] == {
             "description": "Private Tailscale admin hostname.",
             "required": "false",
             "default": PRIVATE_HOST,
             "type": "string",
         }
-        assert inputs["public_admin_host"] == {
-            "description": "Retired public admin hostname that must remain denied.",
-            "required": "false",
-            "default": PUBLIC_ADMIN_HOST,
-            "type": "string",
-        }
+        assert set(inputs) == {"private_admin_host", "auth_mode"}
+    assert dispatch_inputs["auth_mode"] == {
+        "description": "Protected Tailscale credential mode.",
+        "required": "true",
+        "default": "oauth",
+        "type": "choice",
+        "options": ["oauth", "authkey"],
+    }
+    assert call_inputs["auth_mode"] == {
+        "description": "Protected Tailscale credential mode (oauth or authkey).",
+        "required": "false",
+        "default": "oauth",
+        "type": "string",
+    }
     assert "pull_request" not in text
     assert "pull_request_target" not in text
     assert "push:" not in text
@@ -52,13 +60,20 @@ def test_private_tailnet_workflow_is_manual_environment_protected_and_least_priv
     assert verify["timeout-minutes"] == "10"
 
 
-def test_private_tailnet_workflow_uses_only_the_protected_tailscale_secret():
+def test_private_tailnet_workflow_supports_protected_oauth_and_auth_key_modes():
     text, workflow = _load_workflow()
 
     assert "secrets" not in workflow["on"]["workflow_call"]
-    assert "${{ secrets.TAILSCALE_AUTH_KEY }}" in text
+    assert "authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}" in text
+    assert "oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}" in text
+    assert "oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}" in text
+    assert "tags: tag:github-ci" in text
+    assert "if: inputs.auth_mode == 'oauth'" in text
+    assert "if: inputs.auth_mode == 'authkey'" in text
     assert set(re.findall(r"secrets\.([A-Z0-9_]+)", text)) == {
-        "TAILSCALE_AUTH_KEY"
+        "TAILSCALE_AUTH_KEY",
+        "TS_OAUTH_CLIENT_ID",
+        "TS_OAUTH_SECRET",
     }
     assert "env:" in text
     assert "printenv" not in text
@@ -72,12 +87,16 @@ def test_private_tailnet_workflow_uses_only_the_protected_tailscale_secret():
         if "uses" in step
     ]
     assert uses == [
-        "tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8"
+        "tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8",
+        "tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8",
     ]
-    assert re.fullmatch(r"tailscale/github-action@[0-9a-f]{40}", uses[0])
+    assert all(
+        re.fullmatch(r"tailscale/github-action@[0-9a-f]{40}", action)
+        for action in uses
+    )
 
 
-def test_private_tailnet_workflow_checks_reachability_tls_and_public_admin_denial():
+def test_private_tailnet_workflow_checks_private_reachability_and_tls():
     text, workflow = _load_workflow()
     verify = workflow["jobs"]["verify"]
 
@@ -87,18 +106,18 @@ def test_private_tailnet_workflow_checks_reachability_tls_and_public_admin_denia
         verify["env"]["TAILSCALE_PRIVATE_ADMIN_HOST"]
         == "${{ inputs.private_admin_host }}"
     )
-    assert (
-        verify["env"]["TAILSCALE_PUBLIC_ADMIN_HOST"]
-        == "${{ inputs.public_admin_host }}"
-    )
+    assert verify["env"]["TAILSCALE_AUTH_MODE"] == "${{ inputs.auth_mode }}"
+    assert set(verify["env"]) == {
+        "TAILSCALE_PRIVATE_ADMIN_HOST",
+        "TAILSCALE_AUTH_MODE",
+    }
     assert "ping: ${{ inputs.private_admin_host }}" in text
+    assert "auth_mode must be oauth or authkey" in text
     assert '"https://${TAILSCALE_PRIVATE_ADMIN_HOST}/login"' in text
-    assert '"${public_admin_url}/login"' in text
-    assert "Admin verification targets must be hostnames" in text
+    assert "The admin verification target must be a hostname" in text
     assert "getent ahostsv4" in text
     assert "--write-out '%{http_code}'" in text
     assert '"${private_status}" != "200"' in text
-    assert "000|403|404|421|444" in text
     assert "--insecure" not in text
     assert "before joining the tailnet" in text
     assert "Required private admin gate passed." in text
@@ -134,6 +153,8 @@ def test_public_tls_scan_remains_separate_from_private_tailnet_verification():
     assert PRIVATE_HOST not in public_tls
     assert PREVIOUS_PRIVATE_HOST not in public_tls
     assert STALE_PRIVATE_HOST not in public_tls
+    assert "TS_OAUTH_CLIENT_ID" not in public_tls
+    assert "TS_OAUTH_SECRET" not in public_tls
     assert "TAILSCALE_AUTH_KEY" not in public_tls
     assert "tailscale/github-action" not in public_tls
 
@@ -151,7 +172,7 @@ def test_production_workflow_requires_private_gate_after_deploy_and_public_tls()
     assert gate["permissions"] == {"contents": "read"}
     assert gate["with"] == {
         "private_admin_host": PRIVATE_HOST,
-        "public_admin_host": PUBLIC_ADMIN_HOST,
+        "auth_mode": "oauth",
     }
     assert "secrets" not in gate
     assert "continue-on-error" not in gate
@@ -180,7 +201,9 @@ def test_docs_describe_protected_tailnet_rotation_offboarding_and_scan_separatio
     for required in (
         "GitHub-hosted runner",
         "admin-tailscale",
-        "tailscale set --hostname=admin-sitbank",
+        "sitbank-verify-tailscale-admin",
+        "TS_OAUTH_CLIENT_ID",
+        "TS_OAUTH_SECRET",
         "TAILSCALE_AUTH_KEY",
         PRIVATE_HOST,
         f"https://{PRIVATE_HOST}",

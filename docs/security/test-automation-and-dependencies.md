@@ -20,7 +20,9 @@ and test evidence found in the repository.
 | `.github/workflows/ci-deploy.yml` | Main CI, image, smoke, scan, sign, and deploy workflow | Runs tests, audits, scans, DAST paths, Trivy, and cosign |
 | `.github/workflows/codeql.yml` | CodeQL static analysis | Python `security-extended` queries on pull requests, main pushes, and schedule when repository is public |
 | `.github/workflows/sonarqube.yml` | SonarQube Cloud code-quality analysis | Full pytest coverage plus reporting-only maintainability, duplication, reliability, and security dashboard analysis |
-| `.github/workflows/tailscale-private-admin-verify.yml` | Protected private-tailnet verification | A manual/reusable job joins with an ephemeral tagged identity, checks private admin reachability and public admin-route denial, remains separate from PR/public TLS CI, and is required after production deploy plus public TLS |
+| `.github/workflows/tailscale-private-admin-verify.yml` | Protected private-tailnet verification | A manual/reusable job joins with an ephemeral tagged identity, checks private admin reachability, remains separate from PR/public TLS CI, and is required after production deploy plus public TLS |
+| `ops/tailscale/*` | Confirmation-gated Tailscale production-admin provisioning | Dry-run/confirm scripts install the authenticated package, support OAuth/auth-key/interactive enrollment, configure only private HTTPS to `127.0.0.1:5002`, delegate verification, and provide a non-secret ACL reference |
+| `ops/deploy/verify-tailscale-admin-access` | EC2-local private-admin posture verification | A non-mutating production-host check validates Tailscale/Funnel state, loopback binding, readiness, Nginx absence, narrow Serve mapping, and private HTTPS without accepting credentials |
 | `.github/workflows/bootstrap-ec2.yml` | Bootstrap artifact workflow | Uses pinned actions and cosign blob signing |
 
 Not applicable to the current dependency inventory: no `package.json`,
@@ -58,7 +60,9 @@ Tests for this automation include:
 | `tests/test_deployment.py::test_trivy_exception_is_narrow_documented_and_temporary` | Trivy ignore policy |
 | `tests/test_secret_scanner.py` | Secret scanner behavior |
 | `tests/test_sonarqube_workflow.py` | SonarQube trigger, permission, pinning, coverage, scope, secret, label, and documentation policy |
-| `tests/test_tailscale_ci_tailnet_workflow.py` | Private-tailnet trigger, environment, secret, action pinning, reachability, public denial, prohibited operation, and public TLS separation policy |
+| `tests/test_tailscale_ci_tailnet_workflow.py` | Private-tailnet trigger, environment, explicit OAuth/auth-key modes, action pinning, reachability, prohibited operation, and public TLS separation policy |
+| `tests/test_tailscale_admin_access.py` | Host-preflight modes, bootstrap installation, safe command contract, Serve/Funnel parsing, listener failure cases, Nginx absence, and stubbed success/failure behavior |
+| `tests/test_tailscale_admin_automation.py` | Provisioning files, dry-run/confirmation gates, secret handling, fixed Serve target, Funnel prohibition, bootstrap installation, ACL least privilege, and documentation contracts |
 
 ## Test Automation Coverage
 
@@ -154,19 +158,34 @@ Private admin reachability is isolated in the reusable
 manually, and the main production workflow requires it after production deploy
 and public production TLS succeed. Its GitHub-hosted runner enters the
 protected `admin-tailscale` environment after manual approval and uses only
-its `TAILSCALE_AUTH_KEY` secret. The key must be reusable, ephemeral,
-`tag:github-ci`, pre-approved where needed, and limited to
-`tag:admin-sitbank:443`. The job runs no pull-request code, checks the private
-URL is unreachable before joining, validates the private login entrypoint and
-retired public-admin denial, and logs out without artifacts. Normal public TLS
-scans never include `admin-sitbank.tailca101b.ts.net`.
+one selected credential mode. Production explicitly uses OAuth with
+`TS_OAUTH_CLIENT_ID`/`TS_OAUTH_SECRET`; manual/reusable runs may select the
+optional `TAILSCALE_AUTH_KEY`. Both identities are limited to
+`tag:github-ci -> tag:admin-sitbank:443`. The job runs no pull-request code,
+checks the private URL is unreachable before joining, validates the private
+login entrypoint, and logs out without artifacts. Normal public TLS scans never include
+`admin-sitbank.tailca101b.ts.net`.
 
-Credential rotation and offboarding require replacing and then revoking the
-old key, removing stale CI nodes, reviewing environment approvers and branch
-rules, and removing the dedicated CI grants/environment when access is no
-longer required. This workflow does not enable Tailscale Funnel or Serve and
-does not replace Flask admin login, TOTP, CSRF, authorization, audit logging,
-or host-side Tailscale verification.
+Credential rotation and offboarding require replacing and testing the selected
+OAuth client or auth key before revocation, removing stale CI nodes, reviewing
+environment approvers/branch rules, and removing the dedicated CI
+grants/environment when access is no longer required. This workflow does not enable Tailscale
+Funnel or Serve and does not replace Flask admin login, TOTP, CSRF,
+authorization, audit logging, or host-side Tailscale verification.
+
+Repository-managed provisioning lives in `ops/tailscale/`. Its Bash scripts
+are covered by static and dry-run contract tests; normal CI never runs
+installation, `tailscale up`, or Serve configuration. Mutating host execution
+requires `--confirm`, an explicit auth mode, approved operator access, and
+post-change verification. The complementary EC2 host control is
+`/usr/local/sbin/verify-tailscale-admin-access --mode serve`, installed by the
+production bootstrap. Normal CI does not contact a live daemon: it uses
+stubbed command results to cover Running-state parsing, Funnel rejection,
+loopback-only listeners, local readiness, Nginx absence, narrow Serve mapping,
+private HTTPS, and fail-closed behavior. The canonical verifier has no provisioning path
+and accepts no Tailscale credential. A successful live run is operator-owned
+deployment evidence; ACL, device approval, and membership remain separate
+manual evidence.
 
 The separate `.github/workflows/codeql.yml` runs CodeQL Python
 `security-extended` queries for public repository events. The separate

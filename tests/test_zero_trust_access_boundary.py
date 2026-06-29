@@ -59,8 +59,12 @@ def test_hybrid_cloudflare_staging_and_tailscale_admin_design_is_documented():
         "Admin access is private through Tailscale",
         "Implemented repository controls include",
         "Protected GitHub CI tailnet verification is implemented only by",
+        "EC2 Host-Side Tailscale Preflight",
+        "EC2 Tailscale Provisioning Automation",
+        "verify-tailscale-admin-access --mode serve",
         "admin-tailscale",
-        "TAILSCALE_AUTH_KEY",
+        "TS_OAUTH_CLIENT_ID",
+        "TS_OAUTH_SECRET",
         "This intentionally uses both products because the surfaces have different",
         "Production customer | `https://sitbank.duckdns.org`",
         "Staging customer | `https://staging-sitbank.pp.ua`",
@@ -80,7 +84,7 @@ def test_hybrid_cloudflare_staging_and_tailscale_admin_design_is_documented():
         "https://admin-sitbank.tailca101b.ts.net/",
         "old public admin verification",
         "page has been removed from the edge bootstrap",
-        "No public admin hostname is a valid access path",
+        "No public admin hostname or Nginx admin upstream is configured",
         "Zero-trust and network-boundary work should use these repository labels",
     ):
         assert required in docs
@@ -307,6 +311,8 @@ def test_provider_credentials_are_not_committed_or_required_by_ci():
     assert "CLOUDFLARE_API_TOKEN" not in ci_workflow
     assert "TAILSCALE_AUTH_KEY" not in ci_workflow
     assert "TS_AUTHKEY" not in ci_workflow
+    assert "TS_OAUTH_CLIENT_ID" not in ci_workflow
+    assert "TS_OAUTH_SECRET" not in ci_workflow
     assert "CF_API_TOKEN" not in ci_workflow
 
     forbidden_patterns = (
@@ -316,6 +322,8 @@ def test_provider_credentials_are_not_committed_or_required_by_ci():
         r"CLOUDFLARE_API_TOKEN=['\"][^'\"]+['\"]",
         r"TAILSCALE_AUTH_KEY=['\"][^'\"]+['\"]",
         r"TS_AUTHKEY=['\"][^'\"]+['\"]",
+        r"TS_OAUTH_CLIENT_ID=['\"][^'\"]+['\"]",
+        r"TS_OAUTH_SECRET=['\"][^'\"]+['\"]",
     )
     for pattern in forbidden_patterns:
         assert not re.search(pattern, combined)

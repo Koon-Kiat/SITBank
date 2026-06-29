@@ -20,9 +20,10 @@ behind Tailscale/private device access.
 
 Implemented repository controls include origin-side Cloudflare Access assertion
 validation, Authenticated Origin Pull CA integrity checks, Cloudflare staging
-provisioning and verification automation, Tailscale admin host preflight, and
-the private-admin CI verification workflow. Live provider policy, device
-approval, and host-side Serve state remain operator-owned evidence.
+provisioning and verification automation, confirmation-gated Tailscale
+installation/Serve configuration, Tailscale admin host preflight, and the
+private-admin CI verification workflow. Live provider policy, device approval,
+group membership, and executed host state remain operator-owned evidence.
 
 Protected GitHub CI tailnet verification is implemented only by
 `.github/workflows/tailscale-private-admin-verify.yml`. It is deliberately not
@@ -39,6 +40,10 @@ References:
 - Tailscale ACLs and tags:
   <https://tailscale.com/docs/features/access-control/acls> and
   <https://tailscale.com/docs/features/tags>
+- Tailscale OAuth clients:
+  <https://tailscale.com/docs/features/oauth-clients>
+- Tailscale auth keys:
+  <https://tailscale.com/docs/features/access-control/auth-keys>
 
 ## Protected GitHub CI Tailnet Verification
 
@@ -54,28 +59,26 @@ production workflow invoke the required gate after `deploy-production` and
 `verify-production-tls` both succeed. The reusable job uses the protected
 `admin-tailscale` GitHub Environment. Configure that environment to require
 manual approval by trusted maintainers, restrict deployment branches to
-`main`, and store `TAILSCALE_AUTH_KEY` only as an environment secret. Do not
-duplicate it as a repository or organization secret. The auth key must be
-reusable, ephemeral, pre-approved when device approval is enabled, tagged as
-`tag:github-ci`, unable to administer the tailnet or use broad SSH, and granted
-only `tag:admin-sitbank:443`. The workflow uses the official Tailscale action
-at an immutable commit, checks the targets before joining, and does not check
-out or run repository code.
+`main`. Production uses `auth_mode: oauth` with environment secrets
+`TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET`. Manual/reusable verification may
+select `auth_mode: authkey` and use `TAILSCALE_AUTH_KEY`. Do not duplicate any
+of them as repository or organization secrets. The OAuth client needs **Keys >
+Auth Keys > Write**; an auth key must be short-lived, one-off where possible,
+ephemeral, tagged, and pre-approved when required. Both modes are restricted
+to `tag:github-ci`, which may reach only `tag:admin-sitbank:443` and cannot
+administer the tailnet or use broad SSH. Each run selects exactly one mode.
 
 Each approved run:
 
-1. Requires `https://admin-sitbank.duckdns.org/login` to return a documented
-   safe denial (`403`, `404`, `421`, or `444`) or have no public endpoint
-   (`000`). Any public login/dashboard response fails closed.
-2. Confirms `https://admin-sitbank.tailca101b.ts.net/login` cannot respond from
+1. Confirms `https://admin-sitbank.tailca101b.ts.net/login` cannot respond from
    the public runner before tailnet enrollment. An unexpected response fails
    closed because it may indicate Funnel or another public exposure.
-3. Joins the approved tailnet with the protected ephemeral tagged identity and
+2. Joins the approved tailnet with the protected ephemeral tagged identity and
    verifies tailnet connectivity to `admin-sitbank.tailca101b.ts.net`.
-4. Resolves the private hostname and requires the HTTPS login entrypoint to
+3. Resolves the private hostname and requires the HTTPS login entrypoint to
    return its documented unauthenticated `200` response with ordinary
    certificate and hostname validation.
-5. Logs out and relies on ephemeral-node cleanup; it uploads no artifacts or
+4. Logs out and relies on ephemeral-node cleanup; it uploads no artifacts or
    Tailscale state.
 
 This is reachability evidence, not an authenticated admin test. It uses no
@@ -89,10 +92,7 @@ remains forbidden.
 
 Normal public TLS scanning remains in `.github/workflows/tls-scan.yml` and
 covers only `staging-sitbank.pp.ua` and `sitbank.duckdns.org`. It must not
-depend on or include the private Tailscale hostname. Public admin checking in
-the protected workflow verifies denial or absence of the retired
-`admin-sitbank.duckdns.org` login path; it does not make the private admin URL
-a public TLS-scan target.
+depend on or include the private Tailscale hostname.
 
 After a trusted production deployment, the release order is
 `deploy-production` -> `verify-production-tls` ->
@@ -103,22 +103,91 @@ checks after Tailscale DNS, ACL/tag, certificate, Serve, or admin-edge changes.
 
 ### Credential Rotation And CI Offboarding
 
-Rotate `TAILSCALE_AUTH_KEY` before expiry, after suspected disclosure, after a
-maintainer with environment access is offboarded, or whenever its tag/grant
-scope changes:
+Rotate `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET` after suspected disclosure,
+after a maintainer with environment access is offboarded, or whenever the
+client's tag/grant scope changes:
 
-1. Create a replacement reusable, ephemeral, tagged, and narrowly scoped auth
-   key in Tailscale.
-2. Replace the protected environment secret, manually approve one verification
-   run from `main`, and confirm the ephemeral node is removed after the job.
-3. Revoke the old key and remove any stale CI node from the tailnet.
+1. Create a replacement OAuth client with **Keys > Auth Keys > Write**
+   permission restricted to `tag:github-ci`.
+2. Replace both protected environment secrets, manually approve one
+   verification run from `main`, and confirm the ephemeral node is removed
+   after the job.
+3. Revoke the old OAuth client and remove any stale CI node from the tailnet.
 
-To remove CI tailnet access, delete `TAILSCALE_AUTH_KEY` from the environment,
-revoke the key in Tailscale, remove the dedicated CI tag grants and stale
-devices, and disable or delete the GitHub Environment. Environment approver
-and deployment-branch rules must be reviewed during maintainer offboarding.
-Retired private aliases must not be used. If the live tailnet hostname
-changes, update the workflow, documentation, and policy tests together.
+If `auth_mode: authkey` is used, rotate `TAILSCALE_AUTH_KEY` before expiry or
+after disclosure, validate one approved run, then revoke the old key. Revoking
+either credential does not remove enrolled nodes; remove stale nodes
+separately.
+
+To remove CI tailnet access, delete all three optional secrets from the
+environment, revoke the applicable OAuth client/auth key, remove the dedicated
+CI tag grants and stale devices, and disable or delete the GitHub Environment.
+Environment approver and deployment-branch rules must be reviewed during
+maintainer offboarding. Retired private aliases must not be used.
+
+### EC2 Tailscale Provisioning Automation
+
+`ops/tailscale/` implements the approved Model B private-HTTPS setup:
+
+- `install-tailscale` installs the authenticated Ubuntu 24.04 stable package
+  only after `--confirm`; `--dry-run` performs no network or package action.
+- `configure-admin-access` supports explicit `oauth`, `authkey`, and
+  `interactive` modes. It accepts no credential before `--confirm`, passes
+  secrets through an inherited file descriptor, and never prints or persists
+  them.
+- `verify-admin-access` delegates to the canonical EC2 verifier.
+- `acl-policy.hujson` is a non-secret least-privilege policy reference; it is
+  reviewed and applied manually to the live tailnet.
+
+Production bootstrap installs these scripts under `/usr/local/sbin`. The
+confirmed configure flow permits only private HTTPS `443` to
+`http://127.0.0.1:5002`, clears unsafe route/exit-node/SSH advertisement,
+refuses pre-existing Serve mappings, never enables Funnel, and requires the
+preflight before and after Serve changes. Staging admin is deliberately not
+configured; port `5003`, a staging private hostname, policy, verification, and
+docs require a separate approval.
+
+Normal CI performs static/contract tests only and never installs Tailscale,
+joins the tailnet, reads host credentials, or configures Serve. Live policy
+application, operator/device approval, and execution remain manually approved
+external actions. See `ops/tailscale/README.md` for safe secret input,
+onboarding, offboarding, quarterly review, rollback, and emergency disable.
+
+### EC2 Host-Side Tailscale Preflight
+
+Production bootstrap installs
+`ops/deploy/verify-tailscale-admin-access` at
+`/usr/local/sbin/verify-tailscale-admin-access`. It is a non-mutating local
+control with three explicit modes:
+
+- `--mode serve` proves the node is running, Funnel is disabled, the admin
+  listener is only `127.0.0.1:5002`, local readiness works, Nginx has no admin
+  upstream/private hostname, Serve maps only the approved private HTTPS
+  endpoint to `http://127.0.0.1:5002`, and private `/login` returns `200`.
+- `--mode ssh` proves the same local Tailscale, Funnel, listener, readiness,
+  and Nginx prerequisites for fallback private port-forward diagnostics. It
+  does not claim to test a remote tunnel.
+- `--mode documentation-only` checks arguments and warns that no live
+  verification occurred. It is not acceptable production evidence.
+
+Run the primary check on EC2:
+
+```bash
+sudo /usr/local/sbin/verify-tailscale-admin-access --mode serve
+```
+
+The script invokes only local status and read-only inspection commands. It
+does not accept or print auth keys, OAuth credentials, API tokens, node keys,
+cookies, or application secrets. It does not run `tailscale up`, change Serve,
+enable Funnel, write tailnet policy, call an external provider API, or replace
+the protected GitHub workflow.
+
+The two controls answer different questions. The protected GitHub workflow
+proves that an approved ephemeral tailnet client can reach the private HTTPS
+entrypoint. The EC2 preflight proves the deployed host's local listener,
+Nginx, Serve, and Funnel posture. Live ACL/grant contents, tag ownership,
+device approval, operator membership, and removal of stale devices remain
+operator-owned evidence and must be reviewed in Tailscale.
 
 ## Protected Paths
 
@@ -239,19 +308,20 @@ htpasswd hash must not be stored in the repository.
 
 ## Admin Tailscale Access
 
-Install Tailscale on the EC2 host and enroll it as a tagged service node such
-as `tag:sitbank-admin`. Restrict access with the tailnet policy so only
-approved operator users, groups, or managed devices can reach the SITBank host
-and admin service ports. Do not rely on a shared password as the private
-network boundary.
+Use the confirmation-gated `ops/tailscale/` automation to install Tailscale
+and enroll the EC2 host as `tag:sitbank-admin`. Restrict access with the
+reviewed tailnet policy so only approved operator users/groups and the narrow
+CI identity can reach HTTPS `443`. Do not rely on a shared password as the
+private network boundary.
 
 Current admin access path:
 
 ```bash
-sudo tailscale up --advertise-tags=tag:sitbank-admin
-sudo tailscale set --hostname=admin-sitbank
-sudo tailscale serve --bg --https=443 127.0.0.1:5002
-sudo tailscale serve status
+sudo /usr/local/sbin/sitbank-install-tailscale --dry-run
+sudo /usr/local/sbin/sitbank-configure-tailscale-admin \
+  --dry-run --auth-mode oauth
+# After approval, repeat each with --confirm.
+sudo /usr/local/sbin/sitbank-verify-tailscale-admin
 ```
 
 Admins connect to the Tailscale VPN first, then open
@@ -270,9 +340,14 @@ policy entries, monitoring, bookmarks, or automation that contain the previous
 hostname must be updated separately; tag-based grants remain unchanged.
 
 If Tailscale Serve is unavailable, use a separate reviewed private operator
-path rather than exposing the admin app publicly. In all cases, the Flask
-admin login and TOTP remain mandatory after the private network boundary is
-satisfied.
+path rather than exposing the admin app publicly. For host diagnostics, run
+`sudo /usr/local/sbin/verify-tailscale-admin-access --mode ssh`, then establish
+an approved-device tunnel such as
+`ssh -N -L 127.0.0.1:5002:127.0.0.1:5002
+sitbank-deploy@<approved-private-host>`. This is fallback diagnostics only;
+private HTTPS through Serve remains the supported browser path. In all cases,
+Flask admin login and TOTP remain mandatory after the private network boundary
+is satisfied.
 
 ## Operator Onboarding
 
@@ -296,6 +371,8 @@ Admin operators:
    root-admin invite flow.
 5. Confirm admin login still requires password plus TOTP after Tailscale
    access is established.
+6. Run the EC2 `--mode serve` preflight and retain its non-secret result with
+   the operator-change evidence.
 
 ## Offboarding
 
@@ -311,6 +388,8 @@ When an operator or device is removed:
 6. Rotate staging Basic Auth, Tailscale auth keys, or other affected
    host-managed credentials if they were shared with the removed operator.
 7. Review audit logs for staging/admin access near the offboarding time.
+8. Run the EC2 `--mode serve` preflight, confirm removed devices are absent in
+   Tailscale, and retain both results as offboarding evidence.
 
 ## Deployment Verification
 
@@ -375,14 +454,16 @@ live checks manually:
 
 Live Tailscale admin checks:
 
-1. An approved operator reaches `https://admin-sitbank.tailca101b.ts.net/` only from an approved tailnet device.
-2. A non-tailnet network cannot reach the admin app.
-3. A removed user or deleted device loses access.
-4. Admin browser login with workplace password and TOTP reaches the dashboard.
-5. Admin readiness endpoints remain private or restricted.
-6. No public admin hostname is a valid access path; the retired public hostname
-   is absent or returns a safe denial.
-7. `https://sitbank.duckdns.org` remains public.
+1. Run
+   `sudo /usr/local/sbin/verify-tailscale-admin-access --mode serve` on EC2
+   and retain its successful, non-secret output.
+2. An approved operator reaches `https://admin-sitbank.tailca101b.ts.net/` only from an approved tailnet device.
+3. A non-tailnet network cannot reach the admin app.
+4. A removed user or deleted device loses access.
+5. Admin browser login with workplace password and TOTP reaches the dashboard.
+6. Admin readiness endpoints remain private or restricted.
+7. No public admin hostname or Nginx admin upstream is configured.
+8. `https://sitbank.duckdns.org` remains public.
 
 ## Emergency Lockout
 
@@ -401,6 +482,7 @@ For admin compromise or suspected unauthorized admin access:
    ```bash
    sudo tailscale serve reset
    sudo tailscale serve status
+   sudo /usr/local/sbin/verify-tailscale-admin-access --mode ssh
    ```
 
 2. Remove the affected Tailscale devices or users from the tailnet.
@@ -430,6 +512,8 @@ If Tailscale admin setup fails:
 2. Leave the public admin surface absent from Nginx.
 3. Use only approved break-glass host access to recover.
 4. Do not expose admin through the customer app or public Nginx routes.
+5. Run the host preflight in the selected live mode and do not restore operator
+   access until it succeeds.
 
 ## Secrets And Host-Managed State
 

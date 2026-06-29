@@ -92,9 +92,7 @@ curl --fail --resolve staging-sitbank.pp.ua:443:127.0.0.1 \
   https://staging-sitbank.pp.ua/health/ready
 curl -I --resolve staging-sitbank.pp.ua:443:<EC2_PUBLIC_IP> \
   https://staging-sitbank.pp.ua/
-sudo tailscale set --hostname=admin-sitbank
-sudo tailscale serve status
-curl -I https://admin-sitbank.tailca101b.ts.net/login
+sudo /usr/local/sbin/sitbank-verify-tailscale-admin
 ```
 
 The origin-pull verifier is an offline host check. It rejects missing,
@@ -127,39 +125,115 @@ Funnel must stay disabled for SITBank admin.
 Tailscale is the private network/device boundary for admin access; it does not
 replace Flask admin login, TOTP, CSRF protection, route authorization, or audit
 logging.
-Tailscale admin host preflight/provisioning and the private admin boundary are
-implemented repository controls; live ACL, device, and Serve state still
-requires operator verification.
+Tailscale installation, production Serve configuration, and host preflight are
+implemented as repository-managed scripts. Their execution, live ACL, device,
+group, and resulting Serve state still require operator approval and retained
+evidence.
+
+Production bootstrap installs the scripts documented in
+`ops/tailscale/README.md`. Start with non-mutating plans:
+
+```bash
+sudo /usr/local/sbin/sitbank-install-tailscale --dry-run
+sudo /usr/local/sbin/sitbank-configure-tailscale-admin \
+  --dry-run --auth-mode oauth
+```
+
+After change approval, run `sitbank-install-tailscale --confirm`, then run the
+configure command with `--confirm` and one explicit mode:
+
+- `oauth` reads `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET`;
+- `authkey` reads `TAILSCALE_AUTH_KEY`;
+- `interactive` uses approved browser authentication.
+
+OAuth is preferred. The OAuth client needs **Keys > Auth Keys > Write** and
+`tag:sitbank-admin`. Auth keys must be short-lived, one-off where possible,
+pre-approved where required, and tagged. Read a secret without echo, preserve
+only the required variable through `sudo`, and unset it immediately after the
+command. Never paste it into history, logs, tickets, screenshots, or files.
+Both mutating scripts require `--confirm`; normal CI runs neither.
+
+The configure script permits only private HTTPS `443` to
+`http://127.0.0.1:5002`, refuses existing non-empty Serve state, disables
+route/exit-node/Tailscale-SSH advertisement, never enables Funnel, and requires
+the canonical host preflight. It does not configure staging admin or customer
+services. Tailnet policy remains an operator-applied change based on the
+non-secret `ops/tailscale/acl-policy.hujson` reference.
+
+Production bootstrap installs the read-only host preflight at
+`/usr/local/sbin/verify-tailscale-admin-access`. Run it directly on EC2 after
+deployment and whenever the admin listener, Nginx, Tailscale daemon, Serve
+mapping, Funnel state, private hostname, or certificate changes:
+
+```bash
+sudo /usr/local/sbin/verify-tailscale-admin-access --mode serve
+```
+
+Expected output is one `OK:` line for each of these assertions: Tailscale is
+running; Funnel is disabled; port `5002` listens only on `127.0.0.1`; local
+admin readiness returns `200`; Nginx has no admin upstream or private
+Tailscale hostname; Serve exposes only
+`admin-sitbank.tailca101b.ts.net:443` to
+`http://127.0.0.1:5002`; and the private `/login` URL returns `200`. Any
+`ERROR:` line and nonzero exit is a failed preflight. Investigate the named
+control; do not enable Funnel, broaden the listener, or add an Nginx admin
+route to make the check pass.
+
+The reviewed defaults can be overridden with
+`ADMIN_LOOPBACK_HOST`, `ADMIN_LOOPBACK_PORT`, and `PRIVATE_ADMIN_HOST`, or
+their matching command-line flags. Values are strictly validated. Change a
+default only with the Compose, Tailscale, documentation, and tests in the same
+review; there is intentionally no public-admin-host setting.
+
+For a reviewed fallback diagnostic using private SSH port forwarding, first
+run:
+
+```bash
+sudo /usr/local/sbin/verify-tailscale-admin-access --mode ssh
+```
+
+This verifies the host prerequisites but not the remote tunnel. From an
+approved operator device, a reviewed diagnostic tunnel has the form
+`ssh -N -L 127.0.0.1:5002:127.0.0.1:5002
+sitbank-deploy@<approved-private-host>`. Use it only for loopback diagnostics;
+the supported admin browser path remains private HTTPS through Tailscale
+Serve. `--mode documentation-only` performs no live checks and prints that
+warning; never retain its result as production evidence.
+
+The host script consumes no auth key, OAuth secret, API token, node key, or
+policy credential and does not print raw Tailscale status. It never enables
+Tailscale, Serve, or Funnel. It supplies EC2-local listener/configuration
+evidence; the protected GitHub workflow below separately supplies
+tailnet-client reachability evidence. Operators must still retain live ACL,
+tag, device-approval, membership, and offboarding evidence.
 
 The **Verify private Tailscale admin access** workflow is the only
 GitHub-hosted workflow approved to join the tailnet. It can run manually and is
 the required final production gate after deployment and public production TLS
 verification. It uses the protected `admin-tailscale` environment and its
-`TAILSCALE_AUTH_KEY` environment secret. The environment must require manual
-approval by trusted maintainers and restrict deployment branches to `main`.
-The key must create a reusable, ephemeral, pre-approved (when required)
-`tag:github-ci` node with access only to `tag:admin-sitbank:443`; it must not
-administer the tailnet or provide broad SSH access.
+Tailscale credential selected by `auth_mode`. Production selects `oauth` and
+uses `TS_OAUTH_CLIENT_ID`/`TS_OAUTH_SECRET`. A manual/reusable run may select
+`authkey` and use `TAILSCALE_AUTH_KEY`. The environment must require manual
+approval and restrict branches to `main`. Either credential must be restricted
+to `tag:github-ci`; that tag may access only `tag:admin-sitbank:443` and must
+not administer the tailnet or provide broad SSH access.
 
 Run the workflow after private DNS, certificates, Tailscale ACLs/tags, Serve
 configuration, or the admin edge changes. It first confirms the private URL is
 unreachable before joining, then requires
 `https://admin-sitbank.tailca101b.ts.net/login` to return the documented
-unauthenticated `200` response. Before joining, it also requires
-`https://admin-sitbank.duckdns.org/login` to return `403`, `404`, `421`, `444`,
-or no public endpoint (`000`). Any public login/dashboard response fails the
-gate. The job uses no admin login credentials, makes no deployment or provider
-configuration changes, enables neither Tailscale Funnel nor Serve, uploads no
-Tailscale state, and logs out at completion. Flask admin login, TOTP, CSRF,
-route authorization, audit logging, and admin/customer isolation still apply.
+unauthenticated `200` response. The job uses no admin login credentials, makes
+no deployment or provider configuration changes, enables neither Tailscale
+Funnel nor Serve, uploads no Tailscale state, and logs out at completion.
+Flask admin login, TOTP, CSRF, route authorization, audit logging, and
+admin/customer isolation still apply.
 
-For credential rotation, create a replacement reusable, ephemeral, tagged,
-narrowly scoped key; update the protected environment secret; approve and
-verify one `main` run; then revoke the old key and remove stale CI nodes.
+For rotation, replace and test both OAuth secrets before revoking the old
+client, or replace and test `TAILSCALE_AUTH_KEY` before revoking the old key.
 During maintainer offboarding, also review environment approvers and branch
-rules. To remove CI tailnet access entirely, delete the environment secret,
-revoke the key, remove the dedicated CI tag grants/devices, and disable or
-delete the environment. The full runbook is in
+rules. To remove CI tailnet access entirely, delete all Tailscale environment
+secrets, revoke the selected credential, remove dedicated CI tag
+grants/devices, and disable or delete the environment. The full runbook is in
 `docs/security/admin-and-staging-zero-trust-access.md`.
 
 Run the manual **Verify staging Cloudflare Access** workflow before a staging

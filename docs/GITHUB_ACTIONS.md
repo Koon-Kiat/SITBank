@@ -130,29 +130,44 @@ The trusted production workflow calls it as the required final gate after both
 `deploy-production` and `verify-production-tls` succeed. Pull requests,
 forks, Dependabot, staging, and the public TLS workflow do not call it.
 
-Its `admin-tailscale` environment must require trusted maintainer approval,
-permit only `main`, and hold the sole `TAILSCALE_AUTH_KEY` secret. Configure
-that key as reusable, ephemeral, pre-approved when needed, tagged as
-`tag:github-ci`, unable to administer the tailnet or use broad SSH, and allowed
-only to reach `tag:admin-sitbank:443`. The production caller neither inherits
-nor passes deployment secrets; the called job receives the Tailscale key only
-after its protected environment is approved.
+Its `admin-tailscale` environment must require trusted maintainer approval and
+permit only `main`. The production caller explicitly uses `auth_mode: oauth`;
+store `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET` in that environment.
+Configure the OAuth client with **Keys > Auth Keys > Write**, restricted to
+`tag:github-ci`. Manual/reusable runs may select `auth_mode: authkey` and use
+the environment's optional `TAILSCALE_AUTH_KEY`, which must be short-lived,
+tagged, ephemeral, and pre-approved when required. Each run selects exactly
+one mode. The tag cannot administer the tailnet or use broad SSH and may reach
+only `tag:admin-sitbank:443`.
 
 The workflow fails if the private URL responds before enrollment, then joins
 the tailnet, requires `https://admin-sitbank.tailca101b.ts.net/login` to return
-the documented unauthenticated `200`, requires
-`https://admin-sitbank.duckdns.org/login` to return a safe denial or have no
-public endpoint, and logs out. It checks no admin credentials, changes no
-deployment or tailnet state, and enables neither Tailscale Serve nor Funnel.
+the documented unauthenticated `200`, and logs out. It checks no admin
+credentials, changes no deployment or tailnet state, and enables neither
+Tailscale Serve nor Funnel.
 Failure marks the post-deploy workflow failed; production may already be
 deployed, so operators must investigate rather than rerun deployment blindly.
 
-Rotate the environment secret with a replacement key and one approved `main`
-test before revoking the old key. During offboarding, review environment
-approvers and branch rules and remove stale CI nodes. To withdraw CI tailnet
-access, remove the secret, revoke the key, remove the CI tag grants/devices,
-and disable or delete the environment. Normal public TLS scans continue to
-exclude the private hostname.
+Rotate OAuth by replacing both OAuth secrets and testing before revoking the
+old client. Rotate auth-key mode by replacing `TAILSCALE_AUTH_KEY`, testing,
+then revoking the old key. During offboarding, review environment approvers
+and branch rules and remove stale CI nodes. To withdraw CI tailnet access,
+remove all Tailscale credential secrets, revoke the selected client/key,
+remove CI tag grants/devices, and disable or delete the environment. Normal
+public TLS scans continue to exclude the private hostname.
+
+This workflow is network-path evidence, not EC2 host-configuration evidence.
+The production bootstrap separately installs the non-mutating
+`/usr/local/sbin/verify-tailscale-admin-access` preflight. Operators run its
+`--mode serve` check on EC2 to inspect the local Tailscale/Funnel state,
+loopback listener, Serve mapping, local readiness, Nginx absence, and private
+HTTPS response. The host script uses no GitHub secret or Tailscale credential;
+normal CI covers its contract with stubs and does not claim to inspect live
+Tailscale state.
+
+The separate `ops/tailscale/` host automation installs Tailscale and configures
+the production Serve mapping only after explicit operator confirmation. It is
+never called by this workflow, pull requests, or normal CI.
 
 ## DAST Policy
 

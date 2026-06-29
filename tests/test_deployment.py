@@ -1806,7 +1806,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert private_admin["permissions"] == {"contents": "read"}
     assert private_admin["with"] == {
         "private_admin_host": "admin-sitbank.tailca101b.ts.net",
-        "public_admin_host": "admin-sitbank.duckdns.org",
+        "auth_mode": "oauth",
     }
     assert "secrets" not in private_admin
     staging_deploy_env = workflow["jobs"]["deploy-staging"]["env"]
@@ -2579,6 +2579,10 @@ def test_linux_deployment_artifacts_are_forced_to_lf_and_reject_crlf():
         Path("ops/deploy/sitbank-container-runtime"),
         Path("ops/deploy/sitbank-database-cutover"),
         Path("ops/deploy/verify-certbot-host-state"),
+        Path("ops/deploy/verify-tailscale-admin-access"),
+        Path("ops/tailscale/install-tailscale"),
+        Path("ops/tailscale/configure-admin-access"),
+        Path("ops/tailscale/verify-admin-access"),
         Path("ops/backups/sitbank-backup-encrypted"),
         Path("ops/backups/sitbank-restore-preflight"),
         Path("ops/nginx-proxy-headers.conf"),
@@ -2602,6 +2606,8 @@ def test_linux_deployment_artifacts_are_forced_to_lf_and_reject_crlf():
     assert "ops/deploy/bootstrap-container-ec2 text eol=lf" in attributes
     assert "ops/deploy/sitbank-container-bootstrap text eol=lf" in attributes
     assert "ops/deploy/verify-certbot-host-state text eol=lf" in attributes
+    assert "ops/deploy/verify-tailscale-admin-access text eol=lf" in attributes
+    assert "ops/tailscale/* text eol=lf" in attributes
     assert "ops/backups/* text eol=lf" in attributes
     assert "ops/sudoers/* text eol=lf" in attributes
     for path in linux_files:
