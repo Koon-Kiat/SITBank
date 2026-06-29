@@ -8,7 +8,9 @@ import yaml
 
 WORKFLOW_PATH = Path(".github/workflows/tailscale-private-admin-verify.yml")
 PUBLIC_TLS_WORKFLOW_PATH = Path(".github/workflows/tls-scan.yml")
+CI_WORKFLOW_PATH = Path(".github/workflows/ci-deploy.yml")
 PRIVATE_HOST = "admin-sitbank.tailca101b.ts.net"
+PUBLIC_ADMIN_HOST = "admin-sitbank.duckdns.org"
 PREVIOUS_PRIVATE_HOST = "sitbank-admin.tailca101b.ts.net"
 STALE_PRIVATE_HOST = "sitbank-ec2.tailca101b.ts.net"
 
@@ -24,10 +26,26 @@ def test_private_tailnet_workflow_is_manual_environment_protected_and_least_priv
     verify = workflow["jobs"]["verify"]
 
     assert workflow["name"] == "Verify private Tailscale admin access"
-    assert set(triggers) == {"workflow_dispatch"}
+    assert set(triggers) == {"workflow_dispatch", "workflow_call"}
+    for trigger_name in ("workflow_dispatch", "workflow_call"):
+        inputs = triggers[trigger_name]["inputs"]
+        assert inputs["private_admin_host"] == {
+            "description": "Private Tailscale admin hostname.",
+            "required": "false",
+            "default": PRIVATE_HOST,
+            "type": "string",
+        }
+        assert inputs["public_admin_host"] == {
+            "description": "Retired public admin hostname that must remain denied.",
+            "required": "false",
+            "default": PUBLIC_ADMIN_HOST,
+            "type": "string",
+        }
     assert "pull_request" not in text
+    assert "pull_request_target" not in text
     assert "push:" not in text
     assert workflow["permissions"] == {"contents": "read"}
+    assert verify["if"] == "github.ref == 'refs/heads/main'"
     assert verify["runs-on"] == "ubuntu-24.04"
     assert workflow["concurrency"]["group"] == "admin-tailscale-verification"
     assert verify["environment"] == {"name": "Admin-Tailscale"}
@@ -37,6 +55,7 @@ def test_private_tailnet_workflow_is_manual_environment_protected_and_least_priv
 def test_private_tailnet_workflow_uses_only_the_protected_tailscale_secret():
     text, workflow = _load_workflow()
 
+    assert "secrets" not in workflow["on"]["workflow_call"]
     assert "${{ secrets.TAILSCALE_AUTH_KEY }}" in text
     assert set(re.findall(r"secrets\.([A-Z0-9_]+)", text)) == {
         "TAILSCALE_AUTH_KEY"
@@ -64,20 +83,25 @@ def test_private_tailnet_workflow_checks_reachability_tls_and_public_admin_denia
 
     assert STALE_PRIVATE_HOST not in text
     assert PREVIOUS_PRIVATE_HOST not in text
-    assert verify["env"]["PRIVATE_ADMIN_HOST"] == PRIVATE_HOST
-    assert verify["env"]["PRIVATE_ADMIN_URL"] == f"https://{PRIVATE_HOST}"
     assert (
-        verify["env"]["PUBLIC_ADMIN_DENIAL_URL"]
-        == "https://sitbank.duckdns.org/admin"
+        verify["env"]["TAILSCALE_PRIVATE_ADMIN_HOST"]
+        == "${{ inputs.private_admin_host }}"
     )
-    assert f"ping: {PRIVATE_HOST}" in text
-    assert '"${PRIVATE_ADMIN_URL}/login"' in text
+    assert (
+        verify["env"]["TAILSCALE_PUBLIC_ADMIN_HOST"]
+        == "${{ inputs.public_admin_host }}"
+    )
+    assert "ping: ${{ inputs.private_admin_host }}" in text
+    assert '"https://${TAILSCALE_PRIVATE_ADMIN_HOST}/login"' in text
+    assert '"${public_admin_url}/login"' in text
+    assert "Admin verification targets must be hostnames" in text
     assert "getent ahostsv4" in text
     assert "--write-out '%{http_code}'" in text
     assert '"${private_status}" != "200"' in text
-    assert '"${public_status}" != "404"' in text
+    assert "000|403|404|421|444" in text
     assert "--insecure" not in text
     assert "before joining the tailnet" in text
+    assert "Required private admin gate passed." in text
 
 
 def test_private_tailnet_workflow_has_no_mutating_or_secret_artifact_operations():
@@ -114,6 +138,28 @@ def test_public_tls_scan_remains_separate_from_private_tailnet_verification():
     assert "tailscale/github-action" not in public_tls
 
 
+def test_production_workflow_requires_private_gate_after_deploy_and_public_tls():
+    ci_text = CI_WORKFLOW_PATH.read_text(encoding="utf-8")
+    ci = yaml.load(ci_text, Loader=yaml.BaseLoader)
+    gate = ci["jobs"]["verify-private-admin-tailnet"]
+
+    assert gate["name"] == "Required private admin post-deploy gate"
+    assert gate["uses"] == "./.github/workflows/tailscale-private-admin-verify.yml"
+    assert gate["needs"] == ["deploy-production", "verify-production-tls"]
+    assert "needs.deploy-production.result == 'success'" in gate["if"]
+    assert "needs.verify-production-tls.result == 'success'" in gate["if"]
+    assert gate["permissions"] == {"contents": "read"}
+    assert gate["with"] == {
+        "private_admin_host": PRIVATE_HOST,
+        "public_admin_host": PUBLIC_ADMIN_HOST,
+    }
+    assert "secrets" not in gate
+    assert "continue-on-error" not in gate
+    assert ci_text.index("verify-production-tls:") < ci_text.index(
+        "verify-private-admin-tailnet:"
+    )
+
+
 def test_docs_describe_protected_tailnet_rotation_offboarding_and_scan_separation():
     docs = "\n".join(
         path.read_text(encoding="utf-8")
@@ -141,6 +187,8 @@ def test_docs_describe_protected_tailnet_rotation_offboarding_and_scan_separatio
         "rotation",
         "offboarding",
         "manual approval",
+        "required protected post-production-deploy gate",
+        "after production public TLS verification",
         "public TLS",
         "Tailscale Funnel",
         "Flask admin login",

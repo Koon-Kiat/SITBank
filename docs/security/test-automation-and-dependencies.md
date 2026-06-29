@@ -20,7 +20,7 @@ and test evidence found in the repository.
 | `.github/workflows/ci-deploy.yml` | Main CI, image, smoke, scan, sign, and deploy workflow | Runs tests, audits, scans, DAST paths, Trivy, and cosign |
 | `.github/workflows/codeql.yml` | CodeQL static analysis | Python `security-extended` queries on pull requests, main pushes, and schedule when repository is public |
 | `.github/workflows/sonarqube.yml` | SonarQube Cloud code-quality analysis | Full pytest coverage plus reporting-only maintainability, duplication, reliability, and security dashboard analysis |
-| `.github/workflows/tailscale-private-admin-verify.yml` | Protected private-tailnet verification | A manual job joins with an ephemeral tagged identity, checks private admin reachability and public admin-route denial, and remains separate from PR/public TLS CI |
+| `.github/workflows/tailscale-private-admin-verify.yml` | Protected private-tailnet verification | A manual/reusable job joins with an ephemeral tagged identity, checks private admin reachability and public admin-route denial, remains separate from PR/public TLS CI, and is required after production deploy plus public TLS |
 | `.github/workflows/bootstrap-ec2.yml` | Bootstrap artifact workflow | Uses pinned actions and cosign blob signing |
 
 Not applicable to the current dependency inventory: no `package.json`,
@@ -149,16 +149,17 @@ stages:
 | Cosign signing and verification | Image and deployment artifact signing/verification |
 | Manual release DAST option | `workflow_dispatch` input `run_dast` controls authenticated DAST during release verification |
 
-Private admin reachability is intentionally outside the main workflow. The
-manual `.github/workflows/tailscale-private-admin-verify.yml` workflow uses a
-GitHub-hosted runner that enters the protected
-`Admin-Tailscale` environment after manual approval. It
-uses only its `TAILSCALE_AUTH_KEY` secret. The key must be reusable, ephemeral,
-tagged, pre-approved where needed, and limited by tailnet grants to the private
-admin HTTPS service. The job runs no pull-request code, checks the private URL
-is unreachable before joining, validates the private login entrypoint and
-public customer-host admin denial, and logs out without artifacts. Normal
-public TLS scans never include `admin-sitbank.tailca101b.ts.net`.
+Private admin reachability is isolated in the reusable
+`.github/workflows/tailscale-private-admin-verify.yml` workflow. It can run
+manually, and the main production workflow requires it after production deploy
+and public production TLS succeed. Its GitHub-hosted runner enters the
+protected `Admin-Tailscale` environment after manual approval and uses only
+its `TAILSCALE_AUTH_KEY` secret. The key must be reusable, ephemeral,
+`tag:github-ci`, pre-approved where needed, and limited to
+`tag:admin-sitbank:443`. The job runs no pull-request code, checks the private
+URL is unreachable before joining, validates the private login entrypoint and
+retired public-admin denial, and logs out without artifacts. Normal public TLS
+scans never include `admin-sitbank.tailca101b.ts.net`.
 
 Credential rotation and offboarding require replacing and then revoking the
 old key, removing stale CI nodes, reviewing environment approvers and branch

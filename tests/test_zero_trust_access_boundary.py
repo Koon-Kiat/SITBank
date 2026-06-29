@@ -80,7 +80,7 @@ def test_hybrid_cloudflare_staging_and_tailscale_admin_design_is_documented():
         "https://admin-sitbank.tailca101b.ts.net/",
         "old public admin verification",
         "page has been removed from the edge bootstrap",
-        "No public admin hostname is required or scanned.",
+        "No public admin hostname is a valid access path",
         "Zero-trust and network-boundary work should use these repository labels",
     ):
         assert required in docs

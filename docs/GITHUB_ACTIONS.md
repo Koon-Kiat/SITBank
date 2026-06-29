@@ -6,6 +6,7 @@ The normal release path is:
 
 ```text
 main push -> publish -> release-verify -> staging -> production
+  -> production public TLS -> protected private admin tailnet gate
 ```
 
 The tested, scanned, signed, and deployed digest must be identical. Deployments never use `latest`.
@@ -92,21 +93,28 @@ deployment.
 
 ## Private Tailnet Verification
 
-`.github/workflows/tailscale-private-admin-verify.yml` is a separate manual
-workflow. It is the only GitHub-hosted job permitted to join the tailnet and
-is not called by pull-request, deployment, or public TLS workflows.
-Its `Admin-Tailscale` environment must require trusted
-maintainer approval, permit only `main`, and hold the sole
-`TAILSCALE_AUTH_KEY` secret. Configure that key as reusable, ephemeral,
-pre-approved when needed, tagged, and limited to the private admin HTTPS
-service.
+`.github/workflows/tailscale-private-admin-verify.yml` is manual-runnable and
+reusable. It is the only GitHub-hosted workflow permitted to join the tailnet.
+The trusted production workflow calls it as the required final gate after both
+`deploy-production` and `verify-production-tls` succeed. Pull requests,
+forks, Dependabot, staging, and the public TLS workflow do not call it.
+
+Its `Admin-Tailscale` environment must require trusted maintainer approval,
+permit only `main`, and hold the sole `TAILSCALE_AUTH_KEY` secret. Configure
+that key as reusable, ephemeral, pre-approved when needed, tagged as
+`tag:github-ci`, unable to administer the tailnet or use broad SSH, and allowed
+only to reach `tag:admin-sitbank:443`. The production caller neither inherits
+nor passes deployment secrets; the called job receives the Tailscale key only
+after its protected environment is approved.
 
 The workflow fails if the private URL responds before enrollment, then joins
 the tailnet, requires `https://admin-sitbank.tailca101b.ts.net/login` to return
-the documented unauthenticated `200`, requires the public customer
-`https://sitbank.duckdns.org/admin` route to remain denied with `404`, and logs
-out. It checks no admin credentials, changes no deployment or tailnet state,
-and enables neither Tailscale Serve nor Funnel.
+the documented unauthenticated `200`, requires
+`https://admin-sitbank.duckdns.org/login` to return a safe denial or have no
+public endpoint, and logs out. It checks no admin credentials, changes no
+deployment or tailnet state, and enables neither Tailscale Serve nor Funnel.
+Failure marks the post-deploy workflow failed; production may already be
+deployed, so operators must investigate rather than rerun deployment blindly.
 
 Rotate the environment secret with a replacement key and one approved `main`
 test before revoking the old key. During offboarding, review environment

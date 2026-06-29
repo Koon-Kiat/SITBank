@@ -1166,3 +1166,19 @@ jobs:
     with:
       scan_scope: production
       production_host: ${{ vars['PROD_PUBLIC_HOST'] || 'sitbank.duckdns.org' }}
+
+  verify-private-admin-tailnet:
+    name: Required private admin post-deploy gate
+    if: >-
+      always() &&
+      needs.deploy-production.result == 'success' &&
+      needs.verify-production-tls.result == 'success'
+    needs:
+      - deploy-production
+      - verify-production-tls
+    permissions:
+      contents: read
+    uses: ./.github/workflows/tailscale-private-admin-verify.yml
+    with:
+      private_admin_host: admin-sitbank.tailca101b.ts.net
+      public_admin_host: admin-sitbank.duckdns.org

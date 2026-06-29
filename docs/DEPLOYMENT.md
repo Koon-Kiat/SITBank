@@ -122,8 +122,12 @@ Deploy the signed image through the restricted wrapper so it runs
 
 Production deployment runs from the trusted `main` workflow only after release
 verification, staging deployment, and the post-deployment staging TLS scan all
-succeed. Leave the repository variable `PROD_DEPLOY_ENABLED` unset or false
-until the production admin secret files and matching
+succeed. A successful production deployment is followed by public production
+TLS verification and then the required protected private-admin tailnet gate.
+If either post-deploy verification fails, the workflow fails even though the
+production deployment already completed. Leave the repository variable
+`PROD_DEPLOY_ENABLED` unset or false until the production admin secret files
+and matching
 `PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID` are ready; when the flag is not
 explicitly true, production deployment is skipped.
 
@@ -156,22 +160,29 @@ do not move secret values into repository variables.
 
 ### Protected Private-Admin Verification Environment
 
-The manual `.github/workflows/tailscale-private-admin-verify.yml` workflow uses
-a GitHub-hosted runner that temporarily joins the tailnet. Create a
-GitHub Environment named `Admin-Tailscale`, require manual
-approval by trusted maintainers, and restrict its deployment branches to
-`main`. Store `TAILSCALE_AUTH_KEY` only as that environment's secret. It must
+The manual/reusable `.github/workflows/tailscale-private-admin-verify.yml`
+workflow uses a GitHub-hosted runner that temporarily joins the tailnet. It can
+be dispatched on demand and is called by `.github/workflows/ci-deploy.yml`
+after `deploy-production` and `verify-production-tls` succeed. Create a GitHub
+Environment named `Admin-Tailscale`, require manual approval by trusted
+maintainers, and restrict its deployment branches to `main`. Each production
+run pauses for that approval before the required private gate can access its
+secret. This is the required protected post-production-deploy gate and it runs
+after production public TLS verification. Store `TAILSCALE_AUTH_KEY` only as
+that environment's secret. It must
 be a reusable, ephemeral, pre-approved key when device approval applies and
-must assign a dedicated CI tag whose tailnet grants reach only
-`admin-sitbank.tailca101b.ts.net:443`.
+must assign a dedicated `tag:github-ci` identity whose tailnet grants reach
+only the `tag:admin-sitbank` service on TCP `443`.
 
 Do not expose the secret as a repository variable or general repository
 secret, and do not permit pull requests, Dependabot, forks, or untrusted
-branches to use the environment. The workflow checks the private admin URL
-before and after joining, validates the unauthenticated login response over
-TLS, verifies the public customer-host admin route remains denied, and logs
-out. It neither deploys nor changes Flask, Nginx, EC2, tailnet policy,
-Tailscale Serve, or Tailscale Funnel.
+branches to use the environment. Inputs default to
+`admin-sitbank.tailca101b.ts.net` and the retired public admin hostname
+`admin-sitbank.duckdns.org`. The workflow checks the private admin URL before
+and after joining, validates the unauthenticated login response over TLS,
+requires the public admin login path to return a safe denial or have no public
+endpoint, and logs out. It neither deploys nor changes Flask, Nginx, EC2,
+tailnet policy, Tailscale Serve, or Tailscale Funnel.
 
 Rotate the credential by replacing the environment secret with a new narrowly
 scoped ephemeral tagged key, validating one manually approved `main` run, and
@@ -260,10 +271,13 @@ scans the staging customer endpoint; production deployment is blocked until
 that evidence passes. After a successful production deploy it scans the
 production customer endpoint, making the resulting artifact the release's live
 TLS evidence. A production scan failure marks the deployment
-workflow failed and requires investigation before the release is accepted. Run
-the workflow manually after Nginx, certificate, DNS, load-balancer, CDN/WAF,
-or host TLS changes outside the normal deployment path. It deliberately does
-not run on pull requests: PRs do not create a separate public TLS endpoint.
+workflow failed and prevents the private-admin tailnet gate from starting.
+After the production TLS scan succeeds, the deployment workflow calls the
+protected private-admin gate; failure of that gate also fails the completed
+deployment workflow. Run the TLS workflow manually after Nginx, certificate,
+DNS, load-balancer, CDN/WAF, or host TLS changes outside the normal deployment
+path. It deliberately does not run on pull requests: PRs do not create a
+separate public TLS endpoint.
 
 By default it scans these hostname-only targets, which can be overridden as
 manual workflow inputs when an approved endpoint changes:

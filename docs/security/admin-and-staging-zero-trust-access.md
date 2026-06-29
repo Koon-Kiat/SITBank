@@ -42,35 +42,39 @@ References:
 
 ## Protected GitHub CI Tailnet Verification
 
-The manual **Verify private Tailscale admin access** workflow temporarily joins
-a GitHub-hosted runner to the tailnet. The project accepts this narrow
-credential exposure because no trusted self-hosted tailnet runner is
-available. This exception applies only to that protected workflow. It does not
-put pull-request CI, deployment jobs, scheduled public TLS scans, or other
+The manual/reusable **Verify private Tailscale admin access** workflow
+temporarily joins a GitHub-hosted runner to the tailnet. The project accepts
+this narrow credential exposure because no trusted self-hosted tailnet runner
+is available. This exception applies only to that protected workflow. It does
+not put pull-request CI, staging, scheduled public TLS scans, or other
 GitHub-hosted jobs inside the tailnet.
 
-The workflow has only a `workflow_dispatch` trigger and uses the protected
-`Admin-Tailscale` GitHub Environment. Configure that
-environment to require manual approval by trusted maintainers, restrict
-deployment branches to `main`, and store `TAILSCALE_AUTH_KEY` only as an
-environment secret. Do not duplicate it as a repository or organization
-secret. The auth key must be reusable, ephemeral, pre-approved when device
-approval is enabled, and tagged with a dedicated CI identity whose tailnet
-grant reaches only the private admin HTTPS service. The workflow uses the
-official Tailscale action at an immutable commit, checks the target before
-joining, and does not check out or run repository code.
+`workflow_dispatch` supports on-demand checks. `workflow_call` lets the trusted
+production workflow invoke the required gate after `deploy-production` and
+`verify-production-tls` both succeed. The reusable job uses the protected
+`Admin-Tailscale` GitHub Environment. Configure that environment to require
+manual approval by trusted maintainers, restrict deployment branches to
+`main`, and store `TAILSCALE_AUTH_KEY` only as an environment secret. Do not
+duplicate it as a repository or organization secret. The auth key must be
+reusable, ephemeral, pre-approved when device approval is enabled, tagged as
+`tag:github-ci`, unable to administer the tailnet or use broad SSH, and granted
+only `tag:admin-sitbank:443`. The workflow uses the official Tailscale action
+at an immutable commit, checks the targets before joining, and does not check
+out or run repository code.
 
 Each approved run:
 
-1. Confirms `https://admin-sitbank.tailca101b.ts.net/login` cannot respond from
+1. Requires `https://admin-sitbank.duckdns.org/login` to return a documented
+   safe denial (`403`, `404`, `421`, or `444`) or have no public endpoint
+   (`000`). Any public login/dashboard response fails closed.
+2. Confirms `https://admin-sitbank.tailca101b.ts.net/login` cannot respond from
    the public runner before tailnet enrollment. An unexpected response fails
    closed because it may indicate Funnel or another public exposure.
-2. Joins the approved tailnet with the protected ephemeral tagged identity and
+3. Joins the approved tailnet with the protected ephemeral tagged identity and
    verifies tailnet connectivity to `admin-sitbank.tailca101b.ts.net`.
-3. Resolves the private hostname and requires the HTTPS login entrypoint to
+4. Resolves the private hostname and requires the HTTPS login entrypoint to
    return its documented unauthenticated `200` response with ordinary
    certificate and hostname validation.
-4. Requires `https://sitbank.duckdns.org/admin` to remain denied with `404`.
 5. Logs out and relies on ephemeral-node cleanup; it uploads no artifacts or
    Tailscale state.
 
@@ -86,8 +90,16 @@ remains forbidden.
 Normal public TLS scanning remains in `.github/workflows/tls-scan.yml` and
 covers only `staging-sitbank.pp.ua` and `sitbank.duckdns.org`. It must not
 depend on or include the private Tailscale hostname. Public admin checking in
-the protected workflow verifies denial on the public customer host; it does
-not make the private admin URL a public TLS-scan target.
+the protected workflow verifies denial or absence of the retired
+`admin-sitbank.duckdns.org` login path; it does not make the private admin URL
+a public TLS-scan target.
+
+After a trusted production deployment, the release order is
+`deploy-production` -> `verify-production-tls` ->
+`verify-private-admin-tailnet`. A private-gate failure fails the completed
+deployment workflow and clearly requires post-deploy investigation; it does
+not roll back or redeploy automatically. Manual dispatch remains available for
+checks after Tailscale DNS, ACL/tag, certificate, Serve, or admin-edge changes.
 
 ### Credential Rotation And CI Offboarding
 
@@ -360,7 +372,8 @@ Live Tailscale admin checks:
 3. A removed user or deleted device loses access.
 4. Admin browser login with workplace password and TOTP reaches the dashboard.
 5. Admin readiness endpoints remain private or restricted.
-6. No public admin hostname is required or scanned.
+6. No public admin hostname is a valid access path; the retired public hostname
+   is absent or returns a safe denial.
 7. `https://sitbank.duckdns.org` remains public.
 
 ## Emergency Lockout
@@ -427,6 +440,7 @@ Host-managed values:
   `/etc/nginx/cloudflare-authenticated-origin-pull-ca.pem`.
 - Tailscale tailnet policy, ACLs/grants, device approvals, and tagged node
   state.
+- `tag:github-ci` access restricted to `tag:admin-sitbank:443`.
 - Tailscale Serve configuration.
 - Staging Basic Auth password and htpasswd hash.
 

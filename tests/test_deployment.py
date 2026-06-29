@@ -1597,6 +1597,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         "verify-staging-tls",
         "deploy-production",
         "verify-production-tls",
+        "verify-private-admin-tailnet",
     }
     assert workflow["permissions"] == {}
     assert workflow["jobs"]["workflow-security"]["permissions"]["contents"] == "read"
@@ -1770,6 +1771,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     ]
     staging_tls = workflow["jobs"]["verify-staging-tls"]
     production_tls = workflow["jobs"]["verify-production-tls"]
+    private_admin = workflow["jobs"]["verify-private-admin-tailnet"]
     assert staging_tls["uses"] == "./.github/workflows/tls-scan.yml"
     assert staging_tls["needs"] == "deploy-staging"
     assert "always()" in staging_tls["if"]
@@ -1790,6 +1792,23 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
             "${{ vars['PROD_PUBLIC_HOST'] || 'sitbank.duckdns.org' }}"
         ),
     }
+    assert private_admin["name"] == "Required private admin post-deploy gate"
+    assert private_admin["uses"] == (
+        "./.github/workflows/tailscale-private-admin-verify.yml"
+    )
+    assert private_admin["needs"] == [
+        "deploy-production",
+        "verify-production-tls",
+    ]
+    assert "always()" in private_admin["if"]
+    assert "needs.deploy-production.result == 'success'" in private_admin["if"]
+    assert "needs.verify-production-tls.result == 'success'" in private_admin["if"]
+    assert private_admin["permissions"] == {"contents": "read"}
+    assert private_admin["with"] == {
+        "private_admin_host": "admin-sitbank.tailca101b.ts.net",
+        "public_admin_host": "admin-sitbank.duckdns.org",
+    }
+    assert "secrets" not in private_admin
     staging_deploy_env = workflow["jobs"]["deploy-staging"]["env"]
     production_deploy_env = workflow["jobs"]["deploy-production"]["env"]
     assert not any(name.startswith("PROD_") for name in staging_deploy_env)

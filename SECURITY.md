@@ -76,10 +76,11 @@ Bootstrapped root admins open `https://admin-sitbank.tailca101b.ts.net/login`,
 authenticate with the existing admin password and TOTP flow, and then reach the
 private dashboard at `https://admin-sitbank.tailca101b.ts.net/`. Customer
 accounts cannot authenticate to the admin runtime.
-Only the manual protected `tailscale-private-admin-verify.yml` GitHub Actions
-workflow may temporarily join the tailnet to verify private reachability and
-public admin-route denial; normal PR, deployment, and public TLS jobs remain
-outside the tailnet.
+Only the protected `tailscale-private-admin-verify.yml` GitHub Actions workflow
+may temporarily join the tailnet to verify private reachability and public
+admin-route denial. It is manual-runnable and is a required gate after
+production deployment and public production TLS verification; normal PR and
+public TLS jobs remain outside the tailnet.
 
 Staging access is protected by Cloudflare Access before Nginx/Flask and by
 Cloudflare Authenticated Origin Pulls at the staging Nginx origin. Direct

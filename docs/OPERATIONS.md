@@ -131,24 +131,27 @@ Tailscale admin host preflight/provisioning and the private admin boundary are
 implemented repository controls; live ACL, device, and Serve state still
 requires operator verification.
 
-The manual **Verify private Tailscale admin access** workflow is the only
-GitHub-hosted job approved to join the tailnet. It uses the protected
-`Admin-Tailscale` environment and its
+The **Verify private Tailscale admin access** workflow is the only
+GitHub-hosted workflow approved to join the tailnet. It can run manually and is
+the required final production gate after deployment and public production TLS
+verification. It uses the protected `Admin-Tailscale` environment and its
 `TAILSCALE_AUTH_KEY` environment secret. The environment must require manual
 approval by trusted maintainers and restrict deployment branches to `main`.
-The key must create a reusable, ephemeral, pre-approved (when required), tagged
-CI node with access only to the private admin HTTPS service.
+The key must create a reusable, ephemeral, pre-approved (when required)
+`tag:github-ci` node with access only to `tag:admin-sitbank:443`; it must not
+administer the tailnet or provide broad SSH access.
 
 Run the workflow after private DNS, certificates, Tailscale ACLs/tags, Serve
 configuration, or the admin edge changes. It first confirms the private URL is
 unreachable before joining, then requires
 `https://admin-sitbank.tailca101b.ts.net/login` to return the documented
-unauthenticated `200` response and
-`https://sitbank.duckdns.org/admin` to remain denied with `404`. The job uses
-no admin login credentials, makes no deployment or provider configuration
-changes, enables neither Tailscale Funnel nor Serve, uploads no Tailscale
-state, and logs out at completion. Flask admin login, TOTP, CSRF, route
-authorization, audit logging, and admin/customer isolation still apply.
+unauthenticated `200` response. Before joining, it also requires
+`https://admin-sitbank.duckdns.org/login` to return `403`, `404`, `421`, `444`,
+or no public endpoint (`000`). Any public login/dashboard response fails the
+gate. The job uses no admin login credentials, makes no deployment or provider
+configuration changes, enables neither Tailscale Funnel nor Serve, uploads no
+Tailscale state, and logs out at completion. Flask admin login, TOTP, CSRF,
+route authorization, audit logging, and admin/customer isolation still apply.
 
 For credential rotation, create a replacement reusable, ephemeral, tagged,
 narrowly scoped key; update the protected environment secret; approve and
@@ -488,7 +491,8 @@ operator-dispatched, and post-deployment evidence of the Internet-facing TLS
 posture for `staging-sitbank.pp.ua` and `sitbank.duckdns.org`. The deployment
 workflow calls the staging scan
 after staging deploy and blocks production deployment until it passes; it calls
-the production scan after production deploy to complete the release evidence.
+the production scan after production deploy, then calls the required protected
+private-admin tailnet gate only after that public scan succeeds.
 The manual workflow input `staging_host` defaults to
 `staging-sitbank.pp.ua`.
 Dispatch it after edge, certificate, DNS, Nginx/OpenSSL, CDN/WAF, or
@@ -499,7 +503,8 @@ pull requests.
 The normal public TLS scan deliberately excludes the private Tailscale admin hostname
 `admin-sitbank.tailca101b.ts.net`; a GitHub-hosted public runner cannot reach
 it. Private reachability is handled only by the separate, manually approved
-`Admin-Tailscale` environment job that joins the tailnet.
+`Admin-Tailscale` environment job that joins the tailnet on demand or as the
+required final production gate.
 Do not make staging or admin verification pass by switching Cloudflare to
 Flexible SSL, disabling TLS verification, disabling the Cloudflare proxy,
 bypassing Authenticated Origin Pulls, or enabling Tailscale Funnel.
@@ -532,6 +537,8 @@ the workflow/script change before retrying.
 
 Treat a failed scan as a release/deployment verification failure. A failed
 staging scan blocks production deployment, while a failed production scan
+marks the completed deployment workflow failed and prevents the private gate
+from starting. A failed private gate after a successful production scan also
 marks the completed deployment workflow failed. The production customer
 automated gate blocks legacy TLS protocols,
 weak/NULL/anonymous/export/RC4/3DES ciphers, expired or mismatched
