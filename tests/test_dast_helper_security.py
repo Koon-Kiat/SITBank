@@ -160,10 +160,10 @@ def test_dast_docs_describe_secret_file_cookie_model():
         path.read_text(encoding="utf-8")
         for path in (
             Path("docs/GITHUB_ACTIONS.md"),
-            Path("docs/security/test-automation-and-dependencies.md"),
-            Path("docs/security/security-gap-register.md"),
-            Path("docs/security/framework-control-matrix.md"),
-            Path("docs/security/threat-model.md"),
+            Path("docs/security/assurance/test-automation-and-dependencies.md"),
+            Path("docs/security/governance/security-gap-register.md"),
+            Path("docs/security/governance/framework-control-matrix.md"),
+            Path("docs/security/architecture/threat-model.md"),
         )
     )
 

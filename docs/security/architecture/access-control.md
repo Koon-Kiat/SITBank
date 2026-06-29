@@ -4,12 +4,14 @@ This document records the access-control model implemented in the SITBank
 repository. It distinguishes implemented runtime enforcement from test
 coverage notes and service-only flows.
 Framework coverage and current follow-up items are centralized in
-`docs/security/framework-control-matrix.md` and
-`docs/security/security-gap-register.md`.
+`docs/security/governance/framework-control-matrix.md` and
+`docs/security/governance/security-gap-register.md`.
 Privacy/deactivation expectations for customer and staff/admin records are in
-`docs/security/privacy-and-pdpa.md`,
-`docs/security/data-retention-and-deactivation.md`, and
-`docs/security/incident-response.md`.
+`docs/security/governance/privacy-and-pdpa.md`,
+`docs/security/governance/data-retention-and-deactivation.md`, and
+`docs/security/governance/incident-response.md`.
+
+Category: [Security architecture](../README.md#architecture).
 
 ## Access-Control Model
 
@@ -163,14 +165,15 @@ operators open `/login`, complete the normal Flask admin password and TOTP
 controls, and then reach the dashboard. Do not enable Tailscale Funnel or
 expose admin through the customer app. Customer accounts cannot authenticate to
 the admin runtime.
-The protected manual/reusable workflow
-`.github/workflows/tailscale-private-admin-verify.yml` supplies reachability
-evidence from a temporary GitHub-hosted tailnet node. Its
-`admin-tailscale` environment uses OAuth by default and can explicitly select
-the optional protected `TAILSCALE_AUTH_KEY` compatibility mode. Neither mode
-replaces Flask admin login, TOTP, CSRF, route authorization, or audit logging.
-Production calls the workflow only after deployment and public TLS; normal
-public TLS/PR CI remains outside the tailnet.
+The protected manual workflow
+`.github/workflows/tailscale-private-admin-verify.yml` and the direct
+production gate supply reachability evidence from a temporary GitHub-hosted
+tailnet node. Their `admin-tailscale` environment uses OAuth by default, while
+the manual workflow can explicitly select the optional protected
+`TAILSCALE_AUTH_KEY` compatibility mode. Neither mode replaces Flask admin
+login, TOTP, CSRF, route authorization, or audit logging. Production runs its
+direct gate only after deployment and public TLS; normal public TLS/PR CI
+remains outside the tailnet.
 
 `ops/tailscale/` provides confirmation-gated package installation, production
 Serve configuration, a verifier wrapper, and a non-secret ACL reference. The

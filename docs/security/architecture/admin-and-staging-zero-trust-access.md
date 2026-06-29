@@ -25,8 +25,9 @@ installation/Serve configuration, Tailscale admin host preflight, and the
 private-admin CI verification workflow. Live provider policy, device approval,
 group membership, and executed host state remain operator-owned evidence.
 
-Protected GitHub CI tailnet verification is implemented only by
-`.github/workflows/tailscale-private-admin-verify.yml`. It is deliberately not
+Protected GitHub CI tailnet verification is implemented only by the manual
+`.github/workflows/tailscale-private-admin-verify.yml` workflow and the direct
+production gate in `.github/workflows/ci-deploy.yml`. It is deliberately not
 part of normal public CI.
 
 References:
@@ -45,22 +46,26 @@ References:
 - Tailscale auth keys:
   <https://tailscale.com/docs/features/access-control/auth-keys>
 
+Category: [Security architecture](../README.md#architecture).
+
 ## Protected GitHub CI Tailnet Verification
 
-The manual/reusable **Verify private Tailscale admin access** workflow
-temporarily joins a GitHub-hosted runner to the tailnet. The project accepts
-this narrow credential exposure because no trusted self-hosted tailnet runner
-is available. This exception applies only to that protected workflow. It does
-not put pull-request CI, staging, scheduled public TLS scans, or other
-GitHub-hosted jobs inside the tailnet.
+The manual **Verify private Tailscale admin access** workflow and the direct
+production post-deploy gate temporarily join a GitHub-hosted runner to the
+tailnet. The project accepts this narrow credential exposure because no
+trusted self-hosted tailnet runner is available. This exception applies only
+to those protected jobs. It does not put pull-request CI, staging, scheduled
+public TLS scans, or other GitHub-hosted jobs inside the tailnet.
 
-`workflow_dispatch` supports on-demand checks. `workflow_call` lets the trusted
-production workflow invoke the required gate after `deploy-production` and
-`verify-production-tls` both succeed. The reusable job uses the protected
+`workflow_dispatch` supports on-demand checks. The trusted production workflow
+defines a direct required gate after `deploy-production` and
+`verify-production-tls` both succeed. This avoids the observed reusable-call
+behavior where the called job received empty OAuth inputs despite the same
+environment secrets working in a manual run. Both jobs use the protected
 `admin-tailscale` GitHub Environment. Configure that environment to require
-manual approval by trusted maintainers, restrict deployment branches to
-`main`. Production uses `auth_mode: oauth` with environment secrets
-`TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET`. Manual/reusable verification may
+manual approval by trusted maintainers and restrict deployment branches to
+`main`. Production uses OAuth with environment secrets
+`TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET`. Manual verification may
 select `auth_mode: authkey` and use `TAILSCALE_AUTH_KEY`. Do not duplicate any
 of them as repository or organization secrets. The OAuth client needs **Keys >
 Auth Keys > Write**; an auth key must be short-lived, one-off where possible,
@@ -236,7 +241,7 @@ Provider prerequisites and actions:
    corresponding Write permissions. Restrict it to the one account and zone.
 3. Set the account/zone IDs, team domain, approved email/group allowlist, DNS
    origin, and API token in the operator shell as described in
-   `docs/security/cloudflare-staging-access.md`. Do not store them in
+   `docs/security/architecture/cloudflare-staging-access.md`. Do not store them in
    repository `.env` files.
 4. Review the offline plan, then apply with the exact confirmation phrase:
 

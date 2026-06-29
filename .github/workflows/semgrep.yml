@@ -1,0 +1,58 @@
+name: Semgrep
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "43 3 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: semgrep-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    name: High-severity SAST
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      SEMGREP_IMAGE: semgrep/semgrep:1.168.0@sha256:59fbed6127ea7c5dde3ba6a85142733bb20ea9aaa36120c953904f1539aaf66e
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+
+      - name: Run local OSS Semgrep scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --volume "${GITHUB_WORKSPACE}:/src:ro" \
+            --workdir /src \
+            "${SEMGREP_IMAGE}" \
+            semgrep scan \
+              --config p/python \
+              --config p/flask \
+              --config p/security-audit \
+              --config p/owasp-top-ten \
+              --config p/github-actions \
+              --severity ERROR \
+              --error \
+              --exclude .venv \
+              --exclude venv \
+              --exclude .pytest_cache \
+              --exclude .pytest-tmp \
+              --exclude coverage \
+              --exclude htmlcov \
+              --exclude node_modules \
+              --exclude dist \
+              --exclude build \
+              .

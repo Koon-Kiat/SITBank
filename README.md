@@ -35,9 +35,9 @@ The app keeps password hashing PBKDF2+pepper only and MFA/TOTP seed encryption e
 
 Security governance, role-based ownership, review cadence, accepted-risk
 handling, and stale-documentation prevention are documented in
-`docs/security/security-governance.md`. Current gaps live in
-`docs/security/security-gap-register.md`, and framework evidence is mapped in
-`docs/security/framework-control-matrix.md`.
+`docs/security/governance/security-governance.md`. Current gaps live in
+`docs/security/governance/security-gap-register.md`, and framework evidence is mapped in
+`docs/security/governance/framework-control-matrix.md`.
 
 ## Local Development
 
@@ -71,7 +71,16 @@ Common local test commands:
 
 The `not slow` and focused marker commands are for local iteration only. Pull requests and protected CI still run the full pytest suite, including security, deployment, database session integrity, CSRF, MFA, compatibility-route regression checks, route inventory, production guard, dependency lock, and secret-scanning checks.
 
-For a fuller local check, run `scripts/ci-local`. It runs the full pytest suite in parallel with timing output, then Python/package/security checks, Git Bash syntax checks, Docker/Compose checks when Docker is available, and contract checks around `ops/runtime_contract.py`. A Docker-less result is explicitly partial; use `scripts/ci-local --require-docker` before deployment-related changes to fail closed unless Docker/Compose validation runs.
+For a fuller local check, run `scripts/ci-local`. It runs the full pytest suite
+in parallel with timing output, Python/package/security checks, discovered
+shell-script syntax checks, and Docker/Compose validation when Docker is
+available, including contract checks around `ops/runtime_contract.py`. When
+installed, local ShellCheck, Hadolint, and Semgrep use the same
+target/rule policy as their automatic GitHub Actions gates; missing optional
+local tools are reported as `SKIPPED`, never silently omitted. A Docker-less
+result is explicitly partial; use `scripts/ci-local --require-docker` before
+deployment-related changes to fail closed unless Docker/Compose validation
+runs.
 
 ## Required Configuration
 
@@ -146,21 +155,23 @@ customer domain.
 
 ## Documentation
 
+- [Security documentation index](docs/security/README.md)
 - [Contributing](docs/CONTRIBUTING.md)
 - [Deployment](docs/DEPLOYMENT.md)
 - [GitHub Actions](docs/GITHUB_ACTIONS.md)
-- [SonarQube Cloud analysis and PR summary policy](docs/security/sonarqube.md)
+- [SonarQube Cloud analysis and PR summary policy](docs/security/assurance/sonarqube.md)
+- [Repository secret scanning and Gitleaks triage](docs/security/assurance/secret-scanning.md)
 - [Operations](docs/OPERATIONS.md)
 - [Security](SECURITY.md)
-- [Audit and alerting](docs/security/audit-and-alerting.md)
-- [Framework control matrix](docs/security/framework-control-matrix.md)
-- [Privacy and PDPA](docs/security/privacy-and-pdpa.md)
-- [Data retention and deactivation](docs/security/data-retention-and-deactivation.md)
-- [Incident response](docs/security/incident-response.md)
-- [Threat model](docs/security/threat-model.md)
-- [Design risk register](docs/security/design-risk-register.md)
-- [Security gap register](docs/security/security-gap-register.md)
-- [Legacy and out-of-scope technology notes](docs/security/legacy-and-out-of-scope-technology.md)
+- [Audit and alerting](docs/security/assurance/audit-and-alerting.md)
+- [Framework control matrix](docs/security/governance/framework-control-matrix.md)
+- [Privacy and PDPA](docs/security/governance/privacy-and-pdpa.md)
+- [Data retention and deactivation](docs/security/governance/data-retention-and-deactivation.md)
+- [Incident response](docs/security/governance/incident-response.md)
+- [Threat model](docs/security/architecture/threat-model.md)
+- [Design risk register](docs/security/governance/design-risk-register.md)
+- [Security gap register](docs/security/governance/security-gap-register.md)
+- [Legacy and out-of-scope technology notes](docs/security/governance/legacy-and-out-of-scope-technology.md)
 - [Archived EC2 transition notes](docs/archive/EC2_TRANSITION.md)
 
 ## Deployment Snapshot

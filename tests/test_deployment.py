@@ -1031,11 +1031,12 @@ def test_local_ci_command_documents_required_local_checks():
         '"ops/security/scan_repository_secrets.py"',
         '"--history"',
         '"git", "diff", "--check"',
-        "ops/deploy/sitbank-container-deploy",
+        "ops/security/discover_lint_targets.py",
         "ops/container/validate-compose.sh",
         "== {name} ==",
         "Python/test checks",
         "Git Bash syntax checks",
+        "Optional local static analysis",
         "Docker/Compose checks",
         '"PASS"',
         '"FAIL"',
@@ -1793,9 +1794,6 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         ),
     }
     assert private_admin["name"] == "Required private admin post-deploy gate"
-    assert private_admin["uses"] == (
-        "./.github/workflows/tailscale-private-admin-verify.yml"
-    )
     assert private_admin["needs"] == [
         "deploy-production",
         "verify-production-tls",
@@ -1804,11 +1802,22 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "needs.deploy-production.result == 'success'" in private_admin["if"]
     assert "needs.verify-production-tls.result == 'success'" in private_admin["if"]
     assert private_admin["permissions"] == {"contents": "read"}
-    assert private_admin["with"] == {
-        "private_admin_host": "admin-sitbank.tailca101b.ts.net",
-        "auth_mode": "oauth",
+    assert private_admin["environment"] == {"name": "admin-tailscale"}
+    assert private_admin["env"] == {
+        "TAILSCALE_PRIVATE_ADMIN_HOST": "admin-sitbank.tailca101b.ts.net",
     }
     assert "secrets" not in private_admin
+    assert private_admin["runs-on"] == "ubuntu-24.04"
+    assert private_admin["timeout-minutes"] == 10
+    private_join = next(
+        step
+        for step in private_admin["steps"]
+        if step["name"] == "Join the approved tailnet with OAuth"
+    )
+    assert private_join["with"]["oauth-client-id"] == (
+        "${{ secrets.TS_OAUTH_CLIENT_ID }}"
+    )
+    assert private_join["with"]["oauth-secret"] == "${{ secrets.TS_OAUTH_SECRET }}"
     staging_deploy_env = workflow["jobs"]["deploy-staging"]["env"]
     production_deploy_env = workflow["jobs"]["deploy-production"]["env"]
     assert not any(name.startswith("PROD_") for name in staging_deploy_env)
@@ -2475,7 +2484,7 @@ def test_live_tls_scan_workflow_collects_evidence_without_running_on_pull_reques
 
     deployment_docs = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
     operations_docs = Path("docs/OPERATIONS.md").read_text(encoding="utf-8")
-    crypto_docs = Path("docs/security/cryptography-and-authentication.md").read_text(
+    crypto_docs = Path("docs/security/architecture/cryptography-and-authentication.md").read_text(
         encoding="utf-8"
     )
     for docs in (deployment_docs, operations_docs, crypto_docs):
@@ -3297,8 +3306,8 @@ def test_staging_edge_runbook_documents_operator_verification_steps():
         "external `/health/ready` returns `403`",
         "local app readiness",
         "separate from application deployment",
-        "docs/security/admin-and-staging-zero-trust-access.md",
-        "docs/security/cloudflare-staging-access.md",
+        "docs/security/architecture/admin-and-staging-zero-trust-access.md",
+        "docs/security/architecture/cloudflare-staging-access.md",
         "STAGING_CLOUDFLARE_ACCESS_JWT_REQUIRED",
         "STAGING_CLOUDFLARE_ACCESS_AUD",
         "STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN",

@@ -15,6 +15,7 @@ readonly postgres_password
 work_dir="$(mktemp -d)"
 chmod 2770 "${work_dir}"
 
+# Invoked through the EXIT trap registered below; ShellCheck cannot trace it.
 # shellcheck disable=SC2317
 cleanup() {
     docker rm -f sitbank-dast dast-postgres >/dev/null 2>&1 || true

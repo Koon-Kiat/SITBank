@@ -43,6 +43,7 @@ if [[ ! -f "${deploy_config}" || -L "${deploy_config}" \
     exit 1
 fi
 
+# The validated root-owned deploy config path is selected by the wrapper.
 # shellcheck disable=SC1090
 source "${deploy_config}"
 if [[ ! "${GITHUB_REPOSITORY:-}" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ \

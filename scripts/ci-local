@@ -16,15 +16,23 @@ DOCKER_SKIP_MESSAGE = (
     "Local validation is partial."
 )
 
-BASH_SCRIPTS = (
-    "ops/container/smoke-test.sh",
-    "ops/container/validate-compose.sh",
-    "ops/container/dast-smoke.sh",
-    "ops/deploy/bootstrap-container-ec2",
-    "ops/deploy/sitbank-container-bootstrap",
-    "ops/deploy/sitbank-container-deploy",
-    "ops/deploy/sitbank-container-runtime",
-    "ops/deploy/sitbank-database-cutover",
+SEMGREP_CONFIGS = (
+    "p/python",
+    "p/flask",
+    "p/security-audit",
+    "p/owasp-top-ten",
+    "p/github-actions",
+)
+STATIC_ANALYSIS_EXCLUDES = (
+    ".venv",
+    "venv",
+    ".pytest_cache",
+    ".pytest-tmp",
+    "coverage",
+    "htmlcov",
+    "node_modules",
+    "dist",
+    "build",
 )
 
 PYTHON_CHECKS = (
@@ -103,6 +111,81 @@ def run(
         record_result(results, name, "FAIL", str(exc))
         raise
     record_result(results, name, "PASS")
+
+
+def discover_lint_targets(kind: str) -> list[str]:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "ops/security/discover_lint_targets.py",
+            kind,
+        ],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    targets = [line for line in result.stdout.splitlines() if line]
+    if not targets:
+        raise RuntimeError(f"No {kind} lint targets were discovered.")
+    return targets
+
+
+def run_optional_static_analysis(results: list[CheckResult]) -> bool:
+    shell_targets = discover_lint_targets("shell")
+    dockerfiles = discover_lint_targets("dockerfile")
+    checks = (
+        (
+            "ShellCheck repository shell scripts",
+            "shellcheck",
+            ["--severity=style", *shell_targets],
+            ".github/workflows/shellcheck.yml",
+        ),
+        (
+            "Hadolint repository Dockerfiles",
+            "hadolint",
+            ["--failure-threshold", "style", *dockerfiles],
+            ".github/workflows/hadolint.yml",
+        ),
+        (
+            "Semgrep high-severity SAST",
+            "semgrep",
+            [
+                "scan",
+                *[
+                    item
+                    for config in SEMGREP_CONFIGS
+                    for item in ("--config", config)
+                ],
+                "--severity",
+                "ERROR",
+                "--error",
+                *[
+                    item
+                    for excluded in STATIC_ANALYSIS_EXCLUDES
+                    for item in ("--exclude", excluded)
+                ],
+                ".",
+            ],
+            ".github/workflows/semgrep.yml",
+        ),
+    )
+
+    for name, tool, arguments, workflow in checks:
+        executable = shutil.which(tool)
+        if not executable:
+            record_result(
+                results,
+                name,
+                "SKIPPED",
+                f"{tool} is not installed; {workflow} remains the required CI gate.",
+            )
+            continue
+        try:
+            run(name, [executable, *arguments], results)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            return False
+    return True
 
 
 def find_git_bash() -> str:
@@ -233,7 +316,7 @@ def print_summary(results: list[CheckResult]) -> None:
         print("OVERALL: FAIL", flush=True)
     elif any(result.status == "SKIPPED" for result in results):
         print(
-            "OVERALL: PASS (PARTIAL — Docker/Compose checks were SKIPPED)",
+            "OVERALL: PASS (PARTIAL — one or more local checks were SKIPPED)",
             flush=True,
         )
     else:
@@ -262,9 +345,14 @@ def main(argv: list[str] | None = None) -> int:
             record_result(results, "Git Bash availability", "FAIL", str(exc))
             raise
         record_result(results, "Git Bash availability", "PASS", bash)
-        for script in BASH_SCRIPTS:
+        for script in discover_lint_targets("shell"):
             run(f"Syntax check {script}", [bash, "-n", script], results)
-    except (FileNotFoundError, subprocess.CalledProcessError):
+
+        section("Optional local static analysis")
+        if not run_optional_static_analysis(results):
+            print_summary(results)
+            return 1
+    except (FileNotFoundError, RuntimeError, subprocess.CalledProcessError):
         print_summary(results)
         return 1
 

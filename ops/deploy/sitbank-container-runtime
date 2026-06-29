@@ -39,6 +39,7 @@ if [[ ! -r "${DEPLOY_CONFIG}" || ! -r "${STATE_FILE}" ]]; then
     exit 1
 fi
 
+# The validated root-owned deploy config path is selected by the wrapper.
 # shellcheck disable=SC1090
 source "${DEPLOY_CONFIG}"
 image="$(awk -F= '$1 == "IMAGE" { print $2 }' "${STATE_FILE}")"

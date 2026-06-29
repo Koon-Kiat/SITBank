@@ -75,6 +75,7 @@ if [[ ! -f "${DEPLOY_CONFIG}" || -L "${DEPLOY_CONFIG}" \
     exit 1
 fi
 
+# The validated root-owned deploy config path is selected by the wrapper.
 # shellcheck disable=SC1090
 source "${DEPLOY_CONFIG}"
 

@@ -22,6 +22,8 @@ exact confirmation phrase. `--verify` makes read-only API calls, checks that an
 unauthenticated edge request receives the Access challenge, and proves that a
 direct request to the EC2 origin is blocked by Nginx or the network.
 
+Category: [Security architecture](../README.md#architecture).
+
 ## Required configuration
 
 Set values in the operator shell or a protected GitHub `staging` environment.

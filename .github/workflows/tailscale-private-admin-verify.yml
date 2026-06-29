@@ -16,19 +16,6 @@ on:
         options:
           - oauth
           - authkey
-  workflow_call:
-    inputs:
-      private_admin_host:
-        description: Private Tailscale admin hostname.
-        required: false
-        default: admin-sitbank.tailca101b.ts.net
-        type: string
-      auth_mode:
-        description: Protected Tailscale credential mode (oauth or authkey).
-        required: false
-        default: oauth
-        type: string
-
 permissions:
   contents: read
 
@@ -77,6 +64,26 @@ jobs:
             echo
             echo "- Private admin is not reachable from the public runner context."
           } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Validate selected Tailscale credential
+        shell: bash
+        env:
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${TAILSCALE_AUTH_MODE}" == "oauth" \
+            && ( -z "${TS_OAUTH_CLIENT_ID}" || -z "${TS_OAUTH_SECRET}" ) ]]; then
+            echo "::error::OAuth mode requires TS_OAUTH_CLIENT_ID and TS_OAUTH_SECRET in the protected admin-tailscale environment."
+            exit 1
+          fi
+          if [[ "${TAILSCALE_AUTH_MODE}" == "authkey" \
+            && -z "${TAILSCALE_AUTH_KEY}" ]]; then
+            echo "::error::Auth-key mode requires TAILSCALE_AUTH_KEY in the protected admin-tailscale environment."
+            exit 1
+          fi
 
       - name: Join the approved tailnet with OAuth
         if: inputs.auth_mode == 'oauth'
