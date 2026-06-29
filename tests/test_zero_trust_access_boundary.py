@@ -57,10 +57,10 @@ def test_hybrid_cloudflare_staging_and_tailscale_admin_design_is_documented():
         "SITBank uses a hybrid zero-trust access model",
         "Staging uses a Cloudflare-managed public hostname with Cloudflare Access",
         "Admin access is private through Tailscale",
-        "#198: origin-side Cloudflare Access assertion validation for staging.",
-        "#215: CI/CD and deployment migration to the Cloudflare-managed staging",
-        "#218: Tailscale private access as the admin device/network boundary decision.",
-        "Protected GitHub CI tailnet verification is not implemented in normal public CI.",
+        "Implemented repository controls include",
+        "Protected GitHub CI tailnet verification is implemented only by",
+        "admin-tailscale",
+        "TAILSCALE_AUTH_KEY",
         "This intentionally uses both products because the surfaces have different",
         "Production customer | `https://sitbank.duckdns.org`",
         "Staging customer | `https://staging-sitbank.pp.ua`",
@@ -80,11 +80,12 @@ def test_hybrid_cloudflare_staging_and_tailscale_admin_design_is_documented():
         "https://admin-sitbank.tailca101b.ts.net/",
         "old public admin verification",
         "page has been removed from the edge bootstrap",
-        "No public admin hostname is required or scanned.",
+        "No public admin hostname is a valid access path",
         "Zero-trust and network-boundary work should use these repository labels",
     ):
         assert required in docs
 
+    assert "temporarily joins a GitHub-hosted runner to the tailnet" in normalized_docs
     assert "does not replace Flask admin login, TOTP, CSRF protection" in normalized_docs
     assert "staging is documented/configured as public-only" not in docs.lower()
     assert "admin is documented/configured as public-only" not in docs.lower()

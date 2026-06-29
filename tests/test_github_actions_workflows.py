@@ -30,6 +30,7 @@ def test_ci_local_reusable_workflows_exist_and_accept_caller_inputs():
         "sonarqube",
         "verify-staging-tls",
         "verify-production-tls",
+        "verify-private-admin-tailnet",
     }
     for job_name, caller, called_path in calls:
         assert called_path.is_file(), (job_name, called_path)

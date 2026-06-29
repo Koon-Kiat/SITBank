@@ -18,20 +18,15 @@ traffic reaches Nginx or Flask. Admin is an operator-only surface and should
 not be reachable from the public internet at all, so the admin app remains
 behind Tailscale/private device access.
 
-Current tracking references:
+Implemented repository controls include origin-side Cloudflare Access assertion
+validation, Authenticated Origin Pull CA integrity checks, Cloudflare staging
+provisioning and verification automation, Tailscale admin host preflight, and
+the private-admin CI verification workflow. Live provider policy, device
+approval, and host-side Serve state remain operator-owned evidence.
 
-- #198: origin-side Cloudflare Access assertion validation for staging.
-- #199: Cloudflare Authenticated Origin Pull CA integrity checks.
-- #200: Tailscale admin host preflight and Funnel-disabled verification.
-- #210: Cloudflare Access staging provisioning and verification automation.
-- #211: Tailscale admin access provisioning and verification automation.
-- #215: CI/CD and deployment migration to the Cloudflare-managed staging
-  hostname and private Tailscale admin model.
-- #218: Tailscale private access as the admin device/network boundary decision.
-
-Protected GitHub CI tailnet verification is not implemented in normal public CI.
-Track it as a future protected-runner/tailnet workflow if the project wants CI
-to verify the private admin hostname from inside the tailnet.
+Protected GitHub CI tailnet verification is implemented only by
+`.github/workflows/tailscale-private-admin-verify.yml`. It is deliberately not
+part of normal public CI.
 
 References:
 
@@ -44,6 +39,86 @@ References:
 - Tailscale ACLs and tags:
   <https://tailscale.com/docs/features/access-control/acls> and
   <https://tailscale.com/docs/features/tags>
+
+## Protected GitHub CI Tailnet Verification
+
+The manual/reusable **Verify private Tailscale admin access** workflow
+temporarily joins a GitHub-hosted runner to the tailnet. The project accepts
+this narrow credential exposure because no trusted self-hosted tailnet runner
+is available. This exception applies only to that protected workflow. It does
+not put pull-request CI, staging, scheduled public TLS scans, or other
+GitHub-hosted jobs inside the tailnet.
+
+`workflow_dispatch` supports on-demand checks. `workflow_call` lets the trusted
+production workflow invoke the required gate after `deploy-production` and
+`verify-production-tls` both succeed. The reusable job uses the protected
+`admin-tailscale` GitHub Environment. Configure that environment to require
+manual approval by trusted maintainers, restrict deployment branches to
+`main`, and store `TAILSCALE_AUTH_KEY` only as an environment secret. Do not
+duplicate it as a repository or organization secret. The auth key must be
+reusable, ephemeral, pre-approved when device approval is enabled, tagged as
+`tag:github-ci`, unable to administer the tailnet or use broad SSH, and granted
+only `tag:admin-sitbank:443`. The workflow uses the official Tailscale action
+at an immutable commit, checks the targets before joining, and does not check
+out or run repository code.
+
+Each approved run:
+
+1. Requires `https://admin-sitbank.duckdns.org/login` to return a documented
+   safe denial (`403`, `404`, `421`, or `444`) or have no public endpoint
+   (`000`). Any public login/dashboard response fails closed.
+2. Confirms `https://admin-sitbank.tailca101b.ts.net/login` cannot respond from
+   the public runner before tailnet enrollment. An unexpected response fails
+   closed because it may indicate Funnel or another public exposure.
+3. Joins the approved tailnet with the protected ephemeral tagged identity and
+   verifies tailnet connectivity to `admin-sitbank.tailca101b.ts.net`.
+4. Resolves the private hostname and requires the HTTPS login entrypoint to
+   return its documented unauthenticated `200` response with ordinary
+   certificate and hostname validation.
+5. Logs out and relies on ephemeral-node cleanup; it uploads no artifacts or
+   Tailscale state.
+
+This is reachability evidence, not an authenticated admin test. It uses no
+admin credentials, cookies, or session IDs and does not replace Flask admin
+login, TOTP, CSRF protection, route authorization, audit logging,
+admin/customer session isolation, host-side Tailscale ACL/device review, or
+operator verification of Tailscale Serve state. It does not enable or
+configure Tailscale Funnel or Serve, modify tailnet policy, deploy the
+application, bootstrap a root admin, or change EC2 state. Tailscale Funnel
+remains forbidden.
+
+Normal public TLS scanning remains in `.github/workflows/tls-scan.yml` and
+covers only `staging-sitbank.pp.ua` and `sitbank.duckdns.org`. It must not
+depend on or include the private Tailscale hostname. Public admin checking in
+the protected workflow verifies denial or absence of the retired
+`admin-sitbank.duckdns.org` login path; it does not make the private admin URL
+a public TLS-scan target.
+
+After a trusted production deployment, the release order is
+`deploy-production` -> `verify-production-tls` ->
+`verify-private-admin-tailnet`. A private-gate failure fails the completed
+deployment workflow and clearly requires post-deploy investigation; it does
+not roll back or redeploy automatically. Manual dispatch remains available for
+checks after Tailscale DNS, ACL/tag, certificate, Serve, or admin-edge changes.
+
+### Credential Rotation And CI Offboarding
+
+Rotate `TAILSCALE_AUTH_KEY` before expiry, after suspected disclosure, after a
+maintainer with environment access is offboarded, or whenever its tag/grant
+scope changes:
+
+1. Create a replacement reusable, ephemeral, tagged, and narrowly scoped auth
+   key in Tailscale.
+2. Replace the protected environment secret, manually approve one verification
+   run from `main`, and confirm the ephemeral node is removed after the job.
+3. Revoke the old key and remove any stale CI node from the tailnet.
+
+To remove CI tailnet access, delete `TAILSCALE_AUTH_KEY` from the environment,
+revoke the key in Tailscale, remove the dedicated CI tag grants and stale
+devices, and disable or delete the GitHub Environment. Environment approver
+and deployment-branch rules must be reviewed during maintainer offboarding.
+Retired private aliases must not be used. If the live tailnet hostname
+changes, update the workflow, documentation, and policy tests together.
 
 ## Protected Paths
 
@@ -76,6 +151,12 @@ allow-everyone, service-token browser access, bypass/non-identity policies, and
 unmanaged Allow policies. Cloudflare's no-match behavior remains the default
 deny. The retired DuckDNS staging hostname is no longer an active staging
 deployment, Nginx, Certbot, or TLS-scan target.
+The reviewed self-hosted application is named `SITBank staging` and uses
+`STAGING_ACCESS_SESSION_DURATION=6h`. Its policy membership must match the
+exact comma-separated email list stored in
+`STAGING_ACCESS_ALLOWED_EMAILS`. `Everyone`, wildcard domains, and broad
+allow-all rules are forbidden; group and IdP inputs remain optional unless
+those restrictions are intentionally configured.
 
 Provider prerequisites and actions:
 
@@ -168,6 +249,7 @@ Current admin access path:
 
 ```bash
 sudo tailscale up --advertise-tags=tag:sitbank-admin
+sudo tailscale set --hostname=admin-sitbank
 sudo tailscale serve --bg --https=443 127.0.0.1:5002
 sudo tailscale serve status
 ```
@@ -180,6 +262,12 @@ is not approved for SITBank admin. Flask admin login and TOTP remain mandatory
 after the private network boundary is satisfied. Successful browser login
 redirects the operator to the private dashboard at
 `https://admin-sitbank.tailca101b.ts.net/`.
+
+The `admin-sitbank` machine name is part of the MagicDNS FQDN. A hostname
+change must be applied to the live EC2 Tailscale node (or through the Tailscale
+Machines page), then Serve status and HTTPS must be verified again. Tailnet
+policy entries, monitoring, bookmarks, or automation that contain the previous
+hostname must be updated separately; tag-based grants remain unchanged.
 
 If Tailscale Serve is unavailable, use a separate reviewed private operator
 path rather than exposing the admin app publicly. In all cases, the Flask
@@ -245,9 +333,13 @@ python ops/cloudflare/provision-staging-access --verify \
 
 The same non-mutating check is available through the manual
 **Verify staging Cloudflare Access** workflow. It runs only in the protected
-`staging` GitHub environment and uploads a sanitized result with no token,
-account/zone IDs, operator identities, origin address, application ID, or
-audience. It does not run on pull requests or mutate Cloudflare.
+`staging` GitHub environment when dispatched from `main` and uploads a
+sanitized result with no token, account/zone IDs, operator identities, origin
+address, application ID, or audience. It explicitly passes the configured
+session duration and expected audience to the script. It does not run on pull
+requests or mutate Cloudflare. Application drift names safe fields and
+expected/actual values; allowlist drift exposes only counts, never the secret
+addresses.
 
 Host-side staging checks after bootstrap:
 
@@ -288,7 +380,8 @@ Live Tailscale admin checks:
 3. A removed user or deleted device loses access.
 4. Admin browser login with workplace password and TOTP reaches the dashboard.
 5. Admin readiness endpoints remain private or restricted.
-6. No public admin hostname is required or scanned.
+6. No public admin hostname is a valid access path; the retired public hostname
+   is absent or returns a safe denial.
 7. `https://sitbank.duckdns.org` remains public.
 
 ## Emergency Lockout
@@ -355,6 +448,7 @@ Host-managed values:
   `/etc/nginx/cloudflare-authenticated-origin-pull-ca.pem`.
 - Tailscale tailnet policy, ACLs/grants, device approvals, and tagged node
   state.
+- `tag:github-ci` access restricted to `tag:admin-sitbank:443`.
 - Tailscale Serve configuration.
 - Staging Basic Auth password and htpasswd hash.
 

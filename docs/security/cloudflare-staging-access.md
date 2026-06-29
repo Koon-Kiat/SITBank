@@ -27,30 +27,68 @@ direct request to the EC2 origin is blocked by Nginx or the network.
 Set values in the operator shell or a protected GitHub `staging` environment.
 Do not put them in `.env`, workflow YAML, Terraform state, or repository files.
 
-| Variable | Purpose |
-| --- | --- |
-| `CLOUDFLARE_ACCOUNT_ID` | Account containing the Access application |
-| `CLOUDFLARE_ZONE_ID` | Zone containing `staging-sitbank.pp.ua` |
-| `STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN` | `<team>.cloudflareaccess.com` JWT issuer hostname |
-| `STAGING_ACCESS_ALLOWED_EMAILS` | Comma-separated operator emails |
-| `STAGING_ACCESS_ALLOWED_GROUP_IDS` | Optional comma-separated Access group IDs |
-| `STAGING_ACCESS_ALLOWED_IDP_IDS` | Optional comma-separated approved IdP IDs |
-| `STAGING_DNS_ORIGIN` | EC2 origin IPv4/IPv6 address or origin hostname |
-| `STAGING_ORIGIN_IP` | Public EC2 address used only by `--verify` for bypass testing |
-| `CLOUDFLARE_API_TOKEN` | Bearer token; required only by `--apply` and `--verify` |
+The current application is the self-hosted Access application `SITBank
+staging` at `staging-sitbank.pp.ua`. Its session duration is six hours, mapped
+as `STAGING_ACCESS_SESSION_DURATION=6h`. The managed policy is `SITBank staging
+approved operators` and must contain the exact explicit email membership from
+`STAGING_ACCESS_ALLOWED_EMAILS`. `Everyone`, wildcard domains, and broad
+allow-all rules are forbidden.
 
-At least one approved email or group is mandatory. The hostname is fixed to
-`staging-sitbank.pp.ua`; attempts to target production or admin fail closed.
-Optional settings are `STAGING_ACCESS_APP_NAME`,
-`STAGING_ACCESS_POLICY_NAME`, and `STAGING_ACCESS_SESSION_DURATION` (default
-`8h`, allowed range `15m` through `24h`).
+Configure these required `staging` environment secrets:
+
+- `CLOUDFLARE_API_TOKEN`
+- `STAGING_ACCESS_ALLOWED_EMAILS`
+- `STAGING_DNS_ORIGIN`
+- `STAGING_ORIGIN_IP`
+- `STAGING_EC2_KNOWN_HOSTS`
+- `STAGING_EC2_SSH_PRIVATE_KEY_B64`
+
+`STAGING_ACCESS_ALLOWED_GROUP_IDS` is an optional secret. Leave it empty when
+the policy uses only exact emails. `STAGING_ACCESS_ALLOWED_EMAILS` must be a
+comma-separated list of exact approved Cloudflare Access emails and must match
+the live policy. It cannot be empty unless at least one approved Access group
+is configured. Never print or document any of these secret values.
+
+Configure these required `staging` environment variables:
+
+| Variable | Current non-secret value or purpose |
+| --- | --- |
+| `CLOUDFLARE_ACCOUNT_ID` | `6faa030c11df15b07615d1e82d0de15e` |
+| `CLOUDFLARE_ZONE_ID` | `b92001fc94317a194eba3fc76f4364db` |
+| `STAGING_ACCESS_SESSION_DURATION` | `6h` |
+| `STAGING_CLOUDFLARE_ACCESS_AUD` | `847a9be3c396f4930a210e3106aa5d86945839ba9ad31be794e4378bf8a55663` |
+| `STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN` | `small-boat-a77f.cloudflareaccess.com` |
+| `STAGING_PUBLIC_HOST` | `staging-sitbank.pp.ua` |
+| `STAGING_EC2_HOST` | `18.188.152.24` |
+| `STAGING_EC2_DEPLOY_USER` | `sitbank-deploy` |
+| `STAGING_EC2_PORT` | `22` |
+
+`STAGING_ACCESS_ALLOWED_IDP_IDS` is an optional environment variable. Leave it
+empty unless the application intentionally restricts login to specific
+identity providers. `STAGING_ACCESS_APP_NAME` and
+`STAGING_ACCESS_POLICY_NAME` are also optional environment or operator-shell
+overrides; empty values use the defaults `SITBank staging` and `SITBank
+staging approved operators`.
+
+The shared staging environment also carries the existing application and
+deployment variables `ROOT_ADMIN_EMAILS`,
+`STAGING_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID`, `STAGING_MFA_ISSUER_NAME`,
+`STAGING_MFA_KEK_ACTIVE_ID`, `STAGING_PASSWORD_PBKDF2_ITERATIONS`,
+`STAGING_PASSWORD_RESET_EMAIL_FROM`,
+`STAGING_SESSION_HMAC_ACTIVE_KEY_ID`, and `STAGING_SMTP_HOST`. Those values are
+not consumed by provider verification and must retain their existing
+deployment meanings.
+
+The hostname remains fixed to `staging-sitbank.pp.ua`; attempts to target
+production or admin fail closed. Session durations from `15m` through `24h`
+are syntactically supported, but the reviewed live value is `6h`.
 
 For `.github/workflows/cloudflare-access-verify.yml`, configure
-`CLOUDFLARE_API_TOKEN`, `STAGING_ACCESS_ALLOWED_EMAILS`,
-`STAGING_ACCESS_ALLOWED_GROUP_IDS`, `STAGING_DNS_ORIGIN`, and
-`STAGING_ORIGIN_IP` as protected `staging` environment secrets. Configure the
-account ID, zone ID, team domain, and optional IdP IDs as protected environment
-variables. The verification token should have read permissions only.
+the values above in the protected `staging` environment. The workflow maps the
+public host, account and zone IDs, team domain, expected audience, six-hour
+session duration, allowlist inputs, DNS origin, and direct-origin address into
+the verifier explicitly. The verification token should have read permissions
+only.
 
 The staging deployment workflow also requires these protected environment
 variables:
@@ -69,6 +107,12 @@ staging-only request gate.
 The Access identity provider must already exist. Configure and test its MFA,
 group lifecycle, and emergency access separately. Service tokens are not used
 for normal browser access.
+
+Run the workflow manually from **Actions → Verify staging Cloudflare Access →
+Run workflow → main** before a staging release and after changing Access, DNS,
+identity-provider, origin, or environment settings. It has no pull-request
+trigger and its job is restricted to `main`; protected-environment approval
+controls access to the secrets.
 
 ## Token scope and lifecycle
 
@@ -142,9 +186,17 @@ Nginx. Production customer and admin runtimes do not install the staging
 request hook.
 
 `--verify --evidence-file <path>` writes a sanitized JSON summary containing
-only check results, the public staging hostname, and a timestamp. It excludes
-tokens, account/zone IDs, email/group allowlists, origin addresses, application
-IDs, and the audience.
+only check results, the public staging hostname, expected session duration,
+and a timestamp. It excludes tokens, account/zone IDs, email/group allowlists,
+origin addresses, application IDs, and the audience.
+
+Drift diagnostics identify non-secret application fields. For example,
+`session_duration expected=6h actual=24h` identifies a duration mismatch.
+Policy membership drift reports expected and actual email/group counts with
+`mismatch=true`; it never prints the configured addresses. Raw provider
+responses, authorization headers, cookies, JWTs, and Access assertions are not
+written to logs or evidence. Correct the named provider or GitHub-environment
+field and rerun the manual workflow rather than weakening the policy.
 
 After deployment, verify the origin-side gate without copying or printing an
 Access assertion:

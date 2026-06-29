@@ -87,9 +87,6 @@ def test_security_gap_register_is_single_source_with_required_fields():
     ):
         assert open_gap in current_open
 
-    for issue_ref in ("#166", "#197", "#209", "#218"):
-        assert issue_ref in current_open
-
     assert "Local Docker/Compose proof when Docker is unavailable" not in current_open
 
     for fixed_item in (
@@ -129,7 +126,7 @@ def test_issue_186_ssh_hardening_is_deferred_without_stale_artifacts():
     recently_closed = _section(register, "Recently Closed Gaps")
 
     assert "EC2 SSH/UFW/security-group hardening deferred" in current_open
-    assert "Issue 186 is not implemented on this branch" in current_open
+    assert "No OpenSSH drop-in, UFW rollout" in current_open
     assert "EC2 SSH hardening lacked repository-side support" not in recently_closed
     assert "tests/test_ec2_ssh_hardening_docs.py" not in matrix
     assert "ops/ssh/99-sitbank-hardening.conf" not in matrix

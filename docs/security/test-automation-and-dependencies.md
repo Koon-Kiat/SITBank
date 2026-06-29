@@ -20,6 +20,7 @@ and test evidence found in the repository.
 | `.github/workflows/ci-deploy.yml` | Main CI, image, smoke, scan, sign, and deploy workflow | Runs tests, audits, scans, DAST paths, Trivy, and cosign |
 | `.github/workflows/codeql.yml` | CodeQL static analysis | Python `security-extended` queries on pull requests, main pushes, and schedule when repository is public |
 | `.github/workflows/sonarqube.yml` | SonarQube Cloud code-quality analysis | Full pytest coverage plus reporting-only maintainability, duplication, reliability, and security dashboard analysis |
+| `.github/workflows/tailscale-private-admin-verify.yml` | Protected private-tailnet verification | A manual/reusable job joins with an ephemeral tagged identity, checks private admin reachability and public admin-route denial, remains separate from PR/public TLS CI, and is required after production deploy plus public TLS |
 | `.github/workflows/bootstrap-ec2.yml` | Bootstrap artifact workflow | Uses pinned actions and cosign blob signing |
 
 Not applicable to the current dependency inventory: no `package.json`,
@@ -37,7 +38,7 @@ applicable unless a frontend package manager is added.
 | Dependency lock validation | `ops/security/check_dependency_locks.py` | Enforces the hashed lockfile source of truth and rejects legacy dependency manifests |
 | Dependabot | `.github/dependabot.yml` | Opens controlled weekly updates for Docker, GitHub Actions, and pip dependencies |
 | GitHub dependency review | `.github/workflows/ci-deploy.yml` | Reviews dependency changes in pull requests |
-| Trivy image scans | `.github/workflows/ci-deploy.yml` | Scans built images and repository filesystem paths; `.trivyignore` exceptions are tested |
+| Trivy image scans | `.github/workflows/ci-deploy.yml` | Uses pinned Trivy `v0.71.2` for built-image and repository filesystem scans; `.trivyignore` exceptions are tested |
 | CodeQL | `.github/workflows/codeql.yml` | Runs Python security-extended static analysis when the repository is public |
 | SonarQube Cloud | `.github/workflows/ci-deploy.yml`, `.github/workflows/sonarqube.yml`, `sonar-project.properties` | Reuses the CI test job's `coverage.xml` artifact to report private-repository code quality, duplication, maintainability, and security findings without rerunning pytest; initial quality gate is non-blocking |
 | Bandit | `scripts/ci-local`, `.github/workflows/ci-deploy.yml` | Runs a high-confidence Python security scan |
@@ -57,6 +58,7 @@ Tests for this automation include:
 | `tests/test_deployment.py::test_trivy_exception_is_narrow_documented_and_temporary` | Trivy ignore policy |
 | `tests/test_secret_scanner.py` | Secret scanner behavior |
 | `tests/test_sonarqube_workflow.py` | SonarQube trigger, permission, pinning, coverage, scope, secret, label, and documentation policy |
+| `tests/test_tailscale_ci_tailnet_workflow.py` | Private-tailnet trigger, environment, secret, action pinning, reachability, public denial, prohibited operation, and public TLS separation policy |
 
 ## Test Automation Coverage
 
@@ -146,6 +148,25 @@ stages:
 | Immutable image deployment | Image digest promotion and deployment tests |
 | Cosign signing and verification | Image and deployment artifact signing/verification |
 | Manual release DAST option | `workflow_dispatch` input `run_dast` controls authenticated DAST during release verification |
+
+Private admin reachability is isolated in the reusable
+`.github/workflows/tailscale-private-admin-verify.yml` workflow. It can run
+manually, and the main production workflow requires it after production deploy
+and public production TLS succeed. Its GitHub-hosted runner enters the
+protected `admin-tailscale` environment after manual approval and uses only
+its `TAILSCALE_AUTH_KEY` secret. The key must be reusable, ephemeral,
+`tag:github-ci`, pre-approved where needed, and limited to
+`tag:admin-sitbank:443`. The job runs no pull-request code, checks the private
+URL is unreachable before joining, validates the private login entrypoint and
+retired public-admin denial, and logs out without artifacts. Normal public TLS
+scans never include `admin-sitbank.tailca101b.ts.net`.
+
+Credential rotation and offboarding require replacing and then revoking the
+old key, removing stale CI nodes, reviewing environment approvers and branch
+rules, and removing the dedicated CI grants/environment when access is no
+longer required. This workflow does not enable Tailscale Funnel or Serve and
+does not replace Flask admin login, TOTP, CSRF, authorization, audit logging,
+or host-side Tailscale verification.
 
 The separate `.github/workflows/codeql.yml` runs CodeQL Python
 `security-extended` queries for public repository events. The separate
