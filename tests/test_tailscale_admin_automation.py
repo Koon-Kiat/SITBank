@@ -226,13 +226,13 @@ def test_repository_docs_distinguish_provisioning_preflight_and_ci_reachability(
         Path("docs/DEPLOYMENT.md"),
         Path("docs/OPERATIONS.md"),
         Path("docs/GITHUB_ACTIONS.md"),
-        Path("docs/security/admin-and-staging-zero-trust-access.md"),
-        Path("docs/security/access-control.md"),
-        Path("docs/security/framework-control-matrix.md"),
-        Path("docs/security/security-gap-register.md"),
-        Path("docs/security/design-risk-register.md"),
-        Path("docs/security/threat-model.md"),
-        Path("docs/security/test-automation-and-dependencies.md"),
+        Path("docs/security/architecture/admin-and-staging-zero-trust-access.md"),
+        Path("docs/security/architecture/access-control.md"),
+        Path("docs/security/governance/framework-control-matrix.md"),
+        Path("docs/security/governance/security-gap-register.md"),
+        Path("docs/security/governance/design-risk-register.md"),
+        Path("docs/security/architecture/threat-model.md"),
+        Path("docs/security/assurance/test-automation-and-dependencies.md"),
     )
     docs = "\n".join(path.read_text(encoding="utf-8") for path in paths)
     normalized_docs = " ".join(docs.split())

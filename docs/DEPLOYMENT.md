@@ -26,6 +26,20 @@ Only Flask/Gunicorn runs in the SITBank container. Nginx, TLS, PostgreSQL, and b
 - Staging compose dir: `/opt/sitbank-staging`
 - Staging service: `sitbank-staging-container.service`
 
+The separate `.github/workflows/gitleaks.yml` workflow is a pre-merge and
+protected-branch source control, not a deployment step. It scans full Git
+history with redacted output and no production secrets, artifacts, database
+access, Tailscale access, bootstrap, or EC2 impact. The custom repository
+secret scanner remains in the main CI path. Response procedures are documented
+in `docs/security/assurance/secret-scanning.md`.
+
+ShellCheck, Hadolint, and Semgrep are also pre-deployment source gates, not
+deployment steps. They use no production secrets and do not execute the code
+they inspect. ShellCheck and Hadolint use shared tracked-file discovery;
+Semgrep runs local/OSS ERROR-severity SAST from a pinned container digest.
+Passing these checks does not replace container build/smoke validation or
+manual staging verification for behavior-changing deployment edits.
+
 ## Local Deployment Validation
 
 The normal local CI command can run without Docker:
@@ -62,7 +76,7 @@ SonarQube Cloud analysis is a separate reporting workflow, not a deployment
 stage or production prerequisite. It receives no EC2, SSH, AWS, database, or
 application runtime credentials and does not run bootstrap, publish, or deploy
 commands. A SonarQube dashboard result must not be represented as deployed
-runtime evidence. See `docs/security/sonarqube.md`.
+runtime evidence. See `docs/security/assurance/sonarqube.md`.
 
 ## Database Baseline
 
@@ -160,10 +174,12 @@ do not move secret values into repository variables.
 
 ### Protected Private-Admin Verification Environment
 
-The manual/reusable `.github/workflows/tailscale-private-admin-verify.yml`
-workflow uses a GitHub-hosted runner that temporarily joins the tailnet. It can
-be dispatched on demand and is called by `.github/workflows/ci-deploy.yml`
-after `deploy-production` and `verify-production-tls` succeed. Create a GitHub
+The manual `.github/workflows/tailscale-private-admin-verify.yml` workflow
+uses a GitHub-hosted runner that temporarily joins the tailnet. The
+`.github/workflows/ci-deploy.yml` production workflow implements the same
+check directly after `deploy-production` and `verify-production-tls` succeed.
+The direct job is necessary because the previous reusable-workflow call did
+not receive the protected environment secrets. Create a GitHub
 Environment named `admin-tailscale`, require manual approval by trusted
 maintainers, and restrict its deployment branches to `main`. Each production
 run pauses for that approval before the required private gate can access its
@@ -174,7 +190,7 @@ only as that environment's secrets. The OAuth client must have **Keys > Auth
 Keys > Write** permission and be restricted to `tag:github-ci`, whose tailnet
 grants reach only `tag:admin-sitbank:443`.
 
-Manual or reusable verification may instead select `auth_mode: authkey`, in
+Manual verification may instead select `auth_mode: authkey`, in
 which case the same environment must provide `TAILSCALE_AUTH_KEY`. That key
 must be short-lived, one-off where possible, ephemeral, pre-approved when
 device approval applies, and tagged `tag:github-ci`. Never configure both
@@ -597,7 +613,7 @@ before proxying to Flask. The production customer hostname remains public.
 Provider-side desired state is repository-managed by
 `ops/cloudflare/provision-staging-access` using the Cloudflare-managed hostname
 model. From an operator shell with the variables documented in
-`docs/security/cloudflare-staging-access.md`, review and apply it before
+`docs/security/architecture/cloudflare-staging-access.md`, review and apply it before
 staging bootstrap:
 
 ```bash
@@ -737,7 +753,7 @@ explicitly, runs only when dispatched from `main`, and reports non-secret
 field drift without printing the email allowlist or raw provider responses.
 
 The complete operator runbook is
-`docs/security/admin-and-staging-zero-trust-access.md`.
+`docs/security/architecture/admin-and-staging-zero-trust-access.md`.
 
 After the staging TLS check passes, validate production customer HTTPS with
 `testssl.sh --warnings batch --color 0 https://sitbank.duckdns.org`. The

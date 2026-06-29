@@ -4,9 +4,10 @@ import re
 from pathlib import Path
 
 
-GAP_REGISTER = Path("docs/security/security-gap-register.md")
-DESIGN_REGISTER = Path("docs/security/design-risk-register.md")
-ZERO_TRUST = Path("docs/security/admin-and-staging-zero-trust-access.md")
+GAP_REGISTER = Path("docs/security/governance/security-gap-register.md")
+DESIGN_REGISTER = Path("docs/security/governance/design-risk-register.md")
+ZERO_TRUST = Path("docs/security/architecture/admin-and-staging-zero-trust-access.md")
+SECURITY_DOCS = Path("docs/security")
 
 
 def _docs_text() -> str:
@@ -86,13 +87,14 @@ def test_zero_trust_docs_use_current_architecture_and_control_state():
     assert "admin login, TOTP, CSRF, route authorization, and audit logging" in docs
     assert "does not replace Flask admin login, TOTP, CSRF protection" in normalized_docs
     assert "Protected GitHub CI tailnet verification is implemented only by" in docs
+    assert "direct production gate in `.github/workflows/ci-deploy.yml`" in normalized_docs
     assert "### EC2 Host-Side Tailscale Preflight" in docs
     assert "ops/deploy/verify-tailscale-admin-access" in docs
     assert "The two controls answer different questions." in docs
     assert "### EC2 Tailscale Provisioning Automation" in docs
     assert "ops/tailscale/README.md" in docs
     assert "GitHub-hosted runner joins the tailnet" not in docs
-    assert "temporarily joins a GitHub-hosted runner to the tailnet" in normalized_docs
+    assert "temporarily join a GitHub-hosted runner to the tailnet" in normalized_docs
 
 
 def test_documentation_has_no_numbered_issue_references():
@@ -102,6 +104,51 @@ def test_documentation_has_no_numbered_issue_references():
         r"(?i)\bissue\s*#?\s*\d+\b|(?<![\w-])#\d{2,4}\b",
         docs,
     )
+
+
+def test_security_docs_are_grouped_and_indexed_by_purpose():
+    assert sorted(path.name for path in SECURITY_DOCS.glob("*.md")) == ["README.md"]
+
+    expected = {
+        "architecture": {
+            "access-control.md",
+            "admin-and-staging-zero-trust-access.md",
+            "cloudflare-staging-access.md",
+            "cryptography-and-authentication.md",
+            "session-management.md",
+            "threat-model.md",
+        },
+        "assurance": {
+            "audit-and-alerting.md",
+            "secret-scanning.md",
+            "secure-coding.md",
+            "sonarqube.md",
+            "test-automation-and-dependencies.md",
+        },
+        "governance": {
+            "data-retention-and-deactivation.md",
+            "design-risk-register.md",
+            "framework-control-matrix.md",
+            "incident-response.md",
+            "legacy-and-out-of-scope-technology.md",
+            "privacy-and-pdpa.md",
+            "security-gap-register.md",
+            "security-governance.md",
+        },
+    }
+    index = (SECURITY_DOCS / "README.md").read_text(encoding="utf-8")
+
+    assert {
+        path.name for path in SECURITY_DOCS.iterdir() if path.is_dir()
+    } == set(expected)
+    for category, filenames in expected.items():
+        category_dir = SECURITY_DOCS / category
+        assert {path.name for path in category_dir.glob("*.md")} == filenames
+        for filename in filenames:
+            assert f"({category}/{filename})" in index
+            assert f"Category: [Security {category}](../README.md#{category})." in (
+                category_dir / filename
+            ).read_text(encoding="utf-8")
 
 
 def test_staging_domain_docs_match_implemented_active_cloudflare_hostname():
@@ -163,7 +210,7 @@ def test_current_open_gap_rows_have_tracking_state():
 def test_governance_tracking_points_to_governance_doc_and_not_stale_gap_text():
     docs = _docs_text()
 
-    assert "docs/security/security-governance.md" in docs
+    assert "docs/security/governance/security-governance.md" in docs
     assert "Formal ownership and recurring review cadence are documentation follow-up" not in docs
     assert "Assign recurring risk owners outside the repo" not in docs
     assert "formal security ownership is unclear" not in docs

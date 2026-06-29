@@ -16,7 +16,7 @@ import yaml
 
 
 SCRIPT = Path("ops/cloudflare/provision-staging-access")
-README = Path("docs/security/cloudflare-staging-access.md")
+README = Path("docs/security/architecture/cloudflare-staging-access.md")
 LOCAL_README = Path("ops/cloudflare/README.md")
 WORKFLOW = Path(".github/workflows/cloudflare-access-verify.yml")
 EXPECTED_HOST = "staging-sitbank.pp.ua"
@@ -56,10 +56,10 @@ def _all_security_docs() -> str:
     paths = [
         Path("docs/DEPLOYMENT.md"),
         Path("docs/OPERATIONS.md"),
-        Path("docs/security/access-control.md"),
-        Path("docs/security/admin-and-staging-zero-trust-access.md"),
-        Path("docs/security/framework-control-matrix.md"),
-        Path("docs/security/security-gap-register.md"),
+        Path("docs/security/architecture/access-control.md"),
+        Path("docs/security/architecture/admin-and-staging-zero-trust-access.md"),
+        Path("docs/security/governance/framework-control-matrix.md"),
+        Path("docs/security/governance/security-gap-register.md"),
         README,
     ]
     return "\n".join(path.read_text(encoding="utf-8") for path in paths)
@@ -415,7 +415,7 @@ def test_documentation_records_complete_staging_environment_contract():
             Path("docs/GITHUB_ACTIONS.md"),
             Path("docs/DEPLOYMENT.md"),
             Path("docs/OPERATIONS.md"),
-            Path("docs/security/admin-and-staging-zero-trust-access.md"),
+            Path("docs/security/architecture/admin-and-staging-zero-trust-access.md"),
             README,
         )
     )

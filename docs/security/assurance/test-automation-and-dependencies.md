@@ -3,6 +3,8 @@
 This document records the SITBank dependency inventory, security automation,
 and test evidence found in the repository.
 
+Category: [Security assurance](../README.md#assurance).
+
 ## Dependency Inventory
 
 | Manifest or file | Purpose | Notes |
@@ -19,8 +21,12 @@ and test evidence found in the repository.
 | `.github/dependabot.yml` | Dependency update automation | Weekly Docker, GitHub Actions, and pip updates with limits and labels |
 | `.github/workflows/ci-deploy.yml` | Main CI, image, smoke, scan, sign, and deploy workflow | Runs tests, audits, scans, DAST paths, Trivy, and cosign |
 | `.github/workflows/codeql.yml` | CodeQL static analysis | Python `security-extended` queries on pull requests, main pushes, and schedule when repository is public |
+| `.github/workflows/gitleaks.yml` | Dedicated secret scanning | Gitleaks 8.30.1 scans full Git history on pull requests, `main` pushes, manual runs, and a weekly schedule with checksum-verified installation and redacted output |
+| `.github/workflows/shellcheck.yml` | Repository shell static analysis | Checksum-verified ShellCheck 0.11.0 scans all tracked `.sh` files and supported shell shebangs discovered by the shared helper |
+| `.github/workflows/hadolint.yml` | Dockerfile linting | Checksum-verified Hadolint 2.14.0 scans every tracked `Dockerfile` and `Dockerfile.*` discovered by the shared helper |
+| `.github/workflows/semgrep.yml` | Automatic SAST | Digest-pinned Semgrep 1.168.0 runs local/OSS ERROR-severity scanning on PRs, `main`, manual reruns, and a weekly schedule without a token, source upload, or SARIF |
 | `.github/workflows/sonarqube.yml` | SonarQube Cloud code-quality analysis | Full pytest coverage plus reporting-only maintainability, duplication, reliability, and security dashboard analysis |
-| `.github/workflows/tailscale-private-admin-verify.yml` | Protected private-tailnet verification | A manual/reusable job joins with an ephemeral tagged identity, checks private admin reachability, remains separate from PR/public TLS CI, and is required after production deploy plus public TLS |
+| `.github/workflows/tailscale-private-admin-verify.yml` | Protected private-tailnet verification | A manual job joins with an ephemeral tagged identity; the direct environment-bound production gate performs the same reachability check after production deploy plus public TLS |
 | `ops/tailscale/*` | Confirmation-gated Tailscale production-admin provisioning | Dry-run/confirm scripts install the authenticated package, support OAuth/auth-key/interactive enrollment, configure only private HTTPS to `127.0.0.1:5002`, delegate verification, and provide a non-secret ACL reference |
 | `ops/deploy/verify-tailscale-admin-access` | EC2-local private-admin posture verification | A non-mutating production-host check validates Tailscale/Funnel state, loopback binding, readiness, Nginx absence, narrow Serve mapping, and private HTTPS without accepting credentials |
 | `.github/workflows/bootstrap-ec2.yml` | Bootstrap artifact workflow | Uses pinned actions and cosign blob signing |
@@ -44,7 +50,11 @@ applicable unless a frontend package manager is added.
 | CodeQL | `.github/workflows/codeql.yml` | Runs Python security-extended static analysis when the repository is public |
 | SonarQube Cloud | `.github/workflows/ci-deploy.yml`, `.github/workflows/sonarqube.yml`, `sonar-project.properties` | Reuses the CI test job's `coverage.xml` artifact to report private-repository code quality, duplication, maintainability, and security findings without rerunning pytest; initial quality gate is non-blocking |
 | Bandit | `scripts/ci-local`, `.github/workflows/ci-deploy.yml` | Runs a high-confidence Python security scan |
-| Secret scanner | `ops/security/scan_repository_secrets.py` | Scans tracked files and, in CI/local CI, git history for private keys and common token formats |
+| Custom repository secret scanner | `ops/security/scan_repository_secrets.py` | Scans tracked files and, in CI/local CI, git history for private keys and common token formats |
+| Gitleaks | `.github/workflows/gitleaks.yml`, `.gitleaks.toml` | Independently scans all refs with the built-in Gitleaks rules, redacted output, no production secrets, and no SARIF or raw report upload |
+| ShellCheck | `.github/workflows/shellcheck.yml`, `ops/security/discover_lint_targets.py` | Fails on style-or-higher findings across repository-wide tracked-file discovery; Bash syntax remains a separate check |
+| Hadolint | `.github/workflows/hadolint.yml`, `ops/security/discover_lint_targets.py` | Fails on style-or-higher findings for all discovered Dockerfiles |
+| Semgrep | `.github/workflows/semgrep.yml` | Runs `p/python`, `p/flask`, `p/security-audit`, `p/owasp-top-ten`, and `p/github-actions` locally and blocks ERROR severity |
 | Action hygiene | `.github/workflows/ci-deploy.yml` | Runs actionlint and zizmor; tests require actions to be SHA-pinned |
 | Image and artifact signing | `.github/workflows/ci-deploy.yml`, `.github/workflows/bootstrap-ec2.yml`, `ops/deploy/sitbank-container-deploy` | Uses cosign to sign/verify images and deployment artifacts |
 
@@ -59,6 +69,9 @@ Tests for this automation include:
 | `tests/test_deployment.py::test_every_github_action_is_pinned_to_a_full_commit_sha` | GitHub Actions pinning |
 | `tests/test_deployment.py::test_trivy_exception_is_narrow_documented_and_temporary` | Trivy ignore policy |
 | `tests/test_secret_scanner.py` | Secret scanner behavior |
+| `tests/test_gitleaks_workflow.py` | Gitleaks triggers, permissions, checksum pinning, redaction, scope, config, custom-scanner preservation, and documentation consistency |
+| `tests/test_lint_target_discovery.py` | Shell shebang, `.sh`, nested Dockerfile, deterministic output, and empty-discovery behavior |
+| `tests/test_static_analysis_workflows.py` | ShellCheck, Hadolint, and Semgrep triggers, permissions, pinning, scope, blocking policy, secret boundaries, and documentation consistency |
 | `tests/test_sonarqube_workflow.py` | SonarQube trigger, permission, pinning, coverage, scope, secret, label, and documentation policy |
 | `tests/test_tailscale_ci_tailnet_workflow.py` | Private-tailnet trigger, environment, explicit OAuth/auth-key modes, action pinning, reachability, prohibited operation, and public TLS separation policy |
 | `tests/test_tailscale_admin_access.py` | Host-preflight modes, bootstrap installation, safe command contract, Serve/Funnel parsing, listener failure cases, Nginx absence, and stubbed success/failure behavior |
@@ -109,8 +122,10 @@ The preferred local wrapper is:
 .\.venv\Scripts\python.exe scripts\ci-local
 ```
 
-That wrapper runs the Python checks below, then Bash syntax checks, then
-Compose validation if Docker is available.
+That wrapper runs the Python checks below, discovered Bash syntax checks,
+ShellCheck/Hadolint/Semgrep when installed, then Compose validation if Docker
+is available. Missing optional local scanners are explicit `SKIPPED` results;
+their automatic GitHub Actions workflows remain authoritative.
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q -n auto --durations=30 --durations-min=0.5
@@ -123,6 +138,19 @@ Compose validation if Docker is available.
 .\.venv\Scripts\python.exe ops\security\scan_repository_secrets.py --history
 git diff --check
 ```
+
+Shared target discovery and equivalent scanner commands are:
+
+```powershell
+.\.venv\Scripts\python.exe ops\security\discover_lint_targets.py shell
+.\.venv\Scripts\python.exe ops\security\discover_lint_targets.py dockerfile
+shellcheck --severity=style <discovered shell paths>
+hadolint --failure-threshold style <discovered Dockerfile paths>
+semgrep scan --config p/python --config p/flask --config p/security-audit --config p/owasp-top-ten --config p/github-actions --severity ERROR --error .
+```
+
+The Semgrep command is local/OSS mode. Registry rules are downloaded, but
+source is scanned locally and is not uploaded; no token is required.
 
 The GitHub workflow command block in `.github/workflows/ci-deploy.yml` runs the
 same core checks. Its Bandit command currently scans `app`, `ops`, `config.py`,
@@ -146,21 +174,25 @@ stages:
 | --- | --- |
 | Workflow hygiene | actionlint installation plus zizmor action |
 | Dependency review | `actions/dependency-review-action` |
-| Python tests and checks | pytest, compileall, pip check, Bandit, pip-audit, lock validation, secret scan |
+| Python tests and checks | pytest, compileall, pip check, Bandit, pip-audit, lock validation, custom repository secret scan |
+| Dedicated secret scan | Gitleaks 8.30.1 full Git history workflow with checksum-verified CLI and redacted output |
+| Shell static analysis | ShellCheck 0.11.0 scans tracked-file discovery output; `bash -n` remains a distinct syntax check |
+| Dockerfile linting | Hadolint 2.14.0 scans all discovered Dockerfiles with an instruction-scoped documented exception only |
+| SAST | Semgrep 1.168.0 local/OSS registry rules block ERROR severity with no token, source upload, SARIF, or production secrets |
 | Container smoke and DAST path | `ops/container/smoke-test.sh` |
 | Trivy scans | Multiple Trivy action invocations for filesystem/image scan paths |
 | Immutable image deployment | Image digest promotion and deployment tests |
 | Cosign signing and verification | Image and deployment artifact signing/verification |
 | Manual release DAST option | `workflow_dispatch` input `run_dast` controls authenticated DAST during release verification |
 
-Private admin reachability is isolated in the reusable
-`.github/workflows/tailscale-private-admin-verify.yml` workflow. It can run
-manually, and the main production workflow requires it after production deploy
-and public production TLS succeed. Its GitHub-hosted runner enters the
-protected `admin-tailscale` environment after manual approval and uses only
-one selected credential mode. Production explicitly uses OAuth with
-`TS_OAUTH_CLIENT_ID`/`TS_OAUTH_SECRET`; manual/reusable runs may select the
-optional `TAILSCALE_AUTH_KEY`. Both identities are limited to
+Private admin reachability is isolated in protected environment-bound jobs.
+`.github/workflows/tailscale-private-admin-verify.yml` runs manually, and the
+main production workflow implements its required direct gate after production
+deploy and public production TLS succeed. The direct production job avoids the
+reusable-call secret-scope failure and enters the protected `admin-tailscale`
+environment after manual approval. Production uses OAuth with
+`TS_OAUTH_CLIENT_ID`/`TS_OAUTH_SECRET`; manual runs may select the optional
+`TAILSCALE_AUTH_KEY`. Both identities are limited to
 `tag:github-ci -> tag:admin-sitbank:443`. The job runs no pull-request code,
 checks the private URL is unreachable before joining, validates the private
 login entrypoint, and logs out without artifacts. Normal public TLS scans never include
@@ -199,7 +231,7 @@ reusable job requires only `SONAR_TOKEN`, does not use deployment secrets or
 rerun pytest, and does not change the existing CodeQL policy. Plan eligibility,
 cloud source processing, scope,
 exclusions, token rotation, triage, and limitations are documented in
-`docs/security/sonarqube.md`.
+`docs/security/assurance/sonarqube.md`.
 
 Tests in `tests/test_deployment.py` assert that these workflow controls remain
 present, including dependency review, action pinning, Trivy policy, cosign, and
@@ -251,7 +283,7 @@ workflow/script diff before rerunning.
 Authenticated DAST is release-oriented. Ordinary pull requests skip the full
 authenticated crawl for runtime cost, while scheduled runs and release
 verification paths enable it according to workflow policy. The tradeoff is
-tracked in `docs/security/security-gap-register.md`.
+tracked in `docs/security/governance/security-gap-register.md`.
 
 ## Dependency Update Workflow
 

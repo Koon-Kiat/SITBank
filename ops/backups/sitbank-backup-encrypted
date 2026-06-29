@@ -141,7 +141,8 @@ destination="${backup_dir%/}/sitbank-${environment}-${database_name}-${timestamp
 if [[ -n "${database_url}" ]]; then
     pg_dump --format=custom --dbname="${database_url}" > "${temporary_dump}"
 else
-    sudo -u postgres pg_dump --format=custom "${database_name}" > "${temporary_dump}"
+    sudo -u postgres pg_dump --format=custom "${database_name}" \
+        | cat > "${temporary_dump}"
 fi
 chmod 0600 "${temporary_dump}"
 

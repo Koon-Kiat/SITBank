@@ -262,7 +262,7 @@ jobs:
             if contains_any workflow "github actions" dependabot codeql "dependency audit" "pr title" "commit message" "pull request policy" build pipeline || contains_regex '(^|[^a-z0-9])ci([^a-z0-9]|$)'; then
               add_unique labels ci
             fi
-            if contains_any sonarqube sonar "quality gate" "code quality" "code-quality" maintainability coverage duplication "technical debt"; then
+            if contains_any sonarqube sonar shellcheck hadolint semgrep sast "static analysis" "quality gate" "code quality" "code-quality" maintainability coverage duplication "technical debt"; then
               add_unique labels code-quality
             fi
             if contains_any dependency dependencies package requirements pip "docker base image" dependabot "lock file" msgpack "library bump"; then
@@ -371,7 +371,7 @@ jobs:
                 | tr '[:upper:]' '[:lower:]'
             )"
 
-            if path_matches 'app/admin/*' || path_matches 'admin_wsgi.py' || path_matches 'ops/*admin*' || path_matches 'docs/security/admin-and-staging-zero-trust-access.md' || path_matches 'docs/security/access-control.md' || path_matches 'docs/security/session-management.md' || path_matches 'tests/test_admin_*.py'; then
+            if path_matches 'app/admin/*' || path_matches 'admin_wsgi.py' || path_matches 'ops/*admin*' || path_matches 'docs/security/architecture/admin-and-staging-zero-trust-access.md' || path_matches 'docs/security/architecture/access-control.md' || path_matches 'docs/security/architecture/session-management.md' || path_matches 'tests/test_admin_*.py'; then
               add_unique labels admin
             fi
             if path_matches 'app/web/*' || path_matches 'app/main/*' || path_matches 'app/templates/index.html' || path_matches 'app/templates/dashboard.html' || path_matches 'app/templates/profile.html' || path_matches 'tests/test_dashboard.py' || path_matches 'tests/test_authenticated_portal_ui.py'; then
@@ -389,10 +389,10 @@ jobs:
             if path_matches 'app/security/*' || path_matches 'docs/security/*' || path_matches 'security.md' || path_matches '.trivyignore' || path_matches 'ops/nginx/*' || path_matches 'ops/security/*' || path_matches 'ops/fido-*.json' || path_matches 'tests/test_*security*.py' || path_matches 'tests/test_audit_*.py' || path_matches 'tests/test_owasp_regressions.py' || path_matches 'tests/test_pentest_auth_bypass.py' || path_matches 'tests/test_route_inventory_security.py' || path_matches 'tests/test_secret_scanner.py' || path_matches 'tests/test_session_management.py' || path_contains csrf csp hmac crypto secret rate_limit || branch_contains security auth mfa csrf csp session audit admin-isolation webauthn passkey secret rate-limit; then
               add_unique labels security
             fi
-            if contains_any "zero trust" "zero-trust" "cloudflare zero trust" "cloudflare access" tailscale tailnet vpn "private access" "private-access" "identity-aware access" "access boundary" "origin bypass" "origin protection" "admin exposure" "staging exposure" || path_matches 'docs/security/admin-and-staging-zero-trust-access.md' || path_contains zero-trust zero_trust cloudflare tailscale private-access access-boundary || branch_contains zero-trust cloudflare tailscale private-access access-boundary; then
+            if contains_any "zero trust" "zero-trust" "cloudflare zero trust" "cloudflare access" tailscale tailnet vpn "private access" "private-access" "identity-aware access" "access boundary" "origin bypass" "origin protection" "admin exposure" "staging exposure" || path_matches 'docs/security/architecture/admin-and-staging-zero-trust-access.md' || path_contains zero-trust zero_trust cloudflare tailscale private-access access-boundary || branch_contains zero-trust cloudflare tailscale private-access access-boundary; then
               add_unique labels zero-trust
             fi
-            if contains_any firewall "security group" "nginx allowlist" "ip allowlist" vpn tailscale "cloudflare access" "origin bypass" "private network" "network boundary" "admin network" "staging network" "private access" "private-access" || path_matches 'ops/nginx/*' || path_matches 'docs/security/admin-and-staging-zero-trust-access.md' || path_contains firewall allowlist vpn tailscale cloudflare origin-bypass private-network network-boundary || branch_contains network-security firewall vpn tailscale cloudflare origin-bypass private-network; then
+            if contains_any firewall "security group" "nginx allowlist" "ip allowlist" vpn tailscale "cloudflare access" "origin bypass" "private network" "network boundary" "admin network" "staging network" "private access" "private-access" || path_matches 'ops/nginx/*' || path_matches 'docs/security/architecture/admin-and-staging-zero-trust-access.md' || path_contains firewall allowlist vpn tailscale cloudflare origin-bypass private-network network-boundary || branch_contains network-security firewall vpn tailscale cloudflare origin-bypass private-network; then
               add_unique labels network-security
             fi
             if path_matches 'app/security/session_hmac.py' || path_matches 'app/security/sessions.py' || path_matches 'app/static/js/session-timeout.js' || path_matches 'app/templates/sessions.html' || path_matches 'tests/test_session_management.py' || path_contains session cookie; then
@@ -413,7 +413,7 @@ jobs:
             if path_matches '.github/workflows/*' || path_matches '.github/dependabot.yml' || path_matches 'scripts/ci-local' || path_matches 'ops/security/check_dependency_locks.py' || path_matches 'ops/security/validate_pr_body.py' || path_matches 'tests/test_pr_body_policy.py'; then
               add_unique labels ci
             fi
-            if contains_any sonarqube sonar "quality gate" "code quality" "code-quality" maintainability coverage duplication "technical debt" || path_matches '.github/workflows/sonarqube.yml' || path_matches 'sonar-project.properties' || path_matches 'docs/security/sonarqube.md' || path_matches 'tests/test_sonarqube_workflow.py' || branch_contains sonarqube sonar code-quality maintainability coverage; then
+            if contains_any sonarqube sonar shellcheck hadolint semgrep sast "static analysis" "quality gate" "code quality" "code-quality" maintainability coverage duplication "technical debt" || path_matches '.github/workflows/sonarqube.yml' || path_matches '.github/workflows/shellcheck.yml' || path_matches '.github/workflows/hadolint.yml' || path_matches '.github/workflows/semgrep.yml' || path_matches 'sonar-project.properties' || path_matches 'ops/security/discover_lint_targets.py' || path_matches 'docs/security/assurance/sonarqube.md' || path_matches 'tests/test_sonarqube_workflow.py' || path_matches 'tests/test_lint_target_discovery.py' || path_matches 'tests/test_static_analysis_workflows.py' || branch_contains sonarqube sonar shellcheck hadolint semgrep sast code-quality maintainability coverage; then
               add_unique labels code-quality
             fi
             if path_matches 'requirements.in' || path_matches 'requirements-dev.in' || path_matches 'requirements.lock' || path_matches 'requirements-dev.lock' || path_matches '.github/dependabot.yml' || path_matches 'ops/security/check_dependency_locks.py'; then

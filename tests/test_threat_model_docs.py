@@ -1,10 +1,10 @@
 from pathlib import Path
 
 
-THREAT_MODEL = Path("docs/security/threat-model.md")
-DESIGN_REGISTER = Path("docs/security/design-risk-register.md")
-FRAMEWORK = Path("docs/security/framework-control-matrix.md")
-GAP_REGISTER = Path("docs/security/security-gap-register.md")
+THREAT_MODEL = Path("docs/security/architecture/threat-model.md")
+DESIGN_REGISTER = Path("docs/security/governance/design-risk-register.md")
+FRAMEWORK = Path("docs/security/governance/framework-control-matrix.md")
+GAP_REGISTER = Path("docs/security/governance/security-gap-register.md")
 
 
 def _normalized(path: Path) -> str:
@@ -76,14 +76,14 @@ def test_design_risk_register_covers_required_decisions():
 def test_framework_and_gap_docs_reference_threat_model_and_design_risks():
     for path in (
         Path("SECURITY.md"),
-        Path("docs/security/secure-coding.md"),
+        Path("docs/security/assurance/secure-coding.md"),
         FRAMEWORK,
         GAP_REGISTER,
-        Path("docs/security/security-governance.md"),
+        Path("docs/security/governance/security-governance.md"),
     ):
         text = path.read_text(encoding="utf-8")
-        assert "docs/security/threat-model.md" in text, path
-        assert "docs/security/design-risk-register.md" in text, path
+        assert "docs/security/architecture/threat-model.md" in text, path
+        assert "docs/security/governance/design-risk-register.md" in text, path
 
 
 def test_gap_register_closes_threat_model_gap_but_keeps_other_open_items():

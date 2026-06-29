@@ -71,7 +71,12 @@ def test_cli_and_environment_can_enable_strict_docker_mode(
     assert ci_local_module.parse_args(["--require-docker"]).require_docker is True
 
     monkeypatch.setattr(ci_local_module, "PYTHON_CHECKS", ())
-    monkeypatch.setattr(ci_local_module, "BASH_SCRIPTS", ())
+    monkeypatch.setattr(ci_local_module, "discover_lint_targets", lambda _kind: [])
+    monkeypatch.setattr(
+        ci_local_module,
+        "run_optional_static_analysis",
+        lambda _results: True,
+    )
     monkeypatch.setattr(ci_local_module, "find_git_bash", lambda: "bash")
     monkeypatch.setenv("CI_LOCAL_REQUIRE_DOCKER", "1")
     observed = {}
@@ -193,6 +198,80 @@ def test_final_summary_distinguishes_pass_fail_and_skipped(
     assert "SKIPPED: Docker/Compose checks" in output
     assert "FAIL: Example failed check" in output
     assert "OVERALL: FAIL" in output
+
+
+def test_optional_static_analysis_reports_missing_tools_and_required_workflows(
+    ci_local_module, monkeypatch
+):
+    monkeypatch.setattr(
+        ci_local_module,
+        "discover_lint_targets",
+        lambda kind: ["script.sh"] if kind == "shell" else ["Dockerfile"],
+    )
+    monkeypatch.setattr(ci_local_module.shutil, "which", lambda _tool: None)
+    results = []
+
+    assert ci_local_module.run_optional_static_analysis(results) is True
+    assert [(result.name, result.status) for result in results] == [
+        ("ShellCheck repository shell scripts", "SKIPPED"),
+        ("Hadolint repository Dockerfiles", "SKIPPED"),
+        ("Semgrep high-severity SAST", "SKIPPED"),
+    ]
+    assert ".github/workflows/shellcheck.yml" in results[0].detail
+    assert ".github/workflows/hadolint.yml" in results[1].detail
+    assert ".github/workflows/semgrep.yml" in results[2].detail
+
+
+def test_optional_static_analysis_uses_discovered_targets_and_shared_policy(
+    ci_local_module, monkeypatch
+):
+    monkeypatch.setattr(
+        ci_local_module,
+        "discover_lint_targets",
+        lambda kind: (
+            ["scripts/ci-local", "ops/backups/sitbank-backup-encrypted"]
+            if kind == "shell"
+            else ["Dockerfile", "ops/container/Dockerfile.scan"]
+        ),
+    )
+    monkeypatch.setattr(
+        ci_local_module.shutil,
+        "which",
+        lambda tool: f"/tools/{tool}",
+    )
+    commands = []
+
+    def fake_run(name, command, results):
+        commands.append((name, command))
+        ci_local_module.record_result(results, name, "PASS")
+
+    monkeypatch.setattr(ci_local_module, "run", fake_run)
+    results = []
+
+    assert ci_local_module.run_optional_static_analysis(results) is True
+    shellcheck = commands[0][1]
+    hadolint = commands[1][1]
+    semgrep = commands[2][1]
+    assert shellcheck == [
+        "/tools/shellcheck",
+        "--severity=style",
+        "scripts/ci-local",
+        "ops/backups/sitbank-backup-encrypted",
+    ]
+    assert hadolint == [
+        "/tools/hadolint",
+        "--failure-threshold",
+        "style",
+        "Dockerfile",
+        "ops/container/Dockerfile.scan",
+    ]
+    for config in ci_local_module.SEMGREP_CONFIGS:
+        config_index = semgrep.index(config)
+        assert semgrep[config_index - 1] == "--config"
+    assert "--severity" in semgrep
+    assert "ERROR" in semgrep
+    assert "--error" in semgrep
+    assert semgrep[-1] == "."
 
 
 def test_ci_local_docs_explain_partial_and_strict_docker_validation():

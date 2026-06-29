@@ -9,7 +9,7 @@ import yaml
 WORKFLOW_PATH = Path(".github/workflows/sonarqube.yml")
 CI_WORKFLOW_PATH = Path(".github/workflows/ci-deploy.yml")
 PROPERTIES_PATH = Path("sonar-project.properties")
-SONAR_DOC_PATH = Path("docs/security/sonarqube.md")
+SONAR_DOC_PATH = Path("docs/security/assurance/sonarqube.md")
 
 
 def _workflow() -> tuple[str, dict]:

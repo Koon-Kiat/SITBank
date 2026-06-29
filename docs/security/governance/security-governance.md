@@ -7,11 +7,13 @@ compliance statement.
 
 Related evidence:
 
-- `docs/security/security-gap-register.md`
-- `docs/security/design-risk-register.md`
-- `docs/security/framework-control-matrix.md`
-- `docs/security/threat-model.md`
+- `docs/security/governance/security-gap-register.md`
+- `docs/security/governance/design-risk-register.md`
+- `docs/security/governance/framework-control-matrix.md`
+- `docs/security/architecture/threat-model.md`
 - `docs/CONTRIBUTION_MESSAGE_POLICY.md`
+
+Category: [Security governance](../README.md#governance).
 
 ## Roles
 
@@ -116,10 +118,10 @@ gap until live evidence supports the stronger claim.
 
 Every security change or gap closure should check whether these docs need updates:
 
-- `docs/security/security-gap-register.md`
-- `docs/security/framework-control-matrix.md`
-- `docs/security/design-risk-register.md`
-- `docs/security/threat-model.md`
+- `docs/security/governance/security-gap-register.md`
+- `docs/security/governance/framework-control-matrix.md`
+- `docs/security/governance/design-risk-register.md`
+- `docs/security/architecture/threat-model.md`
 - `docs/OPERATIONS.md`
 - `docs/DEPLOYMENT.md`
 - `SECURITY.md`
@@ -138,7 +140,7 @@ failure, public admin exposure, or high-severity scanner findings:
 2. Preserve timestamps, commit SHA, image digest, workflow run IDs, and sanitized
    audit references.
 3. Escalate privately to the Security Owner and Deployment Owner.
-4. Use `docs/security/incident-response.md` for containment and recovery.
+4. Use `docs/security/governance/incident-response.md` for containment and recovery.
 5. Record follow-up actions or accepted-risk decisions after containment.
 
 ## Limitations

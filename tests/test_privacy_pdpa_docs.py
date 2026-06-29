@@ -1,11 +1,11 @@
 from pathlib import Path
 
 
-PRIVACY = Path("docs/security/privacy-and-pdpa.md")
-RETENTION = Path("docs/security/data-retention-and-deactivation.md")
-INCIDENT = Path("docs/security/incident-response.md")
-GAP_REGISTER = Path("docs/security/security-gap-register.md")
-FRAMEWORK = Path("docs/security/framework-control-matrix.md")
+PRIVACY = Path("docs/security/governance/privacy-and-pdpa.md")
+RETENTION = Path("docs/security/governance/data-retention-and-deactivation.md")
+INCIDENT = Path("docs/security/governance/incident-response.md")
+GAP_REGISTER = Path("docs/security/governance/security-gap-register.md")
+FRAMEWORK = Path("docs/security/governance/framework-control-matrix.md")
 
 
 def _normalized(path: Path) -> str:
@@ -66,7 +66,7 @@ def test_retention_doc_distinguishes_deactivation_deletion_and_anonymization():
         "No automated workflow exists",
         "Security audit rows must not be silently auto-deleted",
         "complete retention/disposal scheduler",
-        "docs/security/security-gap-register.md",
+        "docs/security/governance/security-gap-register.md",
     ):
         assert required in text
 
@@ -95,14 +95,14 @@ def test_security_docs_link_privacy_retention_and_incident_response():
     for path in (
         Path("SECURITY.md"),
         Path("docs/OPERATIONS.md"),
-        Path("docs/security/access-control.md"),
-        Path("docs/security/audit-and-alerting.md"),
+        Path("docs/security/architecture/access-control.md"),
+        Path("docs/security/assurance/audit-and-alerting.md"),
         FRAMEWORK,
     ):
         text = path.read_text(encoding="utf-8")
-        assert "docs/security/privacy-and-pdpa.md" in text, path
-        assert "docs/security/data-retention-and-deactivation.md" in text, path
-        assert "docs/security/incident-response.md" in text, path
+        assert "docs/security/governance/privacy-and-pdpa.md" in text, path
+        assert "docs/security/governance/data-retention-and-deactivation.md" in text, path
+        assert "docs/security/governance/incident-response.md" in text, path
 
 
 def test_gap_register_updated_for_privacy_docs_and_retention_automation_gap():

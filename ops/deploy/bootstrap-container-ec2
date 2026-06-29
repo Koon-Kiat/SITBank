@@ -144,6 +144,7 @@ if ! command -v docker >/dev/null 2>&1 \
     curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
         | gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg
     chmod a+r /etc/apt/keyrings/docker.gpg
+    # /etc/os-release is host-managed on the supported Ubuntu target.
     # shellcheck disable=SC1091
     . /etc/os-release
     printf '%s\n' \

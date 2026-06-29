@@ -3,6 +3,8 @@
 This note centralizes historical technology context that should not be repeated
 through active architecture, deployment, or operations documentation.
 
+Category: [Security governance](../README.md#governance).
+
 ## Session Storage
 
 Redis session storage was previously considered or documented, but the current

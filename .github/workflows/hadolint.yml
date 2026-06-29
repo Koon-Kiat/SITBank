@@ -1,0 +1,61 @@
+name: Hadolint
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hadolint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    name: Repository Dockerfiles
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+
+      - name: Discover tracked Dockerfiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          python ops/security/discover_lint_targets.py dockerfile --format nul \
+            > "${RUNNER_TEMP}/hadolint-targets"
+          test -s "${RUNNER_TEMP}/hadolint-targets"
+
+      - name: Install checksum-verified Hadolint 2.14.0
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          readonly version="2.14.0"
+          readonly binary="${RUNNER_TEMP}/hadolint"
+          readonly expected_sha256="6bf226944684f56c84dd014e8b979d27425c0148f61b3bd99bcc6f39e9dc5a47"
+
+          curl --fail --location --silent --show-error \
+            --proto '=https' --tlsv1.2 \
+            --output "${binary}" \
+            "https://github.com/hadolint/hadolint/releases/download/v${version}/hadolint-linux-x86_64"
+          echo "${expected_sha256}  ${binary}" | sha256sum --check --status
+          chmod 0755 "${binary}"
+          "${binary}" --version
+
+      - name: Scan every discovered Dockerfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          xargs --null --no-run-if-empty \
+            "${RUNNER_TEMP}/hadolint" \
+            --failure-threshold style \
+            < "${RUNNER_TEMP}/hadolint-targets"

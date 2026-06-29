@@ -5,6 +5,8 @@ expectations. SITBank is a coursework banking simulation, but operators should
 treat submitted identity, account, audit, security, and banking-like records as
 protected personal data.
 
+Category: [Security governance](../README.md#governance).
+
 ## Data Inventory
 
 | Data category | Purpose | Minimization and handling |
@@ -88,12 +90,12 @@ documented support/admin workflow and must preserve audit evidence.
 
 Account deletion or anonymization is not a normal self-service feature in the
 current codebase. Use the deactivation and retention guidance in
-`docs/security/data-retention-and-deactivation.md`.
+`docs/security/governance/data-retention-and-deactivation.md`.
 
 ## Breach Escalation
 
 Suspected personal-data exposure must follow
-`docs/security/incident-response.md`. Preserve audit logs, alert reports,
+`docs/security/governance/incident-response.md`. Preserve audit logs, alert reports,
 deployment evidence, relevant backups, and host logs. Do not put secrets,
 personal-data dumps, reset links, recovery codes, or full request bodies into
 public issues, chat, screenshots, or incident notes.

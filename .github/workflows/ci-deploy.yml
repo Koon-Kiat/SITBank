@@ -346,7 +346,7 @@ jobs:
 
             SonarQube Cloud is reporting-only for now. Full findings are available in SonarQube Cloud.
 
-            SonarQube Cloud is an additional code-quality and security analysis layer. It does not replace pytest, CodeQL, Semgrep, Bandit, Gitleaks/repository secret scanning, dependency auditing, Trivy, ShellCheck, Hadolint, Syft, deployment tests, or production guard tests.
+            SonarQube Cloud is an additional code-quality and security analysis layer. It does not replace pytest, CodeQL, Semgrep, Bandit, Gitleaks, the custom repository secret scanner, dependency auditing, Trivy, ShellCheck, Hadolint, Syft, deployment tests, or production guard tests.
             `;
 
             const { owner, repo } = context.repo;
@@ -1176,9 +1176,83 @@ jobs:
     needs:
       - deploy-production
       - verify-production-tls
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     permissions:
       contents: read
-    uses: ./.github/workflows/tailscale-private-admin-verify.yml
-    with:
-      private_admin_host: admin-sitbank.tailca101b.ts.net
-      auth_mode: oauth
+    environment:
+      name: admin-tailscale
+    env:
+      TAILSCALE_PRIVATE_ADMIN_HOST: admin-sitbank.tailca101b.ts.net
+
+    steps:
+      - name: Validate private target and OAuth credential
+        shell: bash
+        env:
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "${TAILSCALE_PRIVATE_ADMIN_HOST}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$ ]]; then
+            echo "::error::The admin verification target must be a hostname, not a URL or command fragment."
+            exit 1
+          fi
+          if [[ -z "${TS_OAUTH_CLIENT_ID}" || -z "${TS_OAUTH_SECRET}" ]]; then
+            echo "::error::The production gate requires TS_OAUTH_CLIENT_ID and TS_OAUTH_SECRET in the protected admin-tailscale environment."
+            exit 1
+          fi
+
+          readonly private_admin_url="https://${TAILSCALE_PRIVATE_ADMIN_HOST}"
+          if curl --silent --head --max-time 8 \
+            --output /dev/null "${private_admin_url}/login"; then
+            echo "::error::Private admin responded before the protected runner joined the tailnet."
+            exit 1
+          fi
+
+      - name: Join the approved tailnet with OAuth
+        uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:github-ci
+          ping: ${{ env.TAILSCALE_PRIVATE_ADMIN_HOST }}
+
+      - name: Verify private admin entrypoint
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$(tailscale status --json | jq -r '.BackendState')" != "Running" ]]; then
+            echo "::error::The protected runner did not establish a running tailnet session."
+            exit 1
+          fi
+          if ! getent ahostsv4 "${TAILSCALE_PRIVATE_ADMIN_HOST}" > /dev/null; then
+            echo "::error::Private admin hostname did not resolve inside the tailnet."
+            exit 1
+          fi
+
+          private_status="$(
+            curl --silent --show-error --head --max-time 15 \
+              --output /dev/null --write-out '%{http_code}' \
+              "https://${TAILSCALE_PRIVATE_ADMIN_HOST}/login"
+          )"
+          if [[ "${private_status}" != "200" ]]; then
+            echo "::error::Private admin login entrypoint returned HTTP ${private_status}; expected 200."
+            exit 1
+          fi
+
+          {
+            echo "## Private-tailnet verification"
+            echo
+            echo "- Protected runner joined the approved tailnet."
+            echo "- Private admin HTTPS login entrypoint returned the documented unauthenticated response."
+            echo "- Required private admin gate passed."
+            echo "- No admin credentials, cookies, deployment, Serve, or Funnel operations were used."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Disconnect ephemeral tailnet session
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          sudo tailscale logout > /dev/null 2>&1 || true

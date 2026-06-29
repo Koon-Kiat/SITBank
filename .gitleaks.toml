@@ -1,0 +1,54 @@
+title = "SITBank Gitleaks configuration"
+
+# Retain Gitleaks' complete built-in ruleset. Every exception below is
+# constrained by rule, path, and line shape; historical exceptions also name
+# the reviewed commits. Path-wide allowlists and baselines are absent.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Public SHA-256 checksum pinned by the Tailscale installer"
+condition = "AND"
+targetRules = ["generic-api-key"]
+regexTarget = "line"
+paths = ['''^ops/tailscale/install-tailscale$''']
+regexes = ['''^\s*(?:readonly\s+)?KEY_SHA256="[0-9a-f]{64}"\s*$''']
+
+[[allowlists]]
+description = "Historical synthetic accepted-password test fixture"
+condition = "AND"
+targetRules = ["generic-api-key"]
+regexTarget = "line"
+commits = ["45456ff0e4383cfa996f3e980ee1d2f70f86eb51"]
+paths = ['''^tests/test_auth_registration_login\.py$''']
+regexes = ['''^\s*accepted_password\s*=\s*"[^"]{12}"\s*$''']
+
+[[allowlists]]
+description = "Historical mappings from secret environment names to config field names"
+condition = "AND"
+targetRules = ["generic-api-key"]
+regexTarget = "line"
+commits = [
+  "fc820a45cdec30b8df4d1538e1261258b5c87054",
+  "f6c48a786044820df841bc39533a447c441c4f46",
+  "22851b7ad5a6b423b1f7751b8167d3d20bae751a",
+  "4c38fc792d2f840bcc7255ef245d391dd87c7204",
+]
+paths = [
+  '''^ops/runtime_contract\.py$''',
+  '''^ops/deploy/render_container_bundle\.py$''',
+  '''^ops/deploy/import_legacy_env\.py$''',
+]
+regexes = ['''^\s*"(?:PROD_)?MFA_AES256_GCM_KEY_B64":\s*"[a-z][a-z0-9_]*",?\s*$''']
+
+[[allowlists]]
+description = "Historical shell cases that reject private-key PEM headers"
+condition = "AND"
+targetRules = ["private-key"]
+regexTarget = "match"
+commits = [
+  "d2691d138f2da2b061dff7cc7efecf59ed2dc492",
+  "331e2b1a6599674543406b8aec1fc0da285c6d16",
+]
+paths = ['''^\.github/workflows/ci-deploy\.yml$''']
+regexes = ['''-----BEGIN (?:OPENSSH|RSA|EC) PRIVATE KEY-----''']

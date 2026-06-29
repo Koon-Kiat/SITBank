@@ -4,8 +4,10 @@ SITBank uses SonarQube Cloud as an additional code-quality and security
 analysis layer. It reports maintainability issues, duplication, coverage,
 reliability findings, and security-sensitive patterns through the SonarQube
 Cloud project dashboard. It does not replace pytest, CodeQL, Semgrep, Bandit,
-Gitleaks/repository secret scanning, dependency auditing, Trivy, ShellCheck,
+Gitleaks, the custom repository secret scanner, dependency auditing, Trivy, ShellCheck,
 Hadolint, Syft, deployment tests, or production guard tests.
+
+Category: [Security assurance](../README.md#assurance).
 
 ## Mode And Private-Repository Decision
 
@@ -103,6 +105,13 @@ SonarQube Cloud findings complement the more specialized tools: CodeQL and
 Semgrep inspect security patterns, dependency tools inspect known component
 risk, secret scanners look for credentials, and deployment checks validate
 runtime and infrastructure contracts.
+
+Gitleaks 8.30.1 is a separate full Git history control in
+`.github/workflows/gitleaks.yml`; it uses redacted output, no production
+secrets, and no SARIF upload. The custom repository secret scanner also
+remains in main/local CI. Neither scanner is replaced by SonarQube coverage or
+security findings; triage is documented in
+`docs/security/assurance/secret-scanning.md`.
 
 ## Pull-Request Summary Comment
 

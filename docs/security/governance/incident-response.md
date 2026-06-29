@@ -2,9 +2,11 @@
 
 This runbook covers suspected SITBank security and privacy incidents. It
 complements `SECURITY.md`, `docs/OPERATIONS.md`, and
-`docs/security/audit-and-alerting.md`. Role-based escalation and post-incident
+`docs/security/assurance/audit-and-alerting.md`. Role-based escalation and post-incident
 documentation review expectations are defined in
-`docs/security/security-governance.md`.
+`docs/security/governance/security-governance.md`.
+
+Category: [Security governance](../README.md#governance).
 
 ## First Response
 
@@ -137,4 +139,4 @@ After containment and recovery:
   and controls that need improvement;
 - update the gap register, framework matrix, runbooks, and tests;
 - rotate any temporary credentials used during response;
-- retain sanitized evidence according to `docs/security/data-retention-and-deactivation.md`.
+- retain sanitized evidence according to `docs/security/governance/data-retention-and-deactivation.md`.

@@ -5,9 +5,9 @@ admin:
           - 'admin_wsgi.py'
           - 'ops/**/admin*'
           - 'ops/**/admin/**'
-          - 'docs/security/admin-and-staging-zero-trust-access.md'
-          - 'docs/security/access-control.md'
-          - 'docs/security/session-management.md'
+          - 'docs/security/architecture/admin-and-staging-zero-trust-access.md'
+          - 'docs/security/architecture/access-control.md'
+          - 'docs/security/architecture/session-management.md'
           - 'tests/test_admin_*.py'
 
 customer:
@@ -108,7 +108,7 @@ security:
 zero-trust:
   - changed-files:
       - any-glob-to-any-file:
-          - 'docs/security/admin-and-staging-zero-trust-access.md'
+          - 'docs/security/architecture/admin-and-staging-zero-trust-access.md'
           - '**/*zero-trust*'
           - '**/*zero_trust*'
           - '**/*cloudflare*'
@@ -127,7 +127,7 @@ network-security:
       - any-glob-to-any-file:
           - 'ops/nginx/**'
           - 'ops/cloudflare/**'
-          - 'docs/security/admin-and-staging-zero-trust-access.md'
+          - 'docs/security/architecture/admin-and-staging-zero-trust-access.md'
           - '**/*firewall*'
           - '**/*allowlist*'
           - '**/*vpn*'
@@ -216,13 +216,19 @@ code-quality:
   - changed-files:
       - any-glob-to-any-file:
           - '.github/workflows/sonarqube.yml'
+          - '.github/workflows/shellcheck.yml'
+          - '.github/workflows/hadolint.yml'
+          - '.github/workflows/semgrep.yml'
           - 'sonar-project.properties'
           - 'requirements-dev.in'
           - 'requirements-dev.lock'
-          - 'docs/security/sonarqube.md'
-          - 'docs/security/secure-coding.md'
-          - 'docs/security/test-automation-and-dependencies.md'
+          - 'ops/security/discover_lint_targets.py'
+          - 'docs/security/assurance/sonarqube.md'
+          - 'docs/security/assurance/secure-coding.md'
+          - 'docs/security/assurance/test-automation-and-dependencies.md'
           - 'tests/test_sonarqube_workflow.py'
+          - 'tests/test_lint_target_discovery.py'
+          - 'tests/test_static_analysis_workflows.py'
 
 dependencies:
   - changed-files:

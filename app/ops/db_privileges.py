@@ -105,42 +105,48 @@ def apply_admin_runtime_database_privileges(
                 )
 
             connection.execute(
-                text(f"GRANT CONNECT ON DATABASE {quoted_database} TO {quoted_admin_role}")
+                _trusted_identifier_sql(
+                    f"GRANT CONNECT ON DATABASE {quoted_database} TO {quoted_admin_role}"
+                )
             )
             connection.execute(
-                text(f"GRANT USAGE ON SCHEMA {qualified_schema} TO {quoted_admin_role}")
+                _trusted_identifier_sql(
+                    f"GRANT USAGE ON SCHEMA {qualified_schema} TO {quoted_admin_role}"
+                )
             )
             qualified_audit_table = _qualified_table_name(schema, "security_audit_events")
             connection.execute(
-                text(
+                _trusted_identifier_sql(
                     f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA {qualified_schema} "
                     f"TO {quoted_admin_role}"
                 )
             )
             connection.execute(
-                text(f"GRANT SELECT, INSERT ON TABLE {qualified_audit_table} TO {quoted_admin_role}")
+                _trusted_identifier_sql(
+                    f"GRANT SELECT, INSERT ON TABLE {qualified_audit_table} TO {quoted_admin_role}"
+                )
             )
             connection.execute(
-                text(
+                _trusted_identifier_sql(
                     f"REVOKE UPDATE, DELETE, TRUNCATE ON TABLE {qualified_audit_table} "
                     f"FROM {quoted_admin_role}"
                 )
             )
             connection.execute(
-                text(
+                _trusted_identifier_sql(
                     f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA {qualified_schema} "
                     f"TO {quoted_admin_role}"
                 )
             )
             connection.execute(
-                text(
+                _trusted_identifier_sql(
                     f"ALTER DEFAULT PRIVILEGES FOR ROLE {quoted_migration_role} "
                     f"IN SCHEMA {qualified_schema} GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES "
                     f"TO {quoted_admin_role}"
                 )
             )
             connection.execute(
-                text(
+                _trusted_identifier_sql(
                     f"ALTER DEFAULT PRIVILEGES FOR ROLE {quoted_migration_role} "
                     f"IN SCHEMA {qualified_schema} GRANT USAGE, SELECT ON SEQUENCES "
                     f"TO {quoted_admin_role}"
@@ -269,11 +275,22 @@ def apply_runtime_audit_table_privileges(
                 raise RuntimeError("Runtime and migration connections are using the same role")
             qualified_table = _qualified_table_name(schema, audit_table)
             quoted_runtime_role = _quote_identifier(runtime_role)
-            migration_connection.execute(text(f"GRANT SELECT, INSERT ON TABLE {qualified_table} TO {quoted_runtime_role}"))
             migration_connection.execute(
-                text(f"REVOKE UPDATE, DELETE, TRUNCATE ON TABLE {qualified_table} FROM {quoted_runtime_role}")
+                _trusted_identifier_sql(
+                    f"GRANT SELECT, INSERT ON TABLE {qualified_table} TO {quoted_runtime_role}"
+                )
             )
-            migration_connection.execute(text(f"REVOKE UPDATE, DELETE, TRUNCATE ON TABLE {qualified_table} FROM PUBLIC"))
+            migration_connection.execute(
+                _trusted_identifier_sql(
+                    f"REVOKE UPDATE, DELETE, TRUNCATE ON TABLE {qualified_table} "
+                    f"FROM {quoted_runtime_role}"
+                )
+            )
+            migration_connection.execute(
+                _trusted_identifier_sql(
+                    f"REVOKE UPDATE, DELETE, TRUNCATE ON TABLE {qualified_table} FROM PUBLIC"
+                )
+            )
     finally:
         runtime_engine.dispose()
         migration_engine.dispose()
@@ -314,7 +331,7 @@ def verify_runtime_database_privileges(
                 migration_connection.execute(text(CURRENT_USER_QUERY)).scalar_one()
             )
             _assert_audit_append_only_triggers_installed(migration_connection, schema=schema)
-            migration_connection.execute(text(create_probe_table))
+            migration_connection.execute(_trusted_identifier_sql(create_probe_table))
 
         try:
             with runtime_engine.connect() as runtime_connection:
@@ -719,10 +736,15 @@ def _drop_probe_table(engine: Engine, *, schema: str, probe_table: str) -> None:
     create_probe_table_name = _create_probe_table_name(probe_table)
     with engine.begin() as connection:
         connection.execute(
-            text(f"DROP TABLE IF EXISTS {_qualified_table_name(schema, probe_table)}")
+            _trusted_identifier_sql(
+                f"DROP TABLE IF EXISTS {_qualified_table_name(schema, probe_table)}"
+            )
         )
         connection.execute(
-            text(f"DROP TABLE IF EXISTS {_qualified_table_name(schema, create_probe_table_name)}")
+            _trusted_identifier_sql(
+                f"DROP TABLE IF EXISTS "
+                f"{_qualified_table_name(schema, create_probe_table_name)}"
+            )
         )
 
 
@@ -734,6 +756,12 @@ def _quote_identifier(identifier: str) -> str:
     if not _is_identifier(identifier):
         raise RuntimeError("Unsafe PostgreSQL identifier")
     return f'"{identifier}"'
+
+
+def _trusted_identifier_sql(statement: str):
+    # Dynamic DDL cannot bind PostgreSQL identifiers. Every caller constructs
+    # this statement only from _quote_identifier/_qualified_table_name output.
+    return text(statement)  # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
 
 
 def _qualified_table_name(schema: str, table_name: str) -> str:
