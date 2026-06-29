@@ -1,0 +1,481 @@
+#!/usr/bin/env python3
+"""Verify the production host's non-public Tailscale admin access posture."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+# Commands are invoked without a shell and with validated, fixed arguments.
+import subprocess  # nosec B404
+import sys
+from dataclasses import dataclass
+from typing import Any, Callable, Sequence
+
+
+DEFAULT_ADMIN_LOOPBACK_HOST = "127.0.0.1"
+DEFAULT_ADMIN_LOOPBACK_PORT = 5002
+DEFAULT_PRIVATE_ADMIN_HOST = "admin-sitbank.tailca101b.ts.net"
+MAX_COMMAND_OUTPUT_BYTES = 1024 * 1024
+HOSTNAME_PATTERN = re.compile(
+    r"^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$"
+)
+IPV4_LOOPBACK_PATTERN = re.compile(r"^127(?:\.[0-9]{1,3}){3}$")
+
+
+class VerificationError(RuntimeError):
+    """Raised when a required host-side security assertion cannot be proved."""
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    returncode: int
+    stdout: str = ""
+    stderr: str = ""
+
+
+Runner = Callable[[Sequence[str]], CommandResult]
+
+
+def _bounded_text(value: str, command: str) -> str:
+    if len(value.encode("utf-8", errors="replace")) > MAX_COMMAND_OUTPUT_BYTES:
+        raise VerificationError(f"{command} returned unexpectedly large output")
+    return value
+
+
+def run_command(arguments: Sequence[str]) -> CommandResult:
+    executable = shutil.which(arguments[0])
+    if executable is None:
+        raise VerificationError(f"required command is not installed: {arguments[0]}")
+    try:
+        # The executable is resolved from PATH and no command is passed to a shell.
+        completed = subprocess.run(  # nosec B603
+            [executable, *arguments[1:]],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise VerificationError(
+            f"could not run required command: {arguments[0]}"
+        ) from exc
+    return CommandResult(
+        returncode=completed.returncode,
+        stdout=_bounded_text(completed.stdout, arguments[0]),
+        stderr=_bounded_text(completed.stderr, arguments[0]),
+    )
+
+
+def _require_success(result: CommandResult, description: str) -> str:
+    if result.returncode != 0:
+        raise VerificationError(f"{description} is unavailable or failed")
+    return result.stdout
+
+
+def _load_json(raw: str, description: str) -> Any:
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise VerificationError(f"{description} did not return valid JSON") from exc
+
+
+def _walk_json(value: Any):
+    yield value
+    if isinstance(value, dict):
+        for key, child in value.items():
+            yield key
+            yield from _walk_json(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _walk_json(child)
+
+
+def _values_for_key(value: Any, expected_key: str) -> list[Any]:
+    matches: list[Any] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if str(key).casefold() == expected_key.casefold():
+                matches.append(child)
+            matches.extend(_values_for_key(child, expected_key))
+    elif isinstance(value, list):
+        for child in value:
+            matches.extend(_values_for_key(child, expected_key))
+    return matches
+
+
+def _contains_truthy_funnel(value: Any) -> bool:
+    for candidate in _values_for_key(value, "AllowFunnel"):
+        if isinstance(candidate, dict):
+            if any(bool(enabled) for enabled in candidate.values()):
+                return True
+        elif bool(candidate):
+            return True
+    return False
+
+
+def validate_settings(
+    loopback_host: str,
+    loopback_port: int,
+    private_admin_host: str,
+) -> None:
+    if not IPV4_LOOPBACK_PATTERN.fullmatch(loopback_host):
+        raise VerificationError(
+            "ADMIN_LOOPBACK_HOST must be an IPv4 address in 127.0.0.0/8"
+        )
+    octets = [int(part) for part in loopback_host.split(".")]
+    if any(octet > 255 for octet in octets):
+        raise VerificationError("ADMIN_LOOPBACK_HOST contains an invalid octet")
+    if not 1 <= loopback_port <= 65535:
+        raise VerificationError("ADMIN_LOOPBACK_PORT must be from 1 through 65535")
+    if not HOSTNAME_PATTERN.fullmatch(private_admin_host):
+        raise VerificationError("PRIVATE_ADMIN_HOST must be a bare hostname")
+
+
+def verify_tailscale_running(runner: Runner) -> None:
+    raw = _require_success(
+        runner(("tailscale", "status", "--json")),
+        "Tailscale daemon status",
+    )
+    status = _load_json(raw, "Tailscale daemon status")
+    if not isinstance(status, dict) or status.get("BackendState") != "Running":
+        raise VerificationError("Tailscale node is not in the Running state")
+
+
+def verify_funnel_disabled(runner: Runner) -> None:
+    raw = _require_success(
+        runner(("tailscale", "funnel", "status", "--json")),
+        "Tailscale Funnel status",
+    )
+    status = _load_json(raw, "Tailscale Funnel status")
+    funnel_fields = _values_for_key(status, "AllowFunnel")
+    if status not in ({}, None) and not funnel_fields:
+        raise VerificationError(
+            "Tailscale Funnel status schema cannot prove Funnel is disabled"
+        )
+    if _contains_truthy_funnel(status):
+        raise VerificationError(
+            "Tailscale Funnel is enabled; admin access must remain tailnet-only"
+        )
+
+
+def verify_serve_mapping(
+    runner: Runner,
+    loopback_host: str,
+    loopback_port: int,
+    private_admin_host: str,
+) -> None:
+    raw = _require_success(
+        runner(("tailscale", "serve", "status", "--json")),
+        "Tailscale Serve status",
+    )
+    status = _load_json(raw, "Tailscale Serve status")
+    if not isinstance(status, dict) or not status:
+        raise VerificationError("Tailscale Serve has no active admin mapping")
+    if _contains_truthy_funnel(status):
+        raise VerificationError("Tailscale Serve status reports Funnel enabled")
+
+    approved_target = f"http://{loopback_host}:{loopback_port}"
+    proxy_targets = _values_for_key(status, "Proxy")
+    if not proxy_targets:
+        raise VerificationError("Tailscale Serve has no reverse-proxy target")
+    normalized_targets = {
+        target.rstrip("/")
+        for target in proxy_targets
+        if isinstance(target, str)
+    }
+    if len(normalized_targets) != len(proxy_targets) or normalized_targets != {
+        approved_target
+    }:
+        raise VerificationError(
+            f"Tailscale Serve may proxy only to {approved_target}"
+        )
+
+    expected_endpoint = f"{private_admin_host}:443"
+    web_mappings = _values_for_key(status, "Web")
+    web_endpoints = {
+        str(endpoint)
+        for mapping in web_mappings
+        if isinstance(mapping, dict)
+        for endpoint in mapping
+    }
+    if web_endpoints != {expected_endpoint}:
+        raise VerificationError(
+            f"Tailscale Serve must expose only {expected_endpoint}"
+        )
+
+    tcp_mappings = _values_for_key(status, "TCP")
+    tcp_ports = {
+        str(port)
+        for mapping in tcp_mappings
+        if isinstance(mapping, dict)
+        for port in mapping
+    }
+    if tcp_ports != {"443"}:
+        raise VerificationError("Tailscale Serve may listen only on HTTPS port 443")
+
+    handler_mappings = _values_for_key(status, "Handlers")
+    if not handler_mappings or any(
+        not isinstance(mapping, dict) or set(mapping) != {"/"}
+        for mapping in handler_mappings
+    ):
+        raise VerificationError(
+            "Tailscale Serve must map only the root path to the admin service"
+        )
+
+    forbidden_handler_keys = {"path", "text"}
+    json_keys = {
+        str(candidate).casefold()
+        for candidate in _walk_json(status)
+        if isinstance(candidate, str)
+    }
+    if forbidden_handler_keys & json_keys:
+        raise VerificationError(
+            "Tailscale Serve contains a file or static-text handler"
+        )
+
+    if expected_endpoint not in {
+        candidate
+        for candidate in _walk_json(status)
+        if isinstance(candidate, str)
+    }:
+        raise VerificationError(
+            f"Tailscale Serve does not expose the expected {expected_endpoint} endpoint"
+        )
+
+
+def _local_addresses_for_port(ss_output: str, port: int) -> list[str]:
+    addresses: list[str] = []
+    suffix = f":{port}"
+    for line in ss_output.splitlines():
+        fields = line.split()
+        if len(fields) < 4:
+            continue
+        local_address = fields[3]
+        if local_address.endswith(suffix):
+            addresses.append(local_address)
+    return addresses
+
+
+def verify_admin_listener(
+    runner: Runner,
+    loopback_host: str,
+    loopback_port: int,
+) -> None:
+    output = _require_success(
+        runner(("ss", "-H", "-ltn")),
+        "listening-socket inspection",
+    )
+    addresses = _local_addresses_for_port(output, loopback_port)
+    approved_address = f"{loopback_host}:{loopback_port}"
+    if approved_address not in addresses:
+        raise VerificationError(
+            f"admin service is not listening on {approved_address}"
+        )
+    unexpected = sorted(set(addresses) - {approved_address})
+    if unexpected:
+        raise VerificationError(
+            "admin port has a non-approved listener: " + ", ".join(unexpected)
+        )
+
+
+def verify_local_admin_readiness(
+    runner: Runner,
+    loopback_host: str,
+    loopback_port: int,
+) -> None:
+    result = runner(
+        (
+            "curl",
+            "--silent",
+            "--show-error",
+            "--output",
+            "/dev/null",
+            "--write-out",
+            "%{http_code}",
+            "--max-time",
+            "8",
+            "--header",
+            "Host: sitbank-admin.internal",
+            "--header",
+            "X-Forwarded-Proto: https",
+            f"http://{loopback_host}:{loopback_port}/health/ready",
+        )
+    )
+    if result.returncode != 0 or result.stdout.strip() != "200":
+        raise VerificationError(
+            "admin loopback readiness did not return the expected HTTP 200"
+        )
+
+
+def verify_nginx_has_no_admin_upstream(
+    runner: Runner,
+    loopback_port: int,
+    private_admin_host: str,
+) -> None:
+    result = runner(("nginx", "-T"))
+    if result.returncode != 0:
+        raise VerificationError("Nginx configuration could not be inspected")
+    configuration = f"{result.stdout}\n{result.stderr}"
+    for line in configuration.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if re.search(rf"(?<![0-9]){loopback_port}(?![0-9])", stripped):
+            raise VerificationError(
+                "Nginx configuration references the private admin port"
+            )
+        if private_admin_host.casefold() in stripped.casefold():
+            raise VerificationError(
+                "Nginx configuration references the private Tailscale hostname"
+            )
+
+
+def verify_private_admin_url(
+    runner: Runner,
+    private_admin_host: str,
+) -> None:
+    result = runner(
+        (
+            "curl",
+            "--silent",
+            "--show-error",
+            "--head",
+            "--output",
+            "/dev/null",
+            "--write-out",
+            "%{http_code}",
+            "--max-time",
+            "15",
+            f"https://{private_admin_host}/login",
+        )
+    )
+    if result.returncode != 0 or result.stdout.strip() != "200":
+        raise VerificationError(
+            "private Tailscale admin login did not return the expected HTTP 200"
+        )
+
+
+def verify_host(
+    mode: str,
+    loopback_host: str,
+    loopback_port: int,
+    private_admin_host: str,
+    runner: Runner = run_command,
+) -> list[str]:
+    validate_settings(loopback_host, loopback_port, private_admin_host)
+    if mode not in {"serve", "ssh", "documentation-only"}:
+        raise VerificationError("unsupported verification mode")
+    if mode == "documentation-only":
+        return [
+            "WARNING: documentation-only mode performs no live Tailscale or "
+            "admin access verification."
+        ]
+
+    checks: list[tuple[str, Callable[[], None]]] = [
+        ("Tailscale node is running", lambda: verify_tailscale_running(runner)),
+        ("Tailscale Funnel is disabled", lambda: verify_funnel_disabled(runner)),
+        (
+            "admin listener is loopback-only",
+            lambda: verify_admin_listener(runner, loopback_host, loopback_port),
+        ),
+        (
+            "admin loopback readiness returns HTTP 200",
+            lambda: verify_local_admin_readiness(
+                runner, loopback_host, loopback_port
+            ),
+        ),
+        (
+            "Nginx has no admin upstream or private hostname",
+            lambda: verify_nginx_has_no_admin_upstream(
+                runner, loopback_port, private_admin_host
+            ),
+        ),
+    ]
+    if mode == "serve":
+        checks.extend(
+            [
+                (
+                    "Tailscale Serve maps only the private HTTPS endpoint to "
+                    "the admin loopback service",
+                    lambda: verify_serve_mapping(
+                        runner,
+                        loopback_host,
+                        loopback_port,
+                        private_admin_host,
+                    ),
+                ),
+                (
+                    "private Tailscale admin login returns HTTP 200",
+                    lambda: verify_private_admin_url(runner, private_admin_host),
+                ),
+            ]
+        )
+
+    messages: list[str] = []
+    failures: list[str] = []
+    for description, check in checks:
+        try:
+            check()
+        except VerificationError as exc:
+            failures.append(f"{description}: {exc}")
+        else:
+            messages.append(f"OK: {description}")
+    if failures:
+        raise VerificationError("\n".join(failures))
+    return messages
+
+
+def parse_args(argv: Sequence[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--mode",
+        choices=("serve", "ssh", "documentation-only"),
+        required=True,
+        help="Access posture to verify; ssh means Tailscale/private port-forward fallback.",
+    )
+    parser.add_argument(
+        "--admin-loopback-host",
+        default=os.environ.get(
+            "ADMIN_LOOPBACK_HOST", DEFAULT_ADMIN_LOOPBACK_HOST
+        ),
+    )
+    parser.add_argument(
+        "--admin-loopback-port",
+        type=int,
+        default=os.environ.get(
+            "ADMIN_LOOPBACK_PORT", str(DEFAULT_ADMIN_LOOPBACK_PORT)
+        ),
+    )
+    parser.add_argument(
+        "--private-admin-host",
+        default=os.environ.get(
+            "PRIVATE_ADMIN_HOST", DEFAULT_PRIVATE_ADMIN_HOST
+        ),
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+    try:
+        messages = verify_host(
+            args.mode,
+            args.admin_loopback_host,
+            args.admin_loopback_port,
+            args.private_admin_host,
+        )
+    except VerificationError as exc:
+        for line in str(exc).splitlines():
+            print(f"ERROR: {line}", file=sys.stderr)
+        return 1
+    for message in messages:
+        stream = sys.stderr if message.startswith("WARNING:") else sys.stdout
+        print(message, file=stream)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

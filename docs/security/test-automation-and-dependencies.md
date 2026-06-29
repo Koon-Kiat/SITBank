@@ -21,6 +21,7 @@ and test evidence found in the repository.
 | `.github/workflows/codeql.yml` | CodeQL static analysis | Python `security-extended` queries on pull requests, main pushes, and schedule when repository is public |
 | `.github/workflows/sonarqube.yml` | SonarQube Cloud code-quality analysis | Full pytest coverage plus reporting-only maintainability, duplication, reliability, and security dashboard analysis |
 | `.github/workflows/tailscale-private-admin-verify.yml` | Protected private-tailnet verification | A manual/reusable job joins with an ephemeral tagged identity, checks private admin reachability, remains separate from PR/public TLS CI, and is required after production deploy plus public TLS |
+| `ops/deploy/verify-tailscale-admin-access` | EC2-local private-admin posture verification | A non-mutating production-host check validates Tailscale/Funnel state, loopback binding, readiness, Nginx absence, narrow Serve mapping, and private HTTPS without accepting credentials |
 | `.github/workflows/bootstrap-ec2.yml` | Bootstrap artifact workflow | Uses pinned actions and cosign blob signing |
 
 Not applicable to the current dependency inventory: no `package.json`,
@@ -59,6 +60,7 @@ Tests for this automation include:
 | `tests/test_secret_scanner.py` | Secret scanner behavior |
 | `tests/test_sonarqube_workflow.py` | SonarQube trigger, permission, pinning, coverage, scope, secret, label, and documentation policy |
 | `tests/test_tailscale_ci_tailnet_workflow.py` | Private-tailnet trigger, environment, OAuth secrets, action pinning, reachability, prohibited operation, and public TLS separation policy |
+| `tests/test_tailscale_admin_access.py` | Host-preflight modes, bootstrap installation, safe command contract, Serve/Funnel parsing, listener failure cases, Nginx absence, and stubbed success/failure behavior |
 
 ## Test Automation Coverage
 
@@ -168,6 +170,16 @@ approvers and branch rules, and removing the dedicated CI grants/environment
 when access is no longer required. This workflow does not enable Tailscale
 Funnel or Serve and does not replace Flask admin login, TOTP, CSRF,
 authorization, audit logging, or host-side Tailscale verification.
+
+The complementary EC2 host control is
+`/usr/local/sbin/verify-tailscale-admin-access --mode serve`, installed by the
+production bootstrap. Normal CI does not contact a live daemon: it uses
+stubbed command results to cover Running-state parsing, Funnel rejection,
+loopback-only listeners, local readiness, Nginx absence, narrow Serve mapping,
+private HTTPS, and fail-closed behavior. The script has no provisioning path
+and accepts no Tailscale credential. A successful live run is operator-owned
+deployment evidence; ACL, device approval, and membership remain separate
+manual evidence.
 
 The separate `.github/workflows/codeql.yml` runs CodeQL Python
 `security-extended` queries for public repository events. The separate

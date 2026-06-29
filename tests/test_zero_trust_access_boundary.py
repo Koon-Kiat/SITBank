@@ -59,6 +59,8 @@ def test_hybrid_cloudflare_staging_and_tailscale_admin_design_is_documented():
         "Admin access is private through Tailscale",
         "Implemented repository controls include",
         "Protected GitHub CI tailnet verification is implemented only by",
+        "EC2 Host-Side Tailscale Preflight",
+        "verify-tailscale-admin-access --mode serve",
         "admin-tailscale",
         "TS_OAUTH_CLIENT_ID",
         "TS_OAUTH_SECRET",
@@ -81,7 +83,7 @@ def test_hybrid_cloudflare_staging_and_tailscale_admin_design_is_documented():
         "https://admin-sitbank.tailca101b.ts.net/",
         "old public admin verification",
         "page has been removed from the edge bootstrap",
-        "No public admin hostname is a valid access path",
+        "No public admin hostname or Nginx admin upstream is configured",
         "Zero-trust and network-boundary work should use these repository labels",
     ):
         assert required in docs

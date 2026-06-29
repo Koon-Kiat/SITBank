@@ -149,7 +149,12 @@ evidence from a temporary GitHub-hosted tailnet node. Its
 do not replace Flask admin login, TOTP, CSRF, route authorization, or audit
 logging. Production calls it as a required gate only after deployment and
 public production TLS verification; normal public TLS/PR CI remains outside
-the tailnet.
+the tailnet. The EC2-local
+`/usr/local/sbin/verify-tailscale-admin-access --mode serve` preflight
+separately verifies the running node, disabled Funnel, loopback listener,
+local readiness, narrow Serve mapping, Nginx absence, and private HTTPS
+response without using a Tailscale credential. Live ACL, device approval, and
+operator membership remain operator-reviewed state.
 
 Manual recovery operator review is exposed only by the isolated admin app.
 `GET /manual-recovery/requests` lists public-safe request summaries for root
@@ -213,7 +218,7 @@ Network boundaries complement, but do not replace, Flask authorization:
 | --- | --- | --- |
 | Production customer | Public HTTPS at `sitbank.duckdns.org` | Customer login, MFA onboarding, CSRF, route inventory, rate limiting |
 | Staging customer | Cloudflare Access before Nginx, Cloudflare Authenticated Origin Pull at Nginx, staging Basic Auth | Customer login, MFA, CSRF, route inventory, rate limiting |
-| Production admin | Tailscale Serve at `https://admin-sitbank.tailca101b.ts.net/`; public admin app routes denied; protected CI checks private reachability on demand and after production public TLS | Staff/root-admin login, mandatory TOTP, CSRF, admin route inventory, admin rate limiting |
+| Production admin | Tailscale Serve at `https://admin-sitbank.tailca101b.ts.net/`; no public admin host or Nginx upstream; protected CI checks private reachability and the EC2 preflight checks local Serve/Funnel/listener posture | Staff/root-admin login, mandatory TOTP, CSRF, admin route inventory, admin rate limiting |
 | Staging admin | Tailscale/private operator access to `127.0.0.1:5003`; no public admin host | Staff/root-admin login, mandatory TOTP, CSRF, admin route inventory, admin rate limiting |
 
 The staging Nginx config uses Cloudflare Authenticated Origin Pulls so direct

@@ -117,6 +117,42 @@ and deployment-branch rules must be reviewed during maintainer offboarding.
 Retired private aliases must not be used. If the live tailnet hostname
 changes, update the workflow, documentation, and policy tests together.
 
+### EC2 Host-Side Tailscale Preflight
+
+Production bootstrap installs
+`ops/deploy/verify-tailscale-admin-access` at
+`/usr/local/sbin/verify-tailscale-admin-access`. It is a non-mutating local
+control with three explicit modes:
+
+- `--mode serve` proves the node is running, Funnel is disabled, the admin
+  listener is only `127.0.0.1:5002`, local readiness works, Nginx has no admin
+  upstream/private hostname, Serve maps only the approved private HTTPS
+  endpoint to `http://127.0.0.1:5002`, and private `/login` returns `200`.
+- `--mode ssh` proves the same local Tailscale, Funnel, listener, readiness,
+  and Nginx prerequisites for fallback private port-forward diagnostics. It
+  does not claim to test a remote tunnel.
+- `--mode documentation-only` checks arguments and warns that no live
+  verification occurred. It is not acceptable production evidence.
+
+Run the primary check on EC2:
+
+```bash
+sudo /usr/local/sbin/verify-tailscale-admin-access --mode serve
+```
+
+The script invokes only local status and read-only inspection commands. It
+does not accept or print auth keys, OAuth credentials, API tokens, node keys,
+cookies, or application secrets. It does not run `tailscale up`, change Serve,
+enable Funnel, write tailnet policy, call an external provider API, or replace
+the protected GitHub workflow.
+
+The two controls answer different questions. The protected GitHub workflow
+proves that an approved ephemeral tailnet client can reach the private HTTPS
+entrypoint. The EC2 preflight proves the deployed host's local listener,
+Nginx, Serve, and Funnel posture. Live ACL/grant contents, tag ownership,
+device approval, operator membership, and removal of stale devices remain
+operator-owned evidence and must be reviewed in Tailscale.
+
 ## Protected Paths
 
 | Surface | Host or path | Boundary | Public exposure |
@@ -249,6 +285,7 @@ sudo tailscale up --advertise-tags=tag:sitbank-admin
 sudo tailscale set --hostname=admin-sitbank
 sudo tailscale serve --bg --https=443 127.0.0.1:5002
 sudo tailscale serve status
+sudo /usr/local/sbin/verify-tailscale-admin-access --mode serve
 ```
 
 Admins connect to the Tailscale VPN first, then open
@@ -267,9 +304,14 @@ policy entries, monitoring, bookmarks, or automation that contain the previous
 hostname must be updated separately; tag-based grants remain unchanged.
 
 If Tailscale Serve is unavailable, use a separate reviewed private operator
-path rather than exposing the admin app publicly. In all cases, the Flask
-admin login and TOTP remain mandatory after the private network boundary is
-satisfied.
+path rather than exposing the admin app publicly. For host diagnostics, run
+`sudo /usr/local/sbin/verify-tailscale-admin-access --mode ssh`, then establish
+an approved-device tunnel such as
+`ssh -N -L 127.0.0.1:5002:127.0.0.1:5002
+sitbank-deploy@<approved-private-host>`. This is fallback diagnostics only;
+private HTTPS through Serve remains the supported browser path. In all cases,
+Flask admin login and TOTP remain mandatory after the private network boundary
+is satisfied.
 
 ## Operator Onboarding
 
@@ -293,6 +335,8 @@ Admin operators:
    root-admin invite flow.
 5. Confirm admin login still requires password plus TOTP after Tailscale
    access is established.
+6. Run the EC2 `--mode serve` preflight and retain its non-secret result with
+   the operator-change evidence.
 
 ## Offboarding
 
@@ -308,6 +352,8 @@ When an operator or device is removed:
 6. Rotate staging Basic Auth, Tailscale auth keys, or other affected
    host-managed credentials if they were shared with the removed operator.
 7. Review audit logs for staging/admin access near the offboarding time.
+8. Run the EC2 `--mode serve` preflight, confirm removed devices are absent in
+   Tailscale, and retain both results as offboarding evidence.
 
 ## Deployment Verification
 
@@ -372,14 +418,16 @@ live checks manually:
 
 Live Tailscale admin checks:
 
-1. An approved operator reaches `https://admin-sitbank.tailca101b.ts.net/` only from an approved tailnet device.
-2. A non-tailnet network cannot reach the admin app.
-3. A removed user or deleted device loses access.
-4. Admin browser login with workplace password and TOTP reaches the dashboard.
-5. Admin readiness endpoints remain private or restricted.
-6. No public admin hostname is a valid access path; the retired public hostname
-   is absent or returns a safe denial.
-7. `https://sitbank.duckdns.org` remains public.
+1. Run
+   `sudo /usr/local/sbin/verify-tailscale-admin-access --mode serve` on EC2
+   and retain its successful, non-secret output.
+2. An approved operator reaches `https://admin-sitbank.tailca101b.ts.net/` only from an approved tailnet device.
+3. A non-tailnet network cannot reach the admin app.
+4. A removed user or deleted device loses access.
+5. Admin browser login with workplace password and TOTP reaches the dashboard.
+6. Admin readiness endpoints remain private or restricted.
+7. No public admin hostname or Nginx admin upstream is configured.
+8. `https://sitbank.duckdns.org` remains public.
 
 ## Emergency Lockout
 
@@ -398,6 +446,7 @@ For admin compromise or suspected unauthorized admin access:
    ```bash
    sudo tailscale serve reset
    sudo tailscale serve status
+   sudo /usr/local/sbin/verify-tailscale-admin-access --mode ssh
    ```
 
 2. Remove the affected Tailscale devices or users from the tailnet.
@@ -427,6 +476,8 @@ If Tailscale admin setup fails:
 2. Leave the public admin surface absent from Nginx.
 3. Use only approved break-glass host access to recover.
 4. Do not expose admin through the customer app or public Nginx routes.
+5. Run the host preflight in the selected live mode and do not restore operator
+   access until it succeeds.
 
 ## Secrets And Host-Managed State
 

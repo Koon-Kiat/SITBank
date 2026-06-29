@@ -112,6 +112,7 @@ if [[ "${target}" == "staging" ]]; then
     )
 else
     linux_runtime_files+=(
+        "${repo_root}/ops/deploy/verify-tailscale-admin-access"
         "${repo_root}/ops/nginx-proxy-headers.conf"
         "${repo_root}/ops/nginx/sitbank-production.conf"
         "${repo_root}/ops/nginx/sitbank-production-rate-limits.conf"
@@ -235,6 +236,11 @@ install -o root -g root -m 0755 \
 install -o root -g root -m 0755 \
     "${repo_root}/ops/deploy/verify-certbot-host-state" \
     /usr/local/sbin/verify-certbot-host-state
+if [[ "${target}" == "production" ]]; then
+    install -o root -g root -m 0755 \
+        "${repo_root}/ops/deploy/verify-tailscale-admin-access" \
+        /usr/local/sbin/verify-tailscale-admin-access
+fi
 install -o root -g root -m 0755 \
     "${repo_root}/ops/backups/sitbank-backup-encrypted" \
     /usr/local/sbin/sitbank-backup-encrypted

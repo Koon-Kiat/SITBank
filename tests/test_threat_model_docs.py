@@ -58,6 +58,7 @@ def test_design_risk_register_covers_required_decisions():
         "Admin route inventory testing",
         "Audit hash/HMAC integrity",
         "Zero-trust/private admin-staging access direction",
+        "Read-only EC2 Tailscale admin preflight",
         "GitHub-hosted runner SSH conflict",
         "Reporting-only SonarQube initial rollout",
         "Design decision",

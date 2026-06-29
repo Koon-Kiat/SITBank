@@ -189,6 +189,44 @@ Offboarding requires review of environment approvers/branch rules. To remove
 CI tailnet access, delete both environment secrets, revoke the OAuth client,
 remove the CI tag grants and devices, and disable or delete the environment.
 
+### Production Host Tailscale Preflight
+
+Production bootstrap installs
+`ops/deploy/verify-tailscale-admin-access` as
+`/usr/local/sbin/verify-tailscale-admin-access` with root ownership and mode
+`0755`. Run it on the EC2 host after production deployment and after changes
+to Tailscale, Serve, Funnel, Nginx, or the admin listener:
+
+```bash
+sudo /usr/local/sbin/verify-tailscale-admin-access --mode serve
+```
+
+Serve mode succeeds only when the local Tailscale node reports `Running`,
+Funnel is disabled, the admin service has only the
+`127.0.0.1:5002` listener, loopback readiness returns `200`, Nginx contains
+neither an admin-port upstream nor the private Tailscale hostname, Serve
+exposes only `admin-sitbank.tailca101b.ts.net:443` to
+`http://127.0.0.1:5002`, and the private `/login` entrypoint returns `200`.
+The script reads local status and configuration only. It does not run
+`tailscale up`, change Serve or Funnel, modify policy, call a Tailscale API, or
+use OAuth/auth-key material.
+
+`--mode ssh` verifies the same local Tailscale, Funnel, listener, readiness,
+and Nginx prerequisites for a reviewed private port-forward diagnostic path,
+but does not claim that a remote tunnel or browser session was tested.
+`--mode documentation-only` validates arguments and emits a warning without
+performing live checks; it is for pre-rollout documentation review and is not
+deployment evidence. Any error from a live mode is a failed preflight. Keep
+the admin unavailable rather than weakening the listener, Nginx, or Funnel
+boundary.
+
+This EC2-local preflight complements rather than replaces the protected
+GitHub workflow. The host script proves local listener and Serve/Funnel
+posture; the protected workflow proves reachability from an approved
+ephemeral tailnet node. Neither control proves live ACL membership, device
+approval, or operator offboarding state, which remains operator-owned
+evidence.
+
 Set `ROOT_ADMIN_EMAILS` in both protected GitHub environments before deploying
 admin bootstrap support. It is a non-secret allowlist, but it is
 security-critical: the value must be exactly 7 comma-separated SIT workplace

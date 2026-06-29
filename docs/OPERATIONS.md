@@ -127,9 +127,56 @@ Funnel must stay disabled for SITBank admin.
 Tailscale is the private network/device boundary for admin access; it does not
 replace Flask admin login, TOTP, CSRF protection, route authorization, or audit
 logging.
-Tailscale admin host preflight/provisioning and the private admin boundary are
-implemented repository controls; live ACL, device, and Serve state still
-requires operator verification.
+The Tailscale admin host preflight and private admin boundary are implemented
+repository controls; live provisioning plus ACL, device, and Serve state still
+require operator verification.
+
+Production bootstrap installs the read-only host preflight at
+`/usr/local/sbin/verify-tailscale-admin-access`. Run it directly on EC2 after
+deployment and whenever the admin listener, Nginx, Tailscale daemon, Serve
+mapping, Funnel state, private hostname, or certificate changes:
+
+```bash
+sudo /usr/local/sbin/verify-tailscale-admin-access --mode serve
+```
+
+Expected output is one `OK:` line for each of these assertions: Tailscale is
+running; Funnel is disabled; port `5002` listens only on `127.0.0.1`; local
+admin readiness returns `200`; Nginx has no admin upstream or private
+Tailscale hostname; Serve exposes only
+`admin-sitbank.tailca101b.ts.net:443` to
+`http://127.0.0.1:5002`; and the private `/login` URL returns `200`. Any
+`ERROR:` line and nonzero exit is a failed preflight. Investigate the named
+control; do not enable Funnel, broaden the listener, or add an Nginx admin
+route to make the check pass.
+
+The reviewed defaults can be overridden with
+`ADMIN_LOOPBACK_HOST`, `ADMIN_LOOPBACK_PORT`, and `PRIVATE_ADMIN_HOST`, or
+their matching command-line flags. Values are strictly validated. Change a
+default only with the Compose, Tailscale, documentation, and tests in the same
+review; there is intentionally no public-admin-host setting.
+
+For a reviewed fallback diagnostic using private SSH port forwarding, first
+run:
+
+```bash
+sudo /usr/local/sbin/verify-tailscale-admin-access --mode ssh
+```
+
+This verifies the host prerequisites but not the remote tunnel. From an
+approved operator device, a reviewed diagnostic tunnel has the form
+`ssh -N -L 127.0.0.1:5002:127.0.0.1:5002
+sitbank-deploy@<approved-private-host>`. Use it only for loopback diagnostics;
+the supported admin browser path remains private HTTPS through Tailscale
+Serve. `--mode documentation-only` performs no live checks and prints that
+warning; never retain its result as production evidence.
+
+The host script consumes no auth key, OAuth secret, API token, node key, or
+policy credential and does not print raw Tailscale status. It never enables
+Tailscale, Serve, or Funnel. It supplies EC2-local listener/configuration
+evidence; the protected GitHub workflow below separately supplies
+tailnet-client reachability evidence. Operators must still retain live ACL,
+tag, device-approval, membership, and offboarding evidence.
 
 The **Verify private Tailscale admin access** workflow is the only
 GitHub-hosted workflow approved to join the tailnet. It can run manually and is

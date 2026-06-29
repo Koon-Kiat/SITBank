@@ -154,6 +154,15 @@ withdraw CI tailnet access, remove both secrets, revoke the OAuth client,
 remove the CI tag grants/devices, and disable or delete the environment.
 Normal public TLS scans continue to exclude the private hostname.
 
+This workflow is network-path evidence, not EC2 host-configuration evidence.
+The production bootstrap separately installs the non-mutating
+`/usr/local/sbin/verify-tailscale-admin-access` preflight. Operators run its
+`--mode serve` check on EC2 to inspect the local Tailscale/Funnel state,
+loopback listener, Serve mapping, local readiness, Nginx absence, and private
+HTTPS response. The host script uses no GitHub secret or Tailscale credential;
+normal CI covers its contract with stubs and does not claim to inspect live
+Tailscale state.
+
 ## DAST Policy
 
 Ordinary pull requests skip the full authenticated DAST crawl to keep feedback fast. They still run unit tests, compile checks, `pip check`, Bandit, dependency audits, dependency lock validation, repository secret scan, Docker image build, container smoke test, Compose validation, and Trivy gates.
