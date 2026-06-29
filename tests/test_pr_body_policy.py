@@ -8,26 +8,33 @@ from ops.security.validate_pr_body import load_body_from_event, validate_body
 
 
 VALID_BODY = """Summary
+---
 Adds server-side Payee management required for Local Transfer.
 
 Why
+---
 Local Transfer needs trusted recipient records before transfer creation.
 
 What changed
+---
 * Added Payee model and routes
 * Added server-side validation
 * Added tests for invalid recipient input
 
 Security impact
+---
 Recipient names are loaded from the database and are not accepted from client input.
 
 Deployment impact
+---
 No deployment action required.
 
 Verification
+---
 * python -m pytest tests/test_payees.py
 
 Notes
+---
 No follow-up required.
 """
 
@@ -36,12 +43,18 @@ def _messages(body: str) -> list[str]:
     return [error.message for error in validate_body(body)]
 
 
-def test_valid_pr_body_passes_with_plain_headings():
+def test_valid_pr_body_passes_with_setext_headings():
     assert validate_body(VALID_BODY) == []
 
 
+def test_valid_pr_body_still_accepts_plain_headings():
+    body = VALID_BODY.replace("---\n", "")
+
+    assert validate_body(body) == []
+
+
 def test_valid_pr_body_passes_with_markdown_headings_and_notes_none():
-    body = VALID_BODY.replace("Summary", "## Summary", 1).replace("Notes\nNo follow-up required.", "### Notes\nN/A")
+    body = VALID_BODY.replace("Summary\n---", "## Summary", 1).replace("Notes\n---\nNo follow-up required.", "### Notes\nN/A")
 
     assert validate_body(body) == []
 
@@ -51,7 +64,7 @@ def test_empty_pr_body_fails():
 
 
 def test_missing_required_section_fails():
-    body = VALID_BODY.replace("Why\nLocal Transfer needs trusted recipient records before transfer creation.\n\n", "")
+    body = VALID_BODY.replace("Why\n---\nLocal Transfer needs trusted recipient records before transfer creation.\n\n", "")
 
     assert "Missing required PR description section: Why." in _messages(body)
 
@@ -60,17 +73,22 @@ def test_placeholder_template_left_below_custom_paragraph_fails():
     body = """Introduces the Payee feature as a prerequisite for Local Transfer.
 
 Summary
+---
 Briefly describe what this PR improves or fixes.
 
 Why
+---
 Explain the problem, risk, or reason this change is needed.
 
 What changed
+---
 
 Security impact
+---
 Explain how this affects security controls, secrets, permissions, auth, CI/CD, deployment safety, or runtime behavior.
 
 Deployment impact
+---
 Explain whether this PR requires:
 
 EC2 bootstrap
@@ -81,8 +99,10 @@ secret changes
 no deployment action
 
 Verification
+---
 
 Notes
+---
 Add any follow-up work, limitations, or operator instructions.
 """
 
@@ -103,6 +123,15 @@ def test_verification_requires_meaningful_content():
     body = VALID_BODY.replace("* python -m pytest tests/test_payees.py", "*\n*\n*")
 
     assert "PR description section 'Verification' must contain meaningful content." in _messages(body)
+
+
+def test_setext_underline_alone_does_not_make_section_meaningful():
+    body = VALID_BODY.replace(
+        "* Added Payee model and routes\n* Added server-side validation\n* Added tests for invalid recipient input",
+        "",
+    )
+
+    assert "PR description section 'What changed' must contain meaningful content." in _messages(body)
 
 
 def test_event_payload_body_is_loaded(tmp_path):

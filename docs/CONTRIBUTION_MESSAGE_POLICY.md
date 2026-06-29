@@ -60,8 +60,17 @@ release notes, and reduce ambiguity during incident response or rollback.
 
 ## PR Description Requirements
 
-Pull requests must also fill in the repository PR template. The description
-must include these sections, either as plain headings or Markdown headings:
+Pull requests must also fill in the repository PR template. Use Setext-style
+Markdown headings so each section name is followed by a `---` underline, for
+example:
+
+```markdown
+Summary
+---
+Adds the change in one short paragraph.
+```
+
+The description must include these sections:
 
 - `Summary`
 - `Why`

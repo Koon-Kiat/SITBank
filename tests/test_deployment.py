@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import ast
 import os
@@ -2420,7 +2420,7 @@ def test_live_tls_scan_workflow_collects_evidence_without_running_on_pull_reques
     assert '$items[]\n                    | select(type == "object")' in workflow_text
     assert '$items[]\n                  | select(type == "object")' in workflow_text
     assert "secrets." not in workflow_text
-    assert "sitbank-ec2.tailca101b.ts.net" not in workflow_text
+    assert "admin-sitbank.tailca101b.ts.net" not in workflow_text
 
     upload_steps = [
         step for step in scan["steps"]
@@ -2461,12 +2461,12 @@ def test_live_tls_scan_workflow_collects_evidence_without_running_on_pull_reques
         assert "SSL Labs" in docs
         assert re.search(r"HIGH,\s+CRITICAL,\s+or FATAL", docs)
     for docs in (deployment_docs, operations_docs):
-        assert "https://sitbank-ec2.tailca101b.ts.net/" in docs
+        assert "https://admin-sitbank.tailca101b.ts.net/" in docs
     assert "staging_host" in deployment_docs
     assert "staging_host" in operations_docs
     assert "retired DuckDNS staging hostname" in deployment_docs
     assert "retired DuckDNS staging hostname" in operations_docs
-    assert "sitbank-ec2.tailca101b.ts.net" in operations_docs
+    assert "admin-sitbank.tailca101b.ts.net" in operations_docs
     assert "private Tailscale admin hostname" in operations_docs
     assert "testssl.sh --warnings batch --color 0" in deployment_docs
     assert "tls-scan-staging-sitbank" in deployment_docs
@@ -3177,7 +3177,7 @@ def test_production_edge_runbook_documents_network_waf_and_verification_steps():
         "Nginx terminates TLS, redirects production customer HTTP to HTTPS",
         "Gunicorn binds only to `127.0.0.1:5000`",
         "Admin Gunicorn binds only to `127.0.0.1:5002`",
-        "Flask admin auth is implemented only for root-admin-controlled invite",
+        "Flask admin auth supports manual root-admin bootstrap plus",
         "compose.prod.yml` publishes no",
         "`/health/ready` is for local deployment and load-balancer checks",
         "Cloudflare or AWS WAF should sit in front of Nginx",
@@ -3248,7 +3248,7 @@ def test_staging_edge_runbook_documents_operator_verification_steps():
         "ops/deploy/bootstrap-container-ec2",
         "staging-sitbank.pp.ua",
         "retired DuckDNS staging hostname",
-        "https://sitbank-ec2.tailca101b.ts.net/",
+        "https://admin-sitbank.tailca101b.ts.net/",
         "private Tailscale admin hostname",
         "Nginx proxy header snippet",
         "Cloudflare origin-pull CA file",

@@ -94,6 +94,20 @@ ADMIN_ROUTE_SECURITY_INVENTORY = {
         "expected_guard": "require_staff_session",
         "public_justification": "",
     },
+    "admin.login_form": {
+        "endpoint": "admin.login_form",
+        "rule": "/login",
+        "methods": {"GET"},
+        "access": "public",
+        "role": "none",
+        "classification": "login",
+        "csrf": "not_applicable",
+        "rate_limit": "edge_admin",
+        "step_up": "not_required",
+        "state_changing": False,
+        "expected_guard": "none",
+        "public_justification": "Admin login form must be reachable before a staff session exists.",
+    },
     "admin.login": {
         "endpoint": "admin.login",
         "rule": "/login",
@@ -107,6 +121,20 @@ ADMIN_ROUTE_SECURITY_INVENTORY = {
         "state_changing": True,
         "expected_guard": "none",
         "public_justification": "Primary admin authentication must be reachable before a staff session exists.",
+    },
+    "admin.mfa_verify_form": {
+        "endpoint": "admin.mfa_verify_form",
+        "rule": "/mfa/verify",
+        "methods": {"GET"},
+        "access": "public",
+        "role": "none",
+        "classification": "mfa",
+        "csrf": "not_applicable",
+        "rate_limit": "edge_admin",
+        "step_up": "pending_admin_mfa",
+        "state_changing": False,
+        "expected_guard": "pending_admin_mfa_session",
+        "public_justification": "Admin MFA form is reachable only with a pending admin MFA challenge.",
     },
     "admin.mfa_verify": {
         "endpoint": "admin.mfa_verify",
@@ -471,7 +499,9 @@ def test_admin_route_inventory_has_complete_security_decisions():
         if entry["expected_guard"] == "require_root_admin_session":
             assert "require_root_admin_session" in source, f"{endpoint} must call require_root_admin_session"
         if entry["expected_guard"] == "pending_admin_mfa_session":
-            assert "complete_admin_mfa_login" in source, f"{endpoint} must complete pending admin MFA only"
+            assert (
+                "complete_admin_mfa_login" in source or "pending_mfa_user_id" in source
+            ), f"{endpoint} must require pending admin MFA state"
         if entry["expected_guard"] == "invite_token_validation":
             assert "<token>" in entry["rule"]
             assert any(
