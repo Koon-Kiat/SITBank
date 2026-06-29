@@ -4,8 +4,10 @@ This document describes the session management controls implemented in the
 SITBank repository. The implementation uses database-backed server-side
 sessions identified by an opaque browser cookie.
 Framework coverage and current follow-up items are centralized in
-`docs/security/framework-control-matrix.md` and
-`docs/security/security-gap-register.md`.
+`docs/security/governance/framework-control-matrix.md` and
+`docs/security/governance/security-gap-register.md`.
+
+Category: [Security architecture](../README.md#architecture).
 
 ## Session Storage
 
@@ -195,7 +197,7 @@ lifetime:
 Risk audit metadata contains only the runtime, severity, and changed signal
 names. It does not contain cookies, raw session ids, raw context values, or
 session payloads. Standard audit request columns remain governed by
-`docs/security/audit-and-alerting.md`.
+`docs/security/assurance/audit-and-alerting.md`.
 
 Legacy authenticated sessions without the structured context are migrated on
 their next request. A matching legacy `risk_fingerprint` is accepted and
@@ -224,7 +226,7 @@ isolation.
 | Stolen active cookie | Inactivity timeout, absolute lifetime, revocation, session inventory, and risk-based reauthentication reduce impact, but the cookie is not cryptographically device-bound | `app/security/sessions.py`, `tests/test_session_risk_binding.py`, `tests/test_session_management.py`, `tests/test_session_absolute_lifetime.py` |
 
 Remaining session risk-reduction items are tracked in
-`docs/security/security-gap-register.md`: optional active-session count caps are
+`docs/security/governance/security-gap-register.md`: optional active-session count caps are
 `needs-triage`, while stronger cryptographic device-bound proof remains an
 accepted defense-in-depth gap. Tailscale private access is the current admin
 device/network boundary; it is not cryptographic device binding for browser

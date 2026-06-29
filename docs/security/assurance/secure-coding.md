@@ -6,7 +6,9 @@ Top 10 risks.
 
 Security ownership, review cadence, accepted-risk handling, and stale
 documentation prevention are tracked in
-`docs/security/security-governance.md`.
+`docs/security/governance/security-governance.md`.
+
+Category: [Security assurance](../README.md#assurance).
 
 ## Input Validation
 
@@ -66,7 +68,7 @@ Authentication code avoids common implementation failures:
 
 The app rejects reuse of the current password during change/reset. Full
 previous-password history is tracked in
-`docs/security/security-gap-register.md`.
+`docs/security/governance/security-gap-register.md`.
 
 ## Session And CSRF Coding Practices
 
@@ -153,23 +155,31 @@ Actions.
 | Hashed Python lockfiles | `requirements.lock`, `requirements-dev.lock` |
 | Lockfile policy check | `ops/security/check_dependency_locks.py`, `tests/test_deployment.py::test_dependency_manifests_have_one_hashed_lockfile_source_of_truth` |
 | Vulnerability scans | `pip-audit` in `scripts/ci-local` and `.github/workflows/ci-deploy.yml`; Trivy image scans in CI |
-| Static analysis | Bandit, CodeQL, actionlint, zizmor in CI/local workflows |
-| Code-quality analysis | Reporting-only SonarQube Cloud analysis with full-suite `coverage.xml`, maintainability, duplication, reliability, and security dashboard evidence; see `docs/security/sonarqube.md` |
-| Secret scanning | The custom repository secret scanner remains in main/local CI; the independent Gitleaks 8.30.1 workflow performs redacted full Git history scans with no production secrets or uploaded SARIF. Evidence: `ops/security/scan_repository_secrets.py`, `.github/workflows/gitleaks.yml`, `.gitleaks.toml`, `tests/test_secret_scanner.py`, `tests/test_gitleaks_workflow.py`, and `docs/security/secret-scanning.md` |
+| Static analysis | Bandit and CodeQL cover Python/security patterns; checksum-verified ShellCheck 0.11.0 and Hadolint 2.14.0 scan discovered scripts/Dockerfiles; digest-pinned Semgrep 1.168.0 runs local/OSS ERROR-severity SAST with no token or source upload. Evidence: `.github/workflows/shellcheck.yml`, `.github/workflows/hadolint.yml`, `.github/workflows/semgrep.yml`, `ops/security/discover_lint_targets.py`, and `tests/test_static_analysis_workflows.py` |
+| Code-quality analysis | Reporting-only SonarQube Cloud analysis with full-suite `coverage.xml`, maintainability, duplication, reliability, and security dashboard evidence; see `docs/security/assurance/sonarqube.md` |
+| Secret scanning | The custom repository secret scanner remains in main/local CI; the independent Gitleaks 8.30.1 workflow performs redacted full Git history scans with no production secrets or uploaded SARIF. Evidence: `ops/security/scan_repository_secrets.py`, `.github/workflows/gitleaks.yml`, `.gitleaks.toml`, `tests/test_secret_scanner.py`, `tests/test_gitleaks_workflow.py`, and `docs/security/assurance/secret-scanning.md` |
 | Pinned GitHub Actions and images | `.github/workflows/ci-deploy.yml`, `Dockerfile`, tests in `tests/test_deployment.py` |
 | Image signing and digest deployment | `.github/workflows/ci-deploy.yml`, `tests/test_deployment.py::test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest` |
+
+Shell scripts must pass both Bash syntax validation and ShellCheck; the two
+checks detect different defect classes. Tool suppressions are exceptional:
+prefer a code fix, scope any ShellCheck disable to the affected line with a
+reason, scope Hadolint ignores to one Dockerfile instruction, and use an exact
+Semgrep rule ID with a reviewed explanation. Static analysis complements
+behavioral tests, container smoke tests, and staging verification rather than
+replacing them.
 
 ## OWASP Top 10 Mapping
 
 | OWASP risk | SITBank controls | Notes |
 | --- | --- | --- |
-| A01 Broken Access Control | Customer and admin route inventories, decorators/hooks, high-risk step-up, ownership filters, admin/customer runtime separation, payee IDOR regressions | Current open items are tracked in `docs/security/security-gap-register.md` |
+| A01 Broken Access Control | Customer and admin route inventories, decorators/hooks, high-risk step-up, ownership filters, admin/customer runtime separation, payee IDOR regressions | Current open items are tracked in `docs/security/governance/security-gap-register.md` |
 | A02 Cryptographic Failures | HTTPS, HSTS, AES-256-GCM MFA envelopes, HMAC session/audit integrity, PBKDF2 password storage, encrypted database backup tooling, Docker secrets validation | Live TLS evidence remains deployment-state validation |
 | A03 Injection | SQLAlchemy query construction, WTForms/Marshmallow validation, payload allowlists, no arbitrary URL-like mass assignment | Continue adding focused injection tests as new query surfaces are added |
 | A04 Insecure Design | MFA onboarding gates, password-reset token exchange, manual recovery pending-only public request, isolated admin manual-recovery completion, staff invite workflow, frozen-account behavior | Continue monitoring manual recovery operations and separation-of-duties assumptions |
 | A05 Security Misconfiguration | Production config validation, Nginx default host rejection, Docker hardening, CSRF/Talisman defaults, deployment tests | Live host TLS and certificate-renewal state must be verified outside the repo |
 | A06 Vulnerable And Outdated Components | Dependabot, pip-audit, Trivy, CodeQL, hashed lockfiles, pinned Docker base image | JavaScript package scanning is not applicable because no JavaScript package manifest is present |
-| A07 Identification And Authentication Failures | Generic errors, dummy hash, rate/backoff counters, TOTP, recovery codes, fresh TOTP step-up for recovery-code regeneration, reset verifier HMACs, and MFA onboarding gates | Password-history follow-up is tracked in `docs/security/security-gap-register.md` |
+| A07 Identification And Authentication Failures | Generic errors, dummy hash, rate/backoff counters, TOTP, recovery codes, fresh TOTP step-up for recovery-code regeneration, reset verifier HMACs, and MFA onboarding gates | Password-history follow-up is tracked in `docs/security/governance/security-gap-register.md` |
 | A08 Software And Data Integrity Failures | Hash-locked dependencies, pinned actions, pinned images, cosign signing, audit hash chain, migration/DB privilege tests | Verify external runner and registry trust at deployment time |
 | A09 Security Logging And Monitoring Failures | Structured audit events, sanitization, alerts, append-only audit DB triggers, 500 handler logging | Alert delivery endpoint configuration is deployment-specific |
 | A10 Server-Side Request Forgery | No user-supplied arbitrary URL fetch flow found; fixed HIBP range endpoint sends only SHA-1 prefixes; Turnstile verification uses configured endpoint and redacts token data | New outbound integrations should add allowlists and SSRF tests |
@@ -177,11 +187,11 @@ Actions.
 ## Security Gap Register
 
 Current open security items and recently closed documentation-sensitive gaps are
-centralized in `docs/security/security-gap-register.md`. This document should
+centralized in `docs/security/governance/security-gap-register.md`. This document should
 describe secure-coding controls; the register is the source of truth for
 assessment-relevant constraints and follow-up work.
 Framework-level coverage is mapped in
-`docs/security/framework-control-matrix.md`.
+`docs/security/governance/framework-control-matrix.md`.
 Threat-driven design evidence is documented in
-`docs/security/threat-model.md` and
-`docs/security/design-risk-register.md`.
+`docs/security/architecture/threat-model.md` and
+`docs/security/governance/design-risk-register.md`.

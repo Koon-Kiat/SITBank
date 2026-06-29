@@ -29,6 +29,8 @@ redacted job log supplies file, rule, commit, and line evidence without
 creating a raw report that might retain detected values. Consequently the
 workflow does not request `security-events: write`.
 
+Category: [Security assurance](../README.md#assurance).
+
 ## Safe Failure Triage
 
 Do not paste a finding, suspected credential, raw report, or affected file
@@ -57,7 +59,7 @@ For a real secret in current content or full Git history:
 
 1. Revoke the exposed credential and rotate it at its provider immediately.
 2. Preserve private incident evidence and follow
-   `docs/security/incident-response.md`.
+   `docs/security/governance/incident-response.md`.
 3. Remove the value from current content, then assess a coordinated history
    rewrite. Removing it only from a later commit does not undo disclosure.
 4. Review access and audit logs, invalidate dependent sessions or keys where

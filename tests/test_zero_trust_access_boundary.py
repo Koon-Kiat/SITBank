@@ -288,7 +288,7 @@ def test_required_zero_trust_labels_and_labelers_are_configured():
     assert "ops/cloudflare/**" in labeler_config["staging"][0]["changed-files"][0][
         "any-glob-to-any-file"
     ]
-    assert "docs/security/admin-and-staging-zero-trust-access.md" in labeler
+    assert "docs/security/architecture/admin-and-staging-zero-trust-access.md" in labeler
     assert "PROTECTED_LABELS" in retag
     for protected in ("dependencies", "docker", "github-actions", "python"):
         assert protected in retag

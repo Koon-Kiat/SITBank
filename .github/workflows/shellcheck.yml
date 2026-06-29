@@ -1,0 +1,61 @@
+name: ShellCheck
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: shellcheck-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    name: Repository shell scripts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+
+      - name: Discover tracked shell scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python ops/security/discover_lint_targets.py shell --format nul \
+            > "${RUNNER_TEMP}/shellcheck-targets"
+          test -s "${RUNNER_TEMP}/shellcheck-targets"
+
+      - name: Install checksum-verified ShellCheck 0.11.0
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          readonly version="0.11.0"
+          readonly archive="${RUNNER_TEMP}/shellcheck.tar.xz"
+          readonly expected_sha256="8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
+
+          curl --fail --location --silent --show-error \
+            --proto '=https' --tlsv1.2 \
+            --output "${archive}" \
+            "https://github.com/koalaman/shellcheck/releases/download/v${version}/shellcheck-v${version}.linux.x86_64.tar.xz"
+          echo "${expected_sha256}  ${archive}" | sha256sum --check --status
+          tar --extract --xz --file "${archive}" --directory "${RUNNER_TEMP}"
+          "${RUNNER_TEMP}/shellcheck-v${version}/shellcheck" --version
+
+      - name: Scan every discovered shell script
+        shell: bash
+        run: |
+          set -euo pipefail
+          xargs --null --no-run-if-empty \
+            "${RUNNER_TEMP}/shellcheck-v0.11.0/shellcheck" \
+            --severity=style \
+            < "${RUNNER_TEMP}/shellcheck-targets"

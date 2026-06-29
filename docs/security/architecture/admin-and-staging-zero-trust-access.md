@@ -46,6 +46,8 @@ References:
 - Tailscale auth keys:
   <https://tailscale.com/docs/features/access-control/auth-keys>
 
+Category: [Security architecture](../README.md#architecture).
+
 ## Protected GitHub CI Tailnet Verification
 
 The manual **Verify private Tailscale admin access** workflow and the direct
@@ -239,7 +241,7 @@ Provider prerequisites and actions:
    corresponding Write permissions. Restrict it to the one account and zone.
 3. Set the account/zone IDs, team domain, approved email/group allowlist, DNS
    origin, and API token in the operator shell as described in
-   `docs/security/cloudflare-staging-access.md`. Do not store them in
+   `docs/security/architecture/cloudflare-staging-access.md`. Do not store them in
    repository `.env` files.
 4. Review the offline plan, then apply with the exact confirmation phrase:
 

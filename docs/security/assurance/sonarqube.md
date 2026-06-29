@@ -7,6 +7,8 @@ Cloud project dashboard. It does not replace pytest, CodeQL, Semgrep, Bandit,
 Gitleaks, the custom repository secret scanner, dependency auditing, Trivy, ShellCheck,
 Hadolint, Syft, deployment tests, or production guard tests.
 
+Category: [Security assurance](../README.md#assurance).
+
 ## Mode And Private-Repository Decision
 
 Cloud analysis was selected instead of a self-hosted SonarQube server because
@@ -109,7 +111,7 @@ Gitleaks 8.30.1 is a separate full Git history control in
 secrets, and no SARIF upload. The custom repository secret scanner also
 remains in main/local CI. Neither scanner is replaced by SonarQube coverage or
 security findings; triage is documented in
-`docs/security/secret-scanning.md`.
+`docs/security/assurance/secret-scanning.md`.
 
 ## Pull-Request Summary Comment
 

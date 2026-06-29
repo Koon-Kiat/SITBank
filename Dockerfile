@@ -26,6 +26,9 @@ ENV PATH="/opt/venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \
     HOME=/tmp
 
+# The base image digest fixes the Debian release; these security packages must
+# follow its supported repository updates instead of stale hardcoded versions.
+# hadolint ignore=DL3008
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends --only-upgrade \
         gpgv \

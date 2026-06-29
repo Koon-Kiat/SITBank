@@ -142,12 +142,12 @@ def test_gitleaks_triage_and_control_boundaries_are_documented():
             Path("SECURITY.md"),
             Path("docs/CONTRIBUTING.md"),
             Path("docs/GITHUB_ACTIONS.md"),
-            Path("docs/security/secure-coding.md"),
-            Path("docs/security/test-automation-and-dependencies.md"),
-            Path("docs/security/sonarqube.md"),
-            Path("docs/security/framework-control-matrix.md"),
-            Path("docs/security/security-gap-register.md"),
-            Path("docs/security/threat-model.md"),
+            Path("docs/security/assurance/secure-coding.md"),
+            Path("docs/security/assurance/test-automation-and-dependencies.md"),
+            Path("docs/security/assurance/sonarqube.md"),
+            Path("docs/security/governance/framework-control-matrix.md"),
+            Path("docs/security/governance/security-gap-register.md"),
+            Path("docs/security/architecture/threat-model.md"),
         )
     )
 

@@ -1031,11 +1031,12 @@ def test_local_ci_command_documents_required_local_checks():
         '"ops/security/scan_repository_secrets.py"',
         '"--history"',
         '"git", "diff", "--check"',
-        "ops/deploy/sitbank-container-deploy",
+        "ops/security/discover_lint_targets.py",
         "ops/container/validate-compose.sh",
         "== {name} ==",
         "Python/test checks",
         "Git Bash syntax checks",
+        "Optional local static analysis",
         "Docker/Compose checks",
         '"PASS"',
         '"FAIL"',
@@ -2483,7 +2484,7 @@ def test_live_tls_scan_workflow_collects_evidence_without_running_on_pull_reques
 
     deployment_docs = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
     operations_docs = Path("docs/OPERATIONS.md").read_text(encoding="utf-8")
-    crypto_docs = Path("docs/security/cryptography-and-authentication.md").read_text(
+    crypto_docs = Path("docs/security/architecture/cryptography-and-authentication.md").read_text(
         encoding="utf-8"
     )
     for docs in (deployment_docs, operations_docs, crypto_docs):
@@ -3305,8 +3306,8 @@ def test_staging_edge_runbook_documents_operator_verification_steps():
         "external `/health/ready` returns `403`",
         "local app readiness",
         "separate from application deployment",
-        "docs/security/admin-and-staging-zero-trust-access.md",
-        "docs/security/cloudflare-staging-access.md",
+        "docs/security/architecture/admin-and-staging-zero-trust-access.md",
+        "docs/security/architecture/cloudflare-staging-access.md",
         "STAGING_CLOUDFLARE_ACCESS_JWT_REQUIRED",
         "STAGING_CLOUDFLARE_ACCESS_AUD",
         "STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN",

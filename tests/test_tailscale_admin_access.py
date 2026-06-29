@@ -498,13 +498,13 @@ def test_documentation_distinguishes_host_preflight_from_protected_workflow():
         Path("docs/DEPLOYMENT.md"),
         Path("docs/OPERATIONS.md"),
         Path("docs/GITHUB_ACTIONS.md"),
-        Path("docs/security/admin-and-staging-zero-trust-access.md"),
-        Path("docs/security/access-control.md"),
-        Path("docs/security/framework-control-matrix.md"),
-        Path("docs/security/security-gap-register.md"),
-        Path("docs/security/design-risk-register.md"),
-        Path("docs/security/threat-model.md"),
-        Path("docs/security/test-automation-and-dependencies.md"),
+        Path("docs/security/architecture/admin-and-staging-zero-trust-access.md"),
+        Path("docs/security/architecture/access-control.md"),
+        Path("docs/security/governance/framework-control-matrix.md"),
+        Path("docs/security/governance/security-gap-register.md"),
+        Path("docs/security/governance/design-risk-register.md"),
+        Path("docs/security/architecture/threat-model.md"),
+        Path("docs/security/assurance/test-automation-and-dependencies.md"),
     )
     docs = "\n".join(
         path.read_text(encoding="utf-8") for path in documentation_paths

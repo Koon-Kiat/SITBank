@@ -3,6 +3,8 @@
 This document records retention and deactivation expectations for SITBank.
 It only claims deletion or anonymization behavior supported by code or runbooks.
 
+Category: [Security governance](../README.md#governance).
+
 ## Deactivation, Deletion, And Anonymization
 
 | Term | Meaning | Current support |
@@ -75,7 +77,7 @@ summary of the deleted date range and approval.
 The repository expires and cleans up selected security state. A complete
 retention/disposal scheduler for all personal-data categories, manual recovery
 metadata, staff invites, password reset records, alert reports, or encrypted
-backup archives remains tracked in `docs/security/security-gap-register.md`.
+backup archives remains tracked in `docs/security/governance/security-gap-register.md`.
 
 ## Backup Retention
 

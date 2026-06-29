@@ -2,7 +2,7 @@
 
 Security owner roles, milestone/release review cadence, accepted-risk handling,
 and off-repo evidence expectations are defined in
-`docs/security/security-governance.md`.
+`docs/security/governance/security-governance.md`.
 
 ## Runtime Secrets
 
@@ -26,7 +26,7 @@ EC2 runtime secret. Store and rotate it only through GitHub Actions and
 SonarQube Cloud; never copy it into `/etc/sitbank`, staging, Compose, or
 deployment environments. The analysis workflow has no production access.
 Setup, revocation, rotation, evidence, and incident steps are in
-`docs/security/sonarqube.md`.
+`docs/security/assurance/sonarqube.md`.
 
 GitHub Actions repository variables are non-secret configuration. The CI
 workflow treats an unset `ENABLE_GITHUB_CODE_SECURITY` as `false` and uses the
@@ -234,7 +234,7 @@ During maintainer offboarding, also review environment approvers and branch
 rules. To remove CI tailnet access entirely, delete all Tailscale environment
 secrets, revoke the selected credential, remove dedicated CI tag
 grants/devices, and disable or delete the environment. The full runbook is in
-`docs/security/admin-and-staging-zero-trust-access.md`.
+`docs/security/architecture/admin-and-staging-zero-trust-access.md`.
 
 Run the manual **Verify staging Cloudflare Access** workflow before a staging
 release and after Access, DNS, IdP, token, origin address, or ingress changes.
@@ -253,9 +253,9 @@ provider responses into a ticket or change record.
 
 The detailed onboarding, offboarding, emergency lockout, rollback, and live
 operator verification steps are in
-`docs/security/admin-and-staging-zero-trust-access.md`.
+`docs/security/architecture/admin-and-staging-zero-trust-access.md`.
 Provider automation and origin assertion details are in
-`docs/security/cloudflare-staging-access.md`.
+`docs/security/architecture/cloudflare-staging-access.md`.
 
 ## Root Admin Bootstrap
 
@@ -334,7 +334,30 @@ the old credential no longer works, and assess a coordinated history rewrite.
 Never copy the matched value into an issue or allowlist. The checked-in
 allowlists are narrow reviewed false positives constrained by rule/path/line
 shape and historical commit. Follow
-`docs/security/secret-scanning.md` for safe reproduction and triage.
+`docs/security/assurance/secret-scanning.md` for safe reproduction and triage.
+
+## Repository Static Analysis Operations
+
+ShellCheck 0.11.0, Hadolint 2.14.0, and Semgrep 1.168.0 run in dedicated
+automatic workflows with no production secrets. The first two use
+checksum-verified releases; Semgrep uses a digest-pinned local/OSS container,
+blocks ERROR severity, uploads no source or SARIF, and requires no token.
+Tracked-file discovery is implemented by
+`ops/security/discover_lint_targets.py` and fails closed when the expected
+shell or Dockerfile target set is empty.
+
+Run `scripts/ci-local` before changing scripts or Dockerfiles. It runs a tool
+when installed and explicitly marks it `SKIPPED` otherwise; the GitHub Actions
+gate remains authoritative. Bash syntax success does not imply ShellCheck
+success. Fix findings where possible. Any ShellCheck directive, Hadolint
+instruction ignore, or Semgrep `nosemgrep` must identify a narrow reviewed
+reason and must not hide command injection, unsafe file handling, secret
+logging, authentication, authorization, or deployment risk.
+
+Scanner jobs never execute deployment, bootstrap, database cutover, Tailscale,
+Cloudflare, or registry-push commands. If a scanner-driven change affects
+runtime scripts or the Dockerfile, retain the normal deployment, container
+build, smoke, and manual staging evidence before release.
 
 ## Trivy Exception
 
@@ -397,12 +420,12 @@ Retain `security_audit_events` for 7 years. The application must not auto-delete
 audit rows; disposal after retention requires an operator-approved maintenance
 record and a retained summary of the affected date range.
 The implementation-focused audit and alert reference is
-`docs/security/audit-and-alerting.md`; current open security gaps are tracked in
-`docs/security/security-gap-register.md`.
+`docs/security/assurance/audit-and-alerting.md`; current open security gaps are tracked in
+`docs/security/governance/security-gap-register.md`.
 Privacy, retention, deactivation, and incident response procedures are in
-`docs/security/privacy-and-pdpa.md`,
-`docs/security/data-retention-and-deactivation.md`, and
-`docs/security/incident-response.md`.
+`docs/security/governance/privacy-and-pdpa.md`,
+`docs/security/governance/data-retention-and-deactivation.md`, and
+`docs/security/governance/incident-response.md`.
 
 After `db upgrade`, run `apply-runtime-db-privileges`, then
 `verify-runtime-db-privileges`. The runtime `sitbank_app` role must keep

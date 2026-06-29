@@ -3,10 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 
-GOVERNANCE = Path("docs/security/security-governance.md")
-GAP_REGISTER = Path("docs/security/security-gap-register.md")
-DESIGN_REGISTER = Path("docs/security/design-risk-register.md")
-FRAMEWORK = Path("docs/security/framework-control-matrix.md")
+GOVERNANCE = Path("docs/security/governance/security-governance.md")
+GAP_REGISTER = Path("docs/security/governance/security-gap-register.md")
+DESIGN_REGISTER = Path("docs/security/governance/design-risk-register.md")
+FRAMEWORK = Path("docs/security/governance/framework-control-matrix.md")
 
 
 def _section(text: str, heading: str) -> str:
@@ -55,7 +55,7 @@ def test_security_governance_doc_defines_roles_cadence_and_tracking():
 def test_framework_matrix_links_governance_to_ssdf_and_samm():
     matrix = FRAMEWORK.read_text(encoding="utf-8")
 
-    assert "docs/security/security-governance.md" in matrix
+    assert "docs/security/governance/security-governance.md" in matrix
     assert "| Prepare the organization | Implemented |" in matrix
     assert "| Governance | Implemented |" in matrix
     assert "Role-based ownership" in matrix
@@ -105,7 +105,7 @@ def test_design_risk_register_rows_have_owner_status_and_review_tracking():
         assert row[status_index], row
         assert row[trigger_index], row
 
-    assert "docs/security/security-governance.md" in text
+    assert "docs/security/governance/security-governance.md" in text
     assert "External operator / outside repo" in text
     assert "Conditional accepted risk" in text
 
@@ -116,7 +116,7 @@ def test_security_docs_explain_closed_gap_stale_doc_prevention():
         for path in (
             GOVERNANCE,
             Path("docs/CONTRIBUTING.md"),
-            Path("docs/security/incident-response.md"),
+            Path("docs/security/governance/incident-response.md"),
         )
     ).replace("\n", " ")
 

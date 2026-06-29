@@ -4,8 +4,10 @@ This document records the cryptography and authentication controls found in the
 SITBank repository. It cites repository evidence and points to the central
 register when a control remains open or depends on deployment state.
 Framework coverage is mapped in
-`docs/security/framework-control-matrix.md`, and current follow-up items remain
-centralized in `docs/security/security-gap-register.md`.
+`docs/security/governance/framework-control-matrix.md`, and current follow-up items remain
+centralized in `docs/security/governance/security-gap-register.md`.
+
+Category: [Security architecture](../README.md#architecture).
 
 ## Server Authentication
 
@@ -336,7 +338,7 @@ secret, session, credential URL, webhook URL, and private-key patterns.
 
 The code prevents reuse of the current password during change/reset. Full
 previous-password history is tracked as an open item in
-`docs/security/security-gap-register.md`.
+`docs/security/governance/security-gap-register.md`.
 
 ## Protection Against Unauthorized Access To Stored Passwords
 

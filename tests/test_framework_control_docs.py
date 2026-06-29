@@ -1,16 +1,16 @@
 from pathlib import Path
 
 
-MATRIX = Path("docs/security/framework-control-matrix.md")
-GAP_REGISTER = Path("docs/security/security-gap-register.md")
+MATRIX = Path("docs/security/governance/framework-control-matrix.md")
+GAP_REGISTER = Path("docs/security/governance/security-gap-register.md")
 LINKED_DOCS = [
     Path("README.md"),
     Path("SECURITY.md"),
-    Path("docs/security/security-governance.md"),
-    Path("docs/security/secure-coding.md"),
-    Path("docs/security/access-control.md"),
-    Path("docs/security/session-management.md"),
-    Path("docs/security/cryptography-and-authentication.md"),
+    Path("docs/security/governance/security-governance.md"),
+    Path("docs/security/assurance/secure-coding.md"),
+    Path("docs/security/architecture/access-control.md"),
+    Path("docs/security/architecture/session-management.md"),
+    Path("docs/security/architecture/cryptography-and-authentication.md"),
 ]
 
 
@@ -145,8 +145,8 @@ def test_issue_186_ssh_hardening_is_deferred_without_stale_artifacts():
 def test_requested_docs_link_to_matrix_and_gap_register():
     for path in LINKED_DOCS:
         text = path.read_text(encoding="utf-8")
-        assert "docs/security/security-gap-register.md" in text, path
-        assert "docs/security/framework-control-matrix.md" in text, path
+        assert "docs/security/governance/security-gap-register.md" in text, path
+        assert "docs/security/governance/framework-control-matrix.md" in text, path
 
 
 def test_active_security_docs_do_not_have_scattered_current_gap_tables():

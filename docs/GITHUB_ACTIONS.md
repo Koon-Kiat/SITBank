@@ -186,10 +186,48 @@ SARIF or raw report, and does not run deployment commands.
 line-shape allowlists for confirmed public or synthetic values; historical
 exceptions are also commit-bound. It has no baseline. The existing custom
 repository secret scanner remains in the main CI and `scripts/ci-local`. See
-`docs/security/secret-scanning.md` for safe local
+`docs/security/assurance/secret-scanning.md` for safe local
 reproduction, false-positive handling, rotation/revocation, and history-leak
 response. After rollout, require `Gitleaks / Full-history secret scan` in
 `main` branch protection.
+
+## Repository Static Analysis
+
+Three independent workflows provide early, least-privilege quality and SAST
+gates. Each runs on pull requests and pushes to `main`, supports manual reruns,
+checks out with `persist-credentials: false`, needs no production secrets or
+deployment credentials, and performs no mutating infrastructure operation.
+
+`.github/workflows/shellcheck.yml` downloads checksum-verified ShellCheck
+0.11.0. `ops/security/discover_lint_targets.py` supplies every tracked `.sh`
+file and every tracked file with a supported `sh`/`bash` shebang, including
+backup, container, deployment, PostgreSQL, Tailscale, and operational scripts.
+Empty discovery fails closed. ShellCheck style, info, warning, and error
+findings fail the job. Existing `bash -n` checks remain useful syntax evidence
+but are not equivalent to ShellCheck.
+
+`.github/workflows/hadolint.yml` downloads checksum-verified Hadolint 2.14.0
+and uses the same helper to find every tracked `Dockerfile` and
+`Dockerfile.*`. Empty discovery fails closed and style-or-higher findings fail.
+The current Dockerfile has one instruction-scoped `DL3008` exception: the
+digest-pinned Debian base must consume supported security-package upgrades
+instead of freezing stale package versions.
+
+`.github/workflows/semgrep.yml` runs Semgrep 1.168.0 from an immutable container
+digest in local/OSS mode on pull requests, `main` pushes, manual reruns, and a
+weekly schedule. It uses the `p/python`, `p/flask`, `p/security-audit`,
+`p/owasp-top-ten`, and `p/github-actions` registry packs. Registry rules are
+downloaded, but source is scanned locally and is not uploaded to Semgrep.
+ERROR severity blocks through `--error`; lower severities remain review
+signals during the initial rollout. No Semgrep token, SARIF, artifact, or
+`security-events: write` permission is used.
+
+Only virtual environments, caches, coverage/build output, and dependency
+directories are excluded. Application, tests, operations, scripts, workflows,
+configuration, migrations, templates, Docker/Compose, and deployment-adjacent
+files remain in scope where supported. After stable rollout, branch protection
+should require `ShellCheck / Repository shell scripts`,
+`Hadolint / Repository Dockerfiles`, and `Semgrep / High-severity SAST`.
 
 ## DAST Policy
 
@@ -236,7 +274,7 @@ nor the write-permission comment; after safe coverage steps, the workflow emits
 a notice explaining the skip. Trusted runs fail clearly if the token is absent.
 Inline review comments are intentionally not implemented. Setup, private-project
 plan eligibility, source processing, exclusions, rotation, and triage are in
-`docs/security/sonarqube.md`. CodeQL behavior remains unchanged.
+`docs/security/assurance/sonarqube.md`. CodeQL behavior remains unchanged.
 
 ## Dependency Updates
 

@@ -4,12 +4,14 @@ This document records the access-control model implemented in the SITBank
 repository. It distinguishes implemented runtime enforcement from test
 coverage notes and service-only flows.
 Framework coverage and current follow-up items are centralized in
-`docs/security/framework-control-matrix.md` and
-`docs/security/security-gap-register.md`.
+`docs/security/governance/framework-control-matrix.md` and
+`docs/security/governance/security-gap-register.md`.
 Privacy/deactivation expectations for customer and staff/admin records are in
-`docs/security/privacy-and-pdpa.md`,
-`docs/security/data-retention-and-deactivation.md`, and
-`docs/security/incident-response.md`.
+`docs/security/governance/privacy-and-pdpa.md`,
+`docs/security/governance/data-retention-and-deactivation.md`, and
+`docs/security/governance/incident-response.md`.
+
+Category: [Security architecture](../README.md#architecture).
 
 ## Access-Control Model
 

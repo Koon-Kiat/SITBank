@@ -133,6 +133,7 @@ published_port() {
     printf '%s' "${mapping##*:}"
 }
 
+# Invoked through the EXIT trap registered below; ShellCheck cannot trace it.
 # shellcheck disable=SC2317
 cleanup() {
     docker rm -f "${app_container}" "${admin_container}" "${postgres_container}" >/dev/null 2>&1 || true

@@ -6,9 +6,9 @@ Do not open a public issue containing credentials, personal data, exploit
 details, session identifiers, or production logs. Notify the Security Owner and
 Deployment Owner privately, preserve timestamps and affected commit/digest
 identifiers, and record the response in the project security log.
-Use `docs/security/incident-response.md` for incident workflows,
-`docs/security/security-governance.md` for owner roles and escalation, and
-`docs/security/privacy-and-pdpa.md` for personal-data handling expectations.
+Use `docs/security/governance/incident-response.md` for incident workflows,
+`docs/security/governance/security-governance.md` for owner roles and escalation, and
+`docs/security/governance/privacy-and-pdpa.md` for personal-data handling expectations.
 
 ## Secret Rotation
 
@@ -33,7 +33,16 @@ needed. Never allowlist a real leak. Privately verify a false positive before
 adding a narrow allowlist for a single fake/test value. For a real finding,
 revoke and rotate first, then remove current content and assess history
 rewriting. The complete procedure is in
-`docs/security/secret-scanning.md`.
+`docs/security/assurance/secret-scanning.md`.
+
+Dedicated ShellCheck 0.11.0, Hadolint 2.14.0, and Semgrep 1.168.0 workflows
+also run before protected-branch changes merge. Their tracked-file discovery
+and local/OSS scans need no production secrets or deployment credentials.
+ShellCheck and Hadolint releases are checksum-verified; Semgrep runs from a
+digest-pinned container, blocks ERROR severity, uploads no source or SARIF, and
+requires no token. Suppressions must be rule- and location-specific with a
+reviewed rationale. See
+`docs/security/assurance/test-automation-and-dependencies.md`.
 
 Session HMAC rotation must keep the old key in
 `session_hmac_keys_json` only for the approved overlap period, set the new
@@ -62,7 +71,7 @@ combined network/browser-family drift revokes the session. Admin sessions use
 the stricter policy of revocation on any detected drift. Context checks do not
 refresh the absolute authenticated lifetime or replace idle expiry, CSRF, MFA,
 logout, or server-side revocation. See
-`docs/security/session-management.md` and
+`docs/security/architecture/session-management.md` and
 `tests/test_session_risk_binding.py`.
 
 PostgreSQL uses separate `sitbank_owner` and `sitbank_app` roles in staging
@@ -126,17 +135,17 @@ session payloads, raw session IDs, raw attempted login identifiers, or full
 account numbers.
 
 Detailed audit and alert implementation evidence is maintained in
-`docs/security/audit-and-alerting.md`. Current open security gaps and recently
+`docs/security/assurance/audit-and-alerting.md`. Current open security gaps and recently
 closed documentation-sensitive items are centralized in
-`docs/security/security-gap-register.md`; framework coverage is mapped in
-`docs/security/framework-control-matrix.md`.
+`docs/security/governance/security-gap-register.md`; framework coverage is mapped in
+`docs/security/governance/framework-control-matrix.md`.
 Threat-driven design evidence is documented in
-`docs/security/threat-model.md` and
-`docs/security/design-risk-register.md`.
+`docs/security/architecture/threat-model.md` and
+`docs/security/governance/design-risk-register.md`.
 Privacy, retention, and incident-response expectations are documented in
-`docs/security/privacy-and-pdpa.md`,
-`docs/security/data-retention-and-deactivation.md`, and
-`docs/security/incident-response.md`.
+`docs/security/governance/privacy-and-pdpa.md`,
+`docs/security/governance/data-retention-and-deactivation.md`, and
+`docs/security/governance/incident-response.md`.
 
 New audit rows are chained with `previous_event_hash`, `event_hash`, and
 `hash_algorithm` using deterministic canonical JSON over stable audit fields.
@@ -210,7 +219,7 @@ comment; fork and Dependabot PRs receive neither secret-backed analysis nor
 that comment, and inline review comments are not implemented. Setup,
 source-processing implications, token rotation, scan scope, triage, comment
 behavior, and current plan eligibility are documented in
-`docs/security/sonarqube.md`. SonarQube complements and does not replace CodeQL,
+`docs/security/assurance/sonarqube.md`. SonarQube complements and does not replace CodeQL,
 Semgrep, Bandit, secret scanning, dependency checks, or deployment tests;
 existing CodeQL private-repository behavior is unchanged.
 
