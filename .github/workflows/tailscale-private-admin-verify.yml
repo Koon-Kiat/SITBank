@@ -1,0 +1,94 @@
+name: Verify private Tailscale admin access
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tailscale-private-admin-verification
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Private-tailnet verification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: tailscale-private-admin-verification
+    env:
+      PRIVATE_ADMIN_HOST: sitbank-admin.tailca101b.ts.net
+      PRIVATE_ADMIN_URL: https://sitbank-admin.tailca101b.ts.net
+      PUBLIC_ADMIN_DENIAL_URL: https://sitbank.duckdns.org/admin
+
+    steps:
+      - name: Confirm private admin is unreachable before joining the tailnet
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if curl --silent --head --max-time 8 \
+            --output /dev/null "${PRIVATE_ADMIN_URL}/login"; then
+            echo "::error::Private admin responded before the protected runner joined the tailnet."
+            exit 1
+          fi
+
+          echo "Private admin is not reachable from the public runner context." \
+            >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Join the approved tailnet with an ephemeral tagged identity
+        uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          ping: sitbank-admin.tailca101b.ts.net
+
+      - name: Verify private admin entrypoint and public denial
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$(tailscale status --json | jq -r '.BackendState')" != "Running" ]]; then
+            echo "::error::The protected runner did not establish a running tailnet session."
+            exit 1
+          fi
+
+          if ! getent ahostsv4 "${PRIVATE_ADMIN_HOST}" > /dev/null; then
+            echo "::error::Private admin hostname did not resolve inside the tailnet."
+            exit 1
+          fi
+
+          private_status="$(
+            curl --silent --show-error --head --max-time 15 \
+              --output /dev/null --write-out '%{http_code}' \
+              "${PRIVATE_ADMIN_URL}/login"
+          )"
+          if [[ "${private_status}" != "200" ]]; then
+            echo "::error::Private admin login entrypoint returned HTTP ${private_status}; expected 200."
+            exit 1
+          fi
+
+          public_status="$(
+            curl --silent --show-error --head --max-time 15 \
+              --output /dev/null --write-out '%{http_code}' \
+              "${PUBLIC_ADMIN_DENIAL_URL}"
+          )"
+          if [[ "${public_status}" != "404" ]]; then
+            echo "::error::Public customer route returned HTTP ${public_status}; expected admin denial 404."
+            exit 1
+          fi
+
+          {
+            echo "## Private-tailnet verification"
+            echo
+            echo "- Protected runner joined the approved tailnet."
+            echo "- Private admin HTTPS login entrypoint returned the documented unauthenticated response."
+            echo "- Public customer-host admin route remained denied."
+            echo "- No admin credentials, cookies, deployment, Serve, or Funnel operations were used."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Disconnect ephemeral tailnet session
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          sudo tailscale logout > /dev/null 2>&1 || true

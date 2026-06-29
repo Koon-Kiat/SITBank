@@ -142,6 +142,12 @@ operators open `/login`, complete the normal Flask admin password and TOTP
 controls, and then reach the dashboard. Do not enable Tailscale Funnel or
 expose admin through the customer app. Customer accounts cannot authenticate to
 the admin runtime.
+The manual protected workflow
+`.github/workflows/tailscale-private-admin-verify.yml` supplies reachability
+evidence from a temporary GitHub-hosted tailnet node. Its
+`tailscale-private-admin-verification` environment and `TAILSCALE_AUTH_KEY`
+do not replace Flask admin login, TOTP, CSRF, route authorization, or audit
+logging, and normal public TLS/PR CI remains outside the tailnet.
 
 Manual recovery operator review is exposed only by the isolated admin app.
 `GET /manual-recovery/requests` lists public-safe request summaries for root

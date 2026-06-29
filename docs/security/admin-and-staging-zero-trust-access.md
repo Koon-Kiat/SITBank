@@ -29,9 +29,9 @@ Current tracking references:
   hostname and private Tailscale admin model.
 - #218: Tailscale private access as the admin device/network boundary decision.
 
-Protected GitHub CI tailnet verification is not implemented in normal public CI.
-Track it as a future protected-runner/tailnet workflow if the project wants CI
-to verify the private admin hostname from inside the tailnet.
+Protected GitHub CI tailnet verification is implemented only by
+`.github/workflows/tailscale-private-admin-verify.yml`. It is deliberately not
+part of normal public CI.
 
 References:
 
@@ -44,6 +44,75 @@ References:
 - Tailscale ACLs and tags:
   <https://tailscale.com/docs/features/access-control/acls> and
   <https://tailscale.com/docs/features/tags>
+
+## Protected GitHub CI Tailnet Verification
+
+The selected model is **Option B: a GitHub-hosted runner joins the tailnet**.
+The project accepts the narrower, temporary credential exposure because no
+trusted self-hosted tailnet runner is available. This exception applies only
+to the manual **Verify private Tailscale admin access** workflow. It does not
+put pull-request CI, deployment jobs, scheduled public TLS scans, or other
+GitHub-hosted jobs inside the tailnet.
+
+The workflow has only a `workflow_dispatch` trigger and uses the protected
+`tailscale-private-admin-verification` GitHub Environment. Configure that
+environment to require manual approval by trusted maintainers, restrict
+deployment branches to `main`, and store `TAILSCALE_AUTH_KEY` only as an
+environment secret. Do not duplicate it as a repository or organization
+secret. The auth key must be reusable, ephemeral, pre-approved when device
+approval is enabled, and tagged with a dedicated CI identity whose tailnet
+grant reaches only the private admin HTTPS service. The workflow uses the
+official Tailscale action at an immutable commit, checks the target before
+joining, and does not check out or run repository code.
+
+Each approved run:
+
+1. Confirms `https://sitbank-admin.tailca101b.ts.net/login` cannot respond from
+   the public runner before tailnet enrollment. An unexpected response fails
+   closed because it may indicate Funnel or another public exposure.
+2. Joins the approved tailnet with the protected ephemeral tagged identity and
+   verifies tailnet connectivity to `sitbank-admin.tailca101b.ts.net`.
+3. Resolves the private hostname and requires the HTTPS login entrypoint to
+   return its documented unauthenticated `200` response with ordinary
+   certificate and hostname validation.
+4. Requires `https://sitbank.duckdns.org/admin` to remain denied with `404`.
+5. Logs out and relies on ephemeral-node cleanup; it uploads no artifacts or
+   Tailscale state.
+
+This is reachability evidence, not an authenticated admin test. It uses no
+admin credentials, cookies, or session IDs and does not replace Flask admin
+login, TOTP, CSRF protection, route authorization, audit logging,
+admin/customer session isolation, host-side Tailscale ACL/device review, or
+operator verification of Tailscale Serve state. It does not enable or
+configure Tailscale Funnel or Serve, modify tailnet policy, deploy the
+application, bootstrap a root admin, or change EC2 state. Tailscale Funnel
+remains forbidden.
+
+Normal public TLS scanning remains in `.github/workflows/tls-scan.yml` and
+covers only `staging-sitbank.pp.ua` and `sitbank.duckdns.org`. It must not
+depend on or include the private Tailscale hostname. Public admin checking in
+the protected workflow verifies denial on the public customer host; it does
+not make the private admin URL a public TLS-scan target.
+
+### Credential Rotation And CI Offboarding
+
+Rotate `TAILSCALE_AUTH_KEY` before expiry, after suspected disclosure, after a
+maintainer with environment access is offboarded, or whenever its tag/grant
+scope changes:
+
+1. Create a replacement reusable, ephemeral, tagged, and narrowly scoped auth
+   key in Tailscale.
+2. Replace the protected environment secret, manually approve one verification
+   run from `main`, and confirm the ephemeral node is removed after the job.
+3. Revoke the old key and remove any stale CI node from the tailnet.
+
+To remove CI tailnet access, delete `TAILSCALE_AUTH_KEY` from the environment,
+revoke the key in Tailscale, remove the dedicated CI tag grants and stale
+devices, and disable or delete the GitHub Environment. Environment approver
+and deployment-branch rules must be reviewed during maintainer offboarding.
+The retired hostname `sitbank-ec2.tailca101b.ts.net` must not be used; if the
+live tailnet hostname changes, update the workflow, documentation, and policy
+tests together.
 
 ## Protected Paths
 

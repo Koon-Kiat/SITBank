@@ -154,6 +154,32 @@ documented. Existing staging and production deployment variables remain scoped
 to their protected GitHub environments and are validated before deployment;
 do not move secret values into repository variables.
 
+### Protected Private-Admin Verification Environment
+
+Option B uses a GitHub-hosted runner only for the manual
+`.github/workflows/tailscale-private-admin-verify.yml` workflow. Create a
+GitHub Environment named `tailscale-private-admin-verification`, require manual
+approval by trusted maintainers, and restrict its deployment branches to
+`main`. Store `TAILSCALE_AUTH_KEY` only as that environment's secret. It must
+be a reusable, ephemeral, pre-approved key when device approval applies and
+must assign a dedicated CI tag whose tailnet grants reach only
+`sitbank-admin.tailca101b.ts.net:443`.
+
+Do not expose the secret as a repository variable or general repository
+secret, and do not permit pull requests, Dependabot, forks, or untrusted
+branches to use the environment. The workflow checks the private admin URL
+before and after joining, validates the unauthenticated login response over
+TLS, verifies the public customer-host admin route remains denied, and logs
+out. It neither deploys nor changes Flask, Nginx, EC2, tailnet policy,
+Tailscale Serve, or Tailscale Funnel.
+
+Rotate the credential by replacing the environment secret with a new narrowly
+scoped ephemeral tagged key, validating one manually approved `main` run, and
+then revoking the old key and stale node. Offboarding requires review of
+environment approvers/branch rules. To remove CI tailnet access, delete the
+environment secret, revoke the key, remove the CI tag grants and devices, and
+disable or delete the environment.
+
 Set `ROOT_ADMIN_EMAILS` in both protected GitHub environments before deploying
 admin bootstrap support. It is a non-secret allowlist, but it is
 security-critical: the value must be exactly 7 comma-separated SIT workplace
@@ -616,7 +642,9 @@ After the staging TLS check passes, validate production customer HTTPS with
 `testssl.sh --warnings batch --color 0 https://sitbank.duckdns.org`. The
 `ssl_conf_command` TLS 1.3 setting is runtime-dependent, so `nginx -t` must
 pass on the deployed host before any reload. Do not add the private Tailscale
-admin URL to public GitHub-hosted TLS scans.
+admin URL to public GitHub-hosted TLS scans. Private reachability belongs only
+to the separate manual, protected tailnet verification workflow; the public
+TLS scan and deployment workflows must never require `TAILSCALE_AUTH_KEY`.
 
 Production HSTS validation should also confirm the public customer hostname
 returns the production edge header before the production live TLS scan is

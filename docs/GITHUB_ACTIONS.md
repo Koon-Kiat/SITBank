@@ -90,6 +90,31 @@ TOTP setup values through GitHub Actions. Root-admin bootstrap remains a manual
 operator command run over SSH inside the private admin container after
 deployment.
 
+## Private Tailnet Verification
+
+`.github/workflows/tailscale-private-admin-verify.yml` is a separate manual
+Option B workflow. It is the only GitHub-hosted job permitted to join the
+tailnet and is not called by pull-request, deployment, or public TLS workflows.
+Its `tailscale-private-admin-verification` environment must require trusted
+maintainer approval, permit only `main`, and hold the sole
+`TAILSCALE_AUTH_KEY` secret. Configure that key as reusable, ephemeral,
+pre-approved when needed, tagged, and limited to the private admin HTTPS
+service.
+
+The workflow fails if the private URL responds before enrollment, then joins
+the tailnet, requires `https://sitbank-admin.tailca101b.ts.net/login` to return
+the documented unauthenticated `200`, requires the public customer
+`https://sitbank.duckdns.org/admin` route to remain denied with `404`, and logs
+out. It checks no admin credentials, changes no deployment or tailnet state,
+and enables neither Tailscale Serve nor Funnel.
+
+Rotate the environment secret with a replacement key and one approved `main`
+test before revoking the old key. During offboarding, review environment
+approvers and branch rules and remove stale CI nodes. To withdraw CI tailnet
+access, remove the secret, revoke the key, remove the CI tag grants/devices,
+and disable or delete the environment. Normal public TLS scans continue to
+exclude the private hostname.
+
 ## DAST Policy
 
 Ordinary pull requests skip the full authenticated DAST crawl to keep feedback fast. They still run unit tests, compile checks, `pip check`, Bandit, dependency audits, dependency lock validation, repository secret scan, Docker image build, container smoke test, Compose validation, and Trivy gates.

@@ -128,6 +128,34 @@ logging.
 Tailscale admin host preflight/provisioning and the private admin boundary
 decision are tracked by #200, #211, and #218.
 
+The manual **Verify private Tailscale admin access** workflow is the only
+GitHub-hosted job approved to join the tailnet. It implements Option B with the
+protected `tailscale-private-admin-verification` environment and its
+`TAILSCALE_AUTH_KEY` environment secret. The environment must require manual
+approval by trusted maintainers and restrict deployment branches to `main`.
+The key must create a reusable, ephemeral, pre-approved (when required), tagged
+CI node with access only to the private admin HTTPS service.
+
+Run the workflow after private DNS, certificates, Tailscale ACLs/tags, Serve
+configuration, or the admin edge changes. It first confirms the private URL is
+unreachable before joining, then requires
+`https://sitbank-admin.tailca101b.ts.net/login` to return the documented
+unauthenticated `200` response and
+`https://sitbank.duckdns.org/admin` to remain denied with `404`. The job uses
+no admin login credentials, makes no deployment or provider configuration
+changes, enables neither Tailscale Funnel nor Serve, uploads no Tailscale
+state, and logs out at completion. Flask admin login, TOTP, CSRF, route
+authorization, audit logging, and admin/customer isolation still apply.
+
+For credential rotation, create a replacement reusable, ephemeral, tagged,
+narrowly scoped key; update the protected environment secret; approve and
+verify one `main` run; then revoke the old key and remove stale CI nodes.
+During maintainer offboarding, also review environment approvers and branch
+rules. To remove CI tailnet access entirely, delete the environment secret,
+revoke the key, remove the dedicated CI tag grants/devices, and disable or
+delete the environment. The full runbook is in
+`docs/security/admin-and-staging-zero-trust-access.md`.
+
 Run the manual **Verify staging Cloudflare Access** workflow before a staging
 release and after Access, DNS, IdP, token, origin address, or ingress changes.
 It uses protected `staging` environment secrets and retains only sanitized

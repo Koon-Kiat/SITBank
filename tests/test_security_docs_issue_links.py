@@ -80,7 +80,8 @@ def test_zero_trust_docs_use_current_architecture_and_issue_set():
     assert "Funnel would publish the service to the public internet" in docs
     assert "admin login, TOTP, CSRF, route authorization, and audit logging" in docs
     assert "does not replace Flask admin login, TOTP, CSRF protection" in normalized_docs
-    assert "Protected GitHub CI tailnet verification is not implemented in normal public CI" in docs
+    assert "Protected GitHub CI tailnet verification is implemented only by" in docs
+    assert "Option B: a GitHub-hosted runner joins the tailnet" in docs
 
 
 def test_staging_domain_docs_match_implemented_active_cloudflare_hostname():
@@ -103,6 +104,8 @@ def test_public_tls_docs_exclude_private_tailscale_admin_hostname_from_normal_sc
     assert "normal public TLS scan deliberately excludes the private Tailscale admin hostname" in operations
     assert "job joins the tailnet or uses a tailnet self-hosted runner" in normalized_operations
     assert "admin-sitbank.tailca101b.ts.net" not in workflow
+    assert "sitbank-admin.tailca101b.ts.net" not in workflow
+    assert "sitbank-ec2.tailca101b.ts.net" not in workflow
     assert "Do not add the private Tailscale admin URL to public GitHub-hosted TLS scans." in normalized_deployment
 
 
