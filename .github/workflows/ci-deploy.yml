@@ -53,7 +53,7 @@ jobs:
       source_sha: ${{ steps.resolve.outputs.source_sha }}
     steps:
       - name: Check out trusted workflow repository state
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -146,7 +146,7 @@ jobs:
       contents: read
     steps:
       - name: Check out repository
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           persist-credentials: false
 
@@ -193,7 +193,7 @@ jobs:
       pull-requests: read
     steps:
       - name: Check out repository
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           persist-credentials: false
 
@@ -224,7 +224,7 @@ jobs:
       COMMON_PASSWORDS_MIN_ENTRIES: "100000"
     steps:
       - name: Check out repository
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -292,7 +292,7 @@ jobs:
       pull-requests: write
     steps:
       - name: Check out SonarQube project metadata
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           persist-credentials: false
           ref: ${{ needs.resolve-source.outputs.source_sha }}
@@ -387,7 +387,7 @@ jobs:
       contents: read
     steps:
       - name: Check out repository
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           persist-credentials: false
 
@@ -532,7 +532,7 @@ jobs:
       revision: ${{ needs.resolve-source.outputs.source_sha }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           persist-credentials: false
           ref: ${{ needs.resolve-source.outputs.source_sha }}
@@ -613,13 +613,13 @@ jobs:
       revision: ${{ steps.image.outputs.revision }}
     steps:
       - name: Check out trusted workflow repository state
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           persist-credentials: false
           ref: ${{ github.workflow_sha }}
 
       - name: Check out candidate source
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           persist-credentials: false
           ref: ${{ needs.publish.outputs.revision }}
@@ -778,7 +778,7 @@ jobs:
       STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN: ${{ vars.STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           persist-credentials: false
           ref: ${{ github.workflow_sha }}
@@ -993,7 +993,7 @@ jobs:
       PROD_SMTP_HOST: ${{ vars.PROD_SMTP_HOST }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           persist-credentials: false
           ref: ${{ github.workflow_sha }}
