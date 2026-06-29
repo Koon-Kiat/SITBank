@@ -1,4 +1,4 @@
-"""Security-focused tests for the local transfer service (issue #248).
+"""Security-focused tests for the local transfer service.
 
 Covers: payee ownership, self-transfer, decimal precision, DB-backed anti-replay,
 token binding, deadlock-safe locking order, and audit redaction.

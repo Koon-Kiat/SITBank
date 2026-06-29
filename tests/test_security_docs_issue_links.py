@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import re
 from pathlib import Path
 
 
@@ -33,54 +34,61 @@ def _table_rows(section: str) -> list[list[str]]:
     return rows
 
 
-def test_known_issue_tracked_gaps_link_current_issue_numbers():
+def test_open_gaps_use_current_status_without_tracker_numbers():
     register = GAP_REGISTER.read_text(encoding="utf-8")
     current_open = _section(register, "Current Open Gaps")
 
-    for title, issue_ref in (
-        ("Password history beyond current-password reuse", "#166"),
-        ("Admin audit-log viewer UI", "#197"),
-        ("Automated retention and disposal jobs", "#209"),
-        ("Device-bound session proof", "#218"),
+    for title, status in (
+        ("Password history beyond current-password reuse", "Open gap"),
+        ("Admin audit-log viewer UI", "Open gap"),
+        ("Automated retention and disposal jobs", "Open gap"),
+        ("Device-bound session proof", "Accepted defense-in-depth gap"),
     ):
         row = next(line for line in current_open.splitlines() if title in line)
-        assert issue_ref in row
+        assert status in row
 
-    assert "Separate issue: No" not in register
     assert "Local Docker/Compose proof when Docker is unavailable" not in current_open
     assert "Strict Docker/Compose local CI mode" in register
 
 
-def test_design_risk_register_links_sonar_backup_and_zero_trust_tracking():
+def test_design_risk_register_uses_current_follow_up_status():
     design = DESIGN_REGISTER.read_text(encoding="utf-8")
 
-    assert "#188" in next(
+    assert "Baseline review remains" in next(
         line for line in design.splitlines() if "Reporting-only SonarQube" in line
     )
-    assert "#208" in next(
+    assert "Runtime verification hardening remains" in next(
         line for line in design.splitlines() if "Encrypted backup helper" in line
     )
     zero_trust_row = next(
         line for line in design.splitlines() if "Zero-trust/private admin-staging" in line
     )
-    for issue_ref in ("#198", "#199", "#200", "#210", "#211", "#215", "#218"):
-        assert issue_ref in zero_trust_row
+    assert "Operator verification remains" in zero_trust_row
 
 
-def test_zero_trust_docs_use_current_architecture_and_issue_set():
+def test_zero_trust_docs_use_current_architecture_and_control_state():
     docs = ZERO_TRUST.read_text(encoding="utf-8")
     normalized_docs = " ".join(docs.split())
 
-    assert "Issue #184" not in docs
     assert "SITBank uses a hybrid zero-trust access model" in docs
-    for issue_ref in ("#198", "#199", "#200", "#210", "#211", "#215", "#218"):
-        assert issue_ref in docs
+    assert "Implemented repository controls include" in docs
     assert "https://admin-sitbank.tailca101b.ts.net/" in docs
     assert "Admins connect to the Tailscale VPN first, then open" in docs
     assert "Funnel would publish the service to the public internet" in docs
     assert "admin login, TOTP, CSRF, route authorization, and audit logging" in docs
     assert "does not replace Flask admin login, TOTP, CSRF protection" in normalized_docs
-    assert "Protected GitHub CI tailnet verification is not implemented in normal public CI" in docs
+    assert "Protected GitHub CI tailnet verification is implemented only by" in docs
+    assert "GitHub-hosted runner joins the tailnet" not in docs
+    assert "temporarily joins a GitHub-hosted runner to the tailnet" in normalized_docs
+
+
+def test_documentation_has_no_numbered_issue_references():
+    docs = _docs_text()
+
+    assert not re.search(
+        r"(?i)\bissue\s*#?\s*\d+\b|(?<![\w-])#\d{2,4}\b",
+        docs,
+    )
 
 
 def test_staging_domain_docs_match_implemented_active_cloudflare_hostname():
@@ -101,8 +109,14 @@ def test_public_tls_docs_exclude_private_tailscale_admin_hostname_from_normal_sc
     workflow = Path(".github/workflows/tls-scan.yml").read_text(encoding="utf-8")
 
     assert "normal public TLS scan deliberately excludes the private Tailscale admin hostname" in operations
-    assert "job joins the tailnet or uses a tailnet self-hosted runner" in normalized_operations
+    assert (
+        "manually approved `admin-tailscale` "
+        "environment job that joins the tailnet"
+        in normalized_operations
+    )
     assert "admin-sitbank.tailca101b.ts.net" not in workflow
+    assert "sitbank-admin" + ".tailca101b.ts.net" not in workflow
+    assert "sitbank-ec2" + ".tailca101b.ts.net" not in workflow
     assert "Do not add the private Tailscale admin URL to public GitHub-hosted TLS scans." in normalized_deployment
 
 
@@ -127,7 +141,7 @@ def test_current_open_gap_rows_have_tracking_state():
     rows = _table_rows(_section(register, "Current Open Gaps"))
     header = rows[0]
     status_index = header.index("Status / tracking")
-    tracking_markers = ("#", "needs-triage", "Accepted", "Deferred", "Open gap")
+    tracking_markers = ("needs-triage", "Accepted", "Deferred", "Open gap")
 
     for row in rows[1:]:
         assert any(marker in row[status_index] for marker in tracking_markers), row

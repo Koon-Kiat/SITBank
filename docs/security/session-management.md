@@ -226,6 +226,6 @@ isolation.
 Remaining session risk-reduction items are tracked in
 `docs/security/security-gap-register.md`: optional active-session count caps are
 `needs-triage`, while stronger cryptographic device-bound proof remains an
-accepted defense-in-depth gap. Issue #218 records the current decision to use
-Tailscale private access as the admin device/network boundary rather than
-claiming cryptographic device binding for browser sessions.
+accepted defense-in-depth gap. Tailscale private access is the current admin
+device/network boundary; it is not cryptographic device binding for browser
+sessions.

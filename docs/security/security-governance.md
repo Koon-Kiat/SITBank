@@ -26,7 +26,6 @@ outside the repo.
 | Deployment Owner | CI/CD, EC2, Nginx, Docker, TLS, release evidence, deployment gates | Workflow runs, deployment logs, host checks |
 | Documentation Owner | Framework matrix, gap register, threat model, runbooks, stale-documentation cleanup | Documentation diffs and doc tests |
 | Risk Owner | Role accountable for a specific gap, design risk, or accepted risk | Register owner/status/review fields |
-| Issue Owner | Role driving a linked remediation issue to closure | GitHub issue, branch, pull request |
 | Reviewer | Person or role checking that evidence matches the claim before merge | PR review and validation commands |
 | External operator / outside repo | Cloud, IdP, DNS, tailnet, certificate, or host process not fully controlled in git | Operator notes, live verification output |
 
@@ -43,7 +42,7 @@ Run a lightweight security review:
   zero-trust boundary changes;
 - after high or critical dependency, scanner, or secret-scanning findings;
 - after an incident, high-severity alert, or accepted-risk review trigger;
-- before closing a security issue that changes the implemented control state.
+- before closing a security gap that changes the implemented control state.
 
 Monthly review is useful when the project is active, but the minimum commitment
 for this student repository is once per milestone or release cycle.
@@ -52,14 +51,14 @@ for this student repository is once per milestone or release cycle.
 
 Use this short checklist during security reviews:
 
-- open security issues and `needs-triage` entries have an owner role;
+- open security gaps and `needs-triage` entries have an owner role;
 - current open gaps have status, tracking, and next review trigger;
 - accepted risks still have a reason, compensating controls, and trigger;
 - design-risk rows still match code, docs, workflows, and operator evidence;
 - dependency, SAST, DAST, secret-scanner, and Trivy findings are reviewed;
 - deployment gates, production guard, and smoke/DAST evidence remain current;
 - admin/staging private-access and off-repo prerequisites have current evidence;
-- closed security issues updated the gap register, framework matrix, threat
+- closed security gaps updated the gap register, framework matrix, threat
   model, design risk register, and runbooks where relevant;
 - documentation tests cover new governance, risk, or framework claims.
 
@@ -70,27 +69,16 @@ Open gaps and design risks should record these fields where practical:
 - owner role, for example `Owner: Security Owner`;
 - status, for example `Open gap`, `Implemented`, `Partially implemented`,
   `Accepted risk`, `External prerequisite`, `Deferred`, or `needs-triage`;
-- linked GitHub issue number when one exists;
 - accepted-risk marker and reason when work is intentionally deferred;
 - compensating controls for accepted or partially implemented risks;
 - target review cadence or next review trigger;
 - external owner/process when the control is outside the repository;
 - evidence source such as tests, workflows, docs, or operator output.
 
-Each important open security gap must have a linked issue, accepted-risk entry,
-`needs-triage` status, outside-repo-scope reason, or external-prerequisite note.
-
-## GitHub Issue Tracking
-
-Use GitHub issues for remediation when the fix is actionable in this repo. A
-security issue should include the affected area, owner role, expected evidence,
-tests or docs to update, and deployment impact. Closed security issues must
-trigger a documentation review before the PR is merged so the gap register,
-framework matrix, threat model, design risk register, operations docs, and
-runbooks do not keep stale claims.
-
-If the issue is intentionally not implemented, record why in the gap register as
-an accepted risk, external prerequisite, deferred item, or out-of-scope item.
+Each important open security gap must have an explicit status, owner role,
+next action, and review trigger. Accepted risks, external prerequisites,
+deferred items, and out-of-scope items must state why they are not currently
+implemented.
 
 ## Accepted Risks
 
@@ -99,7 +87,7 @@ Accepted risks are visible project decisions, not a way to hide work. Record:
 - owner role;
 - reason for acceptance;
 - compensating controls;
-- linked issue or documentation reference;
+- documentation or evidence reference;
 - review cadence or next review trigger;
 - condition that reopens the risk.
 
@@ -126,7 +114,7 @@ gap until live evidence supports the stronger claim.
 
 ## Stale Documentation Prevention
 
-Every security PR or issue closure should check whether these docs need updates:
+Every security change or gap closure should check whether these docs need updates:
 
 - `docs/security/security-gap-register.md`
 - `docs/security/framework-control-matrix.md`
@@ -146,12 +134,12 @@ role, status, and review trigger.
 For suspected active compromise, exposed secrets, admin misuse, audit-chain
 failure, public admin exposure, or high-severity scanner findings:
 
-1. Keep secrets and personal data out of public issues and chat.
+1. Keep secrets and personal data out of public records and chat.
 2. Preserve timestamps, commit SHA, image digest, workflow run IDs, and sanitized
    audit references.
 3. Escalate privately to the Security Owner and Deployment Owner.
 4. Use `docs/security/incident-response.md` for containment and recovery.
-5. Record follow-up issues or accepted-risk decisions after containment.
+5. Record follow-up actions or accepted-risk decisions after containment.
 
 ## Limitations
 

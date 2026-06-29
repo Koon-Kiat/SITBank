@@ -122,8 +122,12 @@ Deploy the signed image through the restricted wrapper so it runs
 
 Production deployment runs from the trusted `main` workflow only after release
 verification, staging deployment, and the post-deployment staging TLS scan all
-succeed. Leave the repository variable `PROD_DEPLOY_ENABLED` unset or false
-until the production admin secret files and matching
+succeed. A successful production deployment is followed by public production
+TLS verification and then the required protected private-admin tailnet gate.
+If either post-deploy verification fails, the workflow fails even though the
+production deployment already completed. Leave the repository variable
+`PROD_DEPLOY_ENABLED` unset or false until the production admin secret files
+and matching
 `PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID` are ready; when the flag is not
 explicitly true, production deployment is skipped.
 
@@ -153,6 +157,39 @@ must remain GitHub Actions secrets or protected environment secrets as already
 documented. Existing staging and production deployment variables remain scoped
 to their protected GitHub environments and are validated before deployment;
 do not move secret values into repository variables.
+
+### Protected Private-Admin Verification Environment
+
+The manual/reusable `.github/workflows/tailscale-private-admin-verify.yml`
+workflow uses a GitHub-hosted runner that temporarily joins the tailnet. It can
+be dispatched on demand and is called by `.github/workflows/ci-deploy.yml`
+after `deploy-production` and `verify-production-tls` succeed. Create a GitHub
+Environment named `admin-tailscale`, require manual approval by trusted
+maintainers, and restrict its deployment branches to `main`. Each production
+run pauses for that approval before the required private gate can access its
+secret. This is the required protected post-production-deploy gate and it runs
+after production public TLS verification. Store `TAILSCALE_AUTH_KEY` only as
+that environment's secret. It must
+be a reusable, ephemeral, pre-approved key when device approval applies and
+must assign a dedicated `tag:github-ci` identity whose tailnet grants reach
+only the `tag:admin-sitbank` service on TCP `443`.
+
+Do not expose the secret as a repository variable or general repository
+secret, and do not permit pull requests, Dependabot, forks, or untrusted
+branches to use the environment. Inputs default to
+`admin-sitbank.tailca101b.ts.net` and the retired public admin hostname
+`admin-sitbank.duckdns.org`. The workflow checks the private admin URL before
+and after joining, validates the unauthenticated login response over TLS,
+requires the public admin login path to return a safe denial or have no public
+endpoint, and logs out. It neither deploys nor changes Flask, Nginx, EC2,
+tailnet policy, Tailscale Serve, or Tailscale Funnel.
+
+Rotate the credential by replacing the environment secret with a new narrowly
+scoped ephemeral tagged key, validating one manually approved `main` run, and
+then revoking the old key and stale node. Offboarding requires review of
+environment approvers/branch rules. To remove CI tailnet access, delete the
+environment secret, revoke the key, remove the CI tag grants and devices, and
+disable or delete the environment.
 
 Set `ROOT_ADMIN_EMAILS` in both protected GitHub environments before deploying
 admin bootstrap support. It is a non-secret allowlist, but it is
@@ -234,10 +271,13 @@ scans the staging customer endpoint; production deployment is blocked until
 that evidence passes. After a successful production deploy it scans the
 production customer endpoint, making the resulting artifact the release's live
 TLS evidence. A production scan failure marks the deployment
-workflow failed and requires investigation before the release is accepted. Run
-the workflow manually after Nginx, certificate, DNS, load-balancer, CDN/WAF,
-or host TLS changes outside the normal deployment path. It deliberately does
-not run on pull requests: PRs do not create a separate public TLS endpoint.
+workflow failed and prevents the private-admin tailnet gate from starting.
+After the production TLS scan succeeds, the deployment workflow calls the
+protected private-admin gate; failure of that gate also fails the completed
+deployment workflow. Run the TLS workflow manually after Nginx, certificate,
+DNS, load-balancer, CDN/WAF, or host TLS changes outside the normal deployment
+path. It deliberately does not run on pull requests: PRs do not create a
+separate public TLS endpoint.
 
 By default it scans these hostname-only targets, which can be overridden as
 manual workflow inputs when an approved endpoint changes:
@@ -405,7 +445,7 @@ served through DNS and the deployed edge.
 The reviewed production bootstrap installs and enables the production edge from `ops/nginx/sitbank-default.conf`, `ops/nginx/sitbank-production.conf`, `ops/nginx/sitbank-production-rate-limits.conf`, `ops/nginx-proxy-headers.conf`, and `ops/nginx/sitbank-tls-policy.conf`. The shared default config owns unknown-host rejection so production and staging can run on the same EC2 without duplicate Nginx `default_server` listeners. Any change to those files requires a production bootstrap after merge.
 
 - Public ingress is TCP `80` and `443` only.
-- SSH hardening is deferred in this branch. The Issue 186 OpenSSH drop-in,
+- SSH hardening is deferred in this branch. The planned OpenSSH drop-in,
   UFW/security-group rollout, and deployment-source migration path are not
   implemented here because they can affect GitHub Actions deployment access.
   Treat live SSH posture as operator-owned infrastructure evidence until a
@@ -498,6 +538,11 @@ Copy the apply output into protected GitHub `staging` environment variables
 `STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN`. Staging deployment refuses to render
 without both. Its signed runtime bundle enables
 `STAGING_CLOUDFLARE_ACCESS_JWT_REQUIRED=true`; production does not.
+Set `STAGING_ACCESS_SESSION_DURATION=6h` in that environment so provider plan,
+apply, and verification all use the six-hour duration configured for the
+`SITBank staging` Access application. Keep the exact explicit-email policy in
+`STAGING_ACCESS_ALLOWED_EMAILS`; `Everyone`, wildcard domains, and broad
+allow-all rules are forbidden.
 
 Create a staging Basic Auth file before running the staging bootstrap. This is
 a secondary staging control and must not replace Cloudflare Access:
@@ -551,9 +596,9 @@ change instead of disabling the origin-pull protection.
 Use a Cloudflare-managed zone/hostname or Cloudflare Tunnel for this boundary;
 for this deployment, the approved Cloudflare-managed hostname is
 `staging-sitbank.pp.ua`. The retired DuckDNS staging hostname is not an active
-staging deployment, Nginx, Certbot, or TLS-scan target. Issue #215 tracks the
-staging domain and CI/CD migration history; Cloudflare Access and origin
-protection work is referenced from #198, #199, and #210.
+staging deployment, Nginx, Certbot, or TLS-scan target. The staging domain and
+CI/CD migration are complete. Cloudflare Access and origin-protection
+automation are implemented separately from live operator verification.
 
 Issue or renew staging TLS before bootstrap:
 
@@ -607,7 +652,10 @@ missing/invalid assertion always receives a generic `403`; raw tokens are not
 logged. Authenticated Origin Pull remains a separate required check.
 The manual `cloudflare-access-verify.yml` workflow performs the same
 non-mutating check in the protected `staging` environment and uploads only
-sanitized evidence.
+sanitized evidence. It maps `STAGING_ACCESS_SESSION_DURATION`,
+`STAGING_CLOUDFLARE_ACCESS_AUD`, and every other supported provider value
+explicitly, runs only when dispatched from `main`, and reports non-secret
+field drift without printing the email allowlist or raw provider responses.
 
 The complete operator runbook is
 `docs/security/admin-and-staging-zero-trust-access.md`.
@@ -616,7 +664,9 @@ After the staging TLS check passes, validate production customer HTTPS with
 `testssl.sh --warnings batch --color 0 https://sitbank.duckdns.org`. The
 `ssl_conf_command` TLS 1.3 setting is runtime-dependent, so `nginx -t` must
 pass on the deployed host before any reload. Do not add the private Tailscale
-admin URL to public GitHub-hosted TLS scans.
+admin URL to public GitHub-hosted TLS scans. Private reachability belongs only
+to the separate manual, protected tailnet verification workflow; the public
+TLS scan and deployment workflows must never require `TAILSCALE_AUTH_KEY`.
 
 Production HSTS validation should also confirm the public customer hostname
 returns the production edge header before the production live TLS scan is

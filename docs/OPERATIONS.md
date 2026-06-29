@@ -76,8 +76,9 @@ operator-managed. None of those secret values belong in the repository.
 `staging-sitbank.pp.ua` is the Cloudflare-managed staging hostname for Access.
 The retired DuckDNS staging hostname is not an active staging deployment,
 Nginx, Certbot, or TLS-scan target.
-Issue #215 tracks the staging domain and CI/CD migration history; related
-Cloudflare Access/origin protection work is tracked by #198, #199, and #210.
+The staging domain and CI/CD migration are complete. Cloudflare Access and
+origin-protection automation are implemented, while live provider state
+remains operator-owned evidence.
 
 Routine verification:
 
@@ -91,6 +92,7 @@ curl --fail --resolve staging-sitbank.pp.ua:443:127.0.0.1 \
   https://staging-sitbank.pp.ua/health/ready
 curl -I --resolve staging-sitbank.pp.ua:443:<EC2_PUBLIC_IP> \
   https://staging-sitbank.pp.ua/
+sudo tailscale set --hostname=admin-sitbank
 sudo tailscale serve status
 curl -I https://admin-sitbank.tailca101b.ts.net/login
 ```
@@ -125,14 +127,55 @@ Funnel must stay disabled for SITBank admin.
 Tailscale is the private network/device boundary for admin access; it does not
 replace Flask admin login, TOTP, CSRF protection, route authorization, or audit
 logging.
-Tailscale admin host preflight/provisioning and the private admin boundary
-decision are tracked by #200, #211, and #218.
+Tailscale admin host preflight/provisioning and the private admin boundary are
+implemented repository controls; live ACL, device, and Serve state still
+requires operator verification.
+
+The **Verify private Tailscale admin access** workflow is the only
+GitHub-hosted workflow approved to join the tailnet. It can run manually and is
+the required final production gate after deployment and public production TLS
+verification. It uses the protected `admin-tailscale` environment and its
+`TAILSCALE_AUTH_KEY` environment secret. The environment must require manual
+approval by trusted maintainers and restrict deployment branches to `main`.
+The key must create a reusable, ephemeral, pre-approved (when required)
+`tag:github-ci` node with access only to `tag:admin-sitbank:443`; it must not
+administer the tailnet or provide broad SSH access.
+
+Run the workflow after private DNS, certificates, Tailscale ACLs/tags, Serve
+configuration, or the admin edge changes. It first confirms the private URL is
+unreachable before joining, then requires
+`https://admin-sitbank.tailca101b.ts.net/login` to return the documented
+unauthenticated `200` response. Before joining, it also requires
+`https://admin-sitbank.duckdns.org/login` to return `403`, `404`, `421`, `444`,
+or no public endpoint (`000`). Any public login/dashboard response fails the
+gate. The job uses no admin login credentials, makes no deployment or provider
+configuration changes, enables neither Tailscale Funnel nor Serve, uploads no
+Tailscale state, and logs out at completion. Flask admin login, TOTP, CSRF,
+route authorization, audit logging, and admin/customer isolation still apply.
+
+For credential rotation, create a replacement reusable, ephemeral, tagged,
+narrowly scoped key; update the protected environment secret; approve and
+verify one `main` run; then revoke the old key and remove stale CI nodes.
+During maintainer offboarding, also review environment approvers and branch
+rules. To remove CI tailnet access entirely, delete the environment secret,
+revoke the key, remove the dedicated CI tag grants/devices, and disable or
+delete the environment. The full runbook is in
+`docs/security/admin-and-staging-zero-trust-access.md`.
 
 Run the manual **Verify staging Cloudflare Access** workflow before a staging
 release and after Access, DNS, IdP, token, origin address, or ingress changes.
 It uses protected `staging` environment secrets and retains only sanitized
 evidence. Rotate the Cloudflare API token by verifying a narrowly scoped
 replacement, updating the environment secret, and revoking the old token.
+Dispatch it from `main`. The expected Access application is `SITBank staging`
+at `staging-sitbank.pp.ua` with
+`STAGING_ACCESS_SESSION_DURATION=6h`, the configured team domain and audience,
+and the exact explicit-email membership from
+`STAGING_ACCESS_ALLOWED_EMAILS`. `Everyone`, wildcard domains, and broad
+allow-all policies are forbidden. A drift message names safe fields such as
+`session_duration`; membership drift reports counts only. Never copy tokens,
+email values, authorization headers, cookies, JWTs, Access assertions, or raw
+provider responses into a ticket or change record.
 
 The detailed onboarding, offboarding, emergency lockout, rollback, and live
 operator verification steps are in
@@ -194,7 +237,7 @@ enter the private dashboard.
 
 ## EC2 SSH And Deployment Access Operations
 
-Issue 186 EC2 SSH hardening is deferred and is not implemented by this branch.
+EC2 SSH hardening is deferred and is not implemented by this branch.
 There is no repository OpenSSH drop-in, UFW rollout, security-group migration,
 or deployment-source allowlisting runbook to apply from this checkout.
 
@@ -457,7 +500,8 @@ operator-dispatched, and post-deployment evidence of the Internet-facing TLS
 posture for `staging-sitbank.pp.ua` and `sitbank.duckdns.org`. The deployment
 workflow calls the staging scan
 after staging deploy and blocks production deployment until it passes; it calls
-the production scan after production deploy to complete the release evidence.
+the production scan after production deploy, then calls the required protected
+private-admin tailnet gate only after that public scan succeeds.
 The manual workflow input `staging_host` defaults to
 `staging-sitbank.pp.ua`.
 Dispatch it after edge, certificate, DNS, Nginx/OpenSSL, CDN/WAF, or
@@ -466,10 +510,12 @@ the release or change record. Do not run a public-endpoint scan from ordinary
 pull requests.
 
 The normal public TLS scan deliberately excludes the private Tailscale admin hostname
-`admin-sitbank.tailca101b.ts.net`; a GitHub-hosted public runner cannot reach it
-unless a separate protected job joins the tailnet or uses a tailnet self-hosted
-runner. Do not make staging or admin verification pass by switching Cloudflare
-to Flexible SSL, disabling TLS verification, disabling the Cloudflare proxy,
+`admin-sitbank.tailca101b.ts.net`; a GitHub-hosted public runner cannot reach
+it. Private reachability is handled only by the separate, manually approved
+`admin-tailscale` environment job that joins the tailnet on demand or as the
+required final production gate.
+Do not make staging or admin verification pass by switching Cloudflare to
+Flexible SSL, disabling TLS verification, disabling the Cloudflare proxy,
 bypassing Authenticated Origin Pulls, or enabling Tailscale Funnel.
 
 Each target artifact (`tls-scan-staging-sitbank` or `tls-scan-prod-sitbank`)
@@ -500,6 +546,8 @@ the workflow/script change before retrying.
 
 Treat a failed scan as a release/deployment verification failure. A failed
 staging scan blocks production deployment, while a failed production scan
+marks the completed deployment workflow failed and prevents the private gate
+from starting. A failed private gate after a successful production scan also
 marks the completed deployment workflow failed. The production customer
 automated gate blocks legacy TLS protocols,
 weak/NULL/anonymous/export/RC4/3DES ciphers, expired or mismatched

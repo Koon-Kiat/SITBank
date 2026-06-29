@@ -6,6 +6,7 @@ The normal release path is:
 
 ```text
 main push -> publish -> release-verify -> staging -> production
+  -> production public TLS -> protected private admin tailnet gate
 ```
 
 The tested, scanned, signed, and deployed digest must be identical. Deployments never use `latest`.
@@ -28,7 +29,7 @@ Feature-branch workflow and deployment scripts are never executed with environme
 
 The SSH deployment jobs assume the configured EC2 deploy user is reachable from
 an approved source. GitHub-hosted runners do not have stable source IPs, so
-repo-side Issue 186 SSH hardening is deferred to avoid accidentally breaking
+repo-side SSH hardening is deferred to avoid accidentally breaking
 deployment. Move deployment behind an allowlisted self-hosted runner, bastion,
 VPN egress, or OIDC plus AWS Systems Manager only in a separate reviewed change
 that tests rollback and GitHub Actions reachability.
@@ -78,6 +79,37 @@ creates or reconciles the Access application. They are identifiers rather than
 secrets, but keep them in the protected `staging` environment so deployment
 and provider configuration change together.
 
+The manual **Verify staging Cloudflare Access** workflow runs only from `main`
+in the protected `staging` environment. That shared environment requires:
+
+- `CLOUDFLARE_API_TOKEN`
+- `STAGING_ACCESS_ALLOWED_EMAILS`
+- `STAGING_DNS_ORIGIN`
+- `STAGING_ORIGIN_IP`
+- `STAGING_EC2_KNOWN_HOSTS`
+- `STAGING_EC2_SSH_PRIVATE_KEY_B64`
+
+The provider workflow consumes the first four values; the two EC2 credentials
+remain deployment-only. `STAGING_ACCESS_ALLOWED_GROUP_IDS` is optional when the policy uses only the
+exact explicit emails in `STAGING_ACCESS_ALLOWED_EMAILS`. Required environment
+variables are `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_ZONE_ID`,
+`STAGING_ACCESS_SESSION_DURATION`, `STAGING_CLOUDFLARE_ACCESS_AUD`,
+`STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN`, `STAGING_PUBLIC_HOST`,
+`STAGING_EC2_HOST`, `STAGING_EC2_DEPLOY_USER`, and `STAGING_EC2_PORT`.
+`STAGING_ACCESS_ALLOWED_IDP_IDS` is optional unless a reviewed IdP restriction
+is active. The provider workflow maps every supported Cloudflare value; the
+EC2 host, user, and port remain deployment-only.
+`STAGING_ACCESS_APP_NAME` and `STAGING_ACCESS_POLICY_NAME` are optional;
+leaving them empty uses the reviewed defaults.
+
+The reviewed provider values are `STAGING_ACCESS_SESSION_DURATION=6h`,
+`STAGING_PUBLIC_HOST=staging-sitbank.pp.ua`, application name `SITBank
+staging`, and policy name `SITBank staging approved operators`. `Everyone`,
+wildcard domains, and broad allow-all rules are forbidden. Run the workflow
+manually after any provider or environment change; safe drift output names
+non-secret fields and reports allowlist mismatches by count without printing
+emails, tokens, headers, cookies, JWTs, or Access assertions.
+
 `<PREFIX>_MFA_KEK_ACTIVE_ID` must match a key identifier in the root-managed `/etc/sitbank*/secrets/mfa_kek_keys_json` file on EC2. Do not put `MFA_KEK_KEYS_JSON` in GitHub Actions; the KEK keyring is a long-lived secret and remains host-managed.
 `<PREFIX>_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID` must match a key identifier in
 `/etc/sitbank*/secrets/admin_session_hmac_keys_json`. Do not put admin Flask,
@@ -89,6 +121,38 @@ Do not pass root-admin passwords, TOTP secrets, QR codes, provisioning URIs, or
 TOTP setup values through GitHub Actions. Root-admin bootstrap remains a manual
 operator command run over SSH inside the private admin container after
 deployment.
+
+## Private Tailnet Verification
+
+`.github/workflows/tailscale-private-admin-verify.yml` is manual-runnable and
+reusable. It is the only GitHub-hosted workflow permitted to join the tailnet.
+The trusted production workflow calls it as the required final gate after both
+`deploy-production` and `verify-production-tls` succeed. Pull requests,
+forks, Dependabot, staging, and the public TLS workflow do not call it.
+
+Its `admin-tailscale` environment must require trusted maintainer approval,
+permit only `main`, and hold the sole `TAILSCALE_AUTH_KEY` secret. Configure
+that key as reusable, ephemeral, pre-approved when needed, tagged as
+`tag:github-ci`, unable to administer the tailnet or use broad SSH, and allowed
+only to reach `tag:admin-sitbank:443`. The production caller neither inherits
+nor passes deployment secrets; the called job receives the Tailscale key only
+after its protected environment is approved.
+
+The workflow fails if the private URL responds before enrollment, then joins
+the tailnet, requires `https://admin-sitbank.tailca101b.ts.net/login` to return
+the documented unauthenticated `200`, requires
+`https://admin-sitbank.duckdns.org/login` to return a safe denial or have no
+public endpoint, and logs out. It checks no admin credentials, changes no
+deployment or tailnet state, and enables neither Tailscale Serve nor Funnel.
+Failure marks the post-deploy workflow failed; production may already be
+deployed, so operators must investigate rather than rerun deployment blindly.
+
+Rotate the environment secret with a replacement key and one approved `main`
+test before revoking the old key. During offboarding, review environment
+approvers and branch rules and remove stale CI nodes. To withdraw CI tailnet
+access, remove the secret, revoke the key, remove the CI tag grants/devices,
+and disable or delete the environment. Normal public TLS scans continue to
+exclude the private hostname.
 
 ## DAST Policy
 
@@ -120,7 +184,8 @@ hold any write permission.
 The reusable scanner job has only `contents: read`. It requires the GitHub
 Actions secret `SONAR_TOKEN`; it does not use production environments,
 deployment credentials, or `SONAR_HOST_URL`. Scheduled CI runs skip the
-SonarQube job.
+SonarQube job. Coverage retrieval uses the SHA-pinned
+`actions/download-artifact` v8.0.1 Node.js 24 action.
 
 The initial SonarQube quality gate is reporting-only and is not a release or
 deployment dependency. After a successful trusted internal pull-request scan,

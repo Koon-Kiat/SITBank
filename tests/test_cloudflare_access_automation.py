@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
 import runpy
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -29,6 +32,8 @@ def _base_environment() -> dict[str, str]:
             "CLOUDFLARE_ACCOUNT_ID": "0123456789abcdef0123456789abcdef",
             "CLOUDFLARE_ZONE_ID": "abcdef0123456789abcdef0123456789",
             "STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN": "sitbank.cloudflareaccess.com",
+            "STAGING_CLOUDFLARE_ACCESS_AUD": "non-secret-application-audience",
+            "STAGING_ACCESS_SESSION_DURATION": "6h",
             "STAGING_ACCESS_ALLOWED_EMAILS": "operator@example.com",
             "STAGING_DNS_ORIGIN": "198.51.100.10",
         }
@@ -85,6 +90,7 @@ def test_plan_is_offline_redacted_and_does_not_require_token():
     assert "198.51.100.10" not in result.stdout
     assert "operator@example.com" not in result.stdout
     assert "CLOUDFLARE_API_TOKEN" not in result.stdout
+    assert "Access session duration of 6h" in result.stdout
 
 
 def test_apply_requires_exact_confirmation_before_api_access():
@@ -137,6 +143,23 @@ def test_policy_payload_contains_only_explicit_operator_rules(monkeypatch):
         "everyone" in rule or "any_valid_service_token" in rule
         for rule in payload["include"]
     )
+
+
+def test_config_reads_six_hour_duration_and_expected_audience(monkeypatch):
+    module = runpy.run_path(str(SCRIPT))
+    for name, value in _base_environment().items():
+        if name.startswith(("CLOUDFLARE_", "STAGING_")):
+            monkeypatch.setenv(name, value)
+    monkeypatch.setenv("STAGING_ACCESS_APP_NAME", "")
+    monkeypatch.setenv("STAGING_ACCESS_POLICY_NAME", "")
+
+    config = module["Config"].from_environment(require_origin_ip=False)
+
+    assert config.session_duration == "6h"
+    assert config.access_audience == "non-secret-application-audience"
+    assert config.app_name == "SITBank staging"
+    assert config.policy_name == "SITBank staging approved operators"
+    assert config.application_payload["session_duration"] == "6h"
 
 
 def test_provider_verification_accepts_narrow_state_and_rejects_broad_state(
@@ -192,6 +215,113 @@ def test_provider_verification_accepts_narrow_state_and_rejects_broad_state(
         )
 
 
+def test_provider_drift_diagnostics_name_safe_fields_without_secret_values(
+    monkeypatch,
+):
+    module = runpy.run_path(str(SCRIPT))
+    config_type = module["Config"]
+    provider_state_type = module["ProviderState"]
+    verification_error = module["VerificationError"]
+    verify_provider_state = module["verify_provider_state"]
+    for name, value in _base_environment().items():
+        if name.startswith(("CLOUDFLARE_", "STAGING_")):
+            monkeypatch.setenv(name, value)
+    config = config_type.from_environment(require_origin_ip=False)
+    application = {
+        **config.application_payload,
+        "id": "00000000-0000-0000-0000-000000000001",
+        "aud": config.access_audience,
+    }
+    policy = {
+        **config.policy_payload,
+        "id": "00000000-0000-0000-0000-000000000002",
+    }
+    dns_record = {
+        **config.dns_payload,
+        "id": "00000000000000000000000000000003",
+    }
+
+    drifted_application = {
+        **application,
+        "session_duration": "24h",
+        "app_launcher_visible": True,
+    }
+    with pytest.raises(verification_error) as application_error:
+        verify_provider_state(
+            provider_state_type(
+                drifted_application,
+                (policy,),
+                dns_record,
+            ),
+            config,
+        )
+    message = str(application_error.value)
+    assert "session_duration expected=6h actual=24h" in message
+    assert "app_launcher_visible expected=false actual=true" in message
+
+    unexpected_audience = "different-non-secret-audience"
+    with pytest.raises(verification_error) as audience_error:
+        verify_provider_state(
+            provider_state_type(
+                {**application, "aud": unexpected_audience},
+                (policy,),
+                dns_record,
+            ),
+            config,
+        )
+    message = str(audience_error.value)
+    assert (
+        "audience expected=non-secret-application-audience "
+        f"actual={unexpected_audience}"
+    ) in message
+
+    drifted_policy = {
+        **policy,
+        "include": [{"email": {"email": "different-secret@example.com"}}],
+    }
+    with pytest.raises(verification_error) as policy_error:
+        verify_provider_state(
+            provider_state_type(
+                application,
+                (drifted_policy,),
+                dns_record,
+            ),
+            config,
+        )
+    message = str(policy_error.value)
+    assert "allowed_emails expected_count=1 actual_count=1 mismatch=true" in message
+    assert "operator@example.com" not in message
+    assert "different-secret@example.com" not in message
+
+
+def test_cloudflare_http_error_does_not_print_raw_provider_response(monkeypatch):
+    module = runpy.run_path(str(SCRIPT))
+    cloudflare_api = module["CloudflareAPI"]
+    cloudflare_api_error = module["CloudflareAPIError"]
+    leaked_value = "provider-response-secret"
+
+    def fail_request(*_args, **_kwargs):
+        raise urllib.error.HTTPError(
+            url="https://api.cloudflare.com/client/v4/test",
+            code=403,
+            msg="Forbidden",
+            hdrs=None,
+            fp=io.BytesIO(
+                json.dumps(
+                    {"errors": [{"message": leaked_value}]}
+                ).encode("utf-8")
+            ),
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", fail_request)
+    with pytest.raises(cloudflare_api_error) as error:
+        cloudflare_api("token-that-must-not-appear").request("GET", "/test")
+
+    assert "returned HTTP 403" in str(error.value)
+    assert leaked_value not in str(error.value)
+    assert "token-that-must-not-appear" not in str(error.value)
+
+
 def test_manual_verification_workflow_is_read_only_and_secret_safe():
     text = WORKFLOW.read_text(encoding="utf-8")
     workflow = yaml.safe_load(text)
@@ -201,6 +331,35 @@ def test_manual_verification_workflow_is_read_only_and_secret_safe():
     assert workflow["permissions"] == {}
     assert workflow["jobs"]["verify"]["permissions"] == {"contents": "read"}
     assert workflow["jobs"]["verify"]["environment"]["name"] == "staging"
+    assert workflow["jobs"]["verify"]["if"] == "github.ref == 'refs/heads/main'"
+    assert workflow["jobs"]["verify"]["env"] == {
+        "CLOUDFLARE_API_TOKEN": "${{ secrets.CLOUDFLARE_API_TOKEN }}",
+        "CLOUDFLARE_ACCOUNT_ID": "${{ vars.CLOUDFLARE_ACCOUNT_ID }}",
+        "CLOUDFLARE_ZONE_ID": "${{ vars.CLOUDFLARE_ZONE_ID }}",
+        "STAGING_ACCESS_HOSTNAME": "${{ vars.STAGING_PUBLIC_HOST }}",
+        "STAGING_ACCESS_APP_NAME": "${{ vars.STAGING_ACCESS_APP_NAME }}",
+        "STAGING_ACCESS_POLICY_NAME": "${{ vars.STAGING_ACCESS_POLICY_NAME }}",
+        "STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN": (
+            "${{ vars.STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN }}"
+        ),
+        "STAGING_CLOUDFLARE_ACCESS_AUD": (
+            "${{ vars.STAGING_CLOUDFLARE_ACCESS_AUD }}"
+        ),
+        "STAGING_ACCESS_SESSION_DURATION": (
+            "${{ vars.STAGING_ACCESS_SESSION_DURATION }}"
+        ),
+        "STAGING_ACCESS_ALLOWED_EMAILS": (
+            "${{ secrets.STAGING_ACCESS_ALLOWED_EMAILS }}"
+        ),
+        "STAGING_ACCESS_ALLOWED_GROUP_IDS": (
+            "${{ secrets.STAGING_ACCESS_ALLOWED_GROUP_IDS }}"
+        ),
+        "STAGING_ACCESS_ALLOWED_IDP_IDS": (
+            "${{ vars.STAGING_ACCESS_ALLOWED_IDP_IDS }}"
+        ),
+        "STAGING_DNS_ORIGIN": "${{ secrets.STAGING_DNS_ORIGIN }}",
+        "STAGING_ORIGIN_IP": "${{ secrets.STAGING_ORIGIN_IP }}",
+    }
     assert "--verify" in text
     assert "--apply" not in text
     assert "pull_request" not in text
@@ -215,6 +374,7 @@ def test_manual_verification_workflow_is_read_only_and_secret_safe():
 
 def test_documentation_covers_provider_state_secrets_and_jwt_boundary():
     docs = _all_security_docs()
+    normalized_docs = " ".join(docs.split())
 
     for required in (
         "Cloudflare-managed hostname model",
@@ -226,6 +386,10 @@ def test_documentation_covers_provider_state_secrets_and_jwt_boundary():
         "STAGING_CLOUDFLARE_ACCESS_AUD",
         "STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN",
         "STAGING_CLOUDFLARE_ACCESS_JWT_REQUIRED",
+        "STAGING_ACCESS_SESSION_DURATION=6h",
+        "SITBank staging",
+        "wildcard domains",
+        "broad allow-all",
         "Cf-Access-Jwt-Assertion",
         "email/service-token headers",
         "direct origin",
@@ -236,12 +400,64 @@ def test_documentation_covers_provider_state_secrets_and_jwt_boundary():
         "emergency staging lockout",
         "validates the",
     ):
-        assert required.casefold() in docs.casefold()
+        assert required.casefold() in normalized_docs.casefold()
 
     assert "Cloudflare Tunnel" in docs
     assert "retired DuckDNS staging hostname" in docs
     assert "Cloudflare API tokens" in docs
     assert "Never use a Global API Key" in docs
+
+
+def test_documentation_records_complete_staging_environment_contract():
+    docs = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (
+            Path("docs/GITHUB_ACTIONS.md"),
+            Path("docs/DEPLOYMENT.md"),
+            Path("docs/OPERATIONS.md"),
+            Path("docs/security/admin-and-staging-zero-trust-access.md"),
+            README,
+        )
+    )
+
+    for required_secret in (
+        "CLOUDFLARE_API_TOKEN",
+        "STAGING_ACCESS_ALLOWED_EMAILS",
+        "STAGING_DNS_ORIGIN",
+        "STAGING_ORIGIN_IP",
+        "STAGING_EC2_KNOWN_HOSTS",
+        "STAGING_EC2_SSH_PRIVATE_KEY_B64",
+    ):
+        assert required_secret in docs
+    for required_variable in (
+        "CLOUDFLARE_ACCOUNT_ID",
+        "CLOUDFLARE_ZONE_ID",
+        "STAGING_ACCESS_SESSION_DURATION",
+        "STAGING_CLOUDFLARE_ACCESS_AUD",
+        "STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN",
+        "STAGING_PUBLIC_HOST",
+        "STAGING_EC2_HOST",
+        "STAGING_EC2_DEPLOY_USER",
+        "STAGING_EC2_PORT",
+    ):
+        assert required_variable in docs
+    for expected_value in (
+        "STAGING_ACCESS_SESSION_DURATION=6h",
+        "SITBank staging",
+        "staging-sitbank.pp.ua",
+        "small-boat-a77f.cloudflareaccess.com",
+        "847a9be3c396f4930a210e3106aa5d86945839ba9ad31be794e4378bf8a55663",
+    ):
+        assert expected_value in docs
+    for safety_statement in (
+        "exact explicit email",
+        "Everyone",
+        "wildcard domains",
+        "broad allow-all",
+        "reports counts only",
+    ):
+        assert safety_statement.casefold() in docs.casefold()
+    assert "default `8h`" not in docs
 
 
 def test_sanitized_evidence_contract_excludes_sensitive_values():
@@ -261,6 +477,28 @@ def test_sanitized_evidence_contract_excludes_sensitive_values():
         "audience",
     ):
         assert excluded in normalized_readme
+
+
+def test_sanitized_evidence_records_only_non_secret_expected_duration(
+    monkeypatch,
+    tmp_path,
+):
+    module = runpy.run_path(str(SCRIPT))
+    for name, value in _base_environment().items():
+        if name.startswith(("CLOUDFLARE_", "STAGING_")):
+            monkeypatch.setenv(name, value)
+    config = module["Config"].from_environment(require_origin_ip=False)
+    http = module["HTTPVerification"](True, True, "http_403")
+    evidence_path = tmp_path / "cloudflare-access-evidence.json"
+
+    module["_write_evidence"](evidence_path, config, http)
+
+    evidence_text = evidence_path.read_text(encoding="utf-8")
+    evidence = json.loads(evidence_text)
+    assert evidence["session_duration"] == "6h"
+    assert "operator@example.com" not in evidence_text
+    assert config.access_audience not in evidence_text
+    assert config.dns_origin not in evidence_text
 
 
 def test_existing_authenticated_origin_pull_gate_is_unchanged():

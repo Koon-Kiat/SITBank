@@ -123,8 +123,10 @@ def test_ci_runs_pytest_once_and_hands_coverage_to_sonarqube():
     )
     assert (
         download["uses"]
-        == "actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53"
+        == "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
     )
+    assert "actions/download-artifact v8.0.1 (Node.js 24)" in text
+    assert "018cc2cf5baa6db3ef3c5f8a56943fffe632ef53" not in text
     assert download["with"] == {
         "name": "${{ inputs.coverage_artifact }}",
         "path": ".",

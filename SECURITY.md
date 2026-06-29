@@ -76,6 +76,11 @@ Bootstrapped root admins open `https://admin-sitbank.tailca101b.ts.net/login`,
 authenticate with the existing admin password and TOTP flow, and then reach the
 private dashboard at `https://admin-sitbank.tailca101b.ts.net/`. Customer
 accounts cannot authenticate to the admin runtime.
+Only the protected `tailscale-private-admin-verify.yml` GitHub Actions workflow
+may temporarily join the tailnet to verify private reachability and public
+admin-route denial. It is manual-runnable and is a required gate after
+production deployment and public production TLS verification; normal PR and
+public TLS jobs remain outside the tailnet.
 
 Staging access is protected by Cloudflare Access before Nginx/Flask and by
 Cloudflare Authenticated Origin Pulls at the staging Nginx origin. Direct
@@ -320,7 +325,7 @@ checked manually.
 - Allow public inbound TCP `80` and `443` only.
 - Restricting SSH to an administrator IP allowlist, AWS Systems Manager, a
   bastion, or VPN is still a target control, but this branch does not implement
-  the Issue 186 OpenSSH/UFW/security-group hardening package. Do not claim live
+  the planned OpenSSH/UFW/security-group hardening package. Do not claim live
   SSH hardening until the EC2 host and AWS security group are changed and
   verified through a separate reviewed rollout.
 - Do not expose Gunicorn or PostgreSQL directly to the internet.
