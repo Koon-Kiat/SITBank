@@ -134,10 +134,25 @@ not include request bodies, webhook URLs, tokens, headers, passwords, session
 IDs, or account numbers.
 
 Authorized admin/root users can review a browser-rendered audit log viewer at
-`GET /audit-logs` in the isolated admin runtime. The viewer validates filter,
-sort, and pagination parameters server-side, renders safe event fields only,
-and audits both list and detail access. `staff` users and customers cannot
-access the viewer.
+`GET /audit-logs` and safe details at `GET /audit-logs/<event_id>` in the
+isolated admin runtime. The viewer is read-only: it has no export, edit, or
+delete route. `staff` users and customers cannot access it.
+
+The viewer validates filters, sort fields, sort direction, page number, and
+page size server-side before any query is built. Supported controls are exact
+event type, actor user ID, approved target-reference metadata keys, role,
+severity, outcome/status, request or correlation ID, IP address, timestamp
+range, timestamp/severity/event-type/actor sorting, and bounded pagination.
+The `q` search field is limited to approved safe event columns such as event
+type, outcome, correlation ID, IP address, session reference, and numeric actor
+ID; it does not search raw unbounded metadata.
+
+List rows render only safe top-level event fields. Detail pages pass metadata
+through the same display redaction used by tests, suppressing sensitive keys
+and redacting sensitive-looking legacy values before Jinja autoescaping renders
+the response. Viewer list and detail access are themselves audited with filter
+names, sort direction, and page bounds only; sensitive query values are not
+logged.
 
 Authorized admin/root users can review current security alert report output at
 `GET /alerts`. This dashboard route calls `build_security_alert_report()` with
@@ -179,4 +194,5 @@ every five minutes.
 | `tests/test_password_reset.py` | Reset/manual-recovery audit flows and secret non-disclosure |
 | `tests/test_admin_manual_recovery.py` | Admin manual recovery audit and route authorization |
 | `tests/test_admin_dashboard_operations.py` | Admin dashboard, audit viewer, alert review, staff lifecycle, and template secret-regression coverage |
+| `tests/test_admin_audit_viewer.py` | Audit viewer authorization, query validation, safe search, metadata redaction, escaping, and read-only behavior |
 | `tests/test_session_management.py`, `tests/test_session_absolute_lifetime.py` | Session revocation, expiry, and integrity audit behavior |

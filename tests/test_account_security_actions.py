@@ -256,7 +256,7 @@ def test_password_change_uses_configured_new_password_minimum(app, client):
     assert user.password_hash == old_hash
 
 
-def test_password_change_rejects_common_or_reused_password(client):
+def test_password_change_rejects_common_or_reused_password(client, monkeypatch):
     current_password = "correct horse battery staple"
     register_response = register(client, password=current_password)
     login_response = login(client, password=current_password)
@@ -275,23 +275,27 @@ def test_password_change_rejects_common_or_reused_password(client):
             "confirm_new_password": current_password,
         },
     )
+    stepup_time = int(time.time())
+    monkeypatch.setattr("app.auth.services.time.time", lambda: stepup_time)
     common_response = client.post(
         "/password/change",
         data={
             "current_password": current_password,
             "new_password": "password",
             "confirm_new_password": "password",
-            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).now(),
+            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(stepup_time),
         },
     )
 
     assert reused_response.status_code == 400
     assert common_response.status_code == 400
 
-def test_profile_details_update_succeeds_for_authenticated_user(client):
+def test_profile_details_update_succeeds_for_authenticated_user(client, monkeypatch):
     register(client)
     login(client)
     user, secret = enable_mfa_for_user()
+    stepup_time = int(time.time())
+    monkeypatch.setattr("app.auth.services.time.time", lambda: stepup_time)
 
     response = client.post(
         "/profile",
@@ -299,7 +303,7 @@ def test_profile_details_update_succeeds_for_authenticated_user(client):
             "username": "alice02",
             "email": "alice.new@example.com",
             "mfa_step_up_preference": "totp",
-            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).now(),
+            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(stepup_time),
         },
     )
     db.session.refresh(user)

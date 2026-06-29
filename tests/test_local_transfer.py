@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import Mock
@@ -315,15 +316,17 @@ def test_confirm_get_without_pending_session_redirects(client, transfer_context)
     assert Transaction.query.count() == 0
 
 
-def test_complete_transfer_route_flow(client, transfer_context):
+def test_complete_transfer_route_flow(client, transfer_context, monkeypatch):
     payee = transfer_context["payee"]
+    stepup_time = int(time.time())
     totp_code = pyotp.TOTP(
         transfer_context["alice_secret"],
         digits=6,
         interval=30,
-    ).now()
+    ).at(stepup_time)
 
     form_response = client.get(f"/banking/transfer/{payee.id}")
+    monkeypatch.setattr("app.auth.services.time.time", lambda: stepup_time)
     submit_response = client.post(
         f"/banking/transfer/{payee.id}",
         data={"amount": "25.00", "reference": "Coverage", "totp_code": totp_code},

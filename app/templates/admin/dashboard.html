@@ -9,7 +9,7 @@
       <div class="bank-account-identity">
         <p class="bank-card-eyebrow">Staff/Admin Identity</p>
         <h1 class="bank-card-name">{{ user.email }}</h1>
-        <p class="bank-card-number">{{ role_label }} · {{ user.account_status }}</p>
+        <p class="bank-card-number">{{ role_label }} &middot; {{ user.account_status }}</p>
       </div>
       <div class="bank-account-balance">
         <p class="bank-card-eyebrow">Session Control</p>
@@ -64,6 +64,23 @@
       {% endfor %}
     </div>
   </section>
+
+  {% if business_operations %}
+  <section class="panel">
+    <div class="section-header">
+      <h2>Business Operations</h2>
+    </div>
+    <div class="bank-quick-grid admin-nav-grid">
+      {% for item in business_operations %}
+      <span class="bank-quick-btn is-disabled" aria-disabled="true">
+        <span>{{ item.label }}</span>
+        <span class="badge neutral">{{ item.status }}</span>
+        <span class="muted">{{ item.description }}</span>
+      </span>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
 
   <section class="panel">
     <div class="section-header">
