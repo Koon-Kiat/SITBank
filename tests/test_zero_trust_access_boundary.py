@@ -59,7 +59,7 @@ def test_hybrid_cloudflare_staging_and_tailscale_admin_design_is_documented():
         "Admin access is private through Tailscale",
         "Implemented repository controls include",
         "Protected GitHub CI tailnet verification is implemented only by",
-        "tailscale-private-admin-verification",
+        "Admin-Tailscale",
         "TAILSCALE_AUTH_KEY",
         "This intentionally uses both products because the surfaces have different",
         "Production customer | `https://sitbank.duckdns.org`",

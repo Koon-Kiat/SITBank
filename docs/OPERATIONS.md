@@ -92,6 +92,7 @@ curl --fail --resolve staging-sitbank.pp.ua:443:127.0.0.1 \
   https://staging-sitbank.pp.ua/health/ready
 curl -I --resolve staging-sitbank.pp.ua:443:<EC2_PUBLIC_IP> \
   https://staging-sitbank.pp.ua/
+sudo tailscale set --hostname=admin-sitbank
 sudo tailscale serve status
 curl -I https://admin-sitbank.tailca101b.ts.net/login
 ```
@@ -132,7 +133,7 @@ requires operator verification.
 
 The manual **Verify private Tailscale admin access** workflow is the only
 GitHub-hosted job approved to join the tailnet. It uses the protected
-`tailscale-private-admin-verification` environment and its
+`Admin-Tailscale` environment and its
 `TAILSCALE_AUTH_KEY` environment secret. The environment must require manual
 approval by trusted maintainers and restrict deployment branches to `main`.
 The key must create a reusable, ephemeral, pre-approved (when required), tagged
@@ -141,7 +142,7 @@ CI node with access only to the private admin HTTPS service.
 Run the workflow after private DNS, certificates, Tailscale ACLs/tags, Serve
 configuration, or the admin edge changes. It first confirms the private URL is
 unreachable before joining, then requires
-`https://sitbank-admin.tailca101b.ts.net/login` to return the documented
+`https://admin-sitbank.tailca101b.ts.net/login` to return the documented
 unauthenticated `200` response and
 `https://sitbank.duckdns.org/admin` to remain denied with `404`. The job uses
 no admin login credentials, makes no deployment or provider configuration
@@ -496,10 +497,11 @@ the release or change record. Do not run a public-endpoint scan from ordinary
 pull requests.
 
 The normal public TLS scan deliberately excludes the private Tailscale admin hostname
-`admin-sitbank.tailca101b.ts.net`; a GitHub-hosted public runner cannot reach it
-unless a separate protected job joins the tailnet or uses a tailnet self-hosted
-runner. Do not make staging or admin verification pass by switching Cloudflare
-to Flexible SSL, disabling TLS verification, disabling the Cloudflare proxy,
+`admin-sitbank.tailca101b.ts.net`; a GitHub-hosted public runner cannot reach
+it. Private reachability is handled only by the separate, manually approved
+`Admin-Tailscale` environment job that joins the tailnet.
+Do not make staging or admin verification pass by switching Cloudflare to
+Flexible SSL, disabling TLS verification, disabling the Cloudflare proxy,
 bypassing Authenticated Origin Pulls, or enabling Tailscale Funnel.
 
 Each target artifact (`tls-scan-staging-sitbank` or `tls-scan-prod-sitbank`)

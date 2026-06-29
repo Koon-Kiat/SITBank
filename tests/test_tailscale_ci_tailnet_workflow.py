@@ -8,7 +8,8 @@ import yaml
 
 WORKFLOW_PATH = Path(".github/workflows/tailscale-private-admin-verify.yml")
 PUBLIC_TLS_WORKFLOW_PATH = Path(".github/workflows/tls-scan.yml")
-PRIVATE_HOST = "sitbank-admin.tailca101b.ts.net"
+PRIVATE_HOST = "admin-sitbank.tailca101b.ts.net"
+PREVIOUS_PRIVATE_HOST = "sitbank-admin.tailca101b.ts.net"
 STALE_PRIVATE_HOST = "sitbank-ec2.tailca101b.ts.net"
 
 
@@ -28,9 +29,8 @@ def test_private_tailnet_workflow_is_manual_environment_protected_and_least_priv
     assert "push:" not in text
     assert workflow["permissions"] == {"contents": "read"}
     assert verify["runs-on"] == "ubuntu-24.04"
-    assert verify["environment"] == {
-        "name": "tailscale-private-admin-verification"
-    }
+    assert workflow["concurrency"]["group"] == "admin-tailscale-verification"
+    assert verify["environment"] == {"name": "Admin-Tailscale"}
     assert verify["timeout-minutes"] == "10"
 
 
@@ -63,6 +63,7 @@ def test_private_tailnet_workflow_checks_reachability_tls_and_public_admin_denia
     verify = workflow["jobs"]["verify"]
 
     assert STALE_PRIVATE_HOST not in text
+    assert PREVIOUS_PRIVATE_HOST not in text
     assert verify["env"]["PRIVATE_ADMIN_HOST"] == PRIVATE_HOST
     assert verify["env"]["PRIVATE_ADMIN_URL"] == f"https://{PRIVATE_HOST}"
     assert (
@@ -107,12 +108,13 @@ def test_public_tls_scan_remains_separate_from_private_tailnet_verification():
     public_tls = PUBLIC_TLS_WORKFLOW_PATH.read_text(encoding="utf-8")
 
     assert PRIVATE_HOST not in public_tls
+    assert PREVIOUS_PRIVATE_HOST not in public_tls
     assert STALE_PRIVATE_HOST not in public_tls
     assert "TAILSCALE_AUTH_KEY" not in public_tls
     assert "tailscale/github-action" not in public_tls
 
 
-def test_docs_describe_option_b_rotation_offboarding_and_scan_separation():
+def test_docs_describe_protected_tailnet_rotation_offboarding_and_scan_separation():
     docs = "\n".join(
         path.read_text(encoding="utf-8")
         for path in (
@@ -131,7 +133,8 @@ def test_docs_describe_option_b_rotation_offboarding_and_scan_separation():
 
     for required in (
         "GitHub-hosted runner",
-        "tailscale-private-admin-verification",
+        "Admin-Tailscale",
+        "tailscale set --hostname=admin-sitbank",
         "TAILSCALE_AUTH_KEY",
         PRIVATE_HOST,
         f"https://{PRIVATE_HOST}",
@@ -145,7 +148,5 @@ def test_docs_describe_option_b_rotation_offboarding_and_scan_separation():
         "must not be used",
     ):
         assert required in docs
-    assert (
-        f"The retired hostname `{STALE_PRIVATE_HOST}` must not be used"
-        in docs
-    )
+    assert PREVIOUS_PRIVATE_HOST in docs
+    assert STALE_PRIVATE_HOST in docs

@@ -152,13 +152,13 @@ stages:
 Private admin reachability is intentionally outside the main workflow. The
 manual `.github/workflows/tailscale-private-admin-verify.yml` workflow uses a
 GitHub-hosted runner that enters the protected
-`tailscale-private-admin-verification` environment after manual approval. It
+`Admin-Tailscale` environment after manual approval. It
 uses only its `TAILSCALE_AUTH_KEY` secret. The key must be reusable, ephemeral,
 tagged, pre-approved where needed, and limited by tailnet grants to the private
 admin HTTPS service. The job runs no pull-request code, checks the private URL
 is unreachable before joining, validates the private login entrypoint and
 public customer-host admin denial, and logs out without artifacts. Normal
-public TLS scans never include `sitbank-admin.tailca101b.ts.net`.
+public TLS scans never include `admin-sitbank.tailca101b.ts.net`.
 
 Credential rotation and offboarding require replacing and then revoking the
 old key, removing stale CI nodes, reviewing environment approvers and branch

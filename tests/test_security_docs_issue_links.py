@@ -109,7 +109,11 @@ def test_public_tls_docs_exclude_private_tailscale_admin_hostname_from_normal_sc
     workflow = Path(".github/workflows/tls-scan.yml").read_text(encoding="utf-8")
 
     assert "normal public TLS scan deliberately excludes the private Tailscale admin hostname" in operations
-    assert "job joins the tailnet or uses a tailnet self-hosted runner" in normalized_operations
+    assert (
+        "manually approved `Admin-Tailscale` "
+        "environment job that joins the tailnet"
+        in normalized_operations
+    )
     assert "admin-sitbank.tailca101b.ts.net" not in workflow
     assert "sitbank-admin.tailca101b.ts.net" not in workflow
     assert "sitbank-ec2.tailca101b.ts.net" not in workflow

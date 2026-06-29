@@ -50,7 +50,7 @@ put pull-request CI, deployment jobs, scheduled public TLS scans, or other
 GitHub-hosted jobs inside the tailnet.
 
 The workflow has only a `workflow_dispatch` trigger and uses the protected
-`tailscale-private-admin-verification` GitHub Environment. Configure that
+`Admin-Tailscale` GitHub Environment. Configure that
 environment to require manual approval by trusted maintainers, restrict
 deployment branches to `main`, and store `TAILSCALE_AUTH_KEY` only as an
 environment secret. Do not duplicate it as a repository or organization
@@ -62,11 +62,11 @@ joining, and does not check out or run repository code.
 
 Each approved run:
 
-1. Confirms `https://sitbank-admin.tailca101b.ts.net/login` cannot respond from
+1. Confirms `https://admin-sitbank.tailca101b.ts.net/login` cannot respond from
    the public runner before tailnet enrollment. An unexpected response fails
    closed because it may indicate Funnel or another public exposure.
 2. Joins the approved tailnet with the protected ephemeral tagged identity and
-   verifies tailnet connectivity to `sitbank-admin.tailca101b.ts.net`.
+   verifies tailnet connectivity to `admin-sitbank.tailca101b.ts.net`.
 3. Resolves the private hostname and requires the HTTPS login entrypoint to
    return its documented unauthenticated `200` response with ordinary
    certificate and hostname validation.
@@ -105,9 +105,10 @@ To remove CI tailnet access, delete `TAILSCALE_AUTH_KEY` from the environment,
 revoke the key in Tailscale, remove the dedicated CI tag grants and stale
 devices, and disable or delete the GitHub Environment. Environment approver
 and deployment-branch rules must be reviewed during maintainer offboarding.
-The retired hostname `sitbank-ec2.tailca101b.ts.net` must not be used; if the
-live tailnet hostname changes, update the workflow, documentation, and policy
-tests together.
+The retired hostnames `sitbank-ec2.tailca101b.ts.net` and
+`sitbank-admin.tailca101b.ts.net` must not be used. If the live tailnet
+hostname changes, update the workflow, documentation, and policy tests
+together.
 
 ## Protected Paths
 
@@ -232,6 +233,7 @@ Current admin access path:
 
 ```bash
 sudo tailscale up --advertise-tags=tag:sitbank-admin
+sudo tailscale set --hostname=admin-sitbank
 sudo tailscale serve --bg --https=443 127.0.0.1:5002
 sudo tailscale serve status
 ```
@@ -244,6 +246,12 @@ is not approved for SITBank admin. Flask admin login and TOTP remain mandatory
 after the private network boundary is satisfied. Successful browser login
 redirects the operator to the private dashboard at
 `https://admin-sitbank.tailca101b.ts.net/`.
+
+The `admin-sitbank` machine name is part of the MagicDNS FQDN. A hostname
+change must be applied to the live EC2 Tailscale node (or through the Tailscale
+Machines page), then Serve status and HTTPS must be verified again. Tailnet
+policy entries, monitoring, bookmarks, or automation that contain the previous
+hostname must be updated separately; tag-based grants remain unchanged.
 
 If Tailscale Serve is unavailable, use a separate reviewed private operator
 path rather than exposing the admin app publicly. In all cases, the Flask

@@ -95,14 +95,14 @@ deployment.
 `.github/workflows/tailscale-private-admin-verify.yml` is a separate manual
 workflow. It is the only GitHub-hosted job permitted to join the tailnet and
 is not called by pull-request, deployment, or public TLS workflows.
-Its `tailscale-private-admin-verification` environment must require trusted
+Its `Admin-Tailscale` environment must require trusted
 maintainer approval, permit only `main`, and hold the sole
 `TAILSCALE_AUTH_KEY` secret. Configure that key as reusable, ephemeral,
 pre-approved when needed, tagged, and limited to the private admin HTTPS
 service.
 
 The workflow fails if the private URL responds before enrollment, then joins
-the tailnet, requires `https://sitbank-admin.tailca101b.ts.net/login` to return
+the tailnet, requires `https://admin-sitbank.tailca101b.ts.net/login` to return
 the documented unauthenticated `200`, requires the public customer
 `https://sitbank.duckdns.org/admin` route to remain denied with `404`, and logs
 out. It checks no admin credentials, changes no deployment or tailnet state,

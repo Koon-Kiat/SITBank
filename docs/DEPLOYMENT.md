@@ -158,12 +158,12 @@ do not move secret values into repository variables.
 
 The manual `.github/workflows/tailscale-private-admin-verify.yml` workflow uses
 a GitHub-hosted runner that temporarily joins the tailnet. Create a
-GitHub Environment named `tailscale-private-admin-verification`, require manual
+GitHub Environment named `Admin-Tailscale`, require manual
 approval by trusted maintainers, and restrict its deployment branches to
 `main`. Store `TAILSCALE_AUTH_KEY` only as that environment's secret. It must
 be a reusable, ephemeral, pre-approved key when device approval applies and
 must assign a dedicated CI tag whose tailnet grants reach only
-`sitbank-admin.tailca101b.ts.net:443`.
+`admin-sitbank.tailca101b.ts.net:443`.
 
 Do not expose the secret as a repository variable or general repository
 secret, and do not permit pull requests, Dependabot, forks, or untrusted

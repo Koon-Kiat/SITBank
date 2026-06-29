@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: tailscale-private-admin-verification
+  group: admin-tailscale-verification
   cancel-in-progress: false
 
 jobs:
@@ -16,10 +16,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment:
-      name: tailscale-private-admin-verification
+      name: Admin-Tailscale
     env:
-      PRIVATE_ADMIN_HOST: sitbank-admin.tailca101b.ts.net
-      PRIVATE_ADMIN_URL: https://sitbank-admin.tailca101b.ts.net
+      PRIVATE_ADMIN_HOST: admin-sitbank.tailca101b.ts.net
+      PRIVATE_ADMIN_URL: https://admin-sitbank.tailca101b.ts.net
       PUBLIC_ADMIN_DENIAL_URL: https://sitbank.duckdns.org/admin
 
     steps:
@@ -41,7 +41,7 @@ jobs:
         uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8
         with:
           authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
-          ping: sitbank-admin.tailca101b.ts.net
+          ping: admin-sitbank.tailca101b.ts.net
 
       - name: Verify private admin entrypoint and public denial
         shell: bash
