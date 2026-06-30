@@ -12,7 +12,6 @@ readonly TLS_POLICY_FILE="/etc/nginx/snippets/sitbank-tls-policy.conf"
 readonly STAGING_ACCESS_HEADERS_FILE="/etc/nginx/snippets/sitbank-cloudflare-access-headers.conf"
 readonly PRODUCTION_RATE_LIMITS_FILE="/etc/nginx/conf.d/sitbank-production-rate-limits.conf"
 readonly STAGING_PUBLIC_HOST="staging-sitbank.pp.ua"
-readonly STAGING_BASIC_AUTH_FILE="/etc/nginx/.htpasswd-sitbank-staging"
 readonly STAGING_CLOUDFLARE_ORIGIN_PULL_CA_FILE="/etc/nginx/cloudflare-authenticated-origin-pull-ca.pem"
 readonly STAGING_CLOUDFLARE_ORIGIN_PULL_CA_ALLOWLIST="/etc/sitbank-staging/cloudflare-origin-pull-ca-allowlist.json"
 readonly STAGING_RATE_LIMITS_FILE="/etc/nginx/conf.d/sitbank-staging-rate-limits.conf"
@@ -156,7 +155,7 @@ if ! command -v docker >/dev/null 2>&1 \
 fi
 systemctl enable --now docker.service
 if [[ "${target}" == "staging" ]]; then
-    apt-get install -y nginx certbot python3-certbot-nginx apache2-utils
+    apt-get install -y nginx certbot python3-certbot-nginx
 else
     apt-get install -y nginx certbot python3-certbot-nginx
 fi
@@ -447,12 +446,6 @@ fi
 
 if [[ "${target}" == "staging" ]]; then
     staging_cert_dir="/etc/letsencrypt/live/${public_host}"
-    if [[ ! -f "${STAGING_BASIC_AUTH_FILE}" || -L "${STAGING_BASIC_AUTH_FILE}" \
-        || ! -r "${STAGING_BASIC_AUTH_FILE}" ]]; then
-        echo "Missing required staging Basic Auth file: ${STAGING_BASIC_AUTH_FILE}" >&2
-        echo "Create it with htpasswd, owned by root:www-data and mode 0640, before rerunning bootstrap." >&2
-        exit 1
-    fi
     if ! /usr/local/sbin/verify-cloudflare-origin-pull-ca \
         --certificate "${STAGING_CLOUDFLARE_ORIGIN_PULL_CA_FILE}" \
         --allowlist "${STAGING_CLOUDFLARE_ORIGIN_PULL_CA_ALLOWLIST}"; then
@@ -470,12 +463,6 @@ if [[ "${target}" == "staging" ]]; then
         fi
     done
     /usr/local/sbin/verify-certbot-host-state staging
-    if [[ "$(stat -c '%U:%G' -- "${STAGING_BASIC_AUTH_FILE}")" != "root:www-data" \
-        || "$(stat -c '%a' -- "${STAGING_BASIC_AUTH_FILE}")" != "640" ]]; then
-        echo "${STAGING_BASIC_AUTH_FILE} must be owned by root:www-data with mode 0640" >&2
-        exit 1
-    fi
-
     nginx_conflict=0
     while IFS= read -r enabled_site; do
         if [[ "$(readlink -f "${enabled_site}")" \

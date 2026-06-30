@@ -199,7 +199,7 @@ operator-owned evidence and must be reviewed in Tailscale.
 | Surface | Host or path | Boundary | Public exposure |
 | --- | --- | --- | --- |
 | Production customer | `https://sitbank.duckdns.org` | Public HTTPS edge, Flask customer login and MFA | Public |
-| Staging customer | `https://staging-sitbank.pp.ua` | Cloudflare Access, Cloudflare Authenticated Origin Pull, origin JWT validation, staging Basic Auth, Flask login and MFA | Not directly public at the origin |
+| Staging customer | `https://staging-sitbank.pp.ua` | Cloudflare Access, server-level Cloudflare Authenticated Origin Pull, origin JWT validation, Flask login and MFA | Not directly public at the origin |
 | Production admin app | `https://admin-sitbank.tailca101b.ts.net/` through Tailscale Serve | Tailscale ACLs, approved devices, Flask admin login and TOTP | Private tailnet only |
 | Staging admin app | Approved Tailscale/private operator path to `127.0.0.1:5003` | Tailscale ACLs, approved devices, Flask admin login and TOTP | Private tailnet only |
 
@@ -283,20 +283,20 @@ missing assertions return a generic `403`; the raw assertion is never logged.
 Cloudflare email/identity headers are stripped at Nginx and are not trusted for
 SITBank authorization.
 
-The staging Nginx server blocks accept `staging-sitbank.pp.ua`, then request a
-client certificate with:
+The staging Nginx TLS server accepts only `staging-sitbank.pp.ua` and requires
+a client certificate with:
 
 ```nginx
 ssl_client_certificate /etc/nginx/cloudflare-authenticated-origin-pull-ca.pem;
-ssl_verify_client optional;
+ssl_verify_client on;
 ```
 
-All staging browser/app paths return `403` unless
-`$ssl_client_verify` is `SUCCESS`. This blocks direct EC2-origin bypass for the
-staging app and `/health/live` while preserving loopback readiness checks.
-`/health/ready` remains loopback-only and does not require the Cloudflare
-client certificate so the deployment wrapper can still check local Nginx and
-Flask readiness on the EC2 host.
+This server-level gate covers every public TLS location, including
+`/health/live`, and prevents a future location from omitting a copied check.
+Direct-origin connections without Cloudflare's client certificate fail the
+TLS client-certificate exchange. Nginx readiness is isolated on
+`127.0.0.1:8081` and `[::1]:8081`; the public TLS `/health/ready` location
+does not proxy to Flask.
 
 These controls are independent and both are required: Authenticated Origin
 Pull proves the TLS client is Cloudflare, while Access JWT validation proves
@@ -304,12 +304,10 @@ the request passed the configured staging Access application. A Cloudflare
 edge request without a valid Access assertion therefore still fails closed at
 Flask.
 
-Keep the existing staging Basic Auth file until a separate reviewed change
-removes it. Cloudflare Access is the identity-aware boundary; Basic Auth is a
-secondary staging control after Authenticated Origin Pull succeeds. Direct
-origin requests without Cloudflare's origin-pull client certificate must
-receive `403` rather than a Basic Auth challenge. The Basic Auth password or
-htpasswd hash must not be stored in the repository.
+Nginx shared-password authentication has been removed. Cloudflare Access is
+the auditable identity-aware boundary; Authenticated Origin Pull prevents
+direct-origin bypass, and Flask continues to enforce its own login, MFA, CSRF,
+session, and authorization controls.
 
 ## Admin Tailscale Access
 
@@ -362,9 +360,7 @@ Staging operators:
    used by the Cloudflare Access policy.
 2. Confirm the operator can authenticate to Cloudflare Access with the required
    IdP and any required MFA or device posture.
-3. Provide the staging Basic Auth credential only through the approved secret
-   channel while that secondary control remains active.
-4. Verify the operator reaches the staging hostname through Cloudflare Access
+3. Verify the operator reaches the staging hostname through Cloudflare Access
    and then reaches the normal Flask staging login.
 
 Admin operators:
@@ -390,8 +386,8 @@ When an operator or device is removed:
 4. Remove the user from the Tailscale admin group and confirm ACL tests still
    pass.
 5. Revoke or disable the SITBank admin staff account if applicable.
-6. Rotate staging Basic Auth, Tailscale auth keys, or other affected
-   host-managed credentials if they were shared with the removed operator.
+6. Rotate Tailscale keys or other affected host-managed credentials if they
+   were shared with the removed operator.
 7. Review audit logs for staging/admin access near the offboarding time.
 8. Run the EC2 `--mode serve` preflight, confirm removed devices are absent in
    Tailscale, and retain both results as offboarding evidence.
@@ -431,8 +427,7 @@ Host-side staging checks after bootstrap:
 sudo /usr/local/sbin/verify-cloudflare-origin-pull-ca
 sudo /usr/local/sbin/verify-certbot-host-state staging
 sudo nginx -t
-curl --fail --resolve staging-sitbank.pp.ua:443:127.0.0.1 \
-  https://staging-sitbank.pp.ua/health/ready
+curl --fail http://127.0.0.1:8081/health/ready
 curl -I --resolve staging-sitbank.pp.ua:443:<EC2_PUBLIC_IP> \
   https://staging-sitbank.pp.ua/
 curl -I http://127.0.0.1:5001/
@@ -441,8 +436,8 @@ curl --fail http://127.0.0.1:5001/health/ready
 
 Expected: local readiness succeeds through loopback, a direct request to the
 Flask staging root returns `403` without an Access assertion, and direct Nginx
-origin access to `/` returns `403` without Cloudflare's authenticated
-origin-pull client certificate.
+origin access to `/` fails the TLS client-certificate exchange without
+Cloudflare's authenticated origin-pull client certificate.
 
 The automated verification proves that the Access application and narrow
 policy match, DNS is proxied, the audience exists, unauthenticated edge traffic
@@ -452,8 +447,7 @@ live checks manually:
 
 1. An approved operator passes Cloudflare Access through the configured IdP.
 2. An unapproved account is denied.
-3. Staging Flask login still works after Cloudflare Access and staging Basic
-   Auth.
+3. Staging Flask login still works after Cloudflare Access.
 4. Staging `/health/ready` is blocked externally.
 5. EC2-local deployment health checks still pass.
 
@@ -477,7 +471,7 @@ For staging compromise or suspected unauthorized staging access:
 1. Disable the Cloudflare Access Allow policy or replace it with an empty
    allowlist.
 2. Keep the EC2 staging Nginx origin-pull requirement in place.
-3. Rotate staging Basic Auth and any affected staging application credentials.
+3. Rotate affected staging application credentials and Access sessions.
 4. Preserve Cloudflare Access logs, Nginx logs, and SITBank audit logs.
 
 For admin compromise or suspected unauthorized admin access:
@@ -539,7 +533,6 @@ Host-managed values:
   state.
 - `tag:github-ci` access restricted to `tag:admin-sitbank:443`.
 - Tailscale Serve configuration.
-- Staging Basic Auth password and htpasswd hash.
 
 Never commit:
 
@@ -547,7 +540,6 @@ Never commit:
 - Cloudflare API tokens, tunnel credentials, Access IdP secrets, or origin
   certificate private keys.
 - Private SSH keys.
-- Staging Basic Auth passwords or generated htpasswd hashes.
 - Any SITBank Flask, CSRF, session, MFA, password-pepper, webhook, SMTP, or
   database secrets.
 

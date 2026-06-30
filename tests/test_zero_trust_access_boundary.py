@@ -76,7 +76,7 @@ def test_hybrid_cloudflare_staging_and_tailscale_admin_design_is_documented():
         "Flask admin login and TOTP remain mandatory",
         "onboarding, offboarding, emergency lockout, rollback",
         "local readiness succeeds through loopback",
-        "direct Nginx origin access",
+        "server-level Cloudflare Authenticated Origin Pull",
         "Cloudflare-managed zone/hostname or Cloudflare Tunnel",
         "Cloudflare Access and Tailscale decide whether a request may reach",
         "retired DuckDNS staging hostname is no longer",
@@ -111,13 +111,15 @@ def test_staging_nginx_blocks_direct_origin_bypass_but_keeps_local_health():
     assert "server_name staging-sitbank.pp.ua;" in staging_nginx
     assert "duckdns.org" not in staging_nginx
     assert "ssl_client_certificate /etc/nginx/cloudflare-authenticated-origin-pull-ca.pem;" in staging_nginx
-    assert "ssl_verify_client optional;" in staging_nginx
-    staging_https_prelocation = _nginx_server_block(
+    assert "ssl_verify_client on;" in staging_nginx
+    assert "$ssl_client_verify" not in staging_nginx
+    assert "auth_basic" not in staging_nginx
+    staging_https_server = _nginx_server_block(
         staging_nginx,
         "staging-sitbank.pp.ua",
-    ).split("\n    location ", 1)[0]
-    assert "auth_basic \"SITBank staging\";" not in staging_https_prelocation
-    assert "auth_basic_user_file /etc/nginx/.htpasswd-sitbank-staging;" not in staging_https_prelocation
+    )
+    staging_https_prelocation = staging_https_server.split("\n    location ", 1)[0]
+    assert "ssl_verify_client on;" in staging_https_prelocation
 
     for selector in (
         "= /health/live",
@@ -127,34 +129,24 @@ def test_staging_nginx_blocks_direct_origin_bypass_but_keeps_local_health():
         "^~ /auth/",
         "/",
     ):
-        bodies = _nginx_location_bodies(staging_nginx, selector)
+        bodies = _nginx_location_bodies(staging_https_server, selector)
         assert bodies, f"Missing staging Nginx location {selector}"
-        protected_bodies = [
-            body for body in bodies if "$ssl_client_verify != SUCCESS" in body
-        ]
-        assert protected_bodies, f"Missing origin-pull gate for {selector}"
-        assert any("return 403;" in body for body in protected_bodies)
-        assert any("auth_basic \"SITBank staging\";" in body for body in protected_bodies)
-        assert any(
-            body.index("$ssl_client_verify != SUCCESS")
-            < body.index("auth_basic \"SITBank staging\";")
-            for body in protected_bodies
-        )
         assert any(
             "include /etc/nginx/snippets/"
             "sitbank-cloudflare-access-headers.conf;" in body
-            for body in protected_bodies
+            for body in bodies
         )
 
     ready_bodies = _nginx_location_bodies(staging_nginx, "= /health/ready")
-    assert len(ready_bodies) == 1
-    ready = ready_bodies[0]
-    assert "$ssl_client_verify" not in ready
-    assert "allow 127.0.0.1;" in ready
-    assert "allow ::1;" in ready
-    assert "deny all;" in ready
-    assert "proxy_pass http://127.0.0.1:5001;" in ready
-    assert "sitbank-cloudflare-access-headers.conf" not in ready
+    assert len(ready_bodies) == 2
+    local_ready, public_ready = ready_bodies
+    assert "listen 127.0.0.1:8081;" in staging_nginx
+    assert "allow 127.0.0.1;" in local_ready
+    assert "allow ::1;" in local_ready
+    assert "deny all;" in local_ready
+    assert "proxy_pass http://127.0.0.1:5001;" in local_ready
+    assert "sitbank-cloudflare-access-headers.conf" not in local_ready
+    assert "return 404;" in public_ready
 
     assert (
         "proxy_set_header Cf-Access-Jwt-Assertion "
@@ -169,6 +161,8 @@ def test_staging_nginx_blocks_direct_origin_bypass_but_keeps_local_health():
     assert "install_staging_access_headers" in bootstrap
     assert "/usr/local/sbin/verify-cloudflare-origin-pull-ca" in bootstrap
     assert "Cloudflare Authenticated Origin Pull CA validation failed." in bootstrap
+    assert "STAGING_BASIC_AUTH_FILE" not in bootstrap
+    assert ".htpasswd-sitbank-staging" not in bootstrap
     assert "nginx -t" in bootstrap
 
 
@@ -358,8 +352,8 @@ def test_repository_identity_ghcr_cosign_and_bootstrap_references_are_consistent
         assert old_owner not in lowered, path
         assert old_repo not in lowered, path
 
-    assert "Repository identity: `WenJiangg/SITBank`" in docs
-    assert "Production image form: `ghcr.io/wenjiangg/sitbank@sha256:<digest>`" in docs
+    assert "Repository identity: `Koon-Kiat/SITBank`" in docs
+    assert "Production image form: `ghcr.io/koon-kiat/sitbank@sha256:<digest>`" in docs
     assert 'repository="ghcr.io/${GITHUB_REPOSITORY,,}"' in workflow
     assert "GITHUB_REPOSITORY=${github_repository}" in bootstrap
     assert "GHCR_REPOSITORY=ghcr.io/${repository_lower}" in bootstrap

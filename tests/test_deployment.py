@@ -2330,6 +2330,8 @@ def test_codeowners_and_codeql_cover_security_sensitive_changes():
     codeowners = Path(".github/CODEOWNERS").read_text(encoding="utf-8")
     codeql = Path(".github/workflows/codeql.yml").read_text(encoding="utf-8")
 
+    assert "@Koon-Kiat" in codeowners
+    assert "@WenJiangg" not in codeowners
     for protected_path in (
         "/.github/workflows/",
         "/Dockerfile",
@@ -2907,20 +2909,20 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     assert "ssl_certificate /etc/letsencrypt/live/staging-sitbank.pp.ua/fullchain.pem;" in nginx
     assert "ssl_certificate_key /etc/letsencrypt/live/staging-sitbank.pp.ua/privkey.pem;" in nginx
     assert "ssl_client_certificate /etc/nginx/cloudflare-authenticated-origin-pull-ca.pem;" in nginx
-    assert "ssl_verify_client optional;" in nginx
+    assert "ssl_verify_client on;" in nginx
+    assert "$ssl_client_verify" not in nginx
     _assert_nginx_owns_duplicate_edge_security_headers(
         nginx,
         hsts_add_header='add_header Strict-Transport-Security "max-age=31536000" always;',
     )
     assert "preload" not in nginx
-    assert 'auth_basic "SITBank staging";' in nginx
-    assert "auth_basic_user_file /etc/nginx/.htpasswd-sitbank-staging;" in nginx
+    assert "auth_basic" not in nginx
+    assert ".htpasswd-sitbank-staging" not in nginx
     staging_https_prelocation = _nginx_https_server_prelocation(
         nginx,
         server_name="staging-sitbank.pp.ua",
     )
-    assert 'auth_basic "SITBank staging";' not in staging_https_prelocation
-    assert "auth_basic_user_file /etc/nginx/.htpasswd-sitbank-staging;" not in staging_https_prelocation
+    assert "ssl_verify_client on;" in staging_https_prelocation
     assert not Path("ops/nginx/.htpasswd-sitbank-staging").exists()
     assert not re.search(
         r"^\S+:\$(?:apr1|2[aby]|5|6)\$",
@@ -2931,7 +2933,6 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     acme_bodies = _nginx_location_bodies(nginx, "^~ /.well-known/acme-challenge/")
     assert len(acme_bodies) == 2
     for acme_body in acme_bodies:
-        assert "auth_basic off;" in acme_body
         assert "root /var/www/certbot;" in acme_body
         assert "limit_req" not in acme_body
 
@@ -2941,24 +2942,19 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     assert "return 301" not in staging_http_root_bodies[0]
 
     health_bodies = _nginx_location_bodies(nginx, "= /health/ready")
-    assert len(health_bodies) == 1
-    health_body = health_bodies[0]
-    assert "auth_basic off;" in health_body
-    assert "allow 127.0.0.1;" in health_body
-    assert "allow ::1;" in health_body
-    assert "deny all;" in health_body
-    assert "proxy_pass http://127.0.0.1:5001;" in health_body
-    assert "limit_req" not in health_body
+    assert len(health_bodies) == 2
+    local_health_body, public_health_body = health_bodies
+    assert "listen 127.0.0.1:8081;" in nginx
+    assert "listen [::1]:8081;" in nginx
+    assert "allow 127.0.0.1;" in local_health_body
+    assert "allow ::1;" in local_health_body
+    assert "deny all;" in local_health_body
+    assert "proxy_pass http://127.0.0.1:5001;" in local_health_body
+    assert "limit_req" not in local_health_body
+    assert "return 404;" in public_health_body
 
     health_live_bodies = _nginx_location_bodies(nginx, "= /health/live")
     assert len(health_live_bodies) == 1
-    assert "$ssl_client_verify != SUCCESS" in health_live_bodies[0]
-    assert "return 403;" in health_live_bodies[0]
-    assert 'auth_basic "SITBank staging";' in health_live_bodies[0]
-    assert "auth_basic_user_file /etc/nginx/.htpasswd-sitbank-staging;" in health_live_bodies[0]
-    assert health_live_bodies[0].index("$ssl_client_verify != SUCCESS") < health_live_bodies[0].index(
-        'auth_basic "SITBank staging";'
-    )
     assert "limit_req zone=sitbank_staging_app" in health_live_bodies[0]
     assert "proxy_pass http://127.0.0.1:5001;" in health_live_bodies[0]
 
@@ -2981,22 +2977,9 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     for selector in ("= /login", "= /register", "= /mfa/verify", "^~ /auth/"):
         bodies = _nginx_location_bodies(nginx, selector)
         assert len(bodies) == 1
-        assert "$ssl_client_verify != SUCCESS" in bodies[0]
-        assert "return 403;" in bodies[0]
-        assert 'auth_basic "SITBank staging";' in bodies[0]
-        assert "auth_basic_user_file /etc/nginx/.htpasswd-sitbank-staging;" in bodies[0]
-        assert bodies[0].index("$ssl_client_verify != SUCCESS") < bodies[0].index(
-            'auth_basic "SITBank staging";'
-        )
         assert "limit_req zone=sitbank_staging_login" in bodies[0]
     assert any(
-        "$ssl_client_verify != SUCCESS" in body
-        and "return 403;" in body
-        and 'auth_basic "SITBank staging";' in body
-        and body.index("$ssl_client_verify != SUCCESS") < body.index(
-            'auth_basic "SITBank staging";'
-        )
-        and "limit_req zone=sitbank_staging_app" in body
+        "limit_req zone=sitbank_staging_app" in body
         for body in _nginx_location_bodies(nginx, "/")
     )
 
@@ -3011,14 +2994,15 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
         '"^[[:space:]]*server_name[[:space:]].*(^|[[:space:]])'
         '${public_host_regex}([[:space:];]|$)" \\'
     ) in bootstrap
-    assert "Missing required staging Basic Auth file" in bootstrap
+    assert "STAGING_BASIC_AUTH_FILE" not in bootstrap
+    assert ".htpasswd-sitbank-staging" not in bootstrap
     assert "STAGING_CLOUDFLARE_ORIGIN_PULL_CA_FILE=\"/etc/nginx/cloudflare-authenticated-origin-pull-ca.pem\"" in bootstrap
     assert "STAGING_CLOUDFLARE_ORIGIN_PULL_CA_ALLOWLIST=\"/etc/sitbank-staging/cloudflare-origin-pull-ca-allowlist.json\"" in bootstrap
     assert "if ! /usr/local/sbin/verify-cloudflare-origin-pull-ca" in bootstrap
     assert "Cloudflare Authenticated Origin Pull CA validation failed." in bootstrap
     assert "Install a reviewed CA certificate before rerunning staging bootstrap." in bootstrap
     assert "Missing required staging TLS file" in bootstrap
-    assert "apache2-utils" in bootstrap
+    assert "apache2-utils" not in bootstrap
     assert "certbot" in bootstrap
     assert "STAGING_RATE_LIMITS_FILE=\"/etc/nginx/conf.d/sitbank-staging-rate-limits.conf\"" in bootstrap
     assert "EDGE_DEFAULTS_FILE=\"/etc/nginx/conf.d/sitbank-default.conf\"" in bootstrap
@@ -3246,7 +3230,7 @@ def test_production_edge_runbook_documents_network_waf_and_verification_steps():
         "curl -I https://sitbank.duckdns.org/health/ready",
         "No public admin Nginx server block is configured.",
         "old public admin verification",
-        "external `/health/ready` returns `403`",
+        "external readiness is denied",
         "no public admin hostname is required",
     ):
         assert required in docs
@@ -3286,10 +3270,7 @@ def test_staging_edge_runbook_documents_operator_verification_steps():
         "Staging uses Cloudflare Access as the identity-aware boundary",
         "Cloudflare Authenticated Origin Pulls",
         "The production customer hostname remains public.",
-        "sudo htpasswd -c /etc/nginx/.htpasswd-sitbank-staging",
-        "sudo chown root:www-data /etc/nginx/.htpasswd-sitbank-staging",
-        "sudo chmod 0640 /etc/nginx/.htpasswd-sitbank-staging",
-        "Do not store the Basic Auth password or generated htpasswd hash in the repo.",
+        "Nginx shared-password authentication has been removed from staging",
         "sudo install -o root -g root -m 0644",
         "/etc/nginx/cloudflare-authenticated-origin-pull-ca.pem",
         "Do not store Cloudflare API tokens, tunnel credentials, Access IdP secrets, or",
@@ -3309,16 +3290,15 @@ def test_staging_edge_runbook_documents_operator_verification_steps():
         "sudo nginx -t",
         "sudo systemctl reload nginx",
         "curl -I https://staging-sitbank.pp.ua/",
-        'curl -I -u "$STAGING_BASIC_AUTH_USER:$STAGING_BASIC_AUTH_PASSWORD"',
         "curl -I https://staging-sitbank.pp.ua/health/ready",
         "curl -fsS http://127.0.0.1:5001/health/ready",
-        "curl --fail --resolve staging-sitbank.pp.ua:443:127.0.0.1",
+        "curl -fsS http://127.0.0.1:8081/health/ready",
         "curl -I --resolve staging-sitbank.pp.ua:443:<EC2_PUBLIC_IP>",
         "unauthenticated browser traffic receives the Cloudflare Access",
         "direct EC2-origin access to",
-        "returns `403` without Cloudflare's origin-pull client certificate",
-        "external `/health/ready` returns `403`",
-        "local app readiness",
+        "TLS client-certificate verification",
+        "external `/health/ready` is unavailable",
+        "local app and Nginx readiness",
         "separate from application deployment",
         "docs/security/architecture/admin-and-staging-zero-trust-access.md",
         "docs/security/architecture/cloudflare-staging-access.md",
@@ -3328,6 +3308,8 @@ def test_staging_edge_runbook_documents_operator_verification_steps():
         "Cf-Access-Jwt-Assertion",
     ):
         assert required in docs
+    assert ".htpasswd-sitbank-staging" not in docs
+    assert "STAGING_BASIC_AUTH" not in docs
 
 
 def test_dependency_manifests_have_one_hashed_lockfile_source_of_truth():
@@ -3447,8 +3429,8 @@ def test_migration_baseline_and_existing_database_runbook_are_present():
     assert "verify-migration-baseline" in docs
     assert "db stamp 20260610_0001" in docs
     assert "Do not run `db.create_all()`" in docs
-    assert "WenJiangg/SITBank" in docs
-    assert "ghcr.io/wenjiangg/sitbank@sha256:<digest>" in docs
+    assert "Koon-Kiat/SITBank" in docs
+    assert "ghcr.io/koon-kiat/sitbank@sha256:<digest>" in docs
     assert "sitbank_db" in docs
     assert "sitbank_owner" in docs
     assert "sitbank_app" in docs

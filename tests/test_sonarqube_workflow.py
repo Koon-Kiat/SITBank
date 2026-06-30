@@ -170,8 +170,8 @@ def test_sonarqube_properties_define_scope_coverage_and_reporting_policy():
     properties = _properties()
     gitignore = Path(".gitignore").read_text(encoding="utf-8").splitlines()
 
-    assert properties["sonar.projectKey"] == "TL0024_SITBank"
-    assert properties["sonar.organization"] == "tl0024"
+    assert properties["sonar.projectKey"] == "Koon-Kiat_SITBank"
+    assert properties["sonar.organization"] == "koon-kiat"
     assert properties["sonar.sources"].split(",") == [
         "app",
         "ops",
@@ -210,8 +210,8 @@ def test_sonarqube_docs_record_cloud_private_repo_and_nonblocking_policy():
         "Semgrep",
         "false positive",
         "coverage.xml",
-        "TL0024_SITBank",
-        "tl0024",
+        "Koon-Kiat_SITBank",
+        "koon-kiat",
     ):
         assert required in normalized
     assert "SONAR_HOST_URL" in normalized

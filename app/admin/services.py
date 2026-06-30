@@ -611,13 +611,7 @@ def _apply_audit_filters(statement, filters: dict[str, str]):
         statement = statement.where(SecurityAuditEvent.event_type == filters["event_type"])
     if filters["outcome"]:
         statement = statement.where(SecurityAuditEvent.outcome == filters["outcome"])
-    if filters["actor"]:
-        try:
-            actor_id = int(filters["actor"])
-        except ValueError:
-            actor_id = None
-        if actor_id is not None:
-            statement = statement.where(SecurityAuditEvent.user_id == actor_id)
+    statement = _apply_audit_actor_filter(statement, filters["actor"])
     if filters["role"]:
         statement = statement.join(User, User.id == SecurityAuditEvent.user_id).where(
             User.account_type == filters["role"]
@@ -636,19 +630,34 @@ def _apply_audit_filters(statement, filters: dict[str, str]):
         statement = _where_metadata_key_matches(statement, "severity", filters["severity"], exact=True)
     if filters["target"]:
         statement = _where_any_metadata_key_matches(statement, AUDIT_TARGET_METADATA_KEYS, filters["target"])
-    if filters["q"]:
-        pattern = f"%{_like_escape(filters['q'])}%"
-        search_fields = [
-            SecurityAuditEvent.event_type.ilike(pattern, escape="\\"),
-            SecurityAuditEvent.outcome.ilike(pattern, escape="\\"),
-            SecurityAuditEvent.correlation_id.ilike(pattern, escape="\\"),
-            SecurityAuditEvent.ip_address.ilike(pattern, escape="\\"),
-            SecurityAuditEvent.session_ref.ilike(pattern, escape="\\"),
-        ]
-        if filters["q"].isdigit():
-            search_fields.append(SecurityAuditEvent.user_id == int(filters["q"]))
-        statement = statement.where(or_(*search_fields))
+    statement = _apply_audit_search_filter(statement, filters["q"])
     return statement
+
+
+def _apply_audit_actor_filter(statement, actor: str):
+    if not actor:
+        return statement
+    try:
+        actor_id = int(actor)
+    except ValueError:
+        return statement
+    return statement.where(SecurityAuditEvent.user_id == actor_id)
+
+
+def _apply_audit_search_filter(statement, query: str):
+    if not query:
+        return statement
+    pattern = f"%{_like_escape(query)}%"
+    search_fields = [
+        SecurityAuditEvent.event_type.ilike(pattern, escape="\\"),
+        SecurityAuditEvent.outcome.ilike(pattern, escape="\\"),
+        SecurityAuditEvent.correlation_id.ilike(pattern, escape="\\"),
+        SecurityAuditEvent.ip_address.ilike(pattern, escape="\\"),
+        SecurityAuditEvent.session_ref.ilike(pattern, escape="\\"),
+    ]
+    if query.isdigit():
+        search_fields.append(SecurityAuditEvent.user_id == int(query))
+    return statement.where(or_(*search_fields))
 
 
 def _where_metadata_key_matches(statement, key: str, value: str, *, exact: bool):

@@ -172,6 +172,25 @@ journalctl -u sitbank-security-alerts.service
 The timer runs `check-security-alerts` through the container runtime wrapper
 every five minutes.
 
+## Cloudflare Access Validation Events
+
+The staging assertion gate records
+`cloudflare_access_assertion_validation` with outcome `blocked` before
+returning the same generic `403`. Safe reason codes distinguish
+`missing_assertion`, `malformed_assertion`, `expired`, `not_yet_valid`,
+`wrong_audience`, `wrong_issuer`, `invalid_signature`,
+`unknown_signing_key`, `jwks_fetch_failed`, and `jwks_parse_failed`.
+Metadata is limited to the reason, validator name, whether validation was
+required, whether audience/issuer configuration exists, and whether a JWKS
+cache entry was available.
+
+The raw assertion, JWT claims, JWKS document, authorization/cookie headers,
+Cloudflare or service tokens, sessions, CSRF values, request body, and provider
+response are never audit metadata. Provider automation applies its own output
+sanitizer before handled errors reach CI logs; raw provider exports are not
+workflow artifacts. Investigate using the reason code and protected provider
+console, retaining only the approved sanitized evidence summary.
+
 ## Operator Expectations
 
 - Review active alerts promptly and preserve the report output in the incident
@@ -198,3 +217,4 @@ every five minutes.
 | `tests/test_admin_dashboard_operations.py` | Admin dashboard, audit viewer, alert review, staff lifecycle, and template secret-regression coverage |
 | `tests/test_admin_audit_viewer.py` | Audit viewer authorization, query validation, safe search, metadata redaction, escaping, and read-only behavior |
 | `tests/test_session_management.py`, `tests/test_session_absolute_lifetime.py` | Session revocation, expiry, and integrity audit behavior |
+| `tests/test_cloudflare_access_staging.py`, `tests/test_cloudflare_access_automation.py` | Fail-closed Access validation audit reasons and provider-output redaction |
