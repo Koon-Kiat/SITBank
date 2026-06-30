@@ -9,6 +9,8 @@ from app.models import User
 from app.security.production_guard import (
     ProductionReadinessResult,
     ProductionStartupSecurityError,
+    _validate_admin_mode_and_routes,
+    _validate_customer_mode_and_routes,
     enforce_production_startup_guard,
     validate_production_security_prerequisites,
 )
@@ -108,6 +110,54 @@ def test_admin_validator_enforces_admin_isolation(monkeypatch):
     result = validate_production_security_prerequisites(app, app_mode="admin")
 
     assert "Admin authentication must be enabled" in result.failures
+
+
+def test_mode_helpers_report_every_isolation_misconfiguration(monkeypatch):
+    admin_app = _production_app(monkeypatch, app_mode="admin")
+    admin_app.config.update(
+        SESSION_COOKIE_NAME="wrong",
+        SESSION_KEY_PREFIX="customer-",
+        AUTH_FAILURE_KEY_PREFIX="customer:",
+        RATELIMIT_KEY_PREFIX="customer:",
+        ROOT_ADMIN_EMAILS=(),
+    )
+    admin_result = ProductionReadinessResult()
+
+    _validate_admin_mode_and_routes(
+        admin_app,
+        {"main.index"},
+        admin_result,
+    )
+
+    assert {
+        "Admin session cookie name must be isolated",
+        "Admin session key prefix must be isolated",
+        "Admin auth security-state prefix must be isolated",
+        "Admin rate-limit key prefix must be isolated",
+        "ROOT_ADMIN_EMAILS must configure exactly 7 root administrators",
+        "Admin runtime must not register customer routes",
+    } <= set(admin_result.failures)
+
+    customer_app = _production_app(monkeypatch)
+    customer_app.config.update(
+        ADMIN_AUTH_ENABLED=True,
+        SESSION_COOKIE_NAME="__Host-sitbank_admin_session",
+        SESSION_KEY_PREFIX="admin-session:",
+    )
+    customer_result = ProductionReadinessResult()
+
+    _validate_customer_mode_and_routes(
+        customer_app,
+        {"admin.dashboard"},
+        customer_result,
+    )
+
+    assert {
+        "Customer runtime must not enable admin authentication",
+        "Customer session cookie name must not collide with admin",
+        "Customer session key prefix must not use the admin namespace",
+        "Customer runtime must not register admin routes",
+    } <= set(customer_result.failures)
 
 
 def test_admin_validator_rejects_root_admin_allowlist_outside_admin_domains(monkeypatch):

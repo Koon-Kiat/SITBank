@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 from datetime import datetime, timedelta, timezone
 
 from flask import current_app, g, request, session
@@ -21,8 +20,10 @@ LOGIN_BACKOFF_START_ATTEMPTS = 3
 
 
 def _safe_identifier(value: str) -> str:
-    digest = hashlib.sha256(value.casefold().encode("utf-8")).hexdigest()
-    return digest[:32]
+    return active_hmac_hex(
+        f"rate-limit-identifier:{value.casefold()}",
+        length=32,
+    )
 
 
 def request_principal() -> str:

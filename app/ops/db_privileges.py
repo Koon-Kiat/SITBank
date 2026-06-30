@@ -52,6 +52,37 @@ def apply_admin_runtime_database_privileges(
     migration_url: str,
     schema: str = "public",
 ) -> AdminRuntimePrivilegeApplication:
+    admin_role, database = _validate_admin_privilege_inputs(
+        admin_url=admin_url,
+        migration_url=migration_url,
+        schema=schema,
+    )
+    migration_role = _apply_admin_runtime_grants(
+        migration_url=migration_url,
+        admin_role=admin_role,
+        database=database,
+        schema=schema,
+    )
+    _verify_admin_runtime_connection(
+        admin_url=admin_url,
+        admin_role=admin_role,
+        database=database,
+        schema=schema,
+    )
+    return AdminRuntimePrivilegeApplication(
+        admin_role=admin_role,
+        migration_role=migration_role,
+        database=database,
+        schema=schema,
+    )
+
+
+def _validate_admin_privilege_inputs(
+    *,
+    admin_url: str,
+    migration_url: str,
+    schema: str,
+) -> tuple[str, str]:
     if not admin_url:
         raise RuntimeError("ADMIN_DATABASE_URL is required for admin privilege application")
     if not migration_url:
@@ -77,7 +108,16 @@ def apply_admin_runtime_database_privileges(
         raise RuntimeError("ADMIN_DATABASE_URL database name is not a safe PostgreSQL identifier")
     if database != str(migration_config.database or ""):
         raise RuntimeError("ADMIN_DATABASE_URL must target the migration database")
+    return admin_role, database
 
+
+def _apply_admin_runtime_grants(
+    *,
+    migration_url: str,
+    admin_role: str,
+    database: str,
+    schema: str,
+) -> str:
     migration_engine = create_engine(migration_url)
     try:
         with migration_engine.begin() as connection:
@@ -154,7 +194,16 @@ def apply_admin_runtime_database_privileges(
             )
     finally:
         migration_engine.dispose()
+    return migration_role
 
+
+def _verify_admin_runtime_connection(
+    *,
+    admin_url: str,
+    admin_role: str,
+    database: str,
+    schema: str,
+) -> None:
     admin_engine = create_engine(admin_url)
     try:
         with admin_engine.connect() as admin_connection:
@@ -178,13 +227,6 @@ def apply_admin_runtime_database_privileges(
             )
     finally:
         admin_engine.dispose()
-
-    return AdminRuntimePrivilegeApplication(
-        admin_role=admin_role,
-        migration_role=migration_role,
-        database=database,
-        schema=schema,
-    )
 
 
 def _assert_admin_runtime_database_privileges(connection, *, schema: str) -> None:

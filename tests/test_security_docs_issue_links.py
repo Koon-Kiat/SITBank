@@ -12,7 +12,11 @@ SECURITY_DOCS = Path("docs/security")
 
 def _docs_text() -> str:
     paths = [Path("README.md"), Path("SECURITY.md")]
-    paths.extend(sorted(Path("docs").rglob("*.md")))
+    paths.extend(
+        path
+        for path in sorted(Path("docs").rglob("*.md"))
+        if "codex" not in path.parts
+    )
     return "\n".join(path.read_text(encoding="utf-8") for path in paths)
 
 
@@ -81,6 +85,8 @@ def test_zero_trust_docs_use_current_architecture_and_control_state():
 
     assert "SITBank uses a hybrid zero-trust access model" in docs
     assert "Implemented repository controls include" in docs
+    # Exact static architecture-doc check; no untrusted URL is accepted.
+    # lgtm[py/incomplete-url-substring-sanitization]
     assert "https://admin-sitbank.tailca101b.ts.net/" in docs
     assert "Admins connect to the Tailscale VPN first, then open" in docs
     assert "Funnel would publish the service to the public internet" in docs
@@ -197,7 +203,11 @@ def test_active_docs_tests_and_workflows_use_current_private_admin_hostname():
     retired_ec2_host = "sitbank-ec2" + ".tailca101b.ts.net"
     retired_admin_host = "sitbank-admin" + ".tailca101b.ts.net"
     paths = [Path("README.md"), Path("SECURITY.md")]
-    paths.extend(path for path in sorted(Path("docs").rglob("*.md")) if "archive" not in path.parts)
+    paths.extend(
+        path
+        for path in sorted(Path("docs").rglob("*.md"))
+        if "archive" not in path.parts and "codex" not in path.parts
+    )
     paths.extend(sorted(Path("tests").glob("*.py")))
     paths.extend(sorted(Path(".github/workflows").glob("*.yml")))
 

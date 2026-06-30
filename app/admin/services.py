@@ -1503,7 +1503,10 @@ def _staff_username(workplace_email: str) -> str:
 
 
 def _mfa_setup_payload(user: User, secret: str) -> dict[str, str]:
-    provisioning_uri = pyotp.TOTP(secret, digits=6, interval=30, digest=hashlib.sha1).provisioning_uri(
+    # RFC-compatible TOTP uses HMAC-SHA1; this is not password hashing.
+    provisioning_uri = pyotp.TOTP(  # NOSONAR
+        secret, digits=6, interval=30, digest=hashlib.sha1
+    ).provisioning_uri(
         name=user.email,
         issuer_name=current_app.config["MFA_ISSUER_NAME"],
     )

@@ -26,6 +26,12 @@ Only Flask/Gunicorn runs in the SITBank container. Nginx, TLS, PostgreSQL, and b
 - Staging compose dir: `/opt/sitbank-staging`
 - Staging service: `sitbank-staging-container.service`
 
+The repository identity above was revalidated on 2026-07-01: GitHub reported
+`@Koon-Kiat` as an administrator of `Koon-Kiat/SITBank`, so the CODEOWNERS,
+GHCR, Cosign/OIDC, bootstrap, and deployment trust paths use an approved owner.
+The SonarQube Cloud binding remains `koon-kiat / Koon-Kiat_SITBank`; live
+provider settings still require provider-owned evidence.
+
 The separate `.github/workflows/gitleaks.yml` workflow is a pre-merge and
 protected-branch source control, not a deployment step. It scans full Git
 history with redacted output and no production secrets, artifacts, database
@@ -665,7 +671,10 @@ installs or enables the staging Nginx site, it requires the CA path to be a
 root-owned regular non-symlink, permits only `root` or `www-data` as the group
 with an approved non-writable mode, parses exactly one currently valid CA with
 OpenSSL, and matches its SHA-256 fingerprint, subject, and issuer to the
-allowlist. The bootstrap does not download a CA or call Cloudflare.
+allowlist. The bootstrap does not download a CA or call the Cloudflare API.
+Before replacing the old staging edge config, it also requires the public
+hostname to return a Cloudflare Access challenge. This fail-closed preflight
+prevents the removal of an older edge control while Access is absent.
 
 The repository allowlist initially approves only Cloudflare's global
 Authenticated Origin Pull CA. A change to a zone-level or per-hostname CA must
@@ -703,7 +712,15 @@ sudo /usr/local/sbin/verify-certbot-host-state staging
 sudo /usr/local/sbin/verify-certbot-host-state --renewal-dry-run staging
 ```
 
-Then run `ops/deploy/bootstrap-container-ec2 staging Koon-Kiat/SITBank staging-sitbank.pp.ua`. The bootstrap installs the Nginx proxy header snippet, TLS policy snippet, rate-limit include, and staging Nginx server block for `staging-sitbank.pp.ua`; verifies the pinned Cloudflare origin-pull CA; then runs `sudo nginx -t` before `sudo systemctl reload nginx`. This edge setup is separate from application deployment.
+Then run `ops/deploy/bootstrap-container-ec2 staging Koon-Kiat/SITBank staging-sitbank.pp.ua`. The protected bootstrap workflow first verifies the live Access application, policy, proxied DNS, edge challenge, and direct-origin denial. The host bootstrap independently requires the edge challenge before it installs the Nginx proxy header snippet, TLS policy snippet, rate-limit include, and staging Nginx server block; verifies the pinned Cloudflare origin-pull CA; then runs `sudo nginx -t` before `sudo systemctl reload nginx`. This edge setup is separate from application deployment.
+
+The root deployment wrapper repeats the edge challenge plus loopback
+direct-origin denial before stopping the old runtime. After the new
+containers start, deployment readiness requires an exact HTTP `200` and the
+expected ready JSON through `http://127.0.0.1:8081/health/ready`. It never uses
+the intentionally blocked public staging `/health/ready`, never follows a
+redirect as readiness, and the local Nginx location forces the trusted
+forwarded scheme to `https`.
 
 Staging verification:
 
@@ -727,8 +744,8 @@ testssl.sh --warnings batch --color 0 https://staging-sitbank.pp.ua
 Expected: unauthenticated browser traffic receives the Cloudflare Access
 challenge at `staging-sitbank.pp.ua` before reaching staging, approved operators can pass Cloudflare
 Access and then reach the normal staging controls, direct EC2-origin access to
-`/` is rejected during TLS client-certificate verification (or returns a
-fail-closed response) without Cloudflare's origin-pull client certificate,
+`/` is rejected during TLS client-certificate verification or returns the
+approved Nginx `400`/`403` denial without Cloudflare's origin-pull certificate,
 direct loopback Flask access to `/` returns `403` without an Access assertion,
 external `/health/ready` is unavailable, local app and Nginx readiness
 succeed, and the

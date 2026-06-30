@@ -538,6 +538,94 @@ def test_sanitized_evidence_records_only_non_secret_expected_duration(
     assert config.dns_origin not in evidence_text
 
 
+@pytest.mark.parametrize("direct_status", ["400", "403"])
+def test_live_verification_accepts_approved_http_origin_denials(
+    monkeypatch,
+    direct_status,
+):
+    module = runpy.run_path(str(SCRIPT))
+    for name, value in _base_environment().items():
+        if name.startswith(("CLOUDFLARE_", "STAGING_")):
+            monkeypatch.setenv(name, value)
+    monkeypatch.setenv("STAGING_ORIGIN_IP", "8.8.8.8")
+    config = module["Config"].from_environment(require_origin_ip=True)
+    responses = iter(
+        (
+            subprocess.CompletedProcess(
+                [],
+                0,
+                stdout=(
+                    "HTTP/2 302\r\n"
+                    "server: cloudflare\r\n"
+                    "cf-ray: fake-ray\r\n"
+                    "location: https://sitbank.cloudflareaccess.com/"
+                    "cdn-cgi/access/login\r\n\r\n"
+                ),
+                stderr="",
+            ),
+            subprocess.CompletedProcess(
+                [],
+                0,
+                stdout=f"HTTP/1.1 {direct_status} Denied\r\nserver: nginx\r\n\r\n",
+                stderr="",
+            ),
+        )
+    )
+    monkeypatch.setitem(
+        module["verify_live_http"].__globals__,
+        "_curl_headers",
+        lambda _arguments: next(responses),
+    )
+
+    result = module["verify_live_http"](config)
+
+    assert result.edge_challenge is True
+    assert result.direct_origin_blocked is True
+    assert result.direct_origin_result == f"http_{direct_status}"
+
+
+def test_live_verification_rejects_direct_origin_app_response(monkeypatch):
+    module = runpy.run_path(str(SCRIPT))
+    for name, value in _base_environment().items():
+        if name.startswith(("CLOUDFLARE_", "STAGING_")):
+            monkeypatch.setenv(name, value)
+    monkeypatch.setenv("STAGING_ORIGIN_IP", "8.8.8.8")
+    config = module["Config"].from_environment(require_origin_ip=True)
+    responses = iter(
+        (
+            subprocess.CompletedProcess(
+                [],
+                0,
+                stdout=(
+                    "HTTP/2 302\r\n"
+                    "server: cloudflare\r\n"
+                    "cf-ray: fake-ray\r\n"
+                    "location: https://sitbank.cloudflareaccess.com/"
+                    "cdn-cgi/access/login\r\n\r\n"
+                ),
+                stderr="",
+            ),
+            subprocess.CompletedProcess(
+                [],
+                0,
+                stdout="HTTP/1.1 200 OK\r\nserver: nginx\r\n\r\n",
+                stderr="",
+            ),
+        )
+    )
+    monkeypatch.setitem(
+        module["verify_live_http"].__globals__,
+        "_curl_headers",
+        lambda _arguments: next(responses),
+    )
+
+    with pytest.raises(
+        module["VerificationError"],
+        match="approved fail-closed status",
+    ):
+        module["verify_live_http"](config)
+
+
 def test_existing_authenticated_origin_pull_gate_is_unchanged():
     nginx = Path("ops/nginx/sitbank-staging.conf").read_text(encoding="utf-8")
 

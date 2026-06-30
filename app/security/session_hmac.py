@@ -111,6 +111,8 @@ def _configured_keys() -> Iterator[bytes]:
 
 
 def _digest(key: bytes, message: str, length: int) -> str:
+    # HMAC-SHA256 authenticates session payloads and keyed references.
+    # lgtm[py/weak-sensitive-data-hashing]
     return hmac.new(key, message.encode("utf-8"), hashlib.sha256).hexdigest()[:length]
 
 

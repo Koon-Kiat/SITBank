@@ -61,6 +61,24 @@ jobs:
           persist-credentials: false
           ref: ${{ github.workflow_sha }}
 
+      - name: Verify Cloudflare boundary before staging bootstrap
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ZONE_ID: ${{ vars.CLOUDFLARE_ZONE_ID }}
+          STAGING_ACCESS_HOSTNAME: ${{ vars.STAGING_PUBLIC_HOST }}
+          STAGING_ACCESS_APP_NAME: ${{ vars.STAGING_ACCESS_APP_NAME }}
+          STAGING_ACCESS_POLICY_NAME: ${{ vars.STAGING_ACCESS_POLICY_NAME }}
+          STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN: ${{ vars.STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN }}
+          STAGING_CLOUDFLARE_ACCESS_AUD: ${{ vars.STAGING_CLOUDFLARE_ACCESS_AUD }}
+          STAGING_ACCESS_SESSION_DURATION: ${{ vars.STAGING_ACCESS_SESSION_DURATION }}
+          STAGING_ACCESS_ALLOWED_EMAILS: ${{ secrets.STAGING_ACCESS_ALLOWED_EMAILS }}
+          STAGING_ACCESS_ALLOWED_GROUP_IDS: ${{ secrets.STAGING_ACCESS_ALLOWED_GROUP_IDS }}
+          STAGING_ACCESS_ALLOWED_IDP_IDS: ${{ vars.STAGING_ACCESS_ALLOWED_IDP_IDS }}
+          STAGING_DNS_ORIGIN: ${{ secrets.STAGING_DNS_ORIGIN }}
+          STAGING_ORIGIN_IP: ${{ secrets.STAGING_ORIGIN_IP }}
+        run: python ops/cloudflare/provision-staging-access --verify
+
       - name: Verify staging bootstrap configuration
         env:
           SSH_PRIVATE_KEY_B64: ${{ secrets.STAGING_EC2_SSH_PRIVATE_KEY_B64 }}
