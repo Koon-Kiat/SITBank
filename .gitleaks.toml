@@ -15,6 +15,14 @@ paths = ['''^ops/tailscale/install-tailscale$''']
 regexes = ['''^\s*(?:readonly\s+)?KEY_SHA256="[0-9a-f]{64}"\s*$''']
 
 [[allowlists]]
+description = "Public SonarQube Cloud project key metadata"
+condition = "AND"
+targetRules = ["generic-api-key"]
+regexTarget = "line"
+paths = ['''^sonar-project\.properties$''']
+regexes = ['''^sonar\.projectKey=TL0024_SITBank$''']
+
+[[allowlists]]
 description = "Historical synthetic accepted-password test fixture"
 condition = "AND"
 targetRules = ["generic-api-key"]
