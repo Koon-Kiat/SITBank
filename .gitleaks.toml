@@ -20,7 +20,7 @@ condition = "AND"
 targetRules = ["generic-api-key"]
 regexTarget = "line"
 paths = ['''^sonar-project\.properties$''']
-regexes = ['''^sonar\.projectKey=TL0024_SITBank$''']
+regexes = ['''^sonar\.projectKey=WenJiangg_SITBank$''']
 
 [[allowlists]]
 description = "Historical synthetic accepted-password test fixture"

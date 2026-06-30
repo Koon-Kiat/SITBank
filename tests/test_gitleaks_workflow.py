@@ -134,7 +134,7 @@ def test_gitleaks_configuration_keeps_defaults_and_has_no_broad_allowlist():
         "targetRules": ["generic-api-key"],
         "regexTarget": "line",
         "paths": [r"^sonar-project\.properties$"],
-        "regexes": [r"^sonar\.projectKey=TL0024_SITBank$"],
+        "regexes": [r"^sonar\.projectKey=WenJiangg_SITBank$"],
     }
 
 
