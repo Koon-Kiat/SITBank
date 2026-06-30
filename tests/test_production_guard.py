@@ -5,6 +5,7 @@ import importlib
 import pytest
 
 from app.extensions import db
+from app.models import User
 from app.security.production_guard import (
     ProductionReadinessResult,
     ProductionStartupSecurityError,
@@ -126,6 +127,46 @@ def test_admin_validator_rejects_root_admin_allowlist_outside_admin_domains(monk
     result = validate_production_security_prerequisites(app, app_mode="admin")
 
     assert "ROOT_ADMIN_EMAILS must use approved admin workplace domains" in result.failures
+
+
+def test_admin_production_check_reports_legacy_privileged_email_noncompliance(monkeypatch):
+    app = _production_app(monkeypatch, app_mode="admin")
+    legacy_email = "legacy.admin@gmail.com"
+    with app.app_context():
+        legacy = User(
+            username="legacy-admin",
+            email=legacy_email,
+            password_hash="not-used",
+            account_type="admin",
+            account_status="active",
+            full_name="Legacy Admin",
+            phone_number="91234567",
+            account_number=None,
+        )
+        compliant = User(
+            username="compliant-admin",
+            email="compliant.admin@sit.singaporetech.edu.sg",
+            password_hash="not-used",
+            account_type="admin",
+            account_status="active",
+            full_name="Compliant Admin",
+            phone_number="91234568",
+            account_number=None,
+        )
+        db.session.add_all([legacy, compliant])
+        db.session.commit()
+        legacy_id = legacy.id
+
+    result = validate_production_security_prerequisites(app, app_mode="admin")
+    cli_result = app.test_cli_runner().invoke(args=["production-check"])
+
+    assert result.ready
+    assert result.details["privileged_email_noncompliant_accounts"] == 1
+    assert cli_result.exit_code == 0
+    assert "privileged_email_noncompliant_accounts: 1" in cli_result.output
+    assert legacy_email not in cli_result.output
+    with app.app_context():
+        assert db.session.get(User, legacy_id).email == legacy_email
 
 
 def test_startup_guard_is_inactive_outside_production(monkeypatch):

@@ -14,6 +14,8 @@ from config import (
     MIN_PRODUCTION_PASSWORD_LENGTH,
     _configured_audit_anchor_path,
     _configured_secret,
+    _all_email_domains_allowed,
+    _csv_domain_set,
     _password_reset_base_url,
     _required_b64_32_bytes,
     _required_b64_32_bytes_decoded,
@@ -34,6 +36,43 @@ def test_webauthn_runtime_environment_is_not_required():
     assert "WEBAUTHN_RP_ORIGIN" not in customer_runtime_keys
     assert not hasattr(config, "_required_webauthn_rp_id")
     assert not hasattr(config, "_required_webauthn_origin")
+
+
+def test_admin_allowed_email_domains_accept_configured_workplace_domains(monkeypatch):
+    monkeypatch.setenv(
+        "ADMIN_ALLOWED_EMAIL_DOMAINS",
+        "sit.singaporetech.edu.sg, singaporetech.edu.sg",
+    )
+
+    assert _csv_domain_set("ADMIN_ALLOWED_EMAIL_DOMAINS", default="ignored.example") == frozenset(
+        {"sit.singaporetech.edu.sg", "singaporetech.edu.sg"}
+    )
+
+
+@pytest.mark.parametrize(
+    "domain",
+    [
+        "gmail.com",
+        "*.sit.singaporetech.edu.sg",
+        "example.com",
+        "localhost",
+        "sit.singaporetech.edu.sg.",
+        "sit.singaporetech.edu.sg/evil",
+    ],
+)
+def test_admin_allowed_email_domains_reject_personal_and_malformed_domains(monkeypatch, domain):
+    monkeypatch.setenv("ADMIN_ALLOWED_EMAIL_DOMAINS", domain)
+
+    with pytest.raises(RuntimeError, match="approved workplace email domains"):
+        _csv_domain_set("ADMIN_ALLOWED_EMAIL_DOMAINS", default="sit.singaporetech.edu.sg")
+
+
+def test_root_admin_email_validation_requires_real_allowed_workplace_addresses():
+    allowed_domains = frozenset({"sit.singaporetech.edu.sg"})
+
+    assert _all_email_domains_allowed(frozenset({"root1@sit.singaporetech.edu.sg"}), allowed_domains)
+    assert not _all_email_domains_allowed(frozenset({"root1@gmail.com"}), allowed_domains)
+    assert not _all_email_domains_allowed(frozenset({"root1@sit.singaporetech.edu.sg."}), allowed_domains)
 
 
 def test_password_reset_base_url_must_be_https_in_production(monkeypatch):

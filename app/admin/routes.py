@@ -88,7 +88,6 @@ class AdminTotpForm(FlaskForm):
 
 
 class StaffInviteCreateSchema(Schema):
-    personal_email = fields.Email(required=True, validate=validate.Length(max=255))
     workplace_email = fields.Email(required=True, validate=validate.Length(max=255))
     role = fields.Str(required=True, validate=validate.OneOf(["staff", "admin"]))
     totp_code = fields.Str(
@@ -352,7 +351,6 @@ def invite_create():
     data = _payload(StaffInviteCreateSchema())
     result = create_staff_invite(
         actor,
-        personal_email=data["personal_email"],
         workplace_email=data["workplace_email"],
         role=data["role"],
         totp_code=data["totp_code"],

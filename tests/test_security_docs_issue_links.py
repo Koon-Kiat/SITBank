@@ -106,6 +106,18 @@ def test_documentation_has_no_numbered_issue_references():
     )
 
 
+def test_privileged_email_domain_docs_are_workplace_only():
+    docs = _docs_text()
+    normalized_docs = " ".join(docs.split()).casefold()
+
+    assert "privileged root-admin, admin, and staff accounts use approved sit workplace email domains only" in normalized_docs
+    assert "staff invites are delivered to the workplace email and do not collect personal backup email contacts" in normalized_docs
+    assert "staff invites use the workplace email and do not collect personal backup email contacts" in normalized_docs
+    assert "privileged_email_noncompliant_accounts" in normalized_docs
+    assert "does not silently rewrite or delete accounts" in normalized_docs
+    assert "staff_invite_personal_email_domains" not in normalized_docs
+
+
 def test_security_docs_are_grouped_and_indexed_by_purpose():
     assert sorted(path.name for path in SECURITY_DOCS.glob("*.md")) == ["README.md"]
 
