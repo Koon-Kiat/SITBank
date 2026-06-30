@@ -74,6 +74,7 @@ GENERIC_LOGIN_ERROR = "Invalid username or password"
 GENERIC_MFA_ERROR = "Invalid authentication code."
 AUTH_BACKOFF_ERROR = "Too many attempts. Please try again later."
 ACCOUNT_AUTH_UNAVAILABLE_ERROR = "Authentication unavailable for this account"
+PROFILE_UPDATE_ERROR = "Profile could not be updated with those details"
 AUTH_LOCK_THRESHOLD = 10
 AUTH_LOCK_WINDOW_SECONDS = 15 * 60
 MFA_REPLACEMENT_NONCE_KEY = "mfa_replacement_secret_nonce"
@@ -585,7 +586,7 @@ def update_profile_details(
             normalized_email = require_customer_email(email)
         except IdentityPolicyError as exc:
             audit_event("profile_update", "blocked", user=user, metadata={"reason": exc.reason})
-            raise AuthError("Profile could not be updated with those details", 400) from exc
+            raise AuthError(PROFILE_UPDATE_ERROR, 400) from exc
     else:
         normalized_email = submitted_email
     normalized_preference = _normalize_step_up_preference(mfa_step_up_preference)
@@ -610,7 +611,7 @@ def update_profile_details(
     ).scalar_one_or_none()
     if duplicate_user is not None:
         audit_event("profile_update", "failure", user=user, metadata={"reason": "duplicate_identifier"})
-        raise AuthError("Profile could not be updated with those details", 400)
+        raise AuthError(PROFILE_UPDATE_ERROR, 400)
 
     verify_high_risk_authorization(
         user,
@@ -627,7 +628,7 @@ def update_profile_details(
     except IntegrityError as exc:
         db.session.rollback()
         audit_event("profile_update", "failure", user=user, metadata={"reason": "integrity_error"})
-        raise AuthError("Profile could not be updated with those details", 400) from exc
+        raise AuthError(PROFILE_UPDATE_ERROR, 400) from exc
     audit_event("profile_update", "success", user=user, metadata={"updated_fields": "profile_details"})
     return True
 

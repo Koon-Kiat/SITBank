@@ -43,7 +43,7 @@ a reviewed follow-up instead.
 
 1. Import or rebind the private `TL0024/SITBank` GitHub repository into the
    `tl0024` SonarQube Cloud organization and confirm the project key is
-   `TL0024_SITBank`.
+   `WenJiangg_SITBank`.
 2. Confirm current private LOC usage, member limits, plan terms, repository
    binding, and access permissions in SonarQube Cloud.
 3. Generate a narrowly scoped project analysis token.

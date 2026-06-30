@@ -189,8 +189,9 @@ request hook.
 
 `--verify --evidence-file <path>` writes a sanitized JSON summary containing
 only check results, the public staging hostname, expected session duration,
-and a timestamp. It excludes tokens, account/zone IDs, email/group allowlists,
-origin addresses, application IDs, and the audience.
+provider-owned review statuses, workflow environment, and a timestamp. It
+excludes tokens, account/zone IDs, email/group allowlists, origin addresses,
+application IDs, and the audience.
 
 Drift diagnostics identify non-secret application fields. For example,
 `session_duration expected=6h actual=24h` identifies a duration mismatch.
@@ -210,8 +211,8 @@ curl --fail http://127.0.0.1:5001/health/ready
 
 The first request must return `403` because it has no assertion; loopback
 readiness must succeed. Then use an approved browser session through
-`https://staging-sitbank.pp.ua/` and confirm Cloudflare Access, staging Basic
-Auth, and normal Flask login/MFA all remain required. Never extract, paste,
+`https://staging-sitbank.pp.ua/` and confirm Cloudflare Access and normal
+Flask login/MFA remain required. Never extract, paste,
 record, or add `Cf-Access-Jwt-Assertion` to curl command history.
 
 ## Emergency lockout and recovery
@@ -219,7 +220,7 @@ record, or add `Cf-Access-Jwt-Assertion` to curl command history.
 For emergency staging lockout, disable the managed Allow policy or replace its
 operator membership with an empty approved group in the Cloudflare dashboard.
 Keep proxied DNS and Authenticated Origin Pull enabled. Revoke Access sessions,
-rotate affected Basic Auth/application credentials, preserve Cloudflare/Nginx
+rotate affected application credentials and Access sessions, preserve Cloudflare/Nginx
 audit evidence, and run `--verify` before restoring access.
 
 If apply fails, leave staging unavailable rather than adding an allow-everyone
