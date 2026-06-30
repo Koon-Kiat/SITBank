@@ -1,22 +1,22 @@
 # Default owner for application and documentation changes.
-* @WenJiangg
+* @TL0024
 
 # Production supply-chain and deployment controls require explicit ownership.
-/.github/workflows/ @WenJiangg
-/.github/dependabot.yml @WenJiangg
-/Dockerfile @WenJiangg
-/compose.prod.yml @WenJiangg
-/compose.staging.yml @WenJiangg
-/requirements.in @WenJiangg
-/requirements-dev.in @WenJiangg
-/requirements.lock @WenJiangg
-/requirements-dev.lock @WenJiangg
-/ops/container/ @WenJiangg
-/ops/cloudflare/ @WenJiangg
-/ops/deploy/ @WenJiangg
-/ops/nginx/ @WenJiangg
-/ops/nginx-proxy-headers.conf @WenJiangg
-/ops/security/ @WenJiangg
-/ops/sudoers/ @WenJiangg
-/ops/systemd/ @WenJiangg
-/migrations/ @WenJiangg
+/.github/workflows/ @TL0024
+/.github/dependabot.yml @TL0024
+/Dockerfile @TL0024
+/compose.prod.yml @TL0024
+/compose.staging.yml @TL0024
+/requirements.in @TL0024
+/requirements-dev.in @TL0024
+/requirements.lock @TL0024
+/requirements-dev.lock @TL0024
+/ops/container/ @TL0024
+/ops/cloudflare/ @TL0024
+/ops/deploy/ @TL0024
+/ops/nginx/ @TL0024
+/ops/nginx-proxy-headers.conf @TL0024
+/ops/security/ @TL0024
+/ops/sudoers/ @TL0024
+/ops/systemd/ @TL0024
+/migrations/ @TL0024

@@ -2329,7 +2329,12 @@ def test_dependabot_tracks_docker_base_images_without_automerge():
 def test_codeowners_and_codeql_cover_security_sensitive_changes():
     codeowners = Path(".github/CODEOWNERS").read_text(encoding="utf-8")
     codeql = Path(".github/workflows/codeql.yml").read_text(encoding="utf-8")
+    stale_owner = "@Wen" + "Jiangg"
+    stale_typo_owner = "@Wen" + "Jiangggg"
 
+    assert "@TL0024" in codeowners
+    assert stale_owner not in codeowners
+    assert stale_typo_owner not in codeowners
     for protected_path in (
         "/.github/workflows/",
         "/Dockerfile",
@@ -3447,8 +3452,8 @@ def test_migration_baseline_and_existing_database_runbook_are_present():
     assert "verify-migration-baseline" in docs
     assert "db stamp 20260610_0001" in docs
     assert "Do not run `db.create_all()`" in docs
-    assert "WenJiangg/SITBank" in docs
-    assert "ghcr.io/wenjiangg/sitbank@sha256:<digest>" in docs
+    assert "TL0024/SITBank" in docs
+    assert "ghcr.io/tl0024/sitbank@sha256:<digest>" in docs
     assert "sitbank_db" in docs
     assert "sitbank_owner" in docs
     assert "sitbank_app" in docs

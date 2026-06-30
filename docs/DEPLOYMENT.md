@@ -12,8 +12,8 @@ Only Flask/Gunicorn runs in the SITBank container. Nginx, TLS, PostgreSQL, and b
 - Staging access boundary: Cloudflare Access plus Authenticated Origin Pull
   plus origin-side Access JWT validation
 - Admin access boundary: Tailscale/private operator access only
-- Production image form: `ghcr.io/wenjiangg/sitbank@sha256:<digest>`
-- Repository identity: `WenJiangg/SITBank`
+- Production image form: `ghcr.io/tl0024/sitbank@sha256:<digest>`
+- Repository identity: `TL0024/SITBank`
 - Production config root: `/etc/sitbank`
 - Production compose dir: `/opt/sitbank`
 - Production service: `sitbank-container.service`
@@ -709,7 +709,7 @@ sudo /usr/local/sbin/verify-certbot-host-state staging
 sudo /usr/local/sbin/verify-certbot-host-state --renewal-dry-run staging
 ```
 
-Then run `ops/deploy/bootstrap-container-ec2 staging WenJiangg/SITBank staging-sitbank.pp.ua`. The bootstrap installs the Nginx proxy header snippet, TLS policy snippet, rate-limit include, and staging Nginx server block for `staging-sitbank.pp.ua`; verifies the staging Basic Auth file and the pinned Cloudflare origin-pull CA; then runs `sudo nginx -t` before `sudo systemctl reload nginx`. This edge setup is separate from application deployment.
+Then run `ops/deploy/bootstrap-container-ec2 staging TL0024/SITBank staging-sitbank.pp.ua`. The bootstrap installs the Nginx proxy header snippet, TLS policy snippet, rate-limit include, and staging Nginx server block for `staging-sitbank.pp.ua`; verifies the staging Basic Auth file and the pinned Cloudflare origin-pull CA; then runs `sudo nginx -t` before `sudo systemctl reload nginx`. This edge setup is separate from application deployment.
 
 Staging verification:
 
