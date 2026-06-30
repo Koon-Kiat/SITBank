@@ -337,7 +337,7 @@ class StaffInvite(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     token_hash = db.Column(db.String(64), nullable=False, unique=True, index=True)
-    personal_email_normalized = db.Column(db.String(255), nullable=False, index=True)
+    personal_email_normalized = db.Column(db.String(255), nullable=True, index=True)
     workplace_email_normalized = db.Column(db.String(255), nullable=False, index=True)
     role = db.Column(db.String(32), nullable=False)
     status = db.Column(db.String(32), nullable=False, default="pending", index=True)

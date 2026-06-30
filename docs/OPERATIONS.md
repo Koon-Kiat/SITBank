@@ -267,6 +267,16 @@ accounts. Configure `ROOT_ADMIN_EMAILS` as a protected GitHub environment
 variable in both `staging` and `production` before deploying this command. Do
 not commit the allowlist to the repository.
 
+Privileged root-admin, admin, and staff accounts use approved SIT workplace
+email domains only. Do not configure personal-provider domains in
+`ADMIN_ALLOWED_EMAIL_DOMAINS`; staff invites are delivered to the workplace
+email and do not collect personal backup email contacts.
+The admin `production-check` command reports
+`privileged_email_noncompliant_accounts` as a count when legacy privileged rows
+use non-approved domains. Operators must remediate those accounts to approved
+SIT workplace emails through a reviewed administrative data fix; the check does
+not silently rewrite or delete accounts and does not print the email addresses.
+
 After deployment, verify the admin container received the allowlist:
 
 ```bash
