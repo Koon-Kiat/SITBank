@@ -102,6 +102,7 @@ def validate_password_policy(password: str) -> list[str]:
 
 def _is_password_pwned_by_hibp(password: str) -> bool:
     # SHA-1 is required by the HIBP range API and is only used as a lookup key.
+    # lgtm[py/weak-sensitive-data-hashing]
     password_hash = hashlib.sha1(
         password.encode("utf-8"),
         usedforsecurity=False,
@@ -273,6 +274,8 @@ def validate_password_hash_config() -> None:
 
 def _pbkdf2_digest(password: str, salt: bytes, iterations: int) -> bytes:
     normalized_password = _safe_normalized_password(password)
+    # This keyed prehash feeds PBKDF2; it is not the stored password verifier.
+    # lgtm[py/weak-sensitive-data-hashing]
     peppered = hmac.new(
         _password_pepper(),
         normalized_password.encode("utf-8"),

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import hmac
 import re
 import secrets
@@ -24,6 +23,7 @@ from app.auth.password_reset import (
 from app.auth.services import (
     AuthError,
     _dummy_password_hash,
+    _totp,
     _verify_totp_for_user,
 )
 from app.extensions import db
@@ -1503,7 +1503,7 @@ def _staff_username(workplace_email: str) -> str:
 
 
 def _mfa_setup_payload(user: User, secret: str) -> dict[str, str]:
-    provisioning_uri = pyotp.TOTP(secret, digits=6, interval=30, digest=hashlib.sha1).provisioning_uri(
+    provisioning_uri = _totp(secret).provisioning_uri(
         name=user.email,
         issuer_name=current_app.config["MFA_ISSUER_NAME"],
     )

@@ -257,6 +257,8 @@ def current_session_id() -> str | None:
 
 
 def session_lookup_hash(session_id: str) -> str:
+    # This is a keyed lookup verifier, not password hashing.
+    # lgtm[py/weak-sensitive-data-hashing]
     return hmac.new(
         _lookup_hmac_key(),
         str(session_id).encode("utf-8"),
@@ -949,101 +951,131 @@ def _session_revoked_response():
 
 
 def register_session_hooks(app: Flask) -> None:
-    @app.before_request
-    def enforce_session_activity():
-        session_id = current_session_id()
-        if session_id and session:
-            record = _session_record_for_sid(session_id)
-            if record is not None and record.revoked_at is not None:
-                session.clear()
-                if request.endpoint in {
-                    "main.index",
-                    WEB_LOGIN_ENDPOINT,
-                    "web.login_submit",
-                    "web.register_form",
-                    "web.register_submit",
-                }:
-                    return None
-                return _session_revoked_response()
+    app.before_request(_enforce_session_activity)
 
-        principal_id = session.get("user_id") or session.get("pending_mfa_user_id")
-        if not principal_id:
-            return None
 
-        now = _now()
-        pending_mfa_user_id = session.get("pending_mfa_user_id")
-        if pending_mfa_user_id:
-            authenticated_at = int(session.get("password_authenticated_at") or 0)
-            max_age = current_app.config["PENDING_MFA_MAX_AGE_SECONDS"]
-            if not authenticated_at or now - authenticated_at > max_age:
-                session_id = current_session_id()
-                revoke_current_session(ended_reason="expired")
-                from app.security.audit import audit_event
+def _enforce_session_activity():
+    revoked_response = _revoked_session_response_if_required()
+    if revoked_response is not None:
+        return revoked_response
 
-                audit_event(
-                    "mfa_login_expired",
-                    "expired",
-                    user_id=int(pending_mfa_user_id),
-                    session_id=session_id,
-                )
-                if request.path.startswith("/auth/"):
-                    return jsonify(
-                        {
-                            "error": "MFA challenge expired. Please log in again.",
-                            "code": "mfa_challenge_expired",
-                        }
-                    ), 401
-                flash("MFA challenge expired. Please log in again.", "warning")
-                rotate_session_id()
-                return redirect(url_for(WEB_LOGIN_ENDPOINT))
-
-        authenticated_user_id = session.get("user_id")
-        if authenticated_user_id:
-            try:
-                absolute_lifetime = int(current_app.config["SESSION_ABSOLUTE_LIFETIME_SECONDS"])
-            except (KeyError, TypeError, ValueError):
-                current_app.logger.error("SESSION_ABSOLUTE_LIFETIME_SECONDS is invalid")
-                revoke_current_session(ended_reason="absolute_lifetime")
-                return _session_expired_response()
-
-            raw_auth_created_at = session.get(AUTH_CREATED_AT_KEY)
-            if raw_auth_created_at is None:
-                session[AUTH_CREATED_AT_KEY] = now
-                session.modified = True
-            else:
-                try:
-                    auth_created_at = int(raw_auth_created_at)
-                except (TypeError, ValueError):
-                    revoke_current_session(ended_reason="absolute_lifetime")
-                    return _session_expired_response()
-                if auth_created_at <= 0 or now - auth_created_at > absolute_lifetime:
-                    session_id = current_session_id()
-                    from app.security.audit import audit_event
-
-                    audit_event(
-                        "session_absolute_lifetime",
-                        "expired",
-                        user_id=int(authenticated_user_id),
-                        session_id=session_id,
-                        metadata={
-                            "app_mode": current_app.config.get("APP_MODE", "customer"),
-                            "age_seconds": max(0, now - auth_created_at),
-                            "lifetime_seconds": absolute_lifetime,
-                        },
-                    )
-                    revoke_current_session(ended_reason="absolute_lifetime")
-                    return _session_expired_response()
-
-        last_activity = int(session.get("last_activity_at") or now)
-        if now - last_activity > current_app.config["SESSION_INACTIVITY_SECONDS"]:
-            revoke_current_session(ended_reason="expired")
-            return _session_expired_response()
-
-        context_response = enforce_authenticated_session_context()
-        if context_response is not None:
-            return context_response
-
-        session["last_activity_at"] = now
-        session.modified = True
-        update_session_activity()
+    principal_id = session.get("user_id") or session.get("pending_mfa_user_id")
+    if not principal_id:
         return None
+
+    now = _now()
+    pending_response = _pending_mfa_expiry_response(now)
+    if pending_response is not None:
+        return pending_response
+
+    lifetime_response = _absolute_lifetime_expiry_response(now)
+    if lifetime_response is not None:
+        return lifetime_response
+
+    last_activity = int(session.get("last_activity_at") or now)
+    if now - last_activity > current_app.config["SESSION_INACTIVITY_SECONDS"]:
+        revoke_current_session(ended_reason="expired")
+        return _session_expired_response()
+
+    context_response = enforce_authenticated_session_context()
+    if context_response is not None:
+        return context_response
+
+    session["last_activity_at"] = now
+    session.modified = True
+    update_session_activity()
+    return None
+
+
+def _revoked_session_response_if_required():
+    session_id = current_session_id()
+    if not session_id or not session:
+        return None
+    record = _session_record_for_sid(session_id)
+    if record is None or record.revoked_at is None:
+        return None
+    session.clear()
+    if request.endpoint in {
+        "main.index",
+        WEB_LOGIN_ENDPOINT,
+        "web.login_submit",
+        "web.register_form",
+        "web.register_submit",
+    }:
+        return None
+    return _session_revoked_response()
+
+
+def _pending_mfa_expiry_response(now: int):
+    pending_mfa_user_id = session.get("pending_mfa_user_id")
+    if not pending_mfa_user_id:
+        return None
+    authenticated_at = int(session.get("password_authenticated_at") or 0)
+    max_age = current_app.config["PENDING_MFA_MAX_AGE_SECONDS"]
+    if authenticated_at and now - authenticated_at <= max_age:
+        return None
+
+    session_id = current_session_id()
+    revoke_current_session(ended_reason="expired")
+    from app.security.audit import audit_event
+
+    audit_event(
+        "mfa_login_expired",
+        "expired",
+        user_id=int(pending_mfa_user_id),
+        session_id=session_id,
+    )
+    if request.path.startswith("/auth/"):
+        return jsonify(
+            {
+                "error": "MFA challenge expired. Please log in again.",
+                "code": "mfa_challenge_expired",
+            }
+        ), 401
+    flash("MFA challenge expired. Please log in again.", "warning")
+    rotate_session_id()
+    return redirect(url_for(WEB_LOGIN_ENDPOINT))
+
+
+def _absolute_lifetime_expiry_response(now: int):
+    authenticated_user_id = session.get("user_id")
+    if not authenticated_user_id:
+        return None
+    try:
+        absolute_lifetime = int(
+            current_app.config["SESSION_ABSOLUTE_LIFETIME_SECONDS"]
+        )
+    except (KeyError, TypeError, ValueError):
+        current_app.logger.error("SESSION_ABSOLUTE_LIFETIME_SECONDS is invalid")
+        revoke_current_session(ended_reason="absolute_lifetime")
+        return _session_expired_response()
+
+    raw_auth_created_at = session.get(AUTH_CREATED_AT_KEY)
+    if raw_auth_created_at is None:
+        session[AUTH_CREATED_AT_KEY] = now
+        session.modified = True
+        return None
+    try:
+        auth_created_at = int(raw_auth_created_at)
+    except (TypeError, ValueError):
+        revoke_current_session(ended_reason="absolute_lifetime")
+        return _session_expired_response()
+    if auth_created_at > 0 and now - auth_created_at <= absolute_lifetime:
+        return None
+
+    session_id = current_session_id()
+    from app.security.audit import audit_event
+
+    audit_event(
+        "session_absolute_lifetime",
+        "expired",
+        user_id=int(authenticated_user_id),
+        session_id=session_id,
+        metadata={
+            "app_mode": current_app.config.get("APP_MODE", "customer"),
+            "age_seconds": max(0, now - auth_created_at),
+            "lifetime_seconds": absolute_lifetime,
+        },
+    )
+    revoke_current_session(ended_reason="absolute_lifetime")
+    return _session_expired_response()

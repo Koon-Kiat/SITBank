@@ -183,6 +183,9 @@ returning the same generic `403`. Safe reason codes distinguish
 Metadata is limited to the reason, validator name, whether validation was
 required, whether audience/issuer configuration exists, and whether a JWKS
 cache entry was available.
+The request correlation hook runs before the assertion gate, so every denial
+event has the same safe correlation ID used by later request auditing. JWKS
+cache availability is read under the cache lock used for refreshes and clears.
 
 The raw assertion, JWT claims, JWKS document, authorization/cookie headers,
 Cloudflare or service tokens, sessions, CSRF values, request body, and provider

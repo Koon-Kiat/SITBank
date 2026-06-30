@@ -132,6 +132,37 @@ def test_customer_absolute_lifetime_expiry_revokes_session_and_audits(app, clien
     assert "redis" not in event.event_metadata
 
 
+@pytest.mark.parametrize(
+    "configured_lifetime",
+    [None, "not-an-integer"],
+)
+def test_invalid_absolute_lifetime_configuration_fails_closed(
+    app,
+    client,
+    configured_lifetime,
+):
+    register(client)
+    login(client)
+    app.config["SESSION_ABSOLUTE_LIFETIME_SECONDS"] = configured_lifetime
+
+    response = client.get("/auth/sessions", headers={"Accept": "application/json"})
+
+    assert response.status_code == 401
+    assert response.get_json() == {"error": "Session expired"}
+
+
+def test_malformed_absolute_lifetime_timestamp_fails_closed(app, client):
+    register(client)
+    login(client)
+    with client.session_transaction() as sess:
+        sess[AUTH_CREATED_AT_KEY] = "not-an-integer"
+
+    response = client.get("/auth/sessions", headers={"Accept": "application/json"})
+
+    assert response.status_code == 401
+    assert response.get_json() == {"error": "Session expired"}
+
+
 def test_customer_high_risk_totp_rotation_preserves_auth_created_at(client):
     register(client)
     login(client)

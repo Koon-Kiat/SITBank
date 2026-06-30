@@ -103,14 +103,15 @@ def enforce_production_startup_guard(app: Flask, *, app_mode: str) -> None:
     if result.ready:
         return
 
-    failures = "; ".join(result.failures)
     app.logger.critical(
-        "Production startup security guard failed: %s. Run flask production-check for details.",
-        failures,
+        "Production startup security guard failed (%d prerequisite failures). "
+        "Run flask production-check for sanitized details.",
+        len(result.failures),
     )
+    failures = "; ".join(result.failures)
     raise ProductionStartupSecurityError(
-        "Production startup security guard failed: "
-        f"{failures}. Run flask production-check for details."
+        f"Production startup security guard failed: {failures}. "
+        "Run flask production-check for details."
     )
 
 
@@ -137,33 +138,68 @@ def _validate_mode_and_route_isolation(
 
     endpoints = {rule.endpoint for rule in app.url_map.iter_rules()}
     if requested_mode == "admin":
-        if app.config.get("ADMIN_AUTH_ENABLED") is not True:
-            result.failures.append("Admin authentication must be enabled")
-        if app.config.get("SESSION_COOKIE_NAME") != "__Host-sitbank_admin_session":
-            result.failures.append("Admin session cookie name must be isolated")
-        if not str(app.config.get("SESSION_KEY_PREFIX") or "").startswith("admin-"):
-            result.failures.append("Admin session key prefix must be isolated")
-        if not str(app.config.get("AUTH_FAILURE_KEY_PREFIX") or "").startswith("ospbank:admin:"):
-            result.failures.append("Admin auth security-state prefix must be isolated")
-        if not str(app.config.get("RATELIMIT_KEY_PREFIX") or "").startswith("ospbank:admin:"):
-            result.failures.append("Admin rate-limit key prefix must be isolated")
-        root_admin_emails = app.config.get("ROOT_ADMIN_EMAILS") or set()
-        root_admin_collection = isinstance(root_admin_emails, (set, frozenset, list, tuple))
-        if not root_admin_collection or len(root_admin_emails) != 7:
-            result.failures.append("ROOT_ADMIN_EMAILS must configure exactly 7 root administrators")
-        if root_admin_collection and any(not is_privileged_workplace_email(item) for item in root_admin_emails):
-            result.failures.append("ROOT_ADMIN_EMAILS must use approved admin workplace domains")
-        if any(endpoint.startswith(("auth.", "web.", "banking.", "main.")) for endpoint in endpoints):
-            result.failures.append("Admin runtime must not register customer routes")
-    else:
-        if app.config.get("ADMIN_AUTH_ENABLED") is not False:
-            result.failures.append("Customer runtime must not enable admin authentication")
-        if app.config.get("SESSION_COOKIE_NAME") == "__Host-sitbank_admin_session":
-            result.failures.append("Customer session cookie name must not collide with admin")
-        if str(app.config.get("SESSION_KEY_PREFIX") or "").startswith("admin-"):
-            result.failures.append("Customer session key prefix must not use the admin namespace")
-        if any(endpoint.startswith("admin.") for endpoint in endpoints):
-            result.failures.append("Customer runtime must not register admin routes")
+        _validate_admin_mode_and_routes(app, endpoints, result)
+        return
+    _validate_customer_mode_and_routes(app, endpoints, result)
+
+
+def _validate_admin_mode_and_routes(
+    app: Flask,
+    endpoints: set[str],
+    result: ProductionReadinessResult,
+) -> None:
+    if app.config.get("ADMIN_AUTH_ENABLED") is not True:
+        result.failures.append("Admin authentication must be enabled")
+    if app.config.get("SESSION_COOKIE_NAME") != "__Host-sitbank_admin_session":
+        result.failures.append("Admin session cookie name must be isolated")
+    if not str(app.config.get("SESSION_KEY_PREFIX") or "").startswith("admin-"):
+        result.failures.append("Admin session key prefix must be isolated")
+    if not str(app.config.get("AUTH_FAILURE_KEY_PREFIX") or "").startswith(
+        "ospbank:admin:"
+    ):
+        result.failures.append("Admin auth security-state prefix must be isolated")
+    if not str(app.config.get("RATELIMIT_KEY_PREFIX") or "").startswith(
+        "ospbank:admin:"
+    ):
+        result.failures.append("Admin rate-limit key prefix must be isolated")
+
+    root_admin_emails = app.config.get("ROOT_ADMIN_EMAILS") or set()
+    root_admin_collection = isinstance(
+        root_admin_emails,
+        (set, frozenset, list, tuple),
+    )
+    if not root_admin_collection or len(root_admin_emails) != 7:
+        result.failures.append(
+            "ROOT_ADMIN_EMAILS must configure exactly 7 root administrators"
+        )
+    if root_admin_collection and any(
+        not is_privileged_workplace_email(item) for item in root_admin_emails
+    ):
+        result.failures.append(
+            "ROOT_ADMIN_EMAILS must use approved admin workplace domains"
+        )
+    if any(
+        endpoint.startswith(("auth.", "web.", "banking.", "main."))
+        for endpoint in endpoints
+    ):
+        result.failures.append("Admin runtime must not register customer routes")
+
+
+def _validate_customer_mode_and_routes(
+    app: Flask,
+    endpoints: set[str],
+    result: ProductionReadinessResult,
+) -> None:
+    if app.config.get("ADMIN_AUTH_ENABLED") is not False:
+        result.failures.append("Customer runtime must not enable admin authentication")
+    if app.config.get("SESSION_COOKIE_NAME") == "__Host-sitbank_admin_session":
+        result.failures.append("Customer session cookie name must not collide with admin")
+    if str(app.config.get("SESSION_KEY_PREFIX") or "").startswith("admin-"):
+        result.failures.append(
+            "Customer session key prefix must not use the admin namespace"
+        )
+    if any(endpoint.startswith("admin.") for endpoint in endpoints):
+        result.failures.append("Customer runtime must not register admin routes")
 
 
 def _validate_database_connectivity_and_tables(

@@ -55,8 +55,8 @@ def create_app(config_object: type[Config] = Config, *, app_mode: str = "custome
     )
     install_database_sessions(app)
 
-    register_cloudflare_access_guard(app)
     register_correlation_id(app)
+    register_cloudflare_access_guard(app)
     register_session_hooks(app)
     register_current_user_loader(app)
     register_error_handlers(app)

@@ -81,6 +81,8 @@ class PasswordPolicyTests(unittest.TestCase):
     @patch("app.security.passwords.urlopen")
     def test_rejects_password_found_by_hibp_range_api(self, urlopen) -> None:
         password = "breached-remotely-only"
+        # HIBP requires this SHA-1 prefix; the test does not store a verifier.
+        # lgtm[py/weak-sensitive-data-hashing]
         suffix = hashlib.sha1(
             password.encode("utf-8"),
             usedforsecurity=False,
@@ -183,6 +185,8 @@ class PasswordPolicyTests(unittest.TestCase):
     @patch("app.security.passwords.urlopen")
     def test_sends_only_hash_prefix_with_padding_and_short_timeout(self, urlopen) -> None:
         password = "not-in-local-list"
+        # HIBP requires this SHA-1 prefix; the test does not store a verifier.
+        # lgtm[py/weak-sensitive-data-hashing]
         password_hash = hashlib.sha1(
             password.encode("utf-8"),
             usedforsecurity=False,

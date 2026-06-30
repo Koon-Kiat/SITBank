@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,23 @@ from conftest import TestConfig
 AUDIENCE = "0123456789abcdef0123456789abcdef"
 ISSUER = "https://sitbank.cloudflareaccess.com"
 KID = "test-cloudflare-access-key"
+
+
+def _nginx_server_block(config: str, server_name: str, *, tls: bool = False) -> str:
+    marker = re.compile(
+        rf"server_name\s+[^;]*(?<![A-Za-z0-9.-]){re.escape(server_name)}"
+        r"(?![A-Za-z0-9.-])[^;]*;"
+    )
+    blocks = []
+    for match in marker.finditer(config):
+        start = config.rfind("\nserver {", 0, match.start())
+        start = 0 if start == -1 else start + 1
+        end = config.find("\nserver {", match.start())
+        blocks.append(config[start:] if end == -1 else config[start:end])
+    assert blocks, f"Missing Nginx server block for {server_name}"
+    if tls:
+        return next(block for block in blocks if "listen 443 ssl http2;" in block)
+    return blocks[0]
 
 
 class StagingAccessConfig(TestConfig):
@@ -136,6 +154,7 @@ def test_staging_missing_and_malformed_assertions_fail_closed(staging_app):
     assert all(
         event.event_type == "cloudflare_access_assertion_validation"
         and event.outcome == "blocked"
+        and bool(event.correlation_id)
         and event.event_metadata["validation_required"] is True
         for event in events
     )
@@ -373,10 +392,43 @@ def test_nginx_preserves_origin_pull_and_forwards_only_assertion():
     assert nginx.count(
         "include /etc/nginx/snippets/sitbank-cloudflare-access-headers.conf;"
     ) == 6
-    readiness_locations = nginx.split("location = /health/ready {")[1:]
-    assert len(readiness_locations) == 2
-    local_ready = readiness_locations[0].split("}", 1)[0]
-    public_ready = readiness_locations[1].split("}", 1)[0]
+    local_server = _nginx_server_block(nginx, "localhost")
+    public_server = _nginx_server_block(
+        nginx,
+        "staging-sitbank.pp.ua",
+        tls=True,
+    )
+    local_ready = local_server.split("location = /health/ready {", 1)[1].split(
+        "}",
+        1,
+    )[0]
+    public_ready = public_server.split("location = /health/ready {", 1)[1].split(
+        "}",
+        1,
+    )[0]
     assert "proxy_pass http://127.0.0.1:5001;" in local_ready
+    assert "proxy_set_header Host staging-sitbank.pp.ua;" in local_ready
+    assert "proxy_set_header X-Forwarded-Proto https;" in local_ready
+    assert "sitbank-proxy-headers.conf" not in local_ready
     assert "sitbank-cloudflare-access-headers.conf" not in local_ready
     assert "return 404;" in public_ready
+
+
+def test_jwks_cache_availability_read_uses_cache_lock(monkeypatch):
+    class TrackingLock:
+        entered = 0
+
+        def __enter__(self):
+            self.entered += 1
+
+        def __exit__(self, *_args):
+            return False
+
+    url = "https://team.cloudflareaccess.com/cdn-cgi/access/certs"
+    cloudflare_access._JWKS_CACHE[url] = (0.0, {})
+    lock = TrackingLock()
+    monkeypatch.setattr(cloudflare_access, "_JWKS_CACHE_LOCK", lock)
+
+    assert cloudflare_access._jwks_cache_contains(url) is True
+    assert lock.entered == 1
+    cloudflare_access._JWKS_CACHE.pop(url)

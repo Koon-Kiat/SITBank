@@ -107,7 +107,7 @@ def create_authenticated_cookie(
     suffix = secrets.token_hex(6)
     username = f"zap{suffix}"
     email = f"{username}@sit.singaporetech.edu.sg"
-    password = f"DAST-{secrets.token_urlsafe(24)}-A9!"
+    password = f"DAST-{secrets.token_urlsafe(24)}-A9!"  # NOSONAR - ephemeral generated test credential
     create_dast_user(
         username=username,
         email=email,

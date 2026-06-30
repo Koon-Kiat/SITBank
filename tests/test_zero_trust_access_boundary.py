@@ -137,14 +137,31 @@ def test_staging_nginx_blocks_direct_origin_bypass_but_keeps_local_health():
             for body in bodies
         )
 
-    ready_bodies = _nginx_location_bodies(staging_nginx, "= /health/ready")
-    assert len(ready_bodies) == 2
-    local_ready, public_ready = ready_bodies
+    local_readiness_server = _nginx_server_block(staging_nginx, "localhost")
+    public_staging_server = _nginx_server_block(
+        staging_nginx,
+        "staging-sitbank.pp.ua",
+    )
+    local_ready_bodies = _nginx_location_bodies(
+        local_readiness_server,
+        "= /health/ready",
+    )
+    public_ready_bodies = _nginx_location_bodies(
+        public_staging_server,
+        "= /health/ready",
+    )
+    assert len(local_ready_bodies) == 1
+    assert len(public_ready_bodies) == 1
+    local_ready = local_ready_bodies[0]
+    public_ready = public_ready_bodies[0]
     assert "listen 127.0.0.1:8081;" in staging_nginx
     assert "allow 127.0.0.1;" in local_ready
     assert "allow ::1;" in local_ready
     assert "deny all;" in local_ready
     assert "proxy_pass http://127.0.0.1:5001;" in local_ready
+    assert "proxy_set_header Host staging-sitbank.pp.ua;" in local_ready
+    assert "proxy_set_header X-Forwarded-Proto https;" in local_ready
+    assert "sitbank-proxy-headers.conf" not in local_ready
     assert "sitbank-cloudflare-access-headers.conf" not in local_ready
     assert "return 404;" in public_ready
 
@@ -181,6 +198,8 @@ def test_admin_public_surface_is_absent_and_private_access_is_tailscale_only():
     assert "proxy_pass http://127.0.0.1:5002;" not in production_nginx
 
     assert "Tailscale/private operator access" in docs
+    # Exact static architecture-doc check; no untrusted URL is accepted.
+    # lgtm[py/incomplete-url-substring-sanitization]
     assert "https://admin-sitbank.tailca101b.ts.net/" in docs
     assert "Do not enable Tailscale Funnel" in docs
     assert "old public admin verification" in docs
@@ -338,6 +357,9 @@ def test_repository_identity_ghcr_cosign_and_bootstrap_references_are_consistent
     workflow = Path(".github/workflows/ci-deploy.yml").read_text(encoding="utf-8")
     bootstrap = Path("ops/deploy/bootstrap-container-ec2").read_text(encoding="utf-8")
     deploy = Path("ops/deploy/sitbank-container-deploy").read_text(encoding="utf-8")
+    codeowners = Path(".github/CODEOWNERS").read_text(encoding="utf-8")
+    sonar = Path("sonar-project.properties").read_text(encoding="utf-8")
+    gitleaks = Path(".gitleaks.toml").read_text(encoding="utf-8")
     old_owner = "wenjiang" + "ggg"
     old_repo = f"ghcr.io/{old_owner}/sitbank"
 
@@ -353,7 +375,15 @@ def test_repository_identity_ghcr_cosign_and_bootstrap_references_are_consistent
         assert old_repo not in lowered, path
 
     assert "Repository identity: `Koon-Kiat/SITBank`" in docs
+    assert (
+        "GitHub reported `@Koon-Kiat` as an administrator"
+        in " ".join(docs.split())
+    )
     assert "Production image form: `ghcr.io/koon-kiat/sitbank@sha256:<digest>`" in docs
+    assert "* @Koon-Kiat" in codeowners
+    assert "sonar.projectKey=Koon-Kiat_SITBank" in sonar
+    assert "sonar.organization=koon-kiat" in sonar
+    assert r"^sonar\.projectKey=Koon-Kiat_SITBank$" in gitleaks
     assert 'repository="ghcr.io/${GITHUB_REPOSITORY,,}"' in workflow
     assert "GITHUB_REPOSITORY=${github_repository}" in bootstrap
     assert "GHCR_REPOSITORY=ghcr.io/${repository_lower}" in bootstrap
@@ -361,6 +391,20 @@ def test_repository_identity_ghcr_cosign_and_bootstrap_references_are_consistent
     assert "expected_identity=\"https://github.com/${GITHUB_REPOSITORY}/.github/workflows/ci-deploy.yml@refs/heads/main\"" in deploy
     assert "cosign verify" in deploy
     assert "--certificate-identity \"${COSIGN_CERTIFICATE_IDENTITY}\"" in deploy
+
+    stale_aliases = ("TL" + "0024", "Wen" + "Jiangg")
+    allowed_historical_files = {
+        Path(".gitleaks.toml"),
+        Path("tests/test_gitleaks_workflow.py"),
+    }
+    for alias in stale_aliases:
+        occurrences = {
+            path
+            for path in _tracked_files()
+            if path.is_file()
+            and alias in path.read_text(encoding="utf-8", errors="ignore")
+        }
+        assert occurrences <= allowed_historical_files
 
 
 def test_deployment_policy_and_wrapper_validation_are_not_weakened():

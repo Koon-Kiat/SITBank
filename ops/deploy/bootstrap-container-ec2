@@ -103,6 +103,7 @@ linux_runtime_files=(
 if [[ "${target}" == "staging" ]]; then
     linux_runtime_files+=(
         "${repo_root}/ops/deploy/verify-cloudflare-origin-pull-ca"
+        "${repo_root}/ops/deploy/verify-staging-edge-boundary"
         "${repo_root}/ops/nginx-proxy-headers.conf"
         "${repo_root}/ops/nginx/sitbank-staging.conf"
         "${repo_root}/ops/nginx/sitbank-staging-rate-limits.conf"
@@ -263,6 +264,9 @@ if [[ "${target}" == "staging" ]]; then
     install -o root -g root -m 0755 \
         "${repo_root}/ops/deploy/verify-cloudflare-origin-pull-ca" \
         /usr/local/sbin/verify-cloudflare-origin-pull-ca
+    install -o root -g root -m 0755 \
+        "${repo_root}/ops/deploy/verify-staging-edge-boundary" \
+        /usr/local/sbin/verify-staging-edge-boundary
     install -o root -g root -m 0644 \
         "${repo_root}/ops/security/cloudflare-origin-pull-ca-allowlist.json" \
         "${STAGING_CLOUDFLARE_ORIGIN_PULL_CA_ALLOWLIST}"
@@ -446,6 +450,8 @@ fi
 
 if [[ "${target}" == "staging" ]]; then
     staging_cert_dir="/etc/letsencrypt/live/${public_host}"
+    "${repo_root}/ops/deploy/verify-staging-edge-boundary" \
+        --edge-only "${public_host}"
     if ! /usr/local/sbin/verify-cloudflare-origin-pull-ca \
         --certificate "${STAGING_CLOUDFLARE_ORIGIN_PULL_CA_FILE}" \
         --allowlist "${STAGING_CLOUDFLARE_ORIGIN_PULL_CA_ALLOWLIST}"; then

@@ -514,26 +514,60 @@ prepare_dependencies() {
     fi
 }
 
+wait_for_ready_response() {
+    local expected_body="$1"
+    local url="$2"
+    shift 2
+    local attempt
+    local body
+    local response
+    local status
+    for attempt in {1..16}; do
+        if response="$(
+            curl --silent --show-error --max-redirs 0 \
+                --write-out $'\n%{http_code}' \
+                "$@" "${url}"
+        )"; then
+            status="${response##*$'\n'}"
+            body="${response%$'\n'*}"
+            if [[ "${status}" == "200" && "${body}" == "${expected_body}" ]]; then
+                return
+            fi
+        fi
+        if [[ "${attempt}" -lt 16 ]]; then
+            sleep 2
+        fi
+    done
+    echo "Readiness endpoint did not return the expected HTTP 200 response" >&2
+    return 1
+}
+
 wait_until_ready() {
     # Docker publishes the loopback port through its bridge. Preserve the
     # original host-side client address across the configured proxy hop so the
     # staging readiness-only Access bypass remains restricted to loopback.
-    curl --fail --silent --show-error \
-        --retry 15 --retry-delay 2 --retry-all-errors \
+    wait_for_ready_response \
+        '{"status":"ready"}' \
+        "http://${APP_BIND_HOST}:${APP_BIND_PORT}/health/ready" \
         --header "Host: ${PUBLIC_HOST}" \
         --header "X-Forwarded-For: 127.0.0.1" \
-        --header "X-Forwarded-Proto: https" \
-        "http://${APP_BIND_HOST}:${APP_BIND_PORT}/health/ready" >/dev/null
-    curl --fail --silent --show-error \
-        --retry 8 --retry-delay 2 --retry-all-errors \
-        --resolve "${PUBLIC_HOST}:443:127.0.0.1" \
-        "https://${PUBLIC_HOST}/health/ready" >/dev/null
+        --header "X-Forwarded-Proto: https"
+    if [[ "${target}" == "staging" ]]; then
+        wait_for_ready_response \
+            '{"status":"ready"}' \
+            "http://127.0.0.1:8081/health/ready"
+    else
+        wait_for_ready_response \
+            '{"status":"ready"}' \
+            "https://${PUBLIC_HOST}/health/ready" \
+            --resolve "${PUBLIC_HOST}:443:127.0.0.1"
+    fi
     if [[ "${target}" == "production" ]]; then
-        curl --fail --silent --show-error \
-            --retry 15 --retry-delay 2 --retry-all-errors \
+        wait_for_ready_response \
+            '{"app_mode":"admin","status":"ready"}' \
+            "http://${APP_BIND_HOST}:5002/health/ready" \
             --header "Host: sitbank-admin.internal" \
-            --header "X-Forwarded-Proto: https" \
-            "http://${APP_BIND_HOST}:5002/health/ready" >/dev/null
+            --header "X-Forwarded-Proto: https"
     fi
 }
 
@@ -701,6 +735,9 @@ for secret_file in "${required_secrets[@]}"; do
 done
 validate_staging_isolation
 validate_production_admin_isolation
+if [[ "${target}" == "staging" ]]; then
+    /usr/local/sbin/verify-staging-edge-boundary "${PUBLIC_HOST}"
+fi
 prepare_dependencies
 
 migration_run \

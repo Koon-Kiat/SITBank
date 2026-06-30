@@ -84,6 +84,7 @@ Routine verification:
 
 ```bash
 python ops/cloudflare/provision-staging-access --verify
+sudo /usr/local/sbin/verify-staging-edge-boundary staging-sitbank.pp.ua
 curl -I http://127.0.0.1:5001/
 curl --fail http://127.0.0.1:5001/health/ready
 curl --fail http://127.0.0.1:8081/health/ready
@@ -117,8 +118,9 @@ rollout. Custom zone/per-hostname AOP CAs require their own reviewed allowlist
 entry before deployment.
 
 Expected: the loopback Flask root returns `403` without an Access assertion,
-local Flask and Nginx staging readiness succeed without one, direct Nginx
-origin access fails TLS client-certificate verification without Cloudflare's
+local Flask and Nginx staging readiness return exact non-redirect `200`
+responses, direct Nginx origin access fails TLS client-certificate verification
+or returns the approved Nginx `400`/`403` denial without Cloudflare's
 origin-pull client certificate, and the
 private admin URL is reachable only from an approved tailnet path. Tailscale
 Funnel must stay disabled for SITBank admin.

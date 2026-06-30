@@ -176,7 +176,7 @@ customer domain.
 
 ## Deployment Snapshot
 
-Images are published as immutable signed digests under `ghcr.io/koon-kiat/sitbank@sha256:<digest>` from the `Koon-Kiat/SITBank` repository. The workflow derives the package path from `GITHUB_REPOSITORY` so future owner changes need only docs, CODEOWNERS, EC2 deploy config, and bootstrap inputs updated. Production uses `/etc/sitbank`, `/opt/sitbank`, `sitbank-container.service`, `sitbank_db`, `sitbank_owner`, `sitbank_app`, and a distinct admin runtime DB role such as `sitbank_admin`. Staging uses separate `/etc/sitbank-staging`, `/opt/sitbank-staging`, isolated Compose services, and isolated Docker volumes.
+Images are published as immutable signed digests under `ghcr.io/koon-kiat/sitbank@sha256:<digest>` from the `Koon-Kiat/SITBank` repository. The workflow derives the package path from `GITHUB_REPOSITORY`; any future owner change must still review CODEOWNERS, documentation, EC2/bootstrap trust configuration, GHCR/Cosign/OIDC identities, SonarQube binding, Gitleaks exceptions, and their consistency tests. Production uses `/etc/sitbank`, `/opt/sitbank`, `sitbank-container.service`, `sitbank_db`, `sitbank_owner`, `sitbank_app`, and a distinct admin runtime DB role such as `sitbank_admin`. Staging uses separate `/etc/sitbank-staging`, `/opt/sitbank-staging`, isolated Compose services, and isolated Docker volumes.
 
 Database migrations use Alembic. Existing databases that predate Alembic must first pass `verify-migration-baseline`, then be stamped with `db stamp 20260610_0001`. Do not run `db.create_all()` in deployment.
 
