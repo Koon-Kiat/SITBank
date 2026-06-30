@@ -230,7 +230,7 @@ def test_jwks_parse_failure_is_audited_safely(
     monkeypatch.setattr(
         cloudflare_access,
         "_fetch_jwks_document",
-        lambda _url: {"keys": [{"secret": "fake-service-token"}]},
+        lambda _url: {"keys": [{}]},
     )
 
     response = staging_app.test_client().get(

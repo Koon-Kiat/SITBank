@@ -352,8 +352,8 @@ def test_repository_identity_ghcr_cosign_and_bootstrap_references_are_consistent
         assert old_owner not in lowered, path
         assert old_repo not in lowered, path
 
-    assert "Repository identity: `WenJiangg/SITBank`" in docs
-    assert "Production image form: `ghcr.io/wenjiangg/sitbank@sha256:<digest>`" in docs
+    assert "Repository identity: `Koon-Kiat/SITBank`" in docs
+    assert "Production image form: `ghcr.io/koon-kiat/sitbank@sha256:<digest>`" in docs
     assert 'repository="ghcr.io/${GITHUB_REPOSITORY,,}"' in workflow
     assert "GITHUB_REPOSITORY=${github_repository}" in bootstrap
     assert "GHCR_REPOSITORY=ghcr.io/${repository_lower}" in bootstrap

@@ -2330,6 +2330,8 @@ def test_codeowners_and_codeql_cover_security_sensitive_changes():
     codeowners = Path(".github/CODEOWNERS").read_text(encoding="utf-8")
     codeql = Path(".github/workflows/codeql.yml").read_text(encoding="utf-8")
 
+    assert "@Koon-Kiat" in codeowners
+    assert "@WenJiangg" not in codeowners
     for protected_path in (
         "/.github/workflows/",
         "/Dockerfile",
@@ -3427,8 +3429,8 @@ def test_migration_baseline_and_existing_database_runbook_are_present():
     assert "verify-migration-baseline" in docs
     assert "db stamp 20260610_0001" in docs
     assert "Do not run `db.create_all()`" in docs
-    assert "WenJiangg/SITBank" in docs
-    assert "ghcr.io/wenjiangg/sitbank@sha256:<digest>" in docs
+    assert "Koon-Kiat/SITBank" in docs
+    assert "ghcr.io/koon-kiat/sitbank@sha256:<digest>" in docs
     assert "sitbank_db" in docs
     assert "sitbank_owner" in docs
     assert "sitbank_app" in docs
