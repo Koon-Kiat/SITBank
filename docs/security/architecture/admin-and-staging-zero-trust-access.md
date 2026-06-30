@@ -296,7 +296,9 @@ This server-level gate covers every public TLS location, including
 Direct-origin connections without Cloudflare's client certificate fail the
 TLS client-certificate exchange. Nginx readiness is isolated on
 `127.0.0.1:8081` and `[::1]:8081`; the public TLS `/health/ready` location
-does not proxy to Flask.
+does not proxy to Flask. The local readiness location sets the forwarded scheme
+to `https` explicitly, and the deployment wrapper requires an exact `200` plus
+the expected ready JSON without following redirects.
 
 These controls are independent and both are required: Authenticated Origin
 Pull proves the TLS client is Cloudflare, while Access JWT validation proves
@@ -308,6 +310,13 @@ Nginx shared-password authentication has been removed. Cloudflare Access is
 the auditable identity-aware boundary; Authenticated Origin Pull prevents
 direct-origin bypass, and Flask continues to enforce its own login, MFA, CSRF,
 session, and authorization controls.
+
+Bootstrap and deploy preserve this transition fail closed. The protected
+bootstrap job verifies the live Cloudflare application, policy, DNS, edge
+challenge, and direct-origin denial before changing EC2 state. The host
+bootstrap also requires the edge challenge before reloading the
+Basic-Auth-free Nginx config, and the root deploy wrapper rechecks the edge and
+local origin-pull boundary before stopping the old runtime.
 
 ## Admin Tailscale Access
 
@@ -425,6 +434,7 @@ Host-side staging checks after bootstrap:
 
 ```bash
 sudo /usr/local/sbin/verify-cloudflare-origin-pull-ca
+sudo /usr/local/sbin/verify-staging-edge-boundary staging-sitbank.pp.ua
 sudo /usr/local/sbin/verify-certbot-host-state staging
 sudo nginx -t
 curl --fail http://127.0.0.1:8081/health/ready
@@ -437,7 +447,8 @@ curl --fail http://127.0.0.1:5001/health/ready
 Expected: local readiness succeeds through loopback, a direct request to the
 Flask staging root returns `403` without an Access assertion, and direct Nginx
 origin access to `/` fails the TLS client-certificate exchange without
-Cloudflare's authenticated origin-pull client certificate.
+Cloudflare's authenticated origin-pull client certificate or returns an
+approved Nginx `400`/`403` fail-closed denial.
 
 The automated verification proves that the Access application and narrow
 policy match, DNS is proxied, the audience exists, unauthenticated edge traffic

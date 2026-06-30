@@ -33,7 +33,7 @@ from .recovery_codes import (
 from .services import AuthError, _verify_totp_for_user
 
 
-GENERIC_FORGOT_PASSWORD_MESSAGE = "If an account exists for that email, a reset link has been sent."
+GENERIC_FORGOT_PASSWORD_MESSAGE = "If an account exists for that email, a reset link has been sent."  # NOSONAR - user-facing status, not a credential
 GENERIC_MANUAL_RECOVERY_MESSAGE = "If the account can be reviewed, a recovery request has been recorded."
 GENERIC_RESET_ERROR = "Password reset link is invalid or expired"
 RESET_TRANSACTION_EXPIRED_ERROR = "Password reset transaction expired"

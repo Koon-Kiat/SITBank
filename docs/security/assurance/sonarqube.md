@@ -157,18 +157,15 @@ maintainability finding that asks for only one of those identifiers should be
 accepted with this rationale rather than removing reproducible pinning or
 automated version tracking.
 
-Four cognitive-complexity findings are accepted maintainability debt in
-central registration and security-boundary functions:
-
-- Flask CLI command registration;
-- database-backed session-hook registration;
-- production-readiness validation; and
-- the transactional admin database-privilege applicator.
-
-These findings are not security defects, and splitting the functions without a
-dedicated design review would increase control-flow and rollback risk. Other
-cognitive-complexity findings were reduced with tested helper extraction.
-Accepted findings remain visible in SonarQube and are not suppressed in source.
+The database-backed session hook, production-readiness mode validation, and
+transactional admin database-privilege applicator use focused tested helpers so
+their security decisions and rollback boundaries remain explicit. Flask CLI
+registration retains one line-scoped `NOSONAR` disposition because Sonar counts
+the colocated Click decorator declarations as one function even though each
+command has an independent callback. Credential-like configuration names,
+standardized HMAC-SHA1 TOTP use, HIBP range lookup, keyed HMAC references, and
+isolated-container HTTP carry only line-scoped dispositions with an adjacent
+rationale; there are no file-wide exclusions.
 
 ## Initial Quality-Gate And Triage Policy
 

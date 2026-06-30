@@ -180,12 +180,21 @@ and exact fingerprint/subject/issuer membership in the reviewed repository
 allowlist. The initial entry is Cloudflare's global AOP CA. Custom
 zone/per-hostname CAs and provider rotations require a reviewed allowlist
 change before deployment; bootstrap never fetches CA material or uses the
-Cloudflare API token.
+Cloudflare API token. The protected bootstrap workflow runs read-only provider
+verification first, while the host bootstrap and deploy wrapper independently
+require a live edge Access challenge. Deployment also requires the direct
+loopback origin to fail closed before switching runtimes.
 
 Only loopback `/health/ready` bypasses the assertion gate. A non-loopback
 readiness request still requires a valid assertion and remains blocked by
 Nginx. Production customer and admin runtimes do not install the staging
 request hook.
+
+Staging deployment readiness uses only
+`http://127.0.0.1:8081/health/ready`. The local Nginx block supplies the trusted
+HTTPS forwarding scheme, and the deploy wrapper accepts only the exact ready
+JSON with HTTP `200`; redirects and the public TLS `/health/ready` are never
+accepted as readiness.
 
 `--verify --evidence-file <path>` writes a sanitized JSON summary containing
 only check results, the public staging hostname, expected session duration,

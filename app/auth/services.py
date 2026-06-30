@@ -137,6 +137,9 @@ def _enforce_auth_backoff(scope: str, principal: str) -> None:
 
 
 def _dummy_password_hash() -> str:
+    # This fingerprints high-entropy in-memory configuration for cache invalidation;
+    # user passwords are processed only by hash_password below.
+    # lgtm[py/weak-sensitive-data-hashing]
     config_fingerprint = hashlib.sha256(
         (
             f"{current_app.config['PASSWORD_PBKDF2_ITERATIONS']}:"
@@ -904,7 +907,8 @@ def _lock_user_account(user: User, reason: str, scope: str, attempts: int) -> No
 
 
 def _totp(secret: str) -> pyotp.TOTP:
-    return pyotp.TOTP(secret, digits=6, interval=30, digest=hashlib.sha1)
+    # RFC-compatible TOTP uses HMAC-SHA1; this is not password hashing.
+    return pyotp.TOTP(secret, digits=6, interval=30, digest=hashlib.sha1)  # NOSONAR
 
 
 def _mfa_secret_for_user(user: User) -> str:

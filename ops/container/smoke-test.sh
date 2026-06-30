@@ -474,7 +474,7 @@ if [[ "${admin_ready}" -ne 1 ]]; then
 fi
 
 if [[ "${RUN_ZAP_DAST:-false}" == "true" ]]; then
-    dast_base_url="http://${app_container}:5000"
+    dast_base_url="http://${app_container}:5000"  # NOSONAR - isolated ephemeral Docker network
     if ! wait_for_app_from_smoke_network "${dast_base_url}"; then
         echo "SITBank application was not reachable from the DAST smoke network" >&2
         false
@@ -490,11 +490,11 @@ if [[ "${RUN_ZAP_DAST:-false}" == "true" ]]; then
         --volume "${dast_mount_source}:/run/dast:rw" \
         "${IMAGE}" \
         python /app/create_dast_session.py \
-            --base-url "${dast_base_url}" \
             --allow-host "${app_container}" \
             --output-root /run/dast \
             --output /run/dast/auth-cookie \
-            --zap-replacer-config-output /run/dast/zap-replacer.properties
+            --zap-replacer-config-output /run/dast/zap-replacer.properties \
+            --base-url "${dast_base_url}"  # NOSONAR - isolated ephemeral Docker network
     docker run --rm --interactive "${docker_args[@]}" \
         --volume "${dast_mount_source}:/run/dast:ro" \
         "${IMAGE}" \
@@ -526,10 +526,10 @@ PY
         --volume "${dast_mount_source}:/run/dast:ro" \
         "${ZAP_IMAGE}" \
         zap-full-scan.py \
-            -t "http://${app_container}:5000/dashboard" \
             -I \
             -m 2 \
             -r zap-report.html \
             -J zap-report.json \
-            -z "-dir /zap/wrk/.ZAP -configfile /run/dast/zap-replacer.properties"
+            -z "-dir /zap/wrk/.ZAP -configfile /run/dast/zap-replacer.properties" \
+            -t "http://${app_container}:5000/dashboard"  # NOSONAR - isolated ephemeral Docker network
 fi

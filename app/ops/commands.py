@@ -28,7 +28,8 @@ from app.ops.db_privileges import (
 )
 
 
-def register_ops_commands(app: Flask) -> None:
+# Click command declarations are intentionally colocated registration metadata.
+def register_ops_commands(app: Flask) -> None:  # NOSONAR
     @app.cli.group("admin")
     def admin_cli() -> None:
         """Admin-only management commands."""

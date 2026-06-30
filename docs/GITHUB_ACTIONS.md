@@ -110,6 +110,12 @@ wildcard domains, and broad allow-all rules are forbidden. Run the workflow
 manually after any provider or environment change; safe drift output names
 non-secret fields and reports allowlist mismatches by count without printing
 emails, tokens, headers, cookies, JWTs, or Access assertions.
+The staging bootstrap job also runs this read-only verification before any EC2
+mutation. The root deployment wrapper independently checks the live edge
+challenge and loopback direct-origin denial before switching the staging
+runtime. This ordering makes Cloudflare Access and direct-origin denial
+prerequisites for installing the Basic-Auth-free Nginx edge or changing the
+application behind it.
 The uploaded JSON is intentionally sanitized and retained for 30 days. It
 contains no provider export or raw HTTP response. GitHub secret masking is
 defense in depth; the automation also redacts authentication headers, bearer

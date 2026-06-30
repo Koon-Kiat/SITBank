@@ -20,7 +20,21 @@ condition = "AND"
 targetRules = ["generic-api-key"]
 regexTarget = "line"
 paths = ['''^sonar-project\.properties$''']
-regexes = ['''^sonar\.projectKey=(?:Koon-Kiat|TL0024|WenJiangg)_SITBank$''']
+regexes = ['''^sonar\.projectKey=Koon-Kiat_SITBank$''']
+
+[[allowlists]]
+description = "Historical public SonarQube Cloud project-key aliases"
+condition = "AND"
+targetRules = ["generic-api-key"]
+regexTarget = "line"
+commits = [
+  "0bc76fafb0d0d6bd55e0d6bfbf30b1d1721fc163",
+  "50a8828a6dbe423c519581fbdcf69c04fda1b2b3",
+  "f29d15f476d975d4b8e3c9e1b529a855a12776db",
+  "69b9bfc6a06b8197c2760ce833902de71c3f97ed",
+]
+paths = ['''^sonar-project\.properties$''']
+regexes = ['''^sonar\.projectKey=(?:TL0024|WenJiangg)_SITBank$''']
 
 [[allowlists]]
 description = "Historical synthetic accepted-password test fixture"

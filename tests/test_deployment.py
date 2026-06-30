@@ -1491,7 +1491,8 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "sitbank-staging-postgres-data" not in compose_text
     assert "sitbank-staging-redis-data" not in compose_text
     assert "--wait --wait-timeout 120" in deploy_script
-    assert deploy_script.count("--retry-all-errors") == 3
+    assert "--retry-all-errors" not in deploy_script
+    assert "for attempt in {1..16}" in deploy_script
     assert "show_app_diagnostics" in deploy_script
     assert "DATABASE_MIGRATION_URL_FILE=/run/secrets/database_migration_url" in deploy_script
     assert "Staging runtime database URL must use only the staging app role" in deploy_script
@@ -1519,12 +1520,22 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "Admin runtime database role must be distinct from customer runtime role" in deploy_script
     assert "Admin runtime database role must not be the migration/schema-owner role" in deploy_script
     assert "python -m flask --app admin_wsgi:app production-check" in deploy_script
-    assert (
-        '--header "X-Forwarded-For: 127.0.0.1" \\\n'
-        '        --header "X-Forwarded-Proto: https" \\\n'
-        '        "http://${APP_BIND_HOST}:${APP_BIND_PORT}/health/ready"'
-        in deploy_script
+    assert "wait_for_ready_response" in deploy_script
+    assert '"http://${APP_BIND_HOST}:${APP_BIND_PORT}/health/ready"' in deploy_script
+    assert '"http://127.0.0.1:8081/health/ready"' in deploy_script
+    assert '"${status}" == "200"' in deploy_script
+    assert '"${body}" == "${expected_body}"' in deploy_script
+    assert "--max-redirs 0" in deploy_script
+    staging_ready_branch = re.search(
+        r'if \[\[ "\$\{target\}" == "staging" \]\]; then'
+        r"(.*?)"
+        r"else",
+        deploy_script[deploy_script.index("wait_until_ready()") :],
+        flags=re.DOTALL,
     )
+    assert staging_ready_branch is not None
+    assert "http://127.0.0.1:8081/health/ready" in staging_ready_branch.group(1)
+    assert 'https://${PUBLIC_HOST}/health/ready' not in staging_ready_branch.group(1)
     assert '"http://${APP_BIND_HOST}:5002/health/ready"' in deploy_script
     deploy_db_sequence = re.search(
         r"migration_run \\\n    python -m flask --app wsgi:app db upgrade"
@@ -2155,6 +2166,24 @@ def test_manual_bootstrap_workflow_uses_only_signed_trusted_main_sources():
     assert "refs/heads/main" in guard_step["run"]
     assert "GITHUB_WORKFLOW_SHA" in guard_step["run"]
 
+    staging_steps = workflow["jobs"]["bootstrap-staging"]["steps"]
+    cloudflare_preflight = next(
+        step
+        for step in staging_steps
+        if step["name"] == "Verify Cloudflare boundary before staging bootstrap"
+    )
+    assert cloudflare_preflight["run"] == (
+        "python ops/cloudflare/provision-staging-access --verify"
+    )
+    assert cloudflare_preflight["env"]["CLOUDFLARE_API_TOKEN"] == (
+        "${{ secrets.CLOUDFLARE_API_TOKEN }}"
+    )
+    assert "STAGING_ORIGIN_IP" in cloudflare_preflight["env"]
+    assert not any(
+        step["name"] == "Verify Cloudflare boundary before staging bootstrap"
+        for step in workflow["jobs"]["bootstrap-production"]["steps"]
+    )
+
     for target, prefix in (("staging", "STAGING"), ("production", "PROD")):
         job = workflow["jobs"][f"bootstrap-{target}"]
         assert job["if"] == f"inputs.target_environment == '{target}'"
@@ -2229,6 +2258,8 @@ def test_root_bootstrap_wrapper_authenticates_and_limits_privileged_updates():
     assert "cosign verify-blob" in wrapper
     assert 'trusted_sha}" =~ ^[0-9a-f]{40}$' in wrapper
     assert ".sitbank-bootstrap-commit" in wrapper
+    # Exact static trust-document check; no untrusted URL is accepted.
+    # lgtm[py/incomplete-url-substring-sanitization]
     assert "token.actions.githubusercontent.com" in wrapper
     assert "Bootstrap input must be owned by" in wrapper
     assert "Unsafe bootstrap archive member" in wrapper
@@ -2331,7 +2362,7 @@ def test_codeowners_and_codeql_cover_security_sensitive_changes():
     codeql = Path(".github/workflows/codeql.yml").read_text(encoding="utf-8")
 
     assert "@Koon-Kiat" in codeowners
-    assert "@WenJiangg" not in codeowners
+    assert "@Wen" + "Jiangg" not in codeowners
     for protected_path in (
         "/.github/workflows/",
         "/Dockerfile",
@@ -2506,15 +2537,21 @@ def test_live_tls_scan_workflow_collects_evidence_without_running_on_pull_reques
     for docs in (deployment_docs, operations_docs, crypto_docs):
         assert "live tls scan evidence" in docs.lower()
         assert "staging-sitbank.pp.ua" in docs
+        # Exact static documentation checks; no untrusted URL is accepted.
+        # lgtm[py/incomplete-url-substring-sanitization]
         assert "sitbank.duckdns.org" in docs
         assert "SSL Labs" in docs
         assert re.search(r"HIGH,\s+CRITICAL,\s+or FATAL", docs)
     for docs in (deployment_docs, operations_docs):
+        # Exact static documentation check; no untrusted URL is accepted.
+        # lgtm[py/incomplete-url-substring-sanitization]
         assert "https://admin-sitbank.tailca101b.ts.net/" in docs
     assert "staging_host" in deployment_docs
     assert "staging_host" in operations_docs
     assert "retired DuckDNS staging hostname" in deployment_docs
     assert "retired DuckDNS staging hostname" in operations_docs
+    # Exact static documentation check; no untrusted URL is accepted.
+    # lgtm[py/incomplete-url-substring-sanitization]
     assert "admin-sitbank.tailca101b.ts.net" in operations_docs
     assert "private Tailscale admin hostname" in operations_docs
     assert "testssl.sh --warnings batch --color 0" in deployment_docs
@@ -2604,6 +2641,7 @@ def test_linux_deployment_artifacts_are_forced_to_lf_and_reject_crlf():
         Path("ops/deploy/sitbank-container-runtime"),
         Path("ops/deploy/sitbank-database-cutover"),
         Path("ops/deploy/verify-certbot-host-state"),
+        Path("ops/deploy/verify-staging-edge-boundary"),
         Path("ops/deploy/verify-tailscale-admin-access"),
         Path("ops/tailscale/install-tailscale"),
         Path("ops/tailscale/configure-admin-access"),
@@ -2631,6 +2669,7 @@ def test_linux_deployment_artifacts_are_forced_to_lf_and_reject_crlf():
     assert "ops/deploy/bootstrap-container-ec2 text eol=lf" in attributes
     assert "ops/deploy/sitbank-container-bootstrap text eol=lf" in attributes
     assert "ops/deploy/verify-certbot-host-state text eol=lf" in attributes
+    assert "ops/deploy/verify-staging-edge-boundary text eol=lf" in attributes
     assert "ops/deploy/verify-tailscale-admin-access text eol=lf" in attributes
     assert "ops/tailscale/* text eol=lf" in attributes
     assert "ops/backups/* text eol=lf" in attributes
@@ -2941,15 +2980,29 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     assert "return 403;" in staging_http_root_bodies[0]
     assert "return 301" not in staging_http_root_bodies[0]
 
-    health_bodies = _nginx_location_bodies(nginx, "= /health/ready")
-    assert len(health_bodies) == 2
-    local_health_body, public_health_body = health_bodies
+    local_readiness_server = _nginx_server_block(nginx, "localhost")
+    public_staging_server = _nginx_server_block(nginx, "staging-sitbank.pp.ua")
+    local_health_bodies = _nginx_location_bodies(
+        local_readiness_server,
+        "= /health/ready",
+    )
+    public_health_bodies = _nginx_location_bodies(
+        public_staging_server,
+        "= /health/ready",
+    )
+    assert len(local_health_bodies) == 1
+    assert len(public_health_bodies) == 1
+    local_health_body = local_health_bodies[0]
+    public_health_body = public_health_bodies[0]
     assert "listen 127.0.0.1:8081;" in nginx
     assert "listen [::1]:8081;" in nginx
     assert "allow 127.0.0.1;" in local_health_body
     assert "allow ::1;" in local_health_body
     assert "deny all;" in local_health_body
     assert "proxy_pass http://127.0.0.1:5001;" in local_health_body
+    assert "proxy_set_header Host staging-sitbank.pp.ua;" in local_health_body
+    assert "proxy_set_header X-Forwarded-Proto https;" in local_health_body
+    assert "sitbank-proxy-headers.conf" not in local_health_body
     assert "limit_req" not in local_health_body
     assert "return 404;" in public_health_body
 
@@ -2999,6 +3052,8 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     assert "STAGING_CLOUDFLARE_ORIGIN_PULL_CA_FILE=\"/etc/nginx/cloudflare-authenticated-origin-pull-ca.pem\"" in bootstrap
     assert "STAGING_CLOUDFLARE_ORIGIN_PULL_CA_ALLOWLIST=\"/etc/sitbank-staging/cloudflare-origin-pull-ca-allowlist.json\"" in bootstrap
     assert "if ! /usr/local/sbin/verify-cloudflare-origin-pull-ca" in bootstrap
+    assert "verify-staging-edge-boundary" in bootstrap
+    assert "--edge-only \"${public_host}\"" in bootstrap
     assert "Cloudflare Authenticated Origin Pull CA validation failed." in bootstrap
     assert "Install a reviewed CA certificate before rerunning staging bootstrap." in bootstrap
     assert "Missing required staging TLS file" in bootstrap

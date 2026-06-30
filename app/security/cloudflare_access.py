@@ -407,9 +407,14 @@ def _audit_access_denial(
             "validation_required": True,
             "audience_configured": bool(settings.audience),
             "issuer_configured": bool(settings.issuer),
-            "jwks_cache_available": settings.jwks_url in _JWKS_CACHE,
+            "jwks_cache_available": _jwks_cache_contains(settings.jwks_url),
         },
     )
+
+
+def _jwks_cache_contains(url: str) -> bool:
+    with _JWKS_CACHE_LOCK:
+        return url in _JWKS_CACHE
 
 
 def _clear_jwks_cache_for_testing() -> None:

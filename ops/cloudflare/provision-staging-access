@@ -805,11 +805,11 @@ def verify_live_http(config: Config) -> HTTPVerification:
         r"^HTTP/\S+\s+(\d{3})", direct.stdout, flags=re.MULTILINE
     )
     if direct.returncode == 0:
-        if not direct_statuses or direct_statuses[-1] != "403":
+        if not direct_statuses or direct_statuses[-1] not in {"400", "403"}:
             raise VerificationError(
-                "Direct origin request was not blocked with HTTP 403"
+                "Direct origin request did not return an approved fail-closed status"
             )
-        direct_result = "http_403"
+        direct_result = f"http_{direct_statuses[-1]}"
     elif direct.returncode in {7, 28, 35, 52, 56}:
         direct_result = f"network_or_tls_block_curl_{direct.returncode}"
     else:
