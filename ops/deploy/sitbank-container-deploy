@@ -530,6 +530,9 @@ wait_for_ready_response() {
         )"; then
             status="${response##*$'\n'}"
             body="${response%$'\n'*}"
+            body="${body%$'\r'}"
+            body="${body%$'\n'}"
+
             if [[ "${status}" == "200" && "${body}" == "${expected_body}" ]]; then
                 return
             fi
