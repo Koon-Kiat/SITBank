@@ -94,7 +94,6 @@ def _stable_totp(secret: str) -> str:
 
 def _create_invite(client, secret: str, **overrides):
     payload = {
-        "personal_email": "staff.person@gmail.com",
         "workplace_email": "staff.person@sit.singaporetech.edu.sg",
         "role": "staff",
         "totp_code": _stable_totp(secret),
@@ -133,12 +132,15 @@ def test_root_admin_can_create_hashed_staff_invite(admin_client):
 
     assert response.status_code == 201
     assert response.get_json()["invite"]["workplace_email"] == "staff.person@sit.singaporetech.edu.sg"
+    assert "personal_email_ref" not in response.get_json()["invite"]
+    assert invite.personal_email_normalized is None
     assert invite.token_hash != token
     assert token not in json.dumps(invite.__dict__, default=str)
     assert invite.expires_at.replace(tzinfo=timezone.utc) > datetime.now(timezone.utc)
-    assert password_reset_outbox()[-1]["to"] == "staff.person@gmail.com"
+    assert password_reset_outbox()[-1]["to"] == "staff.person@sit.singaporetech.edu.sg"
     assert "temporary password" not in password_reset_outbox()[-1]["body"].casefold()
     assert events and "token" not in json.dumps(events[0].event_metadata).casefold()
+    assert "personal_email_ref" not in events[0].event_metadata
 
 
 def test_only_root_admin_with_totp_stepup_can_create_invites(admin_client):
@@ -164,7 +166,6 @@ def test_only_root_admin_with_totp_stepup_can_create_invites(admin_client):
     missing_stepup = admin_client.post(
         "/invites",
         json={
-            "personal_email": "person@gmail.com",
             "workplace_email": "person@sit.singaporetech.edu.sg",
             "role": "staff",
         },
@@ -186,14 +187,12 @@ def test_invite_creation_validates_server_side_email_and_role_policy(admin_clien
     cases = [
         {"workplace_email": "staff@sit.singaporetech.edu.sg.evil.com"},
         {"workplace_email": "staff@gmail.com"},
-        {"personal_email": "staff+tag@gmail.com"},
-        {"personal_email": "staff@sit.singaporetech.edu.sg"},
-        {"personal_email": ROOT_EMAIL},
+        {"personal_email": "staff.person@gmail.com"},
         {"role": "root_admin"},
     ]
     responses = [_create_invite(admin_client, secret, **case) for case in cases]
 
-    assert [response.status_code for response in responses] == [400, 400, 400, 400, 400, 400]
+    assert [response.status_code for response in responses] == [400, 400, 400, 400]
     assert db.session.query(StaffInvite).count() == 0
 
 
@@ -209,7 +208,6 @@ def test_invite_creation_accepts_configured_admin_email_domains(admin_client):
     response = _create_invite(
         admin_client,
         secret,
-        personal_email="staff.second-domain@gmail.com",
         workplace_email="staff.second-domain@singaporetech.edu.sg",
     )
 
@@ -329,6 +327,7 @@ def test_staff_invite_acceptance_activates_only_after_workplace_code_and_totp(ad
     assert staff_user.account_type == "staff"
     assert staff_user.account_status == "active"
     assert staff_user.account_number is None
+    assert staff_user.staff_personal_email is None
     assert staff_user.workplace_email_verified_at is not None
     assert login_before_activation.status_code == 401
     assert verify.status_code == 200

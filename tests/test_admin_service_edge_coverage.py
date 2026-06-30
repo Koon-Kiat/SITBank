@@ -16,8 +16,6 @@ def test_email_normalizers_reject_malformed_and_aliased_addresses(app):
             services.normalize_workplace_email(
                 "staff+alias@sit.singaporetech.edu.sg",
             )
-        with pytest.raises(AuthError):
-            services.normalize_personal_email("not-an-email")
 
 
 def test_phone_validation_remains_ascii_only():
@@ -55,7 +53,6 @@ def test_admin_step_up_entry_points_reject_missing_totp(app, monkeypatch):
         with pytest.raises(AuthError):
             services.create_staff_invite(
                 actor,
-                personal_email="staff@example.com",
                 workplace_email="staff@sit.singaporetech.edu.sg",
                 role="admin",
                 totp_code=None,

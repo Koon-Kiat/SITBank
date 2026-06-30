@@ -17,6 +17,7 @@ from app.models import (
     ServerSideSession,
     StaffInvite,
     TotpReplayRecord,
+    User,
 )
 from app.security.alerts import validate_security_alert_config
 from app.security.audit import validate_audit_integrity_config
@@ -29,6 +30,7 @@ from app.security.session_hmac import (
     SESSION_PAYLOAD_FORMAT_VERSION,
     validate_session_hmac_config,
 )
+from app.security.identity_policy import is_privileged_workplace_email
 from config import (
     MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS,
     MIN_PRODUCTION_PASSWORD_LENGTH,
@@ -36,6 +38,9 @@ from config import (
     _validate_password_length_config,
     _validate_session_absolute_lifetime_config,
 )
+
+
+PRIVILEGED_ACCOUNT_TYPES = frozenset({"staff", "admin", "root_admin"})
 
 
 @dataclass
@@ -52,19 +57,6 @@ class ProductionReadinessResult:
 
 class ProductionStartupSecurityError(RuntimeError):
     """Raised only when a production WSGI process is unsafe to start."""
-
-
-def _email_domain(value: object) -> str:
-    _local, separator, domain = str(value or "").strip().partition("@")
-    return domain.casefold() if separator else ""
-
-
-def _config_values(value: object) -> tuple[str, ...]:
-    if value is None:
-        return ()
-    if isinstance(value, str):
-        return tuple(item.strip().casefold() for item in value.split(",") if item.strip())
-    return tuple(str(item).strip().casefold() for item in value if str(item).strip())
 
 
 def is_production_app(app: Flask) -> bool:
@@ -96,6 +88,7 @@ def validate_production_security_prerequisites(
         _validate_edge_policy(app, result)
         _validate_lifetime_policy(app, result)
         _validate_runtime_database_privileges(app, result)
+        _record_privileged_email_compliance(requested_mode, result)
 
     return result
 
@@ -158,13 +151,7 @@ def _validate_mode_and_route_isolation(
         root_admin_collection = isinstance(root_admin_emails, (set, frozenset, list, tuple))
         if not root_admin_collection or len(root_admin_emails) != 7:
             result.failures.append("ROOT_ADMIN_EMAILS must configure exactly 7 root administrators")
-        admin_domains = set(
-            _config_values(
-                app.config.get("ADMIN_ALLOWED_EMAIL_DOMAINS")
-                or app.config.get("SIT_WORKPLACE_EMAIL_DOMAINS")
-            )
-        )
-        if root_admin_collection and any(_email_domain(item) not in admin_domains for item in root_admin_emails):
+        if root_admin_collection and any(not is_privileged_workplace_email(item) for item in root_admin_emails):
             result.failures.append("ROOT_ADMIN_EMAILS must use approved admin workplace domains")
         if any(endpoint.startswith(("auth.", "web.", "banking.", "main.")) for endpoint in endpoints):
             result.failures.append("Admin runtime must not register customer routes")
@@ -190,6 +177,7 @@ def _validate_database_connectivity_and_tables(
         return
 
     table_checks = [
+        (User, "users table"),
         (ServerSideSession, "server_side_sessions table"),
         (AuthAttemptCounter, "auth_attempt_counters table"),
         (TotpReplayRecord, "totp_replay_records table"),
@@ -208,6 +196,25 @@ def _validate_database_connectivity_and_tables(
         except Exception as exc:
             _database_failure(result, f"{label} access check", exc)
             return
+
+
+def _record_privileged_email_compliance(
+    app_mode: str,
+    result: ProductionReadinessResult,
+) -> None:
+    if app_mode != "admin":
+        return
+    try:
+        emails = db.session.execute(
+            db.select(User.email).where(User.account_type.in_(tuple(PRIVILEGED_ACCOUNT_TYPES)))
+        ).scalars()
+    except Exception as exc:
+        _database_failure(result, "privileged email compliance report", exc)
+        return
+
+    result.details["privileged_email_noncompliant_accounts"] = sum(
+        1 for email in emails if not is_privileged_workplace_email(str(email or ""))
+    )
 
 
 def _validate_password_policy(app: Flask, result: ProductionReadinessResult) -> None:

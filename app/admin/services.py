@@ -35,10 +35,8 @@ from app.security.identity_policy import (
     IdentityPolicyError,
     admin_allowed_email_domains,
     is_admin_workplace_email,
-    normalize_identity_email,
     require_admin_workplace_email,
     root_admin_emails,
-    staff_personal_email_policy_violation,
 )
 from app.security.passwords import (
     PasswordPolicyError,
@@ -87,16 +85,12 @@ FRESH_MFA_REQUIRED_ERROR = "Fresh MFA verification is required"
 INVITE_CREATE_ERROR = "Invite could not be created"
 INVITE_ACCEPTANCE_ERROR = "Invite acceptance failed"
 INVALID_WORKPLACE_EMAIL_ERROR = "Invalid workplace email"
-INVALID_PERSONAL_EMAIL_ERROR = "Invalid personal email"
 GENERIC_INVITE_ERROR = "Invite link is invalid or expired"
 GENERIC_WORKPLACE_VERIFICATION_ERROR = "Workplace verification failed"
 ADMIN_AUTH_BACKOFF_ERROR = "Too many attempts. Please try again later."
 STAFF_USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{3,64}$")
 FULL_NAME_RE = re.compile(r"^[^\x00-\x1f\x7f<>]{1,120}$")
 PHONE_RE = re.compile(r"^[89]\d{7}$", re.ASCII)
-EMAIL_RE = re.compile(
-    r"^(?=\S{1,128}@\S{1,253}$)[^@\x00-\x1f\x7f]+@[^@\x00-\x1f\x7f]+$"
-)
 TOTP_RE = re.compile(r"^\d{6}$")
 WORKPLACE_CODE_RE = re.compile(r"^\d{6}$")
 AUDIT_EVENT_TYPE_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
@@ -119,7 +113,6 @@ AUDIT_ALLOWED_OUTCOMES = frozenset(
 AUDIT_TARGET_METADATA_KEYS = (
     "audit_event_ref",
     "invite_ref",
-    "personal_email_ref",
     "principal_ref",
     "request_ref",
     "target_customer_ref",
@@ -881,7 +874,6 @@ def logout_admin_session() -> None:
 def create_staff_invite(
     actor: User,
     *,
-    personal_email: str,
     workplace_email: str,
     role: str,
     totp_code: str | None,
@@ -895,14 +887,9 @@ def create_staff_invite(
 
     try:
         normalized_workplace = normalize_workplace_email(workplace_email)
-        normalized_personal = normalize_personal_email(personal_email)
     except AuthError:
         audit_event("staff_invite_create", "blocked", user=actor, metadata={"reason": "email_policy"})
         raise
-    personal_policy_reason = staff_personal_email_policy_violation(normalized_personal, normalized_workplace)
-    if personal_policy_reason:
-        audit_event("staff_invite_create", "blocked", user=actor, metadata={"reason": personal_policy_reason})
-        raise AuthError(INVALID_PERSONAL_EMAIL_ERROR, 400)
     normalized_role = str(role or "").strip().casefold()
     if normalized_role not in INVITABLE_ROLES:
         audit_event("staff_invite_create", "failure", user=actor, metadata={"reason": "invalid_role"})
@@ -910,7 +897,7 @@ def create_staff_invite(
     if normalized_role == ACCOUNT_ROOT_ADMIN:
         raise AuthError("Invalid invite role", 400)
     _reject_existing_staff_identity(normalized_workplace)
-    _reject_active_invite(normalized_workplace, normalized_personal)
+    _reject_active_invite(normalized_workplace)
     if not _verify_totp_for_user(actor, totp_code, "staff_invite_create"):
         audit_event("staff_invite_create", "failure", user=actor, metadata={"reason": "invalid_totp_step_up"})
         raise AuthError(FRESH_MFA_REQUIRED_ERROR, 403)
@@ -919,7 +906,7 @@ def create_staff_invite(
     now = _utcnow()
     invite = StaffInvite(
         token_hash=invite_token_hash(token),
-        personal_email_normalized=normalized_personal,
+        personal_email_normalized=None,
         workplace_email_normalized=normalized_workplace,
         role=normalized_role,
         status="pending",
@@ -1137,7 +1124,7 @@ def start_invite_acceptance(
             full_name=name,
             phone_number=phone,
             account_number=None,
-            staff_personal_email=invite.personal_email_normalized,
+            staff_personal_email=None,
             mfa_enabled=False,
         )
         db.session.add(user)
@@ -1149,7 +1136,7 @@ def start_invite_acceptance(
         user.full_name = name
         user.phone_number = phone
         user.password_hash = hash_password(password)
-        user.staff_personal_email = invite.personal_email_normalized
+        user.staff_personal_email = None
 
     secret = pyotp.random_base32(length=32)
     user.mfa_secret_nonce, user.mfa_secret_ciphertext = encrypt_mfa_secret(secret, user.id)
@@ -1248,7 +1235,6 @@ def public_admin_user(user: User) -> dict[str, Any]:
 def public_invite(invite: StaffInvite) -> dict[str, Any]:
     return {
         "id": invite.id,
-        "personal_email_ref": audit_reference("staff_personal_email", invite.personal_email_normalized),
         "workplace_email": invite.workplace_email_normalized,
         "role": invite.role,
         "status": invite.status,
@@ -1282,22 +1268,6 @@ def normalize_workplace_email(email: str) -> str:
     local = normalized.partition("@")[0]
     if _contains_alias_separator(local):
         raise AuthError(INVALID_WORKPLACE_EMAIL_ERROR, 400)
-    return normalized
-
-
-def normalize_personal_email(email: str) -> str:
-    try:
-        normalized = normalize_identity_email(email)
-    except IdentityPolicyError as exc:
-        raise AuthError(INVALID_PERSONAL_EMAIL_ERROR, 400) from exc
-    local, separator, domain = normalized.partition("@")
-    if not _valid_email_parts(local, separator, domain):
-        raise AuthError(INVALID_PERSONAL_EMAIL_ERROR, 400)
-    domain_lower = domain.casefold()
-    if staff_personal_email_policy_violation(normalized) or domain_lower not in _personal_domains():
-        raise AuthError(INVALID_PERSONAL_EMAIL_ERROR, 400)
-    if _contains_alias_separator(local):
-        raise AuthError(INVALID_PERSONAL_EMAIL_ERROR, 400)
     return normalized
 
 
@@ -1369,20 +1339,15 @@ def _audit_invalid_invite_attempt(reason: str, *, enabled: bool) -> None:
 
 def _ensure_invite_identity_policy(invite: StaffInvite, event_type: str) -> None:
     try:
-        normalized_workplace = normalize_workplace_email(invite.workplace_email_normalized)
-        normalized_personal = normalize_personal_email(invite.personal_email_normalized)
+        normalize_workplace_email(invite.workplace_email_normalized)
     except AuthError:
         audit_event(event_type, "blocked", metadata={**_invite_audit_metadata(invite), "reason": "email_policy"})
-        raise AuthError(GENERIC_INVITE_ERROR, 401)
-    policy_reason = staff_personal_email_policy_violation(normalized_personal, normalized_workplace)
-    if policy_reason:
-        audit_event(event_type, "blocked", metadata={**_invite_audit_metadata(invite), "reason": policy_reason})
         raise AuthError(GENERIC_INVITE_ERROR, 401)
 
 
 def _send_invite_email(invite: StaffInvite, invite_url: str) -> None:
     send_security_email(
-        invite.personal_email_normalized,
+        invite.workplace_email_normalized,
         "SITBank staff access invite",
         (
             "You have been invited to set up separate SITBank staff access.\n\n"
@@ -1488,7 +1453,7 @@ def _reject_duplicate_staff_signup(workplace_email: str, phone_number: str) -> N
         raise AuthError(INVITE_ACCEPTANCE_ERROR, 400)
 
 
-def _reject_active_invite(workplace_email: str, personal_email: str) -> None:
+def _reject_active_invite(workplace_email: str) -> None:
     now = _utcnow()
     existing = db.session.execute(
         db.select(StaffInvite).where(
@@ -1496,10 +1461,7 @@ def _reject_active_invite(workplace_email: str, personal_email: str) -> None:
             StaffInvite.revoked_at.is_(None),
             StaffInvite.used_at.is_(None),
             StaffInvite.expires_at > now,
-            or_(
-                func.lower(StaffInvite.workplace_email_normalized) == workplace_email.casefold(),
-                func.lower(StaffInvite.personal_email_normalized) == personal_email.casefold(),
-            ),
+            func.lower(StaffInvite.workplace_email_normalized) == workplace_email.casefold(),
         )
     ).scalar_one_or_none()
     if existing is not None:
@@ -1561,7 +1523,6 @@ def _invite_audit_metadata(invite: StaffInvite) -> dict[str, Any]:
     return {
         "invite_ref": audit_reference("staff_invite", invite.id),
         "workplace_email_ref": audit_reference("staff_workplace_email", invite.workplace_email_normalized),
-        "personal_email_ref": audit_reference("staff_personal_email", invite.personal_email_normalized),
         "target_role": invite.role,
         "status": invite.status,
     }
@@ -1587,15 +1548,6 @@ def _normalize_email(email: str) -> str:
     return f"{local}@{domain.strip().casefold()}" if separator else text
 
 
-def _valid_email_parts(local: str, separator: str, domain: str) -> bool:
-    if separator != "@" or not local or not domain:
-        return False
-    if not EMAIL_RE.fullmatch(f"{local}@{domain}"):
-        return False
-    labels = domain.split(".")
-    return all(label and not label.startswith("-") and not label.endswith("-") for label in labels)
-
-
 def _contains_alias_separator(local: str) -> bool:
     separators = tuple(current_app.config.get("STAFF_INVITE_ALIAS_SEPARATORS") or ("+",))
     return any(separator and separator in local for separator in separators)
@@ -1603,10 +1555,6 @@ def _contains_alias_separator(local: str) -> bool:
 
 def _workplace_domains() -> frozenset[str]:
     return admin_allowed_email_domains()
-
-
-def _personal_domains() -> frozenset[str]:
-    return frozenset(str(item).casefold() for item in current_app.config["STAFF_INVITE_PERSONAL_EMAIL_DOMAINS"])
 
 
 def _root_admin_emails() -> frozenset[str]:

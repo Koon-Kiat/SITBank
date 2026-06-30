@@ -180,9 +180,6 @@ class TestConfig:
         {"sit.singaporetech.edu.sg", "singaporetech.edu.sg"}
     )
     SIT_WORKPLACE_EMAIL_DOMAINS = ADMIN_ALLOWED_EMAIL_DOMAINS
-    STAFF_INVITE_PERSONAL_EMAIL_DOMAINS = frozenset(
-        {"gmail.com", "outlook.com", "hotmail.com", "yahoo.com", "icloud.com", "proton.me", "protonmail.com"}
-    )
     STAFF_INVITE_ALIAS_SEPARATORS = ("+",)
     ROOT_ADMIN_EMAILS = frozenset(
         {
