@@ -23,6 +23,15 @@ paths = ['''^sonar-project\.properties$''']
 regexes = ['''^sonar\.projectKey=WenJiangg_SITBank$''']
 
 [[allowlists]]
+description = "Historical public SonarQube Cloud project key metadata"
+condition = "AND"
+targetRules = ["generic-api-key"]
+regexTarget = "line"
+commits = ["f29d15f476d975d4b8e3c9e1b529a855a12776db"]
+paths = ['''^sonar-project\.properties$''']
+regexes = ['''^sonar\.projectKey=TL0024_SITBank$''']
+
+[[allowlists]]
 description = "Historical synthetic accepted-password test fixture"
 condition = "AND"
 targetRules = ["generic-api-key"]

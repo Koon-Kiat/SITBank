@@ -94,10 +94,11 @@ def test_gitleaks_configuration_keeps_defaults_and_has_no_broad_allowlist():
     assert config["title"] == "SITBank Gitleaks configuration"
     assert config["extend"] == {"useDefault": True}
     allowlists = config["allowlists"]
-    assert len(allowlists) == 5
+    assert len(allowlists) == 6
     assert {entry["description"] for entry in allowlists} == {
         "Public SHA-256 checksum pinned by the Tailscale installer",
         "Public SonarQube Cloud project key metadata",
+        "Historical public SonarQube Cloud project key metadata",
         "Historical synthetic accepted-password test fixture",
         "Historical mappings from secret environment names to config field names",
         "Historical shell cases that reject private-key PEM headers",
@@ -135,6 +136,21 @@ def test_gitleaks_configuration_keeps_defaults_and_has_no_broad_allowlist():
         "regexTarget": "line",
         "paths": [r"^sonar-project\.properties$"],
         "regexes": [r"^sonar\.projectKey=WenJiangg_SITBank$"],
+    }
+    historical_sonar_project_key = next(
+        entry
+        for entry in allowlists
+        if entry["description"]
+        == "Historical public SonarQube Cloud project key metadata"
+    )
+    assert historical_sonar_project_key == {
+        "description": "Historical public SonarQube Cloud project key metadata",
+        "condition": "AND",
+        "targetRules": ["generic-api-key"],
+        "regexTarget": "line",
+        "commits": ["f29d15f476d975d4b8e3c9e1b529a855a12776db"],
+        "paths": [r"^sonar-project\.properties$"],
+        "regexes": [r"^sonar\.projectKey=TL0024_SITBank$"],
     }
 
 
