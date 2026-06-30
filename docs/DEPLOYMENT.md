@@ -293,6 +293,10 @@ email addresses. The deployment workflow renders it into
 `/etc/sitbank*/container.env` so `sitbank-admin` and `sitbank-staging-admin`
 can enforce the fixed root-admin group. Root-admin bootstrap remains manual
 over SSH inside the admin container; it is not a GitHub Actions workflow.
+`ADMIN_ALLOWED_EMAIL_DOMAINS` defines the approved privileged workplace-domain
+allowlist for root-admin, admin, and staff identities. Do not set it to
+personal-provider domains; staff invites use the workplace email and do not
+collect personal backup email contacts.
 
 Production admin does not use a public DNS hostname. Keep admin access on the
 private Tailscale Serve URL `https://admin-sitbank.tailca101b.ts.net/` and do

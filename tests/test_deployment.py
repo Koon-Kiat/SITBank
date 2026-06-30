@@ -587,6 +587,20 @@ def test_privileged_user_contact_field_migration_repairs_production_schema_drift
     assert "SET account_number" not in migration
 
 
+def test_staff_invite_personal_email_migration_allows_workplace_only_invites():
+    migration = Path(
+        "migrations/versions/20260630_0018_staff_invites_workplace_email_only.py"
+    ).read_text(encoding="utf-8")
+
+    assert 'revision = "20260630_0018"' in migration
+    assert 'down_revision = "20260629_0017"' in migration
+    assert '"staff_invites"' in migration
+    assert '"personal_email_normalized"' in migration
+    assert "nullable=True" in migration
+    assert "UPDATE staff_invites" not in migration
+    assert "nullable=False" not in migration
+
+
 def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypatch):
     _set_deployment_values(monkeypatch)
 

@@ -20,9 +20,10 @@ configuration, Docker and Compose files, Nginx configuration, documentation,
 templates, fixtures, and full Git history. No path is excluded. The
 `.gitleaks.toml` file extends the complete built-in ruleset and has no
 baseline. Its reviewed allowlists cover only a public package checksum, a
-synthetic historical password fixture, historical configuration-name mapping
-rows, and historical private-key-header validation cases. Each exception is
-constrained by rule, exact path, line shape, and—where historical—commit.
+public SonarQube Cloud project key, a synthetic historical password fixture,
+historical configuration-name mapping rows, and historical private-key-header
+validation cases. Each exception is constrained by rule, exact path, line
+shape, and, where historical, commit.
 
 The workflow uploads no artifact and no SARIF. This is intentional: the
 redacted job log supplies file, rule, commit, and line evidence without
@@ -48,12 +49,14 @@ gitleaks git --config .gitleaks.toml --log-opts=--all --redact \
 For a false positive:
 
 1. Confirm privately that the matched value is synthetic, expired, or a
-   clearly fake example and was never usable.
+   clearly fake example, or that it is public non-secret metadata and was
+   never usable as a credential.
 2. Prefer changing the example so it is unmistakably fake.
 3. If an exception is still necessary, add a narrow allowlist matching only
-   that confirmed fake/test value, document the rationale beside it, and add a
-   focused policy test. Never exclude `.github/workflows`, `ops`, `scripts`,
-   `config.py`, deployment files, or an entire documentation/test directory.
+   that confirmed fake/test value or public metadata value, document the
+   rationale beside it, and add a focused policy test. Never exclude
+   `.github/workflows`, `ops`, `scripts`, `config.py`, deployment files, or an
+   entire documentation/test directory.
 
 For a real secret in current content or full Git history:
 

@@ -203,7 +203,6 @@ def test_admin_totp_stepup_does_not_refresh_auth_created_at(admin_client):
     response = admin_client.post(
         "/invites",
         json={
-            "personal_email": "staff.person@gmail.com",
             "workplace_email": "staff.person@sit.singaporetech.edu.sg",
             "role": "staff",
             "totp_code": _totp(secret),

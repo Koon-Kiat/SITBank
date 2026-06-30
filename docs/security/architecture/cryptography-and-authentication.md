@@ -288,9 +288,12 @@ password, and mandatory TOTP. Active staff users must have `account_status`
 
 Staff onboarding is invite-based. Root admins create invites for `staff` or
 `admin` roles only; root-admin self-service invite creation is not allowed.
-Invite acceptance validates the token, personal and workplace email policies,
-password policy, optional Turnstile, workplace verification code, and TOTP
-setup before activating the account.
+Privileged staff/admin/root-admin identities use only approved workplace email
+domains from `ADMIN_ALLOWED_EMAIL_DOMAINS`; staff invites are sent to the
+workplace email and do not collect a personal backup email. Invite acceptance
+validates the token, workplace email policy, password policy, optional
+Turnstile, workplace verification code, and TOTP setup before activating the
+account.
 
 Evidence: `app/admin/routes.py`, `app/admin/services.py`,
 `app/admin/separation.py`, `admin_wsgi.py`, `config.py`, and

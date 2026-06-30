@@ -26,6 +26,22 @@ MEMORY_RATE_LIMIT_STORAGE = "memory://"
 POSTGRESQL_PSYCOPG2_SCHEME = "postgresql+psycopg2"
 CSP_SELF = "'self'"
 CSP_NONE = "'none'"
+CONFIG_DOMAIN_RE = re.compile(
+    r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
+    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])$"
+)
+CONFIG_EMAIL_RE = re.compile(r"^(?=.{1,255}$)(?=.{1,128}@)[^@\x00-\x1f\x7f]+@[^@\x00-\x1f\x7f]+$")
+PERSONAL_EMAIL_DOMAINS = frozenset(
+    {
+        "gmail.com",
+        "outlook.com",
+        "hotmail.com",
+        "yahoo.com",
+        "icloud.com",
+        "proton.me",
+        "protonmail.com",
+    }
+)
 
 
 PLACEHOLDER_TOKENS = {
@@ -332,13 +348,45 @@ def _csv_env_set(name: str, *, default: str) -> frozenset[str]:
     return values
 
 
+def _csv_domain_set(name: str, *, default: str, reject_personal: bool = True) -> frozenset[str]:
+    domains = _csv_env_set(name, default=default)
+    if any(not _valid_config_domain(domain, reject_personal=reject_personal) for domain in domains):
+        raise RuntimeError(f"{name} must contain only approved workplace email domains")
+    return domains
+
+
+def _valid_config_domain(domain: str, *, reject_personal: bool) -> bool:
+    normalized = str(domain or "").strip().casefold()
+    if not normalized or _looks_placeholder(normalized):
+        return False
+    if normalized in {"example.com", "example.test", "localhost"}:
+        return False
+    if normalized.endswith(".") or "*" in normalized or "@" in normalized or "/" in normalized:
+        return False
+    if reject_personal and normalized in PERSONAL_EMAIL_DOMAINS:
+        return False
+    return bool(CONFIG_DOMAIN_RE.fullmatch(normalized))
+
+
+def _valid_config_email(value: str) -> bool:
+    normalized = str(value or "").strip().casefold()
+    if not normalized or _looks_placeholder(normalized):
+        return False
+    if "\x00" in normalized or "\r" in normalized or "\n" in normalized:
+        return False
+    local, separator, domain = normalized.partition("@")
+    if separator != "@" or not local or not _valid_config_domain(domain, reject_personal=True):
+        return False
+    return bool(CONFIG_EMAIL_RE.fullmatch(normalized))
+
+
 def _email_domain(value: str) -> str:
     _local, separator, domain = str(value or "").strip().partition("@")
     return domain.casefold() if separator else ""
 
 
 def _all_email_domains_allowed(emails: frozenset[str], allowed_domains: frozenset[str]) -> bool:
-    return all(_email_domain(item) in allowed_domains for item in emails)
+    return all(_valid_config_email(item) and _email_domain(item) in allowed_domains for item in emails)
 
 
 def _optional_turnstile_secret() -> str | None:
@@ -1098,7 +1146,7 @@ class Config:
         min_production_seconds=MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS,
     )
 
-    ADMIN_ALLOWED_EMAIL_DOMAINS = _csv_env_set(
+    ADMIN_ALLOWED_EMAIL_DOMAINS = _csv_domain_set(
         "ADMIN_ALLOWED_EMAIL_DOMAINS",
         default=os.getenv(
             "SIT_WORKPLACE_EMAIL_DOMAINS",
@@ -1106,10 +1154,6 @@ class Config:
         ),
     )
     SIT_WORKPLACE_EMAIL_DOMAINS = ADMIN_ALLOWED_EMAIL_DOMAINS
-    STAFF_INVITE_PERSONAL_EMAIL_DOMAINS = _csv_env_set(
-        "STAFF_INVITE_PERSONAL_EMAIL_DOMAINS",
-        default="gmail.com,outlook.com,hotmail.com,yahoo.com,icloud.com,proton.me,protonmail.com",
-    )
     STAFF_INVITE_ALIAS_SEPARATORS = tuple(
         item
         for item in os.getenv("STAFF_INVITE_ALIAS_SEPARATORS", "+").split(",")

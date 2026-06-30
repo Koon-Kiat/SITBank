@@ -29,16 +29,24 @@ def admin_allowed_email_domains() -> frozenset[str]:
     return _config_set("ADMIN_ALLOWED_EMAIL_DOMAINS", fallback_name="SIT_WORKPLACE_EMAIL_DOMAINS")
 
 
+def privileged_allowed_email_domains() -> frozenset[str]:
+    return admin_allowed_email_domains()
+
+
 def root_admin_emails() -> frozenset[str]:
     return _config_set("ROOT_ADMIN_EMAILS")
 
 
-def is_admin_workplace_email(email: str) -> bool:
+def is_privileged_workplace_email(email: str) -> bool:
     try:
         normalized = normalize_identity_email(email)
     except IdentityPolicyError:
         return False
-    return _email_domain(normalized) in admin_allowed_email_domains()
+    return _email_domain(normalized) in privileged_allowed_email_domains()
+
+
+def is_admin_workplace_email(email: str) -> bool:
+    return is_privileged_workplace_email(email)
 
 
 def customer_email_policy_violation(email: str) -> str | None:
@@ -60,30 +68,15 @@ def require_customer_email(email: str) -> str:
     return normalize_identity_email(email)
 
 
-def require_admin_workplace_email(email: str) -> str:
+def require_privileged_workplace_email(email: str) -> str:
     normalized = normalize_identity_email(email)
-    if _email_domain(normalized) not in admin_allowed_email_domains():
+    if _email_domain(normalized) not in privileged_allowed_email_domains():
         raise IdentityPolicyError("admin_email_domain_not_allowed")
     return normalized
 
 
-def staff_personal_email_policy_violation(personal_email: str, workplace_email: str | None = None) -> str | None:
-    try:
-        normalized = normalize_identity_email(personal_email)
-    except IdentityPolicyError:
-        return "invalid_email"
-    if normalized in root_admin_emails():
-        return "root_admin_allowlisted_email"
-    if _email_domain(normalized) in admin_allowed_email_domains():
-        return "admin_email_domain"
-    if workplace_email:
-        try:
-            normalized_workplace = normalize_identity_email(workplace_email)
-        except IdentityPolicyError:
-            normalized_workplace = ""
-        if normalized_workplace and normalized == normalized_workplace:
-            return "personal_matches_workplace"
-    return None
+def require_admin_workplace_email(email: str) -> str:
+    return require_privileged_workplace_email(email)
 
 
 def _config_set(name: str, *, fallback_name: str | None = None) -> frozenset[str]:

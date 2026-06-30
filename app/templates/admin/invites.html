@@ -14,8 +14,6 @@
     </div>
     <form class="admin-form-grid" method="post" action="{{ url_for('admin.invite_create') }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <label for="invite-personal-email">Personal email</label>
-      <input id="invite-personal-email" name="personal_email" type="email" autocomplete="email" required>
       <label for="invite-workplace-email">Workplace email</label>
       <input id="invite-workplace-email" name="workplace_email" type="email" autocomplete="email" required>
       <label for="invite-role">Role</label>

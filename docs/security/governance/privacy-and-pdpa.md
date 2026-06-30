@@ -18,8 +18,8 @@ Category: [Security governance](../README.md#governance).
 | Payee records | Customer-managed payment recipients | Scoped to owner; recipient lookup occurs only after TOTP step-up; do not expose payee ownership across users |
 | Transaction records | Banking-like workflow evidence and validation | Keep business records only for implemented flows; avoid storing client-controlled server fields |
 | Staff/admin identity | Admin login, authorization, accountability | Invite-only staff/admin accounts with role checks and mandatory TOTP |
-| Staff/admin workplace email | Workplace verification and admin login | Must satisfy approved workplace domain policy; do not use personal email for privileged login |
-| Staff invite metadata | Staff onboarding and invite audit trail | Store normalized email metadata and token HMACs; raw invite tokens must not be logged |
+| Staff/admin workplace email | Workplace verification, admin login, and staff invite delivery | Must satisfy approved workplace domain policy; do not use personal email for privileged login or invite contact |
+| Staff invite metadata | Staff onboarding and invite audit trail | Store normalized workplace email metadata and token HMACs; raw invite tokens and personal backup email contacts must not be logged |
 | Audit event metadata | Security accountability and incident review | Redact sensitive keys and values recursively; use HMAC-derived references for raw identifiers |
 | Alert metadata | Operator notification and security monitoring | Sanitize before delivery; webhook URLs and tokens are secrets |
 | Session/security metadata | Session integrity, rate limiting, OTP/reset state, alert dedupe | Stored in application-owned PostgreSQL tables; browser cookies carry opaque identifiers only |

@@ -178,7 +178,6 @@ def test_lower_roles_cannot_create_or_promote_staff_accounts(admin_client):
     admin_attempt = admin_client.post(
         "/invites",
         json={
-            "personal_email": "person@gmail.com",
             "workplace_email": "new.admin@sit.singaporetech.edu.sg",
             "role": "admin",
             "totp_code": pyotp.TOTP(admin_secret, digits=6, interval=30).at(_FIXED_TOTP_TIME),
@@ -196,7 +195,6 @@ def test_lower_roles_cannot_create_or_promote_staff_accounts(admin_client):
     root_promotion_attempt = admin_client.post(
         "/invites",
         json={
-            "personal_email": "person@gmail.com",
             "workplace_email": "new.root@sit.singaporetech.edu.sg",
             "role": "root_admin",
             "totp_code": pyotp.TOTP(root_secret, digits=6, interval=30).at(_FIXED_TOTP_TIME),

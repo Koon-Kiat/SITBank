@@ -271,7 +271,6 @@ def test_admin_browser_form_payload_strips_csrf_token_for_invites(admin_client):
     response = admin_client.post(
         "/invites",
         data={
-            "personal_email": "staff.person@gmail.com",
             "workplace_email": "staff.person@sit.singaporetech.edu.sg",
             "role": "staff",
             "totp_code": _totp(root_secret),
@@ -284,6 +283,7 @@ def test_admin_browser_form_payload_strips_csrf_token_for_invites(admin_client):
     assert response.status_code == 303
     assert response.headers["Location"].endswith("/invites")
     assert invite.workplace_email_normalized == "staff.person@sit.singaporetech.edu.sg"
+    assert invite.personal_email_normalized is None
 
 
 def test_admin_browser_login_rejects_customer_accounts_with_generic_error(admin_client):
