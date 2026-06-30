@@ -246,7 +246,7 @@ Network boundaries complement, but do not replace, Flask authorization:
 | Surface | Network boundary | Application controls that still apply |
 | --- | --- | --- |
 | Production customer | Public HTTPS at `sitbank.duckdns.org` | Customer login, MFA onboarding, CSRF, route inventory, rate limiting |
-| Staging customer | Cloudflare Access before Nginx, Cloudflare Authenticated Origin Pull at Nginx, staging Basic Auth | Customer login, MFA, CSRF, route inventory, rate limiting |
+| Staging customer | Cloudflare Access before Nginx and server-level Cloudflare Authenticated Origin Pull at Nginx | Customer login, MFA, CSRF, route inventory, rate limiting, audit logging |
 | Production admin | Tailscale Serve at `https://admin-sitbank.tailca101b.ts.net/`; no public admin host or Nginx upstream; protected CI checks private reachability and the EC2 preflight checks local Serve/Funnel/listener posture | Staff/root-admin login, mandatory TOTP, CSRF, admin route inventory, admin rate limiting |
 | Staging admin | Tailscale/private operator access to `127.0.0.1:5003`; no public admin host | Staff/root-admin login, mandatory TOTP, CSRF, admin route inventory, admin rate limiting |
 
@@ -268,6 +268,6 @@ The staging customer Flask app also validates the
 `Cf-Access-Jwt-Assertion` RS256 signature, issuer, audience, expiry, and
 optional not-before time before routing the request. Cloudflare Access remains
 an outer network/identity boundary: Flask login, MFA, CSRF, ownership checks,
-rate limiting, audit logging, and Basic Auth still apply. Nginx strips
+rate limiting and audit logging still apply. Nginx strips
 Cloudflare email/service-token headers, and verified token identity remains
 metadata rather than SITBank authorization input.

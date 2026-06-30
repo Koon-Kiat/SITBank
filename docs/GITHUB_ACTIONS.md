@@ -110,6 +110,11 @@ wildcard domains, and broad allow-all rules are forbidden. Run the workflow
 manually after any provider or environment change; safe drift output names
 non-secret fields and reports allowlist mismatches by count without printing
 emails, tokens, headers, cookies, JWTs, or Access assertions.
+The uploaded JSON is intentionally sanitized and retained for 30 days. It
+contains no provider export or raw HTTP response. GitHub secret masking is
+defense in depth; the automation also redacts authentication headers, bearer
+tokens, JWTs, service tokens, cookies, session identifiers, CSRF values, and
+private-key blocks before printing handled errors.
 
 `<PREFIX>_MFA_KEK_ACTIVE_ID` must match a key identifier in the root-managed `/etc/sitbank*/secrets/mfa_kek_keys_json` file on EC2. Do not put `MFA_KEK_KEYS_JSON` in GitHub Actions; the KEK keyring is a long-lived secret and remains host-managed.
 `<PREFIX>_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID` must match a key identifier in

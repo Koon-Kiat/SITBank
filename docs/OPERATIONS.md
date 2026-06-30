@@ -86,10 +86,9 @@ Routine verification:
 python ops/cloudflare/provision-staging-access --verify
 curl -I http://127.0.0.1:5001/
 curl --fail http://127.0.0.1:5001/health/ready
+curl --fail http://127.0.0.1:8081/health/ready
 sudo /usr/local/sbin/verify-cloudflare-origin-pull-ca
 sudo nginx -t
-curl --fail --resolve staging-sitbank.pp.ua:443:127.0.0.1 \
-  https://staging-sitbank.pp.ua/health/ready
 curl -I --resolve staging-sitbank.pp.ua:443:<EC2_PUBLIC_IP> \
   https://staging-sitbank.pp.ua/
 sudo /usr/local/sbin/sitbank-verify-tailscale-admin
@@ -118,8 +117,9 @@ rollout. Custom zone/per-hostname AOP CAs require their own reviewed allowlist
 entry before deployment.
 
 Expected: the loopback Flask root returns `403` without an Access assertion,
-local staging readiness succeeds without one, direct Nginx origin access
-returns `403` without Cloudflare's origin-pull client certificate, and the
+local Flask and Nginx staging readiness succeed without one, direct Nginx
+origin access fails TLS client-certificate verification without Cloudflare's
+origin-pull client certificate, and the
 private admin URL is reachable only from an approved tailnet path. Tailscale
 Funnel must stay disabled for SITBank admin.
 Tailscale is the private network/device boundary for admin access; it does not
@@ -250,6 +250,11 @@ allow-all policies are forbidden. A drift message names safe fields such as
 `session_duration`; membership drift reports counts only. Never copy tokens,
 email values, authorization headers, cookies, JWTs, Access assertions, or raw
 provider responses into a ticket or change record.
+Provider errors are sanitized before reaching standard error, and the retained
+artifact contains only high-level pass/fail fields, public hostname, reviewed
+session duration, provider-owned review statuses, and timestamp. Troubleshoot
+with the named safe field in an approved operator session; do not upload raw
+responses or enable unredacted debug logging.
 
 The detailed onboarding, offboarding, emergency lockout, rollback, and live
 operator verification steps are in

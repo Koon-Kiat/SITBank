@@ -322,6 +322,32 @@ def test_cloudflare_http_error_does_not_print_raw_provider_response(monkeypatch)
     assert "token-that-must-not-appear" not in str(error.value)
 
 
+@pytest.mark.parametrize(
+    "sensitive_value",
+    [
+        "CF-Access-Jwt-Assertion: eyJ.fake.jwt",
+        "Authorization: Bearer fake-cloudflare-token",
+        "CF_API_TOKEN=fake-token",
+        "access_service_token=fake-service-token",
+        "session=fake-session",
+        "csrf_token=fake-csrf",
+        "-----BEGIN " + "PRIVATE KEY-----\nfake\n-----END " + "PRIVATE KEY-----",
+    ],
+)
+def test_provider_output_sanitizer_redacts_sensitive_diagnostics(sensitive_value):
+    module = runpy.run_path(str(SCRIPT))
+
+    sanitized = module["sanitize_provider_output"](
+        f"provider failed: {sensitive_value}"
+    )
+
+    assert sensitive_value not in sanitized
+    assert "fake-cloudflare-token" not in sanitized
+    assert "fake-service-token" not in sanitized
+    assert "fake-session" not in sanitized
+    assert "fake-csrf" not in sanitized
+
+
 def test_manual_verification_workflow_is_read_only_and_secret_safe():
     text = WORKFLOW.read_text(encoding="utf-8")
     workflow = yaml.safe_load(text)
@@ -366,6 +392,7 @@ def test_manual_verification_workflow_is_read_only_and_secret_safe():
     assert "${{ secrets.CLOUDFLARE_API_TOKEN }}" in text
     assert "actions/checkout@" in text
     assert "actions/upload-artifact@" in text
+    assert "retention-days: 30" in text
     assert not re.search(
         r"CLOUDFLARE_API_TOKEN:\s*(?!\$\{\{\s*secrets\.)\S+",
         text,
@@ -495,7 +522,17 @@ def test_sanitized_evidence_records_only_non_secret_expected_duration(
 
     evidence_text = evidence_path.read_text(encoding="utf-8")
     evidence = json.loads(evidence_text)
+    assert evidence["schema"] == 2
     assert evidence["session_duration"] == "6h"
+    assert evidence["result"] == "pass"
+    assert evidence["github_environment"] == "staging"
+    assert evidence["workflow_trigger"] == "manual_protected"
+    assert evidence["checks"]["allow_everyone"] is False
+    assert evidence["checks"]["approved_identities_configured"] is True
+    assert evidence["checks"]["origin_protection_expected"] is True
+    assert evidence["provider_owned_review"]["mfa_or_device_posture"] == (
+        "external_review_required"
+    )
     assert "operator@example.com" not in evidence_text
     assert config.access_audience not in evidence_text
     assert config.dns_origin not in evidence_text
@@ -508,6 +545,6 @@ def test_existing_authenticated_origin_pull_gate_is_unchanged():
         "ssl_client_certificate "
         "/etc/nginx/cloudflare-authenticated-origin-pull-ca.pem;" in nginx
     )
-    assert "ssl_verify_client optional;" in nginx
-    assert "if ($ssl_client_verify != SUCCESS) { return 403; }" in nginx
-    assert 'auth_basic "SITBank staging";' in nginx
+    assert "ssl_verify_client on;" in nginx
+    assert "$ssl_client_verify" not in nginx
+    assert "auth_basic" not in nginx

@@ -22,7 +22,7 @@ allows Free-plan analysis of private projects up to 50,000 private lines of
 code across the organization. Tests, comments, blank lines, excluded files,
 and unsupported languages do not count toward that limit. A repository-side
 count found about 11,600 nonblank/noncomment Python lines under `app`, so this
-project is within the per-organization ceiling if the `tl0024` SonarQube
+project is within the per-organization ceiling if the `koon-kiat` SonarQube
 Cloud organization has enough unused private LOC and no more than five
 members. The plan and usage must be confirmed in the SonarQube Cloud
 organization during project import because limits and organization-wide usage
@@ -41,9 +41,9 @@ a reviewed follow-up instead.
 
 ## One-Time Setup And Secrets
 
-1. Import or rebind the private `TL0024/SITBank` GitHub repository into the
-   `tl0024` SonarQube Cloud organization and confirm the project key is
-   `TL0024_SITBank`.
+1. Import or rebind the private `Koon-Kiat/SITBank` GitHub repository into the
+   `koon-kiat` SonarQube Cloud organization and confirm the project key is
+   `Koon-Kiat_SITBank`.
 2. Confirm current private LOC usage, member limits, plan terms, repository
    binding, and access permissions in SonarQube Cloud.
 3. Generate a narrowly scoped project analysis token.

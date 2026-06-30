@@ -12,8 +12,8 @@ Only Flask/Gunicorn runs in the SITBank container. Nginx, TLS, PostgreSQL, and b
 - Staging access boundary: Cloudflare Access plus Authenticated Origin Pull
   plus origin-side Access JWT validation
 - Admin access boundary: Tailscale/private operator access only
-- Production image form: `ghcr.io/wenjiangg/sitbank@sha256:<digest>`
-- Repository identity: `WenJiangg/SITBank`
+- Production image form: `ghcr.io/koon-kiat/sitbank@sha256:<digest>`
+- Repository identity: `Koon-Kiat/SITBank`
 - Production config root: `/etc/sitbank`
 - Production compose dir: `/opt/sitbank`
 - Production service: `sitbank-container.service`
@@ -643,16 +643,10 @@ apply, and verification all use the six-hour duration configured for the
 `STAGING_ACCESS_ALLOWED_EMAILS`; `Everyone`, wildcard domains, and broad
 allow-all rules are forbidden.
 
-Create a staging Basic Auth file before running the staging bootstrap. This is
-a secondary staging control and must not replace Cloudflare Access:
-
-```bash
-sudo htpasswd -c /etc/nginx/.htpasswd-sitbank-staging <username>
-sudo chown root:www-data /etc/nginx/.htpasswd-sitbank-staging
-sudo chmod 0640 /etc/nginx/.htpasswd-sitbank-staging
-```
-
-Do not store the Basic Auth password or generated htpasswd hash in the repo.
+Nginx shared-password authentication has been removed from staging. Cloudflare
+Access is the identity-aware entry boundary, and the Flask login/MFA, CSRF,
+session, authorization, rate-limit, and audit controls remain in force. Do not
+reintroduce a shared staging password as a fallback.
 
 Install the Cloudflare Authenticated Origin Pull CA certificate on the EC2
 host before running staging bootstrap:
@@ -709,7 +703,7 @@ sudo /usr/local/sbin/verify-certbot-host-state staging
 sudo /usr/local/sbin/verify-certbot-host-state --renewal-dry-run staging
 ```
 
-Then run `ops/deploy/bootstrap-container-ec2 staging WenJiangg/SITBank staging-sitbank.pp.ua`. The bootstrap installs the Nginx proxy header snippet, TLS policy snippet, rate-limit include, and staging Nginx server block for `staging-sitbank.pp.ua`; verifies the staging Basic Auth file and the pinned Cloudflare origin-pull CA; then runs `sudo nginx -t` before `sudo systemctl reload nginx`. This edge setup is separate from application deployment.
+Then run `ops/deploy/bootstrap-container-ec2 staging Koon-Kiat/SITBank staging-sitbank.pp.ua`. The bootstrap installs the Nginx proxy header snippet, TLS policy snippet, rate-limit include, and staging Nginx server block for `staging-sitbank.pp.ua`; verifies the pinned Cloudflare origin-pull CA; then runs `sudo nginx -t` before `sudo systemctl reload nginx`. This edge setup is separate from application deployment.
 
 Staging verification:
 
@@ -718,12 +712,9 @@ python ops/cloudflare/provision-staging-access --verify \
   --evidence-file cloudflare-access-evidence.local.json
 sudo /usr/local/sbin/verify-cloudflare-origin-pull-ca
 curl -I https://staging-sitbank.pp.ua/
-curl -I -u "$STAGING_BASIC_AUTH_USER:$STAGING_BASIC_AUTH_PASSWORD" \
-  https://staging-sitbank.pp.ua/
 curl -I https://staging-sitbank.pp.ua/health/ready
 curl -fsS http://127.0.0.1:5001/health/ready
-curl --fail --resolve staging-sitbank.pp.ua:443:127.0.0.1 \
-  https://staging-sitbank.pp.ua/health/ready
+curl -fsS http://127.0.0.1:8081/health/ready
 curl -I --resolve staging-sitbank.pp.ua:443:<EC2_PUBLIC_IP> \
   https://staging-sitbank.pp.ua/
 curl -I http://127.0.0.1:5001/
@@ -736,9 +727,11 @@ testssl.sh --warnings batch --color 0 https://staging-sitbank.pp.ua
 Expected: unauthenticated browser traffic receives the Cloudflare Access
 challenge at `staging-sitbank.pp.ua` before reaching staging, approved operators can pass Cloudflare
 Access and then reach the normal staging controls, direct EC2-origin access to
-`/` returns `403` without Cloudflare's origin-pull client certificate,
+`/` is rejected during TLS client-certificate verification (or returns a
+fail-closed response) without Cloudflare's origin-pull client certificate,
 direct loopback Flask access to `/` returns `403` without an Access assertion,
-external `/health/ready` returns `403`, local app readiness succeeds, and the
+external `/health/ready` is unavailable, local app and Nginx readiness
+succeed, and the
 retired DuckDNS staging hostname is no longer an active Nginx target.
 
 The script also verifies the live Access application and approved-operator
