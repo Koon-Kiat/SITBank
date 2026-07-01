@@ -29,8 +29,8 @@ def test_pr_dast_smoke_is_local_automatic_and_time_bounded():
     assert "10020\\tFAIL\\tAnti-clickjacking header" in helper
     assert "10021\\tFAIL\\tX-Content-Type-Options header" in helper
     assert "10038\\tFAIL\\tContent Security Policy header" in helper
-    assert 'zap_baseline_target="http://${app_container}:5000/" # NOSONAR' in helper
-    assert '-t "${zap_baseline_target}"' in helper
+    assert 'zap_baseline_target="http://${app_container}:5000/"' in helper
+    assert '-t "${zap_baseline_target}" # NOSONAR' in helper
     for required_runtime_setting in (
         "--env PASSWORD_RESET_ENABLED=true",
         "--env PASSWORD_RESET_EMAIL_BACKEND=smtp",
