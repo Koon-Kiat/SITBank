@@ -64,7 +64,7 @@ class FakeRunner:
         serve_status: str | None = None,
         funnel_status: str = "{}",
         nginx_output: str = (
-            "server { listen 443 ssl; server_name sitbank.duckdns.org; }\n"
+            "server { listen 443 ssl; server_name sitbank.pp.ua; }\n"
         ),
     ) -> None:
         self.listener_output = listener_output

@@ -16,7 +16,7 @@ on:
       production_host:
         description: Production customer HTTPS hostname to scan (hostname only).
         required: false
-        default: sitbank.duckdns.org
+        default: sitbank.pp.ua
         type: string
   workflow_dispatch:
     inputs:
@@ -37,7 +37,7 @@ on:
       production_host:
         description: Production customer HTTPS hostname to scan (hostname only).
         required: true
-        default: sitbank.duckdns.org
+        default: sitbank.pp.ua
         type: string
   schedule:
     # Weekly evidence collection. Manual runs should also follow every edge/TLS deployment.
@@ -94,7 +94,7 @@ jobs:
       matrix: ${{ fromJSON(needs.resolve-targets.outputs.matrix) }}
     env:
       STAGING_HOST: ${{ inputs.staging_host || 'staging-sitbank.pp.ua' }}
-      PRODUCTION_HOST: ${{ inputs.production_host || 'sitbank.duckdns.org' }}
+      PRODUCTION_HOST: ${{ inputs.production_host || 'sitbank.pp.ua' }}
       TARGET_INPUT: ${{ matrix.target.input }}
       TARGET_LABEL: ${{ matrix.target.label }}
 

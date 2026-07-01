@@ -1,4 +1,4 @@
-﻿# Operations
+# Operations
 
 Security owner roles, milestone/release review cadence, accepted-risk handling,
 and off-repo evidence expectations are defined in
@@ -31,7 +31,7 @@ Setup, revocation, rotation, evidence, and incident steps are in
 GitHub Actions repository variables are non-secret configuration. The CI
 workflow treats an unset `ENABLE_GITHUB_CODE_SECURITY` as `false` and uses the
 reviewed public-host fallbacks `staging-sitbank.pp.ua` and
-`sitbank.duckdns.org` when `STAGING_PUBLIC_HOST` or `PROD_PUBLIC_HOST` is
+`sitbank.pp.ua` when `STAGING_PUBLIC_HOST` or `PROD_PUBLIC_HOST` is
 unset. Configure overrides under Actions variables only after the matching
 DNS, certificate, and edge change is reviewed. The complete variable table and
 secret-placement boundary are in `docs/DEPLOYMENT.md`; never copy credentials
@@ -57,7 +57,9 @@ SITBank uses a hybrid private-access model:
   Pulls at `staging-sitbank.pp.ua`.
 - Admin is protected by Tailscale/private operator access at
   `https://admin-sitbank.tailca101b.ts.net/`.
-- The production customer site `sitbank.duckdns.org` remains public.
+- The production customer site `sitbank.pp.ua` remains public.
+- `www.sitbank.pp.ua` is a public alias that redirects to
+  `https://sitbank.pp.ua`.
 
 Bootstrapped root admins browse to
 `https://admin-sitbank.tailca101b.ts.net/login`, sign in with the existing
@@ -610,12 +612,14 @@ sudo /usr/local/sbin/verify-certbot-host-state production
 sudo /usr/local/sbin/verify-certbot-host-state staging
 ```
 
-It fails closed unless Certbot and OpenSSL are installed, `certbot.timer` is
-installed, enabled, and active, and each expected `fullchain.pem` and
-`privkey.pem` resolves below `/etc/letsencrypt`. It parses each leaf
-certificate, requires a valid `notAfter`, more than 14 days of remaining
-validity by default, and an exact DNS SAN for the expected hostname. It does
-not accept CN fallback or wildcard substitution. It also requires each
+It fails closed unless Certbot, the `dns-cloudflare` Certbot plugin, and OpenSSL
+are installed, `certbot.timer` is installed, enabled, and active, and each
+expected `fullchain.pem` and `privkey.pem` resolves below `/etc/letsencrypt`.
+It parses each leaf certificate, requires a valid `notAfter`, more than 14 days
+of remaining validity by default, and exact DNS SANs for the expected target
+hostnames. Production verifies `sitbank.pp.ua` and `www.sitbank.pp.ua` from the
+`sitbank.pp.ua` lineage; staging verifies `staging-sitbank.pp.ua` from its own
+lineage. It does not accept CN fallback or wildcard substitution. It also requires each
 resolved private key to use the approved root ownership/group and denies group
 write or any permissions for other users. Override the validity window only
 with a reviewed positive value such as
@@ -627,28 +631,39 @@ explicit network-dependent readiness check:
 
 ```bash
 sudo /usr/local/sbin/verify-certbot-host-state --renewal-dry-run production
+sudo /usr/local/sbin/verify-certbot-host-state --renewal-dry-run staging
 ```
 
 That mode performs the same local checks before invoking
-`certbot renew --dry-run`. On any failure, repair or renew the affected
-certificate and rerun the check; do not bypass it or expose private-key
-contents. Finally run `sudo nginx -t` before reload.
+`certbot renew --dry-run --cert-name <target-lineage>`. Production and staging
+renewal use DNS-01 through separate root-owned Cloudflare credential files under
+`/root/.secrets/certbot/`; do not disable Cloudflare Access, Authenticated
+Origin Pull, WAF/rate-limit controls, or Tailscale isolation to make renewal
+pass. On any failure, repair or renew the affected certificate and rerun the
+check; do not bypass it or expose private-key contents. Finally run
+`sudo nginx -t` before reload.
 
 ## Live TLS Evidence Operations
 
 The **Live TLS scan evidence** workflow provides scheduled weekly,
 operator-dispatched, and post-deployment evidence of the Internet-facing TLS
-posture for `staging-sitbank.pp.ua` and `sitbank.duckdns.org`. The deployment
+posture for `staging-sitbank.pp.ua` and `sitbank.pp.ua`. The deployment
 workflow calls the staging scan
 after staging deploy and blocks production deployment until it passes; it calls
 the production scan after production deploy, then calls the required protected
 private-admin tailnet gate only after that public scan succeeds.
 The manual workflow input `staging_host` defaults to
-`staging-sitbank.pp.ua`.
+`staging-sitbank.pp.ua`; the production input defaults to `sitbank.pp.ua`.
 Dispatch it after edge, certificate, DNS, Nginx/OpenSSL, CDN/WAF, or
 load-balancer changes outside deployment, then retain the successful run with
 the release or change record. Do not run a public-endpoint scan from ordinary
 pull requests.
+
+Use `docs/runbooks/ppua-dns01-duckdns-retirement.md` for live DNS-01 renewal
+and retired DuckDNS cleanup. Use
+`docs/runbooks/private-observability-grafana-loki.md` for the private
+Grafana/Loki/Alloy stack; Grafana remains private and is not exposed through
+the SITBank admin app.
 
 The normal public TLS scan deliberately excludes the private Tailscale admin hostname
 `admin-sitbank.tailca101b.ts.net`; a GitHub-hosted public runner cannot reach
@@ -756,7 +771,7 @@ python -m flask --app wsgi:app check-security-alerts --report-only
 Expected reset email configuration in production:
 
 - `PASSWORD_RESET_EMAIL_BACKEND=smtp`
-- `PASSWORD_RESET_BASE_URL=https://sitbank.duckdns.org`
+- `PASSWORD_RESET_BASE_URL=https://sitbank.pp.ua`
 - `PASSWORD_RESET_EMAIL_FROM=<approved sender>`
 - `SMTP_HOST=<approved provider host>`
 - `SMTP_USE_TLS=true`
@@ -836,7 +851,7 @@ settings as password reset email:
 
 - `PASSWORD_RESET_EMAIL_BACKEND=smtp`
 - `PASSWORD_RESET_EMAIL_FROM=<approved sender>`
-- `PASSWORD_RESET_BASE_URL=https://sitbank.duckdns.org`
+- `PASSWORD_RESET_BASE_URL=https://sitbank.pp.ua`
 - `SMTP_HOST=<approved provider host>`
 - `SMTP_USE_TLS=true`
 - `SMTP_USERNAME_FILE=/run/secrets/smtp_username`

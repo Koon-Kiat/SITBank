@@ -1,0 +1,108 @@
+local.file_match "nginx" {
+  path_targets = [
+    {
+      __path__ = "/var/log/nginx/sitbank.access.log",
+      service = "nginx",
+      environment = "production",
+      host_role = "edge",
+      source = "nginx_access",
+    },
+    {
+      __path__ = "/var/log/nginx/sitbank.error.log",
+      service = "nginx",
+      environment = "production",
+      host_role = "edge",
+      source = "nginx_error",
+    },
+    {
+      __path__ = "/var/log/nginx/sitbank-staging.access.log",
+      service = "nginx",
+      environment = "staging",
+      host_role = "edge",
+      source = "nginx_access",
+    },
+    {
+      __path__ = "/var/log/nginx/sitbank-staging.error.log",
+      service = "nginx",
+      environment = "staging",
+      host_role = "edge",
+      source = "nginx_error",
+    },
+  ]
+}
+
+loki.source.file "nginx" {
+  targets = local.file_match.nginx.targets
+  forward_to = [loki.process.redact_sensitive.receiver]
+}
+
+discovery.docker "sitbank" {
+  host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "sitbank_containers" {
+  targets = discovery.docker.sitbank.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_label_sitbank_log_collect"]
+    regex = "true"
+    action = "keep"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_sitbank_service"]
+    target_label = "service"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_sitbank_environment"]
+    target_label = "environment"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_sitbank_host_role"]
+    target_label = "host_role"
+  }
+
+  rule {
+    target_label = "source"
+    replacement = "container"
+  }
+}
+
+loki.source.docker "sitbank_containers" {
+  host = "unix:///var/run/docker.sock"
+  targets = discovery.relabel.sitbank_containers.output
+  forward_to = [loki.process.redact_sensitive.receiver]
+}
+
+loki.source.journal "sitbank_systemd" {
+  max_age = "12h"
+  matches = "_SYSTEMD_UNIT=sitbank-security-alerts.service OR _SYSTEMD_UNIT=certbot.service OR _SYSTEMD_UNIT=docker.service"
+  labels = {
+    service = "sitbank-systemd",
+    environment = "production",
+    host_role = "edge",
+    source = "systemd",
+  }
+  forward_to = [loki.process.redact_sensitive.receiver]
+}
+
+loki.process "redact_sensitive" {
+  stage.replace {
+    expression = "(?i)(authorization|cookie|csrf|session|password|token|secret|totp|recovery|database_url|smtp_password)(=|: )[^\\s&]+"
+    replace = "$1$2[REDACTED]"
+  }
+
+  stage.drop {
+    expression = "(?i)(request_body|raw_body|environment dump|BEGIN (RSA |EC |OPENSSH |)PRIVATE KEY)"
+  }
+
+  forward_to = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

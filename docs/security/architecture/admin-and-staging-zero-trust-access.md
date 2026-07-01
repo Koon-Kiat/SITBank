@@ -1,4 +1,4 @@
-﻿# Admin And Staging Zero-Trust Access
+# Admin And Staging Zero-Trust Access
 
 SITBank uses a hybrid zero-trust access model:
 
@@ -96,7 +96,8 @@ application, bootstrap a root admin, or change EC2 state. Tailscale Funnel
 remains forbidden.
 
 Normal public TLS scanning remains in `.github/workflows/tls-scan.yml` and
-covers only `staging-sitbank.pp.ua` and `sitbank.duckdns.org`. It must not
+covers only `staging-sitbank.pp.ua` and `sitbank.pp.ua`. Operators separately
+verify that `www.sitbank.pp.ua` redirects to the canonical production host. It must not
 depend on or include the private Tailscale hostname.
 
 After a trusted production deployment, the release order is
@@ -198,7 +199,7 @@ operator-owned evidence and must be reviewed in Tailscale.
 
 | Surface | Host or path | Boundary | Public exposure |
 | --- | --- | --- | --- |
-| Production customer | `https://sitbank.duckdns.org` | Public HTTPS edge, Flask customer login and MFA | Public |
+| Production customer | `https://sitbank.pp.ua`; `https://www.sitbank.pp.ua` redirects to the canonical host | Public HTTPS edge, Flask customer login and MFA | Public |
 | Staging customer | `https://staging-sitbank.pp.ua` | Cloudflare Access, server-level Cloudflare Authenticated Origin Pull, origin JWT validation, Flask login and MFA | Not directly public at the origin |
 | Production admin app | `https://admin-sitbank.tailca101b.ts.net/` through Tailscale Serve | Tailscale ACLs, approved devices, Flask admin login and TOTP | Private tailnet only |
 | Staging admin app | Approved Tailscale/private operator path to `127.0.0.1:5003` | Tailscale ACLs, approved devices, Flask admin login and TOTP | Private tailnet only |
@@ -473,7 +474,8 @@ Live Tailscale admin checks:
 5. Admin browser login with workplace password and TOTP reaches the dashboard.
 6. Admin readiness endpoints remain private or restricted.
 7. No public admin hostname or Nginx admin upstream is configured.
-8. `https://sitbank.duckdns.org` remains public.
+8. `https://sitbank.pp.ua` remains public and `https://www.sitbank.pp.ua`
+   redirects to the canonical host.
 
 ## Emergency Lockout
 

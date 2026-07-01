@@ -1011,14 +1011,14 @@ jobs:
       packages: read
     environment:
       name: production
-      url: https://${{ vars['PROD_PUBLIC_HOST'] || 'sitbank.duckdns.org' }}
+      url: https://${{ vars['PROD_PUBLIC_HOST'] || 'sitbank.pp.ua' }}
     env:
       RELEASE_SHA: ${{ needs.release-verify.outputs.revision }}
       IMAGE_DIGEST: ${{ needs.release-verify.outputs.digest }}
       REMOTE_HOST: ${{ vars.PROD_EC2_HOST }}
       REMOTE_PORT: ${{ vars.PROD_EC2_PORT }}
       REMOTE_USER: ${{ vars.PROD_EC2_DEPLOY_USER }}
-      PROD_PUBLIC_HOST: ${{ vars['PROD_PUBLIC_HOST'] || 'sitbank.duckdns.org' }}
+      PROD_PUBLIC_HOST: ${{ vars['PROD_PUBLIC_HOST'] || 'sitbank.pp.ua' }}
       PROD_MFA_KEK_ACTIVE_ID: ${{ vars.PROD_MFA_KEK_ACTIVE_ID }}
       PROD_SESSION_HMAC_ACTIVE_KEY_ID: ${{ vars.PROD_SESSION_HMAC_ACTIVE_KEY_ID }}
       PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID: ${{ vars.PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID }}
@@ -1231,7 +1231,7 @@ jobs:
     uses: ./.github/workflows/tls-scan.yml
     with:
       scan_scope: production
-      production_host: ${{ vars['PROD_PUBLIC_HOST'] || 'sitbank.duckdns.org' }}
+      production_host: ${{ vars['PROD_PUBLIC_HOST'] || 'sitbank.pp.ua' }}
 
   verify-private-admin-tailnet:
     name: Required private admin post-deploy gate

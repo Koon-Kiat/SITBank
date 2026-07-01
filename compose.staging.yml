@@ -37,6 +37,11 @@ services:
   app:
     image: ${SITBANK_IMAGE:?SITBANK_IMAGE must be an immutable digest reference}
     container_name: sitbank-staging-app
+    labels:
+      sitbank.log_collect: "true"
+      sitbank.service: sitbank-app
+      sitbank.environment: staging
+      sitbank.host_role: app
     user: "10001:10001"
     read_only: true
     init: true
@@ -154,6 +159,11 @@ services:
   admin:
     image: ${SITBANK_IMAGE:?SITBANK_IMAGE must be an immutable digest reference}
     container_name: sitbank-staging-admin
+    labels:
+      sitbank.log_collect: "true"
+      sitbank.service: sitbank-admin
+      sitbank.environment: staging
+      sitbank.host_role: app
     user: "10001:10001"
     read_only: true
     init: true

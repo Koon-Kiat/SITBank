@@ -77,12 +77,12 @@ def test_root_admin_email_validation_requires_real_allowed_workplace_addresses()
 
 def test_password_reset_base_url_must_be_https_in_production(monkeypatch):
     monkeypatch.setattr(config, "APP_ENV", "production")
-    monkeypatch.setenv("PASSWORD_RESET_BASE_URL", "http://sitbank.duckdns.org")
+    monkeypatch.setenv("PASSWORD_RESET_BASE_URL", "http://sitbank.pp.ua")
 
     with pytest.raises(RuntimeError, match="HTTPS"):
         _password_reset_base_url(
             "PASSWORD_RESET_BASE_URL",
-            default="https://sitbank.duckdns.org",
+            default="https://sitbank.pp.ua",
         )
 
 

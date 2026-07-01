@@ -1,4 +1,4 @@
-﻿# SITBank
+# SITBank
 
 Secure Internet Banking Application for O$P$ Bank.
 
@@ -6,7 +6,7 @@ SITBank is a student cybersecurity project and demonstration site. Do not enter 
 
 ## Overview
 
-SITBank is a Flask/Gunicorn application deployed as hardened Docker containers behind host-managed Nginx, TLS, and PostgreSQL. Production customer traffic runs at `https://sitbank.duckdns.org`; operators use the private Tailscale Serve URL `https://admin-sitbank.tailca101b.ts.net/` with a separate admin app, browser login at `/login`, cookie, session keys, database role, manual root-admin bootstrap, root-admin-controlled staff invites, and mandatory TOTP. Staging runs separately at `https://staging-sitbank.pp.ua`.
+SITBank is a Flask/Gunicorn application deployed as hardened Docker containers behind host-managed Nginx, TLS, and PostgreSQL. Production customer traffic runs at canonical `https://sitbank.pp.ua`; `https://www.sitbank.pp.ua` redirects there. Operators use the private Tailscale Serve URL `https://admin-sitbank.tailca101b.ts.net/` with a separate admin app, browser login at `/login`, cookie, session keys, database role, manual root-admin bootstrap, root-admin-controlled staff invites, and mandatory TOTP. Staging runs separately at `https://staging-sitbank.pp.ua`.
 
 Private admin reachability is checked only by the manual, protected
 `.github/workflows/tailscale-private-admin-verify.yml` workflow and by the same

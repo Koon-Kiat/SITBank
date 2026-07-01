@@ -57,7 +57,7 @@ if [[ "${target}" == "staging" \
     exit 1
 fi
 if [[ "${target}" == "production" \
-    && "${PUBLIC_HOST}" != "sitbank.duckdns.org" ]]; then
+    && "${PUBLIC_HOST}" != "sitbank.pp.ua" ]]; then
     echo "Trusted production public host is invalid" >&2
     exit 1
 fi

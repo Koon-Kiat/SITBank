@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import re
 import subprocess
@@ -66,7 +66,8 @@ def test_hybrid_cloudflare_staging_and_tailscale_admin_design_is_documented():
         "TS_OAUTH_CLIENT_ID",
         "TS_OAUTH_SECRET",
         "This intentionally uses both products because the surfaces have different",
-        "Production customer | `https://sitbank.duckdns.org`",
+        "Production customer | `https://sitbank.pp.ua`",
+        "`https://www.sitbank.pp.ua` redirects to the canonical host",
         "Staging customer | `https://staging-sitbank.pp.ua`",
         "Production admin app | `https://admin-sitbank.tailca101b.ts.net/` through Tailscale Serve",
         "The customer production site remains public.",
@@ -188,10 +189,12 @@ def test_admin_public_surface_is_absent_and_private_access_is_tailscale_only():
         encoding="utf-8"
     )
     docs = _docs_text()
-    customer_server = _nginx_server_block(production_nginx, "sitbank.duckdns.org")
+    customer_server = _nginx_server_block(production_nginx, "sitbank.pp.ua")
 
-    assert "server_name sitbank.duckdns.org;" in customer_server
+    assert "server_name sitbank.pp.ua;" in customer_server
     assert "staging-sitbank.pp.ua" not in customer_server
+    assert "admin.sitbank.pp.ua" not in production_nginx
+    assert "admin-sitbank.pp.ua" not in production_nginx
     assert "location ^~ /admin" in customer_server
     assert "return 404;" in customer_server
     assert "server_name sitbank-" not in production_nginx

@@ -236,7 +236,7 @@ class Config:
         )
         policy_name = (
             os.environ.get("STAGING_ACCESS_POLICY_NAME", "").strip()
-            or "SITBank staging approved operators"
+            or "SITBank staging app - approved operators only"
         )
 
         idp_ids = _csv("STAGING_ACCESS_ALLOWED_IDP_IDS")

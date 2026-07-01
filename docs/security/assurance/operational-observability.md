@@ -1,14 +1,23 @@
 # Operational Observability With Grafana And Loki
 
 SITBank separates operational log search from the banking admin application.
-Grafana and Loki are the approved direction for Nginx, container, deployment,
-systemd, and host-operation observability. The SITBank admin app remains a
-purpose-built viewer for `SecurityAuditEvent` rows and sanitized security alert
-summaries only.
+Grafana, Loki, and Grafana Alloy are implemented as a private host-side
+observability deployment for Nginx, container, deployment, systemd, and
+host-operation evidence. The SITBank admin app remains a purpose-built viewer
+for `SecurityAuditEvent` rows and sanitized security alert summaries only.
 
 Category: [Security assurance](../README.md#assurance).
 
 ## Boundary
+
+The reviewed deployment files are:
+
+- `ops/observability/compose.observability.yml`;
+- `ops/observability/loki/loki.yml`;
+- `ops/observability/alloy/config.alloy`;
+- `ops/observability/grafana/provisioning/datasources/loki.yml`;
+- `ops/deploy/bootstrap-observability-ec2`;
+- `docs/runbooks/private-observability-grafana-loki.md`.
 
 Use Grafana and Loki for operational evidence such as:
 
@@ -26,10 +35,15 @@ credentials.
 
 ## Access Model
 
-Grafana must be private to approved operators. Use an existing private access
-boundary such as Tailscale, a protected operations network, or another reviewed
-identity-aware control. Do not expose Grafana publicly without authentication,
-MFA where available, least-privilege roles, TLS, and documented revocation.
+Grafana is private to approved operators. The Compose deployment binds Grafana
+to `127.0.0.1:3000`, Loki to `127.0.0.1:3100`, and publishes no Alloy port.
+Normal access uses a private Tailscale URL such as
+`https://grafana-sitbank.tailca101b.ts.net/` mapped to local Grafana. SSH local
+port forwarding is bootstrap or break-glass only, not the normal access model.
+
+Do not expose Grafana publicly through production, staging, customer, admin, or
+unknown-host Nginx routes. Do not proxy, iframe, embed, or link authenticated
+Grafana sessions through Flask or the admin runtime.
 
 Use separate credentials for:
 
@@ -38,15 +52,20 @@ Use separate credentials for:
 - Loki ingestion;
 - any alert delivery integration.
 
-Keep those credentials in the operations secret store or provider UI. Do not
-commit Grafana admin passwords, Loki tokens, API keys, datasource passwords,
-webhook URLs, cookies, session values, or provider exports.
+Keep those credentials in root-owned host files, the operations secret store, or
+the provider UI. The repository Compose file reads Grafana bootstrap credentials
+from `/etc/sitbank-observability/secrets/*` and provisions Loki as a datasource
+without committed datasource credentials. Do not commit Grafana admin
+passwords, Loki tokens, API keys, datasource passwords, webhook URLs, cookies,
+session values, or provider exports.
 
 ## Collection Guidance
 
-Collectors should use allowlisted paths and labels. Do not collect arbitrary
-home directories, shell history, environment dumps, raw command transcripts, or
-secret files.
+Alloy uses allowlisted paths, Docker labels, and coarse labels. It collects
+SITBank Nginx access/error logs, Docker logs only from containers labelled
+`sitbank.log_collect=true`, and allowlisted systemd units. It does not collect
+arbitrary home directories, shell history, environment dumps, raw command
+transcripts, or secret files.
 
 Recommended labels are coarse and non-secret:
 
@@ -62,6 +81,9 @@ passwords, TOTP codes, recovery codes, reset URLs, session IDs, CSRF values,
 cookies, authorization headers, Cloudflare Access assertions, Tailscale keys,
 Cloudflare API tokens, SSH private keys, database URLs, SMTP credentials,
 webhook URLs, private keys, or raw request bodies.
+
+Loki retention is bounded in `ops/observability/loki/loki.yml` with
+`retention_enabled: true` and `retention_period: 168h`.
 
 ## Dashboards And Alerts
 

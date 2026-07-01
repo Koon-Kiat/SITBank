@@ -1,10 +1,12 @@
-﻿# Deployment
+# Deployment
 
 ## Current Architecture
 
 Only Flask/Gunicorn runs in the SITBank container. Nginx, TLS, PostgreSQL, and backups remain host-managed on EC2. Sessions, authentication counters, OTP/reset state, alert dedupe, and breached-password circuit state live in application-owned PostgreSQL tables.
 
-- Production public host: `sitbank.duckdns.org`
+- Production public host: `sitbank.pp.ua`
+- Production public `www` host: `www.sitbank.pp.ua` redirects to
+  `https://sitbank.pp.ua`
 - Production private admin URL: `https://admin-sitbank.tailca101b.ts.net/`
 - Staging public host: `staging-sitbank.pp.ua`
 - Staging Cloudflare Access host: `staging-sitbank.pp.ua`
@@ -191,7 +193,7 @@ appropriate:
 | --- | --- | --- |
 | `ENABLE_GITHUB_CODE_SECURITY` | Defaults to `false`; private-repository dependency review runs only when the value is exactly `true` | `dependency-review` in `.github/workflows/ci-deploy.yml` |
 | `STAGING_PUBLIC_HOST` | Defaults to the reviewed staging hostname `staging-sitbank.pp.ua` | Staging deployment URL/configuration and post-deployment staging TLS verification |
-| `PROD_PUBLIC_HOST` | Defaults to the reviewed production hostname `sitbank.duckdns.org` | Production deployment URL/configuration and post-deployment production TLS verification |
+| `PROD_PUBLIC_HOST` | Defaults to the reviewed production hostname `sitbank.pp.ua` | Production deployment URL/configuration and post-deployment production TLS verification |
 | `PROD_DEPLOY_ENABLED` | Defaults to disabled unless exactly `true` | Production deployment gate |
 
 The host fallbacks are explicit repository conventions, not discovery
@@ -423,7 +425,7 @@ manual workflow inputs when an approved endpoint changes:
 | Environment | Workflow input | Default target | Artifact |
 | --- | --- | --- | --- |
 | Staging customer | `staging_host` | `https://staging-sitbank.pp.ua` | `tls-scan-staging-sitbank` |
-| Production customer | `production_host` | `https://sitbank.duckdns.org` | `tls-scan-prod-sitbank` |
+| Production customer | `production_host` | `https://sitbank.pp.ua` | `tls-scan-prod-sitbank` |
 
 Each target preserves the scanner's original `testssl.raw.json` and produces a
 separate `testssl.json` for policy parsing, plus a text log, HTML report, scan
@@ -497,7 +499,7 @@ application credentials):
 testssl.sh --warnings batch --color 0 --jsonfile testssl.json \
   --logfile testssl.log --htmlfile testssl.html \
   https://staging-sitbank.pp.ua
-testssl.sh --warnings batch --color 0 https://sitbank.duckdns.org
+testssl.sh --warnings batch --color 0 https://sitbank.pp.ua
 ```
 
 SSL Labs remains optional, manual corroborating evidence. Use its public
@@ -508,7 +510,15 @@ SSL Labs automation because public API capacity and rate limits are external to
 this repository.
 
 Before first bootstrap, issue the certificates using the approved host Certbot
-flow. The bootstrap retains its certificate-file preflight and installs
+DNS-01 flow with `python3-certbot-dns-cloudflare`. Production and staging use
+separate Cloudflare DNS tokens stored only in root-owned host files:
+
+- `/root/.secrets/certbot/cloudflare-production.ini`
+- `/root/.secrets/certbot/cloudflare-staging.ini`
+
+Each file must be `root:root` mode `0600` and grant only `Zone Read` and
+`DNS Write` for the matching zone. Do not reuse Cloudflare Access provisioning
+tokens for Certbot renewal. The bootstrap retains its certificate-file preflight and installs
 `ops/deploy/verify-certbot-host-state` as
 `/usr/local/sbin/verify-certbot-host-state`. Once the required files exist, it
 runs the verifier before it installs or reloads Nginx; it does not attempt
@@ -520,16 +530,18 @@ and active `certbot.timer`, and every expected Certbot certificate and key:
 
 | Hostname | Certificate | Private key |
 | --- | --- | --- |
-| `sitbank.duckdns.org` | `/etc/letsencrypt/live/sitbank.duckdns.org/fullchain.pem` | `/etc/letsencrypt/live/sitbank.duckdns.org/privkey.pem` |
+| `sitbank.pp.ua`, `www.sitbank.pp.ua` | `/etc/letsencrypt/live/sitbank.pp.ua/fullchain.pem` | `/etc/letsencrypt/live/sitbank.pp.ua/privkey.pem` |
 | `staging-sitbank.pp.ua` | `/etc/letsencrypt/live/staging-sitbank.pp.ua/fullchain.pem` | `/etc/letsencrypt/live/staging-sitbank.pp.ua/privkey.pem` |
 
 Each `fullchain.pem` symlink must resolve to a regular file below
 `/etc/letsencrypt`. OpenSSL must parse it, expose a valid `notAfter`, and confirm
 that it is neither expired nor due to expire within the minimum validity
 window. `CERTBOT_MIN_VALID_DAYS` configures that window and defaults to 14
-days; it must be an integer from 1 through 3650. The leaf certificate must
-contain an exact DNS SAN for its expected hostname. CN fallback and wildcard
-matching are intentionally not accepted.
+days; it must be an integer from 1 through 3650. The production leaf
+certificate must contain exact DNS SANs for `sitbank.pp.ua` and
+`www.sitbank.pp.ua`; the staging leaf certificate must contain an exact DNS SAN
+for `staging-sitbank.pp.ua`. CN fallback and wildcard matching are
+intentionally not accepted.
 
 The `live` private-key path is normally a symlink; the resolved target must
 remain below `/etc/letsencrypt`, be owned by `root`, be group-owned by `root`,
@@ -549,9 +561,12 @@ sudo systemctl status certbot.timer
 sudo /usr/local/sbin/verify-certbot-host-state production
 sudo /usr/local/sbin/verify-certbot-host-state staging
 sudo /usr/local/sbin/verify-certbot-host-state --renewal-dry-run production
+sudo /usr/local/sbin/verify-certbot-host-state --renewal-dry-run staging
+sudo certbot renew --dry-run --cert-name sitbank.pp.ua
+sudo certbot renew --dry-run --cert-name staging-sitbank.pp.ua
 
-sudo readlink -f /etc/letsencrypt/live/sitbank.duckdns.org/privkey.pem
-sudo stat -c '%U %G %a %n' "$(sudo readlink -f /etc/letsencrypt/live/sitbank.duckdns.org/privkey.pem)"
+sudo readlink -f /etc/letsencrypt/live/sitbank.pp.ua/privkey.pem
+sudo stat -c '%U %G %a %n' "$(sudo readlink -f /etc/letsencrypt/live/sitbank.pp.ua/privkey.pem)"
 sudo readlink -f /etc/letsencrypt/live/staging-sitbank.pp.ua/privkey.pem
 sudo stat -c '%U %G %a %n' "$(sudo readlink -f /etc/letsencrypt/live/staging-sitbank.pp.ua/privkey.pem)"
 ```
@@ -565,12 +580,12 @@ non-default threshold, pass it explicitly, for example
 Normal bootstrap and deployment verification does not contact an ACME service,
 so it does not claim to prove renewal readiness. The explicit
 `--renewal-dry-run` mode first performs all local checks and then runs
-`certbot renew --dry-run`; it may contact Let's Encrypt's staging service.
+`certbot renew --dry-run --cert-name <target-lineage>`; it may contact Let's
+Encrypt's staging service.
 Run it after initial issuance, changes to Certbot or ACME configuration, and
-renewal failures. Because `certbot renew` evaluates all configured renewal
-lineages, one successful invocation is sufficient even though a target is
-required for the local host checks. Do not print or copy private-key contents
-while troubleshooting.
+renewal failures. The target-specific check avoids making production or staging
+verification depend on retired DuckDNS lineages. Do not print or copy
+private-key contents while troubleshooting.
 
 A failure is not a deployment bypass condition. Repair the path/ownership/mode,
 install the certificate for the exact hostname, or renew/replace an expired or
@@ -615,15 +630,15 @@ Verification:
 ```bash
 sudo sshd -t
 sudo ufw status numbered verbose
-sudo test -r /etc/letsencrypt/live/sitbank.duckdns.org/fullchain.pem
+sudo test -r /etc/letsencrypt/live/sitbank.pp.ua/fullchain.pem
 sudo /usr/local/sbin/verify-certbot-host-state production
 sudo nginx -t
 sudo nginx -T | grep -E 'ssl_protocols|ssl_ciphers|ssl_ecdh_curve|ssl_conf_command|ssl_session_tickets'
 sudo ss -ltnp | grep -E ':(80|443|5000|5002)([[:space:]]|$)'
 sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-app
 sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-admin
-curl --fail https://sitbank.duckdns.org/health/live
-curl -I https://sitbank.duckdns.org/health/ready
+curl --fail https://sitbank.pp.ua/health/live
+curl -I https://sitbank.pp.ua/health/ready
 ```
 
 Expected: local customer and admin readiness succeeds, external customer
@@ -735,11 +750,14 @@ staging deployment, Nginx, Certbot, or TLS-scan target. The staging domain and
 CI/CD migration are complete. Cloudflare Access and origin-protection
 automation are implemented separately from live operator verification.
 
-Issue or renew staging TLS before bootstrap:
+Issue or renew staging TLS with DNS-01 before bootstrap:
 
 ```bash
-sudo certbot --nginx -d staging-sitbank.pp.ua --cert-name staging-sitbank.pp.ua
-sudo certbot certonly --webroot -w /var/www/certbot -d staging-sitbank.pp.ua --cert-name staging-sitbank.pp.ua
+sudo certbot certonly \
+  --dns-cloudflare \
+  --dns-cloudflare-credentials /root/.secrets/certbot/cloudflare-staging.ini \
+  --cert-name staging-sitbank.pp.ua \
+  -d staging-sitbank.pp.ua
 sudo systemctl status certbot.timer
 sudo /usr/local/sbin/verify-certbot-host-state staging
 sudo /usr/local/sbin/verify-certbot-host-state --renewal-dry-run staging
@@ -803,7 +821,8 @@ The complete operator runbook is
 `docs/security/architecture/admin-and-staging-zero-trust-access.md`.
 
 After the staging TLS check passes, validate production customer HTTPS with
-`testssl.sh --warnings batch --color 0 https://sitbank.duckdns.org`. The
+`testssl.sh --warnings batch --color 0 https://sitbank.pp.ua` and verify that
+`https://www.sitbank.pp.ua` redirects to the canonical host. The
 `ssl_conf_command` TLS 1.3 setting is runtime-dependent, so `nginx -t` must
 pass on the deployed host before any reload. Do not add the private Tailscale
 admin URL to public GitHub-hosted TLS scans. Private reachability belongs only
@@ -816,5 +835,16 @@ returns the production edge header before the production live TLS scan is
 accepted:
 
 ```bash
-curl -fsSI https://sitbank.duckdns.org/ | grep -i '^strict-transport-security:'
+curl -fsSI https://sitbank.pp.ua/ | grep -i '^strict-transport-security:'
+curl -fsSI https://www.sitbank.pp.ua/ | grep -i '^location: https://sitbank.pp.ua'
 ```
+
+The full DNS-01 and retired DuckDNS cleanup runbook is
+`docs/runbooks/ppua-dns01-duckdns-retirement.md`. Use it to remove old DuckDNS
+Certbot lineages only after the `pp.ua` certificates, Nginx config, renewal
+dry-runs, and live checks pass.
+
+The private Grafana/Loki deployment is separate from the banking application
+runtime. Use `ops/deploy/bootstrap-observability-ec2` and
+`docs/runbooks/private-observability-grafana-loki.md`; do not add Grafana,
+Loki, or Alloy routes to public Nginx or the Flask admin app.

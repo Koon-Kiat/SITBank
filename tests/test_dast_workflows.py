@@ -45,7 +45,7 @@ def test_pr_dast_smoke_is_local_automatic_and_time_bounded():
     assert "dump_container_diagnostics" in helper
     assert "target=isolated-docker-network" in text
     assert "staging-sitbank.pp.ua" not in text
-    assert "sitbank.duckdns.org" not in text
+    assert "sitbank.pp.ua" not in text
     assert "admin-sitbank" not in text
     assert "auth-cookie" not in text
     assert "zap-replacer.properties" not in text
