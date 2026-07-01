@@ -482,12 +482,14 @@ if [[ "${RUN_ZAP_BASELINE:-false}" == "true" ]]; then
         > "${work_dir}/zap-pr/rules.tsv"
     chmod_host_path 0644 "${work_dir}/zap-pr/rules.tsv"
     zap_pr_mount_source="$(docker_bind_source "${work_dir}/zap-pr")"
+    # TLS terminates at the production proxy; this URL never leaves the isolated Docker network.
+    zap_baseline_target="http://${app_container}:5000/" # NOSONAR
     docker run --rm \
         --network "${network_name}" \
         --volume "${zap_pr_mount_source}:/zap/wrk:ro" \
         "${ZAP_IMAGE}" \
         zap-baseline.py \
-            -t "http://${app_container}:5000/" \
+            -t "${zap_baseline_target}" \
             -m 2 \
             -T 5 \
             -I \
