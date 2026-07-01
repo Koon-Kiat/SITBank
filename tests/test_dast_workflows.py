@@ -26,7 +26,9 @@ def test_pr_dast_smoke_is_local_automatic_and_time_bounded():
     helper = Path("ops/container/smoke-test.sh").read_text(encoding="utf-8")
     assert "zap-baseline.py" in helper
     assert "-m 2" in helper and "-T 5" in helper
-    assert "10020\\tFAIL" in helper
+    assert "10020\\tFAIL\\tAnti-clickjacking header" in helper
+    assert "10021\\tFAIL\\tX-Content-Type-Options header" in helper
+    assert "10038\\tFAIL\\tContent Security Policy header" in helper
     assert '-t "http://${app_container}:5000/"' in helper
     for required_runtime_setting in (
         "--env PASSWORD_RESET_ENABLED=true",

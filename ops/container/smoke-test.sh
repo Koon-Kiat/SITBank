@@ -478,7 +478,7 @@ fi
 
 if [[ "${RUN_ZAP_BASELINE:-false}" == "true" ]]; then
     install_host_dir 0777 "${work_dir}/zap-pr"
-    printf '10020\tFAIL\n10021\tFAIL\n10038\tFAIL\n' \
+    printf '10020\tFAIL\tAnti-clickjacking header\n10021\tFAIL\tX-Content-Type-Options header\n10038\tFAIL\tContent Security Policy header\n' \
         > "${work_dir}/zap-pr/rules.tsv"
     chmod_host_path 0644 "${work_dir}/zap-pr/rules.tsv"
     zap_pr_mount_source="$(docker_bind_source "${work_dir}/zap-pr")"
