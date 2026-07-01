@@ -10,7 +10,12 @@
   <section class="panel">
     <form class="admin-filter-grid" method="get" action="{{ url_for('admin.audit_logs') }}">
       <label for="audit-event-type">Event type</label>
-      <input id="audit-event-type" name="event_type" value="{{ filters.event_type }}">
+      <select id="audit-event-type" name="event_type">
+        <option value="">Any</option>
+        {% for event_type in event_type_options %}
+        <option value="{{ event_type }}"{% if filters.event_type == event_type %} selected{% endif %}>{{ event_type }}</option>
+        {% endfor %}
+      </select>
       <label for="audit-actor">Actor user ID</label>
       <input id="audit-actor" name="actor" value="{{ filters.actor }}">
       <label for="audit-target">Target reference</label>
@@ -18,14 +23,14 @@
       <label for="audit-severity">Severity</label>
       <select id="audit-severity" name="severity">
         <option value="">Any</option>
-        {% for severity in ["low", "medium", "high", "critical"] %}
+        {% for severity in severity_options %}
         <option value="{{ severity }}"{% if filters.severity == severity %} selected{% endif %}>{{ severity }}</option>
         {% endfor %}
       </select>
       <label for="audit-outcome">Outcome</label>
       <select id="audit-outcome" name="outcome">
         <option value="">Any</option>
-        {% for outcome in ["success", "failure", "blocked", "expired", "queued", "locked", "required", "requested", "verified", "mfa_success"] %}
+        {% for outcome in outcome_options %}
         <option value="{{ outcome }}"{% if filters.outcome == outcome %} selected{% endif %}>{{ outcome }}</option>
         {% endfor %}
       </select>
@@ -48,7 +53,7 @@
       <input id="audit-search" name="q" value="{{ filters.q }}">
       <label for="audit-sort">Sort</label>
       <select id="audit-sort" name="sort">
-        {% for option in ["timestamp", "severity", "event_type", "actor"] %}
+        {% for option in sort_options %}
         <option value="{{ option }}"{% if sort == option %} selected{% endif %}>{{ option }}</option>
         {% endfor %}
       </select>
@@ -77,25 +82,31 @@
           <tr>
             <th scope="col">Time</th>
             <th scope="col">Event</th>
+            <th scope="col">Severity</th>
             <th scope="col">Outcome</th>
-            <th scope="col">Actor</th>
-            <th scope="col">IP</th>
+            <th scope="col">Actor role</th>
+            <th scope="col">Source</th>
+            <th scope="col">Request ID</th>
+            <th scope="col">Target</th>
             <th scope="col">Detail</th>
           </tr>
         </thead>
         <tbody>
           {% for event in events %}
           <tr>
-            <td>{{ event.created_at }}</td>
+            <td><time datetime="{{ event.created_at_utc }}">{{ event.created_at_display }}</time></td>
             <td>{{ event.event_type }}</td>
+            <td>{{ event.severity or "none" }}</td>
             <td>{{ event.outcome }}</td>
-            <td>{{ event.actor_user_id or "system" }}</td>
-            <td>{{ event.ip_address }}</td>
+            <td>{{ event.actor_role }}</td>
+            <td>{{ event.source_kind }}: {{ event.source_display }}</td>
+            <td>{{ event.request_id }}</td>
+            <td>{{ event.target_ref or "none" }}</td>
             <td><a href="{{ url_for('admin.audit_log_detail', event_id=event.id) }}">Open</a></td>
           </tr>
           {% else %}
           <tr>
-            <td colspan="6">No audit events match the current filters.</td>
+            <td colspan="9">No audit events match the current filters.</td>
           </tr>
           {% endfor %}
         </tbody>

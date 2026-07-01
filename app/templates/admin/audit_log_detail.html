@@ -10,25 +10,38 @@
   </div>
   <section class="panel">
     <dl class="admin-metadata-grid">
-      <div><dt>Time</dt><dd>{{ event.created_at }}</dd></div>
+      <div><dt>Time</dt><dd><time datetime="{{ event.created_at_utc }}">{{ event.created_at_display }}</time></dd></div>
       <div><dt>Event</dt><dd>{{ event.event_type }}</dd></div>
+      <div><dt>Severity</dt><dd>{{ event.severity or "none" }}</dd></div>
       <div><dt>Outcome</dt><dd>{{ event.outcome }}</dd></div>
       <div><dt>Actor</dt><dd>{{ event.actor_user_id or "system" }}</dd></div>
-      <div><dt>IP address</dt><dd>{{ event.ip_address }}</dd></div>
+      <div><dt>Actor role</dt><dd>{{ event.actor_role }}</dd></div>
+      <div><dt>Source kind</dt><dd>{{ event.source_kind }}</dd></div>
+      <div><dt>Source</dt><dd>{{ event.source_display }}</dd></div>
+      <div><dt>Target reference</dt><dd>{{ event.target_ref or "none" }}</dd></div>
       <div><dt>Request ID</dt><dd>{{ event.correlation_id }}</dd></div>
+      <div><dt>Hash chain</dt><dd>{% if event.hash_chain_status.linked %}Event hash present{% else %}Event hash missing{% endif %}</dd></div>
+      <div><dt>Hash algorithm</dt><dd>{{ event.hash_chain_status.algorithm }}</dd></div>
     </dl>
   </section>
   <section class="panel">
     <div class="section-header">
       <h2>Safe Metadata</h2>
     </div>
+    {% if event.metadata_groups %}
+    {% for group, values in event.metadata_groups.items() %}
+    <h3>{{ group }}</h3>
     <dl class="admin-metadata-grid">
-      {% for key, value in event.metadata.items() %}
+      {% for key, value in values.items() %}
       <div><dt>{{ key }}</dt><dd>{{ value }}</dd></div>
-      {% else %}
-      <div><dt>Status</dt><dd>No displayable metadata.</dd></div>
       {% endfor %}
     </dl>
+    {% endfor %}
+    {% else %}
+    <dl class="admin-metadata-grid">
+      <div><dt>Status</dt><dd>No displayable metadata.</dd></div>
+    </dl>
+    {% endif %}
   </section>
 </section>
 {% endblock %}

@@ -204,6 +204,15 @@ def test_audit_viewer_filters_sorting_pagination_and_safe_search(admin_client):
     assert filtered.status_code == 200
     filtered_payload = filtered.get_json()
     assert [event["id"] for event in filtered_payload["events"]] == [matching.id]
+    displayed_event = filtered_payload["events"][0]
+    assert displayed_event["created_at_display"] == "2026-06-28 12:00:00 UTC"
+    assert displayed_event["created_at_utc"].startswith("2026-06-28T12:00:00")
+    assert displayed_event["actor_role"] == "admin"
+    assert displayed_event["source_kind"] == "network"
+    assert displayed_event["source_display"] == "203.0.113.10"
+    assert displayed_event["request_id"] == "audit-request-1"
+    assert displayed_event["target_ref"] == "target-ref-123"
+    assert "staff_invite_created" in filtered_payload["event_type_options"]
     assert filtered_payload["total"] == 1
     assert filtered_payload["total_pages"] == 1
     assert invalid.status_code == 200
@@ -253,6 +262,117 @@ def test_audit_event_detail_redacts_existing_unsafe_metadata_and_escapes_html(ad
     assert payload["event"]["metadata"]["note"] == "[redacted]"
     assert payload["event"]["metadata"]["nested"]["visible"] == "[redacted]"
     assert payload["event"]["metadata"]["nested"]["target_staff_ref"] == "safe-ref"
+    assert "Other safe metadata" in body
+    assert "Hash chain" in body
+
+
+def test_audit_viewer_renders_dropdown_timestamps_and_system_probe_source(admin_client):
+    admin, admin_secret = _create_identity(
+        username="security-admin",
+        email="security.admin@sit.singaporetech.edu.sg",
+        account_type="admin",
+        phone_number="91234567",
+    )
+    event = _audit_event(
+        event_type="privilege_probe",
+        user_id=None,
+        metadata={"severity": "critical", "reason": "runtime_db_privilege_check"},
+        created_at=datetime(2026, 6, 30, 8, 15, tzinfo=timezone.utc),
+        ip_address="privilege-check",
+        correlation_id="probe-request-1",
+    )
+    _login_admin(admin_client, admin_secret, "security.admin@sit.singaporetech.edu.sg")
+
+    listing = admin_client.get("/audit-logs")
+    detail = admin_client.get(f"/audit-logs/{event.id}")
+    listing_body = listing.get_data(as_text=True)
+    detail_body = detail.get_data(as_text=True)
+
+    assert listing.status_code == 200
+    assert '<select id="audit-event-type" name="event_type">' in listing_body
+    assert "privilege_probe" in listing_body
+    assert "2026-06-30 08:15:00 UTC" in listing_body
+    assert "system_probe: Runtime privilege probe" in listing_body
+    assert "privilege-check" not in listing_body
+    assert detail.status_code == 200
+    assert "Runtime privilege probe" in detail_body
+    assert "Security decision" in detail_body
+
+
+def test_audit_detail_uses_metadata_role_source_and_grouped_safe_fields(admin_client):
+    admin, admin_secret = _create_identity(
+        username="security-admin",
+        email="security.admin@sit.singaporetech.edu.sg",
+        account_type="admin",
+        phone_number="91234567",
+    )
+    event = _audit_event(
+        event_type="host_deploy_wrapper",
+        user_id=None,
+        metadata={
+            "actor_role": "root_admin",
+            "source_kind": "deployment",
+            "source_display": "Deployment wrapper",
+            "request_method": "POST",
+            "target_staff_ref": "safe-target-ref",
+            "result_count": 2,
+            "custom_note": "operator summary only",
+        },
+        created_at=datetime(2026, 6, 30, 9, 15, tzinfo=timezone.utc),
+        ip_address="deployment",
+        correlation_id="deploy-request-1",
+    )
+    scheduled = _audit_event(
+        event_type="security_alert_scheduler",
+        user_id=None,
+        metadata={"severity": "medium"},
+        ip_address="scheduler",
+        correlation_id="scheduler-request-1",
+    )
+    source_less = _audit_event(
+        event_type="legacy_system_event",
+        user_id=None,
+        metadata={"severity": "low"},
+        ip_address="",
+        correlation_id="source-less-request-1",
+    )
+    _login_admin(admin_client, admin_secret, "security.admin@sit.singaporetech.edu.sg")
+
+    json_response = admin_client.get(
+        f"/audit-logs/{event.id}",
+        headers={"Accept": "application/json"},
+    )
+    scheduled_response = admin_client.get(
+        f"/audit-logs/{scheduled.id}",
+        headers={"Accept": "application/json"},
+    )
+    source_less_response = admin_client.get(
+        f"/audit-logs/{source_less.id}",
+        headers={"Accept": "application/json"},
+    )
+    html_response = admin_client.get(f"/audit-logs/{event.id}")
+    payload = json_response.get_json()["event"]
+    scheduled_payload = scheduled_response.get_json()["event"]
+    source_less_payload = source_less_response.get_json()["event"]
+    body = html_response.get_data(as_text=True)
+
+    assert payload["actor_role"] == "root_admin"
+    assert payload["source_kind"] == "deployment"
+    assert payload["source_display"] == "Deployment wrapper"
+    assert payload["target_ref"] == "safe-target-ref"
+    assert payload["metadata_groups"]["Actor and session"]["actor_role"] == "root_admin"
+    assert payload["metadata_groups"]["Request and source"]["request_method"] == "POST"
+    assert payload["metadata_groups"]["Target"]["target_staff_ref"] == "safe-target-ref"
+    assert payload["metadata_groups"]["Result and system"]["result_count"] == 2
+    assert payload["metadata_groups"]["Other safe metadata"]["custom_note"] == "operator summary only"
+    assert scheduled_payload["source_kind"] == "system"
+    assert scheduled_payload["source_display"] == "System or scheduled control"
+    assert source_less_payload["source_kind"] == "system"
+    assert source_less_payload["source_display"] == "System"
+    assert "Deployment wrapper" in body
+    assert "Actor and session" in body
+    assert "Request and source" in body
+    assert "Result and system" in body
 
 
 def test_audit_viewer_is_read_only_and_template_avoids_safe_filter(admin_client):

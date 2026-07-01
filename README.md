@@ -170,6 +170,7 @@ customer domain.
 - [Operations](docs/OPERATIONS.md)
 - [Security](SECURITY.md)
 - [Audit and alerting](docs/security/assurance/audit-and-alerting.md)
+- [Operational observability with Grafana and Loki](docs/security/assurance/operational-observability.md)
 - [Framework control matrix](docs/security/governance/framework-control-matrix.md)
 - [Privacy and PDPA](docs/security/governance/privacy-and-pdpa.md)
 - [Data retention and deactivation](docs/security/governance/data-retention-and-deactivation.md)
