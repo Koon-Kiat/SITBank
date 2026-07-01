@@ -27,6 +27,15 @@ def test_pr_dast_smoke_is_local_automatic_and_time_bounded():
     assert "zap-baseline.py" in helper
     assert "-m 2" in helper and "-T 5" in helper
     assert "10020\\tFAIL" in helper
+    for required_runtime_setting in (
+        "--env PASSWORD_RESET_ENABLED=true",
+        "--env PASSWORD_RESET_EMAIL_BACKEND=smtp",
+        "--env SMTP_HOST=smtp.example.test",
+        "--env SMTP_USERNAME_FILE=/run/secrets/smtp_username",
+        "--env SMTP_PASSWORD_FILE=/run/secrets/smtp_password",
+        "--env SECURITY_ALERT_WEBHOOK_URL_FILE=/run/secrets/security_alert_webhook_url",
+    ):
+        assert required_runtime_setting in helper
     assert "127.0.0.1:5000" in text
     assert "staging-sitbank.pp.ua" not in text
     assert "sitbank.duckdns.org" not in text

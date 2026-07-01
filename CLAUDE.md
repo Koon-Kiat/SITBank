@@ -13,7 +13,8 @@ Use the imported files above as standing project rules for all SITBank work.
 - Treat the current repository files as the source of truth.
 - Do not assume old zip uploads, old chat context, or stale documentation are current when repository files disagree.
 - For security, deployment, authentication, authorization, cryptography, Cloudflare, Tailscale, Nginx, CI/CD, and production-guard work, preserve existing controls unless a reviewed issue explicitly requires a change.
-- Do not log, print, commit, upload, or expose secrets, tokens, cookies, session IDs, CSRF values, TOTP/recovery/WebAuthn material, HMAC/encryption keys, database URLs, SMTP credentials, provider exports, SSH keys, or real customer data.
+- Do not expose authentication secrets or one-time values, including passwords, tokens, cookies, session IDs, CSRF values, TOTP/recovery codes, or WebAuthn challenges and assertions.
+- Keep cryptographic keys, database connection values, mail-provider credentials, infrastructure exports, SSH keys, and real customer data out of logs, commits, uploads, and responses.
 
 ## GitHub issues
 
