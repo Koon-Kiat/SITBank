@@ -64,10 +64,19 @@ def _deliver_smtp(delivery: EmailDelivery) -> None:
 
     with smtplib.SMTP(host, port, timeout=10) as smtp:
         if use_tls:
-            smtp.starttls(context=ssl.create_default_context())
+            smtp.starttls(context=_verified_tls_context())
         if username and password:
             smtp.login(str(username), str(password))
         smtp.send_message(message)
+
+
+def _verified_tls_context() -> ssl.SSLContext:
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.check_hostname = True
+    context.verify_mode = ssl.CERT_REQUIRED
+    context.load_default_certs()
+    return context
 
 
 def _ensure_secure_smtp_mode(*, use_tls: bool) -> None:

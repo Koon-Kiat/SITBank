@@ -1,4 +1,5 @@
 import pytest
+from flask import render_template_string
 
 from app.security import turnstile
 
@@ -83,3 +84,32 @@ def test_production_enabled_route_requires_site_key(app):
     with app.test_request_context("/auth/login", method="POST"):
         with pytest.raises(turnstile.TurnstileError):
             turnstile.require_turnstile("customer_login", "browser-token")
+
+
+def test_unknown_turnstile_action_fails_closed_even_when_disabled(app):
+    app.config.update(TURNSTILE_ENABLED=False)
+
+    with app.test_request_context("/auth/login", method="POST"):
+        with pytest.raises(turnstile.TurnstileError):
+            turnstile.require_turnstile("customer_lgoin", "browser-token")
+
+
+def test_multiple_turnstile_widgets_load_script_once(app):
+    app.config.update(
+        TURNSTILE_ENABLED=True,
+        TURNSTILE_SITE_KEY="fake-site-key",
+        TURNSTILE_CUSTOMER_LOGIN_ENABLED=True,
+        TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED=True,
+    )
+
+    with app.test_request_context("/"):
+        markup = render_template_string(
+            """
+            {% import "_turnstile.html" as turnstile with context %}
+            {{ turnstile.widget("customer_login") }}
+            {{ turnstile.widget("customer_register_otp") }}
+            """
+        )
+
+    assert markup.count('class="cf-turnstile"') == 2
+    assert markup.count("https://challenges.cloudflare.com/turnstile/v0/api.js") == 1

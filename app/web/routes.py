@@ -100,10 +100,12 @@ _SESSIONS_ENDPOINT = "web.sessions_dashboard"
 _MFA_VERIFY_TEMPLATE = "mfa_verify.html"
 _MFA_SETUP_TEMPLATE = "mfa_setup.html"
 _LOGIN_TEMPLATE = "login.html"
+_FORGOT_PASSWORD_TEMPLATE = "forgot_password.html"
 _PROFILE_TEMPLATE = "profile.html"
 _PASSWORD_CHANGE_TEMPLATE = "password_change.html"
 _FREEZE_TEMPLATE = "freeze.html"
 _SECURITY_TOKEN_EXPIRED_MESSAGE = "Security token expired. Please try again."
+_CHALLENGE_VERIFICATION_FAILED_MESSAGE = "Challenge verification failed"
 
 WEB_MFA_ONBOARDING_ALLOWED_ENDPOINTS = {
     _FORGOT_PASSWORD_ENDPOINT,
@@ -210,7 +212,7 @@ def register_otp_request():
         require_turnstile("customer_register_otp")
         result = request_registration_otp(form.email.data)
     except TurnstileError:
-        flash("Challenge verification failed", "error")
+        flash(_CHALLENGE_VERIFICATION_FAILED_MESSAGE, "error")
         return _render_register_email_form(otp_request_form=form), 400
     except RegistrationOtpError as exc:
         flash(exc.message, "error")
@@ -272,7 +274,7 @@ def register_submit():
             }
         )
     except TurnstileError:
-        flash("Challenge verification failed", "error")
+        flash(_CHALLENGE_VERIFICATION_FAILED_MESSAGE, "error")
         return _render_register_details_form(form, verified_email=verified_email), 400
     except AuthError as exc:
         flash(exc.message, "error")
@@ -346,7 +348,7 @@ def login_submit():
         require_turnstile("customer_login")
         result = authenticate_primary(form.identifier.data, form.password.data)
     except TurnstileError:
-        flash("Challenge verification failed", "error")
+        flash(_CHALLENGE_VERIFICATION_FAILED_MESSAGE, "error")
         return render_template(_LOGIN_TEMPLATE, form=form), 400
     except AuthError as exc:
         flash(exc.message, "error")
@@ -370,7 +372,7 @@ def login_submit():
 def forgot_password():
     if getattr(g, "current_user", None) is not None:
         return redirect(url_for(_DASHBOARD_ENDPOINT))
-    return render_template("forgot_password.html", form=ForgotPasswordForm())
+    return render_template(_FORGOT_PASSWORD_TEMPLATE, form=ForgotPasswordForm())
 
 
 @web_bp.post("/forgot-password")
@@ -379,13 +381,13 @@ def forgot_password():
 def forgot_password_submit():
     form = ForgotPasswordForm()
     if not form.validate_on_submit():
-        return render_template("forgot_password.html", form=form), 400
+        return render_template(_FORGOT_PASSWORD_TEMPLATE, form=form), 400
     try:
         require_turnstile("customer_password_reset")
         result = request_password_reset(form.email.data)
     except TurnstileError:
-        flash("Challenge verification failed", "error")
-        return render_template("forgot_password.html", form=form), 400
+        flash(_CHALLENGE_VERIFICATION_FAILED_MESSAGE, "error")
+        return render_template(_FORGOT_PASSWORD_TEMPLATE, form=form), 400
     flash(result["message"], "success")
     return redirect(url_for(_LOGIN_ENDPOINT))
 

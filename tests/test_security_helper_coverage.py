@@ -46,7 +46,7 @@ def test_security_email_backends_and_outbox_boundary(app, monkeypatch):
             return None
 
         def starttls(self, *, context):
-            events.append(("tls", context.check_hostname, context.verify_mode))
+            events.append(("tls", context.check_hostname, context.verify_mode, context.minimum_version))
 
         def login(self, username, password):
             events.append(("login", username, password))
@@ -69,7 +69,7 @@ def test_security_email_backends_and_outbox_boundary(app, monkeypatch):
 
     assert events == [
         ("connect", "smtp.example.test", 2525, 10),
-        ("tls", True, email.ssl.CERT_REQUIRED),
+        ("tls", True, email.ssl.CERT_REQUIRED, email.ssl.TLSVersion.TLSv1_2),
         ("login", "fake-user", "fake-password"),
         ("send", "user@example.test", "Subject", "Fake body"),
     ]

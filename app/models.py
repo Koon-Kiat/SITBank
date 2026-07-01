@@ -8,6 +8,7 @@ from sqlalchemy import Index, func
 from .extensions import db
 
 _USER_ID_FOREIGN_KEY = "users.id"
+_CASCADE_DELETE_ORPHAN = "all, delete-orphan"
 
 
 class User(db.Model):
@@ -103,7 +104,7 @@ class WebAuthnCredential(db.Model):
         "User",
         backref=db.backref(
             "webauthn_credentials",
-            cascade="all, delete-orphan",
+            cascade=_CASCADE_DELETE_ORPHAN,
             lazy="selectin",
         ),
     )
@@ -172,7 +173,7 @@ class PasswordHistory(db.Model):
         "User",
         backref=db.backref(
             "password_history",
-            cascade="all, delete-orphan",
+            cascade=_CASCADE_DELETE_ORPHAN,
             lazy="selectin",
         ),
     )
@@ -558,7 +559,7 @@ class Payee(db.Model):
 
     user = db.relationship(
         "User",
-        backref=db.backref("payees", cascade="all, delete-orphan", lazy="selectin"),
+        backref=db.backref("payees", cascade=_CASCADE_DELETE_ORPHAN, lazy="selectin"),
     )
 
     __table_args__ = (

@@ -63,7 +63,8 @@ def verify_turnstile_token(token: str | None, *, expected_action: str | None = N
 
 
 def require_turnstile(action: str, token: str | None = None) -> None:
-    if not turnstile_required_for_action(action):
+    config_key = _turnstile_action_config_key(action)
+    if not _turnstile_required_for_config(config_key):
         return
     validate_turnstile_runtime_config(action)
     verify_turnstile_token(
@@ -73,12 +74,7 @@ def require_turnstile(action: str, token: str | None = None) -> None:
 
 
 def turnstile_required_for_action(action: str) -> bool:
-    config_key = _ACTION_CONFIG.get(str(action or "").strip())
-    if not config_key:
-        return False
-    return bool(current_app.config.get("TURNSTILE_ENABLED", False)) and bool(
-        current_app.config.get(config_key, False)
-    )
+    return _turnstile_required_for_config(_turnstile_action_config_key(action))
 
 
 def turnstile_widget_enabled(action: str) -> bool:
@@ -102,10 +98,10 @@ def turnstile_token_from_request() -> str | None:
 
 
 def validate_turnstile_runtime_config(action: str | None = None) -> None:
+    if action:
+        _turnstile_action_config_key(action)
     if not current_app.config.get("TURNSTILE_ENABLED", False):
         return
-    if action and not _ACTION_CONFIG.get(action):
-        raise TurnstileError(_CHALLENGE_FAILED_MESSAGE)
     secret_key = str(current_app.config.get("TURNSTILE_SECRET_KEY") or "").strip()
     if not secret_key:
         raise TurnstileError(_CHALLENGE_FAILED_MESSAGE)
@@ -136,6 +132,19 @@ def _turnstile_verify_target() -> tuple[str, int | None, str]:
         raise TurnstileError(_CHALLENGE_FAILED_MESSAGE)
     path = parsed.path or "/"
     return parsed.hostname, parsed.port, path
+
+
+def _turnstile_action_config_key(action: str) -> str:
+    config_key = _ACTION_CONFIG.get(str(action or "").strip())
+    if not config_key:
+        raise TurnstileError(_CHALLENGE_FAILED_MESSAGE)
+    return config_key
+
+
+def _turnstile_required_for_config(config_key: str) -> bool:
+    return bool(current_app.config.get("TURNSTILE_ENABLED", False)) and bool(
+        current_app.config.get(config_key, False)
+    )
 
 
 def _production_like() -> bool:

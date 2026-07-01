@@ -399,10 +399,22 @@ def _validate_alert_and_audit_policy(result: ProductionReadinessResult) -> None:
 
 
 def _validate_edge_policy(app: Flask, result: ProductionReadinessResult) -> None:
+    _validate_password_hash_strength(app, result)
+    _validate_runtime_boundary_settings(app, result)
+    _validate_request_security_settings(app, result)
+    _validate_rate_limit_storage_policy(app, result)
+    _validate_cloudflare_access_policy(app, result)
+    _validate_turnstile_policy(app, result)
+
+
+def _validate_password_hash_strength(app: Flask, result: ProductionReadinessResult) -> None:
     if _int_config(app, "PASSWORD_PBKDF2_ITERATIONS") is None or _int_config(
         app, "PASSWORD_PBKDF2_ITERATIONS"
     ) < 600000:
         result.failures.append("PASSWORD_PBKDF2_ITERATIONS must be 600000 or higher")
+
+
+def _validate_runtime_boundary_settings(app: Flask, result: ProductionReadinessResult) -> None:
     if not is_production_app(app):
         result.failures.append("APP_ENV must be production")
     if app.config.get("SQLALCHEMY_MIGRATION_DATABASE_URI"):
@@ -411,16 +423,25 @@ def _validate_edge_policy(app: Flask, result: ProductionReadinessResult) -> None
         result.failures.append("WTF_CSRF_SECRET_KEY must be at least 32 characters")
     if _int_config(app, "TRUSTED_PROXY_COUNT") != 1:
         result.failures.append("TRUSTED_PROXY_COUNT must be 1 for the single Nginx proxy boundary")
+
+
+def _validate_request_security_settings(app: Flask, result: ProductionReadinessResult) -> None:
     if app.config.get("WTF_CSRF_ENABLED") is not True:
         result.failures.append("WTF_CSRF_ENABLED must be enabled")
     if app.config.get("WTF_CSRF_CHECK_DEFAULT") is not True:
         result.failures.append("WTF_CSRF_CHECK_DEFAULT must be enabled")
     if app.config.get("TALISMAN_FORCE_HTTPS") is not True:
         result.failures.append("TALISMAN_FORCE_HTTPS must be enabled")
+
+
+def _validate_rate_limit_storage_policy(app: Flask, result: ProductionReadinessResult) -> None:
     if not str(app.config.get("RATELIMIT_STORAGE_URI") or "").startswith("memory://"):
         result.failures.append(
             "Flask-Limiter storage must remain non-authoritative; DB-backed auth counters enforce security limits"
         )
+
+
+def _validate_cloudflare_access_policy(app: Flask, result: ProductionReadinessResult) -> None:
     try:
         validate_cloudflare_access_config(
             app.config,
@@ -428,6 +449,9 @@ def _validate_edge_policy(app: Flask, result: ProductionReadinessResult) -> None
         )
     except Exception as exc:
         _failure(result, "Cloudflare Access assertion configuration check", exc)
+
+
+def _validate_turnstile_policy(app: Flask, result: ProductionReadinessResult) -> None:
     try:
         _validate_turnstile_verify_url(
             app_env=str(app.config.get("APP_ENV") or ""),

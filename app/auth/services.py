@@ -592,18 +592,11 @@ def update_profile_details(
     stepup_token: str | None = None,
     email_verification_code: str | None = None,
 ) -> dict[str, Any]:
-    normalized_username = username.strip()
-    username_lookup = _normalize(normalized_username)
-    submitted_email = email.strip().lower()
-    email_changed = submitted_email != _normalize(user.email)
-    if email_changed:
-        try:
-            normalized_email = require_customer_email(email)
-        except IdentityPolicyError as exc:
-            audit_event("profile_update", "blocked", user=user, metadata={"reason": exc.reason})
-            raise AuthError(PROFILE_UPDATE_ERROR, 400) from exc
-    else:
-        normalized_email = submitted_email
+    normalized_username, username_lookup, normalized_email, email_changed = _profile_update_values(
+        user,
+        username,
+        email,
+    )
 
     if username_lookup == _normalize(user.username) and not email_changed:
         return {"updated": False, "email_verification_pending": False}
@@ -613,61 +606,16 @@ def update_profile_details(
     _reject_duplicate_profile_identifiers(user, username_lookup, normalized_email)
 
     if email_changed:
-        pending_change = _pending_profile_email_change(user)
-        if not email_verification_code:
-            verify_high_risk_authorization(
-                user,
-                code,
-                stepup_token,
-                "profile_email_change_request",
-            )
-            _create_profile_email_change_challenge(
-                user,
-                username=normalized_username,
-                email=normalized_email,
-            )
-            return {
-                "updated": False,
-                "email_verification_pending": True,
-                "pending_email": normalized_email,
-            }
-
-        if pending_change is None:
-            audit_event(
-                "profile_email_change",
-                "failure",
-                user=user,
-                metadata={"reason": "missing_or_expired_challenge"},
-            )
-            raise AuthError("Email verification expired. Request a new code.", 400)
-        if pending_change["email"] != normalized_email:
-            audit_event(
-                "profile_email_change",
-                "failure",
-                user=user,
-                metadata={"reason": "superseded_challenge"},
-            )
-            raise AuthError("Email verification expired. Request a new code.", 400)
-        expected_hmac = str(pending_change["code_hmac"])
-        submitted_hmac = _profile_email_code_hmac(
+        pending_result = _handle_profile_email_change(
             user,
-            normalized_email,
-            str(email_verification_code or "").strip(),
+            username=normalized_username,
+            normalized_email=normalized_email,
+            code=code,
+            stepup_token=stepup_token,
+            email_verification_code=email_verification_code,
         )
-        if not hmac.compare_digest(expected_hmac, submitted_hmac):
-            audit_event(
-                "profile_email_change",
-                "failure",
-                user=user,
-                metadata={"reason": "invalid_verification_code"},
-            )
-            raise AuthError("Email verification code is invalid or expired", 400)
-        verify_high_risk_authorization(
-            user,
-            code,
-            stepup_token,
-            "profile_email_change_commit",
-        )
+        if pending_result is not None:
+            return pending_result
     else:
         verify_high_risk_authorization(
             user,
@@ -676,6 +624,109 @@ def update_profile_details(
             "profile_update",
         )
 
+    return _commit_profile_update(user, normalized_username, normalized_email, email_changed)
+
+
+def _profile_update_values(user: User, username: str, email: str) -> tuple[str, str, str, bool]:
+    normalized_username = username.strip()
+    username_lookup = _normalize(normalized_username)
+    submitted_email = email.strip().lower()
+    email_changed = submitted_email != _normalize(user.email)
+    if not email_changed:
+        return normalized_username, username_lookup, submitted_email, False
+    try:
+        normalized_email = require_customer_email(email)
+    except IdentityPolicyError as exc:
+        audit_event("profile_update", "blocked", user=user, metadata={"reason": exc.reason})
+        raise AuthError(PROFILE_UPDATE_ERROR, 400) from exc
+    return normalized_username, username_lookup, normalized_email, True
+
+
+def _handle_profile_email_change(
+    user: User,
+    *,
+    username: str,
+    normalized_email: str,
+    code: str | None,
+    stepup_token: str | None,
+    email_verification_code: str | None,
+) -> dict[str, Any] | None:
+    if not email_verification_code:
+        verify_high_risk_authorization(
+            user,
+            code,
+            stepup_token,
+            "profile_email_change_request",
+        )
+        _create_profile_email_change_challenge(
+            user,
+            username=username,
+            email=normalized_email,
+        )
+        return {
+            "updated": False,
+            "email_verification_pending": True,
+            "pending_email": normalized_email,
+        }
+
+    _validate_profile_email_change_code(user, normalized_email, email_verification_code)
+    verify_high_risk_authorization(
+        user,
+        code,
+        stepup_token,
+        "profile_email_change_commit",
+    )
+    return None
+
+
+def _validate_profile_email_change_code(
+    user: User,
+    normalized_email: str,
+    email_verification_code: str,
+) -> None:
+    pending_change = _pending_profile_email_change(user)
+    if pending_change is None:
+        _reject_profile_email_change(
+            user,
+            reason="missing_or_expired_challenge",
+            message="Email verification expired. Request a new code.",
+        )
+    if pending_change["email"] != normalized_email:
+        _reject_profile_email_change(
+            user,
+            reason="superseded_challenge",
+            message="Email verification expired. Request a new code.",
+        )
+    expected_hmac = str(pending_change["code_hmac"])
+    submitted_hmac = _profile_email_code_hmac(
+        user,
+        normalized_email,
+        str(email_verification_code or "").strip(),
+    )
+    if not hmac.compare_digest(expected_hmac, submitted_hmac):
+        _reject_profile_email_change(
+            user,
+            reason="invalid_verification_code",
+            message="Email verification code is invalid or expired",
+        )
+
+
+def _reject_profile_email_change(user: User, *, reason: str, message: str) -> None:
+    audit_event(
+        "profile_email_change",
+        "failure",
+        user=user,
+        metadata={"reason": reason},
+    )
+    raise AuthError(message, 400)
+
+
+def _commit_profile_update(
+    user: User,
+    normalized_username: str,
+    normalized_email: str,
+    email_changed: bool,
+) -> dict[str, Any]:
     user.username = normalized_username
     if email_changed:
         user.email = normalized_email

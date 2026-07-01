@@ -14,6 +14,7 @@ _PASSWORDS_MUST_MATCH_MESSAGE = "Passwords must match"
 _INVALID_STEP_UP_TOKEN_MESSAGE = "Invalid step-up token"
 _AUTHENTICATOR_CODE_LABEL = "Authenticator code"
 _MFA_CODE_ERROR = "MFA code must be exactly 6 digits"
+_VERIFICATION_CODE_ERROR = "Verification code must be exactly 6 digits"
 
 
 def password_length(*, minimum: int | None = None):
@@ -109,7 +110,7 @@ class RegistrationOtpCodeForm(FlaskForm):
         "Verification code",
         validators=[
             InputRequired(),
-            Regexp(REGISTRATION_OTP_RE, message="Verification code must be exactly 6 digits"),
+            Regexp(REGISTRATION_OTP_RE, message=_VERIFICATION_CODE_ERROR),
         ],
     )
 
@@ -120,7 +121,7 @@ class RegistrationOtpVerifyForm(FlaskForm):
         "Verification code",
         validators=[
             InputRequired(),
-            Regexp(REGISTRATION_OTP_RE, message="Verification code must be exactly 6 digits"),
+            Regexp(REGISTRATION_OTP_RE, message=_VERIFICATION_CODE_ERROR),
         ],
     )
 
@@ -152,7 +153,7 @@ class ProfileForm(FlaskForm):
         "Email verification code",
         validators=[
             Optional(),
-            Regexp(REGISTRATION_OTP_RE, message="Verification code must be exactly 6 digits"),
+            Regexp(REGISTRATION_OTP_RE, message=_VERIFICATION_CODE_ERROR),
         ],
     )
     totp_code = StringField(
