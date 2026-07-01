@@ -120,7 +120,19 @@ operator-managed HTTPS alert webhook for that environment. Install
 and set `PASSWORD_RESET_EMAIL_BACKEND=smtp`, `PASSWORD_RESET_EMAIL_FROM`,
 `PASSWORD_RESET_BASE_URL`, `SMTP_HOST`, `SMTP_PORT`, and `SMTP_USE_TLS=true` in
 the container runtime environment. Production rejects console reset email,
-non-HTTPS reset base URLs, and plaintext SMTP delivery.
+non-HTTPS reset base URLs, and plaintext SMTP delivery. SMTP STARTTLS uses
+Python's default certificate validation and hostname checking; do not configure
+production or staging with unverifiable SMTP TLS.
+
+Turnstile is disabled until `TURNSTILE_ENABLED=true` and route-specific flags
+are set. Customer login, registration OTP, registration submit, password reset,
+optional admin login, and admin invite acceptance each have separate
+`TURNSTILE_*_ENABLED` flags. Production and staging must use the official
+Cloudflare Siteverify endpoint
+`https://challenges.cloudflare.com/turnstile/v0/siteverify`; local/test mocks
+must not override that production endpoint. Browser rendering also requires
+`TURNSTILE_SITE_KEY` and the narrow CSP allowance for
+`https://challenges.cloudflare.com`.
 
 Install the host-managed backup encryption recipients file before running
 database cutover or scheduled backups:
@@ -302,7 +314,10 @@ over SSH inside the admin container; it is not a GitHub Actions workflow.
 `ADMIN_ALLOWED_EMAIL_DOMAINS` defines the approved privileged workplace-domain
 allowlist for root-admin, admin, and staff identities. Do not set it to
 personal-provider domains; staff invites use the workplace email and do not
-collect personal backup email contacts.
+collect personal backup email contacts. The migration chain keeps
+`staff_invites.personal_email_normalized` nullable for portable SQLite and
+PostgreSQL upgrades; do not synthesize personal email data for privileged
+invites.
 
 Production admin does not use a public DNS hostname. Keep admin access on the
 private Tailscale Serve URL `https://admin-sitbank.tailca101b.ts.net/` and do

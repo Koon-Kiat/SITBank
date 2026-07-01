@@ -45,8 +45,8 @@ def test_security_email_backends_and_outbox_boundary(app, monkeypatch):
         def __exit__(self, *_args):
             return None
 
-        def starttls(self):
-            events.append(("tls",))
+        def starttls(self, *, context):
+            events.append(("tls", context.check_hostname, context.verify_mode))
 
         def login(self, username, password):
             events.append(("login", username, password))
@@ -69,10 +69,28 @@ def test_security_email_backends_and_outbox_boundary(app, monkeypatch):
 
     assert events == [
         ("connect", "smtp.example.test", 2525, 10),
-        ("tls",),
+        ("tls", True, email.ssl.CERT_REQUIRED),
         ("login", "fake-user", "fake-password"),
         ("send", "user@example.test", "Subject", "Fake body"),
     ]
+
+
+def test_smtp_delivery_fails_closed_without_tls_in_production(app):
+    with app.app_context():
+        app.config.update(
+            APP_ENV="production",
+            DEPLOYMENT_TARGET="production",
+            PASSWORD_RESET_EMAIL_BACKEND="smtp",
+            PASSWORD_RESET_EMAIL_FROM="security@example.test",
+            SMTP_HOST="smtp.example.test",
+            SMTP_PORT=2525,
+            SMTP_USE_TLS=False,
+            SMTP_USERNAME="fake-user",
+            SMTP_PASSWORD="fake-password",
+        )
+
+        with pytest.raises(RuntimeError, match="SMTP_USE_TLS=true is required"):
+            email.send_security_email("user@example.test", "Subject", "Fake body")
 
 
 def test_turnstile_disabled_missing_invalid_and_success_paths(app, monkeypatch):

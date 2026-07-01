@@ -65,10 +65,11 @@ Authentication code avoids common implementation failures:
 | Oversized passwords rejected before expensive hashing | `tests/test_auth_registration_login.py::test_oversized_login_password_uses_generic_failure_without_hashing` |
 | TOTP replay prevention | `app/auth/services.py`, `app/models.py::TotpReplayRecord`; `tests/test_mfa_lifecycle.py::test_mfa_setup_stores_encrypted_secret_and_rejects_replay` |
 | Recovery codes are one-time HMAC verifiers | `app/auth/recovery_codes.py`; `tests/test_password_reset.py::test_recovery_codes_are_hashed_single_use_reset_factors` |
+| Previous-password history and forced-change blocking | `app/security/password_history.py`; `tests/test_account_security_actions.py::test_password_change_rejects_recent_password_history`, `tests/test_password_reset.py::test_password_reset_rejects_recent_password_history` |
 
-The app rejects reuse of the current password during change/reset. Full
-previous-password history is tracked in
-`docs/security/governance/security-gap-register.md`.
+The app rejects reuse of the current password and retained recent password
+history during change/reset. Forced password-change flags block normal
+authenticated routes until password change clears the flag.
 
 ## Session And CSRF Coding Practices
 

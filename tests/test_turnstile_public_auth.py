@@ -1,0 +1,85 @@
+import pytest
+
+from app.security import turnstile
+
+
+def test_customer_login_turnstile_accepts_standard_cloudflare_field(app, client, monkeypatch):
+    app.config.update(
+        TURNSTILE_ENABLED=True,
+        TURNSTILE_SECRET_KEY="fake-turnstile-secret",
+        TURNSTILE_CUSTOMER_LOGIN_ENABLED=True,
+    )
+    calls = []
+
+    def fake_verify(token, *, expected_action=None):
+        calls.append((token, expected_action))
+
+    monkeypatch.setattr(turnstile, "verify_turnstile_token", fake_verify)
+
+    response = client.post(
+        "/auth/login",
+        json={
+            "identifier": "missing-user",
+            "password": "wrong-password-value",
+            "cf-turnstile-response": "browser-token",
+        },
+    )
+
+    assert response.status_code == 401
+    assert calls == [("browser-token", "customer_login")]
+    assert "browser-token" not in response.get_data(as_text=True)
+
+
+def test_route_specific_turnstile_disabled_skips_verifier(app, client, monkeypatch):
+    app.config.update(
+        TURNSTILE_ENABLED=True,
+        TURNSTILE_SECRET_KEY="fake-turnstile-secret",
+        TURNSTILE_CUSTOMER_LOGIN_ENABLED=False,
+    )
+
+    def fail_verify(_token, *, expected_action=None):
+        raise AssertionError("route-disabled Turnstile should not verify")
+
+    monkeypatch.setattr(turnstile, "verify_turnstile_token", fail_verify)
+
+    response = client.post(
+        "/auth/login",
+        json={"identifier": "missing-user", "password": "wrong-password-value"},
+    )
+
+    assert response.status_code == 401
+
+
+def test_turnstile_widget_and_csp_are_narrow(app, client):
+    app.config.update(
+        TURNSTILE_ENABLED=True,
+        TURNSTILE_SITE_KEY="fake-site-key",
+        TURNSTILE_CUSTOMER_LOGIN_ENABLED=True,
+    )
+
+    response = client.get("/login")
+    markup = response.get_data(as_text=True)
+    csp = response.headers["Content-Security-Policy"]
+
+    assert response.status_code == 200
+    assert 'class="cf-turnstile"' in markup
+    assert 'data-action="customer_login"' in markup
+    assert "https://challenges.cloudflare.com" in csp
+    assert "*.cloudflare.com" not in csp
+    assert "unsafe-inline" not in csp
+
+
+def test_production_enabled_route_requires_site_key(app):
+    app.config.update(
+        APP_ENV="production",
+        DEPLOYMENT_TARGET="production",
+        TURNSTILE_ENABLED=True,
+        TURNSTILE_SECRET_KEY="fake-turnstile-secret",
+        TURNSTILE_SITE_KEY="",
+        TURNSTILE_CUSTOMER_LOGIN_ENABLED=True,
+        TURNSTILE_VERIFY_URL=turnstile.OFFICIAL_TURNSTILE_VERIFY_URL,
+    )
+
+    with app.test_request_context("/auth/login", method="POST"):
+        with pytest.raises(turnstile.TurnstileError):
+            turnstile.require_turnstile("customer_login", "browser-token")

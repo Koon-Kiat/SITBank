@@ -1,0 +1,8 @@
+{% macro widget(action) -%}
+  {% if turnstile_widget_enabled(action) %}
+    <div class="turnstile-widget">
+      <div class="cf-turnstile" data-sitekey="{{ turnstile_site_key }}" data-action="{{ action }}"></div>
+    </div>
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+  {% endif %}
+{%- endmacro %}

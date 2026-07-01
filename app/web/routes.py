@@ -63,6 +63,7 @@ from app.auth.services import (
     past_sessions_for_user,
     pending_mfa_replacement,
     pending_mfa_setup,
+    pending_profile_email_change,
     register_user,
     regenerate_totp_recovery_codes,
     terminate_other_sessions_for_user,
@@ -85,6 +86,7 @@ from app.security.rate_limits import mfa_principal, request_principal
 from app.security.sessions import (
     has_recent_fresh_mfa,
 )
+from app.security.turnstile import TurnstileError, require_turnstile
 
 
 web_bp = Blueprint("web", __name__)
@@ -205,7 +207,11 @@ def register_otp_request():
     if not form.validate_on_submit():
         return _render_register_email_form(otp_request_form=form), 400
     try:
+        require_turnstile("customer_register_otp")
         result = request_registration_otp(form.email.data)
+    except TurnstileError:
+        flash("Challenge verification failed", "error")
+        return _render_register_email_form(otp_request_form=form), 400
     except RegistrationOtpError as exc:
         flash(exc.message, "error")
         return _render_register_email_form(otp_request_form=form), exc.status_code
@@ -255,6 +261,7 @@ def register_submit():
         return _render_register_details_form(form, verified_email=verified_email), 400
 
     try:
+        require_turnstile("customer_register")
         _user, warnings = register_user(
             {
                 "username": form.username.data,
@@ -264,6 +271,9 @@ def register_submit():
                 "confirm_password": form.confirm_password.data,
             }
         )
+    except TurnstileError:
+        flash("Challenge verification failed", "error")
+        return _render_register_details_form(form, verified_email=verified_email), 400
     except AuthError as exc:
         flash(exc.message, "error")
         verified_email = current_verified_registration_email()
@@ -333,7 +343,11 @@ def login_submit():
         return render_template(_LOGIN_TEMPLATE, form=form), 400
 
     try:
+        require_turnstile("customer_login")
         result = authenticate_primary(form.identifier.data, form.password.data)
+    except TurnstileError:
+        flash("Challenge verification failed", "error")
+        return render_template(_LOGIN_TEMPLATE, form=form), 400
     except AuthError as exc:
         flash(exc.message, "error")
         return render_template(_LOGIN_TEMPLATE, form=form), exc.status_code
@@ -366,7 +380,12 @@ def forgot_password_submit():
     form = ForgotPasswordForm()
     if not form.validate_on_submit():
         return render_template("forgot_password.html", form=form), 400
-    result = request_password_reset(form.email.data)
+    try:
+        require_turnstile("customer_password_reset")
+        result = request_password_reset(form.email.data)
+    except TurnstileError:
+        flash("Challenge verification failed", "error")
+        return render_template("forgot_password.html", form=form), 400
     flash(result["message"], "success")
     return redirect(url_for(_LOGIN_ENDPOINT))
 
@@ -592,14 +611,17 @@ def security_key_revoke(credential_id: str):
 @web_not_frozen_required
 def profile():
     form = ProfileForm()
-    form.username.data = g.current_user.username
-    form.email.data = g.current_user.email
-    form.mfa_step_up_preference.data = "totp"
+    pending_email_change = pending_profile_email_change()
+    form.username.data = (
+        pending_email_change["username"] if pending_email_change else g.current_user.username
+    )
+    form.email.data = pending_email_change["email"] if pending_email_change else g.current_user.email
     return render_template(
         _PROFILE_TEMPLATE,
         user=g.current_user,
         form=form,
         recent_mfa=has_recent_fresh_mfa(),
+        pending_email_change=pending_email_change,
     )
 
 
@@ -609,23 +631,45 @@ def profile():
 def profile_submit():
     form = ProfileForm()
     recent_mfa = has_recent_fresh_mfa()
+    pending_email_change = pending_profile_email_change()
     if not form.validate_on_submit():
-        return render_template(_PROFILE_TEMPLATE, user=g.current_user, form=form, recent_mfa=recent_mfa), 400
+        return render_template(
+            _PROFILE_TEMPLATE,
+            user=g.current_user,
+            form=form,
+            recent_mfa=recent_mfa,
+            pending_email_change=pending_email_change,
+        ), 400
 
     try:
-        updated = update_profile_details(
+        result = update_profile_details(
             g.current_user,
             form.username.data,
             form.email.data,
-            form.mfa_step_up_preference.data,
             form.totp_code.data,
             form.stepup_token.data,
+            form.email_verification_code.data,
         )
     except AuthError as exc:
         flash(exc.message, "error")
-        return render_template(_PROFILE_TEMPLATE, user=g.current_user, form=form, recent_mfa=recent_mfa), exc.status_code
+        return render_template(
+            _PROFILE_TEMPLATE,
+            user=g.current_user,
+            form=form,
+            recent_mfa=recent_mfa,
+            pending_email_change=pending_profile_email_change(),
+        ), exc.status_code
 
-    flash("Profile updated." if updated else "No profile changes were needed.", "success")
+    if result.get("email_verification_pending"):
+        flash("Verification code sent to the new email address.", "info")
+        return render_template(
+            _PROFILE_TEMPLATE,
+            user=g.current_user,
+            form=form,
+            recent_mfa=has_recent_fresh_mfa(),
+            pending_email_change=pending_profile_email_change(),
+        )
+    flash("Profile updated." if result.get("updated") else "No profile changes were needed.", "success")
     return redirect(url_for("web.profile"))
 
 
@@ -864,8 +908,8 @@ def password_change_submit():
 
     for warning in result.get("warnings", []):
         flash(warning, "warning")
-    flash(f"Password changed. Terminated {result['revoked_other_sessions']} other session(s).", "success")
-    return redirect(url_for("web.profile"))
+    flash("Password changed. Please log in again.", "success")
+    return redirect(url_for(_LOGIN_ENDPOINT))
 
 
 @web_bp.get("/sessions")

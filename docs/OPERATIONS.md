@@ -744,12 +744,22 @@ Expected reset email configuration in production:
 - `SMTP_USERNAME_FILE=/run/secrets/smtp_username`
 - `SMTP_PASSWORD_FILE=/run/secrets/smtp_password`
 
+Production and staging SMTP delivery must use STARTTLS with default certificate
+validation and hostname checking. Do not troubleshoot delivery failures by
+disabling TLS validation, setting `SMTP_USE_TLS=false`, or pasting SMTP
+credentials, reset links, OTPs, invite tokens, or email bodies into tickets or
+chat.
+
 Password policy in production:
 
 - `PASSWORD_MIN_LENGTH` defaults to `15` when `APP_ENV=production`.
 - Development and test may keep the explicit shorter default for local workflows.
 - `production-check` and the production startup guard fail closed if a production
   app is configured below `15`.
+- `PASSWORD_HISTORY_RETENTION_COUNT` defaults to `3`; change/reset reject the
+  current and retained recent passwords.
+- If an incident marks `force_password_change` for a customer, normal
+  authenticated routes are blocked until the customer completes password change.
 - This length floor complements mandatory TOTP onboarding; password-authenticated
   users still cannot use sensitive banking routes until current MFA setup is
   complete.
@@ -825,3 +835,26 @@ Operational checks:
 - Existing-account requests intentionally return the same generic response as
   eligible requests; do not treat the absence of an outgoing email as customer
   proof without independent identity checks.
+
+## Turnstile Operations
+
+Turnstile is defense in depth for public authentication abuse protection. It
+does not replace CSRF, rate limits, password checks, MFA, sessions, Cloudflare
+Access, Tailscale private admin access, Flask authorization, or audit logging.
+
+Enable only the routes intended for the environment:
+
+- `TURNSTILE_CUSTOMER_LOGIN_ENABLED`
+- `TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED`
+- `TURNSTILE_CUSTOMER_REGISTER_ENABLED`
+- `TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED`
+- `TURNSTILE_ADMIN_LOGIN_ENABLED`
+- `TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED`
+
+Production and staging require `TURNSTILE_ENABLED=true`,
+`TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` or `TURNSTILE_SECRET_KEY_FILE`, and
+the official verifier URL
+`https://challenges.cloudflare.com/turnstile/v0/siteverify`. Local/test
+verifier overrides are for isolated mocks only. Roll back by disabling the
+affected route flag or `TURNSTILE_ENABLED`; do not point production at a custom
+verifier host.

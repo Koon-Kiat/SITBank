@@ -521,8 +521,9 @@ Production must use SMTP-backed reset email delivery with
 `PASSWORD_RESET_EMAIL_FROM`, `SMTP_HOST`, `SMTP_USE_TLS=true`, and root-managed
 `SMTP_USERNAME_FILE` / `SMTP_PASSWORD_FILE` secrets. Console reset email is
 allowed only outside production, and plaintext SMTP delivery is rejected in
-production. Security alert webhooks are never used to deliver password reset
-links.
+production. STARTTLS uses Python's default certificate validation and hostname
+checking; do not disable validation to troubleshoot provider failures. Security
+alert webhooks are never used to deliver password reset links.
 
 ## AWS OIDC and Systems Manager
 

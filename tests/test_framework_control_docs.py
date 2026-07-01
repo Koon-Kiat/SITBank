@@ -78,14 +78,16 @@ def test_security_gap_register_is_single_source_with_required_fields():
         assert required_column in current_open
 
     for open_gap in (
-        "Password history beyond current-password reuse",
         "Automated retention and disposal jobs",
         "Authenticated DAST on ordinary pull requests",
         "EC2 SSH/UFW/security-group hardening deferred",
-        "Active-session count cap",
         "Device-bound session proof",
     ):
         assert open_gap in current_open
+
+    implemented_controls = _section(register, "Implemented Controls")
+    assert "Password history and forced password change" in implemented_controls
+    assert "Single active customer/admin session cap" in implemented_controls
 
     assert "Local Docker/Compose proof when Docker is unavailable" not in current_open
     assert "Admin audit-log viewer UI hardening follow-up" not in current_open
