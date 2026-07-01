@@ -74,3 +74,12 @@ commits = [
 ]
 paths = ['''^\.github/workflows/ci-deploy\.yml$''']
 regexes = ['''-----BEGIN (?:OPENSSH|RSA|EC) PRIVATE KEY-----''']
+
+[[allowlists]]
+description = "Historical WebAuthn secret-handling policy sentence"
+condition = "AND"
+targetRules = ["generic-api-key"]
+regexTarget = "line"
+commits = ["dbc7358d9e090182030631c95eaf5280558c610e"]
+paths = ['''^CLAUDE\.md$''']
+regexes = ['''^\s*-\s*Do not log, print, commit, upload, or expose secrets, tokens, cookies, session IDs, CSRF values, TOTP/recovery/WebAuthn material, HMAC/encryption keys, database URLs, SMTP credentials, provider exports, SSH keys, or real customer data\.\s*$''']

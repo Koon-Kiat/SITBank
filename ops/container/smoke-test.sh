@@ -321,6 +321,8 @@ printf '%s' 'smtp-user' \
     > "${work_dir}/secrets/smtp_username"
 printf '%s' 'smtp-password' \
     > "${work_dir}/secrets/smtp_password"
+printf '%s' '1x0000000000000000000000000000000AA' \
+    > "${work_dir}/secrets/turnstile_secret_key"
 chmod_host_path 0444 "${work_dir}"/secrets/*
 
 seq -f 'blocked-password-%06g' 1 100000 \
@@ -364,6 +366,7 @@ docker_args=(
     --env ADMIN_RATELIMIT_KEY_PREFIX=ospbank:admin:ratelimit:
     --env SMTP_USERNAME_FILE=/run/secrets/smtp_username
     --env SMTP_PASSWORD_FILE=/run/secrets/smtp_password
+    --env TURNSTILE_SECRET_KEY_FILE=/run/secrets/turnstile_secret_key
     --env PASSWORD_PBKDF2_ITERATIONS=600000
     --env PASSWORD_RESET_ENABLED=true
     --env PASSWORD_RESET_TOKEN_TTL_SECONDS=1800
@@ -471,6 +474,31 @@ done
 if [[ "${admin_ready}" -ne 1 ]]; then
     echo "SITBank admin application did not become ready within 20 seconds" >&2
     false
+fi
+
+if [[ "${RUN_ZAP_BASELINE:-false}" == "true" ]]; then
+    install_host_dir 0777 "${work_dir}/zap-pr"
+    printf '10020\tFAIL\tAnti-clickjacking header\n10021\tFAIL\tX-Content-Type-Options header\n10038\tFAIL\tContent Security Policy header\n' \
+        > "${work_dir}/zap-pr/rules.tsv"
+    chmod_host_path 0644 "${work_dir}/zap-pr/rules.tsv"
+    zap_pr_mount_source="$(docker_bind_source "${work_dir}/zap-pr")"
+    # TLS terminates at the production proxy; this URL never leaves the isolated Docker network.
+    zap_baseline_target="http://${app_container}:5000/"
+    docker run --rm \
+        --network "${network_name}" \
+        --volume "${zap_pr_mount_source}:/zap/wrk:ro" \
+        "${ZAP_IMAGE}" \
+        zap-baseline.py \
+            -m 2 \
+            -T 5 \
+            -I \
+            -c /zap/wrk/rules.tsv \
+            -z "-config replacer.full_list(0).description=ForwardedProto \
+-config replacer.full_list(0).enabled=true \
+-config replacer.full_list(0).matchtype=REQ_HEADER \
+-config replacer.full_list(0).matchstr=X-Forwarded-Proto \
+-config replacer.full_list(0).replacement=https" \
+            -t "${zap_baseline_target}" # NOSONAR
 fi
 
 if [[ "${RUN_ZAP_DAST:-false}" == "true" ]]; then

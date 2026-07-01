@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import builtins
 import json
 import os
 import stat
@@ -24,6 +25,24 @@ def _load_create_dast_session_module():
     finally:
         sys.modules.pop(spec.name, None)
     return module
+
+
+def test_static_dast_helpers_import_without_pyotp(monkeypatch):
+    real_import = builtins.__import__
+
+    def import_without_pyotp(name, *args, **kwargs):
+        if name == "pyotp":
+            raise ModuleNotFoundError("No module named 'pyotp'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.delitem(sys.modules, "pyotp", raising=False)
+    monkeypatch.setattr(builtins, "__import__", import_without_pyotp)
+
+    module = _load_create_dast_session_module()
+
+    assert module._generate_synthetic_account_number().startswith("012")
+    with pytest.raises(ModuleNotFoundError, match="pyotp"):
+        module.create_authenticated_cookie("http://localhost:5000")
 
 
 def test_smoke_test_keeps_dast_cookie_out_of_host_command_arguments():
@@ -284,10 +303,12 @@ def test_create_authenticated_cookie_runs_login_and_mfa_sequence(monkeypatch):
     monkeypatch.setattr(module.secrets, "token_hex", lambda _size: "abc123")
     monkeypatch.setattr(module.secrets, "token_urlsafe", lambda _size: "fake-random")
     monkeypatch.setattr(module, "_generate_synthetic_phone_number", lambda: "91234567")
-    monkeypatch.setattr(
-        module.pyotp,
-        "TOTP",
-        lambda _secret: SimpleNamespace(now=lambda: "123456"),
+    monkeypatch.setitem(
+        sys.modules,
+        "pyotp",
+        SimpleNamespace(
+            TOTP=lambda _secret: SimpleNamespace(now=lambda: "123456")
+        ),
     )
 
     cookie = module.create_authenticated_cookie(
@@ -327,10 +348,12 @@ def test_create_authenticated_cookie_requires_issued_session_cookie(monkeypatch)
 
     monkeypatch.setattr(module, "DastClient", FakeClient)
     monkeypatch.setattr(module, "create_dast_user", lambda **_kwargs: None)
-    monkeypatch.setattr(
-        module.pyotp,
-        "TOTP",
-        lambda _secret: SimpleNamespace(now=lambda: "123456"),
+    monkeypatch.setitem(
+        sys.modules,
+        "pyotp",
+        SimpleNamespace(
+            TOTP=lambda _secret: SimpleNamespace(now=lambda: "123456")
+        ),
     )
     with pytest.raises(RuntimeError, match="was not issued"):
         module.create_authenticated_cookie("http://localhost:5000")
