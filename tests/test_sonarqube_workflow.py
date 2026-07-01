@@ -242,7 +242,7 @@ def test_active_docs_do_not_claim_sonarqube_is_missing():
 
 
 def test_code_quality_label_is_managed_by_all_labelers():
-    labeler = yaml.safe_load(Path(".github/labeler.yml").read_text(encoding="utf-8"))
+    policy = Path("ops/security/github_label_policy.py").read_text(encoding="utf-8")
     workflows = [
         Path(path).read_text(encoding="utf-8")
         for path in (
@@ -252,22 +252,17 @@ def test_code_quality_label_is_managed_by_all_labelers():
         )
     ]
 
-    assert "code-quality" in labeler
-    labeler_text = str(labeler["code-quality"])
-    assert ".github/workflows/sonarqube.yml" in labeler_text
-    assert "sonar-project.properties" in labeler_text
+    for required in (
+        '"code-quality"',
+        "sonarqube",
+        "sonarcloud",
+        "quality gate",
+        "code quality",
+        "maintainability",
+        "coverage",
+        ".github/workflows/sonarqube.yml",
+        "sonar-project.properties",
+    ):
+        assert required in policy
     for workflow in workflows:
-        assert (
-            'create_label code-quality "Static analysis, maintainability, coverage, '
-            'or quality-gate work"'
-        ) in workflow
-        for term in (
-            "sonarqube",
-            "quality gate",
-            "code quality",
-            "maintainability",
-            "coverage",
-            "duplication",
-            "technical debt",
-        ):
-            assert term in workflow
+        assert "ops/security/github_label_policy.py" in workflow

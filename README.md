@@ -75,7 +75,7 @@ For a fuller local check, run `scripts/ci-local`. It runs the full pytest suite
 in parallel with timing output, Python/package/security checks, discovered
 shell-script syntax checks, and Docker/Compose validation when Docker is
 available, including contract checks around `ops/runtime_contract.py`. When
-installed, local ShellCheck, Hadolint, and Semgrep use the same
+installed, local ShellCheck, Hadolint, and metrics-disabled Semgrep use the same
 target/rule policy as their automatic GitHub Actions gates; missing optional
 local tools are reported as `SKIPPED`, never silently omitted. A Docker-less
 result is explicitly partial; use `scripts/ci-local --require-docker` before

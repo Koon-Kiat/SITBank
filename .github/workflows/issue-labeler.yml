@@ -21,6 +21,14 @@ jobs:
       contents: read
       issues: write
     steps:
+      # The policy is loaded only from the trusted default branch. Issue text is
+      # data passed to the policy; it is never executed.
+      - name: Check out trusted label policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.repository.default_branch }}
+
       - name: Ensure standard labels exist
         shell: bash
         env:
@@ -28,146 +36,28 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -Eeuo pipefail
+          while IFS=$'\t' read -r label description color; do
+            gh label create "${label}" \
+              --description "${description}" \
+              --color "${color}" \
+              --force
+          done < <(python ops/security/github_label_policy.py definitions)
 
-          create_label() {
-            gh label create "$1" --description "$2" --color "$3" --force
-          }
-
-          create_label needs-triage "New issue awaiting maintainer triage." fbca04
-          create_label needs-review "Ready for maintainer review." 0e8a16
-          create_label security "Security controls, vulnerabilities, secrets, authn/authz, audit, sessions, crypto, or hardening." d73a4a
-          create_label admin "Admin portal, staff workflows, admin route isolation, or admin deployment boundary." b60205
-          create_label customer "Customer-facing routes, dashboard, profile, account pages, or portal UX." 1d76db
-          create_label banking "Accounts, transfers, payees, balances, freezes, funds, or transaction safety." 0052cc
-          create_label auth "Login, registration, password reset, OTP, sessions, decorators, or auth schemas." c5def5
-          create_label mfa "MFA, TOTP, WebAuthn, passkeys, security keys, recovery codes, or second factors." 5319e7
-          create_label session "Session state, cookies, HMAC, Redis namespace, logout, or active sessions." 0b7285
-          create_label audit "Audit logs, hash chains, HMAC, metadata, alerting, or audit events." d93f0b
-          create_label deployment "Deployment, Docker, compose, nginx, systemd, EC2, runtime, or operations." 006b75
-          create_label zero-trust "Identity-aware or private-network access boundary changes." 5319e7
-          create_label network-security "Firewall, VPN, origin access, private access, or network boundary changes." d73a4a
-          create_label staging "Staging environment, staging deployment, or staging access changes." 006b75
-          create_label database "Database schema, migrations, Postgres, roles, privileges, or DB integrity." 531dab
-          create_label ci "GitHub Actions, CI policy, CodeQL, dependency audit, build, or pipeline changes." a2eeef
-          create_label code-quality "Static analysis, maintainability, coverage, or quality-gate work" 1f6feb
-          create_label dependencies "Dependency updates, lock files, package manager changes, or Dependabot PRs." 0366d6
-          create_label documentation "Docs, README, guides, instructions, or policy documents." 0075ca
-          create_label frontend "Templates, CSS, JavaScript, SVG, UI layout, browser-facing pages, or forms." c2e0c6
-          create_label tests "Tests, pytest, fixtures, coverage, or regression checks." fef2c0
-          create_label feature "Feature branch or feature-oriented change." 84b6eb
-          create_label fix "Fix, bugfix, or hotfix branch." d4c5f9
-          create_label docker "Dockerfile, image, compose, or Docker dependency updates." 0db7ed
-          create_label github-actions "GitHub Actions workflow dependency updates or CI workflow automation." 2088ff
-          create_label python "Python dependency or Python runtime/package updates." 3572a5
-
-      - name: Add computed issue labels
+      - name: Add bounded issue labels
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -Eeuo pipefail
-
-          ISSUE_NUMBER="$(jq -r '.issue.number' "${GITHUB_EVENT_PATH}")"
-          TEXT="$(
-            jq -r '(.issue.title // "") + "\n" + (.issue.body // "")' \
-              "${GITHUB_EVENT_PATH}" \
-              | tr '[:upper:]' '[:lower:]'
-          )"
-
-          labels=(needs-triage)
-
-          add_label() {
-            local label="$1"
-            local existing
-            for existing in "${labels[@]}"; do
-              if [[ "${existing}" == "${label}" ]]; then
-                return 0
-              fi
-            done
-            labels+=("${label}")
-          }
-
-          contains_any() {
-            local term
-            for term in "$@"; do
-              if [[ "${TEXT}" == *"${term}"* ]]; then
-                return 0
-              fi
-            done
-            return 1
-          }
-
-          contains_regex() {
-            local pattern
-            for pattern in "$@"; do
-              if [[ "${TEXT}" =~ ${pattern} ]]; then
-                return 0
-              fi
-            done
-            return 1
-          }
-
-          if contains_any security vulnerability exploit "auth bypass" "authorization bypass" "authentication bypass" "session fixation" "session hijack" cookie csrf csp xss "sql injection" secret encryption hmac audit "rate limit" "admin isolation" "privilege escalation" owasp; then
-            add_label security
+          issue_number="$(jq -r '.issue.number' "${GITHUB_EVENT_PATH}")"
+          mapfile -t labels < <(
+            python ops/security/github_label_policy.py compute \
+              --kind issue \
+              --input "${GITHUB_EVENT_PATH}"
+          )
+          if (( ${#labels[@]} == 0 )); then
+            exit 0
           fi
-          if contains_any admin administrator staff invite "staff invite" "admin portal" "admin route" "admin isolation" "admin session" "admin database" "admin deployment"; then
-            add_label admin
-          fi
-          if contains_any "zero trust" "zero-trust" "cloudflare zero trust" "cloudflare access" tailscale tailnet vpn "private access" "private-access" "identity-aware access" "access boundary" "origin bypass" "origin protection" "admin exposure" "staging exposure"; then
-            add_label zero-trust
-          fi
-          if contains_any firewall "security group" "nginx allowlist" "ip allowlist" vpn tailscale "cloudflare access" "origin bypass" "private network" "network boundary" "admin network" "staging network" "private access" "private-access"; then
-            add_label network-security
-          fi
-          if contains_any customer "user portal" dashboard profile "account page" "customer route"; then
-            add_label customer
-          fi
-          if contains_any banking account transaction transfer payee balance freeze money funds; then
-            add_label banking
-          fi
-          if contains_any login register registration password "reset password" "forgot password" otp authentication session cookie || contains_regex '(^|[^a-z0-9])auth([^a-z0-9]|$)'; then
-            add_label auth
-          fi
-          if contains_any mfa totp webauthn passkey "security key" "recovery code" authenticator "second factor" 2fa; then
-            add_label mfa
-          fi
-          if contains_any session cookie "session hmac" "active session" logout "remember me" "redis session"; then
-            add_label session
-          fi
-          if contains_any audit alert "security alert" "hash chain" "audit event" "audit log" "audit metadata"; then
-            add_label audit
-          fi
-          if contains_any deploy deployment staging production ec2 nginx docker compose bootstrap systemd runtime "environment variable" "secret file"; then
-            add_label deployment
-          fi
-          if contains_any staging "staging-sitbank" "compose.staging" "ops/staging" "staging deployment" "staging access"; then
-            add_label staging
-          fi
-          if contains_any database postgres migration schema role privilege alembic || contains_regex '(^|[^a-z0-9])db([^a-z0-9]|$)' '(^|[^a-z0-9])sql([^a-z0-9]|$)'; then
-            add_label database
-          fi
-          if contains_any workflow "github actions" dependabot codeql "dependency audit" "pr title" "commit message" "pull request policy" build pipeline || contains_regex '(^|[^a-z0-9])ci([^a-z0-9]|$)'; then
-            add_label ci
-          fi
-          if contains_any sonarqube sonar "quality gate" "code quality" "code-quality" maintainability coverage duplication "technical debt"; then
-            add_label code-quality
-          fi
-          if contains_any dependency dependencies package requirements pip "docker base image" dependabot "lock file" msgpack "library bump"; then
-            add_label dependencies
-          fi
-          if contains_any test tests pytest coverage regression fixture; then
-            add_label tests
-          fi
-          if contains_any docs documentation readme guide instructions "policy document"; then
-            add_label documentation
-          fi
-          if contains_any css javascript template page form button "dashboard layout" browser || contains_regex '(^|[^a-z0-9])ui([^a-z0-9]|$)'; then
-            add_label frontend
-          fi
-          if contains_any python flask pytest pip requirements; then
-            add_label python
-          fi
-
           IFS=,
-          gh issue edit "${ISSUE_NUMBER}" --add-label "${labels[*]}"
+          gh issue edit "${issue_number}" --add-label "${labels[*]}"
