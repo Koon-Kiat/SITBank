@@ -39,6 +39,7 @@ jobs:
             --workdir /src \
             "${SEMGREP_IMAGE}" \
             semgrep scan \
+              --metrics=off \
               --config p/python \
               --config p/flask \
               --config p/security-audit \

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import stat
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 import yaml
 
 
@@ -177,3 +180,214 @@ def test_dast_docs_describe_secret_file_cookie_model():
         assert required in docs
 
     assert "DAST cookies are still passed through process arguments" not in docs
+
+
+class _Headers:
+    def __init__(self, cookies=()):
+        self.cookies = list(cookies)
+
+    def get_all(self, name):
+        assert name == "Set-Cookie"
+        return self.cookies
+
+
+class _Response:
+    def __init__(self, body, *, status=200, cookies=()):
+        self.status = status
+        self.headers = _Headers(cookies)
+        self._body = body
+
+    def read(self):
+        return self._body
+
+
+def test_dast_client_request_builds_safe_json_request_and_captures_cookies(monkeypatch):
+    module = _load_create_dast_session_module()
+    seen = []
+
+    def fake_urlopen(request, timeout):
+        seen.append((request, timeout))
+        return _Response(
+            json.dumps({"csrf_token": "fake-csrf"}).encode(),
+            cookies=["__Host-sitbank_session=fake-session; Secure; HttpOnly"],
+        )
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
+    client = module.DastClient("http://127.0.0.1:5000/")
+    result = client.request(
+        "POST",
+        "/auth/example",
+        payload={"value": "fake"},
+        csrf_token="fake-csrf",
+        expected_status=200,
+    )
+
+    request, timeout = seen[0]
+    assert result == {"csrf_token": "fake-csrf"}
+    assert timeout == 15
+    assert request.full_url == "http://127.0.0.1:5000/auth/example"
+    assert json.loads(request.data) == {"value": "fake"}
+    assert request.headers["X-csrftoken"] == "fake-csrf"
+    assert request.headers["Referer"] == "https://127.0.0.1:5000/"
+    assert client.cookies == {"__Host-sitbank_session": "fake-session"}
+
+    monkeypatch.setattr(
+        module.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _Response(b""),
+    )
+    assert client.request("GET", "/empty", expected_status=200) == {}
+
+
+def test_dast_client_rejects_bad_status_and_non_object_json(monkeypatch):
+    module = _load_create_dast_session_module()
+    client = module.DastClient("http://localhost:5000")
+    responses = iter(
+        [
+            _Response(b'{"error":"no"}', status=403),
+            _Response(b"[]", status=200),
+        ]
+    )
+    monkeypatch.setattr(
+        module.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: next(responses),
+    )
+
+    with pytest.raises(RuntimeError, match="returned 403"):
+        client.request("GET", "/denied", expected_status=200)
+    with pytest.raises(RuntimeError, match="non-object"):
+        client.request("GET", "/list", expected_status=200)
+
+
+def test_create_authenticated_cookie_runs_login_and_mfa_sequence(monkeypatch):
+    module = _load_create_dast_session_module()
+    created_users = []
+    calls = []
+
+    class FakeClient:
+        def __init__(self, base_url, *, allowed_hosts):
+            assert base_url == "http://smoke:5000"
+            assert allowed_hosts == {"smoke"}
+            self.cookies = {"__Host-sitbank_session": "fake-session"}
+
+        def request(self, method, path, **kwargs):
+            calls.append((method, path, kwargs))
+            if path == "/auth/csrf-token":
+                return {"csrf_token": "fake-csrf"}
+            if path == "/auth/mfa/setup":
+                return {"manual_entry_secret": "fake-totp-secret"}
+            return {}
+
+    monkeypatch.setattr(module, "DastClient", FakeClient)
+    monkeypatch.setattr(module, "create_dast_user", lambda **kwargs: created_users.append(kwargs))
+    monkeypatch.setattr(module.secrets, "token_hex", lambda _size: "abc123")
+    monkeypatch.setattr(module.secrets, "token_urlsafe", lambda _size: "fake-random")
+    monkeypatch.setattr(module, "_generate_synthetic_phone_number", lambda: "91234567")
+    monkeypatch.setattr(
+        module.pyotp,
+        "TOTP",
+        lambda _secret: SimpleNamespace(now=lambda: "123456"),
+    )
+
+    cookie = module.create_authenticated_cookie(
+        "http://smoke:5000",
+        allowed_hosts={"smoke"},
+    )
+
+    assert cookie == "__Host-sitbank_session=fake-session"
+    assert created_users[0]["username"] == "zapabc123"
+    assert created_users[0]["email"].endswith("@sit.singaporetech.edu.sg")
+    assert created_users[0]["phone_number"] == "91234567"
+    assert [path for _, path, _ in calls] == [
+        "/auth/csrf-token",
+        "/auth/login",
+        "/auth/csrf-token",
+        "/auth/mfa/setup",
+        "/auth/mfa/setup/verify",
+    ]
+    assert calls[-1][2]["payload"] == {"totp_code": "123456"}
+
+
+def test_create_authenticated_cookie_requires_issued_session_cookie(monkeypatch):
+    module = _load_create_dast_session_module()
+
+    class FakeClient:
+        cookies = {}
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def request(self, _method, path, **_kwargs):
+            if path == "/auth/csrf-token":
+                return {"csrf_token": "fake"}
+            if path == "/auth/mfa/setup":
+                return {"manual_entry_secret": "fake"}
+            return {}
+
+    monkeypatch.setattr(module, "DastClient", FakeClient)
+    monkeypatch.setattr(module, "create_dast_user", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        module.pyotp,
+        "TOTP",
+        lambda _secret: SimpleNamespace(now=lambda: "123456"),
+    )
+    with pytest.raises(RuntimeError, match="was not issued"):
+        module.create_authenticated_cookie("http://localhost:5000")
+
+
+def test_synthetic_identifiers_have_expected_shape(monkeypatch):
+    module = _load_create_dast_session_module()
+    monkeypatch.setattr(module.secrets, "randbelow", lambda _limit: 42)
+
+    assert module._generate_synthetic_phone_number() == "91000042"
+    assert module._generate_synthetic_account_number() == "012000042"
+
+
+def test_main_writes_both_restricted_outputs(monkeypatch, tmp_path):
+    module = _load_create_dast_session_module()
+    cookie_path = tmp_path / "cookie"
+    zap_path = tmp_path / "zap.properties"
+    writes = []
+    monkeypatch.setattr(
+        module,
+        "create_authenticated_cookie",
+        lambda base_url, *, allowed_hosts: "__Host-sitbank_session=fake",
+    )
+    monkeypatch.setattr(
+        module,
+        "write_cookie_output",
+        lambda path, cookie, *, allowed_root: writes.append(
+            ("cookie", path, cookie, allowed_root)
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "write_zap_replacer_config",
+        lambda path, cookie, *, allowed_root: writes.append(
+            ("zap", path, cookie, allowed_root)
+        ),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "create_dast_session.py",
+            "--base-url",
+            "http://smoke:5000",
+            "--allow-host",
+            "smoke",
+            "--output",
+            str(cookie_path),
+            "--zap-replacer-config-output",
+            str(zap_path),
+            "--output-root",
+            str(tmp_path),
+        ],
+    )
+
+    module.main()
+
+    assert [write[0] for write in writes] == ["cookie", "zap"]
+    assert all(write[2] == "__Host-sitbank_session=fake" for write in writes)
+    assert all(write[3] == tmp_path for write in writes)

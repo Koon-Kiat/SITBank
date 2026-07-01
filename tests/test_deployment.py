@@ -2387,6 +2387,8 @@ def test_codeowners_and_codeql_cover_security_sensitive_changes():
     ]
     _assert_pinned_actions(init_actions, context="github/codeql-action/init")
     _assert_pinned_actions(analyze_actions, context="github/codeql-action/analyze")
+    assert len(init_actions) == len(analyze_actions) == 1
+    assert init_actions[0].split("@", 1)[1] == analyze_actions[0].split("@", 1)[1]
     assert "languages: python" in codeql
 
 

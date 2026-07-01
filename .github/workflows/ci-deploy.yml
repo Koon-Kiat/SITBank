@@ -182,9 +182,10 @@ jobs:
           persona: pedantic
 
   dependency-review:
+    name: Dependency review (PR only)
     if: >-
       github.event_name == 'pull_request' &&
-      (github.event.repository.private == false ||
+      (github.event.repository.visibility == 'public' ||
         (vars['ENABLE_GITHUB_CODE_SECURITY'] || 'false') == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -201,6 +202,18 @@ jobs:
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294
         with:
           fail-on-severity: high
+
+      - name: Summarize dependency review scope
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Dependency review"
+            echo
+            echo "This PR-only job compares dependency changes for pull requests targeting main."
+            echo "Public repositories are eligible without ENABLE_GITHUB_CODE_SECURITY."
+            echo "Private repositories require ENABLE_GITHUB_CODE_SECURITY=true."
+          } >> "${GITHUB_STEP_SUMMARY}"
 
   test:
     needs: [workflow-security, resolve-source]

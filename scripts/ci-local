@@ -152,6 +152,7 @@ def run_optional_static_analysis(results: list[CheckResult]) -> bool:
             "semgrep",
             [
                 "scan",
+                "--metrics=off",
                 *[
                     item
                     for config in SEMGREP_CONFIGS

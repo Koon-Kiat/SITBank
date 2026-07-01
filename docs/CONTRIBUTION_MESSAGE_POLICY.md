@@ -22,6 +22,11 @@ Each PR title and commit subject must:
 Git-generated `Merge ...` and `Revert ...` commit subjects are allowed for the
 commit-message check.
 
+Dependabot-generated PRs are excluded from this human title and description
+policy. Their generated metadata is instead reviewed through dependency
+review, dependency audit, lockfile checks, the normal test/scanner suite, and
+manual maintainer review. Contributor PRs remain fully subject to this policy.
+
 Capitalized Conventional Commit prefixes are allowed, including scopes:
 
 - `Fix: staging admin secret wiring`

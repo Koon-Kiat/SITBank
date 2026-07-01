@@ -248,31 +248,12 @@ def test_required_zero_trust_labels_and_labelers_are_configured():
     )
     pr_labeler = Path(".github/workflows/pr-labeler.yml").read_text(encoding="utf-8")
     retag = Path(".github/workflows/retag-labels.yml").read_text(encoding="utf-8")
-    labeler = Path(".github/labeler.yml").read_text(encoding="utf-8")
-    labeler_config = yaml.safe_load(labeler)
+    policy = Path("ops/security/github_label_policy.py").read_text(encoding="utf-8")
 
     for workflow in (issue_labeler, pr_labeler, retag):
-        assert 'create_label zero-trust "Identity-aware or private-network access boundary changes."' in workflow
-        assert 'create_label network-security "Firewall, VPN, origin access, private access, or network boundary changes."' in workflow
-        assert 'create_label staging "Staging environment, staging deployment, or staging access changes."' in workflow
-        for term in (
-            "cloudflare access",
-            "tailscale",
-            "tailnet",
-            "vpn",
-            "private access",
-            "origin bypass",
-            "admin exposure",
-            "staging exposure",
-        ):
-            assert term in workflow.lower()
+        assert "ops/security/github_label_policy.py" in workflow
 
-    assert "gh pr diff \"${PR_NUMBER}\" --patch" in pr_labeler
-    assert "gh pr diff \"${number}\" --patch" in retag
-    assert "sync-labels: false" in pr_labeler
-    assert "sync-labels: false" in retag
-
-    for label in (
+    for required in (
         "zero-trust",
         "network-security",
         "staging",
@@ -280,28 +261,20 @@ def test_required_zero_trust_labels_and_labelers_are_configured():
         "deployment",
         "admin",
         "documentation",
+        "cloudflare access",
+        "tailscale",
+        "vpn",
+        "private access",
+        "origin protection",
+        "ops/nginx/**",
+        "ops/cloudflare/**",
+        "compose.staging.yml",
     ):
-        assert label in labeler_config
+        assert required in policy.lower()
 
-    assert "ops/nginx/**" in labeler_config["network-security"][0]["changed-files"][0][
-        "any-glob-to-any-file"
-    ]
-    assert "ops/nginx/**" in labeler_config["security"][0]["changed-files"][0][
-        "any-glob-to-any-file"
-    ]
-    assert "ops/cloudflare/**" in labeler_config["security"][0]["changed-files"][0][
-        "any-glob-to-any-file"
-    ]
-    assert "ops/cloudflare/**" in labeler_config["network-security"][0][
-        "changed-files"
-    ][0]["any-glob-to-any-file"]
-    assert "compose.staging.yml" in labeler_config["staging"][0]["changed-files"][0][
-        "any-glob-to-any-file"
-    ]
-    assert "ops/cloudflare/**" in labeler_config["staging"][0]["changed-files"][0][
-        "any-glob-to-any-file"
-    ]
-    assert "docs/security/architecture/admin-and-staging-zero-trust-access.md" in labeler
+    assert "gh pr diff \"${pr_number}\" --name-only" in pr_labeler
+    assert "gh pr diff \"${number}\" --name-only" in retag
+    assert not Path(".github/labeler.yml").exists()
     assert "PROTECTED_LABELS" in retag
     for protected in ("dependencies", "docker", "github-actions", "python"):
         assert protected in retag

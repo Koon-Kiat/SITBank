@@ -15,6 +15,22 @@ Production never skips disabled, skipped, or failed staging. It runs only after
 release verification and staging deployment both succeed on `main`, with
 `PROD_DEPLOY_ENABLED = true` and GitHub production environment approval.
 
+## Pull Request Policy and Dependency Review
+
+The human PR title and description workflow applies to contributor PRs.
+Dependabot PRs skip that prose-only policy because their generated title and
+body follow GitHub's dependency-update format. They remain subject to
+dependency review, dependency audit, lockfile checks, tests, scanners, and
+manual maintainer review; no `pull_request_target`, write token, or secret is
+introduced for that exception.
+
+The `dependency-review` job is PR-only. Public PRs targeting `main` are
+eligible without `ENABLE_GITHUB_CODE_SECURITY`. A private repository must set
+that variable to `true`; pushes, schedules, and manual deployment runs
+intentionally skip the comparison-only job. If it is unexpectedly skipped,
+confirm the event is a PR targeting `main`, repository visibility, feature
+availability, and required-check configuration before changing permissions.
+
 ## Manual Pre-Merge Staging
 
 Manual pre-merge staging:
@@ -231,7 +247,8 @@ weekly schedule. It uses the `p/python`, `p/flask`, `p/security-audit`,
 downloaded, but source is scanned locally and is not uploaded to Semgrep.
 ERROR severity blocks through `--error`; lower severities remain review
 signals during the initial rollout. No Semgrep token, SARIF, artifact, or
-`security-events: write` permission is used.
+`security-events: write` permission is used. Every CI and local invocation
+passes `--metrics=off`, so Semgrep metrics are explicitly disabled.
 
 Only virtual environments, caches, coverage/build output, and dependency
 directories are excluded. Application, tests, operations, scripts, workflows,

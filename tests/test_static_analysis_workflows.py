@@ -111,6 +111,7 @@ def test_semgrep_workflow_is_automatic_scheduled_local_oss_and_blocking():
     command = scan_job["steps"][1]["run"]
     assert "semgrep/semgrep-action" not in text
     assert "semgrep scan" in command
+    assert "--metrics=off" in command
     for config in (
         "p/python",
         "p/flask",
@@ -137,7 +138,21 @@ def test_semgrep_workflow_is_automatic_scheduled_local_oss_and_blocking():
     for required_scope in ("app", "ops", "scripts", "tests", ".github"):
         assert f"--exclude {required_scope}" not in command
     assert "SEMGREP_APP_TOKEN" not in text
+    assert "SEMGREP_APP_TOKEN" not in scan_job.get("env", {})
     assert "sarif" not in text.casefold()
+
+    docs = "\n".join(
+        Path(path).read_text(encoding="utf-8")
+        for path in (
+            "SECURITY.md",
+            "docs/GITHUB_ACTIONS.md",
+            "docs/CONTRIBUTING.md",
+            "docs/security/assurance/test-automation-and-dependencies.md",
+        )
+    )
+    assert docs.count("--metrics=off") >= 4
+    assert "local/OSS" in docs
+    assert "uploads no source or SARIF" in docs
 
 
 def test_discovery_helper_is_shared_by_ci_and_local_validation():

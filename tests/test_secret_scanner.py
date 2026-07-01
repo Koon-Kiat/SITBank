@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 import base64
+import sys
+from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
+
+from ops.security import scan_repository_secrets as scanner
 from ops.security.scan_repository_secrets import scan_content, scan_history
 
 
@@ -68,3 +74,87 @@ def test_repository_history_contains_no_complete_private_key():
         for finding in findings
         if finding.startswith("private key pattern:")
     ]
+
+
+def test_private_key_payload_rejects_invalid_and_short_base64():
+    assert scanner._private_key_payload(b"Header: value\n\nYWJj") == b"YWJj"
+    assert scanner._private_key_payload_is_substantial(b"%%%") is False
+    assert scanner._private_key_payload_is_substantial(base64.b64encode(b"short")) is False
+
+
+def test_tracked_files_and_historical_blobs_parse_git_output(monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if command[:2] == ["git", "ls-files"]:
+            return SimpleNamespace(stdout=b"app.py\x00docs/README.md\x00")
+        if command[:2] == ["git", "rev-list"]:
+            return SimpleNamespace(
+                stdout="a" * 40 + " app.py\n" + "b" * 40 + " tree\n" + "a" * 40 + " duplicate.py\n"
+            )
+        object_id = command[-1]
+        return SimpleNamespace(stdout="blob\n" if object_id == "a" * 40 else "tree\n")
+
+    monkeypatch.setattr(scanner.subprocess, "run", fake_run)
+
+    assert scanner.tracked_files() == [Path("app.py"), Path("docs/README.md")]
+    assert scanner.historical_blobs() == [("a" * 40, "app.py")]
+    assert any(command[:2] == ["git", "cat-file"] for command in calls)
+
+
+def test_scan_history_skips_forbidden_and_large_blobs_and_scans_small_content(monkeypatch):
+    monkeypatch.setattr(
+        scanner,
+        "historical_blobs",
+        lambda: [
+            ("a" * 40, ".env"),
+            ("b" * 40, "large.py"),
+            ("c" * 40, "small.py"),
+        ],
+    )
+    scanned = []
+
+    def fake_run(command, **kwargs):
+        object_id = command[-1]
+        if command[2] == "-s":
+            size = scanner.MAX_HISTORY_BLOB_BYTES + 1 if object_id == "b" * 40 else 10
+            return SimpleNamespace(stdout=f"{size}\n")
+        return SimpleNamespace(stdout=b"safe")
+
+    monkeypatch.setattr(scanner.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        scanner,
+        "scan_content",
+        lambda label, content, findings: scanned.append((label, content)),
+    )
+    findings = []
+    scanner.scan_history(findings)
+
+    assert findings == ["forbidden credential filename in history: .env"]
+    assert scanned == [("small.py@" + ("c" * 12), b"safe")]
+
+
+def test_main_reports_findings_and_supports_history_mode(tmp_path, monkeypatch, capsys):
+    safe = tmp_path / "safe.py"
+    safe.write_bytes(b"safe")
+    forbidden = tmp_path / "id_rsa"
+    forbidden.write_bytes(b"fake")
+    missing = tmp_path / "missing.py"
+    monkeypatch.setattr(scanner, "tracked_files", lambda: [safe, forbidden, missing])
+    history_calls = []
+    monkeypatch.setattr(
+        scanner,
+        "scan_history",
+        lambda findings: history_calls.append(True),
+    )
+    monkeypatch.setattr(sys, "argv", ["scan_repository_secrets.py", "--history"])
+
+    with pytest.raises(SystemExit, match="Repository secret scan failed") as exc:
+        scanner.main()
+    assert "forbidden credential filename" in str(exc.value)
+    assert history_calls == [True]
+
+    monkeypatch.setattr(scanner, "tracked_files", lambda: [safe])
+    scanner.main()
+    assert "Repository secret scan passed" in capsys.readouterr().out
