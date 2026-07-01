@@ -184,7 +184,7 @@ jobs:
           persona: pedantic
 
   dependency-review:
-    name: Dependency review (PR only)
+    name: Dependency review
     if: >-
       github.event_name == 'pull_request' &&
       (github.event.repository.visibility == 'public' ||
