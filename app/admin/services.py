@@ -111,6 +111,10 @@ AUDIT_ALLOWED_OUTCOMES = frozenset(
         "verified",
     }
 )
+AUDIT_SORT_OPTIONS = frozenset(
+    {"timestamp", "severity", "event_type", "actor", "request_id", "source"}
+)
+AUDIT_EVENT_TYPE_OPTION_LIMIT = 250
 AUDIT_TARGET_METADATA_KEYS = (
     "audit_event_ref",
     "invite_ref",
@@ -120,6 +124,19 @@ AUDIT_TARGET_METADATA_KEYS = (
     "target_role",
     "target_staff_ref",
     "workplace_email_ref",
+)
+AUDIT_SYSTEM_SOURCE_VALUES = frozenset(
+    {"privilege-check", "system", "system-probe", "scheduler", "deployment"}
+)
+AUDIT_SYSTEM_EVENT_PREFIXES = (
+    "audit_",
+    "cloudflare_",
+    "database_",
+    "host_",
+    "mfa_dek_",
+    "privilege_",
+    "runtime_",
+    "security_alert_",
 )
 DISPLAY_REDACTED_VALUE = "[redacted]"
 DISPLAY_SENSITIVE_VALUE_RE = re.compile(
@@ -395,7 +412,7 @@ def query_audit_events_for_admin(actor: User, args: dict[str, Any]) -> dict[str,
     filters = _audit_filters(args)
     page = _bounded_int(args.get("page"), default=1, minimum=1, maximum=10000)
     per_page = _bounded_int(args.get("per_page"), default=25, minimum=1, maximum=100)
-    sort = _validated_choice(args.get("sort"), {"timestamp", "severity", "event_type", "actor"}, "timestamp")
+    sort = _validated_choice(args.get("sort"), AUDIT_SORT_OPTIONS, "timestamp")
     direction = _validated_choice(args.get("direction"), {"asc", "desc"}, "desc")
     statement = db.select(SecurityAuditEvent)
     statement = _apply_audit_filters(statement, filters)
@@ -405,6 +422,8 @@ def query_audit_events_for_admin(actor: User, args: dict[str, Any]) -> dict[str,
         "severity": cast(SecurityAuditEvent.event_metadata, String),
         "event_type": SecurityAuditEvent.event_type,
         "actor": SecurityAuditEvent.user_id,
+        "request_id": SecurityAuditEvent.correlation_id,
+        "source": SecurityAuditEvent.ip_address,
     }[sort]
     if direction == "asc":
         statement = statement.order_by(order_column.asc(), SecurityAuditEvent.id.asc())
@@ -435,6 +454,10 @@ def query_audit_events_for_admin(actor: User, args: dict[str, Any]) -> dict[str,
         "total": int(total or 0),
         "sort": sort,
         "direction": direction,
+        "sort_options": sorted(AUDIT_SORT_OPTIONS),
+        "event_type_options": _audit_event_type_options(filters["event_type"]),
+        "severity_options": ["low", "medium", "high", "critical"],
+        "outcome_options": sorted(AUDIT_ALLOWED_OUTCOMES),
     }
 
 
@@ -471,20 +494,32 @@ def public_staff_account(user: User, actor: User) -> dict[str, Any]:
 
 
 def public_audit_event(event: SecurityAuditEvent, *, include_metadata: bool) -> dict[str, Any]:
+    metadata = event.event_metadata if isinstance(event.event_metadata, dict) else {}
+    source_kind, source_display = _audit_source(event, metadata)
+    created_at_utc = _utc_iso(event.created_at)
     payload = {
         "id": event.id,
         "event_type": event.event_type,
         "outcome": event.outcome,
         "actor_user_id": event.user_id,
+        "actor_role": _audit_actor_role(event, metadata),
         "ip_address": event.ip_address,
+        "source_kind": source_kind,
+        "source_display": source_display,
+        "target_ref": _audit_target_ref(metadata),
+        "request_id": event.correlation_id,
         "correlation_id": event.correlation_id,
         "session_ref": event.session_ref,
-        "created_at": _utc_iso(event.created_at),
+        "created_at": created_at_utc,
+        "created_at_utc": created_at_utc,
+        "created_at_display": _utc_display(event.created_at),
+        "hash_chain_status": _audit_hash_chain_status(event),
     }
-    metadata = event.event_metadata if isinstance(event.event_metadata, dict) else {}
     payload["severity"] = str(metadata.get("severity") or "").strip()[:24] if metadata else ""
     if include_metadata:
-        payload["metadata"] = _safe_metadata_for_display(metadata)
+        safe_metadata = _safe_metadata_for_display(metadata)
+        payload["metadata"] = safe_metadata
+        payload["metadata_groups"] = _audit_metadata_groups(safe_metadata)
     return payload
 
 
@@ -589,6 +624,101 @@ def _admin_dashboard_summary(actor: User) -> dict[str, Any]:
             for role, status, count in rows
         ]
     return summary
+
+
+def _audit_event_type_options(current: str) -> list[str]:
+    rows = db.session.execute(
+        db.select(SecurityAuditEvent.event_type)
+        .distinct()
+        .order_by(SecurityAuditEvent.event_type.asc())
+        .limit(AUDIT_EVENT_TYPE_OPTION_LIMIT)
+    ).scalars()
+    options = {
+        event_type
+        for event_type in rows
+        if isinstance(event_type, str) and AUDIT_EVENT_TYPE_RE.fullmatch(event_type)
+    }
+    if current and AUDIT_EVENT_TYPE_RE.fullmatch(current):
+        options.add(current)
+    return sorted(options)
+
+
+def _audit_actor_role(event: SecurityAuditEvent, metadata: dict[str, Any]) -> str:
+    if event.user is not None and event.user.account_type:
+        return str(event.user.account_type)
+    for key in ("actor_role", "requester_role", "approver_role"):
+        value = metadata.get(key)
+        if isinstance(value, str):
+            text = _safe_filter(value, 40)
+            if text:
+                return text
+    return "system"
+
+
+def _audit_source(
+    event: SecurityAuditEvent,
+    metadata: dict[str, Any],
+) -> tuple[str, str]:
+    configured_kind = _safe_filter(metadata.get("source_kind"), 40)
+    configured_display = _safe_filter(metadata.get("source_display"), 80)
+    if configured_kind and configured_display:
+        return configured_kind, configured_display
+
+    source = _safe_filter(event.ip_address, 64)
+    source_key = source.casefold()
+    is_system_event = event.user_id is None and event.event_type.startswith(AUDIT_SYSTEM_EVENT_PREFIXES)
+    if source_key in AUDIT_SYSTEM_SOURCE_VALUES or is_system_event:
+        if source_key == "privilege-check" or "privilege" in event.event_type:
+            return "system_probe", "Runtime privilege probe"
+        return "system", "System or scheduled control"
+    if event.user_id is None and source_key in {"", "unknown"}:
+        return "system", "System"
+    return "network", source or "unknown"
+
+
+def _audit_target_ref(metadata: dict[str, Any]) -> str:
+    for key in AUDIT_TARGET_METADATA_KEYS:
+        value = metadata.get(key)
+        if isinstance(value, str):
+            text = _safe_filter(value, 120)
+            if text:
+                return text
+    return ""
+
+
+def _audit_hash_chain_status(event: SecurityAuditEvent) -> dict[str, Any]:
+    return {
+        "algorithm": _safe_filter(event.hash_algorithm, 32),
+        "event_hash_present": bool(event.event_hash),
+        "previous_hash_present": bool(event.previous_event_hash),
+        "linked": bool(event.event_hash),
+    }
+
+
+def _audit_metadata_groups(metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    groups: dict[str, dict[str, Any]] = {
+        "Actor and session": {},
+        "Request and source": {},
+        "Target": {},
+        "Security decision": {},
+        "Result and system": {},
+        "Other safe metadata": {},
+    }
+    for key, value in metadata.items():
+        lowered = key.casefold()
+        if any(term in lowered for term in ("actor", "principal", "session", "requester", "approver")):
+            groups["Actor and session"][key] = value
+        elif any(term in lowered for term in ("source", "ip", "route", "method", "validator", "jwks")):
+            groups["Request and source"][key] = value
+        elif key in AUDIT_TARGET_METADATA_KEYS or "target" in lowered or lowered.endswith("_ref"):
+            groups["Target"][key] = value
+        elif any(term in lowered for term in ("reason", "severity", "policy", "required", "decision")):
+            groups["Security decision"][key] = value
+        elif any(term in lowered for term in ("count", "status", "result", "revoked", "probe", "anchor", "chain")):
+            groups["Result and system"][key] = value
+        else:
+            groups["Other safe metadata"][key] = value
+    return {name: values for name, values in groups.items() if values}
 
 
 def _audit_filters(args: dict[str, Any]) -> dict[str, str]:
@@ -1584,3 +1714,7 @@ def _as_utc(value: datetime) -> datetime:
 
 def _utc_iso(value: datetime) -> str:
     return _as_utc(value).isoformat()
+
+
+def _utc_display(value: datetime) -> str:
+    return _as_utc(value).strftime("%Y-%m-%d %H:%M:%S UTC")

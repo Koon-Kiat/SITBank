@@ -11,8 +11,12 @@
     <dl class="admin-metadata-grid">
       <div><dt>Generated</dt><dd>{{ report.generated_at }}</dd></div>
       <div><dt>Active alerts</dt><dd>{{ report.alert_count }}</dd></div>
+      <div><dt>Highest severity</dt><dd>{{ report.highest_severity }}</dd></div>
       <div><dt>Audit chain</dt><dd>{% if report.audit_chain.valid %}Valid{% else %}Attention required{% endif %}</dd></div>
-      <div><dt>Delivery</dt><dd>{% if report.delivery.enabled %}Enabled{% else %}Disabled{% endif %}</dd></div>
+      <div><dt>Database integrity</dt><dd>{% if report.database_integrity.checked %}{% if report.database_integrity.valid is sameas false %}Attention required{% else %}Checked{% endif %}{% else %}Not configured{% endif %}</dd></div>
+      <div><dt>Delivery</dt><dd>{% if report.delivery.enabled %}Enabled{% else %}Disabled{% endif %}; review page is read-only</dd></div>
+      <div><dt>Dedupe</dt><dd>{% if report.dedupe.enabled %}Enabled{% else %}Not active for this review{% endif %}; {{ report.dedupe.suppressed or 0 }} suppressed</dd></div>
+      <div><dt>Next action</dt><dd>{{ report.next_action }}</dd></div>
     </dl>
   </section>
   <section class="panel">
@@ -27,6 +31,7 @@
             <th scope="col">Severity</th>
             <th scope="col">Count</th>
             <th scope="col">Source</th>
+            <th scope="col">Detail</th>
           </tr>
         </thead>
         <tbody>
@@ -36,15 +41,45 @@
             <td>{{ alert.severity }}</td>
             <td>{{ alert.count }}</td>
             <td>{{ alert.source }}</td>
+            <td><a href="{{ alert.detail_url }}">Open</a></td>
           </tr>
           {% else %}
           <tr>
-            <td colspan="4">No active alert report findings.</td>
+            <td colspan="5">No active alert report findings.</td>
           </tr>
           {% endfor %}
         </tbody>
       </table>
     </div>
   </section>
+  {% if report.selected_alert %}
+  <section class="panel">
+    <div class="section-header">
+      <h2>Alert Detail</h2>
+    </div>
+    <dl class="admin-metadata-grid">
+      <div><dt>Type</dt><dd>{{ report.selected_alert.alert_type }}</dd></div>
+      <div><dt>Severity</dt><dd>{{ report.selected_alert.severity }}</dd></div>
+      <div><dt>Source</dt><dd>{{ report.selected_alert.source }}</dd></div>
+      <div><dt>Count</dt><dd>{{ report.selected_alert.count }}</dd></div>
+      <div><dt>Window seconds</dt><dd>{{ report.selected_alert.window_seconds }}</dd></div>
+      <div><dt>Generated</dt><dd>{{ report.selected_alert.generated_at }}</dd></div>
+      <div><dt>Status</dt><dd>{{ report.selected_alert.status or "reported" }}</dd></div>
+      <div><dt>Reason</dt><dd>{{ report.selected_alert.reason or "not specified" }}</dd></div>
+      <div><dt>Error type</dt><dd>{{ report.selected_alert.error_type or "none" }}</dd></div>
+      <div><dt>Recommended action</dt><dd>{{ report.selected_alert.recommended_action }}</dd></div>
+      <div>
+        <dt>Related audit event</dt>
+        <dd>
+          {% if report.selected_alert.event_url %}
+          <a href="{{ report.selected_alert.event_url }}">Open audit event {{ report.selected_alert.event_id }}</a>
+          {% else %}
+          No related audit event ID in this alert.
+          {% endif %}
+        </dd>
+      </div>
+    </dl>
+  </section>
+  {% endif %}
 </section>
 {% endblock %}

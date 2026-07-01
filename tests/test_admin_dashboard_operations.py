@@ -589,6 +589,187 @@ def test_alert_review_is_admin_only_and_does_not_send_alerts(admin_client, monke
     ).count() == 1
 
 
+def test_alert_review_renders_actionable_safe_detail_without_raw_logs(admin_client, monkeypatch):
+    _admin, admin_secret = _create_staff_identity(
+        username="security-admin",
+        email="security.admin@sit.singaporetech.edu.sg",
+        account_type="admin",
+        phone_number="91234568",
+    )
+    event = SecurityAuditEvent(
+        event_type="manual_recovery_requested",
+        outcome="requested",
+        user_id=None,
+        ip_address="203.0.113.50",
+        user_agent="unit-test",
+        correlation_id="alert-request-1",
+        session_ref="safe-session-ref",
+        event_metadata={"severity": "high", "request_ref": "safe-request-ref"},
+        created_at=datetime.now(timezone.utc),
+    )
+    db.session.add(event)
+    db.session.commit()
+    sensitive_header = "Bearer " + "redacted-example"
+
+    def fake_report(*, deliver):
+        assert deliver is False
+        return {
+            "message": "security_alert_report",
+            "generated_at": "2026-06-30T08:15:00+00:00",
+            "alert_count": 1,
+            "deliverable_alert_count": 1,
+            "alerts": [
+                {
+                    "alert_type": "manual_recovery_burst",
+                    "severity": "high",
+                    "count": 3,
+                    "window_seconds": 600,
+                    "source": "principal_ref:safe",
+                    "generated_at": "2026-06-30T08:15:00+00:00",
+                    "latest_event_id": event.id,
+                    "reason": sensitive_header,
+                    "authorization": sensitive_header,
+                }
+            ],
+            "audit_chain": {
+                "checked": True,
+                "valid": True,
+                "anchor_configured": True,
+                "event_count": 1,
+                "latest_event_id": event.id,
+            },
+            "database_integrity": {
+                "checked": True,
+                "configured": True,
+                "valid": True,
+            },
+            "dedupe": {"enabled": False, "ttl_seconds": 600, "suppressed": 0},
+            "delivery": {"attempted": False, "configured": True, "enabled": True},
+        }
+
+    monkeypatch.setattr("app.admin.routes.build_security_alert_report", fake_report)
+    _login_admin(admin_client, admin_secret, email="security.admin@sit.singaporetech.edu.sg")
+
+    response = admin_client.get("/alerts?alert=alert-1")
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "Highest severity" in body
+    assert "Database integrity" in body
+    assert "Dedupe" in body
+    assert "Next action" in body
+    assert "Alert Detail" in body
+    assert "manual_recovery_burst" in body
+    assert f"/audit-logs/{event.id}" in body
+    assert "[redacted]" in body
+    assert sensitive_header not in body
+    assert "authorization:" not in body.casefold()
+    assert "review page is read-only" in body
+
+
+def test_alert_review_next_actions_cover_integrity_and_generic_alerts(admin_client, monkeypatch):
+    _admin, admin_secret = _create_staff_identity(
+        username="security-admin",
+        email="security.admin@sit.singaporetech.edu.sg",
+        account_type="admin",
+        phone_number="91234568",
+    )
+    reports = {
+        "empty": {
+            "generated_at": "2026-06-30T08:15:00+00:00",
+            "alert_count": 0,
+            "alerts": [],
+            "audit_chain": {"checked": True, "valid": True},
+            "database_integrity": {"checked": True, "valid": True},
+            "dedupe": {"enabled": True, "suppressed": 0},
+            "delivery": {"enabled": True},
+        },
+        "audit": {
+            "generated_at": "2026-06-30T08:16:00+00:00",
+            "alert_count": 1,
+            "alerts": [
+                {
+                    "alert_type": "audit_chain_verification_failed",
+                    "severity": "critical",
+                    "source": "audit_chain",
+                    "count": 1,
+                    "window_seconds": 60,
+                }
+            ],
+            "audit_chain": {"checked": True, "valid": False},
+            "database_integrity": {"checked": True, "valid": True},
+            "dedupe": {"enabled": True, "suppressed": 0},
+            "delivery": {"enabled": True},
+        },
+        "database": {
+            "generated_at": "2026-06-30T08:17:00+00:00",
+            "alert_count": 2,
+            "alerts": [
+                {
+                    "alert_type": "database_integrity_regression",
+                    "severity": "high",
+                    "source": "database_integrity",
+                    "count": 2,
+                    "window_seconds": 120,
+                },
+                {
+                    "alert_type": "login_failure_burst",
+                    "severity": "medium",
+                    "source": "principal_ref:safe",
+                    "count": 5,
+                    "window_seconds": 300,
+                },
+            ],
+            "audit_chain": {"checked": True, "valid": True},
+            "database_integrity": {"checked": True, "valid": False},
+            "dedupe": {"enabled": False, "suppressed": 0},
+            "delivery": {"enabled": True},
+        },
+        "generic": {
+            "generated_at": "2026-06-30T08:18:00+00:00",
+            "alert_count": 1,
+            "alerts": [
+                {
+                    "alert_type": "manual_security_alert",
+                    "severity": "low",
+                    "source": "",
+                    "count": 1,
+                    "window_seconds": 0,
+                }
+            ],
+            "audit_chain": {"checked": True, "valid": True},
+            "database_integrity": {"checked": True, "valid": True},
+            "dedupe": {"enabled": False, "suppressed": 0},
+            "delivery": {"enabled": False},
+        },
+    }
+    selected = {"name": "empty"}
+
+    def fake_report(*, deliver):
+        assert deliver is False
+        return reports[selected["name"]]
+
+    monkeypatch.setattr("app.admin.routes.build_security_alert_report", fake_report)
+    _login_admin(admin_client, admin_secret, email="security.admin@sit.singaporetech.edu.sg")
+
+    empty = admin_client.get("/alerts").get_data(as_text=True)
+    selected["name"] = "audit"
+    audit = admin_client.get("/alerts?alert=alert-1").get_data(as_text=True)
+    selected["name"] = "database"
+    database = admin_client.get("/alerts?alert=alert-2").get_data(as_text=True)
+    selected["name"] = "generic"
+    generic = admin_client.get("/alerts?alert=missing").get_data(as_text=True)
+
+    assert "No active alert findings. Continue scheduled monitoring." in empty
+    assert "Preserve evidence and investigate audit-chain integrity" in audit
+    assert "Stop routine anchor rotation" in audit
+    assert "Preserve database and host evidence" in database
+    assert "Review related authentication audit events and source grouping." in database
+    assert "Open the alert detail and correlate with safe audit-log entries." in generic
+    assert "unknown" in generic
+    assert "No related audit event ID in this alert." in generic
+
+
 def test_admin_templates_do_not_render_inline_script_or_sensitive_fields():
     template_dir = Path("app/templates/admin")
     combined = "\n".join(path.read_text(encoding="utf-8") for path in template_dir.glob("*.html"))

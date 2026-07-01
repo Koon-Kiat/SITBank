@@ -161,6 +161,16 @@ Authorized admin/root users can review current security alert report output at
 delivery disabled; it does not send, resend, or acknowledge alerts. Alert
 delivery remains an operator-controlled CLI/timer workflow.
 
+Operational logs are intentionally outside the admin app. Nginx, container,
+deployment, systemd, Cloudflare, Tailscale, and other host-operation logs belong
+in the Grafana/Loki observability boundary documented in
+`operational-observability.md`. The admin app does not receive Loki or Grafana
+credentials, does not query operational log stores, and does not render broad
+host logs. Host-operation evidence for an incident should be summarized with
+safe time windows, labels, command categories, and outcomes rather than raw
+shell history, environment dumps, command arguments, tokens, or secret-bearing
+payloads.
+
 Production installs:
 
 ```bash

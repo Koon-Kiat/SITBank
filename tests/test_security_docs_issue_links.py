@@ -127,6 +127,35 @@ def test_privileged_email_domain_docs_are_workplace_only():
     assert "staff_invite_personal_email_domains" not in normalized_docs
 
 
+def test_operational_observability_keeps_loki_out_of_admin_app():
+    observability = (
+        SECURITY_DOCS / "assurance" / "operational-observability.md"
+    ).read_text(encoding="utf-8")
+    audit_docs = (
+        SECURITY_DOCS / "assurance" / "audit-and-alerting.md"
+    ).read_text(encoding="utf-8")
+    combined = " ".join(f"{observability}\n{audit_docs}".split())
+
+    for required in (
+        "Grafana and Loki are the approved direction",
+        "Nginx, container, deployment, systemd",
+        "Do not embed Loki or Grafana credentials in Flask",
+        "admin app must not become a general log browser",
+        "SecurityAuditEvent",
+        "does not query operational log stores",
+        "raw shell history",
+        "environment dumps",
+        "command arguments",
+    ):
+        assert required in combined
+    for forbidden in (
+        "Grafana admin password:",
+        "loki_" + "token=",
+        "datasource_" + "password=",
+    ):
+        assert forbidden.casefold() not in combined.casefold()
+
+
 def test_security_docs_are_grouped_and_indexed_by_purpose():
     assert sorted(path.name for path in SECURITY_DOCS.glob("*.md")) == ["README.md"]
 
@@ -141,6 +170,7 @@ def test_security_docs_are_grouped_and_indexed_by_purpose():
         },
         "assurance": {
             "audit-and-alerting.md",
+            "operational-observability.md",
             "secret-scanning.md",
             "secure-coding.md",
             "sonarqube.md",

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import re
+from typing import Any
+
 from flask import Blueprint, current_app, flash, g, jsonify, redirect, render_template, request, session, url_for
 from flask_limiter.util import get_remote_address
 from flask_wtf import FlaskForm
@@ -55,6 +58,9 @@ _JSON_MIME_TYPE = "application/json"
 _STAFF_ACCOUNTS_ENDPOINT = "admin.staff_accounts"
 _ADMIN_LOGIN_TEMPLATE = "admin/login.html"
 _ADMIN_MFA_VERIFY_TEMPLATE = "admin/mfa_verify.html"
+_ALERT_SEVERITY_RANK = {"low": 1, "medium": 2, "high": 3, "critical": 4}
+_ALERT_REDACTED_VALUE = "[redacted]"
+_ALERT_SENSITIVE_VALUE_RE = re.compile(r"(?i)\b(bearer|basic|token)\s+[A-Za-z0-9._~+/=-]+")
 
 
 class AdminLoginSchema(Schema):
@@ -216,6 +222,90 @@ def _wants_json() -> bool:
     return best == _JSON_MIME_TYPE and (
         request.accept_mimetypes[_JSON_MIME_TYPE] >= request.accept_mimetypes["text/html"]
     )
+
+
+def _safe_alert_text(value: Any, limit: int = 120) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"[\x00-\x1f\x7f]+", " ", text)
+    compact = " ".join(text.split())[:limit]
+    return _ALERT_REDACTED_VALUE if _ALERT_SENSITIVE_VALUE_RE.search(compact) else compact
+
+
+def _alert_display_report(report: dict[str, Any], selected_ref: str | None) -> dict[str, Any]:
+    display = dict(report)
+    alerts = [
+        _alert_display_item(alert, index)
+        for index, alert in enumerate(report.get("alerts") or [])
+        if isinstance(alert, dict)
+    ]
+    display["alerts"] = alerts
+    display["highest_severity"] = _highest_alert_severity(alerts)
+    display["next_action"] = _alert_next_action(display)
+    display["selected_alert"] = next(
+        (alert for alert in alerts if alert["ref"] == selected_ref),
+        alerts[0] if alerts else None,
+    )
+    return display
+
+
+def _alert_display_item(alert: dict[str, Any], index: int) -> dict[str, Any]:
+    ref = f"alert-{index + 1}"
+    latest_event_id = alert.get("latest_event_id")
+    event_id = int(latest_event_id) if isinstance(latest_event_id, int) and latest_event_id > 0 else None
+    return {
+        "ref": ref,
+        "detail_url": url_for("admin.alerts", alert=ref),
+        "alert_type": _safe_alert_text(alert.get("alert_type"), 80),
+        "severity": _safe_alert_text(alert.get("severity"), 24) or "low",
+        "source": _safe_alert_text(alert.get("source"), 160) or "unknown",
+        "count": int(alert.get("count") or 0),
+        "window_seconds": int(alert.get("window_seconds") or 0),
+        "generated_at": _safe_alert_text(alert.get("generated_at"), 40),
+        "event_id": event_id,
+        "event_url": url_for("admin.audit_log_detail", event_id=event_id) if event_id else "",
+        "status": _safe_alert_text(alert.get("status"), 80),
+        "reason": _safe_alert_text(alert.get("reason"), 120),
+        "error_type": _safe_alert_text(alert.get("error_type"), 80),
+        "recommended_action": _alert_recommended_action(alert),
+    }
+
+
+def _highest_alert_severity(alerts: list[dict[str, Any]]) -> str:
+    if not alerts:
+        return "none"
+    return max(
+        (alert["severity"] for alert in alerts),
+        key=lambda severity: _ALERT_SEVERITY_RANK.get(str(severity).casefold(), 0),
+    )
+
+
+def _alert_next_action(report: dict[str, Any]) -> str:
+    if int(report.get("alert_count") or 0) <= 0:
+        return "No active alert findings. Continue scheduled monitoring."
+    audit_chain = report.get("audit_chain") if isinstance(report.get("audit_chain"), dict) else {}
+    if audit_chain and audit_chain.get("valid") is False:
+        return "Preserve evidence and investigate audit-chain integrity before rotating anchors."
+    database_integrity = (
+        report.get("database_integrity")
+        if isinstance(report.get("database_integrity"), dict)
+        else {}
+    )
+    if database_integrity and database_integrity.get("valid") is False:
+        return "Preserve database and host evidence before routine deployment or cleanup."
+    return "Open the alert detail and correlate with safe audit-log entries."
+
+
+def _alert_recommended_action(alert: dict[str, Any]) -> str:
+    alert_type = str(alert.get("alert_type") or "").casefold()
+    if "audit_anchor" in alert_type or "audit_chain" in alert_type:
+        return "Stop routine anchor rotation, preserve the current anchor, and verify the hash chain."
+    if "database_integrity" in alert_type:
+        return "Preserve database state and compare the protected alert baseline before recovery."
+    if "password_reset" in alert_type or "manual_recovery" in alert_type:
+        return "Review related recovery audit events and rate-limit context before taking account action."
+    if "login" in alert_type or "auth_backoff" in alert_type:
+        return "Review related authentication audit events and source grouping."
+    return "Review the safe audit detail and follow the incident response runbook."
 
 
 def _render_login_form(form: AdminLoginForm | None = None, *, status_code: int = 200):
@@ -492,9 +582,10 @@ def alerts():
     )
     if _wants_json():
         return jsonify(report)
+    display_report = _alert_display_report(report, request.args.get("alert"))
     return render_template(
         "admin/alerts.html",
-        report=report,
+        report=display_report,
         actor=actor,
         user=public_admin_user(actor),
         navigation=admin_navigation_for(actor),

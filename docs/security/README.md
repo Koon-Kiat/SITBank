@@ -15,6 +15,7 @@ evidence, and governance records remain easy to navigate.
 ## Assurance
 
 - [Audit and alerting](assurance/audit-and-alerting.md)
+- [Operational observability with Grafana and Loki](assurance/operational-observability.md)
 - [Repository secret scanning](assurance/secret-scanning.md)
 - [Secure coding](assurance/secure-coding.md)
 - [SonarQube Cloud](assurance/sonarqube.md)
