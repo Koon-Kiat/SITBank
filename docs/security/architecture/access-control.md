@@ -1,4 +1,4 @@
-﻿# Access Control
+# Access Control
 
 This document records the access-control model implemented in the SITBank
 repository. It distinguishes implemented runtime enforcement from test
@@ -247,7 +247,7 @@ Network boundaries complement, but do not replace, Flask authorization:
 
 | Surface | Network boundary | Application controls that still apply |
 | --- | --- | --- |
-| Production customer | Public HTTPS at `sitbank.duckdns.org` | Customer login, MFA onboarding, CSRF, route inventory, rate limiting |
+| Production customer | Public HTTPS at `sitbank.pp.ua`; `www.sitbank.pp.ua` redirects to the canonical host | Customer login, MFA onboarding, CSRF, route inventory, rate limiting |
 | Staging customer | Cloudflare Access before Nginx and server-level Cloudflare Authenticated Origin Pull at Nginx | Customer login, MFA, CSRF, route inventory, rate limiting, audit logging |
 | Production admin | Tailscale Serve at `https://admin-sitbank.tailca101b.ts.net/`; no public admin host or Nginx upstream; protected CI checks private reachability and the EC2 preflight checks local Serve/Funnel/listener posture | Staff/root-admin login, mandatory TOTP, CSRF, admin route inventory, admin rate limiting |
 | Staging admin | Tailscale/private operator access to `127.0.0.1:5003`; no public admin host | Staff/root-admin login, mandatory TOTP, CSRF, admin route inventory, admin rate limiting |

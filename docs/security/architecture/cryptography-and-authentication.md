@@ -18,7 +18,7 @@ proxy headers.
 
 | Environment | Hostname | TLS termination | Upstream |
 | --- | --- | --- | --- |
-| Production customer | `sitbank.duckdns.org` | Nginx in `ops/nginx/sitbank-production.conf` | `http://127.0.0.1:5000` |
+| Production customer | `sitbank.pp.ua`; `www.sitbank.pp.ua` redirects to canonical | Nginx in `ops/nginx/sitbank-production.conf` | `http://127.0.0.1:5000` |
 | Staging customer | `staging-sitbank.pp.ua` | Nginx in `ops/nginx/sitbank-staging.conf` | `http://127.0.0.1:5001` |
 
 The client authenticates the server through the normal browser TLS certificate
@@ -26,8 +26,8 @@ chain for the relevant hostname. The repository expects Certbot/Let's Encrypt
 files on the host:
 
 ```nginx
-ssl_certificate /etc/letsencrypt/live/sitbank.duckdns.org/fullchain.pem;
-ssl_certificate_key /etc/letsencrypt/live/sitbank.duckdns.org/privkey.pem;
+ssl_certificate /etc/letsencrypt/live/sitbank.pp.ua/fullchain.pem;
+ssl_certificate_key /etc/letsencrypt/live/sitbank.pp.ua/privkey.pem;
 include /etc/nginx/snippets/sitbank-tls-policy.conf;
 add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 ```
@@ -37,7 +37,7 @@ Evidence:
 | Control | Evidence |
 | --- | --- |
 | TLS server block and certificate path | `ops/nginx/sitbank-production.conf`; `ops/nginx/sitbank-staging.conf` |
-| HTTP handling | Customer HTTP redirects with `return 301 https://sitbank.duckdns.org$request_uri;`; unknown public hosts fail closed in `ops/nginx/sitbank-default.conf` |
+| HTTP handling | Customer HTTP redirects with `return 301 https://sitbank.pp.ua$request_uri;`; `www.sitbank.pp.ua` HTTPS redirects to the canonical host; unknown public hosts fail closed in `ops/nginx/sitbank-default.conf` |
 | Unknown host rejection | `ops/nginx/sitbank-default.conf` returns `444` for the default HTTP server and uses `ssl_reject_handshake on` for the default HTTPS server |
 | HSTS | Production customer uses `Strict-Transport-Security "max-age=31536000; includeSubDomains"`; staging uses `Strict-Transport-Security "max-age=31536000"` at origin and must also expose acceptable HSTS at the Cloudflare edge; all public live TLS scan targets must stay above the scanner's 15552000-second minimum |
 | Proxy trust boundary | `ops/nginx-proxy-headers.conf` overwrites `Host`, `X-Real-IP`, `X-Forwarded-For`, and `X-Forwarded-Proto`; `app/__init__.py` applies `ProxyFix` using `TRUSTED_PROXY_COUNT` |
@@ -68,7 +68,8 @@ substitution are not accepted. Normal deployment uses this local,
 network-independent mode. Operators run
 `sudo /usr/local/sbin/verify-certbot-host-state --renewal-dry-run production`
 after issuance or Certbot/ACME changes to perform the local checks and then
-invoke the explicit network-dependent `certbot renew --dry-run`.
+invoke the explicit network-dependent
+`certbot renew --dry-run --cert-name <target-lineage>`.
 
 ## HTTPS Cipher Suites
 
@@ -102,7 +103,8 @@ trusted deployment workflow. It verifies staging immediately after staging
 deploy (and blocks production deployment until that verification passes), then
 verifies the production customer endpoint after production deploy to complete
 the release evidence. It scans `staging-sitbank.pp.ua` and
-`sitbank.duckdns.org` with a checksum-verified `testssl.sh` release. Each
+`sitbank.pp.ua` with a checksum-verified `testssl.sh` release, and operators
+verify the `www.sitbank.pp.ua` redirect after certificate or Nginx changes. Each
 per-target artifact retains untouched scanner JSON
 as `testssl.raw.json` and a separate `testssl.json` policy copy, along with the
 log, HTML, metadata, and policy findings. The policy copy changes only
@@ -138,7 +140,7 @@ Certbot-managed paths, for example:
 
 | Hostname | Expected private key path |
 | --- | --- |
-| `sitbank.duckdns.org` | `/etc/letsencrypt/live/sitbank.duckdns.org/privkey.pem` |
+| `sitbank.pp.ua`, `www.sitbank.pp.ua` | `/etc/letsencrypt/live/sitbank.pp.ua/privkey.pem` |
 | `staging-sitbank.pp.ua` | `/etc/letsencrypt/live/staging-sitbank.pp.ua/privkey.pem` |
 
 The private key is not committed to Git. `ops/deploy/bootstrap-container-ec2`

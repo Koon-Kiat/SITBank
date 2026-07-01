@@ -115,7 +115,7 @@ def test_configuration_forbids_allow_everyone_and_non_staging_hosts(monkeypatch)
         config_type.from_environment(require_origin_ip=False)
 
     monkeypatch.setenv("STAGING_ACCESS_ALLOWED_EMAILS", "operator@example.com")
-    monkeypatch.setenv("STAGING_ACCESS_HOSTNAME", "sitbank.duckdns.org")
+    monkeypatch.setenv("STAGING_ACCESS_HOSTNAME", "sitbank.pp.ua")
     with pytest.raises(configuration_error, match="must be exactly"):
         config_type.from_environment(require_origin_ip=False)
 
@@ -159,7 +159,7 @@ def test_config_reads_six_hour_duration_and_expected_audience(monkeypatch):
     assert config.session_duration == "6h"
     assert config.access_audience == "non-secret-application-audience"
     assert config.app_name == "SITBank staging"
-    assert config.policy_name == "SITBank staging approved operators"
+    assert config.policy_name == "SITBank staging app - approved operators only"
     assert config.application_payload["session_duration"] == "6h"
 
 
@@ -206,7 +206,7 @@ def test_provider_verification_accepts_narrow_state_and_rejects_broad_state(
         **application,
         "destinations": [
             {"type": "public", "uri": EXPECTED_HOST},
-            {"type": "public", "uri": "sitbank.duckdns.org"},
+            {"type": "public", "uri": "sitbank.pp.ua"},
         ],
     }
     with pytest.raises(verification_error, match="application configuration"):

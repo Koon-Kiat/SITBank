@@ -77,7 +77,7 @@ def test_ci_variables_have_explicit_safe_defaults():
         "vars['STAGING_PUBLIC_HOST'] || 'staging-sitbank.pp.ua'"
         in text
     )
-    assert "vars['PROD_PUBLIC_HOST'] || 'sitbank.duckdns.org'" in text
+    assert "vars['PROD_PUBLIC_HOST'] || 'sitbank.pp.ua'" in text
 
 
 def test_dependency_review_is_reachable_for_public_main_pull_requests_only():
@@ -178,7 +178,7 @@ def test_tls_workflow_rejects_invalid_hosts_and_has_reviewed_defaults():
     text = (WORKFLOW_DIR / "tls-scan.yml").read_text(encoding="utf-8")
 
     assert "default: staging-sitbank.pp.ua" in text
-    assert "default: sitbank.duckdns.org" in text
+    assert "default: sitbank.pp.ua" in text
     assert "TLS scan target must be a hostname, not a URL or command fragment." in text
     assert 'readonly target_url="https://${target_host}"' in text
 
@@ -193,7 +193,7 @@ def test_github_actions_variables_and_secret_boundary_are_documented():
         "STAGING_PUBLIC_HOST",
         "PROD_PUBLIC_HOST",
         "staging-sitbank.pp.ua",
-        "sitbank.duckdns.org",
+        "sitbank.pp.ua",
         "repository variables",
         "not secrets",
         "protected environment secrets",

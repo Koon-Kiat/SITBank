@@ -32,9 +32,14 @@ Do not put them in `.env`, workflow YAML, Terraform state, or repository files.
 The current application is the self-hosted Access application `SITBank
 staging` at `staging-sitbank.pp.ua`. Its session duration is six hours, mapped
 as `STAGING_ACCESS_SESSION_DURATION=6h`. The managed policy is `SITBank staging
-approved operators` and must contain the exact explicit email membership from
-`STAGING_ACCESS_ALLOWED_EMAILS`. `Everyone`, wildcard domains, and broad
-allow-all rules are forbidden.
+app - approved operators only` and must contain the exact explicit email
+membership from `STAGING_ACCESS_ALLOWED_EMAILS`. `Everyone`, wildcard domains,
+and broad allow-all rules are forbidden.
+
+The separate App Launcher policy is `SITBank Access launcher - approved
+operators only`. It remains a manual Cloudflare-side policy and is outside
+this repository automation unless that automation is explicitly expanded to
+manage it later.
 
 Configure these required `staging` environment secrets:
 
@@ -70,7 +75,7 @@ empty unless the application intentionally restricts login to specific
 identity providers. `STAGING_ACCESS_APP_NAME` and
 `STAGING_ACCESS_POLICY_NAME` are also optional environment or operator-shell
 overrides; empty values use the defaults `SITBank staging` and `SITBank
-staging approved operators`.
+staging app - approved operators only`.
 
 The shared staging environment also carries the existing application and
 deployment variables `ROOT_ADMIN_EMAILS`,

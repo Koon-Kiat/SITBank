@@ -1,4 +1,4 @@
-﻿# SITBank Security Operations
+# SITBank Security Operations
 
 ## Reporting
 
@@ -349,7 +349,8 @@ checked manually.
   `ops/nginx-proxy-headers.conf`, validates Nginx, and reloads only after
   `nginx -t` succeeds.
 - Issue production Certbot files under
-  `/etc/letsencrypt/live/sitbank.duckdns.org/` before bootstrap.
+  `/etc/letsencrypt/live/sitbank.pp.ua/` before bootstrap; the certificate
+  must cover only `sitbank.pp.ua` and `www.sitbank.pp.ua`.
 - Keep Certbot ACME account state and TLS private keys on the EC2 host; never
   commit them to the repository or mount them into application containers.
 - Require an enabled, active `certbot.timer` for host-managed renewal, and run
@@ -394,8 +395,9 @@ sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-app
 sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-admin
 sudo docker inspect --format '{{json .HostConfig.PortBindings}}' sitbank-app
 sudo docker inspect --format '{{json .HostConfig.PortBindings}}' sitbank-admin
-curl --fail https://sitbank.duckdns.org/health/live
-curl -I https://sitbank.duckdns.org/health/ready
+curl --fail https://sitbank.pp.ua/health/live
+curl -I https://www.sitbank.pp.ua/
+curl -I https://sitbank.pp.ua/health/ready
 curl --fail -H 'X-Forwarded-Proto: https' \
   http://127.0.0.1:5000/health/ready
 curl --fail -H 'Host: sitbank-admin.internal' \
