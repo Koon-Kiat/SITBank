@@ -9,25 +9,17 @@ Hadolint, Syft, deployment tests, or production guard tests.
 
 Category: [Security assurance](../README.md#assurance).
 
-## Mode And Private-Repository Decision
+## Mode And Repository Decision
 
 Cloud analysis was selected instead of a self-hosted SonarQube server because
 SITBank does not need another internet-facing service or an operator-maintained
 analysis host. SonarQube must not be installed on the public production EC2
 server.
 
-As checked on 28 June 2026, the official
-[SonarQube Cloud subscription documentation](https://docs.sonarsource.com/sonarqube-cloud/administering-sonarcloud/managing-subscription/subscription-plans)
-allows Free-plan analysis of private projects up to 50,000 private lines of
-code across the organization. Tests, comments, blank lines, excluded files,
-and unsupported languages do not count toward that limit. A repository-side
-count found about 11,600 nonblank/noncomment Python lines under `app`, so this
-project is within the per-organization ceiling if the `koon-kiat` SonarQube
-Cloud organization has enough unused private LOC and no more than five
-members. The plan and usage must be confirmed in the SonarQube Cloud
-organization during project import because limits and organization-wide usage
-can change. Upgrade to Team or stop analysis rather than silently exceeding
-the plan.
+`Koon-Kiat/SITBank` is public. The repository uses the current SonarQube Cloud
+public-project plan selected in the provider UI. Plan limits and provider state
+must still be confirmed by an operator; repository files cannot prove the live
+subscription or organization configuration.
 
 SonarQube Cloud is a third-party SaaS: configured source code is sent to
 SonarQube Cloud for analysis, together with configured test code. The
@@ -41,11 +33,11 @@ a reviewed follow-up instead.
 
 ## One-Time Setup And Secrets
 
-1. Import or rebind the private `Koon-Kiat/SITBank` GitHub repository into the
+1. Import or rebind the public `Koon-Kiat/SITBank` GitHub repository into the
    `koon-kiat` SonarQube Cloud organization and confirm the project key is
    `Koon-Kiat_SITBank`.
-2. Confirm current private LOC usage, member limits, plan terms, repository
-   binding, and access permissions in SonarQube Cloud.
+2. Confirm current plan terms, repository binding, and access permissions in
+   SonarQube Cloud.
 3. Generate a narrowly scoped project analysis token.
 4. Store it as the GitHub Actions repository or organization secret
    `SONAR_TOKEN`. Never place it in a repository variable, environment file,
@@ -206,4 +198,4 @@ Current limitations are the external plan/organization prerequisite, the
 manual `SONAR_TOKEN` setup, absent secret-backed analysis on fork pull
 requests and Dependabot pull requests, no summary comments for those untrusted
 events, intentionally absent inline comments, and the deliberately non-blocking
-quality gate. Existing CodeQL private-repository behavior is unchanged.
+quality gate. Existing CodeQL behavior is unchanged.

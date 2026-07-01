@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 import yaml
 from flask import request
+import ops.deploy.render_container_bundle as runtime_renderer
 
 from ops.deploy.render_container_bundle import (
     NON_SECRET_DEFAULTS,
@@ -78,6 +79,15 @@ DEPLOYMENT_VALUES = {
     "PROD_SMTP_HOST": "smtp.example.test",
     "PROD_SMTP_USERNAME": "smtp-user",
     "PROD_SMTP_PASSWORD": "smtp-password",
+    "PROD_TURNSTILE_SECRET_KEY": "1x0000000000000000000000000000000AA",
+    "PROD_TURNSTILE_ENABLED": "true",
+    "PROD_TURNSTILE_SITE_KEY": "1x00000000000000000000AA",
+    "PROD_TURNSTILE_CUSTOMER_LOGIN_ENABLED": "true",
+    "PROD_TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED": "true",
+    "PROD_TURNSTILE_CUSTOMER_REGISTER_ENABLED": "true",
+    "PROD_TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED": "true",
+    "PROD_TURNSTILE_ADMIN_LOGIN_ENABLED": "false",
+    "PROD_TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED": "false",
     "PROD_WTF_CSRF_SECRET_KEY": "csrf-secret-with-enough-length-for-production",
 }
 
@@ -343,9 +353,12 @@ def _config_secret_inputs() -> set[str]:
         "_configured_secret",
         "_required_session_hmac_keys",
         "_required_url",
+        "_optional_turnstile_secret",
     }
     names = set()
     for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_optional_turnstile_secret":
+            names.add("TURNSTILE_SECRET_KEY")
         if not isinstance(node, ast.Call):
             continue
         if not isinstance(node.func, ast.Name) or node.func.id not in secret_readers:
@@ -1160,6 +1173,133 @@ def test_container_bundle_writer_quotes_dollar_values_and_separates_files(
     assert (output / "secrets" / "secret_key").read_text(encoding="utf-8") == (
         DEPLOYMENT_VALUES["PROD_SECRET_KEY"]
     )
+    assert "TURNSTILE_SECRET_KEY" not in environment
+    assert (
+        output / "secrets" / "turnstile_secret_key"
+    ).read_text(encoding="utf-8") == DEPLOYMENT_VALUES["PROD_TURNSTILE_SECRET_KEY"]
+
+
+def test_turnstile_renderer_maps_public_flags_and_rejects_unsafe_admin_rollout(
+    monkeypatch,
+):
+    _set_deployment_values(monkeypatch)
+
+    environment = build_container_environment()
+
+    assert environment["TURNSTILE_ENABLED"] == "true"
+    assert environment["TURNSTILE_CUSTOMER_LOGIN_ENABLED"] == "true"
+    assert environment["TURNSTILE_ADMIN_LOGIN_ENABLED"] == "false"
+    assert environment["TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED"] == "false"
+    assert environment["TURNSTILE_VERIFY_URL"] == (
+        "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+    )
+
+    monkeypatch.setenv("PROD_TURNSTILE_ADMIN_LOGIN_ENABLED", "true")
+    with pytest.raises(RuntimeError, match="must remain false"):
+        build_container_environment()
+
+
+def test_turnstile_renderer_fails_when_enabled_without_customer_route(
+    monkeypatch,
+):
+    _set_deployment_values(monkeypatch)
+    for name in (
+        "PROD_TURNSTILE_CUSTOMER_LOGIN_ENABLED",
+        "PROD_TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED",
+        "PROD_TURNSTILE_CUSTOMER_REGISTER_ENABLED",
+        "PROD_TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED",
+    ):
+        monkeypatch.setenv(name, "false")
+
+    with pytest.raises(RuntimeError, match="requires at least one customer route flag"):
+        build_container_environment()
+
+
+def test_turnstile_renderer_rejects_invalid_booleans_and_disabled_route_flags(
+    monkeypatch,
+):
+    _set_deployment_values(monkeypatch)
+    monkeypatch.setenv("PROD_TURNSTILE_ENABLED", "sometimes")
+    with pytest.raises(RuntimeError, match="must be true or false"):
+        build_container_environment()
+
+    monkeypatch.setenv("PROD_TURNSTILE_ENABLED", "false")
+    with pytest.raises(RuntimeError, match="route flags require"):
+        build_container_environment()
+
+
+def test_runtime_renderer_validation_errors_are_covered(monkeypatch):
+    with pytest.raises(RuntimeError, match="prefix"):
+        runtime_renderer._validate_prefix("DEV")
+    with pytest.raises(RuntimeError, match="valid base64"):
+        runtime_renderer._validate_b64_key("FAKE_KEY", "!")
+    with pytest.raises(RuntimeError, match="exactly 32 bytes"):
+        runtime_renderer._validate_b64_key("FAKE_KEY", "YQ==")
+    with pytest.raises(RuntimeError, match="invalid"):
+        runtime_renderer._validate_key_id("FAKE_ID", "contains spaces")
+    with pytest.raises(RuntimeError, match="unsupported single quote"):
+        runtime_renderer._quote_environment_value("FAKE_VALUE", "it's invalid")
+    with pytest.raises(RuntimeError, match="JSON object"):
+        runtime_renderer._validate_keyring(
+            "FAKE_KEYRING",
+            "not-json",
+            active_key_id="current",
+        )
+    with pytest.raises(RuntimeError, match="at least one key"):
+        runtime_renderer._validate_keyring(
+            "FAKE_KEYRING",
+            "{}",
+            active_key_id="current",
+        )
+    with pytest.raises(RuntimeError, match="active key id"):
+        runtime_renderer._validate_keyring(
+            "FAKE_KEYRING",
+            '{"other":"MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjI="}',
+            active_key_id="current",
+        )
+
+    monkeypatch.setenv("STAGING_CLOUDFLARE_ACCESS_AUD", "short")
+    with pytest.raises(RuntimeError, match="invalid"):
+        runtime_renderer._cloudflare_access_audience("STAGING")
+    monkeypatch.setenv(
+        "STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN",
+        "not-cloudflare.example",
+    )
+    with pytest.raises(RuntimeError, match="invalid"):
+        runtime_renderer._cloudflare_access_team_domain("STAGING")
+    monkeypatch.setenv(
+        "STAGING_CLOUDFLARE_ACCESS_JWKS_CACHE_TTL_SECONDS",
+        "not-an-integer",
+    )
+    with pytest.raises(RuntimeError, match="must be an integer"):
+        runtime_renderer._cloudflare_access_cache_ttl("STAGING")
+    monkeypatch.setenv(
+        "STAGING_CLOUDFLARE_ACCESS_JWKS_CACHE_TTL_SECONDS",
+        "1",
+    )
+    with pytest.raises(RuntimeError, match="between 60 and 3600"):
+        runtime_renderer._cloudflare_access_cache_ttl("STAGING")
+
+
+def test_runtime_renderer_cli_writes_environment_only_bundle(monkeypatch, tmp_path):
+    _set_deployment_values(monkeypatch)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "render_container_bundle.py",
+            "--output-root",
+            str(tmp_path),
+            "--output",
+            str(tmp_path / "cli-runtime"),
+            "--environment-only",
+        ],
+    )
+
+    runtime_renderer.main()
+
+    assert (tmp_path / "cli-runtime" / "container.env").is_file()
+    assert not (tmp_path / "cli-runtime" / "secrets").exists()
 
 
 def test_container_bundle_writer_rejects_output_outside_allowed_root(
@@ -2016,9 +2156,16 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "dependency-review-action@" in workflow_text
     assert "zizmorcore/zizmor-action@" in workflow_text
     assert "actionlint" in workflow_text
-    assert "shellcheck" in workflow_text
+    shellcheck_workflow = Path(".github/workflows/shellcheck.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "ops/security/discover_lint_targets.py shell" in shellcheck_workflow
+    assert "Validate deployment shell scripts" not in workflow_text
+    assert "\n          shellcheck \\" not in workflow_text
     assert "ops/container/validate-compose.sh" in workflow_text
-    assert "ops/container/dast-smoke.sh" in workflow_text
+    assert "ops/container/dast-smoke.sh" in Path(
+        ".github/workflows/dast-pr-smoke.yml"
+    ).read_text(encoding="utf-8")
     assert "scan_repository_secrets.py" in workflow_text
     assert "scan_repository_secrets.py --history" in workflow_text
     assert "check_dependency_locks.py" in workflow_text
@@ -2352,7 +2499,7 @@ def test_dependabot_tracks_docker_base_images_without_automerge():
     assert "Dependabot updates are review-only" in docs
     assert "Base-image updates must not be auto-merged" in docs
     assert "container smoke test, Compose" in docs
-    assert "Ordinary pull requests skip the full authenticated DAST crawl" in docs
+    assert "Ordinary pull requests skip the full authenticated ZAP crawl" in docs
     assert "scheduled scans" in docs
     assert "release verification retains that coverage" in docs
 

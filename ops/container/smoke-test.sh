@@ -321,6 +321,8 @@ printf '%s' 'smtp-user' \
     > "${work_dir}/secrets/smtp_username"
 printf '%s' 'smtp-password' \
     > "${work_dir}/secrets/smtp_password"
+printf '%s' '1x0000000000000000000000000000000AA' \
+    > "${work_dir}/secrets/turnstile_secret_key"
 chmod_host_path 0444 "${work_dir}"/secrets/*
 
 seq -f 'blocked-password-%06g' 1 100000 \
@@ -364,6 +366,7 @@ docker_args=(
     --env ADMIN_RATELIMIT_KEY_PREFIX=ospbank:admin:ratelimit:
     --env SMTP_USERNAME_FILE=/run/secrets/smtp_username
     --env SMTP_PASSWORD_FILE=/run/secrets/smtp_password
+    --env TURNSTILE_SECRET_KEY_FILE=/run/secrets/turnstile_secret_key
     --env PASSWORD_PBKDF2_ITERATIONS=600000
     --env PASSWORD_RESET_ENABLED=true
     --env PASSWORD_RESET_TOKEN_TTL_SECONDS=1800

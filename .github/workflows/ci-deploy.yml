@@ -44,6 +44,7 @@ env:
 
 jobs:
   resolve-source:
+    name: Resolve source
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -139,6 +140,7 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
   workflow-security:
+    name: Workflow security
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -216,6 +218,7 @@ jobs:
           } >> "${GITHUB_STEP_SUMMARY}"
 
   test:
+    name: Test and security checks
     needs: [workflow-security, resolve-source]
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -262,7 +265,7 @@ jobs:
           node tests/js/collect-browser-coverage.mjs
           python -m compileall app config.py wsgi.py admin_wsgi.py
           python -m pip check
-          python -m bandit -q -ll -r app ops config.py wsgi.py
+          python -m bandit -q -ll -r app ops config.py wsgi.py admin_wsgi.py
           python -m pip_audit --disable-pip --require-hashes -r requirements.lock
           python -m pip_audit --disable-pip --require-hashes -r requirements-dev.lock
           python ops/security/check_dependency_locks.py
@@ -392,6 +395,7 @@ jobs:
             }
 
   image-test:
+    name: Container image test
     if: github.event_name == 'pull_request' || github.event_name == 'schedule'
     needs: [test, workflow-security]
     runs-on: ubuntu-latest
@@ -403,18 +407,6 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           persist-credentials: false
-
-      - name: Validate deployment shell scripts
-        run: |
-          shellcheck \
-            ops/container/smoke-test.sh \
-            ops/container/validate-compose.sh \
-            ops/container/dast-smoke.sh \
-            ops/deploy/bootstrap-container-ec2 \
-            ops/deploy/sitbank-container-bootstrap \
-            ops/deploy/sitbank-container-deploy \
-            ops/deploy/sitbank-container-runtime \
-            ops/deploy/sitbank-database-cutover
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5
@@ -480,6 +472,7 @@ jobs:
           version: v0.71.2
 
   deployment-preflight:
+    name: Deployment preflight
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -789,6 +782,14 @@ jobs:
       STAGING_SMTP_HOST: ${{ vars.STAGING_SMTP_HOST }}
       STAGING_CLOUDFLARE_ACCESS_AUD: ${{ vars.STAGING_CLOUDFLARE_ACCESS_AUD }}
       STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN: ${{ vars.STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN }}
+      STAGING_TURNSTILE_ENABLED: ${{ vars.STAGING_TURNSTILE_ENABLED }}
+      STAGING_TURNSTILE_SITE_KEY: ${{ vars.STAGING_TURNSTILE_SITE_KEY }}
+      STAGING_TURNSTILE_CUSTOMER_LOGIN_ENABLED: ${{ vars.STAGING_TURNSTILE_CUSTOMER_LOGIN_ENABLED }}
+      STAGING_TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED: ${{ vars.STAGING_TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED }}
+      STAGING_TURNSTILE_CUSTOMER_REGISTER_ENABLED: ${{ vars.STAGING_TURNSTILE_CUSTOMER_REGISTER_ENABLED }}
+      STAGING_TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED: ${{ vars.STAGING_TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED }}
+      STAGING_TURNSTILE_ADMIN_LOGIN_ENABLED: ${{ vars.STAGING_TURNSTILE_ADMIN_LOGIN_ENABLED }}
+      STAGING_TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED: ${{ vars.STAGING_TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED }}
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
@@ -817,6 +818,14 @@ jobs:
             STAGING_SMTP_HOST
             STAGING_CLOUDFLARE_ACCESS_AUD
             STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN
+            STAGING_TURNSTILE_ENABLED
+            STAGING_TURNSTILE_SITE_KEY
+            STAGING_TURNSTILE_CUSTOMER_LOGIN_ENABLED
+            STAGING_TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED
+            STAGING_TURNSTILE_CUSTOMER_REGISTER_ENABLED
+            STAGING_TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED
+            STAGING_TURNSTILE_ADMIN_LOGIN_ENABLED
+            STAGING_TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED
             STAGING_EC2_KNOWN_HOSTS
             STAGING_EC2_SSH_PRIVATE_KEY_B64
           )
@@ -891,6 +900,18 @@ jobs:
             exit 1
           fi
 
+      - name: Stage restricted staging Turnstile credential
+        env:
+          TURNSTILE_SECRET_KEY: ${{ secrets.STAGING_TURNSTILE_SECRET_KEY }}
+        run: |
+          umask 077
+          if [[ ! "${TURNSTILE_SECRET_KEY}" =~ ^[A-Za-z0-9._-]{8,512}$ ]]; then
+            echo "::error::STAGING_TURNSTILE_SECRET_KEY is missing or malformed."
+            exit 1
+          fi
+          printf '%s' "${TURNSTILE_SECRET_KEY}" \
+            > "turnstile-staging-${RELEASE_SHA}.secret"
+
       - name: Verify trusted staging deployment files
         run: |
           expected_wrapper_hash="$(
@@ -937,6 +958,7 @@ jobs:
             "runtime-staging-${RELEASE_SHA}.sha256" \
             "runtime-staging-${RELEASE_SHA}.sigstore.json" \
             "registry-staging-${RELEASE_SHA}.credentials" \
+            "turnstile-staging-${RELEASE_SHA}.secret" \
             "${REMOTE_USER}@${REMOTE_HOST}:incoming/"
 
       - name: Deploy verified image digest
@@ -955,7 +977,8 @@ jobs:
             "runtime-staging-${RELEASE_SHA}.tar" \
             "runtime-staging-${RELEASE_SHA}.sha256" \
             "runtime-staging-${RELEASE_SHA}.sigstore.json" \
-            "registry-staging-${RELEASE_SHA}.credentials"
+            "registry-staging-${RELEASE_SHA}.credentials" \
+            "turnstile-staging-${RELEASE_SHA}.secret"
 
   verify-staging-tls:
     if: >-
@@ -1004,6 +1027,14 @@ jobs:
       PROD_PASSWORD_RESET_EMAIL_FROM: ${{ vars.PROD_PASSWORD_RESET_EMAIL_FROM }}
       PROD_ROOT_ADMIN_EMAILS: ${{ vars.ROOT_ADMIN_EMAILS }}
       PROD_SMTP_HOST: ${{ vars.PROD_SMTP_HOST }}
+      PROD_TURNSTILE_ENABLED: ${{ vars.PROD_TURNSTILE_ENABLED }}
+      PROD_TURNSTILE_SITE_KEY: ${{ vars.PROD_TURNSTILE_SITE_KEY }}
+      PROD_TURNSTILE_CUSTOMER_LOGIN_ENABLED: ${{ vars.PROD_TURNSTILE_CUSTOMER_LOGIN_ENABLED }}
+      PROD_TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED: ${{ vars.PROD_TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED }}
+      PROD_TURNSTILE_CUSTOMER_REGISTER_ENABLED: ${{ vars.PROD_TURNSTILE_CUSTOMER_REGISTER_ENABLED }}
+      PROD_TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED: ${{ vars.PROD_TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED }}
+      PROD_TURNSTILE_ADMIN_LOGIN_ENABLED: ${{ vars.PROD_TURNSTILE_ADMIN_LOGIN_ENABLED }}
+      PROD_TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED: ${{ vars.PROD_TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED }}
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
@@ -1030,6 +1061,14 @@ jobs:
             PROD_PASSWORD_RESET_EMAIL_FROM
             PROD_ROOT_ADMIN_EMAILS
             PROD_SMTP_HOST
+            PROD_TURNSTILE_ENABLED
+            PROD_TURNSTILE_SITE_KEY
+            PROD_TURNSTILE_CUSTOMER_LOGIN_ENABLED
+            PROD_TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED
+            PROD_TURNSTILE_CUSTOMER_REGISTER_ENABLED
+            PROD_TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED
+            PROD_TURNSTILE_ADMIN_LOGIN_ENABLED
+            PROD_TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED
             PROD_EC2_KNOWN_HOSTS
             PROD_EC2_SSH_PRIVATE_KEY_B64
           )
@@ -1104,6 +1143,18 @@ jobs:
             exit 1
           fi
 
+      - name: Stage restricted production Turnstile credential
+        env:
+          TURNSTILE_SECRET_KEY: ${{ secrets.PROD_TURNSTILE_SECRET_KEY }}
+        run: |
+          umask 077
+          if [[ ! "${TURNSTILE_SECRET_KEY}" =~ ^[A-Za-z0-9._-]{8,512}$ ]]; then
+            echo "::error::PROD_TURNSTILE_SECRET_KEY is missing or malformed."
+            exit 1
+          fi
+          printf '%s' "${TURNSTILE_SECRET_KEY}" \
+            > "turnstile-${RELEASE_SHA}.secret"
+
       - name: Verify trusted production deployment files
         run: |
           expected_wrapper_hash="$(
@@ -1150,6 +1201,7 @@ jobs:
             "runtime-${RELEASE_SHA}.sha256" \
             "runtime-${RELEASE_SHA}.sigstore.json" \
             "registry-${RELEASE_SHA}.credentials" \
+            "turnstile-${RELEASE_SHA}.secret" \
             "${REMOTE_USER}@${REMOTE_HOST}:incoming/"
 
       - name: Deploy verified image digest
@@ -1168,7 +1220,8 @@ jobs:
             "runtime-${RELEASE_SHA}.tar" \
             "runtime-${RELEASE_SHA}.sha256" \
             "runtime-${RELEASE_SHA}.sigstore.json" \
-            "registry-${RELEASE_SHA}.credentials"
+            "registry-${RELEASE_SHA}.credentials" \
+            "turnstile-${RELEASE_SHA}.secret"
 
   verify-production-tls:
     if: >-

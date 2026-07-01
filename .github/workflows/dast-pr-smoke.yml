@@ -1,0 +1,68 @@
+name: PR DAST smoke
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-dast-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: Local ephemeral application
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5
+
+      - name: Build local DAST image
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf
+        with:
+          context: .
+          load: true
+          tags: sitbank:pr-dast
+          push: false
+
+      - name: Run time-bounded local DAST smoke
+        id: smoke
+        shell: bash
+        env:
+          RUN_ZAP_BASELINE: "true"
+        run: timeout --signal=TERM 12m bash ops/container/dast-smoke.sh sitbank:pr-dast
+
+      - name: Write sanitized DAST summary
+        if: ${{ always() }}
+        shell: bash
+        env:
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+        run: |
+          install -d -m 0755 pr-dast-report
+          {
+            echo "scope=local-ephemeral-application"
+            echo "target=http://127.0.0.1:5000"
+            echo "authentication=synthetic-local-session"
+            echo "timeout=12m"
+            echo "blocking-threshold=zap-fail-alert-or-smoke-regression"
+            echo "outcome=${SMOKE_OUTCOME}"
+          } > pr-dast-report/summary.txt
+
+      - name: Upload sanitized DAST summary
+        if: ${{ always() }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: pr-dast-smoke-${{ github.run_id }}
+          path: pr-dast-report/summary.txt
+          if-no-files-found: error
+          retention-days: 7

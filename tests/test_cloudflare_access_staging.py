@@ -168,7 +168,7 @@ def test_staging_missing_and_malformed_assertions_fail_closed(staging_app):
         ({"exp": 1}, "expired"),
         ({"aud": "wrong-audience-0123456789"}, "wrong_audience"),
         ({"iss": "https://wrong.cloudflareaccess.com"}, "wrong_issuer"),
-        ({"nbf": int(time.time()) + 3600}, "not_yet_valid"),
+        ("future_nbf", "not_yet_valid"),
     ],
 )
 def test_staging_rejects_expired_wrong_audience_issuer_and_future_tokens(
@@ -177,6 +177,8 @@ def test_staging_rejects_expired_wrong_audience_issuer_and_future_tokens(
     claim_override,
     expected_reason,
 ):
+    if claim_override == "future_nbf":
+        claim_override = {"nbf": int(time.time()) + 3600}
     assertion = _jwt(access_signing_key, claims=claim_override)
 
     response = staging_app.test_client().get(
@@ -206,6 +208,16 @@ def test_staging_rejects_invalid_signature(staging_app):
         db.select(SecurityAuditEvent).order_by(SecurityAuditEvent.id.desc())
     ).scalar_one()
     assert event.event_metadata["reason"] == "invalid_signature"
+
+
+def test_future_nbf_is_not_computed_in_parametrize_source():
+    source = Path(__file__).read_text(encoding="utf-8")
+    parametrized = source.split(
+        "def test_staging_rejects_expired_wrong_audience_issuer_and_future_tokens",
+        1,
+    )[0]
+    assert '{"nbf": int(time.time()) + 3600}' not in parametrized
+    assert '("future_nbf", "not_yet_valid")' in parametrized
 
 
 def test_jwks_fetch_failure_is_audited_without_provider_details(

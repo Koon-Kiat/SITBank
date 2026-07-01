@@ -165,8 +165,8 @@ customer domain.
 - [Contributing](docs/CONTRIBUTING.md)
 - [Deployment](docs/DEPLOYMENT.md)
 - [GitHub Actions](docs/GITHUB_ACTIONS.md)
-- [SonarQube Cloud analysis and PR summary policy](docs/security/assurance/sonarqube.md)
-- [Repository secret scanning and Gitleaks triage](docs/security/assurance/secret-scanning.md)
+- [SonarQube Cloud](docs/security/assurance/sonarqube.md)
+- [Secret scanning](docs/security/assurance/secret-scanning.md)
 - [Operations](docs/OPERATIONS.md)
 - [Security](SECURITY.md)
 - [Audit and alerting](docs/security/assurance/audit-and-alerting.md)
@@ -178,8 +178,8 @@ customer domain.
 - [Threat model](docs/security/architecture/threat-model.md)
 - [Design risk register](docs/security/governance/design-risk-register.md)
 - [Security gap register](docs/security/governance/security-gap-register.md)
+- [GitHub branch protection evidence](docs/security/governance/github-branch-protection-evidence.md)
 - [Legacy and out-of-scope technology notes](docs/security/governance/legacy-and-out-of-scope-technology.md)
-- [Archived EC2 transition notes](docs/archive/EC2_TRANSITION.md)
 
 ## Deployment Snapshot
 

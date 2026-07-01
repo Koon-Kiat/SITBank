@@ -45,6 +45,29 @@ When GitHub issue creation is explicitly requested and GitHub access is availabl
 - Keep labels precise and useful. Do not over-label.
 - After creating the issue, return the issue title and URL.
 
+## Issue relationship guidance
+
+When creating, updating, or reviewing SITBank issues, identify whether GitHub-native issue relationships would help the user manually organize the work.
+
+After the issue action or draft, inform the user when any of these four manual relationships are appropriate:
+
+- Parent or sub-issue: use when one issue is a clearly narrower part of a broader tracker.
+- Blocked by: use when an issue cannot be completed safely until another issue is finished.
+- Blocking: use when the current issue must be completed before another issue can proceed.
+- Security alert: use only when the issue directly corresponds to a real GitHub security alert, such as CodeQL, Dependabot, or secret scanning.
+
+Do not create relationship comments, parent/child comments, or backlinks unless the user explicitly asks for comments. Prefer concise manual instructions such as:
+
+```text
+Manual relationship to set:
+- Set #301 parent to #223.
+- Set #299 as blocked by #295 only if #295 must close before #299 can close.
+- Add security alert only if the issue maps to an actual GitHub security alert.
+```
+
+Do not force relationships. If issues are only loosely related, say they can remain unlinked.
+
+
 ## Core format
 
 Write every issue as one integrated GitHub issue that a contributor can copy directly and use as the implementation prompt.

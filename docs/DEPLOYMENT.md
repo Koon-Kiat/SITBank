@@ -134,6 +134,24 @@ must not override that production endpoint. Browser rendering also requires
 `TURNSTILE_SITE_KEY` and the narrow CSP allowance for
 `https://challenges.cloudflare.com`.
 
+Deployment maps production and staging GitHub Environment variables named
+`PROD_TURNSTILE_*` and `STAGING_TURNSTILE_*` to unprefixed
+`TURNSTILE_ENABLED`, `TURNSTILE_SITE_KEY`, `TURNSTILE_VERIFY_URL`, and
+`TURNSTILE_*_ENABLED` runtime settings. Configure separate Cloudflare widgets:
+the production widget covers `sitbank.pp.ua` and `www.sitbank.pp.ua`, while the
+staging widget covers `staging-sitbank.pp.ua`. Store server credentials only as
+the `PROD_TURNSTILE_SECRET_KEY` and `STAGING_TURNSTILE_SECRET_KEY` GitHub
+Environment secrets. The trusted deployment installs each credential as
+`/etc/sitbank*/secrets/turnstile_secret_key`; Compose exposes only
+`TURNSTILE_SECRET_KEY_FILE=/run/secrets/turnstile_secret_key`.
+
+For this customer rollout, set the four
+`*_TURNSTILE_CUSTOMER_*_ENABLED` variables to `true` and both
+`*_TURNSTILE_ADMIN_*_ENABLED` variables to `false`. This wiring adds no public
+admin hostname and does not replace rate limits, CSRF, MFA, Cloudflare Access,
+or Tailscale. The production hostname transition itself is tracked separately
+and is not implemented by this Turnstile wiring.
+
 Install the host-managed backup encryption recipients file before running
 database cutover or scheduled backups:
 

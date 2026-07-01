@@ -74,7 +74,7 @@ def test_ci_keeps_full_parallel_pytest_and_locked_dependency_checks():
     assert "tests/" not in pytest_lines[0]
     for required in (
         "python -m pip check",
-        "python -m bandit -q -ll -r app ops config.py wsgi.py",
+        "python -m bandit -q -ll -r app ops config.py wsgi.py admin_wsgi.py",
         "python -m pip_audit --disable-pip --require-hashes -r requirements.lock",
         "python -m pip_audit --disable-pip --require-hashes -r requirements-dev.lock",
         "python ops/security/check_dependency_locks.py",

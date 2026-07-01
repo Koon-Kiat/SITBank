@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 readonly IMAGE="${1:-sitbank:smoke}"
 readonly POSTGRES_IMAGE="postgres:16.9-alpine@sha256:7c688148e5e156d0e86df7ba8ae5a05a2386aaec1e2ad8e6d11bdf10504b1fb7"
+readonly ZAP_IMAGE="zaproxy/zap-stable:2.17.0@sha256:2ec1d5d5b44d55cfd02ba9b89cd26852f06d92b7fc0ce9f064b9463babc73074"
 readonly PUBLIC_HOST="sitbank.duckdns.org"
 
 random_test_secret() {
@@ -109,6 +110,34 @@ curl --fail --silent \
     --header "Host: ${PUBLIC_HOST}" \
     --header "X-Forwarded-Proto: https" \
     http://127.0.0.1:5000/health/ready >/dev/null
+
+if [[ "${RUN_ZAP_BASELINE:-false}" == "true" ]]; then
+    zap_dir="${work_dir}/zap-pr"
+    install -d -m 0777 "${zap_dir}"
+    printf '10020\tFAIL\n10021\tFAIL\n10038\tFAIL\n' \
+        > "${zap_dir}/rules.tsv"
+    chmod 0644 "${zap_dir}/rules.tsv"
+    docker run --rm \
+        --network host \
+        --volume "${zap_dir}:/zap/wrk:rw" \
+        "${ZAP_IMAGE}" \
+        zap-baseline.py \
+        -t http://127.0.0.1:5000/ \
+        -m 2 \
+        -T 5 \
+        -I \
+        -c /zap/wrk/rules.tsv \
+        -z "-config replacer.full_list(0).description=ForwardedProto \
+-config replacer.full_list(0).enabled=true \
+-config replacer.full_list(0).matchtype=REQ_HEADER \
+-config replacer.full_list(0).matchstr=X-Forwarded-Proto \
+-config replacer.full_list(0).replacement=https \
+-config replacer.full_list(1).description=Host \
+-config replacer.full_list(1).enabled=true \
+-config replacer.full_list(1).matchtype=REQ_HEADER \
+-config replacer.full_list(1).matchstr=Host \
+-config replacer.full_list(1).replacement=${PUBLIC_HOST}"
+fi
 
 cookie_jar="${work_dir}/dast.cookies"
 : > "${cookie_jar}"
