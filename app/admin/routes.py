@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import re
+from typing import Any
+
 from flask import Blueprint, current_app, flash, g, jsonify, redirect, render_template, request, session, url_for
 from flask_limiter.util import get_remote_address
 from flask_wtf import FlaskForm
@@ -10,7 +13,9 @@ from wtforms import PasswordField, StringField
 from wtforms.validators import Email, InputRequired, Length, Regexp
 
 from app.extensions import db, limiter
-from app.security.alerts import build_security_alert_report
+from app.models import SecurityAuditEvent
+from app.security.alerts import AlertConfigurationError, build_security_alert_report
+from app.security.audit import audit_event
 from app.security.production_guard import (
     is_production_app,
     log_production_readiness_failure,
@@ -43,6 +48,7 @@ from .services import (
     start_invite_acceptance,
     transition_staff_account_as_root_admin,
     transition_manual_recovery_request_as_admin,
+    verify_admin_totp_step_up,
     verify_invite_acceptance,
 )
 
@@ -53,8 +59,15 @@ _TOTP_PATTERN = r"^[0-9]{6}$"
 _MFA_CODE_ERROR = "MFA code must be exactly 6 digits"
 _JSON_MIME_TYPE = "application/json"
 _STAFF_ACCOUNTS_ENDPOINT = "admin.staff_accounts"
+_ADMIN_ALERTS_ENDPOINT = "admin.alerts"
 _ADMIN_LOGIN_TEMPLATE = "admin/login.html"
 _ADMIN_MFA_VERIFY_TEMPLATE = "admin/mfa_verify.html"
+_ALERT_SEVERITY_RANK = {"low": 1, "medium": 2, "high": 3, "critical": 4}
+_ALERT_REDACTED_VALUE = "[redacted]"
+_ALERT_SENSITIVE_VALUE_RE = re.compile(
+    r"\b(?:bearer|basic|token)\s+[a-z0-9._~+/=\-]+",
+    re.IGNORECASE,
+)
 
 
 class AdminLoginSchema(Schema):
@@ -216,6 +229,249 @@ def _wants_json() -> bool:
     return best == _JSON_MIME_TYPE and (
         request.accept_mimetypes[_JSON_MIME_TYPE] >= request.accept_mimetypes["text/html"]
     )
+
+
+def _safe_alert_text(value: Any, limit: int = 120) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"[\x00-\x1f\x7f]+", " ", text)
+    compact = " ".join(text.split())[:limit]
+    return _ALERT_REDACTED_VALUE if _ALERT_SENSITIVE_VALUE_RE.search(compact) else compact
+
+
+def _alert_display_report(report: dict[str, Any], selected_ref: str | None) -> dict[str, Any]:
+    display = dict(report)
+    alerts = [
+        _alert_display_item(alert, index)
+        for index, alert in enumerate(report.get("alerts") or [])
+        if isinstance(alert, dict)
+    ]
+    display["alerts"] = alerts
+    display["highest_severity"] = _highest_alert_severity(alerts)
+    display["next_action"] = _alert_next_action(display)
+    display["selected_alert"] = next(
+        (alert for alert in alerts if alert["ref"] == selected_ref),
+        alerts[0] if alerts else None,
+    )
+    return display
+
+
+def _alert_display_item(alert: dict[str, Any], index: int) -> dict[str, Any]:
+    ref = f"alert-{index + 1}"
+    event_id = _alert_existing_event_id(alert.get("latest_event_id"))
+    return {
+        "ref": ref,
+        "detail_url": url_for(_ADMIN_ALERTS_ENDPOINT, alert=ref),
+        "alert_type": _safe_alert_text(alert.get("alert_type"), 80),
+        "severity": _safe_alert_text(alert.get("severity"), 24) or "low",
+        "source": _safe_alert_text(alert.get("source"), 160) or "unknown",
+        "count": int(alert.get("count") or 0),
+        "window_seconds": int(alert.get("window_seconds") or 0),
+        "generated_at": _safe_alert_text(alert.get("generated_at"), 40),
+        "event_id": event_id,
+        "event_url": url_for("admin.audit_log_detail", event_id=event_id) if event_id else "",
+        "status": _safe_alert_text(alert.get("status"), 80),
+        "reason": _safe_alert_text(alert.get("reason"), 120),
+        "error_type": _safe_alert_text(alert.get("error_type"), 80),
+        "recommended_action": _alert_recommended_action(alert),
+    }
+
+
+def _alert_existing_event_id(value: Any) -> int | None:
+    try:
+        event_id = int(value)
+    except (TypeError, ValueError):
+        return None
+    if event_id <= 0:
+        return None
+    return event_id if db.session.get(SecurityAuditEvent, event_id) is not None else None
+
+
+def _highest_alert_severity(alerts: list[dict[str, Any]]) -> str:
+    if not alerts:
+        return "none"
+    return max(
+        (alert["severity"] for alert in alerts),
+        key=lambda severity: _ALERT_SEVERITY_RANK.get(str(severity).casefold(), 0),
+    )
+
+
+def _alert_next_action(report: dict[str, Any]) -> str:
+    if int(report.get("alert_count") or 0) <= 0:
+        return "No active alert findings. Continue scheduled monitoring."
+    audit_chain = report.get("audit_chain") if isinstance(report.get("audit_chain"), dict) else {}
+    if audit_chain and audit_chain.get("valid") is False:
+        return "Preserve evidence and investigate audit-chain integrity before rotating anchors."
+    database_integrity = (
+        report.get("database_integrity")
+        if isinstance(report.get("database_integrity"), dict)
+        else {}
+    )
+    if database_integrity and database_integrity.get("valid") is False:
+        return "Preserve database and host evidence before routine deployment or cleanup."
+    return "Open the alert detail and correlate with safe audit-log entries."
+
+
+def _alert_recommended_action(alert: dict[str, Any]) -> str:
+    alert_type = str(alert.get("alert_type") or "").casefold()
+    if "audit_anchor" in alert_type or "audit_chain" in alert_type:
+        return "Stop routine anchor rotation, preserve the current anchor, and verify the hash chain."
+    if "database_integrity" in alert_type:
+        return "Preserve database state and compare the protected alert baseline before recovery."
+    if "password_reset" in alert_type or "manual_recovery" in alert_type:
+        return "Review related recovery audit events and rate-limit context before taking account action."
+    if "login" in alert_type or "auth_backoff" in alert_type:
+        return "Review related authentication audit events and source grouping."
+    return "Review the safe audit detail and follow the incident response runbook."
+
+
+def _safe_alert_int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _alert_delivery_flags(report: dict[str, Any]) -> dict[str, Any]:
+    delivery = report.get("delivery") if isinstance(report.get("delivery"), dict) else {}
+    status_code = delivery.get("status_code")
+    return {
+        "attempted": bool(delivery.get("attempted")),
+        "configured": bool(delivery.get("configured")),
+        "enabled": bool(delivery.get("enabled")),
+        "delivered": bool(delivery.get("delivered")) if "delivered" in delivery else None,
+        "deduped": bool(delivery.get("deduped")),
+        "provider": _safe_alert_text(delivery.get("provider"), 40),
+        "status_code": int(status_code) if isinstance(status_code, int) and 100 <= status_code <= 599 else None,
+        "error_type": _safe_alert_text(delivery.get("error_type"), 80),
+    }
+
+
+def _alert_dedupe_flags(report: dict[str, Any]) -> dict[str, Any]:
+    dedupe = report.get("dedupe") if isinstance(report.get("dedupe"), dict) else {}
+    return {
+        "enabled": bool(dedupe.get("enabled")),
+        "ttl_seconds": _safe_alert_int(dedupe.get("ttl_seconds")),
+        "suppressed": _safe_alert_int(dedupe.get("suppressed")),
+    }
+
+
+def _alert_integrity_flags(value: Any) -> dict[str, Any]:
+    status = value if isinstance(value, dict) else {}
+    summary: dict[str, Any] = {}
+    for key in ("checked", "valid", "configured", "anchor_configured", "anchor_validated", "state_path_configured"):
+        if key in status:
+            summary[key] = bool(status.get(key)) if status.get(key) is not None else None
+    for key in ("event_count", "latest_event_id", "error_count", "anchor_error_count"):
+        if key in status:
+            summary[key] = _safe_alert_int(status.get(key))
+    if status.get("error_type"):
+        summary["error_type"] = _safe_alert_text(status.get("error_type"), 80)
+    return summary
+
+
+def _alert_delivery_outcome(report: dict[str, Any]) -> tuple[str, str]:
+    alert_count = _safe_alert_int(report.get("alert_count"))
+    deliverable_count = _safe_alert_int(report.get("deliverable_alert_count"))
+    delivery = _alert_delivery_flags(report)
+    dedupe = _alert_dedupe_flags(report)
+    if alert_count <= 0:
+        return "blocked", "no_active_alerts"
+    if delivery["deduped"] or (deliverable_count <= 0 and dedupe["suppressed"] > 0):
+        return "deduped", "dedupe_suppressed"
+    if not delivery["enabled"]:
+        return "blocked", "delivery_disabled"
+    if not delivery["configured"]:
+        return "blocked", "delivery_not_configured"
+    if delivery["attempted"] and delivery["delivered"] is True:
+        return "delivered", "delivery_sent"
+    if delivery["attempted"] and delivery["delivered"] is False:
+        return "failed", "delivery_failed"
+    if deliverable_count <= 0:
+        return "blocked", "no_deliverable_alerts"
+    return "blocked", "delivery_not_attempted"
+
+
+def _alert_delivery_metadata(
+    report: dict[str, Any] | None = None,
+    *,
+    reason: str | None = None,
+    error_type: str | None = None,
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {"channel": "browser", "delivery_path": "build_security_alert_report"}
+    if report is not None:
+        delivery = _alert_delivery_flags(report)
+        dedupe = _alert_dedupe_flags(report)
+        metadata.update(
+            {
+                "alert_count": _safe_alert_int(report.get("alert_count")),
+                "deliverable_alert_count": _safe_alert_int(report.get("deliverable_alert_count")),
+                "delivery_attempted": delivery["attempted"],
+                "delivery_configured": delivery["configured"],
+                "delivery_enabled": delivery["enabled"],
+                "dedupe_enabled": dedupe["enabled"],
+                "dedupe_suppressed": dedupe["suppressed"],
+            }
+        )
+        if delivery["error_type"]:
+            metadata["error_type"] = delivery["error_type"]
+    if reason:
+        metadata["reason"] = _safe_alert_text(reason, 80)
+    if error_type:
+        metadata["error_type"] = _safe_alert_text(error_type, 80)
+    return metadata
+
+
+def _record_alert_delivery_event(
+    actor: Any,
+    outcome: str,
+    report: dict[str, Any] | None = None,
+    *,
+    reason: str | None = None,
+    error_type: str | None = None,
+) -> None:
+    audit_event(
+        "security_alert_delivery",
+        outcome,
+        user=actor,
+        metadata=_alert_delivery_metadata(report, reason=reason, error_type=error_type),
+    )
+
+
+def _alert_delivery_json_payload(report: dict[str, Any], outcome: str, reason: str) -> dict[str, Any]:
+    safe_alerts = [
+        _alert_display_item(alert, index)
+        for index, alert in enumerate(report.get("alerts") or [])
+        if isinstance(alert, dict)
+    ]
+    return {
+        "message": "security_alert_delivery",
+        "outcome": outcome,
+        "reason": _safe_alert_text(reason, 80),
+        "generated_at": _safe_alert_text(report.get("generated_at"), 40),
+        "alert_count": _safe_alert_int(report.get("alert_count")),
+        "deliverable_alert_count": _safe_alert_int(report.get("deliverable_alert_count")),
+        "delivery": _alert_delivery_flags(report),
+        "dedupe": _alert_dedupe_flags(report),
+        "audit_chain": _alert_integrity_flags(report.get("audit_chain")),
+        "database_integrity": _alert_integrity_flags(report.get("database_integrity")),
+        "alerts": safe_alerts,
+    }
+
+
+def _alert_delivery_flash(outcome: str, reason: str) -> tuple[str, str]:
+    if outcome == "delivered":
+        return "Security alert delivery was sent through the configured channel.", "success"
+    if outcome == "deduped":
+        return "Security alert delivery was audited; existing dedupe suppressed repeat delivery.", "info"
+    if outcome == "failed":
+        return "Security alert delivery was audited, but delivery failed. Review the safe alert status.", "error"
+    messages = {
+        "delivery_disabled": "Security alert delivery is disabled.",
+        "delivery_not_configured": "Security alert delivery is not configured.",
+        "no_active_alerts": "No active alerts were available to deliver.",
+        "no_deliverable_alerts": "No deliverable alerts were available.",
+    }
+    return messages.get(reason, "Security alert delivery was not sent."), "warning"
 
 
 def _render_login_form(form: AdminLoginForm | None = None, *, status_code: int = 200):
@@ -482,7 +738,6 @@ def audit_log_detail(event_id: int):
 def alerts():
     actor = require_admin_session()
     report = build_security_alert_report(deliver=False)
-    from app.security.audit import audit_event
 
     audit_event(
         "security_alert_review",
@@ -492,13 +747,65 @@ def alerts():
     )
     if _wants_json():
         return jsonify(report)
+    display_report = _alert_display_report(report, request.args.get("alert"))
     return render_template(
         "admin/alerts.html",
-        report=report,
+        report=display_report,
+        delivery_form=AdminTotpForm(),
         actor=actor,
         user=public_admin_user(actor),
         navigation=admin_navigation_for(actor),
     )
+
+
+@admin_bp.post("/alerts/deliver")
+@limiter.limit("10 per hour", key_func=get_remote_address)
+@limiter.limit("5 per 5 minutes", key_func=request_principal)
+def alert_delivery():
+    actor = require_admin_session()
+    wants_json = _wants_json()
+    if wants_json:
+        data = _payload(AdminTotpSchema())
+        totp_code = data["totp_code"]
+    else:
+        form = AdminTotpForm()
+        if not form.validate_on_submit():
+            _record_alert_delivery_event(actor, "blocked", reason="invalid_request")
+            flash("Enter a current authenticator code.", "error")
+            return redirect(url_for(_ADMIN_ALERTS_ENDPOINT)), 303
+        totp_code = form.totp_code.data
+
+    if not verify_admin_totp_step_up(actor, totp_code, "security_alert_delivery"):
+        _record_alert_delivery_event(actor, "blocked", reason="invalid_totp_step_up")
+        if wants_json:
+            return jsonify({"error": "Fresh MFA verification is required"}), 403
+        flash("Fresh MFA verification is required.", "error")
+        return redirect(url_for(_ADMIN_ALERTS_ENDPOINT)), 303
+
+    _record_alert_delivery_event(actor, "requested")
+    try:
+        report = build_security_alert_report(deliver=True)
+    except AlertConfigurationError as exc:
+        _record_alert_delivery_event(
+            actor,
+            "failed",
+            reason="alert_configuration_error",
+            error_type=type(exc).__name__,
+        )
+        if wants_json:
+            return jsonify({"error": "Security alert delivery is unavailable"}), 503
+        flash("Security alert delivery is unavailable.", "error")
+        return redirect(url_for(_ADMIN_ALERTS_ENDPOINT)), 303
+
+    outcome, reason = _alert_delivery_outcome(report)
+    _record_alert_delivery_event(actor, outcome, report, reason=reason)
+    if wants_json:
+        status_code = 200 if outcome in {"delivered", "deduped", "blocked"} else 503
+        return jsonify(_alert_delivery_json_payload(report, outcome, reason)), status_code
+
+    message, category = _alert_delivery_flash(outcome, reason)
+    flash(message, category)
+    return redirect(url_for(_ADMIN_ALERTS_ENDPOINT)), 303
 
 
 @admin_bp.get("/manual-recovery/requests")

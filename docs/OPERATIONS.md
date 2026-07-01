@@ -560,6 +560,15 @@ anchor so `check-security-alerts` emits critical
 `audit_chain_verification_failed` or `audit_anchor_mismatch` alerts for chain
 tampering, rewind, or tail deletion detectable from the anchor.
 
+Admin/root users may review the same safe report in the private admin runtime
+with `GET /alerts`. That browser review is read-only and must not send alerts.
+Manual browser delivery uses `POST /alerts/deliver`, requires the existing
+admin authorization, browser CSRF token, and current TOTP step-up, then calls
+the same sanitized `build_security_alert_report(deliver=True)` delivery path
+used by the CLI/timer. Dedupe still suppresses repeat delivery; there is no
+browser force-resend mode or Web Push channel. Audit rows record safe
+`security_alert_delivery` outcomes only.
+
 Production uses the committed systemd timer `sitbank-security-alerts.timer` to run
 `check-security-alerts` through the container runtime wrapper every 5 minutes.
 The service fails visibly when alert evaluation fails, when active alerts are
