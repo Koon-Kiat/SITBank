@@ -95,21 +95,26 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
+          definitions_file="${RUNNER_TEMP}/label-definitions.tsv"
+          python ops/security/github_label_policy.py definitions > "${definitions_file}"
           while IFS=$'\t' read -r label description color; do
             gh label create "${label}" \
               --description "${description}" \
               --color "${color}" \
               --force
-          done < <(python ops/security/github_label_policy.py definitions)
+          done < "${definitions_file}"
 
       - name: Retag selected items
         shell: bash
         run: |
           set -Eeuo pipefail
 
-          mapfile -t protected_labels < <(
-            printf '%s\n' "${PROTECTED_LABELS}" | sed '/^[[:space:]]*$/d'
-          )
+          protected_labels=()
+          while IFS= read -r protected_label; do
+            if [[ -n "${protected_label//[[:space:]]/}" ]]; then
+              protected_labels+=("${protected_label}")
+            fi
+          done <<< "${PROTECTED_LABELS}"
 
           is_protected() {
             local candidate="$1"
@@ -203,39 +208,53 @@ jobs:
 
           process_issues() {
             local row issue_json number
-            mapfile -t rows < <(
-              gh issue list \
-                --state "${STATE}" \
-                --limit "${LIMIT}" \
-                --json number,title,body,labels \
-                --jq '.[] | @base64'
-            )
+            local rows_file="${RUNNER_TEMP}/retag-issues.jsonl"
+            local current_file="${RUNNER_TEMP}/retag-issue-current.txt"
+            local computed_file="${RUNNER_TEMP}/retag-issue-computed.txt"
+            local -a rows=()
+            local -a current=()
+            local -a computed=()
+            gh issue list \
+              --state "${STATE}" \
+              --limit "${LIMIT}" \
+              --json number,title,body,labels \
+              --jq '.[] | @base64' \
+              > "${rows_file}"
+            mapfile -t rows < "${rows_file}"
             for row in "${rows[@]}"; do
               issue_json="$(printf '%s' "${row}" | base64 --decode)"
               number="$(jq -r '.number' <<< "${issue_json}")"
-              mapfile -t current < <(jq -r '.labels[].name' <<< "${issue_json}")
-              mapfile -t computed < <(
-                python ops/security/github_label_policy.py compute \
-                  --kind issue \
-                  --input - <<< "${issue_json}"
-              )
+              jq -r '.labels[].name' <<< "${issue_json}" > "${current_file}"
+              mapfile -t current < "${current_file}"
+              python ops/security/github_label_policy.py compute \
+                --kind issue \
+                --input - <<< "${issue_json}" \
+                > "${computed_file}"
+              mapfile -t computed < "${computed_file}"
               report_and_apply "Issue" "${number}" "${current[@]}" --computed-- "${computed[@]}"
             done
           }
 
           process_prs() {
             local row pr_json number paths_json input_json
-            mapfile -t rows < <(
-              gh pr list \
-                --state "${STATE}" \
-                --limit "${LIMIT}" \
-                --json number,title,body,headRefName,labels \
-                --jq '.[] | @base64'
-            )
+            local rows_file="${RUNNER_TEMP}/retag-prs.jsonl"
+            local current_file="${RUNNER_TEMP}/retag-pr-current.txt"
+            local computed_file="${RUNNER_TEMP}/retag-pr-computed.txt"
+            local -a rows=()
+            local -a current=()
+            local -a computed=()
+            gh pr list \
+              --state "${STATE}" \
+              --limit "${LIMIT}" \
+              --json number,title,body,headRefName,labels \
+              --jq '.[] | @base64' \
+              > "${rows_file}"
+            mapfile -t rows < "${rows_file}"
             for row in "${rows[@]}"; do
               pr_json="$(printf '%s' "${row}" | base64 --decode)"
               number="$(jq -r '.number' <<< "${pr_json}")"
-              mapfile -t current < <(jq -r '.labels[].name' <<< "${pr_json}")
+              jq -r '.labels[].name' <<< "${pr_json}" > "${current_file}"
+              mapfile -t current < "${current_file}"
               if paths_json="$(
                 gh pr diff "${number}" --name-only 2>/dev/null \
                   | jq -R -s 'split("\n") | map(select(length > 0))'
@@ -247,11 +266,11 @@ jobs:
                 echo "::warning::Could not load changed paths for PR #${number}; using title, body, and branch only."
                 input_json="$(jq '. + {paths: []}' <<< "${pr_json}")"
               fi
-              mapfile -t computed < <(
-                python ops/security/github_label_policy.py compute \
-                  --kind pr \
-                  --input - <<< "${input_json}"
-              )
+              python ops/security/github_label_policy.py compute \
+                --kind pr \
+                --input - <<< "${input_json}" \
+                > "${computed_file}"
+              mapfile -t computed < "${computed_file}"
               report_and_apply "Pull request" "${number}" "${current[@]}" --computed-- "${computed[@]}"
             done
           }

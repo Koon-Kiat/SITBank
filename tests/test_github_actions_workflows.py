@@ -138,8 +138,12 @@ def test_label_workflows_share_bounded_trusted_policy_and_manual_safeguards():
     for text in (issue_text, pr_text, retag_text):
         assert "ops/security/github_label_policy.py" in text
         assert "pull_request_target" not in text
+        assert "< <(" not in text
     assert "ref: ${{ github.event.repository.default_branch }}" in issue_text
     assert "ref: ${{ github.event.pull_request.base.sha }}" in pr_text
+    assert "Detect trusted label policy" in pr_text
+    assert "steps.trusted-policy.outputs.available == 'true'" in pr_text
+    assert "skipping this bootstrap run" in pr_text
     assert "--name-only" in pr_text
     assert "--patch" not in pr_text
     assert "sync-labels" not in pr_text

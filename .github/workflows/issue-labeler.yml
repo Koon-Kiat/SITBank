@@ -36,12 +36,14 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -Eeuo pipefail
+          definitions_file="${RUNNER_TEMP}/label-definitions.tsv"
+          python ops/security/github_label_policy.py definitions > "${definitions_file}"
           while IFS=$'\t' read -r label description color; do
             gh label create "${label}" \
               --description "${description}" \
               --color "${color}" \
               --force
-          done < <(python ops/security/github_label_policy.py definitions)
+          done < "${definitions_file}"
 
       - name: Add bounded issue labels
         shell: bash
@@ -51,11 +53,12 @@ jobs:
         run: |
           set -Eeuo pipefail
           issue_number="$(jq -r '.issue.number' "${GITHUB_EVENT_PATH}")"
-          mapfile -t labels < <(
-            python ops/security/github_label_policy.py compute \
-              --kind issue \
-              --input "${GITHUB_EVENT_PATH}"
-          )
+          labels_file="${RUNNER_TEMP}/computed-labels.txt"
+          python ops/security/github_label_policy.py compute \
+            --kind issue \
+            --input "${GITHUB_EVENT_PATH}" \
+            > "${labels_file}"
+          mapfile -t labels < "${labels_file}"
           if (( ${#labels[@]} == 0 )); then
             exit 0
           fi
