@@ -232,6 +232,13 @@ registration or customer profile email changes. Evidence:
 `app/auth/registration_otp.py`, `app/auth/services.py`,
 `app/auth/routes.py`, and `app/web/routes.py`.
 
+Public customer authentication entry points can require route-specific
+Cloudflare Turnstile challenges when `TURNSTILE_ENABLED` and the matching route
+flag are enabled. The covered customer routes are login, registration OTP
+request, final registration submit, and password-reset request. Turnstile is
+defense in depth only; CSRF, rate limits, password screening, MFA, sessions,
+audit logging, and authorization remain enforced.
+
 Customer login uses username or email plus password. `authenticate_primary()`
 uses a dummy password hash for unknown users to reduce user-enumeration timing
 differences, returns the generic message `Invalid username or password`, and
@@ -244,6 +251,12 @@ password-bootstrap session and the web/API `before_request` gates require MFA
 setup before normal account access. Evidence: `app/auth/mfa_policy.py`,
 `app/auth/routes.py::enforce_api_mfa_onboarding`, and
 `app/web/routes.py::enforce_mfa_onboarding`.
+
+Customer profile updates use authenticator-app TOTP as the server-selected
+high-risk step-up method. Username-only changes commit after valid TOTP.
+Profile email changes first send a short-lived, session-bound verification
+code to the new email and keep the old email active until the customer submits
+both that email code and a current TOTP code.
 
 ### TOTP MFA And Recovery Codes
 
@@ -326,6 +339,8 @@ Implementation evidence:
 | Algorithm and cost metadata | Hash string contains prefix, version, `i=`, `s=`, and `h=` fields |
 | Rehash support | `password_hash_needs_rehash()` triggers rehash when stored iterations are below the current config |
 | Common-password checks | Local blocklist plus HIBP range API in `validate_password_policy()` |
+| Previous-password history | `password_history` stores retained prior hashes and `PASSWORD_HISTORY_RETENTION_COUNT` defaults to 3 |
+| Forced password change | `force_password_change` blocks normal authenticated routes until password change clears the flag |
 | Length checks before hashing | `PASSWORD_MIN_LENGTH`, `PASSWORD_MAX_CHARS`, and schema/form validators reject invalid passwords before hashing |
 
 Tests: `tests/test_auth_registration_login.py::test_registration_hashes_password_with_pbkdf2`,
@@ -338,10 +353,10 @@ and `tests/test_passwords.py::test_sends_only_hash_prefix_with_padding_and_short
 Passwords are not logged in plaintext by the code paths inspected. Audit
 metadata sanitization redacts keys and values containing password, token,
 secret, session, credential URL, webhook URL, and private-key patterns.
-
-The code prevents reuse of the current password during change/reset. Full
-previous-password history is tracked as an open item in
-`docs/security/governance/security-gap-register.md`.
+Password change and reset reject the current password and retained recent
+password history; compromise-driven forced-change flags block normal
+authenticated routes while leaving logout, recovery, MFA setup, and password
+change paths available.
 
 ## Protection Against Unauthorized Access To Stored Passwords
 

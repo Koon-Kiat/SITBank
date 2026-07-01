@@ -30,9 +30,16 @@ from app.auth.mfa_policy import (
     enrolled_webauthn_credential_count,
     has_enrolled_mfa_method,
 )
-from app.security.audit import audit_event, audit_event_required, principal_reference
+from app.security.audit import audit_event, audit_event_required, audit_reference, principal_reference
 from app.security.crypto import decrypt_mfa_secret, encrypt_mfa_secret
+from app.security.email import send_security_email
 from app.security.identity_policy import IdentityPolicyError, require_customer_email
+from app.security.password_history import (
+    PasswordReuseError,
+    assert_password_not_reused,
+    mark_password_changed,
+    replace_user_password,
+)
 from app.security.passwords import (
     PasswordPolicyError,
     hash_password,
@@ -80,6 +87,10 @@ AUTH_LOCK_WINDOW_SECONDS = 15 * 60
 MFA_REPLACEMENT_NONCE_KEY = "mfa_replacement_secret_nonce"
 MFA_REPLACEMENT_CIPHERTEXT_KEY = "mfa_replacement_secret_ciphertext"
 MFA_REPLACEMENT_STARTED_AT_KEY = "mfa_replacement_started_at"
+PROFILE_EMAIL_PENDING_EMAIL_KEY = "profile_email_pending_email"
+PROFILE_EMAIL_PENDING_USERNAME_KEY = "profile_email_pending_username"
+PROFILE_EMAIL_PENDING_CODE_HMAC_KEY = "profile_email_pending_code_hmac"
+PROFILE_EMAIL_PENDING_EXPIRES_AT_KEY = "profile_email_pending_expires_at"
 
 
 class AuthError(ValueError):
@@ -239,6 +250,7 @@ def register_user(data: dict[str, Any]) -> tuple[User, list[str]]:
         phone_number=data["phone_number"].strip(),
         account_number=_generate_account_number(),
     )
+    mark_password_changed(user)
     db.session.add(user)
     try:
         db.session.flush()
@@ -576,33 +588,166 @@ def update_profile_details(
     user: User,
     username: str,
     email: str,
-    mfa_step_up_preference: str | None,
     code: str | None,
     stepup_token: str | None = None,
-) -> bool:
+    email_verification_code: str | None = None,
+) -> dict[str, Any]:
+    normalized_username, username_lookup, normalized_email, email_changed = _profile_update_values(
+        user,
+        username,
+        email,
+    )
+
+    if username_lookup == _normalize(user.username) and not email_changed:
+        return {"updated": False, "email_verification_pending": False}
+
+    ensure_account_not_frozen(user, "profile update")
+    _ensure_step_up_preference_enrolled(user, "totp")
+    _reject_duplicate_profile_identifiers(user, username_lookup, normalized_email)
+
+    if email_changed:
+        pending_result = _handle_profile_email_change(
+            user,
+            username=normalized_username,
+            normalized_email=normalized_email,
+            code=code,
+            stepup_token=stepup_token,
+            email_verification_code=email_verification_code,
+        )
+        if pending_result is not None:
+            return pending_result
+    else:
+        verify_high_risk_authorization(
+            user,
+            code,
+            stepup_token,
+            "profile_update",
+        )
+
+    return _commit_profile_update(user, normalized_username, normalized_email, email_changed)
+
+
+def _profile_update_values(user: User, username: str, email: str) -> tuple[str, str, str, bool]:
     normalized_username = username.strip()
     username_lookup = _normalize(normalized_username)
     submitted_email = email.strip().lower()
     email_changed = submitted_email != _normalize(user.email)
+    if not email_changed:
+        return normalized_username, username_lookup, submitted_email, False
+    try:
+        normalized_email = require_customer_email(email)
+    except IdentityPolicyError as exc:
+        audit_event("profile_update", "blocked", user=user, metadata={"reason": exc.reason})
+        raise AuthError(PROFILE_UPDATE_ERROR, 400) from exc
+    return normalized_username, username_lookup, normalized_email, True
+
+
+def _handle_profile_email_change(
+    user: User,
+    *,
+    username: str,
+    normalized_email: str,
+    code: str | None,
+    stepup_token: str | None,
+    email_verification_code: str | None,
+) -> dict[str, Any] | None:
+    if not email_verification_code:
+        verify_high_risk_authorization(
+            user,
+            code,
+            stepup_token,
+            "profile_email_change_request",
+        )
+        _create_profile_email_change_challenge(
+            user,
+            username=username,
+            email=normalized_email,
+        )
+        return {
+            "updated": False,
+            "email_verification_pending": True,
+            "pending_email": normalized_email,
+        }
+
+    _validate_profile_email_change_code(user, normalized_email, email_verification_code)
+    verify_high_risk_authorization(
+        user,
+        code,
+        stepup_token,
+        "profile_email_change_commit",
+    )
+    return None
+
+
+def _validate_profile_email_change_code(
+    user: User,
+    normalized_email: str,
+    email_verification_code: str,
+) -> None:
+    pending_change = _pending_profile_email_change(user)
+    if pending_change is None:
+        _reject_profile_email_change(
+            user,
+            reason="missing_or_expired_challenge",
+            message="Email verification expired. Request a new code.",
+        )
+    if pending_change["email"] != normalized_email:
+        _reject_profile_email_change(
+            user,
+            reason="superseded_challenge",
+            message="Email verification expired. Request a new code.",
+        )
+    expected_hmac = str(pending_change["code_hmac"])
+    submitted_hmac = _profile_email_code_hmac(
+        user,
+        normalized_email,
+        str(email_verification_code or "").strip(),
+    )
+    if not hmac.compare_digest(expected_hmac, submitted_hmac):
+        _reject_profile_email_change(
+            user,
+            reason="invalid_verification_code",
+            message="Email verification code is invalid or expired",
+        )
+
+
+def _reject_profile_email_change(user: User, *, reason: str, message: str) -> None:
+    audit_event(
+        "profile_email_change",
+        "failure",
+        user=user,
+        metadata={"reason": reason},
+    )
+    raise AuthError(message, 400)
+
+
+def _commit_profile_update(
+    user: User,
+    normalized_username: str,
+    normalized_email: str,
+    email_changed: bool,
+) -> dict[str, Any]:
+    user.username = normalized_username
     if email_changed:
-        try:
-            normalized_email = require_customer_email(email)
-        except IdentityPolicyError as exc:
-            audit_event("profile_update", "blocked", user=user, metadata={"reason": exc.reason})
-            raise AuthError(PROFILE_UPDATE_ERROR, 400) from exc
-    else:
-        normalized_email = submitted_email
-    normalized_preference = _normalize_step_up_preference(mfa_step_up_preference)
-    if (
-        username_lookup == _normalize(user.username)
-        and normalized_email == user.email
-        and normalized_preference == user.mfa_step_up_preference
-    ):
-        return False
+        user.email = normalized_email
+    try:
+        db.session.commit()
+    except IntegrityError as exc:
+        db.session.rollback()
+        audit_event("profile_update", "failure", user=user, metadata={"reason": "integrity_error"})
+        raise AuthError(PROFILE_UPDATE_ERROR, 400) from exc
+    if email_changed:
+        _clear_pending_profile_email_change()
+    audit_event(
+        "profile_update",
+        "success",
+        user=user,
+        metadata={"updated_fields": "profile_email" if email_changed else "profile_details"},
+    )
+    return {"updated": True, "email_verification_pending": False}
 
-    ensure_account_not_frozen(user, "profile update")
-    _ensure_step_up_preference_enrolled(user, normalized_preference)
 
+def _reject_duplicate_profile_identifiers(user: User, username_lookup: str, normalized_email: str) -> None:
     duplicate_user = db.session.execute(
         db.select(User).where(
             or_(
@@ -616,24 +761,84 @@ def update_profile_details(
         audit_event("profile_update", "failure", user=user, metadata={"reason": "duplicate_identifier"})
         raise AuthError(PROFILE_UPDATE_ERROR, 400)
 
-    verify_high_risk_authorization(
+
+def _create_profile_email_change_challenge(user: User, *, username: str, email: str) -> None:
+    verification_code = f"{secrets.randbelow(1_000_000):06d}"
+    expires_at = int(time.time()) + int(current_app.config["PROFILE_EMAIL_CHANGE_TTL_SECONDS"])
+    _clear_pending_profile_email_change()
+    session[PROFILE_EMAIL_PENDING_USERNAME_KEY] = username
+    session[PROFILE_EMAIL_PENDING_EMAIL_KEY] = email
+    session[PROFILE_EMAIL_PENDING_CODE_HMAC_KEY] = _profile_email_code_hmac(
         user,
-        code,
-        stepup_token,
-        "profile_update",
+        email,
+        verification_code,
+    )
+    session[PROFILE_EMAIL_PENDING_EXPIRES_AT_KEY] = expires_at
+    session.modified = True
+    try:
+        send_security_email(
+            email,
+            "SITBank profile email verification code",
+            (
+                "Use this SITBank profile email verification code:\n\n"
+                f"{verification_code}\n\n"
+                "This code expires in 5 minutes. If you did not request it, ignore this email."
+            ),
+        )
+    except Exception as exc:
+        _clear_pending_profile_email_change()
+        audit_event(
+            "profile_email_change",
+            "failure",
+            user=user,
+            metadata={"reason": "email_delivery_failed"},
+        )
+        raise AuthError("Could not send verification code. Please try again later.", 503) from exc
+    audit_event(
+        "profile_email_change",
+        "requested",
+        user=user,
+        metadata={"email_ref": audit_reference("profile_email", email)},
     )
 
-    user.username = normalized_username
-    user.email = normalized_email
-    user.mfa_step_up_preference = normalized_preference
+
+def _pending_profile_email_change(user: User) -> dict[str, str] | None:
+    email = str(session.get(PROFILE_EMAIL_PENDING_EMAIL_KEY) or "")
+    username = str(session.get(PROFILE_EMAIL_PENDING_USERNAME_KEY) or "")
+    code_hmac = str(session.get(PROFILE_EMAIL_PENDING_CODE_HMAC_KEY) or "")
     try:
-        db.session.commit()
-    except IntegrityError as exc:
-        db.session.rollback()
-        audit_event("profile_update", "failure", user=user, metadata={"reason": "integrity_error"})
-        raise AuthError(PROFILE_UPDATE_ERROR, 400) from exc
-    audit_event("profile_update", "success", user=user, metadata={"updated_fields": "profile_details"})
-    return True
+        expires_at = int(session.get(PROFILE_EMAIL_PENDING_EXPIRES_AT_KEY) or 0)
+    except (TypeError, ValueError):
+        expires_at = 0
+    if not email or not username or not code_hmac or expires_at <= int(time.time()):
+        if email or username or code_hmac or expires_at:
+            _clear_pending_profile_email_change()
+            audit_event("profile_email_change", "expired", user=user)
+        return None
+    return {"email": email, "username": username, "code_hmac": code_hmac}
+
+
+def pending_profile_email_change() -> dict[str, str] | None:
+    user_id = session.get("user_id")
+    user = db.session.get(User, int(user_id)) if user_id else None
+    if user is None:
+        return None
+    return _pending_profile_email_change(user)
+
+
+def _clear_pending_profile_email_change() -> None:
+    session.pop(PROFILE_EMAIL_PENDING_EMAIL_KEY, None)
+    session.pop(PROFILE_EMAIL_PENDING_USERNAME_KEY, None)
+    session.pop(PROFILE_EMAIL_PENDING_CODE_HMAC_KEY, None)
+    session.pop(PROFILE_EMAIL_PENDING_EXPIRES_AT_KEY, None)
+    session.modified = True
+
+
+def _profile_email_code_hmac(user: User, email: str, code: str) -> str:
+    return active_hmac_hex(
+        f"profile-email-change:{user.id}:{current_session_id()}:{_normalize(email)}:{code}",
+        length=64,
+    )
 
 
 def change_password(
@@ -652,9 +857,11 @@ def change_password(
         audit_event("password_change", "failure", user=user, metadata={"reason": "invalid_current_password"})
         _record_user_security_failure(user, "password_change", "password_change_failed_attempts")
         raise AuthError("Current password is invalid", 401)
-    if verify_password(new_password, user.password_hash):
-        audit_event("password_change", "failure", user=user, metadata={"reason": "password_reuse"})
-        raise AuthError("New password must be different from the current password", 400)
+    try:
+        assert_password_not_reused(user, new_password)
+    except PasswordReuseError as exc:
+        audit_event("password_change", "failure", user=user, metadata={"reason": exc.reason})
+        raise AuthError("New password must not match your current or recent passwords", 400) from exc
 
     try:
         password_policy_warnings = validate_password_policy(new_password)
@@ -670,11 +877,12 @@ def change_password(
         rotate_session_on_success=False,
     )
 
-    user.password_hash = hash_password(new_password)
+    replace_user_password(user, new_password)
     user.failed_login_count = 0
+    revoked = revoke_all_sessions(user.id, ended_reason="password_change")
+    session_id = current_session_id()
+    session.clear()
     db.session.commit()
-    session_id = rotate_authenticated_session_after_mfa(user.id)
-    revoked = revoke_other_sessions(user.id)
     clear_failures("login", _auth_principal(user.username))
     clear_failures("login", _auth_principal(user.email))
     _clear_user_security_failures(user, "password_change")
@@ -684,16 +892,18 @@ def change_password(
         user=user,
         session_id=session_id,
         metadata={
-            "revoked_other_sessions": revoked,
+            "revoked_sessions": revoked,
+            "revoked_other_sessions": max(0, revoked - 1),
             "password_screening": (
                 "local_only_fallback" if password_policy_warnings else "local_and_live"
             ),
+            "forced_change_cleared": True,
         },
     )
     return {
-        "message": "Password changed",
-        "session_ref": public_session_reference(session_id),
-        "revoked_other_sessions": revoked,
+        "message": "Password changed. Please log in again.",
+        "revoked_sessions": revoked,
+        "revoked_other_sessions": max(0, revoked - 1),
         "warnings": password_policy_warnings,
     }
 

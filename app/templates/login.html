@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_turnstile.html" as turnstile with context %}
 
 {% block title %}Login | SITBank{% endblock %}
 
@@ -40,6 +41,7 @@
         <p class="hint">Maximum password length is {{ config["PASSWORD_MAX_CHARS"] }} characters.</p>
       </div>
 
+      {{ turnstile.widget("customer_login") }}
       <button class="button full" type="submit">Log in securely</button>
     </form>
 

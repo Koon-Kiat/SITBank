@@ -17,6 +17,7 @@ from app.security.production_guard import (
     validate_production_security_prerequisites,
 )
 from app.security.rate_limits import request_principal
+from app.security.turnstile import TurnstileError, require_turnstile
 
 from .services import (
     ADMIN_INDEX_ENDPOINT,
@@ -59,6 +60,13 @@ _ADMIN_MFA_VERIFY_TEMPLATE = "admin/mfa_verify.html"
 class AdminLoginSchema(Schema):
     workplace_email = fields.Email(required=True, validate=validate.Length(max=255))
     password = fields.Str(required=True, load_only=True, validate=validate.Length(min=1))
+    turnstile_token = fields.Str(required=False, load_only=True, allow_none=True)
+    cf_turnstile_response = fields.Str(
+        required=False,
+        load_only=True,
+        allow_none=True,
+        data_key="cf-turnstile-response",
+    )
 
 
 class AdminTotpSchema(Schema):
@@ -141,6 +149,12 @@ class StaffInviteStartSchema(Schema):
     password = fields.Str(required=True, load_only=True)
     confirm_password = fields.Str(required=True, load_only=True)
     turnstile_token = fields.Str(required=False, load_only=True, allow_none=True)
+    cf_turnstile_response = fields.Str(
+        required=False,
+        load_only=True,
+        allow_none=True,
+        data_key="cf-turnstile-response",
+    )
 
     @validates_schema
     def validate_password_match(self, data, **_kwargs):
@@ -173,6 +187,11 @@ def handle_auth_error(error: AuthError):
 @admin_bp.errorhandler(ValidationError)
 def handle_validation_error(_error: ValidationError):
     return jsonify({"error": "Invalid request"}), 400
+
+
+@admin_bp.errorhandler(TurnstileError)
+def handle_turnstile_error(_error: TurnstileError):
+    return jsonify({"error": "Challenge verification failed"}), 400
 
 
 def _payload(schema: Schema) -> dict:
@@ -259,6 +278,7 @@ def login_form():
 def login():
     if _wants_json():
         data = _payload(AdminLoginSchema())
+        require_turnstile("admin_login")
         return jsonify(authenticate_admin_primary(data["workplace_email"], data["password"]))
 
     form = AdminLoginForm()
@@ -272,6 +292,7 @@ def login():
                 "password": form.password.data,
             }
         )
+        require_turnstile("admin_login")
         authenticate_admin_primary(data["workplace_email"], data["password"])
     except ValidationError:
         flash("Invalid request", "error")
@@ -537,7 +558,7 @@ def invite_accept_start(token: str):
             phone_number=data["phone_number"],
             password=data["password"],
             confirm_password=data["confirm_password"],
-            turnstile_token=data.get("turnstile_token"),
+            turnstile_token=data.get("turnstile_token") or data.get("cf_turnstile_response"),
             request_fields=_request_fields(),
         )
     )

@@ -327,7 +327,8 @@ def test_command_succeeds_handles_nonzero_and_os_error(ci_local_module, monkeypa
 def test_find_git_bash_uses_path_and_reports_missing(ci_local_module, monkeypatch, tmp_path):
     bash = tmp_path / "bash"
     bash.write_text("", encoding="utf-8")
-    monkeypatch.setattr(ci_local_module.os, "name", "posix")
+    monkeypatch.setenv("ProgramFiles", str(tmp_path / "missing-program-files"))
+    monkeypatch.setenv("ProgramFiles(x86)", str(tmp_path / "missing-program-files-x86"))
     monkeypatch.setattr(ci_local_module.shutil, "which", lambda _name: str(bash))
     assert ci_local_module.find_git_bash() == str(bash)
 

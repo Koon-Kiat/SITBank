@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from flask_wtf import FlaskForm
-from wtforms import HiddenField, PasswordField, SelectField, StringField
+from wtforms import HiddenField, PasswordField, StringField
 from wtforms.validators import Email, EqualTo, InputRequired, Length, Optional, Regexp, ValidationError
 
 from app.security.passwords import password_max_chars, password_min_length
@@ -14,6 +14,7 @@ _PASSWORDS_MUST_MATCH_MESSAGE = "Passwords must match"
 _INVALID_STEP_UP_TOKEN_MESSAGE = "Invalid step-up token"
 _AUTHENTICATOR_CODE_LABEL = "Authenticator code"
 _MFA_CODE_ERROR = "MFA code must be exactly 6 digits"
+_VERIFICATION_CODE_ERROR = "Verification code must be exactly 6 digits"
 
 
 def password_length(*, minimum: int | None = None):
@@ -109,7 +110,7 @@ class RegistrationOtpCodeForm(FlaskForm):
         "Verification code",
         validators=[
             InputRequired(),
-            Regexp(REGISTRATION_OTP_RE, message="Verification code must be exactly 6 digits"),
+            Regexp(REGISTRATION_OTP_RE, message=_VERIFICATION_CODE_ERROR),
         ],
     )
 
@@ -120,7 +121,7 @@ class RegistrationOtpVerifyForm(FlaskForm):
         "Verification code",
         validators=[
             InputRequired(),
-            Regexp(REGISTRATION_OTP_RE, message="Verification code must be exactly 6 digits"),
+            Regexp(REGISTRATION_OTP_RE, message=_VERIFICATION_CODE_ERROR),
         ],
     )
 
@@ -148,13 +149,12 @@ class ProfileForm(FlaskForm):
         ],
     )
     email = StringField("Email address", validators=[InputRequired(), Email(), Length(max=255)])
-    mfa_step_up_preference = SelectField(
-        "Preferred verification",
-        choices=[
-            ("totp", "Authenticator code first"),
+    email_verification_code = StringField(
+        "Email verification code",
+        validators=[
+            Optional(),
+            Regexp(REGISTRATION_OTP_RE, message=_VERIFICATION_CODE_ERROR),
         ],
-        validate_choice=False,
-        validators=[InputRequired()],
     )
     totp_code = StringField(
         _AUTHENTICATOR_CODE_LABEL,

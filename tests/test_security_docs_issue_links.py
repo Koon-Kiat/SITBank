@@ -44,7 +44,6 @@ def test_open_gaps_use_current_status_without_tracker_numbers():
     current_open = _section(register, "Current Open Gaps")
 
     for title, status in (
-        ("Password history beyond current-password reuse", "Open gap"),
         ("Automated retention and disposal jobs", "Open gap"),
         ("Authenticated DAST on ordinary pull requests", "Accepted risk / policy tradeoff"),
         ("EC2 SSH/UFW/security-group hardening deferred", "Deferred external prerequisite"),
@@ -52,6 +51,10 @@ def test_open_gaps_use_current_status_without_tracker_numbers():
     ):
         row = next(line for line in current_open.splitlines() if title in line)
         assert status in row
+
+    implemented_controls = _section(register, "Implemented Controls")
+    assert "Password history and forced password change" in implemented_controls
+    assert "Single active customer/admin session cap" in implemented_controls
 
     recently_closed = _section(register, "Recently Closed Gaps")
     for title in ("Admin dashboard role separation", "Admin audit-log viewer hardening"):

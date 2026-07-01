@@ -8,6 +8,7 @@ from sqlalchemy import Index, func
 from .extensions import db
 
 _USER_ID_FOREIGN_KEY = "users.id"
+_CASCADE_DELETE_ORPHAN = "all, delete-orphan"
 
 
 class User(db.Model):
@@ -24,6 +25,10 @@ class User(db.Model):
     account_number = db.Column(db.String(9), nullable=True, unique=True)
     staff_personal_email = db.Column(db.String(255), nullable=True)
     workplace_email_verified_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    password_changed_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    force_password_change = db.Column(db.Boolean, nullable=False, default=False)
+    force_password_change_reason = db.Column(db.String(80), nullable=True)
+    force_password_change_at = db.Column(db.DateTime(timezone=True), nullable=True)
 
     mfa_secret_ciphertext = db.Column(db.LargeBinary, nullable=True)
     mfa_secret_nonce = db.Column(db.LargeBinary(12), nullable=True)
@@ -99,7 +104,7 @@ class WebAuthnCredential(db.Model):
         "User",
         backref=db.backref(
             "webauthn_credentials",
-            cascade="all, delete-orphan",
+            cascade=_CASCADE_DELETE_ORPHAN,
             lazy="selectin",
         ),
     )
@@ -149,6 +154,33 @@ class RecoveryCode(db.Model):
     used_at = db.Column(db.DateTime(timezone=True), nullable=True)
 
     user = db.relationship("User", backref="recovery_codes")
+
+
+class PasswordHistory(db.Model):
+    __tablename__ = "password_history"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
+    password_hash = db.Column(db.String(255), nullable=False)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+    )
+
+    user = db.relationship(
+        "User",
+        backref=db.backref(
+            "password_history",
+            cascade=_CASCADE_DELETE_ORPHAN,
+            lazy="selectin",
+        ),
+    )
+
+    __table_args__ = (
+        Index("ix_password_history_user_created_at", "user_id", "created_at"),
+    )
 
 
 class ManualRecoveryRequest(db.Model):
@@ -527,7 +559,7 @@ class Payee(db.Model):
 
     user = db.relationship(
         "User",
-        backref=db.backref("payees", cascade="all, delete-orphan", lazy="selectin"),
+        backref=db.backref("payees", cascade=_CASCADE_DELETE_ORPHAN, lazy="selectin"),
     )
 
     __table_args__ = (

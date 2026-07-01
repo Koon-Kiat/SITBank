@@ -26,6 +26,8 @@ MEMORY_RATE_LIMIT_STORAGE = "memory://"
 POSTGRESQL_PSYCOPG2_SCHEME = "postgresql+psycopg2"
 CSP_SELF = "'self'"
 CSP_NONE = "'none'"
+OFFICIAL_TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+TURNSTILE_ORIGIN = "https://challenges.cloudflare.com"
 CONFIG_DOMAIN_RE = re.compile(
     r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
     r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])$"
@@ -434,6 +436,74 @@ def _validate_password_reset_email_config(
             raise RuntimeError("SMTP_PASSWORD or SMTP_PASSWORD_FILE is required in production")
 
 
+def _production_like(app_env: str, deployment_target: str | None = None) -> bool:
+    normalized_env = str(app_env or "").strip().casefold()
+    normalized_target = str(deployment_target or "").strip().casefold()
+    return normalized_env == "production" or normalized_target in {"staging", "production"}
+
+
+def _validate_smtp_transport_config(
+    *,
+    app_env: str,
+    deployment_target: str,
+    email_backend: str,
+    smtp_use_tls: bool,
+) -> None:
+    if email_backend != "smtp":
+        return
+    if _production_like(app_env, deployment_target) and not smtp_use_tls:
+        raise RuntimeError("SMTP_USE_TLS=true is required for staging and production SMTP")
+
+
+def _validate_active_session_limit_config(
+    *,
+    customer_limit: object,
+    admin_limit: object,
+) -> None:
+    for name, value in {
+        "CUSTOMER_MAX_ACTIVE_SESSIONS": customer_limit,
+        "ADMIN_MAX_ACTIVE_SESSIONS": admin_limit,
+    }.items():
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f"{name} must be an integer") from exc
+        if parsed != 1:
+            raise RuntimeError(f"{name} must be 1")
+
+
+def _validate_password_history_config(
+    *,
+    enabled: object,
+    retention_count: object,
+) -> None:
+    if enabled is not True:
+        raise RuntimeError("PASSWORD_HISTORY_ENABLED must be true")
+    try:
+        retention = int(retention_count)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("PASSWORD_HISTORY_RETENTION_COUNT must be an integer") from exc
+    if retention < 3:
+        raise RuntimeError("PASSWORD_HISTORY_RETENTION_COUNT must be at least 3")
+
+
+def _validate_turnstile_verify_url(
+    *,
+    app_env: str,
+    deployment_target: str,
+    verify_url: str,
+) -> str:
+    value = str(verify_url or "").strip()
+    parsed = urlparse(value)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise RuntimeError("TURNSTILE_VERIFY_URL must be an HTTPS URL")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise RuntimeError("TURNSTILE_VERIFY_URL must not include credentials, query, or fragment")
+    if _production_like(app_env, deployment_target) and value != OFFICIAL_TURNSTILE_VERIFY_URL:
+        raise RuntimeError("TURNSTILE_VERIFY_URL must use the official Cloudflare Siteverify endpoint")
+    return value
+
+
 def _float_env(name: str, *, default: str, minimum: float, maximum: float) -> float:
     raw_value = os.getenv(name, default)
     try:
@@ -740,6 +810,7 @@ def _customer_runtime_overrides(config: dict) -> dict[str, object]:
         or 5 * 60,
         "SESSION_ABSOLUTE_LIFETIME_SECONDS": config.get("CUSTOMER_SESSION_ABSOLUTE_LIFETIME_SECONDS")
         or DEFAULT_CUSTOMER_SESSION_ABSOLUTE_LIFETIME_SECONDS,
+        "MAX_ACTIVE_SESSIONS": config.get("CUSTOMER_MAX_ACTIVE_SESSIONS") or 1,
         "AUTH_FAILURE_KEY_PREFIX": config.get("AUTH_FAILURE_KEY_PREFIX") or "ospbank:authfail:",
         "RATELIMIT_STORAGE_URI": config.get("RATELIMIT_STORAGE_URI") or MEMORY_RATE_LIMIT_STORAGE,
         "RATELIMIT_KEY_PREFIX": config.get("RATELIMIT_KEY_PREFIX") or "ospbank:ratelimit:",
@@ -822,6 +893,7 @@ def _admin_runtime_overrides(config: dict) -> dict[str, object]:
         "PENDING_MFA_MAX_AGE_SECONDS": config.get("ADMIN_PENDING_MFA_MAX_AGE_SECONDS") or 60,
         "SESSION_ABSOLUTE_LIFETIME_SECONDS": config.get("ADMIN_SESSION_ABSOLUTE_LIFETIME_SECONDS")
         or DEFAULT_ADMIN_SESSION_ABSOLUTE_LIFETIME_SECONDS,
+        "MAX_ACTIVE_SESSIONS": config.get("ADMIN_MAX_ACTIVE_SESSIONS") or 1,
         "AUTH_FAILURE_KEY_PREFIX": config.get("ADMIN_AUTH_FAILURE_KEY_PREFIX") or "ospbank:admin:authfail:",
         "RATELIMIT_STORAGE_URI": config.get("ADMIN_RATELIMIT_STORAGE_URI") or MEMORY_RATE_LIMIT_STORAGE,
         "RATELIMIT_KEY_PREFIX": config.get("ADMIN_RATELIMIT_KEY_PREFIX")
@@ -910,6 +982,17 @@ class Config:
     PASSWORD_PBKDF2_ITERATIONS = int(os.getenv("PASSWORD_PBKDF2_ITERATIONS", "600000"))
     if PASSWORD_PBKDF2_ITERATIONS < 600000:
         raise RuntimeError("PASSWORD_PBKDF2_ITERATIONS must be 600000 or higher")
+    PASSWORD_HISTORY_ENABLED = _optional_bool("PASSWORD_HISTORY_ENABLED", default=True)
+    PASSWORD_HISTORY_RETENTION_COUNT = _int_env(
+        "PASSWORD_HISTORY_RETENTION_COUNT",
+        default="3",
+        minimum=3,
+        maximum=24,
+    )
+    _validate_password_history_config(
+        enabled=PASSWORD_HISTORY_ENABLED,
+        retention_count=PASSWORD_HISTORY_RETENTION_COUNT,
+    )
     PASSWORD_MIN_LENGTH = _int_env(
         "PASSWORD_MIN_LENGTH",
         default=(
@@ -995,6 +1078,12 @@ class Config:
         smtp_username=SMTP_USERNAME,
         smtp_password=SMTP_PASSWORD,
     )
+    _validate_smtp_transport_config(
+        app_env=APP_ENV,
+        deployment_target=DEPLOYMENT_TARGET,
+        email_backend=PASSWORD_RESET_EMAIL_BACKEND,
+        smtp_use_tls=SMTP_USE_TLS,
+    )
 
     SECURITY_ALERT_ENABLED = _optional_bool(
         "SECURITY_ALERT_ENABLED",
@@ -1043,6 +1132,22 @@ class Config:
     SESSION_HISTORY_LIMIT = int(os.getenv("SESSION_HISTORY_LIMIT", "20"))
     if SESSION_HISTORY_LIMIT < 1 or SESSION_HISTORY_LIMIT > 100:
         raise RuntimeError("SESSION_HISTORY_LIMIT must be between 1 and 100")
+    CUSTOMER_MAX_ACTIVE_SESSIONS = _int_env(
+        "CUSTOMER_MAX_ACTIVE_SESSIONS",
+        default="1",
+        minimum=1,
+        maximum=1,
+    )
+    ADMIN_MAX_ACTIVE_SESSIONS = _int_env(
+        "ADMIN_MAX_ACTIVE_SESSIONS",
+        default="1",
+        minimum=1,
+        maximum=1,
+    )
+    _validate_active_session_limit_config(
+        customer_limit=CUSTOMER_MAX_ACTIVE_SESSIONS,
+        admin_limit=ADMIN_MAX_ACTIVE_SESSIONS,
+    )
     PENDING_MFA_MAX_AGE_SECONDS = int(os.getenv("PENDING_MFA_MAX_AGE_SECONDS", "300"))
     if PENDING_MFA_MAX_AGE_SECONDS < 60 or PENDING_MFA_MAX_AGE_SECONDS > SESSION_INACTIVITY_SECONDS:
         raise RuntimeError("PENDING_MFA_MAX_AGE_SECONDS must be between 60 and SESSION_INACTIVITY_SECONDS")
@@ -1126,7 +1231,9 @@ class Config:
         "connect-src": CSP_SELF,
         "font-src": CSP_SELF,
         "manifest-src": CSP_SELF,
+        "frame-src": [CSP_SELF, TURNSTILE_ORIGIN],
     }
+    TALISMAN_CONTENT_SECURITY_POLICY["script-src"] = [CSP_SELF, TURNSTILE_ORIGIN]
 
     TRUSTED_PROXY_COUNT = int(os.getenv("TRUSTED_PROXY_COUNT", "1"))
     if TRUSTED_PROXY_COUNT < 0 or TRUSTED_PROXY_COUNT > 2:
@@ -1188,11 +1295,38 @@ class Config:
         maximum=3600,
     )
     TURNSTILE_ENABLED = _optional_bool("TURNSTILE_ENABLED", default=False)
+    TURNSTILE_SITE_KEY = os.getenv("TURNSTILE_SITE_KEY", "").strip()
     TURNSTILE_SECRET_KEY = _optional_turnstile_secret()
-    TURNSTILE_VERIFY_URL = os.getenv(
-        "TURNSTILE_VERIFY_URL",
-        "https://challenges.cloudflare.com/turnstile/v0/siteverify",
-    ).strip()
+    TURNSTILE_VERIFY_URL = _validate_turnstile_verify_url(
+        app_env=APP_ENV,
+        deployment_target=DEPLOYMENT_TARGET,
+        verify_url=os.getenv("TURNSTILE_VERIFY_URL", OFFICIAL_TURNSTILE_VERIFY_URL),
+    )
+    TURNSTILE_CUSTOMER_LOGIN_ENABLED = _optional_bool("TURNSTILE_CUSTOMER_LOGIN_ENABLED", default=False)
+    TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED = _optional_bool(
+        "TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED",
+        default=False,
+    )
+    TURNSTILE_CUSTOMER_REGISTER_ENABLED = _optional_bool("TURNSTILE_CUSTOMER_REGISTER_ENABLED", default=False)
+    TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED = _optional_bool(
+        "TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED",
+        default=False,
+    )
+    TURNSTILE_ADMIN_LOGIN_ENABLED = _optional_bool("TURNSTILE_ADMIN_LOGIN_ENABLED", default=False)
+    TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED = _optional_bool(
+        "TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED",
+        default=True,
+    )
+    TURNSTILE_FAIL_CLOSED_IN_PRODUCTION = _optional_bool(
+        "TURNSTILE_FAIL_CLOSED_IN_PRODUCTION",
+        default=True,
+    )
+    PROFILE_EMAIL_CHANGE_TTL_SECONDS = _int_env(
+        "PROFILE_EMAIL_CHANGE_TTL_SECONDS",
+        default="300",
+        minimum=60,
+        maximum=900,
+    )
 
 
 class TestingConfig(Config):

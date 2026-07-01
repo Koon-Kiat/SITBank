@@ -11,6 +11,7 @@ from app.models import (
     AuthAttemptCounter,
     PasswordResetToken,
     PasswordResetTransaction,
+    PasswordHistory,
     SecurityAlertDedupe,
     SecurityAuditEvent,
     SecurityCircuitBreaker,
@@ -36,7 +37,11 @@ from config import (
     MIN_PRODUCTION_PASSWORD_LENGTH,
     _validate_payee_cooldown_config,
     _validate_password_length_config,
+    _validate_password_history_config,
     _validate_session_absolute_lifetime_config,
+    _validate_active_session_limit_config,
+    _validate_smtp_transport_config,
+    _validate_turnstile_verify_url,
 )
 
 
@@ -82,6 +87,7 @@ def validate_production_security_prerequisites(
         _validate_mode_and_route_isolation(app, requested_mode, result)
         _validate_database_connectivity_and_tables(requested_mode, result)
         _validate_password_policy(app, result)
+        _validate_email_transport_policy(app, result)
         _validate_session_policy(app, requested_mode, result)
         _validate_mfa_policy(app, result)
         _validate_alert_and_audit_policy(result)
@@ -219,6 +225,7 @@ def _validate_database_connectivity_and_tables(
         (TotpReplayRecord, "totp_replay_records table"),
         (PasswordResetToken, "password_reset_tokens table"),
         (PasswordResetTransaction, "password_reset_transactions table"),
+        (PasswordHistory, "password_history table"),
         (SecurityAlertDedupe, "security_alert_dedupe table"),
         (SecurityCircuitBreaker, "security_circuit_breakers table"),
         (SecurityAuditEvent, "security_audit_events table"),
@@ -271,6 +278,18 @@ def _validate_password_policy(app: Flask, result: ProductionReadinessResult) -> 
             )
 
     try:
+        _validate_password_history_config(
+            enabled=app.config.get("PASSWORD_HISTORY_ENABLED"),
+            retention_count=app.config.get("PASSWORD_HISTORY_RETENTION_COUNT"),
+        )
+    except Exception as exc:
+        result.failures.append(f"Password history configuration check failed: {exc}")
+    else:
+        result.details["password_history_retention_count"] = int(
+            app.config["PASSWORD_HISTORY_RETENTION_COUNT"]
+        )
+
+    try:
         entries = validate_common_password_dictionary()
     except Exception as exc:
         _failure(result, "Common password dictionary check", exc)
@@ -283,6 +302,18 @@ def _validate_password_policy(app: Flask, result: ProductionReadinessResult) -> 
         validate_password_hash_config()
     except Exception as exc:
         _failure(result, "Password hash configuration check", exc)
+
+
+def _validate_email_transport_policy(app: Flask, result: ProductionReadinessResult) -> None:
+    try:
+        _validate_smtp_transport_config(
+            app_env=str(app.config.get("APP_ENV") or ""),
+            deployment_target=str(app.config.get("DEPLOYMENT_TARGET") or ""),
+            email_backend=str(app.config.get("PASSWORD_RESET_EMAIL_BACKEND") or ""),
+            smtp_use_tls=bool(app.config.get("SMTP_USE_TLS")),
+        )
+    except Exception as exc:
+        result.failures.append(f"SMTP transport configuration check failed: {exc}")
 
 
 def _validate_session_policy(
@@ -314,6 +345,18 @@ def _validate_session_policy(
         result.failures.append("SESSION_COOKIE_SAMESITE must be Strict")
     if app_mode == "customer" and app.config.get("SESSION_COOKIE_NAME") != "__Host-sitbank_session":
         result.failures.append("Customer session cookie name must be isolated")
+    try:
+        _validate_active_session_limit_config(
+            customer_limit=app.config.get("CUSTOMER_MAX_ACTIVE_SESSIONS"),
+            admin_limit=app.config.get("ADMIN_MAX_ACTIVE_SESSIONS"),
+        )
+    except Exception as exc:
+        result.failures.append(f"Active session limit configuration check failed: {exc}")
+    else:
+        result.details["max_active_sessions"] = {
+            "customer": int(app.config.get("CUSTOMER_MAX_ACTIVE_SESSIONS", 1)),
+            "admin": int(app.config.get("ADMIN_MAX_ACTIVE_SESSIONS", 1)),
+        }
 
 
 def _validate_mfa_policy(app: Flask, result: ProductionReadinessResult) -> None:
@@ -356,10 +399,22 @@ def _validate_alert_and_audit_policy(result: ProductionReadinessResult) -> None:
 
 
 def _validate_edge_policy(app: Flask, result: ProductionReadinessResult) -> None:
+    _validate_password_hash_strength(app, result)
+    _validate_runtime_boundary_settings(app, result)
+    _validate_request_security_settings(app, result)
+    _validate_rate_limit_storage_policy(app, result)
+    _validate_cloudflare_access_policy(app, result)
+    _validate_turnstile_policy(app, result)
+
+
+def _validate_password_hash_strength(app: Flask, result: ProductionReadinessResult) -> None:
     if _int_config(app, "PASSWORD_PBKDF2_ITERATIONS") is None or _int_config(
         app, "PASSWORD_PBKDF2_ITERATIONS"
     ) < 600000:
         result.failures.append("PASSWORD_PBKDF2_ITERATIONS must be 600000 or higher")
+
+
+def _validate_runtime_boundary_settings(app: Flask, result: ProductionReadinessResult) -> None:
     if not is_production_app(app):
         result.failures.append("APP_ENV must be production")
     if app.config.get("SQLALCHEMY_MIGRATION_DATABASE_URI"):
@@ -368,16 +423,25 @@ def _validate_edge_policy(app: Flask, result: ProductionReadinessResult) -> None
         result.failures.append("WTF_CSRF_SECRET_KEY must be at least 32 characters")
     if _int_config(app, "TRUSTED_PROXY_COUNT") != 1:
         result.failures.append("TRUSTED_PROXY_COUNT must be 1 for the single Nginx proxy boundary")
+
+
+def _validate_request_security_settings(app: Flask, result: ProductionReadinessResult) -> None:
     if app.config.get("WTF_CSRF_ENABLED") is not True:
         result.failures.append("WTF_CSRF_ENABLED must be enabled")
     if app.config.get("WTF_CSRF_CHECK_DEFAULT") is not True:
         result.failures.append("WTF_CSRF_CHECK_DEFAULT must be enabled")
     if app.config.get("TALISMAN_FORCE_HTTPS") is not True:
         result.failures.append("TALISMAN_FORCE_HTTPS must be enabled")
+
+
+def _validate_rate_limit_storage_policy(app: Flask, result: ProductionReadinessResult) -> None:
     if not str(app.config.get("RATELIMIT_STORAGE_URI") or "").startswith("memory://"):
         result.failures.append(
             "Flask-Limiter storage must remain non-authoritative; DB-backed auth counters enforce security limits"
         )
+
+
+def _validate_cloudflare_access_policy(app: Flask, result: ProductionReadinessResult) -> None:
     try:
         validate_cloudflare_access_config(
             app.config,
@@ -385,6 +449,17 @@ def _validate_edge_policy(app: Flask, result: ProductionReadinessResult) -> None
         )
     except Exception as exc:
         _failure(result, "Cloudflare Access assertion configuration check", exc)
+
+
+def _validate_turnstile_policy(app: Flask, result: ProductionReadinessResult) -> None:
+    try:
+        _validate_turnstile_verify_url(
+            app_env=str(app.config.get("APP_ENV") or ""),
+            deployment_target=str(app.config.get("DEPLOYMENT_TARGET") or ""),
+            verify_url=str(app.config.get("TURNSTILE_VERIFY_URL") or ""),
+        )
+    except Exception as exc:
+        result.failures.append(f"Turnstile verifier configuration check failed: {exc}")
 
 
 def _validate_lifetime_policy(app: Flask, result: ProductionReadinessResult) -> None:
