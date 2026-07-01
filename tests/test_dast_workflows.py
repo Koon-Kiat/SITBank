@@ -21,12 +21,13 @@ def test_pr_dast_smoke_is_local_automatic_and_time_bounded():
     assert checkout["with"]["persist-credentials"] is False
     smoke = next(step for step in job["steps"] if step.get("id") == "smoke")
     assert "timeout --signal=TERM 12m" in smoke["run"]
-    assert "ops/container/dast-smoke.sh" in smoke["run"]
+    assert "ops/container/smoke-test.sh" in smoke["run"]
     assert smoke["env"]["RUN_ZAP_BASELINE"] == "true"
-    helper = Path("ops/container/dast-smoke.sh").read_text(encoding="utf-8")
+    helper = Path("ops/container/smoke-test.sh").read_text(encoding="utf-8")
     assert "zap-baseline.py" in helper
     assert "-m 2" in helper and "-T 5" in helper
     assert "10020\\tFAIL" in helper
+    assert '-t "http://${app_container}:5000/"' in helper
     for required_runtime_setting in (
         "--env PASSWORD_RESET_ENABLED=true",
         "--env PASSWORD_RESET_EMAIL_BACKEND=smtp",
@@ -36,7 +37,10 @@ def test_pr_dast_smoke_is_local_automatic_and_time_bounded():
         "--env SECURITY_ALERT_WEBHOOK_URL_FILE=/run/secrets/security_alert_webhook_url",
     ):
         assert required_runtime_setting in helper
-    assert "127.0.0.1:5000" in text
+    assert "apply-runtime-db-privileges" in helper
+    assert "verify-runtime-db-privileges" in helper
+    assert "dump_container_diagnostics" in helper
+    assert "target=isolated-docker-network" in text
     assert "staging-sitbank.pp.ua" not in text
     assert "sitbank.duckdns.org" not in text
     assert "admin-sitbank" not in text

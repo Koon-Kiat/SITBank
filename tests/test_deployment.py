@@ -2163,7 +2163,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "Validate deployment shell scripts" not in workflow_text
     assert "\n          shellcheck \\" not in workflow_text
     assert "ops/container/validate-compose.sh" in workflow_text
-    assert "ops/container/dast-smoke.sh" in Path(
+    assert "ops/container/smoke-test.sh" in Path(
         ".github/workflows/dast-pr-smoke.yml"
     ).read_text(encoding="utf-8")
     assert "scan_repository_secrets.py" in workflow_text

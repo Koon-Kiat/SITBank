@@ -40,7 +40,7 @@ jobs:
         shell: bash
         env:
           RUN_ZAP_BASELINE: "true"
-        run: timeout --signal=TERM 12m bash ops/container/dast-smoke.sh sitbank:pr-dast
+        run: timeout --signal=TERM 12m bash ops/container/smoke-test.sh sitbank:pr-dast
 
       - name: Write sanitized DAST summary
         if: ${{ always() }}
@@ -51,7 +51,7 @@ jobs:
           install -d -m 0755 pr-dast-report
           {
             echo "scope=local-ephemeral-application"
-            echo "target=http://127.0.0.1:5000"
+            echo "target=isolated-docker-network"
             echo "authentication=synthetic-local-session"
             echo "timeout=12m"
             echo "blocking-threshold=zap-fail-alert-or-smoke-regression"

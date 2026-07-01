@@ -476,6 +476,29 @@ if [[ "${admin_ready}" -ne 1 ]]; then
     false
 fi
 
+if [[ "${RUN_ZAP_BASELINE:-false}" == "true" ]]; then
+    install_host_dir 0777 "${work_dir}/zap-pr"
+    printf '10020\tFAIL\n10021\tFAIL\n10038\tFAIL\n' \
+        > "${work_dir}/zap-pr/rules.tsv"
+    chmod_host_path 0644 "${work_dir}/zap-pr/rules.tsv"
+    zap_pr_mount_source="$(docker_bind_source "${work_dir}/zap-pr")"
+    docker run --rm \
+        --network "${network_name}" \
+        --volume "${zap_pr_mount_source}:/zap/wrk:ro" \
+        "${ZAP_IMAGE}" \
+        zap-baseline.py \
+            -t "http://${app_container}:5000/" \
+            -m 2 \
+            -T 5 \
+            -I \
+            -c /zap/wrk/rules.tsv \
+            -z "-config replacer.full_list(0).description=ForwardedProto \
+-config replacer.full_list(0).enabled=true \
+-config replacer.full_list(0).matchtype=REQ_HEADER \
+-config replacer.full_list(0).matchstr=X-Forwarded-Proto \
+-config replacer.full_list(0).replacement=https"
+fi
+
 if [[ "${RUN_ZAP_DAST:-false}" == "true" ]]; then
     dast_base_url="http://${app_container}:5000"  # NOSONAR - isolated ephemeral Docker network
     if ! wait_for_app_from_smoke_network "${dast_base_url}"; then
