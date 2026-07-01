@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from ops.security import validate_pr_body as policy
 from ops.security.validate_pr_body import load_body_from_event, validate_body
 
 
@@ -149,3 +150,44 @@ def test_event_payload_path_must_stay_within_trusted_root(tmp_path):
 
     with pytest.raises(ValueError, match="escapes"):
         load_body_from_event(outside, allowed_root)
+
+
+def test_input_root_and_file_must_be_distinct_existing_files(tmp_path):
+    body = tmp_path / "body.md"
+    body.write_text(VALID_BODY, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="root must be a directory"):
+        policy._validated_input_path(body, body)
+    with pytest.raises(ValueError, match="escapes"):
+        policy._validated_input_path(tmp_path, tmp_path)
+
+
+def test_main_accepts_body_and_event_files_and_reports_errors(tmp_path, capsys):
+    body = tmp_path / "body.md"
+    body.write_text(VALID_BODY, encoding="utf-8")
+    assert policy.main(
+        ["--input-root", str(tmp_path), "--body-file", str(body)]
+    ) == 0
+    assert "policy passed" in capsys.readouterr().out
+
+    event = tmp_path / "event.json"
+    event.write_text(json.dumps({"pull_request": {"body": VALID_BODY}}), encoding="utf-8")
+    assert policy.main(
+        ["--input-root", str(tmp_path), "--event-path", str(event)]
+    ) == 0
+
+    body.write_text("", encoding="utf-8")
+    assert policy.main(
+        ["--input-root", str(tmp_path), "--body-file", str(body)]
+    ) == 1
+    output = capsys.readouterr().out
+    assert "::error title=Invalid PR description::" in output
+    assert "Valid PR description example:" in output
+
+
+def test_annotation_and_normalization_helpers_are_safe():
+    assert policy.annotation_escape("a%\r\nb") == "a%25%0D%0Ab"
+    assert policy._canonical_section_name("  SECURITY   IMPACT ") == "Security impact"
+    assert policy._has_deployment_impact("Staging deployment is required.")
+    assert policy._has_meaningful_content("- N/A") is False
+    assert policy._normalize_line("  -  Mixed   Spacing ") == "mixed spacing"

@@ -40,8 +40,10 @@ also run before protected-branch changes merge. Their tracked-file discovery
 and local/OSS scans need no production secrets or deployment credentials.
 ShellCheck and Hadolint releases are checksum-verified; Semgrep runs from a
 digest-pinned container, blocks ERROR severity, uploads no source or SARIF, and
-requires no token. Suppressions must be rule- and location-specific with a
-reviewed rationale. See
+requires no token. CI and local invocations explicitly use `--metrics=off`;
+registry rules are downloaded, but source remains in the local/OSS scan
+boundary. Suppressions must be rule- and location-specific with a reviewed
+rationale. See
 `docs/security/assurance/test-automation-and-dependencies.md`.
 
 Session HMAC rotation must keep the old key in

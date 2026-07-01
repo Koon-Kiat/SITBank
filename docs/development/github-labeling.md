@@ -1,144 +1,99 @@
 # GitHub Labeling
 
-This repository labels new issues and pull requests automatically, and provides
-a manual workflow for safely retagging historical issues and PRs.
+SITBank uses one tested policy in
+`ops/security/github_label_policy.py` for new issues, pull requests, and
+manual historical retagging. Auto-labels are triage aids, not authoritative
+classifications; maintainers may correct them without changing application
+behavior.
 
-## Future Pull Requests
+## Bounded automatic labels
 
-`.github/workflows/pr-labeler.yml` runs on `pull_request` for opened,
-synchronized, reopened, and ready-for-review pull requests. It uses
-the v6 `actions/labeler` action with `.github/labeler.yml` and
-`sync-labels: false`. The workflow pins the action to an immutable commit SHA.
+The policy scores only high-confidence title terms, the focused `Summary`,
+`Why`, `Required implementation`, `What changed`, and `Root cause` sections,
+trusted base-branch changed paths, and branch names. Generic guardrails,
+validation commands, test checklists, documentation inventories, and
+deployment-impact boilerplate do not drive text labels.
 
-The PR workflow only adds computed labels. It does not remove existing labels,
-so Dependabot labels and any maintainer-applied labels remain in place during
-normal future PR labeling.
+At most six policy labels are automatically added to one item. New and edited
+issues also receive `needs-triage`, which does not count toward that maximum.
+Broad security or architecture changes may need more than six labels; a
+maintainer adds those deliberately after review.
 
-The PR workflow uses a trusted shell step for title, body, branch, file path,
-and patch-text terms that `actions/labeler` does not cover directly. It does
-not checkout or execute pull request code. The SHA-pinned `actions/labeler`
-step still handles path-oriented labels from `.github/labeler.yml`.
+The principal taxonomy is:
 
-The workflow must stay label-only. Do not add `actions/checkout`, do not
-checkout PR branches, and do not execute scripts or code from pull requests in
-that workflow. This repository intentionally avoids `pull_request_target`.
+- `security`: security behavior, secure configuration, auditability, or secure
+  SDLC evidence.
+- `auth`: login, registration, credential handling, identity proofing, or
+  authentication policy.
+- `session`: cookies, server sessions, CSRF-linked state, rotation, revocation,
+  session HMAC, or session-bound decisions.
+- `mfa`: TOTP, passkeys, WebAuthn, recovery codes, step-up, or MFA lifecycle.
+- `admin`: admin application, routes, sessions, deployment boundary,
+  root-admin bootstrap, or admin-only operations.
+- `customer`: customer application, routes, accounts, or customer behavior.
+- `database`: schema, migrations, database roles, permissions, audit tables,
+  retention, or access patterns.
+- `deployment`: deployment workflows, containers, EC2, Nginx, systemd,
+  bootstrap, rollout, or release gates.
+- `network-security`: Cloudflare, TLS/Nginx edge controls, origin protection,
+  Tailscale, VPN/private access, headers, or network boundaries.
+- `zero-trust`: Cloudflare Access, Tailscale, identity-aware access, or the
+  private admin/staging access boundary.
+- `staging`: the staging environment, hostname, deployment, or access controls.
+- `frontend`, `dependencies`, `ci`, `documentation`, `tests`, `code-quality`,
+  `python`, `audit`, and `banking`: only direct work in those areas.
 
-## Future Issues
+`admin` and `customer` are both applied only when both domains are actually in
+scope. Sensitive labels such as `mfa`, `session`, `database`, `deployment`,
+`network-security`, `zero-trust`, and `staging` require focused terms or narrow
+paths rather than incidental checklist words.
 
-`.github/workflows/issue-labeler.yml` runs when issues are opened, reopened, or
-edited. It reads the issue title and body from the GitHub event payload and adds
-matching labels. Every new or edited issue receives `needs-triage`.
+## Future issues and pull requests
 
-The issue labeler only adds computed labels. It does not remove existing labels.
-It applies `zero-trust`, `network-security`, and `staging` when titles or
-bodies mention Cloudflare Access, Tailscale, VPN/private access, origin
-bypass/protection, admin exposure, staging exposure, or staging deployment
-terms.
+`.github/workflows/issue-labeler.yml` runs for opened, reopened, and edited
+issues. It checks out the policy from the trusted default branch, treats the
+event title/body as data, and only adds labels.
 
-## Manual Historical Retag
+`.github/workflows/pr-labeler.yml` runs for opened, synchronized, reopened, and
+ready-for-review pull requests. It checks out only the trusted base commit,
+loads changed path names through the GitHub API, and never checks out or
+executes pull-request code. Normal PR labeling is additive, so Dependabot and
+maintainer-applied labels remain in place. Neither workflow uses
+`pull_request_target`.
 
-`.github/workflows/retag-labels.yml` is manual-only through
-`workflow_dispatch`. It can retag issues, pull requests, or both, for open,
-closed, or all items.
+`needs-triage` means a maintainer has not confirmed the issue classification.
+Remove it after scope, ownership, priority, and labels have been reviewed.
 
-Retagging is intentionally more aggressive than future auto-labeling:
+## Manual historical retag
 
-- It reads the current labels on each selected issue or PR.
-- It preserves protected labels.
-- It removes only unprotected labels from the individual issue or PR.
-- It recomputes labels using the standard issue or PR label rules.
-- It adds the recomputed labels.
-- It never deletes repository labels globally.
+`.github/workflows/retag-labels.yml` is `workflow_dispatch` only. It can inspect
+issues, pull requests, or both, and defaults to `dry_run: true`. Apply mode
+requires the exact confirmation `RETAG`.
 
-The retag workflow defaults to dry-run mode. In dry-run mode it prints the
-current labels, protected labels that would be preserved, unprotected labels
-that would be removed, labels that would be added, and final expected labels.
-It does not edit issues, PRs, or repository label metadata.
+Dry run reports current, protected, removed, computed, and final expected
+labels without mutation. Apply mode removes only unprotected item labels,
+preserves protected labels, and adds the bounded shared-policy result. It never
+deletes repository labels globally.
 
-To dry-run a historical retag:
-
-```text
-Actions -> Retag issue and pull request labels -> Run workflow
-target: both
-state: all
-limit: 500
-dry_run: true
-```
-
-To apply a real retag:
-
-```text
-Actions -> Retag issue and pull request labels -> Run workflow
-target: both
-state: all
-limit: 500
-dry_run: false
-confirm_retag: RETAG
-```
-
-If `dry_run` is `false` and `confirm_retag` is not exactly `RETAG`, the workflow
-fails before changing labels.
-
-## Protected Labels
-
-Protected labels are preserved on each issue or PR during manual retagging.
-They are not automatically added to every issue or PR.
-
-The current protected labels come from `.github/dependabot.yml`:
+The protected automation-sensitive labels are:
 
 - `dependencies`
 - `docker`
 - `github-actions`
 - `python`
 
-These labels must stay protected so Dependabot PRs do not lose labels that
-identify their package ecosystem. The existing workflows were scanned before
-adding the labeler workflows, and no additional issue/PR labels used by GitHub
-Actions logic were found.
+These identify Dependabot ecosystems and must survive manual retagging. Audit
+new workflow, release, deployment, branch-protection, and Dependabot label
+dependencies before changing this list.
 
-If a later workflow depends on a label in conditions, `gh issue edit
---add-label`, `gh issue edit --remove-label`, API calls, `labels:` blocks, or
-other issue/PR label checks, add that label to `PROTECTED_LABELS` in
-`.github/workflows/retag-labels.yml` before running a retag.
+To run a dry run, choose **Actions → Retag issue and pull request labels** and
+keep `dry_run: true`. To mutate labels, review the dry-run output, set
+`dry_run: false`, and set `confirm_retag: RETAG`.
 
-## Label Setup
+## Manual correction
 
-The labeling workflows create or update the standard labels idempotently with
-`gh label create --force`. This keeps label names, descriptions, and colors
-available without deleting any repository labels.
-
-Security/network labels added for zero-trust work:
-
-- `zero-trust`: Identity-aware or private-network access boundary changes.
-- `network-security`: Firewall, VPN, origin access, private access, or network
-  boundary changes.
-- `staging`: Staging environment, staging deployment, or staging access
-  changes.
-
-Code-quality work uses:
-
-- `code-quality`: Static analysis, maintainability, coverage, or quality-gate
-  work.
-- `ci`, `security`, `documentation`, `tests`, and `python` remain additive
-  when the changed paths or issue/PR text match those areas.
-
-Issue, PR, and manual-retag text rules add `code-quality` for `SonarQube`,
-`Sonar`, `quality gate`, `code quality`, `maintainability`, `coverage`,
-`duplication`, and `technical debt`. Path rules cover the SonarQube workflow,
-configuration, tests, and documentation. The existing `.github/workflows/**`
-rule also adds `ci`.
-
-Path rules:
-
-- `ops/nginx/**` receives `deployment`, `network-security`, and `security`.
-- `ops/deploy/**` receives `deployment`.
-- `compose.staging.yml`, staging env templates, and staging deployment files
-  receive `staging` and `deployment`.
-- `docs/security/**` receives `documentation` and `security`.
-- Admin deployment, admin Nginx, and admin isolation docs/tests receive
-  `admin` and `security`.
-- Zero-trust, Cloudflare, Tailscale, and private-access docs receive
-  `zero-trust`, `network-security`, `documentation`, and `security`.
-- `.github/workflows/sonarqube.yml`, `sonar-project.properties`, the SonarQube
-  policy test, and its documentation receive `code-quality`; Python files and
-  Python dependency manifests receive `python`.
+Maintainers may add or remove noisy labels directly after reviewing actual
+scope. Keep automation-sensitive labels intact. If the same correction recurs,
+add a representative test to `tests/test_github_issue_labeler.py` before
+changing the shared rule; do not broaden common keywords merely to classify
+one issue.

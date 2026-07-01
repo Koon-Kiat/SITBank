@@ -23,124 +23,71 @@ jobs:
       pull-requests: write
       issues: write
     steps:
+      # Use only the trusted base commit. Pull request code and scripts are
+      # never checked out or executed by this label-only workflow.
+      - name: Check out trusted base label policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha }}
+
+      - name: Detect trusted label policy
+        id: trusted-policy
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ -f ops/security/github_label_policy.py ]]; then
+            echo "available=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "available=false" >> "${GITHUB_OUTPUT}"
+            echo "::notice::The trusted base does not contain the label policy yet; skipping this bootstrap run."
+          fi
+
       - name: Ensure standard labels exist
+        if: steps.trusted-policy.outputs.available == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -Eeuo pipefail
+          definitions_file="${RUNNER_TEMP}/label-definitions.tsv"
+          python ops/security/github_label_policy.py definitions > "${definitions_file}"
+          while IFS=$'\t' read -r label description color; do
+            gh label create "${label}" \
+              --description "${description}" \
+              --color "${color}" \
+              --force
+          done < "${definitions_file}"
 
-          create_label() {
-            gh label create "$1" --description "$2" --color "$3" --force
-          }
-
-          create_label needs-triage "New issue awaiting maintainer triage." fbca04
-          create_label needs-review "Ready for maintainer review." 0e8a16
-          create_label security "Security controls, vulnerabilities, secrets, authn/authz, audit, sessions, crypto, or hardening." d73a4a
-          create_label admin "Admin portal, staff workflows, admin route isolation, or admin deployment boundary." b60205
-          create_label customer "Customer-facing routes, dashboard, profile, account pages, or portal UX." 1d76db
-          create_label banking "Accounts, transfers, payees, balances, freezes, funds, or transaction safety." 0052cc
-          create_label auth "Login, registration, password reset, OTP, sessions, decorators, or auth schemas." c5def5
-          create_label mfa "MFA, TOTP, WebAuthn, passkeys, security keys, recovery codes, or second factors." 5319e7
-          create_label session "Session state, cookies, HMAC, Redis namespace, logout, or active sessions." 0b7285
-          create_label audit "Audit logs, hash chains, HMAC, metadata, alerting, or audit events." d93f0b
-          create_label deployment "Deployment, Docker, compose, nginx, systemd, EC2, runtime, or operations." 006b75
-          create_label zero-trust "Identity-aware or private-network access boundary changes." 5319e7
-          create_label network-security "Firewall, VPN, origin access, private access, or network boundary changes." d73a4a
-          create_label staging "Staging environment, staging deployment, or staging access changes." 006b75
-          create_label database "Database schema, migrations, Postgres, roles, privileges, or DB integrity." 531dab
-          create_label ci "GitHub Actions, CI policy, CodeQL, dependency audit, build, or pipeline changes." a2eeef
-          create_label code-quality "Static analysis, maintainability, coverage, or quality-gate work" 1f6feb
-          create_label dependencies "Dependency updates, lock files, package manager changes, or Dependabot PRs." 0366d6
-          create_label documentation "Docs, README, guides, instructions, or policy documents." 0075ca
-          create_label frontend "Templates, CSS, JavaScript, SVG, UI layout, browser-facing pages, or forms." c2e0c6
-          create_label tests "Tests, pytest, fixtures, coverage, or regression checks." fef2c0
-          create_label feature "Feature branch or feature-oriented change." 84b6eb
-          create_label fix "Fix, bugfix, or hotfix branch." d4c5f9
-          create_label docker "Dockerfile, image, compose, or Docker dependency updates." 0db7ed
-          create_label github-actions "GitHub Actions workflow dependency updates or CI workflow automation." 2088ff
-          create_label python "Python dependency or Python runtime/package updates." 3572a5
-
-      # Keep this workflow label-only: do not checkout or execute pull request
-      # code here. The ordinary pull_request trigger avoids privileged PR
-      # trigger execution.
-      - name: Add computed pull request text labels
+      - name: Add bounded pull request labels
+        if: steps.trusted-policy.outputs.available == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -Eeuo pipefail
-
-          PR_NUMBER="$(jq -r '.pull_request.number' "${GITHUB_EVENT_PATH}")"
-          PR_TITLE="$(jq -r '.pull_request.title // ""' "${GITHUB_EVENT_PATH}")"
-          PR_BODY="$(jq -r '.pull_request.body // ""' "${GITHUB_EVENT_PATH}")"
-          PR_HEAD="$(jq -r '.pull_request.head.ref // ""' "${GITHUB_EVENT_PATH}")"
-          PR_PATHS=""
-          PR_PATCH=""
-          if ! PR_PATHS="$(gh pr diff "${PR_NUMBER}" --name-only 2>/dev/null)"; then
-            echo "::warning::Could not load changed file paths for PR #${PR_NUMBER}; path labels will still be handled by actions/labeler."
-            PR_PATHS=""
+          pr_number="$(jq -r '.pull_request.number' "${GITHUB_EVENT_PATH}")"
+          paths_file="${RUNNER_TEMP}/pr-paths.json"
+          if gh pr diff "${pr_number}" --name-only > "${RUNNER_TEMP}/pr-paths.txt"; then
+            jq -R -s \
+              'split("\n") | map(select(length > 0)) | {paths: .}' \
+              "${RUNNER_TEMP}/pr-paths.txt" > "${paths_file}"
+          else
+            echo "::warning::Could not load changed paths for PR #${pr_number}; using trusted event text only."
+            printf '%s\n' '{"paths":[]}' > "${paths_file}"
           fi
-          if ! PR_PATCH="$(gh pr diff "${PR_NUMBER}" --patch 2>/dev/null)"; then
-            PR_PATCH=""
-          fi
-          TEXT="$(
-            printf '%s\n%s\n%s\n%s\n%s\n' \
-              "${PR_TITLE}" "${PR_BODY}" "${PR_HEAD}" "${PR_PATHS}" "${PR_PATCH}" \
-              | tr '[:upper:]' '[:lower:]'
-          )"
-
-          labels=()
-
-          add_label() {
-            local label="$1"
-            local existing
-            for existing in "${labels[@]}"; do
-              if [[ "${existing}" == "${label}" ]]; then
-                return 0
-              fi
-            done
-            labels+=("${label}")
-          }
-
-          contains_any() {
-            local term
-            for term in "$@"; do
-              if [[ "${TEXT}" == *"${term}"* ]]; then
-                return 0
-              fi
-            done
-            return 1
-          }
-
-          if contains_any "zero trust" "zero-trust" "cloudflare zero trust" "cloudflare access" tailscale tailnet vpn "private access" "private-access" "identity-aware access" "access boundary" "origin bypass" "origin protection" "admin exposure" "staging exposure"; then
-            add_label zero-trust
-          fi
-          if contains_any firewall "security group" "nginx allowlist" "ip allowlist" vpn tailscale "cloudflare access" "origin bypass" "private network" "network boundary" "admin network" "staging network" "private access" "private-access"; then
-            add_label network-security
-          fi
-          if contains_any staging "staging-sitbank" "compose.staging" "ops/staging" "staging deployment" "staging access"; then
-            add_label staging
-          fi
-          if contains_any sonarqube sonar "quality gate" "code quality" "code-quality" maintainability coverage duplication "technical debt"; then
-            add_label code-quality
-          fi
-          if contains_any python flask pytest pip requirements; then
-            add_label python
-          fi
-
-          if [[ "${#labels[@]}" -eq 0 ]]; then
+          jq -s '.[0] * .[1]' "${GITHUB_EVENT_PATH}" "${paths_file}" \
+            > "${RUNNER_TEMP}/label-input.json"
+          labels_file="${RUNNER_TEMP}/computed-labels.txt"
+          python ops/security/github_label_policy.py compute \
+            --kind pr \
+            --input "${RUNNER_TEMP}/label-input.json" \
+            > "${labels_file}"
+          mapfile -t labels < "${labels_file}"
+          if (( ${#labels[@]} == 0 )); then
             exit 0
           fi
-
           IFS=,
-          gh pr edit "${PR_NUMBER}" --add-label "${labels[*]}"
-
-      # Pinned to the actions/labeler v6.1.0 commit.
-      - name: Label pull request
-        uses: actions/labeler@f27b608878404679385c85cfa523b85ccb86e213
-        with:
-          configuration-path: .github/labeler.yml
-          sync-labels: false
+          gh pr edit "${pr_number}" --add-label "${labels[*]}"
