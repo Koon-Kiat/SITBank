@@ -137,15 +137,17 @@ def test_operational_observability_keeps_loki_out_of_admin_app():
     combined = " ".join(f"{observability}\n{audit_docs}".split())
 
     for required in (
-        "Grafana and Loki are the approved direction",
+        "Grafana, Loki, and Grafana Alloy are implemented",
+        "ops/observability/compose.observability.yml",
+        "docs/runbooks/private-observability-grafana-loki.md",
         "Nginx, container, deployment, systemd",
         "Do not embed Loki or Grafana credentials in Flask",
         "admin app must not become a general log browser",
         "SecurityAuditEvent",
-        "does not query operational log stores",
-        "raw shell history",
+        "does not query Loki",
+        "shell history",
         "environment dumps",
-        "command arguments",
+        "retention_period: 168h",
     ):
         assert required in combined
     for forbidden in (

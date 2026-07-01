@@ -4,6 +4,11 @@ services:
   app:
     image: ${SITBANK_IMAGE:?SITBANK_IMAGE must be an immutable digest reference}
     container_name: sitbank-app
+    labels:
+      sitbank.log_collect: "true"
+      sitbank.service: sitbank-app
+      sitbank.environment: production
+      sitbank.host_role: app
     # Production keeps host networking for EC2/Nginx compatibility; Gunicorn
     # must bind only to 127.0.0.1 so Nginx is the public HTTP/S entry point.
     network_mode: host
@@ -106,6 +111,11 @@ services:
   admin:
     image: ${SITBANK_IMAGE:?SITBANK_IMAGE must be an immutable digest reference}
     container_name: sitbank-admin
+    labels:
+      sitbank.log_collect: "true"
+      sitbank.service: sitbank-admin
+      sitbank.environment: production
+      sitbank.host_role: app
     # Host networking is accepted only with the explicit loopback bind below.
     network_mode: host
     user: "10001:10001"

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import ast
 import os
@@ -67,7 +67,7 @@ DEPLOYMENT_VALUES = {
     "PROD_MFA_KEK_ACTIVE_ID": "2026-06-mfa",
     "PROD_MFA_KEK_KEYS_JSON": '{"2026-06-mfa":"NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ="}',
     "PROD_PASSWORD_PEPPER_B64": "MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE=",
-    "PROD_PUBLIC_HOST": "sitbank.duckdns.org",
+    "PROD_PUBLIC_HOST": "sitbank.pp.ua",
     "PROD_SECRET_KEY": "secret-key-with-$-and-enough-length-for-production",
     "PROD_SECURITY_AUDIT_HMAC_KEY": "audit-hmac-key-with-enough-length-for-production",
     "PROD_SECURITY_ALERT_WEBHOOK_URL": "https://hooks.example.test/sitbank-security-alerts",
@@ -624,7 +624,7 @@ def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypa
     assert environment["DEPLOYMENT_TARGET"] == "production"
     assert "WEBAUTHN_RP_ID" not in environment
     assert "WEBAUTHN_RP_ORIGIN" not in environment
-    assert environment["PASSWORD_RESET_BASE_URL"] == "https://sitbank.duckdns.org"
+    assert environment["PASSWORD_RESET_BASE_URL"] == "https://sitbank.pp.ua"
     assert environment["PASSWORD_RESET_EMAIL_BACKEND"] == "smtp"
     assert environment["PASSWORD_RESET_EMAIL_FROM"] == DEPLOYMENT_VALUES["PROD_PASSWORD_RESET_EMAIL_FROM"]
     assert environment["PAYEE_COOLDOWN_SECONDS"] == "43200"
@@ -1955,7 +1955,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert production_tls["with"] == {
         "scan_scope": "production",
         "production_host": (
-            "${{ vars['PROD_PUBLIC_HOST'] || 'sitbank.duckdns.org' }}"
+            "${{ vars['PROD_PUBLIC_HOST'] || 'sitbank.pp.ua' }}"
         ),
     }
     assert private_admin["name"] == "Required private admin post-deploy gate"
@@ -2573,7 +2573,7 @@ def test_live_tls_scan_workflow_collects_evidence_without_running_on_pull_reques
     inputs = triggers["workflow_dispatch"]["inputs"]
     assert inputs["scan_scope"]["options"] == ["all", "staging", "production"]
     assert inputs["staging_host"]["default"] == "staging-sitbank.pp.ua"
-    assert inputs["production_host"]["default"] == "sitbank.duckdns.org"
+    assert inputs["production_host"]["default"] == "sitbank.pp.ua"
     assert "admin_host" not in inputs
 
     call_inputs = triggers["workflow_call"]["inputs"]
@@ -2688,7 +2688,7 @@ def test_live_tls_scan_workflow_collects_evidence_without_running_on_pull_reques
         assert "staging-sitbank.pp.ua" in docs
         # Exact static documentation checks; no untrusted URL is accepted.
         # lgtm[py/incomplete-url-substring-sanitization]
-        assert "sitbank.duckdns.org" in docs
+        assert "sitbank.pp.ua" in docs
         assert "SSL Labs" in docs
         assert re.search(r"HIGH,\s+CRITICAL,\s+or FATAL", docs)
     for docs in (deployment_docs, operations_docs):
@@ -2846,8 +2846,16 @@ def test_certbot_host_state_verifier_enforces_host_managed_tls():
     assert verifier_path.exists()
     assert verifier.startswith("#!/usr/bin/env bash\n")
     assert 'LETSENCRYPT_ROOT="/etc/letsencrypt"' in verifier
-    assert 'PRODUCTION_PUBLIC_HOST="sitbank.duckdns.org"' in verifier
+    assert 'PRODUCTION_PUBLIC_HOST="sitbank.pp.ua"' in verifier
+    assert (
+        'PRODUCTION_PUBLIC_HOSTNAMES=("sitbank.pp.ua" "www.sitbank.pp.ua")'
+        in verifier
+    )
     assert 'STAGING_PUBLIC_HOST="staging-sitbank.pp.ua"' in verifier
+    assert 'STAGING_PUBLIC_HOSTNAMES=("staging-sitbank.pp.ua")' in verifier
+    assert "verify_dns_cloudflare_plugin" in verifier
+    assert "certbot plugins" in verifier
+    assert "dns-cloudflare" in verifier
     assert 'readlink -f -- "${key_path}"' in verifier
     assert "stat -c '%U'" in verifier
     assert "stat -c '%G'" in verifier
@@ -2872,15 +2880,20 @@ def test_certbot_host_state_verifier_enforces_host_managed_tls():
     assert '"${san_entry}" == "DNS:${expected_hostname}"' in verifier
     assert "certificate SAN does not exactly cover expected hostname" in verifier
     assert "do not fall back to the legacy" in verifier
+    assert 'cert_name="${PRODUCTION_PUBLIC_HOST}"' in verifier
+    assert 'domains=("${PRODUCTION_PUBLIC_HOSTNAMES[@]}")' in verifier
+    assert 'domains=("${STAGING_PUBLIC_HOSTNAMES[@]}")' in verifier
+    assert 'verify_certificate_file "${cert_name}" "fullchain.pem" "${domain}"' in verifier
+    assert 'verify_private_key "${cert_name}"' in verifier
     assert "--renewal-dry-run" in verifier
-    assert "certbot renew --dry-run" in verifier
+    assert 'certbot renew --dry-run --cert-name "${cert_name}"' in verifier
     assert "Renewal dry-run was not requested" in verifier
     assert "chmod " not in verifier
     assert "chown " not in verifier
     assert "cat \"${key_path}\"" not in verifier
 
     expected_key_paths = {
-        "/etc/letsencrypt/live/sitbank.duckdns.org/privkey.pem",
+        "/etc/letsencrypt/live/sitbank.pp.ua/privkey.pem",
         "/etc/letsencrypt/live/staging-sitbank.pp.ua/privkey.pem",
     }
     configured_key_paths = set(
@@ -2898,6 +2911,7 @@ def test_certbot_host_state_verifier_enforces_host_managed_tls():
     assert "/usr/local/sbin/verify-certbot-host-state" in bootstrap
     assert "/usr/local/sbin/verify-certbot-host-state production" in bootstrap
     assert "/usr/local/sbin/verify-certbot-host-state staging" in bootstrap
+    assert "python3-certbot-dns-cloudflare" in bootstrap
     assert "Missing required production TLS file" in bootstrap
     assert "Missing required staging TLS file" in bootstrap
 
@@ -2992,7 +3006,9 @@ def test_nginx_default_server_is_shared_for_same_host_production_and_staging():
     assert combined.count("listen [::]:443 ssl http2 default_server;") == 1
     assert "listen 80 default_server;" not in production_nginx
     assert "listen 80 default_server;" not in staging_nginx
-    assert "server_name sitbank.duckdns.org;" in combined
+    assert "server_name sitbank.pp.ua www.sitbank.pp.ua;" in combined
+    assert "server_name www.sitbank.pp.ua;" in combined
+    assert "server_name sitbank.pp.ua;" in combined
     assert "server_name staging-sitbank.pp.ua;" in combined
 
 
@@ -3045,7 +3061,7 @@ def test_nginx_tls_policy_pins_strong_suites_curves_and_session_hardening():
 
     policy_include = "include /etc/nginx/snippets/sitbank-tls-policy.conf;"
     for nginx, server_name, session_cache in (
-        (production_nginx, "sitbank.duckdns.org", "shared:sitbank_prod_ssl:10m"),
+        (production_nginx, "sitbank.pp.ua", "shared:sitbank_prod_ssl:10m"),
         (staging_nginx, "staging-sitbank.pp.ua", "shared:sitbank_staging_ssl:10m"),
     ):
         https_server = _nginx_https_server_prelocation(nginx, server_name=server_name)
@@ -3163,7 +3179,7 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     proxy_targets = set(re.findall(r"proxy_pass\s+([^;]+);", nginx))
     assert proxy_targets == {"http://127.0.0.1:5001"}
     assert "127.0.0.1:5000" not in nginx
-    assert "server_name sitbank.duckdns.org;" not in nginx
+    assert "server_name sitbank.pp.ua;" not in nginx
     assert staging_compose["services"]["app"]["ports"] == ["127.0.0.1:5001:5000"]
     assert staging_compose["services"]["admin"]["ports"] == ["127.0.0.1:5003:5000"]
     assert "127.0.0.1:5002:5000" not in staging_compose["services"]["admin"]["ports"]
@@ -3248,7 +3264,7 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     production_compose = yaml.safe_load(Path("compose.prod.yml").read_text(encoding="utf-8"))
     app = production_compose["services"]["app"]
     admin = production_compose["services"]["admin"]
-    customer_nginx = _nginx_server_block(nginx, "sitbank.duckdns.org")
+    customer_nginx = _nginx_server_block(nginx, "sitbank.pp.ua")
 
     assert Path("ops/nginx/sitbank-default.conf").exists()
     assert Path("ops/nginx/sitbank-production.conf").exists()
@@ -3262,23 +3278,33 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     assert "ssl_reject_handshake on;" in default_nginx
     assert "return 444;" in default_nginx
     assert "listen 80;" in nginx
-    assert "return 301 https://sitbank.duckdns.org$request_uri;" in nginx
+    assert "return 301 https://sitbank.pp.ua$request_uri;" in nginx
+    assert "server_name sitbank.pp.ua www.sitbank.pp.ua;" in nginx
+    assert "server_name www.sitbank.pp.ua;" in nginx
     assert "listen 80 default_server;" not in nginx
     assert "listen 443 ssl http2 default_server;" not in nginx
     assert "server_name _;" not in nginx
     assert "listen 443 ssl http2;" in nginx
-    assert "server_name sitbank.duckdns.org;" in nginx
-    assert "ssl_certificate /etc/letsencrypt/live/sitbank.duckdns.org/fullchain.pem;" in nginx
-    assert "ssl_certificate_key /etc/letsencrypt/live/sitbank.duckdns.org/privkey.pem;" in nginx
+    assert "server_name sitbank.pp.ua;" in nginx
+    assert "www.sitbank.pp.ua" in nginx
+    assert "ssl_certificate /etc/letsencrypt/live/sitbank.pp.ua/fullchain.pem;" in nginx
+    assert "ssl_certificate_key /etc/letsencrypt/live/sitbank.pp.ua/privkey.pem;" in nginx
+    assert "sitbank" + ".duckdns.org" not in nginx
+    assert "admin.sitbank.pp.ua" not in nginx
+    assert "admin-sitbank.pp.ua" not in nginx
     assert "sitbank-admin" not in nginx
     assert "proxy_pass http://127.0.0.1:5002;" not in nginx
+    www_server = _nginx_server_block(nginx, "www.sitbank.pp.ua")
+    assert "return 301 https://sitbank.pp.ua$request_uri;" in www_server
+    assert "proxy_pass" not in www_server
+    assert "location ^~ /admin" not in www_server
     _assert_nginx_owns_duplicate_edge_security_headers(
         nginx,
         hsts_add_header=(
             'add_header Strict-Transport-Security "max-age=31536000; '
             'includeSubDomains" always;'
         ),
-        server_name="sitbank.duckdns.org",
+        server_name="sitbank.pp.ua",
     )
     assert "client_max_body_size 4m;" in nginx
     for timeout in (
@@ -3364,7 +3390,8 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     assert "proxy_set_header X-Forwarded-For $remote_addr;" in proxy_headers
     assert "$proxy_add_x_forwarded_for" not in proxy_headers
 
-    assert 'PRODUCTION_PUBLIC_HOST="sitbank.duckdns.org"' in bootstrap
+    assert 'PRODUCTION_PUBLIC_HOST="sitbank.pp.ua"' in bootstrap
+    assert 'PRODUCTION_PUBLIC_WWW_HOST="www.sitbank.pp.ua"' in bootstrap
     assert "PRODUCTION_ADMIN_PUBLIC_HOST" not in bootstrap
     assert "Production PUBLIC_HOST must be ${PRODUCTION_PUBLIC_HOST}" in bootstrap
     assert "Missing required production TLS file" in bootstrap
@@ -3381,7 +3408,9 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     assert "install -d -o sitbank-container -g 10001 -m 0750 /var/lib/sitbank" in deploy_script
     assert "Refusing to replace unsafe production Nginx rate-limit file" in bootstrap
     assert "Refusing to replace unsafe production Nginx config" in bootstrap
-    assert "Conflicting Nginx production site is already enabled" in bootstrap
+    assert "Conflicting Nginx production site for ${production_hostname}" in bootstrap
+    assert '"${PRODUCTION_PUBLIC_HOST}"' in bootstrap
+    assert '"${PRODUCTION_PUBLIC_WWW_HOST}"' in bootstrap
     assert "Disable the duplicate production server block" in bootstrap
     assert "nginx-sitbank-production-rate-limits.$(date -u +%Y%m%dT%H%M%SZ).conf" in bootstrap
     assert '"nginx-sitbank-default"' in bootstrap
@@ -3424,14 +3453,15 @@ def test_production_edge_runbook_documents_network_waf_and_verification_steps():
         "Cloudflare or AWS WAF should sit in front of Nginx",
         "The reviewed production bootstrap installs and enables the production edge",
         "requires a production bootstrap after merge",
-        "sudo test -r /etc/letsencrypt/live/sitbank.duckdns.org/fullchain.pem",
+        "sudo test -r /etc/letsencrypt/live/sitbank.pp.ua/fullchain.pem",
         "Cloudflare or AWS WAF rules and security-group allowlists are still",
         "sudo nginx -t",
         "sudo ss -ltnp | grep -E ':(80|443|5000|5002)([[:space:]]|$)'",
         "sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-app",
         "sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-admin",
-        "curl --fail https://sitbank.duckdns.org/health/live",
-        "curl -I https://sitbank.duckdns.org/health/ready",
+        "curl --fail https://sitbank.pp.ua/health/live",
+        "curl -fsSI https://www.sitbank.pp.ua/ | grep -i '^location: https://sitbank.pp.ua'",
+        "curl -I https://sitbank.pp.ua/health/ready",
         "No public admin Nginx server block is configured.",
         "old public admin verification",
         "external readiness is denied",
@@ -3467,6 +3497,118 @@ def test_production_edge_runbook_documents_network_waf_and_verification_steps():
         assert required in security
 
 
+def test_ppua_dns01_and_duckdns_retirement_runbook_documents_safe_migration():
+    runbook_path = Path("docs/runbooks/ppua-dns01-duckdns-retirement.md")
+    runbook = runbook_path.read_text(encoding="utf-8")
+    retired_production = "sitbank" + ".duckdns.org"
+    retired_staging = "staging-sitbank" + ".duckdns.org"
+    retired_admin = "admin-sitbank" + ".duckdns.org"
+
+    assert runbook_path.exists()
+    for required in (
+        "pp.ua DNS-01 And DuckDNS Retirement Runbook",
+        "https://sitbank.pp.ua",
+        "https://www.sitbank.pp.ua",
+        "https://staging-sitbank.pp.ua",
+        "https://admin-sitbank.tailca101b.ts.net/",
+        retired_production,
+        retired_staging,
+        retired_admin,
+        "python3-certbot-dns-cloudflare",
+        "/root/.secrets/certbot/cloudflare-production.ini",
+        "/root/.secrets/certbot/cloudflare-staging.ini",
+        "Zone Read",
+        "DNS Write",
+        "--dns-cloudflare",
+        "--cert-name sitbank.pp.ua",
+        "--cert-name staging-sitbank.pp.ua",
+        "server_name sitbank.pp.ua www.sitbank.pp.ua;",
+        "server_name sitbank.pp.ua;",
+        "return 301 https://sitbank.pp.ua$request_uri;",
+        "sudo /usr/local/sbin/verify-certbot-host-state --renewal-dry-run production",
+        "sudo /usr/local/sbin/verify-certbot-host-state --renewal-dry-run staging",
+        "sudo certbot renew --dry-run --cert-name sitbank.pp.ua",
+        "sudo certbot renew --dry-run --cert-name staging-sitbank.pp.ua",
+        "curl.exe -I https://www.sitbank.pp.ua",
+        "sudo certbot delete --cert-name " + retired_production,
+        "sudo certbot delete --cert-name " + retired_staging,
+        "sudo certbot delete --cert-name " + retired_admin,
+        "Rollback",
+    ):
+        assert required in runbook
+
+
+def test_retired_duckdns_domains_are_not_active_configuration():
+    retired_domains = {
+        "sitbank" + ".duckdns.org",
+        "staging-sitbank" + ".duckdns.org",
+        "admin-sitbank" + ".duckdns.org",
+    }
+    allowed_retirement_docs = {
+        Path("docs/runbooks/ppua-dns01-duckdns-retirement.md"),
+        Path("docs/DEPLOYMENT.md"),
+        Path("docs/security/architecture/admin-and-staging-zero-trust-access.md"),
+        Path("tests/test_security_docs_issue_links.py"),
+        Path("tests/test_tailscale_admin_automation.py"),
+    }
+    result = subprocess.run(
+        ["git", "ls-files", "-z"],
+        check=True,
+        capture_output=True,
+    )
+    tracked_paths = {
+        Path(item.decode("utf-8"))
+        for item in result.stdout.split(b"\0")
+        if item
+    }
+    tracked_paths |= {path for path in allowed_retirement_docs if path.exists()}
+
+    occurrences: dict[str, set[Path]] = {domain: set() for domain in retired_domains}
+    for path in tracked_paths:
+        if not path.is_file():
+            continue
+        try:
+            contents = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        for domain in retired_domains:
+            if domain in contents:
+                occurrences[domain].add(path)
+
+    for domain, paths in occurrences.items():
+        assert paths <= allowed_retirement_docs, f"{domain} appears in {paths}"
+
+    active_paths = [
+        path
+        for path in tracked_paths
+        if path.parts
+        and (
+            path.parts[0] in {".github", "ops"}
+            or path
+            in {
+                Path("README.md"),
+                Path("SECURITY.md"),
+                Path("compose.prod.yml"),
+                Path("compose.staging.yml"),
+            }
+        )
+    ]
+    active_text = "\n".join(
+        path.read_text(encoding="utf-8", errors="ignore")
+        for path in active_paths
+        if path.is_file()
+    )
+
+    assert "sitbank.pp.ua" in active_text
+    assert "www.sitbank.pp.ua" in active_text
+    assert "staging-sitbank.pp.ua" in active_text
+    assert "admin-sitbank.tailca101b.ts.net" in active_text
+    for domain in retired_domains:
+        assert domain not in active_text
+    assert "admin.sitbank.pp.ua" not in active_text
+    assert "admin-sitbank.pp.ua" not in active_text
+
+
 def test_staging_edge_runbook_documents_operator_verification_steps():
     docs = _project_docs_text()
 
@@ -3480,9 +3622,9 @@ def test_staging_edge_runbook_documents_operator_verification_steps():
         "Do not store Cloudflare API tokens, tunnel credentials, Access IdP secrets, or",
         "Cloudflare-managed zone/hostname or Cloudflare Tunnel",
         "staging-sitbank.pp.ua",
-        "sudo certbot --nginx -d staging-sitbank.pp.ua",
-        "sudo certbot certonly --webroot",
-        "sudo certbot renew --dry-run",
+        "--dns-cloudflare",
+        "/root/.secrets/certbot/cloudflare-staging.ini",
+        "sudo certbot renew --dry-run --cert-name staging-sitbank.pp.ua",
         "ops/deploy/bootstrap-container-ec2",
         "staging-sitbank.pp.ua",
         "retired DuckDNS staging hostname",

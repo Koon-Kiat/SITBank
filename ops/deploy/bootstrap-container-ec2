@@ -6,7 +6,8 @@ readonly CONTAINER_GID="10001"
 readonly CONTAINER_ACCOUNT="sitbank-container"
 readonly COSIGN_VERSION="3.0.5"
 readonly COSIGN_SHA256="db15cc99e6e4837daabab023742aaddc3841ce57f193d11b7c3e06c8003642b2"
-readonly PRODUCTION_PUBLIC_HOST="sitbank.duckdns.org"
+readonly PRODUCTION_PUBLIC_HOST="sitbank.pp.ua"
+readonly PRODUCTION_PUBLIC_WWW_HOST="www.sitbank.pp.ua"
 readonly EDGE_DEFAULTS_FILE="/etc/nginx/conf.d/sitbank-default.conf"
 readonly TLS_POLICY_FILE="/etc/nginx/snippets/sitbank-tls-policy.conf"
 readonly STAGING_ACCESS_HEADERS_FILE="/etc/nginx/snippets/sitbank-cloudflare-access-headers.conf"
@@ -39,7 +40,7 @@ if [[ ! "${github_repository}" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
 fi
 if [[ -z "${public_host}" ]]; then
     if [[ "${target}" == "production" ]]; then
-        public_host="sitbank.duckdns.org"
+        public_host="sitbank.pp.ua"
     else
         public_host="staging-sitbank.pp.ua"
     fi
@@ -155,11 +156,7 @@ if ! command -v docker >/dev/null 2>&1 \
         docker-buildx-plugin docker-compose-plugin
 fi
 systemctl enable --now docker.service
-if [[ "${target}" == "staging" ]]; then
-    apt-get install -y nginx certbot python3-certbot-nginx
-else
-    apt-get install -y nginx certbot python3-certbot-nginx
-fi
+apt-get install -y nginx certbot python3-certbot-nginx python3-certbot-dns-cloudflare
 
 cosign_tmp="$(mktemp)"
 trap 'rm -f -- "${cosign_tmp}"' EXIT
@@ -381,18 +378,23 @@ if [[ "${target}" == "production" ]]; then
     /usr/local/sbin/verify-certbot-host-state production
 
     nginx_conflict=0
-    while IFS= read -r enabled_site; do
-        if [[ "$(readlink -f "${enabled_site}")" \
-            != "/etc/nginx/sites-available/sitbank" ]]; then
-            echo "Conflicting Nginx production site is already enabled: ${enabled_site}" >&2
-            nginx_conflict=1
-        fi
-    done < <(
-        grep -RlE \
-            "^[[:space:]]*server_name[[:space:]].*(^|[[:space:]])${public_host_regex}([[:space:];]|$)" \
-            /etc/nginx/sites-enabled /etc/nginx/conf.d \
-            2>/dev/null || true
-    )
+    for production_hostname in \
+        "${PRODUCTION_PUBLIC_HOST}" \
+        "${PRODUCTION_PUBLIC_WWW_HOST}"; do
+        production_hostname_regex="${production_hostname//./\\.}"
+        while IFS= read -r enabled_site; do
+            if [[ "$(readlink -f "${enabled_site}")" \
+                != "/etc/nginx/sites-available/sitbank" ]]; then
+                echo "Conflicting Nginx production site for ${production_hostname} is already enabled: ${enabled_site}" >&2
+                nginx_conflict=1
+            fi
+        done < <(
+            grep -RlE \
+                "^[[:space:]]*server_name[[:space:]].*(^|[[:space:]])${production_hostname_regex}([[:space:];]|$)" \
+                /etc/nginx/sites-enabled /etc/nginx/conf.d \
+                2>/dev/null || true
+        )
+    done
     if [[ "${nginx_conflict}" -ne 0 ]]; then
         echo "Disable the duplicate production server block, then rerun bootstrap." >&2
         exit 1

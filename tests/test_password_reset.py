@@ -28,7 +28,7 @@ from app.security.passwords import PASSWORD_MAX_CHARS, PASSWORD_MIN_LENGTH, hash
 
 VALID_PASSWORD = "Correct-Horse-Battery-Staple-2026!"
 NEW_PASSWORD = "Reset-Correct-Horse-Battery-Staple-2026!"
-ORIGIN = {"Origin": "https://sitbank.duckdns.org"}
+ORIGIN = {"Origin": "https://sitbank.pp.ua"}
 TOTP_TEST_TIMESTAMP = 1_803_988_800
 
 

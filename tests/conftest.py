@@ -117,7 +117,7 @@ class TestConfig:
     MANUAL_RECOVERY_REQUEST_TTL_SECONDS = 7 * 24 * 60 * 60
     PASSWORD_RESET_EMAIL_BACKEND = "console"
     PASSWORD_RESET_EMAIL_FROM = "security@sitbank.test"
-    PASSWORD_RESET_BASE_URL = "https://sitbank.duckdns.org"
+    PASSWORD_RESET_BASE_URL = "https://sitbank.pp.ua"
     SMTP_HOST = ""
     SMTP_PORT = 587
     SMTP_USE_TLS = True

@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# Install the private SITBank Grafana/Loki/Alloy observability stack on EC2.
+set -Eeuo pipefail
+
+readonly OBS_ROOT="/etc/sitbank-observability"
+readonly OBS_DATA_ROOT="/var/lib/sitbank-observability"
+readonly OBS_COMPOSE_FILE="${OBS_ROOT}/compose.yml"
+readonly OBS_ENV_FILE="${OBS_ROOT}/observability.env"
+readonly GRAFANA_ADMIN_USER_FILE="${OBS_ROOT}/secrets/grafana_admin_user"
+readonly GRAFANA_ADMIN_PASSWORD_FILE="${OBS_ROOT}/secrets/grafana_admin_password"
+
+usage() {
+    echo "Usage: bootstrap-observability-ec2 [repo-root]" >&2
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    usage
+    exit 0
+fi
+
+if [[ "${EUID}" -ne 0 ]]; then
+    echo "Run this bootstrap as root, for example: sudo $0 /opt/SITBank" >&2
+    exit 1
+fi
+
+repo_root="${1:-$(pwd)}"
+if [[ ! -f "${repo_root}/ops/observability/compose.observability.yml" ]]; then
+    echo "Repository root does not contain ops/observability/compose.observability.yml: ${repo_root}" >&2
+    exit 2
+fi
+
+if ! command -v docker >/dev/null 2>&1; then
+    echo "docker is required before installing observability" >&2
+    exit 1
+fi
+if ! docker compose version >/dev/null 2>&1; then
+    echo "docker compose plugin is required before installing observability" >&2
+    exit 1
+fi
+
+install -d -o root -g root -m 0755 "${OBS_ROOT}"
+install -d -o root -g root -m 0755 "${OBS_ROOT}/grafana"
+install -d -o root -g root -m 0755 "${OBS_ROOT}/grafana/provisioning"
+install -d -o root -g root -m 0755 "${OBS_ROOT}/grafana/provisioning/datasources"
+install -d -o root -g root -m 0755 "${OBS_ROOT}/grafana/provisioning/dashboards"
+install -d -o root -g root -m 0755 "${OBS_ROOT}/grafana/dashboards"
+install -d -o root -g root -m 0755 "${OBS_ROOT}/loki"
+install -d -o root -g root -m 0755 "${OBS_ROOT}/alloy"
+install -d -o root -g root -m 0700 "${OBS_ROOT}/secrets"
+install -d -o 472 -g 472 -m 0750 "${OBS_DATA_ROOT}/grafana"
+install -d -o 10001 -g 10001 -m 0750 "${OBS_DATA_ROOT}/loki"
+
+install -o root -g root -m 0644 \
+    "${repo_root}/ops/observability/compose.observability.yml" \
+    "${OBS_COMPOSE_FILE}"
+install -o root -g root -m 0644 \
+    "${repo_root}/ops/observability/grafana/provisioning/datasources/loki.yml" \
+    "${OBS_ROOT}/grafana/provisioning/datasources/loki.yml"
+install -o root -g root -m 0644 \
+    "${repo_root}/ops/observability/grafana/provisioning/dashboards/sitbank.yml" \
+    "${OBS_ROOT}/grafana/provisioning/dashboards/sitbank.yml"
+install -o root -g root -m 0644 \
+    "${repo_root}/ops/observability/grafana/dashboards/sitbank-operational-overview.json" \
+    "${OBS_ROOT}/grafana/dashboards/sitbank-operational-overview.json"
+install -o root -g root -m 0644 \
+    "${repo_root}/ops/observability/loki/loki.yml" \
+    "${OBS_ROOT}/loki/loki.yml"
+install -o root -g root -m 0644 \
+    "${repo_root}/ops/observability/alloy/config.alloy" \
+    "${OBS_ROOT}/alloy/config.alloy"
+
+for secret_file in "${GRAFANA_ADMIN_USER_FILE}" "${GRAFANA_ADMIN_PASSWORD_FILE}"; do
+    if [[ ! -f "${secret_file}" ]]; then
+        echo "Missing required root-owned Grafana secret file: ${secret_file}" >&2
+        echo "Create it with root:root ownership and mode 0600 before rerunning bootstrap." >&2
+        exit 1
+    fi
+    owner="$(stat -c '%U' -- "${secret_file}")"
+    group="$(stat -c '%G' -- "${secret_file}")"
+    mode="$(stat -c '%a' -- "${secret_file}")"
+    if [[ "${owner}" != "root" || "${group}" != "root" || "${mode}" != "600" ]]; then
+        echo "Grafana secret file must be root:root mode 0600: ${secret_file}" >&2
+        exit 1
+    fi
+done
+
+if [[ ! -f "${OBS_ENV_FILE}" ]]; then
+    echo "Missing ${OBS_ENV_FILE}; create it with GRAFANA_IMAGE, LOKI_IMAGE, ALLOY_IMAGE, and GRAFANA_PRIVATE_ROOT_URL." >&2
+    exit 1
+fi
+if grep -Eiq '(password|token|secret|key)[[:space:]]*=' "${OBS_ENV_FILE}"; then
+    echo "${OBS_ENV_FILE} must contain non-secret image references and private URL settings only." >&2
+    exit 1
+fi
+
+docker compose --env-file "${OBS_ENV_FILE}" -f "${OBS_COMPOSE_FILE}" config >/dev/null
+docker compose --env-file "${OBS_ENV_FILE}" -f "${OBS_COMPOSE_FILE}" up -d
+
+cat <<'MESSAGE'
+SITBank observability stack started.
+Verify private access through Tailscale only and confirm public Nginx hostnames do not route to Grafana or Loki.
+MESSAGE

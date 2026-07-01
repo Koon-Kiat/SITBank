@@ -1,0 +1,152 @@
+name: sitbank-observability
+
+services:
+  grafana:
+    image: ${GRAFANA_IMAGE:?GRAFANA_IMAGE must be an immutable digest reference}
+    container_name: sitbank-grafana
+    user: "472:472"
+    read_only: true
+    init: true
+    restart: unless-stopped
+    ports:
+      - 127.0.0.1:3000:3000
+    environment:
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+      GF_PATHS_DATA: /var/lib/grafana
+      GF_SERVER_ROOT_URL: ${GRAFANA_PRIVATE_ROOT_URL:?GRAFANA_PRIVATE_ROOT_URL must be the private Tailscale URL}
+      GF_SECURITY_ADMIN_USER__FILE: /run/secrets/grafana_admin_user
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_LOG_MODE: console
+    secrets:
+      - grafana_admin_user
+      - grafana_admin_password
+    volumes:
+      - type: bind
+        source: /etc/sitbank-observability/grafana/provisioning
+        target: /etc/grafana/provisioning
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /etc/sitbank-observability/grafana/dashboards
+        target: /var/lib/grafana/dashboards
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /var/lib/sitbank-observability/grafana
+        target: /var/lib/grafana
+        read_only: false
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,uid=472,gid=472,mode=1770
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 512m
+    networks:
+      - observability
+    depends_on:
+      - loki
+
+  loki:
+    image: ${LOKI_IMAGE:?LOKI_IMAGE must be an immutable digest reference}
+    container_name: sitbank-loki
+    user: "10001:10001"
+    read_only: true
+    init: true
+    restart: unless-stopped
+    command:
+      - -config.file=/etc/loki/loki.yml
+    ports:
+      - 127.0.0.1:3100:3100
+    volumes:
+      - type: bind
+        source: /etc/sitbank-observability/loki/loki.yml
+        target: /etc/loki/loki.yml
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /var/lib/sitbank-observability/loki
+        target: /var/lib/loki
+        read_only: false
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=1770
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 768m
+    networks:
+      - observability
+
+  alloy:
+    image: ${ALLOY_IMAGE:?ALLOY_IMAGE must be an immutable digest reference}
+    container_name: sitbank-alloy
+    user: "0:0"
+    read_only: true
+    init: true
+    restart: unless-stopped
+    command:
+      - run
+      - --server.http.listen-addr=127.0.0.1:12345
+      - /etc/alloy/config.alloy
+    volumes:
+      - type: bind
+        source: /etc/sitbank-observability/alloy/config.alloy
+        target: /etc/alloy/config.alloy
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /var/log/nginx
+        target: /var/log/nginx
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /var/log/journal
+        target: /var/log/journal
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+        read_only: true
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1770
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 512m
+    networks:
+      - observability
+    depends_on:
+      - loki
+
+secrets:
+  grafana_admin_user:
+    file: /etc/sitbank-observability/secrets/grafana_admin_user
+  grafana_admin_password:
+    file: /etc/sitbank-observability/secrets/grafana_admin_password
+
+networks:
+  observability:
+    name: sitbank-observability
+    internal: true

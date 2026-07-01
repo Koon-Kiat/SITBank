@@ -3,8 +3,10 @@
 set -Eeuo pipefail
 
 readonly LETSENCRYPT_ROOT="/etc/letsencrypt"
-readonly PRODUCTION_PUBLIC_HOST="sitbank.duckdns.org"
+readonly PRODUCTION_PUBLIC_HOST="sitbank.pp.ua"
+readonly -a PRODUCTION_PUBLIC_HOSTNAMES=("sitbank.pp.ua" "www.sitbank.pp.ua")
 readonly STAGING_PUBLIC_HOST="staging-sitbank.pp.ua"
+readonly -a STAGING_PUBLIC_HOSTNAMES=("staging-sitbank.pp.ua")
 readonly CERTBOT_MIN_VALID_DAYS="${CERTBOT_MIN_VALID_DAYS:-14}"
 readonly -a APPROVED_TLS_KEY_GROUPS=(root)
 
@@ -69,6 +71,20 @@ verify_certbot() {
     echo "OK: certbot is installed"
 }
 
+verify_dns_cloudflare_plugin() {
+    local plugins_output
+
+    if ! plugins_output="$(certbot plugins 2>/dev/null)"; then
+        fail "unable to list Certbot plugins"
+        return
+    fi
+    if ! grep -Eq '(^|[[:space:]])dns-cloudflare([[:space:]]|$)' <<<"${plugins_output}"; then
+        fail "Certbot dns-cloudflare plugin is not installed"
+        return
+    fi
+    echo "OK: Certbot dns-cloudflare plugin is installed"
+}
+
 verify_renewal_timer() {
     if ! command -v systemctl >/dev/null 2>&1; then
         fail "systemctl is required to verify the host-managed certbot.timer"
@@ -125,14 +141,15 @@ certificate_covers_hostname() {
 }
 
 verify_certificate_file() {
-    local domain="$1"
+    local cert_name="$1"
     local filename="$2"
-    local certificate_path="${LETSENCRYPT_ROOT}/live/${domain}/${filename}"
+    local expected_hostname="$3"
+    local certificate_path="${LETSENCRYPT_ROOT}/live/${cert_name}/${filename}"
     local resolved_path
     local not_after
 
-    if [[ ! -d "${LETSENCRYPT_ROOT}/live/${domain}" ]]; then
-        fail "missing expected certificate directory: ${LETSENCRYPT_ROOT}/live/${domain}"
+    if [[ ! -d "${LETSENCRYPT_ROOT}/live/${cert_name}" ]]; then
+        fail "missing expected certificate directory: ${LETSENCRYPT_ROOT}/live/${cert_name}"
         return
     fi
     if [[ ! -e "${certificate_path}" || ! -f "${certificate_path}" ]]; then
@@ -177,11 +194,11 @@ verify_certificate_file() {
         fail "certificate expires within ${CERTBOT_MIN_VALID_DAYS} days (${not_after}): ${certificate_path}"
         return
     fi
-    if ! certificate_covers_hostname "${resolved_path}" "${domain}"; then
-        fail "certificate SAN does not exactly cover expected hostname ${domain}: ${certificate_path}"
+    if ! certificate_covers_hostname "${resolved_path}" "${expected_hostname}"; then
+        fail "certificate SAN does not exactly cover expected hostname ${expected_hostname}: ${certificate_path}"
         return
     fi
-    echo "OK: ${certificate_path} is parseable, covers ${domain}, and remains valid beyond ${CERTBOT_MIN_VALID_DAYS} days"
+    echo "OK: ${certificate_path} is parseable, covers ${expected_hostname}, and remains valid beyond ${CERTBOT_MIN_VALID_DAYS} days"
 }
 
 is_approved_tls_key_group() {
@@ -251,33 +268,38 @@ verify_private_key() {
 }
 
 verify_renewal_dry_run() {
-    echo "Running explicit Certbot renewal dry-run; this may contact the ACME staging service."
-    if ! certbot renew --dry-run; then
-        fail "certbot renewal dry-run failed"
+    local cert_name="$1"
+
+    echo "Running explicit Certbot renewal dry-run for ${cert_name}; this may contact the ACME staging service."
+    if ! certbot renew --dry-run --cert-name "${cert_name}"; then
+        fail "certbot renewal dry-run failed for ${cert_name}"
         return
     fi
-    echo "OK: certbot renewal dry-run passed"
+    echo "OK: certbot renewal dry-run passed for ${cert_name}"
 }
 
 case "${target}" in
     production)
-        domains=("${PRODUCTION_PUBLIC_HOST}")
+        cert_name="${PRODUCTION_PUBLIC_HOST}"
+        domains=("${PRODUCTION_PUBLIC_HOSTNAMES[@]}")
         ;;
     staging)
-        domains=("${STAGING_PUBLIC_HOST}")
+        cert_name="${STAGING_PUBLIC_HOST}"
+        domains=("${STAGING_PUBLIC_HOSTNAMES[@]}")
         ;;
 esac
 
 verify_certbot
+verify_dns_cloudflare_plugin
 verify_openssl
 verify_renewal_timer
 for domain in "${domains[@]}"; do
-    verify_certificate_file "${domain}" "fullchain.pem"
-    verify_private_key "${domain}"
+    verify_certificate_file "${cert_name}" "fullchain.pem" "${domain}"
 done
+verify_private_key "${cert_name}"
 
 if [[ "${renewal_dry_run}" -eq 1 && "${failures}" -eq 0 ]]; then
-    verify_renewal_dry_run
+    verify_renewal_dry_run "${cert_name}"
 fi
 
 if [[ "${failures}" -ne 0 ]]; then
