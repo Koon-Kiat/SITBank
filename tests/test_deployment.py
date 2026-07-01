@@ -3598,11 +3598,18 @@ def test_retired_duckdns_domains_are_not_active_configuration():
         for path in active_paths
         if path.is_file()
     )
+    workflow = yaml.safe_load(
+        Path(".github/workflows/ci-deploy.yml").read_text(encoding="utf-8")
+    )
+    private_admin_env = workflow["jobs"]["verify-private-admin-tailnet"]["env"]
 
     assert "sitbank.pp.ua" in active_text
     assert "www.sitbank.pp.ua" in active_text
     assert "staging-sitbank.pp.ua" in active_text
-    assert "admin-sitbank.tailca101b.ts.net" in active_text
+    assert (
+        private_admin_env["TAILSCALE_PRIVATE_ADMIN_HOST"]
+        == "admin-sitbank.tailca101b.ts.net"
+    )
     for domain in retired_domains:
         assert domain not in active_text
     assert "admin.sitbank.pp.ua" not in active_text
