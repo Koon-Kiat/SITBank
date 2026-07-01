@@ -4,6 +4,9 @@ from flask import render_template_string
 from app.security import turnstile
 
 
+_TURNSTILE_ORIGIN = "https://challenges.cloudflare.com"
+
+
 def test_customer_login_turnstile_accepts_standard_cloudflare_field(app, client, monkeypatch):
     app.config.update(
         TURNSTILE_ENABLED=True,
@@ -61,13 +64,16 @@ def test_turnstile_widget_and_csp_are_narrow(app, client):
     response = client.get("/login")
     markup = response.get_data(as_text=True)
     csp = response.headers["Content-Security-Policy"]
+    csp_directives = _csp_directives(csp)
 
     assert response.status_code == 200
     assert 'class="cf-turnstile"' in markup
     assert 'data-action="customer_login"' in markup
-    assert "https://challenges.cloudflare.com" in csp
-    assert "*.cloudflare.com" not in csp
-    assert "unsafe-inline" not in csp
+    assert _TURNSTILE_ORIGIN in csp_directives.get("script-src", [])
+    assert _TURNSTILE_ORIGIN in csp_directives.get("frame-src", [])
+    assert "*.cloudflare.com" not in csp_directives.get("script-src", [])
+    assert "*.cloudflare.com" not in csp_directives.get("frame-src", [])
+    assert "'unsafe-inline'" not in csp_directives.get("script-src", [])
 
 
 def test_production_enabled_route_requires_site_key(app):
@@ -113,3 +119,12 @@ def test_multiple_turnstile_widgets_load_script_once(app):
 
     assert markup.count('class="cf-turnstile"') == 2
     assert markup.count("https://challenges.cloudflare.com/turnstile/v0/api.js") == 1
+
+
+def _csp_directives(csp: str) -> dict[str, list[str]]:
+    directives = {}
+    for raw_directive in csp.split(";"):
+        parts = raw_directive.strip().split()
+        if parts:
+            directives[parts[0]] = parts[1:]
+    return directives
