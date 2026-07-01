@@ -59,11 +59,15 @@ _TOTP_PATTERN = r"^[0-9]{6}$"
 _MFA_CODE_ERROR = "MFA code must be exactly 6 digits"
 _JSON_MIME_TYPE = "application/json"
 _STAFF_ACCOUNTS_ENDPOINT = "admin.staff_accounts"
+_ADMIN_ALERTS_ENDPOINT = "admin.alerts"
 _ADMIN_LOGIN_TEMPLATE = "admin/login.html"
 _ADMIN_MFA_VERIFY_TEMPLATE = "admin/mfa_verify.html"
 _ALERT_SEVERITY_RANK = {"low": 1, "medium": 2, "high": 3, "critical": 4}
 _ALERT_REDACTED_VALUE = "[redacted]"
-_ALERT_SENSITIVE_VALUE_RE = re.compile(r"(?i)\b(bearer|basic|token)\s+[A-Za-z0-9._~+/=-]+")
+_ALERT_SENSITIVE_VALUE_RE = re.compile(
+    r"\b(?:bearer|basic|token)\s+[a-z0-9._~+/=\-]+",
+    re.IGNORECASE,
+)
 
 
 class AdminLoginSchema(Schema):
@@ -256,7 +260,7 @@ def _alert_display_item(alert: dict[str, Any], index: int) -> dict[str, Any]:
     event_id = _alert_existing_event_id(alert.get("latest_event_id"))
     return {
         "ref": ref,
-        "detail_url": url_for("admin.alerts", alert=ref),
+        "detail_url": url_for(_ADMIN_ALERTS_ENDPOINT, alert=ref),
         "alert_type": _safe_alert_text(alert.get("alert_type"), 80),
         "severity": _safe_alert_text(alert.get("severity"), 24) or "low",
         "source": _safe_alert_text(alert.get("source"), 160) or "unknown",
@@ -768,7 +772,7 @@ def alert_delivery():
         if not form.validate_on_submit():
             _record_alert_delivery_event(actor, "blocked", reason="invalid_request")
             flash("Enter a current authenticator code.", "error")
-            return redirect(url_for("admin.alerts")), 303
+            return redirect(url_for(_ADMIN_ALERTS_ENDPOINT)), 303
         totp_code = form.totp_code.data
 
     if not verify_admin_totp_step_up(actor, totp_code, "security_alert_delivery"):
@@ -776,7 +780,7 @@ def alert_delivery():
         if wants_json:
             return jsonify({"error": "Fresh MFA verification is required"}), 403
         flash("Fresh MFA verification is required.", "error")
-        return redirect(url_for("admin.alerts")), 303
+        return redirect(url_for(_ADMIN_ALERTS_ENDPOINT)), 303
 
     _record_alert_delivery_event(actor, "requested")
     try:
@@ -791,7 +795,7 @@ def alert_delivery():
         if wants_json:
             return jsonify({"error": "Security alert delivery is unavailable"}), 503
         flash("Security alert delivery is unavailable.", "error")
-        return redirect(url_for("admin.alerts")), 303
+        return redirect(url_for(_ADMIN_ALERTS_ENDPOINT)), 303
 
     outcome, reason = _alert_delivery_outcome(report)
     _record_alert_delivery_event(actor, outcome, report, reason=reason)
@@ -801,7 +805,7 @@ def alert_delivery():
 
     message, category = _alert_delivery_flash(outcome, reason)
     flash(message, category)
-    return redirect(url_for("admin.alerts")), 303
+    return redirect(url_for(_ADMIN_ALERTS_ENDPOINT)), 303
 
 
 @admin_bp.get("/manual-recovery/requests")
