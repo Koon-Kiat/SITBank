@@ -34,6 +34,22 @@ Run the complete test suite with coverage.
     assert labels == ["needs-triage", "ci", "dependencies"]
 
 
+def test_issue_policy_parses_markdown_headings_without_regex_backtracking():
+    labels = policy.compute_labels(
+        kind="issue",
+        title="Harden Cloudflare Access staging access policy",
+        body=(
+            "###### Summary\n"
+            "Tighten the Cloudflare Access staging access boundary.\n"
+            "###### Guardrails\n"
+            "Preserve MFA, database, and admin controls.\n"
+        ),
+    )
+
+    assert {"needs-triage", "network-security", "zero-trust", "staging"} <= set(labels)
+    assert not {"mfa", "database", "admin"} & set(labels)
+
+
 @pytest.mark.parametrize(
     ("title", "body", "expected", "excluded"),
     [

@@ -300,10 +300,16 @@ def _focused_body(body: str) -> str:
             sections.extend(current_lines)
 
     for line in str(body or "").splitlines():
-        heading = re.match(r"^#{1,6}\s+(.+?)\s*$", line)
-        if heading:
+        stripped_line = line.strip()
+        heading_level = len(stripped_line) - len(stripped_line.lstrip("#"))
+        is_heading = (
+            1 <= heading_level <= 6
+            and len(stripped_line) > heading_level
+            and stripped_line[heading_level].isspace()
+        )
+        if is_heading:
             append_current()
-            current_heading = _normalized(heading.group(1))
+            current_heading = _normalized(stripped_line[heading_level:])
             current_lines = []
             continue
         current_lines.append(line)
