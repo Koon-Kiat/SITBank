@@ -159,7 +159,7 @@ def test_config_reads_six_hour_duration_and_expected_audience(monkeypatch):
     assert config.session_duration == "6h"
     assert config.access_audience == "non-secret-application-audience"
     assert config.app_name == "SITBank staging"
-    assert config.policy_name == "SITBank staging approved operators"
+    assert config.policy_name == "SITBank staging app - approved operators only"
     assert config.application_payload["session_duration"] == "6h"
 
 

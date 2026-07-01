@@ -121,8 +121,11 @@ leaving them empty uses the reviewed defaults.
 
 The reviewed provider values are `STAGING_ACCESS_SESSION_DURATION=6h`,
 `STAGING_PUBLIC_HOST=staging-sitbank.pp.ua`, application name `SITBank
-staging`, and policy name `SITBank staging approved operators`. `Everyone`,
-wildcard domains, and broad allow-all rules are forbidden. Run the workflow
+staging`, and policy name `SITBank staging app - approved operators only`.
+`Everyone`, wildcard domains, and broad allow-all rules are forbidden. The
+separate App Launcher policy is `SITBank Access launcher - approved operators
+only`; it remains manual Cloudflare-side configuration unless repository
+automation is explicitly expanded to manage it later. Run the workflow
 manually after any provider or environment change; safe drift output names
 non-secret fields and reports allowlist mismatches by count without printing
 emails, tokens, headers, cookies, JWTs, or Access assertions.
