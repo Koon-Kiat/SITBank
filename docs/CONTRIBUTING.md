@@ -47,6 +47,10 @@ labels the overall result as full, partial, or failed. CI/CD remains the source
 of truth for deployment validation; local strict mode is the closest
 contributor-side parity check, not a replacement for protected CI.
 
+Bandit is blocking in CI and local validation across `app`, `ops`, `config.py`,
+`wsgi.py`, and `admin_wsgi.py`. Keep both customer and admin entrypoints in the
+target list.
+
 ## Secret Scanning
 
 Pull requests and pushes to `main` run the dedicated Gitleaks workflow in

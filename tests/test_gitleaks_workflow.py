@@ -94,7 +94,7 @@ def test_gitleaks_configuration_keeps_defaults_and_has_no_broad_allowlist():
     assert config["title"] == "SITBank Gitleaks configuration"
     assert config["extend"] == {"useDefault": True}
     allowlists = config["allowlists"]
-    assert len(allowlists) == 6
+    assert len(allowlists) == 7
     assert {entry["description"] for entry in allowlists} == {
         "Public SHA-256 checksum pinned by the Tailscale installer",
         "Public SonarQube Cloud project key metadata",
@@ -102,6 +102,7 @@ def test_gitleaks_configuration_keeps_defaults_and_has_no_broad_allowlist():
         "Historical synthetic accepted-password test fixture",
         "Historical mappings from secret environment names to config field names",
         "Historical shell cases that reject private-key PEM headers",
+        "Historical WebAuthn secret-handling policy sentence",
     }
     for entry in allowlists:
         assert entry["condition"] == "AND"
@@ -149,6 +150,17 @@ def test_gitleaks_configuration_keeps_defaults_and_has_no_broad_allowlist():
         r"^sonar\.projectKey=(?:TL0024|WenJiangg)_SITBank$"
     ]
     assert len(historical_sonar_aliases["commits"]) == 4
+    historical_policy = next(
+        entry
+        for entry in allowlists
+        if entry["description"]
+        == "Historical WebAuthn secret-handling policy sentence"
+    )
+    assert historical_policy["commits"] == [
+        "dbc7358d9e090182030631c95eaf5280558c610e"
+    ]
+    assert historical_policy["paths"] == [r"^CLAUDE\.md$"]
+    assert "WebAuthn material" in historical_policy["regexes"][0]
 
 
 def test_custom_repository_scanner_remains_in_ci_and_local_ci():

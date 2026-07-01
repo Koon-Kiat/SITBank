@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 readonly IMAGE="${1:-sitbank:smoke}"
 readonly POSTGRES_IMAGE="postgres:16.9-alpine@sha256:7c688148e5e156d0e86df7ba8ae5a05a2386aaec1e2ad8e6d11bdf10504b1fb7"
+readonly ZAP_IMAGE="zaproxy/zap-stable:2.17.0@sha256:2ec1d5d5b44d55cfd02ba9b89cd26852f06d92b7fc0ce9f064b9463babc73074"
 readonly PUBLIC_HOST="sitbank.duckdns.org"
 
 random_test_secret() {
@@ -57,6 +58,12 @@ printf '%s' 'MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE=' \
     > "${work_dir}/secrets/password_pepper_b64"
 printf '%s' 'ci-audit-hmac-key-that-is-long-enough-for-dast-tests' \
     > "${work_dir}/secrets/security_audit_hmac_key"
+printf '%s' 'https://hooks.example.test/sitbank-security-alerts' \
+    > "${work_dir}/secrets/security_alert_webhook_url"
+printf '%s' 'smtp-user' \
+    > "${work_dir}/secrets/smtp_username"
+printf '%s' 'smtp-password' \
+    > "${work_dir}/secrets/smtp_password"
 chmod 0444 "${work_dir}"/secrets/*
 
 seq -f 'blocked-password-%06g' 1 100000 \
@@ -84,7 +91,20 @@ docker_args=(
     --env PASSWORD_PEPPER_B64_FILE=/run/secrets/password_pepper_b64
     --env SECURITY_AUDIT_HMAC_KEY_FILE=/run/secrets/security_audit_hmac_key
     --env SECURITY_AUDIT_ANCHOR_PATH=/run/state/security-audit.anchor
+    --env SECURITY_ALERT_WEBHOOK_URL_FILE=/run/secrets/security_alert_webhook_url
+    --env PAYEE_COOLDOWN_SECONDS=43200
     --env PASSWORD_PBKDF2_ITERATIONS=600000
+    --env PASSWORD_RESET_ENABLED=true
+    --env PASSWORD_RESET_TOKEN_TTL_SECONDS=1800
+    --env PASSWORD_RESET_TRANSACTION_TTL_SECONDS=900
+    --env PASSWORD_RESET_EMAIL_BACKEND=smtp
+    --env PASSWORD_RESET_EMAIL_FROM=security@sitbank.example
+    --env "PASSWORD_RESET_BASE_URL=https://${PUBLIC_HOST}"
+    --env SMTP_HOST=smtp.example.test
+    --env SMTP_PORT=587
+    --env SMTP_USE_TLS=true
+    --env SMTP_USERNAME_FILE=/run/secrets/smtp_username
+    --env SMTP_PASSWORD_FILE=/run/secrets/smtp_password
     --env COMMON_PASSWORDS_PATH=/run/config/common-passwords.txt
     --env COMMON_PASSWORDS_MIN_ENTRIES=100000
     --env TRUSTED_PROXY_COUNT=1
@@ -109,6 +129,34 @@ curl --fail --silent \
     --header "Host: ${PUBLIC_HOST}" \
     --header "X-Forwarded-Proto: https" \
     http://127.0.0.1:5000/health/ready >/dev/null
+
+if [[ "${RUN_ZAP_BASELINE:-false}" == "true" ]]; then
+    zap_dir="${work_dir}/zap-pr"
+    install -d -m 0777 "${zap_dir}"
+    printf '10020\tFAIL\n10021\tFAIL\n10038\tFAIL\n' \
+        > "${zap_dir}/rules.tsv"
+    chmod 0644 "${zap_dir}/rules.tsv"
+    docker run --rm \
+        --network host \
+        --volume "${zap_dir}:/zap/wrk:rw" \
+        "${ZAP_IMAGE}" \
+        zap-baseline.py \
+        -t http://127.0.0.1:5000/ \
+        -m 2 \
+        -T 5 \
+        -I \
+        -c /zap/wrk/rules.tsv \
+        -z "-config replacer.full_list(0).description=ForwardedProto \
+-config replacer.full_list(0).enabled=true \
+-config replacer.full_list(0).matchtype=REQ_HEADER \
+-config replacer.full_list(0).matchstr=X-Forwarded-Proto \
+-config replacer.full_list(0).replacement=https \
+-config replacer.full_list(1).description=Host \
+-config replacer.full_list(1).enabled=true \
+-config replacer.full_list(1).matchtype=REQ_HEADER \
+-config replacer.full_list(1).matchstr=Host \
+-config replacer.full_list(1).replacement=${PUBLIC_HOST}"
+fi
 
 cookie_jar="${work_dir}/dast.cookies"
 : > "${cookie_jar}"

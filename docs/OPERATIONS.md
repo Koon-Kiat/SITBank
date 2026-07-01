@@ -362,6 +362,8 @@ blocks ERROR severity, uploads no source or SARIF, and requires no token.
 Tracked-file discovery is implemented by
 `ops/security/discover_lint_targets.py` and fails closed when the expected
 shell or Dockerfile target set is empty.
+The dedicated ShellCheck workflow is authoritative and covers deployment
+scripts through repository-wide discovery; `bash -n` is syntax evidence only.
 
 Run `scripts/ci-local` before changing scripts or Dockerfiles. It runs a tool
 when installed and explicitly marks it `SKIPPED` otherwise; the GitHub Actions
@@ -683,6 +685,14 @@ or full replacer config is exposed, cancel the run, remove the artifact, treat
 the synthetic session as compromised until the run cleanup completes, and review
 the workflow/script change before retrying.
 
+Pull requests additionally run a 12-minute local-only DAST smoke against an
+ephemeral image and database. Its two-minute unauthenticated ZAP baseline
+blocks selected header rules at `FAIL`; the synthetic-session smoke also blocks
+unexpected responses and required security-header regressions. Warnings remain
+report-only. The seven-day artifact contains only a sanitized scope/outcome
+summary; raw ZAP responses, cookies, and replacer configuration are never
+uploaded. Release/scheduled authenticated ZAP remains the deeper control.
+
 Treat a failed scan as a release/deployment verification failure. A failed
 staging scan blocks production deployment, while a failed production scan
 marks the completed deployment workflow failed and prevents the private gate
@@ -867,3 +877,13 @@ the official verifier URL
 verifier overrides are for isolated mocks only. Roll back by disabling the
 affected route flag or `TURNSTILE_ENABLED`; do not point production at a custom
 verifier host.
+
+GitHub Environment variables use the `PROD_TURNSTILE_*` and
+`STAGING_TURNSTILE_*` prefixes; the renderer emits unprefixed runtime keys and
+pins the official verifier. Store server credentials as the environment
+secrets `PROD_TURNSTILE_SECRET_KEY` and `STAGING_TURNSTILE_SECRET_KEY`.
+Deployment installs them as separate root-managed
+`/etc/sitbank*/secrets/turnstile_secret_key` files and never writes the value
+to `container.env`. Production and staging use separate widgets for
+`sitbank.pp.ua`/`www.sitbank.pp.ua` and `staging-sitbank.pp.ua`. Keep both
+admin route flags false; the admin app remains private behind Tailscale.

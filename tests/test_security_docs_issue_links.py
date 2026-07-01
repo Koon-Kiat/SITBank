@@ -217,6 +217,7 @@ def test_security_docs_are_grouped_and_indexed_by_purpose():
             "data-retention-and-deactivation.md",
             "design-risk-register.md",
             "framework-control-matrix.md",
+            "github-branch-protection-evidence.md",
             "incident-response.md",
             "legacy-and-out-of-scope-technology.md",
             "privacy-and-pdpa.md",

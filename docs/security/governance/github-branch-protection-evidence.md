@@ -1,0 +1,45 @@
+# GitHub Branch Protection Evidence
+
+Category: [Security governance](../README.md#governance).
+
+Repository policy uses sentence-style workflow and job display names. Job IDs
+remain stable, lower-case, and machine-friendly. A required check is identified
+by its exact `Workflow / Job` display name; event suffixes are avoided unless
+two checks would otherwise collide.
+
+## Expected `main` ruleset
+
+- Require a pull request before merging, at least one approval, dismissal of
+  stale approvals, conversation resolution, and Code Owner review.
+- Require the branch to be up to date and require these stable PR checks:
+  - `CI, publish, and deploy / Workflow security`
+  - `CI, publish, and deploy / Test and security checks`
+  - `CI, publish, and deploy / Dependency review (PR only)`
+  - `ShellCheck / Repository shell scripts`
+  - `Hadolint / Repository Dockerfiles`
+  - `Semgrep / High-severity SAST`
+  - `Gitleaks / Full-history secret scan`
+  - `CodeQL / Python analysis`
+  - `Commit message policy / Commit message`
+  - `PR title policy / Pull request title`
+- Keep SonarQube Cloud, SBOM/provenance publishing, OpenSSF Scorecard, PR DAST
+  smoke, browser/e2e checks, label/comment automation, scheduled scans, manual
+  workflows, and post-merge deployment jobs reporting-only until separately
+  reviewed and approved as stable blocking checks.
+- Do not require staging deployment, production deployment, live TLS evidence,
+  or the private-admin tailnet gate before a pull request can merge. Those
+  controls run after merge to `main`.
+- Prevent force pushes and branch deletion; do not allow bypass except through
+  an explicitly reviewed emergency process.
+
+`.github/CODEOWNERS` covers the repository by default and calls out workflows,
+operations/deployment code, security and admin code, migrations, entry-point
+configuration, and security documentation. Repository files describe the
+expected configuration, but they cannot prove GitHub-hosted settings. A
+maintainer must compare this document with the active GitHub ruleset UI or
+sanitized approved CLI/API evidence after check-name or ruleset changes and at
+least quarterly.
+
+Roll out a renamed required check by first allowing the new workflow to complete
+successfully, updating the GitHub ruleset to the exact new check name, and only
+then removing the old name. This avoids an unmergeable branch-protection gap.

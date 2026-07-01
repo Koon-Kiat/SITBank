@@ -22,7 +22,9 @@ templates, fixtures, and full Git history. No path is excluded. The
 baseline. Its reviewed allowlists cover only a public package checksum, a
 public SonarQube Cloud project key, a synthetic historical password fixture,
 historical configuration-name mapping rows, and historical private-key-header
-validation cases. Each exception is constrained by rule, exact path, line
+validation cases. One commit-bound exception also covers the confirmed
+non-secret `CLAUDE.md` WebAuthn handling sentence that the generic API-key rule
+misclassified. Each exception is constrained by rule, exact path, line
 shape, and, where historical, commit.
 
 The workflow uploads no artifact and no SARIF. This is intentional: the

@@ -194,14 +194,14 @@ def test_sonarqube_properties_define_scope_coverage_and_reporting_policy():
     assert "tests/*" in coverage_config
 
 
-def test_sonarqube_docs_record_cloud_private_repo_and_nonblocking_policy():
+def test_sonarqube_docs_record_cloud_public_repo_and_nonblocking_policy():
     text = SONAR_DOC_PATH.read_text(encoding="utf-8")
     normalized = " ".join(text.split())
 
     for required in (
         "SonarQube Cloud",
-        "50,000",
-        "private",
+        "public",
+        "repository files cannot prove",
         "SONAR_TOKEN",
         "source code is sent",
         "reporting-only",

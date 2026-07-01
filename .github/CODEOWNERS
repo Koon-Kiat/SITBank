@@ -1,22 +1,21 @@
-# Default owner for application and documentation changes.
+# Default ownership and security-sensitive review surfaces.
 * @Koon-Kiat
-
-# Production supply-chain and deployment controls require explicit ownership.
+/.github/ @Koon-Kiat
 /.github/workflows/ @Koon-Kiat
-/.github/dependabot.yml @Koon-Kiat
 /Dockerfile @Koon-Kiat
 /compose.prod.yml @Koon-Kiat
 /compose.staging.yml @Koon-Kiat
-/requirements.in @Koon-Kiat
-/requirements-dev.in @Koon-Kiat
 /requirements.lock @Koon-Kiat
 /requirements-dev.lock @Koon-Kiat
-/ops/container/ @Koon-Kiat
-/ops/cloudflare/ @Koon-Kiat
+/ops/ @Koon-Kiat
 /ops/deploy/ @Koon-Kiat
 /ops/nginx/ @Koon-Kiat
 /ops/nginx-proxy-headers.conf @Koon-Kiat
 /ops/security/ @Koon-Kiat
-/ops/sudoers/ @Koon-Kiat
-/ops/systemd/ @Koon-Kiat
+/app/security/ @Koon-Kiat
+/app/admin/ @Koon-Kiat
 /migrations/ @Koon-Kiat
+/config.py @Koon-Kiat
+/wsgi.py @Koon-Kiat
+/admin_wsgi.py @Koon-Kiat
+/docs/security/ @Koon-Kiat

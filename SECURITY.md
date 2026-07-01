@@ -45,6 +45,8 @@ registry rules are downloaded, but source remains in the local/OSS scan
 boundary. Suppressions must be rule- and location-specific with a reviewed
 rationale. See
 `docs/security/assurance/test-automation-and-dependencies.md`.
+The dedicated ShellCheck workflow is authoritative; deployment CI does not
+maintain a second partial hardcoded ShellCheck list.
 
 Session HMAC rotation must keep the old key in
 `session_hmac_keys_json` only for the approved overlap period, set the new
@@ -200,9 +202,10 @@ Dependabot pull requests are never auto-merged. Review release notes and
 transitive changes, update the reviewed manifest, regenerate the applicable
 hash-locked files, and require the full test, SAST, dependency review,
 container smoke, Compose validation, and image scan checks. Full authenticated
-DAST is intentionally reserved for scheduled scans and release verification;
-ordinary pull requests skip it to keep feedback timely without weakening the
-release gate. Authenticated DAST uses only synthetic users. The CI helper writes
+ZAP DAST is reserved for scheduled scans and release verification. Pull
+requests also run a fast local-only DAST smoke with a synthetic session and
+sanitized summary; it does not replace the deeper release gate. Authenticated
+DAST uses only synthetic users. The CI helper writes
 the session cookie and ZAP replacer properties as temporary `0600` files under
 `umask 077`, mounts them only into the scanner path that needs them, passes only
 `-configfile` to ZAP, and removes the temporary directory through the smoke-test
@@ -214,7 +217,7 @@ before rerunning.
 The CI test job generates full-suite Python coverage once and passes
 `coverage.xml` as a short-lived artifact to its downstream reusable SonarQube
 job. That job reports maintainability, duplication, reliability, and security
-findings for the private repository without rerunning pytest. Its initial
+findings for the public repository without rerunning pytest. Its initial
 quality gate is reporting-only and does not participate in deployment.
 Successful trusted internal PR scans create or update one informational summary
 comment; fork and Dependabot PRs receive neither secret-backed analysis nor
@@ -223,7 +226,7 @@ source-processing implications, token rotation, scan scope, triage, comment
 behavior, and current plan eligibility are documented in
 `docs/security/assurance/sonarqube.md`. SonarQube complements and does not replace CodeQL,
 Semgrep, Bandit, secret scanning, dependency checks, or deployment tests;
-existing CodeQL private-repository behavior is unchanged.
+existing CodeQL behavior is unchanged.
 
 Critical advisories require immediate triage. High advisories require an owner
 and target date. A runtime upgrade is kept separate from ordinary package

@@ -26,6 +26,7 @@ evidence, and governance records remain easy to navigate.
 - [Data retention and deactivation](governance/data-retention-and-deactivation.md)
 - [Design risk register](governance/design-risk-register.md)
 - [Framework control matrix](governance/framework-control-matrix.md)
+- [GitHub branch protection evidence](governance/github-branch-protection-evidence.md)
 - [Incident response](governance/incident-response.md)
 - [Legacy and out-of-scope technology](governance/legacy-and-out-of-scope-technology.md)
 - [Privacy and PDPA](governance/privacy-and-pdpa.md)

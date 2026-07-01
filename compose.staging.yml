@@ -92,6 +92,7 @@ services:
       SECURITY_ALERT_WEBHOOK_URL_FILE: /run/secrets/security_alert_webhook_url
       SMTP_USERNAME_FILE: /run/secrets/smtp_username
       SMTP_PASSWORD_FILE: /run/secrets/smtp_password
+      TURNSTILE_SECRET_KEY_FILE: /run/secrets/turnstile_secret_key
     secrets:
       - source: secret_key
         target: secret_key
@@ -115,6 +116,8 @@ services:
         target: smtp_username
       - source: smtp_password
         target: smtp_password
+      - source: turnstile_secret_key
+        target: turnstile_secret_key
     volumes:
       - type: bind
         source: /etc/sitbank-staging/common-passwords.txt
@@ -288,6 +291,8 @@ secrets:
     file: /etc/sitbank-staging/secrets/smtp_username
   smtp_password:
     file: /etc/sitbank-staging/secrets/smtp_password
+  turnstile_secret_key:
+    file: /etc/sitbank-staging/secrets/turnstile_secret_key
   postgres_owner_password:
     file: /etc/sitbank-staging/secrets/postgres_owner_password
   postgres_app_password:

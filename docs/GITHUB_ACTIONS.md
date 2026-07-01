@@ -226,12 +226,17 @@ checks out with `persist-credentials: false`, needs no production secrets or
 deployment credentials, and performs no mutating infrastructure operation.
 
 `.github/workflows/shellcheck.yml` downloads checksum-verified ShellCheck
-0.11.0. `ops/security/discover_lint_targets.py` supplies every tracked `.sh`
+0.11.0 and is the authoritative repository-wide ShellCheck gate. It runs
+automatically on pull requests and pushes to `main`; manual dispatch is a
+rerun/debug path. `ops/security/discover_lint_targets.py` supplies every tracked `.sh`
 file and every tracked file with a supported `sh`/`bash` shebang, including
 backup, container, deployment, PostgreSQL, Tailscale, and operational scripts.
 Empty discovery fails closed. ShellCheck style, info, warning, and error
 findings fail the job. Existing `bash -n` checks remain useful syntax evidence
 but are not equivalent to ShellCheck.
+
+The blocking Bandit command scans `app`, `ops`, `config.py`, `wsgi.py`, and
+`admin_wsgi.py`, so both customer and admin WSGI entrypoints remain in scope.
 
 `.github/workflows/hadolint.yml` downloads checksum-verified Hadolint 2.14.0
 and uses the same helper to find every tracked `Dockerfile` and
@@ -259,9 +264,20 @@ should require `ShellCheck / Repository shell scripts`,
 
 ## DAST Policy
 
-Ordinary pull requests skip the full authenticated DAST crawl to keep feedback fast. They still run unit tests, compile checks, `pip check`, Bandit, dependency audits, dependency lock validation, the custom repository secret scan, the separate Gitleaks workflow, Docker image build, container smoke test, Compose validation, and Trivy gates.
+Ordinary pull requests skip the full authenticated ZAP crawl but run the
+dedicated `.github/workflows/dast-pr-smoke.yml` check against only a local
+ephemeral container. The smoke has a 12-minute command timeout, runs a
+two-minute unauthenticated ZAP baseline with selected header rules at `FAIL`,
+then exercises a synthetic local session. ZAP `FAIL` alerts and smoke
+regressions block; warnings remain report-only. The workflow uploads only a
+sanitized summary for seven days. It receives no
+deployment/provider credentials and never targets staging, production, or the
+private admin hostname.
 
 Authenticated DAST still runs before staging/production deployment during release verification. Manual staging can enable or disable DAST with `run_dast`; scheduled scans keep regular full DAST coverage. This means release verification retains that coverage while PRs stay responsive.
+
+Exact required-check names and the reporting-only status of PR DAST are
+recorded in `docs/security/governance/github-branch-protection-evidence.md`.
 
 Synthetic DAST users remain the only authenticated scan identities. The smoke
 helper writes the authenticated session cookie and ZAP replacer configuration to
