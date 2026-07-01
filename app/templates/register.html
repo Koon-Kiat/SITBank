@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_turnstile.html" as turnstile with context %}
 
 {% block title %}Register | SITBank{% endblock %}
 
@@ -78,6 +79,7 @@
         {% for error in form.confirm_password.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
       </div>
 
+      {{ turnstile.widget("customer_register") }}
       <p class="hint">Common passwords are rejected server-side.</p>
       <button class="button full" type="submit">Register account</button>
     </form>
@@ -94,6 +96,7 @@
           {{ otp_request_form.email(id="otp_request_email", autocomplete="email", maxlength="255", placeholder="name@example.com") }}
           {% for error in otp_request_form.email.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
         </div>
+        {{ turnstile.widget("customer_register_otp") }}
         <button class="button secondary full" type="submit">Send verification code</button>
       </form>
 

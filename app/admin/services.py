@@ -46,6 +46,7 @@ from app.security.passwords import (
     validate_password_policy,
     verify_password,
 )
+from app.security.password_history import mark_password_changed, replace_user_password
 from app.security.rate_limits import AuthBackoffRequired, apply_exponential_backoff, clear_failures, record_failure
 from app.security.session_hmac import active_hmac_hex
 from app.security.sessions import (
@@ -55,7 +56,7 @@ from app.security.sessions import (
     revoke_all_sessions,
     revoke_current_session,
 )
-from app.security.turnstile import TurnstileError, verify_turnstile_token
+from app.security.turnstile import TurnstileError, require_turnstile
 
 
 ACCOUNT_CUSTOMER = "customer"
@@ -1103,7 +1104,7 @@ def start_invite_acceptance(
 ) -> dict[str, Any]:
     _reject_forged_invite_fields(request_fields)
     try:
-        verify_turnstile_token(turnstile_token)
+        require_turnstile("admin_invite_accept", turnstile_token)
     except TurnstileError as exc:
         audit_event("staff_invite_accept", "failure", metadata={"reason": "turnstile_failed"})
         raise AuthError(INVITE_ACCEPTANCE_ERROR, 400) from exc
@@ -1136,6 +1137,7 @@ def start_invite_acceptance(
             staff_personal_email=None,
             mfa_enabled=False,
         )
+        mark_password_changed(user)
         db.session.add(user)
         db.session.flush()
         invite.setup_user_id = user.id
@@ -1144,7 +1146,7 @@ def start_invite_acceptance(
             raise AuthError(GENERIC_INVITE_ERROR, 401)
         user.full_name = name
         user.phone_number = phone
-        user.password_hash = hash_password(password)
+        replace_user_password(user, password)
         user.staff_personal_email = None
 
     secret = pyotp.random_base32(length=32)

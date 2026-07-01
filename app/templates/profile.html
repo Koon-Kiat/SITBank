@@ -79,12 +79,19 @@
             {{ form.email(autocomplete="email", maxlength="255") }}
             {% for error in form.email.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
           </div>
-          <div class="form-group">
-            <label for="{{ form.mfa_step_up_preference.id }}">Preferred verification</label>
-            {{ form.mfa_step_up_preference() }}
-            {% for error in form.mfa_step_up_preference.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
-            <p class="hint">Authenticator code is the active verification method.</p>
-          </div>
+          {% if pending_email_change %}
+            <div class="notice">
+              <span class="notice-icon" aria-hidden="true">
+                <svg class="icon" focusable="false"><use href="#icon-info"></use></svg>
+              </span>
+              <p class="muted">Enter the verification code sent to {{ pending_email_change.email }}.</p>
+            </div>
+            <div class="form-group">
+              <label for="{{ form.email_verification_code.id }}">Email verification code</label>
+              {{ form.email_verification_code(inputmode="numeric", autocomplete="one-time-code", maxlength="6", placeholder="6-digit code") }}
+              {% for error in form.email_verification_code.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+            </div>
+          {% endif %}
           <div class="form-group">
             <label for="{{ form.totp_code.id }}">Authenticator code</label>
             {{ form.totp_code(inputmode="numeric", autocomplete="one-time-code", maxlength="6", placeholder="6-digit code") }}

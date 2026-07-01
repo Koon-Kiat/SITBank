@@ -111,6 +111,7 @@ def test_authenticated_user_can_open_own_edit_profile_page(client):
     assert "Use an authenticator app for login MFA." in markup
     assert 'href="/security-keys"' not in markup
     assert 'class="badge warning"' not in markup
+    assert "Preferred verification" not in markup
 
 def test_profile_enables_change_password_action_after_mfa_setup(client):
     register(client)
@@ -147,8 +148,6 @@ def test_password_change_succeeds_with_recent_mfa_and_revokes_other_sessions(app
     old_hash = user.password_hash
     change_time = int(time.time())
     monkeypatch.setattr("app.auth.services.time.time", lambda: change_time)
-    with client.session_transaction() as sess:
-        session_before_change = sess.sid
 
     response = client.post(
         "/password/change",
@@ -160,8 +159,7 @@ def test_password_change_succeeds_with_recent_mfa_and_revokes_other_sessions(app
         },
     )
     db.session.refresh(user)
-    with client.session_transaction() as sess:
-        session_after_change = sess.sid
+    current_session_response = client.get("/auth/sessions")
     client.post("/logout")
     old_login = login(client)
     clear_failures("login", "127.0.0.1:alice01")
@@ -169,7 +167,7 @@ def test_password_change_succeeds_with_recent_mfa_and_revokes_other_sessions(app
     revoked_response = second_client.get("/auth/sessions")
 
     assert response.status_code == 302
-    assert session_after_change != session_before_change
+    assert current_session_response.status_code == 401
     assert user.password_hash != old_hash
     assert old_login.status_code == 401
     assert new_login.status_code == 302
@@ -290,6 +288,92 @@ def test_password_change_rejects_common_or_reused_password(client, monkeypatch):
     assert reused_response.status_code == 400
     assert common_response.status_code == 400
 
+
+def test_password_change_rejects_recent_password_history(client, monkeypatch):
+    register(client)
+    user, secret = enable_mfa_for_user()
+    totp = pyotp.TOTP(secret, digits=6, interval=30)
+    current_password = "correct horse battery staple"
+    first_new_password = "new correct horse battery staple"
+    second_new_password = "another correct horse battery staple"
+    base_time = int(time.time())
+
+    def mfa_login(password, timestamp):
+        assert login(client, password=password).status_code == 302
+        monkeypatch.setattr("app.auth.services.time.time", lambda: timestamp)
+        response = client.post(
+            "/auth/mfa/verify",
+            json={"totp_code": totp.at(timestamp)},
+        )
+        assert response.status_code == 200
+
+    def change_password_to(old_password, new_password, timestamp):
+        monkeypatch.setattr("app.auth.services.time.time", lambda: timestamp)
+        response = client.post(
+            "/password/change",
+            data={
+                "current_password": old_password,
+                "new_password": new_password,
+                "confirm_new_password": new_password,
+                "totp_code": totp.at(timestamp),
+            },
+        )
+        assert response.status_code == 302
+
+    mfa_login(current_password, base_time)
+    change_password_to(current_password, first_new_password, base_time + 30)
+    mfa_login(first_new_password, base_time + 60)
+    change_password_to(first_new_password, second_new_password, base_time + 90)
+    mfa_login(second_new_password, base_time + 120)
+    monkeypatch.setattr("app.auth.services.time.time", lambda: base_time + 150)
+
+    reused_response = client.post(
+        "/password/change",
+        data={
+            "current_password": second_new_password,
+            "new_password": current_password,
+            "confirm_new_password": current_password,
+            "totp_code": totp.at(base_time + 150),
+        },
+    )
+    db.session.refresh(user)
+
+    assert reused_response.status_code == 400
+    assert verify_password(second_new_password, user.password_hash)
+
+
+def test_forced_password_change_blocks_normal_routes_until_password_changed(client, monkeypatch):
+    from app.security.password_history import require_forced_password_change
+
+    register(client)
+    login(client)
+    user, secret = enable_mfa_for_user()
+    mark_recent_mfa(client, user)
+    require_forced_password_change(user, "compromised_password")
+    db.session.commit()
+    change_time = int(time.time())
+    monkeypatch.setattr("app.auth.services.time.time", lambda: change_time)
+
+    blocked_dashboard = client.get("/dashboard")
+    password_page = client.get("/password/change")
+    change_response = client.post(
+        "/password/change",
+        data={
+            "current_password": "correct horse battery staple",
+            "new_password": "new correct horse battery staple",
+            "confirm_new_password": "new correct horse battery staple",
+            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(change_time),
+        },
+    )
+    db.session.refresh(user)
+
+    assert blocked_dashboard.status_code == 403
+    assert b"Password change required" in blocked_dashboard.data
+    assert password_page.status_code == 200
+    assert change_response.status_code == 302
+    assert user.force_password_change is False
+    assert user.force_password_change_reason is None
+
 def test_profile_details_update_succeeds_for_authenticated_user(client, monkeypatch):
     register(client)
     login(client)
@@ -301,7 +385,7 @@ def test_profile_details_update_succeeds_for_authenticated_user(client, monkeypa
         "/profile",
         data={
             "username": "alice02",
-            "email": "alice.new@example.com",
+            "email": "alice@example.com",
             "mfa_step_up_preference": "totp",
             "totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(stepup_time),
         },
@@ -313,7 +397,7 @@ def test_profile_details_update_succeeds_for_authenticated_user(client, monkeypa
     assert response.status_code == 302
     assert response.headers["Location"].endswith("/profile")
     assert user.username == "alice02"
-    assert user.email == "alice.new@example.com"
+    assert user.email == "alice@example.com"
     assert new_username_login.status_code == 302
     assert new_username_login.headers["Location"].endswith("/mfa/verify")
     assert db.session.query(SecurityAuditEvent).filter_by(event_type="profile_update", outcome="success").count() == 1
@@ -345,24 +429,47 @@ def test_profile_email_update_rejects_passkey_stepup_token(client):
     assert user.email == "alice@example.com"
     assert b"Enter an authenticator code to verify this action" in response.data
 
-def test_profile_email_update_accepts_totp_stepup_without_passkey(client):
+def test_profile_email_update_requires_email_code_and_totp_stepup(client, monkeypatch):
+    from app.security.email import password_reset_outbox
+
     register(client)
     login(client)
     user, secret = enable_mfa_for_user()
     mark_recent_mfa(client, user)
+    request_time = int(time.time())
+    commit_time = request_time + 30
+    monkeypatch.setattr("app.auth.services.time.time", lambda: request_time)
 
-    response = client.post(
+    request_response = client.post(
         "/profile",
         data={
             "username": "alice01",
             "email": "alice.mfa@example.com",
             "mfa_step_up_preference": "totp",
-            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).now(),
+            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(request_time),
         },
     )
     db.session.refresh(user)
 
-    assert response.status_code == 302
+    body = password_reset_outbox()[-1]["body"]
+    match = re.search(r"\b([0-9]{6})\b", body)
+    assert match is not None
+    assert request_response.status_code == 200
+    assert user.email == "alice@example.com"
+
+    monkeypatch.setattr("app.auth.services.time.time", lambda: commit_time)
+    commit_response = client.post(
+        "/profile",
+        data={
+            "username": "alice01",
+            "email": "alice.mfa@example.com",
+            "email_verification_code": match.group(1),
+            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(commit_time),
+        },
+    )
+    db.session.refresh(user)
+
+    assert commit_response.status_code == 302
     assert user.email == "alice.mfa@example.com"
 
 
@@ -383,9 +490,8 @@ def test_profile_preference_rejects_passkey_when_not_enrolled(client):
     )
     db.session.refresh(user)
 
-    assert response.status_code == 400
+    assert response.status_code == 302
     assert user.mfa_step_up_preference == "totp"
-    assert b"Passkey verification preference is no longer available" in response.data
 
 
 def test_legacy_passkey_does_not_unlock_profile_without_totp(client):
@@ -555,7 +661,7 @@ def test_profile_submission_cannot_modify_privileged_fields(client):
         "/profile",
         data={
             "username": "alice02",
-            "email": "alice.new@example.com",
+            "email": "alice@example.com",
             "mfa_step_up_preference": "totp",
             "totp_code": pyotp.TOTP(secret, digits=6, interval=30).now(),
             "user_id": str(other_user.id),
@@ -570,7 +676,7 @@ def test_profile_submission_cannot_modify_privileged_fields(client):
 
     assert response.status_code == 302
     assert user.username == "alice02"
-    assert user.email == "alice.new@example.com"
+    assert user.email == "alice@example.com"
     assert user.mfa_enabled is True
     assert user.is_frozen is False
     assert user.password_hash == original_password_hash
@@ -586,8 +692,8 @@ def test_high_risk_stepup_token_is_rejected(client):
     response = client.post(
         "/profile",
         data={
-            "username": "alice01",
-            "email": "alice.stepup@example.com",
+            "username": "alice02",
+            "email": "alice@example.com",
             "mfa_step_up_preference": "totp",
             "stepup_token": token,
         },
@@ -608,8 +714,8 @@ def test_high_risk_action_without_passkey_accepts_totp_stepup(client):
     response = client.post(
         "/profile",
         data={
-            "username": "alice01",
-            "email": "alice.needs-keys@example.com",
+            "username": "alice02",
+            "email": "alice@example.com",
             "mfa_step_up_preference": "totp",
             "totp_code": pyotp.TOTP(secret, digits=6, interval=30).now(),
         },
@@ -617,7 +723,7 @@ def test_high_risk_action_without_passkey_accepts_totp_stepup(client):
     db.session.refresh(user)
 
     assert response.status_code == 302
-    assert user.email == "alice.needs-keys@example.com"
+    assert user.username == "alice02"
 
 def test_totp_user_without_passkeys_can_navigate_and_use_high_risk_forms(client):
     register(client)

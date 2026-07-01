@@ -45,6 +45,7 @@ SESSION_END_REASON_LABELS = {
     "risk_change": "Session context changed",
     "rotated": "Session refreshed",
     "integrity_failure": "Session integrity failure",
+    "session_cap": "Replaced by a new sign-in",
     "ended": "Ended",
 }
 
@@ -347,6 +348,8 @@ def establish_authenticated_session(
     rotate_session_id()
     refresh_session_risk_fingerprint()
     register_session_metadata(user_id=user_id, login_time=login_time)
+    if mfa_verified:
+        enforce_active_session_cap(user_id)
     return current_session_id() or ""
 
 
@@ -882,6 +885,49 @@ def revoke_all_sessions(user_id: int, *, ended_reason: str = "revoked") -> int:
         _end_session_record(record, ended_reason=ended_reason, now=_utcnow())
         revoked += 1
     return revoked
+
+
+def enforce_active_session_cap(user_id: int) -> int:
+    max_active_sessions = _configured_active_session_cap()
+    current_lookup_hash = session_lookup_hash(current_session_id()) if current_session_id() else ""
+    kept = 0
+    revoked = 0
+    now = _utcnow()
+    records = _active_session_records(user_id)
+    current_record = _current_session_record()
+    if (
+        current_record is not None
+        and current_record.user_id == int(user_id)
+        and current_record.revoked_at is None
+        and current_record.ended_at is None
+        and current_record not in records
+    ):
+        records.append(current_record)
+    records.sort(
+        key=lambda record: (
+            record.session_lookup_hash != current_lookup_hash,
+            _as_utc_datetime(record.created_at),
+            int(record.id or 0),
+        ),
+        reverse=False,
+    )
+    for record in records:
+        if kept < max_active_sessions:
+            kept += 1
+            continue
+        _end_session_record(record, ended_reason="session_cap", now=now)
+        revoked += 1
+    if revoked:
+        db.session.commit()
+    return revoked
+
+
+def _configured_active_session_cap() -> int:
+    try:
+        configured = int(current_app.config.get("MAX_ACTIVE_SESSIONS", 1))
+    except (TypeError, ValueError):
+        return 1
+    return 1 if configured != 1 else configured
 
 
 def _end_session_id(session_id: str, *, ended_reason: str) -> None:

@@ -9,6 +9,7 @@ from app.extensions import limiter
 from app.auth.mfa_policy import has_enrolled_mfa_method
 from app.admin.services import is_customer_user
 from app.security.rate_limits import mfa_principal, request_principal
+from app.security.turnstile import TurnstileError, require_turnstile
 
 from .decorators import login_required, not_frozen_required
 from .forms import (
@@ -147,6 +148,11 @@ def handle_registration_otp_error(error: RegistrationOtpError):
     return response, error.status_code
 
 
+@auth_bp.errorhandler(TurnstileError)
+def handle_turnstile_error(_error: TurnstileError):
+    return jsonify({"error": "Challenge verification failed"}), 400
+
+
 @auth_bp.errorhandler(ValidationError)
 def handle_validation_error(error: ValidationError):
     return jsonify({"error": "Invalid request"}), 400
@@ -162,6 +168,7 @@ def csrf_token():
 @limiter.limit("3 per 5 minutes", key_func=request_principal)
 def register_otp_request():
     data = _load_payload(RegistrationOtpRequestSchema(), RegistrationOtpRequestForm)
+    require_turnstile("customer_register_otp")
     return jsonify(request_registration_otp(data["email"]))
 
 
@@ -178,6 +185,7 @@ def register_otp_verify():
 @limiter.limit("5 per 5 minutes", key_func=request_principal)
 def register():
     data = _load_payload(RegisterSchema(), RegisterForm)
+    require_turnstile("customer_register")
     user, warnings = register_user(data)
     return (
         jsonify(
@@ -204,6 +212,7 @@ def register():
 @limiter.limit("5 per minute", key_func=request_principal)
 def login():
     data = _load_payload(LoginSchema(), LoginForm)
+    require_turnstile("customer_login")
     return jsonify(authenticate_primary(data["identifier"], data["password"]))
 
 
@@ -212,6 +221,7 @@ def login():
 @limiter.limit("5 per 15 minutes", key_func=request_principal)
 def password_reset_request():
     data = _load_payload(ForgotPasswordSchema(), ForgotPasswordForm)
+    require_turnstile("customer_password_reset")
     return jsonify(request_password_reset(data["email"]))
 
 
