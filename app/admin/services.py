@@ -199,6 +199,10 @@ def require_admin_session() -> User:
     return user
 
 
+def verify_admin_totp_step_up(actor: User, totp_code: str | None, scope: str) -> bool:
+    return bool(totp_code) and _verify_totp_for_user(actor, totp_code, scope)
+
+
 def role_rank(role: str | None) -> int:
     return ROLE_HIERARCHY.get(str(role or ACCOUNT_CUSTOMER).strip().casefold(), -1)
 

@@ -38,7 +38,7 @@ Representative event families include:
 | Password reset and manual recovery | `password_reset_requested`, `password_reset_token_exchanged`, `password_reset_mfa_failed`, `password_reset_completed`, `manual_recovery_requested`, `manual_recovery_admin_transition`, `manual_recovery_completed` | `app/auth/password_reset.py`, `app/admin/services.py` |
 | Session management | `session_terminate`, `session_revoke_others`, `session_integrity`, `session_expired`, `session_risk` | `app/auth/services.py`, `app/security/sessions.py` |
 | Account security | `password_change`, account detail updates, `account_freeze` | `app/auth/services.py` |
-| Admin and staff operations | `admin_dashboard_access`, `staff_invite_create`, `staff_invite_revoked`, `staff_invite_accept`, `staff_account_activated`, `staff_account_deactivated`, `staff_account_reactivated`, `staff_activation_reset`, `audit_log_view`, `security_alert_review`, `admin_access_denied` | `app/admin/services.py`, `app/admin/routes.py` |
+| Admin and staff operations | `admin_dashboard_access`, `staff_invite_create`, `staff_invite_revoked`, `staff_invite_accept`, `staff_account_activated`, `staff_account_deactivated`, `staff_account_reactivated`, `staff_activation_reset`, `audit_log_view`, `security_alert_review`, `security_alert_delivery`, `admin_access_denied` | `app/admin/services.py`, `app/admin/routes.py` |
 | Banking and payees | `payee_lookup`, `payee_add`, `payee_remove`, transaction validation events | `app/banking/routes.py`, `app/banking/services.py` |
 | Operations | `mfa_dek_rewrap`, audit chain verification/export, alert checks | `app/ops/commands.py`, `app/security/audit.py`, `app/security/alerts.py` |
 
@@ -158,8 +158,24 @@ logged.
 
 Authorized admin/root users can review current security alert report output at
 `GET /alerts`. This dashboard route calls `build_security_alert_report()` with
-delivery disabled; it does not send, resend, or acknowledge alerts. Alert
-delivery remains an operator-controlled CLI/timer workflow.
+delivery disabled; it does not send, resend, or acknowledge alerts. The browser
+view shows labeled report cards, actionable safe alert details, audit-chain and
+database-integrity status, delivery status, dedupe status, next action text,
+and links to existing authorized audit-event detail pages only when a related
+event row exists.
+
+Manual browser delivery is explicit and state-changing through
+`POST /alerts/deliver` only. The route requires the existing admin/root session
+authorization, the normal browser CSRF token, and a current TOTP step-up before
+calling the same `build_security_alert_report(deliver=True)` path used by the
+CLI/timer. It does not implement a parallel delivery mechanism, force-resend
+mode, Web Push subscription, or browser notification channel. Existing severity
+filtering, final delivery sanitization, and `SecurityAlertDedupe` suppression
+remain in force. The route audits safe `security_alert_delivery` outcomes for
+`requested`, `delivered`, `deduped`, `failed`, and `blocked` without storing
+webhook URLs, tokens, TOTP codes, CSRF tokens, request bodies, authorization
+headers, cookies, or raw alert payloads. Browser responses use safe
+redirect/flash messages; JSON clients receive a whitelisted safe summary.
 
 Operational logs are intentionally outside the admin app. Nginx, container,
 deployment, systemd, Cloudflare, Tailscale, and other host-operation logs belong

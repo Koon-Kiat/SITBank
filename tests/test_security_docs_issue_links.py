@@ -156,6 +156,43 @@ def test_operational_observability_keeps_loki_out_of_admin_app():
         assert forbidden.casefold() not in combined.casefold()
 
 
+def test_security_alert_delivery_docs_match_admin_controls():
+    audit_docs = (
+        SECURITY_DOCS / "assurance" / "audit-and-alerting.md"
+    ).read_text(encoding="utf-8")
+    access_docs = (
+        SECURITY_DOCS / "architecture" / "access-control.md"
+    ).read_text(encoding="utf-8")
+    operations = Path("docs/OPERATIONS.md").read_text(encoding="utf-8")
+    combined = " ".join(f"{audit_docs}\n{access_docs}\n{operations}".split())
+
+    for required in (
+        "`GET /alerts`",
+        "delivery disabled",
+        "`POST /alerts/deliver`",
+        "CSRF",
+        "current TOTP step-up",
+        "build_security_alert_report(deliver=True)",
+        "SecurityAlertDedupe",
+        "security_alert_delivery",
+        "requested",
+        "delivered",
+        "deduped",
+        "failed",
+        "blocked",
+        "no browser force-resend mode or Web Push channel",
+    ):
+        assert required in combined
+    for forbidden in (
+        "GET /alerts sends",
+        "GET /alerts delivers",
+        "delivery bypasses CSRF",
+        "delivery bypasses TOTP",
+        "delivery bypasses admin",
+    ):
+        assert forbidden.casefold() not in combined.casefold()
+
+
 def test_security_docs_are_grouped_and_indexed_by_purpose():
     assert sorted(path.name for path in SECURITY_DOCS.glob("*.md")) == ["README.md"]
 
