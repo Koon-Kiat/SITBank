@@ -52,6 +52,13 @@ output. Sensitive keys and sensitive-looking values are redacted recursively in
 dicts and lists. Raw identifiers are represented with HMAC-derived references
 through `audit_reference()` and `principal_reference()`.
 
+Banking and payee audit calls must avoid raw account identifiers and
+customer-controlled free text at the call site. Use fields such as
+`payee_account_ref`, `transaction_ref`, boolean presence flags, counts, and
+bounded lengths so investigation correlation remains possible without storing
+raw account numbers, payee nicknames, or transfer reference text in the audit
+row.
+
 Do not log or paste these values into audit metadata, application logs, alert
 payloads, tickets, or chat:
 
@@ -74,6 +81,7 @@ Relevant tests:
 | `tests/test_audit_alerting.py::test_structured_audit_log_output_is_sanitized` | Structured audit logs are safe for log forwarding |
 | `tests/test_password_reset.py` reset-token tests | Password reset tokens and recovery codes are not stored or logged raw |
 | `tests/test_payee_management_security.py::test_invalid_payee_lookup_is_generic_and_audited` | Payee lookup failures audit only safe account references |
+| `tests/test_payee_management_security.py::test_payee_add_and_remove_audit_metadata_uses_safe_references` | Payee add/remove events store safe account references and bounded nickname metadata |
 
 ## Audit Integrity
 

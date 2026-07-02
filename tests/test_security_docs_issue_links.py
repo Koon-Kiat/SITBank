@@ -195,6 +195,25 @@ def test_security_alert_delivery_docs_match_admin_controls():
         assert forbidden.casefold() not in combined.casefold()
 
 
+def test_payee_audit_docs_require_references_and_bounded_metadata():
+    audit_docs = (
+        SECURITY_DOCS / "assurance" / "audit-and-alerting.md"
+    ).read_text(encoding="utf-8")
+    privacy_docs = (
+        SECURITY_DOCS / "governance" / "privacy-and-pdpa.md"
+    ).read_text(encoding="utf-8")
+    combined = " ".join(f"{audit_docs}\n{privacy_docs}".split()).casefold()
+
+    for required in (
+        "payee audit calls must avoid raw account identifiers",
+        "customer-controlled free text at the call site",
+        "payee_account_ref",
+        "bounded lengths",
+        "instead of raw account numbers or customer-entered nicknames",
+    ):
+        assert required in combined
+
+
 def test_security_docs_are_grouped_and_indexed_by_purpose():
     assert sorted(path.name for path in SECURITY_DOCS.glob("*.md")) == ["README.md"]
 
