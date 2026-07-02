@@ -229,6 +229,74 @@ class ManualRecoveryRequest(db.Model):
     user = db.relationship("User", backref="manual_recovery_requests")
 
 
+class AdminActionRequest(db.Model):
+    __tablename__ = "admin_action_requests"
+
+    id = db.Column(db.Integer, primary_key=True)
+    operation_type = db.Column(db.String(80), nullable=False, index=True)
+    target_type = db.Column(db.String(80), nullable=False, index=True)
+    target_id = db.Column(db.String(64), nullable=False, index=True)
+    operation_payload = db.Column(db.JSON, nullable=False, default=dict)
+    requester_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
+    requester_role = db.Column(db.String(32), nullable=False)
+    approver_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=True, index=True)
+    status = db.Column(db.String(32), nullable=False, default="pending", index=True)
+    reason_present = db.Column(db.Boolean, nullable=False, default=False)
+    reason_length = db.Column(db.Integer, nullable=False, default=0)
+    metadata_hmac = db.Column(db.String(64), nullable=False)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+    )
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
+    decided_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    executed_at = db.Column(db.DateTime(timezone=True), nullable=True)
+
+    requester = db.relationship(
+        "User",
+        foreign_keys=[requester_id],
+        backref="requested_admin_actions",
+    )
+    approver = db.relationship(
+        "User",
+        foreign_keys=[approver_id],
+        backref="approved_admin_actions",
+    )
+
+    __table_args__ = (
+        db.CheckConstraint(
+            (
+                "operation_type IN ("
+                "'staff_deactivate', 'staff_reactivate', 'staff_reset_activation', "
+                "'manual_recovery_approve', 'manual_recovery_deny', 'manual_recovery_complete'"
+                ")"
+            ),
+            name="ck_admin_action_requests_operation_type",
+        ),
+        db.CheckConstraint(
+            "target_type IN ('staff_user', 'manual_recovery_request')",
+            name="ck_admin_action_requests_target_type",
+        ),
+        db.CheckConstraint(
+            "requester_role IN ('root_admin')",
+            name="ck_admin_action_requests_requester_role",
+        ),
+        db.CheckConstraint(
+            "status IN ('pending', 'rejected', 'cancelled', 'expired', 'executed', 'execution_failed')",
+            name="ck_admin_action_requests_status",
+        ),
+        Index("ix_admin_action_requests_status_expires_at", "status", "expires_at"),
+    )
+
+
 class ServerSideSession(db.Model):
     __tablename__ = "server_side_sessions"
 

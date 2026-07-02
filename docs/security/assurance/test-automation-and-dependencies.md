@@ -97,7 +97,7 @@ deployment.
 | Configuration and secret validation | `tests/test_config.py`, `tests/test_deployment.py` |
 | Registration, login, password policy, and rate limits | `tests/test_auth_registration_login.py`, `tests/test_passwords.py` |
 | MFA lifecycle and envelope encryption | `tests/test_mfa_lifecycle.py`, `tests/test_mfa_envelope_crypto.py` |
-| Password reset and manual recovery services | `tests/test_password_reset.py`, `tests/test_admin_manual_recovery.py` |
+| Password reset and manual recovery services | `tests/test_password_reset.py`, `tests/test_admin_manual_recovery.py`, `tests/test_admin_maker_checker.py` |
 | Database session integrity | `tests/test_db_session_integrity.py` |
 | Session management UI/API | `tests/test_session_management.py`, `tests/test_session_absolute_lifetime.py` |
 | Auth bypass and pentest regressions | `tests/test_pentest_auth_bypass.py`, `tests/test_owasp_regressions.py` |
@@ -115,7 +115,8 @@ by `tests/test_payee_management_security.py`.
 
 Admin route authorization has a separate generated route-inventory matrix in
 `tests/test_admin_route_inventory_security.py`, plus targeted admin service
-tests for staff invites and manual recovery.
+tests for staff invites, manual recovery, maker-checker approval, and the
+manual-only root-admin bootstrap boundary.
 
 Playwright E2E browser tests are opt-in for local unscoped pytest because they
 require browser binaries. To run them locally:

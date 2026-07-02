@@ -378,7 +378,10 @@ exactly 7 approved admin workplace email addresses from
 normal customer registration and staff invites must not create `root_admin`
 accounts. Configure `ROOT_ADMIN_EMAILS` as a protected GitHub environment
 variable in both `staging` and `production` before deploying this command. Do
-not commit the allowlist to the repository.
+not commit the allowlist to the repository. Production/admin runtime rejects
+missing, empty, malformed, duplicate, built-in default, placeholder, demo,
+example, personal-domain, and non-approved-domain root-admin allowlists before
+serving admin traffic.
 
 Privileged root-admin, admin, and staff accounts use approved SIT workplace
 email domains only. Do not configure personal-provider domains in
@@ -397,10 +400,13 @@ sudo docker exec sitbank-admin printenv ROOT_ADMIN_EMAILS
 ```
 
 The output must be the configured comma-separated 7-email allowlist before you
-run bootstrap.
+run bootstrap. It must not be the built-in `root1` through `root7` development
+placeholder set.
 
-When no usable root admin exists, run the shell-only bootstrap command from the
-already deployed private admin container:
+Root-admin bootstrap remains a manual-only private operator procedure in the
+current design and must not run from GitHub Actions, deployment automation, or
+non-interactive bootstrap wrappers. When no usable root admin exists, run the
+shell-only bootstrap command from the already deployed private admin container:
 
 ```bash
 sudo docker exec -it sitbank-admin \
@@ -424,11 +430,16 @@ root-admin password, TOTP secret, QR code, provisioning URI, or setup values
 through Actions inputs or secrets.
 
 The command prints one-time sensitive TOTP setup output: a manual-entry secret
-and provisioning URI. Add it to an authenticator app immediately. Do not paste
-that output into logs, tickets, chat, shell history, or committed files. The
+and provisioning URI. Add it to an authenticator app immediately. Do not paste,
+screenshot, commit, upload, or store the root-admin password, TOTP secret, QR
+code, provisioning URI, or setup output in GitHub logs, artifacts, job summaries,
+issues, PRs, docs, chat, tickets, shell history, screenshots, or committed files. The
 bootstrap stores only the protected password hash and envelope-encrypted TOTP
 secret, sets the account active, marks the workplace email verified, and records
 a safe `root_admin_bootstrap` audit event without the password or TOTP secret.
+Any future automation must be a separate reviewed design with protected
+environment approval, no plaintext bootstrap material in logs or artifacts,
+short-lived one-time delivery, and explicit redaction tests.
 After bootstrap, open `https://admin-sitbank.tailca101b.ts.net/login` from an
 approved tailnet device and use that workplace email, password, and TOTP code to
 enter the private dashboard.

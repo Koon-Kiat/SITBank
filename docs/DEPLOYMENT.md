@@ -399,8 +399,12 @@ admin bootstrap support. It is a non-secret allowlist, but it is
 security-critical: the value must be exactly 7 comma-separated SIT workplace
 email addresses. The deployment workflow renders it into
 `/etc/sitbank*/container.env` so `sitbank-admin` and `sitbank-staging-admin`
-can enforce the fixed root-admin group. Root-admin bootstrap remains manual
-over SSH inside the admin container; it is not a GitHub Actions workflow.
+can enforce the fixed root-admin group. The production/admin runtime rejects the
+built-in development root-admin set, placeholders, demo/example identities,
+duplicates after normalization, personal domains, and non-approved domains.
+Root-admin bootstrap remains manual over SSH inside the admin container; it is
+not a GitHub Actions workflow, deployment automation step, or non-interactive
+bootstrap wrapper.
 `ADMIN_ALLOWED_EMAIL_DOMAINS` defines the approved privileged workplace-domain
 allowlist for root-admin, admin, and staff identities. Do not set it to
 personal-provider domains; staff invites use the workplace email and do not

@@ -18,6 +18,12 @@ from config import MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS, MIN_PRODUCTION_PASSWOR
 from conftest import TestConfig
 
 
+EXPLICIT_ROOT_ADMIN_EMAILS = frozenset(
+    f"chief{index}@sit.singaporetech.edu.sg"
+    for index in range(1, 8)
+)
+
+
 def _production_app(monkeypatch, *, app_mode: str = "customer"):
     from app import create_app
     import app.security.production_guard as production_guard
@@ -38,6 +44,7 @@ def _production_app(monkeypatch, *, app_mode: str = "customer"):
     )
     if app_mode == "admin":
         app.config["RATELIMIT_KEY_PREFIX"] = "ospbank:admin:ratelimit:"
+        app.config["ROOT_ADMIN_EMAILS"] = EXPLICIT_ROOT_ADMIN_EMAILS
     with app.app_context():
         db.create_all()
     return app
@@ -177,6 +184,68 @@ def test_admin_validator_rejects_root_admin_allowlist_outside_admin_domains(monk
     result = validate_production_security_prerequisites(app, app_mode="admin")
 
     assert "ROOT_ADMIN_EMAILS must use approved admin workplace domains" in result.failures
+
+
+@pytest.mark.parametrize(
+    ("emails", "expected_failure"),
+    [
+        (
+            TestConfig.ROOT_ADMIN_EMAILS,
+            "ROOT_ADMIN_EMAILS must be explicitly configured for production/admin runtime",
+        ),
+        (
+            tuple(reversed(tuple(TestConfig.ROOT_ADMIN_EMAILS))),
+            "ROOT_ADMIN_EMAILS must be explicitly configured for production/admin runtime",
+        ),
+        (
+            tuple(item.upper() for item in TestConfig.ROOT_ADMIN_EMAILS),
+            "ROOT_ADMIN_EMAILS must be explicitly configured for production/admin runtime",
+        ),
+        (
+            (
+                "chief1@sit.singaporetech.edu.sg",
+                "chief1@sit.singaporetech.edu.sg",
+                "chief3@sit.singaporetech.edu.sg",
+                "chief4@sit.singaporetech.edu.sg",
+                "chief5@sit.singaporetech.edu.sg",
+                "chief6@sit.singaporetech.edu.sg",
+                "chief7@sit.singaporetech.edu.sg",
+            ),
+            "ROOT_ADMIN_EMAILS must not contain duplicate email addresses",
+        ),
+        (
+            (
+                "demo@sit.singaporetech.edu.sg",
+                "chief2@sit.singaporetech.edu.sg",
+                "chief3@sit.singaporetech.edu.sg",
+                "chief4@sit.singaporetech.edu.sg",
+                "chief5@sit.singaporetech.edu.sg",
+                "chief6@sit.singaporetech.edu.sg",
+                "chief7@sit.singaporetech.edu.sg",
+            ),
+            "ROOT_ADMIN_EMAILS must not contain placeholder, demo, or example identities",
+        ),
+    ],
+)
+def test_admin_validator_rejects_unsafe_root_admin_allowlists(
+    monkeypatch,
+    emails,
+    expected_failure,
+):
+    app = _production_app(monkeypatch, app_mode="admin")
+    app.config["ROOT_ADMIN_EMAILS"] = emails
+
+    result = validate_production_security_prerequisites(app, app_mode="admin")
+
+    assert expected_failure in result.failures
+
+
+def test_admin_startup_guard_rejects_builtin_root_admin_default(monkeypatch):
+    app = _production_app(monkeypatch, app_mode="admin")
+    app.config["ROOT_ADMIN_EMAILS"] = TestConfig.ROOT_ADMIN_EMAILS
+
+    with pytest.raises(ProductionStartupSecurityError, match="ROOT_ADMIN_EMAILS"):
+        enforce_production_startup_guard(app, app_mode="admin")
 
 
 def test_admin_production_check_reports_legacy_privileged_email_noncompliance(monkeypatch):
