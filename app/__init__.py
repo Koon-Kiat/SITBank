@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from flask import Flask, g, jsonify, render_template, request
 from flask_wtf.csrf import CSRFError
@@ -63,6 +63,7 @@ def create_app(config_object: type[Config] = Config, *, app_mode: str = "custome
     register_forced_password_change_guard(app)
     register_error_handlers(app)
     register_no_store_headers(app)
+    register_datetime_template_helpers(app)
     register_turnstile_template_helpers(app)
     register_ops_commands(app)
 
@@ -227,6 +228,18 @@ def register_error_handlers(app: Flask) -> None:
             )
         )
         return respond("Server error. Please try again later.", 500)
+
+
+def register_datetime_template_helpers(app: Flask) -> None:
+    singapore_tz = timezone(timedelta(hours=8))
+
+    @app.template_filter("sgt")
+    def to_singapore_time(value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(singapore_tz)
 
 
 def register_no_store_headers(app: Flask) -> None:

@@ -175,16 +175,16 @@ def test_dashboard_quick_actions_have_correct_labels(client):
     assert "Monthly Statement" in markup
 
 
-def test_dashboard_all_quick_actions_are_coming_soon(client):
+def test_dashboard_remaining_quick_actions_are_coming_soon(client):
     login_with_mfa(client)
     markup = client.get("/dashboard").data.decode("utf-8")
-    assert markup.count("Coming soon") == 3
+    assert markup.count("Coming soon") == 2
 
 
 def test_dashboard_quick_actions_are_disabled(client):
     login_with_mfa(client)
     markup = client.get("/dashboard").data.decode("utf-8")
-    assert markup.count("is-disabled") >= 3
+    assert markup.count("is-disabled") >= 2
 
 
 def test_dashboard_local_transfer_links_to_payees_when_mfa_ready(client):
@@ -192,6 +192,13 @@ def test_dashboard_local_transfer_links_to_payees_when_mfa_ready(client):
     markup = client.get("/dashboard").data.decode("utf-8")
     assert 'href="/banking/payees"' in markup
     assert "Local Transfer" in markup
+
+
+def test_dashboard_payup_links_to_payup_when_mfa_ready(client):
+    login_with_mfa(client)
+    markup = client.get("/dashboard").data.decode("utf-8")
+    assert 'href="/banking/payup"' in markup
+    assert "PayUp" in markup
 
 
 # ── Recent transactions panel ──────────────────────────────────────────────────

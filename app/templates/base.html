@@ -139,7 +139,7 @@
                   </span>
                   <span class="account-trigger-copy">
                     <span class="sr-only">Account</span>
-                    <span class="account-trigger-name">{{ g.current_user.username }}</span>
+                    <span class="account-trigger-name">{{ g.current_user.full_name or g.current_user.username }}</span>
                   </span>
                 </button>
                 <div class="account-panel" id="account-menu-panel" role="menu" aria-labelledby="account-menu-button" data-account-panel hidden>
@@ -159,8 +159,10 @@
                   {% if g.mfa_ready %}
                     <a role="menuitem" href="{{ url_for('web.sessions_dashboard') }}">Active Sessions</a>
                     {% if g.high_risk_ready %}
+                      <a role="menuitem" href="{{ url_for('banking.transfer_limits') }}">Daily Transfer Limit</a>
                       <a role="menuitem" href="{{ url_for('web.freeze_account') }}">Freeze Account</a>
                     {% else %}
+                      <span role="menuitem" class="is-disabled" aria-disabled="true">Daily Transfer Limit</span>
                       <span role="menuitem" class="is-disabled" aria-disabled="true">Freeze Account</span>
                     {% endif %}
                   {% endif %}
