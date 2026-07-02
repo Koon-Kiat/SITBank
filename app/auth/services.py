@@ -78,8 +78,8 @@ from .recovery_codes import (
 
 
 GENERIC_LOGIN_ERROR = "Invalid username or password"
-GENERIC_MFA_ERROR = "Invalid authentication code."
-AUTH_BACKOFF_ERROR = "Too many attempts. Please try again later."
+GENERIC_MFA_ERROR = "Incorrect code. Check your authenticator and try again."
+AUTH_BACKOFF_ERROR = "Too many failed attempts. Please wait before trying again."
 ACCOUNT_AUTH_UNAVAILABLE_ERROR = "Authentication unavailable for this account"
 PROFILE_UPDATE_ERROR = "Profile could not be updated with those details"
 AUTH_LOCK_THRESHOLD = 10
@@ -238,7 +238,7 @@ def register_user(data: dict[str, Any]) -> tuple[User, list[str]]:
 
     if _find_user_by_registration_fields(data["username"], normalized_email, data["phone_number"]):
         audit_event("registration", "failure", metadata={"reason": "duplicate_identifier"})
-        raise AuthError("Registration could not be completed with those details", 400)
+        raise AuthError("That username or phone number is already in use. Please try different details.", 400)
 
     user = User(
         username=data["username"].strip(),
@@ -258,7 +258,7 @@ def register_user(data: dict[str, Any]) -> tuple[User, list[str]]:
     except IntegrityError as exc:
         db.session.rollback()
         audit_event("registration", "failure", metadata={"reason": "integrity_error"})
-        raise AuthError("Registration could not be completed with those details", 400) from exc
+        raise AuthError("That username or phone number is already in use. Please try different details.", 400) from exc
     consume_verified_registration_email(normalized_email)
     audit_event(
         "registration",

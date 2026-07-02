@@ -2,39 +2,64 @@
 {% import "_turnstile.html" as turnstile with context %}
 
 {% block title %}Register | SITBank{% endblock %}
+{% block alerts %}{% endblock %}
 
 {% block content %}
 <section class="auth-shell">
   <div class="auth-intro">
-    <p class="eyebrow">New customer profile</p>
-    <h1>Create your online banking profile</h1>
-    <p class="lede">Use a personal customer email address to verify your registration before creating a secure banking portal profile.</p>
-    <div class="notice">
-      <span class="notice-icon" aria-hidden="true">
-        <svg class="icon" focusable="false"><use href="#icon-info"></use></svg>
-      </span>
-      <p class="muted">SIT workplace email addresses are reserved for staff and admin access. This simulated banking portal must not be used with real banking credentials.</p>
-    </div>
+    <p class="eyebrow">New customer</p>
+    <h1>Open your account today.</h1>
+    <p class="lede">Simple, secure online banking. Send money, track your spending, and manage your account — all in one place.</p>
+    <ul class="auth-benefits">
+      <li>
+        <span class="auth-benefit-icon" aria-hidden="true">
+          <svg class="icon" focusable="false"><use href="#icon-check-circle"></use></svg>
+        </span>
+        Instant money transfers to any payee
+      </li>
+      <li>
+        <span class="auth-benefit-icon" aria-hidden="true">
+          <svg class="icon" focusable="false"><use href="#icon-check-circle"></use></svg>
+        </span>
+        Full transaction history, always up to date
+      </li>
+      <li>
+        <span class="auth-benefit-icon" aria-hidden="true">
+          <svg class="icon" focusable="false"><use href="#icon-check-circle"></use></svg>
+        </span>
+        Multi-factor authentication on every login
+      </li>
+    </ul>
   </div>
 
   <div class="auth-card">
-    <div class="page-heading">
-      <p class="eyebrow">Account registration</p>
-      <h2>Create account</h2>
+
+    <div class="auth-steps">
+      <div class="auth-step {% if step == 'details' %}is-done{% else %}is-active{% endif %}">
+        <span class="auth-step-num">
+          {% if step == 'details' %}
+            <svg class="icon" focusable="false" aria-hidden="true"><use href="#icon-check-circle"></use></svg>
+          {% else %}1{% endif %}
+        </span>
+        <span class="auth-step-label">Verify email</span>
+      </div>
+      <div class="auth-step-line" aria-hidden="true"></div>
+      <div class="auth-step {% if step == 'details' %}is-active{% endif %}">
+        <span class="auth-step-num">2</span>
+        <span class="auth-step-label">Your details</span>
+      </div>
     </div>
 
     {% if step == "details" %}
-    <div class="stacked-panel">
-      <div class="page-heading compact">
-        <p class="eyebrow">Step 2 of 2</p>
-        <h3>Complete your account</h3>
-      </div>
-      <dl class="detail-list">
-        <div>
-          <dt>Verified email</dt>
-          <dd>{{ verified_email }}</dd>
-        </div>
-      </dl>
+
+    <div class="page-heading">
+      <h2>Complete your account</h2>
+      <p class="lede">Your email is verified. Fill in your details to finish.</p>
+    </div>
+
+    <div class="auth-verified-pill">
+      <svg class="icon" focusable="false" aria-hidden="true"><use href="#icon-check-circle"></use></svg>
+      {{ verified_email }}
     </div>
 
     <form method="post" action="{{ url_for('web.register_submit') }}" novalidate>
@@ -50,6 +75,7 @@
         <label for="{{ form.full_name.id }}">Full name</label>
         {{ form.full_name(autocomplete="name", maxlength="120") }}
         {% for error in form.full_name.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+        <p class="hint">English letters only. Spaces, hyphens, and apostrophes are allowed (e.g. Mary-Jane O'Brien).</p>
       </div>
 
       <div class="form-group">
@@ -81,38 +107,63 @@
 
       {{ turnstile.widget("customer_register") }}
       <p class="hint">Common passwords are rejected server-side.</p>
-      <button class="button full" type="submit">Register account</button>
+      <button class="button full" type="submit">Create account</button>
     </form>
-    {% else %}
-    <div class="stacked-panel">
-      <div class="page-heading compact">
-        <p class="eyebrow">Step 1 of 2</p>
-        <h3>Verify your customer email</h3>
-      </div>
-      <form method="post" action="{{ url_for('web.register_otp_request') }}" novalidate>
-        {{ otp_request_form.hidden_tag() }}
-        <div class="form-group">
-          <label for="otp_request_email">Customer email</label>
-          {{ otp_request_form.email(id="otp_request_email", autocomplete="email", maxlength="255", placeholder="name@example.com") }}
-          {% for error in otp_request_form.email.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
-        </div>
-        {{ turnstile.widget("customer_register_otp") }}
-        <button class="button secondary full" type="submit">Send verification code</button>
-      </form>
 
-      <form method="post" action="{{ url_for('web.register_otp_verify') }}" novalidate>
-        {{ otp_verify_form.hidden_tag() }}
-        <div class="form-group">
-          <label for="otp_code">Verification code</label>
-          {{ otp_verify_form.otp_code(id="otp_code", inputmode="numeric", autocomplete="one-time-code", maxlength="6") }}
-          {% for error in otp_verify_form.otp_code.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
-          <p class="hint">Codes expire after 5 minutes. Requesting a new code invalidates the previous one.</p>
-        </div>
-        <button class="button secondary full" type="submit">Verify email</button>
-      </form>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, message in messages %}
+          <div class="alert alert-{{ category }} alert-inline">
+            <span>{{ message }}</span>
+          </div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    {% else %}
+
+    <div class="page-heading">
+      <h2>Create your account</h2>
+      <p class="lede">Enter your email to receive a verification code.</p>
     </div>
+
+    <form method="post" action="{{ url_for('web.register_otp_request') }}" novalidate data-otp-request-form>
+      {{ otp_request_form.hidden_tag() }}
+      <div class="form-group">
+        <label for="otp_request_email">Email address</label>
+        {{ otp_request_form.email(id="otp_request_email", autocomplete="email", maxlength="255", placeholder="name@example.com") }}
+        {% for error in otp_request_form.email.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+      </div>
+      {{ turnstile.widget("customer_register_otp") }}
+      <button class="button full" type="submit"{% if resend_cooldown %} disabled data-otp-resend-countdown="{{ resend_cooldown }}"{% endif %}>Send verification code</button>
+    </form>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, message in messages %}
+          <div class="alert alert-{{ category }} alert-inline">
+            <span>{{ message }}</span>
+          </div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    <hr class="form-divider">
+
+    <form method="post" action="{{ url_for('web.register_otp_verify') }}" novalidate>
+      {{ otp_verify_form.hidden_tag() }}
+      <div class="form-group">
+        <label for="otp_code">Verification code</label>
+        {{ otp_verify_form.otp_code(id="otp_code", inputmode="numeric", autocomplete="one-time-code", maxlength="6") }}
+        {% for error in otp_verify_form.otp_code.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+        <p class="hint">Codes expire after 5 minutes. Requesting a new code invalidates the previous one.</p>
+      </div>
+      <button class="button secondary full" type="submit">Verify email</button>
+    </form>
+
     {% endif %}
-    <p class="switch-link">Already registered? <a href="{{ url_for('web.login') }}">Login</a>.</p>
+
+    <p class="switch-link">Already have an account? <a href="{{ url_for('web.login') }}">Log in</a>.</p>
   </div>
 </section>
 {% endblock %}

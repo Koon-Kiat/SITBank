@@ -4,24 +4,19 @@
 {% block title %}Login | SITBank{% endblock %}
 
 {% block content %}
-<section class="auth-shell">
-  <div class="auth-intro">
-    <p class="eyebrow">Secure access</p>
-    <h1>Welcome back</h1>
-    <p class="lede">Sign in to view your security dashboard and manage account protection settings.</p>
-    <div class="notice">
-      <span class="notice-icon" aria-hidden="true">
-        <svg class="icon" focusable="false"><use href="#icon-info"></use></svg>
-      </span>
-      <p class="muted">Use your registered username or email address. Additional verification may be required for protected accounts.</p>
-    </div>
-  </div>
+<div class="login-page">
+  <div class="login-card">
 
-  <div class="auth-card">
-    <div class="page-heading">
-      <p class="eyebrow">Account login</p>
-      <h2>Log in to SITBank</h2>
+    <div class="login-brand">
+      <img class="login-brand-mark" src="{{ url_for('static', filename='img/sitbank-mark.svg') }}" alt="" aria-hidden="true">
+      <span class="login-brand-name">SITBank</span>
     </div>
+
+    <div class="login-head">
+      <h1>Welcome back</h1>
+      <p>Sign in to your account to continue.</p>
+    </div>
+
     <form method="post" action="{{ url_for('web.login_submit') }}" novalidate>
       {{ form.hidden_tag() }}
 
@@ -38,16 +33,18 @@
           <button class="password-toggle" type="button" data-password-toggle="{{ form.password.id }}" aria-label="Show password">Show</button>
         </div>
         {% for error in form.password.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
-        <p class="hint">Maximum password length is {{ config["PASSWORD_MAX_CHARS"] }} characters.</p>
       </div>
 
       {{ turnstile.widget("customer_login") }}
       <button class="button full" type="submit">Log in securely</button>
     </form>
 
-    <p class="switch-link"><a href="{{ url_for('web.forgot_password') }}">Forgot password?</a></p>
-    <p class="switch-link"><a href="{{ url_for('web.account_recovery') }}">Request account recovery</a></p>
-    <p class="switch-link">Need an account? <a href="{{ url_for('web.register_form') }}">Register</a>.</p>
+    <div class="login-footer">
+      <a href="{{ url_for('web.forgot_password') }}">Forgot your password?</a>
+      <a href="{{ url_for('web.account_recovery') }}">Request account recovery</a>
+      <p class="login-footer-register">Don't have an account? <a href="{{ url_for('web.register_form') }}">Register</a></p>
+    </div>
+
   </div>
-</section>
+</div>
 {% endblock %}

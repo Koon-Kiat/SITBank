@@ -129,7 +129,7 @@ def test_forgot_password_response_is_generic_and_token_is_hashed(app, client):
     assert known.status_code == 200
     assert unknown.status_code == 200
     assert known.get_json() == unknown.get_json()
-    assert known.get_json()["message"] == "If an account exists for that email, a reset link has been sent."
+    assert known.get_json()["message"] == "If an account is linked to that email, a reset link has been sent. Check your inbox."
 
     token = _reset_token(app)
     selector, verifier = token.split(".", 1)
