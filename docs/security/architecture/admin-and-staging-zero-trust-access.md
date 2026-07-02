@@ -50,12 +50,13 @@ Category: [Security architecture](../README.md#architecture).
 
 ## Protected GitHub CI Tailnet Verification
 
-The manual **Verify private Tailscale admin access** workflow and the direct
-production post-deploy gate temporarily join a GitHub-hosted runner to the
-tailnet. The project accepts this narrow credential exposure because no
-trusted self-hosted tailnet runner is available. This exception applies only
-to those protected jobs. It does not put pull-request CI, staging, scheduled
-public TLS scans, or other GitHub-hosted jobs inside the tailnet.
+The staging and production deployment jobs, the manual **Verify private
+Tailscale admin access** workflow, and the direct production post-deploy gate
+temporarily join a GitHub-hosted runner to the tailnet. The project accepts
+this narrow credential exposure because no trusted self-hosted tailnet runner
+is available. This exception applies only to protected environment jobs. It
+does not put pull-request CI, scheduled public TLS scans, or other
+GitHub-hosted jobs inside the tailnet.
 
 `workflow_dispatch` supports on-demand checks. The trusted production workflow
 defines a direct required gate after `deploy-production` and
@@ -70,8 +71,11 @@ select `auth_mode: authkey` and use `TAILSCALE_AUTH_KEY`. Do not duplicate any
 of them as repository or organization secrets. The OAuth client needs **Keys >
 Auth Keys > Write**; an auth key must be short-lived, one-off where possible,
 ephemeral, tagged, and pre-approved when required. Both modes are restricted
-to `tag:github-ci`, which may reach only `tag:admin-sitbank:443` and cannot
-administer the tailnet or use broad SSH. Each run selects exactly one mode.
+to `tag:github-ci-admin-verify`, which may reach only
+`tag:admin-sitbank:443` and cannot administer the tailnet or use broad SSH.
+Each run selects exactly one mode. Staging and production deployment use
+separate OAuth clients and source tags that can reach only the matching EC2
+destination tag on port `22`.
 
 Each approved run:
 
@@ -114,7 +118,7 @@ after a maintainer with environment access is offboarded, or whenever the
 client's tag/grant scope changes:
 
 1. Create a replacement OAuth client with **Keys > Auth Keys > Write**
-   permission restricted to `tag:github-ci`.
+   permission restricted to `tag:github-ci-admin-verify`.
 2. Replace both protected environment secrets, manually approve one
    verification run from `main`, and confirm the ephemeral node is removed
    after the job.
@@ -322,7 +326,7 @@ local origin-pull boundary before stopping the old runtime.
 ## Admin Tailscale Access
 
 Use the confirmation-gated `ops/tailscale/` automation to install Tailscale
-and enroll the EC2 host as `tag:sitbank-admin`. Restrict access with the
+and enroll the EC2 host as `tag:admin-sitbank`. Restrict access with the
 reviewed tailnet policy so only approved operator users/groups and the narrow
 CI identity can reach HTTPS `443`. Do not rely on a shared password as the
 private network boundary.
@@ -544,7 +548,11 @@ Host-managed values:
   `/etc/nginx/cloudflare-authenticated-origin-pull-ca.pem`.
 - Tailscale tailnet policy, ACLs/grants, device approvals, and tagged node
   state.
-- `tag:github-ci` access restricted to `tag:admin-sitbank:443`.
+- `tag:github-ci-admin-verify` access restricted to `tag:admin-sitbank:443`.
+- `tag:github-ci-staging-deploy` access restricted to
+  `tag:sitbank-staging-ec2:22`.
+- `tag:github-ci-prod-deploy` access restricted to
+  `tag:sitbank-prod-ec2:22`.
 - Tailscale Serve configuration.
 
 Never commit:

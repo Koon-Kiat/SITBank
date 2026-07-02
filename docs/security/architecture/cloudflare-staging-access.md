@@ -66,7 +66,7 @@ Configure these required `staging` environment variables:
 | `STAGING_CLOUDFLARE_ACCESS_AUD` | `847a9be3c396f4930a210e3106aa5d86945839ba9ad31be794e4378bf8a55663` |
 | `STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN` | `small-boat-a77f.cloudflareaccess.com` |
 | `STAGING_PUBLIC_HOST` | `staging-sitbank.pp.ua` |
-| `STAGING_EC2_HOST` | `18.188.152.24` |
+| `STAGING_EC2_HOST` | Private Tailscale MagicDNS name or `100.x.y.z` deployment target |
 | `STAGING_EC2_DEPLOY_USER` | `sitbank-deploy` |
 | `STAGING_EC2_PORT` | `22` |
 

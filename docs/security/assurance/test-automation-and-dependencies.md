@@ -193,7 +193,7 @@ reusable-call secret-scope failure and enters the protected `admin-tailscale`
 environment after manual approval. Production uses OAuth with
 `TS_OAUTH_CLIENT_ID`/`TS_OAUTH_SECRET`; manual runs may select the optional
 `TAILSCALE_AUTH_KEY`. Both identities are limited to
-`tag:github-ci -> tag:admin-sitbank:443`. The job runs no pull-request code,
+`tag:github-ci-admin-verify -> tag:admin-sitbank:443`. The job runs no pull-request code,
 checks the private URL is unreachable before joining, validates the private
 login entrypoint, and logs out without artifacts. Normal public TLS scans never include
 `admin-sitbank.tailca101b.ts.net`.

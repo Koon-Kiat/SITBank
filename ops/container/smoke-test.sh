@@ -483,7 +483,7 @@ if [[ "${RUN_ZAP_BASELINE:-false}" == "true" ]]; then
     chmod_host_path 0644 "${work_dir}/zap-pr/rules.tsv"
     zap_pr_mount_source="$(docker_bind_source "${work_dir}/zap-pr")"
     # TLS terminates at the production proxy; this URL never leaves the isolated Docker network.
-    zap_baseline_target="http://${app_container}:5000/"
+    zap_baseline_target="http://${app_container}:5000/"  # NOSONAR - isolated ephemeral Docker network
     docker run --rm \
         --network "${network_name}" \
         --volume "${zap_pr_mount_source}:/zap/wrk:ro" \
@@ -498,7 +498,7 @@ if [[ "${RUN_ZAP_BASELINE:-false}" == "true" ]]; then
 -config replacer.full_list(0).matchtype=REQ_HEADER \
 -config replacer.full_list(0).matchstr=X-Forwarded-Proto \
 -config replacer.full_list(0).replacement=https" \
-            -t "${zap_baseline_target}" # NOSONAR
+            -t "${zap_baseline_target}"
 fi
 
 if [[ "${RUN_ZAP_DAST:-false}" == "true" ]]; then

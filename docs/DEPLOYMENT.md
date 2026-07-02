@@ -176,6 +176,9 @@ Production deployment runs from the trusted `main` workflow only after release
 verification, staging deployment, and the post-deployment staging TLS scan all
 succeed. A successful production deployment is followed by public production
 TLS verification and then the required protected private-admin tailnet gate.
+Production deployment is environment-approved automatic after successful
+staging gates. GitHub Environment approval pauses that automatic `main` flow;
+there is no direct manual production dispatch target.
 If either post-deploy verification fails, the workflow fails even though the
 production deployment already completed. Leave the repository variable
 `PROD_DEPLOY_ENABLED` unset or false until the production admin secret files
@@ -194,6 +197,8 @@ appropriate:
 | `ENABLE_GITHUB_CODE_SECURITY` | Defaults to `false`; private-repository dependency review runs only when the value is exactly `true` | `dependency-review` in `.github/workflows/ci-deploy.yml` |
 | `STAGING_PUBLIC_HOST` | Defaults to the reviewed staging hostname `staging-sitbank.pp.ua` | Staging deployment URL/configuration and post-deployment staging TLS verification |
 | `PROD_PUBLIC_HOST` | Defaults to the reviewed production hostname `sitbank.pp.ua` | Production deployment URL/configuration and post-deployment production TLS verification |
+| `STAGING_EC2_HOST` | Required private Tailscale MagicDNS name or `100.x.y.z` address | Staging OpenSSH deployment target |
+| `PROD_EC2_HOST` | Required private Tailscale MagicDNS name or `100.x.y.z` address | Production OpenSSH deployment target |
 | `PROD_DEPLOY_ENABLED` | Defaults to disabled unless exactly `true` | Production deployment gate |
 
 The host fallbacks are explicit repository conventions, not discovery
@@ -210,6 +215,39 @@ documented. Existing staging and production deployment variables remain scoped
 to their protected GitHub environments and are validated before deployment;
 do not move secret values into repository variables.
 
+Each deployment environment also stores a separate Tailscale OAuth client as
+`TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET`. The staging client may advertise
+only `tag:github-ci-staging-deploy`; the production client may advertise only
+`tag:github-ci-prod-deploy`. Regenerate `STAGING_EC2_KNOWN_HOSTS` and
+`PROD_EC2_KNOWN_HOSTS` for their private Tailscale targets and verify the SSH
+fingerprints out of band. Keep the existing OpenSSH private keys and strict
+host-key checking. Do not enable Tailscale SSH or Funnel. After both private
+deployments are proven, remove public SSH exposure from the EC2 firewall and
+security group.
+
+### Tailscale Deployment Rollout
+
+Before changing the live tailnet, export and securely retain the current
+Access Controls policy. Merge the reviewed paths from
+`ops/tailscale/acl-policy.hujson`, including its deny-by-omission
+cross-environment policy tests, into the live policy:
+
+- `tag:github-ci-admin-verify` to `tag:admin-sitbank:443`
+- `tag:github-ci-staging-deploy` to `tag:sitbank-staging-ec2:22`
+- `tag:github-ci-prod-deploy` to `tag:sitbank-prod-ec2:22`
+
+Apply the matching destination tag to each stable host. Prefer separate
+staging and production EC2 instances; if one host carries both destination
+tags, retain separate Linux deploy users, sudoers rules, wrappers, and runtime
+directories. Create three OAuth clients, restrict each client to its one source
+tag, and store it only in `admin-tailscale`, `staging`, or `production` as
+appropriate. Update the private EC2 host variables and verified known-hosts
+values, deploy staging first, then allow the automatic production flow through
+its protected environment. Remove public port `22` only after both private
+paths pass. Committed files and tests do not prove live Tailscale, GitHub
+Environment, security-group, or host-firewall state; retain sanitized operator
+evidence separately.
+
 ### Protected Private-Admin Verification Environment
 
 The manual `.github/workflows/tailscale-private-admin-verify.yml` workflow
@@ -225,13 +263,14 @@ secret. This is the required protected post-production-deploy gate and it runs
 after production public TLS verification. The production caller explicitly
 selects `auth_mode: oauth`. Store `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET`
 only as that environment's secrets. The OAuth client must have **Keys > Auth
-Keys > Write** permission and be restricted to `tag:github-ci`, whose tailnet
-grants reach only `tag:admin-sitbank:443`.
+Keys > Write** permission and be restricted to
+`tag:github-ci-admin-verify`, whose tailnet grants reach only
+`tag:admin-sitbank:443`.
 
 Manual verification may instead select `auth_mode: authkey`, in
 which case the same environment must provide `TAILSCALE_AUTH_KEY`. That key
 must be short-lived, one-off where possible, ephemeral, pre-approved when
-device approval applies, and tagged `tag:github-ci`. Never configure both
+device approval applies, and tagged `tag:github-ci-admin-verify`. Never configure both
 modes for one run. OAuth is the preferred/default mode; the auth-key mode is a
 compatibility path with separate rotation.
 
@@ -598,11 +637,11 @@ served through DNS and the deployed edge.
 The reviewed production bootstrap installs and enables the production edge from `ops/nginx/sitbank-default.conf`, `ops/nginx/sitbank-production.conf`, `ops/nginx/sitbank-production-rate-limits.conf`, `ops/nginx-proxy-headers.conf`, and `ops/nginx/sitbank-tls-policy.conf`. The shared default config owns unknown-host rejection so production and staging can run on the same EC2 without duplicate Nginx `default_server` listeners. Any change to those files requires a production bootstrap after merge.
 
 - Public ingress is TCP `80` and `443` only.
-- SSH hardening is deferred in this branch. The planned OpenSSH drop-in,
-  UFW/security-group rollout, and deployment-source migration path are not
-  implemented here because they can affect GitHub Actions deployment access.
-  Treat live SSH posture as operator-owned infrastructure evidence until a
-  separate reviewed change lands.
+- GitHub deployment SSH reaches private Tailscale targets through separate
+  staging and production tags. Remove public TCP `22` from the security group
+  and host firewall after private deployment succeeds. OpenSSH drop-in and UFW
+  automation remain deferred; treat their live posture and the provider
+  firewall change as operator-owned infrastructure evidence.
 - Nginx terminates TLS, redirects production customer HTTP to HTTPS, rejects
   unknown hosts with the shared default server, and forwards only expected
   proxy headers.

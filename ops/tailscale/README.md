@@ -55,7 +55,7 @@ The configure script supports three explicit modes:
 
 - `oauth` (preferred for automation): supply `TS_OAUTH_CLIENT_ID` and
   `TS_OAUTH_SECRET`. The OAuth client needs **Keys > Auth Keys > Write** and
-  must be restricted to `tag:sitbank-admin`.
+  must be restricted to `tag:admin-sitbank`.
 - `authkey`: supply `TAILSCALE_AUTH_KEY`. Use a short-lived, one-off,
   pre-approved, tagged key where possible. Reusable keys require exceptional
   approval and vault storage.
@@ -100,7 +100,7 @@ sudo --preserve-env=TAILSCALE_AUTH_KEY \
 ```
 
 The confirmed flow resets unsafe node flags, applies only
-`tag:sitbank-admin`, refuses an existing non-empty Serve configuration,
+`tag:admin-sitbank`, refuses an existing non-empty Serve configuration,
 configures HTTPS `443` to `http://127.0.0.1:5002`, and requires the canonical
 preflight to pass. Verification can be repeated without credentials:
 
@@ -121,8 +121,11 @@ The supported admin browser path remains private Serve HTTPS.
 
 `acl-policy.hujson` is a non-secret least-privilege reference, not an
 automatically applied policy. It grants production HTTPS only from
-`group:sitbank-production-admins` and from the protected `tag:github-ci`
-identity to `tag:sitbank-admin:443`. It grants neither broad tailnet access nor
+`group:sitbank-production-admins` and the protected
+`tag:github-ci-admin-verify` identity to `tag:admin-sitbank:443`. Separate
+`tag:github-ci-staging-deploy` and `tag:github-ci-prod-deploy` identities may
+reach only their matching EC2 destination tag on port `22`. Cross-environment
+paths are denied by omission. It grants neither broad tailnet access nor
 Tailscale SSH.
 
 Onboarding requires a reviewed group change, approved managed device, Flask

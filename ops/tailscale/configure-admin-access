@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 readonly ADMIN_HOSTNAME="admin-sitbank"
-readonly ADMIN_TAG="tag:sitbank-admin"
+readonly ADMIN_TAG="tag:admin-sitbank"
 readonly ADMIN_TARGET="http://127.0.0.1:5002"
 
 usage() {

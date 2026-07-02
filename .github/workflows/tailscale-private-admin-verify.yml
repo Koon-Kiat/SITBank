@@ -91,7 +91,7 @@ jobs:
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:github-ci
+          tags: tag:github-ci-admin-verify
           ping: ${{ inputs.private_admin_host }}
 
       - name: Join the approved tailnet with an auth key

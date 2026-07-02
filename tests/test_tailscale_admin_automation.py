@@ -156,19 +156,43 @@ def test_verify_wrapper_delegates_to_one_canonical_non_mutating_verifier():
         assert forbidden not in wrapper
 
 
-def test_reference_policy_is_least_privilege_and_does_not_claim_staging():
+def test_reference_policy_separates_admin_and_environment_deploy_paths():
     policy = POLICY.read_text(encoding="utf-8")
 
     assert "group:sitbank-production-admins" in policy
-    assert '"tag:sitbank-admin:443"' in policy
-    assert '"tag:github-ci"' in policy
+    assert '"tag:admin-sitbank:443"' in policy
+    assert '"tag:github-ci-admin-verify"' in policy
+    assert '"tag:github-ci-staging-deploy"' in policy
+    assert '"tag:sitbank-staging-ec2:22"' in policy
+    assert '"tag:github-ci-prod-deploy"' in policy
+    assert '"tag:sitbank-prod-ec2:22"' in policy
     assert '"ssh": []' in policy
     assert "autogroup:member" not in policy
     assert "autogroup:internet" not in policy
     assert '"*"' not in policy
     assert "0.0.0.0/0" not in policy
-    assert "tag:sitbank-admin:*" not in policy
+    assert "tag:admin-sitbank:*" not in policy
     assert "staging-admin" not in policy
+
+    acl_paths = set(
+        re.findall(
+            r'"src": \["([^"]+)"\],\s+"dst": \["([^"]+)"\]',
+            policy,
+        )
+    )
+    assert acl_paths == {
+        ("group:sitbank-production-admins", "tag:admin-sitbank:443"),
+        ("tag:github-ci-admin-verify", "tag:admin-sitbank:443"),
+        ("tag:github-ci-staging-deploy", "tag:sitbank-staging-ec2:22"),
+        ("tag:github-ci-prod-deploy", "tag:sitbank-prod-ec2:22"),
+    }
+
+
+def test_admin_configurator_uses_the_canonical_destination_tag():
+    script = CONFIGURATOR.read_text(encoding="utf-8")
+
+    assert 'readonly ADMIN_TAG="tag:admin-sitbank"' in script
+    assert "tag:sitbank-admin" not in script
 
 
 def test_production_bootstrap_installs_scripts_without_running_them():
