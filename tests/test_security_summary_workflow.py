@@ -76,6 +76,9 @@ def test_rollup_represents_every_pr_and_main_security_check():
     assert step["uses"] == (
         "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3"
     )
+    assert step["env"]["TARGET_SHA"] == (
+        "${{ github.event.pull_request.head.sha || github.sha }}"
+    )
     assert set(yaml.safe_load(step["env"]["PR_CHECKS"])) == PR_CHECK_NAMES
     assert set(yaml.safe_load(step["env"]["MAIN_CHECKS"])) == MAIN_CHECK_NAMES
     assert "GITHUB_STEP_SUMMARY" in step["with"]["script"]

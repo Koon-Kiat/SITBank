@@ -31,7 +31,7 @@ jobs:
       - name: Wait for and summarize independent security checks
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         env:
-          TARGET_SHA: ${{ github.sha }}
+          TARGET_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           EVENT_NAME: ${{ github.event_name }}
           DEPENDABOT_PR: ${{ github.event.pull_request.user.login == 'dependabot[bot]' }}
           PR_CHECKS: >-
