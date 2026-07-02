@@ -457,6 +457,15 @@ This exception is temporary with a review/remove-by date: 2026-06-26. The full C
 
 Application rollback restores the previous signed image digest and runtime bundle. Database rollback requires an explicit backup/restore decision because Alembic migrations must remain backward-compatible and are not automatically reversed.
 
+For migration `20260702_0020`, run staging first and preserve sanitized
+`db current`, `db heads`, `verify-migration-baseline`, and
+`verify-runtime-db-privileges` output before production. Confirm an encrypted
+production backup exists before production `db upgrade`. The migration
+recomputes any missing `transactions.transaction_hash` values from existing
+transaction fields and then makes the column non-null; rollback should use an
+explicit restore decision if production verification fails, not manual
+schema-edit commands.
+
 ## Encrypted Backup Operations
 
 Create database backups with the host-managed encrypted helper:

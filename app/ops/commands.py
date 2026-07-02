@@ -97,7 +97,7 @@ def register_ops_commands(app: Flask) -> None:  # NOSONAR
 
     @app.cli.command("verify-migration-baseline")
     def verify_migration_baseline() -> None:
-        """Verify an existing schema before adopting the initial revision."""
+        """Verify the current database schema matches SQLAlchemy metadata."""
 
         def include_object(obj, name, type_, reflected, compare_to):
             del obj, reflected, compare_to
@@ -120,7 +120,7 @@ def register_ops_commands(app: Flask) -> None:  # NOSONAR
                 "Database schema does not match the migration baseline"
             )
 
-        click.echo("Database schema matches migration baseline 20260610_0001")
+        click.echo("Database schema matches current migration metadata")
 
     @app.cli.command("production-check")
     def production_check() -> None:

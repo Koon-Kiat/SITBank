@@ -98,6 +98,17 @@ python -m flask --app wsgi:app db upgrade
 
 Do not run `db.create_all()` in deployment. For role cutover use `sitbank-database-cutover prepare`, review the generated SQL, and execute it only during an approved maintenance window.
 
+Migration `20260702_0020` aligns the production migration baseline with the
+SQLAlchemy model metadata. It backfills missing `transactions.transaction_hash`
+values from the canonical transaction fields used by the application and then
+enforces `transaction_hash` as `NOT NULL`; the downgrade relaxes only that
+nullability and does not delete transaction evidence. Run it in staging first,
+preserve the staging verification output, and take or confirm an encrypted
+production backup before production `db upgrade`. After the migration, run
+`verify-migration-baseline` and `verify-runtime-db-privileges`; do not repair
+reported drift with ad hoc production `ALTER TABLE`, `DROP INDEX`, or
+`DROP CONSTRAINT` commands.
+
 ## Registration Schema Reset For Disposable Environments
 
 The registration schema requires verified email, full name, phone number, and a
