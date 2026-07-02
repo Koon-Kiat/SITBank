@@ -26,6 +26,8 @@ def test_playwright_e2e_defaults_to_opt_in_local_loopback():
 
     assert not Path("tests/e2e/conftest.py").exists()
     assert "SITBANK_RUN_E2E" in combined
+    assert "from tests.e2e.support import RUN_E2E_ENV, browser_page, live_server" in tests
+    assert "from support import" not in tests
     assert "pytest.mark.skip" in tests
     assert 'make_server("127.0.0.1", 0, app, threaded=True)' in support
     assert "Playwright E2E tests may only use a loopback live server" in support

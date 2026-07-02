@@ -7,7 +7,7 @@ import pytest
 from app.extensions import db
 from app.models import User
 from app.security.passwords import hash_password
-from support import RUN_E2E_ENV, browser_page, live_server
+from tests.e2e.support import RUN_E2E_ENV, browser_page, live_server
 
 
 pytestmark = [pytest.mark.e2e]
