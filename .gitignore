@@ -50,3 +50,4 @@ appendonly.aof*
 cloudflare-access-evidence*.json
 .vscode/
 compose.dev.yml
+docker-compose.dev.yml

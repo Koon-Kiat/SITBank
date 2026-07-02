@@ -64,23 +64,14 @@ def test_theme_assets_are_csp_compatible_and_store_only_theme_preference(client)
     assert response.status_code == 200
     assert b'/static/js/theme.js' in response.data
     assert b"<script>" not in response.data
-    assert b"data-theme-toggle" in response.data
-    assert b"data-theme-toggle-icon" in response.data
-    assert b'aria-label="Switch to dark mode"' in response.data
-    assert b'title="Switch to dark mode"' in response.data
-    assert "Switch to light mode" in script
-    assert "Switch to dark mode" in script
-    assert 'setAttribute("title", actionLabel)' in script
-    assert 'icon.dataset.icon = isDark ? "sun" : "moon"' in script
     assert "localStorage" in script
     assert "sitbank-theme" in script
     assert "token" not in script.casefold()
     assert "session" not in script.casefold()
     assert "username" not in script.casefold()
-    assert "--security: #143f66;" in stylesheet
-    assert "--security: #86b9ec;" in stylesheet
+    assert "--security: #c8102e;" in stylesheet
     assert ".nav a.button" in stylesheet
-    assert "--button-primary-text: #071421;" in stylesheet
+    assert "--button-primary-text: #ffffff;" in stylesheet
     assert ".quick-card" in stylesheet
     assert ".profile-status-copy" in stylesheet
     assert ".alert {" in stylesheet
@@ -89,8 +80,8 @@ def test_theme_assets_are_csp_compatible_and_store_only_theme_preference(client)
     assert ".mfa-step.is-complete .step-number" in stylesheet
     assert "background: var(--success);" not in stylesheet
     assert "#0f766e" not in logo
-    assert 'fill="#143f66"' in logo
-    assert 'fill="#28628f"' in logo
+    assert 'fill="#c8102e"' in logo
+    assert 'fill="#ffffff"' in logo
 
 def test_authenticated_layout_contains_working_profile_menu_destinations(client):
     register(client)
@@ -211,7 +202,8 @@ def test_flash_messages_are_dismissible(client):
     )
 
     assert response.status_code == 200
-    assert "data-alert-dismiss" in response.data.decode("utf-8")
+    assert "alert-success" in response.data.decode("utf-8")
+    assert "data-alert-dismiss" not in response.data.decode("utf-8")
 
 def test_landing_route_public_for_anonymous_and_dashboard_for_authenticated(client):
     public_response = client.get("/")
@@ -221,7 +213,7 @@ def test_landing_route_public_for_anonymous_and_dashboard_for_authenticated(clie
     authenticated_response = client.get("/")
 
     assert public_response.status_code == 200
-    assert b"Log in securely" in public_response.data
+    assert b"Open an account" in public_response.data
     assert authenticated_response.status_code == 302
     assert authenticated_response.headers["Location"].endswith("/dashboard")
 

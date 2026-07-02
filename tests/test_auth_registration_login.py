@@ -50,7 +50,7 @@ def test_register_requires_verified_customer_email(client):
     response = register(client, verify_email=False)
 
     assert response.status_code == 400
-    assert b"Verify your customer email before creating an account" in response.data
+    assert b"Please verify your email address before continuing" in response.data
     assert db.session.query(User).count() == 0
 
 
@@ -59,9 +59,9 @@ def test_registration_step_one_has_single_email_input(client):
     html = response.data.decode("utf-8")
 
     assert response.status_code == 200
-    assert "Step 1 of 2" in html
+    assert "data-otp-request-form" in html
     assert html.count('name="email"') == 1
-    assert "Step 2 of 2" not in html
+    assert "Complete your account" not in html
     assert "data-password-strength" not in html
 
 
@@ -72,8 +72,8 @@ def test_registration_step_two_uses_verified_email_text_not_input(client):
     html = response.data.decode("utf-8")
 
     assert response.status_code == 200
-    assert "Step 2 of 2" in html
-    assert "Verified email" in html
+    assert "Complete your account" in html
+    assert "Your email is verified" in html
     assert "verified@example.com" in html
     assert 'name="email"' not in html
     assert "data-password-strength" in html
@@ -126,7 +126,7 @@ def test_registration_consumes_verified_email_after_success(client):
 
     assert created.status_code == 302
     assert reused.status_code == 400
-    assert b"Verify your customer email before creating an account" in reused.data
+    assert b"Please verify your email address before continuing" in reused.data
     assert db.session.query(User).count() == 1
 
 
@@ -134,7 +134,7 @@ def test_registration_otp_allows_personal_customer_email(client):
     response = client.post("/auth/register/otp/request", json={"email": "alice@example.com"})
 
     assert response.status_code == 200
-    assert response.get_json() == {"message": "If the email is eligible, a verification code has been sent."}
+    assert response.get_json() == {"message": "Check your inbox. If this address is valid, a verification code has been sent."}
     assert db.session.query(User).count() == 0
 
 
@@ -167,7 +167,7 @@ def test_registration_otp_uses_exact_admin_domain_matching(client):
     )
 
     assert response.status_code == 200
-    assert response.get_json() == {"message": "If the email is eligible, a verification code has been sent."}
+    assert response.get_json() == {"message": "Check your inbox. If this address is valid, a verification code has been sent."}
 
 
 def test_registration_service_rechecks_customer_email_policy(client):
@@ -189,7 +189,7 @@ def test_registration_service_rechecks_customer_email_policy(client):
     events = db.session.query(SecurityAuditEvent).filter_by(event_type="registration").all()
 
     assert response.status_code == 400
-    assert response.get_json() == {"error": "Verify your customer email before creating an account."}
+    assert response.get_json() == {"error": "Please verify your email address before continuing."}
     assert db.session.query(User).count() == 0
     assert events[-1].outcome == "blocked"
     assert events[-1].event_metadata["reason"] == "root_admin_allowlisted_email"
@@ -265,7 +265,7 @@ def test_registration_otp_existing_account_response_is_generic(client):
 
     assert created.status_code == 302
     assert response.status_code == 200
-    assert response.get_json() == {"message": "If the email is eligible, a verification code has been sent."}
+    assert response.get_json() == {"message": "Check your inbox. If this address is valid, a verification code has been sent."}
     assert len(password_reset_outbox()) == before_count
 
 
@@ -283,7 +283,7 @@ def test_registration_otp_email_failure_fails_closed_without_code(client, monkey
     )
 
     assert response.status_code == 503
-    assert response.get_json() == {"error": "Could not send verification code. Please try again later."}
+    assert response.get_json() == {"error": "Could not send a code right now. Please try again in a moment."}
     assert db.session.query(RegistrationOtpChallenge).count() == 0
 
 
@@ -397,7 +397,7 @@ def test_password_templates_do_not_truncate_and_show_max_length_guidance(client)
         f"{PASSWORD_RECOMMENDED_MIN_LENGTH} or more is recommended."
     ).encode("utf-8")
     assert expected_guidance in register_response.data
-    assert b"Maximum password length is 256 characters." in login_response.data
+    assert b"Maximum password length is 256 characters." not in login_response.data
     assert expected_guidance in change_response.data
     assert b"Maximum password length is 256 characters." in change_response.data
 
@@ -642,7 +642,7 @@ def test_registration_rejects_unsafe_full_name(client):
     )
 
     assert response.status_code == 400
-    assert b"Full name contains invalid characters" in response.data
+    assert b"Full name must contain only English letters" in response.data
     assert db.session.query(User).count() == 0
 
 
@@ -658,7 +658,7 @@ def test_registration_rejects_duplicate_phone_with_generic_error(client):
 
     assert created.status_code == 302
     assert duplicate_phone.status_code == 400
-    assert b"Registration could not be completed with those details" in duplicate_phone.data
+    assert b"That username or phone number is already in use" in duplicate_phone.data
     assert db.session.query(User).count() == 1
 
 def test_api_registration_rejects_client_supplied_account_number(client):
@@ -761,7 +761,7 @@ def test_login_backoff_starts_after_three_failures(client):
 
     assert [response.status_code for response in failures] == [401, 401, 401]
     assert blocked.status_code == 429
-    assert blocked.get_json()["error"] == "Too many attempts. Please try again later."
+    assert blocked.get_json()["error"] == "Too many failed attempts. Please wait before trying again."
     assert blocked.headers["X-Auth-Retry-After"] == "1"
 
 def test_login_rate_limits_include_per_minute_and_daily_limits(client):

@@ -1,7 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
-  <title>SITBank shield mark</title>
-  <rect width="64" height="64" rx="14" fill="#143f66"/>
-  <path d="M32 9 49 16v14c0 12.4-7.1 20.9-17 25-9.9-4.1-17-12.6-17-25V16l17-7Z" fill="#f8fbff" opacity=".95"/>
-  <path d="M32 15 44 20v10c0 8.7-4.6 14.9-12 18.4C24.6 44.9 20 38.7 20 30V20l12-5Z" fill="#28628f"/>
-  <path d="M27 32.5 30.6 36 38 27.5" fill="none" stroke="#f8fbff" stroke-width="4.2" stroke-linecap="round" stroke-linejoin="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="sitbank-title">
+  <title id="sitbank-title">SITBank</title>
+  <!-- Red rounded square background -->
+  <rect width="64" height="64" rx="14" fill="#c8102e"/>
+  <!-- Geometric S lettermark -->
+  <!-- Top bar (right-anchored) -->
+  <rect x="23" y="13" width="24" height="6" rx="3" fill="#ffffff"/>
+  <!-- Left side (top half) -->
+  <rect x="17" y="13" width="6" height="18" rx="3" fill="#ffffff"/>
+  <!-- Middle bar (full width) -->
+  <rect x="17" y="29" width="30" height="6" rx="3" fill="#ffffff"/>
+  <!-- Right side (bottom half) -->
+  <rect x="41" y="29" width="6" height="18" rx="3" fill="#ffffff"/>
+  <!-- Bottom bar (left-anchored) -->
+  <rect x="17" y="45" width="24" height="6" rx="3" fill="#ffffff"/>
 </svg>

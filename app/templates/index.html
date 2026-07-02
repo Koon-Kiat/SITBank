@@ -1,94 +1,150 @@
 {% extends "base.html" %}
-
-{% block title %}SITBank Secure Banking{% endblock %}
-
+{% block title %}SITBank — Online Banking{% endblock %}
 {% block content %}
-<div class="section-stack">
-  <section class="hero">
-    <div class="hero-content">
-      <p class="eyebrow">Secure Internet Banking</p>
-      <h1>SITBank</h1>
-      <p class="lede">A simulated online banking portal focused on secure account access, MFA protection, session visibility, and emergency account freeze controls.</p>
-      <div class="actions">
+<div class="lp">
+
+  <!-- ── Hero ── -->
+  <div class="lp-hero">
+    <div class="lp-hero-center">
+      <span class="lp-eyebrow">Online Banking · Singapore</span>
+      <h1 class="lp-headline">Bank smarter,<br><span class="lp-headline-accent">every day.</span></h1>
+      <p class="lp-sub">Simple, secure internet banking — send money, view your transactions, and manage your account all in one place.</p>
+      <div class="lp-hero-ctas">
         {% if g.current_user %}
-          <a class="button" href="{{ url_for('web.dashboard') }}">Open dashboard</a>
-          <a class="button secondary" href="{{ url_for('web.sessions_dashboard') }}">Manage sessions</a>
+          <a class="button" href="{{ url_for('web.dashboard') }}">Go to my account</a>
         {% else %}
-          <a class="button" href="{{ url_for('web.login') }}">Log in securely</a>
-          <a class="button secondary" href="{{ url_for('web.register_form') }}">Create account</a>
+          <a class="button" href="{{ url_for('web.register_form') }}">Open an account</a>
+          <a class="lp-link-login" href="{{ url_for('web.login') }}">Log in →</a>
         {% endif %}
       </div>
     </div>
-    <aside class="hero-panel" aria-label="Security capabilities">
-      <div class="hero-metric">
-        <span class="metric-icon" aria-hidden="true">
-          <svg class="icon" focusable="false"><use href="#icon-shield-check"></use></svg>
-        </span>
-        <div>
-          <h2>Layered sign-in</h2>
-          <p class="muted">Authenticator-code verification is available for higher-risk account actions.</p>
-        </div>
-      </div>
-      <div class="hero-metric">
-        <span class="metric-icon" aria-hidden="true">
-          <svg class="icon" focusable="false"><use href="#icon-reference"></use></svg>
-        </span>
-        <div>
-          <h2>Public session references</h2>
-          <p class="muted">Session management uses safe references instead of exposing raw session identifiers.</p>
-        </div>
-      </div>
-      <div class="hero-metric">
-        <span class="metric-icon" aria-hidden="true">
-          <svg class="icon" focusable="false"><use href="#icon-education"></use></svg>
-        </span>
-        <div>
-          <h2>Security-focused access</h2>
-          <p class="muted">Designed to practise secure online banking workflows without real financial services.</p>
-        </div>
-      </div>
-    </aside>
-  </section>
+  </div>
 
-  <section class="feature-grid" aria-label="Portal security features">
-    <article class="feature-card">
-      <span class="card-icon" aria-hidden="true">
-        <svg class="icon" focusable="false"><use href="#icon-shield-check"></use></svg>
-      </span>
-      <h2>MFA Protection</h2>
-      <p class="muted">Set up a time-based authenticator code and use it for sensitive account workflows.</p>
-    </article>
-    <article class="feature-card">
-      <span class="card-icon" aria-hidden="true">
-        <svg class="icon" focusable="false"><use href="#icon-session"></use></svg>
-      </span>
-      <h2>Active Session Control</h2>
-      <p class="muted">Review signed-in sessions and terminate access you do not recognise.</p>
-    </article>
-    <article class="feature-card">
-      <span class="card-icon" aria-hidden="true">
-        <svg class="icon" focusable="false"><use href="#icon-freeze"></use></svg>
-      </span>
-      <h2>Account Freeze</h2>
-      <p class="muted">Use an MFA-confirmed freeze action to block sensitive account activity.</p>
-    </article>
-    <article class="feature-card">
-      <span class="card-icon" aria-hidden="true">
-        <svg class="icon" focusable="false"><use href="#icon-lock"></use></svg>
-      </span>
-      <h2>Secure Controls</h2>
-      <p class="muted">CSRF-protected forms and strict local assets keep the interface aligned with the security model.</p>
-    </article>
-  </section>
-
-  <section class="notice" aria-label="Simulation disclaimer">
-    <span class="notice-icon" aria-hidden="true">
-      <svg class="icon" focusable="false"><use href="#icon-alert"></use></svg>
-    </span>
-    <div>
-      <h2>Simulation notice</h2>
-      <p class="muted">SITBank is a simulated banking portal. It is not a real bank, does not provide financial services, and must not be used with real banking credentials or financial data.</p>
+  <!-- ── Features — white band ── -->
+  <section class="lp-features" aria-labelledby="lp-feat-h">
+    <div class="lp-inner">
+      <div class="lp-section-head" data-reveal>
+        <p class="lp-section-eyebrow">Our Services</p>
+        <h2 class="lp-section-title" id="lp-feat-h">Everything you need,<br>all in one place.</h2>
+      </div>
+      <div class="lp-feat-grid">
+        <article class="lp-feat-card" data-reveal>
+          <span class="lp-feat-icon" aria-hidden="true">
+            <svg class="icon" focusable="false"><use href="#icon-reference"></use></svg>
+          </span>
+          <h3>Send money instantly</h3>
+          <p>Transfer funds to any payee, any time. Add recipients and send money securely from your account.</p>
+        </article>
+        <article class="lp-feat-card" data-reveal data-reveal-delay="100">
+          <span class="lp-feat-icon" aria-hidden="true">
+            <svg class="icon" focusable="false"><use href="#icon-refresh"></use></svg>
+          </span>
+          <h3>Track your spending</h3>
+          <p>See every payment and deposit. Your full transaction history, always up to date and easy to review.</p>
+        </article>
+        <article class="lp-feat-card" data-reveal data-reveal-delay="200">
+          <span class="lp-feat-icon" aria-hidden="true">
+            <svg class="icon" focusable="false"><use href="#icon-controls"></use></svg>
+          </span>
+          <h3>Manage your account</h3>
+          <p>Update your profile, change your password, and keep your account settings in order from one place.</p>
+        </article>
+      </div>
     </div>
   </section>
+
+  <!-- ── Trust strip — dark band ── -->
+  <div class="lp-trust">
+    <div class="lp-trust-item" data-reveal>
+      <span class="lp-trust-icon" aria-hidden="true">
+        <svg class="icon" focusable="false"><use href="#icon-shield-check"></use></svg>
+      </span>
+      <div class="lp-trust-body">
+        <p class="lp-trust-heading">Bank-grade security</p>
+        <p class="lp-trust-desc">Every account is protected with multi-factor authentication and encrypted sessions.</p>
+      </div>
+    </div>
+    <div class="lp-trust-item" data-reveal data-reveal-delay="100">
+      <span class="lp-trust-icon" aria-hidden="true">
+        <svg class="icon" focusable="false"><use href="#icon-reference"></use></svg>
+      </span>
+      <div class="lp-trust-body">
+        <p class="lp-trust-heading">Instant transfers</p>
+        <p class="lp-trust-desc">Send money to any saved payee in seconds, from anywhere, at any time of day.</p>
+      </div>
+    </div>
+    <div class="lp-trust-item" data-reveal data-reveal-delay="200">
+      <span class="lp-trust-icon" aria-hidden="true">
+        <svg class="icon" focusable="false"><use href="#icon-refresh"></use></svg>
+      </span>
+      <div class="lp-trust-body">
+        <p class="lp-trust-heading">Always up to date</p>
+        <p class="lp-trust-desc">Your transaction history refreshes in real time so your balance is never a guess.</p>
+      </div>
+    </div>
+    <div class="lp-trust-item" data-reveal data-reveal-delay="300">
+      <span class="lp-trust-icon" aria-hidden="true">
+        <svg class="icon" focusable="false"><use href="#icon-lock"></use></svg>
+      </span>
+      <div class="lp-trust-body">
+        <p class="lp-trust-heading">Your data, private</p>
+        <p class="lp-trust-desc">Access controls, session management, and secure storage keep your information safe.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── How it works — light grey band ── -->
+  <section class="lp-steps" aria-labelledby="lp-steps-h">
+    <div class="lp-inner">
+      <div class="lp-section-head" data-reveal>
+        <p class="lp-section-eyebrow">Get Started</p>
+        <h2 class="lp-section-title" id="lp-steps-h">Up and running<br>in minutes.</h2>
+      </div>
+      <ol class="lp-step-list">
+        <li class="lp-step" data-reveal>
+          <span class="lp-step-num" aria-hidden="true">01</span>
+          <div>
+            <h3>Create your account</h3>
+            <p>Register with your name and email. No branch visit needed — everything is done online.</p>
+          </div>
+        </li>
+        <li class="lp-step" data-reveal data-reveal-delay="100">
+          <span class="lp-step-num" aria-hidden="true">02</span>
+          <div>
+            <h3>Add a payee</h3>
+            <p>Enter a recipient's account details. Save them for quick transfers next time.</p>
+          </div>
+        </li>
+        <li class="lp-step" data-reveal data-reveal-delay="200">
+          <span class="lp-step-num" aria-hidden="true">03</span>
+          <div>
+            <h3>Start banking</h3>
+            <p>Send money, check your balance, and manage everything from your dashboard.</p>
+          </div>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  {% if not g.current_user %}
+  <!-- ── CTA — red band ── -->
+  <section class="lp-cta" aria-labelledby="lp-cta-h" data-reveal>
+    <div class="lp-inner">
+      <h2 id="lp-cta-h">Ready to get started?</h2>
+      <p>Open a SITBank account today. It takes less than a minute.</p>
+      <a class="button lp-cta-btn" href="{{ url_for('web.register_form') }}">Open an account</a>
+    </div>
+  </section>
+  {% endif %}
+
+  <!-- ── Disclaimer ── -->
+  <p class="lp-disclaimer" role="note" data-reveal>
+    <svg class="icon" focusable="false" aria-hidden="true"><use href="#icon-info"></use></svg>
+    SITBank is a simulated banking portal for a cybersecurity course. It is not a real bank — do not enter real credentials or financial data.
+  </p>
+
 </div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/scroll-reveal.js') }}" defer></script>
 {% endblock %}

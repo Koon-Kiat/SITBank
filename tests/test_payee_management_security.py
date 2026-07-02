@@ -45,7 +45,7 @@ def _register_customer(client, *, username: str, email: str, phone: str, account
         client,
         username=username,
         email=email,
-        full_name=f"{username.title()} Test",
+        full_name=f"{''.join(c for c in username if c.isalpha()).title()} Test",
         phone_number=phone,
     )
     return _set_account(username, account)

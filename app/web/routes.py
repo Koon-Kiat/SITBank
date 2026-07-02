@@ -216,9 +216,9 @@ def register_otp_request():
         return _render_register_email_form(otp_request_form=form), 400
     except RegistrationOtpError as exc:
         flash(exc.message, "error")
-        return _render_register_email_form(otp_request_form=form), exc.status_code
+        return _render_register_email_form(otp_request_form=form, resend_cooldown=exc.retry_after if exc.status_code == 429 else None), exc.status_code
     flash(result["message"], "info")
-    return _render_register_email_form(otp_request_form=form)
+    return _render_register_email_form(otp_request_form=form, resend_cooldown=60)
 
 
 @web_bp.post("/register/otp/verify")
@@ -293,6 +293,7 @@ def _render_register_email_form(
     *,
     otp_request_form: RegistrationOtpRequestForm | None = None,
     otp_verify_form: RegistrationOtpCodeForm | None = None,
+    resend_cooldown: int | None = None,
 ):
     request_form = otp_request_form or RegistrationOtpRequestForm()
     if not request_form.email.data:
@@ -304,6 +305,7 @@ def _render_register_email_form(
         verified_email=None,
         otp_request_form=request_form,
         otp_verify_form=otp_verify_form or RegistrationOtpCodeForm(),
+        resend_cooldown=resend_cooldown or 0,
     )
 
 

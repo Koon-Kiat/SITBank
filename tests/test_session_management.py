@@ -526,7 +526,8 @@ def test_session_timeout_ui_uses_explicit_extension_and_csp_safe_toggling(client
 def test_security_warning_alerts_do_not_auto_dismiss():
     script = Path("app/static/js/account.js").read_text(encoding="utf-8")
 
-    assert "alert-success" in script
-    assert "alert-info" in script
+    # All alerts are persistent — no category is auto-dismissed
+    assert "alert-success" not in script
+    assert "alert-info" not in script
     assert "alert-warning" not in script
     assert "alert-error" not in script

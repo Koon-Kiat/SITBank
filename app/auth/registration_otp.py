@@ -21,10 +21,10 @@ from app.security.identity_policy import (
 from app.security.session_hmac import active_hmac_hex
 
 
-GENERIC_OTP_SENT_MESSAGE = "If the email is eligible, a verification code has been sent."
-GENERIC_OTP_ERROR = "Verification code expired or invalid. Please request a new code."
+GENERIC_OTP_SENT_MESSAGE = "Check your inbox. If this address is valid, a verification code has been sent."
+GENERIC_OTP_ERROR = "That code has expired or is incorrect. Request a new one and try again."
 GENERIC_REGISTRATION_EMAIL_ERROR = "Registration could not be started for that email."
-VERIFY_CUSTOMER_EMAIL_MESSAGE = "Verify your customer email before creating an account."
+VERIFY_CUSTOMER_EMAIL_MESSAGE = "Please verify your email address before continuing."
 REGISTRATION_OTP_TTL_SECONDS = 5 * 60
 REGISTRATION_OTP_RESEND_COOLDOWN_SECONDS = 60
 REGISTRATION_OTP_MAX_ATTEMPTS = 5
@@ -85,7 +85,7 @@ def request_registration_otp(email: str) -> dict[str, str]:
                 metadata={"reason": "cooldown", "email_ref": email_ref},
             )
             raise RegistrationOtpError(
-                "Please wait before requesting another verification code.",
+                "Please wait a moment before requesting a new code.",
                 429,
                 retry_after=retry_after,
             )
@@ -124,7 +124,7 @@ def request_registration_otp(email: str) -> dict[str, str]:
             "failed",
             metadata={"reason": "email_delivery_failed", "email_ref": email_ref, "error_type": type(exc).__name__},
         )
-        raise RegistrationOtpError("Could not send verification code. Please try again later.", 503) from exc
+        raise RegistrationOtpError("Could not send a code right now. Please try again in a moment.", 503) from exc
 
     audit_event("registration_otp", "requested", metadata={"email_ref": email_ref, "eligible": True})
     session[REGISTRATION_OTP_PENDING_EMAIL_KEY] = normalized_email
@@ -179,7 +179,7 @@ def verify_registration_otp(email: str, otp_code: str) -> dict[str, str]:
     session[REGISTRATION_OTP_VERIFIED_AT_KEY] = int(time.time())
     session.pop(REGISTRATION_OTP_PENDING_EMAIL_KEY, None)
     audit_event("registration_otp", "verified", metadata={"email_ref": email_ref})
-    return {"message": "Email verified. Complete registration to create your account."}
+    return {"message": "Email verified. Fill in your details to finish creating your account."}
 
 
 def pending_registration_email() -> str | None:

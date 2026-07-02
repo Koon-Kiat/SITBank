@@ -6,7 +6,7 @@ from app.security.passwords import password_max_chars, password_min_length
 
 
 USERNAME_RE = r"^[A-Za-z0-9_.-]{3,64}$"
-FULL_NAME_RE = r"^[^\x00-\x1f\x7f<>]+$"
+FULL_NAME_RE = r"^[A-Za-z][A-Za-z '\-]*[A-Za-z]$|^[A-Za-z]$"
 PHONE_RE = r"^[89][0-9]{7}$"
 TOTP_RE = r"^[0-9]{6}$"
 SESSION_REFERENCE_RE = r"^[A-Fa-f0-9]{32}$"
@@ -55,7 +55,7 @@ class RegisterSchema(TurnstileTokenMixin, Schema):
         required=True,
         validate=[
             validate.Length(min=1, max=120),
-            validate.Regexp(FULL_NAME_RE, error="Full name contains invalid characters"),
+            validate.Regexp(FULL_NAME_RE, error="Full name must contain only English letters, spaces, hyphens, and apostrophes"),
         ],
     )
     phone_number = fields.Str(

@@ -164,7 +164,7 @@ def test_recovery_code_satisfies_pending_totp_login_once_and_notifies(app, clien
     assert "unused recovery codes remain" not in dashboard.data.decode("utf-8")
     assert "9 unused recovery codes remain." in mfa_setup_page.data.decode("utf-8")
     assert reused.status_code == 401
-    assert reused.get_json()["error"] == "Invalid authentication code."
+    assert reused.get_json()["error"] == "Incorrect code. Check your authenticator and try again."
     assert db.session.query(RecoveryCode).filter_by(user_id=user.id).filter(RecoveryCode.used_at.is_not(None)).count() == 1
     assert db.session.query(SecurityAuditEvent).filter_by(event_type="mfa_recovery_code_verify", outcome="success").count() == 1
     assert password_reset_outbox()[-1]["subject"] == "SITBank recovery code used"
@@ -179,7 +179,7 @@ def test_invalid_recovery_code_attempt_uses_generic_error_and_audits_failure(cli
     response = client.post("/auth/mfa/verify", json={"totp_code": "not-a-valid-recovery-code"})
 
     assert response.status_code == 401
-    assert response.get_json()["error"] == "Invalid authentication code."
+    assert response.get_json()["error"] == "Incorrect code. Check your authenticator and try again."
     assert db.session.query(SecurityAuditEvent).filter_by(event_type="mfa_recovery_code_verify", outcome="failure").count() == 1
 
 def test_recovery_code_satisfies_totp_login_even_when_passkeys_are_registered(client):

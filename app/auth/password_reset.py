@@ -38,9 +38,9 @@ from .recovery_codes import (
 from .services import AuthError, _verify_totp_for_user
 
 
-GENERIC_FORGOT_PASSWORD_MESSAGE = "If an account exists for that email, a reset link has been sent."  # NOSONAR - user-facing status, not a credential
-GENERIC_MANUAL_RECOVERY_MESSAGE = "If the account can be reviewed, a recovery request has been recorded."
-GENERIC_RESET_ERROR = "Password reset link is invalid or expired"
+GENERIC_FORGOT_PASSWORD_MESSAGE = "If an account is linked to that email, a reset link has been sent. Check your inbox."  # NOSONAR - user-facing status, not a credential
+GENERIC_MANUAL_RECOVERY_MESSAGE = "If we can locate that account, your recovery request has been submitted."
+GENERIC_RESET_ERROR = "That reset link is no longer valid. Please request a new one from the login page."
 RESET_TRANSACTION_EXPIRED_ERROR = "Password reset transaction expired"
 RESET_TRANSACTION_SESSION_KEY = "password_reset_transaction_id"
 GENERIC_AUTHENTICATION_CODE_ERROR = "Invalid authentication code."
@@ -344,7 +344,7 @@ def complete_password_reset(new_password: str, confirm_new_password: str) -> dic
         current_app.logger.warning("password_reset_notification_failed error=%s", type(exc).__name__)
         audit_event("password_reset_notification", "failure", user=user, metadata={"reason": "email_delivery_failed"})
     return {
-        "message": "Password reset completed. Please log in.",
+        "message": "Your password has been reset. You can now log in.",
         "revoked_sessions": revoked,
         "warnings": password_policy_warnings,
     }

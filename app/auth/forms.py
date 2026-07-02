@@ -9,8 +9,8 @@ from app.security.passwords import password_max_chars, password_min_length
 from .schemas import FULL_NAME_RE, PHONE_RE, REGISTRATION_OTP_RE, STEP_UP_TOKEN_RE, TOTP_RE, USERNAME_RE
 
 
-_INVALID_USERNAME_MESSAGE = "Username contains invalid characters"
-_PASSWORDS_MUST_MATCH_MESSAGE = "Passwords must match"
+_INVALID_USERNAME_MESSAGE = "Username can only contain letters, numbers, underscores ( _ ), dots ( . ), and hyphens ( - )"
+_PASSWORDS_MUST_MATCH_MESSAGE = "Passwords do not match. Please re-enter your password."
 _INVALID_STEP_UP_TOKEN_MESSAGE = "Invalid step-up token"
 _AUTHENTICATOR_CODE_LABEL = "Authenticator code"
 _MFA_CODE_ERROR = "MFA code must be exactly 6 digits"
@@ -44,7 +44,7 @@ class RegisterForm(FlaskForm):
         validators=[
             InputRequired(),
             Length(min=1, max=120),
-            Regexp(FULL_NAME_RE, message="Full name contains invalid characters"),
+            Regexp(FULL_NAME_RE, message="Full name must contain only English letters, spaces, hyphens, and apostrophes"),
         ],
     )
     phone_number = StringField(
@@ -80,7 +80,7 @@ class RegisterDetailsForm(FlaskForm):
         validators=[
             InputRequired(),
             Length(min=1, max=120),
-            Regexp(FULL_NAME_RE, message="Full name contains invalid characters"),
+            Regexp(FULL_NAME_RE, message="Full name must contain only English letters, spaces, hyphens, and apostrophes"),
         ],
     )
     phone_number = StringField(
