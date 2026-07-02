@@ -1747,13 +1747,14 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     staging_ready_branch = re.search(
         r'if \[\[ "\$\{target\}" == "staging" \]\]; then'
         r"(.*?)"
-        r"else",
+        r"fi\n    if \[\[ \"\$\{target\}\" == \"production\" \]\]; then",
         deploy_script[deploy_script.index("wait_until_ready()") :],
         flags=re.DOTALL,
     )
     assert staging_ready_branch is not None
     assert "http://127.0.0.1:8081/health/ready" in staging_ready_branch.group(1)
     assert 'https://${PUBLIC_HOST}/health/ready' not in staging_ready_branch.group(1)
+    assert '"https://${PUBLIC_HOST}/health/ready"' not in deploy_script
     assert '"http://${APP_BIND_HOST}:5002/health/ready"' in deploy_script
     deploy_db_sequence = re.search(
         r"migration_run \\\n    python -m flask --app wsgi:app db upgrade"

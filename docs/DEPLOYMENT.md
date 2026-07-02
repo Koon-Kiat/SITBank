@@ -707,12 +707,19 @@ sudo nginx -T | grep -E 'ssl_protocols|ssl_ciphers|ssl_ecdh_curve|ssl_conf_comma
 sudo ss -ltnp | grep -E ':(80|443|5000|5002)([[:space:]]|$)'
 sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-app
 sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-admin
+curl --fail -H 'Host: sitbank.pp.ua' -H 'X-Forwarded-For: 127.0.0.1' -H 'X-Forwarded-Proto: https' \
+  http://127.0.0.1:5000/health/ready
+curl --fail -H 'Host: sitbank-admin.internal' -H 'X-Forwarded-Proto: https' \
+  http://127.0.0.1:5002/health/ready
 curl --fail https://sitbank.pp.ua/health/live
 curl -I https://sitbank.pp.ua/health/ready
 ```
 
-Expected: local customer and admin readiness succeeds, external customer
-`/health/ready` returns `403`, and no public admin hostname is required.
+Expected: local customer and admin readiness succeeds through loopback, external
+customer `/health/ready` does not return application readiness, and no public
+admin hostname is required. The deployment wrapper uses the loopback readiness
+checks; production public TLS verification remains a separate protected
+post-deploy gate.
 
 GitHub-hosted runners do not have stable source IPs. The normal
 GitHub-hosted SSH deployment is acceptable only when the runner source is
