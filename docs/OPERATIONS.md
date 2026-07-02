@@ -9,6 +9,10 @@ staging gates. A push to `main` pauses at the protected `production`
 environment for reviewer approval; operators do not dispatch production
 directly.
 
+For one-stop safe verification commands and EC2 operational path inventory,
+start with `docs/runbooks/global-verification.md`, then follow the deeper
+runbooks linked from that page.
+
 ## Runtime Secrets
 
 Keep root-managed secret files in `/etc/sitbank/secrets` and `/etc/sitbank-staging/secrets`. The container reads only mounted files under `/run/secrets`; long-lived application secrets are not exported into the Compose process environment.

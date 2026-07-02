@@ -14,6 +14,9 @@ protected reusable workflow as a required gate after production deployment and
 public production TLS verification. Normal PR and public TLS CI do not join
 the tailnet and do not scan the private hostname.
 
+For centralized verification commands and EC2 operational path lookup, start
+with the [global verification and EC2 path inventory runbook](docs/runbooks/global-verification.md).
+
 Production bootstrap installs the non-mutating
 `/usr/local/sbin/verify-tailscale-admin-access` host preflight. Operators run
 it on EC2 with `--mode serve` to verify the local Tailscale state, Funnel

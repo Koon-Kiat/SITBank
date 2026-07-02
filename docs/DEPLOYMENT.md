@@ -28,6 +28,11 @@ Only Flask/Gunicorn runs in the SITBank container. Nginx, TLS, PostgreSQL, and b
 - Staging compose dir: `/opt/sitbank-staging`
 - Staging service: `sitbank-staging-container.service`
 
+For centralized verification commands and EC2 operational path inventory, see
+`docs/runbooks/global-verification.md`. That runbook links these deployment
+paths to safe inspection commands and marks secret-bearing paths that must not
+be printed.
+
 The repository identity above was revalidated on 2026-07-01: GitHub reported
 `@Koon-Kiat` as an administrator of `Koon-Kiat/SITBank`, so the CODEOWNERS,
 GHCR, Cosign/OIDC, bootstrap, and deployment trust paths use an approved owner.
