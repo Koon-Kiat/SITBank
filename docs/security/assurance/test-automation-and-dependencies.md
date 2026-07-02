@@ -11,7 +11,7 @@ Category: [Security assurance](../README.md#assurance).
 | --- | --- | --- |
 | `requirements.in` | Top-level runtime Python dependencies | Flask, SQLAlchemy, Flask-WTF, Flask-Limiter, Flask-Talisman, PyOTP, Marshmallow, Cryptography, and related runtime packages |
 | `requirements.lock` | Runtime Python lockfile | Generated with hashes and consumed by `pip-audit --require-hashes` |
-| `requirements-dev.in` | Development/test dependencies | Includes `-r requirements.in`, `pytest`, `pytest-cov`, `pytest-xdist`, `pip-audit`, `bandit`, and `pip-tools` |
+| `requirements-dev.in` | Development/test dependencies | Includes `-r requirements.in`, `pytest`, `pytest-cov`, `pytest-xdist`, `pip-audit`, `bandit`, `pip-tools`, and Playwright for browser E2E tests |
 | `requirements-dev.lock` | Development/test lockfile | Generated with hashes and audited separately |
 | `Dockerfile` | Runtime image | Uses a version tag plus immutable Python base-image digest for Dependabot tracking and reproducible builds, keeps application code root-owned and read-only, and runs as non-root UID/GID `10001:10001` |
 | `compose.prod.yml` | Production deployment model | Uses Docker secrets, read-only app containers, loopback bindings, and separate customer/admin secret sets |
@@ -49,6 +49,7 @@ applicable unless a frontend package manager is added.
 | Trivy image scans | `.github/workflows/ci-deploy.yml` | Uses pinned Trivy `v0.71.2` for built-image and repository filesystem scans; `.trivyignore` exceptions are tested |
 | CodeQL | `.github/workflows/codeql.yml` | Runs Python security-extended static analysis when the repository is public |
 | SonarQube Cloud | `.github/workflows/ci-deploy.yml`, `.github/workflows/sonarqube.yml`, `sonar-project.properties` | Reuses the CI test job's `coverage.xml` artifact to report private-repository code quality, duplication, maintainability, and security findings without rerunning pytest; initial quality gate is non-blocking |
+| Playwright E2E | `.github/workflows/ci-deploy.yml`, `tests/e2e/` | Installs Chromium in a dedicated CI job and exercises browser-rendered customer login, protected redirects, security headers, and MFA-onboarding navigation against a loopback Flask server |
 | Bandit | `scripts/ci-local`, `.github/workflows/ci-deploy.yml` | Runs a high-confidence Python security scan |
 | Custom repository secret scanner | `ops/security/scan_repository_secrets.py` | Scans tracked files and, in CI/local CI, git history for private keys and common token formats |
 | Gitleaks | `.github/workflows/gitleaks.yml`, `.gitleaks.toml` | Independently scans all refs with the built-in Gitleaks rules, redacted output, no production secrets, and no SARIF or raw report upload |
@@ -63,6 +64,7 @@ Tests for this automation include:
 | Test | Coverage |
 | --- | --- |
 | `tests/test_pytest_optimization.py::test_ci_keeps_full_parallel_pytest_and_locked_dependency_checks` | CI keeps full unscoped pytest, pip check, Bandit, pip-audit, lock validation, and secret scan |
+| `tests/test_playwright_e2e_config.py` | Playwright dependency lock, opt-in local browser execution, dedicated CI job, and documentation contract |
 | `tests/test_pytest_optimization.py::test_local_ci_keeps_full_parallel_pytest_and_security_gates` | Local CI wrapper keeps the same security gates |
 | `tests/test_deployment.py::test_dependency_manifests_have_one_hashed_lockfile_source_of_truth` | Dependency manifest policy |
 | `tests/test_deployment.py::test_dependabot_tracks_docker_base_images_without_automerge` | Dependabot policy |
@@ -105,6 +107,7 @@ deployment.
 | Audit, alerts, and redaction | `tests/test_audit_alerting.py`, `tests/test_audit_metadata_sanitization.py` |
 | Deployment, Nginx, Docker, workflows, and runtime contracts | `tests/test_deployment.py` |
 | UI security regressions | `tests/test_authenticated_portal_ui.py`, `tests/test_dashboard.py` |
+| Browser E2E smoke paths | `tests/e2e/test_customer_auth_browser.py` |
 
 Payee ownership, direct banking MFA gating, pre-TOTP lookup blocking,
 duplicate/self-payee protections, expiry behavior, and removal IDOR are covered
@@ -113,6 +116,23 @@ by `tests/test_payee_management_security.py`.
 Admin route authorization has a separate generated route-inventory matrix in
 `tests/test_admin_route_inventory_security.py`, plus targeted admin service
 tests for staff invites and manual recovery.
+
+Playwright E2E browser tests are opt-in for local unscoped pytest because they
+require browser binaries. To run them locally:
+
+```powershell
+$env:PLAYWRIGHT_BROWSERS_PATH = ".playwright-browsers"
+.\.venv\Scripts\python.exe -m playwright install chromium
+$env:SITBANK_RUN_E2E = "1"
+.\.venv\Scripts\python.exe -m pytest -q tests/e2e
+```
+
+The CI `Playwright E2E browser tests` job installs Chromium with `python -m
+playwright install --with-deps chromium`, sets `SITBANK_RUN_E2E=1`, and runs
+`python -m pytest -q tests/e2e`. Browser cache and report paths stay under
+ignored local paths such as `.playwright-browsers`, `playwright-report`, and
+`test-results`; the workflow does not upload traces, videos, cookies, or
+browser profiles.
 
 ## Local Security Commands
 

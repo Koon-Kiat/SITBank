@@ -1831,6 +1831,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         "workflow-security",
         "dependency-review",
         "test",
+        "playwright-e2e",
         "sonarqube",
         "sonarqube-comment",
         "image-test",
@@ -1892,7 +1893,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "PROD_DEPLOY_ENABLED is not true" in preflight_run
     assert "Automatic production deployment will be skipped." in preflight_run
     assert "Missing required production deployment setting" not in preflight_run
-    candidate_jobs = ("test", "publish")
+    candidate_jobs = ("test", "playwright-e2e", "publish")
     for job_name in candidate_jobs:
         checkout = next(
             step
@@ -2344,7 +2345,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         action for action in _workflow_uses(workflow_text)
         if action.startswith("actions/setup-python@")
     ]
-    assert len(checkout_uses) == 11
+    assert len(checkout_uses) == 12
     assert workflow_text.count("persist-credentials: false") == len(checkout_uses)
     _assert_pinned_actions(checkout_uses, context="actions/checkout")
     _assert_pinned_actions(
@@ -2360,7 +2361,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert workflow_text.count("ref: ${{ github.workflow_sha }}") == 4
     assert workflow_text.count(
         "ref: ${{ needs.resolve-source.outputs.source_sha }}"
-    ) == 3
+    ) == 4
     assert "ref: ${{ needs.publish.outputs.revision }}" in workflow_text
     assert "candidate-source/ops/container/smoke-test.sh" in workflow_text
     assert "RELEASE_SHA: ${{ github.sha }}" not in workflow_text
