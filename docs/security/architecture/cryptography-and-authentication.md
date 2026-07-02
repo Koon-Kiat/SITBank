@@ -197,6 +197,17 @@ Tests covering key validation include
 `tests/test_mfa_envelope_crypto.py::test_mfa_keyring_config_fails_closed`, and
 `tests/test_deployment.py::test_container_bundle_keyring_validation_normalizes_ids_and_rejects_duplicates`.
 
+MFA KEK rotation is an operator-run, staging-first procedure documented in
+`docs/OPERATIONS.md#mfa-kek-rotation`. Operators add the new KEK id to the
+root-managed `MFA_KEK_KEYS_JSON` keyring before running
+`rewrap-mfa-deks --dry-run`; a missing target id fails before row writes with
+`Target MFA KEK id is not configured`. Dry runs and real rewraps report only
+scanned, updated, skipped, failure counts, and key ids. They must not display
+KEK values, TOTP seeds, wrapped DEKs, ciphertext, nonces, recovery codes, QR
+codes, or decrypted MFA material. Removing the old KEK is a separate
+post-verification action after all rows are rewrapped and the rollback window
+is approved closed.
+
 ## Cryptographic Algorithms
 
 Communication encryption is provided by HTTPS/TLS at Nginx. The Flask app does

@@ -50,7 +50,48 @@ status check, update the GitHub ruleset manually only after the new context has
 completed successfully; repository commits cannot mutate or prove that
 provider-side setting.
 
-MFA/TOTP seed encryption uses envelope encryption. Keep old KEKs in `mfa_kek_keys_json` until `rewrap-mfa-deks` has moved stored records to the new active KEK. Then update `MFA_KEK_ACTIVE_ID` and the root-managed keyring together.
+MFA/TOTP seed encryption uses envelope encryption. Keep old KEKs in
+`mfa_kek_keys_json` until `rewrap-mfa-deks` has moved stored records to the new
+active KEK.
+
+### MFA KEK Rotation
+
+Rotate MFA KEKs in staging first, then production. Do not print, paste, or
+commit KEK values, TOTP seeds, wrapped DEKs, ciphertext, nonces, recovery
+codes, QR codes, or decrypted MFA material.
+
+1. Add the new key id and base64 key value to the root-managed
+   `/etc/sitbank-staging/secrets/mfa_kek_keys_json` file while keeping the old
+   key id present. Repeat later for `/etc/sitbank/secrets/mfa_kek_keys_json`
+   only after staging passes.
+2. Keep `MFA_KEK_ACTIVE_ID` on the old key until the new key id is present and
+   `production-check` passes. The error `Target MFA KEK id is not configured`
+   means the target id has not been added to the runtime keyring yet.
+3. Run the staging dry run and verify only counts and key ids are displayed:
+
+   ```bash
+   sudo docker exec sitbank-staging-app python -m flask --app wsgi:app production-check
+   sudo docker exec sitbank-staging-app python -m flask --app wsgi:app rewrap-mfa-deks --from-kek-id <old-kek-id> --to-kek-id <new-kek-id> --dry-run
+   ```
+
+4. Run the staging rewrap. The command commits only if all matching rows
+   rewrap successfully; on any failure it rolls back and reports that no
+   changes were committed.
+
+   ```bash
+   sudo docker exec sitbank-staging-app python -m flask --app wsgi:app rewrap-mfa-deks --from-kek-id <old-kek-id> --to-kek-id <new-kek-id>
+   sudo docker exec sitbank-staging-app python -m flask --app wsgi:app production-check
+   sudo docker exec sitbank-staging-app python -m flask --app wsgi:app check-security-alerts --report-only --no-delivery
+   ```
+
+5. After staging evidence is reviewed, repeat the same dry run and rewrap in
+   production with the production app container. Confirm an encrypted database
+   backup exists before production rotation.
+6. Set `MFA_KEK_ACTIVE_ID` to the new id only after the new key is present and
+   configuration validation passes. New MFA enrollments then use the new KEK.
+7. Remove the old KEK from the root-managed keyring only after all rows have
+   been rewrapped, post-rotation checks pass, rollback evidence is preserved,
+   and the approved rollback window has closed.
 
 ## Disposable Registration Data Reset
 

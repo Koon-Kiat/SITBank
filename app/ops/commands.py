@@ -297,12 +297,7 @@ def register_ops_commands(app: Flask) -> None:  # NOSONAR
     def rewrap_mfa_deks(from_kek_id: str, to_kek_id: str, dry_run: bool) -> None:
         """Rewrap envelope DEKs without re-encrypting TOTP secret ciphertext."""
 
-        if from_kek_id == to_kek_id:
-            raise click.ClickException("from-kek-id and to-kek-id must be different")
-        if from_kek_id not in app.config["MFA_KEK_KEYS"]:
-            raise click.ClickException("Source MFA KEK id is not configured")
-        if to_kek_id not in app.config["MFA_KEK_KEYS"]:
-            raise click.ClickException("Target MFA KEK id is not configured")
+        _validate_mfa_rewrap_preflight(app, from_kek_id, to_kek_id, dry_run)
         audit_system_event(
             "mfa_dek_rewrap",
             "started",
@@ -396,12 +391,58 @@ def register_ops_commands(app: Flask) -> None:  # NOSONAR
 def _users_with_mfa_secret() -> list[User]:
     return list(
         db.session.execute(
-            db.select(User).where(
+            db.select(User)
+            .where(
                 User.mfa_secret_nonce.is_not(None),
                 User.mfa_secret_ciphertext.is_not(None),
             )
+            .order_by(User.id.asc())
         ).scalars()
     )
+
+
+def _validate_mfa_rewrap_preflight(
+    app: Flask,
+    from_kek_id: str,
+    to_kek_id: str,
+    dry_run: bool,
+) -> None:
+    keys = app.config.get("MFA_KEK_KEYS")
+    reason: str | None = None
+    message: str | None = None
+    if from_kek_id == to_kek_id:
+        reason = "same_kek_id"
+        message = "from-kek-id and to-kek-id must be different"
+    elif not isinstance(keys, dict) or not keys:
+        reason = "missing_keyring"
+        message = "MFA KEK keyring is not configured"
+    elif from_kek_id not in keys:
+        reason = "missing_source_kek"
+        message = (
+            "Source MFA KEK id is not configured; keep the old KEK in "
+            "MFA_KEK_KEYS_JSON until stored DEKs are rewrapped"
+        )
+    elif to_kek_id not in keys:
+        reason = "missing_target_kek"
+        message = (
+            "Target MFA KEK id is not configured; add the new KEK id to "
+            "MFA_KEK_KEYS_JSON before running rewrap-mfa-deks"
+        )
+    if message is None:
+        return
+
+    audit_system_event(
+        "mfa_dek_rewrap",
+        "failure",
+        metadata={
+            "from_kek_id": from_kek_id,
+            "to_kek_id": to_kek_id,
+            "dry_run": dry_run,
+            "reason": reason,
+            "stage": "preflight",
+        },
+    )
+    raise click.ClickException(message)
 
 
 def _utc_iso_or_none(value: datetime | None) -> str | None:

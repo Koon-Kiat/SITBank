@@ -214,6 +214,34 @@ def test_payee_audit_docs_require_references_and_bounded_metadata():
         assert required in combined
 
 
+def test_mfa_kek_rotation_docs_match_rewrap_cli_safety():
+    operations = Path("docs/OPERATIONS.md").read_text(encoding="utf-8")
+    crypto_docs = (
+        SECURITY_DOCS / "architecture" / "cryptography-and-authentication.md"
+    ).read_text(encoding="utf-8")
+    combined = " ".join(f"{operations}\n{crypto_docs}".split())
+
+    for required in (
+        "### MFA KEK Rotation",
+        "Rotate MFA KEKs in staging first, then production",
+        "Target MFA KEK id is not configured",
+        "rewrap-mfa-deks --from-kek-id <old-kek-id> --to-kek-id <new-kek-id> --dry-run",
+        "commits only if all matching rows rewrap successfully",
+        "Remove the old KEK",
+        "post-verification action",
+        "rollback window",
+        "Do not print, paste, or commit KEK values",
+        "or decrypted MFA material",
+    ):
+        assert required in combined
+    for forbidden in (
+        "cat /etc/sitbank/secrets/mfa_kek_keys_json",
+        "print MFA_KEK_KEYS_JSON",
+        "echo $MFA_KEK_KEYS_JSON",
+    ):
+        assert forbidden.casefold() not in combined.casefold()
+
+
 def test_security_docs_are_grouped_and_indexed_by_purpose():
     assert sorted(path.name for path in SECURITY_DOCS.glob("*.md")) == ["README.md"]
 
