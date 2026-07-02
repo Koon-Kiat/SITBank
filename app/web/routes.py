@@ -277,7 +277,11 @@ def register_submit():
         flash(_CHALLENGE_VERIFICATION_FAILED_MESSAGE, "error")
         return _render_register_details_form(form, verified_email=verified_email), 400
     except AuthError as exc:
-        flash(exc.message, "error")
+        _duplicate_field_messages = {
+            "username": "That username is already taken. Please choose a different one.",
+            "phone": "That phone number is already registered.",
+        }
+        flash(_duplicate_field_messages.get(exc.field, exc.message), "error")
         verified_email = current_verified_registration_email()
         if verified_email:
             return _render_register_details_form(form, verified_email=verified_email), exc.status_code

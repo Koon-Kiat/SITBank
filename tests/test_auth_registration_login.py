@@ -646,7 +646,7 @@ def test_registration_rejects_unsafe_full_name(client):
     assert db.session.query(User).count() == 0
 
 
-def test_registration_rejects_duplicate_phone_with_generic_error(client):
+def test_registration_rejects_duplicate_phone_with_specific_error(client):
     created = register(client)
     duplicate_phone = register(
         client,
@@ -658,7 +658,7 @@ def test_registration_rejects_duplicate_phone_with_generic_error(client):
 
     assert created.status_code == 302
     assert duplicate_phone.status_code == 400
-    assert b"Registration could not be completed with those details" in duplicate_phone.data
+    assert b"That phone number is already registered." in duplicate_phone.data
     assert db.session.query(User).count() == 1
 
 def test_api_registration_rejects_client_supplied_account_number(client):
