@@ -211,7 +211,8 @@ def test_flash_messages_are_dismissible(client):
     )
 
     assert response.status_code == 200
-    assert "data-alert-dismiss" in response.data.decode("utf-8")
+    assert "alert-success" in response.data.decode("utf-8")
+    assert "data-alert-dismiss" not in response.data.decode("utf-8")
 
 def test_landing_route_public_for_anonymous_and_dashboard_for_authenticated(client):
     public_response = client.get("/")
@@ -221,7 +222,7 @@ def test_landing_route_public_for_anonymous_and_dashboard_for_authenticated(clie
     authenticated_response = client.get("/")
 
     assert public_response.status_code == 200
-    assert b"Log in securely" in public_response.data
+    assert b"Open an account" in public_response.data
     assert authenticated_response.status_code == 302
     assert authenticated_response.headers["Location"].endswith("/dashboard")
 

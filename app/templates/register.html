@@ -92,7 +92,7 @@
           <button class="password-toggle" type="button" data-password-toggle="{{ form.password.id }}" aria-label="Show password">Show</button>
         </div>
         {% for error in form.password.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
-        <p class="hint">{{ config["PASSWORD_MIN_LENGTH"] }} to {{ config["PASSWORD_MAX_CHARS"] }} characters. {{ config["PASSWORD_RECOMMENDED_MIN_LENGTH"] }} or more recommended.</p>
+        <p class="hint">Use {{ config["PASSWORD_MIN_LENGTH"] }} to {{ config["PASSWORD_MAX_CHARS"] }} characters. {{ config["PASSWORD_RECOMMENDED_MIN_LENGTH"] }} or more is recommended.</p>
         <p class="strength-meter" data-password-strength="registration-password">Password strength: not entered</p>
       </div>
 
