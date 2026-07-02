@@ -394,14 +394,18 @@ ephemeral tailnet node. Neither control proves live ACL membership, device
 approval, or operator offboarding state, which remains operator-owned
 evidence.
 
-Set `ROOT_ADMIN_EMAILS` in both protected GitHub environments before deploying
-admin bootstrap support. It is a non-secret allowlist, but it is
-security-critical: the value must be exactly 7 comma-separated SIT workplace
-email addresses. The deployment workflow renders it into
-`/etc/sitbank*/container.env` so `sitbank-admin` and `sitbank-staging-admin`
-can enforce the fixed root-admin group. The production/admin runtime rejects the
+Set `ROOT_ADMIN_EMAILS` as a protected environment secret in both the
+`staging` and `production` GitHub environments before deploying admin bootstrap
+support. It is sensitive privileged-identity configuration: the value must be
+exactly 7 comma-separated SIT workplace email addresses. The deployment
+workflow validates the secret without printing it, uploads it as a restricted
+deployment input, and installs it as `/etc/sitbank*/secrets/root_admin_emails`
+so `sitbank-admin` and `sitbank-staging-admin` can enforce the fixed root-admin
+group through `ROOT_ADMIN_EMAILS_FILE`. The production/admin runtime rejects the
 built-in development root-admin set, placeholders, demo/example identities,
 duplicates after normalization, personal domains, and non-approved domains.
+Do not copy the real allowlist into issues, pull requests, screenshots, logs,
+or job summaries.
 Root-admin bootstrap remains manual over SSH inside the admin container; it is
 not a GitHub Actions workflow, deployment automation step, or non-interactive
 bootstrap wrapper.

@@ -115,6 +115,7 @@ readonly bundle_path="${INCOMING_DIR}/runtime-${input_stem}.tar"
 readonly checksum_path="${INCOMING_DIR}/runtime-${input_stem}.sha256"
 readonly signature_path="${INCOMING_DIR}/runtime-${input_stem}.sigstore.json"
 readonly turnstile_credential_path="${INCOMING_DIR}/turnstile-${input_stem}.secret"
+readonly root_admin_emails_path="${INCOMING_DIR}/root-admin-emails-${input_stem}.secret"
 
 exec 9>"${LOCK_FILE}"
 if ! flock -n 9; then
@@ -127,6 +128,7 @@ staging_dir="$(mktemp -d "${STATE_DIR}/runtime-staging.XXXXXX")"
 runtime_backup="$(mktemp -d "${STATE_DIR}/runtime-backup.XXXXXX")"
 runtime_replaced=0
 turnstile_secret_replaced=0
+root_admin_emails_replaced=0
 service_switched=0
 dependencies_prepared=0
 previous_image=""
@@ -141,7 +143,8 @@ cleanup() {
         "${bundle_path}" \
         "${checksum_path}" \
         "${signature_path}" \
-        "${turnstile_credential_path}"
+        "${turnstile_credential_path}" \
+        "${root_admin_emails_path}"
 }
 
 audit_log() {
@@ -169,6 +172,11 @@ backup_runtime() {
             "${SECRET_DIR}/turnstile_secret_key" \
             "${runtime_backup}/turnstile_secret_key"
     fi
+    if [[ -f "${SECRET_DIR}/root_admin_emails" ]]; then
+        install -m 0600 \
+            "${SECRET_DIR}/root_admin_emails" \
+            "${runtime_backup}/root_admin_emails"
+    fi
 }
 
 restore_runtime() {
@@ -183,6 +191,14 @@ restore_runtime() {
             install -o root -g 10001 -m 0440 \
                 "${runtime_backup}/turnstile_secret_key" \
                 "${SECRET_DIR}/turnstile_secret_key"
+        fi
+    fi
+    if [[ "${root_admin_emails_replaced}" -eq 1 ]]; then
+        rm -f -- "${SECRET_DIR}/root_admin_emails"
+        if [[ -f "${runtime_backup}/root_admin_emails" ]]; then
+            install -o root -g 10001 -m 0440 \
+                "${runtime_backup}/root_admin_emails" \
+                "${SECRET_DIR}/root_admin_emails"
         fi
     fi
 }
@@ -204,6 +220,48 @@ install_turnstile_credential() {
         "${SECRET_DIR}/turnstile_secret_key"
     turnstile_secret_replaced=1
     unset value
+}
+
+install_root_admin_allowlist() {
+    if [[ "${runtime_replaced}" -ne 1 ]]; then
+        echo "Root-admin allowlist requires a verified runtime bundle" >&2
+        exit 2
+    fi
+    validate_input_file "${root_admin_emails_path}"
+    python3 - "${root_admin_emails_path}" <<'PY'
+from pathlib import Path
+import sys
+
+APPROVED_DOMAINS = frozenset({"sit.singaporetech.edu.sg", "singaporetech.edu.sg"})
+
+
+def workplace_email_domain(email):
+    if email.count("@") != 1:
+        return None
+    local, domain = email.rsplit("@", 1)
+    if not (1 <= len(local) <= 128 and 1 <= len(domain) <= 253):
+        return None
+    if any(ord(character) <= 32 or ord(character) == 127 for character in email):
+        return None
+    return domain
+
+
+value = Path(sys.argv[1]).read_text(encoding="utf-8")
+emails = [item.strip().casefold() for item in value.split(",") if item.strip()]
+if len(emails) != 7 or len(set(emails)) != 7:
+    raise SystemExit("Root-admin allowlist must contain exactly 7 unique workplace email addresses")
+for email in emails:
+    domain = workplace_email_domain(email)
+    if domain is None:
+        raise SystemExit("Root-admin allowlist contains an invalid email address")
+    if domain not in APPROVED_DOMAINS:
+        raise SystemExit("Root-admin allowlist must contain only SIT workplace email addresses")
+Path(sys.argv[1]).write_text(",".join(emails), encoding="utf-8", newline="")
+PY
+    install -o root -g 10001 -m 0440 \
+        "${root_admin_emails_path}" \
+        "${SECRET_DIR}/root_admin_emails"
+    root_admin_emails_replaced=1
 }
 
 validate_deployment_profile() {
@@ -327,7 +385,6 @@ install_runtime_bundle() {
         PASSWORD_RESET_TOKEN_TTL_SECONDS
         PASSWORD_RESET_TRANSACTION_TTL_SECONDS
         PASSWORD_PBKDF2_ITERATIONS
-        ROOT_ADMIN_EMAILS
         SECURITY_ALERT_DEDUPE_TTL_SECONDS
         SECURITY_ALERT_ENABLED
         SECURITY_ALERT_MIN_SEVERITY
@@ -433,6 +490,7 @@ validate_staging_isolation() {
         admin_session_lookup_hmac_key \
         admin_database_url \
         admin_password_pepper_b64 \
+        root_admin_emails \
         smtp_username \
         smtp_password \
         turnstile_secret_key; do
@@ -688,6 +746,7 @@ fi
 
 install_runtime_bundle
 install_turnstile_credential
+install_root_admin_allowlist
 
 export DOCKER_CONFIG="${docker_config}"
 printf '%s' "${registry_token}" | docker login ghcr.io \
@@ -727,6 +786,7 @@ required_secrets=(
     database_migration_url
     mfa_kek_keys_json
     password_pepper_b64
+    root_admin_emails
     security_audit_hmac_key
     security_alert_webhook_url
     smtp_username
@@ -836,6 +896,7 @@ fi
 service_switched=0
 runtime_replaced=0
 turnstile_secret_replaced=0
+root_admin_emails_replaced=0
 trap - ERR
 if [[ -n "${DATABASE_CUTOVER}" && -r "${DATABASE_CUTOVER}" ]]; then
     if ! /usr/local/sbin/sitbank-database-cutover finalize; then

@@ -324,6 +324,8 @@ printf '%s' 'smtp-password' \
     > "${work_dir}/secrets/smtp_password"
 printf '%s' '1x0000000000000000000000000000000AA' \
     > "${work_dir}/secrets/turnstile_secret_key"
+printf '%s' "${root_admin_emails}" \
+    > "${work_dir}/secrets/root_admin_emails"
 chmod_host_path 0444 "${work_dir}"/secrets/*
 
 seq -f 'blocked-password-%06g' 1 100000 \
@@ -375,7 +377,7 @@ docker_args=(
     --env PASSWORD_RESET_EMAIL_BACKEND=smtp
     --env PASSWORD_RESET_EMAIL_FROM=security@sitbank.example
     --env PASSWORD_RESET_BASE_URL=https://sitbank.pp.ua
-    --env "ROOT_ADMIN_EMAILS=${root_admin_emails}"
+    --env ROOT_ADMIN_EMAILS_FILE=/run/secrets/root_admin_emails
     --env SMTP_HOST=smtp.example.test
     --env SMTP_PORT=587
     --env SMTP_USE_TLS=true

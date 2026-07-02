@@ -112,8 +112,9 @@ environment-specific deploy key, pinned known-hosts entry, and
 
 GitHub environment variables provide only non-secret deployment settings. Keep
 `STAGING_DEPLOY_ENABLED` and `PROD_DEPLOY_ENABLED` as repository variables. Put
-environment-specific settings, including SMTP sender/host values, under their
-matching GitHub environment. For both `staging` and `production`, set:
+environment-specific non-secret settings, including SMTP sender/host values,
+under their matching GitHub environment. For both `staging` and `production`,
+set these environment variables:
 
 - `<PREFIX>_EC2_HOST`
 - `<PREFIX>_EC2_PORT`
@@ -125,14 +126,16 @@ matching GitHub environment. For both `staging` and `production`, set:
 - `<PREFIX>_MFA_ISSUER_NAME`
 - `<PREFIX>_PASSWORD_RESET_EMAIL_FROM`
 - `<PREFIX>_SMTP_HOST`
-- `ROOT_ADMIN_EMAILS`
 
-`ROOT_ADMIN_EMAILS` is scoped by GitHub environment rather than prefix: set it
-separately in both the `staging` and `production` environments. It must be a
-comma-separated list of exactly 7 workplace email addresses from
-`ADMIN_ALLOWED_EMAIL_DOMAINS`. The deployment workflow maps it into the
-prefixed renderer input for the target environment and writes
-`ROOT_ADMIN_EMAILS` into the signed runtime `container.env`.
+`ROOT_ADMIN_EMAILS` is sensitive privileged-identity configuration, not a
+repository variable. Store it as a protected environment secret named
+`ROOT_ADMIN_EMAILS` separately in both the `staging` and `production`
+environments. It must be a comma-separated list of exactly 7 workplace email
+addresses from `ADMIN_ALLOWED_EMAIL_DOMAINS`. The deployment workflow maps the
+secret into the prefixed renderer input for the target environment, validates
+only its shape, and installs it as the root-managed secret file
+`/etc/sitbank*/secrets/root_admin_emails`. Do not copy the real allowlist into
+issues, pull requests, screenshots, logs, or job summaries.
 
 `STAGING_PUBLIC_HOST` and `PROD_PUBLIC_HOST` are public HTTPS verification
 names. `STAGING_EC2_HOST` and `PROD_EC2_HOST` are private Tailscale MagicDNS

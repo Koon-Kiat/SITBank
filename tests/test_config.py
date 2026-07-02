@@ -17,10 +17,12 @@ from config import (
     _configured_secret,
     _all_email_domains_allowed,
     _csv_domain_set,
+    _csv_env_values,
     _password_reset_base_url,
     _required_b64_32_bytes,
     _required_b64_32_bytes_decoded,
     _required_env_or_file,
+    _root_admin_email_set,
     _required_session_hmac_keys,
     root_admin_email_allowlist_failures,
     _validate_audit_anchor_path,
@@ -219,6 +221,74 @@ def test_root_admin_allowlist_accepts_explicit_non_placeholder_workplace_set():
         allowed_domains=frozenset({"sit.singaporetech.edu.sg"}),
         reject_default=True,
     ) == []
+
+
+def test_root_admin_allowlist_can_load_from_secret_file(monkeypatch, tmp_path):
+    value = ",".join(
+        f"chief{index}@sit.singaporetech.edu.sg"
+        for index in range(1, 8)
+    )
+    secret_file = tmp_path / "root_admin_emails"
+    secret_file.write_text(value, encoding="utf-8")
+    monkeypatch.delenv("ROOT_ADMIN_EMAILS", raising=False)
+    monkeypatch.setenv("ROOT_ADMIN_EMAILS_FILE", str(secret_file))
+
+    assert _root_admin_email_set(
+        "ROOT_ADMIN_EMAILS",
+        default="placeholder@example.test",
+        allowed_domains=frozenset({"sit.singaporetech.edu.sg"}),
+        app_env="production",
+        deployment_target="production",
+    ) == frozenset(value.split(","))
+
+
+def test_root_admin_allowlist_can_load_from_direct_environment(monkeypatch):
+    value = ",".join(
+        f"chief{index}@sit.singaporetech.edu.sg"
+        for index in range(1, 8)
+    )
+    monkeypatch.setenv("ROOT_ADMIN_EMAILS", value)
+    monkeypatch.delenv("ROOT_ADMIN_EMAILS_FILE", raising=False)
+
+    assert _root_admin_email_set(
+        "ROOT_ADMIN_EMAILS",
+        default="placeholder@example.test",
+        allowed_domains=frozenset({"sit.singaporetech.edu.sg"}),
+        app_env="production",
+        deployment_target="production",
+    ) == frozenset(value.split(","))
+
+
+def test_csv_env_values_normalizes_direct_csv_environment(monkeypatch):
+    monkeypatch.setenv("CSV_UNIT_TEST_VALUES", " Alpha , beta,ALPHA ")
+
+    assert _csv_env_values("CSV_UNIT_TEST_VALUES", default="ignored") == (
+        "alpha",
+        "beta",
+        "alpha",
+    )
+
+
+def test_root_admin_allowlist_rejects_direct_and_file(monkeypatch, tmp_path):
+    secret_file = tmp_path / "root_admin_emails"
+    secret_file.write_text(
+        ",".join(
+            f"chief{index}@sit.singaporetech.edu.sg"
+            for index in range(1, 8)
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ROOT_ADMIN_EMAILS", "chief1@sit.singaporetech.edu.sg")
+    monkeypatch.setenv("ROOT_ADMIN_EMAILS_FILE", str(secret_file))
+
+    with pytest.raises(RuntimeError, match="Configure either ROOT_ADMIN_EMAILS or ROOT_ADMIN_EMAILS_FILE"):
+        _root_admin_email_set(
+            "ROOT_ADMIN_EMAILS",
+            default="placeholder@example.test",
+            allowed_domains=frozenset({"sit.singaporetech.edu.sg"}),
+            app_env="production",
+            deployment_target="production",
+        )
 
 
 def test_password_reset_base_url_must_be_https_in_production(monkeypatch):

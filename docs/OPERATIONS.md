@@ -377,11 +377,14 @@ exactly 7 approved admin workplace email addresses from
 `ADMIN_ALLOWED_EMAIL_DOMAINS` before any database user can become `root_admin`;
 normal customer registration and staff invites must not create `root_admin`
 accounts. Configure `ROOT_ADMIN_EMAILS` as a protected GitHub environment
-variable in both `staging` and `production` before deploying this command. Do
-not commit the allowlist to the repository. Production/admin runtime rejects
-missing, empty, malformed, duplicate, built-in default, placeholder, demo,
-example, personal-domain, and non-approved-domain root-admin allowlists before
-serving admin traffic.
+secret in both `staging` and `production` before deploying this command. The
+deployment workflow installs it as `/etc/sitbank*/secrets/root_admin_emails`
+and the containers read it through `ROOT_ADMIN_EMAILS_FILE`. Do not commit,
+print, screenshot, or paste the real allowlist into GitHub issues, pull
+requests, chat, logs, artifacts, or job summaries. Production/admin runtime
+rejects missing, empty, malformed, duplicate, built-in default, placeholder,
+demo, example, personal-domain, and non-approved-domain root-admin allowlists
+before serving admin traffic.
 
 Privileged root-admin, admin, and staff accounts use approved SIT workplace
 email domains only. Do not configure personal-provider domains in
@@ -393,15 +396,26 @@ use non-approved domains. Operators must remediate those accounts to approved
 SIT workplace emails through a reviewed administrative data fix; the check does
 not silently rewrite or delete accounts and does not print the email addresses.
 
-After deployment, verify the admin container received the allowlist:
+After deployment, verify the admin container received an allowlist with the
+expected shape without printing the identities:
 
 ```bash
-sudo docker exec sitbank-admin printenv ROOT_ADMIN_EMAILS
+sudo docker exec -i sitbank-admin python - <<'PY'
+import os
+value = os.environ.get("ROOT_ADMIN_EMAILS", "")
+if not value:
+    path = os.environ.get("ROOT_ADMIN_EMAILS_FILE", "")
+    value = open(path, encoding="utf-8").read() if path else ""
+emails = [item.strip().casefold() for item in value.split(",") if item.strip()]
+domains = sorted({email.rsplit("@", 1)[1] for email in emails if "@" in email})
+print({"count": len(emails), "unique": len(set(emails)), "domains": domains})
+PY
 ```
 
-The output must be the configured comma-separated 7-email allowlist before you
-run bootstrap. It must not be the built-in `root1` through `root7` development
-placeholder set.
+The output must show `count` and `unique` equal to `7` and only approved SIT
+workplace domains before you run bootstrap. It must not reveal the individual
+root-admin identities and must not be the built-in `root1` through `root7`
+development placeholder set.
 
 Root-admin bootstrap remains a manual-only private operator procedure in the
 current design and must not run from GitHub Actions, deployment automation, or
@@ -970,18 +984,28 @@ manual recovery workflow.
 
 Manual recovery operator workflow:
 
-- Root admins review requests in the admin app with
-  `GET /manual-recovery/requests`.
+- Root admins review requests in the isolated admin browser UI at
+  `GET /manual-recovery/requests`; explicit JSON clients can still request the
+  same safe public request contract with `Accept: application/json`.
+- The browser queue and detail view show only safe metadata: request reference,
+  status, linked/unlinked indicator, request count, created/updated/expiry
+  time, completion time, and allowed actions. Unlinked or unknown requests stay
+  generic and do not prove whether a submitted identifier belongs to an
+  account.
 - Root admins move a request through `under_review`, `approved`, or `denied`
-  using `POST /manual-recovery/requests/<id>/transition` with an operator
-  reason and fresh TOTP code.
+  using `POST /manual-recovery/requests/<id>/transition` with browser CSRF,
+  an operator reason, and a fresh TOTP code. Approval and denial create durable
+  maker-checker admin action requests when required by the service layer.
 - Completion uses `POST /manual-recovery/requests/<id>/complete` after
-  approval, again with an operator reason and fresh TOTP code.
+  approval, again with browser CSRF, an operator reason, and a fresh TOTP code;
+  the service queues the durable maker-checker completion request.
 - Completion forces customer MFA re-enrollment, revokes active customer
   sessions, sends the existing manual recovery completion notification, and
   records `manual_recovery_completed` plus admin actor audit events.
 - Public account-recovery submission never unlocks, mutates, or completes an
   account by itself.
+- Browser admin logout clears the admin session and redirects to `/login`;
+  explicit JSON clients still receive the JSON logout response.
 
 ## Customer Email OTP Registration Operations
 

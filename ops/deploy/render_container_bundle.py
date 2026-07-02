@@ -320,7 +320,6 @@ def build_container_environment(prefix: str = "PROD") -> dict[str, str]:
         "MFA_ISSUER_NAME": _value(_prefixed(prefix, "MFA_ISSUER_NAME"), default="SITBank"),
         "PASSWORD_RESET_BASE_URL": f"https://{public_host}",  # NOSONAR - configuration name, not a credential
         "PASSWORD_RESET_EMAIL_FROM": _value(_prefixed(prefix, "PASSWORD_RESET_EMAIL_FROM")),
-        "ROOT_ADMIN_EMAILS": _root_admin_emails(prefix),
         "SESSION_HMAC_ACTIVE_KEY_ID": _active_key_id(prefix),
         "SMTP_HOST": _value(_prefixed(prefix, "SMTP_HOST")),
     }
@@ -373,6 +372,8 @@ def build_container_bundle(
         for source, target in DEPLOYMENT_SECRET_INPUTS.items()
         if source in CUSTOMER_SECRET_INPUTS or source in {"DATABASE_MIGRATION_URL"}
     }
+    if "root_admin_emails" in secrets:
+        secrets["root_admin_emails"] = _root_admin_emails(prefix)
     _validate_keyring(
         _prefixed(prefix, "MFA_KEK_KEYS_JSON"),
         secrets["mfa_kek_keys_json"],

@@ -93,6 +93,7 @@ services:
       DATABASE_URL_FILE: /run/secrets/database_url
       MFA_KEK_KEYS_JSON_FILE: /run/secrets/mfa_kek_keys_json
       PASSWORD_PEPPER_B64_FILE: /run/secrets/password_pepper_b64
+      ROOT_ADMIN_EMAILS_FILE: /run/secrets/root_admin_emails
       SECURITY_AUDIT_HMAC_KEY_FILE: /run/secrets/security_audit_hmac_key
       SECURITY_ALERT_WEBHOOK_URL_FILE: /run/secrets/security_alert_webhook_url
       SMTP_USERNAME_FILE: /run/secrets/smtp_username
@@ -113,6 +114,8 @@ services:
         target: mfa_kek_keys_json
       - source: password_pepper_b64
         target: password_pepper_b64
+      - source: root_admin_emails
+        target: root_admin_emails
       - source: security_audit_hmac_key
         target: security_audit_hmac_key
       - source: security_alert_webhook_url
@@ -216,6 +219,7 @@ services:
       ADMIN_DATABASE_URL_FILE: /run/secrets/admin_database_url
       MFA_KEK_KEYS_JSON_FILE: /run/secrets/mfa_kek_keys_json
       ADMIN_PASSWORD_PEPPER_B64_FILE: /run/secrets/admin_password_pepper_b64
+      ROOT_ADMIN_EMAILS_FILE: /run/secrets/root_admin_emails
       SECURITY_AUDIT_HMAC_KEY_FILE: /run/secrets/security_audit_hmac_key
       SECURITY_ALERT_WEBHOOK_URL_FILE: /run/secrets/security_alert_webhook_url
       SMTP_USERNAME_FILE: /run/secrets/smtp_username
@@ -235,6 +239,8 @@ services:
         target: mfa_kek_keys_json
       - source: admin_password_pepper_b64
         target: admin_password_pepper_b64
+      - source: root_admin_emails
+        target: root_admin_emails
       - source: security_audit_hmac_key
         target: security_audit_hmac_key
       - source: security_alert_webhook_url
@@ -293,6 +299,8 @@ secrets:
     file: /etc/sitbank-staging/secrets/mfa_kek_keys_json
   password_pepper_b64:
     file: /etc/sitbank-staging/secrets/password_pepper_b64
+  root_admin_emails:
+    file: /etc/sitbank-staging/secrets/root_admin_emails
   security_audit_hmac_key:
     file: /etc/sitbank-staging/secrets/security_audit_hmac_key
   security_alert_webhook_url:
