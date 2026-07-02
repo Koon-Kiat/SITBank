@@ -131,12 +131,6 @@
           </div>
           {% endif %}
           <div class="nav-actions">
-            <button class="theme-toggle icon-button" type="button" data-theme-toggle aria-pressed="false" aria-label="Switch to dark mode" title="Switch to dark mode">
-              <span class="theme-icon" aria-hidden="true" data-theme-toggle-icon>
-                <svg class="icon" focusable="false"><use href="#icon-theme-moon"></use></svg>
-              </span>
-              <span class="sr-only" data-theme-toggle-label>Switch to dark mode</span>
-            </button>
             {% if g.current_user %}
               <div class="account-menu" data-account-menu>
                 <button class="account-trigger" type="button" id="account-menu-button" aria-haspopup="menu" aria-expanded="false" aria-controls="account-menu-panel" data-account-trigger>
@@ -203,18 +197,19 @@
         </div>
       </dialog>
       {% endif %}
+      {% block alerts %}
       {% with messages = get_flashed_messages(with_categories=true) %}
         {% if messages %}
           <section class="alerts" aria-label="Status messages">
             {% for category, message in messages %}
               <div class="alert alert-{{ category }}">
                 <span>{{ message }}</span>
-                <button class="alert-dismiss" type="button" data-alert-dismiss aria-label="Dismiss message">Dismiss</button>
               </div>
             {% endfor %}
           </section>
         {% endif %}
       {% endwith %}
+      {% endblock %}
 
       {% block content %}{% endblock %}
     </main>

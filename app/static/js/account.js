@@ -97,20 +97,37 @@
   }
 
   globalThis.addEventListener("DOMContentLoaded", function () {
-    document.querySelectorAll("[data-alert-dismiss]").forEach(function (button) {
-      button.addEventListener("click", function () {
-        const alert = button.closest(".alert");
-        if (alert) {
-          alert.remove();
+
+    function startResendCountdown(button, seconds) {
+      var originalLabel = button.textContent;
+      button.disabled = true;
+      (function tick() {
+        if (seconds <= 0) {
+          button.disabled = false;
+          button.textContent = originalLabel;
+          return;
+        }
+        button.textContent = "Try again in " + seconds + "s";
+        seconds--;
+        setTimeout(tick, 1000);
+      }());
+    }
+
+    document.querySelectorAll("[data-otp-resend-countdown]").forEach(function (button) {
+      var seconds = parseInt(button.dataset.otpResendCountdown, 10);
+      if (!seconds || seconds <= 0) { return; }
+      startResendCountdown(button, seconds);
+    });
+
+    var otpRequestForm = document.querySelector("[data-otp-request-form]");
+    if (otpRequestForm) {
+      otpRequestForm.addEventListener("submit", function () {
+        var button = otpRequestForm.querySelector("[type=submit]");
+        if (button && !button.disabled) {
+          startResendCountdown(button, 60);
         }
       });
-      const alert = button.closest(".alert");
-      if (alert) {
-        if (alert.classList.contains("alert-success") || alert.classList.contains("alert-info")) {
-          setTimeout(function () { alert.remove(); }, 3000);
-        }
-      }
-    });
+    }
 
     document.querySelectorAll("[data-password-toggle]").forEach(function (button) {
       button.addEventListener("click", function () {
