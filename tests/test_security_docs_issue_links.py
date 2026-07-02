@@ -336,6 +336,43 @@ def test_security_alert_delivery_docs_match_admin_controls():
         assert forbidden.casefold() not in combined.casefold()
 
 
+def test_audit_anchor_docs_distinguish_stale_drift_from_tampering():
+    audit_docs = (
+        SECURITY_DOCS / "assurance" / "audit-and-alerting.md"
+    ).read_text(encoding="utf-8")
+    operations = Path("docs/OPERATIONS.md").read_text(encoding="utf-8")
+    runbook = GLOBAL_RUNBOOK.read_text(encoding="utf-8")
+    combined = " ".join(f"{audit_docs}\n{operations}\n{runbook}".split())
+
+    for required in (
+        "anchor_validated=true",
+        "anchor_stale=true",
+        "anchor_refresh_required=true",
+        "anchor_event_id",
+        "latest_event_id",
+        "events_since_anchor",
+        "normal append-only audit rows",
+        "does not emit a critical `audit_anchor_mismatch` alert",
+        "audit_chain_verification_failed",
+        "event_hash_mismatch",
+        "previous_hash_mismatch",
+        "unsupported hash algorithms",
+        "Do not blindly refresh anchors",
+        "preserving evidence",
+        "check-security-alerts --report-only --no-delivery",
+        "alert_count=0",
+    ):
+        assert required in combined
+
+    for forbidden in (
+        "refresh anchors until alerts stop",
+        "ignore audit_anchor_mismatch",
+        "delete the old anchor",
+        "overwrite the anchor before preserving evidence",
+    ):
+        assert forbidden.casefold() not in combined.casefold()
+
+
 def test_payee_audit_docs_require_references_and_bounded_metadata():
     audit_docs = (
         SECURITY_DOCS / "assurance" / "audit-and-alerting.md"

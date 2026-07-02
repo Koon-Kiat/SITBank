@@ -102,9 +102,26 @@ python -m flask --app wsgi:app export-audit-log-anchor --output /var/lib/sitbank
 ```
 
 `SECURITY_AUDIT_ANCHOR_PATH` points production checks and alerting at the
-host-protected anchor. Anchor mismatch, chain rewind, tail deletion, malformed
-rows, missing append-only controls, and runtime database privilege failures are
-treated as high-priority operational signals.
+host-protected anchor. Verification reports separate anchor freshness from
+hash-chain integrity:
+
+- `anchor_validated=true` means the saved anchor exactly matches the current
+  chain head.
+- `anchor_stale=true` with `anchor_refresh_required=true` means the chain is
+  valid, the saved anchor event still exists with the same event hash, and
+  normal append-only audit rows were written after the anchor. This state
+  includes `anchor_event_id`, `latest_event_id`, and `events_since_anchor`; it
+  does not emit a critical `audit_anchor_mismatch` alert.
+- `audit_anchor_mismatch` remains critical for unreadable or malformed anchors,
+  anchor rollback, current chain behind the anchor, missing anchored rows, or
+  anchored event hash changes.
+- `audit_chain_verification_failed` remains critical for hash-chain failures
+  such as `event_hash_mismatch`, `previous_hash_mismatch`, missing hashes after
+  the chain starts, and unsupported hash algorithms.
+
+Chain rewind, tail deletion, malformed rows, missing append-only controls, and
+runtime database privilege failures are treated as high-priority operational
+signals.
 
 ## Alerting
 
@@ -119,7 +136,8 @@ python -m flask --app wsgi:app check-security-alerts
 Alert rules cover at least:
 
 - audit hash-chain verification failure
-- audit anchor mismatch
+- critical audit anchor mismatch or corruption
+- stale audit anchor refresh due without alert delivery noise
 - security audit write failures
 - append-only audit protection failures
 - runtime database privilege verification failures

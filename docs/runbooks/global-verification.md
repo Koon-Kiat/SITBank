@@ -231,11 +231,22 @@ sudo docker exec sitbank-app python -m flask --app wsgi:app check-security-alert
 sudo systemctl status sitbank-security-alerts.timer
 ```
 
-Expected safe success indicators: chain verification is valid, anchor matches
-the protected host anchor, report-only alert output contains sanitized alert
-summaries, and the timer is active. Audit HMAC keys, raw payloads, webhook
-URLs, alert delivery credentials, and sensitive audit metadata are never safe
-to print.
+Expected safe success indicators: chain verification is valid, exact anchors
+report `anchor_validated=true`, normal append-only drift reports
+`anchor_status=stale`, `events_since_anchor`, and `anchor_refresh_required`
+without an `audit_anchor_mismatch` alert, report-only alert output contains
+sanitized alert summaries, and the timer is active. Audit HMAC keys, raw
+payloads, webhook URLs, alert delivery credentials, and sensitive audit
+metadata are never safe to print.
+
+Do not blindly refresh anchors. For stale append-only drift, preserve current
+verification evidence first, export a refreshed sanitized anchor only after the
+chain is valid, rerun `check-security-alerts --report-only --no-delivery`, and
+resume or restart alert timers only after `alert_count=0` or after any
+remaining non-anchor alerts are separately explained. For
+`audit_anchor_mismatch` or `audit_chain_verification_failed`, preserve evidence
+and investigate tampering, rollback, truncation, malformed anchor state, or
+anchored event hash changes before rotating anchors.
 
 ### Backup And Restore Verification
 

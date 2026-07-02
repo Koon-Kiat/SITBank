@@ -606,14 +606,35 @@ host path outside the database volume and repository. The app validates that the
 configured path is absolute, non-world-writable, outside the application and
 database directories, and readable/writable by the runtime where the host can
 check it. `verify-audit-log-chain` and `check-security-alerts` use the
-configured anchor automatically and fail or alert when it is unreadable or does
-not match the current chain head.
+configured anchor automatically. A valid chain can be ahead of the saved
+anchor after normal append-only audit activity; that reports `anchor_stale`,
+`events_since_anchor`, and `anchor_refresh_required` without sending a critical
+`audit_anchor_mismatch` alert. Unreadable or malformed anchors, anchor rollback,
+anchored event hash changes, missing anchored rows, current chain behind the
+anchor, chain rewind, row tampering, tail deletion, missing hashes after the
+chain starts, and unsupported hash algorithms remain critical.
 
-On an anchor mismatch, stop rotating anchors, preserve the current database and
-the mismatched anchor as incident evidence, run
-`python -m flask --app wsgi:app verify-audit-log-chain --anchor /var/lib/sitbank/security-audit.anchor`,
-and investigate possible row tampering, chain rewind, or tail deletion before
-resuming routine deployments.
+Do not blindly refresh anchors. When `anchor_status=stale` and the chain is
+valid, refresh only after preserving evidence:
+
+1. Preserve the current verification output and anchor metadata in root-only
+   evidence storage. Record the command, timestamp, environment, `anchor_event_id`,
+   `latest_event_id`, and `events_since_anchor`; do not include HMAC keys or
+   raw sensitive metadata.
+2. Run
+   `python -m flask --app wsgi:app verify-audit-log-chain --anchor /var/lib/sitbank/security-audit.anchor`
+   and confirm `valid=true`, `anchor_stale=true`, and `anchor_refresh_required=true`.
+3. Export the refreshed sanitized anchor with
+   `python -m flask --app wsgi:app export-audit-log-anchor --output /var/lib/sitbank/security-audit.anchor`.
+4. Rerun
+   `python -m flask --app wsgi:app check-security-alerts --report-only --no-delivery`
+   and restart or resume the alert timer only after `alert_count=0` or after all
+   remaining alerts are separately explained and preserved.
+
+On `audit_anchor_mismatch` or `audit_chain_verification_failed`, stop rotating
+anchors, preserve the current database and anchor as incident evidence, and
+investigate row tampering, chain rewind, anchor corruption, or tail deletion
+before resuming routine deployments.
 
 The current banking implementation audits public transaction validation,
 TOTP-backed transaction authorization checks, and local transfer execution.
@@ -681,7 +702,11 @@ count and identity baselines outside the application database and emits critical
 rewind or shrink. Keep `SECURITY_AUDIT_ANCHOR_PATH` set to the protected local
 anchor so `check-security-alerts` emits critical
 `audit_chain_verification_failed` or `audit_anchor_mismatch` alerts for chain
-tampering, rewind, or tail deletion detectable from the anchor.
+tampering, rewind, anchor corruption, or tail deletion detectable from the
+anchor. Valid append-only drift after the last exported anchor is reported as
+`anchor_stale`/`anchor_refresh_required` and should be refreshed with the
+evidence-preserving workflow above rather than delivered as a critical webhook
+alert.
 
 Admin/root users may review the same safe report in the private admin runtime
 with `GET /alerts`. That browser review is read-only and must not send alerts.
