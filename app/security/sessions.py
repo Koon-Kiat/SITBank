@@ -4,10 +4,12 @@ import hashlib
 import hmac
 import ipaddress
 import re
+import threading
 import time
 import uuid
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from typing import Any
 
 from flask import Flask, current_app, flash, has_request_context, jsonify, redirect, request, session, url_for
@@ -48,6 +50,16 @@ SESSION_END_REASON_LABELS = {
     "session_cap": "Replaced by a new sign-in",
     "ended": "Ended",
 }
+_SESSION_STORE_LOCK = threading.RLock()
+
+
+def _session_store_locked(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        with _SESSION_STORE_LOCK:
+            return func(*args, **kwargs)
+
+    return wrapper
 
 
 class DatabaseSession(CallbackDict, SessionMixin):
@@ -84,6 +96,7 @@ class DatabaseSessionInterface(SessionInterface):
     serializer = DatabaseSessionSerializer()
     session_class = DatabaseSession
 
+    @_session_store_locked
     def open_session(self, app: Flask, request) -> DatabaseSession:
         cookie_name = self.get_cookie_name(app)
         session_id = request.cookies.get(cookie_name)
@@ -125,6 +138,7 @@ class DatabaseSessionInterface(SessionInterface):
         record.last_activity_at = now
         return self.session_class(session_data, sid=session_id)
 
+    @_session_store_locked
     def save_session(self, app: Flask, session_obj: DatabaseSession, response) -> None:
         domain = self.get_cookie_domain(app)
         path = self.get_cookie_path(app)
@@ -304,12 +318,29 @@ def _session_record_for_sid(session_id: str) -> ServerSideSession | None:
 
 
 def _session_record_for_lookup_hash(lookup_hash: str) -> ServerSideSession | None:
-    return db.session.execute(
-        db.select(ServerSideSession).where(
-            ServerSideSession.component == _session_component(),
-            ServerSideSession.session_lookup_hash == lookup_hash,
+    with db.session.no_autoflush:
+        records = list(
+            db.session.execute(
+                db.select(ServerSideSession)
+                .where(
+                    ServerSideSession.component == _session_component(),
+                    ServerSideSession.session_lookup_hash == lookup_hash,
+                )
+                .order_by(
+                    ServerSideSession.revoked_at.is_not(None).desc(),
+                    ServerSideSession.ended_at.is_not(None).desc(),
+                    ServerSideSession.id.desc(),
+                )
+                .limit(2)
+            ).scalars()
         )
-    ).scalar_one_or_none()
+    if len(records) > 1:
+        store_ref = active_hmac_hex(f"session-store:{lookup_hash}", length=16)
+        current_app.logger.warning(
+            "duplicate_session_records_detected store_ref=%s",
+            store_ref,
+        )
+    return records[0] if records else None
 
 
 def _session_expires_at(now: datetime) -> datetime:

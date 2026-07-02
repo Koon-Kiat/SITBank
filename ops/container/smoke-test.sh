@@ -11,6 +11,7 @@ network_name="sitbank-smoke-$RANDOM-$$"
 readonly postgres_container="smoke-postgres"
 readonly app_container="sitbank-smoke"
 readonly admin_container="sitbank-admin-smoke"
+readonly root_admin_emails="chief1@sit.singaporetech.edu.sg,chief2@sit.singaporetech.edu.sg,chief3@sit.singaporetech.edu.sg,chief4@sit.singaporetech.edu.sg,chief5@sit.singaporetech.edu.sg,chief6@sit.singaporetech.edu.sg,chief7@sit.singaporetech.edu.sg"
 
 random_test_secret() {
     od -An -N24 -tx1 /dev/urandom | tr -d '[:space:]'
@@ -374,7 +375,7 @@ docker_args=(
     --env PASSWORD_RESET_EMAIL_BACKEND=smtp
     --env PASSWORD_RESET_EMAIL_FROM=security@sitbank.example
     --env PASSWORD_RESET_BASE_URL=https://sitbank.pp.ua
-    --env "ROOT_ADMIN_EMAILS=root1@sit.singaporetech.edu.sg,root2@sit.singaporetech.edu.sg,root3@sit.singaporetech.edu.sg,root4@sit.singaporetech.edu.sg,root5@sit.singaporetech.edu.sg,root6@sit.singaporetech.edu.sg,root7@sit.singaporetech.edu.sg"
+    --env "ROOT_ADMIN_EMAILS=${root_admin_emails}"
     --env SMTP_HOST=smtp.example.test
     --env SMTP_PORT=587
     --env SMTP_USE_TLS=true

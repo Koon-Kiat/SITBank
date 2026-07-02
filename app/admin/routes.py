@@ -28,8 +28,12 @@ from .services import (
     ADMIN_INDEX_ENDPOINT,
     AuthError,
     admin_navigation_for,
+    admin_action_request_detail_for_admin,
+    admin_action_requests_for_admin,
     admin_dashboard_context,
     authenticate_admin_primary,
+    approve_admin_action_request_as_root_admin,
+    cancel_admin_action_request_as_root_admin,
     complete_manual_recovery_request_as_admin,
     complete_admin_mfa_login,
     create_staff_invite,
@@ -43,6 +47,7 @@ from .services import (
     require_admin_session,
     require_root_admin_session,
     require_staff_session,
+    reject_admin_action_request_as_root_admin,
     revoke_staff_invite,
     staff_accounts_for_admin,
     start_invite_acceptance,
@@ -59,6 +64,7 @@ _TOTP_PATTERN = r"^[0-9]{6}$"
 _MFA_CODE_ERROR = "MFA code must be exactly 6 digits"
 _JSON_MIME_TYPE = "application/json"
 _STAFF_ACCOUNTS_ENDPOINT = "admin.staff_accounts"
+_ADMIN_ACTION_REQUESTS_ENDPOINT = "admin.admin_action_requests"
 _ADMIN_ALERTS_ENDPOINT = "admin.alerts"
 _ADMIN_LOGIN_TEMPLATE = "admin/login.html"
 _ADMIN_MFA_VERIFY_TEMPLATE = "admin/mfa_verify.html"
@@ -149,6 +155,14 @@ class ManualRecoveryTransitionSchema(Schema):
 
 class ManualRecoveryCompleteSchema(Schema):
     reason = fields.Str(required=True, validate=validate.Length(min=1, max=512))
+    totp_code = fields.Str(
+        required=True,
+        load_only=True,
+        validate=validate.Regexp(_TOTP_PATTERN, error=_MFA_CODE_ERROR),
+    )
+
+
+class AdminActionDecisionSchema(Schema):
     totp_code = fields.Str(
         required=True,
         load_only=True,
@@ -674,7 +688,7 @@ def staff_account_deactivate(user_id: int):
     result = transition_staff_account_as_root_admin(actor, user_id, "deactivate", data["totp_code"])
     if _wants_json():
         return jsonify(result)
-    flash("Staff/admin account deactivated.", "success")
+    flash("Staff/admin deactivation request created for approval.", "success")
     return redirect(url_for(_STAFF_ACCOUNTS_ENDPOINT)), 303
 
 
@@ -687,7 +701,7 @@ def staff_account_reactivate(user_id: int):
     result = transition_staff_account_as_root_admin(actor, user_id, "reactivate", data["totp_code"])
     if _wants_json():
         return jsonify(result)
-    flash("Staff/admin account reactivated.", "success")
+    flash("Staff/admin reactivation request created for approval.", "success")
     return redirect(url_for(_STAFF_ACCOUNTS_ENDPOINT)), 303
 
 
@@ -700,8 +714,80 @@ def staff_account_reset_activation(user_id: int):
     result = transition_staff_account_as_root_admin(actor, user_id, "reset_activation", data["totp_code"])
     if _wants_json():
         return jsonify(result)
-    flash("Staff/admin activation state reset.", "success")
+    flash("Staff/admin activation reset request created for approval.", "success")
     return redirect(url_for(_STAFF_ACCOUNTS_ENDPOINT)), 303
+
+
+@admin_bp.get("/admin-action-requests")
+def admin_action_requests():
+    actor = require_root_admin_session()
+    requests = admin_action_requests_for_admin(actor)
+    if _wants_json():
+        return jsonify({"requests": requests})
+    return render_template(
+        "admin/action_requests.html",
+        requests=requests,
+        selected_request=None,
+        actor=actor,
+        user=public_admin_user(actor),
+        navigation=admin_navigation_for(actor),
+    )
+
+
+@admin_bp.get("/admin-action-requests/<int:request_id>")
+def admin_action_request_detail(request_id: int):
+    actor = require_root_admin_session()
+    request_record = admin_action_request_detail_for_admin(actor, request_id)
+    if _wants_json():
+        return jsonify({"request": request_record})
+    requests = admin_action_requests_for_admin(actor)
+    return render_template(
+        "admin/action_requests.html",
+        requests=requests,
+        selected_request=request_record,
+        actor=actor,
+        user=public_admin_user(actor),
+        navigation=admin_navigation_for(actor),
+    )
+
+
+@admin_bp.post("/admin-action-requests/<int:request_id>/approve")
+@limiter.limit("10 per hour", key_func=get_remote_address)
+@limiter.limit("5 per 5 minutes", key_func=request_principal)
+def admin_action_request_approve(request_id: int):
+    actor = require_root_admin_session()
+    data = _payload(AdminActionDecisionSchema())
+    result = approve_admin_action_request_as_root_admin(actor, request_id, data["totp_code"])
+    if _wants_json():
+        return jsonify(result)
+    flash("Admin action request approved and executed.", "success")
+    return redirect(url_for(_ADMIN_ACTION_REQUESTS_ENDPOINT)), 303
+
+
+@admin_bp.post("/admin-action-requests/<int:request_id>/reject")
+@limiter.limit("10 per hour", key_func=get_remote_address)
+@limiter.limit("5 per 5 minutes", key_func=request_principal)
+def admin_action_request_reject(request_id: int):
+    actor = require_root_admin_session()
+    data = _payload(AdminActionDecisionSchema())
+    result = reject_admin_action_request_as_root_admin(actor, request_id, data["totp_code"])
+    if _wants_json():
+        return jsonify(result)
+    flash("Admin action request rejected.", "success")
+    return redirect(url_for(_ADMIN_ACTION_REQUESTS_ENDPOINT)), 303
+
+
+@admin_bp.post("/admin-action-requests/<int:request_id>/cancel")
+@limiter.limit("10 per hour", key_func=get_remote_address)
+@limiter.limit("5 per 5 minutes", key_func=request_principal)
+def admin_action_request_cancel(request_id: int):
+    actor = require_root_admin_session()
+    data = _payload(AdminActionDecisionSchema())
+    result = cancel_admin_action_request_as_root_admin(actor, request_id, data["totp_code"])
+    if _wants_json():
+        return jsonify(result)
+    flash("Admin action request cancelled.", "success")
+    return redirect(url_for(_ADMIN_ACTION_REQUESTS_ENDPOINT)), 303
 
 
 @admin_bp.get("/audit-logs")
