@@ -201,6 +201,65 @@ def test_rewrap_mfa_deks_preflight_requires_configured_target_kek(app):
     assert "44444444444444444444444444444444" not in str(event.event_metadata)
 
 
+@pytest.mark.parametrize(
+    ("from_kek_id", "to_kek_id", "keyring_override", "expected_message", "expected_reason"),
+    (
+        (
+            "test-mfa-current",
+            "test-mfa-current",
+            None,
+            "from-kek-id and to-kek-id must be different",
+            "same_kek_id",
+        ),
+        (
+            "test-mfa-previous",
+            "test-mfa-current",
+            {},
+            "MFA KEK keyring is not configured",
+            "missing_keyring",
+        ),
+        (
+            "missing-source",
+            "test-mfa-current",
+            None,
+            "Source MFA KEK id is not configured",
+            "missing_source_kek",
+        ),
+    ),
+)
+def test_rewrap_mfa_deks_preflight_rejects_unsafe_keyring_inputs(
+    app,
+    from_kek_id,
+    to_kek_id,
+    keyring_override,
+    expected_message,
+    expected_reason,
+):
+    if keyring_override is not None:
+        app.config["MFA_KEK_KEYS"] = keyring_override
+
+    result = app.test_cli_runner().invoke(
+        args=[
+            "rewrap-mfa-deks",
+            "--from-kek-id",
+            from_kek_id,
+            "--to-kek-id",
+            to_kek_id,
+            "--dry-run",
+        ]
+    )
+    event = db.session.query(SecurityAuditEvent).filter_by(
+        event_type="mfa_dek_rewrap",
+        outcome="failure",
+    ).one()
+
+    assert result.exit_code != 0
+    assert expected_message in result.output
+    assert event.event_metadata["stage"] == "preflight"
+    assert event.event_metadata["reason"] == expected_reason
+    assert event.event_metadata["dry_run"] is True
+
+
 def test_rewrap_mfa_deks_dry_run_reports_without_writing(app):
     user = _user()
     secret = pyotp.random_base32(length=32)
