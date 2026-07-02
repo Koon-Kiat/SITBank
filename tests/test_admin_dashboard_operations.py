@@ -10,7 +10,7 @@ import pyotp
 import pytest
 
 from app.extensions import db
-from app.models import SecurityAuditEvent, StaffInvite, User
+from app.models import AdminActionRequest, SecurityAuditEvent, StaffInvite, User
 from app.security.crypto import encrypt_mfa_secret
 from app.security.passwords import hash_password
 from conftest import TestConfig
@@ -496,23 +496,28 @@ def test_root_manages_staff_lifecycle_with_totp_and_safe_audit(admin_client):
     assert self_action.status_code == 403
     assert deactivate.status_code == 200
     assert reset.status_code == 200
-    assert target.account_status == "setup_pending"
-    assert target.mfa_enabled is False
-    assert target.mfa_secret_nonce is None
-    assert target.mfa_secret_ciphertext is None
+    assert deactivate.get_json()["message"] == "Admin action approval required"
+    assert reset.get_json()["message"] == "Admin action approval required"
+    assert target.account_status == "active"
+    assert target.mfa_enabled is True
+    assert target.mfa_secret_nonce is not None
+    assert target.mfa_secret_ciphertext is not None
+    assert db.session.query(AdminActionRequest).filter_by(
+        operation_type="staff_deactivate",
+        status="pending",
+    ).count() == 1
+    assert db.session.query(AdminActionRequest).filter_by(
+        operation_type="staff_reset_activation",
+        status="pending",
+    ).count() == 1
     assert db.session.query(SecurityAuditEvent).filter_by(
         event_type="staff_account_deactivated",
         outcome="success",
-    ).count() == 1
-    deactivation_event = db.session.query(SecurityAuditEvent).filter_by(
-        event_type="staff_account_deactivated",
-        outcome="success",
-    ).one()
-    assert deactivation_event.event_metadata["revoked_sessions"] == 0
+    ).count() == 0
     assert db.session.query(SecurityAuditEvent).filter_by(
         event_type="staff_activation_reset",
         outcome="success",
-    ).count() == 1
+    ).count() == 0
 
 
 def test_non_root_admin_cannot_mutate_staff_lifecycle(admin_client):

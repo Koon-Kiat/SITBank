@@ -5,6 +5,7 @@ readonly IMAGE="${1:-sitbank:smoke}"
 readonly POSTGRES_IMAGE="postgres:16.9-alpine@sha256:7c688148e5e156d0e86df7ba8ae5a05a2386aaec1e2ad8e6d11bdf10504b1fb7"
 readonly ZAP_IMAGE="zaproxy/zap-stable:2.17.0@sha256:2ec1d5d5b44d55cfd02ba9b89cd26852f06d92b7fc0ce9f064b9463babc73074"
 readonly PUBLIC_HOST="sitbank.pp.ua"
+readonly root_admin_emails="chief1@sit.singaporetech.edu.sg,chief2@sit.singaporetech.edu.sg,chief3@sit.singaporetech.edu.sg,chief4@sit.singaporetech.edu.sg,chief5@sit.singaporetech.edu.sg,chief6@sit.singaporetech.edu.sg,chief7@sit.singaporetech.edu.sg"
 
 random_test_secret() {
     od -An -N24 -tx1 /dev/urandom | tr -d '[:space:]'
@@ -100,6 +101,7 @@ docker_args=(
     --env PASSWORD_RESET_EMAIL_BACKEND=smtp
     --env PASSWORD_RESET_EMAIL_FROM=security@sitbank.example
     --env "PASSWORD_RESET_BASE_URL=https://${PUBLIC_HOST}"
+    --env "ROOT_ADMIN_EMAILS=${root_admin_emails}"
     --env SMTP_HOST=smtp.example.test
     --env SMTP_PORT=587
     --env SMTP_USE_TLS=true

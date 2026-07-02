@@ -9,6 +9,7 @@ from sqlalchemy import text
 from app.extensions import db
 from app.models import (
     AuthAttemptCounter,
+    AdminActionRequest,
     PasswordResetToken,
     PasswordResetTransaction,
     PasswordHistory,
@@ -35,6 +36,7 @@ from app.security.identity_policy import is_privileged_workplace_email
 from config import (
     MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS,
     MIN_PRODUCTION_PASSWORD_LENGTH,
+    root_admin_email_allowlist_failures,
     _validate_payee_cooldown_config,
     _validate_password_length_config,
     _validate_password_history_config,
@@ -169,21 +171,12 @@ def _validate_admin_mode_and_routes(
     ):
         result.failures.append("Admin rate-limit key prefix must be isolated")
 
-    root_admin_emails = app.config.get("ROOT_ADMIN_EMAILS") or set()
-    root_admin_collection = isinstance(
-        root_admin_emails,
-        (set, frozenset, list, tuple),
+    root_admin_failures = root_admin_email_allowlist_failures(
+        app.config.get("ROOT_ADMIN_EMAILS") or (),
+        allowed_domains=app.config.get("ADMIN_ALLOWED_EMAIL_DOMAINS") or (),
+        reject_default=True,
     )
-    if not root_admin_collection or len(root_admin_emails) != 7:
-        result.failures.append(
-            "ROOT_ADMIN_EMAILS must configure exactly 7 root administrators"
-        )
-    if root_admin_collection and any(
-        not is_privileged_workplace_email(item) for item in root_admin_emails
-    ):
-        result.failures.append(
-            "ROOT_ADMIN_EMAILS must use approved admin workplace domains"
-        )
+    result.failures.extend(root_admin_failures)
     if any(
         endpoint.startswith(("auth.", "web.", "banking.", "main."))
         for endpoint in endpoints
@@ -232,6 +225,7 @@ def _validate_database_connectivity_and_tables(
     ]
     if app_mode == "admin":
         table_checks.append((StaffInvite, "staff_invites table"))
+        table_checks.append((AdminActionRequest, "admin_action_requests table"))
 
     for model, label in table_checks:
         try:

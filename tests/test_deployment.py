@@ -51,7 +51,7 @@ PYTHON_SLIM_TRIXIE_IMAGE = (
 )
 
 ROOT_ADMIN_EMAILS_VALUE = ",".join(
-    f"root{index}@sit.singaporetech.edu.sg" for index in range(1, 8)
+    f"chief{index}@sit.singaporetech.edu.sg" for index in range(1, 8)
 )
 
 DEPLOYMENT_VALUES = {
@@ -1072,7 +1072,8 @@ def test_smoke_fixture_and_deployment_wrapper_match_runtime_contract():
 
     assert "--env DATABASE_MIGRATION_URL_FILE=/run/secrets/database_migration_url" in smoke_test
     assert "--env PAYEE_COOLDOWN_SECONDS=43200" in smoke_test
-    assert '--env "ROOT_ADMIN_EMAILS=root1@sit.singaporetech.edu.sg' in smoke_test
+    assert 'readonly root_admin_emails="chief1@sit.singaporetech.edu.sg' in smoke_test
+    assert '--env "ROOT_ADMIN_EMAILS=${root_admin_emails}"' in smoke_test
     assert "--env SECURITY_AUDIT_ANCHOR_PATH=/run/state/security-audit.anchor" in smoke_test
     assert '--tmpfs "/run/state:rw,noexec,nosuid,nodev,size=16m,uid=10001,gid=10001,mode=0750"' in smoke_test
     assert ':/run/secrets/database_migration_url:ro' not in smoke_test

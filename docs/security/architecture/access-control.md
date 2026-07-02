@@ -136,8 +136,8 @@ existing role model rather than by adding new roles. Current mapping:
 - `admin`: technical/security administration, including audit review, alert
   review, and safe staff/admin status visibility.
 - `root_admin`: privileged platform administration, including staff/admin
-  invites, invite revocation, staff/admin lifecycle state, and manual recovery
-  review/completion.
+  invites, invite revocation, staff/admin lifecycle request creation, manual
+  recovery review, and maker-checker approval of selected highest-risk changes.
 
 Server-rendered navigation is only a usability layer. Every admin route also
 calls the appropriate `require_staff_session()`, `require_admin_session()`, or
@@ -149,7 +149,7 @@ changes.
 | --- | --- | --- |
 | Generated admin route authorization inventory | `app/admin/routes.py`; explicit policy entries in `tests/test_admin_route_inventory_security.py` | `tests/test_admin_route_inventory_security.py::test_admin_route_inventory_matches_registered_flask_routes`, `tests/test_admin_route_inventory_security.py::test_admin_route_inventory_has_complete_security_decisions` |
 | Staff/admin browser and JSON login requires workplace email, password, active account, approved admin email domain, verified workplace email, and TOTP | `app/admin/routes.py`, `app/admin/services.py::authenticate_admin_primary()` and `complete_admin_mfa_login()` | `tests/test_admin_dashboard_operations.py::test_admin_browser_login_and_mfa_reaches_dashboard`, `tests/test_admin_dashboard_operations.py::test_admin_json_login_contract_remains_compatible`, `tests/test_admin_dashboard_operations.py::test_admin_browser_login_rejects_staff_outside_admin_email_domains` |
-| Root admin is configured by role, approved admin email domain, and email allowlist | `app/admin/services.py::is_root_admin()`, `app/security/identity_policy.py`, and `config.py` `ROOT_ADMIN_EMAILS` | `tests/test_admin_staff_invites.py::test_only_root_admin_with_totp_stepup_can_create_invites`, `tests/test_admin_bootstrap_root.py::test_bootstrap_root_admin_cli_rejects_non_admin_domain_allowlist_entry` |
+| Root admin is configured by role, approved admin email domain, and an explicit non-placeholder email allowlist | `app/admin/services.py::is_root_admin()`, `app/security/identity_policy.py`, and `config.py` `ROOT_ADMIN_EMAILS` | `tests/test_admin_staff_invites.py::test_only_root_admin_with_totp_stepup_can_create_invites`, `tests/test_admin_bootstrap_root.py::test_bootstrap_root_admin_cli_rejects_non_admin_domain_allowlist_entry`, `tests/test_config.py::test_root_admin_allowlist_rejects_builtin_default_in_production`, `tests/test_production_guard.py::test_admin_validator_rejects_unsafe_root_admin_allowlists` |
 | Root admin can invite only `staff` or `admin`, not `root_admin` | `StaffInvite` role constraint in `app/models.py`; role validation in `app/admin/services.py` | `tests/test_admin_staff_invites.py::test_invite_creation_validates_server_side_email_and_role_policy` |
 | Staff invites use approved workplace email only and do not collect personal backup email contacts | `StaffInviteCreateSchema` in `app/admin/routes.py`; `normalize_workplace_email()` and `create_staff_invite()` in `app/admin/services.py`; `ADMIN_ALLOWED_EMAIL_DOMAINS` in `config.py` | `tests/test_admin_staff_invites.py::test_root_admin_can_create_hashed_staff_invite`, `tests/test_privileged_email_domains.py`, `tests/test_config.py::test_admin_allowed_email_domains_reject_personal_and_malformed_domains` |
 | Invite acceptance rejects forged privileged fields | `_reject_forged_invite_fields()` in `app/admin/services.py` | `tests/test_admin_staff_invites.py` |
@@ -158,7 +158,7 @@ changes.
 | Admin/root audit viewer supports bounded filters, safe field search, sorting, pagination, and redacted detail display | `app/admin/routes.py::audit_logs()`, `app/admin/services.py::query_audit_events_for_admin()` | `tests/test_admin_dashboard_operations.py::test_audit_viewer_filters_bounds_and_redacts_detail_metadata`, `tests/test_admin_audit_viewer.py` |
 | Admin/root alert review uses the existing report path without sending alerts on GET | `app/admin/routes.py::alerts()`, `app/security/alerts.py::build_security_alert_report()` | `tests/test_admin_dashboard_operations.py::test_alert_review_is_admin_only_and_does_not_send_alerts` |
 | Admin/root manual alert delivery is POST-only, CSRF-protected, current-TOTP-gated, dedupe-aware, and audited | `app/admin/routes.py::alert_delivery()`, `app/security/alerts.py::build_security_alert_report()` | `tests/test_admin_dashboard_operations.py::test_alert_manual_delivery_browser_requires_csrf_when_enabled`, `tests/test_admin_dashboard_operations.py::test_alert_manual_delivery_reuses_builder_and_audits_delivered`, `tests/test_admin_dashboard_operations.py::test_alert_manual_delivery_respects_dedupe_and_returns_safe_json`, `tests/test_admin_dashboard_operations.py::test_alert_manual_delivery_blocks_invalid_totp`, `tests/test_admin_dashboard_operations.py::test_alert_manual_delivery_audits_configuration_failure` |
-| Root-admin staff/admin lifecycle actions require TOTP and audit logging | `app/admin/routes.py`, `app/admin/services.py::transition_staff_account_as_root_admin()` | `tests/test_admin_dashboard_operations.py::test_root_manages_staff_lifecycle_with_totp_and_safe_audit` |
+| Root-admin staff/admin lifecycle actions require maker-checker approval before final state change | `AdminActionRequest` in `app/models.py`; `app/admin/services.py::transition_staff_account_as_root_admin()` and `approve_admin_action_request_as_root_admin()` | `tests/test_admin_maker_checker.py::test_staff_lifecycle_requires_maker_checker_before_execution`, `tests/test_admin_dashboard_operations.py::test_root_manages_staff_lifecycle_with_totp_and_safe_audit` |
 | Staff/customer self-action guard | `app/admin/separation.py::assert_not_self_customer_action()` | `tests/test_admin_staff_invites.py::test_separation_guard_blocks_linked_staff_acting_on_own_customer`, `tests/test_admin_manual_recovery.py::test_root_admin_cannot_transition_own_customer_manual_recovery` |
 | Admin session context drift | Any detected coarse-network, browser-family, or detailed User-Agent drift revokes the admin session and requires full login | `app/security/sessions.py`, `tests/test_session_risk_binding.py::test_admin_context_change_revokes_session_under_stricter_policy` |
 
@@ -189,11 +189,13 @@ operator membership remain operator-reviewed state.
 
 Manual recovery operator review is exposed only by the isolated admin app.
 `GET /manual-recovery/requests` lists public-safe request summaries for root
-admins. `POST /manual-recovery/requests/<id>/transition` and
-`POST /manual-recovery/requests/<id>/complete` require root-admin session
-authorization, CSRF, rate limiting, an operator reason, and a fresh TOTP code.
-The routes delegate to `app/auth/password_reset.py` so the manual recovery
-state machine remains centralized.
+admins. Moving a request to `under_review` remains a root-admin TOTP-gated
+triage action. Approval, denial, and completion create an `AdminActionRequest`
+that stores only safe metadata and an HMAC over canonical immutable fields. A
+different active root admin must approve with a fresh TOTP code before the
+centralized `app/auth/password_reset.py` state machine executes the final
+change. Pending approval requests expire, cannot be replayed after terminal
+states, and reject tampered metadata.
 
 Session context is a risk signal, not cryptographic device binding. IP
 networks and User-Agent values do not prove possession of a client-held key.
@@ -219,10 +221,10 @@ High-risk customer actions use `verify_high_risk_authorization()` in
 | Payee add confirmation | Authenticated user, pending payee state, recipient revalidation, TOTP step-up | `app/banking/routes.py::payees_confirm_submit()` |
 | Payee removal | Authenticated user, payee ownership check, TOTP step-up | `app/banking/routes.py::payees_remove_submit()` |
 | Staff invite create/revoke | Root admin session and TOTP code | `app/admin/services.py::create_staff_invite()`, `app/admin/services.py::revoke_staff_invite()` |
-| Staff/admin account lifecycle | Root admin session, CSRF, rate limit, TOTP step-up, no self-management, and safe audit metadata | `app/admin/services.py::transition_staff_account_as_root_admin()`, `tests/test_admin_dashboard_operations.py` |
+| Staff/admin account lifecycle | Requesting root admin session, CSRF, rate limit, TOTP step-up, no self-management, durable maker-checker request, different active root-admin approver with fresh TOTP, HMAC integrity, expiry, and safe audit metadata | `app/admin/services.py::transition_staff_account_as_root_admin()`, `app/admin/services.py::approve_admin_action_request_as_root_admin()`, `tests/test_admin_maker_checker.py` |
 | Manual recovery public request | No step-up because the caller is unauthenticated; it creates only a pending request and does not unlock or mutate the account | `app/auth/password_reset.py::request_manual_recovery()`, `tests/test_password_reset.py::test_manual_recovery_request_does_not_freeze_or_unlock_account` |
 | Manual recovery admin review | Root admin session in the isolated admin app | `app/admin/routes.py::manual_recovery_requests()`, `tests/test_admin_manual_recovery.py` |
-| Manual recovery transition/completion | Root admin session, CSRF, rate limit, operator reason, and TOTP step-up | `app/admin/services.py::transition_manual_recovery_request_as_admin()`, `app/admin/services.py::complete_manual_recovery_request_as_admin()`, `tests/test_admin_manual_recovery.py` |
+| Manual recovery approval/denial/completion | Requesting root admin session, CSRF, rate limit, operator reason, TOTP step-up, durable maker-checker request, different active root-admin approver with fresh TOTP, HMAC integrity, expiry, and safe audit metadata | `app/admin/services.py::transition_manual_recovery_request_as_admin()`, `app/admin/services.py::complete_manual_recovery_request_as_admin()`, `app/admin/services.py::approve_admin_action_request_as_root_admin()`, `tests/test_admin_maker_checker.py`, `tests/test_admin_manual_recovery.py` |
 
 ## Broken Access Control Mitigations
 

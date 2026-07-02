@@ -45,8 +45,10 @@ def test_pr_dast_smoke_is_local_automatic_and_time_bounded():
         "--env SMTP_USERNAME_FILE=/run/secrets/smtp_username",
         "--env SMTP_PASSWORD_FILE=/run/secrets/smtp_password",
         "--env SECURITY_ALERT_WEBHOOK_URL_FILE=/run/secrets/security_alert_webhook_url",
+        '--env "ROOT_ADMIN_EMAILS=${root_admin_emails}"',
     ):
         assert required_runtime_setting in helper
+    assert 'readonly root_admin_emails="chief1@sit.singaporetech.edu.sg' in helper
     assert "apply-runtime-db-privileges" in helper
     assert "verify-runtime-db-privileges" in helper
     assert "dump_container_diagnostics" in helper

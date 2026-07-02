@@ -217,9 +217,14 @@ Actions; those remain root-managed EC2 secret files.
 `SECURITY_AUDIT_HMAC_KEY` is also a root-managed EC2 secret file and is not
 exported through GitHub Actions environment variables.
 Do not pass root-admin passwords, TOTP secrets, QR codes, provisioning URIs, or
-TOTP setup values through GitHub Actions. Root-admin bootstrap remains a manual
-operator command run over SSH inside the private admin container after
-deployment.
+TOTP setup values through GitHub Actions. Root-admin bootstrap remains a
+manual-only operator command run over SSH inside the private admin container
+after deployment. It must not run from GitHub Actions, deployment automation,
+non-interactive bootstrap wrappers, workflow inputs, job summaries, artifacts,
+or repository/environment secrets. Any future automation must be a separate
+reviewed design with protected environment approval and explicit tests proving
+that bootstrap passwords, TOTP secrets, QR codes, provisioning URIs, and setup
+values never enter logs or artifacts.
 
 ## Private Tailnet Verification
 

@@ -44,6 +44,28 @@ PERSONAL_EMAIL_DOMAINS = frozenset(
         "protonmail.com",
     }
 )
+ROOT_ADMIN_EMAIL_COUNT = 7
+DEFAULT_ROOT_ADMIN_EMAILS = frozenset(
+    f"root{index}@sit.singaporetech.edu.sg"
+    for index in range(1, ROOT_ADMIN_EMAIL_COUNT + 1)
+)
+DEFAULT_ROOT_ADMIN_EMAILS_CSV = ",".join(
+    f"root{index}@sit.singaporetech.edu.sg"
+    for index in range(1, ROOT_ADMIN_EMAIL_COUNT + 1)
+)
+ROOT_ADMIN_PLACEHOLDER_LOCAL_PARTS = frozenset(
+    {
+        "admin",
+        "demo",
+        "example",
+        "placeholder",
+        "root",
+        "root-admin",
+        "root_admin",
+        "rootadmin",
+        "test",
+    }
+)
 
 
 PLACEHOLDER_TOKENS = {
@@ -350,6 +372,19 @@ def _csv_env_set(name: str, *, default: str) -> frozenset[str]:
     return values
 
 
+def _csv_env_values(name: str, *, default: str) -> tuple[str, ...]:
+    raw_value = os.getenv(name, default)
+    values: list[str] = []
+    for item in raw_value.split(","):
+        normalized = item.strip().casefold()
+        if not normalized:
+            raise RuntimeError(f"{name} must not contain empty entries")
+        values.append(normalized)
+    if not values:
+        raise RuntimeError(f"{name} must contain at least one value")
+    return tuple(values)
+
+
 def _csv_domain_set(name: str, *, default: str, reject_personal: bool = True) -> frozenset[str]:
     domains = _csv_env_set(name, default=default)
     if any(not _valid_config_domain(domain, reject_personal=reject_personal) for domain in domains):
@@ -380,6 +415,82 @@ def _valid_config_email(value: str) -> bool:
     if separator != "@" or not local or not _valid_config_domain(domain, reject_personal=True):
         return False
     return bool(CONFIG_EMAIL_RE.fullmatch(normalized))
+
+
+def _root_admin_email_has_placeholder_identity(value: str) -> bool:
+    normalized = str(value or "").strip().casefold()
+    local, separator, domain = normalized.partition("@")
+    if separator != "@":
+        return True
+    if _looks_placeholder(local) or _looks_placeholder(domain):
+        return True
+    if local in ROOT_ADMIN_PLACEHOLDER_LOCAL_PARTS:
+        return True
+    if any(token in local for token in ("placeholder", "example", "demo", "changeme", "replace")):
+        return True
+    return domain in {"example.com", "example.test"}
+
+
+def root_admin_email_allowlist_failures(
+    values: object,
+    *,
+    allowed_domains: object,
+    reject_default: bool,
+) -> list[str]:
+    emails, failures = _normalized_root_admin_email_values(values)
+    if emails is None:
+        return failures
+
+    failures.extend(_root_admin_email_shape_failures(emails, allowed_domains))
+    if reject_default and frozenset(emails) == DEFAULT_ROOT_ADMIN_EMAILS:
+        failures.append("ROOT_ADMIN_EMAILS must be explicitly configured for production/admin runtime")
+    return failures
+
+
+def _normalized_root_admin_email_values(values: object) -> tuple[tuple[str, ...] | None, list[str]]:
+    if not isinstance(values, (set, frozenset, list, tuple)):
+        return None, ["ROOT_ADMIN_EMAILS must configure exactly 7 root administrators"]
+    emails = tuple(str(item or "").strip().casefold() for item in values)
+    return emails, []
+
+
+def _root_admin_email_shape_failures(emails: tuple[str, ...], allowed_domains: object) -> list[str]:
+    failures: list[str] = []
+    if any(not item for item in emails):
+        failures.append("ROOT_ADMIN_EMAILS must not contain empty entries")
+    if len(emails) != ROOT_ADMIN_EMAIL_COUNT:
+        failures.append(
+            f"ROOT_ADMIN_EMAILS must configure exactly {ROOT_ADMIN_EMAIL_COUNT} root administrators"
+        )
+    if len(set(emails)) != len(emails):
+        failures.append("ROOT_ADMIN_EMAILS must not contain duplicate email addresses")
+
+    allowed = frozenset(str(item or "").strip().casefold() for item in (allowed_domains or ()))
+    email_set = frozenset(emails)
+    if any(not _valid_config_email(item) for item in emails) or not _all_email_domains_allowed(email_set, allowed):
+        failures.append("ROOT_ADMIN_EMAILS must use approved admin workplace domains")
+    if any(_root_admin_email_has_placeholder_identity(item) for item in emails):
+        failures.append("ROOT_ADMIN_EMAILS must not contain placeholder, demo, or example identities")
+    return failures
+
+
+def _root_admin_email_set(
+    name: str,
+    *,
+    default: str,
+    allowed_domains: frozenset[str],
+    app_env: str,
+    deployment_target: str,
+) -> frozenset[str]:
+    emails = _csv_env_values(name, default=default)
+    failures = root_admin_email_allowlist_failures(
+        emails,
+        allowed_domains=allowed_domains,
+        reject_default=_production_like(app_env, deployment_target),
+    )
+    if failures:
+        raise RuntimeError(failures[0])
+    return frozenset(emails)
 
 
 def _email_domain(value: str) -> str:
@@ -1266,22 +1377,13 @@ class Config:
         for item in os.getenv("STAFF_INVITE_ALIAS_SEPARATORS", "+").split(",")
         if item
     )
-    ROOT_ADMIN_EMAILS = _csv_env_set(
+    ROOT_ADMIN_EMAILS = _root_admin_email_set(
         "ROOT_ADMIN_EMAILS",
-        default=(
-            "root1@sit.singaporetech.edu.sg,"
-            "root2@sit.singaporetech.edu.sg,"
-            "root3@sit.singaporetech.edu.sg,"
-            "root4@sit.singaporetech.edu.sg,"
-            "root5@sit.singaporetech.edu.sg,"
-            "root6@sit.singaporetech.edu.sg,"
-            "root7@sit.singaporetech.edu.sg"
-        ),
+        default=DEFAULT_ROOT_ADMIN_EMAILS_CSV,
+        allowed_domains=ADMIN_ALLOWED_EMAIL_DOMAINS,
+        app_env=APP_ENV,
+        deployment_target=DEPLOYMENT_TARGET,
     )
-    if len(ROOT_ADMIN_EMAILS) != 7:
-        raise RuntimeError("ROOT_ADMIN_EMAILS must contain exactly 7 workplace email addresses")
-    if not _all_email_domains_allowed(ROOT_ADMIN_EMAILS, ADMIN_ALLOWED_EMAIL_DOMAINS):
-        raise RuntimeError("ROOT_ADMIN_EMAILS must contain only approved admin workplace email addresses")
     STAFF_INVITE_TTL_SECONDS = _int_env(
         "STAFF_INVITE_TTL_SECONDS",
         default=str(24 * 60 * 60),
