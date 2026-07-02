@@ -169,7 +169,7 @@ def test_production_workflow_requires_private_gate_after_deploy_and_public_tls()
     ci = yaml.load(ci_text, Loader=yaml.BaseLoader)
     gate = ci["jobs"]["verify-private-admin-tailnet"]
 
-    assert gate["name"] == "Required private admin post-deploy gate"
+    assert gate["name"] == "Verify private admin tailnet"
     assert gate["needs"] == ["deploy-production", "verify-production-tls"]
     assert "needs.deploy-production.result == 'success'" in gate["if"]
     assert "needs.verify-production-tls.result == 'success'" in gate["if"]

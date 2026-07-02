@@ -42,6 +42,14 @@ DNS, certificate, and edge change is reviewed. The complete variable table and
 secret-placement boundary are in `docs/DEPLOYMENT.md`; never copy credentials
 or application secrets into repository variables.
 
+GitHub Actions displays explicit human-readable job names such as
+`Test and security checks`, `SonarQube analysis`, `Deploy staging`, and
+`Verify private admin tailnet`. Stable kebab-case job IDs remain only for
+workflow dependencies and expressions. If a renamed display name is a required
+status check, update the GitHub ruleset manually only after the new context has
+completed successfully; repository commits cannot mutate or prove that
+provider-side setting.
+
 MFA/TOTP seed encryption uses envelope encryption. Keep old KEKs in `mfa_kek_keys_json` until `rewrap-mfa-deks` has moved stored records to the new active KEK. Then update `MFA_KEK_ACTIVE_ID` and the root-managed keyring together.
 
 ## Disposable Registration Data Reset
@@ -216,11 +224,13 @@ evidence; the protected GitHub workflow below separately supplies
 tailnet-client reachability evidence. Operators must still retain live ACL,
 tag, device-approval, membership, and offboarding evidence.
 
-The staging and production deployment jobs and the protected private-admin
-verification jobs are the only GitHub-hosted jobs approved to join the
-tailnet. Deployment uses separate `tag:github-ci-staging-deploy` and
-`tag:github-ci-prod-deploy` identities with access only to the matching EC2
-host on port `22`. The direct production admin-verification job runs after
+The staging and production deployment and trusted-main bootstrap jobs, plus
+the protected private-admin verification jobs, are the only GitHub-hosted jobs
+approved to join the tailnet. Deployment and bootstrap use separate
+`tag:github-ci-staging-deploy` and `tag:github-ci-prod-deploy` identities with
+access only to the matching EC2 host on port `22`; each joins before its first
+SSH/SCP command and logs out even after failure. The direct production
+admin-verification job runs after
 deployment and public production TLS verification because a reusable-workflow
 call did not receive the protected environment secrets. That direct job and
 the manual verification workflow use the protected `admin-tailscale`
@@ -340,10 +350,14 @@ enter the private dashboard.
 
 ## EC2 SSH And Deployment Access Operations
 
-GitHub Actions deployment SSH uses protected, environment-specific Tailscale
-OAuth identities and private EC2 targets. After staging and production deploy
-successfully through those paths, remove public TCP `22` from the AWS security
-group and host firewall and retain sanitized provider evidence.
+GitHub Actions deployment and bootstrap SSH use protected,
+environment-specific Tailscale OAuth identities and private EC2 targets. After
+staging and production deploy and bootstrap successfully through those paths,
+remove public TCP `22` from the AWS security group and host firewall and retain
+sanitized provider evidence. Public SSH is not a fallback once the environment
+host variable points to a Tailscale IP or MagicDNS name. Keep approved AWS
+console/SSM recovery or a documented, source-restricted and time-limited
+security-group break-glass procedure.
 
 OpenSSH daemon and UFW hardening automation remains deferred. There is no
 repository OpenSSH drop-in or UFW rollout, so do not claim root SSH, password

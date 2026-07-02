@@ -64,8 +64,9 @@ that both the cloud scan and PR comment were skipped.
 
 ## Coverage, Scope, And Evidence
 
-The `test` job in `.github/workflows/ci-deploy.yml` installs
-`requirements-dev.lock` with hashes and runs the full suite once:
+The visible `Test and security checks` job (internal ID `test`) in
+`.github/workflows/ci-deploy.yml` installs `requirements-dev.lock` with hashes
+and runs the full suite once:
 
 ```text
 python -m pytest -q -n auto --cov=. --cov-config=.coveragerc --cov-report=xml:coverage.xml --cov-report=term --durations=30 --durations-min=0.5
@@ -73,14 +74,15 @@ node tests/js/collect-browser-coverage.mjs
 ```
 
 After all test and security checks pass, that job uploads `coverage.xml` and
-`coverage/lcov.info`
-as a one-day artifact. Its downstream `sonarqube` job calls the reusable
+`coverage/lcov.info` as a one-day artifact. Its downstream visible
+`SonarQube analysis` job (internal ID `sonarqube`) calls the reusable
 `.github/workflows/sonarqube.yml`, checks out the same resolved source commit,
 downloads the coverage artifact, and runs the scanner without rerunning pytest.
 This keeps the authoritative test result and SonarQube coverage input in the
 same workflow run. The test and reusable scanner jobs remain read-only; a
-separate trusted-PR-only comment job holds the narrowly scoped
-`pull-requests: write` permission.
+separate trusted-PR-only `SonarQube PR comment` job (internal ID
+`sonarqube-comment`) holds the narrowly scoped `pull-requests: write`
+permission.
 
 `sonar-project.properties` sends `app`, deployment/security material under
 `ops`, and `config.py`, `wsgi.py`, and `admin_wsgi.py` as sources.
@@ -105,10 +107,13 @@ fall back to a legacy owner or project. Scanner evidence is valid only when the
 same run imports both `coverage.xml` and `coverage/lcov.info` for the resolved
 source commit.
 
-The reviewed main-branch cleartext-protocol findings in
-`ops/container/smoke-test.sh` are false positives: those URLs address only
-named containers on an isolated ephemeral Docker smoke network, while public
-and production traffic remains HTTPS-only. CodeQL findings for the mandated
+The reviewed main-branch cleartext-protocol finding in
+`ops/container/smoke-test.sh` is an intentional private-only exception: the
+URL and its ZAP baseline sink address only a named container on the isolated
+ephemeral Docker smoke network and carry narrow line-scoped dispositions.
+Public, staging, production, admin, deployment, and observability traffic
+remain HTTPS/TLS or private OpenSSH-over-Tailscale as applicable. CodeQL
+findings for the mandated
 HIBP SHA-1 range lookup, keyed HMAC/PBKDF2 constructions, a non-verifier
 configuration fingerprint, and exact trusted static-document assertions are
 also alert-specific false positives. Each provider disposition carries its
