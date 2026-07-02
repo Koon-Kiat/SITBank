@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 
 import pyotp
@@ -159,6 +160,18 @@ def _assert_no_sensitive_recovery_material(payload: dict) -> None:
     ]
     for item in forbidden:
         assert item not in body
+
+
+def _enable_browser_csrf_and_get_token(admin_app, admin_client, path: str) -> str:
+    admin_app.config["WTF_CSRF_ENABLED"] = True
+    response = admin_client.get(path)
+    assert response.status_code == 200
+    match = re.search(
+        r'name="csrf_token"[^>]*value="([^"]+)"',
+        response.get_data(as_text=True),
+    )
+    assert match is not None
+    return match.group(1)
 
 
 def test_manual_recovery_routes_are_admin_app_only():
@@ -398,6 +411,80 @@ def test_browser_transition_requires_valid_fields_and_redirects_safely(admin_cli
     assert request_record.status == "under_review"
 
 
+@pytest.mark.parametrize("csrf_value", (None, "invalid-browser-csrf-token"))
+def test_browser_transition_rejects_missing_or_invalid_csrf_before_mutation(
+    admin_app,
+    admin_client,
+    csrf_value,
+):
+    root, root_secret = _create_staff_identity(
+        username="root-browser-transition-csrf",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="89990020",
+    )
+    customer, _customer_secret = _create_customer("recover-csrf-transition")
+    request_record = _create_manual_recovery_request(customer)
+    _login_admin(admin_client, root_secret, root.email)
+    _enable_browser_csrf_and_get_token(
+        admin_app,
+        admin_client,
+        f"/manual-recovery/requests/{request_record.id}",
+    )
+    form = {
+        "status": "under_review",
+        "reason": "identity review started",
+        "totp_code": _totp(root_secret),
+    }
+    if csrf_value is not None:
+        form["csrf_token"] = csrf_value
+
+    response = admin_client.post(
+        f"/manual-recovery/requests/{request_record.id}/transition",
+        data=form,
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400
+    db.session.refresh(request_record)
+    assert request_record.status == "pending"
+
+
+def test_browser_transition_accepts_valid_csrf_and_security_fields(
+    admin_app,
+    admin_client,
+):
+    root, root_secret = _create_staff_identity(
+        username="root-browser-transition-valid-csrf",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="89990021",
+    )
+    customer, _customer_secret = _create_customer("recover-valid-csrf-transition")
+    request_record = _create_manual_recovery_request(customer)
+    _login_admin(admin_client, root_secret, root.email)
+    csrf_token = _enable_browser_csrf_and_get_token(
+        admin_app,
+        admin_client,
+        f"/manual-recovery/requests/{request_record.id}",
+    )
+
+    response = admin_client.post(
+        f"/manual-recovery/requests/{request_record.id}/transition",
+        data={
+            "csrf_token": csrf_token,
+            "status": "under_review",
+            "reason": "identity review started",
+            "totp_code": _totp(root_secret),
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    db.session.refresh(request_record)
+    assert request_record.status == "under_review"
+
+
 def test_browser_transition_auth_error_redirects_with_safe_flash(admin_client):
     root, root_secret = _create_staff_identity(
         username="root-browser-auth-error",
@@ -486,6 +573,78 @@ def test_browser_completion_validation_redirects_before_service_call(admin_clien
     assert response.headers["Location"].endswith(f"/manual-recovery/requests/{request_record.id}")
     db.session.refresh(request_record)
     assert request_record.status == "approved"
+
+
+def test_browser_completion_rejects_missing_csrf_before_queueing_action(
+    admin_app,
+    admin_client,
+):
+    root, root_secret = _create_staff_identity(
+        username="root-browser-complete-csrf",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="89990022",
+    )
+    customer, _customer_secret = _create_customer("recover-csrf-complete")
+    request_record = _create_manual_recovery_request(customer, status="approved")
+    _login_admin(admin_client, root_secret, root.email)
+    _enable_browser_csrf_and_get_token(
+        admin_app,
+        admin_client,
+        f"/manual-recovery/requests/{request_record.id}",
+    )
+
+    response = admin_client.post(
+        f"/manual-recovery/requests/{request_record.id}/complete",
+        data={
+            "reason": "identity verified",
+            "totp_code": _totp(root_secret),
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400
+    db.session.refresh(request_record)
+    assert request_record.status == "approved"
+    assert db.session.query(AdminActionRequest).filter_by(
+        operation_type="manual_recovery_complete",
+    ).count() == 0
+
+
+def test_browser_completion_accepts_valid_csrf_and_queues_maker_checker(
+    admin_app,
+    admin_client,
+):
+    root, root_secret = _create_staff_identity(
+        username="root-browser-complete-valid-csrf",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="89990023",
+    )
+    customer, _customer_secret = _create_customer("recover-valid-csrf-complete")
+    request_record = _create_manual_recovery_request(customer, status="approved")
+    _login_admin(admin_client, root_secret, root.email)
+    csrf_token = _enable_browser_csrf_and_get_token(
+        admin_app,
+        admin_client,
+        f"/manual-recovery/requests/{request_record.id}",
+    )
+
+    response = admin_client.post(
+        f"/manual-recovery/requests/{request_record.id}/complete",
+        data={
+            "csrf_token": csrf_token,
+            "reason": "identity verified",
+            "totp_code": _totp(root_secret),
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert db.session.query(AdminActionRequest).filter_by(
+        operation_type="manual_recovery_complete",
+        status="pending",
+    ).count() == 1
 
 
 def test_admin_browser_logout_redirects_and_json_logout_remains_compatible(admin_client):

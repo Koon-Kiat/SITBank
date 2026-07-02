@@ -122,9 +122,10 @@ untrusted or incomplete chains, and every HIGH, CRITICAL, or FATAL
 `testssl.sh` finding. The Cloudflare Access-protected staging target accepts
 the expected unauthenticated `302 Found` Access challenge, but still requires
 TLS 1.0 and TLS 1.1 to be not offered, certificate hostname/trust and chain
-checks to be OK, TLS 1.2 and TLS 1.3 to be offered, HSTS to meet the scanner
-minimum, no expiration or insecure redirect finding, and final `overall_grade`
-`A` or `A+`. `HSTS: not offered` is a failure for staging because the public
+checks to be OK, and TLS 1.3 to be offered. TLS 1.2 is optional for staging
+compatibility. HSTS must meet the scanner minimum, expiration and insecure
+redirect findings are prohibited, and final `overall_grade` must be `A` or
+`A+`. `HSTS: not offered` is a failure for staging because the public
 Cloudflare edge, not only origin Nginx, is part of the deployed HTTPS
 boundary. `cipherlist_OBSOLETED: offered` on Cloudflare Universal SSL is
 retained as review evidence; removing it requires Advanced Certificate

@@ -89,9 +89,9 @@ Each approved run:
    closed because it may indicate Funnel or another public exposure.
 2. Joins the approved tailnet with the protected ephemeral tagged identity and
    verifies tailnet connectivity to `admin-sitbank.tailca101b.ts.net`.
-3. Resolves the private hostname and requires the HTTPS login entrypoint to
-   return its documented unauthenticated `200` response with ordinary
-   certificate and hostname validation.
+3. Resolves the private hostname and sends an HTTPS `GET` to the login
+   entrypoint, which must return its documented unauthenticated `200` response
+   with ordinary certificate and hostname validation.
 4. Logs out and relies on ephemeral-node cleanup; it uploads no artifacts or
    Tailscale state.
 
@@ -177,13 +177,15 @@ Production bootstrap installs
 `/usr/local/sbin/verify-tailscale-admin-access`. It is a non-mutating local
 control with three explicit modes:
 
-- `--mode serve` proves the node is running, Funnel is disabled, the admin
+- `--mode serve` proves the node is running, Tailscale SSH and Funnel are
+  disabled, the admin
   listener is only `127.0.0.1:5002`, local readiness works, Nginx has no admin
   upstream/private hostname, Serve maps only the approved private HTTPS
-  endpoint to `http://127.0.0.1:5002`, and private `/login` returns `200`.
-- `--mode ssh` proves the same local Tailscale, Funnel, listener, readiness,
-  and Nginx prerequisites for fallback private port-forward diagnostics. It
-  does not claim to test a remote tunnel.
+  endpoint to `http://127.0.0.1:5002`, and an unauthenticated `GET /login`
+  returns `200`.
+- `--mode ssh` proves the same local Tailscale, Tailscale-SSH-disabled,
+  Funnel, listener, readiness, and Nginx prerequisites for fallback private
+  port-forward diagnostics. It does not claim to test a remote tunnel.
 - `--mode documentation-only` checks arguments and warns that no live
   verification occurred. It is not acceptable production evidence.
 

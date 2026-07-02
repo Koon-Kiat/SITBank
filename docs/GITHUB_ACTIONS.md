@@ -44,6 +44,24 @@ manual private-tailnet jobs follow the same explicit naming policy.
 `.github/workflows/*.yml` file while allowing the intentional TLS matrix name
 `Scan ${{ matrix.target.label }}`.
 
+## Non-Deploy Security Summaries
+
+Each independent security job outside `.github/workflows/ci-deploy.yml` writes
+a bounded, human-readable `GITHUB_STEP_SUMMARY`. Scanner summaries identify
+the checked scope, decision, safe finding counts, and artifact or code-scanning
+location where applicable. Detailed logs, individual job summaries, SARIF
+views, and retained artifacts remain the source of truth; summaries never copy
+secret matches or full raw scanner payloads.
+
+`.github/workflows/security-summary.yml` adds a shorter read-only rollup for
+pull requests and for merged commits pushed to `main`. It waits for the
+event-appropriate independent jobs, distinguishes passed, failed, skipped,
+expected-skipped, pending, and unknown states, and fails closed for any
+unresolved or unexpected state. Its one `CI, publish, and deploy` row is only a
+scope pointer and does not duplicate findings from `ci-deploy.yml`. The rollup
+does not replace individual checks, change branch-protection contexts, post a
+PR comment, publish, or deploy.
+
 The `Playwright E2E browser tests` job (internal ID `playwright-e2e`) installs
 the hashed development dependencies, installs Chromium with `python -m
 playwright install --with-deps chromium`, and runs `python -m pytest -q
@@ -259,9 +277,10 @@ fallback. The current provider value is `admin-sitbank.tailca101b.ts.net`.
 `STAGING_EC2_HOST` and `PROD_EC2_HOST` remain separate private SSH deployment
 targets, not admin browser targets.
 
-The workflow fails if the private URL responds before enrollment, then joins
-the tailnet, requires `https://${TAILSCALE_PRIVATE_ADMIN_HOST}/login` to return
-the documented unauthenticated `200`, and logs out. It checks no admin
+The workflow fails if a `GET` to the private URL responds before enrollment,
+then joins the tailnet, requires an unauthenticated `GET` to
+`https://${TAILSCALE_PRIVATE_ADMIN_HOST}/login` to return the documented
+`200`, and logs out. It checks no admin
 credentials, changes no deployment or tailnet state, and enables neither
 Tailscale Serve nor Funnel.
 Failure marks the post-deploy workflow failed; production may already be
