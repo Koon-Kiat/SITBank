@@ -211,12 +211,15 @@ sudo docker exec sitbank-app python -m flask --app wsgi:app production-check
 sudo docker exec sitbank-app python -m flask --app wsgi:app verify-migration-baseline
 sudo docker exec sitbank-app python -m flask --app wsgi:app verify-runtime-db-privileges
 sudo docker exec sitbank-app python -m flask --app admin_wsgi:app production-check
+curl --fail -H 'Host: sitbank.pp.ua' -H 'X-Forwarded-For: 127.0.0.1' -H 'X-Forwarded-Proto: https' http://127.0.0.1:5000/health/ready
+curl --fail -H 'Host: sitbank-admin.internal' -H 'X-Forwarded-Proto: https' http://127.0.0.1:5002/health/ready
 ```
 
 Expected safe success indicators: production prerequisites pass, current
-database schema matches migration metadata, and runtime roles cannot mutate
-schema objects. Do not display database URLs, passwords, connection strings,
-raw dumps, row-level customer data, or migration-role credentials.
+database schema matches migration metadata, runtime roles cannot mutate schema
+objects, and customer/admin readiness is proven through EC2 loopback. Do not
+display database URLs, passwords, connection strings, raw dumps, row-level
+customer data, or migration-role credentials.
 
 ### Audit Chain, Audit Anchor, And Security Alerts
 
