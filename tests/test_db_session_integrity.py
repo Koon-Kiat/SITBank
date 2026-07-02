@@ -9,9 +9,11 @@ import time
 from datetime import datetime, timezone
 
 import pytest
+from flask import request
 
 from app.extensions import db
 from app.models import SecurityAuditEvent, ServerSideSession, User
+from app.security import sessions as sessions_module
 from app.security.session_hmac import (
     SESSION_PAYLOAD_FORMAT_VERSION,
     SessionPayloadIntegrityError,
@@ -130,6 +132,41 @@ def test_valid_db_session_payload_continues_to_authenticate(app, client):
     assert envelope["sig"]
     assert response.status_code == 200
     assert db.session.query(SecurityAuditEvent).filter_by(event_type="session_integrity").count() == 0
+
+
+def test_session_row_missing_expiry_is_rejected_without_server_error(app, monkeypatch, caplog):
+    session_id = "malformed-session-id"
+    record = ServerSideSession(
+        component="customer",
+        session_lookup_hash=session_lookup_hash(session_id),
+        created_at=datetime.now(timezone.utc),
+        last_activity_at=datetime.now(timezone.utc),
+        expires_at=datetime.now(timezone.utc),
+    )
+    record.expires_at = None
+
+    monkeypatch.setattr(
+        sessions_module,
+        "_session_record_for_sid",
+        lambda _session_id: record,
+    )
+    caplog.set_level("WARNING", logger=app.logger.name)
+
+    with app.test_request_context(
+        "/static/img/sitbank-mark.svg",
+        headers={"Cookie": f"{app.config['SESSION_COOKIE_NAME']}={session_id}"},
+    ):
+        loaded = app.session_interface.open_session(app, request)
+
+    assert loaded.new is True
+    assert loaded.sid != session_id
+    assert record.ended_reason == "integrity_failure"
+    assert record.revoked_at is not None
+    assert db.session.query(SecurityAuditEvent).filter_by(
+        event_type="session_integrity",
+        outcome="failure",
+    ).count() == 1
+    assert "missing_expires_at" in "\n".join(record.getMessage() for record in caplog.records)
 
 
 def test_modified_db_session_user_id_is_rejected(app, client):
