@@ -1,4 +1,4 @@
-﻿# SITBank Security Operations
+# SITBank Security Operations
 
 ## Reporting
 
@@ -40,9 +40,13 @@ also run before protected-branch changes merge. Their tracked-file discovery
 and local/OSS scans need no production secrets or deployment credentials.
 ShellCheck and Hadolint releases are checksum-verified; Semgrep runs from a
 digest-pinned container, blocks ERROR severity, uploads no source or SARIF, and
-requires no token. Suppressions must be rule- and location-specific with a
-reviewed rationale. See
+requires no token. CI and local invocations explicitly use `--metrics=off`;
+registry rules are downloaded, but source remains in the local/OSS scan
+boundary. Suppressions must be rule- and location-specific with a reviewed
+rationale. See
 `docs/security/assurance/test-automation-and-dependencies.md`.
+The dedicated ShellCheck workflow is authoritative; deployment CI does not
+maintain a second partial hardcoded ShellCheck list.
 
 Session HMAC rotation must keep the old key in
 `session_hmac_keys_json` only for the approved overlap period, set the new
@@ -198,9 +202,10 @@ Dependabot pull requests are never auto-merged. Review release notes and
 transitive changes, update the reviewed manifest, regenerate the applicable
 hash-locked files, and require the full test, SAST, dependency review,
 container smoke, Compose validation, and image scan checks. Full authenticated
-DAST is intentionally reserved for scheduled scans and release verification;
-ordinary pull requests skip it to keep feedback timely without weakening the
-release gate. Authenticated DAST uses only synthetic users. The CI helper writes
+ZAP DAST is reserved for scheduled scans and release verification. Pull
+requests also run a fast local-only DAST smoke with a synthetic session and
+sanitized summary; it does not replace the deeper release gate. Authenticated
+DAST uses only synthetic users. The CI helper writes
 the session cookie and ZAP replacer properties as temporary `0600` files under
 `umask 077`, mounts them only into the scanner path that needs them, passes only
 `-configfile` to ZAP, and removes the temporary directory through the smoke-test
@@ -212,7 +217,7 @@ before rerunning.
 The CI test job generates full-suite Python coverage once and passes
 `coverage.xml` as a short-lived artifact to its downstream reusable SonarQube
 job. That job reports maintainability, duplication, reliability, and security
-findings for the private repository without rerunning pytest. Its initial
+findings for the public repository without rerunning pytest. Its initial
 quality gate is reporting-only and does not participate in deployment.
 Successful trusted internal PR scans create or update one informational summary
 comment; fork and Dependabot PRs receive neither secret-backed analysis nor
@@ -221,7 +226,7 @@ source-processing implications, token rotation, scan scope, triage, comment
 behavior, and current plan eligibility are documented in
 `docs/security/assurance/sonarqube.md`. SonarQube complements and does not replace CodeQL,
 Semgrep, Bandit, secret scanning, dependency checks, or deployment tests;
-existing CodeQL private-repository behavior is unchanged.
+existing CodeQL behavior is unchanged.
 
 Critical advisories require immediate triage. High advisories require an owner
 and target date. A runtime upgrade is kept separate from ordinary package
@@ -344,7 +349,8 @@ checked manually.
   `ops/nginx-proxy-headers.conf`, validates Nginx, and reloads only after
   `nginx -t` succeeds.
 - Issue production Certbot files under
-  `/etc/letsencrypt/live/sitbank.duckdns.org/` before bootstrap.
+  `/etc/letsencrypt/live/sitbank.pp.ua/` before bootstrap; the certificate
+  must cover only `sitbank.pp.ua` and `www.sitbank.pp.ua`.
 - Keep Certbot ACME account state and TLS private keys on the EC2 host; never
   commit them to the repository or mount them into application containers.
 - Require an enabled, active `certbot.timer` for host-managed renewal, and run
@@ -367,6 +373,12 @@ checked manually.
 - Require Cloudflare Access and Cloudflare Authenticated Origin Pulls for
   `staging-sitbank.pp.ua`; do not disable the origin-pull check to make
   direct EC2-origin staging access work.
+- Require Cloudflare Authenticated Origin Pull for production HTTPS using the
+  separately verified production CA path. Keep raw HTTP origin-IP behavior
+  redirect-only, and reject raw or hostname-SNI direct-origin HTTPS without
+  Cloudflare's client certificate.
+- Keep production Cloudflare and Nginx HSTS aligned at six months
+  (`max-age=15552000`) with include subdomains enabled and preload disabled.
 - Enable WAF managed common, SQL injection, XSS, bot, and protocol anomaly
   rules.
 - Add WAF rate-based rules for `/login`, `/register`, `/mfa/verify`,
@@ -389,8 +401,13 @@ sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-app
 sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-admin
 sudo docker inspect --format '{{json .HostConfig.PortBindings}}' sitbank-app
 sudo docker inspect --format '{{json .HostConfig.PortBindings}}' sitbank-admin
-curl --fail https://sitbank.duckdns.org/health/live
-curl -I https://sitbank.duckdns.org/health/ready
+curl --fail https://sitbank.pp.ua/health/live
+curl -I https://www.sitbank.pp.ua/
+curl -I https://sitbank.pp.ua/health/ready
+curl -I http://18.188.152.24/
+curl -k -I https://18.188.152.24/
+curl -k --resolve sitbank.pp.ua:443:18.188.152.24 \
+  -I https://sitbank.pp.ua/
 curl --fail -H 'X-Forwarded-Proto: https' \
   http://127.0.0.1:5000/health/ready
 curl --fail -H 'Host: sitbank-admin.internal' \
@@ -401,7 +418,9 @@ curl --fail -H 'Host: sitbank-admin.internal' \
 Expected results: only `80` and `443` are publicly reachable, Gunicorn is
 loopback-only on `5000` and `5002`, Docker publishes no app ports, external
 customer readiness is denied, no public admin hostname is required, and local
-readiness succeeds.
+readiness succeeds. Raw HTTP origin-IP access redirects to
+`https://sitbank.pp.ua`, while both direct HTTPS probes fail closed without
+returning application content.
 In short, external readiness is denied.
 
 ## Monitoring
@@ -519,8 +538,9 @@ Production must use SMTP-backed reset email delivery with
 `PASSWORD_RESET_EMAIL_FROM`, `SMTP_HOST`, `SMTP_USE_TLS=true`, and root-managed
 `SMTP_USERNAME_FILE` / `SMTP_PASSWORD_FILE` secrets. Console reset email is
 allowed only outside production, and plaintext SMTP delivery is rejected in
-production. Security alert webhooks are never used to deliver password reset
-links.
+production. STARTTLS uses Python's default certificate validation and hostname
+checking; do not disable validation to troubleshoot provider failures. Security
+alert webhooks are never used to deliver password reset links.
 
 ## AWS OIDC and Systems Manager
 
@@ -528,7 +548,7 @@ The current restricted SSH deployment remains supported. The preferred next
 step is GitHub OIDC federation to a narrowly scoped AWS IAM role and Systems
 Manager Run Command:
 
-- trust only `repo:WenJiangg/SITBank:environment:production`;
+- trust only `repo:Koon-Kiat/SITBank:environment:production`;
 - require the GitHub OIDC audience `sts.amazonaws.com`;
 - allow commands only on the tagged SITBank instance and approved SSM
   document;

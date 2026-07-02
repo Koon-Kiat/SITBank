@@ -13,7 +13,7 @@ def test_required_pytest_markers_are_registered(pytestconfig):
         for marker in pytestconfig.getini("markers")
     }
 
-    assert {"security", "deployment", "slow", "serial"} <= registered
+    assert {"security", "deployment", "e2e", "slow", "serial"} <= registered
 
 
 def test_security_test_marker_inventory_covers_required_files():
@@ -74,7 +74,7 @@ def test_ci_keeps_full_parallel_pytest_and_locked_dependency_checks():
     assert "tests/" not in pytest_lines[0]
     for required in (
         "python -m pip check",
-        "python -m bandit -q -ll -r app ops config.py wsgi.py",
+        "python -m bandit -q -ll -r app ops config.py wsgi.py admin_wsgi.py",
         "python -m pip_audit --disable-pip --require-hashes -r requirements.lock",
         "python -m pip_audit --disable-pip --require-hashes -r requirements-dev.lock",
         "python ops/security/check_dependency_locks.py",

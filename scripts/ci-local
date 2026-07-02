@@ -152,6 +152,7 @@ def run_optional_static_analysis(results: list[CheckResult]) -> bool:
             "semgrep",
             [
                 "scan",
+                "--metrics=off",
                 *[
                     item
                     for config in SEMGREP_CONFIGS
@@ -190,6 +191,9 @@ def run_optional_static_analysis(results: list[CheckResult]) -> bool:
 
 def find_git_bash() -> str:
     candidates: list[Path] = []
+    path_bash = shutil.which("bash")
+    if path_bash:
+        candidates.append(Path(path_bash))
     if os.name == "nt":
         program_files = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
         program_files_x86 = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"))
@@ -199,9 +203,6 @@ def find_git_bash() -> str:
                 program_files_x86 / "Git" / "bin" / "bash.exe",
             )
         )
-    path_bash = shutil.which("bash")
-    if path_bash:
-        candidates.append(Path(path_bash))
 
     for candidate in candidates:
         if candidate.is_file():

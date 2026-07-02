@@ -36,9 +36,9 @@ Representative event families include:
 | Authentication | `login_password`, `login`, `mfa_login_verify`, `admin_login_password`, `admin_mfa_login`, `logout` | `app/auth/services.py`, `app/admin/services.py` |
 | MFA lifecycle | `mfa_setup_generate`, `mfa_setup_verify`, `mfa_replace_start`, `mfa_replace_verify`, `mfa_recovery_code_verify`, `recovery_codes_regenerate` | `app/auth/services.py`, `app/auth/recovery_codes.py` |
 | Password reset and manual recovery | `password_reset_requested`, `password_reset_token_exchanged`, `password_reset_mfa_failed`, `password_reset_completed`, `manual_recovery_requested`, `manual_recovery_admin_transition`, `manual_recovery_completed` | `app/auth/password_reset.py`, `app/admin/services.py` |
-| Session management | `session_terminate`, `session_revoke_others`, `session_integrity`, `session_expired`, `session_risk` | `app/auth/services.py`, `app/security/sessions.py` |
+| Session management | `session_terminate`, protected backend `session_revoke_others`, `session_integrity`, `session_expired`, `session_risk` | `app/auth/services.py`, `app/security/sessions.py` |
 | Account security | `password_change`, account detail updates, `account_freeze` | `app/auth/services.py` |
-| Admin and staff operations | `admin_dashboard_access`, `staff_invite_create`, `staff_invite_revoked`, `staff_invite_accept`, `staff_account_activated`, `staff_account_deactivated`, `staff_account_reactivated`, `staff_activation_reset`, `audit_log_view`, `security_alert_review`, `admin_access_denied` | `app/admin/services.py`, `app/admin/routes.py` |
+| Admin and staff operations | `admin_dashboard_access`, `staff_invite_create`, `staff_invite_revoked`, `staff_invite_accept`, `staff_account_activated`, `staff_account_deactivated`, `staff_account_reactivated`, `staff_activation_reset`, `audit_log_view`, `security_alert_review`, `security_alert_delivery`, `admin_access_denied` | `app/admin/services.py`, `app/admin/routes.py` |
 | Banking and payees | `payee_lookup`, `payee_add`, `payee_remove`, transaction validation events | `app/banking/routes.py`, `app/banking/services.py` |
 | Operations | `mfa_dek_rewrap`, audit chain verification/export, alert checks | `app/ops/commands.py`, `app/security/audit.py`, `app/security/alerts.py` |
 
@@ -51,6 +51,13 @@ Audit metadata is sanitized before persistence and before structured log
 output. Sensitive keys and sensitive-looking values are redacted recursively in
 dicts and lists. Raw identifiers are represented with HMAC-derived references
 through `audit_reference()` and `principal_reference()`.
+
+Banking and payee audit calls must avoid raw account identifiers and
+customer-controlled free text at the call site. Use fields such as
+`payee_account_ref`, `transaction_ref`, boolean presence flags, counts, and
+bounded lengths so investigation correlation remains possible without storing
+raw account numbers, payee nicknames, or transfer reference text in the audit
+row.
 
 Do not log or paste these values into audit metadata, application logs, alert
 payloads, tickets, or chat:
@@ -74,6 +81,7 @@ Relevant tests:
 | `tests/test_audit_alerting.py::test_structured_audit_log_output_is_sanitized` | Structured audit logs are safe for log forwarding |
 | `tests/test_password_reset.py` reset-token tests | Password reset tokens and recovery codes are not stored or logged raw |
 | `tests/test_payee_management_security.py::test_invalid_payee_lookup_is_generic_and_audited` | Payee lookup failures audit only safe account references |
+| `tests/test_payee_management_security.py::test_payee_add_and_remove_audit_metadata_uses_safe_references` | Payee add/remove events store safe account references and bounded nickname metadata |
 
 ## Audit Integrity
 
@@ -94,9 +102,26 @@ python -m flask --app wsgi:app export-audit-log-anchor --output /var/lib/sitbank
 ```
 
 `SECURITY_AUDIT_ANCHOR_PATH` points production checks and alerting at the
-host-protected anchor. Anchor mismatch, chain rewind, tail deletion, malformed
-rows, missing append-only controls, and runtime database privilege failures are
-treated as high-priority operational signals.
+host-protected anchor. Verification reports separate anchor freshness from
+hash-chain integrity:
+
+- `anchor_validated=true` means the saved anchor exactly matches the current
+  chain head.
+- `anchor_stale=true` with `anchor_refresh_required=true` means the chain is
+  valid, the saved anchor event still exists with the same event hash, and
+  normal append-only audit rows were written after the anchor. This state
+  includes `anchor_event_id`, `latest_event_id`, and `events_since_anchor`; it
+  does not emit a critical `audit_anchor_mismatch` alert.
+- `audit_anchor_mismatch` remains critical for unreadable or malformed anchors,
+  anchor rollback, current chain behind the anchor, missing anchored rows, or
+  anchored event hash changes.
+- `audit_chain_verification_failed` remains critical for hash-chain failures
+  such as `event_hash_mismatch`, `previous_hash_mismatch`, missing hashes after
+  the chain starts, and unsupported hash algorithms.
+
+Chain rewind, tail deletion, malformed rows, missing append-only controls, and
+runtime database privilege failures are treated as high-priority operational
+signals.
 
 ## Alerting
 
@@ -111,7 +136,8 @@ python -m flask --app wsgi:app check-security-alerts
 Alert rules cover at least:
 
 - audit hash-chain verification failure
-- audit anchor mismatch
+- critical audit anchor mismatch or corruption
+- stale audit anchor refresh due without alert delivery noise
 - security audit write failures
 - append-only audit protection failures
 - runtime database privilege verification failures
@@ -158,8 +184,34 @@ logged.
 
 Authorized admin/root users can review current security alert report output at
 `GET /alerts`. This dashboard route calls `build_security_alert_report()` with
-delivery disabled; it does not send, resend, or acknowledge alerts. Alert
-delivery remains an operator-controlled CLI/timer workflow.
+delivery disabled; it does not send, resend, or acknowledge alerts. The browser
+view shows labeled report cards, actionable safe alert details, audit-chain and
+database-integrity status, delivery status, dedupe status, next action text,
+and links to existing authorized audit-event detail pages only when a related
+event row exists.
+
+Manual browser delivery is explicit and state-changing through
+`POST /alerts/deliver` only. The route requires the existing admin/root session
+authorization, the normal browser CSRF token, and a current TOTP step-up before
+calling the same `build_security_alert_report(deliver=True)` path used by the
+CLI/timer. It does not implement a parallel delivery mechanism, force-resend
+mode, Web Push subscription, or browser notification channel. Existing severity
+filtering, final delivery sanitization, and `SecurityAlertDedupe` suppression
+remain in force. The route audits safe `security_alert_delivery` outcomes for
+`requested`, `delivered`, `deduped`, `failed`, and `blocked` without storing
+webhook URLs, tokens, TOTP codes, CSRF tokens, request bodies, authorization
+headers, cookies, or raw alert payloads. Browser responses use safe
+redirect/flash messages; JSON clients receive a whitelisted safe summary.
+
+Operational logs are intentionally outside the admin app. Nginx, container,
+deployment, systemd, Cloudflare, Tailscale, and other host-operation logs belong
+in the Grafana/Loki observability boundary documented in
+`operational-observability.md`. The admin app does not receive Loki or Grafana
+credentials, does not query operational log stores, and does not render broad
+host logs. Host-operation evidence for an incident should be summarized with
+safe time windows, labels, command categories, and outcomes rather than raw
+shell history, environment dumps, command arguments, tokens, or secret-bearing
+payloads.
 
 Production installs:
 
@@ -171,6 +223,28 @@ journalctl -u sitbank-security-alerts.service
 
 The timer runs `check-security-alerts` through the container runtime wrapper
 every five minutes.
+
+## Cloudflare Access Validation Events
+
+The staging assertion gate records
+`cloudflare_access_assertion_validation` with outcome `blocked` before
+returning the same generic `403`. Safe reason codes distinguish
+`missing_assertion`, `malformed_assertion`, `expired`, `not_yet_valid`,
+`wrong_audience`, `wrong_issuer`, `invalid_signature`,
+`unknown_signing_key`, `jwks_fetch_failed`, and `jwks_parse_failed`.
+Metadata is limited to the reason, validator name, whether validation was
+required, whether audience/issuer configuration exists, and whether a JWKS
+cache entry was available.
+The request correlation hook runs before the assertion gate, so every denial
+event has the same safe correlation ID used by later request auditing. JWKS
+cache availability is read under the cache lock used for refreshes and clears.
+
+The raw assertion, JWT claims, JWKS document, authorization/cookie headers,
+Cloudflare or service tokens, sessions, CSRF values, request body, and provider
+response are never audit metadata. Provider automation applies its own output
+sanitizer before handled errors reach CI logs; raw provider exports are not
+workflow artifacts. Investigate using the reason code and protected provider
+console, retaining only the approved sanitized evidence summary.
 
 ## Operator Expectations
 
@@ -198,3 +272,4 @@ every five minutes.
 | `tests/test_admin_dashboard_operations.py` | Admin dashboard, audit viewer, alert review, staff lifecycle, and template secret-regression coverage |
 | `tests/test_admin_audit_viewer.py` | Audit viewer authorization, query validation, safe search, metadata redaction, escaping, and read-only behavior |
 | `tests/test_session_management.py`, `tests/test_session_absolute_lifetime.py` | Session revocation, expiry, and integrity audit behavior |
+| `tests/test_cloudflare_access_staging.py`, `tests/test_cloudflare_access_automation.py` | Fail-closed Access validation audit reasons and provider-output redaction |

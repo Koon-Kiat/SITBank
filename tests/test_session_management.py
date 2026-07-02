@@ -25,6 +25,77 @@ def test_login_sets_secure_session_cookie_and_hides_raw_session_id(client):
     assert "login_time_display" in session_item
     assert "last_activity_display" in session_item
 
+
+def test_mfa_login_enforces_single_active_session_cap(app, client, monkeypatch):
+    second_client = app.test_client()
+    register(client)
+    user, secret = enable_mfa_for_user()
+    totp = pyotp.TOTP(secret, digits=6, interval=30)
+    base_time = int(time.time())
+
+    assert login(client).status_code == 302
+    monkeypatch.setattr("app.auth.services.time.time", lambda: base_time)
+    first_mfa = client.post("/auth/mfa/verify", json={"totp_code": totp.at(base_time)})
+    first_sessions = client.get("/auth/sessions").get_json()["sessions"]
+    first_ref = next(item["session_ref"] for item in first_sessions if item["current"])
+
+    assert login(second_client).status_code == 302
+    monkeypatch.setattr("app.auth.services.time.time", lambda: base_time + 30)
+    second_mfa = second_client.post(
+        "/auth/mfa/verify",
+        json={"totp_code": totp.at(base_time + 30)},
+    )
+    old_session_response = client.get("/auth/sessions")
+    sessions_payload = second_client.get("/auth/sessions").get_json()
+
+    assert first_mfa.status_code == 200
+    assert second_mfa.status_code == 200
+    assert old_session_response.status_code == 401
+    assert len(sessions_payload["sessions"]) == 1
+    assert any(
+        item["session_ref"] == first_ref and item["ended_reason"] == "session_cap"
+        for item in sessions_payload["past_sessions"]
+    )
+
+
+def test_failed_login_and_mfa_do_not_revoke_existing_active_session(app, client, monkeypatch):
+    second_client = app.test_client()
+    register(client)
+    user, secret = enable_mfa_for_user()
+    totp = pyotp.TOTP(secret, digits=6, interval=30)
+    base_time = int(time.time())
+
+    assert login(client).status_code == 302
+    monkeypatch.setattr("app.auth.services.time.time", lambda: base_time)
+    first_mfa = client.post("/auth/mfa/verify", json={"totp_code": totp.at(base_time)})
+    original_sessions = client.get("/auth/sessions").get_json()["sessions"]
+    original_ref = next(item["session_ref"] for item in original_sessions if item["current"])
+
+    failed_password_login = login(second_client, password="wrong password")
+    original_after_failed_password = client.get("/auth/sessions")
+
+    pending_login = login(second_client)
+    failed_mfa_time = base_time + 30
+    monkeypatch.setattr("app.auth.services.time.time", lambda: failed_mfa_time)
+    valid_code = totp.at(failed_mfa_time)
+    invalid_code = "000000" if valid_code != "000000" else "111111"
+    failed_mfa = second_client.post("/auth/mfa/verify", json={"totp_code": invalid_code})
+    original_after_failed_mfa = client.get("/auth/sessions")
+    current_refs = {
+        item["session_ref"]
+        for item in original_after_failed_mfa.get_json()["sessions"]
+        if item["current"]
+    }
+
+    assert first_mfa.status_code == 200
+    assert failed_password_login.status_code in {200, 401}
+    assert original_after_failed_password.status_code == 200
+    assert pending_login.status_code == 302
+    assert failed_mfa.status_code in {400, 401}
+    assert original_after_failed_mfa.status_code == 200
+    assert original_ref in current_refs
+
+
 def test_logout_invalidates_current_session(client):
     register(client)
     login(client)
@@ -65,8 +136,11 @@ def test_logout_records_session_as_past_session_on_management_page(client):
     assert original_ref in markup
     assert f"/sessions/{original_ref}/terminate" not in markup
     assert f"/sessions/{current_ref}/terminate" not in markup
+    assert "Current session" in markup
     assert "Current" in markup
-    assert "/sessions/revoke-others" in markup
+    assert "/sessions/revoke-others" not in markup
+    assert "Revoke all other sessions" not in markup
+    assert 'id="session-revoke-totp-code"' not in markup
 
 def test_incognito_logout_appears_in_past_sessions_for_existing_browser(app, client, monkeypatch):
     incognito_client = app.test_client()
@@ -93,14 +167,21 @@ def test_incognito_logout_appears_in_past_sessions_for_existing_browser(app, cli
         "/auth/mfa/verify",
         json={"totp_code": totp.at(incognito_mfa_time)},
     )
-    active_after_incognito_login = client.get("/auth/sessions").get_json()["sessions"]
+    old_browser_response = client.get("/auth/sessions")
     incognito_ref = next(
         item["session_ref"]
-        for item in active_after_incognito_login
-        if item["session_ref"] != normal_ref
+        for item in incognito_client.get("/auth/sessions").get_json()["sessions"]
+        if item["current"]
     )
 
     incognito_logout = incognito_client.post("/logout")
+    reauth_time = incognito_mfa_time + 30
+    login_response = login(client)
+    monkeypatch.setattr("app.auth.services.time.time", lambda: reauth_time)
+    mfa_response = client.post(
+        "/auth/mfa/verify",
+        json={"totp_code": totp.at(reauth_time)},
+    )
     sessions_payload = client.get("/auth/sessions").get_json()
     sessions_page = client.get("/sessions")
     markup = sessions_page.data.decode("utf-8")
@@ -112,10 +193,19 @@ def test_incognito_logout_appears_in_past_sessions_for_existing_browser(app, cli
 
     assert incognito_login.status_code == 302
     assert incognito_mfa.status_code == 200
+    assert old_browser_response.status_code == 401
     assert incognito_logout.status_code == 302
+    assert login_response.status_code == 302
+    assert mfa_response.status_code == 200
     assert past_incognito["ended_reason"] == "logout"
     assert past_incognito["ended_reason_display"] == "Logged out"
+    assert any(
+        item["session_ref"] == normal_ref and item["ended_reason"] == "session_cap"
+        for item in sessions_payload["past_sessions"]
+    )
     assert incognito_ref in markup
+    assert normal_ref in markup
+    assert "Replaced by a new sign-in" in markup
     assert f"/sessions/{incognito_ref}/terminate" not in markup
 
 def test_session_references_survive_hmac_key_rotation(app, client):
@@ -188,7 +278,7 @@ def test_terminating_other_session_moves_it_to_past_sessions(app, client):
     assert f"/sessions/{other_session['session_ref']}/terminate" not in markup
 
 
-def test_sessions_page_shows_web_revocation_controls_for_other_sessions(app, client):
+def test_sessions_page_keeps_review_controls_without_bulk_revoke_action(app, client):
     second_client = app.test_client()
     register(client)
     login(client)
@@ -205,8 +295,11 @@ def test_sessions_page_shows_web_revocation_controls_for_other_sessions(app, cli
     assert response.status_code == 200
     assert f"/sessions/{other_ref}/terminate" in markup
     assert f"/sessions/{current_ref}/terminate" not in markup
-    assert "/sessions/revoke-others" in markup
-    assert 'name="totp_code"' in markup
+    assert "Current session" in markup
+    assert "/sessions/revoke-others" not in markup
+    assert "Revoke all other sessions" not in markup
+    assert 'name="totp_code"' not in markup
+    assert "Authenticator code" not in markup
     assert "webauthn" not in markup.casefold()
     assert "passkey step-up" not in markup.casefold()
 

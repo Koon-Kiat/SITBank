@@ -16,6 +16,7 @@ REGISTRATION_OTP_RE = r"^[0-9]{6}$"
 INVALID_USERNAME_MESSAGE = "Username contains invalid characters"
 PASSWORDS_MUST_MATCH_MESSAGE = "Passwords must match"
 MFA_CODE_ERROR = "MFA code must be exactly 6 digits"
+TURNSTILE_TOKEN_LENGTH = validate.Length(min=1, max=4096)
 
 
 def password_length(*, minimum: int | None = None):
@@ -32,7 +33,17 @@ def password_length(*, minimum: int | None = None):
     return validate_password_length
 
 
-class RegisterSchema(Schema):
+class TurnstileTokenMixin:
+    turnstile_token = fields.Str(required=False, load_only=True, validate=TURNSTILE_TOKEN_LENGTH)
+    cf_turnstile_response = fields.Str(
+        required=False,
+        load_only=True,
+        data_key="cf-turnstile-response",
+        validate=TURNSTILE_TOKEN_LENGTH,
+    )
+
+
+class RegisterSchema(TurnstileTokenMixin, Schema):
     username = fields.Str(
         required=True,
         validate=[
@@ -69,7 +80,7 @@ class RegisterSchema(Schema):
             raise ValidationError(PASSWORDS_MUST_MATCH_MESSAGE)
 
 
-class RegistrationOtpRequestSchema(Schema):
+class RegistrationOtpRequestSchema(TurnstileTokenMixin, Schema):
     email = fields.Email(required=True, validate=validate.Length(max=255))
 
 
@@ -82,12 +93,12 @@ class RegistrationOtpVerifySchema(Schema):
     )
 
 
-class LoginSchema(Schema):
+class LoginSchema(TurnstileTokenMixin, Schema):
     identifier = fields.Str(required=True, validate=validate.Length(min=1, max=255))
     password = fields.Str(required=True, load_only=True, validate=validate.Length(min=1))
 
 
-class ForgotPasswordSchema(Schema):
+class ForgotPasswordSchema(TurnstileTokenMixin, Schema):
     email = fields.Email(required=True, validate=validate.Length(max=255))
 
 

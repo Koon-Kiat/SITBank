@@ -20,7 +20,21 @@ condition = "AND"
 targetRules = ["generic-api-key"]
 regexTarget = "line"
 paths = ['''^sonar-project\.properties$''']
-regexes = ['''^sonar\.projectKey=TL0024_SITBank$''']
+regexes = ['''^sonar\.projectKey=Koon-Kiat_SITBank$''']
+
+[[allowlists]]
+description = "Historical public SonarQube Cloud project-key aliases"
+condition = "AND"
+targetRules = ["generic-api-key"]
+regexTarget = "line"
+commits = [
+  "0bc76fafb0d0d6bd55e0d6bfbf30b1d1721fc163",
+  "50a8828a6dbe423c519581fbdcf69c04fda1b2b3",
+  "f29d15f476d975d4b8e3c9e1b529a855a12776db",
+  "69b9bfc6a06b8197c2760ce833902de71c3f97ed",
+]
+paths = ['''^sonar-project\.properties$''']
+regexes = ['''^sonar\.projectKey=(?:TL0024|WenJiangg)_SITBank$''']
 
 [[allowlists]]
 description = "Historical synthetic accepted-password test fixture"
@@ -60,3 +74,12 @@ commits = [
 ]
 paths = ['''^\.github/workflows/ci-deploy\.yml$''']
 regexes = ['''-----BEGIN (?:OPENSSH|RSA|EC) PRIVATE KEY-----''']
+
+[[allowlists]]
+description = "Historical WebAuthn secret-handling policy sentence"
+condition = "AND"
+targetRules = ["generic-api-key"]
+regexTarget = "line"
+commits = ["dbc7358d9e090182030631c95eaf5280558c610e"]
+paths = ['''^CLAUDE\.md$''']
+regexes = ['''^\s*-\s*Do not log, print, commit, upload, or expose secrets, tokens, cookies, session IDs, CSRF values, TOTP/recovery/WebAuthn material, HMAC/encryption keys, database URLs, SMTP credentials, provider exports, SSH keys, or real customer data\.\s*$''']

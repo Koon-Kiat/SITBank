@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta, timezone
 
 import pyotp
@@ -27,8 +28,16 @@ def _set_account(username: str, account_number: str) -> User:
     return user
 
 
-def _current_totp(secret: str) -> str:
-    return pyotp.TOTP(secret, digits=6, interval=30).now()
+def _freeze_totp_verifier(monkeypatch) -> int:
+    timestamp = int(time.time())
+    monkeypatch.setattr("app.auth.services.time.time", lambda: timestamp)
+    return timestamp
+
+
+def _current_totp(secret: str, timestamp: int | None = None) -> str:
+    if timestamp is None:
+        timestamp = int(time.time())
+    return pyotp.TOTP(secret, digits=6, interval=30).at(timestamp)
 
 
 def _register_customer(client, *, username: str, email: str, phone: str, account: str) -> User:
@@ -116,7 +125,7 @@ def test_payee_lookup_does_not_reveal_recipient_before_totp(app, client):
         assert "pending_payee" not in sess
 
 
-def test_payee_lookup_requires_totp_before_confirmation(app, client):
+def test_payee_lookup_requires_totp_before_confirmation(app, client, monkeypatch):
     bob_client = app.test_client()
     _register_customer(
         client,
@@ -133,13 +142,14 @@ def test_payee_lookup_requires_totp_before_confirmation(app, client):
         account="012555999",
     )
     _alice, secret = _login_mfa_customer(client)
+    totp_time = _freeze_totp_verifier(monkeypatch)
 
     lookup = client.post(
         "/banking/payees/add",
         data={
             "nickname": "Bob",
             "account_number": bob.account_number,
-            "totp_code": _current_totp(secret),
+            "totp_code": _current_totp(secret, totp_time),
         },
     )
     confirm = client.get("/banking/payees/confirm")
@@ -189,7 +199,7 @@ def test_payee_add_rejects_passkey_stepup_token(app, client):
         assert "pending_payee" not in sess
 
 
-def test_invalid_payee_lookup_is_generic_and_audited(client):
+def test_invalid_payee_lookup_is_generic_and_audited(client, monkeypatch):
     _register_customer(
         client,
         username="alice01",
@@ -198,13 +208,14 @@ def test_invalid_payee_lookup_is_generic_and_audited(client):
         account="012345678",
     )
     _alice, secret = _login_mfa_customer(client)
+    totp_time = _freeze_totp_verifier(monkeypatch)
 
     response = client.post(
         "/banking/payees/add",
         data={
             "nickname": "Missing",
             "account_number": "012000999",
-            "totp_code": _current_totp(secret),
+            "totp_code": _current_totp(secret, totp_time),
         },
     )
     event = db.session.query(SecurityAuditEvent).filter_by(event_type="payee_lookup", outcome="failure").one()
@@ -215,7 +226,64 @@ def test_invalid_payee_lookup_is_generic_and_audited(client):
     assert "012000999" not in str(event.event_metadata)
 
 
-def test_self_and_duplicate_payee_are_rejected_before_pending_state(app, client):
+def test_payee_add_and_remove_audit_metadata_uses_safe_references(app, client, monkeypatch):
+    bob_client = app.test_client()
+    _register_customer(
+        client,
+        username="alice01",
+        email="alice@example.com",
+        phone="91234567",
+        account="012345678",
+    )
+    bob = _register_customer(
+        bob_client,
+        username="bob02",
+        email="bob@example.com",
+        phone="81234567",
+        account="012555999",
+    )
+    _alice, secret = _login_mfa_customer(client)
+    totp_time = _freeze_totp_verifier(monkeypatch)
+
+    nickname = "Sensitive Bob Alias"
+    lookup = client.post(
+        "/banking/payees/add",
+        data={
+            "nickname": nickname,
+            "account_number": bob.account_number,
+            "totp_code": _current_totp(secret, totp_time),
+        },
+    )
+    confirm = client.post("/banking/payees/confirm")
+    payee = db.session.execute(db.select(Payee).where(Payee.account_number == bob.account_number)).scalar_one()
+    clear_failures("payee_remove", str(_alice.id))
+    removed = client.post(
+        f"/banking/payees/{payee.id}/remove",
+        data={"totp_code": _current_totp(secret, totp_time)},
+    )
+
+    add_event = db.session.query(SecurityAuditEvent).filter_by(event_type="payee_add", outcome="success").one()
+    remove_event = db.session.query(SecurityAuditEvent).filter_by(
+        event_type="payee_remove",
+        outcome="success",
+    ).one()
+    combined_metadata = f"{add_event.event_metadata} {remove_event.event_metadata}"
+
+    assert lookup.status_code == 302
+    assert confirm.status_code == 302
+    assert removed.status_code == 302
+    assert "payee_account_ref" in add_event.event_metadata
+    assert "payee_account_ref" in remove_event.event_metadata
+    assert remove_event.event_metadata["nickname_present"] is True
+    assert remove_event.event_metadata["nickname_length"] == len(nickname)
+    assert bob.account_number not in combined_metadata
+    assert nickname not in combined_metadata
+    assert "account_number" not in add_event.event_metadata
+    assert "account_number" not in remove_event.event_metadata
+    assert "nickname" not in remove_event.event_metadata
+
+
+def test_self_and_duplicate_payee_are_rejected_before_pending_state(app, client, monkeypatch):
     bob_client = app.test_client()
     alice = _register_customer(
         client,
@@ -234,14 +302,23 @@ def test_self_and_duplicate_payee_are_rejected_before_pending_state(app, client)
     db.session.add(Payee(user_id=alice.id, nickname="Existing", account_number=bob.account_number, recipient_name=bob.full_name))
     db.session.commit()
     _alice, secret = _login_mfa_customer(client)
+    totp_time = _freeze_totp_verifier(monkeypatch)
 
     self_response = client.post(
         "/banking/payees/add",
-        data={"nickname": "Me", "account_number": alice.account_number, "totp_code": _current_totp(secret)},
+        data={
+            "nickname": "Me",
+            "account_number": alice.account_number,
+            "totp_code": _current_totp(secret, totp_time),
+        },
     )
     duplicate_response = client.post(
         "/banking/payees/add",
-        data={"nickname": "Bob", "account_number": bob.account_number, "totp_code": _current_totp(secret)},
+        data={
+            "nickname": "Bob",
+            "account_number": bob.account_number,
+            "totp_code": _current_totp(secret, totp_time),
+        },
     )
 
     assert self_response.status_code == 400
@@ -393,6 +470,7 @@ def test_payee_confirmation_handles_missing_duplicate_and_removal_paths(
         account="012555999",
     )
     _alice, secret = _login_mfa_customer(client)
+    totp_time = _freeze_totp_verifier(monkeypatch)
 
     def pending(account_number: str, nickname: str = "Payee") -> dict[str, str]:
         return {
@@ -442,7 +520,7 @@ def test_payee_confirmation_handles_missing_duplicate_and_removal_paths(
     clear_failures("payee_remove", str(alice.id))
     successful_remove = client.post(
         f"/banking/payees/{existing.id}/remove",
-        data={"totp_code": _current_totp(secret)},
+        data={"totp_code": _current_totp(secret, totp_time)},
     )
 
     assert missing.status_code == 302

@@ -77,14 +77,108 @@ def test_ci_variables_have_explicit_safe_defaults():
         "vars['STAGING_PUBLIC_HOST'] || 'staging-sitbank.pp.ua'"
         in text
     )
-    assert "vars['PROD_PUBLIC_HOST'] || 'sitbank.duckdns.org'" in text
+    assert "vars['PROD_PUBLIC_HOST'] || 'sitbank.pp.ua'" in text
+
+
+def test_dependency_review_is_reachable_for_public_main_pull_requests_only():
+    text = CI_WORKFLOW_PATH.read_text(encoding="utf-8")
+    workflow = _load_workflow(CI_WORKFLOW_PATH)
+    dependency_review = workflow["jobs"]["dependency-review"]
+
+    assert workflow["on"]["pull_request"]["branches"] == ["main"]
+    condition = dependency_review["if"]
+    assert "github.event_name == 'pull_request'" in condition
+    assert "github.event.repository.visibility == 'public'" in condition
+    assert "(vars['ENABLE_GITHUB_CODE_SECURITY'] || 'false') == 'true'" in condition
+    assert "github.event.repository.private == false" not in condition
+    assert dependency_review["permissions"] == {
+        "contents": "read",
+        "pull-requests": "read",
+    }
+    checkout = dependency_review["steps"][0]
+    assert checkout["with"]["persist-credentials"] == "false"
+    review = dependency_review["steps"][1]
+    assert review["uses"].startswith("actions/dependency-review-action@")
+    assert len(review["uses"].split("@", 1)[1]) == 40
+    summary = dependency_review["steps"][2]["run"]
+    assert "PR-only job" in summary
+    assert "Public repositories are eligible without ENABLE_GITHUB_CODE_SECURITY" in summary
+    assert "Private repositories require ENABLE_GITHUB_CODE_SECURITY=true" in summary
+    assert "pull_request_target" not in text
+
+
+def test_dependabot_skips_only_the_human_pr_prose_policy():
+    path = WORKFLOW_DIR / "pr-title-policy.yml"
+    text = path.read_text(encoding="utf-8")
+    workflow = _load_workflow(path)
+    job = workflow["jobs"]["pr-title-policy"]
+
+    assert job["if"] == "github.actor != 'dependabot[bot]'"
+    assert "Validate PR title" in text
+    assert "Validate PR description" in text
+    assert "ops/security/validate_pr_body.py" in text
+    assert "pull_request_target" not in text
+    assert workflow["permissions"] == {
+        "contents": "read",
+        "pull-requests": "read",
+    }
+
+
+def test_label_workflows_share_bounded_trusted_policy_and_manual_safeguards():
+    issue = _load_workflow(WORKFLOW_DIR / "issue-labeler.yml")
+    pr = _load_workflow(WORKFLOW_DIR / "pr-labeler.yml")
+    retag = _load_workflow(WORKFLOW_DIR / "retag-labels.yml")
+    issue_text = (WORKFLOW_DIR / "issue-labeler.yml").read_text(encoding="utf-8")
+    pr_text = (WORKFLOW_DIR / "pr-labeler.yml").read_text(encoding="utf-8")
+    retag_text = (WORKFLOW_DIR / "retag-labels.yml").read_text(encoding="utf-8")
+
+    assert "issues" in issue["on"]
+    assert "pull_request" in pr["on"]
+    assert set(retag["on"]) == {"workflow_dispatch"}
+    for text in (issue_text, pr_text, retag_text):
+        assert "ops/security/github_label_policy.py" in text
+        assert "pull_request_target" not in text
+        assert "< <(" not in text
+    assert "ref: ${{ github.event.repository.default_branch }}" in issue_text
+    assert "ref: ${{ github.event.pull_request.base.sha }}" in pr_text
+    assert "Detect trusted label policy" in pr_text
+    assert "steps.trusted-policy.outputs.available == 'true'" in pr_text
+    assert "skipping this bootstrap run" in pr_text
+    assert "--name-only" in pr_text
+    assert "--patch" not in pr_text
+    assert "sync-labels" not in pr_text
+    assert retag["on"]["workflow_dispatch"]["inputs"]["dry_run"]["default"] == "true"
+    assert "confirm_retag to equal RETAG" in retag_text
+    assert "PROTECTED_LABELS" in retag_text
+    assert not Path(".github/labeler.yml").exists()
+
+    docs = "\n".join(
+        Path(path).read_text(encoding="utf-8")
+        for path in (
+            "docs/development/github-labeling.md",
+            "docs/GITHUB_ACTIONS.md",
+            "docs/CONTRIBUTING.md",
+        )
+    )
+    for required in (
+        "At most six",
+        "needs-triage",
+        "dry_run: true",
+        "confirm_retag: RETAG",
+        "dependencies",
+        "docker",
+        "github-actions",
+        "python",
+        "triage aids",
+    ):
+        assert required in docs
 
 
 def test_tls_workflow_rejects_invalid_hosts_and_has_reviewed_defaults():
     text = (WORKFLOW_DIR / "tls-scan.yml").read_text(encoding="utf-8")
 
     assert "default: staging-sitbank.pp.ua" in text
-    assert "default: sitbank.duckdns.org" in text
+    assert "default: sitbank.pp.ua" in text
     assert "TLS scan target must be a hostname, not a URL or command fragment." in text
     assert 'readonly target_url="https://${target_host}"' in text
 
@@ -99,7 +193,7 @@ def test_github_actions_variables_and_secret_boundary_are_documented():
         "STAGING_PUBLIC_HOST",
         "PROD_PUBLIC_HOST",
         "staging-sitbank.pp.ua",
-        "sitbank.duckdns.org",
+        "sitbank.pp.ua",
         "repository variables",
         "not secrets",
         "protected environment secrets",

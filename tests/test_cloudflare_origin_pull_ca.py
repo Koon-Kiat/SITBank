@@ -307,7 +307,7 @@ def test_verifier_and_fixture_contain_no_secrets_or_runtime_fetches():
     assert "https://" not in helper
 
 
-def test_staging_bootstrap_installs_and_runs_verifier_before_nginx():
+def test_bootstrap_installs_and_runs_verifier_before_each_nginx_boundary():
     bootstrap = Path("ops/deploy/bootstrap-container-ec2").read_text(
         encoding="utf-8"
     )
@@ -317,6 +317,13 @@ def test_staging_bootstrap_installs_and_runs_verifier_before_nginx():
     staging_config = bootstrap.index(
         '"${repo_root}/ops/nginx/sitbank-staging.conf"',
         invocation,
+    )
+    production_invocation = bootstrap.index(
+        "Production Cloudflare Authenticated Origin Pull CA validation failed."
+    )
+    production_config = bootstrap.index(
+        '"${repo_root}/ops/nginx/sitbank-production.conf"',
+        production_invocation,
     )
 
     assert "ops/security/cloudflare-origin-pull-ca-allowlist.json" in bootstrap
@@ -329,3 +336,8 @@ def test_staging_bootstrap_installs_and_runs_verifier_before_nginx():
     assert "authenticated_origin_pull_ca.pem" not in bootstrap
     assert invocation < staging_config
     assert invocation < bootstrap.index("nginx -t", invocation)
+    assert production_invocation < production_config
+    assert production_invocation < bootstrap.index(
+        "nginx -t",
+        production_invocation,
+    )

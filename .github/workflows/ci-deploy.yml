@@ -44,6 +44,7 @@ env:
 
 jobs:
   resolve-source:
+    name: Resolve source
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -139,6 +140,7 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
   workflow-security:
+    name: Workflow security
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -182,9 +184,10 @@ jobs:
           persona: pedantic
 
   dependency-review:
+    name: Dependency review
     if: >-
       github.event_name == 'pull_request' &&
-      (github.event.repository.private == false ||
+      (github.event.repository.visibility == 'public' ||
         (vars['ENABLE_GITHUB_CODE_SECURITY'] || 'false') == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -202,7 +205,20 @@ jobs:
         with:
           fail-on-severity: high
 
+      - name: Summarize dependency review scope
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Dependency review"
+            echo
+            echo "This PR-only job compares dependency changes for pull requests targeting main."
+            echo "Public repositories are eligible without ENABLE_GITHUB_CODE_SECURITY."
+            echo "Private repositories require ENABLE_GITHUB_CODE_SECURITY=true."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
   test:
+    name: Test and security checks
     needs: [workflow-security, resolve-source]
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -231,7 +247,7 @@ jobs:
           ref: ${{ needs.resolve-source.outputs.source_sha }}
 
       - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           # setup-python's pip cache key includes runner OS, Python version, and these lockfile hashes.
@@ -249,7 +265,7 @@ jobs:
           node tests/js/collect-browser-coverage.mjs
           python -m compileall app config.py wsgi.py admin_wsgi.py
           python -m pip check
-          python -m bandit -q -ll -r app ops config.py wsgi.py
+          python -m bandit -q -ll -r app ops config.py wsgi.py admin_wsgi.py
           python -m pip_audit --disable-pip --require-hashes -r requirements.lock
           python -m pip_audit --disable-pip --require-hashes -r requirements-dev.lock
           python ops/security/check_dependency_locks.py
@@ -266,7 +282,46 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  playwright-e2e:
+    name: Playwright E2E browser tests
+    needs: [workflow-security, resolve-source]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      APP_ENV: testing
+      SITBANK_RUN_E2E: "1"
+      SITBANK_E2E_HEADLESS: "1"
+      PLAYWRIGHT_BROWSERS_PATH: .playwright-browsers
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ needs.resolve-source.outputs.source_sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.lock
+            requirements-dev.lock
+
+      - name: Install locked dependencies
+        run: python -m pip install --require-hashes -r requirements-dev.lock
+
+      - name: Install Playwright Chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Run Playwright E2E tests
+        run: python -m pytest -q tests/e2e
+
   sonarqube:
+    name: SonarQube analysis
     if: github.event_name != 'schedule'
     needs: [test, resolve-source]
     permissions:
@@ -279,6 +334,7 @@ jobs:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
   sonarqube-comment:
+    name: SonarQube PR comment
     if: >-
       needs.sonarqube.result == 'success' &&
       github.event_name == 'pull_request' &&
@@ -379,6 +435,7 @@ jobs:
             }
 
   image-test:
+    name: Container image test
     if: github.event_name == 'pull_request' || github.event_name == 'schedule'
     needs: [test, workflow-security]
     runs-on: ubuntu-latest
@@ -390,18 +447,6 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           persist-credentials: false
-
-      - name: Validate deployment shell scripts
-        run: |
-          shellcheck \
-            ops/container/smoke-test.sh \
-            ops/container/validate-compose.sh \
-            ops/container/dast-smoke.sh \
-            ops/deploy/bootstrap-container-ec2 \
-            ops/deploy/sitbank-container-bootstrap \
-            ops/deploy/sitbank-container-deploy \
-            ops/deploy/sitbank-container-runtime \
-            ops/deploy/sitbank-database-cutover
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5
@@ -467,6 +512,7 @@ jobs:
           version: v0.71.2
 
   deployment-preflight:
+    name: Deployment preflight
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -510,6 +556,7 @@ jobs:
           fi
 
   publish:
+    name: Publish container image
     if: >-
       github.event_name != 'pull_request' &&
       github.ref == 'refs/heads/main' &&
@@ -589,6 +636,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   release-verify:
+    name: Release verification
     if: >-
       github.event_name != 'pull_request' &&
       github.ref == 'refs/heads/main' &&
@@ -732,6 +780,7 @@ jobs:
             "${IMAGE}" >/dev/null
 
   deploy-staging:
+    name: Deploy staging
     if: >-
       github.event_name != 'pull_request' &&
       needs.release-verify.result == 'success' &&
@@ -776,6 +825,14 @@ jobs:
       STAGING_SMTP_HOST: ${{ vars.STAGING_SMTP_HOST }}
       STAGING_CLOUDFLARE_ACCESS_AUD: ${{ vars.STAGING_CLOUDFLARE_ACCESS_AUD }}
       STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN: ${{ vars.STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN }}
+      STAGING_TURNSTILE_ENABLED: ${{ vars.STAGING_TURNSTILE_ENABLED }}
+      STAGING_TURNSTILE_SITE_KEY: ${{ vars.STAGING_TURNSTILE_SITE_KEY }}
+      STAGING_TURNSTILE_CUSTOMER_LOGIN_ENABLED: ${{ vars.STAGING_TURNSTILE_CUSTOMER_LOGIN_ENABLED }}
+      STAGING_TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED: ${{ vars.STAGING_TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED }}
+      STAGING_TURNSTILE_CUSTOMER_REGISTER_ENABLED: ${{ vars.STAGING_TURNSTILE_CUSTOMER_REGISTER_ENABLED }}
+      STAGING_TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED: ${{ vars.STAGING_TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED }}
+      STAGING_TURNSTILE_ADMIN_LOGIN_ENABLED: ${{ vars.STAGING_TURNSTILE_ADMIN_LOGIN_ENABLED }}
+      STAGING_TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED: ${{ vars.STAGING_TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED }}
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
@@ -787,6 +844,8 @@ jobs:
         env:
           STAGING_EC2_KNOWN_HOSTS: ${{ secrets.STAGING_EC2_KNOWN_HOSTS }}
           STAGING_EC2_SSH_PRIVATE_KEY_B64: ${{ secrets.STAGING_EC2_SSH_PRIVATE_KEY_B64 }}
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
         run: |
           required=(
             IMAGE_DIGEST
@@ -804,8 +863,18 @@ jobs:
             STAGING_SMTP_HOST
             STAGING_CLOUDFLARE_ACCESS_AUD
             STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN
+            STAGING_TURNSTILE_ENABLED
+            STAGING_TURNSTILE_SITE_KEY
+            STAGING_TURNSTILE_CUSTOMER_LOGIN_ENABLED
+            STAGING_TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED
+            STAGING_TURNSTILE_CUSTOMER_REGISTER_ENABLED
+            STAGING_TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED
+            STAGING_TURNSTILE_ADMIN_LOGIN_ENABLED
+            STAGING_TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED
             STAGING_EC2_KNOWN_HOSTS
             STAGING_EC2_SSH_PRIVATE_KEY_B64
+            TS_OAUTH_CLIENT_ID
+            TS_OAUTH_SECRET
           )
           missing=0
           for name in "${required[@]}"; do
@@ -847,6 +916,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      - name: Join the staging deploy tailnet
+        uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:github-ci-staging-deploy
+          ping: ${{ vars.STAGING_EC2_HOST }}
+
       - name: Configure verified SSH
         env:
           SSH_PRIVATE_KEY_B64: ${{ secrets.STAGING_EC2_SSH_PRIVATE_KEY_B64 }}
@@ -877,6 +954,18 @@ jobs:
             echo "::error::STAGING_EC2_KNOWN_HOSTS is empty."
             exit 1
           fi
+
+      - name: Stage restricted staging Turnstile credential
+        env:
+          TURNSTILE_SECRET_KEY: ${{ secrets.STAGING_TURNSTILE_SECRET_KEY }}
+        run: |
+          umask 077
+          if [[ ! "${TURNSTILE_SECRET_KEY}" =~ ^[A-Za-z0-9._-]{8,512}$ ]]; then
+            echo "::error::STAGING_TURNSTILE_SECRET_KEY is missing or malformed."
+            exit 1
+          fi
+          printf '%s' "${TURNSTILE_SECRET_KEY}" \
+            > "turnstile-staging-${RELEASE_SHA}.secret"
 
       - name: Verify trusted staging deployment files
         run: |
@@ -924,6 +1013,7 @@ jobs:
             "runtime-staging-${RELEASE_SHA}.sha256" \
             "runtime-staging-${RELEASE_SHA}.sigstore.json" \
             "registry-staging-${RELEASE_SHA}.credentials" \
+            "turnstile-staging-${RELEASE_SHA}.secret" \
             "${REMOTE_USER}@${REMOTE_HOST}:incoming/"
 
       - name: Deploy verified image digest
@@ -942,9 +1032,16 @@ jobs:
             "runtime-staging-${RELEASE_SHA}.tar" \
             "runtime-staging-${RELEASE_SHA}.sha256" \
             "runtime-staging-${RELEASE_SHA}.sigstore.json" \
-            "registry-staging-${RELEASE_SHA}.credentials"
+            "registry-staging-${RELEASE_SHA}.credentials" \
+            "turnstile-staging-${RELEASE_SHA}.secret"
+
+      - name: Disconnect staging deploy tailnet
+        if: ${{ always() }}
+        run: |
+          sudo tailscale logout > /dev/null 2>&1 || true
 
   verify-staging-tls:
+    name: Verify staging TLS
     if: >-
       always() &&
       needs.deploy-staging.result == 'success'
@@ -955,6 +1052,7 @@ jobs:
       staging_host: ${{ vars['STAGING_PUBLIC_HOST'] || 'staging-sitbank.pp.ua' }}
 
   deploy-production:
+    name: Deploy production
     if: >-
       always() &&
       needs.release-verify.result == 'success' &&
@@ -975,14 +1073,14 @@ jobs:
       packages: read
     environment:
       name: production
-      url: https://${{ vars['PROD_PUBLIC_HOST'] || 'sitbank.duckdns.org' }}
+      url: https://${{ vars['PROD_PUBLIC_HOST'] || 'sitbank.pp.ua' }}
     env:
       RELEASE_SHA: ${{ needs.release-verify.outputs.revision }}
       IMAGE_DIGEST: ${{ needs.release-verify.outputs.digest }}
       REMOTE_HOST: ${{ vars.PROD_EC2_HOST }}
       REMOTE_PORT: ${{ vars.PROD_EC2_PORT }}
       REMOTE_USER: ${{ vars.PROD_EC2_DEPLOY_USER }}
-      PROD_PUBLIC_HOST: ${{ vars['PROD_PUBLIC_HOST'] || 'sitbank.duckdns.org' }}
+      PROD_PUBLIC_HOST: ${{ vars['PROD_PUBLIC_HOST'] || 'sitbank.pp.ua' }}
       PROD_MFA_KEK_ACTIVE_ID: ${{ vars.PROD_MFA_KEK_ACTIVE_ID }}
       PROD_SESSION_HMAC_ACTIVE_KEY_ID: ${{ vars.PROD_SESSION_HMAC_ACTIVE_KEY_ID }}
       PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID: ${{ vars.PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID }}
@@ -991,6 +1089,14 @@ jobs:
       PROD_PASSWORD_RESET_EMAIL_FROM: ${{ vars.PROD_PASSWORD_RESET_EMAIL_FROM }}
       PROD_ROOT_ADMIN_EMAILS: ${{ vars.ROOT_ADMIN_EMAILS }}
       PROD_SMTP_HOST: ${{ vars.PROD_SMTP_HOST }}
+      PROD_TURNSTILE_ENABLED: ${{ vars.PROD_TURNSTILE_ENABLED }}
+      PROD_TURNSTILE_SITE_KEY: ${{ vars.PROD_TURNSTILE_SITE_KEY }}
+      PROD_TURNSTILE_CUSTOMER_LOGIN_ENABLED: ${{ vars.PROD_TURNSTILE_CUSTOMER_LOGIN_ENABLED }}
+      PROD_TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED: ${{ vars.PROD_TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED }}
+      PROD_TURNSTILE_CUSTOMER_REGISTER_ENABLED: ${{ vars.PROD_TURNSTILE_CUSTOMER_REGISTER_ENABLED }}
+      PROD_TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED: ${{ vars.PROD_TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED }}
+      PROD_TURNSTILE_ADMIN_LOGIN_ENABLED: ${{ vars.PROD_TURNSTILE_ADMIN_LOGIN_ENABLED }}
+      PROD_TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED: ${{ vars.PROD_TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED }}
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
@@ -1002,6 +1108,8 @@ jobs:
         env:
           PROD_EC2_KNOWN_HOSTS: ${{ secrets.PROD_EC2_KNOWN_HOSTS }}
           PROD_EC2_SSH_PRIVATE_KEY_B64: ${{ secrets.PROD_EC2_SSH_PRIVATE_KEY_B64 }}
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
         run: |
           required=(
             IMAGE_DIGEST
@@ -1017,8 +1125,18 @@ jobs:
             PROD_PASSWORD_RESET_EMAIL_FROM
             PROD_ROOT_ADMIN_EMAILS
             PROD_SMTP_HOST
+            PROD_TURNSTILE_ENABLED
+            PROD_TURNSTILE_SITE_KEY
+            PROD_TURNSTILE_CUSTOMER_LOGIN_ENABLED
+            PROD_TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED
+            PROD_TURNSTILE_CUSTOMER_REGISTER_ENABLED
+            PROD_TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED
+            PROD_TURNSTILE_ADMIN_LOGIN_ENABLED
+            PROD_TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED
             PROD_EC2_KNOWN_HOSTS
             PROD_EC2_SSH_PRIVATE_KEY_B64
+            TS_OAUTH_CLIENT_ID
+            TS_OAUTH_SECRET
           )
           missing=0
           for name in "${required[@]}"; do
@@ -1060,6 +1178,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      - name: Join the production deploy tailnet
+        uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:github-ci-prod-deploy
+          ping: ${{ vars.PROD_EC2_HOST }}
+
       - name: Configure verified SSH
         env:
           SSH_PRIVATE_KEY_B64: ${{ secrets.PROD_EC2_SSH_PRIVATE_KEY_B64 }}
@@ -1090,6 +1216,18 @@ jobs:
             echo "::error::PROD_EC2_KNOWN_HOSTS is empty."
             exit 1
           fi
+
+      - name: Stage restricted production Turnstile credential
+        env:
+          TURNSTILE_SECRET_KEY: ${{ secrets.PROD_TURNSTILE_SECRET_KEY }}
+        run: |
+          umask 077
+          if [[ ! "${TURNSTILE_SECRET_KEY}" =~ ^[A-Za-z0-9._-]{8,512}$ ]]; then
+            echo "::error::PROD_TURNSTILE_SECRET_KEY is missing or malformed."
+            exit 1
+          fi
+          printf '%s' "${TURNSTILE_SECRET_KEY}" \
+            > "turnstile-${RELEASE_SHA}.secret"
 
       - name: Verify trusted production deployment files
         run: |
@@ -1137,6 +1275,7 @@ jobs:
             "runtime-${RELEASE_SHA}.sha256" \
             "runtime-${RELEASE_SHA}.sigstore.json" \
             "registry-${RELEASE_SHA}.credentials" \
+            "turnstile-${RELEASE_SHA}.secret" \
             "${REMOTE_USER}@${REMOTE_HOST}:incoming/"
 
       - name: Deploy verified image digest
@@ -1155,9 +1294,16 @@ jobs:
             "runtime-${RELEASE_SHA}.tar" \
             "runtime-${RELEASE_SHA}.sha256" \
             "runtime-${RELEASE_SHA}.sigstore.json" \
-            "registry-${RELEASE_SHA}.credentials"
+            "registry-${RELEASE_SHA}.credentials" \
+            "turnstile-${RELEASE_SHA}.secret"
+
+      - name: Disconnect production deploy tailnet
+        if: ${{ always() }}
+        run: |
+          sudo tailscale logout > /dev/null 2>&1 || true
 
   verify-production-tls:
+    name: Verify production TLS
     if: >-
       always() &&
       needs.deploy-production.result == 'success'
@@ -1165,10 +1311,10 @@ jobs:
     uses: ./.github/workflows/tls-scan.yml
     with:
       scan_scope: production
-      production_host: ${{ vars['PROD_PUBLIC_HOST'] || 'sitbank.duckdns.org' }}
+      production_host: ${{ vars['PROD_PUBLIC_HOST'] || 'sitbank.pp.ua' }}
 
   verify-private-admin-tailnet:
-    name: Required private admin post-deploy gate
+    name: Verify private admin tailnet
     if: >-
       always() &&
       needs.deploy-production.result == 'success' &&
@@ -1183,7 +1329,7 @@ jobs:
     environment:
       name: admin-tailscale
     env:
-      TAILSCALE_PRIVATE_ADMIN_HOST: admin-sitbank.tailca101b.ts.net
+      TAILSCALE_PRIVATE_ADMIN_HOST: ${{ vars.TAILSCALE_PRIVATE_ADMIN_HOST }}
 
     steps:
       - name: Validate private target and OAuth credential
@@ -1196,6 +1342,15 @@ jobs:
 
           if [[ ! "${TAILSCALE_PRIVATE_ADMIN_HOST}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$ ]]; then
             echo "::error::The admin verification target must be a hostname, not a URL or command fragment."
+            exit 1
+          fi
+          normalized_private_host="${TAILSCALE_PRIVATE_ADMIN_HOST,,}"
+          if [[ "${normalized_private_host}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || [[ ! "${normalized_private_host}" =~ \.ts\.net$ ]] \
+            || [[ "${normalized_private_host}" == "sitbank.pp.ua" ]] \
+            || [[ "${normalized_private_host}" == "www.sitbank.pp.ua" ]] \
+            || [[ "${normalized_private_host}" == "staging-sitbank.pp.ua" ]]; then
+            echo "::error::TAILSCALE_PRIVATE_ADMIN_HOST must be a private Tailscale DNS hostname from the protected admin-tailscale environment."
             exit 1
           fi
           if [[ -z "${TS_OAUTH_CLIENT_ID}" || -z "${TS_OAUTH_SECRET}" ]]; then
@@ -1215,7 +1370,7 @@ jobs:
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:github-ci
+          tags: tag:github-ci-admin-verify
           ping: ${{ env.TAILSCALE_PRIVATE_ADMIN_HOST }}
 
       - name: Verify private admin entrypoint
@@ -1243,7 +1398,7 @@ jobs:
           fi
 
           {
-            echo "## Private-tailnet verification"
+            echo "## Private admin tailnet verification"
             echo
             echo "- Protected runner joined the approved tailnet."
             echo "- Private admin HTTPS login entrypoint returned the documented unauthenticated response."

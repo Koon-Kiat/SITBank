@@ -6,13 +6,15 @@ readonly CONTAINER_GID="10001"
 readonly CONTAINER_ACCOUNT="sitbank-container"
 readonly COSIGN_VERSION="3.0.5"
 readonly COSIGN_SHA256="db15cc99e6e4837daabab023742aaddc3841ce57f193d11b7c3e06c8003642b2"
-readonly PRODUCTION_PUBLIC_HOST="sitbank.duckdns.org"
+readonly PRODUCTION_PUBLIC_HOST="sitbank.pp.ua"
+readonly PRODUCTION_PUBLIC_WWW_HOST="www.sitbank.pp.ua"
 readonly EDGE_DEFAULTS_FILE="/etc/nginx/conf.d/sitbank-default.conf"
 readonly TLS_POLICY_FILE="/etc/nginx/snippets/sitbank-tls-policy.conf"
 readonly STAGING_ACCESS_HEADERS_FILE="/etc/nginx/snippets/sitbank-cloudflare-access-headers.conf"
 readonly PRODUCTION_RATE_LIMITS_FILE="/etc/nginx/conf.d/sitbank-production-rate-limits.conf"
+readonly PRODUCTION_CLOUDFLARE_ORIGIN_PULL_CA_FILE="/etc/nginx/sitbank-production-cloudflare-origin-pull-ca.pem"
+readonly PRODUCTION_CLOUDFLARE_ORIGIN_PULL_CA_ALLOWLIST="/etc/sitbank/cloudflare-origin-pull-ca-allowlist.json"
 readonly STAGING_PUBLIC_HOST="staging-sitbank.pp.ua"
-readonly STAGING_BASIC_AUTH_FILE="/etc/nginx/.htpasswd-sitbank-staging"
 readonly STAGING_CLOUDFLARE_ORIGIN_PULL_CA_FILE="/etc/nginx/cloudflare-authenticated-origin-pull-ca.pem"
 readonly STAGING_CLOUDFLARE_ORIGIN_PULL_CA_ALLOWLIST="/etc/sitbank-staging/cloudflare-origin-pull-ca-allowlist.json"
 readonly STAGING_RATE_LIMITS_FILE="/etc/nginx/conf.d/sitbank-staging-rate-limits.conf"
@@ -40,7 +42,7 @@ if [[ ! "${github_repository}" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
 fi
 if [[ -z "${public_host}" ]]; then
     if [[ "${target}" == "production" ]]; then
-        public_host="sitbank.duckdns.org"
+        public_host="sitbank.pp.ua"
     else
         public_host="staging-sitbank.pp.ua"
     fi
@@ -94,21 +96,22 @@ linux_runtime_files=(
     "${repo_root}/ops/deploy/sitbank-container-runtime"
     "${repo_root}/ops/deploy/sitbank-database-cutover"
     "${repo_root}/ops/deploy/verify-certbot-host-state"
+    "${repo_root}/ops/deploy/verify-cloudflare-origin-pull-ca"
     "${repo_root}/ops/backups/sitbank-backup-encrypted"
     "${repo_root}/ops/backups/sitbank-restore-preflight"
     "${repo_root}/ops/nginx/sitbank-default.conf"
     "${repo_root}/ops/nginx/sitbank-cloudflare-access-headers.conf"
     "${repo_root}/ops/nginx/sitbank-tls-policy.conf"
+    "${repo_root}/ops/security/cloudflare-origin-pull-ca-allowlist.json"
     "${repo_root}/ops/sudoers/sitbank-container-deploy"
 )
 if [[ "${target}" == "staging" ]]; then
     linux_runtime_files+=(
-        "${repo_root}/ops/deploy/verify-cloudflare-origin-pull-ca"
+        "${repo_root}/ops/deploy/verify-staging-edge-boundary"
         "${repo_root}/ops/nginx-proxy-headers.conf"
         "${repo_root}/ops/nginx/sitbank-staging.conf"
         "${repo_root}/ops/nginx/sitbank-staging-rate-limits.conf"
         "${repo_root}/ops/postgres/init-sitbank-staging-roles.sh"
-        "${repo_root}/ops/security/cloudflare-origin-pull-ca-allowlist.json"
     )
 else
     linux_runtime_files+=(
@@ -155,11 +158,7 @@ if ! command -v docker >/dev/null 2>&1 \
         docker-buildx-plugin docker-compose-plugin
 fi
 systemctl enable --now docker.service
-if [[ "${target}" == "staging" ]]; then
-    apt-get install -y nginx certbot python3-certbot-nginx apache2-utils
-else
-    apt-get install -y nginx certbot python3-certbot-nginx
-fi
+apt-get install -y nginx certbot python3-certbot-nginx python3-certbot-dns-cloudflare
 
 cosign_tmp="$(mktemp)"
 trap 'rm -f -- "${cosign_tmp}"' EXIT
@@ -240,6 +239,9 @@ install -o root -g root -m 0755 \
 install -o root -g root -m 0755 \
     "${repo_root}/ops/deploy/verify-certbot-host-state" \
     /usr/local/sbin/verify-certbot-host-state
+install -o root -g root -m 0755 \
+    "${repo_root}/ops/deploy/verify-cloudflare-origin-pull-ca" \
+    /usr/local/sbin/verify-cloudflare-origin-pull-ca
 if [[ "${target}" == "production" ]]; then
     install -o root -g root -m 0755 \
         "${repo_root}/ops/deploy/verify-tailscale-admin-access" \
@@ -262,8 +264,8 @@ install -o root -g root -m 0755 \
     /usr/local/sbin/sitbank-restore-preflight
 if [[ "${target}" == "staging" ]]; then
     install -o root -g root -m 0755 \
-        "${repo_root}/ops/deploy/verify-cloudflare-origin-pull-ca" \
-        /usr/local/sbin/verify-cloudflare-origin-pull-ca
+        "${repo_root}/ops/deploy/verify-staging-edge-boundary" \
+        /usr/local/sbin/verify-staging-edge-boundary
     install -o root -g root -m 0644 \
         "${repo_root}/ops/security/cloudflare-origin-pull-ca-allowlist.json" \
         "${STAGING_CLOUDFLARE_ORIGIN_PULL_CA_ALLOWLIST}"
@@ -271,6 +273,10 @@ if [[ "${target}" == "staging" ]]; then
     install -o root -g root -m 0755 \
         "${repo_root}/ops/postgres/init-sitbank-staging-roles.sh" \
         "${config_root}/postgres/init-sitbank-staging-roles.sh"
+else
+    install -o root -g root -m 0644 \
+        "${repo_root}/ops/security/cloudflare-origin-pull-ca-allowlist.json" \
+        "${PRODUCTION_CLOUDFLARE_ORIGIN_PULL_CA_ALLOWLIST}"
 fi
 install -o root -g root -m 0644 \
     "${repo_root}/${systemd_source}" \
@@ -366,6 +372,13 @@ refresh_enabled_sibling_site() {
 
 if [[ "${target}" == "production" ]]; then
     production_cert_dir="/etc/letsencrypt/live/${public_host}"
+    if ! /usr/local/sbin/verify-cloudflare-origin-pull-ca \
+        --certificate "${PRODUCTION_CLOUDFLARE_ORIGIN_PULL_CA_FILE}" \
+        --allowlist "${PRODUCTION_CLOUDFLARE_ORIGIN_PULL_CA_ALLOWLIST}"; then
+        echo "Production Cloudflare Authenticated Origin Pull CA validation failed." >&2
+        echo "Install the reviewed production CA certificate before rerunning bootstrap." >&2
+        exit 1
+    fi
     for required_production_file in \
         "${production_cert_dir}/fullchain.pem" \
         "${production_cert_dir}/privkey.pem"; do
@@ -378,18 +391,23 @@ if [[ "${target}" == "production" ]]; then
     /usr/local/sbin/verify-certbot-host-state production
 
     nginx_conflict=0
-    while IFS= read -r enabled_site; do
-        if [[ "$(readlink -f "${enabled_site}")" \
-            != "/etc/nginx/sites-available/sitbank" ]]; then
-            echo "Conflicting Nginx production site is already enabled: ${enabled_site}" >&2
-            nginx_conflict=1
-        fi
-    done < <(
-        grep -RlE \
-            "^[[:space:]]*server_name[[:space:]].*(^|[[:space:]])${public_host_regex}([[:space:];]|$)" \
-            /etc/nginx/sites-enabled /etc/nginx/conf.d \
-            2>/dev/null || true
-    )
+    for production_hostname in \
+        "${PRODUCTION_PUBLIC_HOST}" \
+        "${PRODUCTION_PUBLIC_WWW_HOST}"; do
+        production_hostname_regex="${production_hostname//./\\.}"
+        while IFS= read -r enabled_site; do
+            if [[ "$(readlink -f "${enabled_site}")" \
+                != "/etc/nginx/sites-available/sitbank" ]]; then
+                echo "Conflicting Nginx production site for ${production_hostname} is already enabled: ${enabled_site}" >&2
+                nginx_conflict=1
+            fi
+        done < <(
+            grep -RlE \
+                "^[[:space:]]*server_name[[:space:]].*(^|[[:space:]])${production_hostname_regex}([[:space:];]|$)" \
+                /etc/nginx/sites-enabled /etc/nginx/conf.d \
+                2>/dev/null || true
+        )
+    done
     if [[ "${nginx_conflict}" -ne 0 ]]; then
         echo "Disable the duplicate production server block, then rerun bootstrap." >&2
         exit 1
@@ -447,12 +465,8 @@ fi
 
 if [[ "${target}" == "staging" ]]; then
     staging_cert_dir="/etc/letsencrypt/live/${public_host}"
-    if [[ ! -f "${STAGING_BASIC_AUTH_FILE}" || -L "${STAGING_BASIC_AUTH_FILE}" \
-        || ! -r "${STAGING_BASIC_AUTH_FILE}" ]]; then
-        echo "Missing required staging Basic Auth file: ${STAGING_BASIC_AUTH_FILE}" >&2
-        echo "Create it with htpasswd, owned by root:www-data and mode 0640, before rerunning bootstrap." >&2
-        exit 1
-    fi
+    "${repo_root}/ops/deploy/verify-staging-edge-boundary" \
+        --edge-only "${public_host}"
     if ! /usr/local/sbin/verify-cloudflare-origin-pull-ca \
         --certificate "${STAGING_CLOUDFLARE_ORIGIN_PULL_CA_FILE}" \
         --allowlist "${STAGING_CLOUDFLARE_ORIGIN_PULL_CA_ALLOWLIST}"; then
@@ -470,12 +484,6 @@ if [[ "${target}" == "staging" ]]; then
         fi
     done
     /usr/local/sbin/verify-certbot-host-state staging
-    if [[ "$(stat -c '%U:%G' -- "${STAGING_BASIC_AUTH_FILE}")" != "root:www-data" \
-        || "$(stat -c '%a' -- "${STAGING_BASIC_AUTH_FILE}")" != "640" ]]; then
-        echo "${STAGING_BASIC_AUTH_FILE} must be owned by root:www-data with mode 0640" >&2
-        exit 1
-    fi
-
     nginx_conflict=0
     while IFS= read -r enabled_site; do
         if [[ "$(readlink -f "${enabled_site}")" \

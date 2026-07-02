@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import smtplib
+import ssl
 from dataclasses import dataclass
 from email.message import EmailMessage
 from typing import Any
@@ -59,10 +60,27 @@ def _deliver_smtp(delivery: EmailDelivery) -> None:
     username = current_app.config.get("SMTP_USERNAME")
     password = current_app.config.get("SMTP_PASSWORD")
     use_tls = bool(current_app.config.get("SMTP_USE_TLS", True))
+    _ensure_secure_smtp_mode(use_tls=use_tls)
 
     with smtplib.SMTP(host, port, timeout=10) as smtp:
         if use_tls:
-            smtp.starttls()
+            smtp.starttls(context=_verified_tls_context())
         if username and password:
             smtp.login(str(username), str(password))
         smtp.send_message(message)
+
+
+def _verified_tls_context() -> ssl.SSLContext:
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.check_hostname = True
+    context.verify_mode = ssl.CERT_REQUIRED
+    context.load_default_certs()
+    return context
+
+
+def _ensure_secure_smtp_mode(*, use_tls: bool) -> None:
+    app_env = str(current_app.config.get("APP_ENV") or "").strip().casefold()
+    deployment_target = str(current_app.config.get("DEPLOYMENT_TARGET") or "").strip().casefold()
+    if (app_env == "production" or deployment_target in {"staging", "production"}) and not use_tls:
+        raise RuntimeError("SMTP_USE_TLS=true is required for staging and production SMTP")

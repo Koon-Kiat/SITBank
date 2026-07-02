@@ -10,6 +10,7 @@ import pytest
 import config
 from config import (
     DEFAULT_DEVELOPMENT_PASSWORD_MIN_LENGTH,
+    DEFAULT_ROOT_ADMIN_EMAILS,
     MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS,
     MIN_PRODUCTION_PASSWORD_LENGTH,
     _configured_audit_anchor_path,
@@ -21,6 +22,7 @@ from config import (
     _required_b64_32_bytes_decoded,
     _required_env_or_file,
     _required_session_hmac_keys,
+    root_admin_email_allowlist_failures,
     _validate_audit_anchor_path,
     _validate_password_reset_email_config,
     _validate_payee_cooldown_config,
@@ -75,14 +77,158 @@ def test_root_admin_email_validation_requires_real_allowed_workplace_addresses()
     assert not _all_email_domains_allowed(frozenset({"root1@sit.singaporetech.edu.sg."}), allowed_domains)
 
 
+@pytest.mark.parametrize(
+    "emails",
+    [
+        DEFAULT_ROOT_ADMIN_EMAILS,
+        tuple(reversed(tuple(DEFAULT_ROOT_ADMIN_EMAILS))),
+        tuple(item.upper() for item in DEFAULT_ROOT_ADMIN_EMAILS),
+        tuple(f"  {item}  " for item in DEFAULT_ROOT_ADMIN_EMAILS),
+    ],
+)
+def test_root_admin_allowlist_rejects_builtin_default_in_production(emails):
+    failures = root_admin_email_allowlist_failures(
+        emails,
+        allowed_domains=frozenset({"sit.singaporetech.edu.sg"}),
+        reject_default=True,
+    )
+
+    assert "ROOT_ADMIN_EMAILS must be explicitly configured for production/admin runtime" in failures
+
+
+@pytest.mark.parametrize(
+    ("emails", "expected"),
+    [
+        (
+            [
+                "chief1@sit.singaporetech.edu.sg",
+                "chief1@sit.singaporetech.edu.sg",
+                "chief3@sit.singaporetech.edu.sg",
+                "chief4@sit.singaporetech.edu.sg",
+                "chief5@sit.singaporetech.edu.sg",
+                "chief6@sit.singaporetech.edu.sg",
+                "chief7@sit.singaporetech.edu.sg",
+            ],
+            "duplicate",
+        ),
+        (
+            [
+                "placeholder@sit.singaporetech.edu.sg",
+                "chief2@sit.singaporetech.edu.sg",
+                "chief3@sit.singaporetech.edu.sg",
+                "chief4@sit.singaporetech.edu.sg",
+                "chief5@sit.singaporetech.edu.sg",
+                "chief6@sit.singaporetech.edu.sg",
+                "chief7@sit.singaporetech.edu.sg",
+            ],
+            "placeholder",
+        ),
+        (
+            [
+                "chief1@gmail.com",
+                "chief2@sit.singaporetech.edu.sg",
+                "chief3@sit.singaporetech.edu.sg",
+                "chief4@sit.singaporetech.edu.sg",
+                "chief5@sit.singaporetech.edu.sg",
+                "chief6@sit.singaporetech.edu.sg",
+                "chief7@sit.singaporetech.edu.sg",
+            ],
+            "approved admin workplace domains",
+        ),
+    ],
+)
+def test_root_admin_allowlist_rejects_unsafe_entries(emails, expected):
+    failures = root_admin_email_allowlist_failures(
+        emails,
+        allowed_domains=frozenset({"sit.singaporetech.edu.sg"}),
+        reject_default=True,
+    )
+
+    assert any(expected in failure for failure in failures)
+
+
+def test_root_admin_allowlist_rejects_malformed_collection_and_placeholder_shapes():
+    non_collection_failures = root_admin_email_allowlist_failures(
+        "chief1@sit.singaporetech.edu.sg",
+        allowed_domains=frozenset({"sit.singaporetech.edu.sg"}),
+        reject_default=True,
+    )
+    empty_entry_failures = root_admin_email_allowlist_failures(
+        (
+            "chief1@sit.singaporetech.edu.sg",
+            "",
+            "chief3@sit.singaporetech.edu.sg",
+            "chief4@sit.singaporetech.edu.sg",
+            "chief5@sit.singaporetech.edu.sg",
+            "chief6@sit.singaporetech.edu.sg",
+            "chief7@sit.singaporetech.edu.sg",
+        ),
+        allowed_domains=frozenset({"sit.singaporetech.edu.sg"}),
+        reject_default=True,
+    )
+    missing_at_failures = root_admin_email_allowlist_failures(
+        (
+            "chief1",
+            "chief2@sit.singaporetech.edu.sg",
+            "chief3@sit.singaporetech.edu.sg",
+            "chief4@sit.singaporetech.edu.sg",
+            "chief5@sit.singaporetech.edu.sg",
+            "chief6@sit.singaporetech.edu.sg",
+            "chief7@sit.singaporetech.edu.sg",
+        ),
+        allowed_domains=frozenset({"sit.singaporetech.edu.sg"}),
+        reject_default=True,
+    )
+    placeholder_token_failures = root_admin_email_allowlist_failures(
+        (
+            "chief1@sit.singaporetech.edu.sg",
+            "replace-me@sit.singaporetech.edu.sg",
+            "chief3@sit.singaporetech.edu.sg",
+            "chief4@sit.singaporetech.edu.sg",
+            "chief5@sit.singaporetech.edu.sg",
+            "chief6@sit.singaporetech.edu.sg",
+            "chief7@sit.singaporetech.edu.sg",
+        ),
+        allowed_domains=frozenset({"sit.singaporetech.edu.sg"}),
+        reject_default=True,
+    )
+
+    assert non_collection_failures == [
+        "ROOT_ADMIN_EMAILS must configure exactly 7 root administrators"
+    ]
+    assert "ROOT_ADMIN_EMAILS must not contain empty entries" in empty_entry_failures
+    assert "ROOT_ADMIN_EMAILS must use approved admin workplace domains" in missing_at_failures
+    assert (
+        "ROOT_ADMIN_EMAILS must not contain placeholder, demo, or example identities"
+        in missing_at_failures
+    )
+    assert (
+        "ROOT_ADMIN_EMAILS must not contain placeholder, demo, or example identities"
+        in placeholder_token_failures
+    )
+
+
+def test_root_admin_allowlist_accepts_explicit_non_placeholder_workplace_set():
+    emails = frozenset(
+        f"chief{index}@sit.singaporetech.edu.sg"
+        for index in range(1, 8)
+    )
+
+    assert root_admin_email_allowlist_failures(
+        emails,
+        allowed_domains=frozenset({"sit.singaporetech.edu.sg"}),
+        reject_default=True,
+    ) == []
+
+
 def test_password_reset_base_url_must_be_https_in_production(monkeypatch):
     monkeypatch.setattr(config, "APP_ENV", "production")
-    monkeypatch.setenv("PASSWORD_RESET_BASE_URL", "http://sitbank.duckdns.org")
+    monkeypatch.setenv("PASSWORD_RESET_BASE_URL", "http://sitbank.pp.ua")
 
     with pytest.raises(RuntimeError, match="HTTPS"):
         _password_reset_base_url(
             "PASSWORD_RESET_BASE_URL",
-            default="https://sitbank.duckdns.org",
+            default="https://sitbank.pp.ua",
         )
 
 

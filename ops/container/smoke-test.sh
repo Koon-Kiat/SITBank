@@ -11,6 +11,7 @@ network_name="sitbank-smoke-$RANDOM-$$"
 readonly postgres_container="smoke-postgres"
 readonly app_container="sitbank-smoke"
 readonly admin_container="sitbank-admin-smoke"
+readonly root_admin_emails="chief1@sit.singaporetech.edu.sg,chief2@sit.singaporetech.edu.sg,chief3@sit.singaporetech.edu.sg,chief4@sit.singaporetech.edu.sg,chief5@sit.singaporetech.edu.sg,chief6@sit.singaporetech.edu.sg,chief7@sit.singaporetech.edu.sg"
 
 random_test_secret() {
     od -An -N24 -tx1 /dev/urandom | tr -d '[:space:]'
@@ -321,6 +322,8 @@ printf '%s' 'smtp-user' \
     > "${work_dir}/secrets/smtp_username"
 printf '%s' 'smtp-password' \
     > "${work_dir}/secrets/smtp_password"
+printf '%s' '1x0000000000000000000000000000000AA' \
+    > "${work_dir}/secrets/turnstile_secret_key"
 chmod_host_path 0444 "${work_dir}"/secrets/*
 
 seq -f 'blocked-password-%06g' 1 100000 \
@@ -364,14 +367,15 @@ docker_args=(
     --env ADMIN_RATELIMIT_KEY_PREFIX=ospbank:admin:ratelimit:
     --env SMTP_USERNAME_FILE=/run/secrets/smtp_username
     --env SMTP_PASSWORD_FILE=/run/secrets/smtp_password
+    --env TURNSTILE_SECRET_KEY_FILE=/run/secrets/turnstile_secret_key
     --env PASSWORD_PBKDF2_ITERATIONS=600000
     --env PASSWORD_RESET_ENABLED=true
     --env PASSWORD_RESET_TOKEN_TTL_SECONDS=1800
     --env PASSWORD_RESET_TRANSACTION_TTL_SECONDS=900
     --env PASSWORD_RESET_EMAIL_BACKEND=smtp
     --env PASSWORD_RESET_EMAIL_FROM=security@sitbank.example
-    --env PASSWORD_RESET_BASE_URL=https://sitbank.duckdns.org
-    --env "ROOT_ADMIN_EMAILS=root1@sit.singaporetech.edu.sg,root2@sit.singaporetech.edu.sg,root3@sit.singaporetech.edu.sg,root4@sit.singaporetech.edu.sg,root5@sit.singaporetech.edu.sg,root6@sit.singaporetech.edu.sg,root7@sit.singaporetech.edu.sg"
+    --env PASSWORD_RESET_BASE_URL=https://sitbank.pp.ua
+    --env "ROOT_ADMIN_EMAILS=${root_admin_emails}"
     --env SMTP_HOST=smtp.example.test
     --env SMTP_PORT=587
     --env SMTP_USE_TLS=true
@@ -473,8 +477,33 @@ if [[ "${admin_ready}" -ne 1 ]]; then
     false
 fi
 
+if [[ "${RUN_ZAP_BASELINE:-false}" == "true" ]]; then
+    install_host_dir 0777 "${work_dir}/zap-pr"
+    printf '10020\tFAIL\tAnti-clickjacking header\n10021\tFAIL\tX-Content-Type-Options header\n10038\tFAIL\tContent Security Policy header\n' \
+        > "${work_dir}/zap-pr/rules.tsv"
+    chmod_host_path 0644 "${work_dir}/zap-pr/rules.tsv"
+    zap_pr_mount_source="$(docker_bind_source "${work_dir}/zap-pr")"
+    # TLS terminates at the production proxy; this URL never leaves the isolated Docker network.
+    zap_baseline_target="http://${app_container}:5000/"  # NOSONAR - isolated ephemeral Docker network
+    docker run --rm \
+        --network "${network_name}" \
+        --volume "${zap_pr_mount_source}:/zap/wrk:ro" \
+        "${ZAP_IMAGE}" \
+        zap-baseline.py \
+            -m 2 \
+            -T 5 \
+            -I \
+            -c /zap/wrk/rules.tsv \
+            -z "-config replacer.full_list(0).description=ForwardedProto \
+-config replacer.full_list(0).enabled=true \
+-config replacer.full_list(0).matchtype=REQ_HEADER \
+-config replacer.full_list(0).matchstr=X-Forwarded-Proto \
+-config replacer.full_list(0).replacement=https" \
+            -t "${zap_baseline_target}"  # NOSONAR - isolated ephemeral Docker network
+fi
+
 if [[ "${RUN_ZAP_DAST:-false}" == "true" ]]; then
-    dast_base_url="http://${app_container}:5000"
+    dast_base_url="http://${app_container}:5000"  # NOSONAR - isolated ephemeral Docker network
     if ! wait_for_app_from_smoke_network "${dast_base_url}"; then
         echo "SITBank application was not reachable from the DAST smoke network" >&2
         false
@@ -490,11 +519,11 @@ if [[ "${RUN_ZAP_DAST:-false}" == "true" ]]; then
         --volume "${dast_mount_source}:/run/dast:rw" \
         "${IMAGE}" \
         python /app/create_dast_session.py \
-            --base-url "${dast_base_url}" \
             --allow-host "${app_container}" \
             --output-root /run/dast \
             --output /run/dast/auth-cookie \
-            --zap-replacer-config-output /run/dast/zap-replacer.properties
+            --zap-replacer-config-output /run/dast/zap-replacer.properties \
+            --base-url "${dast_base_url}"  # NOSONAR - isolated ephemeral Docker network
     docker run --rm --interactive "${docker_args[@]}" \
         --volume "${dast_mount_source}:/run/dast:ro" \
         "${IMAGE}" \
@@ -526,10 +555,10 @@ PY
         --volume "${dast_mount_source}:/run/dast:ro" \
         "${ZAP_IMAGE}" \
         zap-full-scan.py \
-            -t "http://${app_container}:5000/dashboard" \
             -I \
             -m 2 \
             -r zap-report.html \
             -J zap-report.json \
-            -z "-dir /zap/wrk/.ZAP -configfile /run/dast/zap-replacer.properties"
+            -z "-dir /zap/wrk/.ZAP -configfile /run/dast/zap-replacer.properties" \
+            -t "http://${app_container}:5000/dashboard"  # NOSONAR - isolated ephemeral Docker network
 fi

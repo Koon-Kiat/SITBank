@@ -20,6 +20,7 @@ from .ops.commands import register_ops_commands
 from .security.audit import register_correlation_id
 from .security.cloudflare_access import register_cloudflare_access_guard
 from .security.sessions import install_database_sessions, register_session_hooks
+from .security.turnstile import register_turnstile_template_helpers
 from .web.routes import web_bp
 
 
@@ -55,12 +56,14 @@ def create_app(config_object: type[Config] = Config, *, app_mode: str = "custome
     )
     install_database_sessions(app)
 
-    register_cloudflare_access_guard(app)
     register_correlation_id(app)
+    register_cloudflare_access_guard(app)
     register_session_hooks(app)
     register_current_user_loader(app)
+    register_forced_password_change_guard(app)
     register_error_handlers(app)
     register_no_store_headers(app)
+    register_turnstile_template_helpers(app)
     register_ops_commands(app)
 
     with app.app_context():
@@ -108,6 +111,61 @@ def register_current_user_loader(app: Flask) -> None:
                 g.legacy_passkey_credential_count = g.webauthn_credential_count
                 g.mfa_ready = has_enrolled_mfa_method(g.current_user)
                 g.high_risk_ready = g.mfa_ready
+
+
+def register_forced_password_change_guard(app: Flask) -> None:
+    @app.before_request
+    def enforce_forced_password_change():
+        user = getattr(g, "current_user", None)
+        if user is None or not getattr(user, "force_password_change", False):
+            return None
+        allowed_endpoints = {
+            "auth.csrf_token",
+            "auth.logout",
+            "auth.session_extend",
+            "auth.password_change",
+            "auth.password_reset_request",
+            "auth.password_reset_exchange",
+            "auth.password_reset_transaction",
+            "auth.password_reset_mfa_method",
+            "auth.password_reset_totp",
+            "auth.password_reset_complete",
+            "auth.manual_recovery_request",
+            "web.logout",
+            "web.password_change",
+            "web.password_change_submit",
+            "web.forgot_password",
+            "web.forgot_password_submit",
+            "web.reset_password_exchange",
+            "web.reset_password_continue",
+            "web.reset_password_continue_submit",
+            "web.account_recovery",
+            "web.account_recovery_submit",
+            "web.mfa_setup",
+            "web.mfa_setup_submit",
+            "admin.logout",
+        }
+        if request.endpoint in allowed_endpoints:
+            return None
+        from .security.audit import audit_event
+
+        audit_event(
+            "forced_password_change",
+            "required",
+            user=user,
+            metadata={
+                "reason": str(getattr(user, "force_password_change_reason", "") or "security_event"),
+                "endpoint": request.endpoint or "",
+            },
+        )
+        if app.config.get("APP_MODE") == "admin" or request.path.startswith("/auth/"):
+            return jsonify(
+                {
+                    "error": "Password change required",
+                    "code": "password_change_required",
+                }
+            ), 403
+        return render_template("error.html", message="Password change required", status_code=403), 403
 
 
 def register_error_handlers(app: Flask) -> None:

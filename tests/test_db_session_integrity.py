@@ -9,9 +9,13 @@ import time
 from datetime import datetime, timezone
 
 import pytest
+from flask import request
+from sqlalchemy import event
+from sqlalchemy.orm import Session as SQLAlchemySession
 
 from app.extensions import db
 from app.models import SecurityAuditEvent, ServerSideSession, User
+from app.security import sessions as sessions_module
 from app.security.session_hmac import (
     SESSION_PAYLOAD_FORMAT_VERSION,
     SessionPayloadIntegrityError,
@@ -130,6 +134,97 @@ def test_valid_db_session_payload_continues_to_authenticate(app, client):
     assert envelope["sig"]
     assert response.status_code == 200
     assert db.session.query(SecurityAuditEvent).filter_by(event_type="session_integrity").count() == 0
+
+
+def test_session_record_lookup_does_not_autoflush_pending_activity(app, client):
+    user_id = _create_user()
+    session_id = _authenticate_session(client, user_id)
+    record = _session_record(session_id)
+    record.last_activity_at = datetime.now(timezone.utc)
+    assert db.session.is_modified(record)
+
+    def fail_on_flush(*_args):
+        raise AssertionError("session lookup unexpectedly autoflushed pending activity")
+
+    event.listen(SQLAlchemySession, "before_flush", fail_on_flush)
+    try:
+        lookup_hash = session_lookup_hash(session_id)
+        loaded = sessions_module._session_record_for_lookup_hash(lookup_hash)
+    finally:
+        event.remove(SQLAlchemySession, "before_flush", fail_on_flush)
+        db.session.rollback()
+
+    assert loaded is record
+
+
+def test_session_record_lookup_logs_duplicate_records(app, monkeypatch, caplog):
+    lookup_hash = "a" * 64
+    records = [
+        ServerSideSession(
+            id=2,
+            component="customer",
+            session_lookup_hash=lookup_hash,
+            created_at=datetime.now(timezone.utc),
+            last_activity_at=datetime.now(timezone.utc),
+            expires_at=datetime.now(timezone.utc),
+        ),
+        ServerSideSession(
+            id=1,
+            component="customer",
+            session_lookup_hash=lookup_hash,
+            created_at=datetime.now(timezone.utc),
+            last_activity_at=datetime.now(timezone.utc),
+            expires_at=datetime.now(timezone.utc),
+        ),
+    ]
+
+    class FakeResult:
+        def scalars(self):
+            return iter(records)
+
+    monkeypatch.setattr(sessions_module.db.session, "execute", lambda _statement: FakeResult())
+    caplog.set_level("WARNING", logger=app.logger.name)
+
+    loaded = sessions_module._session_record_for_lookup_hash(lookup_hash)
+
+    assert loaded is records[0]
+    assert "duplicate_session_records_detected" in caplog.text
+    assert lookup_hash not in caplog.text
+
+
+def test_session_row_missing_expiry_is_rejected_without_server_error(app, monkeypatch, caplog):
+    session_id = "malformed-session-id"
+    record = ServerSideSession(
+        component="customer",
+        session_lookup_hash=session_lookup_hash(session_id),
+        created_at=datetime.now(timezone.utc),
+        last_activity_at=datetime.now(timezone.utc),
+        expires_at=datetime.now(timezone.utc),
+    )
+    record.expires_at = None
+
+    monkeypatch.setattr(
+        sessions_module,
+        "_session_record_for_sid",
+        lambda _session_id: record,
+    )
+    caplog.set_level("WARNING", logger=app.logger.name)
+
+    with app.test_request_context(
+        "/static/img/sitbank-mark.svg",
+        headers={"Cookie": f"{app.config['SESSION_COOKIE_NAME']}={session_id}"},
+    ):
+        loaded = app.session_interface.open_session(app, request)
+
+    assert loaded.new is True
+    assert loaded.sid != session_id
+    assert record.ended_reason == "integrity_failure"
+    assert record.revoked_at is not None
+    assert db.session.query(SecurityAuditEvent).filter_by(
+        event_type="session_integrity",
+        outcome="failure",
+    ).count() == 1
+    assert "missing_expires_at" in "\n".join(record.getMessage() for record in caplog.records)
 
 
 def test_modified_db_session_user_id_is_rejected(app, client):

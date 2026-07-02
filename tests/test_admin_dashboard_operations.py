@@ -10,7 +10,7 @@ import pyotp
 import pytest
 
 from app.extensions import db
-from app.models import SecurityAuditEvent, StaffInvite, User
+from app.models import AdminActionRequest, SecurityAuditEvent, StaffInvite, User
 from app.security.crypto import encrypt_mfa_secret
 from app.security.passwords import hash_password
 from conftest import TestConfig
@@ -75,15 +75,18 @@ def _create_staff_identity(
     return user, secret
 
 
-def _login_admin(client, secret: str, email: str = ROOT_EMAIL):
+def _login_admin(client, secret: str, email: str = ROOT_EMAIL, *, remote_addr: str | None = None):
+    request_kwargs = {"environ_overrides": {"REMOTE_ADDR": remote_addr}} if remote_addr else {}
     password_response = client.post(
         "/login",
         json={"workplace_email": email, "password": ROOT_PASSWORD},
+        **request_kwargs,
     )
     assert password_response.status_code == 200
     verify_response = client.post(
         "/mfa/verify",
         json={"totp_code": _totp(secret)},
+        **request_kwargs,
     )
     assert verify_response.status_code == 200
     return verify_response
@@ -91,6 +94,46 @@ def _login_admin(client, secret: str, email: str = ROOT_EMAIL):
 
 def _totp(secret: str) -> str:
     return pyotp.TOTP(secret, digits=6, interval=30).at(_FIXED_TOTP_TIME)
+
+
+def _delivery_report(
+    *,
+    alert_count: int = 1,
+    deliverable_alert_count: int = 1,
+    alerts: list[dict] | None = None,
+    delivery: dict | None = None,
+    dedupe: dict | None = None,
+) -> dict:
+    return {
+        "message": "security_alert_report",
+        "generated_at": "2026-06-30T08:15:00+00:00",
+        "alert_count": alert_count,
+        "deliverable_alert_count": deliverable_alert_count,
+        "alerts": alerts
+        if alerts is not None
+        else [
+            {
+                "alert_type": "manual_recovery_burst",
+                "severity": "high",
+                "count": 1,
+                "window_seconds": 600,
+                "source": "principal_ref:safe",
+                "generated_at": "2026-06-30T08:15:00+00:00",
+            }
+        ],
+        "audit_chain": {"checked": True, "valid": True, "anchor_configured": True},
+        "database_integrity": {"checked": True, "configured": True, "valid": True},
+        "dedupe": dedupe or {"enabled": True, "ttl_seconds": 300, "suppressed": 0},
+        "delivery": delivery
+        or {
+            "attempted": True,
+            "configured": True,
+            "enabled": True,
+            "delivered": True,
+            "provider": "generic",
+            "status_code": 204,
+        },
+    }
 
 
 def test_admin_browser_login_and_mfa_reaches_dashboard(admin_app, admin_client):
@@ -453,23 +496,28 @@ def test_root_manages_staff_lifecycle_with_totp_and_safe_audit(admin_client):
     assert self_action.status_code == 403
     assert deactivate.status_code == 200
     assert reset.status_code == 200
-    assert target.account_status == "setup_pending"
-    assert target.mfa_enabled is False
-    assert target.mfa_secret_nonce is None
-    assert target.mfa_secret_ciphertext is None
+    assert deactivate.get_json()["message"] == "Admin action approval required"
+    assert reset.get_json()["message"] == "Admin action approval required"
+    assert target.account_status == "active"
+    assert target.mfa_enabled is True
+    assert target.mfa_secret_nonce is not None
+    assert target.mfa_secret_ciphertext is not None
+    assert db.session.query(AdminActionRequest).filter_by(
+        operation_type="staff_deactivate",
+        status="pending",
+    ).count() == 1
+    assert db.session.query(AdminActionRequest).filter_by(
+        operation_type="staff_reset_activation",
+        status="pending",
+    ).count() == 1
     assert db.session.query(SecurityAuditEvent).filter_by(
         event_type="staff_account_deactivated",
         outcome="success",
-    ).count() == 1
-    deactivation_event = db.session.query(SecurityAuditEvent).filter_by(
-        event_type="staff_account_deactivated",
-        outcome="success",
-    ).one()
-    assert deactivation_event.event_metadata["revoked_sessions"] == 0
+    ).count() == 0
     assert db.session.query(SecurityAuditEvent).filter_by(
         event_type="staff_activation_reset",
         outcome="success",
-    ).count() == 1
+    ).count() == 0
 
 
 def test_non_root_admin_cannot_mutate_staff_lifecycle(admin_client):
@@ -554,14 +602,25 @@ def test_audit_viewer_filters_bounds_and_redacts_detail_metadata(admin_client):
 
 
 def test_alert_review_is_admin_only_and_does_not_send_alerts(admin_client, monkeypatch):
+    remote_addr = "203.0.113.41"
     _staff, staff_secret = _create_staff_identity(
         username="bank-staff",
         email="bank.staff@sit.singaporetech.edu.sg",
         account_type="staff",
         phone_number="91234567",
     )
-    _login_admin(admin_client, staff_secret, email="bank.staff@sit.singaporetech.edu.sg")
-    assert admin_client.get("/alerts").status_code == 403
+    _login_admin(
+        admin_client,
+        staff_secret,
+        email="bank.staff@sit.singaporetech.edu.sg",
+        remote_addr=remote_addr,
+    )
+    assert admin_client.get("/alerts", environ_overrides={"REMOTE_ADDR": remote_addr}).status_code == 403
+    assert admin_client.post(
+        "/alerts/deliver",
+        json={"totp_code": "123456"},
+        environ_overrides={"REMOTE_ADDR": remote_addr},
+    ).status_code == 403
 
     admin_client.post("/logout")
     _admin, admin_secret = _create_staff_identity(
@@ -587,6 +646,443 @@ def test_alert_review_is_admin_only_and_does_not_send_alerts(admin_client, monke
         event_type="security_alert_review",
         outcome="success",
     ).count() == 1
+
+
+def test_alert_review_renders_actionable_safe_detail_without_raw_logs(admin_client, monkeypatch):
+    _admin, admin_secret = _create_staff_identity(
+        username="security-admin",
+        email="security.admin@sit.singaporetech.edu.sg",
+        account_type="admin",
+        phone_number="91234568",
+    )
+    event = SecurityAuditEvent(
+        event_type="manual_recovery_requested",
+        outcome="requested",
+        user_id=None,
+        ip_address="203.0.113.50",
+        user_agent="unit-test",
+        correlation_id="alert-request-1",
+        session_ref="safe-session-ref",
+        event_metadata={"severity": "high", "request_ref": "safe-request-ref"},
+        created_at=datetime.now(timezone.utc),
+    )
+    db.session.add(event)
+    db.session.commit()
+    sensitive_header = "Bearer " + "redacted-example"
+
+    def fake_report(*, deliver):
+        assert deliver is False
+        return {
+            "message": "security_alert_report",
+            "generated_at": "2026-06-30T08:15:00+00:00",
+            "alert_count": 1,
+            "deliverable_alert_count": 1,
+            "alerts": [
+                {
+                    "alert_type": "manual_recovery_burst",
+                    "severity": "high",
+                    "count": 3,
+                    "window_seconds": 600,
+                    "source": "principal_ref:safe",
+                    "generated_at": "2026-06-30T08:15:00+00:00",
+                    "latest_event_id": event.id,
+                    "reason": sensitive_header,
+                    "authorization": sensitive_header,
+                }
+            ],
+            "audit_chain": {
+                "checked": True,
+                "valid": True,
+                "anchor_configured": True,
+                "event_count": 1,
+                "latest_event_id": event.id,
+            },
+            "database_integrity": {
+                "checked": True,
+                "configured": True,
+                "valid": True,
+            },
+            "dedupe": {"enabled": False, "ttl_seconds": 600, "suppressed": 0},
+            "delivery": {"attempted": False, "configured": True, "enabled": True},
+        }
+
+    monkeypatch.setattr("app.admin.routes.build_security_alert_report", fake_report)
+    _login_admin(admin_client, admin_secret, email="security.admin@sit.singaporetech.edu.sg")
+
+    response = admin_client.get("/alerts?alert=alert-1")
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "Highest severity" in body
+    assert "Database integrity" in body
+    assert "Dedupe" in body
+    assert "Next action" in body
+    assert "Alert Detail" in body
+    assert "manual_recovery_burst" in body
+    assert f"/audit-logs/{event.id}" in body
+    assert "[redacted]" in body
+    assert sensitive_header not in body
+    assert "authorization:" not in body.casefold()
+    assert "review page is read-only" in body
+
+
+def test_alert_review_next_actions_cover_integrity_and_generic_alerts(admin_client, monkeypatch):
+    _admin, admin_secret = _create_staff_identity(
+        username="security-admin",
+        email="security.admin@sit.singaporetech.edu.sg",
+        account_type="admin",
+        phone_number="91234568",
+    )
+    reports = {
+        "empty": {
+            "generated_at": "2026-06-30T08:15:00+00:00",
+            "alert_count": 0,
+            "alerts": [],
+            "audit_chain": {"checked": True, "valid": True},
+            "database_integrity": {"checked": True, "valid": True},
+            "dedupe": {"enabled": True, "suppressed": 0},
+            "delivery": {"enabled": True},
+        },
+        "audit": {
+            "generated_at": "2026-06-30T08:16:00+00:00",
+            "alert_count": 1,
+            "alerts": [
+                {
+                    "alert_type": "audit_chain_verification_failed",
+                    "severity": "critical",
+                    "source": "audit_chain",
+                    "count": 1,
+                    "window_seconds": 60,
+                }
+            ],
+            "audit_chain": {"checked": True, "valid": False},
+            "database_integrity": {"checked": True, "valid": True},
+            "dedupe": {"enabled": True, "suppressed": 0},
+            "delivery": {"enabled": True},
+        },
+        "database": {
+            "generated_at": "2026-06-30T08:17:00+00:00",
+            "alert_count": 2,
+            "alerts": [
+                {
+                    "alert_type": "database_integrity_regression",
+                    "severity": "high",
+                    "source": "database_integrity",
+                    "count": 2,
+                    "window_seconds": 120,
+                },
+                {
+                    "alert_type": "login_failure_burst",
+                    "severity": "medium",
+                    "source": "principal_ref:safe",
+                    "count": 5,
+                    "window_seconds": 300,
+                },
+            ],
+            "audit_chain": {"checked": True, "valid": True},
+            "database_integrity": {"checked": True, "valid": False},
+            "dedupe": {"enabled": False, "suppressed": 0},
+            "delivery": {"enabled": True},
+        },
+        "generic": {
+            "generated_at": "2026-06-30T08:18:00+00:00",
+            "alert_count": 1,
+            "alerts": [
+                {
+                    "alert_type": "manual_security_alert",
+                    "severity": "low",
+                    "source": "",
+                    "count": 1,
+                    "window_seconds": 0,
+                }
+            ],
+            "audit_chain": {"checked": True, "valid": True},
+            "database_integrity": {"checked": True, "valid": True},
+            "dedupe": {"enabled": False, "suppressed": 0},
+            "delivery": {"enabled": False},
+        },
+    }
+    selected = {"name": "empty"}
+
+    def fake_report(*, deliver):
+        assert deliver is False
+        return reports[selected["name"]]
+
+    monkeypatch.setattr("app.admin.routes.build_security_alert_report", fake_report)
+    _login_admin(admin_client, admin_secret, email="security.admin@sit.singaporetech.edu.sg")
+
+    empty = admin_client.get("/alerts").get_data(as_text=True)
+    selected["name"] = "audit"
+    audit = admin_client.get("/alerts?alert=alert-1").get_data(as_text=True)
+    selected["name"] = "database"
+    database = admin_client.get("/alerts?alert=alert-2").get_data(as_text=True)
+    selected["name"] = "generic"
+    generic = admin_client.get("/alerts?alert=missing").get_data(as_text=True)
+
+    assert "No active alert findings. Continue scheduled monitoring." in empty
+    assert "Preserve evidence and investigate audit-chain integrity" in audit
+    assert "Stop routine anchor rotation" in audit
+    assert "Preserve database and host evidence" in database
+    assert "Review related authentication audit events and source grouping." in database
+    assert "Open the alert detail and correlate with safe audit-log entries." in generic
+    assert "unknown" in generic
+    assert "No related audit event ID in this alert." in generic
+
+
+def test_alert_manual_delivery_browser_requires_csrf_when_enabled(admin_app, admin_client, monkeypatch):
+    remote_addr = "203.0.113.42"
+    _admin, admin_secret = _create_staff_identity(
+        username="security-admin",
+        email="security.admin@sit.singaporetech.edu.sg",
+        account_type="admin",
+        phone_number="91234568",
+    )
+    calls = []
+
+    def fake_report(*, deliver):
+        calls.append(deliver)
+        return _delivery_report(delivery={"attempted": bool(deliver), "configured": True, "enabled": True})
+
+    monkeypatch.setattr("app.admin.routes.build_security_alert_report", fake_report)
+    _login_admin(
+        admin_client,
+        admin_secret,
+        email="security.admin@sit.singaporetech.edu.sg",
+        remote_addr=remote_addr,
+    )
+
+    original = admin_app.config["WTF_CSRF_ENABLED"]
+    admin_app.config["WTF_CSRF_ENABLED"] = True
+    try:
+        page = admin_client.get("/alerts", environ_overrides={"REMOTE_ADDR": remote_addr})
+        missing_csrf = admin_client.post(
+            "/alerts/deliver",
+            data={"totp_code": _totp(admin_secret)},
+            environ_overrides={"REMOTE_ADDR": remote_addr},
+            follow_redirects=False,
+        )
+        csrf_match = re.search(r'name="csrf_token"[^>]*value="([^"]+)"', page.get_data(as_text=True))
+        assert csrf_match is not None
+        delivered = admin_client.post(
+            "/alerts/deliver",
+            data={"csrf_token": csrf_match.group(1), "totp_code": _totp(admin_secret)},
+            environ_overrides={"REMOTE_ADDR": remote_addr},
+            follow_redirects=False,
+        )
+    finally:
+        admin_app.config["WTF_CSRF_ENABLED"] = original
+
+    assert page.status_code == 200
+    assert 'action="/alerts/deliver"' in page.get_data(as_text=True)
+    assert missing_csrf.status_code == 400
+    assert delivered.status_code == 303
+    assert delivered.headers["Location"].endswith("/alerts")
+    assert calls == [False, True]
+
+
+def test_alert_manual_delivery_reuses_builder_and_audits_delivered(admin_client, monkeypatch):
+    remote_addr = "203.0.113.44"
+    _admin, admin_secret = _create_staff_identity(
+        username="security-admin",
+        email="security.admin@sit.singaporetech.edu.sg",
+        account_type="admin",
+        phone_number="91234568",
+    )
+    event = SecurityAuditEvent(
+        event_type="manual_recovery_requested",
+        outcome="requested",
+        user_id=None,
+        ip_address="203.0.113.50",
+        user_agent="unit-test",
+        correlation_id="alert-request-1",
+        session_ref="safe-session-ref",
+        event_metadata={"severity": "high", "request_ref": "safe-request-ref"},
+        created_at=datetime.now(timezone.utc),
+    )
+    db.session.add(event)
+    db.session.commit()
+    secret_header = "Bearer " + "A" * 48
+    calls = []
+
+    def fake_report(*, deliver):
+        calls.append(deliver)
+        assert deliver is True
+        return _delivery_report(
+            alerts=[
+                {
+                    "alert_type": "manual_recovery_burst",
+                    "severity": "high",
+                    "count": 3,
+                    "window_seconds": 600,
+                    "source": "principal_ref:safe",
+                    "generated_at": "2026-06-30T08:15:00+00:00",
+                    "latest_event_id": event.id,
+                    "reason": secret_header,
+                    "authorization": secret_header,
+                },
+                {
+                    "alert_type": "login_failure_burst",
+                    "severity": "medium",
+                    "count": 4,
+                    "window_seconds": 300,
+                    "source": secret_header,
+                    "generated_at": "2026-06-30T08:15:00+00:00",
+                    "latest_event_id": 999999,
+                },
+            ],
+        )
+
+    monkeypatch.setattr("app.admin.routes.build_security_alert_report", fake_report)
+    _login_admin(
+        admin_client,
+        admin_secret,
+        email="security.admin@sit.singaporetech.edu.sg",
+        remote_addr=remote_addr,
+    )
+
+    response = admin_client.post(
+        "/alerts/deliver",
+        json={"totp_code": _totp(admin_secret)},
+        environ_overrides={"REMOTE_ADDR": remote_addr},
+    )
+    payload = response.get_json()
+    body = response.get_data(as_text=True)
+    events = db.session.query(SecurityAuditEvent).filter_by(
+        event_type="security_alert_delivery",
+    ).order_by(SecurityAuditEvent.id).all()
+
+    assert response.status_code == 200
+    assert payload["outcome"] == "delivered"
+    assert payload["delivery"]["attempted"] is True
+    assert payload["delivery"]["delivered"] is True
+    assert payload["alerts"][0]["event_url"].endswith(f"/audit-logs/{event.id}")
+    assert payload["alerts"][1]["event_url"] == ""
+    assert "[redacted]" in body
+    assert secret_header not in body
+    assert "authorization" not in body.casefold()
+    assert calls == [True]
+    assert [item.outcome for item in events] == ["requested", "delivered"]
+    assert events[-1].event_metadata["delivery_attempted"] is True
+    assert events[-1].event_metadata["delivery_configured"] is True
+
+
+def test_alert_manual_delivery_respects_dedupe_and_returns_safe_json(admin_client, monkeypatch):
+    remote_addr = "203.0.113.45"
+    _admin, admin_secret = _create_staff_identity(
+        username="security-admin",
+        email="security.admin@sit.singaporetech.edu.sg",
+        account_type="admin",
+        phone_number="91234568",
+    )
+
+    def fake_report(*, deliver):
+        assert deliver is True
+        return _delivery_report(
+            deliverable_alert_count=0,
+            delivery={
+                "attempted": False,
+                "configured": True,
+                "enabled": True,
+                "delivered": True,
+                "deduped": True,
+            },
+            dedupe={"enabled": True, "ttl_seconds": 300, "suppressed": 1},
+        )
+
+    monkeypatch.setattr("app.admin.routes.build_security_alert_report", fake_report)
+    _login_admin(
+        admin_client,
+        admin_secret,
+        email="security.admin@sit.singaporetech.edu.sg",
+        remote_addr=remote_addr,
+    )
+
+    response = admin_client.post(
+        "/alerts/deliver",
+        json={"totp_code": _totp(admin_secret)},
+        environ_overrides={"REMOTE_ADDR": remote_addr},
+    )
+    payload = response.get_json()
+    outcomes = [
+        item.outcome
+        for item in db.session.query(SecurityAuditEvent)
+        .filter_by(event_type="security_alert_delivery")
+        .order_by(SecurityAuditEvent.id)
+    ]
+
+    assert response.status_code == 200
+    assert payload["outcome"] == "deduped"
+    assert payload["dedupe"]["suppressed"] == 1
+    assert outcomes == ["requested", "deduped"]
+
+
+def test_alert_manual_delivery_blocks_invalid_totp(admin_client):
+    remote_addr = "203.0.113.46"
+    _admin, admin_secret = _create_staff_identity(
+        username="security-admin",
+        email="security.admin@sit.singaporetech.edu.sg",
+        account_type="admin",
+        phone_number="91234568",
+    )
+    _login_admin(
+        admin_client,
+        admin_secret,
+        email="security.admin@sit.singaporetech.edu.sg",
+        remote_addr=remote_addr,
+    )
+    bad_code = "000000" if _totp(admin_secret) != "000000" else "111111"
+
+    blocked = admin_client.post(
+        "/alerts/deliver",
+        json={"totp_code": bad_code},
+        environ_overrides={"REMOTE_ADDR": remote_addr},
+    )
+    events = db.session.query(SecurityAuditEvent).filter_by(
+        event_type="security_alert_delivery",
+    ).order_by(SecurityAuditEvent.id).all()
+
+    assert blocked.status_code == 403
+    assert blocked.get_json() == {"error": "Fresh MFA verification is required"}
+    assert [item.outcome for item in events] == ["blocked"]
+    assert events[0].event_metadata["reason"] == "invalid_totp_step_up"
+
+
+def test_alert_manual_delivery_audits_configuration_failure(admin_client, monkeypatch):
+    from app.security.alerts import AlertConfigurationError
+
+    remote_addr = "203.0.113.47"
+    _admin, admin_secret = _create_staff_identity(
+        username="security-admin",
+        email="security.admin@sit.singaporetech.edu.sg",
+        account_type="admin",
+        phone_number="91234568",
+    )
+    _login_admin(
+        admin_client,
+        admin_secret,
+        email="security.admin@sit.singaporetech.edu.sg",
+        remote_addr=remote_addr,
+    )
+
+    def fail_report(*, deliver):
+        assert deliver is True
+        raise AlertConfigurationError("SECURITY_ALERT_WEBHOOK_URL_FILE is required")
+
+    monkeypatch.setattr("app.admin.routes.build_security_alert_report", fail_report)
+    failed = admin_client.post(
+        "/alerts/deliver",
+        json={"totp_code": _totp(admin_secret)},
+        environ_overrides={"REMOTE_ADDR": remote_addr},
+    )
+    events = db.session.query(SecurityAuditEvent).filter_by(
+        event_type="security_alert_delivery",
+    ).order_by(SecurityAuditEvent.id).all()
+
+    assert failed.status_code == 503
+    assert failed.get_json() == {"error": "Security alert delivery is unavailable"}
+    assert [item.outcome for item in events] == ["requested", "failed"]
+    assert events[-1].event_metadata["reason"] == "alert_configuration_error"
+    assert events[-1].event_metadata["error_type"] == "AlertConfigurationError"
 
 
 def test_admin_templates_do_not_render_inline_script_or_sensitive_fields():

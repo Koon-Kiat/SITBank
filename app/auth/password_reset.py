@@ -20,7 +20,12 @@ from app.security.audit import (
     principal_reference,
 )
 from app.security.email import send_security_email
-from app.security.passwords import PasswordPolicyError, hash_password, validate_password_policy, verify_password
+from app.security.password_history import (
+    PasswordReuseError,
+    assert_password_not_reused,
+    replace_user_password,
+)
+from app.security.passwords import PasswordPolicyError, validate_password_policy
 from app.security.rate_limits import AuthBackoffRequired, apply_exponential_backoff, clear_failures, record_failure
 from app.security.session_hmac import active_hmac_hex
 from app.security.sessions import revoke_all_sessions, rotate_session_id
@@ -33,7 +38,7 @@ from .recovery_codes import (
 from .services import AuthError, _verify_totp_for_user
 
 
-GENERIC_FORGOT_PASSWORD_MESSAGE = "If an account exists for that email, a reset link has been sent."
+GENERIC_FORGOT_PASSWORD_MESSAGE = "If an account exists for that email, a reset link has been sent."  # NOSONAR - user-facing status, not a credential
 GENERIC_MANUAL_RECOVERY_MESSAGE = "If the account can be reviewed, a recovery request has been recorded."
 GENERIC_RESET_ERROR = "Password reset link is invalid or expired"
 RESET_TRANSACTION_EXPIRED_ERROR = "Password reset transaction expired"
@@ -293,9 +298,11 @@ def complete_password_reset(new_password: str, confirm_new_password: str) -> dic
     if new_password != confirm_new_password:
         audit_event("password_reset_failed", "failure", user=user, metadata={"reason": "password_mismatch"})
         raise AuthError("Passwords must match", 400)
-    if verify_password(new_password, user.password_hash):
-        audit_event("password_reset_failed", "failure", user=user, metadata={"reason": "password_reuse"})
-        raise AuthError("New password must be different from the current password", 400)
+    try:
+        assert_password_not_reused(user, new_password)
+    except PasswordReuseError as exc:
+        audit_event("password_reset_failed", "failure", user=user, metadata={"reason": exc.reason})
+        raise AuthError("New password must not match your current or recent passwords", 400) from exc
 
     try:
         password_policy_warnings = validate_password_policy(new_password)
@@ -304,7 +311,7 @@ def complete_password_reset(new_password: str, confirm_new_password: str) -> dic
         raise AuthError(str(exc), 400) from exc
 
     now = _utcnow()
-    user.password_hash = hash_password(new_password)
+    replace_user_password(user, new_password)
     user.failed_login_count = 0
     for token in db.session.execute(
         db.select(PasswordResetToken).where(

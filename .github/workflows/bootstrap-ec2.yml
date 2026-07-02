@@ -19,6 +19,7 @@ concurrency:
 
 jobs:
   validate-request:
+    name: Validate bootstrap request
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -37,6 +38,7 @@ jobs:
           fi
 
   bootstrap-staging:
+    name: Bootstrap staging EC2
     if: inputs.target_environment == 'staging'
     needs: validate-request
     runs-on: ubuntu-latest
@@ -61,10 +63,30 @@ jobs:
           persist-credentials: false
           ref: ${{ github.workflow_sha }}
 
+      - name: Verify Cloudflare boundary before staging bootstrap
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ZONE_ID: ${{ vars.CLOUDFLARE_ZONE_ID }}
+          STAGING_ACCESS_HOSTNAME: ${{ vars.STAGING_PUBLIC_HOST }}
+          STAGING_ACCESS_APP_NAME: ${{ vars.STAGING_ACCESS_APP_NAME }}
+          STAGING_ACCESS_POLICY_NAME: ${{ vars.STAGING_ACCESS_POLICY_NAME }}
+          STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN: ${{ vars.STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN }}
+          STAGING_CLOUDFLARE_ACCESS_AUD: ${{ vars.STAGING_CLOUDFLARE_ACCESS_AUD }}
+          STAGING_ACCESS_SESSION_DURATION: ${{ vars.STAGING_ACCESS_SESSION_DURATION }}
+          STAGING_ACCESS_ALLOWED_EMAILS: ${{ secrets.STAGING_ACCESS_ALLOWED_EMAILS }}
+          STAGING_ACCESS_ALLOWED_GROUP_IDS: ${{ secrets.STAGING_ACCESS_ALLOWED_GROUP_IDS }}
+          STAGING_ACCESS_ALLOWED_IDP_IDS: ${{ vars.STAGING_ACCESS_ALLOWED_IDP_IDS }}
+          STAGING_DNS_ORIGIN: ${{ secrets.STAGING_DNS_ORIGIN }}
+          STAGING_ORIGIN_IP: ${{ secrets.STAGING_ORIGIN_IP }}
+        run: python ops/cloudflare/provision-staging-access --verify
+
       - name: Verify staging bootstrap configuration
         env:
           SSH_PRIVATE_KEY_B64: ${{ secrets.STAGING_EC2_SSH_PRIVATE_KEY_B64 }}
           SSH_KNOWN_HOSTS: ${{ secrets.STAGING_EC2_KNOWN_HOSTS }}
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
         shell: bash
         run: |
           required=(
@@ -73,6 +95,8 @@ jobs:
             REMOTE_USER
             SSH_PRIVATE_KEY_B64
             SSH_KNOWN_HOSTS
+            TS_OAUTH_CLIENT_ID
+            TS_OAUTH_SECRET
           )
           missing=0
           for name in "${required[@]}"; do
@@ -103,6 +127,14 @@ jobs:
           cosign sign-blob --yes \
             --bundle "${archive}.sigstore.json" \
             "${archive}"
+
+      - name: Join the staging bootstrap tailnet
+        uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:github-ci-staging-deploy
+          ping: ${{ vars.STAGING_EC2_HOST }}
 
       - name: Configure verified SSH
         env:
@@ -194,7 +226,13 @@ jobs:
             "bootstrap-${TARGET}-${TRUSTED_SHA}.tar.gz" \
             "bootstrap-${TARGET}-${TRUSTED_SHA}.tar.gz.sigstore.json"
 
+      - name: Disconnect staging bootstrap tailnet
+        if: ${{ always() }}
+        shell: bash
+        run: sudo tailscale logout > /dev/null 2>&1 || true
+
   bootstrap-production:
+    name: Bootstrap production EC2
     if: inputs.target_environment == 'production'
     needs: validate-request
     runs-on: ubuntu-latest
@@ -223,6 +261,8 @@ jobs:
         env:
           SSH_PRIVATE_KEY_B64: ${{ secrets.PROD_EC2_SSH_PRIVATE_KEY_B64 }}
           SSH_KNOWN_HOSTS: ${{ secrets.PROD_EC2_KNOWN_HOSTS }}
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
         shell: bash
         run: |
           required=(
@@ -231,6 +271,8 @@ jobs:
             REMOTE_USER
             SSH_PRIVATE_KEY_B64
             SSH_KNOWN_HOSTS
+            TS_OAUTH_CLIENT_ID
+            TS_OAUTH_SECRET
           )
           missing=0
           for name in "${required[@]}"; do
@@ -261,6 +303,14 @@ jobs:
           cosign sign-blob --yes \
             --bundle "${archive}.sigstore.json" \
             "${archive}"
+
+      - name: Join the production bootstrap tailnet
+        uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:github-ci-prod-deploy
+          ping: ${{ vars.PROD_EC2_HOST }}
 
       - name: Configure verified SSH
         env:
@@ -351,3 +401,8 @@ jobs:
             ~/.ssh/bootstrap_key \
             "bootstrap-${TARGET}-${TRUSTED_SHA}.tar.gz" \
             "bootstrap-${TARGET}-${TRUSTED_SHA}.tar.gz.sigstore.json"
+
+      - name: Disconnect production bootstrap tailnet
+        if: ${{ always() }}
+        shell: bash
+        run: sudo tailscale logout > /dev/null 2>&1 || true

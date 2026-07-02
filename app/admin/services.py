@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import hashlib
 import hmac
+import json
 import re
 import secrets
 import time
@@ -24,10 +24,11 @@ from app.auth.password_reset import (
 from app.auth.services import (
     AuthError,
     _dummy_password_hash,
+    _totp,
     _verify_totp_for_user,
 )
 from app.extensions import db
-from app.models import ManualRecoveryRequest, SecurityAuditEvent, StaffInvite, User
+from app.models import AdminActionRequest, ManualRecoveryRequest, SecurityAuditEvent, StaffInvite, User
 from app.security.audit import audit_event, audit_event_required, audit_reference, principal_reference
 from app.security.crypto import encrypt_mfa_secret
 from app.security.email import send_security_email
@@ -46,6 +47,7 @@ from app.security.passwords import (
     validate_password_policy,
     verify_password,
 )
+from app.security.password_history import mark_password_changed, replace_user_password
 from app.security.rate_limits import AuthBackoffRequired, apply_exponential_backoff, clear_failures, record_failure
 from app.security.session_hmac import active_hmac_hex
 from app.security.sessions import (
@@ -55,7 +57,7 @@ from app.security.sessions import (
     revoke_all_sessions,
     revoke_current_session,
 )
-from app.security.turnstile import TurnstileError, verify_turnstile_token
+from app.security.turnstile import TurnstileError, require_turnstile
 
 
 ACCOUNT_CUSTOMER = "customer"
@@ -79,6 +81,19 @@ MANUAL_RECOVERY_ADMIN_TRANSITION_STATUSES = frozenset(
         MANUAL_RECOVERY_STATUS_DENIED,
     }
 )
+ADMIN_ACTION_REQUEST_TTL_SECONDS = 24 * 60 * 60
+ADMIN_ACTION_PENDING_STATUS = "pending"
+STAFF_ACTION_OPERATION_TYPES = {
+    "deactivate": "staff_deactivate",
+    "reactivate": "staff_reactivate",
+    "reset_activation": "staff_reset_activation",
+}
+MANUAL_RECOVERY_STATUS_OPERATION_TYPES = {
+    MANUAL_RECOVERY_STATUS_APPROVED: "manual_recovery_approve",
+    MANUAL_RECOVERY_STATUS_DENIED: "manual_recovery_deny",
+}
+ADMIN_ACTION_EXECUTION_REASON = "maker_checker_approved"
+ADMIN_ACTION_APPROVAL_REQUIRED_MESSAGE = "Admin action approval required"
 GENERIC_ADMIN_LOGIN_ERROR = "Invalid workplace email, password, or authentication code"
 ADMIN_INDEX_ENDPOINT = "admin.index"
 FRESH_MFA_REQUIRED_ERROR = "Fresh MFA verification is required"
@@ -110,6 +125,10 @@ AUDIT_ALLOWED_OUTCOMES = frozenset(
         "verified",
     }
 )
+AUDIT_SORT_OPTIONS = frozenset(
+    {"timestamp", "severity", "event_type", "actor", "request_id", "source"}
+)
+AUDIT_EVENT_TYPE_OPTION_LIMIT = 250
 AUDIT_TARGET_METADATA_KEYS = (
     "audit_event_ref",
     "invite_ref",
@@ -119,6 +138,19 @@ AUDIT_TARGET_METADATA_KEYS = (
     "target_role",
     "target_staff_ref",
     "workplace_email_ref",
+)
+AUDIT_SYSTEM_SOURCE_VALUES = frozenset(
+    {"privilege-check", "system", "system-probe", "scheduler", "deployment"}
+)
+AUDIT_SYSTEM_EVENT_PREFIXES = (
+    "audit_",
+    "cloudflare_",
+    "database_",
+    "host_",
+    "mfa_dek_",
+    "privilege_",
+    "runtime_",
+    "security_alert_",
 )
 DISPLAY_REDACTED_VALUE = "[redacted]"
 DISPLAY_SENSITIVE_VALUE_RE = re.compile(
@@ -179,6 +211,10 @@ def require_admin_session() -> User:
         audit_event("admin_role_authorization", "blocked", user=user, metadata={"reason": "admin_role_required"})
         raise AuthError("Forbidden", 403)
     return user
+
+
+def verify_admin_totp_step_up(actor: User, totp_code: str | None, scope: str) -> bool:
+    return bool(totp_code) and _verify_totp_for_user(actor, totp_code, scope)
 
 
 def role_rank(role: str | None) -> int:
@@ -246,6 +282,12 @@ def admin_navigation_for(user: User) -> list[dict[str, str]]:
                     "endpoint": "admin.manual_recovery_requests",
                     "group": "root",
                 },
+                {
+                    "label": "Approvals",
+                    "href": url_for("admin.admin_action_requests"),
+                    "endpoint": "admin.admin_action_requests",
+                    "group": "root",
+                },
             ]
         )
     return items
@@ -296,11 +338,48 @@ def transition_staff_account_as_root_admin(
     action: str,
     totp_code: str | None,
 ) -> dict[str, Any]:
+    normalized_action, target = _validate_staff_account_lifecycle_request(
+        actor,
+        target_user_id,
+        action,
+    )
+    if not totp_code or not _verify_totp_for_user(actor, totp_code, f"staff_account_{normalized_action}"):
+        audit_event(
+            "staff_account_lifecycle",
+            "failure",
+            user=actor,
+            metadata={
+                "reason": "invalid_totp_step_up",
+                "action": normalized_action,
+                "target_staff_ref": audit_reference("staff_user", target.id),
+            },
+        )
+        raise AuthError(FRESH_MFA_REQUIRED_ERROR, 403)
+
+    request_record = _create_admin_action_request(
+        actor,
+        operation_type=STAFF_ACTION_OPERATION_TYPES[normalized_action],
+        target_type="staff_user",
+        target_id=str(target.id),
+        operation_payload={"action": normalized_action},
+        reason=None,
+    )
+    return {
+        "message": ADMIN_ACTION_APPROVAL_REQUIRED_MESSAGE,
+        "request": public_admin_action_request(request_record),
+    }
+
+
+def _validate_staff_account_lifecycle_request(
+    actor: User,
+    target_user_id: int,
+    action: str,
+) -> tuple[str, User]:
     if not is_root_admin(actor):
         audit_event("staff_account_lifecycle", "blocked", user=actor, metadata={"reason": "not_root_admin"})
         raise AuthError("Forbidden", 403)
     normalized_action = str(action or "").strip().casefold()
-    if normalized_action not in {"deactivate", "reactivate", "reset_activation"}:
+    if normalized_action not in STAFF_ACTION_OPERATION_TYPES:
         audit_event("staff_account_lifecycle", "failure", user=actor, metadata={"reason": "invalid_action"})
         raise AuthError("Invalid staff account action", 400)
     target = db.session.get(User, int(target_user_id))
@@ -320,19 +399,19 @@ def transition_staff_account_as_root_admin(
             metadata={"reason": "target_not_manageable", "action": normalized_action},
         )
         raise AuthError("Staff account not found", 404)
-    if not totp_code or not _verify_totp_for_user(actor, totp_code, f"staff_account_{normalized_action}"):
-        audit_event(
-            "staff_account_lifecycle",
-            "failure",
-            user=actor,
-            metadata={
-                "reason": "invalid_totp_step_up",
-                "action": normalized_action,
-                "target_staff_ref": audit_reference("staff_user", target.id),
-            },
-        )
-        raise AuthError(FRESH_MFA_REQUIRED_ERROR, 403)
+    return normalized_action, target
 
+
+def _execute_staff_account_lifecycle(
+    actor: User,
+    target_user_id: int,
+    action: str,
+) -> dict[str, Any]:
+    normalized_action, target = _validate_staff_account_lifecycle_request(
+        actor,
+        target_user_id,
+        action,
+    )
     revoked_sessions = 0
     if normalized_action == "deactivate":
         target.account_status = "revoked"
@@ -394,7 +473,7 @@ def query_audit_events_for_admin(actor: User, args: dict[str, Any]) -> dict[str,
     filters = _audit_filters(args)
     page = _bounded_int(args.get("page"), default=1, minimum=1, maximum=10000)
     per_page = _bounded_int(args.get("per_page"), default=25, minimum=1, maximum=100)
-    sort = _validated_choice(args.get("sort"), {"timestamp", "severity", "event_type", "actor"}, "timestamp")
+    sort = _validated_choice(args.get("sort"), AUDIT_SORT_OPTIONS, "timestamp")
     direction = _validated_choice(args.get("direction"), {"asc", "desc"}, "desc")
     statement = db.select(SecurityAuditEvent)
     statement = _apply_audit_filters(statement, filters)
@@ -404,6 +483,8 @@ def query_audit_events_for_admin(actor: User, args: dict[str, Any]) -> dict[str,
         "severity": cast(SecurityAuditEvent.event_metadata, String),
         "event_type": SecurityAuditEvent.event_type,
         "actor": SecurityAuditEvent.user_id,
+        "request_id": SecurityAuditEvent.correlation_id,
+        "source": SecurityAuditEvent.ip_address,
     }[sort]
     if direction == "asc":
         statement = statement.order_by(order_column.asc(), SecurityAuditEvent.id.asc())
@@ -434,6 +515,10 @@ def query_audit_events_for_admin(actor: User, args: dict[str, Any]) -> dict[str,
         "total": int(total or 0),
         "sort": sort,
         "direction": direction,
+        "sort_options": sorted(AUDIT_SORT_OPTIONS),
+        "event_type_options": _audit_event_type_options(filters["event_type"]),
+        "severity_options": ["low", "medium", "high", "critical"],
+        "outcome_options": sorted(AUDIT_ALLOWED_OUTCOMES),
     }
 
 
@@ -470,20 +555,32 @@ def public_staff_account(user: User, actor: User) -> dict[str, Any]:
 
 
 def public_audit_event(event: SecurityAuditEvent, *, include_metadata: bool) -> dict[str, Any]:
+    metadata = event.event_metadata if isinstance(event.event_metadata, dict) else {}
+    source_kind, source_display = _audit_source(event, metadata)
+    created_at_utc = _utc_iso(event.created_at)
     payload = {
         "id": event.id,
         "event_type": event.event_type,
         "outcome": event.outcome,
         "actor_user_id": event.user_id,
+        "actor_role": _audit_actor_role(event, metadata),
         "ip_address": event.ip_address,
+        "source_kind": source_kind,
+        "source_display": source_display,
+        "target_ref": _audit_target_ref(metadata),
+        "request_id": event.correlation_id,
         "correlation_id": event.correlation_id,
         "session_ref": event.session_ref,
-        "created_at": _utc_iso(event.created_at),
+        "created_at": created_at_utc,
+        "created_at_utc": created_at_utc,
+        "created_at_display": _utc_display(event.created_at),
+        "hash_chain_status": _audit_hash_chain_status(event),
     }
-    metadata = event.event_metadata if isinstance(event.event_metadata, dict) else {}
     payload["severity"] = str(metadata.get("severity") or "").strip()[:24] if metadata else ""
     if include_metadata:
-        payload["metadata"] = _safe_metadata_for_display(metadata)
+        safe_metadata = _safe_metadata_for_display(metadata)
+        payload["metadata"] = safe_metadata
+        payload["metadata_groups"] = _audit_metadata_groups(safe_metadata)
     return payload
 
 
@@ -590,6 +687,101 @@ def _admin_dashboard_summary(actor: User) -> dict[str, Any]:
     return summary
 
 
+def _audit_event_type_options(current: str) -> list[str]:
+    rows = db.session.execute(
+        db.select(SecurityAuditEvent.event_type)
+        .distinct()
+        .order_by(SecurityAuditEvent.event_type.asc())
+        .limit(AUDIT_EVENT_TYPE_OPTION_LIMIT)
+    ).scalars()
+    options = {
+        event_type
+        for event_type in rows
+        if isinstance(event_type, str) and AUDIT_EVENT_TYPE_RE.fullmatch(event_type)
+    }
+    if current and AUDIT_EVENT_TYPE_RE.fullmatch(current):
+        options.add(current)
+    return sorted(options)
+
+
+def _audit_actor_role(event: SecurityAuditEvent, metadata: dict[str, Any]) -> str:
+    if event.user is not None and event.user.account_type:
+        return str(event.user.account_type)
+    for key in ("actor_role", "requester_role", "approver_role"):
+        value = metadata.get(key)
+        if isinstance(value, str):
+            text = _safe_filter(value, 40)
+            if text:
+                return text
+    return "system"
+
+
+def _audit_source(
+    event: SecurityAuditEvent,
+    metadata: dict[str, Any],
+) -> tuple[str, str]:
+    configured_kind = _safe_filter(metadata.get("source_kind"), 40)
+    configured_display = _safe_filter(metadata.get("source_display"), 80)
+    if configured_kind and configured_display:
+        return configured_kind, configured_display
+
+    source = _safe_filter(event.ip_address, 64)
+    source_key = source.casefold()
+    is_system_event = event.user_id is None and event.event_type.startswith(AUDIT_SYSTEM_EVENT_PREFIXES)
+    if source_key in AUDIT_SYSTEM_SOURCE_VALUES or is_system_event:
+        if source_key == "privilege-check" or "privilege" in event.event_type:
+            return "system_probe", "Runtime privilege probe"
+        return "system", "System or scheduled control"
+    if event.user_id is None and source_key in {"", "unknown"}:
+        return "system", "System"
+    return "network", source or "unknown"
+
+
+def _audit_target_ref(metadata: dict[str, Any]) -> str:
+    for key in AUDIT_TARGET_METADATA_KEYS:
+        value = metadata.get(key)
+        if isinstance(value, str):
+            text = _safe_filter(value, 120)
+            if text:
+                return text
+    return ""
+
+
+def _audit_hash_chain_status(event: SecurityAuditEvent) -> dict[str, Any]:
+    return {
+        "algorithm": _safe_filter(event.hash_algorithm, 32),
+        "event_hash_present": bool(event.event_hash),
+        "previous_hash_present": bool(event.previous_event_hash),
+        "linked": bool(event.event_hash),
+    }
+
+
+def _audit_metadata_groups(metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    groups: dict[str, dict[str, Any]] = {
+        "Actor and session": {},
+        "Request and source": {},
+        "Target": {},
+        "Security decision": {},
+        "Result and system": {},
+        "Other safe metadata": {},
+    }
+    for key, value in metadata.items():
+        lowered = key.casefold()
+        if any(term in lowered for term in ("actor", "principal", "session", "requester", "approver")):
+            groups["Actor and session"][key] = value
+        elif any(term in lowered for term in ("source", "ip", "route", "method", "validator", "jwks")):
+            groups["Request and source"][key] = value
+        elif key in AUDIT_TARGET_METADATA_KEYS or "target" in lowered or lowered.endswith("_ref"):
+            groups["Target"][key] = value
+        elif any(term in lowered for term in ("reason", "severity", "policy", "required", "decision")):
+            groups["Security decision"][key] = value
+        elif any(term in lowered for term in ("count", "status", "result", "revoked", "probe", "anchor", "chain")):
+            groups["Result and system"][key] = value
+        else:
+            groups["Other safe metadata"][key] = value
+    return {name: values for name, values in groups.items() if values}
+
+
 def _audit_filters(args: dict[str, Any]) -> dict[str, str]:
     return {
         "event_type": _safe_identifier_filter(args.get("event_type"), AUDIT_EVENT_TYPE_RE),
@@ -611,13 +803,7 @@ def _apply_audit_filters(statement, filters: dict[str, str]):
         statement = statement.where(SecurityAuditEvent.event_type == filters["event_type"])
     if filters["outcome"]:
         statement = statement.where(SecurityAuditEvent.outcome == filters["outcome"])
-    if filters["actor"]:
-        try:
-            actor_id = int(filters["actor"])
-        except ValueError:
-            actor_id = None
-        if actor_id is not None:
-            statement = statement.where(SecurityAuditEvent.user_id == actor_id)
+    statement = _apply_audit_actor_filter(statement, filters["actor"])
     if filters["role"]:
         statement = statement.join(User, User.id == SecurityAuditEvent.user_id).where(
             User.account_type == filters["role"]
@@ -636,19 +822,34 @@ def _apply_audit_filters(statement, filters: dict[str, str]):
         statement = _where_metadata_key_matches(statement, "severity", filters["severity"], exact=True)
     if filters["target"]:
         statement = _where_any_metadata_key_matches(statement, AUDIT_TARGET_METADATA_KEYS, filters["target"])
-    if filters["q"]:
-        pattern = f"%{_like_escape(filters['q'])}%"
-        search_fields = [
-            SecurityAuditEvent.event_type.ilike(pattern, escape="\\"),
-            SecurityAuditEvent.outcome.ilike(pattern, escape="\\"),
-            SecurityAuditEvent.correlation_id.ilike(pattern, escape="\\"),
-            SecurityAuditEvent.ip_address.ilike(pattern, escape="\\"),
-            SecurityAuditEvent.session_ref.ilike(pattern, escape="\\"),
-        ]
-        if filters["q"].isdigit():
-            search_fields.append(SecurityAuditEvent.user_id == int(filters["q"]))
-        statement = statement.where(or_(*search_fields))
+    statement = _apply_audit_search_filter(statement, filters["q"])
     return statement
+
+
+def _apply_audit_actor_filter(statement, actor: str):
+    if not actor:
+        return statement
+    try:
+        actor_id = int(actor)
+    except ValueError:
+        return statement
+    return statement.where(SecurityAuditEvent.user_id == actor_id)
+
+
+def _apply_audit_search_filter(statement, query: str):
+    if not query:
+        return statement
+    pattern = f"%{_like_escape(query)}%"
+    search_fields = [
+        SecurityAuditEvent.event_type.ilike(pattern, escape="\\"),
+        SecurityAuditEvent.outcome.ilike(pattern, escape="\\"),
+        SecurityAuditEvent.correlation_id.ilike(pattern, escape="\\"),
+        SecurityAuditEvent.ip_address.ilike(pattern, escape="\\"),
+        SecurityAuditEvent.session_ref.ilike(pattern, escape="\\"),
+    ]
+    if query.isdigit():
+        search_fields.append(SecurityAuditEvent.user_id == int(query))
+    return statement.where(or_(*search_fields))
 
 
 def _where_metadata_key_matches(statement, key: str, value: str, *, exact: bool):
@@ -1020,6 +1221,21 @@ def transition_manual_recovery_request_as_admin(
         raise AuthError(FRESH_MFA_REQUIRED_ERROR, 403)
 
     _assert_not_self_manual_recovery_action(actor, request_id, "manual_recovery_transition")
+    if normalized_status in MANUAL_RECOVERY_STATUS_OPERATION_TYPES:
+        _validate_manual_recovery_transition_request(actor, request_id, normalized_status)
+        request_record = _create_admin_action_request(
+            actor,
+            operation_type=MANUAL_RECOVERY_STATUS_OPERATION_TYPES[normalized_status],
+            target_type="manual_recovery_request",
+            target_id=str(int(request_id)),
+            operation_payload={"status": normalized_status},
+            reason=clean_reason,
+        )
+        return {
+            "message": ADMIN_ACTION_APPROVAL_REQUIRED_MESSAGE,
+            "request": public_admin_action_request(request_record),
+        }
+
     result = transition_manual_recovery_request(request_id, normalized_status, reason=clean_reason)
     audit_event(
         "manual_recovery_admin_transition",
@@ -1054,18 +1270,509 @@ def complete_manual_recovery_request_as_admin(
         raise AuthError(FRESH_MFA_REQUIRED_ERROR, 403)
 
     _assert_not_self_manual_recovery_action(actor, request_id, "manual_recovery_complete")
-    result = complete_manual_recovery_request(request_id, reason=clean_reason)
+    _validate_manual_recovery_completion_request(actor, request_id)
+    request_record = _create_admin_action_request(
+        actor,
+        operation_type="manual_recovery_complete",
+        target_type="manual_recovery_request",
+        target_id=str(int(request_id)),
+        operation_payload={"action": "complete"},
+        reason=clean_reason,
+    )
+    return {
+        "message": ADMIN_ACTION_APPROVAL_REQUIRED_MESSAGE,
+        "request": public_admin_action_request(request_record),
+    }
+
+
+def admin_action_requests_for_admin(actor: User) -> list[dict[str, Any]]:
+    _require_active_root_admin(actor, "admin_action_request_review")
+    _expire_stale_admin_action_requests(actor)
+    requests = list(
+        db.session.execute(
+            db.select(AdminActionRequest).order_by(
+                AdminActionRequest.created_at.desc(),
+                AdminActionRequest.id.desc(),
+            )
+        ).scalars()
+    )
+    audit_event("admin_action_request_review", "success", user=actor)
+    return [public_admin_action_request(item) for item in requests]
+
+
+def admin_action_request_detail_for_admin(actor: User, request_id: int) -> dict[str, Any]:
+    _require_active_root_admin(actor, "admin_action_request_detail")
+    request_record = _admin_action_request_or_error(request_id)
+    _expire_admin_action_request_if_stale(request_record, actor)
+    audit_event(
+        "admin_action_request_detail",
+        "success",
+        user=actor,
+        metadata={"request_ref": audit_reference("admin_action_request", request_record.id)},
+    )
+    return public_admin_action_request(request_record)
+
+
+def approve_admin_action_request_as_root_admin(
+    actor: User,
+    request_id: int,
+    totp_code: str | None,
+) -> dict[str, Any]:
+    _require_active_root_admin(actor, "admin_action_request_approve")
+    request_record = _pending_admin_action_request_or_error(request_id, actor)
+    _assert_admin_action_request_hmac_valid(request_record, actor)
+    _assert_requester_still_eligible(request_record, actor)
+    if request_record.requester_id == actor.id:
+        audit_event(
+            "admin_action_request_approve",
+            "blocked",
+            user=actor,
+            metadata={
+                "reason": "self_approval_denied",
+                "request_ref": audit_reference("admin_action_request", request_record.id),
+            },
+        )
+        raise AuthError("Requester cannot approve their own admin action request", 403)
+    if not totp_code or not _verify_totp_for_user(actor, totp_code, f"admin_action_approve_{request_record.operation_type}"):
+        audit_event(
+            "admin_action_request_approve",
+            "failure",
+            user=actor,
+            metadata={
+                "reason": "invalid_totp_step_up",
+                "request_ref": audit_reference("admin_action_request", request_record.id),
+            },
+        )
+        raise AuthError(FRESH_MFA_REQUIRED_ERROR, 403)
+
+    request_record.approver_id = actor.id
+    request_record.status = "executed"
+    request_record.decided_at = _utcnow()
+    result = _execute_admin_action_request(actor, request_record)
+    request_record.executed_at = _utcnow()
+    audit_event_required(
+        "admin_action_request_executed",
+        "success",
+        user=actor,
+        metadata={
+            "request_ref": audit_reference("admin_action_request", request_record.id),
+            "operation_type": request_record.operation_type,
+            "target_type": request_record.target_type,
+            "target_ref": _admin_action_target_ref(request_record),
+            "requester_ref": audit_reference("admin_user", request_record.requester_id),
+        },
+    )
+    db.session.commit()
+    return {
+        "message": "Admin action request approved and executed",
+        "request": public_admin_action_request(request_record),
+        "result": result,
+    }
+
+
+def reject_admin_action_request_as_root_admin(
+    actor: User,
+    request_id: int,
+    totp_code: str | None,
+) -> dict[str, Any]:
+    _require_active_root_admin(actor, "admin_action_request_reject")
+    request_record = _pending_admin_action_request_or_error(request_id, actor)
+    _assert_admin_action_request_hmac_valid(request_record, actor)
+    if request_record.requester_id == actor.id:
+        audit_event(
+            "admin_action_request_reject",
+            "blocked",
+            user=actor,
+            metadata={
+                "reason": "self_rejection_denied",
+                "request_ref": audit_reference("admin_action_request", request_record.id),
+            },
+        )
+        raise AuthError("Requester cannot reject their own admin action request", 403)
+    if not totp_code or not _verify_totp_for_user(actor, totp_code, f"admin_action_reject_{request_record.operation_type}"):
+        audit_event(
+            "admin_action_request_reject",
+            "failure",
+            user=actor,
+            metadata={
+                "reason": "invalid_totp_step_up",
+                "request_ref": audit_reference("admin_action_request", request_record.id),
+            },
+        )
+        raise AuthError(FRESH_MFA_REQUIRED_ERROR, 403)
+    request_record.approver_id = actor.id
+    request_record.status = "rejected"
+    request_record.decided_at = _utcnow()
+    audit_event(
+        "admin_action_request_rejected",
+        "success",
+        user=actor,
+        metadata={
+            "request_ref": audit_reference("admin_action_request", request_record.id),
+            "operation_type": request_record.operation_type,
+        },
+    )
+    db.session.commit()
+    return {"message": "Admin action request rejected", "request": public_admin_action_request(request_record)}
+
+
+def cancel_admin_action_request_as_root_admin(
+    actor: User,
+    request_id: int,
+    totp_code: str | None,
+) -> dict[str, Any]:
+    _require_active_root_admin(actor, "admin_action_request_cancel")
+    request_record = _pending_admin_action_request_or_error(request_id, actor)
+    _assert_admin_action_request_hmac_valid(request_record, actor)
+    if request_record.requester_id != actor.id:
+        audit_event(
+            "admin_action_request_cancel",
+            "blocked",
+            user=actor,
+            metadata={
+                "reason": "not_requester",
+                "request_ref": audit_reference("admin_action_request", request_record.id),
+            },
+        )
+        raise AuthError("Only the requester can cancel this admin action request", 403)
+    if not totp_code or not _verify_totp_for_user(actor, totp_code, f"admin_action_cancel_{request_record.operation_type}"):
+        audit_event(
+            "admin_action_request_cancel",
+            "failure",
+            user=actor,
+            metadata={
+                "reason": "invalid_totp_step_up",
+                "request_ref": audit_reference("admin_action_request", request_record.id),
+            },
+        )
+        raise AuthError(FRESH_MFA_REQUIRED_ERROR, 403)
+    request_record.status = "cancelled"
+    request_record.decided_at = _utcnow()
+    audit_event(
+        "admin_action_request_cancelled",
+        "success",
+        user=actor,
+        metadata={
+            "request_ref": audit_reference("admin_action_request", request_record.id),
+            "operation_type": request_record.operation_type,
+        },
+    )
+    db.session.commit()
+    return {"message": "Admin action request cancelled", "request": public_admin_action_request(request_record)}
+
+
+def public_admin_action_request(request_record: AdminActionRequest) -> dict[str, Any]:
+    payload = dict(request_record.operation_payload or {})
+    return {
+        "id": request_record.id,
+        "operation_type": request_record.operation_type,
+        "target_type": request_record.target_type,
+        "target_ref": _admin_action_target_ref(request_record),
+        "payload": _safe_admin_action_payload(payload),
+        "requester_ref": audit_reference("admin_user", request_record.requester_id),
+        "requester_role": request_record.requester_role,
+        "approver_ref": audit_reference("admin_user", request_record.approver_id)
+        if request_record.approver_id
+        else None,
+        "status": request_record.status,
+        "reason_present": bool(request_record.reason_present),
+        "reason_length": int(request_record.reason_length or 0),
+        "created_at": request_record.created_at.isoformat() if request_record.created_at else None,
+        "expires_at": request_record.expires_at.isoformat() if request_record.expires_at else None,
+        "decided_at": request_record.decided_at.isoformat() if request_record.decided_at else None,
+        "executed_at": request_record.executed_at.isoformat() if request_record.executed_at else None,
+    }
+
+
+def _create_admin_action_request(
+    actor: User,
+    *,
+    operation_type: str,
+    target_type: str,
+    target_id: str,
+    operation_payload: dict[str, Any],
+    reason: str | None,
+) -> AdminActionRequest:
+    _require_active_root_admin(actor, "admin_action_request_create")
+    now = _utcnow()
+    reason_text = str(reason or "").strip()
+    request_record = AdminActionRequest(
+        operation_type=operation_type,
+        target_type=target_type,
+        target_id=str(target_id),
+        operation_payload=_safe_admin_action_payload(operation_payload),
+        requester_id=actor.id,
+        requester_role=actor.account_type,
+        status=ADMIN_ACTION_PENDING_STATUS,
+        reason_present=bool(reason_text),
+        reason_length=len(reason_text),
+        metadata_hmac="pending",
+        created_at=now,
+        updated_at=now,
+        expires_at=now + timedelta(seconds=ADMIN_ACTION_REQUEST_TTL_SECONDS),
+    )
+    db.session.add(request_record)
+    db.session.flush()
+    request_record.metadata_hmac = _admin_action_request_hmac(request_record)
+    audit_event_required(
+        "admin_action_request_created",
+        "success",
+        user=actor,
+        metadata={
+            "request_ref": audit_reference("admin_action_request", request_record.id),
+            "operation_type": operation_type,
+            "target_type": target_type,
+            "target_ref": _admin_action_target_ref(request_record),
+            "reason_present": bool(reason_text),
+            "reason_length": len(reason_text),
+        },
+    )
+    db.session.commit()
+    return request_record
+
+
+def _execute_admin_action_request(actor: User, request_record: AdminActionRequest) -> dict[str, Any]:
+    try:
+        if request_record.operation_type in STAFF_ACTION_OPERATION_TYPES.values():
+            return _execute_staff_admin_action_request(actor, request_record)
+        if request_record.operation_type in {"manual_recovery_approve", "manual_recovery_deny"}:
+            return _execute_manual_recovery_transition_admin_action_request(actor, request_record)
+        if request_record.operation_type == "manual_recovery_complete":
+            return _execute_manual_recovery_complete_admin_action_request(actor, request_record)
+    except (TypeError, ValueError):
+        _mark_admin_action_request_execution_failed(actor, request_record)
+        raise
+    audit_event(
+        "admin_action_request_execute",
+        "failure",
+        user=actor,
+        metadata={
+            "reason": "unsupported_operation",
+            "request_ref": audit_reference("admin_action_request", request_record.id),
+            "operation_type": request_record.operation_type,
+        },
+    )
+    raise AuthError("Admin action request cannot be executed", 409)
+
+
+def _execute_staff_admin_action_request(
+    actor: User,
+    request_record: AdminActionRequest,
+) -> dict[str, Any]:
+    action = str((request_record.operation_payload or {}).get("action") or "")
+    return _execute_staff_account_lifecycle(actor, int(request_record.target_id), action)
+
+
+def _execute_manual_recovery_transition_admin_action_request(
+    actor: User,
+    request_record: AdminActionRequest,
+) -> dict[str, Any]:
+    status = str((request_record.operation_payload or {}).get("status") or "")
+    _assert_not_self_manual_recovery_action(actor, int(request_record.target_id), "manual_recovery_transition")
+    result = transition_manual_recovery_request(
+        int(request_record.target_id),
+        status,
+        reason=ADMIN_ACTION_EXECUTION_REASON,
+    )
+    audit_event(
+        "manual_recovery_admin_transition",
+        "success",
+        user=actor,
+        metadata={
+            "request_ref": audit_reference("manual_recovery_request", request_record.target_id),
+            "new_status": result["status"],
+            "reason_recorded": True,
+            "maker_checker_request_ref": audit_reference("admin_action_request", request_record.id),
+        },
+    )
+    return {"message": "Manual recovery request updated", "request": result}
+
+
+def _execute_manual_recovery_complete_admin_action_request(
+    actor: User,
+    request_record: AdminActionRequest,
+) -> dict[str, Any]:
+    _assert_not_self_manual_recovery_action(actor, int(request_record.target_id), "manual_recovery_complete")
+    result = complete_manual_recovery_request(
+        int(request_record.target_id),
+        reason=ADMIN_ACTION_EXECUTION_REASON,
+    )
     audit_event(
         "manual_recovery_admin_complete",
         "success",
         user=actor,
         metadata={
-            "request_ref": audit_reference("manual_recovery_request", request_id),
+            "request_ref": audit_reference("manual_recovery_request", request_record.target_id),
+            "maker_checker_request_ref": audit_reference("admin_action_request", request_record.id),
             "mfa_reenrollment_required": bool(result.get("mfa_reenrollment_required")),
             "revoked_sessions": int(result.get("revoked_sessions") or 0),
         },
     )
     return {"message": "Manual recovery request completed", "request": result}
+
+
+def _mark_admin_action_request_execution_failed(actor: User, request_record: AdminActionRequest) -> None:
+    request_record.status = "execution_failed"
+    request_record.decided_at = request_record.decided_at or _utcnow()
+    audit_event(
+        "admin_action_request_execute",
+        "failure",
+        user=actor,
+        metadata={
+            "request_ref": audit_reference("admin_action_request", request_record.id),
+            "operation_type": request_record.operation_type,
+        },
+    )
+    db.session.commit()
+
+
+def _pending_admin_action_request_or_error(request_id: int, actor: User) -> AdminActionRequest:
+    request_record = _admin_action_request_or_error(request_id)
+    _expire_admin_action_request_if_stale(request_record, actor)
+    if request_record.status != ADMIN_ACTION_PENDING_STATUS:
+        audit_event(
+            "admin_action_request_state",
+            "blocked",
+            user=actor,
+            metadata={
+                "reason": "not_pending",
+                "request_ref": audit_reference("admin_action_request", request_record.id),
+                "status": request_record.status,
+            },
+        )
+        raise AuthError("Admin action request is not pending", 409)
+    return request_record
+
+
+def _admin_action_request_or_error(request_id: int) -> AdminActionRequest:
+    request_record = db.session.get(AdminActionRequest, int(request_id))
+    if request_record is None:
+        raise AuthError("Admin action request not found", 404)
+    return request_record
+
+
+def _expire_stale_admin_action_requests(actor: User) -> None:
+    now = _utcnow()
+    stale = list(
+        db.session.execute(
+            db.select(AdminActionRequest).where(
+                AdminActionRequest.status == ADMIN_ACTION_PENDING_STATUS,
+                AdminActionRequest.expires_at <= now,
+            )
+        ).scalars()
+    )
+    for request_record in stale:
+        request_record.status = "expired"
+        request_record.decided_at = now
+        audit_event(
+            "admin_action_request_expired",
+            "success",
+            user=actor,
+            metadata={
+                "request_ref": audit_reference("admin_action_request", request_record.id),
+                "operation_type": request_record.operation_type,
+            },
+        )
+    if stale:
+        db.session.commit()
+
+
+def _expire_admin_action_request_if_stale(request_record: AdminActionRequest, actor: User) -> None:
+    if request_record.status != ADMIN_ACTION_PENDING_STATUS:
+        return
+    if _as_utc(request_record.expires_at) > _utcnow():
+        return
+    request_record.status = "expired"
+    request_record.decided_at = _utcnow()
+    audit_event(
+        "admin_action_request_expired",
+        "success",
+        user=actor,
+        metadata={
+            "request_ref": audit_reference("admin_action_request", request_record.id),
+            "operation_type": request_record.operation_type,
+        },
+    )
+    db.session.commit()
+    raise AuthError("Admin action request is expired", 409)
+
+
+def _assert_requester_still_eligible(request_record: AdminActionRequest, actor: User) -> None:
+    requester = db.session.get(User, int(request_record.requester_id))
+    if not _is_active_root_admin(requester):
+        audit_event(
+            "admin_action_request_approve",
+            "blocked",
+            user=actor,
+            metadata={
+                "reason": "requester_ineligible",
+                "request_ref": audit_reference("admin_action_request", request_record.id),
+            },
+        )
+        raise AuthError("Admin action requester is no longer eligible", 409)
+
+
+def _assert_admin_action_request_hmac_valid(request_record: AdminActionRequest, actor: User) -> None:
+    expected = _admin_action_request_hmac(request_record)
+    if not hmac.compare_digest(str(request_record.metadata_hmac or ""), expected):
+        audit_event(
+            "admin_action_request_integrity",
+            "failure",
+            user=actor,
+            metadata={"request_ref": audit_reference("admin_action_request", request_record.id)},
+        )
+        raise AuthError("Admin action request integrity check failed", 409)
+
+
+def _admin_action_request_hmac(request_record: AdminActionRequest) -> str:
+    payload = {
+        "id": int(request_record.id),
+        "operation_type": request_record.operation_type,
+        "target_type": request_record.target_type,
+        "target_id": request_record.target_id,
+        "operation_payload": _safe_admin_action_payload(request_record.operation_payload or {}),
+        "requester_id": int(request_record.requester_id),
+        "requester_role": request_record.requester_role,
+        "reason_present": bool(request_record.reason_present),
+        "reason_length": int(request_record.reason_length or 0),
+        "created_at": _datetime_hmac_value(request_record.created_at),
+        "expires_at": _datetime_hmac_value(request_record.expires_at),
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return active_hmac_hex(f"admin-action-request:{canonical}", length=64)
+
+
+def _safe_admin_action_payload(payload: dict[str, Any]) -> dict[str, str]:
+    safe: dict[str, str] = {}
+    for key, value in dict(payload or {}).items():
+        key_text = str(key or "").strip()
+        if key_text not in {"action", "status"}:
+            continue
+        value_text = str(value or "").strip().casefold()
+        if value_text:
+            safe[key_text] = value_text
+    return safe
+
+
+def _admin_action_target_ref(request_record: AdminActionRequest) -> str | None:
+    return audit_reference(request_record.target_type, request_record.target_id)
+
+
+def _datetime_hmac_value(value: datetime | None) -> str:
+    if value is None:
+        return ""
+    return _as_utc(value).isoformat()
+
+
+def _is_active_root_admin(user: User | None) -> bool:
+    return bool(is_root_admin(user) and is_active_staff_user(user))
+
+
+def _require_active_root_admin(actor: User, event_type: str) -> None:
+    if _is_active_root_admin(actor):
+        return
+    audit_event(event_type, "blocked", user=actor, metadata={"reason": "not_active_root_admin"})
+    raise AuthError("Forbidden", 403)
 
 
 def invite_info(token: str) -> dict[str, Any]:
@@ -1094,7 +1801,7 @@ def start_invite_acceptance(
 ) -> dict[str, Any]:
     _reject_forged_invite_fields(request_fields)
     try:
-        verify_turnstile_token(turnstile_token)
+        require_turnstile("admin_invite_accept", turnstile_token)
     except TurnstileError as exc:
         audit_event("staff_invite_accept", "failure", metadata={"reason": "turnstile_failed"})
         raise AuthError(INVITE_ACCEPTANCE_ERROR, 400) from exc
@@ -1127,6 +1834,7 @@ def start_invite_acceptance(
             staff_personal_email=None,
             mfa_enabled=False,
         )
+        mark_password_changed(user)
         db.session.add(user)
         db.session.flush()
         invite.setup_user_id = user.id
@@ -1135,7 +1843,7 @@ def start_invite_acceptance(
             raise AuthError(GENERIC_INVITE_ERROR, 401)
         user.full_name = name
         user.phone_number = phone
-        user.password_hash = hash_password(password)
+        replace_user_password(user, password)
         user.staff_personal_email = None
 
     secret = pyotp.random_base32(length=32)
@@ -1429,6 +2137,86 @@ def _assert_not_self_manual_recovery_action(actor: User, request_id: int, action
     assert_not_self_customer_action(actor, target_customer, action_type)
 
 
+def _validate_manual_recovery_transition_request(actor: User, request_id: int, status: str) -> None:
+    request_record = db.session.get(ManualRecoveryRequest, int(request_id))
+    if request_record is None:
+        audit_event(
+            "manual_recovery_admin_transition",
+            "blocked",
+            user=actor,
+            metadata={"reason": "request_not_found"},
+        )
+        raise AuthError("Manual recovery request not found", 404)
+    if _as_utc(request_record.expires_at) <= _utcnow():
+        request_record.status = "expired"
+        request_record.status_changed_at = _utcnow()
+        audit_event(
+            "manual_recovery_admin_transition",
+            "blocked",
+            user=actor,
+            metadata={
+                "reason": "request_expired",
+                "request_ref": audit_reference("manual_recovery_request", request_id),
+            },
+        )
+        db.session.commit()
+        raise AuthError("Manual recovery request is expired", 409)
+    allowed = {
+        "pending": frozenset({MANUAL_RECOVERY_STATUS_DENIED}),
+        MANUAL_RECOVERY_STATUS_UNDER_REVIEW: frozenset(
+            {MANUAL_RECOVERY_STATUS_APPROVED, MANUAL_RECOVERY_STATUS_DENIED}
+        ),
+    }
+    if status not in allowed.get(str(request_record.status or ""), frozenset()):
+        audit_event(
+            "manual_recovery_admin_transition",
+            "failure",
+            user=actor,
+            metadata={
+                "reason": "invalid_transition",
+                "request_ref": audit_reference("manual_recovery_request", request_id),
+            },
+        )
+        raise AuthError("Invalid manual recovery status transition", 409)
+
+
+def _validate_manual_recovery_completion_request(actor: User, request_id: int) -> None:
+    request_record = db.session.get(ManualRecoveryRequest, int(request_id))
+    if request_record is None:
+        audit_event(
+            "manual_recovery_admin_complete",
+            "blocked",
+            user=actor,
+            metadata={"reason": "request_not_found"},
+        )
+        raise AuthError("Manual recovery request not found", 404)
+    if _as_utc(request_record.expires_at) <= _utcnow():
+        request_record.status = "expired"
+        request_record.status_changed_at = _utcnow()
+        audit_event(
+            "manual_recovery_admin_complete",
+            "blocked",
+            user=actor,
+            metadata={
+                "reason": "request_expired",
+                "request_ref": audit_reference("manual_recovery_request", request_id),
+            },
+        )
+        db.session.commit()
+        raise AuthError("Manual recovery request is expired", 409)
+    if request_record.status != MANUAL_RECOVERY_STATUS_APPROVED:
+        audit_event(
+            "manual_recovery_admin_complete",
+            "failure",
+            user=actor,
+            metadata={
+                "reason": "completion_requires_approval",
+                "request_ref": audit_reference("manual_recovery_request", request_id),
+            },
+        )
+        raise AuthError("Manual recovery request must be approved before completion", 409)
+
+
 def _reject_existing_staff_identity(workplace_email: str) -> None:
     existing = db.session.execute(
         db.select(User).where(
@@ -1494,7 +2282,7 @@ def _staff_username(workplace_email: str) -> str:
 
 
 def _mfa_setup_payload(user: User, secret: str) -> dict[str, str]:
-    provisioning_uri = pyotp.TOTP(secret, digits=6, interval=30, digest=hashlib.sha1).provisioning_uri(
+    provisioning_uri = _totp(secret).provisioning_uri(
         name=user.email,
         issuer_name=current_app.config["MFA_ISSUER_NAME"],
     )
@@ -1573,3 +2361,7 @@ def _as_utc(value: datetime) -> datetime:
 
 def _utc_iso(value: datetime) -> str:
     return _as_utc(value).isoformat()
+
+
+def _utc_display(value: datetime) -> str:
+    return _as_utc(value).strftime("%Y-%m-%d %H:%M:%S UTC")

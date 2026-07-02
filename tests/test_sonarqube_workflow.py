@@ -85,7 +85,8 @@ def test_ci_runs_pytest_once_and_hands_coverage_to_sonarqube():
     test_command = next(
         step for step in test_steps if step.get("name") == "Run tests and security checks"
     )["run"]
-    assert ci_text.count("python -m pytest") == 1
+    test_job_text = str(ci["jobs"]["test"])
+    assert test_job_text.count("python -m pytest") == 1
     assert "python -m pytest -q -n auto" in test_command
     assert "--cov-report=xml:coverage.xml" in test_command
     assert "--cov=." in test_command
@@ -170,8 +171,8 @@ def test_sonarqube_properties_define_scope_coverage_and_reporting_policy():
     properties = _properties()
     gitignore = Path(".gitignore").read_text(encoding="utf-8").splitlines()
 
-    assert properties["sonar.projectKey"] == "TL0024_SITBank"
-    assert properties["sonar.organization"] == "tl0024"
+    assert properties["sonar.projectKey"] == "Koon-Kiat_SITBank"
+    assert properties["sonar.organization"] == "koon-kiat"
     assert properties["sonar.sources"].split(",") == [
         "app",
         "ops",
@@ -194,14 +195,14 @@ def test_sonarqube_properties_define_scope_coverage_and_reporting_policy():
     assert "tests/*" in coverage_config
 
 
-def test_sonarqube_docs_record_cloud_private_repo_and_nonblocking_policy():
+def test_sonarqube_docs_record_cloud_public_repo_and_nonblocking_policy():
     text = SONAR_DOC_PATH.read_text(encoding="utf-8")
     normalized = " ".join(text.split())
 
     for required in (
         "SonarQube Cloud",
-        "50,000",
-        "private",
+        "public",
+        "repository files cannot prove",
         "SONAR_TOKEN",
         "source code is sent",
         "reporting-only",
@@ -210,8 +211,8 @@ def test_sonarqube_docs_record_cloud_private_repo_and_nonblocking_policy():
         "Semgrep",
         "false positive",
         "coverage.xml",
-        "TL0024_SITBank",
-        "tl0024",
+        "Koon-Kiat_SITBank",
+        "koon-kiat",
     ):
         assert required in normalized
     assert "SONAR_HOST_URL" in normalized
@@ -242,7 +243,7 @@ def test_active_docs_do_not_claim_sonarqube_is_missing():
 
 
 def test_code_quality_label_is_managed_by_all_labelers():
-    labeler = yaml.safe_load(Path(".github/labeler.yml").read_text(encoding="utf-8"))
+    policy = Path("ops/security/github_label_policy.py").read_text(encoding="utf-8")
     workflows = [
         Path(path).read_text(encoding="utf-8")
         for path in (
@@ -252,22 +253,17 @@ def test_code_quality_label_is_managed_by_all_labelers():
         )
     ]
 
-    assert "code-quality" in labeler
-    labeler_text = str(labeler["code-quality"])
-    assert ".github/workflows/sonarqube.yml" in labeler_text
-    assert "sonar-project.properties" in labeler_text
+    for required in (
+        '"code-quality"',
+        "sonarqube",
+        "sonarcloud",
+        "quality gate",
+        "code quality",
+        "maintainability",
+        "coverage",
+        ".github/workflows/sonarqube.yml",
+        "sonar-project.properties",
+    ):
+        assert required in policy
     for workflow in workflows:
-        assert (
-            'create_label code-quality "Static analysis, maintainability, coverage, '
-            'or quality-gate work"'
-        ) in workflow
-        for term in (
-            "sonarqube",
-            "quality gate",
-            "code quality",
-            "maintainability",
-            "coverage",
-            "duplication",
-            "technical debt",
-        ):
-            assert term in workflow
+        assert "ops/security/github_label_policy.py" in workflow

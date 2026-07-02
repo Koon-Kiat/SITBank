@@ -9,25 +9,17 @@ Hadolint, Syft, deployment tests, or production guard tests.
 
 Category: [Security assurance](../README.md#assurance).
 
-## Mode And Private-Repository Decision
+## Mode And Repository Decision
 
 Cloud analysis was selected instead of a self-hosted SonarQube server because
 SITBank does not need another internet-facing service or an operator-maintained
 analysis host. SonarQube must not be installed on the public production EC2
 server.
 
-As checked on 28 June 2026, the official
-[SonarQube Cloud subscription documentation](https://docs.sonarsource.com/sonarqube-cloud/administering-sonarcloud/managing-subscription/subscription-plans)
-allows Free-plan analysis of private projects up to 50,000 private lines of
-code across the organization. Tests, comments, blank lines, excluded files,
-and unsupported languages do not count toward that limit. A repository-side
-count found about 11,600 nonblank/noncomment Python lines under `app`, so this
-project is within the per-organization ceiling if the `tl0024` SonarQube
-Cloud organization has enough unused private LOC and no more than five
-members. The plan and usage must be confirmed in the SonarQube Cloud
-organization during project import because limits and organization-wide usage
-can change. Upgrade to Team or stop analysis rather than silently exceeding
-the plan.
+`Koon-Kiat/SITBank` is public. The repository uses the current SonarQube Cloud
+public-project plan selected in the provider UI. Plan limits and provider state
+must still be confirmed by an operator; repository files cannot prove the live
+subscription or organization configuration.
 
 SonarQube Cloud is a third-party SaaS: configured source code is sent to
 SonarQube Cloud for analysis, together with configured test code. The
@@ -41,11 +33,11 @@ a reviewed follow-up instead.
 
 ## One-Time Setup And Secrets
 
-1. Import or rebind the private `TL0024/SITBank` GitHub repository into the
-   `tl0024` SonarQube Cloud organization and confirm the project key is
-   `TL0024_SITBank`.
-2. Confirm current private LOC usage, member limits, plan terms, repository
-   binding, and access permissions in SonarQube Cloud.
+1. Import or rebind the public `Koon-Kiat/SITBank` GitHub repository into the
+   `koon-kiat` SonarQube Cloud organization and confirm the project key is
+   `Koon-Kiat_SITBank`.
+2. Confirm current plan terms, repository binding, and access permissions in
+   SonarQube Cloud.
 3. Generate a narrowly scoped project analysis token.
 4. Store it as the GitHub Actions repository or organization secret
    `SONAR_TOKEN`. Never place it in a repository variable, environment file,
@@ -72,8 +64,9 @@ that both the cloud scan and PR comment were skipped.
 
 ## Coverage, Scope, And Evidence
 
-The `test` job in `.github/workflows/ci-deploy.yml` installs
-`requirements-dev.lock` with hashes and runs the full suite once:
+The visible `Test and security checks` job (internal ID `test`) in
+`.github/workflows/ci-deploy.yml` installs `requirements-dev.lock` with hashes
+and runs the full suite once:
 
 ```text
 python -m pytest -q -n auto --cov=. --cov-config=.coveragerc --cov-report=xml:coverage.xml --cov-report=term --durations=30 --durations-min=0.5
@@ -81,14 +74,15 @@ node tests/js/collect-browser-coverage.mjs
 ```
 
 After all test and security checks pass, that job uploads `coverage.xml` and
-`coverage/lcov.info`
-as a one-day artifact. Its downstream `sonarqube` job calls the reusable
+`coverage/lcov.info` as a one-day artifact. Its downstream visible
+`SonarQube analysis` job (internal ID `sonarqube`) calls the reusable
 `.github/workflows/sonarqube.yml`, checks out the same resolved source commit,
 downloads the coverage artifact, and runs the scanner without rerunning pytest.
 This keeps the authoritative test result and SonarQube coverage input in the
 same workflow run. The test and reusable scanner jobs remain read-only; a
-separate trusted-PR-only comment job holds the narrowly scoped
-`pull-requests: write` permission.
+separate trusted-PR-only `SonarQube PR comment` job (internal ID
+`sonarqube-comment`) holds the narrowly scoped `pull-requests: write`
+permission.
 
 `sonar-project.properties` sends `app`, deployment/security material under
 `ops`, and `config.py`, `wsgi.py`, and `admin_wsgi.py` as sources.
@@ -105,6 +99,26 @@ SonarQube Cloud findings complement the more specialized tools: CodeQL and
 Semgrep inspect security patterns, dependency tools inspect known component
 risk, secret scanners look for credentials, and deployment checks validate
 runtime and infrastructure contracts.
+
+The active binding is the `koon-kiat` organization and
+`Koon-Kiat_SITBank` project key. Workflow dashboard links are constructed from
+the validated values in `sonar-project.properties`; they must not hard-code or
+fall back to a legacy owner or project. Scanner evidence is valid only when the
+same run imports both `coverage.xml` and `coverage/lcov.info` for the resolved
+source commit.
+
+The reviewed main-branch cleartext-protocol finding in
+`ops/container/smoke-test.sh` is an intentional private-only exception: the
+URL and its ZAP baseline sink address only a named container on the isolated
+ephemeral Docker smoke network and carry narrow line-scoped dispositions.
+Public, staging, production, admin, deployment, and observability traffic
+remain HTTPS/TLS or private OpenSSH-over-Tailscale as applicable. CodeQL
+findings for the mandated
+HIBP SHA-1 range lookup, keyed HMAC/PBKDF2 constructions, a non-verifier
+configuration fingerprint, and exact trusted static-document assertions are
+also alert-specific false positives. Each provider disposition carries its
+own rationale; these decisions do not allow broad exclusions or suppression
+of future findings.
 
 Gitleaks 8.30.1 is a separate full Git history control in
 `.github/workflows/gitleaks.yml`; it uses redacted output, no production
@@ -157,18 +171,15 @@ maintainability finding that asks for only one of those identifiers should be
 accepted with this rationale rather than removing reproducible pinning or
 automated version tracking.
 
-Four cognitive-complexity findings are accepted maintainability debt in
-central registration and security-boundary functions:
-
-- Flask CLI command registration;
-- database-backed session-hook registration;
-- production-readiness validation; and
-- the transactional admin database-privilege applicator.
-
-These findings are not security defects, and splitting the functions without a
-dedicated design review would increase control-flow and rollback risk. Other
-cognitive-complexity findings were reduced with tested helper extraction.
-Accepted findings remain visible in SonarQube and are not suppressed in source.
+The database-backed session hook, production-readiness mode validation, and
+transactional admin database-privilege applicator use focused tested helpers so
+their security decisions and rollback boundaries remain explicit. Flask CLI
+registration retains one line-scoped `NOSONAR` disposition because Sonar counts
+the colocated Click decorator declarations as one function even though each
+command has an independent callback. Credential-like configuration names,
+standardized HMAC-SHA1 TOTP use, HIBP range lookup, keyed HMAC references, and
+isolated-container HTTP carry only line-scoped dispositions with an adjacent
+rationale; there are no file-wide exclusions.
 
 ## Initial Quality-Gate And Triage Policy
 
@@ -192,4 +203,4 @@ Current limitations are the external plan/organization prerequisite, the
 manual `SONAR_TOKEN` setup, absent secret-backed analysis on fork pull
 requests and Dependabot pull requests, no summary comments for those untrusted
 events, intentionally absent inline comments, and the deliberately non-blocking
-quality gate. Existing CodeQL private-repository behavior is unchanged.
+quality gate. Existing CodeQL behavior is unchanged.

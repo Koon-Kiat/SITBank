@@ -1,8 +1,17 @@
-﻿# Operations
+# Operations
 
 Security owner roles, milestone/release review cadence, accepted-risk handling,
 and off-repo evidence expectations are defined in
 `docs/security/governance/security-governance.md`.
+
+Production deployment is environment-approved automatic after successful
+staging gates. A push to `main` pauses at the protected `production`
+environment for reviewer approval; operators do not dispatch production
+directly.
+
+For one-stop safe verification commands and EC2 operational path inventory,
+start with `docs/runbooks/global-verification.md`, then follow the deeper
+runbooks linked from that page.
 
 ## Runtime Secrets
 
@@ -31,13 +40,62 @@ Setup, revocation, rotation, evidence, and incident steps are in
 GitHub Actions repository variables are non-secret configuration. The CI
 workflow treats an unset `ENABLE_GITHUB_CODE_SECURITY` as `false` and uses the
 reviewed public-host fallbacks `staging-sitbank.pp.ua` and
-`sitbank.duckdns.org` when `STAGING_PUBLIC_HOST` or `PROD_PUBLIC_HOST` is
+`sitbank.pp.ua` when `STAGING_PUBLIC_HOST` or `PROD_PUBLIC_HOST` is
 unset. Configure overrides under Actions variables only after the matching
 DNS, certificate, and edge change is reviewed. The complete variable table and
 secret-placement boundary are in `docs/DEPLOYMENT.md`; never copy credentials
 or application secrets into repository variables.
 
-MFA/TOTP seed encryption uses envelope encryption. Keep old KEKs in `mfa_kek_keys_json` until `rewrap-mfa-deks` has moved stored records to the new active KEK. Then update `MFA_KEK_ACTIVE_ID` and the root-managed keyring together.
+GitHub Actions displays explicit human-readable job names such as
+`Test and security checks`, `SonarQube analysis`, `Deploy staging`, and
+`Verify private admin tailnet`. Stable kebab-case job IDs remain only for
+workflow dependencies and expressions. If a renamed display name is a required
+status check, update the GitHub ruleset manually only after the new context has
+completed successfully; repository commits cannot mutate or prove that
+provider-side setting.
+
+MFA/TOTP seed encryption uses envelope encryption. Keep old KEKs in
+`mfa_kek_keys_json` until `rewrap-mfa-deks` has moved stored records to the new
+active KEK.
+
+### MFA KEK Rotation
+
+Rotate MFA KEKs in staging first, then production. Do not print, paste, or
+commit KEK values, TOTP seeds, wrapped DEKs, ciphertext, nonces, recovery
+codes, QR codes, or decrypted MFA material.
+
+1. Add the new key id and base64 key value to the root-managed
+   `/etc/sitbank-staging/secrets/mfa_kek_keys_json` file while keeping the old
+   key id present. Repeat later for `/etc/sitbank/secrets/mfa_kek_keys_json`
+   only after staging passes.
+2. Keep `MFA_KEK_ACTIVE_ID` on the old key until the new key id is present and
+   `production-check` passes. The error `Target MFA KEK id is not configured`
+   means the target id has not been added to the runtime keyring yet.
+3. Run the staging dry run and verify only counts and key ids are displayed:
+
+   ```bash
+   sudo docker exec sitbank-staging-app python -m flask --app wsgi:app production-check
+   sudo docker exec sitbank-staging-app python -m flask --app wsgi:app rewrap-mfa-deks --from-kek-id <old-kek-id> --to-kek-id <new-kek-id> --dry-run
+   ```
+
+4. Run the staging rewrap. The command commits only if all matching rows
+   rewrap successfully; on any failure it rolls back and reports that no
+   changes were committed.
+
+   ```bash
+   sudo docker exec sitbank-staging-app python -m flask --app wsgi:app rewrap-mfa-deks --from-kek-id <old-kek-id> --to-kek-id <new-kek-id>
+   sudo docker exec sitbank-staging-app python -m flask --app wsgi:app production-check
+   sudo docker exec sitbank-staging-app python -m flask --app wsgi:app check-security-alerts --report-only --no-delivery
+   ```
+
+5. After staging evidence is reviewed, repeat the same dry run and rewrap in
+   production with the production app container. Confirm an encrypted database
+   backup exists before production rotation.
+6. Set `MFA_KEK_ACTIVE_ID` to the new id only after the new key is present and
+   configuration validation passes. New MFA enrollments then use the new KEK.
+7. Remove the old KEK from the root-managed keyring only after all rows have
+   been rewrapped, post-rotation checks pass, rollback evidence is preserved,
+   and the approved rollback window has closed.
 
 ## Disposable Registration Data Reset
 
@@ -57,7 +115,9 @@ SITBank uses a hybrid private-access model:
   Pulls at `staging-sitbank.pp.ua`.
 - Admin is protected by Tailscale/private operator access at
   `https://admin-sitbank.tailca101b.ts.net/`.
-- The production customer site `sitbank.duckdns.org` remains public.
+- The production customer site `sitbank.pp.ua` remains public.
+- `www.sitbank.pp.ua` is a public alias that redirects to
+  `https://sitbank.pp.ua`.
 
 Bootstrapped root admins browse to
 `https://admin-sitbank.tailca101b.ts.net/login`, sign in with the existing
@@ -84,12 +144,12 @@ Routine verification:
 
 ```bash
 python ops/cloudflare/provision-staging-access --verify
+sudo /usr/local/sbin/verify-staging-edge-boundary staging-sitbank.pp.ua
 curl -I http://127.0.0.1:5001/
 curl --fail http://127.0.0.1:5001/health/ready
+curl --fail http://127.0.0.1:8081/health/ready
 sudo /usr/local/sbin/verify-cloudflare-origin-pull-ca
 sudo nginx -t
-curl --fail --resolve staging-sitbank.pp.ua:443:127.0.0.1 \
-  https://staging-sitbank.pp.ua/health/ready
 curl -I --resolve staging-sitbank.pp.ua:443:<EC2_PUBLIC_IP> \
   https://staging-sitbank.pp.ua/
 sudo /usr/local/sbin/sitbank-verify-tailscale-admin
@@ -118,8 +178,10 @@ rollout. Custom zone/per-hostname AOP CAs require their own reviewed allowlist
 entry before deployment.
 
 Expected: the loopback Flask root returns `403` without an Access assertion,
-local staging readiness succeeds without one, direct Nginx origin access
-returns `403` without Cloudflare's origin-pull client certificate, and the
+local Flask and Nginx staging readiness return exact non-redirect `200`
+responses, direct Nginx origin access fails TLS client-certificate verification
+or returns the approved Nginx `400`/`403` denial without Cloudflare's
+origin-pull client certificate, and the
 private admin URL is reachable only from an approved tailnet path. Tailscale
 Funnel must stay disabled for SITBank admin.
 Tailscale is the private network/device boundary for admin access; it does not
@@ -147,7 +209,7 @@ configure command with `--confirm` and one explicit mode:
 - `interactive` uses approved browser authentication.
 
 OAuth is preferred. The OAuth client needs **Keys > Auth Keys > Write** and
-`tag:sitbank-admin`. Auth keys must be short-lived, one-off where possible,
+`tag:admin-sitbank`. Auth keys must be short-lived, one-off where possible,
 pre-approved where required, and tagged. Read a secret without echo, preserve
 only the required variable through `sudo`, and unset it immediately after the
 command. Never paste it into history, logs, tickets, screenshots, or files.
@@ -179,11 +241,14 @@ Tailscale hostname; Serve exposes only
 control; do not enable Funnel, broaden the listener, or add an Nginx admin
 route to make the check pass.
 
-The reviewed defaults can be overridden with
-`ADMIN_LOOPBACK_HOST`, `ADMIN_LOOPBACK_PORT`, and `PRIVATE_ADMIN_HOST`, or
-their matching command-line flags. Values are strictly validated. Change a
-default only with the Compose, Tailscale, documentation, and tests in the same
-review; there is intentionally no public-admin-host setting.
+The reviewed loopback defaults can be overridden with `ADMIN_LOOPBACK_HOST`
+and `ADMIN_LOOPBACK_PORT`. The verifier derives the private host from the local
+Tailscale node `DNSName`; `PRIVATE_ADMIN_HOST` or `--private-admin-host` is a
+strictly validated diagnostic override. GitHub workflows do not use that
+override: `TAILSCALE_PRIVATE_ADMIN_HOST` in the protected `admin-tailscale`
+environment is their single source of truth. There is intentionally no
+public-admin-host setting; there is intentionally no public-admin-host setting
+in any workflow or runtime configuration.
 
 For a reviewed fallback diagnostic using private SSH port forwarding, first
 run:
@@ -207,16 +272,29 @@ evidence; the protected GitHub workflow below separately supplies
 tailnet-client reachability evidence. Operators must still retain live ACL,
 tag, device-approval, membership, and offboarding evidence.
 
-The manual **Verify private Tailscale admin access** workflow and the direct
-production post-deploy gate are the only GitHub-hosted jobs approved to join
-the tailnet. The direct production job runs after deployment and public
-production TLS verification because a reusable-workflow call did not receive
-the protected environment secrets. Both use the protected `admin-tailscale`
-environment. Production uses `TS_OAUTH_CLIENT_ID`/`TS_OAUTH_SECRET`; a manual
-run may select `authkey` and use `TAILSCALE_AUTH_KEY`. The environment must require manual
-approval and restrict branches to `main`. Either credential must be restricted
-to `tag:github-ci`; that tag may access only `tag:admin-sitbank:443` and must
-not administer the tailnet or provide broad SSH access.
+The staging and production deployment and trusted-main bootstrap jobs, plus
+the protected private-admin verification jobs, are the only GitHub-hosted jobs
+approved to join the tailnet. Deployment and bootstrap use separate
+`tag:github-ci-staging-deploy` and `tag:github-ci-prod-deploy` identities with
+access only to the matching EC2 host on port `22`; each joins before its first
+SSH/SCP command and logs out even after failure. The direct production
+admin-verification job runs after
+deployment and public production TLS verification because a reusable-workflow
+call did not receive the protected environment secrets. That direct job and
+the manual verification workflow use the protected `admin-tailscale`
+environment. The direct job uses `TS_OAUTH_CLIENT_ID`/`TS_OAUTH_SECRET`; a
+manual run may select `authkey` and use `TAILSCALE_AUTH_KEY`. The environment
+must require manual approval and restrict branches to `main`. Either credential
+must be restricted to `tag:github-ci-admin-verify`; that tag may access only
+`tag:admin-sitbank:443` and must not administer the tailnet or provide broad
+SSH access.
+
+`TAILSCALE_PRIVATE_ADMIN_HOST` is mandatory in the protected
+`admin-tailscale` environment for both GitHub verification jobs. Do not add a
+dispatch hostname input or workflow fallback. Its current provider value is
+`admin-sitbank.tailca101b.ts.net`; update it only after an approved Tailscale
+DNS/Serve change. `STAGING_EC2_HOST` and `PROD_EC2_HOST` remain separate SSH
+deployment targets.
 
 Run the workflow after private DNS, certificates, Tailscale ACLs/tags, Serve
 configuration, or the admin edge changes. It first confirms the private URL is
@@ -250,12 +328,47 @@ allow-all policies are forbidden. A drift message names safe fields such as
 `session_duration`; membership drift reports counts only. Never copy tokens,
 email values, authorization headers, cookies, JWTs, Access assertions, or raw
 provider responses into a ticket or change record.
+Provider errors are sanitized before reaching standard error, and the retained
+artifact contains only high-level pass/fail fields, public hostname, reviewed
+session duration, provider-owned review statuses, and timestamp. Troubleshoot
+with the named safe field in an approved operator session; do not upload raw
+responses or enable unredacted debug logging.
 
 The detailed onboarding, offboarding, emergency lockout, rollback, and live
 operator verification steps are in
 `docs/security/architecture/admin-and-staging-zero-trust-access.md`.
 Provider automation and origin assertion details are in
 `docs/security/architecture/cloudflare-staging-access.md`.
+
+## Production Cloudflare Origin Operations
+
+Production requires Cloudflare Authenticated Origin Pull in addition to
+proxied DNS and `Full (strict)`. Install the reviewed CA at
+`/etc/nginx/sitbank-production-cloudflare-origin-pull-ca.pem`; production
+bootstrap verifies it against the separate
+`/etc/sitbank/cloudflare-origin-pull-ca-allowlist.json` before Nginx reload.
+Do not copy the staging CA path into production configuration.
+
+Expected Cloudflare state is minimum TLS 1.3 with TLS 1.3 and Universal SSL
+enabled; Always Use HTTPS, Automatic HTTPS Rewrites, Certificate Transparency
+Monitoring, and six-month HSTS (`max-age=15552000`, include subdomains) enabled;
+Opportunistic Encryption and HSTS preload disabled. Repository files do not
+prove provider state. Retain sanitized Cloudflare and AWS security-group
+evidence and restrict `443/tcp` to Cloudflare edge ranges where practical.
+
+Verify after production bootstrap:
+
+```powershell
+curl.exe -I https://sitbank.pp.ua/
+curl.exe -I http://18.188.152.24/
+curl.exe -k -I https://18.188.152.24/
+curl.exe -k --resolve sitbank.pp.ua:443:18.188.152.24 -I https://sitbank.pp.ua/
+```
+
+The proxied site succeeds, raw HTTP redirects to the canonical hostname, and
+both direct HTTPS requests fail closed without returning SITBank application
+content. See
+`docs/security/architecture/production-cloudflare-origin-boundary.md`.
 
 ## Root Admin Bootstrap
 
@@ -265,7 +378,10 @@ exactly 7 approved admin workplace email addresses from
 normal customer registration and staff invites must not create `root_admin`
 accounts. Configure `ROOT_ADMIN_EMAILS` as a protected GitHub environment
 variable in both `staging` and `production` before deploying this command. Do
-not commit the allowlist to the repository.
+not commit the allowlist to the repository. Production/admin runtime rejects
+missing, empty, malformed, duplicate, built-in default, placeholder, demo,
+example, personal-domain, and non-approved-domain root-admin allowlists before
+serving admin traffic.
 
 Privileged root-admin, admin, and staff accounts use approved SIT workplace
 email domains only. Do not configure personal-provider domains in
@@ -284,10 +400,13 @@ sudo docker exec sitbank-admin printenv ROOT_ADMIN_EMAILS
 ```
 
 The output must be the configured comma-separated 7-email allowlist before you
-run bootstrap.
+run bootstrap. It must not be the built-in `root1` through `root7` development
+placeholder set.
 
-When no usable root admin exists, run the shell-only bootstrap command from the
-already deployed private admin container:
+Root-admin bootstrap remains a manual-only private operator procedure in the
+current design and must not run from GitHub Actions, deployment automation, or
+non-interactive bootstrap wrappers. When no usable root admin exists, run the
+shell-only bootstrap command from the already deployed private admin container:
 
 ```bash
 sudo docker exec -it sitbank-admin \
@@ -311,25 +430,36 @@ root-admin password, TOTP secret, QR code, provisioning URI, or setup values
 through Actions inputs or secrets.
 
 The command prints one-time sensitive TOTP setup output: a manual-entry secret
-and provisioning URI. Add it to an authenticator app immediately. Do not paste
-that output into logs, tickets, chat, shell history, or committed files. The
+and provisioning URI. Add it to an authenticator app immediately. Do not paste,
+screenshot, commit, upload, or store the root-admin password, TOTP secret, QR
+code, provisioning URI, or setup output in GitHub logs, artifacts, job summaries,
+issues, PRs, docs, chat, tickets, shell history, screenshots, or committed files. The
 bootstrap stores only the protected password hash and envelope-encrypted TOTP
 secret, sets the account active, marks the workplace email verified, and records
 a safe `root_admin_bootstrap` audit event without the password or TOTP secret.
+Any future automation must be a separate reviewed design with protected
+environment approval, no plaintext bootstrap material in logs or artifacts,
+short-lived one-time delivery, and explicit redaction tests.
 After bootstrap, open `https://admin-sitbank.tailca101b.ts.net/login` from an
 approved tailnet device and use that workplace email, password, and TOTP code to
 enter the private dashboard.
 
 ## EC2 SSH And Deployment Access Operations
 
-EC2 SSH hardening is deferred and is not implemented by this branch.
-There is no repository OpenSSH drop-in, UFW rollout, security-group migration,
-or deployment-source allowlisting runbook to apply from this checkout.
+GitHub Actions deployment and bootstrap SSH use protected,
+environment-specific Tailscale OAuth identities and private EC2 targets. After
+staging and production deploy and bootstrap successfully through those paths,
+remove public TCP `22` from the AWS security group and host firewall and retain
+sanitized provider evidence. Public SSH is not a fallback once the environment
+host variable points to a Tailscale IP or MagicDNS name. Keep approved AWS
+console/SSM recovery or a documented, source-restricted and time-limited
+security-group break-glass procedure.
 
-Keep the existing approved deployment path in place until a separate reviewed
-change designs and tests the EC2 host, AWS security-group, GitHub Actions, and
-rollback impact together. Do not claim root SSH, password SSH, `AllowUsers`,
-UFW, or TCP `22` ingress has been hardened from repository evidence alone.
+OpenSSH daemon and UFW hardening automation remains deferred. There is no
+repository OpenSSH drop-in or UFW rollout, so do not claim root SSH, password
+SSH, `AllowUsers`, or host-firewall policy has been hardened from repository
+evidence alone. Tailscale SSH remains disabled; deployment continues to use
+OpenSSH with pinned known hosts and the restricted deploy user.
 
 ## Repository Secret Scan Operations
 
@@ -355,6 +485,8 @@ blocks ERROR severity, uploads no source or SARIF, and requires no token.
 Tracked-file discovery is implemented by
 `ops/security/discover_lint_targets.py` and fails closed when the expected
 shell or Dockerfile target set is empty.
+The dedicated ShellCheck workflow is authoritative and covers deployment
+scripts through repository-wide discovery; `bash -n` is syntax evidence only.
 
 Run `scripts/ci-local` before changing scripts or Dockerfiles. It runs a tool
 when installed and explicitly marks it `SKIPPED` otherwise; the GitHub Actions
@@ -380,6 +512,15 @@ This exception is temporary with a review/remove-by date: 2026-06-26. The full C
 ## Rollback
 
 Application rollback restores the previous signed image digest and runtime bundle. Database rollback requires an explicit backup/restore decision because Alembic migrations must remain backward-compatible and are not automatically reversed.
+
+For migration `20260702_0020`, run staging first and preserve sanitized
+`db current`, `db heads`, `verify-migration-baseline`, and
+`verify-runtime-db-privileges` output before production. Confirm an encrypted
+production backup exists before production `db upgrade`. The migration
+recomputes any missing `transactions.transaction_hash` values from existing
+transaction fields and then makes the column non-null; rollback should use an
+explicit restore decision if production verification fails, not manual
+schema-edit commands.
 
 ## Encrypted Backup Operations
 
@@ -476,14 +617,35 @@ host path outside the database volume and repository. The app validates that the
 configured path is absolute, non-world-writable, outside the application and
 database directories, and readable/writable by the runtime where the host can
 check it. `verify-audit-log-chain` and `check-security-alerts` use the
-configured anchor automatically and fail or alert when it is unreadable or does
-not match the current chain head.
+configured anchor automatically. A valid chain can be ahead of the saved
+anchor after normal append-only audit activity; that reports `anchor_stale`,
+`events_since_anchor`, and `anchor_refresh_required` without sending a critical
+`audit_anchor_mismatch` alert. Unreadable or malformed anchors, anchor rollback,
+anchored event hash changes, missing anchored rows, current chain behind the
+anchor, chain rewind, row tampering, tail deletion, missing hashes after the
+chain starts, and unsupported hash algorithms remain critical.
 
-On an anchor mismatch, stop rotating anchors, preserve the current database and
-the mismatched anchor as incident evidence, run
-`python -m flask --app wsgi:app verify-audit-log-chain --anchor /var/lib/sitbank/security-audit.anchor`,
-and investigate possible row tampering, chain rewind, or tail deletion before
-resuming routine deployments.
+Do not blindly refresh anchors. When `anchor_status=stale` and the chain is
+valid, refresh only after preserving evidence:
+
+1. Preserve the current verification output and anchor metadata in root-only
+   evidence storage. Record the command, timestamp, environment, `anchor_event_id`,
+   `latest_event_id`, and `events_since_anchor`; do not include HMAC keys or
+   raw sensitive metadata.
+2. Run
+   `python -m flask --app wsgi:app verify-audit-log-chain --anchor /var/lib/sitbank/security-audit.anchor`
+   and confirm `valid=true`, `anchor_stale=true`, and `anchor_refresh_required=true`.
+3. Export the refreshed sanitized anchor with
+   `python -m flask --app wsgi:app export-audit-log-anchor --output /var/lib/sitbank/security-audit.anchor`.
+4. Rerun
+   `python -m flask --app wsgi:app check-security-alerts --report-only --no-delivery`
+   and restart or resume the alert timer only after `alert_count=0` or after all
+   remaining alerts are separately explained and preserved.
+
+On `audit_anchor_mismatch` or `audit_chain_verification_failed`, stop rotating
+anchors, preserve the current database and anchor as incident evidence, and
+investigate row tampering, chain rewind, anchor corruption, or tail deletion
+before resuming routine deployments.
 
 The current banking implementation audits public transaction validation,
 TOTP-backed transaction authorization checks, and local transfer execution.
@@ -551,7 +713,20 @@ count and identity baselines outside the application database and emits critical
 rewind or shrink. Keep `SECURITY_AUDIT_ANCHOR_PATH` set to the protected local
 anchor so `check-security-alerts` emits critical
 `audit_chain_verification_failed` or `audit_anchor_mismatch` alerts for chain
-tampering, rewind, or tail deletion detectable from the anchor.
+tampering, rewind, anchor corruption, or tail deletion detectable from the
+anchor. Valid append-only drift after the last exported anchor is reported as
+`anchor_stale`/`anchor_refresh_required` and should be refreshed with the
+evidence-preserving workflow above rather than delivered as a critical webhook
+alert.
+
+Admin/root users may review the same safe report in the private admin runtime
+with `GET /alerts`. That browser review is read-only and must not send alerts.
+Manual browser delivery uses `POST /alerts/deliver`, requires the existing
+admin authorization, browser CSRF token, and current TOTP step-up, then calls
+the same sanitized `build_security_alert_report(deliver=True)` delivery path
+used by the CLI/timer. Dedupe still suppresses repeat delivery; there is no
+browser force-resend mode or Web Push channel. Audit rows record safe
+`security_alert_delivery` outcomes only.
 
 Production uses the committed systemd timer `sitbank-security-alerts.timer` to run
 `check-security-alerts` through the container runtime wrapper every 5 minutes.
@@ -592,12 +767,14 @@ sudo /usr/local/sbin/verify-certbot-host-state production
 sudo /usr/local/sbin/verify-certbot-host-state staging
 ```
 
-It fails closed unless Certbot and OpenSSL are installed, `certbot.timer` is
-installed, enabled, and active, and each expected `fullchain.pem` and
-`privkey.pem` resolves below `/etc/letsencrypt`. It parses each leaf
-certificate, requires a valid `notAfter`, more than 14 days of remaining
-validity by default, and an exact DNS SAN for the expected hostname. It does
-not accept CN fallback or wildcard substitution. It also requires each
+It fails closed unless Certbot, the `dns-cloudflare` Certbot plugin, and OpenSSL
+are installed, `certbot.timer` is installed, enabled, and active, and each
+expected `fullchain.pem` and `privkey.pem` resolves below `/etc/letsencrypt`.
+It parses each leaf certificate, requires a valid `notAfter`, more than 14 days
+of remaining validity by default, and exact DNS SANs for the expected target
+hostnames. Production verifies `sitbank.pp.ua` and `www.sitbank.pp.ua` from the
+`sitbank.pp.ua` lineage; staging verifies `staging-sitbank.pp.ua` from its own
+lineage. It does not accept CN fallback or wildcard substitution. It also requires each
 resolved private key to use the approved root ownership/group and denies group
 write or any permissions for other users. Override the validity window only
 with a reviewed positive value such as
@@ -609,28 +786,39 @@ explicit network-dependent readiness check:
 
 ```bash
 sudo /usr/local/sbin/verify-certbot-host-state --renewal-dry-run production
+sudo /usr/local/sbin/verify-certbot-host-state --renewal-dry-run staging
 ```
 
 That mode performs the same local checks before invoking
-`certbot renew --dry-run`. On any failure, repair or renew the affected
-certificate and rerun the check; do not bypass it or expose private-key
-contents. Finally run `sudo nginx -t` before reload.
+`certbot renew --dry-run --cert-name <target-lineage>`. Production and staging
+renewal use DNS-01 through separate root-owned Cloudflare credential files under
+`/root/.secrets/certbot/`; do not disable Cloudflare Access, Authenticated
+Origin Pull, WAF/rate-limit controls, or Tailscale isolation to make renewal
+pass. On any failure, repair or renew the affected certificate and rerun the
+check; do not bypass it or expose private-key contents. Finally run
+`sudo nginx -t` before reload.
 
 ## Live TLS Evidence Operations
 
 The **Live TLS scan evidence** workflow provides scheduled weekly,
 operator-dispatched, and post-deployment evidence of the Internet-facing TLS
-posture for `staging-sitbank.pp.ua` and `sitbank.duckdns.org`. The deployment
+posture for `staging-sitbank.pp.ua` and `sitbank.pp.ua`. The deployment
 workflow calls the staging scan
 after staging deploy and blocks production deployment until it passes; it calls
 the production scan after production deploy, then calls the required protected
 private-admin tailnet gate only after that public scan succeeds.
 The manual workflow input `staging_host` defaults to
-`staging-sitbank.pp.ua`.
+`staging-sitbank.pp.ua`; the production input defaults to `sitbank.pp.ua`.
 Dispatch it after edge, certificate, DNS, Nginx/OpenSSL, CDN/WAF, or
 load-balancer changes outside deployment, then retain the successful run with
 the release or change record. Do not run a public-endpoint scan from ordinary
 pull requests.
+
+The `pp.ua` DNS-01 migration and DuckDNS retirement are complete. Keep retired
+names out of active Nginx, Certbot, workflow, and TLS-scan configuration. Use
+`docs/runbooks/private-observability-grafana-loki.md` for the private
+Grafana/Loki/Alloy stack; Grafana remains private and is not exposed through
+the SITBank admin app.
 
 The normal public TLS scan deliberately excludes the private Tailscale admin hostname
 `admin-sitbank.tailca101b.ts.net`; a GitHub-hosted public runner cannot reach
@@ -666,6 +854,14 @@ artifacts, job summaries, chat, screenshots, or issue comments. If a DAST cookie
 or full replacer config is exposed, cancel the run, remove the artifact, treat
 the synthetic session as compromised until the run cleanup completes, and review
 the workflow/script change before retrying.
+
+Pull requests additionally run a 12-minute local-only DAST smoke against an
+ephemeral image and database. Its two-minute unauthenticated ZAP baseline
+blocks selected header rules at `FAIL`; the synthetic-session smoke also blocks
+unexpected responses and required security-header regressions. Warnings remain
+report-only. The seven-day artifact contains only a sanitized scope/outcome
+summary; raw ZAP responses, cookies, and replacer configuration are never
+uploaded. Release/scheduled authenticated ZAP remains the deeper control.
 
 Treat a failed scan as a release/deployment verification failure. A failed
 staging scan blocks production deployment, while a failed production scan
@@ -730,12 +926,18 @@ python -m flask --app wsgi:app check-security-alerts --report-only
 Expected reset email configuration in production:
 
 - `PASSWORD_RESET_EMAIL_BACKEND=smtp`
-- `PASSWORD_RESET_BASE_URL=https://sitbank.duckdns.org`
+- `PASSWORD_RESET_BASE_URL=https://sitbank.pp.ua`
 - `PASSWORD_RESET_EMAIL_FROM=<approved sender>`
 - `SMTP_HOST=<approved provider host>`
 - `SMTP_USE_TLS=true`
 - `SMTP_USERNAME_FILE=/run/secrets/smtp_username`
 - `SMTP_PASSWORD_FILE=/run/secrets/smtp_password`
+
+Production and staging SMTP delivery must use STARTTLS with default certificate
+validation and hostname checking. Do not troubleshoot delivery failures by
+disabling TLS validation, setting `SMTP_USE_TLS=false`, or pasting SMTP
+credentials, reset links, OTPs, invite tokens, or email bodies into tickets or
+chat.
 
 Password policy in production:
 
@@ -743,6 +945,10 @@ Password policy in production:
 - Development and test may keep the explicit shorter default for local workflows.
 - `production-check` and the production startup guard fail closed if a production
   app is configured below `15`.
+- `PASSWORD_HISTORY_RETENTION_COUNT` defaults to `3`; change/reset reject the
+  current and retained recent passwords.
+- If an incident marks `force_password_change` for a customer, normal
+  authenticated routes are blocked until the customer completes password change.
 - This length floor complements mandatory TOTP onboarding; password-authenticated
   users still cannot use sensitive banking routes until current MFA setup is
   complete.
@@ -800,7 +1006,7 @@ settings as password reset email:
 
 - `PASSWORD_RESET_EMAIL_BACKEND=smtp`
 - `PASSWORD_RESET_EMAIL_FROM=<approved sender>`
-- `PASSWORD_RESET_BASE_URL=https://sitbank.duckdns.org`
+- `PASSWORD_RESET_BASE_URL=https://sitbank.pp.ua`
 - `SMTP_HOST=<approved provider host>`
 - `SMTP_USE_TLS=true`
 - `SMTP_USERNAME_FILE=/run/secrets/smtp_username`
@@ -818,3 +1024,36 @@ Operational checks:
 - Existing-account requests intentionally return the same generic response as
   eligible requests; do not treat the absence of an outgoing email as customer
   proof without independent identity checks.
+
+## Turnstile Operations
+
+Turnstile is defense in depth for public authentication abuse protection. It
+does not replace CSRF, rate limits, password checks, MFA, sessions, Cloudflare
+Access, Tailscale private admin access, Flask authorization, or audit logging.
+
+Enable only the routes intended for the environment:
+
+- `TURNSTILE_CUSTOMER_LOGIN_ENABLED`
+- `TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED`
+- `TURNSTILE_CUSTOMER_REGISTER_ENABLED`
+- `TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED`
+- `TURNSTILE_ADMIN_LOGIN_ENABLED`
+- `TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED`
+
+Production and staging require `TURNSTILE_ENABLED=true`,
+`TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` or `TURNSTILE_SECRET_KEY_FILE`, and
+the official verifier URL
+`https://challenges.cloudflare.com/turnstile/v0/siteverify`. Local/test
+verifier overrides are for isolated mocks only. Roll back by disabling the
+affected route flag or `TURNSTILE_ENABLED`; do not point production at a custom
+verifier host.
+
+GitHub Environment variables use the `PROD_TURNSTILE_*` and
+`STAGING_TURNSTILE_*` prefixes; the renderer emits unprefixed runtime keys and
+pins the official verifier. Store server credentials as the environment
+secrets `PROD_TURNSTILE_SECRET_KEY` and `STAGING_TURNSTILE_SECRET_KEY`.
+Deployment installs them as separate root-managed
+`/etc/sitbank*/secrets/turnstile_secret_key` files and never writes the value
+to `container.env`. Production and staging use separate widgets for
+`sitbank.pp.ua`/`www.sitbank.pp.ua` and `staging-sitbank.pp.ua`. Keep both
+admin route flags false; the admin app remains private behind Tailscale.

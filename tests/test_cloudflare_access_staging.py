@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -12,14 +13,35 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from app import create_app
 from app.extensions import db
+from app.models import SecurityAuditEvent
 from app.security import cloudflare_access
-from app.security.cloudflare_access import CloudflareAccessConfigurationError
+from app.security.cloudflare_access import (
+    CloudflareAccessConfigurationError,
+    CloudflareAccessVerificationError,
+)
 from conftest import TestConfig
 
 
 AUDIENCE = "0123456789abcdef0123456789abcdef"
 ISSUER = "https://sitbank.cloudflareaccess.com"
 KID = "test-cloudflare-access-key"
+
+
+def _nginx_server_block(config: str, server_name: str, *, tls: bool = False) -> str:
+    marker = re.compile(
+        rf"server_name\s+[^;]*(?<![A-Za-z0-9.-]){re.escape(server_name)}"
+        r"(?![A-Za-z0-9.-])[^;]*;"
+    )
+    blocks = []
+    for match in marker.finditer(config):
+        start = config.rfind("\nserver {", 0, match.start())
+        start = 0 if start == -1 else start + 1
+        end = config.find("\nserver {", match.start())
+        blocks.append(config[start:] if end == -1 else config[start:end])
+    assert blocks, f"Missing Nginx server block for {server_name}"
+    if tls:
+        return next(block for block in blocks if "listen 443 ssl http2;" in block)
+    return blocks[0]
 
 
 class StagingAccessConfig(TestConfig):
@@ -122,22 +144,41 @@ def test_staging_missing_and_malformed_assertions_fail_closed(staging_app):
     assert missing.status_code == 403
     assert malformed.status_code == 403
     assert b"not-a-jwt" not in malformed.data
+    events = db.session.execute(
+        db.select(SecurityAuditEvent).order_by(SecurityAuditEvent.id)
+    ).scalars().all()
+    assert [event.event_metadata["reason"] for event in events] == [
+        "missing_assertion",
+        "malformed_assertion",
+    ]
+    assert all(
+        event.event_type == "cloudflare_access_assertion_validation"
+        and event.outcome == "blocked"
+        and bool(event.correlation_id)
+        and event.event_metadata["validation_required"] is True
+        for event in events
+    )
+    serialized = json.dumps([event.event_metadata for event in events])
+    assert "not-a-jwt" not in serialized
 
 
 @pytest.mark.parametrize(
-    "claim_override",
+    ("claim_override", "expected_reason"),
     [
-        {"exp": 1},
-        {"aud": "wrong-audience-0123456789"},
-        {"iss": "https://wrong.cloudflareaccess.com"},
-        {"nbf": int(time.time()) + 3600},
+        ({"exp": 1}, "expired"),
+        ({"aud": "wrong-audience-0123456789"}, "wrong_audience"),
+        ({"iss": "https://wrong.cloudflareaccess.com"}, "wrong_issuer"),
+        ("future_nbf", "not_yet_valid"),
     ],
 )
 def test_staging_rejects_expired_wrong_audience_issuer_and_future_tokens(
     staging_app,
     access_signing_key,
     claim_override,
+    expected_reason,
 ):
+    if claim_override == "future_nbf":
+        claim_override = {"nbf": int(time.time()) + 3600}
     assertion = _jwt(access_signing_key, claims=claim_override)
 
     response = staging_app.test_client().get(
@@ -147,6 +188,10 @@ def test_staging_rejects_expired_wrong_audience_issuer_and_future_tokens(
 
     assert response.status_code == 403
     assert assertion.encode("ascii") not in response.data
+    event = db.session.execute(
+        db.select(SecurityAuditEvent).order_by(SecurityAuditEvent.id.desc())
+    ).scalar_one()
+    assert event.event_metadata["reason"] == expected_reason
 
 
 def test_staging_rejects_invalid_signature(staging_app):
@@ -159,6 +204,84 @@ def test_staging_rejects_invalid_signature(staging_app):
     )
 
     assert response.status_code == 403
+    event = db.session.execute(
+        db.select(SecurityAuditEvent).order_by(SecurityAuditEvent.id.desc())
+    ).scalar_one()
+    assert event.event_metadata["reason"] == "invalid_signature"
+
+
+def test_future_nbf_is_not_computed_in_parametrize_source():
+    source = Path(__file__).read_text(encoding="utf-8")
+    parametrized = source.split(
+        "def test_staging_rejects_expired_wrong_audience_issuer_and_future_tokens",
+        1,
+    )[0]
+    assert '{"nbf": int(time.time()) + 3600}' not in parametrized
+    assert '("future_nbf", "not_yet_valid")' in parametrized
+
+
+def test_jwks_fetch_failure_is_audited_without_provider_details(
+    staging_app,
+    access_signing_key,
+    monkeypatch,
+):
+    cloudflare_access._clear_jwks_cache_for_testing()
+    leaked_detail = "Authorization: Bearer fake-cloudflare-token"
+
+    def fail_fetch(_url):
+        raise CloudflareAccessVerificationError(
+            f"Signing keys unavailable: {leaked_detail}",
+            reason="jwks_fetch_failed",
+        )
+
+    monkeypatch.setattr(cloudflare_access, "_fetch_jwks_document", fail_fetch)
+    assertion = _jwt(access_signing_key)
+
+    response = staging_app.test_client().get(
+        "/",
+        headers={"Cf-Access-Jwt-Assertion": assertion},
+    )
+
+    assert response.status_code == 403
+    event = db.session.execute(
+        db.select(SecurityAuditEvent).order_by(SecurityAuditEvent.id.desc())
+    ).scalar_one()
+    assert event.event_metadata["reason"] == "jwks_fetch_failed"
+    serialized = json.dumps(event.event_metadata)
+    assert assertion not in serialized
+    assert leaked_detail not in serialized
+
+
+def test_jwks_parse_failure_is_audited_safely(
+    staging_app,
+    access_signing_key,
+    monkeypatch,
+):
+    cloudflare_access._clear_jwks_cache_for_testing()
+    monkeypatch.setattr(
+        cloudflare_access,
+        "_fetch_jwks_document",
+        lambda _url: {"keys": [{}]},
+    )
+
+    response = staging_app.test_client().get(
+        "/",
+        headers={"Cf-Access-Jwt-Assertion": _jwt(access_signing_key)},
+    )
+
+    assert response.status_code == 403
+    event = db.session.execute(
+        db.select(SecurityAuditEvent).order_by(SecurityAuditEvent.id.desc())
+    ).scalar_one()
+    assert event.event_metadata["reason"] == "jwks_parse_failed"
+    assert set(event.event_metadata) == {
+        "reason",
+        "validator",
+        "validation_required",
+        "audience_configured",
+        "issuer_configured",
+        "jwks_cache_available",
+    }
 
 
 def test_valid_assertion_continues_to_normal_flask_authentication(
@@ -267,8 +390,10 @@ def test_nginx_preserves_origin_pull_and_forwards_only_assertion():
         "ssl_client_certificate "
         "/etc/nginx/cloudflare-authenticated-origin-pull-ca.pem;" in nginx
     )
-    assert "ssl_verify_client optional;" in nginx
-    assert "if ($ssl_client_verify != SUCCESS) { return 403; }" in nginx
+    assert "ssl_verify_client on;" in nginx
+    assert "$ssl_client_verify" not in nginx
+    assert "auth_basic" not in nginx
+    assert "listen 127.0.0.1:8081;" in nginx
     assert (
         "proxy_set_header Cf-Access-Jwt-Assertion "
         "$http_cf_access_jwt_assertion;" in headers
@@ -279,5 +404,43 @@ def test_nginx_preserves_origin_pull_and_forwards_only_assertion():
     assert nginx.count(
         "include /etc/nginx/snippets/sitbank-cloudflare-access-headers.conf;"
     ) == 6
-    ready = nginx.split("location = /health/ready {", 1)[1].split("}", 1)[0]
-    assert "sitbank-cloudflare-access-headers.conf" not in ready
+    local_server = _nginx_server_block(nginx, "localhost")
+    public_server = _nginx_server_block(
+        nginx,
+        "staging-sitbank.pp.ua",
+        tls=True,
+    )
+    local_ready = local_server.split("location = /health/ready {", 1)[1].split(
+        "}",
+        1,
+    )[0]
+    public_ready = public_server.split("location = /health/ready {", 1)[1].split(
+        "}",
+        1,
+    )[0]
+    assert "proxy_pass http://127.0.0.1:5001;" in local_ready
+    assert "proxy_set_header Host staging-sitbank.pp.ua;" in local_ready
+    assert "proxy_set_header X-Forwarded-Proto https;" in local_ready
+    assert "sitbank-proxy-headers.conf" not in local_ready
+    assert "sitbank-cloudflare-access-headers.conf" not in local_ready
+    assert "return 404;" in public_ready
+
+
+def test_jwks_cache_availability_read_uses_cache_lock(monkeypatch):
+    class TrackingLock:
+        entered = 0
+
+        def __enter__(self):
+            self.entered += 1
+
+        def __exit__(self, *_args):
+            return False
+
+    url = "https://team.cloudflareaccess.com/cdn-cgi/access/certs"
+    cloudflare_access._JWKS_CACHE[url] = (0.0, {})
+    lock = TrackingLock()
+    monkeypatch.setattr(cloudflare_access, "_JWKS_CACHE_LOCK", lock)
+
+    assert cloudflare_access._jwks_cache_contains(url) is True
+    assert lock.entered == 1
+    cloudflare_access._JWKS_CACHE.pop(url)

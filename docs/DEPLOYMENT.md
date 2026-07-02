@@ -1,10 +1,12 @@
-﻿# Deployment
+# Deployment
 
 ## Current Architecture
 
 Only Flask/Gunicorn runs in the SITBank container. Nginx, TLS, PostgreSQL, and backups remain host-managed on EC2. Sessions, authentication counters, OTP/reset state, alert dedupe, and breached-password circuit state live in application-owned PostgreSQL tables.
 
-- Production public host: `sitbank.duckdns.org`
+- Production public host: `sitbank.pp.ua`
+- Production public `www` host: `www.sitbank.pp.ua` redirects to
+  `https://sitbank.pp.ua`
 - Production private admin URL: `https://admin-sitbank.tailca101b.ts.net/`
 - Staging public host: `staging-sitbank.pp.ua`
 - Staging Cloudflare Access host: `staging-sitbank.pp.ua`
@@ -12,8 +14,8 @@ Only Flask/Gunicorn runs in the SITBank container. Nginx, TLS, PostgreSQL, and b
 - Staging access boundary: Cloudflare Access plus Authenticated Origin Pull
   plus origin-side Access JWT validation
 - Admin access boundary: Tailscale/private operator access only
-- Production image form: `ghcr.io/wenjiangg/sitbank@sha256:<digest>`
-- Repository identity: `WenJiangg/SITBank`
+- Production image form: `ghcr.io/koon-kiat/sitbank@sha256:<digest>`
+- Repository identity: `Koon-Kiat/SITBank`
 - Production config root: `/etc/sitbank`
 - Production compose dir: `/opt/sitbank`
 - Production service: `sitbank-container.service`
@@ -25,6 +27,17 @@ Only Flask/Gunicorn runs in the SITBank container. Nginx, TLS, PostgreSQL, and b
 - Staging config root: `/etc/sitbank-staging`
 - Staging compose dir: `/opt/sitbank-staging`
 - Staging service: `sitbank-staging-container.service`
+
+For centralized verification commands and EC2 operational path inventory, see
+`docs/runbooks/global-verification.md`. That runbook links these deployment
+paths to safe inspection commands and marks secret-bearing paths that must not
+be printed.
+
+The repository identity above was revalidated on 2026-07-01: GitHub reported
+`@Koon-Kiat` as an administrator of `Koon-Kiat/SITBank`, so the CODEOWNERS,
+GHCR, Cosign/OIDC, bootstrap, and deployment trust paths use an approved owner.
+The SonarQube Cloud binding remains `koon-kiat / Koon-Kiat_SITBank`; live
+provider settings still require provider-owned evidence.
 
 The separate `.github/workflows/gitleaks.yml` workflow is a pre-merge and
 protected-branch source control, not a deployment step. It scans full Git
@@ -90,6 +103,17 @@ python -m flask --app wsgi:app db upgrade
 
 Do not run `db.create_all()` in deployment. For role cutover use `sitbank-database-cutover prepare`, review the generated SQL, and execute it only during an approved maintenance window.
 
+Migration `20260702_0020` aligns the production migration baseline with the
+SQLAlchemy model metadata. It backfills missing `transactions.transaction_hash`
+values from the canonical transaction fields used by the application and then
+enforces `transaction_hash` as `NOT NULL`; the downgrade relaxes only that
+nullability and does not delete transaction evidence. Run it in staging first,
+preserve the staging verification output, and take or confirm an encrypted
+production backup before production `db upgrade`. After the migration, run
+`verify-migration-baseline` and `verify-runtime-db-privileges`; do not repair
+reported drift with ad hoc production `ALTER TABLE`, `DROP INDEX`, or
+`DROP CONSTRAINT` commands.
+
 ## Registration Schema Reset For Disposable Environments
 
 The registration schema requires verified email, full name, phone number, and a
@@ -114,7 +138,37 @@ operator-managed HTTPS alert webhook for that environment. Install
 and set `PASSWORD_RESET_EMAIL_BACKEND=smtp`, `PASSWORD_RESET_EMAIL_FROM`,
 `PASSWORD_RESET_BASE_URL`, `SMTP_HOST`, `SMTP_PORT`, and `SMTP_USE_TLS=true` in
 the container runtime environment. Production rejects console reset email,
-non-HTTPS reset base URLs, and plaintext SMTP delivery.
+non-HTTPS reset base URLs, and plaintext SMTP delivery. SMTP STARTTLS uses
+Python's default certificate validation and hostname checking; do not configure
+production or staging with unverifiable SMTP TLS.
+
+Turnstile is disabled until `TURNSTILE_ENABLED=true` and route-specific flags
+are set. Customer login, registration OTP, registration submit, password reset,
+optional admin login, and admin invite acceptance each have separate
+`TURNSTILE_*_ENABLED` flags. Production and staging must use the official
+Cloudflare Siteverify endpoint
+`https://challenges.cloudflare.com/turnstile/v0/siteverify`; local/test mocks
+must not override that production endpoint. Browser rendering also requires
+`TURNSTILE_SITE_KEY` and the narrow CSP allowance for
+`https://challenges.cloudflare.com`.
+
+Deployment maps production and staging GitHub Environment variables named
+`PROD_TURNSTILE_*` and `STAGING_TURNSTILE_*` to unprefixed
+`TURNSTILE_ENABLED`, `TURNSTILE_SITE_KEY`, `TURNSTILE_VERIFY_URL`, and
+`TURNSTILE_*_ENABLED` runtime settings. Configure separate Cloudflare widgets:
+the production widget covers `sitbank.pp.ua` and `www.sitbank.pp.ua`, while the
+staging widget covers `staging-sitbank.pp.ua`. Store server credentials only as
+the `PROD_TURNSTILE_SECRET_KEY` and `STAGING_TURNSTILE_SECRET_KEY` GitHub
+Environment secrets. The trusted deployment installs each credential as
+`/etc/sitbank*/secrets/turnstile_secret_key`; Compose exposes only
+`TURNSTILE_SECRET_KEY_FILE=/run/secrets/turnstile_secret_key`.
+
+For this customer rollout, set the four
+`*_TURNSTILE_CUSTOMER_*_ENABLED` variables to `true` and both
+`*_TURNSTILE_ADMIN_*_ENABLED` variables to `false`. This wiring adds no public
+admin hostname and does not replace rate limits, CSRF, MFA, Cloudflare Access,
+or Tailscale. The production hostname transition itself is tracked separately
+and is not implemented by this Turnstile wiring.
 
 Install the host-managed backup encryption recipients file before running
 database cutover or scheduled backups:
@@ -138,6 +192,14 @@ Production deployment runs from the trusted `main` workflow only after release
 verification, staging deployment, and the post-deployment staging TLS scan all
 succeed. A successful production deployment is followed by public production
 TLS verification and then the required protected private-admin tailnet gate.
+The visible Actions checks for those gates are `Release verification`,
+`Deploy staging`, `Verify staging TLS`, `Deploy production`,
+`Verify production TLS`, and `Verify private admin tailnet`. Their stable
+kebab-case job IDs remain in workflow `needs:` expressions and are not display
+labels.
+Production deployment is environment-approved automatic after successful
+staging gates. GitHub Environment approval pauses that automatic `main` flow;
+there is no direct manual production dispatch target.
 If either post-deploy verification fails, the workflow fails even though the
 production deployment already completed. Leave the repository variable
 `PROD_DEPLOY_ENABLED` unset or false until the production admin secret files
@@ -153,9 +215,11 @@ appropriate:
 
 | Variable | Safe behavior when unset | Workflow consumer |
 | --- | --- | --- |
-| `ENABLE_GITHUB_CODE_SECURITY` | Defaults to `false`; private-repository dependency review runs only when the value is exactly `true` | `dependency-review` in `.github/workflows/ci-deploy.yml` |
+| `ENABLE_GITHUB_CODE_SECURITY` | Defaults to `false`; private-repository dependency review runs only when the value is exactly `true` | `Dependency review` (`dependency-review` job ID) in `.github/workflows/ci-deploy.yml` |
 | `STAGING_PUBLIC_HOST` | Defaults to the reviewed staging hostname `staging-sitbank.pp.ua` | Staging deployment URL/configuration and post-deployment staging TLS verification |
-| `PROD_PUBLIC_HOST` | Defaults to the reviewed production hostname `sitbank.duckdns.org` | Production deployment URL/configuration and post-deployment production TLS verification |
+| `PROD_PUBLIC_HOST` | Defaults to the reviewed production hostname `sitbank.pp.ua` | Production deployment URL/configuration and post-deployment production TLS verification |
+| `STAGING_EC2_HOST` | Required private Tailscale MagicDNS name or `100.x.y.z` address | Staging OpenSSH deployment target |
+| `PROD_EC2_HOST` | Required private Tailscale MagicDNS name or `100.x.y.z` address | Production OpenSSH deployment target |
 | `PROD_DEPLOY_ENABLED` | Defaults to disabled unless exactly `true` | Production deployment gate |
 
 The host fallbacks are explicit repository conventions, not discovery
@@ -172,12 +236,55 @@ documented. Existing staging and production deployment variables remain scoped
 to their protected GitHub environments and are validated before deployment;
 do not move secret values into repository variables.
 
+Each deployment environment also stores a separate Tailscale OAuth client as
+`TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET`. The staging client may advertise
+only `tag:github-ci-staging-deploy`; the production client may advertise only
+`tag:github-ci-prod-deploy`. Regenerate `STAGING_EC2_KNOWN_HOSTS` and
+`PROD_EC2_KNOWN_HOSTS` for their private Tailscale targets and verify the SSH
+fingerprints out of band. Keep the existing OpenSSH private keys and strict
+host-key checking. Both the deployment and trusted-main bootstrap workflows
+join with the matching environment OAuth client before any SSH or SCP to the
+private host and always log out afterward. Do not enable Tailscale SSH or
+Funnel. After both private deployment and bootstrap paths are proven, remove
+public SSH exposure from the EC2 firewall and security group.
+
+### Tailscale Deployment Rollout
+
+Before changing the live tailnet, export and securely retain the current
+Access Controls policy. Merge the reviewed paths from
+`ops/tailscale/acl-policy.hujson`, including its deny-by-omission
+cross-environment policy tests, into the live policy:
+
+- `tag:github-ci-admin-verify` to `tag:admin-sitbank:443`
+- `tag:github-ci-staging-deploy` to `tag:sitbank-staging-ec2:22`
+- `tag:github-ci-prod-deploy` to `tag:sitbank-prod-ec2:22`
+
+Apply the matching destination tag to each stable host. Prefer separate
+staging and production EC2 instances; if one host carries both destination
+tags, retain separate Linux deploy users, sudoers rules, wrappers, and runtime
+directories. Create three OAuth clients, restrict each client to its one source
+tag, and store it only in `admin-tailscale`, `staging`, or `production` as
+appropriate. Update the private EC2 host variables and verified known-hosts
+values, deploy staging first, then allow the automatic production flow through
+its protected environment. Remove public port `22` only after both private
+paths pass. Committed files and tests do not prove live Tailscale, GitHub
+Environment, security-group, or host-firewall state; retain sanitized operator
+evidence separately.
+
+Once `STAGING_EC2_HOST` and `PROD_EC2_HOST` use a Tailscale IP or MagicDNS
+name, both bootstrap and deployment require the private tailnet path; public
+SSH is not a workflow fallback. Retain an approved host-recovery path such as
+AWS console or SSM access. A temporary security-group exception is break-glass
+only: authorize it explicitly, restrict its source and lifetime, record the
+change, and remove it immediately after recovery.
+
 ### Protected Private-Admin Verification Environment
 
 The manual `.github/workflows/tailscale-private-admin-verify.yml` workflow
 uses a GitHub-hosted runner that temporarily joins the tailnet. The
 `.github/workflows/ci-deploy.yml` production workflow implements the same
-check directly after `deploy-production` and `verify-production-tls` succeed.
+visible `Verify private admin tailnet` check directly after the internal
+`deploy-production` and `verify-production-tls` jobs succeed.
 The direct job is necessary because the previous reusable-workflow call did
 not receive the protected environment secrets. Create a GitHub
 Environment named `admin-tailscale`, require manual approval by trusted
@@ -187,13 +294,14 @@ secret. This is the required protected post-production-deploy gate and it runs
 after production public TLS verification. The production caller explicitly
 selects `auth_mode: oauth`. Store `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET`
 only as that environment's secrets. The OAuth client must have **Keys > Auth
-Keys > Write** permission and be restricted to `tag:github-ci`, whose tailnet
-grants reach only `tag:admin-sitbank:443`.
+Keys > Write** permission and be restricted to
+`tag:github-ci-admin-verify`, whose tailnet grants reach only
+`tag:admin-sitbank:443`.
 
 Manual verification may instead select `auth_mode: authkey`, in
 which case the same environment must provide `TAILSCALE_AUTH_KEY`. That key
 must be short-lived, one-off where possible, ephemeral, pre-approved when
-device approval applies, and tagged `tag:github-ci`. Never configure both
+device approval applies, and tagged `tag:github-ci-admin-verify`. Never configure both
 modes for one run. OAuth is the preferred/default mode; the auth-key mode is a
 compatibility path with separate rotation.
 
@@ -291,12 +399,19 @@ admin bootstrap support. It is a non-secret allowlist, but it is
 security-critical: the value must be exactly 7 comma-separated SIT workplace
 email addresses. The deployment workflow renders it into
 `/etc/sitbank*/container.env` so `sitbank-admin` and `sitbank-staging-admin`
-can enforce the fixed root-admin group. Root-admin bootstrap remains manual
-over SSH inside the admin container; it is not a GitHub Actions workflow.
+can enforce the fixed root-admin group. The production/admin runtime rejects the
+built-in development root-admin set, placeholders, demo/example identities,
+duplicates after normalization, personal domains, and non-approved domains.
+Root-admin bootstrap remains manual over SSH inside the admin container; it is
+not a GitHub Actions workflow, deployment automation step, or non-interactive
+bootstrap wrapper.
 `ADMIN_ALLOWED_EMAIL_DOMAINS` defines the approved privileged workplace-domain
 allowlist for root-admin, admin, and staff identities. Do not set it to
 personal-provider domains; staff invites use the workplace email and do not
-collect personal backup email contacts.
+collect personal backup email contacts. The migration chain keeps
+`staff_invites.personal_email_normalized` nullable for portable SQLite and
+PostgreSQL upgrades; do not synthesize personal email data for privileged
+invites.
 
 Production admin does not use a public DNS hostname. Keep admin access on the
 private Tailscale Serve URL `https://admin-sitbank.tailca101b.ts.net/` and do
@@ -384,7 +499,7 @@ manual workflow inputs when an approved endpoint changes:
 | Environment | Workflow input | Default target | Artifact |
 | --- | --- | --- | --- |
 | Staging customer | `staging_host` | `https://staging-sitbank.pp.ua` | `tls-scan-staging-sitbank` |
-| Production customer | `production_host` | `https://sitbank.duckdns.org` | `tls-scan-prod-sitbank` |
+| Production customer | `production_host` | `https://sitbank.pp.ua` | `tls-scan-prod-sitbank` |
 
 Each target preserves the scanner's original `testssl.raw.json` and produces a
 separate `testssl.json` for policy parsing, plus a text log, HTML report, scan
@@ -458,7 +573,7 @@ application credentials):
 testssl.sh --warnings batch --color 0 --jsonfile testssl.json \
   --logfile testssl.log --htmlfile testssl.html \
   https://staging-sitbank.pp.ua
-testssl.sh --warnings batch --color 0 https://sitbank.duckdns.org
+testssl.sh --warnings batch --color 0 https://sitbank.pp.ua
 ```
 
 SSL Labs remains optional, manual corroborating evidence. Use its public
@@ -469,7 +584,15 @@ SSL Labs automation because public API capacity and rate limits are external to
 this repository.
 
 Before first bootstrap, issue the certificates using the approved host Certbot
-flow. The bootstrap retains its certificate-file preflight and installs
+DNS-01 flow with `python3-certbot-dns-cloudflare`. Production and staging use
+separate Cloudflare DNS tokens stored only in root-owned host files:
+
+- `/root/.secrets/certbot/cloudflare-production.ini`
+- `/root/.secrets/certbot/cloudflare-staging.ini`
+
+Each file must be `root:root` mode `0600` and grant only `Zone Read` and
+`DNS Write` for the matching zone. Do not reuse Cloudflare Access provisioning
+tokens for Certbot renewal. The bootstrap retains its certificate-file preflight and installs
 `ops/deploy/verify-certbot-host-state` as
 `/usr/local/sbin/verify-certbot-host-state`. Once the required files exist, it
 runs the verifier before it installs or reloads Nginx; it does not attempt
@@ -481,16 +604,18 @@ and active `certbot.timer`, and every expected Certbot certificate and key:
 
 | Hostname | Certificate | Private key |
 | --- | --- | --- |
-| `sitbank.duckdns.org` | `/etc/letsencrypt/live/sitbank.duckdns.org/fullchain.pem` | `/etc/letsencrypt/live/sitbank.duckdns.org/privkey.pem` |
+| `sitbank.pp.ua`, `www.sitbank.pp.ua` | `/etc/letsencrypt/live/sitbank.pp.ua/fullchain.pem` | `/etc/letsencrypt/live/sitbank.pp.ua/privkey.pem` |
 | `staging-sitbank.pp.ua` | `/etc/letsencrypt/live/staging-sitbank.pp.ua/fullchain.pem` | `/etc/letsencrypt/live/staging-sitbank.pp.ua/privkey.pem` |
 
 Each `fullchain.pem` symlink must resolve to a regular file below
 `/etc/letsencrypt`. OpenSSL must parse it, expose a valid `notAfter`, and confirm
 that it is neither expired nor due to expire within the minimum validity
 window. `CERTBOT_MIN_VALID_DAYS` configures that window and defaults to 14
-days; it must be an integer from 1 through 3650. The leaf certificate must
-contain an exact DNS SAN for its expected hostname. CN fallback and wildcard
-matching are intentionally not accepted.
+days; it must be an integer from 1 through 3650. The production leaf
+certificate must contain exact DNS SANs for `sitbank.pp.ua` and
+`www.sitbank.pp.ua`; the staging leaf certificate must contain an exact DNS SAN
+for `staging-sitbank.pp.ua`. CN fallback and wildcard matching are
+intentionally not accepted.
 
 The `live` private-key path is normally a symlink; the resolved target must
 remain below `/etc/letsencrypt`, be owned by `root`, be group-owned by `root`,
@@ -510,9 +635,12 @@ sudo systemctl status certbot.timer
 sudo /usr/local/sbin/verify-certbot-host-state production
 sudo /usr/local/sbin/verify-certbot-host-state staging
 sudo /usr/local/sbin/verify-certbot-host-state --renewal-dry-run production
+sudo /usr/local/sbin/verify-certbot-host-state --renewal-dry-run staging
+sudo certbot renew --dry-run --cert-name sitbank.pp.ua
+sudo certbot renew --dry-run --cert-name staging-sitbank.pp.ua
 
-sudo readlink -f /etc/letsencrypt/live/sitbank.duckdns.org/privkey.pem
-sudo stat -c '%U %G %a %n' "$(sudo readlink -f /etc/letsencrypt/live/sitbank.duckdns.org/privkey.pem)"
+sudo readlink -f /etc/letsencrypt/live/sitbank.pp.ua/privkey.pem
+sudo stat -c '%U %G %a %n' "$(sudo readlink -f /etc/letsencrypt/live/sitbank.pp.ua/privkey.pem)"
 sudo readlink -f /etc/letsencrypt/live/staging-sitbank.pp.ua/privkey.pem
 sudo stat -c '%U %G %a %n' "$(sudo readlink -f /etc/letsencrypt/live/staging-sitbank.pp.ua/privkey.pem)"
 ```
@@ -526,12 +654,12 @@ non-default threshold, pass it explicitly, for example
 Normal bootstrap and deployment verification does not contact an ACME service,
 so it does not claim to prove renewal readiness. The explicit
 `--renewal-dry-run` mode first performs all local checks and then runs
-`certbot renew --dry-run`; it may contact Let's Encrypt's staging service.
+`certbot renew --dry-run --cert-name <target-lineage>`; it may contact Let's
+Encrypt's staging service.
 Run it after initial issuance, changes to Certbot or ACME configuration, and
-renewal failures. Because `certbot renew` evaluates all configured renewal
-lineages, one successful invocation is sufficient even though a target is
-required for the local host checks. Do not print or copy private-key contents
-while troubleshooting.
+renewal failures. The target-specific check avoids making production or staging
+verification depend on retired DuckDNS lineages. Do not print or copy
+private-key contents while troubleshooting.
 
 A failure is not a deployment bypass condition. Repair the path/ownership/mode,
 install the certificate for the exact hostname, or renew/replace an expired or
@@ -544,11 +672,11 @@ served through DNS and the deployed edge.
 The reviewed production bootstrap installs and enables the production edge from `ops/nginx/sitbank-default.conf`, `ops/nginx/sitbank-production.conf`, `ops/nginx/sitbank-production-rate-limits.conf`, `ops/nginx-proxy-headers.conf`, and `ops/nginx/sitbank-tls-policy.conf`. The shared default config owns unknown-host rejection so production and staging can run on the same EC2 without duplicate Nginx `default_server` listeners. Any change to those files requires a production bootstrap after merge.
 
 - Public ingress is TCP `80` and `443` only.
-- SSH hardening is deferred in this branch. The planned OpenSSH drop-in,
-  UFW/security-group rollout, and deployment-source migration path are not
-  implemented here because they can affect GitHub Actions deployment access.
-  Treat live SSH posture as operator-owned infrastructure evidence until a
-  separate reviewed change lands.
+- GitHub deployment SSH reaches private Tailscale targets through separate
+  staging and production tags. Remove public TCP `22` from the security group
+  and host firewall after private deployment succeeds. OpenSSH drop-in and UFW
+  automation remain deferred; treat their live posture and the provider
+  firewall change as operator-owned infrastructure evidence.
 - Nginx terminates TLS, redirects production customer HTTP to HTTPS, rejects
   unknown hosts with the shared default server, and forwards only expected
   proxy headers.
@@ -576,19 +704,26 @@ Verification:
 ```bash
 sudo sshd -t
 sudo ufw status numbered verbose
-sudo test -r /etc/letsencrypt/live/sitbank.duckdns.org/fullchain.pem
+sudo test -r /etc/letsencrypt/live/sitbank.pp.ua/fullchain.pem
 sudo /usr/local/sbin/verify-certbot-host-state production
 sudo nginx -t
 sudo nginx -T | grep -E 'ssl_protocols|ssl_ciphers|ssl_ecdh_curve|ssl_conf_command|ssl_session_tickets'
 sudo ss -ltnp | grep -E ':(80|443|5000|5002)([[:space:]]|$)'
 sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-app
 sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-admin
-curl --fail https://sitbank.duckdns.org/health/live
-curl -I https://sitbank.duckdns.org/health/ready
+curl --fail -H 'Host: sitbank.pp.ua' -H 'X-Forwarded-For: 127.0.0.1' -H 'X-Forwarded-Proto: https' \
+  http://127.0.0.1:5000/health/ready
+curl --fail -H 'Host: sitbank-admin.internal' -H 'X-Forwarded-Proto: https' \
+  http://127.0.0.1:5002/health/ready
+curl --fail https://sitbank.pp.ua/health/live
+curl -I https://sitbank.pp.ua/health/ready
 ```
 
-Expected: local customer and admin readiness succeeds, external customer
-`/health/ready` returns `403`, and no public admin hostname is required.
+Expected: local customer and admin readiness succeeds through loopback, external
+customer `/health/ready` does not return application readiness, and no public
+admin hostname is required. The deployment wrapper uses the loopback readiness
+checks; production public TLS verification remains a separate protected
+post-deploy gate.
 
 GitHub-hosted runners do not have stable source IPs. The normal
 GitHub-hosted SSH deployment is acceptable only when the runner source is
@@ -643,16 +778,10 @@ apply, and verification all use the six-hour duration configured for the
 `STAGING_ACCESS_ALLOWED_EMAILS`; `Everyone`, wildcard domains, and broad
 allow-all rules are forbidden.
 
-Create a staging Basic Auth file before running the staging bootstrap. This is
-a secondary staging control and must not replace Cloudflare Access:
-
-```bash
-sudo htpasswd -c /etc/nginx/.htpasswd-sitbank-staging <username>
-sudo chown root:www-data /etc/nginx/.htpasswd-sitbank-staging
-sudo chmod 0640 /etc/nginx/.htpasswd-sitbank-staging
-```
-
-Do not store the Basic Auth password or generated htpasswd hash in the repo.
+Nginx shared-password authentication has been removed from staging. Cloudflare
+Access is the identity-aware entry boundary, and the Flask login/MFA, CSRF,
+session, authorization, rate-limit, and audit controls remain in force. Do not
+reintroduce a shared staging password as a fallback.
 
 Install the Cloudflare Authenticated Origin Pull CA certificate on the EC2
 host before running staging bootstrap:
@@ -671,7 +800,10 @@ installs or enables the staging Nginx site, it requires the CA path to be a
 root-owned regular non-symlink, permits only `root` or `www-data` as the group
 with an approved non-writable mode, parses exactly one currently valid CA with
 OpenSSL, and matches its SHA-256 fingerprint, subject, and issuer to the
-allowlist. The bootstrap does not download a CA or call Cloudflare.
+allowlist. The bootstrap does not download a CA or call the Cloudflare API.
+Before replacing the old staging edge config, it also requires the public
+hostname to return a Cloudflare Access challenge. This fail-closed preflight
+prevents the removal of an older edge control while Access is absent.
 
 The repository allowlist initially approves only Cloudflare's global
 Authenticated Origin Pull CA. A change to a zone-level or per-hostname CA must
@@ -699,17 +831,28 @@ staging deployment, Nginx, Certbot, or TLS-scan target. The staging domain and
 CI/CD migration are complete. Cloudflare Access and origin-protection
 automation are implemented separately from live operator verification.
 
-Issue or renew staging TLS before bootstrap:
+Issue or renew staging TLS with DNS-01 before bootstrap:
 
 ```bash
-sudo certbot --nginx -d staging-sitbank.pp.ua --cert-name staging-sitbank.pp.ua
-sudo certbot certonly --webroot -w /var/www/certbot -d staging-sitbank.pp.ua --cert-name staging-sitbank.pp.ua
+sudo certbot certonly \
+  --dns-cloudflare \
+  --dns-cloudflare-credentials /root/.secrets/certbot/cloudflare-staging.ini \
+  --cert-name staging-sitbank.pp.ua \
+  -d staging-sitbank.pp.ua
 sudo systemctl status certbot.timer
 sudo /usr/local/sbin/verify-certbot-host-state staging
 sudo /usr/local/sbin/verify-certbot-host-state --renewal-dry-run staging
 ```
 
-Then run `ops/deploy/bootstrap-container-ec2 staging WenJiangg/SITBank staging-sitbank.pp.ua`. The bootstrap installs the Nginx proxy header snippet, TLS policy snippet, rate-limit include, and staging Nginx server block for `staging-sitbank.pp.ua`; verifies the staging Basic Auth file and the pinned Cloudflare origin-pull CA; then runs `sudo nginx -t` before `sudo systemctl reload nginx`. This edge setup is separate from application deployment.
+Then run `ops/deploy/bootstrap-container-ec2 staging Koon-Kiat/SITBank staging-sitbank.pp.ua`. The protected bootstrap workflow first verifies the live Access application, policy, proxied DNS, edge challenge, and direct-origin denial. The host bootstrap independently requires the edge challenge before it installs the Nginx proxy header snippet, TLS policy snippet, rate-limit include, and staging Nginx server block; verifies the pinned Cloudflare origin-pull CA; then runs `sudo nginx -t` before `sudo systemctl reload nginx`. This edge setup is separate from application deployment.
+
+The root deployment wrapper repeats the edge challenge plus loopback
+direct-origin denial before stopping the old runtime. After the new
+containers start, deployment readiness requires an exact HTTP `200` and the
+expected ready JSON through `http://127.0.0.1:8081/health/ready`. It never uses
+the intentionally blocked public staging `/health/ready`, never follows a
+redirect as readiness, and the local Nginx location forces the trusted
+forwarded scheme to `https`.
 
 Staging verification:
 
@@ -718,12 +861,9 @@ python ops/cloudflare/provision-staging-access --verify \
   --evidence-file cloudflare-access-evidence.local.json
 sudo /usr/local/sbin/verify-cloudflare-origin-pull-ca
 curl -I https://staging-sitbank.pp.ua/
-curl -I -u "$STAGING_BASIC_AUTH_USER:$STAGING_BASIC_AUTH_PASSWORD" \
-  https://staging-sitbank.pp.ua/
 curl -I https://staging-sitbank.pp.ua/health/ready
 curl -fsS http://127.0.0.1:5001/health/ready
-curl --fail --resolve staging-sitbank.pp.ua:443:127.0.0.1 \
-  https://staging-sitbank.pp.ua/health/ready
+curl -fsS http://127.0.0.1:8081/health/ready
 curl -I --resolve staging-sitbank.pp.ua:443:<EC2_PUBLIC_IP> \
   https://staging-sitbank.pp.ua/
 curl -I http://127.0.0.1:5001/
@@ -736,9 +876,11 @@ testssl.sh --warnings batch --color 0 https://staging-sitbank.pp.ua
 Expected: unauthenticated browser traffic receives the Cloudflare Access
 challenge at `staging-sitbank.pp.ua` before reaching staging, approved operators can pass Cloudflare
 Access and then reach the normal staging controls, direct EC2-origin access to
-`/` returns `403` without Cloudflare's origin-pull client certificate,
+`/` is rejected during TLS client-certificate verification or returns the
+approved Nginx `400`/`403` denial without Cloudflare's origin-pull certificate,
 direct loopback Flask access to `/` returns `403` without an Access assertion,
-external `/health/ready` returns `403`, local app readiness succeeds, and the
+external `/health/ready` is unavailable, local app and Nginx readiness
+succeed, and the
 retired DuckDNS staging hostname is no longer an active Nginx target.
 
 The script also verifies the live Access application and approved-operator
@@ -760,7 +902,8 @@ The complete operator runbook is
 `docs/security/architecture/admin-and-staging-zero-trust-access.md`.
 
 After the staging TLS check passes, validate production customer HTTPS with
-`testssl.sh --warnings batch --color 0 https://sitbank.duckdns.org`. The
+`testssl.sh --warnings batch --color 0 https://sitbank.pp.ua` and verify that
+`https://www.sitbank.pp.ua` redirects to the canonical host. The
 `ssl_conf_command` TLS 1.3 setting is runtime-dependent, so `nginx -t` must
 pass on the deployed host before any reload. Do not add the private Tailscale
 admin URL to public GitHub-hosted TLS scans. Private reachability belongs only
@@ -773,5 +916,33 @@ returns the production edge header before the production live TLS scan is
 accepted:
 
 ```bash
-curl -fsSI https://sitbank.duckdns.org/ | grep -i '^strict-transport-security:'
+curl -fsSI https://sitbank.pp.ua/ | grep -i '^strict-transport-security:'
+curl -fsSI https://www.sitbank.pp.ua/ | grep -i '^location: https://sitbank.pp.ua'
 ```
+
+Production Nginx and the reviewed Cloudflare edge both use six-month HSTS:
+`max-age=15552000; includeSubDomains`, with preload disabled. Production
+bootstrap requires the separately installed
+`/etc/nginx/sitbank-production-cloudflare-origin-pull-ca.pem`, verifies it
+against `/etc/sitbank/cloudflare-origin-pull-ca-allowlist.json`, and fails
+closed before `nginx -t` or reload. This production path is separate from the
+staging CA path.
+
+After bootstrap, verify raw HTTP origin-IP access redirects to
+`https://sitbank.pp.ua`, while raw HTTPS IP and direct-origin HTTPS with
+`sitbank.pp.ua` SNI do not return application content without Cloudflare's
+client certificate. Keep Cloudflare DNS proxied and `Full (strict)`, and
+restrict AWS `443/tcp` to Cloudflare edge ranges where practical. Provider and
+security-group state require sanitized operator evidence; repository files do
+not prove them. See
+`docs/security/architecture/production-cloudflare-origin-boundary.md`.
+
+The `pp.ua` DNS-01 migration and DuckDNS retirement are complete. Ongoing
+certificate renewal, origin-boundary, and live verification instructions stay
+in this deployment guide and `docs/OPERATIONS.md`; do not restore retired
+DuckDNS names as active Nginx, Certbot, workflow, or TLS-scan targets.
+
+The private Grafana/Loki deployment is separate from the banking application
+runtime. Use `ops/deploy/bootstrap-observability-ec2` and
+`docs/runbooks/private-observability-grafana-loki.md`; do not add Grafana,
+Loki, or Alloy routes to public Nginx or the Flask admin app.

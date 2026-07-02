@@ -29,6 +29,18 @@ ADMIN_SECRET_INPUTS = dict(ADMIN_APP_SECRET_INPUTS)
 
 DEPLOYMENT_PREFIXES = {"PROD", "STAGING"}
 KEY_ID_PATTERN = r"[A-Za-z0-9._-]{1,32}"
+OFFICIAL_TURNSTILE_VERIFY_URL = (
+    "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+)
+TURNSTILE_BOOLEAN_NAMES = (
+    "TURNSTILE_ENABLED",
+    "TURNSTILE_CUSTOMER_LOGIN_ENABLED",
+    "TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED",
+    "TURNSTILE_CUSTOMER_REGISTER_ENABLED",
+    "TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED",
+    "TURNSTILE_ADMIN_LOGIN_ENABLED",
+    "TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED",
+)
 
 DEPLOYMENT_PROFILES = {
     "PROD": {
@@ -152,6 +164,46 @@ def _root_admin_emails(prefix: str) -> str:
     return ",".join(emails)
 
 
+def _turnstile_environment(prefix: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for name in TURNSTILE_BOOLEAN_NAMES:
+        prefixed_name = _prefixed(prefix, name)
+        value = _value(prefixed_name).casefold()
+        if value not in {"true", "false"}:
+            raise RuntimeError(f"{prefixed_name} must be true or false")
+        values[name] = value
+
+    site_key_name = _prefixed(prefix, "TURNSTILE_SITE_KEY")
+    values["TURNSTILE_SITE_KEY"] = _value(site_key_name)
+    values["TURNSTILE_VERIFY_URL"] = OFFICIAL_TURNSTILE_VERIFY_URL
+
+    customer_flags = (
+        "TURNSTILE_CUSTOMER_LOGIN_ENABLED",
+        "TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED",
+        "TURNSTILE_CUSTOMER_REGISTER_ENABLED",
+        "TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED",
+    )
+    if values["TURNSTILE_ENABLED"] == "true" and not any(
+        values[name] == "true" for name in customer_flags
+    ):
+        raise RuntimeError(
+            f"{_prefixed(prefix, 'TURNSTILE_ENABLED')} requires at least one customer route flag"
+        )
+    if values["TURNSTILE_ENABLED"] == "false" and any(
+        values[name] == "true" for name in customer_flags
+    ):
+        raise RuntimeError("Turnstile customer route flags require TURNSTILE_ENABLED=true")
+    for admin_name in (
+        "TURNSTILE_ADMIN_LOGIN_ENABLED",
+        "TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED",
+    ):
+        if values[admin_name] != "false":
+            raise RuntimeError(
+                f"{_prefixed(prefix, admin_name)} must remain false for the customer rollout"
+            )
+    return values
+
+
 def _validate_keyring(name: str, value: str, *, active_key_id: str) -> str:
     try:
         payload = json.loads(value)
@@ -266,7 +318,7 @@ def build_container_environment(prefix: str = "PROD") -> dict[str, str]:
             _value(_prefixed(prefix, "MFA_KEK_ACTIVE_ID")),
         ),
         "MFA_ISSUER_NAME": _value(_prefixed(prefix, "MFA_ISSUER_NAME"), default="SITBank"),
-        "PASSWORD_RESET_BASE_URL": f"https://{public_host}",
+        "PASSWORD_RESET_BASE_URL": f"https://{public_host}",  # NOSONAR - configuration name, not a credential
         "PASSWORD_RESET_EMAIL_FROM": _value(_prefixed(prefix, "PASSWORD_RESET_EMAIL_FROM")),
         "ROOT_ADMIN_EMAILS": _root_admin_emails(prefix),
         "SESSION_HMAC_ACTIVE_KEY_ID": _active_key_id(prefix),
@@ -276,6 +328,7 @@ def build_container_environment(prefix: str = "PROD") -> dict[str, str]:
         if prefix == "PROD" and name == "SECURITY_AUDIT_ANCHOR_PATH":
             default = "/var/lib/sitbank/security-audit.anchor"
         environment[name] = _value(_prefixed(prefix, name), default=default)
+    environment.update(_turnstile_environment(prefix))
     environment["ADMIN_SESSION_HMAC_ACTIVE_KEY_ID"] = _admin_active_key_id(prefix)
     if prefix == "PROD":
         environment["ADMIN_SESSION_KEY_PREFIX"] = _value(

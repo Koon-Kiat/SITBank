@@ -30,6 +30,39 @@ HOSTNAME_PATTERN = re.compile(
     r"[A-Za-z]{2,63}\.?$"
 )
 DURATION_PATTERN = re.compile(r"^(?:[1-9][0-9]*)(?:m|h)$")
+SENSITIVE_OUTPUT_PATTERNS = (
+    (
+        re.compile(
+            r"(?i)\b(?:authorization|cf-access-jwt-assertion)\s*[:=]\s*"
+            r"(?:bearer\s+)?[^\s,;]+"
+        ),
+        "[REDACTED_AUTHENTICATION_HEADER]",
+    ),
+    (
+        re.compile(
+            r"(?i)\b(?:cloudflare_api_token|cf_api_token|access_service_token|"
+            r"client_secret|oauth_secret|cookie|session(?:_id)?|csrf_token)"
+            r"\s*=\s*[^\s,;]+"
+        ),
+        "[REDACTED_SECRET]",
+    ),
+    (
+        re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+"),
+        "Bearer [REDACTED_TOKEN]",
+    ),
+    (
+        re.compile(r"\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"),
+        "[REDACTED_JWT]",
+    ),
+    (
+        re.compile(
+            r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----.*?"
+            r"-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----",
+            re.DOTALL,
+        ),
+        "[REDACTED_PRIVATE_KEY]",
+    ),
+)
 
 
 class ConfigurationError(ValueError):
@@ -42,6 +75,14 @@ class VerificationError(RuntimeError):
 
 class CloudflareAPIError(RuntimeError):
     """Raised for a failed Cloudflare API operation."""
+
+
+def sanitize_provider_output(value: Any) -> str:
+    """Redact authentication material before provider diagnostics are printed."""
+    sanitized = str(value)
+    for pattern, replacement in SENSITIVE_OUTPUT_PATTERNS:
+        sanitized = pattern.sub(replacement, sanitized)
+    return sanitized[:1000]
 
 
 def _csv(name: str) -> tuple[str, ...]:
@@ -195,7 +236,7 @@ class Config:
         )
         policy_name = (
             os.environ.get("STAGING_ACCESS_POLICY_NAME", "").strip()
-            or "SITBank staging approved operators"
+            or "SITBank staging app - approved operators only"
         )
 
         idp_ids = _csv("STAGING_ACCESS_ALLOWED_IDP_IDS")
@@ -764,11 +805,11 @@ def verify_live_http(config: Config) -> HTTPVerification:
         r"^HTTP/\S+\s+(\d{3})", direct.stdout, flags=re.MULTILINE
     )
     if direct.returncode == 0:
-        if not direct_statuses or direct_statuses[-1] != "403":
+        if not direct_statuses or direct_statuses[-1] not in {"400", "403"}:
             raise VerificationError(
-                "Direct origin request was not blocked with HTTP 403"
+                "Direct origin request did not return an approved fail-closed status"
             )
-        direct_result = "http_403"
+        direct_result = f"http_{direct_statuses[-1]}"
     elif direct.returncode in {7, 28, 35, 52, 56}:
         direct_result = f"network_or_tls_block_curl_{direct.returncode}"
     else:
@@ -787,8 +828,8 @@ def _verify_repository_origin_pull() -> None:
     config = path.read_text(encoding="utf-8")
     required = (
         "ssl_client_certificate /etc/nginx/cloudflare-authenticated-origin-pull-ca.pem;",
-        "ssl_verify_client optional;",
-        "if ($ssl_client_verify != SUCCESS) { return 403; }",
+        "ssl_verify_client on;",
+        "listen 127.0.0.1:8081;",
     )
     if any(item not in config for item in required):
         raise VerificationError(
@@ -798,16 +839,32 @@ def _verify_repository_origin_pull() -> None:
 
 def _write_evidence(path: Path, config: Config, http: HTTPVerification) -> None:
     evidence = {
-        "schema": 1,
+        "schema": 2,
         "verified_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "hostname": config.hostname,
         "session_duration": config.session_duration,
+        "result": "pass",
+        "github_environment": "staging",
+        "workflow_trigger": "manual_protected",
+        "provider_owned_review": {
+            "approved_identity_provider": (
+                "configured" if config.allowed_idp_ids else "external_review_required"
+            ),
+            "mfa_or_device_posture": "external_review_required",
+            "environment_protection": "external_review_required",
+            "offboarding_and_emergency_revocation": "operator_review_required",
+        },
         "checks": {
             "access_application": True,
+            "expected_hostname": True,
             "approved_operator_policy": True,
+            "allow_everyone": False,
+            "approved_identities_configured": True,
             "implicit_default_deny": True,
             "proxied_dns": True,
             "application_audience_present": True,
+            "session_duration_reviewed": True,
+            "origin_protection_expected": True,
             "edge_access_challenge": http.edge_challenge,
             "direct_origin_blocked": http.direct_origin_blocked,
             "direct_origin_result": http.direct_origin_result,
@@ -908,7 +965,7 @@ def main(argv: list[str] | None = None) -> int:
         ConfigurationError,
         VerificationError,
     ) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR: {sanitize_provider_output(exc)}", file=sys.stderr)
         return 1
 
 

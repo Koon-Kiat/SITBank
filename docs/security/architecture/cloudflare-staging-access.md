@@ -32,9 +32,14 @@ Do not put them in `.env`, workflow YAML, Terraform state, or repository files.
 The current application is the self-hosted Access application `SITBank
 staging` at `staging-sitbank.pp.ua`. Its session duration is six hours, mapped
 as `STAGING_ACCESS_SESSION_DURATION=6h`. The managed policy is `SITBank staging
-approved operators` and must contain the exact explicit email membership from
-`STAGING_ACCESS_ALLOWED_EMAILS`. `Everyone`, wildcard domains, and broad
-allow-all rules are forbidden.
+app - approved operators only` and must contain the exact explicit email
+membership from `STAGING_ACCESS_ALLOWED_EMAILS`. `Everyone`, wildcard domains,
+and broad allow-all rules are forbidden.
+
+The separate App Launcher policy is `SITBank Access launcher - approved
+operators only`. It remains a manual Cloudflare-side policy and is outside
+this repository automation unless that automation is explicitly expanded to
+manage it later.
 
 Configure these required `staging` environment secrets:
 
@@ -61,7 +66,7 @@ Configure these required `staging` environment variables:
 | `STAGING_CLOUDFLARE_ACCESS_AUD` | `847a9be3c396f4930a210e3106aa5d86945839ba9ad31be794e4378bf8a55663` |
 | `STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN` | `small-boat-a77f.cloudflareaccess.com` |
 | `STAGING_PUBLIC_HOST` | `staging-sitbank.pp.ua` |
-| `STAGING_EC2_HOST` | `18.188.152.24` |
+| `STAGING_EC2_HOST` | Private Tailscale MagicDNS name or `100.x.y.z` deployment target |
 | `STAGING_EC2_DEPLOY_USER` | `sitbank-deploy` |
 | `STAGING_EC2_PORT` | `22` |
 
@@ -70,7 +75,7 @@ empty unless the application intentionally restricts login to specific
 identity providers. `STAGING_ACCESS_APP_NAME` and
 `STAGING_ACCESS_POLICY_NAME` are also optional environment or operator-shell
 overrides; empty values use the defaults `SITBank staging` and `SITBank
-staging approved operators`.
+staging app - approved operators only`.
 
 The shared staging environment also carries the existing application and
 deployment variables `ROOT_ADMIN_EMAILS`,
@@ -180,17 +185,27 @@ and exact fingerprint/subject/issuer membership in the reviewed repository
 allowlist. The initial entry is Cloudflare's global AOP CA. Custom
 zone/per-hostname CAs and provider rotations require a reviewed allowlist
 change before deployment; bootstrap never fetches CA material or uses the
-Cloudflare API token.
+Cloudflare API token. The protected bootstrap workflow runs read-only provider
+verification first, while the host bootstrap and deploy wrapper independently
+require a live edge Access challenge. Deployment also requires the direct
+loopback origin to fail closed before switching runtimes.
 
 Only loopback `/health/ready` bypasses the assertion gate. A non-loopback
 readiness request still requires a valid assertion and remains blocked by
 Nginx. Production customer and admin runtimes do not install the staging
 request hook.
 
+Staging deployment readiness uses only
+`http://127.0.0.1:8081/health/ready`. The local Nginx block supplies the trusted
+HTTPS forwarding scheme, and the deploy wrapper accepts only the exact ready
+JSON with HTTP `200`; redirects and the public TLS `/health/ready` are never
+accepted as readiness.
+
 `--verify --evidence-file <path>` writes a sanitized JSON summary containing
 only check results, the public staging hostname, expected session duration,
-and a timestamp. It excludes tokens, account/zone IDs, email/group allowlists,
-origin addresses, application IDs, and the audience.
+provider-owned review statuses, workflow environment, and a timestamp. It
+excludes tokens, account/zone IDs, email/group allowlists, origin addresses,
+application IDs, and the audience.
 
 Drift diagnostics identify non-secret application fields. For example,
 `session_duration expected=6h actual=24h` identifies a duration mismatch.
@@ -210,8 +225,8 @@ curl --fail http://127.0.0.1:5001/health/ready
 
 The first request must return `403` because it has no assertion; loopback
 readiness must succeed. Then use an approved browser session through
-`https://staging-sitbank.pp.ua/` and confirm Cloudflare Access, staging Basic
-Auth, and normal Flask login/MFA all remain required. Never extract, paste,
+`https://staging-sitbank.pp.ua/` and confirm Cloudflare Access and normal
+Flask login/MFA remain required. Never extract, paste,
 record, or add `Cf-Access-Jwt-Assertion` to curl command history.
 
 ## Emergency lockout and recovery
@@ -219,7 +234,7 @@ record, or add `Cf-Access-Jwt-Assertion` to curl command history.
 For emergency staging lockout, disable the managed Allow policy or replace its
 operator membership with an empty approved group in the Cloudflare dashboard.
 Keep proxied DNS and Authenticated Origin Pull enabled. Revoke Access sessions,
-rotate affected Basic Auth/application credentials, preserve Cloudflare/Nginx
+rotate affected application credentials and Access sessions, preserve Cloudflare/Nginx
 audit evidence, and run `--verify` before restoring access.
 
 If apply fails, leave staging unavailable rather than adding an allow-everyone

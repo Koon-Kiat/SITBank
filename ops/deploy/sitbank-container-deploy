@@ -114,6 +114,7 @@ readonly credential_path="${INCOMING_DIR}/registry-${input_stem}.credentials"
 readonly bundle_path="${INCOMING_DIR}/runtime-${input_stem}.tar"
 readonly checksum_path="${INCOMING_DIR}/runtime-${input_stem}.sha256"
 readonly signature_path="${INCOMING_DIR}/runtime-${input_stem}.sigstore.json"
+readonly turnstile_credential_path="${INCOMING_DIR}/turnstile-${input_stem}.secret"
 
 exec 9>"${LOCK_FILE}"
 if ! flock -n 9; then
@@ -125,6 +126,7 @@ docker_config="$(mktemp -d)"
 staging_dir="$(mktemp -d "${STATE_DIR}/runtime-staging.XXXXXX")"
 runtime_backup="$(mktemp -d "${STATE_DIR}/runtime-backup.XXXXXX")"
 runtime_replaced=0
+turnstile_secret_replaced=0
 service_switched=0
 dependencies_prepared=0
 previous_image=""
@@ -138,7 +140,8 @@ cleanup() {
         "${credential_path}" \
         "${bundle_path}" \
         "${checksum_path}" \
-        "${signature_path}"
+        "${signature_path}" \
+        "${turnstile_credential_path}"
 }
 
 audit_log() {
@@ -161,6 +164,11 @@ backup_runtime() {
     if [[ -f "${CONTAINER_ENV}" ]]; then
         install -m 0600 "${CONTAINER_ENV}" "${runtime_backup}/container.env"
     fi
+    if [[ -f "${SECRET_DIR}/turnstile_secret_key" ]]; then
+        install -m 0600 \
+            "${SECRET_DIR}/turnstile_secret_key" \
+            "${runtime_backup}/turnstile_secret_key"
+    fi
 }
 
 restore_runtime() {
@@ -169,6 +177,33 @@ restore_runtime() {
         install -o root -g root -m 0600 \
             "${runtime_backup}/container.env" "${CONTAINER_ENV}"
     fi
+    if [[ "${turnstile_secret_replaced}" -eq 1 ]]; then
+        rm -f -- "${SECRET_DIR}/turnstile_secret_key"
+        if [[ -f "${runtime_backup}/turnstile_secret_key" ]]; then
+            install -o root -g 10001 -m 0440 \
+                "${runtime_backup}/turnstile_secret_key" \
+                "${SECRET_DIR}/turnstile_secret_key"
+        fi
+    fi
+}
+
+install_turnstile_credential() {
+    if [[ "${runtime_replaced}" -ne 1 ]]; then
+        echo "Turnstile credential requires a verified runtime bundle" >&2
+        exit 2
+    fi
+    validate_input_file "${turnstile_credential_path}"
+    local value
+    value="$(<"${turnstile_credential_path}")"
+    if [[ ! "${value}" =~ ^[A-Za-z0-9._-]{8,512}$ ]]; then
+        echo "Turnstile credential is malformed" >&2
+        exit 2
+    fi
+    install -o root -g 10001 -m 0440 \
+        "${turnstile_credential_path}" \
+        "${SECRET_DIR}/turnstile_secret_key"
+    turnstile_secret_replaced=1
+    unset value
 }
 
 validate_deployment_profile() {
@@ -304,6 +339,15 @@ install_runtime_bundle() {
         SMTP_PORT
         SMTP_USE_TLS
         TRUSTED_PROXY_COUNT
+        TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED
+        TURNSTILE_ADMIN_LOGIN_ENABLED
+        TURNSTILE_CUSTOMER_LOGIN_ENABLED
+        TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED
+        TURNSTILE_CUSTOMER_REGISTER_ENABLED
+        TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED
+        TURNSTILE_ENABLED
+        TURNSTILE_SITE_KEY
+        TURNSTILE_VERIFY_URL
     )
     if [[ "${target}" == "production" ]]; then
         allowed_environment+=(
@@ -390,7 +434,8 @@ validate_staging_isolation() {
         admin_database_url \
         admin_password_pepper_b64 \
         smtp_username \
-        smtp_password; do
+        smtp_password \
+        turnstile_secret_key; do
         production_secret="/etc/sitbank/secrets/${secret_file}"
         if [[ -r "${production_secret}" ]] \
             && cmp -s "${SECRET_DIR}/${secret_file}" "${production_secret}"; then
@@ -514,26 +559,58 @@ prepare_dependencies() {
     fi
 }
 
+wait_for_ready_response() {
+    local expected_body="$1"
+    local url="$2"
+    shift 2
+    local attempt
+    local body
+    local response
+    local status
+    for attempt in {1..16}; do
+        if response="$(
+            curl --silent --show-error --max-redirs 0 \
+                --write-out $'\n%{http_code}' \
+                "$@" "${url}"
+        )"; then
+            status="${response##*$'\n'}"
+            body="${response%$'\n'*}"
+            body="${body%$'\r'}"
+            body="${body%$'\n'}"
+
+            if [[ "${status}" == "200" && "${body}" == "${expected_body}" ]]; then
+                return
+            fi
+        fi
+        if [[ "${attempt}" -lt 16 ]]; then
+            sleep 2
+        fi
+    done
+    echo "Readiness endpoint did not return the expected HTTP 200 response" >&2
+    return 1
+}
+
 wait_until_ready() {
     # Docker publishes the loopback port through its bridge. Preserve the
     # original host-side client address across the configured proxy hop so the
     # staging readiness-only Access bypass remains restricted to loopback.
-    curl --fail --silent --show-error \
-        --retry 15 --retry-delay 2 --retry-all-errors \
+    wait_for_ready_response \
+        '{"status":"ready"}' \
+        "http://${APP_BIND_HOST}:${APP_BIND_PORT}/health/ready" \
         --header "Host: ${PUBLIC_HOST}" \
         --header "X-Forwarded-For: 127.0.0.1" \
-        --header "X-Forwarded-Proto: https" \
-        "http://${APP_BIND_HOST}:${APP_BIND_PORT}/health/ready" >/dev/null
-    curl --fail --silent --show-error \
-        --retry 8 --retry-delay 2 --retry-all-errors \
-        --resolve "${PUBLIC_HOST}:443:127.0.0.1" \
-        "https://${PUBLIC_HOST}/health/ready" >/dev/null
+        --header "X-Forwarded-Proto: https"
+    if [[ "${target}" == "staging" ]]; then
+        wait_for_ready_response \
+            '{"status":"ready"}' \
+            "http://127.0.0.1:8081/health/ready"
+    fi
     if [[ "${target}" == "production" ]]; then
-        curl --fail --silent --show-error \
-            --retry 15 --retry-delay 2 --retry-all-errors \
+        wait_for_ready_response \
+            '{"app_mode":"admin","status":"ready"}' \
+            "http://${APP_BIND_HOST}:5002/health/ready" \
             --header "Host: sitbank-admin.internal" \
-            --header "X-Forwarded-Proto: https" \
-            "http://${APP_BIND_HOST}:5002/health/ready" >/dev/null
+            --header "X-Forwarded-Proto: https"
     fi
 }
 
@@ -610,6 +687,7 @@ if [[ -z "${registry_user}" || -z "${registry_token}" \
 fi
 
 install_runtime_bundle
+install_turnstile_credential
 
 export DOCKER_CONFIG="${docker_config}"
 printf '%s' "${registry_token}" | docker login ghcr.io \
@@ -653,6 +731,7 @@ required_secrets=(
     security_alert_webhook_url
     smtp_username
     smtp_password
+    turnstile_secret_key
 )
 if [[ "${target}" == "staging" ]]; then
     required_secrets+=(
@@ -701,6 +780,9 @@ for secret_file in "${required_secrets[@]}"; do
 done
 validate_staging_isolation
 validate_production_admin_isolation
+if [[ "${target}" == "staging" ]]; then
+    /usr/local/sbin/verify-staging-edge-boundary "${PUBLIC_HOST}"
+fi
 prepare_dependencies
 
 migration_run \
@@ -753,6 +835,7 @@ if [[ -n "${ALERT_SYSTEMD_TIMER}" ]]; then
 fi
 service_switched=0
 runtime_replaced=0
+turnstile_secret_replaced=0
 trap - ERR
 if [[ -n "${DATABASE_CUTOVER}" && -r "${DATABASE_CUTOVER}" ]]; then
     if ! /usr/local/sbin/sitbank-database-cutover finalize; then

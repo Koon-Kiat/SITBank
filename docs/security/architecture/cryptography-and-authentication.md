@@ -18,7 +18,7 @@ proxy headers.
 
 | Environment | Hostname | TLS termination | Upstream |
 | --- | --- | --- | --- |
-| Production customer | `sitbank.duckdns.org` | Nginx in `ops/nginx/sitbank-production.conf` | `http://127.0.0.1:5000` |
+| Production customer | `sitbank.pp.ua`; `www.sitbank.pp.ua` redirects to canonical | Nginx in `ops/nginx/sitbank-production.conf` | `http://127.0.0.1:5000` |
 | Staging customer | `staging-sitbank.pp.ua` | Nginx in `ops/nginx/sitbank-staging.conf` | `http://127.0.0.1:5001` |
 
 The client authenticates the server through the normal browser TLS certificate
@@ -26,10 +26,10 @@ chain for the relevant hostname. The repository expects Certbot/Let's Encrypt
 files on the host:
 
 ```nginx
-ssl_certificate /etc/letsencrypt/live/sitbank.duckdns.org/fullchain.pem;
-ssl_certificate_key /etc/letsencrypt/live/sitbank.duckdns.org/privkey.pem;
+ssl_certificate /etc/letsencrypt/live/sitbank.pp.ua/fullchain.pem;
+ssl_certificate_key /etc/letsencrypt/live/sitbank.pp.ua/privkey.pem;
 include /etc/nginx/snippets/sitbank-tls-policy.conf;
-add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+add_header Strict-Transport-Security "max-age=15552000; includeSubDomains" always;
 ```
 
 Evidence:
@@ -37,9 +37,9 @@ Evidence:
 | Control | Evidence |
 | --- | --- |
 | TLS server block and certificate path | `ops/nginx/sitbank-production.conf`; `ops/nginx/sitbank-staging.conf` |
-| HTTP handling | Customer HTTP redirects with `return 301 https://sitbank.duckdns.org$request_uri;`; unknown public hosts fail closed in `ops/nginx/sitbank-default.conf` |
+| HTTP handling | Customer HTTP redirects with `return 301 https://sitbank.pp.ua$request_uri;`; `www.sitbank.pp.ua` HTTPS redirects to the canonical host; unknown public hosts fail closed in `ops/nginx/sitbank-default.conf` |
 | Unknown host rejection | `ops/nginx/sitbank-default.conf` returns `444` for the default HTTP server and uses `ssl_reject_handshake on` for the default HTTPS server |
-| HSTS | Production customer uses `Strict-Transport-Security "max-age=31536000; includeSubDomains"`; staging uses `Strict-Transport-Security "max-age=31536000"` at origin and must also expose acceptable HSTS at the Cloudflare edge; all public live TLS scan targets must stay above the scanner's 15552000-second minimum |
+| HSTS | Production customer uses `Strict-Transport-Security "max-age=15552000; includeSubDomains"` to match the reviewed six-month Cloudflare policy; staging uses `Strict-Transport-Security "max-age=31536000"` at origin and must also expose acceptable HSTS at the Cloudflare edge; all public live TLS scan targets must stay at or above the scanner's 15552000-second minimum |
 | Proxy trust boundary | `ops/nginx-proxy-headers.conf` overwrites `Host`, `X-Real-IP`, `X-Forwarded-For`, and `X-Forwarded-Proto`; `app/__init__.py` applies `ProxyFix` using `TRUSTED_PROXY_COUNT` |
 | TLS policy and deployment validation | `ops/nginx/sitbank-tls-policy.conf` pins the shared TLS policy; `ops/deploy/bootstrap-container-ec2` requires the Certbot files, invokes `ops/deploy/verify-certbot-host-state`, and installs the TLS snippet before installing the production or staging Nginx site, then runs `nginx -t` before reload |
 | Tests | `tests/test_deployment.py::test_nginx_default_server_is_shared_for_same_host_production_and_staging`, `tests/test_deployment.py::test_production_nginx_edge_config_enforces_network_boundary_and_limits`, `tests/test_deployment.py::test_staging_nginx_enforces_https_auth_health_and_rate_limits`, `tests/test_deployment.py::test_proxyfix_trusts_exactly_the_configured_nginx_hop` |
@@ -68,7 +68,8 @@ substitution are not accepted. Normal deployment uses this local,
 network-independent mode. Operators run
 `sudo /usr/local/sbin/verify-certbot-host-state --renewal-dry-run production`
 after issuance or Certbot/ACME changes to perform the local checks and then
-invoke the explicit network-dependent `certbot renew --dry-run`.
+invoke the explicit network-dependent
+`certbot renew --dry-run --cert-name <target-lineage>`.
 
 ## HTTPS Cipher Suites
 
@@ -102,7 +103,8 @@ trusted deployment workflow. It verifies staging immediately after staging
 deploy (and blocks production deployment until that verification passes), then
 verifies the production customer endpoint after production deploy to complete
 the release evidence. It scans `staging-sitbank.pp.ua` and
-`sitbank.duckdns.org` with a checksum-verified `testssl.sh` release. Each
+`sitbank.pp.ua` with a checksum-verified `testssl.sh` release, and operators
+verify the `www.sitbank.pp.ua` redirect after certificate or Nginx changes. Each
 per-target artifact retains untouched scanner JSON
 as `testssl.raw.json` and a separate `testssl.json` policy copy, along with the
 log, HTML, metadata, and policy findings. The policy copy changes only
@@ -138,7 +140,7 @@ Certbot-managed paths, for example:
 
 | Hostname | Expected private key path |
 | --- | --- |
-| `sitbank.duckdns.org` | `/etc/letsencrypt/live/sitbank.duckdns.org/privkey.pem` |
+| `sitbank.pp.ua`, `www.sitbank.pp.ua` | `/etc/letsencrypt/live/sitbank.pp.ua/privkey.pem` |
 | `staging-sitbank.pp.ua` | `/etc/letsencrypt/live/staging-sitbank.pp.ua/privkey.pem` |
 
 The private key is not committed to Git. `ops/deploy/bootstrap-container-ec2`
@@ -195,6 +197,17 @@ Tests covering key validation include
 `tests/test_mfa_envelope_crypto.py::test_mfa_keyring_config_fails_closed`, and
 `tests/test_deployment.py::test_container_bundle_keyring_validation_normalizes_ids_and_rejects_duplicates`.
 
+MFA KEK rotation is an operator-run, staging-first procedure documented in
+`docs/OPERATIONS.md#mfa-kek-rotation`. Operators add the new KEK id to the
+root-managed `MFA_KEK_KEYS_JSON` keyring before running
+`rewrap-mfa-deks --dry-run`; a missing target id fails before row writes with
+`Target MFA KEK id is not configured`. Dry runs and real rewraps report only
+scanned, updated, skipped, failure counts, and key ids. They must not display
+KEK values, TOTP seeds, wrapped DEKs, ciphertext, nonces, recovery codes, QR
+codes, or decrypted MFA material. Removing the old KEK is a separate
+post-verification action after all rows are rewrapped and the rollback window
+is approved closed.
+
 ## Cryptographic Algorithms
 
 Communication encryption is provided by HTTPS/TLS at Nginx. The Flask app does
@@ -232,6 +245,13 @@ registration or customer profile email changes. Evidence:
 `app/auth/registration_otp.py`, `app/auth/services.py`,
 `app/auth/routes.py`, and `app/web/routes.py`.
 
+Public customer authentication entry points can require route-specific
+Cloudflare Turnstile challenges when `TURNSTILE_ENABLED` and the matching route
+flag are enabled. The covered customer routes are login, registration OTP
+request, final registration submit, and password-reset request. Turnstile is
+defense in depth only; CSRF, rate limits, password screening, MFA, sessions,
+audit logging, and authorization remain enforced.
+
 Customer login uses username or email plus password. `authenticate_primary()`
 uses a dummy password hash for unknown users to reduce user-enumeration timing
 differences, returns the generic message `Invalid username or password`, and
@@ -244,6 +264,12 @@ password-bootstrap session and the web/API `before_request` gates require MFA
 setup before normal account access. Evidence: `app/auth/mfa_policy.py`,
 `app/auth/routes.py::enforce_api_mfa_onboarding`, and
 `app/web/routes.py::enforce_mfa_onboarding`.
+
+Customer profile updates use authenticator-app TOTP as the server-selected
+high-risk step-up method. Username-only changes commit after valid TOTP.
+Profile email changes first send a short-lived, session-bound verification
+code to the new email and keep the old email active until the customer submits
+both that email code and a current TOTP code.
 
 ### TOTP MFA And Recovery Codes
 
@@ -326,6 +352,8 @@ Implementation evidence:
 | Algorithm and cost metadata | Hash string contains prefix, version, `i=`, `s=`, and `h=` fields |
 | Rehash support | `password_hash_needs_rehash()` triggers rehash when stored iterations are below the current config |
 | Common-password checks | Local blocklist plus HIBP range API in `validate_password_policy()` |
+| Previous-password history | `password_history` stores retained prior hashes and `PASSWORD_HISTORY_RETENTION_COUNT` defaults to 3 |
+| Forced password change | `force_password_change` blocks normal authenticated routes until password change clears the flag |
 | Length checks before hashing | `PASSWORD_MIN_LENGTH`, `PASSWORD_MAX_CHARS`, and schema/form validators reject invalid passwords before hashing |
 
 Tests: `tests/test_auth_registration_login.py::test_registration_hashes_password_with_pbkdf2`,
@@ -338,10 +366,10 @@ and `tests/test_passwords.py::test_sends_only_hash_prefix_with_padding_and_short
 Passwords are not logged in plaintext by the code paths inspected. Audit
 metadata sanitization redacts keys and values containing password, token,
 secret, session, credential URL, webhook URL, and private-key patterns.
-
-The code prevents reuse of the current password during change/reset. Full
-previous-password history is tracked as an open item in
-`docs/security/governance/security-gap-register.md`.
+Password change and reset reject the current password and retained recent
+password history; compromise-driven forced-change flags block normal
+authenticated routes while leaving logout, recovery, MFA setup, and password
+change paths available.
 
 ## Protection Against Unauthorized Access To Stored Passwords
 

@@ -240,10 +240,10 @@ def test_invite_acceptance_requires_turnstile_when_enabled(admin_app, admin_clie
 
     calls = []
 
-    def fake_verify(token_value):
-        calls.append(token_value)
+    def fake_require(action, token_value=None):
+        calls.append((action, token_value))
 
-    monkeypatch.setattr("app.admin.services.verify_turnstile_token", fake_verify)
+    monkeypatch.setattr("app.admin.services.require_turnstile", fake_require)
     valid = admin_client.post(
         f"/invites/accept/{token}/start",
         json={
@@ -257,7 +257,7 @@ def test_invite_acceptance_requires_turnstile_when_enabled(admin_app, admin_clie
 
     assert missing.status_code == 400
     assert valid.status_code == 200
-    assert calls == ["browser-token"]
+    assert calls == [("admin_invite_accept", "browser-token")]
 
 
 def test_turnstile_verifier_rejects_non_https_verify_url(admin_app):

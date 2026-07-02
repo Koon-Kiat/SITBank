@@ -55,7 +55,7 @@ The configure script supports three explicit modes:
 
 - `oauth` (preferred for automation): supply `TS_OAUTH_CLIENT_ID` and
   `TS_OAUTH_SECRET`. The OAuth client needs **Keys > Auth Keys > Write** and
-  must be restricted to `tag:sitbank-admin`.
+  must be restricted to `tag:admin-sitbank`.
 - `authkey`: supply `TAILSCALE_AUTH_KEY`. Use a short-lived, one-off,
   pre-approved, tagged key where possible. Reusable keys require exceptional
   approval and vault storage.
@@ -100,7 +100,7 @@ sudo --preserve-env=TAILSCALE_AUTH_KEY \
 ```
 
 The confirmed flow resets unsafe node flags, applies only
-`tag:sitbank-admin`, refuses an existing non-empty Serve configuration,
+`tag:admin-sitbank`, refuses an existing non-empty Serve configuration,
 configures HTTPS `443` to `http://127.0.0.1:5002`, and requires the canonical
 preflight to pass. Verification can be repeated without credentials:
 
@@ -121,8 +121,11 @@ The supported admin browser path remains private Serve HTTPS.
 
 `acl-policy.hujson` is a non-secret least-privilege reference, not an
 automatically applied policy. It grants production HTTPS only from
-`group:sitbank-production-admins` and from the protected `tag:github-ci`
-identity to `tag:sitbank-admin:443`. It grants neither broad tailnet access nor
+`group:sitbank-production-admins` and the protected
+`tag:github-ci-admin-verify` identity to `tag:admin-sitbank:443`. Separate
+`tag:github-ci-staging-deploy` and `tag:github-ci-prod-deploy` identities may
+reach only their matching EC2 destination tag on port `22`. Cross-environment
+paths are denied by omission. It grants neither broad tailnet access nor
 Tailscale SSH.
 
 Onboarding requires a reviewed group change, approved managed device, Flask
@@ -162,3 +165,23 @@ tailnet node. These host scripts install/configure the EC2 node and prove its
 local listener, Nginx, Serve, and Funnel posture. Neither normal CI nor these
 scripts automatically applies the live ACL policy, approves devices, edits
 groups, or proves offboarding; those remain operator-reviewed external state.
+
+The canonical host verifier supports the reviewed Tailscale 1.98.x JSON shape:
+`tailscale serve status --json` contains the HTTPS `TCP` and `Web` mapping, and
+`tailscale funnel status --json` may return that same Serve configuration with
+`AllowFunnel` omitted when Funnel is disabled. Omitted `AllowFunnel` is accepted
+only with the known Serve fields; a truthy `AllowFunnel`, unknown non-empty
+schema, wrong backend, extra endpoint, or unexpected handler fails closed.
+Use these safe diagnostics without uploading raw provider state:
+
+```bash
+sudo tailscale serve status
+sudo tailscale serve status --json | jq .
+sudo tailscale funnel status --json | jq .
+sudo /usr/local/sbin/verify-tailscale-admin-access --mode serve
+```
+
+The host verifier derives its hostname from the local node `DNSName`.
+GitHub-hosted verification instead uses
+`TAILSCALE_PRIVATE_ADMIN_HOST` from the protected `admin-tailscale` environment
+as its single workflow source of truth.

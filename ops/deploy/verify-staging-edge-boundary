@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+usage() {
+    echo "Usage: verify-staging-edge-boundary [--edge-only] PUBLIC_HOST" >&2
+    exit 2
+}
+
+edge_only=0
+if [[ "${1:-}" == "--edge-only" ]]; then
+    edge_only=1
+    shift
+fi
+if [[ "$#" -ne 1 ]]; then
+    usage
+fi
+
+public_host="$1"
+if [[ ! "${public_host}" =~ ^[A-Za-z0-9.-]+$ ]]; then
+    echo "PUBLIC_HOST must be a bare hostname" >&2
+    exit 2
+fi
+
+headers="$(
+    curl --silent --show-error --head \
+        --max-time 20 --proto '=https' \
+        "https://${public_host}/"
+)"
+status="$(
+    printf '%s\n' "${headers}" \
+        | awk 'toupper($1) ~ /^HTTP\// { value=$2 } END { print value }'
+)"
+location="$(
+    printf '%s\n' "${headers}" \
+        | awk 'BEGIN { IGNORECASE=1 } /^location:/ { sub(/\r$/, ""); value=$2 } END { print value }'
+)"
+server="$(
+    printf '%s\n' "${headers}" \
+        | awk 'BEGIN { IGNORECASE=1 } /^server:/ { sub(/\r$/, ""); value=tolower($2) } END { print value }'
+)"
+if [[ "${status}" != "302" && "${status}" != "303" ]] \
+    || [[ ! "${location,,}" =~ ^https://[a-z0-9.-]+\.cloudflareaccess\.com/cdn-cgi/access/ ]] \
+    || [[ "${server}" != "cloudflare" ]] \
+    || ! printf '%s\n' "${headers}" | grep -Eiq '^cf-ray:'; then
+    echo "Staging edge did not return the required Cloudflare Access challenge" >&2
+    exit 1
+fi
+
+if [[ "${edge_only}" -eq 1 ]]; then
+    echo "Staging Cloudflare Access edge challenge verified"
+    exit 0
+fi
+
+set +e
+direct_status="$(
+    curl --silent --show-error --head \
+        --max-time 20 --proto '=https' \
+        --resolve "${public_host}:443:127.0.0.1" \
+        --output /dev/null --write-out '%{http_code}' \
+        "https://${public_host}/"
+)"
+direct_exit=$?
+set -e
+
+if [[ "${direct_exit}" -eq 0 && "${direct_status}" =~ ^(400|403)$ ]]; then
+    echo "Staging direct origin failed closed with HTTP ${direct_status}"
+    exit 0
+fi
+if [[ "${direct_exit}" =~ ^(35|52|56)$ ]]; then
+    echo "Staging direct origin failed closed during TLS client-certificate verification"
+    exit 0
+fi
+
+echo "Staging direct origin did not fail closed" >&2
+exit 1

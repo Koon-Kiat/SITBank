@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import re
 import subprocess
@@ -66,7 +66,8 @@ def test_hybrid_cloudflare_staging_and_tailscale_admin_design_is_documented():
         "TS_OAUTH_CLIENT_ID",
         "TS_OAUTH_SECRET",
         "This intentionally uses both products because the surfaces have different",
-        "Production customer | `https://sitbank.duckdns.org`",
+        "Production customer | `https://sitbank.pp.ua`",
+        "`https://www.sitbank.pp.ua` redirects to the canonical host",
         "Staging customer | `https://staging-sitbank.pp.ua`",
         "Production admin app | `https://admin-sitbank.tailca101b.ts.net/` through Tailscale Serve",
         "The customer production site remains public.",
@@ -76,7 +77,7 @@ def test_hybrid_cloudflare_staging_and_tailscale_admin_design_is_documented():
         "Flask admin login and TOTP remain mandatory",
         "onboarding, offboarding, emergency lockout, rollback",
         "local readiness succeeds through loopback",
-        "direct Nginx origin access",
+        "server-level Cloudflare Authenticated Origin Pull",
         "Cloudflare-managed zone/hostname or Cloudflare Tunnel",
         "Cloudflare Access and Tailscale decide whether a request may reach",
         "retired DuckDNS staging hostname is no longer",
@@ -111,13 +112,15 @@ def test_staging_nginx_blocks_direct_origin_bypass_but_keeps_local_health():
     assert "server_name staging-sitbank.pp.ua;" in staging_nginx
     assert "duckdns.org" not in staging_nginx
     assert "ssl_client_certificate /etc/nginx/cloudflare-authenticated-origin-pull-ca.pem;" in staging_nginx
-    assert "ssl_verify_client optional;" in staging_nginx
-    staging_https_prelocation = _nginx_server_block(
+    assert "ssl_verify_client on;" in staging_nginx
+    assert "$ssl_client_verify" not in staging_nginx
+    assert "auth_basic" not in staging_nginx
+    staging_https_server = _nginx_server_block(
         staging_nginx,
         "staging-sitbank.pp.ua",
-    ).split("\n    location ", 1)[0]
-    assert "auth_basic \"SITBank staging\";" not in staging_https_prelocation
-    assert "auth_basic_user_file /etc/nginx/.htpasswd-sitbank-staging;" not in staging_https_prelocation
+    )
+    staging_https_prelocation = staging_https_server.split("\n    location ", 1)[0]
+    assert "ssl_verify_client on;" in staging_https_prelocation
 
     for selector in (
         "= /health/live",
@@ -127,34 +130,41 @@ def test_staging_nginx_blocks_direct_origin_bypass_but_keeps_local_health():
         "^~ /auth/",
         "/",
     ):
-        bodies = _nginx_location_bodies(staging_nginx, selector)
+        bodies = _nginx_location_bodies(staging_https_server, selector)
         assert bodies, f"Missing staging Nginx location {selector}"
-        protected_bodies = [
-            body for body in bodies if "$ssl_client_verify != SUCCESS" in body
-        ]
-        assert protected_bodies, f"Missing origin-pull gate for {selector}"
-        assert any("return 403;" in body for body in protected_bodies)
-        assert any("auth_basic \"SITBank staging\";" in body for body in protected_bodies)
-        assert any(
-            body.index("$ssl_client_verify != SUCCESS")
-            < body.index("auth_basic \"SITBank staging\";")
-            for body in protected_bodies
-        )
         assert any(
             "include /etc/nginx/snippets/"
             "sitbank-cloudflare-access-headers.conf;" in body
-            for body in protected_bodies
+            for body in bodies
         )
 
-    ready_bodies = _nginx_location_bodies(staging_nginx, "= /health/ready")
-    assert len(ready_bodies) == 1
-    ready = ready_bodies[0]
-    assert "$ssl_client_verify" not in ready
-    assert "allow 127.0.0.1;" in ready
-    assert "allow ::1;" in ready
-    assert "deny all;" in ready
-    assert "proxy_pass http://127.0.0.1:5001;" in ready
-    assert "sitbank-cloudflare-access-headers.conf" not in ready
+    local_readiness_server = _nginx_server_block(staging_nginx, "localhost")
+    public_staging_server = _nginx_server_block(
+        staging_nginx,
+        "staging-sitbank.pp.ua",
+    )
+    local_ready_bodies = _nginx_location_bodies(
+        local_readiness_server,
+        "= /health/ready",
+    )
+    public_ready_bodies = _nginx_location_bodies(
+        public_staging_server,
+        "= /health/ready",
+    )
+    assert len(local_ready_bodies) == 1
+    assert len(public_ready_bodies) == 1
+    local_ready = local_ready_bodies[0]
+    public_ready = public_ready_bodies[0]
+    assert "listen 127.0.0.1:8081;" in staging_nginx
+    assert "allow 127.0.0.1;" in local_ready
+    assert "allow ::1;" in local_ready
+    assert "deny all;" in local_ready
+    assert "proxy_pass http://127.0.0.1:5001;" in local_ready
+    assert "proxy_set_header Host staging-sitbank.pp.ua;" in local_ready
+    assert "proxy_set_header X-Forwarded-Proto https;" in local_ready
+    assert "sitbank-proxy-headers.conf" not in local_ready
+    assert "sitbank-cloudflare-access-headers.conf" not in local_ready
+    assert "return 404;" in public_ready
 
     assert (
         "proxy_set_header Cf-Access-Jwt-Assertion "
@@ -169,6 +179,8 @@ def test_staging_nginx_blocks_direct_origin_bypass_but_keeps_local_health():
     assert "install_staging_access_headers" in bootstrap
     assert "/usr/local/sbin/verify-cloudflare-origin-pull-ca" in bootstrap
     assert "Cloudflare Authenticated Origin Pull CA validation failed." in bootstrap
+    assert "STAGING_BASIC_AUTH_FILE" not in bootstrap
+    assert ".htpasswd-sitbank-staging" not in bootstrap
     assert "nginx -t" in bootstrap
 
 
@@ -177,16 +189,20 @@ def test_admin_public_surface_is_absent_and_private_access_is_tailscale_only():
         encoding="utf-8"
     )
     docs = _docs_text()
-    customer_server = _nginx_server_block(production_nginx, "sitbank.duckdns.org")
+    customer_server = _nginx_server_block(production_nginx, "sitbank.pp.ua")
 
-    assert "server_name sitbank.duckdns.org;" in customer_server
+    assert "server_name sitbank.pp.ua;" in customer_server
     assert "staging-sitbank.pp.ua" not in customer_server
+    assert "admin.sitbank.pp.ua" not in production_nginx
+    assert "admin-sitbank.pp.ua" not in production_nginx
     assert "location ^~ /admin" in customer_server
     assert "return 404;" in customer_server
     assert "server_name sitbank-" not in production_nginx
     assert "proxy_pass http://127.0.0.1:5002;" not in production_nginx
 
     assert "Tailscale/private operator access" in docs
+    # Exact static architecture-doc check; no untrusted URL is accepted.
+    # lgtm[py/incomplete-url-substring-sanitization]
     assert "https://admin-sitbank.tailca101b.ts.net/" in docs
     assert "Do not enable Tailscale Funnel" in docs
     assert "old public admin verification" in docs
@@ -235,31 +251,12 @@ def test_required_zero_trust_labels_and_labelers_are_configured():
     )
     pr_labeler = Path(".github/workflows/pr-labeler.yml").read_text(encoding="utf-8")
     retag = Path(".github/workflows/retag-labels.yml").read_text(encoding="utf-8")
-    labeler = Path(".github/labeler.yml").read_text(encoding="utf-8")
-    labeler_config = yaml.safe_load(labeler)
+    policy = Path("ops/security/github_label_policy.py").read_text(encoding="utf-8")
 
     for workflow in (issue_labeler, pr_labeler, retag):
-        assert 'create_label zero-trust "Identity-aware or private-network access boundary changes."' in workflow
-        assert 'create_label network-security "Firewall, VPN, origin access, private access, or network boundary changes."' in workflow
-        assert 'create_label staging "Staging environment, staging deployment, or staging access changes."' in workflow
-        for term in (
-            "cloudflare access",
-            "tailscale",
-            "tailnet",
-            "vpn",
-            "private access",
-            "origin bypass",
-            "admin exposure",
-            "staging exposure",
-        ):
-            assert term in workflow.lower()
+        assert "ops/security/github_label_policy.py" in workflow
 
-    assert "gh pr diff \"${PR_NUMBER}\" --patch" in pr_labeler
-    assert "gh pr diff \"${number}\" --patch" in retag
-    assert "sync-labels: false" in pr_labeler
-    assert "sync-labels: false" in retag
-
-    for label in (
+    for required in (
         "zero-trust",
         "network-security",
         "staging",
@@ -267,28 +264,20 @@ def test_required_zero_trust_labels_and_labelers_are_configured():
         "deployment",
         "admin",
         "documentation",
+        "cloudflare access",
+        "tailscale",
+        "vpn",
+        "private access",
+        "origin protection",
+        "ops/nginx/**",
+        "ops/cloudflare/**",
+        "compose.staging.yml",
     ):
-        assert label in labeler_config
+        assert required in policy.lower()
 
-    assert "ops/nginx/**" in labeler_config["network-security"][0]["changed-files"][0][
-        "any-glob-to-any-file"
-    ]
-    assert "ops/nginx/**" in labeler_config["security"][0]["changed-files"][0][
-        "any-glob-to-any-file"
-    ]
-    assert "ops/cloudflare/**" in labeler_config["security"][0]["changed-files"][0][
-        "any-glob-to-any-file"
-    ]
-    assert "ops/cloudflare/**" in labeler_config["network-security"][0][
-        "changed-files"
-    ][0]["any-glob-to-any-file"]
-    assert "compose.staging.yml" in labeler_config["staging"][0]["changed-files"][0][
-        "any-glob-to-any-file"
-    ]
-    assert "ops/cloudflare/**" in labeler_config["staging"][0]["changed-files"][0][
-        "any-glob-to-any-file"
-    ]
-    assert "docs/security/architecture/admin-and-staging-zero-trust-access.md" in labeler
+    assert "gh pr diff \"${pr_number}\" --name-only" in pr_labeler
+    assert "gh pr diff \"${number}\" --name-only" in retag
+    assert not Path(".github/labeler.yml").exists()
     assert "PROTECTED_LABELS" in retag
     for protected in ("dependencies", "docker", "github-actions", "python"):
         assert protected in retag
@@ -300,10 +289,20 @@ def test_provider_credentials_are_not_committed_or_required_by_ci():
     ci_workflow = Path(".github/workflows/ci-deploy.yml").read_text(encoding="utf-8")
     workflow = yaml.safe_load(ci_workflow)
     private_gate = workflow["jobs"]["verify-private-admin-tailnet"]
-    other_jobs = {
+    oauth_job_names = {
+        "deploy-staging",
+        "deploy-production",
+        "verify-private-admin-tailnet",
+    }
+    oauth_jobs = {
         name: job
         for name, job in workflow["jobs"].items()
-        if name != "verify-private-admin-tailnet"
+        if name in oauth_job_names
+    }
+    non_oauth_jobs = {
+        name: job
+        for name, job in workflow["jobs"].items()
+        if name not in oauth_job_names
     }
     tracked_text = []
     for path in _tracked_files():
@@ -322,8 +321,18 @@ def test_provider_credentials_are_not_committed_or_required_by_ci():
     assert private_gate["environment"] == {"name": "admin-tailscale"}
     assert "TS_OAUTH_CLIENT_ID" in str(private_gate)
     assert "TS_OAUTH_SECRET" in str(private_gate)
-    assert "TS_OAUTH_CLIENT_ID" not in str(other_jobs)
-    assert "TS_OAUTH_SECRET" not in str(other_jobs)
+    assert set(oauth_jobs) == oauth_job_names
+    assert {
+        name: job["environment"]["name"] for name, job in oauth_jobs.items()
+    } == {
+        "deploy-staging": "staging",
+        "deploy-production": "production",
+        "verify-private-admin-tailnet": "admin-tailscale",
+    }
+    assert all("TS_OAUTH_CLIENT_ID" in str(job) for job in oauth_jobs.values())
+    assert all("TS_OAUTH_SECRET" in str(job) for job in oauth_jobs.values())
+    assert "TS_OAUTH_CLIENT_ID" not in str(non_oauth_jobs)
+    assert "TS_OAUTH_SECRET" not in str(non_oauth_jobs)
 
     forbidden_patterns = (
         r"tskey-(?:auth|api)-[A-Za-z0-9_-]{12,}",
@@ -344,6 +353,9 @@ def test_repository_identity_ghcr_cosign_and_bootstrap_references_are_consistent
     workflow = Path(".github/workflows/ci-deploy.yml").read_text(encoding="utf-8")
     bootstrap = Path("ops/deploy/bootstrap-container-ec2").read_text(encoding="utf-8")
     deploy = Path("ops/deploy/sitbank-container-deploy").read_text(encoding="utf-8")
+    codeowners = Path(".github/CODEOWNERS").read_text(encoding="utf-8")
+    sonar = Path("sonar-project.properties").read_text(encoding="utf-8")
+    gitleaks = Path(".gitleaks.toml").read_text(encoding="utf-8")
     old_owner = "wenjiang" + "ggg"
     old_repo = f"ghcr.io/{old_owner}/sitbank"
 
@@ -358,8 +370,16 @@ def test_repository_identity_ghcr_cosign_and_bootstrap_references_are_consistent
         assert old_owner not in lowered, path
         assert old_repo not in lowered, path
 
-    assert "Repository identity: `WenJiangg/SITBank`" in docs
-    assert "Production image form: `ghcr.io/wenjiangg/sitbank@sha256:<digest>`" in docs
+    assert "Repository identity: `Koon-Kiat/SITBank`" in docs
+    assert (
+        "GitHub reported `@Koon-Kiat` as an administrator"
+        in " ".join(docs.split())
+    )
+    assert "Production image form: `ghcr.io/koon-kiat/sitbank@sha256:<digest>`" in docs
+    assert "* @Koon-Kiat" in codeowners
+    assert "sonar.projectKey=Koon-Kiat_SITBank" in sonar
+    assert "sonar.organization=koon-kiat" in sonar
+    assert r"^sonar\.projectKey=Koon-Kiat_SITBank$" in gitleaks
     assert 'repository="ghcr.io/${GITHUB_REPOSITORY,,}"' in workflow
     assert "GITHUB_REPOSITORY=${github_repository}" in bootstrap
     assert "GHCR_REPOSITORY=ghcr.io/${repository_lower}" in bootstrap
@@ -367,6 +387,20 @@ def test_repository_identity_ghcr_cosign_and_bootstrap_references_are_consistent
     assert "expected_identity=\"https://github.com/${GITHUB_REPOSITORY}/.github/workflows/ci-deploy.yml@refs/heads/main\"" in deploy
     assert "cosign verify" in deploy
     assert "--certificate-identity \"${COSIGN_CERTIFICATE_IDENTITY}\"" in deploy
+
+    stale_aliases = ("TL" + "0024", "Wen" + "Jiangg")
+    allowed_historical_files = {
+        Path(".gitleaks.toml"),
+        Path("tests/test_gitleaks_workflow.py"),
+    }
+    for alias in stale_aliases:
+        occurrences = {
+            path
+            for path in _tracked_files()
+            if path.is_file()
+            and alias in path.read_text(encoding="utf-8", errors="ignore")
+        }
+        assert occurrences <= allowed_historical_files
 
 
 def test_deployment_policy_and_wrapper_validation_are_not_weakened():

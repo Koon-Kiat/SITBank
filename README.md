@@ -1,4 +1,4 @@
-﻿# SITBank
+# SITBank
 
 Secure Internet Banking Application for O$P$ Bank.
 
@@ -6,13 +6,16 @@ SITBank is a student cybersecurity project and demonstration site. Do not enter 
 
 ## Overview
 
-SITBank is a Flask/Gunicorn application deployed as hardened Docker containers behind host-managed Nginx, TLS, and PostgreSQL. Production customer traffic runs at `https://sitbank.duckdns.org`; operators use the private Tailscale Serve URL `https://admin-sitbank.tailca101b.ts.net/` with a separate admin app, browser login at `/login`, cookie, session keys, database role, manual root-admin bootstrap, root-admin-controlled staff invites, and mandatory TOTP. Staging runs separately at `https://staging-sitbank.pp.ua`.
+SITBank is a Flask/Gunicorn application deployed as hardened Docker containers behind host-managed Nginx, TLS, and PostgreSQL. Production customer traffic runs at canonical `https://sitbank.pp.ua`; `https://www.sitbank.pp.ua` redirects there. Operators use the private Tailscale Serve URL `https://admin-sitbank.tailca101b.ts.net/` with a separate admin app, browser login at `/login`, cookie, session keys, database role, manual root-admin bootstrap, root-admin-controlled staff invites, and mandatory TOTP. Staging runs separately at `https://staging-sitbank.pp.ua`.
 
 Private admin reachability is checked only by the manual, protected
 `.github/workflows/tailscale-private-admin-verify.yml` workflow and by the same
 protected reusable workflow as a required gate after production deployment and
 public production TLS verification. Normal PR and public TLS CI do not join
 the tailnet and do not scan the private hostname.
+
+For centralized verification commands and EC2 operational path lookup, start
+with the [global verification and EC2 path inventory runbook](docs/runbooks/global-verification.md).
 
 Production bootstrap installs the non-mutating
 `/usr/local/sbin/verify-tailscale-admin-access` host preflight. Operators run
@@ -67,15 +70,24 @@ Common local test commands:
 .\.venv\Scripts\python.exe -m pytest -q -m security
 .\.venv\Scripts\python.exe -m pytest -q -m deployment
 .\.venv\Scripts\python.exe -m pytest -q -m "not slow"
+
+# Playwright browser E2E smoke tests
+$env:PLAYWRIGHT_BROWSERS_PATH = ".playwright-browsers"
+.\.venv\Scripts\python.exe -m playwright install chromium
+$env:SITBANK_RUN_E2E = "1"
+.\.venv\Scripts\python.exe -m pytest -q tests/e2e
 ```
 
-The `not slow` and focused marker commands are for local iteration only. Pull requests and protected CI still run the full pytest suite, including security, deployment, database session integrity, CSRF, MFA, compatibility-route regression checks, route inventory, production guard, dependency lock, and secret-scanning checks.
+The `not slow` and focused marker commands are for local iteration only. Pull requests and protected CI still run the full pytest suite, including security, deployment, database session integrity, CSRF, MFA, compatibility-route regression checks, route inventory, production guard, dependency lock, and secret-scanning checks. Playwright E2E browser tests run in CI through a dedicated Chromium job; local unscoped pytest runs collect them but skip unless `SITBANK_RUN_E2E=1` is set, and the tests start a loopback Flask server rather than using staging or production hosts.
+
+On non-Windows shells, use `python -m playwright install chromium` before
+`python -m pytest -q tests/e2e`.
 
 For a fuller local check, run `scripts/ci-local`. It runs the full pytest suite
 in parallel with timing output, Python/package/security checks, discovered
 shell-script syntax checks, and Docker/Compose validation when Docker is
 available, including contract checks around `ops/runtime_contract.py`. When
-installed, local ShellCheck, Hadolint, and Semgrep use the same
+installed, local ShellCheck, Hadolint, and metrics-disabled Semgrep use the same
 target/rule policy as their automatic GitHub Actions gates; missing optional
 local tools are reported as `SKIPPED`, never silently omitted. A Docker-less
 result is explicitly partial; use `scripts/ci-local --require-docker` before
@@ -109,6 +121,8 @@ Current required settings include:
 - `MFA_KEK_KEYS_JSON` or `MFA_KEK_KEYS_JSON_FILE`
 - `PASSWORD_PEPPER_B64` or `PASSWORD_PEPPER_B64_FILE`
 - `PASSWORD_PBKDF2_ITERATIONS`
+- `PASSWORD_HISTORY_ENABLED`
+- `PASSWORD_HISTORY_RETENTION_COUNT`
 - `PAYEE_COOLDOWN_SECONDS`
 - `ROOT_ADMIN_EMAILS`
 - `SECURITY_AUDIT_HMAC_KEY` or `SECURITY_AUDIT_HMAC_KEY_FILE`
@@ -124,6 +138,10 @@ Current required settings include:
 - `SMTP_USE_TLS`
 - `SMTP_USERNAME` or `SMTP_USERNAME_FILE`
 - `SMTP_PASSWORD` or `SMTP_PASSWORD_FILE`
+- `TURNSTILE_ENABLED`
+- `TURNSTILE_SITE_KEY`
+- `TURNSTILE_SECRET_KEY` or `TURNSTILE_SECRET_KEY_FILE`
+- `TURNSTILE_*_ENABLED` route-specific flags
 - `SECURITY_ALERT_ENABLED`
 - `SECURITY_ALERT_WEBHOOK_URL` or `SECURITY_ALERT_WEBHOOK_URL_FILE`
 - `SECURITY_ALERT_MIN_SEVERITY`
@@ -159,11 +177,12 @@ customer domain.
 - [Contributing](docs/CONTRIBUTING.md)
 - [Deployment](docs/DEPLOYMENT.md)
 - [GitHub Actions](docs/GITHUB_ACTIONS.md)
-- [SonarQube Cloud analysis and PR summary policy](docs/security/assurance/sonarqube.md)
-- [Repository secret scanning and Gitleaks triage](docs/security/assurance/secret-scanning.md)
+- [SonarQube Cloud](docs/security/assurance/sonarqube.md)
+- [Secret scanning](docs/security/assurance/secret-scanning.md)
 - [Operations](docs/OPERATIONS.md)
 - [Security](SECURITY.md)
 - [Audit and alerting](docs/security/assurance/audit-and-alerting.md)
+- [Operational observability with Grafana and Loki](docs/security/assurance/operational-observability.md)
 - [Framework control matrix](docs/security/governance/framework-control-matrix.md)
 - [Privacy and PDPA](docs/security/governance/privacy-and-pdpa.md)
 - [Data retention and deactivation](docs/security/governance/data-retention-and-deactivation.md)
@@ -171,12 +190,12 @@ customer domain.
 - [Threat model](docs/security/architecture/threat-model.md)
 - [Design risk register](docs/security/governance/design-risk-register.md)
 - [Security gap register](docs/security/governance/security-gap-register.md)
+- [GitHub branch protection evidence](docs/security/governance/github-branch-protection-evidence.md)
 - [Legacy and out-of-scope technology notes](docs/security/governance/legacy-and-out-of-scope-technology.md)
-- [Archived EC2 transition notes](docs/archive/EC2_TRANSITION.md)
 
 ## Deployment Snapshot
 
-Images are published as immutable signed digests under `ghcr.io/wenjiangg/sitbank@sha256:<digest>` from the `WenJiangg/SITBank` repository. The workflow derives the package path from `GITHUB_REPOSITORY` so future owner changes need only docs, CODEOWNERS, EC2 deploy config, and bootstrap inputs updated. Production uses `/etc/sitbank`, `/opt/sitbank`, `sitbank-container.service`, `sitbank_db`, `sitbank_owner`, `sitbank_app`, and a distinct admin runtime DB role such as `sitbank_admin`. Staging uses separate `/etc/sitbank-staging`, `/opt/sitbank-staging`, isolated Compose services, and isolated Docker volumes.
+Images are published as immutable signed digests under `ghcr.io/koon-kiat/sitbank@sha256:<digest>` from the `Koon-Kiat/SITBank` repository. The workflow derives the package path from `GITHUB_REPOSITORY`; any future owner change must still review CODEOWNERS, documentation, EC2/bootstrap trust configuration, GHCR/Cosign/OIDC identities, SonarQube binding, Gitleaks exceptions, and their consistency tests. Production uses `/etc/sitbank`, `/opt/sitbank`, `sitbank-container.service`, `sitbank_db`, `sitbank_owner`, `sitbank_app`, and a distinct admin runtime DB role such as `sitbank_admin`. Staging uses separate `/etc/sitbank-staging`, `/opt/sitbank-staging`, isolated Compose services, and isolated Docker volumes.
 
 Database migrations use Alembic. Existing databases that predate Alembic must first pass `verify-migration-baseline`, then be stamped with `db stamp 20260610_0001`. Do not run `db.create_all()` in deployment.
 

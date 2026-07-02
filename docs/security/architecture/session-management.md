@@ -90,7 +90,7 @@ Transport protections:
 | --- | --- |
 | HTTPS edge | `ops/nginx/sitbank-production.conf`, `ops/nginx/sitbank-staging.conf` |
 | HTTP handling | Production Nginx redirects customer HTTP to HTTPS; public admin non-ACME HTTP returns `403` |
-| HSTS | Production Nginx sets `Strict-Transport-Security "max-age=31536000; includeSubDomains"` |
+| HSTS | Production Nginx sets `Strict-Transport-Security "max-age=15552000; includeSubDomains"` to match the reviewed six-month Cloudflare edge policy |
 | Flask secure cookie enforcement | `SESSION_COOKIE_SECURE`, `SESSION_COOKIE_HTTPONLY`, and `SESSION_COOKIE_SAMESITE` in `config.py` |
 | Proxy trust boundary | `ops/nginx-proxy-headers.conf` and `tests/test_deployment.py::test_proxyfix_trusts_exactly_the_configured_nginx_hop` |
 
@@ -134,14 +134,23 @@ Session creation and rotation are implemented in `app/security/sessions.py` and
 called from authentication services in `app/auth/services.py` and
 `app/admin/services.py`.
 
+Only one active customer/admin session is allowed per runtime namespace. A new
+successful login replaces previous active sessions in that namespace and moves
+them to past-session history. Old browser tabs may still display stale HTML
+until the next request, but the revoked session cannot access protected routes.
+The session-management page is for reviewing the current active session and
+recent past sessions; normal operation does not require a manual bulk-revoke
+form.
+
 | Lifecycle event | Control | Evidence |
 | --- | --- | --- |
 | Password login that requires MFA | Creates a pending MFA session instead of a fully authenticated session | `app/auth/services.py::authenticate_primary()`; `tests/test_pentest_auth_bypass.py::test_pending_mfa_session_cannot_access_dashboard` |
 | Successful customer MFA | Rotates the session id and records authenticated session metadata | `app/auth/services.py::complete_pending_mfa()` and `app/security/sessions.py` |
 | Successful admin MFA | Uses the admin session cookie and staff account checks | `app/admin/services.py`; `tests/test_admin_staff_invites.py::test_admin_login_creates_only_admin_session_cookie` |
-| Password change | Requires TOTP step-up, rotates current session, revokes other sessions | `app/auth/services.py::change_password()`; `tests/test_account_security_actions.py::test_password_change_succeeds_with_recent_mfa_and_revokes_other_sessions` |
+| Password change | Requires TOTP step-up, changes the password, and revokes all customer sessions so the user signs in again | `app/auth/services.py::change_password()`; `tests/test_account_security_actions.py::test_password_change_succeeds_with_recent_mfa_and_revokes_other_sessions` |
+| Successful MFA login | Enforces the single active customer/admin session cap and moves replaced sessions to past-session history | `app/security/sessions.py::enforce_active_session_cap()`; `tests/test_session_management.py::test_mfa_login_enforces_single_active_session_cap` |
 | Logout | Revokes current server-side session | `tests/test_session_management.py::test_logout_invalidates_current_session` |
-| Revoke other sessions | Requires high-risk TOTP authorization and keeps the current session after rotation | `tests/test_session_management.py::test_revoke_other_sessions_accepts_totp_stepup_and_rotates_session` |
+| Protected revoke-other endpoint | Preserved as a CSRF/MFA-protected backend defense-in-depth route and not linked from the session-management page | `tests/test_session_management.py::test_revoke_other_sessions_accepts_totp_stepup_and_rotates_session`; `tests/test_session_management.py::test_sessions_page_keeps_review_controls_without_bulk_revoke_action` |
 | Terminate one listed session | Uses public session references and ownership checks | `tests/test_session_management.py::test_terminate_other_session_by_public_reference_revokes_it` |
 | Inactivity expiry | Rejects sessions after `SESSION_INACTIVITY_SECONDS` | `tests/test_session_management.py::test_session_inactivity_expiry_revokes_session` |
 | Absolute authenticated lifetime | Rejects fully authenticated sessions after `SESSION_ABSOLUTE_LIFETIME_SECONDS` without refreshing the timestamp during activity or step-up | `tests/test_session_absolute_lifetime.py` |
@@ -214,7 +223,7 @@ isolation.
 
 | Attack or risk | Implemented control | Evidence |
 | --- | --- | --- |
-| Session fixation | Session id is rotated after authentication milestones and high-risk changes | `rotate_session_id()` in `app/security/sessions.py`; password-change and revoke-other-session tests |
+| Session fixation | Session id is rotated after authentication milestones and high-risk changes | `rotate_session_id()` in `app/security/sessions.py`; password-change and protected revoke-other endpoint tests |
 | Client-side privilege tampering | Authenticated state is server-side and HMAC-signed | `tests/test_db_session_integrity.py` |
 | Raw session id exposure in management UI | UI uses public HMAC-derived references | `tests/test_session_management.py::test_session_termination_rejects_raw_internal_session_id` |
 | Terminating another user's session | Ownership and public-reference checks | `tests/test_pentest_auth_bypass.py::test_cannot_terminate_other_users_session` |

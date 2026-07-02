@@ -8,6 +8,7 @@ from sqlalchemy import Index, func
 from .extensions import db
 
 _USER_ID_FOREIGN_KEY = "users.id"
+_CASCADE_DELETE_ORPHAN = "all, delete-orphan"
 
 
 class User(db.Model):
@@ -20,10 +21,14 @@ class User(db.Model):
     account_type = db.Column(db.String(32), nullable=False, default="customer", index=True)
     account_status = db.Column(db.String(32), nullable=False, default="active", index=True)
     full_name = db.Column(db.String(128), nullable=False)
-    phone_number = db.Column(db.String(8), nullable=True, unique=True)
-    account_number = db.Column(db.String(9), nullable=True, unique=True)
+    phone_number = db.Column(db.String(8), nullable=True)
+    account_number = db.Column(db.String(9), nullable=True)
     staff_personal_email = db.Column(db.String(255), nullable=True)
     workplace_email_verified_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    password_changed_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    force_password_change = db.Column(db.Boolean, nullable=False, default=False)
+    force_password_change_reason = db.Column(db.String(80), nullable=True)
+    force_password_change_at = db.Column(db.DateTime(timezone=True), nullable=True)
 
     mfa_secret_ciphertext = db.Column(db.LargeBinary, nullable=True)
     mfa_secret_nonce = db.Column(db.LargeBinary(12), nullable=True)
@@ -58,6 +63,14 @@ class User(db.Model):
     __table_args__ = (
         Index("ix_users_username_lower", func.lower(username), unique=True),
         Index("ix_users_email_lower", func.lower(email), unique=True),
+        Index(
+            "ix_users_phone_number",
+            "phone_number",
+            unique=True,
+            postgresql_where=phone_number.isnot(None),
+            sqlite_where=phone_number.isnot(None),
+        ),
+        Index("ix_users_account_number", "account_number", unique=True),
         db.CheckConstraint(
             "account_type IN ('customer', 'staff', 'admin', 'root_admin')",
             name="ck_users_account_type",
@@ -99,7 +112,7 @@ class WebAuthnCredential(db.Model):
         "User",
         backref=db.backref(
             "webauthn_credentials",
-            cascade="all, delete-orphan",
+            cascade=_CASCADE_DELETE_ORPHAN,
             lazy="selectin",
         ),
     )
@@ -139,7 +152,7 @@ class RecoveryCode(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
-    code_hmac = db.Column(db.String(64), nullable=False, unique=True)
+    code_hmac = db.Column(db.String(64), nullable=False, unique=True, index=True)
     purpose = db.Column(db.String(40), nullable=False, default="totp_recovery")
     created_at = db.Column(
         db.DateTime(timezone=True),
@@ -151,13 +164,40 @@ class RecoveryCode(db.Model):
     user = db.relationship("User", backref="recovery_codes")
 
 
+class PasswordHistory(db.Model):
+    __tablename__ = "password_history"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
+    password_hash = db.Column(db.String(255), nullable=False)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+    )
+
+    user = db.relationship(
+        "User",
+        backref=db.backref(
+            "password_history",
+            cascade=_CASCADE_DELETE_ORPHAN,
+            lazy="selectin",
+        ),
+    )
+
+    __table_args__ = (
+        Index("ix_password_history_user_created_at", "user_id", "created_at"),
+    )
+
+
 class ManualRecoveryRequest(db.Model):
     __tablename__ = "manual_recovery_requests"
 
     id = db.Column(db.Integer, primary_key=True)
     identifier_ref = db.Column(db.String(64), nullable=False, index=True)
     user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=True, index=True)
-    status = db.Column(db.String(32), nullable=False, default="pending")
+    status = db.Column(db.String(32), nullable=False, default="pending", index=True)
     requested_ip = db.Column(db.String(64), nullable=False, default="")
     requested_user_agent = db.Column(db.String(256), nullable=False, default="")
     request_count = db.Column(db.Integer, nullable=False, default=1)
@@ -187,6 +227,74 @@ class ManualRecoveryRequest(db.Model):
     completed_at = db.Column(db.DateTime(timezone=True), nullable=True)
 
     user = db.relationship("User", backref="manual_recovery_requests")
+
+
+class AdminActionRequest(db.Model):
+    __tablename__ = "admin_action_requests"
+
+    id = db.Column(db.Integer, primary_key=True)
+    operation_type = db.Column(db.String(80), nullable=False, index=True)
+    target_type = db.Column(db.String(80), nullable=False, index=True)
+    target_id = db.Column(db.String(64), nullable=False, index=True)
+    operation_payload = db.Column(db.JSON, nullable=False, default=dict)
+    requester_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
+    requester_role = db.Column(db.String(32), nullable=False)
+    approver_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=True, index=True)
+    status = db.Column(db.String(32), nullable=False, default="pending", index=True)
+    reason_present = db.Column(db.Boolean, nullable=False, default=False)
+    reason_length = db.Column(db.Integer, nullable=False, default=0)
+    metadata_hmac = db.Column(db.String(64), nullable=False)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+    )
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
+    decided_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    executed_at = db.Column(db.DateTime(timezone=True), nullable=True)
+
+    requester = db.relationship(
+        "User",
+        foreign_keys=[requester_id],
+        backref="requested_admin_actions",
+    )
+    approver = db.relationship(
+        "User",
+        foreign_keys=[approver_id],
+        backref="approved_admin_actions",
+    )
+
+    __table_args__ = (
+        db.CheckConstraint(
+            (
+                "operation_type IN ("
+                "'staff_deactivate', 'staff_reactivate', 'staff_reset_activation', "
+                "'manual_recovery_approve', 'manual_recovery_deny', 'manual_recovery_complete'"
+                ")"
+            ),
+            name="ck_admin_action_requests_operation_type",
+        ),
+        db.CheckConstraint(
+            "target_type IN ('staff_user', 'manual_recovery_request')",
+            name="ck_admin_action_requests_target_type",
+        ),
+        db.CheckConstraint(
+            "requester_role IN ('root_admin')",
+            name="ck_admin_action_requests_requester_role",
+        ),
+        db.CheckConstraint(
+            "status IN ('pending', 'rejected', 'cancelled', 'expired', 'executed', 'execution_failed')",
+            name="ck_admin_action_requests_status",
+        ),
+        Index("ix_admin_action_requests_status_expires_at", "status", "expires_at"),
+    )
 
 
 class ServerSideSession(db.Model):
@@ -366,6 +474,7 @@ class StaffInvite(db.Model):
     revoked_by = db.relationship("User", foreign_keys=[revoked_by_user_id], backref="revoked_staff_invites")
 
     __table_args__ = (
+        db.UniqueConstraint("token_hash"),
         db.CheckConstraint("role IN ('staff', 'admin')", name="ck_staff_invites_role"),
         db.CheckConstraint(
             "status IN ('pending', 'totp_pending', 'accepted', 'revoked', 'expired')",
@@ -527,7 +636,7 @@ class Payee(db.Model):
 
     user = db.relationship(
         "User",
-        backref=db.backref("payees", cascade="all, delete-orphan", lazy="selectin"),
+        backref=db.backref("payees", cascade=_CASCADE_DELETE_ORPHAN, lazy="selectin"),
     )
 
     __table_args__ = (
@@ -542,11 +651,11 @@ class Transaction(db.Model):
     __tablename__ = "transactions"
 
     id = db.Column(db.Integer, primary_key=True)
-    transaction_ref = db.Column(db.String(36), nullable=False, unique=True, index=True)
+    transaction_ref = db.Column(db.String(36), nullable=False)
     transaction_hash = db.Column(db.String(64), nullable=False, unique=True, index=True)
     sender_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
     recipient_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
-    payee_id = db.Column(db.Integer, db.ForeignKey("payees.id"), nullable=True, index=True)
+    payee_id = db.Column(db.Integer, db.ForeignKey("payees.id", ondelete="SET NULL"), nullable=True, index=True)
     amount = db.Column(db.Numeric(12, 2), nullable=False)
     reference = db.Column(db.String(128), nullable=False, default="")
     status = db.Column(db.String(32), nullable=False, default="completed")
@@ -570,6 +679,8 @@ class Transaction(db.Model):
     payee = db.relationship("Payee", backref="transactions")
 
     __table_args__ = (
+        db.UniqueConstraint("transaction_ref", name="uq_transactions_ref"),
+        Index("ix_transactions_transaction_ref", "transaction_ref"),
         db.CheckConstraint(
             "status IN ('completed', 'failed')",
             name="ck_transactions_status",
@@ -604,6 +715,10 @@ class PendingTransfer(db.Model):
         backref=db.backref("pending_transfers", lazy="selectin"),
     )
     payee = db.relationship("Payee", backref=db.backref("pending_transfers", lazy="selectin"))
+
+    __table_args__ = (
+        db.UniqueConstraint("token", name="uq_pending_transfers_token"),
+    )
 
     def __repr__(self) -> str:
         return f"<PendingTransfer id={self.id!r} user_id={self.user_id!r} consumed={self.consumed_at is not None!r}>"

@@ -1,4 +1,4 @@
-﻿# Access Control
+# Access Control
 
 This document records the access-control model implemented in the SITBank
 repository. It distinguishes implemented runtime enforcement from test
@@ -57,6 +57,7 @@ account state.
 | JSON auth/account routes | Auth blueprint request hooks enforce login/MFA for protected endpoints | `app/auth/routes.py`, `tests/test_mfa_lifecycle.py::test_api_onboarding_requires_enrolled_mfa_before_authenticated_endpoints` |
 | Frozen accounts | Sensitive actions call `ensure_account_not_frozen()` or are blocked by route gates | `app/auth/services.py`, `app/web/routes.py`, `tests/test_account_security_actions.py::test_account_freeze_is_durable_and_blocks_group_a_sensitive_actions` |
 | Pending MFA sessions | Pending sessions cannot access authenticated resources | `tests/test_pentest_auth_bypass.py::test_pending_mfa_session_cannot_access_dashboard`, `tests/test_pentest_auth_bypass.py::test_pending_mfa_session_cannot_freeze_account` |
+| Profile updates | Username changes require TOTP; profile email changes require a session-bound new-email code plus current TOTP before commit | `app/auth/services.py::update_profile_details()`, `tests/test_account_security_actions.py::test_profile_email_update_requires_email_code_and_totp_stepup` |
 | Absolute session lifetime | Customer and admin sessions expire from their original authenticated timestamp, independent of activity or TOTP step-up | `app/security/sessions.py`, `tests/test_session_absolute_lifetime.py` |
 | Session context risk | Coarse network or browser-family drift marks customer sessions for full reauthentication before sensitive actions; simultaneous drift revokes the session | `app/security/sessions.py`, `tests/test_session_risk_binding.py` |
 | Session management | Public session refs are scoped to the current user | `app/auth/services.py::terminate_session_for_user()`, `tests/test_session_management.py::test_past_sessions_are_scoped_to_current_user` |
@@ -135,8 +136,8 @@ existing role model rather than by adding new roles. Current mapping:
 - `admin`: technical/security administration, including audit review, alert
   review, and safe staff/admin status visibility.
 - `root_admin`: privileged platform administration, including staff/admin
-  invites, invite revocation, staff/admin lifecycle state, and manual recovery
-  review/completion.
+  invites, invite revocation, staff/admin lifecycle request creation, manual
+  recovery review, and maker-checker approval of selected highest-risk changes.
 
 Server-rendered navigation is only a usability layer. Every admin route also
 calls the appropriate `require_staff_session()`, `require_admin_session()`, or
@@ -148,15 +149,16 @@ changes.
 | --- | --- | --- |
 | Generated admin route authorization inventory | `app/admin/routes.py`; explicit policy entries in `tests/test_admin_route_inventory_security.py` | `tests/test_admin_route_inventory_security.py::test_admin_route_inventory_matches_registered_flask_routes`, `tests/test_admin_route_inventory_security.py::test_admin_route_inventory_has_complete_security_decisions` |
 | Staff/admin browser and JSON login requires workplace email, password, active account, approved admin email domain, verified workplace email, and TOTP | `app/admin/routes.py`, `app/admin/services.py::authenticate_admin_primary()` and `complete_admin_mfa_login()` | `tests/test_admin_dashboard_operations.py::test_admin_browser_login_and_mfa_reaches_dashboard`, `tests/test_admin_dashboard_operations.py::test_admin_json_login_contract_remains_compatible`, `tests/test_admin_dashboard_operations.py::test_admin_browser_login_rejects_staff_outside_admin_email_domains` |
-| Root admin is configured by role, approved admin email domain, and email allowlist | `app/admin/services.py::is_root_admin()`, `app/security/identity_policy.py`, and `config.py` `ROOT_ADMIN_EMAILS` | `tests/test_admin_staff_invites.py::test_only_root_admin_with_totp_stepup_can_create_invites`, `tests/test_admin_bootstrap_root.py::test_bootstrap_root_admin_cli_rejects_non_admin_domain_allowlist_entry` |
+| Root admin is configured by role, approved admin email domain, and an explicit non-placeholder email allowlist | `app/admin/services.py::is_root_admin()`, `app/security/identity_policy.py`, and `config.py` `ROOT_ADMIN_EMAILS` | `tests/test_admin_staff_invites.py::test_only_root_admin_with_totp_stepup_can_create_invites`, `tests/test_admin_bootstrap_root.py::test_bootstrap_root_admin_cli_rejects_non_admin_domain_allowlist_entry`, `tests/test_config.py::test_root_admin_allowlist_rejects_builtin_default_in_production`, `tests/test_production_guard.py::test_admin_validator_rejects_unsafe_root_admin_allowlists` |
 | Root admin can invite only `staff` or `admin`, not `root_admin` | `StaffInvite` role constraint in `app/models.py`; role validation in `app/admin/services.py` | `tests/test_admin_staff_invites.py::test_invite_creation_validates_server_side_email_and_role_policy` |
 | Staff invites use approved workplace email only and do not collect personal backup email contacts | `StaffInviteCreateSchema` in `app/admin/routes.py`; `normalize_workplace_email()` and `create_staff_invite()` in `app/admin/services.py`; `ADMIN_ALLOWED_EMAIL_DOMAINS` in `config.py` | `tests/test_admin_staff_invites.py::test_root_admin_can_create_hashed_staff_invite`, `tests/test_privileged_email_domains.py`, `tests/test_config.py::test_admin_allowed_email_domains_reject_personal_and_malformed_domains` |
 | Invite acceptance rejects forged privileged fields | `_reject_forged_invite_fields()` in `app/admin/services.py` | `tests/test_admin_staff_invites.py` |
 | Staff invite acceptance activates only after workplace verification and TOTP setup | `start_invite_acceptance()` and `verify_invite_acceptance()` | `tests/test_admin_staff_invites.py::test_staff_invite_acceptance_activates_only_after_workplace_code_and_totp` |
 | Admin dashboard navigation is role-rendered and backend-enforced | `app/admin/routes.py::index()`, `app/admin/services.py::admin_navigation_for()` | `tests/test_admin_dashboard_operations.py::test_dashboard_renders_role_navigation_and_audits_access`, `tests/test_admin_dashboard_role_separation.py`, `tests/test_admin_route_inventory_security.py` |
 | Admin/root audit viewer supports bounded filters, safe field search, sorting, pagination, and redacted detail display | `app/admin/routes.py::audit_logs()`, `app/admin/services.py::query_audit_events_for_admin()` | `tests/test_admin_dashboard_operations.py::test_audit_viewer_filters_bounds_and_redacts_detail_metadata`, `tests/test_admin_audit_viewer.py` |
-| Admin/root alert review uses the existing report path without sending alerts | `app/admin/routes.py::alerts()`, `app/security/alerts.py::build_security_alert_report()` | `tests/test_admin_dashboard_operations.py::test_alert_review_is_admin_only_and_does_not_send_alerts` |
-| Root-admin staff/admin lifecycle actions require TOTP and audit logging | `app/admin/routes.py`, `app/admin/services.py::transition_staff_account_as_root_admin()` | `tests/test_admin_dashboard_operations.py::test_root_manages_staff_lifecycle_with_totp_and_safe_audit` |
+| Admin/root alert review uses the existing report path without sending alerts on GET | `app/admin/routes.py::alerts()`, `app/security/alerts.py::build_security_alert_report()` | `tests/test_admin_dashboard_operations.py::test_alert_review_is_admin_only_and_does_not_send_alerts` |
+| Admin/root manual alert delivery is POST-only, CSRF-protected, current-TOTP-gated, dedupe-aware, and audited | `app/admin/routes.py::alert_delivery()`, `app/security/alerts.py::build_security_alert_report()` | `tests/test_admin_dashboard_operations.py::test_alert_manual_delivery_browser_requires_csrf_when_enabled`, `tests/test_admin_dashboard_operations.py::test_alert_manual_delivery_reuses_builder_and_audits_delivered`, `tests/test_admin_dashboard_operations.py::test_alert_manual_delivery_respects_dedupe_and_returns_safe_json`, `tests/test_admin_dashboard_operations.py::test_alert_manual_delivery_blocks_invalid_totp`, `tests/test_admin_dashboard_operations.py::test_alert_manual_delivery_audits_configuration_failure` |
+| Root-admin staff/admin lifecycle actions require maker-checker approval before final state change | `AdminActionRequest` in `app/models.py`; `app/admin/services.py::transition_staff_account_as_root_admin()` and `approve_admin_action_request_as_root_admin()` | `tests/test_admin_maker_checker.py::test_staff_lifecycle_requires_maker_checker_before_execution`, `tests/test_admin_dashboard_operations.py::test_root_manages_staff_lifecycle_with_totp_and_safe_audit` |
 | Staff/customer self-action guard | `app/admin/separation.py::assert_not_self_customer_action()` | `tests/test_admin_staff_invites.py::test_separation_guard_blocks_linked_staff_acting_on_own_customer`, `tests/test_admin_manual_recovery.py::test_root_admin_cannot_transition_own_customer_manual_recovery` |
 | Admin session context drift | Any detected coarse-network, browser-family, or detailed User-Agent drift revokes the admin session and requires full login | `app/security/sessions.py`, `tests/test_session_risk_binding.py::test_admin_context_change_revokes_session_under_stricter_policy` |
 
@@ -187,11 +189,13 @@ operator membership remain operator-reviewed state.
 
 Manual recovery operator review is exposed only by the isolated admin app.
 `GET /manual-recovery/requests` lists public-safe request summaries for root
-admins. `POST /manual-recovery/requests/<id>/transition` and
-`POST /manual-recovery/requests/<id>/complete` require root-admin session
-authorization, CSRF, rate limiting, an operator reason, and a fresh TOTP code.
-The routes delegate to `app/auth/password_reset.py` so the manual recovery
-state machine remains centralized.
+admins. Moving a request to `under_review` remains a root-admin TOTP-gated
+triage action. Approval, denial, and completion create an `AdminActionRequest`
+that stores only safe metadata and an HMAC over canonical immutable fields. A
+different active root admin must approve with a fresh TOTP code before the
+centralized `app/auth/password_reset.py` state machine executes the final
+change. Pending approval requests expire, cannot be replayed after terminal
+states, and reject tampered metadata.
 
 Session context is a risk signal, not cryptographic device binding. IP
 networks and User-Agent values do not prove possession of a client-held key.
@@ -212,15 +216,15 @@ High-risk customer actions use `verify_high_risk_authorization()` in
 | MFA replacement start | Fresh TOTP step-up before replacing an existing authenticator secret | `app/auth/services.py`, `tests/test_mfa_lifecycle.py::test_mfa_replacement_start_requires_fresh_mfa_stepup` |
 | Recovery-code regeneration | Authenticated MFA-ready account, CSRF, fresh TOTP step-up, and audit logging before new recovery codes are issued | `app/auth/services.py::regenerate_totp_recovery_codes()`, `tests/test_mfa_lifecycle.py::test_recovery_code_regeneration_requires_fresh_totp_stepup` |
 | Account freeze | Authenticated user, non-frozen state, TOTP step-up, revoke other sessions | `app/auth/services.py::freeze_own_account()`, `tests/test_account_security_actions.py::test_account_freeze_is_durable_and_blocks_group_a_sensitive_actions` |
-| Revoke other sessions | Authenticated user and TOTP step-up | `app/auth/routes.py::revoke_other_sessions()`, `tests/test_pentest_auth_bypass.py::test_revoke_others_requires_valid_mfa_code` |
+| Protected revoke-other endpoint | Authenticated user, CSRF, and TOTP step-up; retained as a backend defense-in-depth route and not linked from the session-management page | `app/auth/routes.py::revoke_other_sessions()`, `tests/test_pentest_auth_bypass.py::test_revoke_others_requires_valid_mfa_code` |
 | Terminate one session | Authenticated user, current-user ownership, public reference | `app/auth/services.py::terminate_session_for_user()`, `tests/test_pentest_auth_bypass.py::test_cannot_terminate_other_users_session` |
 | Payee add confirmation | Authenticated user, pending payee state, recipient revalidation, TOTP step-up | `app/banking/routes.py::payees_confirm_submit()` |
 | Payee removal | Authenticated user, payee ownership check, TOTP step-up | `app/banking/routes.py::payees_remove_submit()` |
 | Staff invite create/revoke | Root admin session and TOTP code | `app/admin/services.py::create_staff_invite()`, `app/admin/services.py::revoke_staff_invite()` |
-| Staff/admin account lifecycle | Root admin session, CSRF, rate limit, TOTP step-up, no self-management, and safe audit metadata | `app/admin/services.py::transition_staff_account_as_root_admin()`, `tests/test_admin_dashboard_operations.py` |
+| Staff/admin account lifecycle | Requesting root admin session, CSRF, rate limit, TOTP step-up, no self-management, durable maker-checker request, different active root-admin approver with fresh TOTP, HMAC integrity, expiry, and safe audit metadata | `app/admin/services.py::transition_staff_account_as_root_admin()`, `app/admin/services.py::approve_admin_action_request_as_root_admin()`, `tests/test_admin_maker_checker.py` |
 | Manual recovery public request | No step-up because the caller is unauthenticated; it creates only a pending request and does not unlock or mutate the account | `app/auth/password_reset.py::request_manual_recovery()`, `tests/test_password_reset.py::test_manual_recovery_request_does_not_freeze_or_unlock_account` |
 | Manual recovery admin review | Root admin session in the isolated admin app | `app/admin/routes.py::manual_recovery_requests()`, `tests/test_admin_manual_recovery.py` |
-| Manual recovery transition/completion | Root admin session, CSRF, rate limit, operator reason, and TOTP step-up | `app/admin/services.py::transition_manual_recovery_request_as_admin()`, `app/admin/services.py::complete_manual_recovery_request_as_admin()`, `tests/test_admin_manual_recovery.py` |
+| Manual recovery approval/denial/completion | Requesting root admin session, CSRF, rate limit, operator reason, TOTP step-up, durable maker-checker request, different active root-admin approver with fresh TOTP, HMAC integrity, expiry, and safe audit metadata | `app/admin/services.py::transition_manual_recovery_request_as_admin()`, `app/admin/services.py::complete_manual_recovery_request_as_admin()`, `app/admin/services.py::approve_admin_action_request_as_root_admin()`, `tests/test_admin_maker_checker.py`, `tests/test_admin_manual_recovery.py` |
 
 ## Broken Access Control Mitigations
 
@@ -245,8 +249,8 @@ Network boundaries complement, but do not replace, Flask authorization:
 
 | Surface | Network boundary | Application controls that still apply |
 | --- | --- | --- |
-| Production customer | Public HTTPS at `sitbank.duckdns.org` | Customer login, MFA onboarding, CSRF, route inventory, rate limiting |
-| Staging customer | Cloudflare Access before Nginx, Cloudflare Authenticated Origin Pull at Nginx, staging Basic Auth | Customer login, MFA, CSRF, route inventory, rate limiting |
+| Production customer | Public HTTPS at `sitbank.pp.ua`; `www.sitbank.pp.ua` redirects to the canonical host | Customer login, MFA onboarding, CSRF, route inventory, rate limiting |
+| Staging customer | Cloudflare Access before Nginx and server-level Cloudflare Authenticated Origin Pull at Nginx | Customer login, MFA, CSRF, route inventory, rate limiting, audit logging |
 | Production admin | Tailscale Serve at `https://admin-sitbank.tailca101b.ts.net/`; no public admin host or Nginx upstream; protected CI checks private reachability and the EC2 preflight checks local Serve/Funnel/listener posture | Staff/root-admin login, mandatory TOTP, CSRF, admin route inventory, admin rate limiting |
 | Staging admin | Tailscale/private operator access to `127.0.0.1:5003`; no public admin host | Staff/root-admin login, mandatory TOTP, CSRF, admin route inventory, admin rate limiting |
 
@@ -268,6 +272,6 @@ The staging customer Flask app also validates the
 `Cf-Access-Jwt-Assertion` RS256 signature, issuer, audience, expiry, and
 optional not-before time before routing the request. Cloudflare Access remains
 an outer network/identity boundary: Flask login, MFA, CSRF, ownership checks,
-rate limiting, audit logging, and Basic Auth still apply. Nginx strips
+rate limiting and audit logging still apply. Nginx strips
 Cloudflare email/service-token headers, and verified token identity remains
 metadata rather than SITBank authorization input.

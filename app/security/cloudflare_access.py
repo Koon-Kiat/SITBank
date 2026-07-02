@@ -37,6 +37,10 @@ class CloudflareAccessConfigurationError(RuntimeError):
 class CloudflareAccessVerificationError(ValueError):
     """Raised for all untrusted or unverifiable Access assertions."""
 
+    def __init__(self, message: str, *, reason: str = "malformed_assertion") -> None:
+        super().__init__(message)
+        self.reason = reason
+
 
 @dataclass(frozen=True)
 class CloudflareAccessSettings:
@@ -149,7 +153,10 @@ def _integer_from_base64url(value: Any, *, label: str) -> int:
 
 def _parse_jwks(document: Any) -> dict[str, rsa.RSAPublicKey]:
     if not isinstance(document, dict) or not isinstance(document.get("keys"), list):
-        raise CloudflareAccessVerificationError("Invalid Cloudflare Access JWKS")
+        raise CloudflareAccessVerificationError(
+            "Invalid Cloudflare Access JWKS",
+            reason="jwks_parse_failed",
+        )
 
     keys: dict[str, rsa.RSAPublicKey] = {}
     for item in document["keys"]:
@@ -176,7 +183,8 @@ def _parse_jwks(document: Any) -> dict[str, rsa.RSAPublicKey]:
         keys[kid] = key
     if not keys:
         raise CloudflareAccessVerificationError(
-            "Cloudflare Access JWKS contains no usable signing keys"
+            "Cloudflare Access JWKS contains no usable signing keys",
+            reason="jwks_parse_failed",
         )
     return keys
 
@@ -198,21 +206,25 @@ def _fetch_jwks_document(url: str) -> dict[str, Any]:
             raw = response.read(_MAX_JWKS_BYTES + 1)
     except OSError as exc:
         raise CloudflareAccessVerificationError(
-            "Cloudflare Access signing keys are unavailable"
+            "Cloudflare Access signing keys are unavailable",
+            reason="jwks_fetch_failed",
         ) from exc
     if len(raw) > _MAX_JWKS_BYTES:
         raise CloudflareAccessVerificationError(
-            "Cloudflare Access signing-key response is too large"
+            "Cloudflare Access signing-key response is too large",
+            reason="jwks_parse_failed",
         )
     try:
         document = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise CloudflareAccessVerificationError(
-            "Cloudflare Access signing-key response is invalid"
+            "Cloudflare Access signing-key response is invalid",
+            reason="jwks_parse_failed",
         ) from exc
     if not isinstance(document, dict):
         raise CloudflareAccessVerificationError(
-            "Cloudflare Access signing-key response is invalid"
+            "Cloudflare Access signing-key response is invalid",
+            reason="jwks_parse_failed",
         )
     return document
 
@@ -277,21 +289,33 @@ class CloudflareAccessVerifier:
 
         segments = assertion.split(".")
         if len(segments) != 3:
-            raise CloudflareAccessVerificationError("Invalid Access assertion")
+            raise CloudflareAccessVerificationError(
+                "Invalid Access assertion",
+                reason="malformed_assertion",
+            )
         encoded_header, encoded_claims, encoded_signature = segments
         header = _decode_json_segment(encoded_header, label="header")
         if header.get("alg") != "RS256":
-            raise CloudflareAccessVerificationError("Unsupported JWT algorithm")
+            raise CloudflareAccessVerificationError(
+                "Unsupported JWT algorithm",
+                reason="malformed_assertion",
+            )
         kid = header.get("kid")
         if not isinstance(kid, str) or not kid or len(kid) > 128:
-            raise CloudflareAccessVerificationError("Invalid JWT key identifier")
+            raise CloudflareAccessVerificationError(
+                "Invalid JWT key identifier",
+                reason="malformed_assertion",
+            )
 
         keys = _signing_keys(self._settings)
         key = keys.get(kid)
         if key is None:
             key = _signing_keys(self._settings, force_refresh=True).get(kid)
         if key is None:
-            raise CloudflareAccessVerificationError("Unknown JWT signing key")
+            raise CloudflareAccessVerificationError(
+                "Unknown JWT signing key",
+                reason="unknown_signing_key",
+            )
 
         signature = _decode_base64url(encoded_signature, label="signature")
         signing_input = f"{encoded_header}.{encoded_claims}".encode("ascii")
@@ -304,21 +328,32 @@ class CloudflareAccessVerifier:
             )
         except InvalidSignature as exc:
             raise CloudflareAccessVerificationError(
-                "Invalid Access assertion signature"
+                "Invalid Access assertion signature",
+                reason="invalid_signature",
             ) from exc
 
         claims = _decode_json_segment(encoded_claims, label="claims")
         if claims.get("iss") != self._settings.issuer:
-            raise CloudflareAccessVerificationError("Invalid JWT issuer")
+            raise CloudflareAccessVerificationError(
+                "Invalid JWT issuer",
+                reason="wrong_issuer",
+            )
         if not _audience_matches(claims.get("aud"), self._settings.audience):
-            raise CloudflareAccessVerificationError("Invalid JWT audience")
+            raise CloudflareAccessVerificationError(
+                "Invalid JWT audience",
+                reason="wrong_audience",
+            )
 
         current_time = time.time() if now is None else float(now)
         if _numeric_date(claims, "exp") <= current_time:
-            raise CloudflareAccessVerificationError("Expired Access assertion")
+            raise CloudflareAccessVerificationError(
+                "Expired Access assertion",
+                reason="expired",
+            )
         if "nbf" in claims and _numeric_date(claims, "nbf") > current_time:
             raise CloudflareAccessVerificationError(
-                "Access assertion is not yet valid"
+                "Access assertion is not yet valid",
+                reason="not_yet_valid",
             )
         return claims
 
@@ -346,11 +381,40 @@ def register_cloudflare_access_guard(app: Flask) -> None:
         if _loopback_readiness_request():
             return
         assertion = request.headers.get("Cf-Access-Jwt-Assertion", "")
+        if not assertion:
+            _audit_access_denial(settings, "missing_assertion")
+            abort(403)
         try:
             verifier.verify(assertion)
-        except CloudflareAccessVerificationError:
+        except CloudflareAccessVerificationError as exc:
+            _audit_access_denial(settings, exc.reason)
             abort(403)
         g.cloudflare_access_verified = True
+
+
+def _audit_access_denial(
+    settings: CloudflareAccessSettings,
+    reason: str,
+) -> None:
+    from app.security.audit import audit_event
+
+    audit_event(
+        "cloudflare_access_assertion_validation",
+        "blocked",
+        metadata={
+            "reason": reason,
+            "validator": "cloudflare_access_jwt",
+            "validation_required": True,
+            "audience_configured": bool(settings.audience),
+            "issuer_configured": bool(settings.issuer),
+            "jwks_cache_available": _jwks_cache_contains(settings.jwks_url),
+        },
+    )
+
+
+def _jwks_cache_contains(url: str) -> bool:
+    with _JWKS_CACHE_LOCK:
+        return url in _JWKS_CACHE
 
 
 def _clear_jwks_cache_for_testing() -> None:

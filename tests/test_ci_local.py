@@ -268,6 +268,7 @@ def test_optional_static_analysis_uses_discovered_targets_and_shared_policy(
     for config in ci_local_module.SEMGREP_CONFIGS:
         config_index = semgrep.index(config)
         assert semgrep[config_index - 1] == "--config"
+    assert semgrep.count("--metrics=off") == 1
     assert "--severity" in semgrep
     assert "ERROR" in semgrep
     assert "--error" in semgrep
@@ -284,3 +285,89 @@ def test_ci_local_docs_explain_partial_and_strict_docker_validation():
         assert "CI_LOCAL_REQUIRE_DOCKER=1" in normalized
         assert "partial" in normalized.lower()
         assert "CI/CD remains the source of truth" in normalized
+
+
+def test_run_and_discovery_failures_are_recorded(ci_local_module, monkeypatch):
+    results = []
+    monkeypatch.setattr(
+        ci_local_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            subprocess.CalledProcessError(1, ["fake"])
+        ),
+    )
+    with pytest.raises(subprocess.CalledProcessError):
+        ci_local_module.run("Failing check", ["fake"], results)
+    assert results[-1].status == "FAIL"
+
+    monkeypatch.setattr(
+        ci_local_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: type("Result", (), {"stdout": ""})(),
+    )
+    with pytest.raises(RuntimeError, match="No shell lint targets"):
+        ci_local_module.discover_lint_targets("shell")
+
+
+def test_command_succeeds_handles_nonzero_and_os_error(ci_local_module, monkeypatch):
+    monkeypatch.setattr(
+        ci_local_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: type("Result", (), {"returncode": 1})(),
+    )
+    assert ci_local_module.command_succeeds(["fake"]) is False
+    monkeypatch.setattr(
+        ci_local_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("missing")),
+    )
+    assert ci_local_module.command_succeeds(["fake"]) is False
+
+
+def test_find_git_bash_uses_path_and_reports_missing(ci_local_module, monkeypatch, tmp_path):
+    bash = tmp_path / "bash"
+    bash.write_text("", encoding="utf-8")
+    monkeypatch.setenv("ProgramFiles", str(tmp_path / "missing-program-files"))
+    monkeypatch.setenv("ProgramFiles(x86)", str(tmp_path / "missing-program-files-x86"))
+    monkeypatch.setattr(ci_local_module.shutil, "which", lambda _name: str(bash))
+    assert ci_local_module.find_git_bash() == str(bash)
+
+    monkeypatch.setattr(ci_local_module.shutil, "which", lambda _name: None)
+    with pytest.raises(FileNotFoundError, match="Git Bash"):
+        ci_local_module.find_git_bash()
+
+
+def test_main_returns_failure_for_python_static_and_docker_boundaries(
+    ci_local_module,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        ci_local_module,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            subprocess.CalledProcessError(1, ["fake"])
+        ),
+    )
+    assert ci_local_module.main([]) == 1
+
+    monkeypatch.setattr(ci_local_module, "run", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ci_local_module, "find_git_bash", lambda: "/bin/bash")
+    monkeypatch.setattr(ci_local_module, "discover_lint_targets", lambda _kind: [])
+    monkeypatch.setattr(
+        ci_local_module,
+        "run_optional_static_analysis",
+        lambda _results: False,
+    )
+    assert ci_local_module.main([]) == 1
+
+    monkeypatch.setattr(
+        ci_local_module,
+        "run_optional_static_analysis",
+        lambda _results: True,
+    )
+    monkeypatch.setattr(
+        ci_local_module,
+        "run_docker_checks",
+        lambda **_kwargs: False,
+    )
+    assert ci_local_module.main([]) == 1

@@ -26,6 +26,8 @@ MEMORY_RATE_LIMIT_STORAGE = "memory://"
 POSTGRESQL_PSYCOPG2_SCHEME = "postgresql+psycopg2"
 CSP_SELF = "'self'"
 CSP_NONE = "'none'"
+OFFICIAL_TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+TURNSTILE_ORIGIN = "https://challenges.cloudflare.com"
 CONFIG_DOMAIN_RE = re.compile(
     r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
     r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])$"
@@ -40,6 +42,28 @@ PERSONAL_EMAIL_DOMAINS = frozenset(
         "icloud.com",
         "proton.me",
         "protonmail.com",
+    }
+)
+ROOT_ADMIN_EMAIL_COUNT = 7
+DEFAULT_ROOT_ADMIN_EMAILS = frozenset(
+    f"root{index}@sit.singaporetech.edu.sg"
+    for index in range(1, ROOT_ADMIN_EMAIL_COUNT + 1)
+)
+DEFAULT_ROOT_ADMIN_EMAILS_CSV = ",".join(
+    f"root{index}@sit.singaporetech.edu.sg"
+    for index in range(1, ROOT_ADMIN_EMAIL_COUNT + 1)
+)
+ROOT_ADMIN_PLACEHOLDER_LOCAL_PARTS = frozenset(
+    {
+        "admin",
+        "demo",
+        "example",
+        "placeholder",
+        "root",
+        "root-admin",
+        "root_admin",
+        "rootadmin",
+        "test",
     }
 )
 
@@ -348,6 +372,19 @@ def _csv_env_set(name: str, *, default: str) -> frozenset[str]:
     return values
 
 
+def _csv_env_values(name: str, *, default: str) -> tuple[str, ...]:
+    raw_value = os.getenv(name, default)
+    values: list[str] = []
+    for item in raw_value.split(","):
+        normalized = item.strip().casefold()
+        if not normalized:
+            raise RuntimeError(f"{name} must not contain empty entries")
+        values.append(normalized)
+    if not values:
+        raise RuntimeError(f"{name} must contain at least one value")
+    return tuple(values)
+
+
 def _csv_domain_set(name: str, *, default: str, reject_personal: bool = True) -> frozenset[str]:
     domains = _csv_env_set(name, default=default)
     if any(not _valid_config_domain(domain, reject_personal=reject_personal) for domain in domains):
@@ -378,6 +415,82 @@ def _valid_config_email(value: str) -> bool:
     if separator != "@" or not local or not _valid_config_domain(domain, reject_personal=True):
         return False
     return bool(CONFIG_EMAIL_RE.fullmatch(normalized))
+
+
+def _root_admin_email_has_placeholder_identity(value: str) -> bool:
+    normalized = str(value or "").strip().casefold()
+    local, separator, domain = normalized.partition("@")
+    if separator != "@":
+        return True
+    if _looks_placeholder(local) or _looks_placeholder(domain):
+        return True
+    if local in ROOT_ADMIN_PLACEHOLDER_LOCAL_PARTS:
+        return True
+    if any(token in local for token in ("placeholder", "example", "demo", "changeme", "replace")):
+        return True
+    return domain in {"example.com", "example.test"}
+
+
+def root_admin_email_allowlist_failures(
+    values: object,
+    *,
+    allowed_domains: object,
+    reject_default: bool,
+) -> list[str]:
+    emails, failures = _normalized_root_admin_email_values(values)
+    if emails is None:
+        return failures
+
+    failures.extend(_root_admin_email_shape_failures(emails, allowed_domains))
+    if reject_default and frozenset(emails) == DEFAULT_ROOT_ADMIN_EMAILS:
+        failures.append("ROOT_ADMIN_EMAILS must be explicitly configured for production/admin runtime")
+    return failures
+
+
+def _normalized_root_admin_email_values(values: object) -> tuple[tuple[str, ...] | None, list[str]]:
+    if not isinstance(values, (set, frozenset, list, tuple)):
+        return None, ["ROOT_ADMIN_EMAILS must configure exactly 7 root administrators"]
+    emails = tuple(str(item or "").strip().casefold() for item in values)
+    return emails, []
+
+
+def _root_admin_email_shape_failures(emails: tuple[str, ...], allowed_domains: object) -> list[str]:
+    failures: list[str] = []
+    if any(not item for item in emails):
+        failures.append("ROOT_ADMIN_EMAILS must not contain empty entries")
+    if len(emails) != ROOT_ADMIN_EMAIL_COUNT:
+        failures.append(
+            f"ROOT_ADMIN_EMAILS must configure exactly {ROOT_ADMIN_EMAIL_COUNT} root administrators"
+        )
+    if len(set(emails)) != len(emails):
+        failures.append("ROOT_ADMIN_EMAILS must not contain duplicate email addresses")
+
+    allowed = frozenset(str(item or "").strip().casefold() for item in (allowed_domains or ()))
+    email_set = frozenset(emails)
+    if any(not _valid_config_email(item) for item in emails) or not _all_email_domains_allowed(email_set, allowed):
+        failures.append("ROOT_ADMIN_EMAILS must use approved admin workplace domains")
+    if any(_root_admin_email_has_placeholder_identity(item) for item in emails):
+        failures.append("ROOT_ADMIN_EMAILS must not contain placeholder, demo, or example identities")
+    return failures
+
+
+def _root_admin_email_set(
+    name: str,
+    *,
+    default: str,
+    allowed_domains: frozenset[str],
+    app_env: str,
+    deployment_target: str,
+) -> frozenset[str]:
+    emails = _csv_env_values(name, default=default)
+    failures = root_admin_email_allowlist_failures(
+        emails,
+        allowed_domains=allowed_domains,
+        reject_default=_production_like(app_env, deployment_target),
+    )
+    if failures:
+        raise RuntimeError(failures[0])
+    return frozenset(emails)
 
 
 def _email_domain(value: str) -> str:
@@ -432,6 +545,74 @@ def _validate_password_reset_email_config(
             raise RuntimeError("SMTP_USERNAME or SMTP_USERNAME_FILE is required in production")
         if not smtp_password:
             raise RuntimeError("SMTP_PASSWORD or SMTP_PASSWORD_FILE is required in production")
+
+
+def _production_like(app_env: str, deployment_target: str | None = None) -> bool:
+    normalized_env = str(app_env or "").strip().casefold()
+    normalized_target = str(deployment_target or "").strip().casefold()
+    return normalized_env == "production" or normalized_target in {"staging", "production"}
+
+
+def _validate_smtp_transport_config(
+    *,
+    app_env: str,
+    deployment_target: str,
+    email_backend: str,
+    smtp_use_tls: bool,
+) -> None:
+    if email_backend != "smtp":
+        return
+    if _production_like(app_env, deployment_target) and not smtp_use_tls:
+        raise RuntimeError("SMTP_USE_TLS=true is required for staging and production SMTP")
+
+
+def _validate_active_session_limit_config(
+    *,
+    customer_limit: object,
+    admin_limit: object,
+) -> None:
+    for name, value in {
+        "CUSTOMER_MAX_ACTIVE_SESSIONS": customer_limit,
+        "ADMIN_MAX_ACTIVE_SESSIONS": admin_limit,
+    }.items():
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f"{name} must be an integer") from exc
+        if parsed != 1:
+            raise RuntimeError(f"{name} must be 1")
+
+
+def _validate_password_history_config(
+    *,
+    enabled: object,
+    retention_count: object,
+) -> None:
+    if enabled is not True:
+        raise RuntimeError("PASSWORD_HISTORY_ENABLED must be true")
+    try:
+        retention = int(retention_count)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("PASSWORD_HISTORY_RETENTION_COUNT must be an integer") from exc
+    if retention < 3:
+        raise RuntimeError("PASSWORD_HISTORY_RETENTION_COUNT must be at least 3")
+
+
+def _validate_turnstile_verify_url(
+    *,
+    app_env: str,
+    deployment_target: str,
+    verify_url: str,
+) -> str:
+    value = str(verify_url or "").strip()
+    parsed = urlparse(value)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise RuntimeError("TURNSTILE_VERIFY_URL must be an HTTPS URL")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise RuntimeError("TURNSTILE_VERIFY_URL must not include credentials, query, or fragment")
+    if _production_like(app_env, deployment_target) and value != OFFICIAL_TURNSTILE_VERIFY_URL:
+        raise RuntimeError("TURNSTILE_VERIFY_URL must use the official Cloudflare Siteverify endpoint")
+    return value
 
 
 def _float_env(name: str, *, default: str, minimum: float, maximum: float) -> float:
@@ -740,6 +921,7 @@ def _customer_runtime_overrides(config: dict) -> dict[str, object]:
         or 5 * 60,
         "SESSION_ABSOLUTE_LIFETIME_SECONDS": config.get("CUSTOMER_SESSION_ABSOLUTE_LIFETIME_SECONDS")
         or DEFAULT_CUSTOMER_SESSION_ABSOLUTE_LIFETIME_SECONDS,
+        "MAX_ACTIVE_SESSIONS": config.get("CUSTOMER_MAX_ACTIVE_SESSIONS") or 1,
         "AUTH_FAILURE_KEY_PREFIX": config.get("AUTH_FAILURE_KEY_PREFIX") or "ospbank:authfail:",
         "RATELIMIT_STORAGE_URI": config.get("RATELIMIT_STORAGE_URI") or MEMORY_RATE_LIMIT_STORAGE,
         "RATELIMIT_KEY_PREFIX": config.get("RATELIMIT_KEY_PREFIX") or "ospbank:ratelimit:",
@@ -822,6 +1004,7 @@ def _admin_runtime_overrides(config: dict) -> dict[str, object]:
         "PENDING_MFA_MAX_AGE_SECONDS": config.get("ADMIN_PENDING_MFA_MAX_AGE_SECONDS") or 60,
         "SESSION_ABSOLUTE_LIFETIME_SECONDS": config.get("ADMIN_SESSION_ABSOLUTE_LIFETIME_SECONDS")
         or DEFAULT_ADMIN_SESSION_ABSOLUTE_LIFETIME_SECONDS,
+        "MAX_ACTIVE_SESSIONS": config.get("ADMIN_MAX_ACTIVE_SESSIONS") or 1,
         "AUTH_FAILURE_KEY_PREFIX": config.get("ADMIN_AUTH_FAILURE_KEY_PREFIX") or "ospbank:admin:authfail:",
         "RATELIMIT_STORAGE_URI": config.get("ADMIN_RATELIMIT_STORAGE_URI") or MEMORY_RATE_LIMIT_STORAGE,
         "RATELIMIT_KEY_PREFIX": config.get("ADMIN_RATELIMIT_KEY_PREFIX")
@@ -910,6 +1093,17 @@ class Config:
     PASSWORD_PBKDF2_ITERATIONS = int(os.getenv("PASSWORD_PBKDF2_ITERATIONS", "600000"))
     if PASSWORD_PBKDF2_ITERATIONS < 600000:
         raise RuntimeError("PASSWORD_PBKDF2_ITERATIONS must be 600000 or higher")
+    PASSWORD_HISTORY_ENABLED = _optional_bool("PASSWORD_HISTORY_ENABLED", default=True)
+    PASSWORD_HISTORY_RETENTION_COUNT = _int_env(
+        "PASSWORD_HISTORY_RETENTION_COUNT",
+        default="3",
+        minimum=3,
+        maximum=24,
+    )
+    _validate_password_history_config(
+        enabled=PASSWORD_HISTORY_ENABLED,
+        retention_count=PASSWORD_HISTORY_RETENTION_COUNT,
+    )
     PASSWORD_MIN_LENGTH = _int_env(
         "PASSWORD_MIN_LENGTH",
         default=(
@@ -995,6 +1189,12 @@ class Config:
         smtp_username=SMTP_USERNAME,
         smtp_password=SMTP_PASSWORD,
     )
+    _validate_smtp_transport_config(
+        app_env=APP_ENV,
+        deployment_target=DEPLOYMENT_TARGET,
+        email_backend=PASSWORD_RESET_EMAIL_BACKEND,
+        smtp_use_tls=SMTP_USE_TLS,
+    )
 
     SECURITY_ALERT_ENABLED = _optional_bool(
         "SECURITY_ALERT_ENABLED",
@@ -1043,6 +1243,22 @@ class Config:
     SESSION_HISTORY_LIMIT = int(os.getenv("SESSION_HISTORY_LIMIT", "20"))
     if SESSION_HISTORY_LIMIT < 1 or SESSION_HISTORY_LIMIT > 100:
         raise RuntimeError("SESSION_HISTORY_LIMIT must be between 1 and 100")
+    CUSTOMER_MAX_ACTIVE_SESSIONS = _int_env(
+        "CUSTOMER_MAX_ACTIVE_SESSIONS",
+        default="1",
+        minimum=1,
+        maximum=1,
+    )
+    ADMIN_MAX_ACTIVE_SESSIONS = _int_env(
+        "ADMIN_MAX_ACTIVE_SESSIONS",
+        default="1",
+        minimum=1,
+        maximum=1,
+    )
+    _validate_active_session_limit_config(
+        customer_limit=CUSTOMER_MAX_ACTIVE_SESSIONS,
+        admin_limit=ADMIN_MAX_ACTIVE_SESSIONS,
+    )
     PENDING_MFA_MAX_AGE_SECONDS = int(os.getenv("PENDING_MFA_MAX_AGE_SECONDS", "300"))
     if PENDING_MFA_MAX_AGE_SECONDS < 60 or PENDING_MFA_MAX_AGE_SECONDS > SESSION_INACTIVITY_SECONDS:
         raise RuntimeError("PENDING_MFA_MAX_AGE_SECONDS must be between 60 and SESSION_INACTIVITY_SECONDS")
@@ -1126,7 +1342,9 @@ class Config:
         "connect-src": CSP_SELF,
         "font-src": CSP_SELF,
         "manifest-src": CSP_SELF,
+        "frame-src": [CSP_SELF, TURNSTILE_ORIGIN],
     }
+    TALISMAN_CONTENT_SECURITY_POLICY["script-src"] = [CSP_SELF, TURNSTILE_ORIGIN]
 
     TRUSTED_PROXY_COUNT = int(os.getenv("TRUSTED_PROXY_COUNT", "1"))
     if TRUSTED_PROXY_COUNT < 0 or TRUSTED_PROXY_COUNT > 2:
@@ -1159,22 +1377,13 @@ class Config:
         for item in os.getenv("STAFF_INVITE_ALIAS_SEPARATORS", "+").split(",")
         if item
     )
-    ROOT_ADMIN_EMAILS = _csv_env_set(
+    ROOT_ADMIN_EMAILS = _root_admin_email_set(
         "ROOT_ADMIN_EMAILS",
-        default=(
-            "root1@sit.singaporetech.edu.sg,"
-            "root2@sit.singaporetech.edu.sg,"
-            "root3@sit.singaporetech.edu.sg,"
-            "root4@sit.singaporetech.edu.sg,"
-            "root5@sit.singaporetech.edu.sg,"
-            "root6@sit.singaporetech.edu.sg,"
-            "root7@sit.singaporetech.edu.sg"
-        ),
+        default=DEFAULT_ROOT_ADMIN_EMAILS_CSV,
+        allowed_domains=ADMIN_ALLOWED_EMAIL_DOMAINS,
+        app_env=APP_ENV,
+        deployment_target=DEPLOYMENT_TARGET,
     )
-    if len(ROOT_ADMIN_EMAILS) != 7:
-        raise RuntimeError("ROOT_ADMIN_EMAILS must contain exactly 7 workplace email addresses")
-    if not _all_email_domains_allowed(ROOT_ADMIN_EMAILS, ADMIN_ALLOWED_EMAIL_DOMAINS):
-        raise RuntimeError("ROOT_ADMIN_EMAILS must contain only approved admin workplace email addresses")
     STAFF_INVITE_TTL_SECONDS = _int_env(
         "STAFF_INVITE_TTL_SECONDS",
         default=str(24 * 60 * 60),
@@ -1188,11 +1397,38 @@ class Config:
         maximum=3600,
     )
     TURNSTILE_ENABLED = _optional_bool("TURNSTILE_ENABLED", default=False)
+    TURNSTILE_SITE_KEY = os.getenv("TURNSTILE_SITE_KEY", "").strip()
     TURNSTILE_SECRET_KEY = _optional_turnstile_secret()
-    TURNSTILE_VERIFY_URL = os.getenv(
-        "TURNSTILE_VERIFY_URL",
-        "https://challenges.cloudflare.com/turnstile/v0/siteverify",
-    ).strip()
+    TURNSTILE_VERIFY_URL = _validate_turnstile_verify_url(
+        app_env=APP_ENV,
+        deployment_target=DEPLOYMENT_TARGET,
+        verify_url=os.getenv("TURNSTILE_VERIFY_URL", OFFICIAL_TURNSTILE_VERIFY_URL),
+    )
+    TURNSTILE_CUSTOMER_LOGIN_ENABLED = _optional_bool("TURNSTILE_CUSTOMER_LOGIN_ENABLED", default=False)
+    TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED = _optional_bool(
+        "TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED",
+        default=False,
+    )
+    TURNSTILE_CUSTOMER_REGISTER_ENABLED = _optional_bool("TURNSTILE_CUSTOMER_REGISTER_ENABLED", default=False)
+    TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED = _optional_bool(
+        "TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED",
+        default=False,
+    )
+    TURNSTILE_ADMIN_LOGIN_ENABLED = _optional_bool("TURNSTILE_ADMIN_LOGIN_ENABLED", default=False)
+    TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED = _optional_bool(
+        "TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED",
+        default=True,
+    )
+    TURNSTILE_FAIL_CLOSED_IN_PRODUCTION = _optional_bool(
+        "TURNSTILE_FAIL_CLOSED_IN_PRODUCTION",
+        default=True,
+    )
+    PROFILE_EMAIL_CHANGE_TTL_SECONDS = _int_env(
+        "PROFILE_EMAIL_CHANGE_TTL_SECONDS",
+        default="300",
+        minimum=60,
+        maximum=900,
+    )
 
 
 class TestingConfig(Config):

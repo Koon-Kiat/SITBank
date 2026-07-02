@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import ast
 import os
@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 import yaml
 from flask import request
+import ops.deploy.render_container_bundle as runtime_renderer
 
 from ops.deploy.render_container_bundle import (
     NON_SECRET_DEFAULTS,
@@ -50,7 +51,7 @@ PYTHON_SLIM_TRIXIE_IMAGE = (
 )
 
 ROOT_ADMIN_EMAILS_VALUE = ",".join(
-    f"root{index}@sit.singaporetech.edu.sg" for index in range(1, 8)
+    f"chief{index}@sit.singaporetech.edu.sg" for index in range(1, 8)
 )
 
 DEPLOYMENT_VALUES = {
@@ -66,7 +67,7 @@ DEPLOYMENT_VALUES = {
     "PROD_MFA_KEK_ACTIVE_ID": "2026-06-mfa",
     "PROD_MFA_KEK_KEYS_JSON": '{"2026-06-mfa":"NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ="}',
     "PROD_PASSWORD_PEPPER_B64": "MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE=",
-    "PROD_PUBLIC_HOST": "sitbank.duckdns.org",
+    "PROD_PUBLIC_HOST": "sitbank.pp.ua",
     "PROD_SECRET_KEY": "secret-key-with-$-and-enough-length-for-production",
     "PROD_SECURITY_AUDIT_HMAC_KEY": "audit-hmac-key-with-enough-length-for-production",
     "PROD_SECURITY_ALERT_WEBHOOK_URL": "https://hooks.example.test/sitbank-security-alerts",
@@ -78,6 +79,15 @@ DEPLOYMENT_VALUES = {
     "PROD_SMTP_HOST": "smtp.example.test",
     "PROD_SMTP_USERNAME": "smtp-user",
     "PROD_SMTP_PASSWORD": "smtp-password",
+    "PROD_TURNSTILE_SECRET_KEY": "1x0000000000000000000000000000000AA",
+    "PROD_TURNSTILE_ENABLED": "true",
+    "PROD_TURNSTILE_SITE_KEY": "1x00000000000000000000AA",
+    "PROD_TURNSTILE_CUSTOMER_LOGIN_ENABLED": "true",
+    "PROD_TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED": "true",
+    "PROD_TURNSTILE_CUSTOMER_REGISTER_ENABLED": "true",
+    "PROD_TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED": "true",
+    "PROD_TURNSTILE_ADMIN_LOGIN_ENABLED": "false",
+    "PROD_TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED": "false",
     "PROD_WTF_CSRF_SECRET_KEY": "csrf-secret-with-enough-length-for-production",
 }
 
@@ -343,9 +353,12 @@ def _config_secret_inputs() -> set[str]:
         "_configured_secret",
         "_required_session_hmac_keys",
         "_required_url",
+        "_optional_turnstile_secret",
     }
     names = set()
     for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_optional_turnstile_secret":
+            names.add("TURNSTILE_SECRET_KEY")
         if not isinstance(node, ast.Call):
             continue
         if not isinstance(node.func, ast.Name) or node.func.id not in secret_readers:
@@ -601,6 +614,84 @@ def test_staff_invite_personal_email_migration_allows_workplace_only_invites():
     assert "nullable=False" not in migration
 
 
+def test_migration_baseline_drift_metadata_matches_reviewed_migrations():
+    from app.models import (
+        ManualRecoveryRequest,
+        PendingTransfer,
+        RecoveryCode,
+        StaffInvite,
+        Transaction,
+        User,
+    )
+
+    user_indexes = User.__table__.indexes
+    recovery_indexes = RecoveryCode.__table__.indexes
+    manual_recovery_indexes = ManualRecoveryRequest.__table__.indexes
+    transaction_constraints = Transaction.__table__.constraints
+    transaction_indexes = Transaction.__table__.indexes
+    pending_constraints = PendingTransfer.__table__.constraints
+    staff_constraints = StaffInvite.__table__.constraints
+
+    assert User.__table__.c.phone_number.unique is None
+    assert User.__table__.c.account_number.unique is None
+    assert any(index.name == "ix_users_phone_number" and index.unique for index in user_indexes)
+    assert any(index.name == "ix_users_account_number" and index.unique for index in user_indexes)
+    assert any(index.name == "ix_recovery_codes_code_hmac" and index.unique for index in recovery_indexes)
+    assert any(index.name == "ix_manual_recovery_requests_status" for index in manual_recovery_indexes)
+    assert any(
+        constraint.name == "uq_transactions_ref"
+        and [column.name for column in constraint.columns] == ["transaction_ref"]
+        for constraint in transaction_constraints
+    )
+    assert any(
+        index.name == "ix_transactions_transaction_ref" and not index.unique
+        for index in transaction_indexes
+    )
+    assert Transaction.__table__.c.transaction_hash.nullable is False
+    payee_fk = next(
+        constraint
+        for constraint in transaction_constraints
+        if [column.name for column in constraint.columns] == ["payee_id"]
+    )
+    assert next(iter(payee_fk.elements)).ondelete == "SET NULL"
+    assert any(
+        constraint.name == "uq_pending_transfers_token"
+        and [column.name for column in constraint.columns] == ["token"]
+        for constraint in pending_constraints
+    )
+    assert any(
+        [column.name for column in constraint.columns] == ["token_hash"]
+        for constraint in staff_constraints
+    )
+
+
+def test_transaction_hash_not_null_migration_is_data_preserving():
+    migration = Path(
+        "migrations/versions/20260702_0020_align_migration_baseline_metadata.py"
+    ).read_text(encoding="utf-8")
+    deployment_docs = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
+    operations_docs = Path("docs/OPERATIONS.md").read_text(encoding="utf-8")
+    combined_docs = f"{deployment_docs}\n{operations_docs}"
+    normalized_docs = " ".join(combined_docs.split())
+
+    assert 'revision = "20260702_0020"' in migration
+    assert 'down_revision = "20260701_0019"' in migration
+    assert "_backfill_transaction_hashes()" in migration
+    assert "hashlib.sha256" in migration
+    assert '"transaction_ref": row.transaction_ref' in migration
+    assert '"sender_id": row.sender_id' in migration
+    assert '"recipient_id": row.recipient_id' in migration
+    assert "nullable=False" in migration
+    assert "nullable=True" in migration
+    assert "placeholder" not in migration.casefold()
+    assert "Migration `20260702_0020`" in normalized_docs
+    assert "staging first" in normalized_docs
+    assert "encrypted production backup" in normalized_docs
+    assert "verify-migration-baseline" in normalized_docs
+    assert "verify-runtime-db-privileges" in normalized_docs
+    assert "not manual schema-edit commands" in normalized_docs
+
+
 def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypatch):
     _set_deployment_values(monkeypatch)
 
@@ -611,7 +702,7 @@ def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypa
     assert environment["DEPLOYMENT_TARGET"] == "production"
     assert "WEBAUTHN_RP_ID" not in environment
     assert "WEBAUTHN_RP_ORIGIN" not in environment
-    assert environment["PASSWORD_RESET_BASE_URL"] == "https://sitbank.duckdns.org"
+    assert environment["PASSWORD_RESET_BASE_URL"] == "https://sitbank.pp.ua"
     assert environment["PASSWORD_RESET_EMAIL_BACKEND"] == "smtp"
     assert environment["PASSWORD_RESET_EMAIL_FROM"] == DEPLOYMENT_VALUES["PROD_PASSWORD_RESET_EMAIL_FROM"]
     assert environment["PAYEE_COOLDOWN_SECONDS"] == "43200"
@@ -981,7 +1072,8 @@ def test_smoke_fixture_and_deployment_wrapper_match_runtime_contract():
 
     assert "--env DATABASE_MIGRATION_URL_FILE=/run/secrets/database_migration_url" in smoke_test
     assert "--env PAYEE_COOLDOWN_SECONDS=43200" in smoke_test
-    assert '--env "ROOT_ADMIN_EMAILS=root1@sit.singaporetech.edu.sg' in smoke_test
+    assert 'readonly root_admin_emails="chief1@sit.singaporetech.edu.sg' in smoke_test
+    assert '--env "ROOT_ADMIN_EMAILS=${root_admin_emails}"' in smoke_test
     assert "--env SECURITY_AUDIT_ANCHOR_PATH=/run/state/security-audit.anchor" in smoke_test
     assert '--tmpfs "/run/state:rw,noexec,nosuid,nodev,size=16m,uid=10001,gid=10001,mode=0750"' in smoke_test
     assert ':/run/secrets/database_migration_url:ro' not in smoke_test
@@ -1160,6 +1252,133 @@ def test_container_bundle_writer_quotes_dollar_values_and_separates_files(
     assert (output / "secrets" / "secret_key").read_text(encoding="utf-8") == (
         DEPLOYMENT_VALUES["PROD_SECRET_KEY"]
     )
+    assert "TURNSTILE_SECRET_KEY" not in environment
+    assert (
+        output / "secrets" / "turnstile_secret_key"
+    ).read_text(encoding="utf-8") == DEPLOYMENT_VALUES["PROD_TURNSTILE_SECRET_KEY"]
+
+
+def test_turnstile_renderer_maps_public_flags_and_rejects_unsafe_admin_rollout(
+    monkeypatch,
+):
+    _set_deployment_values(monkeypatch)
+
+    environment = build_container_environment()
+
+    assert environment["TURNSTILE_ENABLED"] == "true"
+    assert environment["TURNSTILE_CUSTOMER_LOGIN_ENABLED"] == "true"
+    assert environment["TURNSTILE_ADMIN_LOGIN_ENABLED"] == "false"
+    assert environment["TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED"] == "false"
+    assert environment["TURNSTILE_VERIFY_URL"] == (
+        "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+    )
+
+    monkeypatch.setenv("PROD_TURNSTILE_ADMIN_LOGIN_ENABLED", "true")
+    with pytest.raises(RuntimeError, match="must remain false"):
+        build_container_environment()
+
+
+def test_turnstile_renderer_fails_when_enabled_without_customer_route(
+    monkeypatch,
+):
+    _set_deployment_values(monkeypatch)
+    for name in (
+        "PROD_TURNSTILE_CUSTOMER_LOGIN_ENABLED",
+        "PROD_TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED",
+        "PROD_TURNSTILE_CUSTOMER_REGISTER_ENABLED",
+        "PROD_TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED",
+    ):
+        monkeypatch.setenv(name, "false")
+
+    with pytest.raises(RuntimeError, match="requires at least one customer route flag"):
+        build_container_environment()
+
+
+def test_turnstile_renderer_rejects_invalid_booleans_and_disabled_route_flags(
+    monkeypatch,
+):
+    _set_deployment_values(monkeypatch)
+    monkeypatch.setenv("PROD_TURNSTILE_ENABLED", "sometimes")
+    with pytest.raises(RuntimeError, match="must be true or false"):
+        build_container_environment()
+
+    monkeypatch.setenv("PROD_TURNSTILE_ENABLED", "false")
+    with pytest.raises(RuntimeError, match="route flags require"):
+        build_container_environment()
+
+
+def test_runtime_renderer_validation_errors_are_covered(monkeypatch):
+    with pytest.raises(RuntimeError, match="prefix"):
+        runtime_renderer._validate_prefix("DEV")
+    with pytest.raises(RuntimeError, match="valid base64"):
+        runtime_renderer._validate_b64_key("FAKE_KEY", "!")
+    with pytest.raises(RuntimeError, match="exactly 32 bytes"):
+        runtime_renderer._validate_b64_key("FAKE_KEY", "YQ==")
+    with pytest.raises(RuntimeError, match="invalid"):
+        runtime_renderer._validate_key_id("FAKE_ID", "contains spaces")
+    with pytest.raises(RuntimeError, match="unsupported single quote"):
+        runtime_renderer._quote_environment_value("FAKE_VALUE", "it's invalid")
+    with pytest.raises(RuntimeError, match="JSON object"):
+        runtime_renderer._validate_keyring(
+            "FAKE_KEYRING",
+            "not-json",
+            active_key_id="current",
+        )
+    with pytest.raises(RuntimeError, match="at least one key"):
+        runtime_renderer._validate_keyring(
+            "FAKE_KEYRING",
+            "{}",
+            active_key_id="current",
+        )
+    with pytest.raises(RuntimeError, match="active key id"):
+        runtime_renderer._validate_keyring(
+            "FAKE_KEYRING",
+            '{"other":"MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjI="}',
+            active_key_id="current",
+        )
+
+    monkeypatch.setenv("STAGING_CLOUDFLARE_ACCESS_AUD", "short")
+    with pytest.raises(RuntimeError, match="invalid"):
+        runtime_renderer._cloudflare_access_audience("STAGING")
+    monkeypatch.setenv(
+        "STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN",
+        "not-cloudflare.example",
+    )
+    with pytest.raises(RuntimeError, match="invalid"):
+        runtime_renderer._cloudflare_access_team_domain("STAGING")
+    monkeypatch.setenv(
+        "STAGING_CLOUDFLARE_ACCESS_JWKS_CACHE_TTL_SECONDS",
+        "not-an-integer",
+    )
+    with pytest.raises(RuntimeError, match="must be an integer"):
+        runtime_renderer._cloudflare_access_cache_ttl("STAGING")
+    monkeypatch.setenv(
+        "STAGING_CLOUDFLARE_ACCESS_JWKS_CACHE_TTL_SECONDS",
+        "1",
+    )
+    with pytest.raises(RuntimeError, match="between 60 and 3600"):
+        runtime_renderer._cloudflare_access_cache_ttl("STAGING")
+
+
+def test_runtime_renderer_cli_writes_environment_only_bundle(monkeypatch, tmp_path):
+    _set_deployment_values(monkeypatch)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "render_container_bundle.py",
+            "--output-root",
+            str(tmp_path),
+            "--output",
+            str(tmp_path / "cli-runtime"),
+            "--environment-only",
+        ],
+    )
+
+    runtime_renderer.main()
+
+    assert (tmp_path / "cli-runtime" / "container.env").is_file()
+    assert not (tmp_path / "cli-runtime" / "secrets").exists()
 
 
 def test_container_bundle_writer_rejects_output_outside_allowed_root(
@@ -1491,7 +1710,8 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "sitbank-staging-postgres-data" not in compose_text
     assert "sitbank-staging-redis-data" not in compose_text
     assert "--wait --wait-timeout 120" in deploy_script
-    assert deploy_script.count("--retry-all-errors") == 3
+    assert "--retry-all-errors" not in deploy_script
+    assert "for attempt in {1..16}" in deploy_script
     assert "show_app_diagnostics" in deploy_script
     assert "DATABASE_MIGRATION_URL_FILE=/run/secrets/database_migration_url" in deploy_script
     assert "Staging runtime database URL must use only the staging app role" in deploy_script
@@ -1519,12 +1739,23 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "Admin runtime database role must be distinct from customer runtime role" in deploy_script
     assert "Admin runtime database role must not be the migration/schema-owner role" in deploy_script
     assert "python -m flask --app admin_wsgi:app production-check" in deploy_script
-    assert (
-        '--header "X-Forwarded-For: 127.0.0.1" \\\n'
-        '        --header "X-Forwarded-Proto: https" \\\n'
-        '        "http://${APP_BIND_HOST}:${APP_BIND_PORT}/health/ready"'
-        in deploy_script
+    assert "wait_for_ready_response" in deploy_script
+    assert '"http://${APP_BIND_HOST}:${APP_BIND_PORT}/health/ready"' in deploy_script
+    assert '"http://127.0.0.1:8081/health/ready"' in deploy_script
+    assert '"${status}" == "200"' in deploy_script
+    assert '"${body}" == "${expected_body}"' in deploy_script
+    assert "--max-redirs 0" in deploy_script
+    staging_ready_branch = re.search(
+        r'if \[\[ "\$\{target\}" == "staging" \]\]; then'
+        r"(.*?)"
+        r"fi\n    if \[\[ \"\$\{target\}\" == \"production\" \]\]; then",
+        deploy_script[deploy_script.index("wait_until_ready()") :],
+        flags=re.DOTALL,
     )
+    assert staging_ready_branch is not None
+    assert "http://127.0.0.1:8081/health/ready" in staging_ready_branch.group(1)
+    assert 'https://${PUBLIC_HOST}/health/ready' not in staging_ready_branch.group(1)
+    assert '"https://${PUBLIC_HOST}/health/ready"' not in deploy_script
     assert '"http://${APP_BIND_HOST}:5002/health/ready"' in deploy_script
     deploy_db_sequence = re.search(
         r"migration_run \\\n    python -m flask --app wsgi:app db upgrade"
@@ -1602,6 +1833,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         "workflow-security",
         "dependency-review",
         "test",
+        "playwright-e2e",
         "sonarqube",
         "sonarqube-comment",
         "image-test",
@@ -1663,7 +1895,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "PROD_DEPLOY_ENABLED is not true" in preflight_run
     assert "Automatic production deployment will be skipped." in preflight_run
     assert "Missing required production deployment setting" not in preflight_run
-    candidate_jobs = ("test", "publish")
+    candidate_jobs = ("test", "playwright-e2e", "publish")
     for job_name in candidate_jobs:
         checkout = next(
             step
@@ -1804,10 +2036,10 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert production_tls["with"] == {
         "scan_scope": "production",
         "production_host": (
-            "${{ vars['PROD_PUBLIC_HOST'] || 'sitbank.duckdns.org' }}"
+            "${{ vars['PROD_PUBLIC_HOST'] || 'sitbank.pp.ua' }}"
         ),
     }
-    assert private_admin["name"] == "Required private admin post-deploy gate"
+    assert private_admin["name"] == "Verify private admin tailnet"
     assert private_admin["needs"] == [
         "deploy-production",
         "verify-production-tls",
@@ -1818,7 +2050,9 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert private_admin["permissions"] == {"contents": "read"}
     assert private_admin["environment"] == {"name": "admin-tailscale"}
     assert private_admin["env"] == {
-        "TAILSCALE_PRIVATE_ADMIN_HOST": "admin-sitbank.tailca101b.ts.net",
+        "TAILSCALE_PRIVATE_ADMIN_HOST": (
+            "${{ vars.TAILSCALE_PRIVATE_ADMIN_HOST }}"
+        ),
     }
     assert "secrets" not in private_admin
     assert private_admin["runs-on"] == "ubuntu-24.04"
@@ -1832,6 +2066,91 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         "${{ secrets.TS_OAUTH_CLIENT_ID }}"
     )
     assert private_join["with"]["oauth-secret"] == "${{ secrets.TS_OAUTH_SECRET }}"
+    assert private_join["with"]["tags"] == "tag:github-ci-admin-verify"
+    deploy_tailnet_tags = {private_join["with"]["tags"]}
+    for job_name, environment_name, join_name, source_tag, host_variable in (
+        (
+            "deploy-staging",
+            "staging",
+            "Join the staging deploy tailnet",
+            "tag:github-ci-staging-deploy",
+            "STAGING_EC2_HOST",
+        ),
+        (
+            "deploy-production",
+            "production",
+            "Join the production deploy tailnet",
+            "tag:github-ci-prod-deploy",
+            "PROD_EC2_HOST",
+        ),
+    ):
+        job = workflow["jobs"][job_name]
+        steps = job["steps"]
+        step_names = [step["name"] for step in steps]
+        join_index = step_names.index(join_name)
+        remote_command_indexes = [
+            index
+            for index, step in enumerate(steps)
+            if re.search(r"\b(?:ssh|scp)\b", step.get("run", ""))
+        ]
+        assert remote_command_indexes
+        assert join_index < min(remote_command_indexes)
+        assert job["environment"]["name"] == environment_name
+        join = steps[join_index]
+        assert join["uses"] == (
+            "tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8"
+        )
+        assert join["with"] == {
+            "oauth-client-id": "${{ secrets.TS_OAUTH_CLIENT_ID }}",
+            "oauth-secret": "${{ secrets.TS_OAUTH_SECRET }}",
+            "tags": source_tag,
+            "ping": f"${{{{ vars.{host_variable} }}}}",
+        }
+        deploy_tailnet_tags.add(join["with"]["tags"])
+        config_step = next(
+            step
+            for step in steps
+            if step["name"].startswith("Verify ")
+            and step["name"].endswith(" deployment configuration")
+        )
+        assert {
+            "TS_OAUTH_CLIENT_ID",
+            "TS_OAUTH_SECRET",
+        } <= set(config_step["env"])
+        assert {
+            "TS_OAUTH_CLIENT_ID",
+            "TS_OAUTH_SECRET",
+        } <= set(_extract_bash_array(config_step["run"], "required"))
+        assert steps[-1]["if"] == "${{ always() }}"
+        assert "tailscale logout" in steps[-1]["run"]
+        assert "continue-on-error" not in steps[-1]
+    assert deploy_tailnet_tags == {
+        "tag:github-ci-admin-verify",
+        "tag:github-ci-staging-deploy",
+        "tag:github-ci-prod-deploy",
+    }
+    oauth_jobs = {
+        job_name
+        for job_name, job in workflow["jobs"].items()
+        if "secrets.TS_OAUTH_" in yaml.safe_dump(job, sort_keys=False)
+    }
+    assert oauth_jobs == {
+        "deploy-staging",
+        "deploy-production",
+        "verify-private-admin-tailnet",
+    }
+    for job_name in oauth_jobs:
+        assert workflow["jobs"][job_name]["environment"]["name"] in {
+            "staging",
+            "production",
+            "admin-tailscale",
+        }
+    production_secret_jobs = {
+        job_name
+        for job_name, job in workflow["jobs"].items()
+        if "secrets.PROD_" in yaml.safe_dump(job, sort_keys=False)
+    }
+    assert production_secret_jobs == {"deploy-production"}
     staging_deploy_env = workflow["jobs"]["deploy-staging"]["env"]
     production_deploy_env = workflow["jobs"]["deploy-production"]["env"]
     assert not any(name.startswith("PROD_") for name in staging_deploy_env)
@@ -2005,9 +2324,16 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "dependency-review-action@" in workflow_text
     assert "zizmorcore/zizmor-action@" in workflow_text
     assert "actionlint" in workflow_text
-    assert "shellcheck" in workflow_text
+    shellcheck_workflow = Path(".github/workflows/shellcheck.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "ops/security/discover_lint_targets.py shell" in shellcheck_workflow
+    assert "Validate deployment shell scripts" not in workflow_text
+    assert "\n          shellcheck \\" not in workflow_text
     assert "ops/container/validate-compose.sh" in workflow_text
-    assert "ops/container/dast-smoke.sh" in workflow_text
+    assert "ops/container/smoke-test.sh" in Path(
+        ".github/workflows/dast-pr-smoke.yml"
+    ).read_text(encoding="utf-8")
     assert "scan_repository_secrets.py" in workflow_text
     assert "scan_repository_secrets.py --history" in workflow_text
     assert "check_dependency_locks.py" in workflow_text
@@ -2021,7 +2347,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         action for action in _workflow_uses(workflow_text)
         if action.startswith("actions/setup-python@")
     ]
-    assert len(checkout_uses) == 11
+    assert len(checkout_uses) == 12
     assert workflow_text.count("persist-credentials: false") == len(checkout_uses)
     _assert_pinned_actions(checkout_uses, context="actions/checkout")
     _assert_pinned_actions(
@@ -2037,7 +2363,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert workflow_text.count("ref: ${{ github.workflow_sha }}") == 4
     assert workflow_text.count(
         "ref: ${{ needs.resolve-source.outputs.source_sha }}"
-    ) == 3
+    ) == 4
     assert "ref: ${{ needs.publish.outputs.revision }}" in workflow_text
     assert "candidate-source/ops/container/smoke-test.sh" in workflow_text
     assert "RELEASE_SHA: ${{ github.sha }}" not in workflow_text
@@ -2119,9 +2445,32 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "source_ref = candidate branch, tag, or SHA" in docs
     assert "resolve immutable source_sha" in docs
     assert "deploy staging using trusted main scripts" in docs
-    assert "main push -> publish -> release-verify -> staging -> production" in docs
+    assert (
+        "main push -> Publish container image -> Release verification "
+        "-> Deploy staging"
+        in docs
+    )
+    assert (
+        "Verify staging TLS -> Deploy production -> Verify production TLS"
+        in docs
+    )
     assert "manual production dispatch -> publish -> release-verify -> production" not in docs
     assert "Production deployment is manual-only." not in docs
+    production_policy = (
+        "Production deployment is environment-approved automatic after successful "
+        "staging gates."
+    )
+    for policy_doc in (
+        Path("docs/GITHUB_ACTIONS.md"),
+        Path("docs/DEPLOYMENT.md"),
+        Path("docs/OPERATIONS.md"),
+    ):
+        normalized_policy_doc = re.sub(
+            r"\s+",
+            " ",
+            policy_doc.read_text(encoding="utf-8"),
+        )
+        assert production_policy in normalized_policy_doc
     assert "target_environment = production" not in docs
     assert "PROD_DEPLOY_ENABLED = true" in docs
     assert "Production never skips disabled, skipped, or failed staging." in docs
@@ -2129,6 +2478,61 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "environment-specific settings, including SMTP sender/host values" in docs
     assert "Feature-branch workflow and deployment scripts" in docs
     assert "adopt-existing" in docs
+
+
+def test_private_deploy_docs_separate_public_https_from_private_ssh_targets():
+    docs = re.sub(
+        r"\s+",
+        " ",
+        "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (
+                Path("docs/GITHUB_ACTIONS.md"),
+                Path("docs/DEPLOYMENT.md"),
+                Path("docs/OPERATIONS.md"),
+                Path("docs/security/architecture/admin-and-staging-zero-trust-access.md"),
+                Path("ops/tailscale/README.md"),
+            )
+        )
+    )
+
+    for required in (
+        "STAGING_PUBLIC_HOST",
+        "PROD_PUBLIC_HOST",
+        "STAGING_EC2_HOST",
+        "PROD_EC2_HOST",
+        "private Tailscale",
+        "STAGING_EC2_KNOWN_HOSTS",
+        "PROD_EC2_KNOWN_HOSTS",
+        "verify the SSH fingerprints out of band",
+        "tag:github-ci-admin-verify",
+        "tag:github-ci-staging-deploy",
+        "tag:github-ci-prod-deploy",
+        "tag:admin-sitbank:443",
+        "tag:sitbank-staging-ec2:22",
+        "tag:sitbank-prod-ec2:22",
+        "Tailscale SSH remains disabled",
+        "remove public port `22`",
+        "public SSH is not a workflow fallback",
+        "both bootstrap and deployment require the private tailnet path",
+        "AWS console or SSM",
+        "do not prove live Tailscale",
+    ):
+        assert required in docs
+    for path in (
+        Path("docs/GITHUB_ACTIONS.md"),
+        Path("docs/DEPLOYMENT.md"),
+        Path("docs/OPERATIONS.md"),
+        Path("docs/security/architecture/admin-and-staging-zero-trust-access.md"),
+    ):
+        document = path.read_text(encoding="utf-8")
+        assert "bootstrap" in document.lower()
+        assert "tag:github-ci-staging-deploy" in document
+        assert "tag:github-ci-prod-deploy" in document
+    assert not re.search(r"tag:github-ci(?!-)", docs)
+    assert "18.188.152.24" not in Path(
+        "docs/security/architecture/cloudflare-staging-access.md"
+    ).read_text(encoding="utf-8")
 
 
 def test_manual_bootstrap_workflow_uses_only_signed_trusted_main_sources():
@@ -2155,6 +2559,24 @@ def test_manual_bootstrap_workflow_uses_only_signed_trusted_main_sources():
     assert "refs/heads/main" in guard_step["run"]
     assert "GITHUB_WORKFLOW_SHA" in guard_step["run"]
 
+    staging_steps = workflow["jobs"]["bootstrap-staging"]["steps"]
+    cloudflare_preflight = next(
+        step
+        for step in staging_steps
+        if step["name"] == "Verify Cloudflare boundary before staging bootstrap"
+    )
+    assert cloudflare_preflight["run"] == (
+        "python ops/cloudflare/provision-staging-access --verify"
+    )
+    assert cloudflare_preflight["env"]["CLOUDFLARE_API_TOKEN"] == (
+        "${{ secrets.CLOUDFLARE_API_TOKEN }}"
+    )
+    assert "STAGING_ORIGIN_IP" in cloudflare_preflight["env"]
+    assert not any(
+        step["name"] == "Verify Cloudflare boundary before staging bootstrap"
+        for step in workflow["jobs"]["bootstrap-production"]["steps"]
+    )
+
     for target, prefix in (("staging", "STAGING"), ("production", "PROD")):
         job = workflow["jobs"][f"bootstrap-{target}"]
         assert job["if"] == f"inputs.target_environment == '{target}'"
@@ -2177,6 +2599,58 @@ def test_manual_bootstrap_workflow_uses_only_signed_trusted_main_sources():
         assert checkout["with"]["ref"] == "${{ github.workflow_sha }}"
         assert checkout["with"]["persist-credentials"] is False
         assert checkout["with"]["fetch-depth"] == 0
+        configuration_step = next(
+            step
+            for step in job["steps"]
+            if step["name"] == f"Verify {target} bootstrap configuration"
+        )
+        assert configuration_step["env"]["TS_OAUTH_CLIENT_ID"] == (
+            "${{ secrets.TS_OAUTH_CLIENT_ID }}"
+        )
+        assert configuration_step["env"]["TS_OAUTH_SECRET"] == (
+            "${{ secrets.TS_OAUTH_SECRET }}"
+        )
+        assert "TS_OAUTH_CLIENT_ID" in configuration_step["run"]
+        assert "TS_OAUTH_SECRET" in configuration_step["run"]
+        tailnet_step = next(
+            step
+            for step in job["steps"]
+            if step["name"] == f"Join the {target} bootstrap tailnet"
+        )
+        deploy_workflow = yaml.safe_load(
+            Path(".github/workflows/ci-deploy.yml").read_text(encoding="utf-8")
+        )
+        deploy_tailnet_step = next(
+            step
+            for step in deploy_workflow["jobs"][f"deploy-{target}"]["steps"]
+            if step["name"] == f"Join the {target} deploy tailnet"
+        )
+        assert tailnet_step["uses"] == deploy_tailnet_step["uses"]
+        assert tailnet_step["with"] == {
+            "oauth-client-id": "${{ secrets.TS_OAUTH_CLIENT_ID }}",
+            "oauth-secret": "${{ secrets.TS_OAUTH_SECRET }}",
+            "tags": (
+                "tag:github-ci-staging-deploy"
+                if target == "staging"
+                else "tag:github-ci-prod-deploy"
+            ),
+            "ping": f"${{{{ vars.{prefix}_EC2_HOST }}}}",
+        }
+        tailnet_index = job["steps"].index(tailnet_step)
+        remote_command_indexes = [
+            index
+            for index, step in enumerate(job["steps"])
+            if "REMOTE_HOST" in str(step.get("run", ""))
+            and re.search(r"\b(?:ssh|scp)\b", str(step.get("run", "")))
+        ]
+        assert remote_command_indexes
+        assert all(tailnet_index < index for index in remote_command_indexes)
+        cleanup_step = job["steps"][-1]
+        assert cleanup_step["name"] == f"Disconnect {target} bootstrap tailnet"
+        assert cleanup_step["if"] == "${{ always() }}"
+        assert cleanup_step["run"] == (
+            "sudo tailscale logout > /dev/null 2>&1 || true"
+        )
         step_text = "\n".join(
             str(step.get("run", "")) for step in job["steps"]
         )
@@ -2211,6 +2685,7 @@ def test_manual_bootstrap_workflow_uses_only_signed_trusted_main_sources():
     assert "PROD_EC2_SSH_PRIVATE_KEY_B64" in workflow_text
     assert "STAGING_EC2_KNOWN_HOSTS" in workflow_text
     assert "PROD_EC2_KNOWN_HOSTS" in workflow_text
+    assert "tag:github-ci-admin-verify" not in workflow_text
 
 
 def test_root_bootstrap_wrapper_authenticates_and_limits_privileged_updates():
@@ -2229,6 +2704,8 @@ def test_root_bootstrap_wrapper_authenticates_and_limits_privileged_updates():
     assert "cosign verify-blob" in wrapper
     assert 'trusted_sha}" =~ ^[0-9a-f]{40}$' in wrapper
     assert ".sitbank-bootstrap-commit" in wrapper
+    # Exact static trust-document check; no untrusted URL is accepted.
+    # lgtm[py/incomplete-url-substring-sanitization]
     assert "token.actions.githubusercontent.com" in wrapper
     assert "Bootstrap input must be owned by" in wrapper
     assert "Unsafe bootstrap archive member" in wrapper
@@ -2321,7 +2798,7 @@ def test_dependabot_tracks_docker_base_images_without_automerge():
     assert "Dependabot updates are review-only" in docs
     assert "Base-image updates must not be auto-merged" in docs
     assert "container smoke test, Compose" in docs
-    assert "Ordinary pull requests skip the full authenticated DAST crawl" in docs
+    assert "Ordinary pull requests skip the full authenticated ZAP crawl" in docs
     assert "scheduled scans" in docs
     assert "release verification retains that coverage" in docs
 
@@ -2330,6 +2807,8 @@ def test_codeowners_and_codeql_cover_security_sensitive_changes():
     codeowners = Path(".github/CODEOWNERS").read_text(encoding="utf-8")
     codeql = Path(".github/workflows/codeql.yml").read_text(encoding="utf-8")
 
+    assert "@Koon-Kiat" in codeowners
+    assert "@Wen" + "Jiangg" not in codeowners
     for protected_path in (
         "/.github/workflows/",
         "/Dockerfile",
@@ -2354,6 +2833,8 @@ def test_codeowners_and_codeql_cover_security_sensitive_changes():
     ]
     _assert_pinned_actions(init_actions, context="github/codeql-action/init")
     _assert_pinned_actions(analyze_actions, context="github/codeql-action/analyze")
+    assert len(init_actions) == len(analyze_actions) == 1
+    assert init_actions[0].split("@", 1)[1] == analyze_actions[0].split("@", 1)[1]
     assert "languages: python" in codeql
 
 
@@ -2391,7 +2872,7 @@ def test_live_tls_scan_workflow_collects_evidence_without_running_on_pull_reques
     inputs = triggers["workflow_dispatch"]["inputs"]
     assert inputs["scan_scope"]["options"] == ["all", "staging", "production"]
     assert inputs["staging_host"]["default"] == "staging-sitbank.pp.ua"
-    assert inputs["production_host"]["default"] == "sitbank.duckdns.org"
+    assert inputs["production_host"]["default"] == "sitbank.pp.ua"
     assert "admin_host" not in inputs
 
     call_inputs = triggers["workflow_call"]["inputs"]
@@ -2504,15 +2985,21 @@ def test_live_tls_scan_workflow_collects_evidence_without_running_on_pull_reques
     for docs in (deployment_docs, operations_docs, crypto_docs):
         assert "live tls scan evidence" in docs.lower()
         assert "staging-sitbank.pp.ua" in docs
-        assert "sitbank.duckdns.org" in docs
+        # Exact static documentation checks; no untrusted URL is accepted.
+        # lgtm[py/incomplete-url-substring-sanitization]
+        assert "sitbank.pp.ua" in docs
         assert "SSL Labs" in docs
         assert re.search(r"HIGH,\s+CRITICAL,\s+or FATAL", docs)
     for docs in (deployment_docs, operations_docs):
+        # Exact static documentation check; no untrusted URL is accepted.
+        # lgtm[py/incomplete-url-substring-sanitization]
         assert "https://admin-sitbank.tailca101b.ts.net/" in docs
     assert "staging_host" in deployment_docs
     assert "staging_host" in operations_docs
     assert "retired DuckDNS staging hostname" in deployment_docs
     assert "retired DuckDNS staging hostname" in operations_docs
+    # Exact static documentation check; no untrusted URL is accepted.
+    # lgtm[py/incomplete-url-substring-sanitization]
     assert "admin-sitbank.tailca101b.ts.net" in operations_docs
     assert "private Tailscale admin hostname" in operations_docs
     assert "testssl.sh --warnings batch --color 0" in deployment_docs
@@ -2602,6 +3089,7 @@ def test_linux_deployment_artifacts_are_forced_to_lf_and_reject_crlf():
         Path("ops/deploy/sitbank-container-runtime"),
         Path("ops/deploy/sitbank-database-cutover"),
         Path("ops/deploy/verify-certbot-host-state"),
+        Path("ops/deploy/verify-staging-edge-boundary"),
         Path("ops/deploy/verify-tailscale-admin-access"),
         Path("ops/tailscale/install-tailscale"),
         Path("ops/tailscale/configure-admin-access"),
@@ -2629,6 +3117,7 @@ def test_linux_deployment_artifacts_are_forced_to_lf_and_reject_crlf():
     assert "ops/deploy/bootstrap-container-ec2 text eol=lf" in attributes
     assert "ops/deploy/sitbank-container-bootstrap text eol=lf" in attributes
     assert "ops/deploy/verify-certbot-host-state text eol=lf" in attributes
+    assert "ops/deploy/verify-staging-edge-boundary text eol=lf" in attributes
     assert "ops/deploy/verify-tailscale-admin-access text eol=lf" in attributes
     assert "ops/tailscale/* text eol=lf" in attributes
     assert "ops/backups/* text eol=lf" in attributes
@@ -2656,8 +3145,16 @@ def test_certbot_host_state_verifier_enforces_host_managed_tls():
     assert verifier_path.exists()
     assert verifier.startswith("#!/usr/bin/env bash\n")
     assert 'LETSENCRYPT_ROOT="/etc/letsencrypt"' in verifier
-    assert 'PRODUCTION_PUBLIC_HOST="sitbank.duckdns.org"' in verifier
+    assert 'PRODUCTION_PUBLIC_HOST="sitbank.pp.ua"' in verifier
+    assert (
+        'PRODUCTION_PUBLIC_HOSTNAMES=("sitbank.pp.ua" "www.sitbank.pp.ua")'
+        in verifier
+    )
     assert 'STAGING_PUBLIC_HOST="staging-sitbank.pp.ua"' in verifier
+    assert 'STAGING_PUBLIC_HOSTNAMES=("staging-sitbank.pp.ua")' in verifier
+    assert "verify_dns_cloudflare_plugin" in verifier
+    assert "certbot plugins" in verifier
+    assert "dns-cloudflare" in verifier
     assert 'readlink -f -- "${key_path}"' in verifier
     assert "stat -c '%U'" in verifier
     assert "stat -c '%G'" in verifier
@@ -2682,15 +3179,20 @@ def test_certbot_host_state_verifier_enforces_host_managed_tls():
     assert '"${san_entry}" == "DNS:${expected_hostname}"' in verifier
     assert "certificate SAN does not exactly cover expected hostname" in verifier
     assert "do not fall back to the legacy" in verifier
+    assert 'cert_name="${PRODUCTION_PUBLIC_HOST}"' in verifier
+    assert 'domains=("${PRODUCTION_PUBLIC_HOSTNAMES[@]}")' in verifier
+    assert 'domains=("${STAGING_PUBLIC_HOSTNAMES[@]}")' in verifier
+    assert 'verify_certificate_file "${cert_name}" "fullchain.pem" "${domain}"' in verifier
+    assert 'verify_private_key "${cert_name}"' in verifier
     assert "--renewal-dry-run" in verifier
-    assert "certbot renew --dry-run" in verifier
+    assert 'certbot renew --dry-run --cert-name "${cert_name}"' in verifier
     assert "Renewal dry-run was not requested" in verifier
     assert "chmod " not in verifier
     assert "chown " not in verifier
     assert "cat \"${key_path}\"" not in verifier
 
     expected_key_paths = {
-        "/etc/letsencrypt/live/sitbank.duckdns.org/privkey.pem",
+        "/etc/letsencrypt/live/sitbank.pp.ua/privkey.pem",
         "/etc/letsencrypt/live/staging-sitbank.pp.ua/privkey.pem",
     }
     configured_key_paths = set(
@@ -2708,6 +3210,7 @@ def test_certbot_host_state_verifier_enforces_host_managed_tls():
     assert "/usr/local/sbin/verify-certbot-host-state" in bootstrap
     assert "/usr/local/sbin/verify-certbot-host-state production" in bootstrap
     assert "/usr/local/sbin/verify-certbot-host-state staging" in bootstrap
+    assert "python3-certbot-dns-cloudflare" in bootstrap
     assert "Missing required production TLS file" in bootstrap
     assert "Missing required staging TLS file" in bootstrap
 
@@ -2802,7 +3305,12 @@ def test_nginx_default_server_is_shared_for_same_host_production_and_staging():
     assert combined.count("listen [::]:443 ssl http2 default_server;") == 1
     assert "listen 80 default_server;" not in production_nginx
     assert "listen 80 default_server;" not in staging_nginx
-    assert "server_name sitbank.duckdns.org;" in combined
+    assert (
+        "server_name sitbank.pp.ua www.sitbank.pp.ua 18.188.152.24;"
+        in combined
+    )
+    assert "server_name www.sitbank.pp.ua;" in combined
+    assert "server_name sitbank.pp.ua;" in combined
     assert "server_name staging-sitbank.pp.ua;" in combined
 
 
@@ -2855,7 +3363,7 @@ def test_nginx_tls_policy_pins_strong_suites_curves_and_session_hardening():
 
     policy_include = "include /etc/nginx/snippets/sitbank-tls-policy.conf;"
     for nginx, server_name, session_cache in (
-        (production_nginx, "sitbank.duckdns.org", "shared:sitbank_prod_ssl:10m"),
+        (production_nginx, "sitbank.pp.ua", "shared:sitbank_prod_ssl:10m"),
         (staging_nginx, "staging-sitbank.pp.ua", "shared:sitbank_staging_ssl:10m"),
     ):
         https_server = _nginx_https_server_prelocation(nginx, server_name=server_name)
@@ -2907,20 +3415,20 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     assert "ssl_certificate /etc/letsencrypt/live/staging-sitbank.pp.ua/fullchain.pem;" in nginx
     assert "ssl_certificate_key /etc/letsencrypt/live/staging-sitbank.pp.ua/privkey.pem;" in nginx
     assert "ssl_client_certificate /etc/nginx/cloudflare-authenticated-origin-pull-ca.pem;" in nginx
-    assert "ssl_verify_client optional;" in nginx
+    assert "ssl_verify_client on;" in nginx
+    assert "$ssl_client_verify" not in nginx
     _assert_nginx_owns_duplicate_edge_security_headers(
         nginx,
         hsts_add_header='add_header Strict-Transport-Security "max-age=31536000" always;',
     )
     assert "preload" not in nginx
-    assert 'auth_basic "SITBank staging";' in nginx
-    assert "auth_basic_user_file /etc/nginx/.htpasswd-sitbank-staging;" in nginx
+    assert "auth_basic" not in nginx
+    assert ".htpasswd-sitbank-staging" not in nginx
     staging_https_prelocation = _nginx_https_server_prelocation(
         nginx,
         server_name="staging-sitbank.pp.ua",
     )
-    assert 'auth_basic "SITBank staging";' not in staging_https_prelocation
-    assert "auth_basic_user_file /etc/nginx/.htpasswd-sitbank-staging;" not in staging_https_prelocation
+    assert "ssl_verify_client on;" in staging_https_prelocation
     assert not Path("ops/nginx/.htpasswd-sitbank-staging").exists()
     assert not re.search(
         r"^\S+:\$(?:apr1|2[aby]|5|6)\$",
@@ -2931,7 +3439,6 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     acme_bodies = _nginx_location_bodies(nginx, "^~ /.well-known/acme-challenge/")
     assert len(acme_bodies) == 2
     for acme_body in acme_bodies:
-        assert "auth_basic off;" in acme_body
         assert "root /var/www/certbot;" in acme_body
         assert "limit_req" not in acme_body
 
@@ -2940,32 +3447,41 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     assert "return 403;" in staging_http_root_bodies[0]
     assert "return 301" not in staging_http_root_bodies[0]
 
-    health_bodies = _nginx_location_bodies(nginx, "= /health/ready")
-    assert len(health_bodies) == 1
-    health_body = health_bodies[0]
-    assert "auth_basic off;" in health_body
-    assert "allow 127.0.0.1;" in health_body
-    assert "allow ::1;" in health_body
-    assert "deny all;" in health_body
-    assert "proxy_pass http://127.0.0.1:5001;" in health_body
-    assert "limit_req" not in health_body
+    local_readiness_server = _nginx_server_block(nginx, "localhost")
+    public_staging_server = _nginx_server_block(nginx, "staging-sitbank.pp.ua")
+    local_health_bodies = _nginx_location_bodies(
+        local_readiness_server,
+        "= /health/ready",
+    )
+    public_health_bodies = _nginx_location_bodies(
+        public_staging_server,
+        "= /health/ready",
+    )
+    assert len(local_health_bodies) == 1
+    assert len(public_health_bodies) == 1
+    local_health_body = local_health_bodies[0]
+    public_health_body = public_health_bodies[0]
+    assert "listen 127.0.0.1:8081;" in nginx
+    assert "listen [::1]:8081;" in nginx
+    assert "allow 127.0.0.1;" in local_health_body
+    assert "allow ::1;" in local_health_body
+    assert "deny all;" in local_health_body
+    assert "proxy_pass http://127.0.0.1:5001;" in local_health_body
+    assert "proxy_set_header Host staging-sitbank.pp.ua;" in local_health_body
+    assert "proxy_set_header X-Forwarded-Proto https;" in local_health_body
+    assert "sitbank-proxy-headers.conf" not in local_health_body
+    assert "limit_req" not in local_health_body
+    assert "return 404;" in public_health_body
 
     health_live_bodies = _nginx_location_bodies(nginx, "= /health/live")
     assert len(health_live_bodies) == 1
-    assert "$ssl_client_verify != SUCCESS" in health_live_bodies[0]
-    assert "return 403;" in health_live_bodies[0]
-    assert 'auth_basic "SITBank staging";' in health_live_bodies[0]
-    assert "auth_basic_user_file /etc/nginx/.htpasswd-sitbank-staging;" in health_live_bodies[0]
-    assert health_live_bodies[0].index("$ssl_client_verify != SUCCESS") < health_live_bodies[0].index(
-        'auth_basic "SITBank staging";'
-    )
     assert "limit_req zone=sitbank_staging_app" in health_live_bodies[0]
     assert "proxy_pass http://127.0.0.1:5001;" in health_live_bodies[0]
 
     proxy_targets = set(re.findall(r"proxy_pass\s+([^;]+);", nginx))
     assert proxy_targets == {"http://127.0.0.1:5001"}
     assert "127.0.0.1:5000" not in nginx
-    assert "server_name sitbank.duckdns.org;" not in nginx
+    assert "server_name sitbank.pp.ua;" not in nginx
     assert staging_compose["services"]["app"]["ports"] == ["127.0.0.1:5001:5000"]
     assert staging_compose["services"]["admin"]["ports"] == ["127.0.0.1:5003:5000"]
     assert "127.0.0.1:5002:5000" not in staging_compose["services"]["admin"]["ports"]
@@ -2981,22 +3497,9 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     for selector in ("= /login", "= /register", "= /mfa/verify", "^~ /auth/"):
         bodies = _nginx_location_bodies(nginx, selector)
         assert len(bodies) == 1
-        assert "$ssl_client_verify != SUCCESS" in bodies[0]
-        assert "return 403;" in bodies[0]
-        assert 'auth_basic "SITBank staging";' in bodies[0]
-        assert "auth_basic_user_file /etc/nginx/.htpasswd-sitbank-staging;" in bodies[0]
-        assert bodies[0].index("$ssl_client_verify != SUCCESS") < bodies[0].index(
-            'auth_basic "SITBank staging";'
-        )
         assert "limit_req zone=sitbank_staging_login" in bodies[0]
     assert any(
-        "$ssl_client_verify != SUCCESS" in body
-        and "return 403;" in body
-        and 'auth_basic "SITBank staging";' in body
-        and body.index("$ssl_client_verify != SUCCESS") < body.index(
-            'auth_basic "SITBank staging";'
-        )
-        and "limit_req zone=sitbank_staging_app" in body
+        "limit_req zone=sitbank_staging_app" in body
         for body in _nginx_location_bodies(nginx, "/")
     )
 
@@ -3011,14 +3514,17 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
         '"^[[:space:]]*server_name[[:space:]].*(^|[[:space:]])'
         '${public_host_regex}([[:space:];]|$)" \\'
     ) in bootstrap
-    assert "Missing required staging Basic Auth file" in bootstrap
+    assert "STAGING_BASIC_AUTH_FILE" not in bootstrap
+    assert ".htpasswd-sitbank-staging" not in bootstrap
     assert "STAGING_CLOUDFLARE_ORIGIN_PULL_CA_FILE=\"/etc/nginx/cloudflare-authenticated-origin-pull-ca.pem\"" in bootstrap
     assert "STAGING_CLOUDFLARE_ORIGIN_PULL_CA_ALLOWLIST=\"/etc/sitbank-staging/cloudflare-origin-pull-ca-allowlist.json\"" in bootstrap
     assert "if ! /usr/local/sbin/verify-cloudflare-origin-pull-ca" in bootstrap
+    assert "verify-staging-edge-boundary" in bootstrap
+    assert "--edge-only \"${public_host}\"" in bootstrap
     assert "Cloudflare Authenticated Origin Pull CA validation failed." in bootstrap
     assert "Install a reviewed CA certificate before rerunning staging bootstrap." in bootstrap
     assert "Missing required staging TLS file" in bootstrap
-    assert "apache2-utils" in bootstrap
+    assert "apache2-utils" not in bootstrap
     assert "certbot" in bootstrap
     assert "STAGING_RATE_LIMITS_FILE=\"/etc/nginx/conf.d/sitbank-staging-rate-limits.conf\"" in bootstrap
     assert "EDGE_DEFAULTS_FILE=\"/etc/nginx/conf.d/sitbank-default.conf\"" in bootstrap
@@ -3060,7 +3566,7 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     production_compose = yaml.safe_load(Path("compose.prod.yml").read_text(encoding="utf-8"))
     app = production_compose["services"]["app"]
     admin = production_compose["services"]["admin"]
-    customer_nginx = _nginx_server_block(nginx, "sitbank.duckdns.org")
+    customer_nginx = _nginx_server_block(nginx, "sitbank.pp.ua")
 
     assert Path("ops/nginx/sitbank-default.conf").exists()
     assert Path("ops/nginx/sitbank-production.conf").exists()
@@ -3074,23 +3580,38 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     assert "ssl_reject_handshake on;" in default_nginx
     assert "return 444;" in default_nginx
     assert "listen 80;" in nginx
-    assert "return 301 https://sitbank.duckdns.org$request_uri;" in nginx
+    assert "return 301 https://sitbank.pp.ua$request_uri;" in nginx
+    assert "server_name sitbank.pp.ua www.sitbank.pp.ua 18.188.152.24;" in nginx
+    assert "server_name www.sitbank.pp.ua;" in nginx
     assert "listen 80 default_server;" not in nginx
     assert "listen 443 ssl http2 default_server;" not in nginx
     assert "server_name _;" not in nginx
     assert "listen 443 ssl http2;" in nginx
-    assert "server_name sitbank.duckdns.org;" in nginx
-    assert "ssl_certificate /etc/letsencrypt/live/sitbank.duckdns.org/fullchain.pem;" in nginx
-    assert "ssl_certificate_key /etc/letsencrypt/live/sitbank.duckdns.org/privkey.pem;" in nginx
+    assert "server_name sitbank.pp.ua;" in nginx
+    assert "www.sitbank.pp.ua" in nginx
+    assert "ssl_certificate /etc/letsencrypt/live/sitbank.pp.ua/fullchain.pem;" in nginx
+    assert "ssl_certificate_key /etc/letsencrypt/live/sitbank.pp.ua/privkey.pem;" in nginx
+    assert nginx.count(
+        "ssl_client_certificate "
+        "/etc/nginx/sitbank-production-cloudflare-origin-pull-ca.pem;"
+    ) == 2
+    assert nginx.count("ssl_verify_client on;") == 2
+    assert "sitbank" + ".duckdns.org" not in nginx
+    assert "admin.sitbank.pp.ua" not in nginx
+    assert "admin-sitbank.pp.ua" not in nginx
     assert "sitbank-admin" not in nginx
     assert "proxy_pass http://127.0.0.1:5002;" not in nginx
+    www_server = _nginx_server_block(nginx, "www.sitbank.pp.ua")
+    assert "return 301 https://sitbank.pp.ua$request_uri;" in www_server
+    assert "proxy_pass" not in www_server
+    assert "location ^~ /admin" not in www_server
     _assert_nginx_owns_duplicate_edge_security_headers(
         nginx,
         hsts_add_header=(
-            'add_header Strict-Transport-Security "max-age=31536000; '
+            'add_header Strict-Transport-Security "max-age=15552000; '
             'includeSubDomains" always;'
         ),
-        server_name="sitbank.duckdns.org",
+        server_name="sitbank.pp.ua",
     )
     assert "client_max_body_size 4m;" in nginx
     for timeout in (
@@ -3135,6 +3656,18 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     assert "ports" not in admin
     assert admin["command"][admin["command"].index("--bind") + 1] == "127.0.0.1:5002"
     assert admin["command"][-1] == "admin_wsgi:app"
+    assert (
+        'PRODUCTION_CLOUDFLARE_ORIGIN_PULL_CA_FILE="/etc/nginx/'
+        'sitbank-production-cloudflare-origin-pull-ca.pem"'
+    ) in bootstrap
+    assert (
+        'PRODUCTION_CLOUDFLARE_ORIGIN_PULL_CA_ALLOWLIST="/etc/sitbank/'
+        'cloudflare-origin-pull-ca-allowlist.json"'
+    ) in bootstrap
+    assert (
+        "Production Cloudflare Authenticated Origin Pull CA validation failed."
+        in bootstrap
+    )
 
     for zone in (
         "limit_req_zone $binary_remote_addr zone=sitbank_prod_app:10m rate=20r/s;",
@@ -3176,7 +3709,8 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     assert "proxy_set_header X-Forwarded-For $remote_addr;" in proxy_headers
     assert "$proxy_add_x_forwarded_for" not in proxy_headers
 
-    assert 'PRODUCTION_PUBLIC_HOST="sitbank.duckdns.org"' in bootstrap
+    assert 'PRODUCTION_PUBLIC_HOST="sitbank.pp.ua"' in bootstrap
+    assert 'PRODUCTION_PUBLIC_WWW_HOST="www.sitbank.pp.ua"' in bootstrap
     assert "PRODUCTION_ADMIN_PUBLIC_HOST" not in bootstrap
     assert "Production PUBLIC_HOST must be ${PRODUCTION_PUBLIC_HOST}" in bootstrap
     assert "Missing required production TLS file" in bootstrap
@@ -3193,7 +3727,9 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     assert "install -d -o sitbank-container -g 10001 -m 0750 /var/lib/sitbank" in deploy_script
     assert "Refusing to replace unsafe production Nginx rate-limit file" in bootstrap
     assert "Refusing to replace unsafe production Nginx config" in bootstrap
-    assert "Conflicting Nginx production site is already enabled" in bootstrap
+    assert "Conflicting Nginx production site for ${production_hostname}" in bootstrap
+    assert '"${PRODUCTION_PUBLIC_HOST}"' in bootstrap
+    assert '"${PRODUCTION_PUBLIC_WWW_HOST}"' in bootstrap
     assert "Disable the duplicate production server block" in bootstrap
     assert "nginx-sitbank-production-rate-limits.$(date -u +%Y%m%dT%H%M%SZ).conf" in bootstrap
     assert '"nginx-sitbank-default"' in bootstrap
@@ -3223,10 +3759,10 @@ def test_production_edge_runbook_documents_network_waf_and_verification_steps():
         "ops/nginx/sitbank-production.conf",
         "ops/nginx/sitbank-production-rate-limits.conf",
         "Public ingress is TCP `80` and `443` only.",
-        "SSH hardening is deferred in this branch.",
-        "planned OpenSSH drop-in",
-        "deployment-source migration path",
-        "implemented here because they can affect GitHub Actions deployment access",
+        "GitHub deployment SSH reaches private Tailscale targets",
+        "OpenSSH drop-in and UFW",
+        "automation remain deferred",
+        "operator-owned infrastructure evidence",
         "Nginx terminates TLS, redirects production customer HTTP to HTTPS",
         "Gunicorn binds only to `127.0.0.1:5000`",
         "Admin Gunicorn binds only to `127.0.0.1:5002`",
@@ -3236,17 +3772,18 @@ def test_production_edge_runbook_documents_network_waf_and_verification_steps():
         "Cloudflare or AWS WAF should sit in front of Nginx",
         "The reviewed production bootstrap installs and enables the production edge",
         "requires a production bootstrap after merge",
-        "sudo test -r /etc/letsencrypt/live/sitbank.duckdns.org/fullchain.pem",
+        "sudo test -r /etc/letsencrypt/live/sitbank.pp.ua/fullchain.pem",
         "Cloudflare or AWS WAF rules and security-group allowlists are still",
         "sudo nginx -t",
         "sudo ss -ltnp | grep -E ':(80|443|5000|5002)([[:space:]]|$)'",
         "sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-app",
         "sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-admin",
-        "curl --fail https://sitbank.duckdns.org/health/live",
-        "curl -I https://sitbank.duckdns.org/health/ready",
+        "curl --fail https://sitbank.pp.ua/health/live",
+        "curl -fsSI https://www.sitbank.pp.ua/ | grep -i '^location: https://sitbank.pp.ua'",
+        "curl -I https://sitbank.pp.ua/health/ready",
         "No public admin Nginx server block is configured.",
         "old public admin verification",
-        "external `/health/ready` returns `403`",
+        "external readiness is denied",
         "no public admin hostname is required",
     ):
         assert required in docs
@@ -3279,6 +3816,83 @@ def test_production_edge_runbook_documents_network_waf_and_verification_steps():
         assert required in security
 
 
+def test_retired_duckdns_domains_are_not_active_configuration():
+    retired_domains = {
+        "sitbank" + ".duckdns.org",
+        "staging-sitbank" + ".duckdns.org",
+        "admin-sitbank" + ".duckdns.org",
+    }
+    allowed_retirement_docs = {
+        Path("docs/DEPLOYMENT.md"),
+        Path("docs/security/architecture/admin-and-staging-zero-trust-access.md"),
+        Path("tests/test_security_docs_issue_links.py"),
+        Path("tests/test_tailscale_admin_automation.py"),
+    }
+    result = subprocess.run(
+        ["git", "ls-files", "-z"],
+        check=True,
+        capture_output=True,
+    )
+    tracked_paths = {
+        Path(item.decode("utf-8"))
+        for item in result.stdout.split(b"\0")
+        if item
+    }
+    tracked_paths |= {path for path in allowed_retirement_docs if path.exists()}
+
+    occurrences: dict[str, set[Path]] = {domain: set() for domain in retired_domains}
+    for path in tracked_paths:
+        if not path.is_file():
+            continue
+        try:
+            contents = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        for domain in retired_domains:
+            if domain in contents:
+                occurrences[domain].add(path)
+
+    for domain, paths in occurrences.items():
+        assert paths <= allowed_retirement_docs, f"{domain} appears in {paths}"
+
+    active_paths = [
+        path
+        for path in tracked_paths
+        if path.parts
+        and (
+            path.parts[0] in {".github", "ops"}
+            or path
+            in {
+                Path("README.md"),
+                Path("SECURITY.md"),
+                Path("compose.prod.yml"),
+                Path("compose.staging.yml"),
+            }
+        )
+    ]
+    active_text = "\n".join(
+        path.read_text(encoding="utf-8", errors="ignore")
+        for path in active_paths
+        if path.is_file()
+    )
+    workflow = yaml.safe_load(
+        Path(".github/workflows/ci-deploy.yml").read_text(encoding="utf-8")
+    )
+    private_admin_env = workflow["jobs"]["verify-private-admin-tailnet"]["env"]
+
+    assert "sitbank.pp.ua" in active_text
+    assert "www.sitbank.pp.ua" in active_text
+    assert "staging-sitbank.pp.ua" in active_text
+    assert (
+        private_admin_env["TAILSCALE_PRIVATE_ADMIN_HOST"]
+        == "${{ vars.TAILSCALE_PRIVATE_ADMIN_HOST }}"
+    )
+    for domain in retired_domains:
+        assert domain not in active_text
+    assert "admin.sitbank.pp.ua" not in active_text
+    assert "admin-sitbank.pp.ua" not in active_text
+
+
 def test_staging_edge_runbook_documents_operator_verification_steps():
     docs = _project_docs_text()
 
@@ -3286,18 +3900,15 @@ def test_staging_edge_runbook_documents_operator_verification_steps():
         "Staging uses Cloudflare Access as the identity-aware boundary",
         "Cloudflare Authenticated Origin Pulls",
         "The production customer hostname remains public.",
-        "sudo htpasswd -c /etc/nginx/.htpasswd-sitbank-staging",
-        "sudo chown root:www-data /etc/nginx/.htpasswd-sitbank-staging",
-        "sudo chmod 0640 /etc/nginx/.htpasswd-sitbank-staging",
-        "Do not store the Basic Auth password or generated htpasswd hash in the repo.",
+        "Nginx shared-password authentication has been removed from staging",
         "sudo install -o root -g root -m 0644",
         "/etc/nginx/cloudflare-authenticated-origin-pull-ca.pem",
         "Do not store Cloudflare API tokens, tunnel credentials, Access IdP secrets, or",
         "Cloudflare-managed zone/hostname or Cloudflare Tunnel",
         "staging-sitbank.pp.ua",
-        "sudo certbot --nginx -d staging-sitbank.pp.ua",
-        "sudo certbot certonly --webroot",
-        "sudo certbot renew --dry-run",
+        "--dns-cloudflare",
+        "/root/.secrets/certbot/cloudflare-staging.ini",
+        "sudo certbot renew --dry-run --cert-name staging-sitbank.pp.ua",
         "ops/deploy/bootstrap-container-ec2",
         "staging-sitbank.pp.ua",
         "retired DuckDNS staging hostname",
@@ -3309,16 +3920,15 @@ def test_staging_edge_runbook_documents_operator_verification_steps():
         "sudo nginx -t",
         "sudo systemctl reload nginx",
         "curl -I https://staging-sitbank.pp.ua/",
-        'curl -I -u "$STAGING_BASIC_AUTH_USER:$STAGING_BASIC_AUTH_PASSWORD"',
         "curl -I https://staging-sitbank.pp.ua/health/ready",
         "curl -fsS http://127.0.0.1:5001/health/ready",
-        "curl --fail --resolve staging-sitbank.pp.ua:443:127.0.0.1",
+        "curl -fsS http://127.0.0.1:8081/health/ready",
         "curl -I --resolve staging-sitbank.pp.ua:443:<EC2_PUBLIC_IP>",
         "unauthenticated browser traffic receives the Cloudflare Access",
         "direct EC2-origin access to",
-        "returns `403` without Cloudflare's origin-pull client certificate",
-        "external `/health/ready` returns `403`",
-        "local app readiness",
+        "TLS client-certificate verification",
+        "external `/health/ready` is unavailable",
+        "local app and Nginx readiness",
         "separate from application deployment",
         "docs/security/architecture/admin-and-staging-zero-trust-access.md",
         "docs/security/architecture/cloudflare-staging-access.md",
@@ -3328,6 +3938,8 @@ def test_staging_edge_runbook_documents_operator_verification_steps():
         "Cf-Access-Jwt-Assertion",
     ):
         assert required in docs
+    assert ".htpasswd-sitbank-staging" not in docs
+    assert "STAGING_BASIC_AUTH" not in docs
 
 
 def test_dependency_manifests_have_one_hashed_lockfile_source_of_truth():
@@ -3447,8 +4059,8 @@ def test_migration_baseline_and_existing_database_runbook_are_present():
     assert "verify-migration-baseline" in docs
     assert "db stamp 20260610_0001" in docs
     assert "Do not run `db.create_all()`" in docs
-    assert "WenJiangg/SITBank" in docs
-    assert "ghcr.io/wenjiangg/sitbank@sha256:<digest>" in docs
+    assert "Koon-Kiat/SITBank" in docs
+    assert "ghcr.io/koon-kiat/sitbank@sha256:<digest>" in docs
     assert "sitbank_db" in docs
     assert "sitbank_owner" in docs
     assert "sitbank_app" in docs
@@ -3564,7 +4176,7 @@ def test_existing_schema_matches_migration_baseline(app):
     result = app.test_cli_runner().invoke(args=["verify-migration-baseline"])
 
     assert result.exit_code == 0, result.output
-    assert "matches migration baseline 20260610_0001" in result.output
+    assert "matches current migration metadata" in result.output
 
 
 def test_proxyfix_trusts_exactly_the_configured_nginx_hop(app):

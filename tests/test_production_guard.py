@@ -9,11 +9,19 @@ from app.models import User
 from app.security.production_guard import (
     ProductionReadinessResult,
     ProductionStartupSecurityError,
+    _validate_admin_mode_and_routes,
+    _validate_customer_mode_and_routes,
     enforce_production_startup_guard,
     validate_production_security_prerequisites,
 )
 from config import MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS, MIN_PRODUCTION_PASSWORD_LENGTH
 from conftest import TestConfig
+
+
+EXPLICIT_ROOT_ADMIN_EMAILS = frozenset(
+    f"chief{index}@sit.singaporetech.edu.sg"
+    for index in range(1, 8)
+)
 
 
 def _production_app(monkeypatch, *, app_mode: str = "customer"):
@@ -36,6 +44,7 @@ def _production_app(monkeypatch, *, app_mode: str = "customer"):
     )
     if app_mode == "admin":
         app.config["RATELIMIT_KEY_PREFIX"] = "ospbank:admin:ratelimit:"
+        app.config["ROOT_ADMIN_EMAILS"] = EXPLICIT_ROOT_ADMIN_EMAILS
     with app.app_context():
         db.create_all()
     return app
@@ -110,6 +119,54 @@ def test_admin_validator_enforces_admin_isolation(monkeypatch):
     assert "Admin authentication must be enabled" in result.failures
 
 
+def test_mode_helpers_report_every_isolation_misconfiguration(monkeypatch):
+    admin_app = _production_app(monkeypatch, app_mode="admin")
+    admin_app.config.update(
+        SESSION_COOKIE_NAME="wrong",
+        SESSION_KEY_PREFIX="customer-",
+        AUTH_FAILURE_KEY_PREFIX="customer:",
+        RATELIMIT_KEY_PREFIX="customer:",
+        ROOT_ADMIN_EMAILS=(),
+    )
+    admin_result = ProductionReadinessResult()
+
+    _validate_admin_mode_and_routes(
+        admin_app,
+        {"main.index"},
+        admin_result,
+    )
+
+    assert {
+        "Admin session cookie name must be isolated",
+        "Admin session key prefix must be isolated",
+        "Admin auth security-state prefix must be isolated",
+        "Admin rate-limit key prefix must be isolated",
+        "ROOT_ADMIN_EMAILS must configure exactly 7 root administrators",
+        "Admin runtime must not register customer routes",
+    } <= set(admin_result.failures)
+
+    customer_app = _production_app(monkeypatch)
+    customer_app.config.update(
+        ADMIN_AUTH_ENABLED=True,
+        SESSION_COOKIE_NAME="__Host-sitbank_admin_session",
+        SESSION_KEY_PREFIX="admin-session:",
+    )
+    customer_result = ProductionReadinessResult()
+
+    _validate_customer_mode_and_routes(
+        customer_app,
+        {"admin.dashboard"},
+        customer_result,
+    )
+
+    assert {
+        "Customer runtime must not enable admin authentication",
+        "Customer session cookie name must not collide with admin",
+        "Customer session key prefix must not use the admin namespace",
+        "Customer runtime must not register admin routes",
+    } <= set(customer_result.failures)
+
+
 def test_admin_validator_rejects_root_admin_allowlist_outside_admin_domains(monkeypatch):
     app = _production_app(monkeypatch, app_mode="admin")
     app.config["ROOT_ADMIN_EMAILS"] = frozenset(
@@ -127,6 +184,68 @@ def test_admin_validator_rejects_root_admin_allowlist_outside_admin_domains(monk
     result = validate_production_security_prerequisites(app, app_mode="admin")
 
     assert "ROOT_ADMIN_EMAILS must use approved admin workplace domains" in result.failures
+
+
+@pytest.mark.parametrize(
+    ("emails", "expected_failure"),
+    [
+        (
+            TestConfig.ROOT_ADMIN_EMAILS,
+            "ROOT_ADMIN_EMAILS must be explicitly configured for production/admin runtime",
+        ),
+        (
+            tuple(reversed(tuple(TestConfig.ROOT_ADMIN_EMAILS))),
+            "ROOT_ADMIN_EMAILS must be explicitly configured for production/admin runtime",
+        ),
+        (
+            tuple(item.upper() for item in TestConfig.ROOT_ADMIN_EMAILS),
+            "ROOT_ADMIN_EMAILS must be explicitly configured for production/admin runtime",
+        ),
+        (
+            (
+                "chief1@sit.singaporetech.edu.sg",
+                "chief1@sit.singaporetech.edu.sg",
+                "chief3@sit.singaporetech.edu.sg",
+                "chief4@sit.singaporetech.edu.sg",
+                "chief5@sit.singaporetech.edu.sg",
+                "chief6@sit.singaporetech.edu.sg",
+                "chief7@sit.singaporetech.edu.sg",
+            ),
+            "ROOT_ADMIN_EMAILS must not contain duplicate email addresses",
+        ),
+        (
+            (
+                "demo@sit.singaporetech.edu.sg",
+                "chief2@sit.singaporetech.edu.sg",
+                "chief3@sit.singaporetech.edu.sg",
+                "chief4@sit.singaporetech.edu.sg",
+                "chief5@sit.singaporetech.edu.sg",
+                "chief6@sit.singaporetech.edu.sg",
+                "chief7@sit.singaporetech.edu.sg",
+            ),
+            "ROOT_ADMIN_EMAILS must not contain placeholder, demo, or example identities",
+        ),
+    ],
+)
+def test_admin_validator_rejects_unsafe_root_admin_allowlists(
+    monkeypatch,
+    emails,
+    expected_failure,
+):
+    app = _production_app(monkeypatch, app_mode="admin")
+    app.config["ROOT_ADMIN_EMAILS"] = emails
+
+    result = validate_production_security_prerequisites(app, app_mode="admin")
+
+    assert expected_failure in result.failures
+
+
+def test_admin_startup_guard_rejects_builtin_root_admin_default(monkeypatch):
+    app = _production_app(monkeypatch, app_mode="admin")
+    app.config["ROOT_ADMIN_EMAILS"] = TestConfig.ROOT_ADMIN_EMAILS
+
+    with pytest.raises(ProductionStartupSecurityError, match="ROOT_ADMIN_EMAILS"):
+        enforce_production_startup_guard(app, app_mode="admin")
 
 
 def test_admin_production_check_reports_legacy_privileged_email_noncompliance(monkeypatch):

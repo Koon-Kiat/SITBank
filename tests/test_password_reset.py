@@ -28,7 +28,7 @@ from app.security.passwords import PASSWORD_MAX_CHARS, PASSWORD_MIN_LENGTH, hash
 
 VALID_PASSWORD = "Correct-Horse-Battery-Staple-2026!"
 NEW_PASSWORD = "Reset-Correct-Horse-Battery-Staple-2026!"
-ORIGIN = {"Origin": "https://sitbank.duckdns.org"}
+ORIGIN = {"Origin": "https://sitbank.pp.ua"}
 TOTP_TEST_TIMESTAMP = 1_803_988_800
 
 
@@ -91,6 +91,15 @@ def _reset_token(app) -> str:
         match = re.search(r"https://[^\s]+/reset-password\?token=([A-Za-z0-9_.-]+)", outbox[0]["body"])
         assert match
         return parse_qs(urlparse(f"https://example.test/?token={match.group(1)}").query)["token"][0]
+
+
+def _latest_reset_token(app) -> str:
+    with app.app_context():
+        for item in reversed(password_reset_outbox()):
+            match = re.search(r"https://[^\s]+/reset-password\?token=([A-Za-z0-9_.-]+)", item["body"])
+            if match:
+                return parse_qs(urlparse(f"https://example.test/?token={match.group(1)}").query)["token"][0]
+    raise AssertionError("password reset email was not sent")
 
 
 def _exchange(client, token: str):
@@ -190,6 +199,36 @@ def test_no_mfa_password_reset_does_not_auto_login_and_forces_mfa_on_next_login(
         user = db.session.get(User, user.id)
         assert user is not None
         assert user.password_hash != old_hash
+        assert verify_password(NEW_PASSWORD, user.password_hash)
+
+
+def test_password_reset_rejects_recent_password_history(app, client, monkeypatch):
+    monkeypatch.setattr("app.security.passwords._is_password_pwned_by_hibp", lambda _password: False)
+    with app.app_context():
+        user = _create_user("resethistory", "resethistory@example.com")
+        user_id = user.id
+
+    _request_reset(client, "resethistory@example.com")
+    token = _latest_reset_token(app)
+    assert _exchange(client, token).status_code == 200
+    first_completed = client.post(
+        "/auth/password-reset/complete",
+        json={"new_password": NEW_PASSWORD, "confirm_new_password": NEW_PASSWORD},
+    )
+    assert first_completed.status_code == 200
+
+    _request_reset(client, "resethistory@example.com")
+    second_token = _latest_reset_token(app)
+    assert _exchange(client, second_token).status_code == 200
+    reused = client.post(
+        "/auth/password-reset/complete",
+        json={"new_password": VALID_PASSWORD, "confirm_new_password": VALID_PASSWORD},
+    )
+
+    assert reused.status_code == 400
+    with app.app_context():
+        user = db.session.get(User, user_id)
+        assert user is not None
         assert verify_password(NEW_PASSWORD, user.password_hash)
 
 
