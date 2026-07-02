@@ -283,6 +283,7 @@ jobs:
           retention-days: 1
 
   sonarqube:
+    name: SonarQube analysis
     if: github.event_name != 'schedule'
     needs: [test, resolve-source]
     permissions:
@@ -295,6 +296,7 @@ jobs:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
   sonarqube-comment:
+    name: SonarQube PR comment
     if: >-
       needs.sonarqube.result == 'success' &&
       github.event_name == 'pull_request' &&
@@ -516,6 +518,7 @@ jobs:
           fi
 
   publish:
+    name: Publish container image
     if: >-
       github.event_name != 'pull_request' &&
       github.ref == 'refs/heads/main' &&
@@ -595,6 +598,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   release-verify:
+    name: Release verification
     if: >-
       github.event_name != 'pull_request' &&
       github.ref == 'refs/heads/main' &&
@@ -738,6 +742,7 @@ jobs:
             "${IMAGE}" >/dev/null
 
   deploy-staging:
+    name: Deploy staging
     if: >-
       github.event_name != 'pull_request' &&
       needs.release-verify.result == 'success' &&
@@ -998,6 +1003,7 @@ jobs:
           sudo tailscale logout > /dev/null 2>&1 || true
 
   verify-staging-tls:
+    name: Verify staging TLS
     if: >-
       always() &&
       needs.deploy-staging.result == 'success'
@@ -1008,6 +1014,7 @@ jobs:
       staging_host: ${{ vars['STAGING_PUBLIC_HOST'] || 'staging-sitbank.pp.ua' }}
 
   deploy-production:
+    name: Deploy production
     if: >-
       always() &&
       needs.release-verify.result == 'success' &&
@@ -1258,6 +1265,7 @@ jobs:
           sudo tailscale logout > /dev/null 2>&1 || true
 
   verify-production-tls:
+    name: Verify production TLS
     if: >-
       always() &&
       needs.deploy-production.result == 'success'
@@ -1268,7 +1276,7 @@ jobs:
       production_host: ${{ vars['PROD_PUBLIC_HOST'] || 'sitbank.pp.ua' }}
 
   verify-private-admin-tailnet:
-    name: Required private admin post-deploy gate
+    name: Verify private admin tailnet
     if: >-
       always() &&
       needs.deploy-production.result == 'success' &&
@@ -1343,7 +1351,7 @@ jobs:
           fi
 
           {
-            echo "## Private-tailnet verification"
+            echo "## Private admin tailnet verification"
             echo
             echo "- Protected runner joined the approved tailnet."
             echo "- Private admin HTTPS login entrypoint returned the documented unauthenticated response."

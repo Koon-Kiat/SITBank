@@ -16,6 +16,7 @@ concurrency:
 
 jobs:
   label:
+    name: Label pull request
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

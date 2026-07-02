@@ -19,6 +19,7 @@ concurrency:
 
 jobs:
   validate-request:
+    name: Validate bootstrap request
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -37,6 +38,7 @@ jobs:
           fi
 
   bootstrap-staging:
+    name: Bootstrap staging EC2
     if: inputs.target_environment == 'staging'
     needs: validate-request
     runs-on: ubuntu-latest
@@ -230,6 +232,7 @@ jobs:
         run: sudo tailscale logout > /dev/null 2>&1 || true
 
   bootstrap-production:
+    name: Bootstrap production EC2
     if: inputs.target_environment == 'production'
     needs: validate-request
     runs-on: ubuntu-latest

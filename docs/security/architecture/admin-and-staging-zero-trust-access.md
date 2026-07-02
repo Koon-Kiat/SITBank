@@ -59,8 +59,9 @@ to protected environment jobs. It does not put pull-request CI, scheduled
 public TLS scans, or other GitHub-hosted jobs inside the tailnet.
 
 `workflow_dispatch` supports on-demand checks. The trusted production workflow
-defines a direct required gate after `deploy-production` and
-`verify-production-tls` both succeed. This avoids the observed reusable-call
+defines a direct required `Verify private admin tailnet` gate after the
+internal `deploy-production` and `verify-production-tls` jobs both succeed.
+This avoids the observed reusable-call
 behavior where the called job received empty OAuth inputs despite the same
 environment secrets working in a manual run. Both jobs use the protected
 `admin-tailscale` GitHub Environment. Configure that environment to require
@@ -108,8 +109,10 @@ covers only `staging-sitbank.pp.ua` and `sitbank.pp.ua`. Operators separately
 verify that `www.sitbank.pp.ua` redirects to the canonical production host. It must not
 depend on or include the private Tailscale hostname.
 
-After a trusted production deployment, the release order is
-`deploy-production` -> `verify-production-tls` ->
+After a trusted production deployment, the visible release order is
+`Deploy production` -> `Verify production TLS` ->
+`Verify private admin tailnet`. The stable internal IDs remain
+`deploy-production`, `verify-production-tls`, and
 `verify-private-admin-tailnet`. A private-gate failure fails the completed
 deployment workflow and clearly requires post-deploy investigation; it does
 not roll back or redeploy automatically. Manual dispatch remains available for

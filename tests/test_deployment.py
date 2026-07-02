@@ -1958,7 +1958,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
             "${{ vars['PROD_PUBLIC_HOST'] || 'sitbank.pp.ua' }}"
         ),
     }
-    assert private_admin["name"] == "Required private admin post-deploy gate"
+    assert private_admin["name"] == "Verify private admin tailnet"
     assert private_admin["needs"] == [
         "deploy-production",
         "verify-production-tls",
@@ -2362,7 +2362,15 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "source_ref = candidate branch, tag, or SHA" in docs
     assert "resolve immutable source_sha" in docs
     assert "deploy staging using trusted main scripts" in docs
-    assert "main push -> publish -> release-verify -> staging -> production" in docs
+    assert (
+        "main push -> Publish container image -> Release verification "
+        "-> Deploy staging"
+        in docs
+    )
+    assert (
+        "Verify staging TLS -> Deploy production -> Verify production TLS"
+        in docs
+    )
     assert "manual production dispatch -> publish -> release-verify -> production" not in docs
     assert "Production deployment is manual-only." not in docs
     production_policy = (

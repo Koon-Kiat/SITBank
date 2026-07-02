@@ -42,6 +42,14 @@ DNS, certificate, and edge change is reviewed. The complete variable table and
 secret-placement boundary are in `docs/DEPLOYMENT.md`; never copy credentials
 or application secrets into repository variables.
 
+GitHub Actions displays explicit human-readable job names such as
+`Test and security checks`, `SonarQube analysis`, `Deploy staging`, and
+`Verify private admin tailnet`. Stable kebab-case job IDs remain only for
+workflow dependencies and expressions. If a renamed display name is a required
+status check, update the GitHub ruleset manually only after the new context has
+completed successfully; repository commits cannot mutate or prove that
+provider-side setting.
+
 MFA/TOTP seed encryption uses envelope encryption. Keep old KEKs in `mfa_kek_keys_json` until `rewrap-mfa-deks` has moved stored records to the new active KEK. Then update `MFA_KEK_ACTIVE_ID` and the root-managed keyring together.
 
 ## Disposable Registration Data Reset

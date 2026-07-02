@@ -176,6 +176,11 @@ Production deployment runs from the trusted `main` workflow only after release
 verification, staging deployment, and the post-deployment staging TLS scan all
 succeed. A successful production deployment is followed by public production
 TLS verification and then the required protected private-admin tailnet gate.
+The visible Actions checks for those gates are `Release verification`,
+`Deploy staging`, `Verify staging TLS`, `Deploy production`,
+`Verify production TLS`, and `Verify private admin tailnet`. Their stable
+kebab-case job IDs remain in workflow `needs:` expressions and are not display
+labels.
 Production deployment is environment-approved automatic after successful
 staging gates. GitHub Environment approval pauses that automatic `main` flow;
 there is no direct manual production dispatch target.
@@ -194,7 +199,7 @@ appropriate:
 
 | Variable | Safe behavior when unset | Workflow consumer |
 | --- | --- | --- |
-| `ENABLE_GITHUB_CODE_SECURITY` | Defaults to `false`; private-repository dependency review runs only when the value is exactly `true` | `dependency-review` in `.github/workflows/ci-deploy.yml` |
+| `ENABLE_GITHUB_CODE_SECURITY` | Defaults to `false`; private-repository dependency review runs only when the value is exactly `true` | `Dependency review` (`dependency-review` job ID) in `.github/workflows/ci-deploy.yml` |
 | `STAGING_PUBLIC_HOST` | Defaults to the reviewed staging hostname `staging-sitbank.pp.ua` | Staging deployment URL/configuration and post-deployment staging TLS verification |
 | `PROD_PUBLIC_HOST` | Defaults to the reviewed production hostname `sitbank.pp.ua` | Production deployment URL/configuration and post-deployment production TLS verification |
 | `STAGING_EC2_HOST` | Required private Tailscale MagicDNS name or `100.x.y.z` address | Staging OpenSSH deployment target |
@@ -262,7 +267,8 @@ change, and remove it immediately after recovery.
 The manual `.github/workflows/tailscale-private-admin-verify.yml` workflow
 uses a GitHub-hosted runner that temporarily joins the tailnet. The
 `.github/workflows/ci-deploy.yml` production workflow implements the same
-check directly after `deploy-production` and `verify-production-tls` succeed.
+visible `Verify private admin tailnet` check directly after the internal
+`deploy-production` and `verify-production-tls` jobs succeed.
 The direct job is necessary because the previous reusable-workflow call did
 not receive the protected environment secrets. Create a GitHub
 Environment named `admin-tailscale`, require manual approval by trusted

@@ -15,6 +15,7 @@ concurrency:
 
 jobs:
   label:
+    name: Label issue
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
