@@ -604,11 +604,6 @@ wait_until_ready() {
         wait_for_ready_response \
             '{"status":"ready"}' \
             "http://127.0.0.1:8081/health/ready"
-    else
-        wait_for_ready_response \
-            '{"status":"ready"}' \
-            "https://${PUBLIC_HOST}/health/ready" \
-            --resolve "${PUBLIC_HOST}:443:127.0.0.1"
     fi
     if [[ "${target}" == "production" ]]; then
         wait_for_ready_response \

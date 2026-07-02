@@ -29,7 +29,7 @@ def test_playwright_e2e_defaults_to_opt_in_local_loopback():
     assert "from tests.e2e.support import RUN_E2E_ENV, browser_page, live_server" in tests
     assert "from support import" not in tests
     assert "pytest.mark.skip" in tests
-    assert 'make_server("127.0.0.1", 0, app, threaded=True)' in support
+    assert 'make_server("127.0.0.1", 0, app, threaded=False)' in support
     assert "Playwright E2E tests may only use a loopback live server" in support
     assert "pytest.mark.e2e" in tests
     assert "https://sitbank.pp.ua" not in combined

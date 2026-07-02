@@ -14,7 +14,9 @@ LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 @pytest.fixture()
 def live_server(app):
-    server = make_server("127.0.0.1", 0, app, threaded=True)
+    # Keep the browser smoke server serial so the shared in-memory SQLite test
+    # database is not touched concurrently by page and asset requests.
+    server = make_server("127.0.0.1", 0, app, threaded=False)
     base_url = f"http://127.0.0.1:{server.server_port}"
     _assert_local_base_url(base_url)
     thread = threading.Thread(
