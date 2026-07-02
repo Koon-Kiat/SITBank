@@ -351,9 +351,11 @@ def _config_secret_inputs() -> set[str]:
         "_required_keyring",
         "_required_secret",
         "_configured_secret",
+        "_csv_env_or_file_values",
         "_required_session_hmac_keys",
         "_required_url",
         "_optional_turnstile_secret",
+        "_root_admin_email_set",
     }
     names = set()
     for node in ast.walk(tree):
@@ -706,7 +708,7 @@ def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypa
     assert environment["PASSWORD_RESET_EMAIL_BACKEND"] == "smtp"
     assert environment["PASSWORD_RESET_EMAIL_FROM"] == DEPLOYMENT_VALUES["PROD_PASSWORD_RESET_EMAIL_FROM"]
     assert environment["PAYEE_COOLDOWN_SECONDS"] == "43200"
-    assert environment["ROOT_ADMIN_EMAILS"] == ROOT_ADMIN_EMAILS_VALUE
+    assert "ROOT_ADMIN_EMAILS" not in environment
     assert environment["SMTP_HOST"] == DEPLOYMENT_VALUES["PROD_SMTP_HOST"]
     assert environment["SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06"
     assert environment["ADMIN_SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06-admin"
@@ -727,6 +729,7 @@ def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypa
     assert secrets["admin_secret_key"] == DEPLOYMENT_VALUES["PROD_ADMIN_SECRET_KEY"]
     assert secrets["database_migration_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_MIGRATION_URL"]
     assert secrets["mfa_kek_keys_json"] == DEPLOYMENT_VALUES["PROD_MFA_KEK_KEYS_JSON"]
+    assert secrets["root_admin_emails"] == ROOT_ADMIN_EMAILS_VALUE
     assert secrets["security_audit_hmac_key"] == DEPLOYMENT_VALUES["PROD_SECURITY_AUDIT_HMAC_KEY"]
     assert secrets["smtp_username"] == DEPLOYMENT_VALUES["PROD_SMTP_USERNAME"]
     assert secrets["smtp_password"] == DEPLOYMENT_VALUES["PROD_SMTP_PASSWORD"]
@@ -759,7 +762,7 @@ def test_container_bundle_accepts_staging_prefix(monkeypatch):
     assert "WEBAUTHN_RP_ORIGIN" not in environment
     assert environment["PASSWORD_RESET_BASE_URL"] == "https://staging.sitbank.example"
     assert environment["PAYEE_COOLDOWN_SECONDS"] == "43200"
-    assert environment["ROOT_ADMIN_EMAILS"] == ROOT_ADMIN_EMAILS_VALUE
+    assert "ROOT_ADMIN_EMAILS" not in environment
     assert environment["SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06"
     assert environment["ADMIN_SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06-admin"
     assert environment["MFA_KEK_ACTIVE_ID"] == "2026-06-mfa"
@@ -768,6 +771,7 @@ def test_container_bundle_accepts_staging_prefix(monkeypatch):
     assert secrets["database_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_URL"]
     assert secrets["session_lookup_hmac_key"] == DEPLOYMENT_VALUES["PROD_SESSION_LOOKUP_HMAC_KEY"]
     assert secrets["database_migration_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_MIGRATION_URL"]
+    assert secrets["root_admin_emails"] == ROOT_ADMIN_EMAILS_VALUE
     assert secrets["security_audit_hmac_key"] == DEPLOYMENT_VALUES["PROD_SECURITY_AUDIT_HMAC_KEY"]
 
 
@@ -844,7 +848,7 @@ def test_staging_bundle_requires_valid_root_admin_allowlist(
         monkeypatch.delenv("STAGING_ROOT_ADMIN_EMAILS")
 
     with pytest.raises(RuntimeError, match=message):
-        build_container_environment("STAGING")
+        build_container_bundle("STAGING")
 
 
 def test_deployment_profiles_keep_production_and_staging_isolated(monkeypatch):
@@ -1073,7 +1077,8 @@ def test_smoke_fixture_and_deployment_wrapper_match_runtime_contract():
     assert "--env DATABASE_MIGRATION_URL_FILE=/run/secrets/database_migration_url" in smoke_test
     assert "--env PAYEE_COOLDOWN_SECONDS=43200" in smoke_test
     assert 'readonly root_admin_emails="chief1@sit.singaporetech.edu.sg' in smoke_test
-    assert '--env "ROOT_ADMIN_EMAILS=${root_admin_emails}"' in smoke_test
+    assert "--env ROOT_ADMIN_EMAILS_FILE=/run/secrets/root_admin_emails" in smoke_test
+    assert '--env "ROOT_ADMIN_EMAILS=${root_admin_emails}"' not in smoke_test
     assert "--env SECURITY_AUDIT_ANCHOR_PATH=/run/state/security-audit.anchor" in smoke_test
     assert '--tmpfs "/run/state:rw,noexec,nosuid,nodev,size=16m,uid=10001,gid=10001,mode=0750"' in smoke_test
     assert ':/run/secrets/database_migration_url:ro' not in smoke_test
@@ -1114,6 +1119,8 @@ def test_smoke_fixture_and_deployment_wrapper_match_runtime_contract():
     )
     for staging_env in STAGING_CLOUDFLARE_ACCESS_RUNTIME_ENVIRONMENT:
         assert staging_env in deploy_script
+    assert "ROOT_ADMIN_EMAILS" not in _extract_bash_array(deploy_script, "allowed_environment")
+    assert "root_admin_emails" in _extract_bash_array(deploy_script, "required_secrets")
 
 
 def test_local_ci_command_documents_required_local_checks():
@@ -1190,6 +1197,7 @@ def test_environment_only_bundle_does_not_export_long_lived_secrets(
 
     assert environment["SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06"
     assert environment["MFA_KEK_ACTIVE_ID"] == "2026-06-mfa"
+    assert "ROOT_ADMIN_EMAILS" not in environment
     assert (output / "container.env").is_file()
     assert (output / "deployment.env").is_file()
     assert not (output / "secrets").exists()
@@ -1227,7 +1235,7 @@ def test_environment_only_bundle_accepts_staging_prefix(monkeypatch, tmp_path):
     deployment = (output / "deployment.env").read_text(encoding="utf-8")
     assert "ADMIN_SESSION_HMAC_ACTIVE_KEY_ID='2026-06-admin'" in environment
     assert "MFA_KEK_ACTIVE_ID='2026-06-mfa'" in environment
-    assert f"ROOT_ADMIN_EMAILS='{ROOT_ADMIN_EMAILS_VALUE}'" in environment
+    assert "ROOT_ADMIN_EMAILS=" not in environment
     assert "WEBAUTHN_RP_ID" not in environment
     assert "WEBAUTHN_RP_ORIGIN" not in environment
     assert "APP_BIND_PORT='5001'" in deployment
@@ -1247,7 +1255,7 @@ def test_container_bundle_writer_quotes_dollar_values_and_separates_files(
 
     environment = (output / "container.env").read_text(encoding="utf-8")
     assert "MFA_ISSUER_NAME='SITBank'" in environment
-    assert f"ROOT_ADMIN_EMAILS='{ROOT_ADMIN_EMAILS_VALUE}'" in environment
+    assert "ROOT_ADMIN_EMAILS=" not in environment
     assert "PROD_SECRET_KEY" not in environment
     assert (output / "secrets" / "secret_key").read_text(encoding="utf-8") == (
         DEPLOYMENT_VALUES["PROD_SECRET_KEY"]
@@ -1256,6 +1264,9 @@ def test_container_bundle_writer_quotes_dollar_values_and_separates_files(
     assert (
         output / "secrets" / "turnstile_secret_key"
     ).read_text(encoding="utf-8") == DEPLOYMENT_VALUES["PROD_TURNSTILE_SECRET_KEY"]
+    assert (output / "secrets" / "root_admin_emails").read_text(encoding="utf-8") == (
+        ROOT_ADMIN_EMAILS_VALUE
+    )
 
 
 def test_turnstile_renderer_maps_public_flags_and_rejects_unsafe_admin_rollout(
@@ -2172,7 +2183,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     )
     assert (
         staging_deploy_env["STAGING_ROOT_ADMIN_EMAILS"]
-        == "${{ vars.ROOT_ADMIN_EMAILS }}"
+        == "${{ secrets.ROOT_ADMIN_EMAILS }}"
     )
     assert staging_deploy_env["STAGING_SMTP_HOST"] == "${{ vars.STAGING_SMTP_HOST }}"
     assert (
@@ -2201,9 +2212,13 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     )
     assert (
         production_deploy_env["PROD_ROOT_ADMIN_EMAILS"]
-        == "${{ vars.ROOT_ADMIN_EMAILS }}"
+        == "${{ secrets.ROOT_ADMIN_EMAILS }}"
     )
     assert production_deploy_env["PROD_SMTP_HOST"] == "${{ vars.PROD_SMTP_HOST }}"
+    workflow_text = Path(".github/workflows/ci-deploy.yml").read_text(encoding="utf-8")
+    assert "vars.ROOT_ADMIN_EMAILS" not in workflow_text
+    assert "root-admin-emails-staging-${RELEASE_SHA}.secret" in workflow_text
+    assert "root-admin-emails-${RELEASE_SHA}.secret" in workflow_text
     for job_name, verify_step_name, required_names in (
         (
             "deploy-staging",
@@ -2475,7 +2490,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "PROD_DEPLOY_ENABLED = true" in docs
     assert "Production never skips disabled, skipped, or failed staging." in docs
     assert "PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID" in docs
-    assert "environment-specific settings, including SMTP sender/host values" in docs
+    assert "environment-specific non-secret settings, including SMTP sender/host values" in docs
     assert "Feature-branch workflow and deployment scripts" in docs
     assert "adopt-existing" in docs
 

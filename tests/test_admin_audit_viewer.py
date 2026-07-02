@@ -207,7 +207,10 @@ def test_audit_viewer_filters_sorting_pagination_and_safe_search(admin_client):
     displayed_event = filtered_payload["events"][0]
     assert displayed_event["created_at_display"] == "2026-06-28 12:00:00 UTC"
     assert displayed_event["created_at_utc"].startswith("2026-06-28T12:00:00")
+    assert displayed_event["activity"] == "Staff invite created"
+    assert displayed_event["event_description"] == "A staff/admin invite was created."
     assert displayed_event["actor_role"] == "admin"
+    assert displayed_event["actor_summary"] == f"user:{admin.id} (admin, security.admin@sit.singaporetech.edu.sg)"
     assert displayed_event["source_kind"] == "network"
     assert displayed_event["source_display"] == "203.0.113.10"
     assert displayed_event["request_id"] == "audit-request-1"
@@ -264,6 +267,50 @@ def test_audit_event_detail_redacts_existing_unsafe_metadata_and_escapes_html(ad
     assert payload["event"]["metadata"]["nested"]["target_staff_ref"] == "safe-ref"
     assert "Other safe metadata" in body
     assert "Hash chain" in body
+    assert "Investigation Summary" in body
+    assert "Field Legend" in body
+    assert payload["event"]["activity"] == "Unsafe legacy metadata"
+    assert payload["event"]["event_description"] == "Recorded audit event `unsafe_legacy_metadata`."
+    assert payload["event"]["field_legend"]["Actor"].startswith("Safe actor identity")
+
+
+def test_audit_actor_summary_handles_unavailable_and_customer_actors(admin_client):
+    admin, admin_secret = _create_identity(
+        username="security-admin",
+        email="security.admin@sit.singaporetech.edu.sg",
+        account_type="admin",
+        phone_number="91234567",
+    )
+    customer, _customer_secret = _create_identity(
+        username="audit-customer",
+        email="audit.customer@example.com",
+        account_type="customer",
+        phone_number="91234568",
+    )
+    unavailable = _audit_event(
+        event_type="manual_recovery_requested",
+        user_id=999999,
+        metadata={"severity": "low"},
+    )
+    customer_event = _audit_event(
+        event_type="manual_recovery_requested",
+        user_id=customer.id,
+        metadata={"severity": "low"},
+    )
+    _login_admin(admin_client, admin_secret, "security.admin@sit.singaporetech.edu.sg")
+
+    unavailable_payload = admin_client.get(
+        f"/audit-logs/{unavailable.id}",
+        headers={"Accept": "application/json"},
+    ).get_json()
+    customer_payload = admin_client.get(
+        f"/audit-logs/{customer_event.id}",
+        headers={"Accept": "application/json"},
+    ).get_json()
+
+    assert unavailable_payload["event"]["actor_summary"] == "user:999999 (unavailable)"
+    assert customer_payload["event"]["actor_summary"] == f"user:{customer.id} (customer)"
+    assert "audit.customer@example.com" not in str(customer_payload)
 
 
 def test_audit_viewer_renders_dropdown_timestamps_and_system_probe_source(admin_client):
@@ -295,6 +342,8 @@ def test_audit_viewer_renders_dropdown_timestamps_and_system_probe_source(admin_
     assert "system_probe: Runtime privilege probe" in listing_body
     assert "privilege-check" not in listing_body
     assert detail.status_code == 200
+    assert "Runtime privilege probe" in detail_body
+    assert "Blocked or failed outcomes should stop deployment" in detail_body
     assert "Runtime privilege probe" in detail_body
     assert "Security decision" in detail_body
 
@@ -357,6 +406,8 @@ def test_audit_detail_uses_metadata_role_source_and_grouped_safe_fields(admin_cl
     body = html_response.get_data(as_text=True)
 
     assert payload["actor_role"] == "root_admin"
+    assert payload["activity"] == "Deployment wrapper check"
+    assert payload["investigation_hint"] == "Correlate with GitHub run evidence and host-side deployment logs."
     assert payload["source_kind"] == "deployment"
     assert payload["source_display"] == "Deployment wrapper"
     assert payload["target_ref"] == "safe-target-ref"

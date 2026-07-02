@@ -6,11 +6,16 @@ from datetime import datetime, timedelta, timezone
 import pyotp
 import pytest
 
+from app.admin.routes import (
+    _manual_recovery_failure_message,
+    _manual_recovery_transition_options,
+)
 from app.extensions import db
 from app.models import AdminActionRequest, ManualRecoveryRequest, SecurityAuditEvent, User
 from app.security.crypto import encrypt_mfa_secret
 from app.security.email import password_reset_outbox
 from app.security.passwords import hash_password
+from app.auth.services import AuthError
 from conftest import TestConfig
 
 
@@ -94,15 +99,15 @@ def _create_customer(username: str = "recover-admin01") -> tuple[User, str]:
 
 
 def _create_manual_recovery_request(
-    user: User,
+    user: User | None,
     *,
     status: str = "pending",
     expired: bool = False,
 ) -> ManualRecoveryRequest:
     now = datetime.now(timezone.utc)
     request_record = ManualRecoveryRequest(
-        identifier_ref=f"manual-request-ref-{user.id}",
-        user_id=user.id,
+        identifier_ref=f"manual-request-ref-{user.id if user else 'unlinked'}",
+        user_id=user.id if user else None,
         status=status,
         requested_ip="203.0.113.10",
         requested_user_agent="unit-test",
@@ -169,6 +174,10 @@ def test_manual_recovery_routes_are_admin_app_only():
     assert not any(rule.startswith("/manual-recovery") for rule in customer_rules)
     assert admin_rules["/manual-recovery/requests"] == "admin.manual_recovery_requests"
     assert (
+        admin_rules["/manual-recovery/requests/<int:request_id>"]
+        == "admin.manual_recovery_request_detail"
+    )
+    assert (
         admin_rules["/manual-recovery/requests/<int:request_id>/transition"]
         == "admin.manual_recovery_transition"
     )
@@ -221,7 +230,10 @@ def test_root_admin_can_list_pending_manual_recovery_requests(admin_client):
     request_record = _create_manual_recovery_request(customer)
     _login_admin(admin_client, root_secret)
 
-    response = admin_client.get("/manual-recovery/requests")
+    response = admin_client.get(
+        "/manual-recovery/requests",
+        headers={"Accept": "application/json"},
+    )
 
     assert response.status_code == 200
     payload = response.get_json()
@@ -229,6 +241,276 @@ def test_root_admin_can_list_pending_manual_recovery_requests(admin_client):
     assert payload["requests"][0]["status"] == "pending"
     assert payload["requests"][0]["linked_customer"] is True
     _assert_no_sensitive_recovery_material(payload)
+
+
+def test_root_admin_gets_browser_manual_recovery_queue_by_default(admin_client):
+    _root, root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    customer, _customer_secret = _create_customer("recover-browser-list")
+    request_record = _create_manual_recovery_request(customer)
+    _login_admin(admin_client, root_secret)
+
+    response = admin_client.get("/manual-recovery/requests")
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert response.content_type.startswith("text/html")
+    assert "Manual Recovery" in body
+    assert "Queue Summary" in body
+    assert f"/manual-recovery/requests/{request_record.id}" in body
+    assert "Unlinked requests are intentionally generic" in body
+    _assert_no_sensitive_recovery_material({"html": body})
+
+
+def test_browser_manual_recovery_queue_filters_active_closed_and_linked_states(admin_client):
+    root, root_secret = _create_staff_identity(
+        username="root-browser-filter",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="89990012",
+    )
+    customer, _customer_secret = _create_customer("recover-filter01")
+    active_request = _create_manual_recovery_request(customer, status="pending")
+    approved_request = _create_manual_recovery_request(customer, status="approved")
+    closed_unlinked_request = _create_manual_recovery_request(None, status="denied")
+    _login_admin(admin_client, root_secret, root.email)
+
+    linked = admin_client.get(
+        "/manual-recovery/requests?status=pending&linked=linked&active=active&sort=status&direction=asc"
+    )
+    closed = admin_client.get(
+        "/manual-recovery/requests?linked=unlinked&active=closed&sort=updated_at&direction=desc"
+    )
+
+    assert linked.status_code == 200
+    linked_body = linked.get_data(as_text=True)
+    assert f"#{active_request.id}" in linked_body
+    assert f"#{approved_request.id}" not in linked_body
+    assert f"#{closed_unlinked_request.id}" not in linked_body
+    assert closed.status_code == 200
+    closed_body = closed.get_data(as_text=True)
+    assert f"#{closed_unlinked_request.id}" in closed_body
+    assert "Unlinked or unknown" in closed_body
+    assert "Closed" in closed_body
+
+
+def test_browser_manual_recovery_missing_detail_returns_not_found(admin_client):
+    root, root_secret = _create_staff_identity(
+        username="root-browser-missing",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="89990013",
+    )
+    _login_admin(admin_client, root_secret, root.email)
+
+    response = admin_client.get("/manual-recovery/requests/999")
+
+    assert response.status_code == 404
+
+
+def test_manual_recovery_detail_renders_safe_forms(admin_client):
+    _root, root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    customer, _customer_secret = _create_customer("recover-browser-detail")
+    request_record = _create_manual_recovery_request(customer, status="under_review")
+    _login_admin(admin_client, root_secret)
+
+    response = admin_client.get(f"/manual-recovery/requests/{request_record.id}")
+    body = response.get_data(as_text=True)
+    json_response = admin_client.get(
+        f"/manual-recovery/requests/{request_record.id}",
+        headers={"Accept": "application/json"},
+    )
+
+    assert response.status_code == 200
+    assert f"Request #{request_record.id}" in body
+    assert "manual-recovery-transition-status" in body
+    assert 'name="csrf_token"' in body
+    assert 'autocomplete="one-time-code"' in body
+    assert 'maxlength="6"' in body
+    assert "approved" in body
+    assert "denied" in body
+    assert json_response.status_code == 200
+    assert json_response.get_json()["request"]["id"] == request_record.id
+    _assert_no_sensitive_recovery_material({"html": body, "json": json_response.get_json()})
+
+
+def test_manual_recovery_display_helpers_cover_safe_state_labels():
+    assert _manual_recovery_transition_options({"status": "pending"}) == ["under_review", "denied"]
+    assert _manual_recovery_transition_options({"status": "under_review"}) == ["approved", "denied"]
+    assert _manual_recovery_transition_options({"status": "completed"}) == []
+    assert (
+        _manual_recovery_failure_message(AuthError("missing", 404))
+        == "Manual recovery request was not found."
+    )
+    assert (
+        _manual_recovery_failure_message(AuthError("forbidden", 403))
+        == "Manual recovery action was not authorized."
+    )
+    assert (
+        _manual_recovery_failure_message(AuthError("unexpected", 418))
+        == "Manual recovery action could not be completed."
+    )
+
+
+def test_browser_transition_requires_valid_fields_and_redirects_safely(admin_client):
+    _root, root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    customer, _customer_secret = _create_customer("recover-browser-transition")
+    request_record = _create_manual_recovery_request(customer)
+    _login_admin(admin_client, root_secret)
+
+    invalid = admin_client.post(
+        f"/manual-recovery/requests/{request_record.id}/transition",
+        data={"status": "under_review", "reason": "identity review"},
+        follow_redirects=False,
+    )
+    db.session.refresh(request_record)
+    assert invalid.status_code == 303
+    assert invalid.headers["Location"].endswith(f"/manual-recovery/requests/{request_record.id}")
+    assert request_record.status == "pending"
+
+    valid = admin_client.post(
+        f"/manual-recovery/requests/{request_record.id}/transition",
+        data={
+            "status": "under_review",
+            "reason": "identity review started",
+            "totp_code": _totp(root_secret),
+        },
+        follow_redirects=False,
+    )
+
+    assert valid.status_code == 303
+    assert valid.headers["Location"].endswith(f"/manual-recovery/requests/{request_record.id}")
+    db.session.refresh(request_record)
+    assert request_record.status == "under_review"
+
+
+def test_browser_transition_auth_error_redirects_with_safe_flash(admin_client):
+    root, root_secret = _create_staff_identity(
+        username="root-browser-auth-error",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="89990014",
+    )
+    customer, _customer_secret = _create_customer("recover-browser-auth")
+    request_record = _create_manual_recovery_request(customer)
+    _login_admin(admin_client, root_secret, root.email)
+
+    response = admin_client.post(
+        f"/manual-recovery/requests/{request_record.id}/transition",
+        data={
+            "status": "under_review",
+            "reason": "identity review started",
+            "totp_code": "000000",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["Location"].endswith(f"/manual-recovery/requests/{request_record.id}")
+    db.session.refresh(request_record)
+    assert request_record.status == "pending"
+
+
+def test_browser_completion_requires_approval_and_queues_maker_checker(admin_client):
+    _root, root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    _second_root, second_root_secret = _create_staff_identity(
+        username="root-admin-two",
+        email="root2@sit.singaporetech.edu.sg",
+        account_type="root_admin",
+        phone_number="91234568",
+    )
+    customer, _customer_secret = _create_customer("recover-browser-complete")
+    pending_request = _create_manual_recovery_request(customer)
+    approved_request = _create_manual_recovery_request(customer, status="approved")
+    _login_admin(admin_client, root_secret)
+
+    blocked = admin_client.post(
+        f"/manual-recovery/requests/{pending_request.id}/complete",
+        data={"reason": "identity verified", "totp_code": _totp(root_secret)},
+        follow_redirects=False,
+    )
+    admin_client.post("/logout", headers={"Accept": "application/json"})
+    _login_admin(admin_client, second_root_secret, email="root2@sit.singaporetech.edu.sg")
+    queued = admin_client.post(
+        f"/manual-recovery/requests/{approved_request.id}/complete",
+        data={"reason": "identity verified", "totp_code": _totp(second_root_secret)},
+        follow_redirects=False,
+    )
+
+    assert blocked.status_code == 303
+    assert queued.status_code == 303
+    assert queued.headers["Location"].endswith(f"/manual-recovery/requests/{approved_request.id}")
+    assert db.session.query(AdminActionRequest).filter_by(
+        operation_type="manual_recovery_complete",
+        status="pending",
+    ).count() == 1
+
+
+def test_browser_completion_validation_redirects_before_service_call(admin_client):
+    root, root_secret = _create_staff_identity(
+        username="root-browser-complete-invalid",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="89990015",
+    )
+    customer, _customer_secret = _create_customer("recover-complete-invalid")
+    request_record = _create_manual_recovery_request(customer, status="approved")
+    _login_admin(admin_client, root_secret, root.email)
+
+    response = admin_client.post(
+        f"/manual-recovery/requests/{request_record.id}/complete",
+        data={"reason": ""},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["Location"].endswith(f"/manual-recovery/requests/{request_record.id}")
+    db.session.refresh(request_record)
+    assert request_record.status == "approved"
+
+
+def test_admin_browser_logout_redirects_and_json_logout_remains_compatible(admin_client):
+    _root, root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    _second_root, second_root_secret = _create_staff_identity(
+        username="root-admin-two",
+        email="root2@sit.singaporetech.edu.sg",
+        account_type="root_admin",
+        phone_number="91234568",
+    )
+    _login_admin(admin_client, root_secret)
+
+    browser_logout = admin_client.post("/logout", follow_redirects=False)
+    _login_admin(admin_client, second_root_secret, email="root2@sit.singaporetech.edu.sg")
+    json_logout = admin_client.post("/logout", headers={"Accept": "application/json"})
+
+    assert browser_logout.status_code == 303
+    assert browser_logout.headers["Location"].endswith("/login")
+    assert json_logout.status_code == 200
+    assert json_logout.get_json() == {"message": "Logged out"}
 
 
 def test_root_admin_transition_requires_totp_and_preserves_status(admin_client):

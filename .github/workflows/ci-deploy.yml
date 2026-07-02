@@ -821,7 +821,7 @@ jobs:
       STAGING_PASSWORD_PBKDF2_ITERATIONS: ${{ vars.STAGING_PASSWORD_PBKDF2_ITERATIONS }}
       STAGING_MFA_ISSUER_NAME: ${{ vars.STAGING_MFA_ISSUER_NAME }}
       STAGING_PASSWORD_RESET_EMAIL_FROM: ${{ vars.STAGING_PASSWORD_RESET_EMAIL_FROM }}
-      STAGING_ROOT_ADMIN_EMAILS: ${{ vars.ROOT_ADMIN_EMAILS }}
+      STAGING_ROOT_ADMIN_EMAILS: ${{ secrets.ROOT_ADMIN_EMAILS }}
       STAGING_SMTP_HOST: ${{ vars.STAGING_SMTP_HOST }}
       STAGING_CLOUDFLARE_ACCESS_AUD: ${{ vars.STAGING_CLOUDFLARE_ACCESS_AUD }}
       STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN: ${{ vars.STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN }}
@@ -896,7 +896,7 @@ jobs:
       - name: Install Cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
 
-      - name: Render and sign non-secret staging runtime configuration
+      - name: Render and sign staging runtime configuration
         run: |
           umask 077
           python ops/deploy/render_container_bundle.py \
@@ -967,6 +967,31 @@ jobs:
           printf '%s' "${TURNSTILE_SECRET_KEY}" \
             > "turnstile-staging-${RELEASE_SHA}.secret"
 
+      - name: Stage restricted staging root-admin allowlist
+        run: |
+          umask 077
+          python - <<'PY'
+          import os
+          import re
+          import sys
+
+          value = os.environ.get("STAGING_ROOT_ADMIN_EMAILS", "")
+          emails = [item.strip().casefold() for item in value.split(",") if item.strip()]
+          if len(emails) != 7 or len(set(emails)) != 7:
+              print("::error::STAGING_ROOT_ADMIN_EMAILS must contain exactly 7 unique workplace email addresses.", file=sys.stderr)
+              raise SystemExit(1)
+          for email in emails:
+              if not re.fullmatch(r"(?=\S{1,128}@\S{1,253}$)[^@\x00-\x1f\x7f]+@[^@\x00-\x1f\x7f]+", email):
+                  print("::error::STAGING_ROOT_ADMIN_EMAILS contains an invalid email address.", file=sys.stderr)
+                  raise SystemExit(1)
+              domain = email.rsplit("@", 1)[1]
+              if domain not in {"sit.singaporetech.edu.sg", "singaporetech.edu.sg"}:
+                  print("::error::STAGING_ROOT_ADMIN_EMAILS must contain only SIT workplace email addresses.", file=sys.stderr)
+                  raise SystemExit(1)
+          PY
+          printf '%s' "${STAGING_ROOT_ADMIN_EMAILS}" \
+            > "root-admin-emails-staging-${RELEASE_SHA}.secret"
+
       - name: Verify trusted staging deployment files
         run: |
           expected_wrapper_hash="$(
@@ -1014,6 +1039,7 @@ jobs:
             "runtime-staging-${RELEASE_SHA}.sigstore.json" \
             "registry-staging-${RELEASE_SHA}.credentials" \
             "turnstile-staging-${RELEASE_SHA}.secret" \
+            "root-admin-emails-staging-${RELEASE_SHA}.secret" \
             "${REMOTE_USER}@${REMOTE_HOST}:incoming/"
 
       - name: Deploy verified image digest
@@ -1033,7 +1059,8 @@ jobs:
             "runtime-staging-${RELEASE_SHA}.sha256" \
             "runtime-staging-${RELEASE_SHA}.sigstore.json" \
             "registry-staging-${RELEASE_SHA}.credentials" \
-            "turnstile-staging-${RELEASE_SHA}.secret"
+            "turnstile-staging-${RELEASE_SHA}.secret" \
+            "root-admin-emails-staging-${RELEASE_SHA}.secret"
 
       - name: Disconnect staging deploy tailnet
         if: ${{ always() }}
@@ -1087,7 +1114,7 @@ jobs:
       PROD_PASSWORD_PBKDF2_ITERATIONS: ${{ vars.PROD_PASSWORD_PBKDF2_ITERATIONS }}
       PROD_MFA_ISSUER_NAME: ${{ vars.PROD_MFA_ISSUER_NAME }}
       PROD_PASSWORD_RESET_EMAIL_FROM: ${{ vars.PROD_PASSWORD_RESET_EMAIL_FROM }}
-      PROD_ROOT_ADMIN_EMAILS: ${{ vars.ROOT_ADMIN_EMAILS }}
+      PROD_ROOT_ADMIN_EMAILS: ${{ secrets.ROOT_ADMIN_EMAILS }}
       PROD_SMTP_HOST: ${{ vars.PROD_SMTP_HOST }}
       PROD_TURNSTILE_ENABLED: ${{ vars.PROD_TURNSTILE_ENABLED }}
       PROD_TURNSTILE_SITE_KEY: ${{ vars.PROD_TURNSTILE_SITE_KEY }}
@@ -1158,7 +1185,7 @@ jobs:
       - name: Install Cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
 
-      - name: Render and sign non-secret production runtime configuration
+      - name: Render and sign production runtime configuration
         run: |
           umask 077
           python ops/deploy/render_container_bundle.py \
@@ -1229,6 +1256,31 @@ jobs:
           printf '%s' "${TURNSTILE_SECRET_KEY}" \
             > "turnstile-${RELEASE_SHA}.secret"
 
+      - name: Stage restricted production root-admin allowlist
+        run: |
+          umask 077
+          python - <<'PY'
+          import os
+          import re
+          import sys
+
+          value = os.environ.get("PROD_ROOT_ADMIN_EMAILS", "")
+          emails = [item.strip().casefold() for item in value.split(",") if item.strip()]
+          if len(emails) != 7 or len(set(emails)) != 7:
+              print("::error::PROD_ROOT_ADMIN_EMAILS must contain exactly 7 unique workplace email addresses.", file=sys.stderr)
+              raise SystemExit(1)
+          for email in emails:
+              if not re.fullmatch(r"(?=\S{1,128}@\S{1,253}$)[^@\x00-\x1f\x7f]+@[^@\x00-\x1f\x7f]+", email):
+                  print("::error::PROD_ROOT_ADMIN_EMAILS contains an invalid email address.", file=sys.stderr)
+                  raise SystemExit(1)
+              domain = email.rsplit("@", 1)[1]
+              if domain not in {"sit.singaporetech.edu.sg", "singaporetech.edu.sg"}:
+                  print("::error::PROD_ROOT_ADMIN_EMAILS must contain only SIT workplace email addresses.", file=sys.stderr)
+                  raise SystemExit(1)
+          PY
+          printf '%s' "${PROD_ROOT_ADMIN_EMAILS}" \
+            > "root-admin-emails-${RELEASE_SHA}.secret"
+
       - name: Verify trusted production deployment files
         run: |
           expected_wrapper_hash="$(
@@ -1276,6 +1328,7 @@ jobs:
             "runtime-${RELEASE_SHA}.sigstore.json" \
             "registry-${RELEASE_SHA}.credentials" \
             "turnstile-${RELEASE_SHA}.secret" \
+            "root-admin-emails-${RELEASE_SHA}.secret" \
             "${REMOTE_USER}@${REMOTE_HOST}:incoming/"
 
       - name: Deploy verified image digest
@@ -1295,7 +1348,8 @@ jobs:
             "runtime-${RELEASE_SHA}.sha256" \
             "runtime-${RELEASE_SHA}.sigstore.json" \
             "registry-${RELEASE_SHA}.credentials" \
-            "turnstile-${RELEASE_SHA}.secret"
+            "turnstile-${RELEASE_SHA}.secret" \
+            "root-admin-emails-${RELEASE_SHA}.secret"
 
       - name: Disconnect production deploy tailnet
         if: ${{ always() }}

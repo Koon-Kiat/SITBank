@@ -182,6 +182,20 @@ the response. Viewer list and detail access are themselves audited with filter
 names, sort direction, and page bounds only; sensitive query values are not
 logged.
 
+Audit list and detail pages include a human-readable activity label, concise
+event description, investigation hint, safe actor summary, actor role, source
+kind/display, target reference, request ID, outcome, severity, and hash-chain
+status. The primary admin-facing timestamp is readable UTC such as
+`2026-07-01 22:11:49 UTC`; the machine ISO timestamp remains in HTML
+`datetime` attributes and JSON fields for tooling. Known admin, MFA, staff
+invite, staff lifecycle, manual recovery, deployment, Cloudflare, Tailscale,
+runtime privilege, and alerting event types use explicit descriptions. Unknown
+event types fall back to a safe readable label and preserve the raw technical
+event name without rendering secrets. A field legend explains Actor, Actor
+role, Source kind, Source, Target reference, Request ID, Timestamp, Hash chain,
+Hash algorithm, Severity, and Outcome so admins can build an investigation case
+without copying secrets into issues, pull requests, screenshots, or chat.
+
 Authorized admin/root users can review current security alert report output at
 `GET /alerts`. This dashboard route calls `build_security_alert_report()` with
 delivery disabled; it does not send, resend, or acknowledge alerts. The browser

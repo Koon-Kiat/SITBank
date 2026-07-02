@@ -299,6 +299,59 @@ def test_operational_observability_keeps_loki_out_of_admin_app():
         assert forbidden.casefold() not in combined.casefold()
 
 
+def test_manual_recovery_docs_cover_browser_root_admin_workflow():
+    operations = Path("docs/OPERATIONS.md").read_text(encoding="utf-8")
+    combined = " ".join(operations.split())
+
+    for required in (
+        "isolated admin browser UI",
+        "`GET /manual-recovery/requests`",
+        "Accept: application/json",
+        "browser CSRF",
+        "fresh TOTP code",
+        "maker-checker",
+        "Unlinked or unknown requests stay generic",
+        "Browser admin logout clears the admin session and redirects to `/login`",
+    ):
+        assert required in combined
+    for forbidden in (
+        "manual recovery review is JSON-only",
+        "complete without approval",
+        "complete without TOTP",
+    ):
+        assert forbidden.casefold() not in combined.casefold()
+
+
+def test_root_admin_allowlist_docs_treat_identities_as_sensitive_secrets():
+    combined = " ".join(
+        path.read_text(encoding="utf-8")
+        for path in (
+            Path("docs/GITHUB_ACTIONS.md"),
+            Path("docs/DEPLOYMENT.md"),
+            Path("docs/OPERATIONS.md"),
+            Path("docs/security/architecture/cloudflare-staging-access.md"),
+        )
+    )
+    normalized = " ".join(combined.split())
+
+    for required in (
+        "protected environment secret named `ROOT_ADMIN_EMAILS`",
+        "sensitive privileged-identity configuration",
+        "/etc/sitbank*/secrets/root_admin_emails",
+        "ROOT_ADMIN_EMAILS_FILE",
+        "Do not copy the real allowlist into issues, pull requests, screenshots, logs, or job summaries",
+        "without printing the identities",
+    ):
+        assert required in normalized
+    for forbidden in (
+        "vars.ROOT_ADMIN_EMAILS",
+        "non-secret allowlist",
+        "printenv ROOT_ADMIN_EMAILS",
+        "protected GitHub environment variable in both `staging` and `production`",
+    ):
+        assert forbidden.casefold() not in normalized.casefold()
+
+
 def test_security_alert_delivery_docs_match_admin_controls():
     audit_docs = (
         SECURITY_DOCS / "assurance" / "audit-and-alerting.md"

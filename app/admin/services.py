@@ -152,6 +152,217 @@ AUDIT_SYSTEM_EVENT_PREFIXES = (
     "runtime_",
     "security_alert_",
 )
+AUDIT_EVENT_DESCRIPTIONS = {
+    "admin_access_denied": (
+        "Admin access denied",
+        "A staff/admin account was blocked before admin access was granted.",
+        "Confirm the account is active, workplace verified, and expected to use the admin app.",
+    ),
+    "admin_action_request_created": (
+        "Admin approval request created",
+        "A high-risk root-admin operation was queued for maker-checker approval.",
+        "Review the requester, target reference, operation type, and request integrity status.",
+    ),
+    "admin_action_request_executed": (
+        "Admin approval executed",
+        "A durable privileged action request was approved and executed.",
+        "Review requester, approver, target, operation type, and downstream audit events.",
+    ),
+    "admin_action_request_review": (
+        "Admin approval queue reviewed",
+        "A root admin opened the admin approval queue.",
+        "Use this to correlate who reviewed pending high-risk actions.",
+    ),
+    "admin_dashboard_access": (
+        "Admin dashboard opened",
+        "A staff/admin user accessed the isolated admin dashboard.",
+        "Confirm the actor role, session context, and source are expected.",
+    ),
+    "admin_login": (
+        "Admin login blocked",
+        "An admin login attempt was blocked before password verification completed.",
+        "Review account status and lock reason without exposing credentials.",
+    ),
+    "admin_login_password": (
+        "Admin password accepted",
+        "An admin password check succeeded and TOTP verification was required.",
+        "Correlate with a later admin MFA login event from the same actor and source.",
+    ),
+    "admin_logout": (
+        "Admin logout",
+        "An admin session logout was requested.",
+        "Use this to confirm session end timing for an investigation.",
+    ),
+    "admin_mfa_login": (
+        "Admin MFA login",
+        "An admin TOTP login step was attempted or completed.",
+        "Successful events establish an authenticated admin session.",
+    ),
+    "admin_role_authorization": (
+        "Admin role authorization",
+        "A route guard checked whether the actor had admin-level authority.",
+        "Blocked outcomes indicate a role boundary was enforced.",
+    ),
+    "audit_log_detail_view": (
+        "Audit detail opened",
+        "An admin opened a sanitized SecurityAuditEvent detail page.",
+        "This is read-only investigation activity, not a raw log query.",
+    ),
+    "audit_log_view": (
+        "Audit log searched",
+        "An admin viewed or filtered sanitized SecurityAuditEvent rows.",
+        "Use filters, request ID, and actor context to reconstruct review activity.",
+    ),
+    "cloudflare_access_denied": (
+        "Cloudflare Access denied request",
+        "A Cloudflare Access assertion or boundary check rejected a request.",
+        "Review source kind, route, and policy reason without copying assertions.",
+    ),
+    "host_deploy_wrapper": (
+        "Deployment wrapper check",
+        "A trusted host deployment wrapper or deployment probe reported status.",
+        "Correlate with GitHub run evidence and host-side deployment logs.",
+    ),
+    "manual_recovery_admin_complete": (
+        "Manual recovery completion requested",
+        "A root admin requested completion of an approved manual recovery case.",
+        "Confirm approval, maker-checker status, TOTP step-up, and target reference.",
+    ),
+    "manual_recovery_admin_review": (
+        "Manual recovery queue reviewed",
+        "A root admin accessed the manual recovery review queue.",
+        "Treat unlinked requests generically; they do not prove account existence.",
+    ),
+    "manual_recovery_admin_transition": (
+        "Manual recovery status transition",
+        "A root admin attempted to move a manual recovery request through review.",
+        "Confirm the requested state, reason, TOTP step-up, and maker-checker requirement.",
+    ),
+    "manual_recovery_completed": (
+        "Manual recovery completed",
+        "A manual recovery request completed and the customer MFA state was reset for re-enrollment.",
+        "Confirm session revocation, notification, and follow-up customer verification.",
+    ),
+    "manual_recovery_notification": (
+        "Manual recovery notification",
+        "A manual recovery notification delivery attempt was recorded.",
+        "Investigate failures through the email provider without exposing message contents.",
+    ),
+    "manual_recovery_requested": (
+        "Manual recovery requested",
+        "A public manual recovery request was received with generic account-discovery protections.",
+        "Review rate-limit context and linked/unlinked state without confirming identity to users.",
+    ),
+    "manual_recovery_status_changed": (
+        "Manual recovery status changed",
+        "The manual recovery state machine accepted a status change.",
+        "Use this to reconstruct the case timeline and operator reason.",
+    ),
+    "privilege_probe": (
+        "Runtime privilege probe",
+        "A runtime database or host privilege verification probe ran.",
+        "Blocked or failed outcomes should stop deployment until privileges are corrected.",
+    ),
+    "runtime_db_privilege_verification_failed": (
+        "Runtime database privilege failure",
+        "A runtime database privilege verification failed.",
+        "Treat this as deployment-blocking until least-privilege grants are restored.",
+    ),
+    "security_alert_delivery": (
+        "Security alert delivery",
+        "An admin requested or completed manual delivery of the current alert report.",
+        "Confirm TOTP step-up, delivery outcome, and dedupe behavior.",
+    ),
+    "security_alert_review": (
+        "Security alerts reviewed",
+        "An admin opened the sanitized security alert review page.",
+        "Correlate with active alert rows and audit-chain status.",
+    ),
+    "security_alert_scheduler": (
+        "Security alert scheduler",
+        "The scheduled security alert job evaluated alert conditions.",
+        "Review alert count, severity, and delivery metadata.",
+    ),
+    "staff_account_activated": (
+        "Staff account activated",
+        "A staff/admin invite acceptance completed account activation.",
+        "Confirm workplace verification, TOTP enrollment, and invite target reference.",
+    ),
+    "staff_account_lifecycle": (
+        "Staff account lifecycle change",
+        "A root admin requested a staff/admin account lifecycle operation.",
+        "Review target role/status, TOTP step-up, and maker-checker approval.",
+    ),
+    "staff_account_view": (
+        "Staff accounts viewed",
+        "An admin viewed the staff/admin account list.",
+        "Use this as read-only access evidence for staff-account investigations.",
+    ),
+    "staff_invite_accept": (
+        "Staff invite acceptance",
+        "A staff/admin invite acceptance step was attempted.",
+        "Review invite state, workplace verification, and forged-field checks.",
+    ),
+    "staff_invite_create": (
+        "Staff invite creation attempt",
+        "A root admin attempted to create a staff/admin invite.",
+        "Confirm role, workplace email policy, TOTP step-up, and delivery outcome.",
+    ),
+    "staff_invite_created": (
+        "Staff invite created",
+        "A staff/admin invite was created.",
+        "Use the invite target reference and role; do not expose invite tokens.",
+    ),
+    "staff_invite_email": (
+        "Staff invite email",
+        "A staff/admin invite email delivery attempt was recorded.",
+        "Investigate provider delivery without exposing invite tokens.",
+    ),
+    "staff_invite_expired": (
+        "Staff invite expired",
+        "A staff/admin invite expired before successful activation.",
+        "Confirm no later activation occurred for the same invite reference.",
+    ),
+    "staff_invite_revoked": (
+        "Staff invite revoked",
+        "A root admin revoked an active staff/admin invite.",
+        "Review the actor, target invite reference, and TOTP step-up outcome.",
+    ),
+    "staff_totp_setup": (
+        "Staff TOTP setup",
+        "A staff/admin invitee attempted or completed authenticator enrollment.",
+        "Confirm setup state without exposing TOTP secret material.",
+    ),
+    "staff_workplace_verification": (
+        "Staff workplace email verified",
+        "A staff/admin invitee verified their workplace email.",
+        "Correlate with invite acceptance and TOTP setup.",
+    ),
+    "staff_workplace_verification_sent": (
+        "Staff workplace verification sent",
+        "A staff/admin workplace verification code delivery attempt was recorded.",
+        "Investigate provider delivery without exposing the verification code.",
+    ),
+    "tailscale_admin_access": (
+        "Tailscale admin access check",
+        "A private admin access verification checked the Tailscale boundary.",
+        "Confirm the admin host remains private and Funnel is not enabled.",
+    ),
+}
+AUDIT_FIELD_LEGEND = {
+    "Activity": "Plain-language summary of the technical event type.",
+    "Actor": "Safe actor identity: system, user ID, and privileged workplace identity when allowed.",
+    "Actor role": "Role observed on the actor record or safe role metadata.",
+    "Source kind": "Classifies whether the source is network, system, deployment, or another safe category.",
+    "Source": "Sanitized source display such as an IP address, system probe, or deployment wrapper.",
+    "Target reference": "Opaque audit reference for the affected user, invite, request, or resource.",
+    "Request ID": "Correlation identifier used to connect related application events.",
+    "Hash chain": "Whether this row has an audit hash and is linked into the audit chain.",
+    "Hash algorithm": "Hash-chain algorithm recorded for this row.",
+    "Severity": "Security severity supplied by safe metadata, when available.",
+    "Outcome": "Result of the action, authorization decision, or system check.",
+    "Timestamp": "Readable UTC time; the machine ISO timestamp remains in datetime/JSON fields.",
+}
 DISPLAY_REDACTED_VALUE = "[redacted]"
 DISPLAY_SENSITIVE_VALUE_RE = re.compile(
     r"(?i)(bearer\s+[A-Za-z0-9._~+/=-]+|basic\s+[A-Za-z0-9._~+/=-]+|"
@@ -558,12 +769,17 @@ def public_audit_event(event: SecurityAuditEvent, *, include_metadata: bool) -> 
     metadata = event.event_metadata if isinstance(event.event_metadata, dict) else {}
     source_kind, source_display = _audit_source(event, metadata)
     created_at_utc = _utc_iso(event.created_at)
+    activity, description, investigation_hint = _audit_event_description(event.event_type)
     payload = {
         "id": event.id,
         "event_type": event.event_type,
+        "activity": activity,
+        "event_description": description,
+        "investigation_hint": investigation_hint,
         "outcome": event.outcome,
         "actor_user_id": event.user_id,
         "actor_role": _audit_actor_role(event, metadata),
+        "actor_summary": _audit_actor_summary(event, metadata),
         "ip_address": event.ip_address,
         "source_kind": source_kind,
         "source_display": source_display,
@@ -581,6 +797,7 @@ def public_audit_event(event: SecurityAuditEvent, *, include_metadata: bool) -> 
         safe_metadata = _safe_metadata_for_display(metadata)
         payload["metadata"] = safe_metadata
         payload["metadata_groups"] = _audit_metadata_groups(safe_metadata)
+        payload["field_legend"] = dict(AUDIT_FIELD_LEGEND)
     return payload
 
 
@@ -714,6 +931,34 @@ def _audit_actor_role(event: SecurityAuditEvent, metadata: dict[str, Any]) -> st
             if text:
                 return text
     return "system"
+
+
+def _audit_actor_summary(event: SecurityAuditEvent, metadata: dict[str, Any]) -> str:
+    if event.user is None:
+        if event.user_id is None:
+            return "system"
+        return f"user:{int(event.user_id)} (unavailable)"
+    role = _audit_actor_role(event, metadata)
+    actor_ref = f"user:{int(event.user.id)}"
+    if role in STAFF_ACCOUNT_TYPES:
+        workplace_email = _safe_filter(event.user.email, 255)
+        if workplace_email:
+            return f"{actor_ref} ({role}, {workplace_email})"
+    return f"{actor_ref} ({role})"
+
+
+def _audit_event_description(event_type: str) -> tuple[str, str, str]:
+    clean_event_type = _safe_filter(event_type, 80) or "unknown_event"
+    configured = AUDIT_EVENT_DESCRIPTIONS.get(clean_event_type)
+    if configured is not None:
+        return configured
+    readable = " ".join(part for part in clean_event_type.replace("-", "_").split("_") if part)
+    activity = readable[:1].upper() + readable[1:] if readable else "Unknown audit event"
+    return (
+        activity,
+        f"Recorded audit event `{clean_event_type}`.",
+        "Review safe metadata, actor context, source, target reference, and request ID before escalation.",
+    )
 
 
 def _audit_source(

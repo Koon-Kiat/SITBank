@@ -402,6 +402,20 @@ ADMIN_ROUTE_SECURITY_INVENTORY = {
         "expected_guard": "require_root_admin_session",
         "public_justification": "",
     },
+    "admin.manual_recovery_request_detail": {
+        "endpoint": "admin.manual_recovery_request_detail",
+        "rule": "/manual-recovery/requests/<int:request_id>",
+        "methods": {"GET"},
+        "access": "root_admin_session",
+        "role": "root_admin",
+        "classification": "manual_recovery",
+        "csrf": "not_applicable",
+        "rate_limit": "admin_session",
+        "step_up": "not_required",
+        "state_changing": False,
+        "expected_guard": "require_root_admin_session",
+        "public_justification": "",
+    },
     "admin.manual_recovery_transition": {
         "endpoint": "admin.manual_recovery_transition",
         "rule": "/manual-recovery/requests/<int:request_id>/transition",
@@ -598,7 +612,9 @@ def test_admin_route_inventory_has_complete_security_decisions():
             ), f"{endpoint} must delegate to invite-token validation"
 
         if entry["step_up"] == "required":
-            assert "totp_code" in source, f"{endpoint} must handle a TOTP step-up code"
+            assert (
+                "totp_code" in source or "_ADMIN_TOTP_CODE_FIELD" in source
+            ), f"{endpoint} must handle a TOTP step-up code"
         if entry["step_up"] == "invite_totp_setup":
             assert "totp_code" in source
             assert "workplace_verification_code" in source

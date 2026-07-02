@@ -148,11 +148,15 @@ def _read_secret_file(name: str, path_value: str) -> str:
     return value
 
 
+def _env_or_file_conflict_message(name: str) -> str:
+    return f"Configure either {name} or {name}_FILE, not both"
+
+
 def _required_env_or_file(name: str) -> str:
     direct_value = os.getenv(name)
     file_value = os.getenv(f"{name}_FILE")
     if direct_value and file_value:
-        raise RuntimeError(f"Configure either {name} or {name}_FILE, not both")
+        raise RuntimeError(_env_or_file_conflict_message(name))
     if file_value:
         value = _read_secret_file(name, file_value)
     else:
@@ -168,7 +172,7 @@ def _optional_env_or_file(name: str) -> str | None:
     direct_value = os.getenv(name)
     file_value = os.getenv(f"{name}_FILE")
     if direct_value and file_value:
-        raise RuntimeError(f"Configure either {name} or {name}_FILE, not both")
+        raise RuntimeError(_env_or_file_conflict_message(name))
     if file_value:
         value = _read_secret_file(name, file_value)
     else:
@@ -328,7 +332,7 @@ def _optional_url(name: str, *, schemes: set[str], require_password: bool) -> st
     direct_value = os.getenv(name)
     file_value = os.getenv(f"{name}_FILE")
     if direct_value and file_value:
-        raise RuntimeError(f"Configure either {name} or {name}_FILE, not both")
+        raise RuntimeError(_env_or_file_conflict_message(name))
     if file_value:
         value = _read_secret_file(name, file_value)
     else:
@@ -374,6 +378,24 @@ def _csv_env_set(name: str, *, default: str) -> frozenset[str]:
 
 def _csv_env_values(name: str, *, default: str) -> tuple[str, ...]:
     raw_value = os.getenv(name, default)
+    return _csv_values(name, raw_value)
+
+
+def _csv_env_or_file_values(name: str, *, default: str) -> tuple[str, ...]:
+    direct_value = os.getenv(name)
+    file_value = os.getenv(f"{name}_FILE")
+    if direct_value is not None and file_value:
+        raise RuntimeError(_env_or_file_conflict_message(name))
+    if file_value:
+        raw_value = _read_secret_file(name, file_value)
+    elif direct_value is not None:
+        raw_value = direct_value
+    else:
+        raw_value = default
+    return _csv_values(name, raw_value)
+
+
+def _csv_values(name: str, raw_value: str) -> tuple[str, ...]:
     values: list[str] = []
     for item in raw_value.split(","):
         normalized = item.strip().casefold()
@@ -482,7 +504,7 @@ def _root_admin_email_set(
     app_env: str,
     deployment_target: str,
 ) -> frozenset[str]:
-    emails = _csv_env_values(name, default=default)
+    emails = _csv_env_or_file_values(name, default=default)
     failures = root_admin_email_allowlist_failures(
         emails,
         allowed_domains=allowed_domains,

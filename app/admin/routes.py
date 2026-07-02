@@ -63,16 +63,59 @@ admin_bp = Blueprint("admin", __name__)
 _TOTP_PATTERN = r"^[0-9]{6}$"
 _MFA_CODE_ERROR = "MFA code must be exactly 6 digits"
 _JSON_MIME_TYPE = "application/json"
+_HTML_MIME_TYPE = "text/html"
+_ADMIN_LOGIN_FORM_ENDPOINT = "admin.login_form"
 _STAFF_ACCOUNTS_ENDPOINT = "admin.staff_accounts"
 _ADMIN_ACTION_REQUESTS_ENDPOINT = "admin.admin_action_requests"
 _ADMIN_ALERTS_ENDPOINT = "admin.alerts"
 _ADMIN_LOGIN_TEMPLATE = "admin/login.html"
 _ADMIN_MFA_VERIFY_TEMPLATE = "admin/mfa_verify.html"
+_ADMIN_RATE_LIMIT_HOURLY = "10 per hour"
+_ADMIN_RATE_LIMIT_STEP_UP = "5 per 5 minutes"
+_ADMIN_TOTP_CODE_FIELD = "totp_code"
 _ALERT_SEVERITY_RANK = {"low": 1, "medium": 2, "high": 3, "critical": 4}
 _ALERT_REDACTED_VALUE = "[redacted]"
 _ALERT_SENSITIVE_VALUE_RE = re.compile(
     r"\b(?:bearer|basic|token)\s+[a-z0-9._~+/=\-]+",
     re.IGNORECASE,
+)
+_MANUAL_RECOVERY_STATUS_PENDING = "pending"
+_MANUAL_RECOVERY_STATUS_UNDER_REVIEW = "under_review"
+_MANUAL_RECOVERY_STATUS_APPROVED = "approved"
+_MANUAL_RECOVERY_STATUS_DENIED = "denied"
+_MANUAL_RECOVERY_LINKED_CUSTOMER_FIELD = "linked_customer"
+_MANUAL_RECOVERY_STATUS_FIELD = "status"
+_MANUAL_RECOVERY_SORT_FIELD = "sort"
+_MANUAL_RECOVERY_DIRECTION_FIELD = "direction"
+_MANUAL_RECOVERY_CREATED_AT_FIELD = "created_at"
+_MANUAL_RECOVERY_ASC_DIRECTION = "asc"
+_MANUAL_RECOVERY_DESC_DIRECTION = "desc"
+_MANUAL_RECOVERY_REASON_FIELD = "reason"
+_MANUAL_RECOVERY_DETAIL_ENDPOINT = "admin.manual_recovery_request_detail"
+_MANUAL_RECOVERY_FILTER_LINKED = "linked"
+_MANUAL_RECOVERY_FILTER_ACTIVE = "active"
+_MANUAL_RECOVERY_FILTER_UNLINKED = "unlinked"
+_MANUAL_RECOVERY_FILTER_CLOSED = "closed"
+_MANUAL_RECOVERY_STATUSES = frozenset(
+    {
+        _MANUAL_RECOVERY_STATUS_PENDING,
+        _MANUAL_RECOVERY_STATUS_UNDER_REVIEW,
+        _MANUAL_RECOVERY_STATUS_APPROVED,
+        _MANUAL_RECOVERY_STATUS_DENIED,
+        "expired",
+        "cancelled",
+        "completed",
+    }
+)
+_MANUAL_RECOVERY_ACTIVE_STATUSES = frozenset(
+    {
+        _MANUAL_RECOVERY_STATUS_PENDING,
+        _MANUAL_RECOVERY_STATUS_UNDER_REVIEW,
+        _MANUAL_RECOVERY_STATUS_APPROVED,
+    }
+)
+_MANUAL_RECOVERY_SORT_OPTIONS = frozenset(
+    {_MANUAL_RECOVERY_CREATED_AT_FIELD, "updated_at", "expires_at", _MANUAL_RECOVERY_STATUS_FIELD}
 )
 
 
@@ -143,7 +186,13 @@ class StaffAccountActionSchema(Schema):
 class ManualRecoveryTransitionSchema(Schema):
     status = fields.Str(
         required=True,
-        validate=validate.OneOf(["under_review", "approved", "denied"]),
+        validate=validate.OneOf(
+            [
+                _MANUAL_RECOVERY_STATUS_UNDER_REVIEW,
+                _MANUAL_RECOVERY_STATUS_APPROVED,
+                _MANUAL_RECOVERY_STATUS_DENIED,
+            ]
+        ),
     )
     reason = fields.Str(required=True, validate=validate.Length(min=1, max=512))
     totp_code = fields.Str(
@@ -239,9 +288,9 @@ def _request_fields() -> set[str]:
 def _wants_json() -> bool:
     if request.is_json:
         return True
-    best = request.accept_mimetypes.best_match([_JSON_MIME_TYPE, "text/html"])
+    best = request.accept_mimetypes.best_match([_JSON_MIME_TYPE, _HTML_MIME_TYPE])
     return best == _JSON_MIME_TYPE and (
-        request.accept_mimetypes[_JSON_MIME_TYPE] >= request.accept_mimetypes["text/html"]
+        request.accept_mimetypes[_JSON_MIME_TYPE] >= request.accept_mimetypes[_HTML_MIME_TYPE]
     )
 
 
@@ -336,6 +385,170 @@ def _alert_recommended_action(alert: dict[str, Any]) -> str:
     if "login" in alert_type or "auth_backoff" in alert_type:
         return "Review related authentication audit events and source grouping."
     return "Review the safe audit detail and follow the incident response runbook."
+
+
+def _manual_recovery_context(
+    requests_payload: list[dict[str, Any]],
+    *,
+    selected_id: int | None = None,
+) -> dict[str, Any]:
+    filters = _manual_recovery_filters(request.args.to_dict(flat=True))
+    filtered_requests = _filter_manual_recovery_requests(requests_payload, filters)
+    filtered_requests = _sort_manual_recovery_requests(
+        filtered_requests,
+        filters[_MANUAL_RECOVERY_SORT_FIELD],
+        filters[_MANUAL_RECOVERY_DIRECTION_FIELD],
+    )
+    selected_request = _selected_manual_recovery_request(requests_payload, selected_id)
+    if selected_request is not None:
+        selected_request = dict(selected_request)
+        selected_request["transition_options"] = _manual_recovery_transition_options(selected_request)
+        selected_request["can_complete"] = (
+            selected_request.get(_MANUAL_RECOVERY_STATUS_FIELD) == _MANUAL_RECOVERY_STATUS_APPROVED
+        )
+    return {
+        "requests": filtered_requests,
+        "selected_request": selected_request,
+        "filters": filters,
+        "summary": _manual_recovery_summary(requests_payload),
+        "status_options": sorted(_MANUAL_RECOVERY_STATUSES),
+        "sort_options": sorted(_MANUAL_RECOVERY_SORT_OPTIONS),
+    }
+
+
+def _manual_recovery_filters(args: dict[str, Any]) -> dict[str, str]:
+    return {
+        _MANUAL_RECOVERY_STATUS_FIELD: _manual_recovery_choice(
+            args.get(_MANUAL_RECOVERY_STATUS_FIELD),
+            _MANUAL_RECOVERY_STATUSES,
+        ),
+        _MANUAL_RECOVERY_FILTER_LINKED: _manual_recovery_choice(
+            args.get(_MANUAL_RECOVERY_FILTER_LINKED),
+            {"", _MANUAL_RECOVERY_FILTER_LINKED, _MANUAL_RECOVERY_FILTER_UNLINKED},
+        ),
+        _MANUAL_RECOVERY_FILTER_ACTIVE: _manual_recovery_choice(
+            args.get(_MANUAL_RECOVERY_FILTER_ACTIVE),
+            {"", _MANUAL_RECOVERY_FILTER_ACTIVE, _MANUAL_RECOVERY_FILTER_CLOSED},
+        ),
+        _MANUAL_RECOVERY_SORT_FIELD: _manual_recovery_choice(
+            args.get(_MANUAL_RECOVERY_SORT_FIELD),
+            _MANUAL_RECOVERY_SORT_OPTIONS,
+        )
+        or _MANUAL_RECOVERY_CREATED_AT_FIELD,
+        _MANUAL_RECOVERY_DIRECTION_FIELD: _manual_recovery_choice(
+            args.get(_MANUAL_RECOVERY_DIRECTION_FIELD),
+            {_MANUAL_RECOVERY_ASC_DIRECTION, _MANUAL_RECOVERY_DESC_DIRECTION},
+        )
+        or _MANUAL_RECOVERY_DESC_DIRECTION,
+    }
+
+
+def _manual_recovery_choice(value: Any, allowed: frozenset[str] | set[str]) -> str:
+    text = str(value or "").strip().casefold()
+    return text if text in allowed else ""
+
+
+def _filter_manual_recovery_requests(
+    requests_payload: list[dict[str, Any]],
+    filters: dict[str, str],
+) -> list[dict[str, Any]]:
+    rows = list(requests_payload)
+    if filters[_MANUAL_RECOVERY_STATUS_FIELD]:
+        rows = [
+            item
+            for item in rows
+            if item.get(_MANUAL_RECOVERY_STATUS_FIELD) == filters[_MANUAL_RECOVERY_STATUS_FIELD]
+        ]
+    if filters[_MANUAL_RECOVERY_FILTER_LINKED] == _MANUAL_RECOVERY_FILTER_LINKED:
+        rows = [item for item in rows if item.get(_MANUAL_RECOVERY_LINKED_CUSTOMER_FIELD) is True]
+    elif filters[_MANUAL_RECOVERY_FILTER_LINKED] == _MANUAL_RECOVERY_FILTER_UNLINKED:
+        rows = [item for item in rows if item.get(_MANUAL_RECOVERY_LINKED_CUSTOMER_FIELD) is False]
+    if filters[_MANUAL_RECOVERY_FILTER_ACTIVE] == _MANUAL_RECOVERY_FILTER_ACTIVE:
+        rows = [item for item in rows if item.get(_MANUAL_RECOVERY_FILTER_ACTIVE) is True]
+    elif filters[_MANUAL_RECOVERY_FILTER_ACTIVE] == _MANUAL_RECOVERY_FILTER_CLOSED:
+        rows = [item for item in rows if item.get(_MANUAL_RECOVERY_FILTER_ACTIVE) is False]
+    return rows
+
+
+def _sort_manual_recovery_requests(
+    requests_payload: list[dict[str, Any]],
+    sort: str,
+    direction: str,
+) -> list[dict[str, Any]]:
+    reverse = direction != _MANUAL_RECOVERY_ASC_DIRECTION
+    return sorted(
+        requests_payload,
+        key=lambda item: str(item.get(sort) or ""),
+        reverse=reverse,
+    )
+
+
+def _selected_manual_recovery_request(
+    requests_payload: list[dict[str, Any]],
+    selected_id: int | None,
+) -> dict[str, Any] | None:
+    if selected_id is None:
+        return None
+    for item in requests_payload:
+        if int(item.get("id") or 0) == int(selected_id):
+            return item
+    raise AuthError("Manual recovery request not found", 404)
+
+
+def _manual_recovery_transition_options(item: dict[str, Any]) -> list[str]:
+    status = str(item.get(_MANUAL_RECOVERY_STATUS_FIELD) or "")
+    if status == _MANUAL_RECOVERY_STATUS_PENDING:
+        return [_MANUAL_RECOVERY_STATUS_UNDER_REVIEW, _MANUAL_RECOVERY_STATUS_DENIED]
+    if status == _MANUAL_RECOVERY_STATUS_UNDER_REVIEW:
+        return [_MANUAL_RECOVERY_STATUS_APPROVED, _MANUAL_RECOVERY_STATUS_DENIED]
+    return []
+
+
+def _manual_recovery_summary(requests_payload: list[dict[str, Any]]) -> dict[str, int]:
+    summary = {
+        "total": len(requests_payload),
+        _MANUAL_RECOVERY_FILTER_ACTIVE: 0,
+        _MANUAL_RECOVERY_STATUS_PENDING: 0,
+        _MANUAL_RECOVERY_STATUS_UNDER_REVIEW: 0,
+        "approved_ready": 0,
+        _MANUAL_RECOVERY_FILTER_CLOSED: 0,
+        _MANUAL_RECOVERY_FILTER_LINKED: 0,
+        _MANUAL_RECOVERY_FILTER_UNLINKED: 0,
+    }
+    for item in requests_payload:
+        status = str(item.get(_MANUAL_RECOVERY_STATUS_FIELD) or "")
+        if status in _MANUAL_RECOVERY_ACTIVE_STATUSES:
+            summary[_MANUAL_RECOVERY_FILTER_ACTIVE] += 1
+        else:
+            summary[_MANUAL_RECOVERY_FILTER_CLOSED] += 1
+        if status == _MANUAL_RECOVERY_STATUS_PENDING:
+            summary[_MANUAL_RECOVERY_STATUS_PENDING] += 1
+        if status == _MANUAL_RECOVERY_STATUS_UNDER_REVIEW:
+            summary[_MANUAL_RECOVERY_STATUS_UNDER_REVIEW] += 1
+        if status == _MANUAL_RECOVERY_STATUS_APPROVED:
+            summary["approved_ready"] += 1
+        if item.get(_MANUAL_RECOVERY_LINKED_CUSTOMER_FIELD) is True:
+            summary[_MANUAL_RECOVERY_FILTER_LINKED] += 1
+        else:
+            summary[_MANUAL_RECOVERY_FILTER_UNLINKED] += 1
+    return summary
+
+
+def _manual_recovery_failure_message(error: AuthError) -> str:
+    if error.status_code == 404:
+        return "Manual recovery request was not found."
+    if error.status_code == 409:
+        return "Manual recovery action was blocked by the current request state."
+    if error.status_code == 403:
+        return "Manual recovery action was not authorized."
+    return "Manual recovery action could not be completed."
+
+
+def _manual_recovery_success_message(result: dict[str, Any]) -> str:
+    message = str(result.get("message") or "").strip()
+    if message == "Admin action approval required":
+        return "Manual recovery action was queued for separate root-admin approval."
+    return "Manual recovery request was updated."
 
 
 def _safe_alert_int(value: Any) -> int:
@@ -583,21 +796,21 @@ def mfa_verify_form():
         if _wants_json():
             return jsonify({"error": "No pending MFA challenge"}), 401
         flash("Please log in first.", "warning")
-        return redirect(url_for("admin.login_form")), 303
+        return redirect(url_for(_ADMIN_LOGIN_FORM_ENDPOINT)), 303
     return _render_mfa_form()[0]
 
 
 @admin_bp.post("/mfa/verify")
-@limiter.limit("5 per 5 minutes", key_func=get_remote_address)
-@limiter.limit("5 per 5 minutes", key_func=request_principal)
+@limiter.limit(_ADMIN_RATE_LIMIT_STEP_UP, key_func=get_remote_address)
+@limiter.limit(_ADMIN_RATE_LIMIT_STEP_UP, key_func=request_principal)
 def mfa_verify():
     if _wants_json():
         data = _payload(AdminTotpSchema())
-        return jsonify(complete_admin_mfa_login(data["totp_code"]))
+        return jsonify(complete_admin_mfa_login(data[_ADMIN_TOTP_CODE_FIELD]))
 
     if not session.get("pending_mfa_user_id"):
         flash("Please log in first.", "warning")
-        return redirect(url_for("admin.login_form")), 303
+        return redirect(url_for(_ADMIN_LOGIN_FORM_ENDPOINT)), 303
 
     form = AdminTotpForm()
     if not form.validate_on_submit():
@@ -616,6 +829,12 @@ def mfa_verify():
 @admin_bp.post("/logout")
 def logout():
     logout_admin_session()
+    wants_json = request.is_json or (
+        request.accept_mimetypes[_JSON_MIME_TYPE] > request.accept_mimetypes[_HTML_MIME_TYPE]
+    )
+    if not wants_json:
+        flash("Logged out.", "success")
+        return redirect(url_for(_ADMIN_LOGIN_FORM_ENDPOINT)), 303
     return jsonify({"message": "Logged out"})
 
 
@@ -635,8 +854,8 @@ def invites():
 
 
 @admin_bp.post("/invites")
-@limiter.limit("10 per hour", key_func=get_remote_address)
-@limiter.limit("5 per 5 minutes", key_func=request_principal)
+@limiter.limit(_ADMIN_RATE_LIMIT_HOURLY, key_func=get_remote_address)
+@limiter.limit(_ADMIN_RATE_LIMIT_STEP_UP, key_func=request_principal)
 def invite_create():
     actor = require_root_admin_session()
     data = _payload(StaffInviteCreateSchema())
@@ -644,7 +863,7 @@ def invite_create():
         actor,
         workplace_email=data["workplace_email"],
         role=data["role"],
-        totp_code=data["totp_code"],
+        totp_code=data[_ADMIN_TOTP_CODE_FIELD],
     )
     if _wants_json():
         return jsonify(result), 201
@@ -653,11 +872,11 @@ def invite_create():
 
 
 @admin_bp.post("/invites/<int:invite_id>/revoke")
-@limiter.limit("10 per hour", key_func=get_remote_address)
+@limiter.limit(_ADMIN_RATE_LIMIT_HOURLY, key_func=get_remote_address)
 def invite_revoke(invite_id: int):
     actor = require_root_admin_session()
     data = _payload(StaffInviteRevokeSchema())
-    result = revoke_staff_invite(actor, invite_id, data["totp_code"])
+    result = revoke_staff_invite(actor, invite_id, data[_ADMIN_TOTP_CODE_FIELD])
     if _wants_json():
         return jsonify(result)
     flash("Staff/admin invite revoked.", "success")
@@ -680,12 +899,17 @@ def staff_accounts():
 
 
 @admin_bp.post("/staff/<int:user_id>/deactivate")
-@limiter.limit("10 per hour", key_func=get_remote_address)
-@limiter.limit("5 per 5 minutes", key_func=request_principal)
+@limiter.limit(_ADMIN_RATE_LIMIT_HOURLY, key_func=get_remote_address)
+@limiter.limit(_ADMIN_RATE_LIMIT_STEP_UP, key_func=request_principal)
 def staff_account_deactivate(user_id: int):
     actor = require_root_admin_session()
     data = _payload(StaffAccountActionSchema())
-    result = transition_staff_account_as_root_admin(actor, user_id, "deactivate", data["totp_code"])
+    result = transition_staff_account_as_root_admin(
+        actor,
+        user_id,
+        "deactivate",
+        data[_ADMIN_TOTP_CODE_FIELD],
+    )
     if _wants_json():
         return jsonify(result)
     flash("Staff/admin deactivation request created for approval.", "success")
@@ -693,12 +917,17 @@ def staff_account_deactivate(user_id: int):
 
 
 @admin_bp.post("/staff/<int:user_id>/reactivate")
-@limiter.limit("10 per hour", key_func=get_remote_address)
-@limiter.limit("5 per 5 minutes", key_func=request_principal)
+@limiter.limit(_ADMIN_RATE_LIMIT_HOURLY, key_func=get_remote_address)
+@limiter.limit(_ADMIN_RATE_LIMIT_STEP_UP, key_func=request_principal)
 def staff_account_reactivate(user_id: int):
     actor = require_root_admin_session()
     data = _payload(StaffAccountActionSchema())
-    result = transition_staff_account_as_root_admin(actor, user_id, "reactivate", data["totp_code"])
+    result = transition_staff_account_as_root_admin(
+        actor,
+        user_id,
+        "reactivate",
+        data[_ADMIN_TOTP_CODE_FIELD],
+    )
     if _wants_json():
         return jsonify(result)
     flash("Staff/admin reactivation request created for approval.", "success")
@@ -706,12 +935,17 @@ def staff_account_reactivate(user_id: int):
 
 
 @admin_bp.post("/staff/<int:user_id>/reset-activation")
-@limiter.limit("10 per hour", key_func=get_remote_address)
-@limiter.limit("5 per 5 minutes", key_func=request_principal)
+@limiter.limit(_ADMIN_RATE_LIMIT_HOURLY, key_func=get_remote_address)
+@limiter.limit(_ADMIN_RATE_LIMIT_STEP_UP, key_func=request_principal)
 def staff_account_reset_activation(user_id: int):
     actor = require_root_admin_session()
     data = _payload(StaffAccountActionSchema())
-    result = transition_staff_account_as_root_admin(actor, user_id, "reset_activation", data["totp_code"])
+    result = transition_staff_account_as_root_admin(
+        actor,
+        user_id,
+        "reset_activation",
+        data[_ADMIN_TOTP_CODE_FIELD],
+    )
     if _wants_json():
         return jsonify(result)
     flash("Staff/admin activation reset request created for approval.", "success")
@@ -752,12 +986,12 @@ def admin_action_request_detail(request_id: int):
 
 
 @admin_bp.post("/admin-action-requests/<int:request_id>/approve")
-@limiter.limit("10 per hour", key_func=get_remote_address)
-@limiter.limit("5 per 5 minutes", key_func=request_principal)
+@limiter.limit(_ADMIN_RATE_LIMIT_HOURLY, key_func=get_remote_address)
+@limiter.limit(_ADMIN_RATE_LIMIT_STEP_UP, key_func=request_principal)
 def admin_action_request_approve(request_id: int):
     actor = require_root_admin_session()
     data = _payload(AdminActionDecisionSchema())
-    result = approve_admin_action_request_as_root_admin(actor, request_id, data["totp_code"])
+    result = approve_admin_action_request_as_root_admin(actor, request_id, data[_ADMIN_TOTP_CODE_FIELD])
     if _wants_json():
         return jsonify(result)
     flash("Admin action request approved and executed.", "success")
@@ -765,12 +999,12 @@ def admin_action_request_approve(request_id: int):
 
 
 @admin_bp.post("/admin-action-requests/<int:request_id>/reject")
-@limiter.limit("10 per hour", key_func=get_remote_address)
-@limiter.limit("5 per 5 minutes", key_func=request_principal)
+@limiter.limit(_ADMIN_RATE_LIMIT_HOURLY, key_func=get_remote_address)
+@limiter.limit(_ADMIN_RATE_LIMIT_STEP_UP, key_func=request_principal)
 def admin_action_request_reject(request_id: int):
     actor = require_root_admin_session()
     data = _payload(AdminActionDecisionSchema())
-    result = reject_admin_action_request_as_root_admin(actor, request_id, data["totp_code"])
+    result = reject_admin_action_request_as_root_admin(actor, request_id, data[_ADMIN_TOTP_CODE_FIELD])
     if _wants_json():
         return jsonify(result)
     flash("Admin action request rejected.", "success")
@@ -778,12 +1012,12 @@ def admin_action_request_reject(request_id: int):
 
 
 @admin_bp.post("/admin-action-requests/<int:request_id>/cancel")
-@limiter.limit("10 per hour", key_func=get_remote_address)
-@limiter.limit("5 per 5 minutes", key_func=request_principal)
+@limiter.limit(_ADMIN_RATE_LIMIT_HOURLY, key_func=get_remote_address)
+@limiter.limit(_ADMIN_RATE_LIMIT_STEP_UP, key_func=request_principal)
 def admin_action_request_cancel(request_id: int):
     actor = require_root_admin_session()
     data = _payload(AdminActionDecisionSchema())
-    result = cancel_admin_action_request_as_root_admin(actor, request_id, data["totp_code"])
+    result = cancel_admin_action_request_as_root_admin(actor, request_id, data[_ADMIN_TOTP_CODE_FIELD])
     if _wants_json():
         return jsonify(result)
     flash("Admin action request cancelled.", "success")
@@ -845,14 +1079,14 @@ def alerts():
 
 
 @admin_bp.post("/alerts/deliver")
-@limiter.limit("10 per hour", key_func=get_remote_address)
-@limiter.limit("5 per 5 minutes", key_func=request_principal)
+@limiter.limit(_ADMIN_RATE_LIMIT_HOURLY, key_func=get_remote_address)
+@limiter.limit(_ADMIN_RATE_LIMIT_STEP_UP, key_func=request_principal)
 def alert_delivery():
     actor = require_admin_session()
     wants_json = _wants_json()
     if wants_json:
         data = _payload(AdminTotpSchema())
-        totp_code = data["totp_code"]
+        totp_code = data[_ADMIN_TOTP_CODE_FIELD]
     else:
         form = AdminTotpForm()
         if not form.validate_on_submit():
@@ -897,40 +1131,102 @@ def alert_delivery():
 @admin_bp.get("/manual-recovery/requests")
 def manual_recovery_requests():
     actor = require_root_admin_session()
-    return jsonify({"requests": manual_recovery_requests_for_admin(actor)})
+    requests_payload = manual_recovery_requests_for_admin(actor)
+    if _wants_json():
+        return jsonify({"requests": requests_payload})
+    return render_template(
+        "admin/manual_recovery_requests.html",
+        **_manual_recovery_context(requests_payload),
+        actor=actor,
+        user=public_admin_user(actor),
+        navigation=admin_navigation_for(actor),
+    )
+
+
+@admin_bp.get("/manual-recovery/requests/<int:request_id>")
+def manual_recovery_request_detail(request_id: int):
+    actor = require_root_admin_session()
+    requests_payload = manual_recovery_requests_for_admin(actor)
+    context = _manual_recovery_context(requests_payload, selected_id=request_id)
+    if _wants_json():
+        return jsonify({"request": context["selected_request"]})
+    return render_template(
+        "admin/manual_recovery_requests.html",
+        **context,
+        actor=actor,
+        user=public_admin_user(actor),
+        navigation=admin_navigation_for(actor),
+    )
 
 
 @admin_bp.post("/manual-recovery/requests/<int:request_id>/transition")
-@limiter.limit("10 per hour", key_func=get_remote_address)
-@limiter.limit("5 per 5 minutes", key_func=request_principal)
+@limiter.limit(_ADMIN_RATE_LIMIT_HOURLY, key_func=get_remote_address)
+@limiter.limit(_ADMIN_RATE_LIMIT_STEP_UP, key_func=request_principal)
 def manual_recovery_transition(request_id: int):
     actor = require_root_admin_session()
-    data = _payload(ManualRecoveryTransitionSchema())
-    return jsonify(
-        transition_manual_recovery_request_as_admin(
+    wants_json = _wants_json()
+    if wants_json:
+        data = _payload(ManualRecoveryTransitionSchema())
+        return jsonify(
+            transition_manual_recovery_request_as_admin(
+                actor,
+                request_id,
+                data[_MANUAL_RECOVERY_STATUS_FIELD],
+                data[_MANUAL_RECOVERY_REASON_FIELD],
+                data[_ADMIN_TOTP_CODE_FIELD],
+            )
+        )
+    try:
+        data = _payload(ManualRecoveryTransitionSchema())
+        result = transition_manual_recovery_request_as_admin(
             actor,
             request_id,
-            data["status"],
-            data["reason"],
-            data["totp_code"],
+            data[_MANUAL_RECOVERY_STATUS_FIELD],
+            data[_MANUAL_RECOVERY_REASON_FIELD],
+            data[_ADMIN_TOTP_CODE_FIELD],
         )
-    )
+    except ValidationError:
+        flash("Enter a valid status, reason, and authenticator code.", "error")
+        return redirect(url_for(_MANUAL_RECOVERY_DETAIL_ENDPOINT, request_id=request_id)), 303
+    except AuthError as exc:
+        flash(_manual_recovery_failure_message(exc), "error")
+        return redirect(url_for(_MANUAL_RECOVERY_DETAIL_ENDPOINT, request_id=request_id)), 303
+    flash(_manual_recovery_success_message(result), "success")
+    return redirect(url_for(_MANUAL_RECOVERY_DETAIL_ENDPOINT, request_id=request_id)), 303
 
 
 @admin_bp.post("/manual-recovery/requests/<int:request_id>/complete")
-@limiter.limit("10 per hour", key_func=get_remote_address)
-@limiter.limit("5 per 5 minutes", key_func=request_principal)
+@limiter.limit(_ADMIN_RATE_LIMIT_HOURLY, key_func=get_remote_address)
+@limiter.limit(_ADMIN_RATE_LIMIT_STEP_UP, key_func=request_principal)
 def manual_recovery_complete(request_id: int):
     actor = require_root_admin_session()
-    data = _payload(ManualRecoveryCompleteSchema())
-    return jsonify(
-        complete_manual_recovery_request_as_admin(
+    wants_json = _wants_json()
+    if wants_json:
+        data = _payload(ManualRecoveryCompleteSchema())
+        return jsonify(
+            complete_manual_recovery_request_as_admin(
+                actor,
+                request_id,
+                data[_MANUAL_RECOVERY_REASON_FIELD],
+                data[_ADMIN_TOTP_CODE_FIELD],
+            )
+        )
+    try:
+        data = _payload(ManualRecoveryCompleteSchema())
+        result = complete_manual_recovery_request_as_admin(
             actor,
             request_id,
-            data["reason"],
-            data["totp_code"],
+            data[_MANUAL_RECOVERY_REASON_FIELD],
+            data[_ADMIN_TOTP_CODE_FIELD],
         )
-    )
+    except ValidationError:
+        flash("Enter a reason and current authenticator code.", "error")
+        return redirect(url_for(_MANUAL_RECOVERY_DETAIL_ENDPOINT, request_id=request_id)), 303
+    except AuthError as exc:
+        flash(_manual_recovery_failure_message(exc), "error")
+        return redirect(url_for(_MANUAL_RECOVERY_DETAIL_ENDPOINT, request_id=request_id)), 303
+    flash(_manual_recovery_success_message(result), "success")
+    return redirect(url_for(_MANUAL_RECOVERY_DETAIL_ENDPOINT, request_id=request_id)), 303
 
 
 @admin_bp.get("/invites/accept/<token>")
@@ -965,7 +1261,7 @@ def invite_accept_verify(token: str):
     return jsonify(
         verify_invite_acceptance(
             token,
-            totp_code=data["totp_code"],
+            totp_code=data[_ADMIN_TOTP_CODE_FIELD],
             workplace_verification_code=data["workplace_verification_code"],
             request_fields=_request_fields(),
         )
