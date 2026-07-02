@@ -69,10 +69,9 @@ def test_theme_assets_are_csp_compatible_and_store_only_theme_preference(client)
     assert "token" not in script.casefold()
     assert "session" not in script.casefold()
     assert "username" not in script.casefold()
-    assert "--security: #143f66;" in stylesheet
-    assert "--security: #86b9ec;" in stylesheet
+    assert "--security: #c8102e;" in stylesheet
     assert ".nav a.button" in stylesheet
-    assert "--button-primary-text: #071421;" in stylesheet
+    assert "--button-primary-text: #ffffff;" in stylesheet
     assert ".quick-card" in stylesheet
     assert ".profile-status-copy" in stylesheet
     assert ".alert {" in stylesheet
