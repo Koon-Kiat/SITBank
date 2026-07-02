@@ -80,8 +80,8 @@ def test_theme_assets_are_csp_compatible_and_store_only_theme_preference(client)
     assert ".mfa-step.is-complete .step-number" in stylesheet
     assert "background: var(--success);" not in stylesheet
     assert "#0f766e" not in logo
-    assert 'fill="#143f66"' in logo
-    assert 'fill="#28628f"' in logo
+    assert 'fill="#c8102e"' in logo
+    assert 'fill="#ffffff"' in logo
 
 def test_authenticated_layout_contains_working_profile_menu_destinations(client):
     register(client)
