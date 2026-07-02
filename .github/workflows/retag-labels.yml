@@ -45,6 +45,7 @@ concurrency:
 
 jobs:
   retag:
+    name: Retag issue and pull request labels
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

@@ -14,7 +14,7 @@ two checks would otherwise collide.
 - Require the branch to be up to date and require these stable PR checks:
   - `CI, publish, and deploy / Workflow security`
   - `CI, publish, and deploy / Test and security checks`
-  - `CI, publish, and deploy / Dependency review (PR only)`
+  - `CI, publish, and deploy / Dependency review`
   - `ShellCheck / Repository shell scripts`
   - `Hadolint / Repository Dockerfiles`
   - `Semgrep / High-severity SAST`
@@ -43,3 +43,8 @@ least quarterly.
 Roll out a renamed required check by first allowing the new workflow to complete
 successfully, updating the GitHub ruleset to the exact new check name, and only
 then removing the old name. This avoids an unmergeable branch-protection gap.
+This repository change does not update GitHub settings automatically. Review
+the active ruleset after merge for any former raw contexts such as
+`deploy-staging`, `verify-staging-tls`, `sonarqube`, or `sonarqube-comment`.
+Post-merge deployment and reporting-only jobs should remain non-required unless
+a separate reviewed policy change explicitly promotes them.

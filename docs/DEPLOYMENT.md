@@ -176,6 +176,11 @@ Production deployment runs from the trusted `main` workflow only after release
 verification, staging deployment, and the post-deployment staging TLS scan all
 succeed. A successful production deployment is followed by public production
 TLS verification and then the required protected private-admin tailnet gate.
+The visible Actions checks for those gates are `Release verification`,
+`Deploy staging`, `Verify staging TLS`, `Deploy production`,
+`Verify production TLS`, and `Verify private admin tailnet`. Their stable
+kebab-case job IDs remain in workflow `needs:` expressions and are not display
+labels.
 Production deployment is environment-approved automatic after successful
 staging gates. GitHub Environment approval pauses that automatic `main` flow;
 there is no direct manual production dispatch target.
@@ -194,7 +199,7 @@ appropriate:
 
 | Variable | Safe behavior when unset | Workflow consumer |
 | --- | --- | --- |
-| `ENABLE_GITHUB_CODE_SECURITY` | Defaults to `false`; private-repository dependency review runs only when the value is exactly `true` | `dependency-review` in `.github/workflows/ci-deploy.yml` |
+| `ENABLE_GITHUB_CODE_SECURITY` | Defaults to `false`; private-repository dependency review runs only when the value is exactly `true` | `Dependency review` (`dependency-review` job ID) in `.github/workflows/ci-deploy.yml` |
 | `STAGING_PUBLIC_HOST` | Defaults to the reviewed staging hostname `staging-sitbank.pp.ua` | Staging deployment URL/configuration and post-deployment staging TLS verification |
 | `PROD_PUBLIC_HOST` | Defaults to the reviewed production hostname `sitbank.pp.ua` | Production deployment URL/configuration and post-deployment production TLS verification |
 | `STAGING_EC2_HOST` | Required private Tailscale MagicDNS name or `100.x.y.z` address | Staging OpenSSH deployment target |
@@ -221,9 +226,11 @@ only `tag:github-ci-staging-deploy`; the production client may advertise only
 `tag:github-ci-prod-deploy`. Regenerate `STAGING_EC2_KNOWN_HOSTS` and
 `PROD_EC2_KNOWN_HOSTS` for their private Tailscale targets and verify the SSH
 fingerprints out of band. Keep the existing OpenSSH private keys and strict
-host-key checking. Do not enable Tailscale SSH or Funnel. After both private
-deployments are proven, remove public SSH exposure from the EC2 firewall and
-security group.
+host-key checking. Both the deployment and trusted-main bootstrap workflows
+join with the matching environment OAuth client before any SSH or SCP to the
+private host and always log out afterward. Do not enable Tailscale SSH or
+Funnel. After both private deployment and bootstrap paths are proven, remove
+public SSH exposure from the EC2 firewall and security group.
 
 ### Tailscale Deployment Rollout
 
@@ -248,12 +255,20 @@ paths pass. Committed files and tests do not prove live Tailscale, GitHub
 Environment, security-group, or host-firewall state; retain sanitized operator
 evidence separately.
 
+Once `STAGING_EC2_HOST` and `PROD_EC2_HOST` use a Tailscale IP or MagicDNS
+name, both bootstrap and deployment require the private tailnet path; public
+SSH is not a workflow fallback. Retain an approved host-recovery path such as
+AWS console or SSM access. A temporary security-group exception is break-glass
+only: authorize it explicitly, restrict its source and lifetime, record the
+change, and remove it immediately after recovery.
+
 ### Protected Private-Admin Verification Environment
 
 The manual `.github/workflows/tailscale-private-admin-verify.yml` workflow
 uses a GitHub-hosted runner that temporarily joins the tailnet. The
 `.github/workflows/ci-deploy.yml` production workflow implements the same
-check directly after `deploy-production` and `verify-production-tls` succeed.
+visible `Verify private admin tailnet` check directly after the internal
+`deploy-production` and `verify-production-tls` jobs succeed.
 The direct job is necessary because the previous reusable-workflow call did
 not receive the protected environment secrets. Create a GitHub
 Environment named `admin-tailscale`, require manual approval by trusted

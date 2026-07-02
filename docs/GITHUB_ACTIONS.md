@@ -5,11 +5,50 @@
 The normal release path is:
 
 ```text
-main push -> publish -> release-verify -> staging -> production
-  -> production public TLS -> protected private admin tailnet gate
+main push -> Publish container image -> Release verification -> Deploy staging
+  -> Verify staging TLS -> Deploy production -> Verify production TLS
+  -> Verify private admin tailnet
 ```
 
 The tested, scanned, signed, and deployed digest must be identical. Deployments never use `latest`.
+
+## Workflow And Check Display Names
+
+Every workflow job and visible step has an explicit human-readable display
+name. Internal job IDs remain stable kebab-case keys because `needs:`
+dependencies, expressions, and repository tests refer to them. The Actions UI
+and status checks use the display names:
+
+| Internal job ID | Visible job/check name |
+| --- | --- |
+| `resolve-source` | `Resolve source` |
+| `workflow-security` | `Workflow security` |
+| `dependency-review` | `Dependency review` |
+| `test` | `Test and security checks` |
+| `sonarqube` | `SonarQube analysis` |
+| `sonarqube-comment` | `SonarQube PR comment` |
+| `image-test` | `Container image test` |
+| `deployment-preflight` | `Deployment preflight` |
+| `publish` | `Publish container image` |
+| `release-verify` | `Release verification` |
+| `deploy-staging` | `Deploy staging` |
+| `verify-staging-tls` | `Verify staging TLS` |
+| `deploy-production` | `Deploy production` |
+| `verify-production-tls` | `Verify production TLS` |
+| `verify-private-admin-tailnet` | `Verify private admin tailnet` |
+
+Bootstrap, Cloudflare verification, label automation, reusable SonarQube, and
+manual private-tailnet jobs follow the same explicit naming policy.
+`tests/test_workflow_display_names.py` enforces the policy across every
+`.github/workflows/*.yml` file while allowing the intentional TLS matrix name
+`Scan ${{ matrix.target.label }}`.
+
+Changing a job display name can change its required status-check context even
+when the internal ID is unchanged. Repository files do not update GitHub
+rulesets. After merging a display-name change, let the new check complete,
+update any affected required context in GitHub settings, and only then remove
+the old context, following
+`docs/security/governance/github-branch-protection-evidence.md`.
 
 Production never skips disabled, skipped, or failed staging. It runs only after
 release verification and staging deployment both succeed on `main`, with
@@ -33,7 +72,8 @@ dependency review, dependency audit, lockfile checks, tests, scanners, and
 manual maintainer review; no `pull_request_target`, write token, or secret is
 introduced for that exception.
 
-The `dependency-review` job is PR-only. Public PRs targeting `main` are
+The `Dependency review` check (internal job ID `dependency-review`) is PR-only.
+Public PRs targeting `main` are
 eligible without `ENABLE_GITHUB_CODE_SECURITY`. A private repository must set
 that variable to `true`; pushes, schedules, and manual deployment runs
 intentionally skip the comparison-only job. If it is unexpectedly skipped,
@@ -52,8 +92,9 @@ Manual pre-merge staging:
 
 Feature-branch workflow and deployment scripts are never executed with environment secrets. The only accepted migration mode for existing EC2 deployment files is `adopt-existing`, and it must still pass wrapper hash validation before app deployment.
 
-The SSH deployment jobs join Tailscale before any `ssh` or `scp` command.
-Staging uses `tag:github-ci-staging-deploy` and production uses
+The SSH deployment jobs and trusted-main EC2 bootstrap jobs join Tailscale
+before any `ssh` or `scp` command and always log out afterward. Staging uses
+`tag:github-ci-staging-deploy` and production uses
 `tag:github-ci-prod-deploy`; each protected environment stores its own
 `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET`. OpenSSH still requires the
 environment-specific deploy key, pinned known-hosts entry, and
@@ -87,10 +128,13 @@ prefixed renderer input for the target environment and writes
 
 `STAGING_PUBLIC_HOST` and `PROD_PUBLIC_HOST` are public HTTPS verification
 names. `STAGING_EC2_HOST` and `PROD_EC2_HOST` are private Tailscale MagicDNS
-names or `100.x.y.z` addresses used only for deployment SSH. Regenerate the
-matching `*_EC2_KNOWN_HOSTS` value for that private target and verify its
-fingerprint out of band before saving it. After private deployment succeeds,
-remove public port `22` exposure from the EC2 security group and host firewall.
+names or `100.x.y.z` addresses used only for deployment and bootstrap OpenSSH.
+Regenerate the matching `*_EC2_KNOWN_HOSTS` value for that private target and
+verify its fingerprint out of band before saving it. After both private paths
+succeed, remove public port `22` exposure from the EC2 security group and host
+firewall. Public SSH is not a workflow fallback; retain approved AWS
+console/SSM access or a tightly scoped, time-limited security-group break-glass
+procedure for host recovery.
 
 For production only, also set:
 
@@ -173,12 +217,12 @@ deployment.
 
 `.github/workflows/tailscale-private-admin-verify.yml` is manual-runnable.
 The trusted production workflow implements the same protected check directly
-as its required final gate after both `deploy-production` and
-`verify-production-tls` succeed. A direct environment-bound job is required
-because GitHub did not expose `admin-tailscale` environment secrets to the
-previous reusable-workflow call, even though the manual environment job could
-use them. Pull requests, forks, Dependabot, staging, and the public TLS
-workflow do not join the tailnet.
+as its required `Verify private admin tailnet` gate after the internal
+`deploy-production` and `verify-production-tls` jobs succeed. A direct
+environment-bound job is required because GitHub did not expose
+`admin-tailscale` environment secrets to the previous reusable-workflow call,
+even though the manual environment job could use them. Pull requests, forks,
+Dependabot, staging, and the public TLS workflow do not join the tailnet.
 
 Its `admin-tailscale` environment must require trusted maintainer approval and
 permit only `main`. The production caller explicitly uses `auth_mode: oauth`;
@@ -312,14 +356,15 @@ appears in logs, summaries, or artifacts.
 
 ## SonarQube Cloud
 
-The `test` job in `.github/workflows/ci-deploy.yml` runs the complete pytest
-suite once with `pytest-cov`, writes `coverage.xml`, and uploads that file as a
-short-lived artifact. After the test job succeeds on pull requests, pushes to
-`main`, and manual runs, the downstream `sonarqube` job calls the reusable
-`.github/workflows/sonarqube.yml`. That job checks out the same immutable
-source commit, downloads `coverage.xml`, and invokes only the SHA-pinned
-official SonarQube scanner; it does not install dependencies, rerun pytest, or
-hold any write permission.
+The `Test and security checks` job (internal ID `test`) in
+`.github/workflows/ci-deploy.yml` runs the complete pytest suite once with
+`pytest-cov`, writes `coverage.xml`, and uploads that file as a short-lived
+artifact. After it succeeds on pull requests, pushes to `main`, and manual
+runs, the downstream `SonarQube analysis` job (internal ID `sonarqube`) calls
+the reusable `.github/workflows/sonarqube.yml`. That job checks out the same
+immutable source commit, downloads `coverage.xml`, and invokes only the
+SHA-pinned official SonarQube scanner; it does not install dependencies, rerun
+pytest, or hold any write permission.
 
 The reusable scanner job has only `contents: read`. It requires the GitHub
 Actions secret `SONAR_TOKEN`; it does not use production environments,
@@ -329,7 +374,8 @@ SonarQube job. Coverage retrieval uses the SHA-pinned
 
 The initial SonarQube quality gate is reporting-only and is not a release or
 deployment dependency. After a successful trusted internal pull-request scan,
-the separate `sonarqube-comment` job uses SHA-pinned, Node.js 24
+the separate `SonarQube PR comment` job (internal ID `sonarqube-comment`) uses
+SHA-pinned, Node.js 24
 `actions/github-script` to create or update one informational summary with
 workflow and dashboard links. The comment job has only `contents: read` and
 `pull-requests: write`; the scanner never receives that write capability. A

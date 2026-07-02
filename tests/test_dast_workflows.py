@@ -34,7 +34,10 @@ def test_pr_dast_smoke_is_local_automatic_and_time_bounded():
         'zap_baseline_target="http://${app_container}:5000/"  '
         "# NOSONAR - isolated ephemeral Docker network"
     ) in helper
-    assert '-t "${zap_baseline_target}" # NOSONAR' not in helper
+    assert (
+        '-t "${zap_baseline_target}"  '
+        "# NOSONAR - isolated ephemeral Docker network"
+    ) in helper
     for required_runtime_setting in (
         "--env PASSWORD_RESET_ENABLED=true",
         "--env PASSWORD_RESET_EMAIL_BACKEND=smtp",
