@@ -298,3 +298,45 @@ Dependabot is configured in `.github/dependabot.yml`:
 Dependabot does not auto-merge updates in the repository configuration
 inspected. Updates must still pass the lockfile policy, tests, audits, scans,
 and review workflow.
+
+## Supply-Chain Evidence
+
+The source SBOM workflow at `.github/workflows/sbom.yml` uses pinned Syft
+1.46.0 to create `sitbank-source-sbom-cyclonedx.json`, validates it as JSON,
+and retains the `sitbank-source-sbom` CycloneDX JSON artifact for 30 days. It
+runs without secrets on pull requests, pushes to `main`, and manual dispatch.
+It is separate from Buildx image attestation and is not vulnerability scanning.
+The existing Buildx `sbom: true` attestation remains required; an explicit
+image SBOM artifact remains deferred until the exact digest-verified release
+image is safely available to the evidence job.
+
+The informational `.github/workflows/scorecard.yml` runs on `main`, weekly, and
+manually. It uploads `openssf-scorecard-results` for 30 days, does not publish
+results, and is not a required pull-request check. Record the numeric baseline
+and key findings after the first merged run rather than inventing provider
+evidence in repository documentation.
+
+The latest reviewed Dependency Review run on 2026-07-02 reported no high-or-
+higher vulnerabilities or denied packages and showed an upstream OpenSSF
+Scorecard score of `6.9` for the newly pinned
+`tailscale/github-action`. That `6.9` is the dependency repository's score, not
+SITBank's repository baseline. The public Scorecard API had no SITBank result
+before rollout; the first successful merged `scorecard.yml` run remains the
+authoritative SITBank baseline.
+
+| Scorecard check | Classification | Repository evidence or follow-up |
+| --- | --- | --- |
+| `Token-Permissions` | Fixed and test-covered | Every workflow defaults to no permissions or read-only access; the narrow job-level write allowlist is asserted by `tests/test_scorecard_workflow.py` |
+| `Branch-Protection` | `provider-state-only` | Expected `main` rules are documented; retain sanitized ruleset evidence because repository files cannot prove live enforcement |
+| `SAST` | Implemented; a missing result is a false positive | CodeQL, Semgrep, and SonarQube Cloud remain enabled and test-covered |
+| `Packaging` | Implemented with a project-specific release model | The release unit is a digest-pinned GHCR image, not a traditional GitHub release asset |
+| `Signed-Releases` | Implemented; a release-asset-only warning is a false positive | Cosign/OIDC signs the GHCR digest and deployment verifies certificate identity |
+| `CII-Best-Practices` | Accepted backlog | A badge or registration alone would not strengthen a runtime control; track only if maintainers adopt the program |
+| `Fuzzing` | Accepted backlog | Existing property/negative tests remain; add a reviewed fuzzing issue when stable targets and triage ownership exist |
+
+Warnings about the pinned `tailscale/github-action` dependency can describe
+that upstream repository rather than SITBank. Classify them as upstream
+evidence, not proof that SITBank lacks its own token, SAST, packaging, or
+signing controls. `CII-Best-Practices` and `Fuzzing` remain accepted backlog
+items. Do not chase a perfect score by broadening tokens, mutating
+provider state, weakening deployment gates, or duplicating scanners.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -191,3 +192,21 @@ def test_annotation_and_normalization_helpers_are_safe():
     assert policy._has_deployment_impact("Staging deployment is required.")
     assert policy._has_meaningful_content("- N/A") is False
     assert policy._normalize_line("  -  Mixed   Spacing ") == "mixed spacing"
+
+
+def test_agent_pr_and_commit_guidance_matches_repository_policy():
+    agents = Path("AGENTS.md").read_text(encoding="utf-8")
+    rules = Path("docs/codex/github-pr-rules.md").read_text(encoding="utf-8")
+
+    for required in (
+        ".github/workflows/pr-title-policy.yml",
+        "docs/CONTRIBUTION_MESSAGE_POLICY.md",
+        "12 to 72 characters",
+        "Do not add `[codex]`",
+        "Avoid category or Conventional Commit prefixes",
+        "descriptive commit subject plus a commit body",
+        "why the change is needed",
+        "trust boundaries affected",
+        "validation, deployment, migration, or provider impact",
+    ):
+        assert required in f"{agents}\n{rules}"

@@ -1969,7 +1969,9 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert private_admin["permissions"] == {"contents": "read"}
     assert private_admin["environment"] == {"name": "admin-tailscale"}
     assert private_admin["env"] == {
-        "TAILSCALE_PRIVATE_ADMIN_HOST": "admin-sitbank.tailca101b.ts.net",
+        "TAILSCALE_PRIVATE_ADMIN_HOST": (
+            "${{ vars.TAILSCALE_PRIVATE_ADMIN_HOST }}"
+        ),
     }
     assert "secrets" not in private_admin
     assert private_admin["runs-on"] == "ubuntu-24.04"
@@ -3222,7 +3224,10 @@ def test_nginx_default_server_is_shared_for_same_host_production_and_staging():
     assert combined.count("listen [::]:443 ssl http2 default_server;") == 1
     assert "listen 80 default_server;" not in production_nginx
     assert "listen 80 default_server;" not in staging_nginx
-    assert "server_name sitbank.pp.ua www.sitbank.pp.ua;" in combined
+    assert (
+        "server_name sitbank.pp.ua www.sitbank.pp.ua 18.188.152.24;"
+        in combined
+    )
     assert "server_name www.sitbank.pp.ua;" in combined
     assert "server_name sitbank.pp.ua;" in combined
     assert "server_name staging-sitbank.pp.ua;" in combined
@@ -3495,7 +3500,7 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     assert "return 444;" in default_nginx
     assert "listen 80;" in nginx
     assert "return 301 https://sitbank.pp.ua$request_uri;" in nginx
-    assert "server_name sitbank.pp.ua www.sitbank.pp.ua;" in nginx
+    assert "server_name sitbank.pp.ua www.sitbank.pp.ua 18.188.152.24;" in nginx
     assert "server_name www.sitbank.pp.ua;" in nginx
     assert "listen 80 default_server;" not in nginx
     assert "listen 443 ssl http2 default_server;" not in nginx
@@ -3505,6 +3510,11 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     assert "www.sitbank.pp.ua" in nginx
     assert "ssl_certificate /etc/letsencrypt/live/sitbank.pp.ua/fullchain.pem;" in nginx
     assert "ssl_certificate_key /etc/letsencrypt/live/sitbank.pp.ua/privkey.pem;" in nginx
+    assert nginx.count(
+        "ssl_client_certificate "
+        "/etc/nginx/sitbank-production-cloudflare-origin-pull-ca.pem;"
+    ) == 2
+    assert nginx.count("ssl_verify_client on;") == 2
     assert "sitbank" + ".duckdns.org" not in nginx
     assert "admin.sitbank.pp.ua" not in nginx
     assert "admin-sitbank.pp.ua" not in nginx
@@ -3517,7 +3527,7 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     _assert_nginx_owns_duplicate_edge_security_headers(
         nginx,
         hsts_add_header=(
-            'add_header Strict-Transport-Security "max-age=31536000; '
+            'add_header Strict-Transport-Security "max-age=15552000; '
             'includeSubDomains" always;'
         ),
         server_name="sitbank.pp.ua",
@@ -3565,6 +3575,18 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     assert "ports" not in admin
     assert admin["command"][admin["command"].index("--bind") + 1] == "127.0.0.1:5002"
     assert admin["command"][-1] == "admin_wsgi:app"
+    assert (
+        'PRODUCTION_CLOUDFLARE_ORIGIN_PULL_CA_FILE="/etc/nginx/'
+        'sitbank-production-cloudflare-origin-pull-ca.pem"'
+    ) in bootstrap
+    assert (
+        'PRODUCTION_CLOUDFLARE_ORIGIN_PULL_CA_ALLOWLIST="/etc/sitbank/'
+        'cloudflare-origin-pull-ca-allowlist.json"'
+    ) in bootstrap
+    assert (
+        "Production Cloudflare Authenticated Origin Pull CA validation failed."
+        in bootstrap
+    )
 
     for zone in (
         "limit_req_zone $binary_remote_addr zone=sitbank_prod_app:10m rate=20r/s;",
@@ -3713,47 +3735,6 @@ def test_production_edge_runbook_documents_network_waf_and_verification_steps():
         assert required in security
 
 
-def test_ppua_dns01_and_duckdns_retirement_runbook_documents_safe_migration():
-    runbook_path = Path("docs/runbooks/ppua-dns01-duckdns-retirement.md")
-    runbook = runbook_path.read_text(encoding="utf-8")
-    retired_production = "sitbank" + ".duckdns.org"
-    retired_staging = "staging-sitbank" + ".duckdns.org"
-    retired_admin = "admin-sitbank" + ".duckdns.org"
-
-    assert runbook_path.exists()
-    for required in (
-        "pp.ua DNS-01 And DuckDNS Retirement Runbook",
-        "https://sitbank.pp.ua",
-        "https://www.sitbank.pp.ua",
-        "https://staging-sitbank.pp.ua",
-        "https://admin-sitbank.tailca101b.ts.net/",
-        retired_production,
-        retired_staging,
-        retired_admin,
-        "python3-certbot-dns-cloudflare",
-        "/root/.secrets/certbot/cloudflare-production.ini",
-        "/root/.secrets/certbot/cloudflare-staging.ini",
-        "Zone Read",
-        "DNS Write",
-        "--dns-cloudflare",
-        "--cert-name sitbank.pp.ua",
-        "--cert-name staging-sitbank.pp.ua",
-        "server_name sitbank.pp.ua www.sitbank.pp.ua;",
-        "server_name sitbank.pp.ua;",
-        "return 301 https://sitbank.pp.ua$request_uri;",
-        "sudo /usr/local/sbin/verify-certbot-host-state --renewal-dry-run production",
-        "sudo /usr/local/sbin/verify-certbot-host-state --renewal-dry-run staging",
-        "sudo certbot renew --dry-run --cert-name sitbank.pp.ua",
-        "sudo certbot renew --dry-run --cert-name staging-sitbank.pp.ua",
-        "curl.exe -I https://www.sitbank.pp.ua",
-        "sudo certbot delete --cert-name " + retired_production,
-        "sudo certbot delete --cert-name " + retired_staging,
-        "sudo certbot delete --cert-name " + retired_admin,
-        "Rollback",
-    ):
-        assert required in runbook
-
-
 def test_retired_duckdns_domains_are_not_active_configuration():
     retired_domains = {
         "sitbank" + ".duckdns.org",
@@ -3761,7 +3742,6 @@ def test_retired_duckdns_domains_are_not_active_configuration():
         "admin-sitbank" + ".duckdns.org",
     }
     allowed_retirement_docs = {
-        Path("docs/runbooks/ppua-dns01-duckdns-retirement.md"),
         Path("docs/DEPLOYMENT.md"),
         Path("docs/security/architecture/admin-and-staging-zero-trust-access.md"),
         Path("tests/test_security_docs_issue_links.py"),
@@ -3824,7 +3804,7 @@ def test_retired_duckdns_domains_are_not_active_configuration():
     assert "staging-sitbank.pp.ua" in active_text
     assert (
         private_admin_env["TAILSCALE_PRIVATE_ADMIN_HOST"]
-        == "admin-sitbank.tailca101b.ts.net"
+        == "${{ vars.TAILSCALE_PRIVATE_ADMIN_HOST }}"
     )
     for domain in retired_domains:
         assert domain not in active_text

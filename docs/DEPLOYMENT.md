@@ -893,10 +893,27 @@ curl -fsSI https://sitbank.pp.ua/ | grep -i '^strict-transport-security:'
 curl -fsSI https://www.sitbank.pp.ua/ | grep -i '^location: https://sitbank.pp.ua'
 ```
 
-The full DNS-01 and retired DuckDNS cleanup runbook is
-`docs/runbooks/ppua-dns01-duckdns-retirement.md`. Use it to remove old DuckDNS
-Certbot lineages only after the `pp.ua` certificates, Nginx config, renewal
-dry-runs, and live checks pass.
+Production Nginx and the reviewed Cloudflare edge both use six-month HSTS:
+`max-age=15552000; includeSubDomains`, with preload disabled. Production
+bootstrap requires the separately installed
+`/etc/nginx/sitbank-production-cloudflare-origin-pull-ca.pem`, verifies it
+against `/etc/sitbank/cloudflare-origin-pull-ca-allowlist.json`, and fails
+closed before `nginx -t` or reload. This production path is separate from the
+staging CA path.
+
+After bootstrap, verify raw HTTP origin-IP access redirects to
+`https://sitbank.pp.ua`, while raw HTTPS IP and direct-origin HTTPS with
+`sitbank.pp.ua` SNI do not return application content without Cloudflare's
+client certificate. Keep Cloudflare DNS proxied and `Full (strict)`, and
+restrict AWS `443/tcp` to Cloudflare edge ranges where practical. Provider and
+security-group state require sanitized operator evidence; repository files do
+not prove them. See
+`docs/security/architecture/production-cloudflare-origin-boundary.md`.
+
+The `pp.ua` DNS-01 migration and DuckDNS retirement are complete. Ongoing
+certificate renewal, origin-boundary, and live verification instructions stay
+in this deployment guide and `docs/OPERATIONS.md`; do not restore retired
+DuckDNS names as active Nginx, Certbot, workflow, or TLS-scan targets.
 
 The private Grafana/Loki deployment is separate from the banking application
 runtime. Use `ops/deploy/bootstrap-observability-ec2` and

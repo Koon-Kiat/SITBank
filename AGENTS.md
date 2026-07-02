@@ -58,6 +58,8 @@ Important defaults:
 - Do not create branches, commit, push, or open pull requests unless the user explicitly asks for implementation work that includes those actions.
 - When the user explicitly asks for the full PR workflow, create a branch, commit the intended changes, push the branch, and open a pull request when tool access is available.
 - Use the repository PR template when opening a pull request.
+- Before creating or renaming a pull request, validate the proposed title against `.github/workflows/pr-title-policy.yml` and `docs/CONTRIBUTION_MESSAGE_POLICY.md`. Prefer a specific, capitalized, sentence-style title without `[codex]`, tool attribution, or category prefixes such as `Security:` and `Fix:`.
+- For non-trivial, multi-issue, security-sensitive, or deployment-sensitive changes, use a descriptive commit subject plus a commit body that explains why the change is needed, the main boundaries affected, and any important validation or deployment impact.
 - Never push directly to protected branches.
 - Never auto-merge a pull request.
 - Review the diff before committing and avoid staging unrelated files, generated artifacts, secrets, provider exports, local environment files, or caches.

@@ -91,7 +91,32 @@ Before committing:
 - Confirm no secrets or sensitive generated files are staged.
 - Do not commit local virtual environments, caches, coverage output, generated SBOMs, logs, database dumps, or build artifacts unless the issue explicitly requires versioning them.
 
-Use a clear sentence-style commit message.
+Use a clear sentence-style commit subject that independently explains the
+change. The enforced subject policy is documented in
+`docs/CONTRIBUTION_MESSAGE_POLICY.md`: start with a capital letter, use 12 to
+72 characters, omit a trailing full stop, and avoid generic wording.
+
+For a trivial, single-purpose change, a subject alone may be sufficient. For a
+non-trivial, multi-issue, security-sensitive, deployment-sensitive, or
+operational change, add a commit body. The body should explain:
+
+- why the change is needed;
+- the main behavior or trust boundaries affected;
+- important security or compatibility decisions; and
+- validation, deployment, migration, or provider impact when relevant.
+
+Keep the subject concise and put detail in the body instead of compressing the
+entire rationale into one line. For example:
+
+```text
+Harden private admin and origin controls
+
+Use the protected environment as the private-host source of truth and update
+the host verifier for the reviewed Tailscale status schema.
+
+Require production origin-pull trust before Nginx reload while preserving the
+raw-IP HTTP redirect and staging isolation.
+```
 
 Examples:
 
@@ -115,6 +140,18 @@ If push fails because of permissions, branch protection, authentication, or remo
 
 When opening a PR:
 
+- Read `.github/workflows/pr-title-policy.yml` and
+  `docs/CONTRIBUTION_MESSAGE_POLICY.md` before choosing the title.
+- Validate the title before creating the PR: it must start with a capital
+  letter, contain 12 to 72 characters, have no leading/trailing whitespace,
+  not end with a full stop, and not use generic or vague wording.
+- Prefer a descriptive, unprefixed sentence-style title such as
+  `Harden supply chain and private origin controls`.
+- Do not add `[codex]`, `Codex:`, or another agent/tool attribution.
+- Avoid category or Conventional Commit prefixes such as `Security:`, `Fix:`,
+  `Feat:`, `Docs:`, and `Chore:` by default, even though the repository
+  validator accepts capitalized forms. Use one only when the user explicitly
+  requests it or the prefix materially improves classification.
 - Use the repository PR template if `.github/pull_request_template.md`, `.github/PULL_REQUEST_TEMPLATE.md`, or `.github/PULL_REQUEST_TEMPLATE/*.md` exists.
 - Preserve the template headings and fill them honestly.
 - Link the related issue.

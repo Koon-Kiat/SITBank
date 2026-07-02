@@ -13,6 +13,7 @@ import pytest
 
 SCRIPT_PATH = Path("ops/deploy/verify-tailscale-admin-access")
 PRIVATE_HOST = "admin-sitbank.tailca101b.ts.net"
+TAILSCALE_FIXTURE_DIR = Path("tests/fixtures/tailscale")
 
 
 def _load_verifier():
@@ -79,7 +80,12 @@ class FakeRunner:
         if command == ("tailscale", "status", "--json"):
             return verifier.CommandResult(
                 0,
-                json.dumps({"BackendState": "Running"}),
+                json.dumps(
+                    {
+                        "BackendState": "Running",
+                        "Self": {"DNSName": f"{PRIVATE_HOST}."},
+                    }
+                ),
             )
         if command == ("tailscale", "funnel", "status", "--json"):
             return verifier.CommandResult(0, self.funnel_status)
@@ -277,14 +283,33 @@ def test_listener_check_fails_closed_on_non_loopback_binding(
 
 
 def test_funnel_check_fails_closed_when_any_endpoint_is_enabled():
-    runner = FakeRunner(
-        funnel_status=json.dumps(
-            {"AllowFunnel": {f"{PRIVATE_HOST}:443": True}}
-        )
-    )
+    runner = FakeRunner(funnel_status=(
+        TAILSCALE_FIXTURE_DIR / "funnel-status-enabled-1.98.json"
+    ).read_text(encoding="utf-8"))
 
     with pytest.raises(verifier.VerificationError, match="Funnel is enabled"):
         verifier.verify_funnel_disabled(runner)
+
+
+def test_tailscale_1_98_serve_and_disabled_funnel_status_are_accepted():
+    serve_status = (
+        TAILSCALE_FIXTURE_DIR / "serve-status-1.98.json"
+    ).read_text(encoding="utf-8")
+    funnel_status = (
+        TAILSCALE_FIXTURE_DIR / "funnel-status-disabled-1.98.json"
+    ).read_text(encoding="utf-8")
+    runner = FakeRunner(
+        serve_status=serve_status,
+        funnel_status=funnel_status,
+    )
+
+    verifier.verify_funnel_disabled(runner)
+    verifier.verify_serve_mapping(
+        runner,
+        "127.0.0.1",
+        5002,
+        PRIVATE_HOST,
+    )
 
 
 def test_funnel_check_fails_closed_on_unknown_nonempty_status_schema():
@@ -390,6 +415,10 @@ def test_settings_reject_non_loopback_and_command_fragment_inputs():
         verifier.validate_settings("127.0.0.999", 5002, PRIVATE_HOST)
     with pytest.raises(verifier.VerificationError, match="1 through 65535"):
         verifier.validate_settings("127.0.0.1", 0, PRIVATE_HOST)
+    with pytest.raises(verifier.VerificationError, match="IP literal"):
+        verifier.validate_settings("127.0.0.1", 5002, "127.0.0.1")
+    with pytest.raises(verifier.VerificationError, match="Tailscale DNS"):
+        verifier.validate_settings("127.0.0.1", 5002, "sitbank.pp.ua")
 
 
 def test_individual_checks_fail_closed_when_evidence_is_missing():
@@ -450,6 +479,7 @@ def test_individual_checks_fail_closed_when_evidence_is_missing():
 
 
 def test_argument_parsing_and_main_paths_are_covered(monkeypatch, capsys):
+    monkeypatch.setenv("PRIVATE_ADMIN_HOST", PRIVATE_HOST)
     arguments = verifier.parse_args(["--mode", "serve"])
     assert arguments.mode == "serve"
     assert arguments.admin_loopback_host == "127.0.0.1"
@@ -467,6 +497,25 @@ def test_argument_parsing_and_main_paths_are_covered(monkeypatch, capsys):
     error_output = capsys.readouterr().err
     assert "ERROR: first failure" in error_output
     assert "ERROR: second failure" in error_output
+
+
+def test_private_hostname_is_discovered_from_local_tailscale_state(monkeypatch):
+    monkeypatch.delenv("PRIVATE_ADMIN_HOST", raising=False)
+    arguments = verifier.parse_args(["--mode", "serve"])
+
+    assert arguments.private_admin_host is None
+    assert verifier.discover_private_admin_host(FakeRunner()) == PRIVATE_HOST
+
+    with pytest.raises(
+        verifier.VerificationError,
+        match="cannot provide the private admin hostname",
+    ):
+        verifier.discover_private_admin_host(
+            lambda arguments: verifier.CommandResult(
+                0,
+                json.dumps({"BackendState": "Running"}),
+            )
+        )
 
 
 def test_host_verification_reports_every_failed_required_check():
