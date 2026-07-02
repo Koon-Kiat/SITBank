@@ -910,6 +910,20 @@ form {
   gap: var(--space-2);
 }
 
+.form-group[hidden] {
+  display: none;
+}
+
+input[data-limit-custom]::-webkit-outer-spin-button,
+input[data-limit-custom]::-webkit-inner-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+}
+
+input[data-limit-custom] {
+  -moz-appearance: textfield;
+}
+
 .password-input-wrap {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1010,6 +1024,15 @@ select:focus {
   display: grid;
   gap: var(--space-3);
   margin-bottom: var(--space-5);
+}
+
+.alerts .alert {
+  transition: opacity 300ms ease, transform 300ms ease;
+}
+
+.alerts .alert.is-dismissing {
+  opacity: 0;
+  transform: translateY(-4px);
 }
 
 .alert.alert-inline {
@@ -1804,6 +1827,33 @@ th {
 .card-eye-btn .icon {
   width: 20px;
   height: 20px;
+}
+
+.text-eye-btn {
+  background: none;
+  border: none;
+  padding: var(--space-1);
+  cursor: pointer;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  border-radius: 4px;
+  transition: color 0.15s;
+  flex-shrink: 0;
+}
+
+.text-eye-btn:hover {
+  color: var(--text);
+}
+
+.text-eye-btn .icon {
+  width: 16px;
+  height: 16px;
+}
+
+.form-divider-tight {
+  margin-bottom: var(--space-2);
 }
 
 .bank-account-frozen-notice {

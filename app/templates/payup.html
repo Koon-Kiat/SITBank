@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+
+{% block title %}PayUp | SITBank{% endblock %}
+
+{% block content %}
+<section class="security-page profile-page">
+  <div class="dashboard-header">
+    <div class="page-heading">
+      <p class="eyebrow">PayUp</p>
+      <h1>Send money by phone number</h1>
+      <p class="muted">Enter the recipient's phone number. We'll look up the registered name for you.</p>
+    </div>
+    <div class="button-row">
+      <a class="button secondary" href="{{ url_for('web.dashboard') }}">Cancel</a>
+    </div>
+  </div>
+
+  <div class="profile-grid">
+    <article class="profile-panel profile-summary">
+      <div class="profile-panel-title">
+        <p class="eyebrow">How it works</p>
+      </div>
+      <p class="muted">Enter the recipient's 8-digit Singapore mobile number. If it belongs to a SITBank customer, you'll be taken straight to the amount screen with their name shown for confirmation.</p>
+    </article>
+
+    <article class="profile-panel profile-card">
+      <div class="profile-panel-title">
+        <p class="eyebrow">Pay to</p>
+        <h2>Recipient phone number</h2>
+      </div>
+      <form method="post" action="{{ url_for('banking.payup_submit') }}" novalidate>
+        {{ form.hidden_tag() }}
+        <div class="form-group">
+          <label for="{{ form.phone_number.id }}">Phone number</label>
+          {{ form.phone_number(autocomplete="off", maxlength="8", placeholder="8-digit phone number", inputmode="numeric") }}
+          {% for error in form.phone_number.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+        </div>
+        <button class="button full" type="submit">Continue</button>
+      </form>
+    </article>
+  </div>
+</section>
+{% endblock %}

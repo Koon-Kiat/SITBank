@@ -526,8 +526,16 @@ def test_session_timeout_ui_uses_explicit_extension_and_csp_safe_toggling(client
 def test_security_warning_alerts_do_not_auto_dismiss():
     script = Path("app/static/js/account.js").read_text(encoding="utf-8")
 
-    # All alerts are persistent — no category is auto-dismissed
-    assert "alert-success" not in script
-    assert "alert-info" not in script
+    # Warnings and errors carry security-relevant context (failed logins,
+    # account freezes, MFA changes) and must stay until dismissed manually.
     assert "alert-warning" not in script
     assert "alert-error" not in script
+
+
+def test_success_and_info_alerts_auto_dismiss():
+    script = Path("app/static/js/account.js").read_text(encoding="utf-8")
+
+    # Low-stakes confirmations are allowed to auto-dismiss.
+    assert "alert-success" in script
+    assert "alert-info" in script
+    assert "3000" in script

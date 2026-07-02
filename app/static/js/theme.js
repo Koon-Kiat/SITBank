@@ -80,14 +80,13 @@
       items[(index + items.length) % items.length].focus();
     }
 
-    if (!toggle) {
-      return;
+    if (toggle) {
+      toggle.addEventListener("click", function () {
+        const nextTheme = root.dataset.theme === "dark" ? "light" : "dark";
+        globalThis.localStorage.setItem(storageKey, nextTheme);
+        applyTheme(nextTheme);
+      });
     }
-    toggle.addEventListener("click", function () {
-      const nextTheme = root.dataset.theme === "dark" ? "light" : "dark";
-      globalThis.localStorage.setItem(storageKey, nextTheme);
-      applyTheme(nextTheme);
-    });
 
     if (navToggle && navMenu) {
       navToggle.addEventListener("click", function () {
