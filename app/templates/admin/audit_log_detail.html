@@ -8,13 +8,35 @@
     <h1>Audit Event {{ event.id }}</h1>
     <a class="button secondary" href="{{ url_for('admin.audit_logs') }}">Back</a>
   </div>
+  <section class="panel" aria-labelledby="audit-investigation-summary-heading">
+    <div class="section-header">
+      <h2 id="audit-investigation-summary-heading">Investigation Summary</h2>
+    </div>
+    <dl class="admin-metadata-grid">
+      <div><dt>Activity</dt><dd>{{ event.activity }}</dd></div>
+      <div><dt>Description</dt><dd>{{ event.event_description }}</dd></div>
+      <div><dt>When</dt><dd><time datetime="{{ event.created_at_utc }}">{{ event.created_at_display }}</time></dd></div>
+      <div><dt>Actor</dt><dd>{{ event.actor_summary }}</dd></div>
+      <div><dt>Actor role</dt><dd>{{ event.actor_role }}</dd></div>
+      <div><dt>Source</dt><dd>{{ event.source_kind }}: {{ event.source_display }}</dd></div>
+      <div><dt>Target reference</dt><dd>{{ event.target_ref or "none" }}</dd></div>
+      <div><dt>Outcome</dt><dd>{{ event.outcome }}</dd></div>
+      <div><dt>Severity</dt><dd>{{ event.severity or "none" }}</dd></div>
+      <div><dt>Request ID</dt><dd>{{ event.correlation_id }}</dd></div>
+      <div><dt>Hash chain</dt><dd>{% if event.hash_chain_status.linked %}Event hash present{% else %}Event hash missing{% endif %}</dd></div>
+      <div><dt>Investigation hint</dt><dd>{{ event.investigation_hint }}</dd></div>
+    </dl>
+  </section>
   <section class="panel">
+    <div class="section-header">
+      <h2>Technical Fields</h2>
+    </div>
     <dl class="admin-metadata-grid">
       <div><dt>Time</dt><dd><time datetime="{{ event.created_at_utc }}">{{ event.created_at_display }}</time></dd></div>
       <div><dt>Event</dt><dd>{{ event.event_type }}</dd></div>
       <div><dt>Severity</dt><dd>{{ event.severity or "none" }}</dd></div>
       <div><dt>Outcome</dt><dd>{{ event.outcome }}</dd></div>
-      <div><dt>Actor</dt><dd>{{ event.actor_user_id or "system" }}</dd></div>
+      <div><dt>Actor</dt><dd>{{ event.actor_summary }}</dd></div>
       <div><dt>Actor role</dt><dd>{{ event.actor_role }}</dd></div>
       <div><dt>Source kind</dt><dd>{{ event.source_kind }}</dd></div>
       <div><dt>Source</dt><dd>{{ event.source_display }}</dd></div>
@@ -22,6 +44,16 @@
       <div><dt>Request ID</dt><dd>{{ event.correlation_id }}</dd></div>
       <div><dt>Hash chain</dt><dd>{% if event.hash_chain_status.linked %}Event hash present{% else %}Event hash missing{% endif %}</dd></div>
       <div><dt>Hash algorithm</dt><dd>{{ event.hash_chain_status.algorithm }}</dd></div>
+    </dl>
+  </section>
+  <section class="panel" aria-labelledby="audit-field-legend-heading">
+    <div class="section-header">
+      <h2 id="audit-field-legend-heading">Field Legend</h2>
+    </div>
+    <dl class="admin-metadata-grid">
+      {% for label, description in event.field_legend.items() %}
+      <div><dt>{{ label }}</dt><dd>{{ description }}</dd></div>
+      {% endfor %}
     </dl>
   </section>
   <section class="panel">

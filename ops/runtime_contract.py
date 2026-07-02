@@ -8,6 +8,7 @@ CUSTOMER_APP_SECRET_INPUTS = {
     "DATABASE_URL": "database_url",
     "MFA_KEK_KEYS_JSON": "mfa_kek_keys_json",
     "PASSWORD_PEPPER_B64": "password_pepper_b64",
+    "ROOT_ADMIN_EMAILS": "root_admin_emails",
     "SECURITY_AUDIT_HMAC_KEY": "security_audit_hmac_key",
     "SECURITY_ALERT_WEBHOOK_URL": "security_alert_webhook_url",
     "SMTP_USERNAME": "smtp_username",
@@ -23,6 +24,7 @@ ADMIN_APP_SECRET_INPUTS = {
     "ADMIN_DATABASE_URL": "admin_database_url",
     "MFA_KEK_KEYS_JSON": "mfa_kek_keys_json",
     "ADMIN_PASSWORD_PEPPER_B64": "admin_password_pepper_b64",
+    "ROOT_ADMIN_EMAILS": "root_admin_emails",
 }
 
 APP_SECRET_INPUTS = CUSTOMER_APP_SECRET_INPUTS
@@ -118,7 +120,6 @@ NON_SECRET_RUNTIME_ENVIRONMENT = tuple(
             "PASSWORD_RESET_EMAIL_FROM",
             "MFA_KEK_ACTIVE_ID",
             "MFA_ISSUER_NAME",
-            "ROOT_ADMIN_EMAILS",
             "SESSION_HMAC_ACTIVE_KEY_ID",
             "SMTP_HOST",
             *NON_SECRET_DEFAULTS,
