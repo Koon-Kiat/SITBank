@@ -11,6 +11,7 @@ from typing import Any, Iterable, Sequence
 
 MAX_AUTO_LABELS = 6
 ISSUE_DEFAULT_LABEL = "needs-triage"
+CLOUDFLARE_POLICY_PATH = "ops/cloudflare/**"
 
 LABEL_DEFINITIONS: dict[str, tuple[str, str]] = {
     "needs-triage": ("New issue awaiting maintainer triage.", "fbca04"),
@@ -182,7 +183,7 @@ RULES: tuple[LabelRule, ...] = (
             "network boundary",
             "security header",
         ),
-        ("ops/nginx/**", "ops/cloudflare/**", "ops/tailscale/**"),
+        ("ops/nginx/**", CLOUDFLARE_POLICY_PATH, "ops/tailscale/**"),
         ("cloudflare", "tailscale", "network-security"),
     ),
     LabelRule(
@@ -196,13 +197,13 @@ RULES: tuple[LabelRule, ...] = (
             "private admin boundary",
             "staging access boundary",
         ),
-        ("ops/cloudflare/**", "ops/tailscale/**", "docs/security/**/*zero-trust*"),
+        (CLOUDFLARE_POLICY_PATH, "ops/tailscale/**", "docs/security/**/*zero-trust*"),
         ("zero-trust", "cloudflare", "tailscale"),
     ),
     LabelRule(
         "staging",
         ("staging environment", "staging hostname", "staging deployment", "staging access", "staging control"),
-        ("compose.staging.yml", "ops/cloudflare/**", "ops/**/*staging*", "tests/**/*staging*.py"),
+        ("compose.staging.yml", CLOUDFLARE_POLICY_PATH, "ops/**/*staging*", "tests/**/*staging*.py"),
         ("staging",),
     ),
     LabelRule(

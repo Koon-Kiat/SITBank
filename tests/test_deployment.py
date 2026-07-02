@@ -1983,6 +1983,91 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         "${{ secrets.TS_OAUTH_CLIENT_ID }}"
     )
     assert private_join["with"]["oauth-secret"] == "${{ secrets.TS_OAUTH_SECRET }}"
+    assert private_join["with"]["tags"] == "tag:github-ci-admin-verify"
+    deploy_tailnet_tags = {private_join["with"]["tags"]}
+    for job_name, environment_name, join_name, source_tag, host_variable in (
+        (
+            "deploy-staging",
+            "staging",
+            "Join the staging deploy tailnet",
+            "tag:github-ci-staging-deploy",
+            "STAGING_EC2_HOST",
+        ),
+        (
+            "deploy-production",
+            "production",
+            "Join the production deploy tailnet",
+            "tag:github-ci-prod-deploy",
+            "PROD_EC2_HOST",
+        ),
+    ):
+        job = workflow["jobs"][job_name]
+        steps = job["steps"]
+        step_names = [step["name"] for step in steps]
+        join_index = step_names.index(join_name)
+        remote_command_indexes = [
+            index
+            for index, step in enumerate(steps)
+            if re.search(r"\b(?:ssh|scp)\b", step.get("run", ""))
+        ]
+        assert remote_command_indexes
+        assert join_index < min(remote_command_indexes)
+        assert job["environment"]["name"] == environment_name
+        join = steps[join_index]
+        assert join["uses"] == (
+            "tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8"
+        )
+        assert join["with"] == {
+            "oauth-client-id": "${{ secrets.TS_OAUTH_CLIENT_ID }}",
+            "oauth-secret": "${{ secrets.TS_OAUTH_SECRET }}",
+            "tags": source_tag,
+            "ping": f"${{{{ vars.{host_variable} }}}}",
+        }
+        deploy_tailnet_tags.add(join["with"]["tags"])
+        config_step = next(
+            step
+            for step in steps
+            if step["name"].startswith("Verify ")
+            and step["name"].endswith(" deployment configuration")
+        )
+        assert {
+            "TS_OAUTH_CLIENT_ID",
+            "TS_OAUTH_SECRET",
+        } <= set(config_step["env"])
+        assert {
+            "TS_OAUTH_CLIENT_ID",
+            "TS_OAUTH_SECRET",
+        } <= set(_extract_bash_array(config_step["run"], "required"))
+        assert steps[-1]["if"] == "${{ always() }}"
+        assert "tailscale logout" in steps[-1]["run"]
+        assert "continue-on-error" not in steps[-1]
+    assert deploy_tailnet_tags == {
+        "tag:github-ci-admin-verify",
+        "tag:github-ci-staging-deploy",
+        "tag:github-ci-prod-deploy",
+    }
+    oauth_jobs = {
+        job_name
+        for job_name, job in workflow["jobs"].items()
+        if "secrets.TS_OAUTH_" in yaml.safe_dump(job, sort_keys=False)
+    }
+    assert oauth_jobs == {
+        "deploy-staging",
+        "deploy-production",
+        "verify-private-admin-tailnet",
+    }
+    for job_name in oauth_jobs:
+        assert workflow["jobs"][job_name]["environment"]["name"] in {
+            "staging",
+            "production",
+            "admin-tailscale",
+        }
+    production_secret_jobs = {
+        job_name
+        for job_name, job in workflow["jobs"].items()
+        if "secrets.PROD_" in yaml.safe_dump(job, sort_keys=False)
+    }
+    assert production_secret_jobs == {"deploy-production"}
     staging_deploy_env = workflow["jobs"]["deploy-staging"]["env"]
     production_deploy_env = workflow["jobs"]["deploy-production"]["env"]
     assert not any(name.startswith("PROD_") for name in staging_deploy_env)
@@ -2280,6 +2365,21 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "main push -> publish -> release-verify -> staging -> production" in docs
     assert "manual production dispatch -> publish -> release-verify -> production" not in docs
     assert "Production deployment is manual-only." not in docs
+    production_policy = (
+        "Production deployment is environment-approved automatic after successful "
+        "staging gates."
+    )
+    for policy_doc in (
+        Path("docs/GITHUB_ACTIONS.md"),
+        Path("docs/DEPLOYMENT.md"),
+        Path("docs/OPERATIONS.md"),
+    ):
+        normalized_policy_doc = re.sub(
+            r"\s+",
+            " ",
+            policy_doc.read_text(encoding="utf-8"),
+        )
+        assert production_policy in normalized_policy_doc
     assert "target_environment = production" not in docs
     assert "PROD_DEPLOY_ENABLED = true" in docs
     assert "Production never skips disabled, skipped, or failed staging." in docs
@@ -2287,6 +2387,48 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "environment-specific settings, including SMTP sender/host values" in docs
     assert "Feature-branch workflow and deployment scripts" in docs
     assert "adopt-existing" in docs
+
+
+def test_private_deploy_docs_separate_public_https_from_private_ssh_targets():
+    docs = re.sub(
+        r"\s+",
+        " ",
+        "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (
+                Path("docs/GITHUB_ACTIONS.md"),
+                Path("docs/DEPLOYMENT.md"),
+                Path("docs/OPERATIONS.md"),
+                Path("docs/security/architecture/admin-and-staging-zero-trust-access.md"),
+                Path("ops/tailscale/README.md"),
+            )
+        )
+    )
+
+    for required in (
+        "STAGING_PUBLIC_HOST",
+        "PROD_PUBLIC_HOST",
+        "STAGING_EC2_HOST",
+        "PROD_EC2_HOST",
+        "private Tailscale",
+        "STAGING_EC2_KNOWN_HOSTS",
+        "PROD_EC2_KNOWN_HOSTS",
+        "verify the SSH fingerprints out of band",
+        "tag:github-ci-admin-verify",
+        "tag:github-ci-staging-deploy",
+        "tag:github-ci-prod-deploy",
+        "tag:admin-sitbank:443",
+        "tag:sitbank-staging-ec2:22",
+        "tag:sitbank-prod-ec2:22",
+        "Tailscale SSH remains disabled",
+        "remove public port `22`",
+        "do not prove live Tailscale",
+    ):
+        assert required in docs
+    assert not re.search(r"tag:github-ci(?!-)", docs)
+    assert "18.188.152.24" not in Path(
+        "docs/security/architecture/cloudflare-staging-access.md"
+    ).read_text(encoding="utf-8")
 
 
 def test_manual_bootstrap_workflow_uses_only_signed_trusted_main_sources():
@@ -3440,10 +3582,10 @@ def test_production_edge_runbook_documents_network_waf_and_verification_steps():
         "ops/nginx/sitbank-production.conf",
         "ops/nginx/sitbank-production-rate-limits.conf",
         "Public ingress is TCP `80` and `443` only.",
-        "SSH hardening is deferred in this branch.",
-        "planned OpenSSH drop-in",
-        "deployment-source migration path",
-        "implemented here because they can affect GitHub Actions deployment access",
+        "GitHub deployment SSH reaches private Tailscale targets",
+        "OpenSSH drop-in and UFW",
+        "automation remain deferred",
+        "operator-owned infrastructure evidence",
         "Nginx terminates TLS, redirects production customer HTTP to HTTPS",
         "Gunicorn binds only to `127.0.0.1:5000`",
         "Admin Gunicorn binds only to `127.0.0.1:5002`",

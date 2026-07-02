@@ -58,7 +58,7 @@ def test_private_tailnet_workflow_supports_protected_oauth_and_auth_key_modes():
     assert "authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}" in text
     assert "oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}" in text
     assert "oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}" in text
-    assert "tags: tag:github-ci" in text
+    assert "tags: tag:github-ci-admin-verify" in text
     assert "if: inputs.auth_mode == 'oauth'" in text
     assert "if: inputs.auth_mode == 'authkey'" in text
     assert set(re.findall(r"secrets\.([A-Z0-9_]+)", text)) == {
@@ -193,7 +193,7 @@ def test_production_workflow_requires_private_gate_after_deploy_and_public_tls()
     assert join["with"] == {
         "oauth-client-id": "${{ secrets.TS_OAUTH_CLIENT_ID }}",
         "oauth-secret": "${{ secrets.TS_OAUTH_SECRET }}",
-        "tags": "tag:github-ci",
+        "tags": "tag:github-ci-admin-verify",
         "ping": "${{ env.TAILSCALE_PRIVATE_ADMIN_HOST }}",
     }
     assert "tailscale logout" in gate["steps"][-1]["run"]
