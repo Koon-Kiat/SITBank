@@ -8,20 +8,8 @@ import pytest
 from werkzeug.serving import make_server
 
 
-_RUN_E2E_ENV = "SITBANK_RUN_E2E"
-_LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
-
-
-def pytest_collection_modifyitems(config, items):
-    del config
-    if os.environ.get(_RUN_E2E_ENV) == "1":
-        return
-    skip_e2e = pytest.mark.skip(
-        reason=f"set {_RUN_E2E_ENV}=1 to run Playwright E2E browser tests"
-    )
-    for item in items:
-        if item.get_closest_marker("e2e") is not None:
-            item.add_marker(skip_e2e)
+RUN_E2E_ENV = "SITBANK_RUN_E2E"
+LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
 @pytest.fixture()
@@ -70,7 +58,7 @@ def browser_page():
 
 def _assert_local_base_url(base_url: str) -> None:
     parsed = urlparse(base_url)
-    if parsed.scheme != "http" or parsed.hostname not in _LOCAL_HOSTS:
+    if parsed.scheme != "http" or parsed.hostname not in LOCAL_HOSTS:
         raise RuntimeError("Playwright E2E tests may only use a loopback live server")
 
 

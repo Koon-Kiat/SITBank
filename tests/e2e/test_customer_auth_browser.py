@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from app.extensions import db
 from app.models import User
 from app.security.passwords import hash_password
+from support import RUN_E2E_ENV, browser_page, live_server
 
 
-pytestmark = pytest.mark.e2e
+pytestmark = [pytest.mark.e2e]
+if os.environ.get(RUN_E2E_ENV) != "1":
+    pytestmark.append(
+        pytest.mark.skip(reason=f"set {RUN_E2E_ENV}=1 to run Playwright E2E browser tests")
+    )
 
 _CUSTOMER_USERNAME = "e2e_customer"
 _CUSTOMER_PASSWORD = "Correct Horse Battery Staple 2026!"

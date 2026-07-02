@@ -6,7 +6,7 @@ import yaml
 
 
 CI_WORKFLOW_PATH = Path(".github/workflows/ci-deploy.yml")
-E2E_CONFTEXT_PATH = Path("tests/e2e/conftest.py")
+E2E_SUPPORT_PATH = Path("tests/e2e/support.py")
 E2E_TEST_PATH = Path("tests/e2e/test_customer_auth_browser.py")
 
 
@@ -20,15 +20,16 @@ def test_playwright_dependency_is_locked_for_browser_e2e():
 
 
 def test_playwright_e2e_defaults_to_opt_in_local_loopback():
-    conftest = E2E_CONFTEXT_PATH.read_text(encoding="utf-8")
+    support = E2E_SUPPORT_PATH.read_text(encoding="utf-8")
     tests = E2E_TEST_PATH.read_text(encoding="utf-8")
-    combined = f"{conftest}\n{tests}"
+    combined = f"{support}\n{tests}"
 
-    assert "SITBANK_RUN_E2E" in conftest
-    assert "pytest.mark.skip" in conftest
-    assert 'make_server("127.0.0.1", 0, app, threaded=True)' in conftest
-    assert "Playwright E2E tests may only use a loopback live server" in conftest
-    assert 'pytestmark = pytest.mark.e2e' in tests
+    assert not Path("tests/e2e/conftest.py").exists()
+    assert "SITBANK_RUN_E2E" in combined
+    assert "pytest.mark.skip" in tests
+    assert 'make_server("127.0.0.1", 0, app, threaded=True)' in support
+    assert "Playwright E2E tests may only use a loopback live server" in support
+    assert "pytest.mark.e2e" in tests
     assert "https://sitbank.pp.ua" not in combined
     assert "https://staging-sitbank.pp.ua" not in combined
 
