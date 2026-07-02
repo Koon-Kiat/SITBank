@@ -921,7 +921,6 @@ def sessions_dashboard():
         "sessions.html",
         sessions=active_sessions_for_user(g.current_user),
         past_sessions=past_sessions_for_user(g.current_user),
-        revoke_form=MfaOrStepUpForm(),
     )
 
 

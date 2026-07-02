@@ -373,6 +373,34 @@ def test_audit_anchor_docs_distinguish_stale_drift_from_tampering():
         assert forbidden.casefold() not in combined.casefold()
 
 
+def test_session_management_docs_match_single_session_review_ui():
+    template = Path("app/templates/sessions.html").read_text(encoding="utf-8")
+    session_docs = (
+        SECURITY_DOCS / "architecture" / "session-management.md"
+    ).read_text(encoding="utf-8")
+    access_docs = (
+        SECURITY_DOCS / "architecture" / "access-control.md"
+    ).read_text(encoding="utf-8")
+    combined = " ".join(f"{session_docs}\n{access_docs}".split()).casefold()
+
+    for required in (
+        "only one active customer/admin session is allowed per runtime namespace",
+        "a new successful login replaces previous active sessions in that namespace",
+        "old browser tabs may still display stale html until the next request",
+        "the session-management page is for reviewing the current active session and recent past sessions",
+        "protected revoke-other endpoint",
+        "not linked from the session-management page",
+    ):
+        assert required in combined
+
+    assert "Current session" in template
+    assert "Past Sessions" in template
+    assert "ended_reason_display" in template
+    assert "url_for('web.sessions_revoke_others_submit')" not in template
+    assert "Revoke all other sessions" not in template
+    assert "session-revoke-totp-code" not in template
+
+
 def test_payee_audit_docs_require_references_and_bounded_metadata():
     audit_docs = (
         SECURITY_DOCS / "assurance" / "audit-and-alerting.md"
