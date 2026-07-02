@@ -7,7 +7,7 @@ import pyotp
 import pytest
 
 from app.extensions import db
-from app.models import ManualRecoveryRequest, SecurityAuditEvent, User
+from app.models import AdminActionRequest, ManualRecoveryRequest, SecurityAuditEvent, User
 from app.security.crypto import encrypt_mfa_secret
 from app.security.email import password_reset_outbox
 from app.security.passwords import hash_password
@@ -317,11 +317,20 @@ def test_root_admin_can_transition_manual_recovery_to_review_and_approval(admin_
     assert under_review.status_code == 200
     assert under_review.get_json()["request"]["status"] == "under_review"
     assert approved.status_code == 200
-    assert approved.get_json()["request"]["status"] == "approved"
+    approved_payload = approved.get_json()
+    assert approved_payload["message"] == "Admin action approval required"
+    assert approved_payload["request"]["operation_type"] == "manual_recovery_approve"
+    assert approved_payload["request"]["status"] == "pending"
+    db.session.refresh(request_record)
+    assert request_record.status == "under_review"
     assert db.session.query(SecurityAuditEvent).filter_by(
         event_type="manual_recovery_admin_transition",
         outcome="success",
-    ).count() == 2
+    ).count() == 1
+    assert db.session.query(AdminActionRequest).filter_by(
+        operation_type="manual_recovery_approve",
+        status="pending",
+    ).count() == 1
 
 
 def test_root_admin_cannot_complete_manual_recovery_before_approval(admin_client):
@@ -363,26 +372,25 @@ def test_root_admin_can_complete_approved_manual_recovery(admin_client):
 
     assert response.status_code == 200
     payload = response.get_json()
-    assert payload["request"]["status"] == "completed"
-    assert payload["request"]["mfa_reenrollment_required"] is True
+    assert payload["message"] == "Admin action approval required"
+    assert payload["request"]["operation_type"] == "manual_recovery_complete"
+    assert payload["request"]["status"] == "pending"
     _assert_no_sensitive_recovery_material(payload)
     db.session.refresh(customer)
     db.session.refresh(request_record)
-    assert customer.mfa_enabled is False
-    assert customer.mfa_secret_nonce is None
-    assert customer.mfa_secret_ciphertext is None
-    assert request_record.completed_at is not None
-    assert "SITBank manual recovery completed" in [
+    assert customer.mfa_enabled is True
+    assert request_record.completed_at is None
+    assert "SITBank manual recovery completed" not in [
         item["subject"] for item in password_reset_outbox()
     ]
     assert db.session.query(SecurityAuditEvent).filter_by(
         event_type="manual_recovery_completed",
         outcome="success",
-    ).count() == 1
+    ).count() == 0
     assert db.session.query(SecurityAuditEvent).filter_by(
         event_type="manual_recovery_admin_complete",
         outcome="success",
-    ).count() == 1
+    ).count() == 0
 
 
 def test_expired_manual_recovery_request_is_safely_rejected(admin_client):
