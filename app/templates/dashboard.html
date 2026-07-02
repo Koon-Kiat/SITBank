@@ -77,13 +77,22 @@
         <span class="badge neutral">Set up MFA first</span>
       </a>
       {% endif %}
+      {% if g.mfa_ready %}
+      <a class="bank-quick-btn" href="{{ url_for('banking.payup') }}">
+        <span class="bank-quick-icon" aria-hidden="true">
+          <svg class="icon" focusable="false"><use href="#icon-shield-check"></use></svg>
+        </span>
+        <span>PayUp</span>
+      </a>
+      {% else %}
       <a class="bank-quick-btn is-disabled" aria-disabled="true">
         <span class="bank-quick-icon" aria-hidden="true">
           <svg class="icon" focusable="false"><use href="#icon-shield-check"></use></svg>
         </span>
         <span>PayUp</span>
-        <span class="badge neutral">Coming soon</span>
+        <span class="badge neutral">Set up MFA first</span>
       </a>
+      {% endif %}
       <a class="bank-quick-btn is-disabled" aria-disabled="true">
         <span class="bank-quick-icon" aria-hidden="true">
           <svg class="icon" focusable="false"><use href="#icon-session"></use></svg>
@@ -113,11 +122,12 @@
         <thead>
           <tr>
             <th>Type</th>
-            <th>Party</th>
+            <th>Transaction ID</th>
+            <th>Recipient</th>
+            <th>Method</th>
             <th>Reference</th>
             <th>Amount (SGD)</th>
             <th>Date</th>
-            <th>Status</th>
           </tr>
         </thead>
         <tbody>
@@ -130,11 +140,19 @@
               <span class="badge">Received</span>
               {% endif %}
             </td>
+            <td title="{{ txn.transaction_ref }}">{{ txn.transaction_ref[:8]|upper }}</td>
             <td>
               {% if txn.sender_id == user.id %}
               {{ txn.recipient.full_name or txn.recipient.username }}
               {% else %}
               {{ txn.sender.full_name or txn.sender.username }}
+              {% endif %}
+            </td>
+            <td>
+              {% if txn.transaction_type == 'payup' %}
+              PayUp
+              {% else %}
+              Local Transfer
               {% endif %}
             </td>
             <td>{{ txn.reference or "—" }}</td>
@@ -145,8 +163,7 @@
               +{{ txn.amount }}
               {% endif %}
             </td>
-            <td><time datetime="{{ txn.created_at.isoformat() }}">{{ txn.created_at.strftime('%d %b %Y, %H:%M') }}</time></td>
-            <td><span class="badge {% if txn.status != 'completed' %}neutral{% endif %}">{{ txn.status|capitalize }}</span></td>
+            <td><time datetime="{{ txn.created_at.isoformat() }}">{{ (txn.created_at | sgt).strftime('%d %b %Y, %H:%M') }} SGT</time></td>
           </tr>
           {% endfor %}
         </tbody>

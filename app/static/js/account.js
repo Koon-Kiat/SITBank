@@ -111,7 +111,21 @@
     }());
   }
 
+  function dismissTransientFlashBanners() {
+    // Only success/info banners auto-dismiss. Warnings and errors carry
+    // security-relevant context and must stay until dismissed manually.
+    document.querySelectorAll(".alerts .alert-success, .alerts .alert-info").forEach(function (banner) {
+      setTimeout(function () {
+        banner.classList.add("is-dismissing");
+        banner.addEventListener("transitionend", function () {
+          banner.remove();
+        }, { once: true });
+      }, 3000);
+    });
+  }
+
   globalThis.addEventListener("DOMContentLoaded", function () {
+    dismissTransientFlashBanners();
 
     document.querySelectorAll("[data-otp-resend-countdown]").forEach(function (button) {
       const seconds = Number.parseInt(button.dataset.otpResendCountdown, 10);
@@ -154,5 +168,26 @@
     });
 
     document.querySelectorAll("[data-recovery-code-list]").forEach(setupRecoveryCodeList);
+
+    document.querySelectorAll("[data-limit-select]").forEach(function (select) {
+      const key = select.dataset.limitSelect;
+      const group = document.querySelector('[data-limit-custom-group="' + key + '"]');
+      if (!group) {
+        return;
+      }
+      function syncVisibility() {
+        group.hidden = select.value !== "custom";
+      }
+      select.addEventListener("change", syncVisibility);
+      syncVisibility();
+    });
+
+    document.querySelectorAll("[data-limit-custom]").forEach(function (input) {
+      input.addEventListener("wheel", function (event) {
+        if (document.activeElement === input) {
+          event.preventDefault();
+        }
+      }, { passive: false });
+    });
   });
 })();

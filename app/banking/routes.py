@@ -22,11 +22,25 @@ from decimal import Decimal, InvalidOperation
 from app.auth.forms import CsrfOnlyForm, MfaOrStepUpForm
 from app.auth.mfa_policy import has_enrolled_mfa_method
 from app.auth.services import AuthError, verify_high_risk_authorization
-from app.banking.forms import AddPayeeForm, TransferForm
+from app.banking.forms import (
+    AddPayeeForm,
+    PayupAmountForm,
+    PayupConfirmForm,
+    PayupPhoneForm,
+    TRANSFER_LIMIT_PRESETS,
+    TransferForm,
+    TransferLimitsForm,
+)
 from app.banking.schemas import MAX_TRANSACTION_AMOUNT, MIN_TRANSACTION_AMOUNT
-from app.banking.services import execute_local_transfer
+from app.banking.services import (
+    execute_local_transfer,
+    execute_payup_transfer,
+    payup_amount_used_today,
+    payup_requires_step_up,
+    resolve_transfer_limit_choice,
+)
 from app.extensions import db, limiter
-from app.models import Payee, PendingTransfer, User
+from app.models import Payee, PayupPendingTransfer, PendingTransfer, User
 from app.security.audit import audit_event, audit_reference
 from app.security.rate_limits import mfa_principal
 from app.web.routes import web_login_required, web_not_frozen_required
@@ -45,6 +59,18 @@ _TRANSFER_TEMPLATE = "transfer.html"
 _ADD_PAYEE_TEMPLATE = "add_payee.html"
 _REMOVE_PAYEE_TEMPLATE = "remove_payee.html"
 _DUPLICATE_PAYEE_MESSAGE = "This payee is already in your list."
+
+_PAYUP_PENDING_RECIPIENT_TTL = 300  # seconds; time to complete amount entry after phone lookup
+_PAYUP_PENDING_TRANSFER_TTL = 300  # seconds; time to confirm after amount step
+_PAYUP_TEMPLATE = "payup.html"
+_PAYUP_AMOUNT_TEMPLATE = "payup_amount.html"
+_PAYUP_CONFIRM_TEMPLATE = "payup_confirm.html"
+_PAYUP_ENDPOINT = "banking.payup"
+_NO_PENDING_PAYUP_RECIPIENT_MESSAGE = "No pending PayUp request. Please start again."
+_INVALID_PHONE_MESSAGE = "Invalid phone number."
+
+_TRANSFER_LIMITS_TEMPLATE = "transfer_limits.html"
+_TRANSFER_LIMITS_ENDPOINT = "banking.transfer_limits"
 
 
 @banking_bp.before_request
@@ -494,3 +520,319 @@ def transfer_confirm_submit(payee_id: int):
         "success",
     )
     return redirect(url_for(_PAYEES_ENDPOINT))
+
+
+# ── PayUp: step 1 — phone lookup ────────────────────────────────────────────────
+
+@banking_bp.get("/payup")
+@web_login_required
+@web_not_frozen_required
+def payup():
+    return render_template(_PAYUP_TEMPLATE, form=PayupPhoneForm())
+
+
+@banking_bp.post("/payup")
+@limiter.limit("15 per hour", key_func=mfa_principal)
+@web_login_required
+@web_not_frozen_required
+def payup_submit():
+    form = PayupPhoneForm()
+    if not form.validate_on_submit():
+        return render_template(_PAYUP_TEMPLATE, form=form), 400
+
+    phone_number = form.phone_number.data.strip()
+
+    if phone_number == g.current_user.phone_number:
+        flash("You cannot PayUp to your own phone number.", "error")
+        return render_template(_PAYUP_TEMPLATE, form=form), 400
+
+    recipient = User.query.filter_by(phone_number=phone_number).first()
+    if not recipient or recipient.account_status not in ("active", "locked"):
+        audit_event(
+            "payup_lookup",
+            "failure",
+            user=g.current_user,
+            metadata={"reason": "recipient_not_found"},
+        )
+        flash(_INVALID_PHONE_MESSAGE, "error")
+        return render_template(_PAYUP_TEMPLATE, form=form), 400
+
+    # Store pending state server-side; client never controls the recipient name
+    session["pending_payup_recipient"] = {
+        "recipient_user_id": recipient.id,
+        "recipient_name": recipient.full_name,
+        "recipient_phone": phone_number,
+        "expires_at": (
+            datetime.now(timezone.utc) + timedelta(seconds=_PAYUP_PENDING_RECIPIENT_TTL)
+        ).isoformat(),
+    }
+    return redirect(url_for("banking.payup_amount"))
+
+
+# ── PayUp: step 2 — amount + daily limit ────────────────────────────────────────
+
+@banking_bp.get("/payup/amount")
+@web_login_required
+@web_not_frozen_required
+def payup_amount():
+    pending = session.get("pending_payup_recipient")
+    if not pending:
+        flash(_NO_PENDING_PAYUP_RECIPIENT_MESSAGE, "warning")
+        return redirect(url_for(_PAYUP_ENDPOINT))
+
+    if datetime.now(timezone.utc) > datetime.fromisoformat(pending["expires_at"]):
+        session.pop("pending_payup_recipient", None)
+        flash(_REQUEST_EXPIRED_MESSAGE, "warning")
+        return redirect(url_for(_PAYUP_ENDPOINT))
+
+    daily_limit = Decimal(str(g.current_user.payup_daily_limit))
+    remaining = max(Decimal("0.00"), daily_limit - payup_amount_used_today(g.current_user))
+    return render_template(
+        _PAYUP_AMOUNT_TEMPLATE,
+        form=PayupAmountForm(),
+        pending=pending,
+        daily_limit=daily_limit,
+        remaining=remaining,
+    )
+
+
+@banking_bp.post("/payup/amount")
+@limiter.limit("10 per hour", key_func=mfa_principal)
+@web_login_required
+@web_not_frozen_required
+def payup_amount_submit():
+    pending = session.get("pending_payup_recipient")
+    if not pending:
+        flash(_NO_PENDING_PAYUP_RECIPIENT_MESSAGE, "warning")
+        return redirect(url_for(_PAYUP_ENDPOINT))
+
+    if datetime.now(timezone.utc) > datetime.fromisoformat(pending["expires_at"]):
+        session.pop("pending_payup_recipient", None)
+        flash(_REQUEST_EXPIRED_MESSAGE, "warning")
+        return redirect(url_for(_PAYUP_ENDPOINT))
+
+    daily_limit = Decimal(str(g.current_user.payup_daily_limit))
+    remaining = max(Decimal("0.00"), daily_limit - payup_amount_used_today(g.current_user))
+
+    form = PayupAmountForm()
+    if not form.validate_on_submit():
+        return render_template(
+            _PAYUP_AMOUNT_TEMPLATE, form=form, pending=pending, daily_limit=daily_limit, remaining=remaining
+        ), 400
+
+    try:
+        amount = Decimal(form.amount.data.strip())
+    except InvalidOperation:
+        flash("Invalid amount.", "error")
+        return render_template(
+            _PAYUP_AMOUNT_TEMPLATE, form=form, pending=pending, daily_limit=daily_limit, remaining=remaining
+        ), 400
+
+    if amount < MIN_TRANSACTION_AMOUNT or amount > MAX_TRANSACTION_AMOUNT:
+        flash(
+            f"Amount must be between SGD {MIN_TRANSACTION_AMOUNT} and SGD {MAX_TRANSACTION_AMOUNT}.",
+            "error",
+        )
+        return render_template(
+            _PAYUP_AMOUNT_TEMPLATE, form=form, pending=pending, daily_limit=daily_limit, remaining=remaining
+        ), 400
+
+    if amount > remaining:
+        flash(
+            f"This transfer would exceed your daily PayUp limit. Remaining today: SGD {remaining}.",
+            "error",
+        )
+        return render_template(
+            _PAYUP_AMOUNT_TEMPLATE, form=form, pending=pending, daily_limit=daily_limit, remaining=remaining
+        ), 400
+
+    if amount > Decimal(str(g.current_user.balance)):
+        flash("Insufficient balance for this transfer.", "error")
+        return render_template(
+            _PAYUP_AMOUNT_TEMPLATE, form=form, pending=pending, daily_limit=daily_limit, remaining=remaining
+        ), 400
+
+    token = os.urandom(32).hex()
+    pending_tfr = PayupPendingTransfer(
+        token=token,
+        user_id=g.current_user.id,
+        recipient_user_id=pending["recipient_user_id"],
+        amount=amount,
+        reference=(form.reference.data or "").strip()[:128],
+        expires_at=datetime.now(timezone.utc) + timedelta(seconds=_PAYUP_PENDING_TRANSFER_TTL),
+    )
+    db.session.add(pending_tfr)
+    db.session.commit()
+    session.pop("pending_payup_recipient", None)
+    session["pending_payup_token"] = token
+    return redirect(url_for("banking.payup_confirm"))
+
+
+# ── PayUp: step 3 — confirmation (conditional MFA step-up) ──────────────────────
+
+@banking_bp.get("/payup/confirm")
+@web_login_required
+@web_not_frozen_required
+def payup_confirm():
+    token = session.get("pending_payup_token")
+    if not token:
+        flash(_NO_PENDING_TRANSFER_MESSAGE, "warning")
+        return redirect(url_for(_PAYUP_ENDPOINT))
+
+    pending_tfr = PayupPendingTransfer.query.filter_by(
+        token=token,
+        user_id=g.current_user.id,
+        consumed_at=None,
+    ).first()
+    if not pending_tfr:
+        session.pop("pending_payup_token", None)
+        flash(_NO_PENDING_TRANSFER_MESSAGE, "warning")
+        return redirect(url_for(_PAYUP_ENDPOINT))
+
+    expires_at = (
+        pending_tfr.expires_at
+        if pending_tfr.expires_at.tzinfo
+        else pending_tfr.expires_at.replace(tzinfo=timezone.utc)
+    )
+    if expires_at < datetime.now(timezone.utc):
+        session.pop("pending_payup_token", None)
+        flash(_REQUEST_EXPIRED_MESSAGE, "warning")
+        return redirect(url_for(_PAYUP_ENDPOINT))
+
+    amount = Decimal(str(pending_tfr.amount))
+    pending = {
+        "recipient_name": pending_tfr.recipient_user.full_name,
+        "amount": str(amount.quantize(Decimal("0.01"))),
+        "reference": pending_tfr.reference,
+        "requires_step_up": payup_requires_step_up(g.current_user, amount),
+    }
+    return render_template(_PAYUP_CONFIRM_TEMPLATE, form=PayupConfirmForm(), pending=pending)
+
+
+@banking_bp.post("/payup/confirm")
+@limiter.limit("5 per 15 minutes", key_func=mfa_principal)
+@web_login_required
+@web_not_frozen_required
+def payup_confirm_submit():
+    form = PayupConfirmForm()
+
+    # A04: consume session token immediately — prevents session-layer replay
+    token = session.pop("pending_payup_token", None)
+    if not token:
+        flash(_NO_PENDING_TRANSFER_MESSAGE, "warning")
+        return redirect(url_for(_PAYUP_ENDPOINT))
+
+    if not form.validate_on_submit():
+        flash("Request validation failed. Please start again.", "error")
+        return redirect(url_for(_PAYUP_ENDPOINT))
+
+    pending_tfr = PayupPendingTransfer.query.filter_by(
+        token=token,
+        user_id=g.current_user.id,
+        consumed_at=None,
+    ).first()
+    if not pending_tfr:
+        flash(_NO_PENDING_TRANSFER_MESSAGE, "warning")
+        return redirect(url_for(_PAYUP_ENDPOINT))
+
+    amount = Decimal(str(pending_tfr.amount))
+    requires_step_up = payup_requires_step_up(g.current_user, amount)
+
+    authorized = False
+    if requires_step_up:
+        try:
+            verify_high_risk_authorization(
+                g.current_user,
+                form.totp_code.data,
+                form.stepup_token.data,
+                "payup_transfer",
+            )
+            authorized = True
+        except AuthError as exc:
+            flash(exc.message, "error")
+            session["pending_payup_token"] = token
+            pending = {
+                "recipient_name": pending_tfr.recipient_user.full_name,
+                "amount": str(amount.quantize(Decimal("0.01"))),
+                "reference": pending_tfr.reference,
+                "requires_step_up": True,
+            }
+            return render_template(_PAYUP_CONFIRM_TEMPLATE, form=form, pending=pending), exc.status_code
+
+    try:
+        txn_ref = execute_payup_transfer(
+            sender=g.current_user,
+            confirmation_token=token,
+            authorized=authorized,
+        )
+    except AuthError as exc:
+        flash(exc.message, "error")
+        return redirect(url_for(_PAYUP_ENDPOINT))
+
+    recipient_name = pending_tfr.recipient_user.full_name
+    flash(
+        f"Transfer of SGD {amount.quantize(Decimal('0.01'))} to {recipient_name} is complete. "
+        f"Ref: {txn_ref[:8].upper()}",
+        "success",
+    )
+    return redirect(url_for("web.dashboard"))
+
+
+# ── Settings: Daily Transfer Limit ──────────────────────────────────────────────
+
+def _prefill_transfer_limits_form(form: TransferLimitsForm) -> None:
+    current = Decimal(str(g.current_user.payup_daily_limit))
+    for preset in TRANSFER_LIMIT_PRESETS:
+        if current == Decimal(preset):
+            form.payup_limit.data = preset
+            return
+    form.payup_limit.data = "custom"
+    form.payup_limit_custom.data = str(current.quantize(Decimal("0.01")))
+
+
+@banking_bp.get("/settings/transfer-limits")
+@web_login_required
+@web_not_frozen_required
+def transfer_limits():
+    form = TransferLimitsForm()
+    _prefill_transfer_limits_form(form)
+    return render_template(_TRANSFER_LIMITS_TEMPLATE, form=form)
+
+
+@banking_bp.post("/settings/transfer-limits")
+@limiter.limit("5 per 5 minutes", key_func=mfa_principal)
+@web_login_required
+@web_not_frozen_required
+def transfer_limits_submit():
+    form = TransferLimitsForm()
+    if not form.validate_on_submit():
+        return render_template(_TRANSFER_LIMITS_TEMPLATE, form=form), 400
+
+    try:
+        payup_limit = resolve_transfer_limit_choice(form.payup_limit.data, form.payup_limit_custom.data)
+    except AuthError as exc:
+        flash(exc.message, "error")
+        return render_template(_TRANSFER_LIMITS_TEMPLATE, form=form), exc.status_code
+
+    try:
+        verify_high_risk_authorization(
+            g.current_user,
+            form.totp_code.data,
+            form.stepup_token.data,
+            "transfer_limits_change",
+        )
+    except AuthError as exc:
+        flash(exc.message, "error")
+        return render_template(_TRANSFER_LIMITS_TEMPLATE, form=form), exc.status_code
+
+    g.current_user.payup_daily_limit = payup_limit
+    db.session.commit()
+
+    audit_event(
+        "transfer_limits_change",
+        "success",
+        user=g.current_user,
+        metadata={"payup_daily_limit": str(payup_limit)},
+    )
+    flash("Daily transfer limits updated.", "success")
+    return redirect(url_for(_TRANSFER_LIMITS_ENDPOINT))

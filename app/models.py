@@ -41,6 +41,12 @@ class User(db.Model):
         default=Decimal("0.00"),
         server_default="0.00",
     )
+    payup_daily_limit = db.Column(
+        db.Numeric(10, 2),
+        nullable=False,
+        default=Decimal("500.00"),
+        server_default="500.00",
+    )
 
     is_frozen = db.Column(db.Boolean, nullable=False, default=False)
     failed_login_count = db.Column(db.Integer, nullable=False, default=0)
@@ -659,6 +665,12 @@ class Transaction(db.Model):
     amount = db.Column(db.Numeric(12, 2), nullable=False)
     reference = db.Column(db.String(128), nullable=False, default="")
     status = db.Column(db.String(32), nullable=False, default="completed")
+    transaction_type = db.Column(
+        db.String(32),
+        nullable=False,
+        default="local_transfer",
+        server_default="local_transfer",
+    )
     created_at = db.Column(
         db.DateTime(timezone=True),
         nullable=False,
@@ -686,6 +698,10 @@ class Transaction(db.Model):
             name="ck_transactions_status",
         ),
         db.CheckConstraint("amount > 0", name="ck_transactions_amount_positive"),
+        db.CheckConstraint(
+            "transaction_type IN ('local_transfer', 'payup')",
+            name="ck_transactions_transaction_type",
+        ),
     )
 
     def __repr__(self) -> str:
@@ -722,3 +738,36 @@ class PendingTransfer(db.Model):
 
     def __repr__(self) -> str:
         return f"<PendingTransfer id={self.id!r} user_id={self.user_id!r} consumed={self.consumed_at is not None!r}>"
+
+
+class PayupPendingTransfer(db.Model):
+    __tablename__ = "payup_pending_transfers"
+
+    id = db.Column(db.Integer, primary_key=True)
+    token = db.Column(db.String(64), nullable=False, unique=True, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
+    recipient_user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
+    amount = db.Column(db.Numeric(12, 5), nullable=False)
+    reference = db.Column(db.String(128), nullable=False, default="", server_default="")
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
+    consumed_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    consumed_transaction_ref = db.Column(db.String(36), nullable=True)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    user = db.relationship(
+        "User",
+        foreign_keys=[user_id],
+        backref=db.backref("payup_pending_transfers", lazy="selectin"),
+    )
+    recipient_user = db.relationship("User", foreign_keys=[recipient_user_id])
+
+    __table_args__ = (
+        db.UniqueConstraint("token", name="uq_payup_pending_transfers_token"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<PayupPendingTransfer id={self.id!r} user_id={self.user_id!r} consumed={self.consumed_at is not None!r}>"
