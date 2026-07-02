@@ -12,6 +12,8 @@ readonly EDGE_DEFAULTS_FILE="/etc/nginx/conf.d/sitbank-default.conf"
 readonly TLS_POLICY_FILE="/etc/nginx/snippets/sitbank-tls-policy.conf"
 readonly STAGING_ACCESS_HEADERS_FILE="/etc/nginx/snippets/sitbank-cloudflare-access-headers.conf"
 readonly PRODUCTION_RATE_LIMITS_FILE="/etc/nginx/conf.d/sitbank-production-rate-limits.conf"
+readonly PRODUCTION_CLOUDFLARE_ORIGIN_PULL_CA_FILE="/etc/nginx/sitbank-production-cloudflare-origin-pull-ca.pem"
+readonly PRODUCTION_CLOUDFLARE_ORIGIN_PULL_CA_ALLOWLIST="/etc/sitbank/cloudflare-origin-pull-ca-allowlist.json"
 readonly STAGING_PUBLIC_HOST="staging-sitbank.pp.ua"
 readonly STAGING_CLOUDFLARE_ORIGIN_PULL_CA_FILE="/etc/nginx/cloudflare-authenticated-origin-pull-ca.pem"
 readonly STAGING_CLOUDFLARE_ORIGIN_PULL_CA_ALLOWLIST="/etc/sitbank-staging/cloudflare-origin-pull-ca-allowlist.json"
@@ -94,22 +96,22 @@ linux_runtime_files=(
     "${repo_root}/ops/deploy/sitbank-container-runtime"
     "${repo_root}/ops/deploy/sitbank-database-cutover"
     "${repo_root}/ops/deploy/verify-certbot-host-state"
+    "${repo_root}/ops/deploy/verify-cloudflare-origin-pull-ca"
     "${repo_root}/ops/backups/sitbank-backup-encrypted"
     "${repo_root}/ops/backups/sitbank-restore-preflight"
     "${repo_root}/ops/nginx/sitbank-default.conf"
     "${repo_root}/ops/nginx/sitbank-cloudflare-access-headers.conf"
     "${repo_root}/ops/nginx/sitbank-tls-policy.conf"
+    "${repo_root}/ops/security/cloudflare-origin-pull-ca-allowlist.json"
     "${repo_root}/ops/sudoers/sitbank-container-deploy"
 )
 if [[ "${target}" == "staging" ]]; then
     linux_runtime_files+=(
-        "${repo_root}/ops/deploy/verify-cloudflare-origin-pull-ca"
         "${repo_root}/ops/deploy/verify-staging-edge-boundary"
         "${repo_root}/ops/nginx-proxy-headers.conf"
         "${repo_root}/ops/nginx/sitbank-staging.conf"
         "${repo_root}/ops/nginx/sitbank-staging-rate-limits.conf"
         "${repo_root}/ops/postgres/init-sitbank-staging-roles.sh"
-        "${repo_root}/ops/security/cloudflare-origin-pull-ca-allowlist.json"
     )
 else
     linux_runtime_files+=(
@@ -237,6 +239,9 @@ install -o root -g root -m 0755 \
 install -o root -g root -m 0755 \
     "${repo_root}/ops/deploy/verify-certbot-host-state" \
     /usr/local/sbin/verify-certbot-host-state
+install -o root -g root -m 0755 \
+    "${repo_root}/ops/deploy/verify-cloudflare-origin-pull-ca" \
+    /usr/local/sbin/verify-cloudflare-origin-pull-ca
 if [[ "${target}" == "production" ]]; then
     install -o root -g root -m 0755 \
         "${repo_root}/ops/deploy/verify-tailscale-admin-access" \
@@ -259,9 +264,6 @@ install -o root -g root -m 0755 \
     /usr/local/sbin/sitbank-restore-preflight
 if [[ "${target}" == "staging" ]]; then
     install -o root -g root -m 0755 \
-        "${repo_root}/ops/deploy/verify-cloudflare-origin-pull-ca" \
-        /usr/local/sbin/verify-cloudflare-origin-pull-ca
-    install -o root -g root -m 0755 \
         "${repo_root}/ops/deploy/verify-staging-edge-boundary" \
         /usr/local/sbin/verify-staging-edge-boundary
     install -o root -g root -m 0644 \
@@ -271,6 +273,10 @@ if [[ "${target}" == "staging" ]]; then
     install -o root -g root -m 0755 \
         "${repo_root}/ops/postgres/init-sitbank-staging-roles.sh" \
         "${config_root}/postgres/init-sitbank-staging-roles.sh"
+else
+    install -o root -g root -m 0644 \
+        "${repo_root}/ops/security/cloudflare-origin-pull-ca-allowlist.json" \
+        "${PRODUCTION_CLOUDFLARE_ORIGIN_PULL_CA_ALLOWLIST}"
 fi
 install -o root -g root -m 0644 \
     "${repo_root}/${systemd_source}" \
@@ -366,6 +372,13 @@ refresh_enabled_sibling_site() {
 
 if [[ "${target}" == "production" ]]; then
     production_cert_dir="/etc/letsencrypt/live/${public_host}"
+    if ! /usr/local/sbin/verify-cloudflare-origin-pull-ca \
+        --certificate "${PRODUCTION_CLOUDFLARE_ORIGIN_PULL_CA_FILE}" \
+        --allowlist "${PRODUCTION_CLOUDFLARE_ORIGIN_PULL_CA_ALLOWLIST}"; then
+        echo "Production Cloudflare Authenticated Origin Pull CA validation failed." >&2
+        echo "Install the reviewed production CA certificate before rerunning bootstrap." >&2
+        exit 1
+    fi
     for required_production_file in \
         "${production_cert_dir}/fullchain.pem" \
         "${production_cert_dir}/privkey.pem"; do

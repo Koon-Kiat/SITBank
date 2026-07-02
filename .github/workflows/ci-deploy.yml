@@ -1291,7 +1291,7 @@ jobs:
     environment:
       name: admin-tailscale
     env:
-      TAILSCALE_PRIVATE_ADMIN_HOST: admin-sitbank.tailca101b.ts.net
+      TAILSCALE_PRIVATE_ADMIN_HOST: ${{ vars.TAILSCALE_PRIVATE_ADMIN_HOST }}
 
     steps:
       - name: Validate private target and OAuth credential
@@ -1304,6 +1304,15 @@ jobs:
 
           if [[ ! "${TAILSCALE_PRIVATE_ADMIN_HOST}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$ ]]; then
             echo "::error::The admin verification target must be a hostname, not a URL or command fragment."
+            exit 1
+          fi
+          normalized_private_host="${TAILSCALE_PRIVATE_ADMIN_HOST,,}"
+          if [[ "${normalized_private_host}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || [[ ! "${normalized_private_host}" =~ \.ts\.net$ ]] \
+            || [[ "${normalized_private_host}" == "sitbank.pp.ua" ]] \
+            || [[ "${normalized_private_host}" == "www.sitbank.pp.ua" ]] \
+            || [[ "${normalized_private_host}" == "staging-sitbank.pp.ua" ]]; then
+            echo "::error::TAILSCALE_PRIVATE_ADMIN_HOST must be a private Tailscale DNS hostname from the protected admin-tailscale environment."
             exit 1
           fi
           if [[ -z "${TS_OAUTH_CLIENT_ID}" || -z "${TS_OAUTH_SECRET}" ]]; then

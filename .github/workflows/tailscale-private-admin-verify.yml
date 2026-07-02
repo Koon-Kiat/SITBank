@@ -3,11 +3,6 @@ name: Verify private Tailscale admin access
 on:
   workflow_dispatch:
     inputs:
-      private_admin_host:
-        description: Private Tailscale admin hostname.
-        required: false
-        default: admin-sitbank.tailca101b.ts.net
-        type: string
       auth_mode:
         description: Protected Tailscale credential mode.
         required: true
@@ -32,7 +27,7 @@ jobs:
     environment:
       name: admin-tailscale
     env:
-      TAILSCALE_PRIVATE_ADMIN_HOST: ${{ inputs.private_admin_host }}
+      TAILSCALE_PRIVATE_ADMIN_HOST: ${{ vars.TAILSCALE_PRIVATE_ADMIN_HOST }}
       TAILSCALE_AUTH_MODE: ${{ inputs.auth_mode }}
 
     steps:
@@ -43,6 +38,15 @@ jobs:
 
           if [[ ! "${TAILSCALE_PRIVATE_ADMIN_HOST}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$ ]]; then
             echo "::error::The admin verification target must be a hostname, not a URL or command fragment."
+            exit 1
+          fi
+          normalized_private_host="${TAILSCALE_PRIVATE_ADMIN_HOST,,}"
+          if [[ "${normalized_private_host}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || [[ ! "${normalized_private_host}" =~ \.ts\.net$ ]] \
+            || [[ "${normalized_private_host}" == "sitbank.pp.ua" ]] \
+            || [[ "${normalized_private_host}" == "www.sitbank.pp.ua" ]] \
+            || [[ "${normalized_private_host}" == "staging-sitbank.pp.ua" ]]; then
+            echo "::error::TAILSCALE_PRIVATE_ADMIN_HOST must be a private Tailscale DNS hostname from the protected admin-tailscale environment."
             exit 1
           fi
           if [[ "${TAILSCALE_AUTH_MODE}" != "oauth" \
@@ -92,14 +96,14 @@ jobs:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:github-ci-admin-verify
-          ping: ${{ inputs.private_admin_host }}
+          ping: ${{ env.TAILSCALE_PRIVATE_ADMIN_HOST }}
 
       - name: Join the approved tailnet with an auth key
         if: inputs.auth_mode == 'authkey'
         uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8
         with:
           authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
-          ping: ${{ inputs.private_admin_host }}
+          ping: ${{ env.TAILSCALE_PRIVATE_ADMIN_HOST }}
 
       - name: Verify private admin entrypoint
         shell: bash

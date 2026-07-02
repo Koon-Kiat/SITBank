@@ -48,3 +48,17 @@ the active ruleset after merge for any former raw contexts such as
 `deploy-staging`, `verify-staging-tls`, `sonarqube`, or `sonarqube-comment`.
 Post-merge deployment and reporting-only jobs should remain non-required unless
 a separate reviewed policy change explicitly promotes them.
+
+OpenSSF Scorecard `Branch-Protection` is `provider-state-only`: a low or missing
+result is not resolved by claiming this document enforces GitHub settings.
+Retain a sanitized ruleset export or screenshot, compare it with this contract,
+and open a focused follow-up for drift. Scorecard remains informational and not
+a required pull-request check.
+
+The sanitized GitHub API review on 2026-07-02 found status checks and stale
+review dismissal configured, but zero required approving reviews, Code Owner
+review disabled, and administrator enforcement disabled. That live state does
+not meet the expected contract above and remains a provider-setting follow-up;
+this repository change does not silently mutate branch protection. The public
+Scorecard API had no SITBank project baseline before workflow rollout, so the
+first merged workflow run must record the numeric score and key findings.

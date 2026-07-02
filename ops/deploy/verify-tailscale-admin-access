@@ -17,7 +17,6 @@ from typing import Any, Callable, Sequence
 
 DEFAULT_ADMIN_LOOPBACK_HOST = "127.0.0.1"
 DEFAULT_ADMIN_LOOPBACK_PORT = 5002
-DEFAULT_PRIVATE_ADMIN_HOST = "admin-sitbank.tailca101b.ts.net"
 MAX_COMMAND_OUTPUT_BYTES = 1024 * 1024
 HOSTNAME_PATTERN = re.compile(
     r"^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$"
@@ -132,6 +131,21 @@ def validate_settings(
         raise VerificationError("ADMIN_LOOPBACK_PORT must be from 1 through 65535")
     if not HOSTNAME_PATTERN.fullmatch(private_admin_host):
         raise VerificationError("PRIVATE_ADMIN_HOST must be a bare hostname")
+    normalized_private_host = private_admin_host.casefold()
+    if re.fullmatch(r"(?:[0-9]{1,3}\.){3}[0-9]{1,3}", private_admin_host):
+        raise VerificationError("PRIVATE_ADMIN_HOST must not be an IP literal")
+    if not normalized_private_host.endswith(".ts.net"):
+        raise VerificationError(
+            "PRIVATE_ADMIN_HOST must be a private Tailscale DNS hostname"
+        )
+    if normalized_private_host in {
+        "sitbank.pp.ua",
+        "www.sitbank.pp.ua",
+        "staging-sitbank.pp.ua",
+    }:
+        raise VerificationError(
+            "PRIVATE_ADMIN_HOST must not be a public SITBank hostname"
+        )
 
 
 def verify_tailscale_running(runner: Runner) -> None:
@@ -144,6 +158,24 @@ def verify_tailscale_running(runner: Runner) -> None:
         raise VerificationError("Tailscale node is not in the Running state")
 
 
+def discover_private_admin_host(runner: Runner) -> str:
+    raw = _require_success(
+        runner(("tailscale", "status", "--json")),
+        "Tailscale daemon status",
+    )
+    status = _load_json(raw, "Tailscale daemon status")
+    if not isinstance(status, dict) or not isinstance(status.get("Self"), dict):
+        raise VerificationError(
+            "Tailscale status cannot provide the private admin hostname"
+        )
+    dns_name = status["Self"].get("DNSName")
+    if not isinstance(dns_name, str) or not dns_name.strip():
+        raise VerificationError(
+            "Tailscale status cannot provide the private admin hostname"
+        )
+    return dns_name.rstrip(".")
+
+
 def verify_funnel_disabled(runner: Runner) -> None:
     raw = _require_success(
         runner(("tailscale", "funnel", "status", "--json")),
@@ -151,13 +183,37 @@ def verify_funnel_disabled(runner: Runner) -> None:
     )
     status = _load_json(raw, "Tailscale Funnel status")
     funnel_fields = _values_for_key(status, "AllowFunnel")
-    if status not in ({}, None) and not funnel_fields:
-        raise VerificationError(
-            "Tailscale Funnel status schema cannot prove Funnel is disabled"
-        )
     if _contains_truthy_funnel(status):
         raise VerificationError(
             "Tailscale Funnel is enabled; admin access must remain tailnet-only"
+        )
+    if status in ({}, None):
+        return
+    if not isinstance(status, dict):
+        raise VerificationError(
+            "Tailscale Funnel status schema cannot prove Funnel is disabled"
+        )
+    # Tailscale 1.98 returns the active Serve configuration from
+    # `funnel status --json` even when AllowFunnel is omitted/disabled.
+    # Accept only that reviewed schema; unknown fields continue to fail closed.
+    reviewed_status_fields = {
+        "TCP",
+        "Web",
+        "Services",
+        "Foreground",
+        "AllowFunnel",
+    }
+    if not status or set(status) - reviewed_status_fields:
+        raise VerificationError(
+            "Tailscale Funnel status schema cannot prove Funnel is disabled"
+        )
+    if funnel_fields and any(
+        not isinstance(candidate, dict)
+        or any(bool(enabled) for enabled in candidate.values())
+        for candidate in funnel_fields
+    ):
+        raise VerificationError(
+            "Tailscale Funnel status schema cannot prove Funnel is disabled"
         )
 
 
@@ -451,8 +507,10 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--private-admin-host",
-        default=os.environ.get(
-            "PRIVATE_ADMIN_HOST", DEFAULT_PRIVATE_ADMIN_HOST
+        default=os.environ.get("PRIVATE_ADMIN_HOST"),
+        help=(
+            "Private Tailscale DNS hostname; defaults to PRIVATE_ADMIN_HOST, "
+            "then the local Tailscale node DNSName."
         ),
     )
     return parser.parse_args(argv)
@@ -461,11 +519,18 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     try:
+        if args.mode == "documentation-only" and not args.private_admin_host:
+            private_admin_host = "documentation-only.invalid.ts.net"
+        else:
+            private_admin_host = (
+                args.private_admin_host
+                or discover_private_admin_host(run_command)
+            )
         messages = verify_host(
             args.mode,
             args.admin_loopback_host,
             args.admin_loopback_port,
-            args.private_admin_host,
+            private_admin_host,
         )
     except VerificationError as exc:
         for line in str(exc).splitlines():

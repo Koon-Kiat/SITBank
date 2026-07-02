@@ -373,6 +373,12 @@ checked manually.
 - Require Cloudflare Access and Cloudflare Authenticated Origin Pulls for
   `staging-sitbank.pp.ua`; do not disable the origin-pull check to make
   direct EC2-origin staging access work.
+- Require Cloudflare Authenticated Origin Pull for production HTTPS using the
+  separately verified production CA path. Keep raw HTTP origin-IP behavior
+  redirect-only, and reject raw or hostname-SNI direct-origin HTTPS without
+  Cloudflare's client certificate.
+- Keep production Cloudflare and Nginx HSTS aligned at six months
+  (`max-age=15552000`) with include subdomains enabled and preload disabled.
 - Enable WAF managed common, SQL injection, XSS, bot, and protocol anomaly
   rules.
 - Add WAF rate-based rules for `/login`, `/register`, `/mfa/verify`,
@@ -398,6 +404,10 @@ sudo docker inspect --format '{{json .HostConfig.PortBindings}}' sitbank-admin
 curl --fail https://sitbank.pp.ua/health/live
 curl -I https://www.sitbank.pp.ua/
 curl -I https://sitbank.pp.ua/health/ready
+curl -I http://18.188.152.24/
+curl -k -I https://18.188.152.24/
+curl -k --resolve sitbank.pp.ua:443:18.188.152.24 \
+  -I https://sitbank.pp.ua/
 curl --fail -H 'X-Forwarded-Proto: https' \
   http://127.0.0.1:5000/health/ready
 curl --fail -H 'Host: sitbank-admin.internal' \
@@ -408,7 +418,9 @@ curl --fail -H 'Host: sitbank-admin.internal' \
 Expected results: only `80` and `443` are publicly reachable, Gunicorn is
 loopback-only on `5000` and `5002`, Docker publishes no app ports, external
 customer readiness is denied, no public admin hostname is required, and local
-readiness succeeds.
+readiness succeeds. Raw HTTP origin-IP access redirects to
+`https://sitbank.pp.ua`, while both direct HTTPS probes fail closed without
+returning application content.
 In short, external readiness is denied.
 
 ## Monitoring
