@@ -21,6 +21,7 @@ from app.security.audit import audit_event, audit_event_required, audit_referenc
 
 PAYUP_STEP_UP_THRESHOLD = Decimal("0.80")
 _SGT_OFFSET = timezone(timedelta(hours=8))
+_TRANSFER_CONFIRMATION_EXPIRED_MESSAGE = "Transfer confirmation has expired or was already used."
 
 TRANSFER_RISK_NORMAL = "normal"
 TRANSFER_RISK_NEW_PAYEE = "new_payee"
@@ -384,7 +385,7 @@ def execute_local_transfer(
             metadata={"reason": "confirmation_token_not_found"},
         )
         db.session.commit()
-        raise AuthError("Transfer confirmation has expired or was already used.", 409)
+        raise AuthError(_TRANSFER_CONFIRMATION_EXPIRED_MESSAGE, 409)
 
     expires_at = (
         pending_tfr.expires_at
@@ -398,7 +399,7 @@ def execute_local_transfer(
             metadata={"reason": "confirmation_token_expired"},
         )
         db.session.commit()
-        raise AuthError("Transfer confirmation has expired or was already used.", 409)
+        raise AuthError(_TRANSFER_CONFIRMATION_EXPIRED_MESSAGE, 409)
 
     pending_tfr.consumed_at = now
     # normalize() strips trailing zeros (e.g. Decimal("10.10000") -> Decimal("10.1"))
@@ -541,22 +542,8 @@ def resolve_transfer_limit_choice(choice: str, custom_value: str | None) -> Deci
     raise AuthError("Invalid limit selection.", 400)
 
 
-def execute_payup_transfer(
-    *,
-    sender: User,
-    confirmation_token: str,
-    authorized: bool,
-) -> str:
-    """Atomically debit sender and credit recipient for a phone-number PayUp transfer.
-
-    Amount and recipient are read from the PayupPendingTransfer DB record identified
-    by confirmation_token, consumed atomically with the transfer. The daily-limit and
-    step-up decisions are recomputed here under lock rather than trusted from the
-    caller, so a route-level pre-check cannot be raced into skipping MFA.
-    """
+def _load_and_lock_payup_pending_transfer(sender: User, confirmation_token: str):
     from app.models import PayupPendingTransfer
-
-    ensure_outbound_transfer_allowed(sender)
 
     pending_tfr = db.session.execute(
         db.select(PayupPendingTransfer)
@@ -575,7 +562,7 @@ def execute_payup_transfer(
             metadata={"reason": "confirmation_token_not_found", "transfer_channel": "payup"},
         )
         db.session.commit()
-        raise AuthError("Transfer confirmation has expired or was already used.", 409)
+        raise AuthError(_TRANSFER_CONFIRMATION_EXPIRED_MESSAGE, 409)
 
     now = datetime.now(timezone.utc)
     expires_at = (
@@ -590,10 +577,18 @@ def execute_payup_transfer(
             metadata={"reason": "confirmation_token_expired", "transfer_channel": "payup"},
         )
         db.session.commit()
-        raise AuthError("Transfer confirmation has expired or was already used.", 409)
+        raise AuthError(_TRANSFER_CONFIRMATION_EXPIRED_MESSAGE, 409)
 
+    # Consume immediately once validated, before further checks, so a retried
+    # confirm click cannot reprocess the same pending transfer.
+    pending_tfr.consumed_at = now
+    return pending_tfr
+
+
+def _validate_payup_amount(sender: User, pending_tfr) -> Decimal:
+    # normalize() strips trailing zeros (e.g. Decimal("10.10000") -> Decimal("10.1"))
+    # so the exponent check below correctly catches sub-cent amounts.
     amount = Decimal(str(pending_tfr.amount)).normalize()
-    reference = (pending_tfr.reference or "")[:128]
 
     if not amount.is_finite() or amount.as_tuple().exponent < -2:
         audit_outbound_transfer(
@@ -622,7 +617,11 @@ def execute_payup_transfer(
         db.session.commit()
         raise AuthError("Transfer amount is out of the allowed range.", 400)
 
-    recipient_user = db.session.get(User, pending_tfr.recipient_user_id)
+    return amount
+
+
+def _validate_payup_recipient(sender: User, recipient_user_id: int) -> User:
+    recipient_user = db.session.get(User, recipient_user_id)
     if not recipient_user:
         audit_outbound_transfer(
             sender,
@@ -649,6 +648,29 @@ def execute_payup_transfer(
         )
         db.session.commit()
         raise AuthError("Recipient account is not available to receive transfers.", 400)
+
+    return recipient_user
+
+
+def execute_payup_transfer(
+    *,
+    sender: User,
+    confirmation_token: str,
+    authorized: bool,
+) -> str:
+    """Atomically debit sender and credit recipient for a phone-number PayUp transfer.
+
+    Amount and recipient are read from the PayupPendingTransfer DB record identified
+    by confirmation_token, consumed atomically with the transfer. The daily-limit and
+    step-up decisions are recomputed here under lock rather than trusted from the
+    caller, so a route-level pre-check cannot be raced into skipping MFA.
+    """
+    ensure_outbound_transfer_allowed(sender)
+
+    pending_tfr = _load_and_lock_payup_pending_transfer(sender, confirmation_token)
+    amount = _validate_payup_amount(sender, pending_tfr)
+    reference = (pending_tfr.reference or "")[:128]
+    recipient_user = _validate_payup_recipient(sender, pending_tfr.recipient_user_id)
 
     # Lock rows in consistent ascending ID order before SELECT FOR UPDATE so
     # concurrent transfers between the same two accounts cannot deadlock.
@@ -726,7 +748,6 @@ def execute_payup_transfer(
             created_at=txn_created_at,
         )
     )
-    pending_tfr.consumed_at = now
     pending_tfr.consumed_transaction_ref = txn_ref
 
     audit_outbound_transfer(

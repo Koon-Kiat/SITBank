@@ -17,6 +17,10 @@ TRANSFER_LIMIT_CHOICES = [(value, f"SGD {value}") for value in TRANSFER_LIMIT_PR
     ("custom", "Custom amount"),
 ]
 
+_AUTHENTICATOR_CODE_LABEL = "Authenticator code"
+_MFA_CODE_LENGTH_MESSAGE = "MFA code must be exactly 6 digits"
+_INVALID_STEP_UP_TOKEN_MESSAGE = "Invalid step-up token"
+
 
 class AddPayeeForm(FlaskForm):
     nickname = StringField(
@@ -38,16 +42,16 @@ class AddPayeeForm(FlaskForm):
         ],
     )
     totp_code = StringField(
-        "Authenticator code",
+        _AUTHENTICATOR_CODE_LABEL,
         validators=[
             InputRequired(),
-            Regexp(TOTP_RE, message="MFA code must be exactly 6 digits"),
+            Regexp(TOTP_RE, message=_MFA_CODE_LENGTH_MESSAGE),
         ],
     )
     stepup_token = HiddenField(
         validators=[
             Optional(),
-            Regexp(STEP_UP_TOKEN_RE, message="Invalid step-up token"),
+            Regexp(STEP_UP_TOKEN_RE, message=_INVALID_STEP_UP_TOKEN_MESSAGE),
         ],
     )
 
@@ -86,16 +90,16 @@ class PayupAmountForm(FlaskForm):
 
 class PayupConfirmForm(FlaskForm):
     totp_code = StringField(
-        "Authenticator code",
+        _AUTHENTICATOR_CODE_LABEL,
         validators=[
             Optional(),
-            Regexp(TOTP_RE, message="MFA code must be exactly 6 digits"),
+            Regexp(TOTP_RE, message=_MFA_CODE_LENGTH_MESSAGE),
         ],
     )
     stepup_token = HiddenField(
         validators=[
             Optional(),
-            Regexp(STEP_UP_TOKEN_RE, message="Invalid step-up token"),
+            Regexp(STEP_UP_TOKEN_RE, message=_INVALID_STEP_UP_TOKEN_MESSAGE),
         ],
     )
 
@@ -111,16 +115,16 @@ class TransferLimitsForm(FlaskForm):
         ],
     )
     totp_code = StringField(
-        "Authenticator code",
+        _AUTHENTICATOR_CODE_LABEL,
         validators=[
             InputRequired(),
-            Regexp(TOTP_RE, message="MFA code must be exactly 6 digits"),
+            Regexp(TOTP_RE, message=_MFA_CODE_LENGTH_MESSAGE),
         ],
     )
     stepup_token = HiddenField(
         validators=[
             Optional(),
-            Regexp(STEP_UP_TOKEN_RE, message="Invalid step-up token"),
+            Regexp(STEP_UP_TOKEN_RE, message=_INVALID_STEP_UP_TOKEN_MESSAGE),
         ],
     )
 
@@ -146,15 +150,15 @@ class TransferForm(FlaskForm):
         ],
     )
     totp_code = StringField(
-        "Authenticator code",
+        _AUTHENTICATOR_CODE_LABEL,
         validators=[
             InputRequired(),
-            Regexp(TOTP_RE, message="MFA code must be exactly 6 digits"),
+            Regexp(TOTP_RE, message=_MFA_CODE_LENGTH_MESSAGE),
         ],
     )
     stepup_token = HiddenField(
         validators=[
             Optional(),
-            Regexp(STEP_UP_TOKEN_RE, message="Invalid step-up token"),
+            Regexp(STEP_UP_TOKEN_RE, message=_INVALID_STEP_UP_TOKEN_MESSAGE),
         ],
     )
