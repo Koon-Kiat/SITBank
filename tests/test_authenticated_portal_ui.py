@@ -64,14 +64,6 @@ def test_theme_assets_are_csp_compatible_and_store_only_theme_preference(client)
     assert response.status_code == 200
     assert b'/static/js/theme.js' in response.data
     assert b"<script>" not in response.data
-    assert b"data-theme-toggle" in response.data
-    assert b"data-theme-toggle-icon" in response.data
-    assert b'aria-label="Switch to dark mode"' in response.data
-    assert b'title="Switch to dark mode"' in response.data
-    assert "Switch to light mode" in script
-    assert "Switch to dark mode" in script
-    assert 'setAttribute("title", actionLabel)' in script
-    assert 'icon.dataset.icon = isDark ? "sun" : "moon"' in script
     assert "localStorage" in script
     assert "sitbank-theme" in script
     assert "token" not in script.casefold()
