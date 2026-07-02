@@ -31,6 +31,7 @@ jobs:
           syft-version: v1.46.0
 
       - name: Generate CycloneDX JSON source SBOM
+        id: generate
         shell: bash
         run: |
           set -euo pipefail
@@ -39,7 +40,37 @@ jobs:
             --output cyclonedx-json=sitbank-source-sbom-cyclonedx.json
           jq empty sitbank-source-sbom-cyclonedx.json
 
+      - name: Summarize source SBOM
+        if: ${{ always() }}
+        shell: bash
+        env:
+          GENERATE_OUTCOME: ${{ steps.generate.outcome }}
+        run: |
+          {
+            echo "## CycloneDX source SBOM"
+            echo
+            echo "- Status: **${GENERATE_OUTCOME}**"
+            echo "- Artifact: \`sitbank-source-sbom\`"
+            echo "- Format: CycloneDX JSON"
+            if [[ -s sitbank-source-sbom-cyclonedx.json ]] \
+              && jq empty sitbank-source-sbom-cyclonedx.json 2>/dev/null; then
+              echo "- Components: \`$(jq '(.components // []) | length' sitbank-source-sbom-cyclonedx.json)\`"
+              echo "- Dependency entries: \`$(jq '(.dependencies // []) | length' sitbank-source-sbom-cyclonedx.json)\`"
+              echo "- Services: \`$(jq '(.services // []) | length' sitbank-source-sbom-cyclonedx.json)\`"
+              echo
+              echo "| Component | Version | Type |"
+              echo "| --- | --- | --- |"
+              jq -r '(.components // [])[:10][] | "| \((.name // "unknown") | gsub("[|\\r\\n]"; " ")) | \((.version // "unknown") | gsub("[|\\r\\n]"; " ")) | \((.type // "unknown") | gsub("[|\\r\\n]"; " ")) |"' \
+                sitbank-source-sbom-cyclonedx.json
+            else
+              echo "- Counts: unavailable because valid SBOM output was not produced."
+            fi
+            echo
+            echo "- The full SBOM remains in the artifact; this summary is intentionally bounded."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
       - name: Upload source SBOM
+        if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: sitbank-source-sbom

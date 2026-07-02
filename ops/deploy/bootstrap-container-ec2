@@ -115,6 +115,7 @@ if [[ "${target}" == "staging" ]]; then
     )
 else
     linux_runtime_files+=(
+        "${repo_root}/ops/deploy/verify-production-nginx-boundary"
         "${repo_root}/ops/deploy/verify-tailscale-admin-access"
         "${repo_root}/ops/tailscale/install-tailscale"
         "${repo_root}/ops/tailscale/configure-admin-access"
@@ -243,6 +244,9 @@ install -o root -g root -m 0755 \
     "${repo_root}/ops/deploy/verify-cloudflare-origin-pull-ca" \
     /usr/local/sbin/verify-cloudflare-origin-pull-ca
 if [[ "${target}" == "production" ]]; then
+    install -o root -g root -m 0755 \
+        "${repo_root}/ops/deploy/verify-production-nginx-boundary" \
+        /usr/local/sbin/verify-production-nginx-boundary
     install -o root -g root -m 0755 \
         "${repo_root}/ops/deploy/verify-tailscale-admin-access" \
         /usr/local/sbin/verify-tailscale-admin-access
@@ -461,6 +465,7 @@ if [[ "${target}" == "production" ]]; then
         /etc/nginx/sites-enabled/sitbank
     nginx -t
     systemctl reload nginx
+    /usr/local/sbin/verify-production-nginx-boundary
 fi
 
 if [[ "${target}" == "staging" ]]; then

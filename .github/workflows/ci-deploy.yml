@@ -1413,7 +1413,7 @@ jobs:
           fi
 
           readonly private_admin_url="https://${TAILSCALE_PRIVATE_ADMIN_HOST}"
-          if curl --silent --head --max-time 8 \
+          if curl --silent --request GET --max-time 8 \
             --output /dev/null "${private_admin_url}/login"; then
             echo "::error::Private admin responded before the protected runner joined the tailnet."
             exit 1
@@ -1442,7 +1442,7 @@ jobs:
           fi
 
           private_status="$(
-            curl --silent --show-error --head --max-time 15 \
+            curl --silent --show-error --request GET --max-time 15 \
               --output /dev/null --write-out '%{http_code}' \
               "https://${TAILSCALE_PRIVATE_ADMIN_HOST}/login"
           )"

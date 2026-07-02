@@ -369,17 +369,19 @@ sudo /usr/local/sbin/verify-tailscale-admin-access --mode serve
 ```
 
 Serve mode succeeds only when the local Tailscale node reports `Running`,
-Funnel is disabled, the admin service has only the
+Tailscale SSH and Funnel are disabled, the admin service has only the
 `127.0.0.1:5002` listener, loopback readiness returns `200`, Nginx contains
 neither an admin-port upstream nor the private Tailscale hostname, Serve
 exposes only `admin-sitbank.tailca101b.ts.net:443` to
-`http://127.0.0.1:5002`, and the private `/login` entrypoint returns `200`.
+`http://127.0.0.1:5002`, and an unauthenticated `GET` to the private `/login`
+entrypoint returns `200`.
 The script reads local status and configuration only. It does not run
 `tailscale up`, change Serve or Funnel, modify policy, call a Tailscale API, or
 use OAuth/auth-key material.
 
-`--mode ssh` verifies the same local Tailscale, Funnel, listener, readiness,
-and Nginx prerequisites for a reviewed private port-forward diagnostic path,
+`--mode ssh` verifies the same local Tailscale, Tailscale-SSH-disabled,
+Funnel, listener, readiness, and Nginx prerequisites for a reviewed private
+port-forward diagnostic path,
 but does not claim that a remote tunnel or browser session was tested.
 `--mode documentation-only` validates arguments and emits a warning without
 performing live checks; it is for pre-rollout documentation review and is not
@@ -548,10 +550,11 @@ explicit prohibited classes above.
 The Cloudflare Access-protected staging target `staging-sitbank.pp.ua` uses a
 staging-specific acceptance gate because unauthenticated HTTP requests should
 receive a `302 Found` Access challenge before the app. The staging scan still
-fails unless TLS 1.0 and TLS 1.1 are not offered, TLS 1.2 and TLS 1.3 are
-offered, certificate hostname/trust and chain checks are OK, the certificate
-is not expired, HSTS meets the scanner minimum, insecure redirects are absent,
-and the final `overall_grade` is `A` or `A+`. Generic LUCKY13 wording and
+fails unless TLS 1.0 and TLS 1.1 are not offered and TLS 1.3 is offered.
+TLS 1.2 may remain available for compatibility but is optional for staging.
+Certificate hostname/trust and chain checks must be OK, the certificate must
+not be expired, HSTS must meet the scanner minimum, insecure redirects must be
+absent, and the final `overall_grade` must be `A` or `A+`. Generic LUCKY13 wording and
 `cipherlist_OBSOLETED: offered` on Cloudflare Universal SSL are retained as
 review evidence for protected staging, not automatic failures.
 
@@ -674,6 +677,17 @@ served through DNS and the deployed edge.
 ## Production Edge and Network Hardening
 
 The reviewed production bootstrap installs and enables the production edge from `ops/nginx/sitbank-default.conf`, `ops/nginx/sitbank-production.conf`, `ops/nginx/sitbank-production-rate-limits.conf`, `ops/nginx-proxy-headers.conf`, and `ops/nginx/sitbank-tls-policy.conf`. The shared default config owns unknown-host rejection so production and staging can run on the same EC2 without duplicate Nginx `default_server` listeners. Any change to those files requires a production bootstrap after merge.
+
+Production bootstrap also installs
+`/usr/local/sbin/verify-production-nginx-boundary`. Bootstrap runs it after
+Nginx reload, and every normal production deploy runs it before deployment
+starts. The verifier inspects the loaded `nginx -T` state and fails closed if
+the raw-IP HTTP redirect, production Authenticated Origin Pull CA/client
+verification, six-month HSTS, default HTTPS rejection, or public-admin denial
+is stale. Normal deploy does not repair Nginx. Rerun the trusted production
+bootstrap, confirm Cloudflare Authenticated Origin Pull remains enabled with
+sanitized provider evidence, and then retry deployment. Repository and host
+checks do not by themselves prove live Cloudflare provider settings.
 
 - Public ingress is TCP `80` and `443` only.
 - GitHub deployment SSH reaches private Tailscale targets through separate

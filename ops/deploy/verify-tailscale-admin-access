@@ -158,6 +158,22 @@ def verify_tailscale_running(runner: Runner) -> None:
         raise VerificationError("Tailscale node is not in the Running state")
 
 
+def verify_tailscale_ssh_disabled(runner: Runner) -> None:
+    raw = _require_success(
+        runner(("tailscale", "debug", "prefs")),
+        "Tailscale preferences",
+    )
+    preferences = _load_json(raw, "Tailscale preferences")
+    if (
+        not isinstance(preferences, dict)
+        or "RunSSH" not in preferences
+        or preferences["RunSSH"] is not False
+    ):
+        raise VerificationError(
+            "Tailscale SSH is enabled or its disabled state cannot be proved"
+        )
+
+
 def discover_private_admin_host(runner: Runner) -> str:
     raw = _require_success(
         runner(("tailscale", "status", "--json")),
@@ -398,7 +414,8 @@ def verify_private_admin_url(
             "curl",
             "--silent",
             "--show-error",
-            "--head",
+            "--request",
+            "GET",
             "--output",
             "/dev/null",
             "--write-out",
@@ -410,7 +427,7 @@ def verify_private_admin_url(
     )
     if result.returncode != 0 or result.stdout.strip() != "200":
         raise VerificationError(
-            "private Tailscale admin login did not return the expected HTTP 200"
+            "private Tailscale admin login GET did not return the expected HTTP 200"
         )
 
 
@@ -432,6 +449,10 @@ def verify_host(
 
     checks: list[tuple[str, Callable[[], None]]] = [
         ("Tailscale node is running", lambda: verify_tailscale_running(runner)),
+        (
+            "Tailscale SSH is disabled",
+            lambda: verify_tailscale_ssh_disabled(runner),
+        ),
         ("Tailscale Funnel is disabled", lambda: verify_funnel_disabled(runner)),
         (
             "admin listener is loopback-only",
@@ -464,7 +485,7 @@ def verify_host(
                     ),
                 ),
                 (
-                    "private Tailscale admin login returns HTTP 200",
+                    "private Tailscale admin login GET returns HTTP 200",
                     lambda: verify_private_admin_url(runner, private_admin_host),
                 ),
             ]

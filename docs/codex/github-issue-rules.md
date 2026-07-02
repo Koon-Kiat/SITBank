@@ -195,7 +195,7 @@ Keep it short. Usually this is enough:
 Include the coverage command only when coverage generation or coverage config is directly relevant:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q -n auto --cov=. --cov-config=.coveragerc --cov-report=xml:coverage.xml --cov-report=term
+.\.venv\Scripts\python.exe -m pytest -q -n 4 --cov=. --cov-config=.coveragerc --cov-report=xml:coverage.xml --cov-report=term
 ```
 
 Do not include long generic SonarQube boilerplate for docs-only or simple workflow-evidence issues.
@@ -206,7 +206,7 @@ Always include:
 
 ```powershell
 git diff --check
-.\.venv\Scripts\python.exe -m pytest -q -n auto
+.\.venv\Scripts\python.exe -m pytest -q -n 4
 ```
 
 Add targeted tests before the full suite only when a likely target file is known.

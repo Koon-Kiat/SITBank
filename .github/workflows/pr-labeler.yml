@@ -45,6 +45,7 @@ jobs:
           fi
 
       - name: Ensure standard labels exist
+        id: ensure-labels
         if: steps.trusted-policy.outputs.available == 'true'
         shell: bash
         env:
@@ -62,6 +63,7 @@ jobs:
           done < "${definitions_file}"
 
       - name: Add bounded pull request labels
+        id: apply-labels
         if: steps.trusted-policy.outputs.available == 'true'
         shell: bash
         env:
@@ -92,3 +94,26 @@ jobs:
           fi
           IFS=,
           gh pr edit "${pr_number}" --add-label "${labels[*]}"
+
+      - name: Summarize pull request labels
+        if: ${{ always() }}
+        shell: bash
+        env:
+          POLICY_AVAILABLE: ${{ steps.trusted-policy.outputs.available }}
+          ENSURE_OUTCOME: ${{ steps.ensure-labels.outcome }}
+          APPLY_OUTCOME: ${{ steps.apply-labels.outcome }}
+        run: |
+          {
+            echo "## Pull request label policy"
+            echo
+            echo "- Trusted base policy available: \`${POLICY_AVAILABLE:-unknown}\`"
+            echo "- Standard-label reconciliation: **${ENSURE_OUTCOME}**"
+            echo "- Label decision: **${APPLY_OUTCOME}**"
+            if [[ -s "${RUNNER_TEMP}/computed-labels.txt" ]]; then
+              echo "- Computed labels:"
+              sed -n '1,20s/^/  - `&`/p' "${RUNNER_TEMP}/computed-labels.txt"
+            else
+              echo "- Computed labels: none or unavailable."
+            fi
+            echo "- Scope: trusted base policy plus bounded pull request metadata and changed paths."
+          } >> "${GITHUB_STEP_SUMMARY}"

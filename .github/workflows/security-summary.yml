@@ -1,0 +1,161 @@
+name: Non-deploy security summary
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - edited
+      - ready_for_review
+  push:
+    branches:
+      - main
+
+permissions:
+  checks: read
+  contents: read
+
+concurrency:
+  group: security-summary-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  summarize:
+    name: Consolidated non-deploy security
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Wait for and summarize independent security checks
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        env:
+          TARGET_SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          DEPENDABOT_PR: ${{ github.event.pull_request.user.login == 'dependabot[bot]' }}
+          PR_CHECKS: >-
+            ["Python analysis","Commit message","Local ephemeral application",
+            "Full-history secret scan","Repository Dockerfiles",
+            "Label pull request","Pull request title",
+            "Generate CycloneDX source SBOM","High-severity SAST",
+            "Repository shell scripts"]
+          MAIN_CHECKS: >-
+            ["Python analysis","Full-history secret scan",
+            "Repository Dockerfiles","Generate CycloneDX source SBOM",
+            "Collect informational Scorecard evidence","High-severity SAST",
+            "Repository shell scripts"]
+        with:
+          script: |
+            const fs = require("fs");
+            const expected = JSON.parse(
+              process.env.EVENT_NAME === "pull_request"
+                ? process.env.PR_CHECKS
+                : process.env.MAIN_CHECKS,
+            );
+            const terminalConclusions = new Set([
+              "success",
+              "failure",
+              "neutral",
+              "cancelled",
+              "skipped",
+              "timed_out",
+              "action_required",
+              "stale",
+              "startup_failure",
+            ]);
+
+            async function loadChecks() {
+              return github.paginate(github.rest.checks.listForRef, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: process.env.TARGET_SHA,
+                per_page: 100,
+              });
+            }
+
+            function latestChecks(runs) {
+              const selected = new Map();
+              for (const run of runs) {
+                if (!expected.includes(run.name)) continue;
+                const current = selected.get(run.name);
+                if (!current || run.id > current.id) selected.set(run.name, run);
+              }
+              return selected;
+            }
+
+            function isExpectedSkip(name) {
+              return process.env.DEPENDABOT_PR === "true"
+                && name === "Pull request title";
+            }
+
+            let selected = new Map();
+            for (let attempt = 0; attempt < 75; attempt += 1) {
+              selected = latestChecks(await loadChecks());
+              const allTerminal = expected.every((name) => {
+                if (isExpectedSkip(name)) return true;
+                const run = selected.get(name);
+                return run
+                  && run.status === "completed"
+                  && terminalConclusions.has(run.conclusion);
+              });
+              if (allTerminal) break;
+              if (attempt < 74) {
+                await new Promise((resolve) => setTimeout(resolve, 20000));
+              }
+            }
+
+            const rows = [];
+            let rollupFailed = false;
+            for (const name of expected) {
+              const run = selected.get(name);
+              let status;
+              if (isExpectedSkip(name)) {
+                status = "expected-skipped";
+              } else if (!run) {
+                status = "unknown";
+                rollupFailed = true;
+              } else if (run.status !== "completed") {
+                status = "pending";
+                rollupFailed = true;
+              } else if (run.conclusion === "success") {
+                status = "passed";
+              } else if (run.conclusion === "skipped") {
+                status = "skipped";
+                rollupFailed = true;
+              } else {
+                status = "failed";
+                rollupFailed = true;
+              }
+              const details = run?.details_url?.startsWith("https://github.com/")
+                ? `[individual job](${run.details_url})`
+                : "GitHub checks";
+              rows.push(`| ${name} | **${status}** | ${details} |`);
+            }
+
+            const lines = [
+              "## Non-deploy security rollup",
+              "",
+              process.env.EVENT_NAME === "pull_request"
+                ? "This pull request rollup summarizes independent non-deploy security jobs."
+                : "This default-branch rollup summarizes independent security evidence for the merged commit.",
+              "",
+              "| Check | Status | Details |",
+              "| --- | --- | --- |",
+              ...rows,
+              "| CI, publish, and deploy | **not in scope** | `.github/workflows/ci-deploy.yml` |",
+              "",
+              "Individual job summaries, logs, code-scanning views, and artifacts remain the source of truth for detailed findings.",
+              "This rollup uses read-only permissions and does not replace or alter any security gate.",
+              "",
+            ];
+            fs.appendFileSync(
+              process.env.GITHUB_STEP_SUMMARY,
+              `${lines.join("\n")}\n`,
+              { encoding: "utf8" },
+            );
+            if (rollupFailed) {
+              core.setFailed(
+                "One or more non-deploy security checks failed, were unexpectedly skipped, remained pending, or were unknown.",
+              );
+            }

@@ -114,7 +114,7 @@ Before finishing:
 
 ```powershell
 git diff --check
-.\.venv\Scripts\python.exe -m pytest -q -n auto
+.\.venv\Scripts\python.exe -m pytest -q -n 4
 ```
 
 If coverage-relevant source code, workflow tests, documentation checks, or test structure changed, also run the project coverage command that generates `coverage.xml` for SonarQube/SonarCloud import.
