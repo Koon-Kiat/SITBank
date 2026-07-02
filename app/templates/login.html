@@ -33,7 +33,6 @@
           <button class="password-toggle" type="button" data-password-toggle="{{ form.password.id }}" aria-label="Show password">Show</button>
         </div>
         {% for error in form.password.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
-        <p class="hint">Maximum password length is {{ config["PASSWORD_MAX_CHARS"] }} characters.</p>
       </div>
 
       {{ turnstile.widget("customer_login") }}

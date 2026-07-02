@@ -96,33 +96,33 @@
     });
   }
 
+  function startResendCountdown(button, seconds) {
+    const originalLabel = button.textContent;
+    button.disabled = true;
+    (function tick() {
+      if (seconds <= 0) {
+        button.disabled = false;
+        button.textContent = originalLabel;
+        return;
+      }
+      button.textContent = "Try again in " + seconds + "s";
+      seconds--;
+      setTimeout(tick, 1000);
+    }());
+  }
+
   globalThis.addEventListener("DOMContentLoaded", function () {
 
-    function startResendCountdown(button, seconds) {
-      var originalLabel = button.textContent;
-      button.disabled = true;
-      (function tick() {
-        if (seconds <= 0) {
-          button.disabled = false;
-          button.textContent = originalLabel;
-          return;
-        }
-        button.textContent = "Try again in " + seconds + "s";
-        seconds--;
-        setTimeout(tick, 1000);
-      }());
-    }
-
     document.querySelectorAll("[data-otp-resend-countdown]").forEach(function (button) {
-      var seconds = parseInt(button.dataset.otpResendCountdown, 10);
+      const seconds = Number.parseInt(button.dataset.otpResendCountdown, 10);
       if (!seconds || seconds <= 0) { return; }
       startResendCountdown(button, seconds);
     });
 
-    var otpRequestForm = document.querySelector("[data-otp-request-form]");
+    const otpRequestForm = document.querySelector("[data-otp-request-form]");
     if (otpRequestForm) {
       otpRequestForm.addEventListener("submit", function () {
-        var button = otpRequestForm.querySelector("[type=submit]");
+        const button = otpRequestForm.querySelector("[type=submit]");
         if (button && !button.disabled) {
           startResendCountdown(button, 60);
         }

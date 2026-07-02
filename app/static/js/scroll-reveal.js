@@ -1,5 +1,5 @@
 (function () {
-  var mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+  const mq = globalThis.matchMedia('(prefers-reduced-motion: reduce)');
 
   function markAllVisible() {
     document.querySelectorAll('[data-reveal]').forEach(function (el) {
@@ -12,12 +12,12 @@
     return;
   }
 
-  if (!('IntersectionObserver' in window)) {
+  if (!('IntersectionObserver' in globalThis)) {
     markAllVisible();
     return;
   }
 
-  var observer = new IntersectionObserver(
+  const observer = new IntersectionObserver(
     function (entries) {
       entries.forEach(function (entry) {
         if (entry.isIntersecting) {

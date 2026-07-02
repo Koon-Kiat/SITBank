@@ -457,7 +457,7 @@ img {
   align-content: center;
   border-radius: var(--radius);
   padding: clamp(32px, 5vw, 56px);
-  background: linear-gradient(155deg, #042322 0%, #0a5452 55%, #107a74 100%);
+  background: linear-gradient(155deg, #1a0208 0%, #5a0a18 45%, #991222 80%, #c8102e 100%);
   color: #ffffff;
 }
 
@@ -486,7 +486,7 @@ img {
 
 .auth-intro .notice-icon {
   background: rgba(255, 255, 255, 0.14);
-  color: rgba(255, 255, 255, 0.9);
+  color: #ffffff;
   box-shadow: none;
 }
 
@@ -1648,12 +1648,6 @@ th {
   border: 0;
 }
 
-.form-divider {
-  border: 0;
-  border-top: 1px solid var(--line);
-  margin: var(--space-5) 0;
-}
-
 .key-list {
   display: grid;
   gap: var(--space-3);
@@ -2502,6 +2496,7 @@ th {
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+  animation: lp-enter-up 440ms cubic-bezier(0.16, 1, 0.3, 1)  60ms both;
 }
 
 .lp-headline {
@@ -2511,6 +2506,7 @@ th {
   line-height: 1.02;
   letter-spacing: -0.04em;
   color: var(--text);
+  animation: lp-enter-up 540ms cubic-bezier(0.16, 1, 0.3, 1) 150ms both;
 }
 
 .lp-headline-accent {
@@ -2523,6 +2519,7 @@ th {
   font-size: 1.08rem;
   line-height: 1.75;
   color: var(--muted);
+  animation: lp-enter-up 540ms cubic-bezier(0.16, 1, 0.3, 1) 270ms both;
 }
 
 .lp-hero-ctas {
@@ -2532,6 +2529,7 @@ th {
   gap: var(--space-4);
   flex-wrap: wrap;
   margin-top: var(--space-3);
+  animation: lp-enter-up 480ms cubic-bezier(0.16, 1, 0.3, 1) 370ms both;
 }
 
 .lp-link-login {
@@ -2736,7 +2734,7 @@ th {
   height: 44px;
   border-radius: 50%;
   background: rgba(200, 16, 46, 0.25);
-  color: #ff8fa3;
+  color: #ffffff;
   flex-shrink: 0;
 }
 
@@ -2909,11 +2907,6 @@ th {
   to   { opacity: 1; transform: translateY(0); }
 }
 
-.lp-eyebrow   { animation: lp-enter-up 440ms cubic-bezier(0.16, 1, 0.3, 1)  60ms both; }
-.lp-headline  { animation: lp-enter-up 540ms cubic-bezier(0.16, 1, 0.3, 1) 150ms both; }
-.lp-sub       { animation: lp-enter-up 540ms cubic-bezier(0.16, 1, 0.3, 1) 270ms both; }
-.lp-hero-ctas { animation: lp-enter-up 480ms cubic-bezier(0.16, 1, 0.3, 1) 370ms both; }
-
 /* ── Scroll reveal ── */
 
 [data-reveal] {
@@ -3077,12 +3070,6 @@ th {
   font-weight: 600;
 }
 
-/* ── Auth intro ── */
-
-.auth-intro {
-  background: linear-gradient(155deg, #1a0208 0%, #5a0a18 45%, #991222 80%, #c8102e 100%);
-}
-
 /* ── Auth benefits list (register left panel) ── */
 
 .auth-benefits {
@@ -3109,7 +3096,7 @@ th {
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.18);
+  background: rgba(0, 0, 0, 0.22);
   color: #ffffff;
   flex-shrink: 0;
 }

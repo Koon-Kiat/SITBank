@@ -397,7 +397,7 @@ def test_password_templates_do_not_truncate_and_show_max_length_guidance(client)
         f"{PASSWORD_RECOMMENDED_MIN_LENGTH} or more is recommended."
     ).encode("utf-8")
     assert expected_guidance in register_response.data
-    assert b"Maximum password length is 256 characters." in login_response.data
+    assert b"Maximum password length is 256 characters." not in login_response.data
     assert expected_guidance in change_response.data
     assert b"Maximum password length is 256 characters." in change_response.data
 
