@@ -89,6 +89,23 @@ jobs:
                 && name === "Pull request title";
             }
 
+            function runSummaryUrl(run) {
+              const detailsUrl = run?.details_url;
+              if (!detailsUrl) return null;
+              try {
+                const url = new URL(detailsUrl);
+                if (url.protocol !== "https:" || url.hostname !== "github.com") {
+                  return null;
+                }
+                const path = url.pathname.match(
+                  /^\/[^/]+\/[^/]+\/actions\/runs\/\d+(?=\/|$)/,
+                );
+                return path ? `${url.origin}${path[0]}` : null;
+              } catch {
+                return null;
+              }
+            }
+
             let selected = new Map();
             for (let attempt = 0; attempt < 75; attempt += 1) {
               selected = latestChecks(await loadChecks());
@@ -121,24 +138,25 @@ jobs:
               const run = selected.get(name);
               let status;
               if (isExpectedSkip(name)) {
-                status = "expected-skipped";
+                status = "Expected skipped";
               } else if (!run) {
-                status = "unknown";
+                status = "Unknown";
                 rollupFailed = true;
               } else if (run.status !== "completed") {
-                status = "pending";
+                status = "Pending";
                 rollupFailed = true;
               } else if (run.conclusion === "success") {
-                status = "passed";
+                status = "Passed";
               } else if (run.conclusion === "skipped") {
-                status = "skipped";
+                status = "Skipped";
                 rollupFailed = true;
               } else {
-                status = "failed";
+                status = "Failed";
                 rollupFailed = true;
               }
-              const details = run?.details_url?.startsWith("https://github.com/")
-                ? `[individual job](${run.details_url})`
+              const summaryUrl = runSummaryUrl(run);
+              const details = summaryUrl
+                ? `[Individual job](${summaryUrl})`
                 : "GitHub checks";
               rows.push(`| ${name} | **${status}** | ${details} |`);
             }
@@ -153,7 +171,7 @@ jobs:
               "| Check | Status | Details |",
               "| --- | --- | --- |",
               ...rows,
-              "| CI, publish, and deploy | **not in scope** | `.github/workflows/ci-deploy.yml` |",
+              "| CI, publish, and deploy | **Not in scope** | `.github/workflows/ci-deploy.yml` |",
               "",
               "Individual job summaries, logs, code-scanning views, and artifacts remain the source of truth for detailed findings.",
               "This rollup uses read-only permissions and does not replace or alter any security gate.",

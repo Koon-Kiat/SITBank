@@ -83,9 +83,10 @@ def test_rollup_represents_every_pr_and_main_security_check():
     assert set(yaml.safe_load(step["env"]["MAIN_CHECKS"])) == MAIN_CHECK_NAMES
     assert "GITHUB_STEP_SUMMARY" in step["with"]["script"]
     assert "Individual job summaries" in step["with"]["script"]
+    assert "[Individual job]" in step["with"]["script"]
     assert "CI, publish, and deploy" in step["with"]["script"]
     assert ".github/workflows/ci-deploy.yml" in step["with"]["script"]
-    assert "not in scope" in step["with"]["script"]
+    assert "**Not in scope**" in step["with"]["script"]
     assert "pull request rollup" in step["with"]["script"]
     assert "default-branch rollup" in step["with"]["script"]
 
@@ -96,12 +97,12 @@ def test_rollup_distinguishes_all_required_states_and_fails_unknown():
     ]
 
     for status in (
-        "passed",
-        "failed",
-        "skipped",
-        "expected-skipped",
-        "pending",
-        "unknown",
+        "Passed",
+        "Failed",
+        "Skipped",
+        "Expected skipped",
+        "Pending",
+        "Unknown",
     ):
         assert f'"{status}"' in script
     assert "core.setFailed" in script
@@ -110,6 +111,18 @@ def test_rollup_distinguishes_all_required_states_and_fails_unknown():
     assert "allTerminal || terminalFailure" in script
     assert "polling attempt" in script
     assert "read-only permissions" in script
+
+
+def test_rollup_links_individual_jobs_to_their_run_summaries():
+    script = _load(WORKFLOW_PATH)[1]["jobs"]["summarize"]["steps"][0]["with"][
+        "script"
+    ]
+
+    assert "function runSummaryUrl(run)" in script
+    assert 'url.hostname !== "github.com"' in script
+    assert r"\/actions\/runs\/\d+" in script
+    assert "`[Individual job](${summaryUrl})`" in script
+    assert "`[Individual job](${run.details_url})`" not in script
 
 
 def test_each_independent_security_job_writes_a_readable_summary():
