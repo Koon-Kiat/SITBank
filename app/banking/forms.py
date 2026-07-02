@@ -22,6 +22,50 @@ _MFA_CODE_LENGTH_MESSAGE = "MFA code must be exactly 6 digits"
 _INVALID_STEP_UP_TOKEN_MESSAGE = "Invalid step-up token"
 
 
+def _totp_code_field(*, required: bool = True) -> StringField:
+    return StringField(
+        _AUTHENTICATOR_CODE_LABEL,
+        validators=[
+            InputRequired() if required else Optional(),
+            Regexp(TOTP_RE, message=_MFA_CODE_LENGTH_MESSAGE),
+        ],
+    )
+
+
+def _stepup_token_field() -> HiddenField:
+    return HiddenField(
+        validators=[
+            Optional(),
+            Regexp(STEP_UP_TOKEN_RE, message=_INVALID_STEP_UP_TOKEN_MESSAGE),
+        ],
+    )
+
+
+def _amount_field() -> StringField:
+    return StringField(
+        "Amount (SGD)",
+        validators=[
+            InputRequired(),
+            Length(max=13),
+            Regexp(AMOUNT_RE, message="Enter a valid amount (e.g. 10.00)"),
+        ],
+    )
+
+
+def _reference_field() -> StringField:
+    return StringField(
+        "Reference (optional)",
+        validators=[
+            Optional(),
+            Length(max=128),
+            Regexp(
+                REFERENCE_RE,
+                message="Reference may only contain letters, numbers, spaces, and basic punctuation",
+            ),
+        ],
+    )
+
+
 class AddPayeeForm(FlaskForm):
     nickname = StringField(
         "Nickname",
@@ -41,19 +85,8 @@ class AddPayeeForm(FlaskForm):
             Regexp(ACCOUNT_NUMBER_RE, message="Account number must be exactly 9 digits"),
         ],
     )
-    totp_code = StringField(
-        _AUTHENTICATOR_CODE_LABEL,
-        validators=[
-            InputRequired(),
-            Regexp(TOTP_RE, message=_MFA_CODE_LENGTH_MESSAGE),
-        ],
-    )
-    stepup_token = HiddenField(
-        validators=[
-            Optional(),
-            Regexp(STEP_UP_TOKEN_RE, message=_INVALID_STEP_UP_TOKEN_MESSAGE),
-        ],
-    )
+    totp_code = _totp_code_field()
+    stepup_token = _stepup_token_field()
 
 
 class PayupPhoneForm(FlaskForm):
@@ -67,41 +100,13 @@ class PayupPhoneForm(FlaskForm):
 
 
 class PayupAmountForm(FlaskForm):
-    amount = StringField(
-        "Amount (SGD)",
-        validators=[
-            InputRequired(),
-            Length(max=13),
-            Regexp(AMOUNT_RE, message="Enter a valid amount (e.g. 10.00)"),
-        ],
-    )
-    reference = StringField(
-        "Reference (optional)",
-        validators=[
-            Optional(),
-            Length(max=128),
-            Regexp(
-                REFERENCE_RE,
-                message="Reference may only contain letters, numbers, spaces, and basic punctuation",
-            ),
-        ],
-    )
+    amount = _amount_field()
+    reference = _reference_field()
 
 
 class PayupConfirmForm(FlaskForm):
-    totp_code = StringField(
-        _AUTHENTICATOR_CODE_LABEL,
-        validators=[
-            Optional(),
-            Regexp(TOTP_RE, message=_MFA_CODE_LENGTH_MESSAGE),
-        ],
-    )
-    stepup_token = HiddenField(
-        validators=[
-            Optional(),
-            Regexp(STEP_UP_TOKEN_RE, message=_INVALID_STEP_UP_TOKEN_MESSAGE),
-        ],
-    )
+    totp_code = _totp_code_field(required=False)
+    stepup_token = _stepup_token_field()
 
 
 class TransferLimitsForm(FlaskForm):
@@ -114,51 +119,12 @@ class TransferLimitsForm(FlaskForm):
             Regexp(AMOUNT_RE, message="Enter a valid amount (e.g. 750.00)"),
         ],
     )
-    totp_code = StringField(
-        _AUTHENTICATOR_CODE_LABEL,
-        validators=[
-            InputRequired(),
-            Regexp(TOTP_RE, message=_MFA_CODE_LENGTH_MESSAGE),
-        ],
-    )
-    stepup_token = HiddenField(
-        validators=[
-            Optional(),
-            Regexp(STEP_UP_TOKEN_RE, message=_INVALID_STEP_UP_TOKEN_MESSAGE),
-        ],
-    )
+    totp_code = _totp_code_field()
+    stepup_token = _stepup_token_field()
 
 
 class TransferForm(FlaskForm):
-    amount = StringField(
-        "Amount (SGD)",
-        validators=[
-            InputRequired(),
-            Length(max=13),
-            Regexp(AMOUNT_RE, message="Enter a valid amount (e.g. 10.00)"),
-        ],
-    )
-    reference = StringField(
-        "Reference (optional)",
-        validators=[
-            Optional(),
-            Length(max=128),
-            Regexp(
-                REFERENCE_RE,
-                message="Reference may only contain letters, numbers, spaces, and basic punctuation",
-            ),
-        ],
-    )
-    totp_code = StringField(
-        _AUTHENTICATOR_CODE_LABEL,
-        validators=[
-            InputRequired(),
-            Regexp(TOTP_RE, message=_MFA_CODE_LENGTH_MESSAGE),
-        ],
-    )
-    stepup_token = HiddenField(
-        validators=[
-            Optional(),
-            Regexp(STEP_UP_TOKEN_RE, message=_INVALID_STEP_UP_TOKEN_MESSAGE),
-        ],
-    )
+    amount = _amount_field()
+    reference = _reference_field()
+    totp_code = _totp_code_field()
+    stepup_token = _stepup_token_field()

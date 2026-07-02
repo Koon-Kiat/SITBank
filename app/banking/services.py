@@ -286,6 +286,23 @@ def _record_idempotency_key_use(
         raise AuthError("Idempotency key already used for a different transaction request", 409)
 
 
+def _lock_transfer_participants(sender_id: int, recipient_id: int) -> tuple[User, User]:
+    """Lock both accounts in consistent ascending ID order before SELECT FOR
+    UPDATE so concurrent transfers between the same two accounts cannot
+    deadlock.
+    """
+    lock_ids = sorted([sender_id, recipient_id])
+    locked_rows = (
+        User.query
+        .filter(User.id.in_(lock_ids))
+        .order_by(User.id.asc())
+        .with_for_update()
+        .all()
+    )
+    locked = {u.id: u for u in locked_rows}
+    return locked[sender_id], locked[recipient_id]
+
+
 def execute_local_transfer(
     *,
     sender: User,
@@ -429,19 +446,7 @@ def execute_local_transfer(
         db.session.commit()
         raise AuthError("Transfer amount is out of the allowed range.", 400)
 
-    # Lock rows in consistent ascending ID order before SELECT FOR UPDATE so
-    # concurrent transfers between the same two accounts cannot deadlock.
-    lock_ids = sorted([sender.id, recipient_user.id])
-    locked_rows = (
-        User.query
-        .filter(User.id.in_(lock_ids))
-        .order_by(User.id.asc())
-        .with_for_update()
-        .all()
-    )
-    locked = {u.id: u for u in locked_rows}
-    locked_sender = locked[sender.id]
-    locked_recipient = locked[recipient_user.id]
+    locked_sender, locked_recipient = _lock_transfer_participants(sender.id, recipient_user.id)
 
     if locked_sender.balance < amount:
         audit_outbound_transfer(
@@ -672,19 +677,7 @@ def execute_payup_transfer(
     reference = (pending_tfr.reference or "")[:128]
     recipient_user = _validate_payup_recipient(sender, pending_tfr.recipient_user_id)
 
-    # Lock rows in consistent ascending ID order before SELECT FOR UPDATE so
-    # concurrent transfers between the same two accounts cannot deadlock.
-    lock_ids = sorted([sender.id, recipient_user.id])
-    locked_rows = (
-        User.query
-        .filter(User.id.in_(lock_ids))
-        .order_by(User.id.asc())
-        .with_for_update()
-        .all()
-    )
-    locked = {u.id: u for u in locked_rows}
-    locked_sender = locked[sender.id]
-    locked_recipient = locked[recipient_user.id]
+    locked_sender, locked_recipient = _lock_transfer_participants(sender.id, recipient_user.id)
 
     # Recompute the daily-limit and step-up decisions under the sender's row lock,
     # which serializes concurrent PayUp transfers from the same sender and makes

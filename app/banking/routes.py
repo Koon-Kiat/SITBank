@@ -462,12 +462,7 @@ def transfer_confirm(payee_id: int):
         flash(_NO_PENDING_TRANSFER_MESSAGE, "warning")
         return redirect(url_for(_PAYEES_ENDPOINT))
 
-    expires_at = (
-        pending_tfr.expires_at
-        if pending_tfr.expires_at.tzinfo
-        else pending_tfr.expires_at.replace(tzinfo=timezone.utc)
-    )
-    if expires_at < datetime.now(timezone.utc):
+    if _as_utc(pending_tfr.expires_at) < datetime.now(timezone.utc):
         session.pop("pending_transfer_token", None)
         flash(_REQUEST_EXPIRED_MESSAGE, "warning")
         return redirect(url_for(_PAYEES_ENDPOINT))
@@ -689,12 +684,7 @@ def payup_confirm():
         flash(_NO_PENDING_TRANSFER_MESSAGE, "warning")
         return redirect(url_for(_PAYUP_ENDPOINT))
 
-    expires_at = (
-        pending_tfr.expires_at
-        if pending_tfr.expires_at.tzinfo
-        else pending_tfr.expires_at.replace(tzinfo=timezone.utc)
-    )
-    if expires_at < datetime.now(timezone.utc):
+    if _as_utc(pending_tfr.expires_at) < datetime.now(timezone.utc):
         session.pop("pending_payup_token", None)
         flash(_REQUEST_EXPIRED_MESSAGE, "warning")
         return redirect(url_for(_PAYUP_ENDPOINT))
