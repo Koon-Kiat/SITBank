@@ -165,3 +165,23 @@ tailnet node. These host scripts install/configure the EC2 node and prove its
 local listener, Nginx, Serve, and Funnel posture. Neither normal CI nor these
 scripts automatically applies the live ACL policy, approves devices, edits
 groups, or proves offboarding; those remain operator-reviewed external state.
+
+The canonical host verifier supports the reviewed Tailscale 1.98.x JSON shape:
+`tailscale serve status --json` contains the HTTPS `TCP` and `Web` mapping, and
+`tailscale funnel status --json` may return that same Serve configuration with
+`AllowFunnel` omitted when Funnel is disabled. Omitted `AllowFunnel` is accepted
+only with the known Serve fields; a truthy `AllowFunnel`, unknown non-empty
+schema, wrong backend, extra endpoint, or unexpected handler fails closed.
+Use these safe diagnostics without uploading raw provider state:
+
+```bash
+sudo tailscale serve status
+sudo tailscale serve status --json | jq .
+sudo tailscale funnel status --json | jq .
+sudo /usr/local/sbin/verify-tailscale-admin-access --mode serve
+```
+
+The host verifier derives its hostname from the local node `DNSName`.
+GitHub-hosted verification instead uses
+`TAILSCALE_PRIVATE_ADMIN_HOST` from the protected `admin-tailscale` environment
+as its single workflow source of truth.

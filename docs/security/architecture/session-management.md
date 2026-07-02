@@ -90,7 +90,7 @@ Transport protections:
 | --- | --- |
 | HTTPS edge | `ops/nginx/sitbank-production.conf`, `ops/nginx/sitbank-staging.conf` |
 | HTTP handling | Production Nginx redirects customer HTTP to HTTPS; public admin non-ACME HTTP returns `403` |
-| HSTS | Production Nginx sets `Strict-Transport-Security "max-age=31536000; includeSubDomains"` |
+| HSTS | Production Nginx sets `Strict-Transport-Security "max-age=15552000; includeSubDomains"` to match the reviewed six-month Cloudflare edge policy |
 | Flask secure cookie enforcement | `SESSION_COOKIE_SECURE`, `SESSION_COOKIE_HTTPONLY`, and `SESSION_COOKIE_SAMESITE` in `config.py` |
 | Proxy trust boundary | `ops/nginx-proxy-headers.conf` and `tests/test_deployment.py::test_proxyfix_trusts_exactly_the_configured_nginx_hop` |
 

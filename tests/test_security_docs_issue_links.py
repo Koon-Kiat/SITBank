@@ -204,6 +204,7 @@ def test_security_docs_are_grouped_and_indexed_by_purpose():
             "admin-and-staging-zero-trust-access.md",
             "cloudflare-staging-access.md",
             "cryptography-and-authentication.md",
+            "production-cloudflare-origin-boundary.md",
             "session-management.md",
             "threat-model.md",
         },

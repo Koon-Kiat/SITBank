@@ -236,8 +236,15 @@ only `tag:admin-sitbank:443`. The admin verification tag cannot reach either
 EC2 deployment SSH destination, and the deployment tags cannot reach the
 private admin HTTPS destination.
 
+`TAILSCALE_PRIVATE_ADMIN_HOST` in the protected `admin-tailscale` GitHub
+Environment is the single workflow source of truth for the private admin
+hostname. Both verification jobs consume it; neither keeps a hostname input or
+fallback. The current provider value is `admin-sitbank.tailca101b.ts.net`.
+`STAGING_EC2_HOST` and `PROD_EC2_HOST` remain separate private SSH deployment
+targets, not admin browser targets.
+
 The workflow fails if the private URL responds before enrollment, then joins
-the tailnet, requires `https://admin-sitbank.tailca101b.ts.net/login` to return
+the tailnet, requires `https://${TAILSCALE_PRIVATE_ADMIN_HOST}/login` to return
 the documented unauthenticated `200`, and logs out. It checks no admin
 credentials, changes no deployment or tailnet state, and enables neither
 Tailscale Serve nor Funnel.
@@ -259,7 +266,10 @@ The production bootstrap separately installs the non-mutating
 loopback listener, Serve mapping, local readiness, Nginx absence, and private
 HTTPS response. The host script uses no GitHub secret or Tailscale credential;
 normal CI covers its contract with stubs and does not claim to inspect live
-Tailscale state.
+Tailscale state. The host verifier derives the local node DNS name from
+`tailscale status --json` unless an operator supplies `PRIVATE_ADMIN_HOST`;
+that live host discovery does not override the protected environment value
+used by workflows.
 
 The separate `ops/tailscale/` host automation installs Tailscale and configures
 the production Serve mapping only after explicit operator confirmation. It is
@@ -399,3 +409,29 @@ by replacing deprecated pins with reviewed full commit SHAs; never change them
 to floating tags. Runtime updates to the live TLS scan must preserve its
 per-target JSON, log, and HTML evidence artifacts, names, failure behavior, and
 retention policy.
+
+## SBOM And OpenSSF Scorecard Evidence
+
+`.github/workflows/sbom.yml` generates
+`sitbank-source-sbom-cyclonedx.json` with pinned Syft 1.46.0 from `dir:.` on
+pull requests to `main`, pushes to `main`, and manual dispatch. It uploads only
+the `sitbank-source-sbom` CycloneDX JSON artifact for 30 days with
+`contents: read` and checkout credentials disabled. Generated SBOM files are
+evidence artifacts and must not be committed.
+
+This source artifact complements the existing Docker Buildx `sbom: true`
+release-image attestation. An explicit image SBOM artifact remains deferred
+until the exact digest-verified release image can be supplied to Syft without
+adding registry write privileges or untrusted-PR credentials. SBOM generation
+is inventory evidence, not vulnerability scanning; dependency audit and Trivy
+remain separate controls.
+
+`.github/workflows/scorecard.yml` runs the official SHA-pinned OpenSSF
+Scorecard action on pushes to `main`, weekly, and by manual dispatch. It is
+informational and not a required pull-request check. The workflow keeps
+`contents: read`, publishes no result to the public Scorecard service, grants
+neither `id-token: write` nor `security-events: write`, and retains the
+`openssf-scorecard-results` SARIF artifact for 30 days. Record the numeric
+baseline and key findings after the first merged run; until then the Dependency
+Review observations are the qualitative baseline and no numeric score is
+claimed.

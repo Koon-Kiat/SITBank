@@ -8,6 +8,7 @@ evidence, and governance records remain easy to navigate.
 - [Access control](architecture/access-control.md)
 - [Admin and staging zero-trust access](architecture/admin-and-staging-zero-trust-access.md)
 - [Cloudflare staging access](architecture/cloudflare-staging-access.md)
+- [Production Cloudflare origin boundary](architecture/production-cloudflare-origin-boundary.md)
 - [Cryptography and authentication](architecture/cryptography-and-authentication.md)
 - [Session management](architecture/session-management.md)
 - [Threat model](architecture/threat-model.md)

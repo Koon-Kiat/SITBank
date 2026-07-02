@@ -196,11 +196,14 @@ Tailscale hostname; Serve exposes only
 control; do not enable Funnel, broaden the listener, or add an Nginx admin
 route to make the check pass.
 
-The reviewed defaults can be overridden with
-`ADMIN_LOOPBACK_HOST`, `ADMIN_LOOPBACK_PORT`, and `PRIVATE_ADMIN_HOST`, or
-their matching command-line flags. Values are strictly validated. Change a
-default only with the Compose, Tailscale, documentation, and tests in the same
-review; there is intentionally no public-admin-host setting.
+The reviewed loopback defaults can be overridden with `ADMIN_LOOPBACK_HOST`
+and `ADMIN_LOOPBACK_PORT`. The verifier derives the private host from the local
+Tailscale node `DNSName`; `PRIVATE_ADMIN_HOST` or `--private-admin-host` is a
+strictly validated diagnostic override. GitHub workflows do not use that
+override: `TAILSCALE_PRIVATE_ADMIN_HOST` in the protected `admin-tailscale`
+environment is their single source of truth. There is intentionally no
+public-admin-host setting; there is intentionally no public-admin-host setting
+in any workflow or runtime configuration.
 
 For a reviewed fallback diagnostic using private SSH port forwarding, first
 run:
@@ -240,6 +243,13 @@ must require manual approval and restrict branches to `main`. Either credential
 must be restricted to `tag:github-ci-admin-verify`; that tag may access only
 `tag:admin-sitbank:443` and must not administer the tailnet or provide broad
 SSH access.
+
+`TAILSCALE_PRIVATE_ADMIN_HOST` is mandatory in the protected
+`admin-tailscale` environment for both GitHub verification jobs. Do not add a
+dispatch hostname input or workflow fallback. Its current provider value is
+`admin-sitbank.tailca101b.ts.net`; update it only after an approved Tailscale
+DNS/Serve change. `STAGING_EC2_HOST` and `PROD_EC2_HOST` remain separate SSH
+deployment targets.
 
 Run the workflow after private DNS, certificates, Tailscale ACLs/tags, Serve
 configuration, or the admin edge changes. It first confirms the private URL is
@@ -284,6 +294,36 @@ operator verification steps are in
 `docs/security/architecture/admin-and-staging-zero-trust-access.md`.
 Provider automation and origin assertion details are in
 `docs/security/architecture/cloudflare-staging-access.md`.
+
+## Production Cloudflare Origin Operations
+
+Production requires Cloudflare Authenticated Origin Pull in addition to
+proxied DNS and `Full (strict)`. Install the reviewed CA at
+`/etc/nginx/sitbank-production-cloudflare-origin-pull-ca.pem`; production
+bootstrap verifies it against the separate
+`/etc/sitbank/cloudflare-origin-pull-ca-allowlist.json` before Nginx reload.
+Do not copy the staging CA path into production configuration.
+
+Expected Cloudflare state is minimum TLS 1.3 with TLS 1.3 and Universal SSL
+enabled; Always Use HTTPS, Automatic HTTPS Rewrites, Certificate Transparency
+Monitoring, and six-month HSTS (`max-age=15552000`, include subdomains) enabled;
+Opportunistic Encryption and HSTS preload disabled. Repository files do not
+prove provider state. Retain sanitized Cloudflare and AWS security-group
+evidence and restrict `443/tcp` to Cloudflare edge ranges where practical.
+
+Verify after production bootstrap:
+
+```powershell
+curl.exe -I https://sitbank.pp.ua/
+curl.exe -I http://18.188.152.24/
+curl.exe -k -I https://18.188.152.24/
+curl.exe -k --resolve sitbank.pp.ua:443:18.188.152.24 -I https://sitbank.pp.ua/
+```
+
+The proxied site succeeds, raw HTTP redirects to the canonical hostname, and
+both direct HTTPS requests fail closed without returning SITBank application
+content. See
+`docs/security/architecture/production-cloudflare-origin-boundary.md`.
 
 ## Root Admin Bootstrap
 
@@ -684,8 +724,8 @@ load-balancer changes outside deployment, then retain the successful run with
 the release or change record. Do not run a public-endpoint scan from ordinary
 pull requests.
 
-Use `docs/runbooks/ppua-dns01-duckdns-retirement.md` for live DNS-01 renewal
-and retired DuckDNS cleanup. Use
+The `pp.ua` DNS-01 migration and DuckDNS retirement are complete. Keep retired
+names out of active Nginx, Certbot, workflow, and TLS-scan configuration. Use
 `docs/runbooks/private-observability-grafana-loki.md` for the private
 Grafana/Loki/Alloy stack; Grafana remains private and is not exposed through
 the SITBank admin app.

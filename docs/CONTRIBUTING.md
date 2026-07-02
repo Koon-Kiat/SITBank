@@ -127,3 +127,11 @@ coverage dashboard without treating its gate as a merge or deployment
 approval. Fork pull requests run coverage but explicitly skip the secret-backed
 upload. See `docs/security/assurance/sonarqube.md` for scope, exclusions, private-project
 plan prerequisites, triage, and false-positive handling.
+
+## Supply-Chain Evidence
+
+Pull requests generate a secret-free CycloneDX JSON source SBOM through
+`.github/workflows/sbom.yml`. Do not commit generated SBOM output. OpenSSF
+Scorecard runs after merge, weekly, or manually as informational evidence; it
+is not a required pull-request check and does not replace dependency review,
+CodeQL, Semgrep, SonarQube Cloud, Trivy, signing, or review.
