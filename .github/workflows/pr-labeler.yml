@@ -111,7 +111,11 @@ jobs:
             echo "- Label decision: **${APPLY_OUTCOME}**"
             if [[ -s "${RUNNER_TEMP}/computed-labels.txt" ]]; then
               echo "- Computed labels:"
-              sed -n '1,20s/^/  - `&`/p' "${RUNNER_TEMP}/computed-labels.txt"
+              label_count=0
+              while IFS= read -r label && (( label_count < 20 )); do
+                printf '  - `%s`\n' "${label}"
+                label_count=$((label_count + 1))
+              done < "${RUNNER_TEMP}/computed-labels.txt"
             else
               echo "- Computed labels: none or unavailable."
             fi

@@ -92,6 +92,9 @@ jobs:
             let selected = new Map();
             for (let attempt = 0; attempt < 75; attempt += 1) {
               selected = latestChecks(await loadChecks());
+              core.info(
+                `Observed ${selected.size}/${expected.length} monitored checks; polling attempt ${attempt + 1}/75.`,
+              );
               const allTerminal = expected.every((name) => {
                 if (isExpectedSkip(name)) return true;
                 const run = selected.get(name);
@@ -99,7 +102,14 @@ jobs:
                   && run.status === "completed"
                   && terminalConclusions.has(run.conclusion);
               });
-              if (allTerminal) break;
+              const terminalFailure = expected.some((name) => {
+                if (isExpectedSkip(name)) return false;
+                const run = selected.get(name);
+                return run
+                  && run.status === "completed"
+                  && run.conclusion !== "success";
+              });
+              if (allTerminal || terminalFailure) break;
               if (attempt < 74) {
                 await new Promise((resolve) => setTimeout(resolve, 20000));
               }

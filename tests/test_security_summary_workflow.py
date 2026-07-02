@@ -103,6 +103,9 @@ def test_rollup_distinguishes_all_required_states_and_fails_unknown():
         assert f'"{status}"' in script
     assert "core.setFailed" in script
     assert "run.status !== \"completed\"" in script
+    assert "const terminalFailure" in script
+    assert "allTerminal || terminalFailure" in script
+    assert "polling attempt" in script
     assert "read-only permissions" in script
 
 
