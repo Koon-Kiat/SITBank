@@ -97,6 +97,9 @@ class DatabaseSessionInterface(SessionInterface):
         now = _utcnow()
         if record.revoked_at is not None:
             return self.session_class(sid=_new_session_id(), new=True)
+        if record.expires_at is None:
+            self._handle_integrity_failure(record, reason="missing_expires_at")
+            return self.session_class(sid=_new_session_id(), new=True)
         if _as_utc_datetime(record.expires_at) <= now:
             _end_session_record(record, ended_reason="expired", now=now)
             _commit_quietly()

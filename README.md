@@ -14,6 +14,9 @@ protected reusable workflow as a required gate after production deployment and
 public production TLS verification. Normal PR and public TLS CI do not join
 the tailnet and do not scan the private hostname.
 
+For centralized verification commands and EC2 operational path lookup, start
+with the [global verification and EC2 path inventory runbook](docs/runbooks/global-verification.md).
+
 Production bootstrap installs the non-mutating
 `/usr/local/sbin/verify-tailscale-admin-access` host preflight. Operators run
 it on EC2 with `--mode serve` to verify the local Tailscale state, Funnel
@@ -67,9 +70,18 @@ Common local test commands:
 .\.venv\Scripts\python.exe -m pytest -q -m security
 .\.venv\Scripts\python.exe -m pytest -q -m deployment
 .\.venv\Scripts\python.exe -m pytest -q -m "not slow"
+
+# Playwright browser E2E smoke tests
+$env:PLAYWRIGHT_BROWSERS_PATH = ".playwright-browsers"
+.\.venv\Scripts\python.exe -m playwright install chromium
+$env:SITBANK_RUN_E2E = "1"
+.\.venv\Scripts\python.exe -m pytest -q tests/e2e
 ```
 
-The `not slow` and focused marker commands are for local iteration only. Pull requests and protected CI still run the full pytest suite, including security, deployment, database session integrity, CSRF, MFA, compatibility-route regression checks, route inventory, production guard, dependency lock, and secret-scanning checks.
+The `not slow` and focused marker commands are for local iteration only. Pull requests and protected CI still run the full pytest suite, including security, deployment, database session integrity, CSRF, MFA, compatibility-route regression checks, route inventory, production guard, dependency lock, and secret-scanning checks. Playwright E2E browser tests run in CI through a dedicated Chromium job; local unscoped pytest runs collect them but skip unless `SITBANK_RUN_E2E=1` is set, and the tests start a loopback Flask server rather than using staging or production hosts.
+
+On non-Windows shells, use `python -m playwright install chromium` before
+`python -m pytest -q tests/e2e`.
 
 For a fuller local check, run `scripts/ci-local`. It runs the full pytest suite
 in parallel with timing output, Python/package/security checks, discovered

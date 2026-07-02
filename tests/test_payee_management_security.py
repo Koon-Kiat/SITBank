@@ -215,6 +215,62 @@ def test_invalid_payee_lookup_is_generic_and_audited(client):
     assert "012000999" not in str(event.event_metadata)
 
 
+def test_payee_add_and_remove_audit_metadata_uses_safe_references(app, client):
+    bob_client = app.test_client()
+    _register_customer(
+        client,
+        username="alice01",
+        email="alice@example.com",
+        phone="91234567",
+        account="012345678",
+    )
+    bob = _register_customer(
+        bob_client,
+        username="bob02",
+        email="bob@example.com",
+        phone="81234567",
+        account="012555999",
+    )
+    _alice, secret = _login_mfa_customer(client)
+
+    nickname = "Sensitive Bob Alias"
+    lookup = client.post(
+        "/banking/payees/add",
+        data={
+            "nickname": nickname,
+            "account_number": bob.account_number,
+            "totp_code": _current_totp(secret),
+        },
+    )
+    confirm = client.post("/banking/payees/confirm")
+    payee = db.session.execute(db.select(Payee).where(Payee.account_number == bob.account_number)).scalar_one()
+    clear_failures("payee_remove", str(_alice.id))
+    removed = client.post(
+        f"/banking/payees/{payee.id}/remove",
+        data={"totp_code": _current_totp(secret)},
+    )
+
+    add_event = db.session.query(SecurityAuditEvent).filter_by(event_type="payee_add", outcome="success").one()
+    remove_event = db.session.query(SecurityAuditEvent).filter_by(
+        event_type="payee_remove",
+        outcome="success",
+    ).one()
+    combined_metadata = f"{add_event.event_metadata} {remove_event.event_metadata}"
+
+    assert lookup.status_code == 302
+    assert confirm.status_code == 302
+    assert removed.status_code == 302
+    assert "payee_account_ref" in add_event.event_metadata
+    assert "payee_account_ref" in remove_event.event_metadata
+    assert remove_event.event_metadata["nickname_present"] is True
+    assert remove_event.event_metadata["nickname_length"] == len(nickname)
+    assert bob.account_number not in combined_metadata
+    assert nickname not in combined_metadata
+    assert "account_number" not in add_event.event_metadata
+    assert "account_number" not in remove_event.event_metadata
+    assert "nickname" not in remove_event.event_metadata
+
+
 def test_self_and_duplicate_payee_are_rejected_before_pending_state(app, client):
     bob_client = app.test_client()
     alice = _register_customer(

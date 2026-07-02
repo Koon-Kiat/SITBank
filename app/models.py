@@ -21,8 +21,8 @@ class User(db.Model):
     account_type = db.Column(db.String(32), nullable=False, default="customer", index=True)
     account_status = db.Column(db.String(32), nullable=False, default="active", index=True)
     full_name = db.Column(db.String(128), nullable=False)
-    phone_number = db.Column(db.String(8), nullable=True, unique=True)
-    account_number = db.Column(db.String(9), nullable=True, unique=True)
+    phone_number = db.Column(db.String(8), nullable=True)
+    account_number = db.Column(db.String(9), nullable=True)
     staff_personal_email = db.Column(db.String(255), nullable=True)
     workplace_email_verified_at = db.Column(db.DateTime(timezone=True), nullable=True)
     password_changed_at = db.Column(db.DateTime(timezone=True), nullable=True)
@@ -63,6 +63,14 @@ class User(db.Model):
     __table_args__ = (
         Index("ix_users_username_lower", func.lower(username), unique=True),
         Index("ix_users_email_lower", func.lower(email), unique=True),
+        Index(
+            "ix_users_phone_number",
+            "phone_number",
+            unique=True,
+            postgresql_where=phone_number.isnot(None),
+            sqlite_where=phone_number.isnot(None),
+        ),
+        Index("ix_users_account_number", "account_number", unique=True),
         db.CheckConstraint(
             "account_type IN ('customer', 'staff', 'admin', 'root_admin')",
             name="ck_users_account_type",
@@ -144,7 +152,7 @@ class RecoveryCode(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
-    code_hmac = db.Column(db.String(64), nullable=False, unique=True)
+    code_hmac = db.Column(db.String(64), nullable=False, unique=True, index=True)
     purpose = db.Column(db.String(40), nullable=False, default="totp_recovery")
     created_at = db.Column(
         db.DateTime(timezone=True),
@@ -189,7 +197,7 @@ class ManualRecoveryRequest(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     identifier_ref = db.Column(db.String(64), nullable=False, index=True)
     user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=True, index=True)
-    status = db.Column(db.String(32), nullable=False, default="pending")
+    status = db.Column(db.String(32), nullable=False, default="pending", index=True)
     requested_ip = db.Column(db.String(64), nullable=False, default="")
     requested_user_agent = db.Column(db.String(256), nullable=False, default="")
     request_count = db.Column(db.Integer, nullable=False, default=1)
@@ -398,6 +406,7 @@ class StaffInvite(db.Model):
     revoked_by = db.relationship("User", foreign_keys=[revoked_by_user_id], backref="revoked_staff_invites")
 
     __table_args__ = (
+        db.UniqueConstraint("token_hash"),
         db.CheckConstraint("role IN ('staff', 'admin')", name="ck_staff_invites_role"),
         db.CheckConstraint(
             "status IN ('pending', 'totp_pending', 'accepted', 'revoked', 'expired')",
@@ -574,11 +583,11 @@ class Transaction(db.Model):
     __tablename__ = "transactions"
 
     id = db.Column(db.Integer, primary_key=True)
-    transaction_ref = db.Column(db.String(36), nullable=False, unique=True, index=True)
+    transaction_ref = db.Column(db.String(36), nullable=False)
     transaction_hash = db.Column(db.String(64), nullable=False, unique=True, index=True)
     sender_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
     recipient_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
-    payee_id = db.Column(db.Integer, db.ForeignKey("payees.id"), nullable=True, index=True)
+    payee_id = db.Column(db.Integer, db.ForeignKey("payees.id", ondelete="SET NULL"), nullable=True, index=True)
     amount = db.Column(db.Numeric(12, 2), nullable=False)
     reference = db.Column(db.String(128), nullable=False, default="")
     status = db.Column(db.String(32), nullable=False, default="completed")
@@ -602,6 +611,8 @@ class Transaction(db.Model):
     payee = db.relationship("Payee", backref="transactions")
 
     __table_args__ = (
+        db.UniqueConstraint("transaction_ref", name="uq_transactions_ref"),
+        Index("ix_transactions_transaction_ref", "transaction_ref"),
         db.CheckConstraint(
             "status IN ('completed', 'failed')",
             name="ck_transactions_status",
@@ -636,6 +647,10 @@ class PendingTransfer(db.Model):
         backref=db.backref("pending_transfers", lazy="selectin"),
     )
     payee = db.relationship("Payee", backref=db.backref("pending_transfers", lazy="selectin"))
+
+    __table_args__ = (
+        db.UniqueConstraint("token", name="uq_pending_transfers_token"),
+    )
 
     def __repr__(self) -> str:
         return f"<PendingTransfer id={self.id!r} user_id={self.user_id!r} consumed={self.consumed_at is not None!r}>"

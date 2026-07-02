@@ -85,7 +85,8 @@ def test_ci_runs_pytest_once_and_hands_coverage_to_sonarqube():
     test_command = next(
         step for step in test_steps if step.get("name") == "Run tests and security checks"
     )["run"]
-    assert ci_text.count("python -m pytest") == 1
+    test_job_text = str(ci["jobs"]["test"])
+    assert test_job_text.count("python -m pytest") == 1
     assert "python -m pytest -q -n auto" in test_command
     assert "--cov-report=xml:coverage.xml" in test_command
     assert "--cov=." in test_command

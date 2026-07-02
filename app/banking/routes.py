@@ -278,7 +278,7 @@ def payees_confirm_submit():
         "payee_add",
         "success",
         user=g.current_user,
-        metadata={"account_number": account_number},
+        metadata={"payee_account_ref": audit_reference("payee_account", account_number)},
     )
 
     cooldown_seconds = current_app.config.get("PAYEE_COOLDOWN_SECONDS", 60)
@@ -325,7 +325,11 @@ def payees_remove_submit(payee_id: int):
         "payee_remove",
         "success",
         user=g.current_user,
-        metadata={"account_number": payee.account_number, "nickname": payee.nickname},
+        metadata={
+            "payee_account_ref": audit_reference("payee_account", payee.account_number),
+            "nickname_present": bool(payee.nickname),
+            "nickname_length": len(payee.nickname or ""),
+        },
     )
     db.session.delete(payee)
     db.session.commit()

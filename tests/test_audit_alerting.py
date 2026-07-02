@@ -293,12 +293,20 @@ def test_audit_hash_chain_records_verifies_and_exports_anchor(app, tmp_path):
     anchor_path = tmp_path / "audit-anchor.json"
     anchor_path.write_text(json.dumps(anchor), encoding="utf-8")
     verify_anchor_cli = runner.invoke(args=["verify-audit-log-chain", "--anchor", str(anchor_path)])
-    stale_anchor = dict(anchor)
-    stale_anchor["latest_event_hash"] = "0" * 64
-    stale_anchor_path = tmp_path / "stale-audit-anchor.json"
-    stale_anchor_path.write_text(json.dumps(stale_anchor), encoding="utf-8")
-    stale_anchor_cli = runner.invoke(
-        args=["verify-audit-log-chain", "--anchor", str(stale_anchor_path)]
+    corrupt_anchor = dict(anchor)
+    corrupt_anchor["latest_event_hash"] = "0" * 64
+    corrupt_anchor_path = tmp_path / "corrupt-audit-anchor.json"
+    corrupt_anchor_path.write_text(json.dumps(corrupt_anchor), encoding="utf-8")
+    corrupt_anchor_cli = runner.invoke(
+        args=["verify-audit-log-chain", "--anchor", str(corrupt_anchor_path)]
+    )
+    future_anchor = dict(anchor)
+    future_anchor["latest_event_id"] = second.id + 1000
+    future_anchor["event_count"] = anchor["event_count"] + 1000
+    future_anchor_path = tmp_path / "future-audit-anchor.json"
+    future_anchor_path.write_text(json.dumps(future_anchor), encoding="utf-8")
+    future_anchor_cli = runner.invoke(
+        args=["verify-audit-log-chain", "--anchor", str(future_anchor_path)]
     )
     app.config["SECURITY_AUDIT_ANCHOR_PATH"] = str(anchor_path)
     configured_anchor_cli = runner.invoke(args=["verify-audit-log-chain"])
@@ -309,13 +317,22 @@ def test_audit_hash_chain_records_verifies_and_exports_anchor(app, tmp_path):
     matching_anchor_alert_cli = runner.invoke(
         args=["check-security-alerts", "--report-only", "--no-delivery"]
     )
-    app.config["SECURITY_AUDIT_ANCHOR_PATH"] = str(stale_anchor_path)
-    stale_anchor_alert_cli = runner.invoke(
+    with app.test_request_context("/audit/after-anchor", method="POST"):
+        audit_event("anchor_drift", "success", metadata={"note": "append-only"})
+    drift_anchor_cli = runner.invoke(args=["verify-audit-log-chain", "--anchor", str(anchor_path)])
+    drift_anchor_alert_cli = runner.invoke(
         args=["check-security-alerts", "--report-only", "--no-delivery"]
     )
-    strict_stale_anchor_alert_cli = runner.invoke(args=["check-security-alerts", "--no-delivery"])
+    strict_drift_anchor_alert_cli = runner.invoke(args=["check-security-alerts", "--no-delivery"])
+    app.config["SECURITY_AUDIT_ANCHOR_PATH"] = str(corrupt_anchor_path)
+    corrupt_anchor_alert_cli = runner.invoke(
+        args=["check-security-alerts", "--report-only", "--no-delivery"]
+    )
+    strict_corrupt_anchor_alert_cli = runner.invoke(args=["check-security-alerts", "--no-delivery"])
     matching_anchor_report = json.loads(matching_anchor_alert_cli.output)
-    stale_anchor_report = json.loads(stale_anchor_alert_cli.output)
+    drift_anchor = json.loads(drift_anchor_cli.output)
+    drift_anchor_report = json.loads(drift_anchor_alert_cli.output)
+    corrupt_anchor_report = json.loads(corrupt_anchor_alert_cli.output)
 
     assert first.previous_event_hash == "0" * 64
     assert len(first.event_hash) == 64
@@ -337,8 +354,10 @@ def test_audit_hash_chain_records_verifies_and_exports_anchor(app, tmp_path):
     assert "top-secret-note" not in anchor_cli.output
     assert verify_anchor_cli.exit_code == 0, verify_anchor_cli.output
     assert json.loads(verify_anchor_cli.output)["anchor_validated"] is True
-    assert stale_anchor_cli.exit_code != 0
-    assert "anchor_mismatch" in stale_anchor_cli.output
+    assert corrupt_anchor_cli.exit_code != 0
+    assert "anchor_event_hash_mismatch" in corrupt_anchor_cli.output
+    assert future_anchor_cli.exit_code != 0
+    assert "anchor_current_behind" in future_anchor_cli.output
     assert configured_anchor_cli.exit_code == 0, configured_anchor_cli.output
     assert json.loads(configured_anchor_cli.output)["anchor_validated"] is True
     assert configured_export_cli.exit_code == 0, configured_export_cli.output
@@ -352,14 +371,33 @@ def test_audit_hash_chain_records_verifies_and_exports_anchor(app, tmp_path):
         alert["alert_type"] == "audit_anchor_mismatch"
         for alert in matching_anchor_report["alerts"]
     )
-    assert stale_anchor_alert_cli.exit_code == 0, stale_anchor_alert_cli.output
-    assert stale_anchor_report["audit_chain"]["anchor_validated"] is False
+    assert drift_anchor_cli.exit_code == 0, drift_anchor_cli.output
+    assert drift_anchor["valid"] is True
+    assert drift_anchor["anchor_validated"] is False
+    assert drift_anchor["anchor_stale"] is True
+    assert drift_anchor["anchor_refresh_required"] is True
+    assert drift_anchor["anchor_event_id"] == second.id
+    assert drift_anchor["events_since_anchor"] == 1
+    assert drift_anchor_alert_cli.exit_code == 0, drift_anchor_alert_cli.output
+    assert strict_drift_anchor_alert_cli.exit_code == 0, strict_drift_anchor_alert_cli.output
+    assert drift_anchor_report["audit_chain"]["valid"] is True
+    assert drift_anchor_report["audit_chain"]["anchor_status"] == "stale"
+    assert drift_anchor_report["audit_chain"]["anchor_stale"] is True
+    assert drift_anchor_report["audit_chain"]["anchor_refresh_required"] is True
+    assert drift_anchor_report["audit_chain"]["events_since_anchor"] == 1
+    assert not any(
+        alert["alert_type"] == "audit_anchor_mismatch"
+        for alert in drift_anchor_report["alerts"]
+    )
+    assert corrupt_anchor_alert_cli.exit_code == 0, corrupt_anchor_alert_cli.output
+    assert corrupt_anchor_report["audit_chain"]["anchor_validated"] is False
+    assert corrupt_anchor_report["audit_chain"]["anchor_status"] == "critical"
     assert any(
         alert["alert_type"] == "audit_anchor_mismatch"
-        for alert in stale_anchor_report["alerts"]
+        for alert in corrupt_anchor_report["alerts"]
     )
-    assert strict_stale_anchor_alert_cli.exit_code != 0
-    assert "top-secret-note" not in stale_anchor_alert_cli.output
+    assert strict_corrupt_anchor_alert_cli.exit_code != 0
+    assert "top-secret-note" not in corrupt_anchor_alert_cli.output
 
 def test_audit_hash_chain_uses_hmac_key_and_reads_legacy_sha_rows(app):
     from app.security import audit as audit_module
@@ -385,6 +423,34 @@ def test_audit_hash_chain_uses_hmac_key_and_reads_legacy_sha_rows(app):
     assert "event_hash_mismatch" in {error["reason"] for error in wrong_key["errors"]}
     assert legacy["valid"] is True
     assert legacy["verified_event_count"] == 1
+
+
+def test_audit_hash_chain_keeps_missing_hash_and_unsupported_algorithm_critical(app):
+    from app.security import audit as audit_module
+
+    with app.test_request_context("/audit/critical-one", method="POST"):
+        audit_module.audit_event("chain_one", "success")
+    with app.test_request_context("/audit/critical-two", method="POST"):
+        audit_module.audit_event("chain_two", "success")
+
+    _first, second = db.session.query(SecurityAuditEvent).order_by(SecurityAuditEvent.id.asc()).all()
+    original_hash = second.event_hash
+    second.event_hash = None
+    db.session.commit()
+    missing_hash = audit_module.verify_audit_hash_chain()
+
+    second.event_hash = original_hash
+    second.hash_algorithm = "unsupported-test"
+    db.session.commit()
+    unsupported = audit_module.verify_audit_hash_chain()
+
+    assert missing_hash["valid"] is False
+    assert "missing_event_hash" in {error["reason"] for error in missing_hash["errors"]}
+    assert unsupported["valid"] is False
+    assert "unsupported_hash_algorithm" in {
+        error["reason"] for error in unsupported["errors"]
+    }
+
 
 def test_audit_hash_chain_detects_metadata_link_missing_row_and_order_tampering(app):
     from sqlalchemy import text

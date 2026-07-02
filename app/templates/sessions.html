@@ -8,14 +8,14 @@
     <div class="page-heading">
       <p class="eyebrow">Security management</p>
       <h1>Session Management</h1>
-      <p class="muted">Review current and recently ended access. Only public session references are shown.</p>
+      <p class="muted">Review your current session and recent session history. Only public session references are shown.</p>
     </div>
     <a class="button secondary" href="{{ url_for('web.dashboard') }}">Back to dashboard</a>
   </div>
 
   <div class="section-heading">
     <h2>Active Sessions</h2>
-    <p class="muted">Signed-in sessions that can still access this account.</p>
+    <p class="muted">The current session that can still access this account.</p>
   </div>
 
   {% if sessions %}
@@ -59,15 +59,6 @@
         </tbody>
       </table>
     </div>
-    <form class="action-panel" method="post" action="{{ url_for('web.sessions_revoke_others_submit') }}">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <div class="field">
-        <label for="session-revoke-totp-code">Authenticator code</label>
-        {{ revoke_form.totp_code(id="session-revoke-totp-code", inputmode="numeric", autocomplete="one-time-code", maxlength="6", placeholder="6-digit code") }}
-      </div>
-      {{ revoke_form.stepup_token() }}
-      <button type="submit" class="button-danger">Revoke all other sessions</button>
-    </form>
   {% else %}
     <div class="empty-state">
       <h2>No active sessions found</h2>
@@ -77,7 +68,7 @@
 
   <div class="section-heading">
     <h2>Past Sessions</h2>
-    <p class="muted">Recently logged-out, terminated, or expired sessions are shown for review only.</p>
+    <p class="muted">Recently replaced, refreshed, logged-out, terminated, or expired sessions are shown for review only.</p>
   </div>
 
   {% if past_sessions %}

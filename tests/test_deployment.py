@@ -614,6 +614,84 @@ def test_staff_invite_personal_email_migration_allows_workplace_only_invites():
     assert "nullable=False" not in migration
 
 
+def test_migration_baseline_drift_metadata_matches_reviewed_migrations():
+    from app.models import (
+        ManualRecoveryRequest,
+        PendingTransfer,
+        RecoveryCode,
+        StaffInvite,
+        Transaction,
+        User,
+    )
+
+    user_indexes = User.__table__.indexes
+    recovery_indexes = RecoveryCode.__table__.indexes
+    manual_recovery_indexes = ManualRecoveryRequest.__table__.indexes
+    transaction_constraints = Transaction.__table__.constraints
+    transaction_indexes = Transaction.__table__.indexes
+    pending_constraints = PendingTransfer.__table__.constraints
+    staff_constraints = StaffInvite.__table__.constraints
+
+    assert User.__table__.c.phone_number.unique is None
+    assert User.__table__.c.account_number.unique is None
+    assert any(index.name == "ix_users_phone_number" and index.unique for index in user_indexes)
+    assert any(index.name == "ix_users_account_number" and index.unique for index in user_indexes)
+    assert any(index.name == "ix_recovery_codes_code_hmac" and index.unique for index in recovery_indexes)
+    assert any(index.name == "ix_manual_recovery_requests_status" for index in manual_recovery_indexes)
+    assert any(
+        constraint.name == "uq_transactions_ref"
+        and [column.name for column in constraint.columns] == ["transaction_ref"]
+        for constraint in transaction_constraints
+    )
+    assert any(
+        index.name == "ix_transactions_transaction_ref" and not index.unique
+        for index in transaction_indexes
+    )
+    assert Transaction.__table__.c.transaction_hash.nullable is False
+    payee_fk = next(
+        constraint
+        for constraint in transaction_constraints
+        if [column.name for column in constraint.columns] == ["payee_id"]
+    )
+    assert next(iter(payee_fk.elements)).ondelete == "SET NULL"
+    assert any(
+        constraint.name == "uq_pending_transfers_token"
+        and [column.name for column in constraint.columns] == ["token"]
+        for constraint in pending_constraints
+    )
+    assert any(
+        [column.name for column in constraint.columns] == ["token_hash"]
+        for constraint in staff_constraints
+    )
+
+
+def test_transaction_hash_not_null_migration_is_data_preserving():
+    migration = Path(
+        "migrations/versions/20260702_0020_align_migration_baseline_metadata.py"
+    ).read_text(encoding="utf-8")
+    deployment_docs = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
+    operations_docs = Path("docs/OPERATIONS.md").read_text(encoding="utf-8")
+    combined_docs = f"{deployment_docs}\n{operations_docs}"
+    normalized_docs = " ".join(combined_docs.split())
+
+    assert 'revision = "20260702_0020"' in migration
+    assert 'down_revision = "20260701_0019"' in migration
+    assert "_backfill_transaction_hashes()" in migration
+    assert "hashlib.sha256" in migration
+    assert '"transaction_ref": row.transaction_ref' in migration
+    assert '"sender_id": row.sender_id' in migration
+    assert '"recipient_id": row.recipient_id' in migration
+    assert "nullable=False" in migration
+    assert "nullable=True" in migration
+    assert "placeholder" not in migration.casefold()
+    assert "Migration `20260702_0020`" in normalized_docs
+    assert "staging first" in normalized_docs
+    assert "encrypted production backup" in normalized_docs
+    assert "verify-migration-baseline" in normalized_docs
+    assert "verify-runtime-db-privileges" in normalized_docs
+    assert "not manual schema-edit commands" in normalized_docs
+
+
 def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypatch):
     _set_deployment_values(monkeypatch)
 
@@ -1753,6 +1831,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         "workflow-security",
         "dependency-review",
         "test",
+        "playwright-e2e",
         "sonarqube",
         "sonarqube-comment",
         "image-test",
@@ -1814,7 +1893,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "PROD_DEPLOY_ENABLED is not true" in preflight_run
     assert "Automatic production deployment will be skipped." in preflight_run
     assert "Missing required production deployment setting" not in preflight_run
-    candidate_jobs = ("test", "publish")
+    candidate_jobs = ("test", "playwright-e2e", "publish")
     for job_name in candidate_jobs:
         checkout = next(
             step
@@ -2266,7 +2345,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         action for action in _workflow_uses(workflow_text)
         if action.startswith("actions/setup-python@")
     ]
-    assert len(checkout_uses) == 11
+    assert len(checkout_uses) == 12
     assert workflow_text.count("persist-credentials: false") == len(checkout_uses)
     _assert_pinned_actions(checkout_uses, context="actions/checkout")
     _assert_pinned_actions(
@@ -2282,7 +2361,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert workflow_text.count("ref: ${{ github.workflow_sha }}") == 4
     assert workflow_text.count(
         "ref: ${{ needs.resolve-source.outputs.source_sha }}"
-    ) == 3
+    ) == 4
     assert "ref: ${{ needs.publish.outputs.revision }}" in workflow_text
     assert "candidate-source/ops/container/smoke-test.sh" in workflow_text
     assert "RELEASE_SHA: ${{ github.sha }}" not in workflow_text
@@ -4095,7 +4174,7 @@ def test_existing_schema_matches_migration_baseline(app):
     result = app.test_cli_runner().invoke(args=["verify-migration-baseline"])
 
     assert result.exit_code == 0, result.output
-    assert "matches migration baseline 20260610_0001" in result.output
+    assert "matches current migration metadata" in result.output
 
 
 def test_proxyfix_trusts_exactly_the_configured_nginx_hop(app):

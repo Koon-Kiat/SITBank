@@ -13,7 +13,7 @@ def test_required_pytest_markers_are_registered(pytestconfig):
         for marker in pytestconfig.getini("markers")
     }
 
-    assert {"security", "deployment", "slow", "serial"} <= registered
+    assert {"security", "deployment", "e2e", "slow", "serial"} <= registered
 
 
 def test_security_test_marker_inventory_covers_required_files():

@@ -15,7 +15,7 @@ Category: [Security governance](../README.md#governance).
 | Customer email | Customer email verification, login identifier, reset/recovery email | Staff/admin workplace domains are blocked for customer registration; audit metadata uses references where possible |
 | Customer phone | Registration contact metadata | Singapore phone format only; optional for preserved legacy rows; do not use as an authenticator |
 | Account identifiers | Customer account routing, payee setup, display | Generated server-side; UI masks account numbers where possible; audit events use references |
-| Payee records | Customer-managed payment recipients | Scoped to owner; recipient lookup occurs only after TOTP step-up; do not expose payee ownership across users |
+| Payee records | Customer-managed payment recipients | Scoped to owner; recipient lookup occurs only after TOTP step-up; audit events use account references and nickname presence/length metadata instead of raw account numbers or customer-entered nicknames |
 | Transaction records | Banking-like workflow evidence and validation | Keep business records only for implemented flows; avoid storing client-controlled server fields |
 | Staff/admin identity | Admin login, authorization, accountability | Invite-only staff/admin accounts with role checks and mandatory TOTP |
 | Staff/admin workplace email | Workplace verification, admin login, and staff invite delivery | Must satisfy approved workplace domain policy; do not use personal email for privileged login or invite contact |

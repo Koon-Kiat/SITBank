@@ -25,6 +25,7 @@ and status checks use the display names:
 | `workflow-security` | `Workflow security` |
 | `dependency-review` | `Dependency review` |
 | `test` | `Test and security checks` |
+| `playwright-e2e` | `Playwright E2E browser tests` |
 | `sonarqube` | `SonarQube analysis` |
 | `sonarqube-comment` | `SonarQube PR comment` |
 | `image-test` | `Container image test` |
@@ -42,6 +43,13 @@ manual private-tailnet jobs follow the same explicit naming policy.
 `tests/test_workflow_display_names.py` enforces the policy across every
 `.github/workflows/*.yml` file while allowing the intentional TLS matrix name
 `Scan ${{ matrix.target.label }}`.
+
+The `Playwright E2E browser tests` job (internal ID `playwright-e2e`) installs
+the hashed development dependencies, installs Chromium with `python -m
+playwright install --with-deps chromium`, and runs `python -m pytest -q
+tests/e2e` with `SITBANK_RUN_E2E=1` and `PLAYWRIGHT_BROWSERS_PATH` set to
+`.playwright-browsers`. The tests use a loopback Flask server from the pytest
+app fixture and do not target staging, production, or private-admin hosts.
 
 Changing a job display name can change its required status-check context even
 when the internal ID is unchanged. Repository files do not update GitHub

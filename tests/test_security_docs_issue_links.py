@@ -8,6 +8,7 @@ GAP_REGISTER = Path("docs/security/governance/security-gap-register.md")
 DESIGN_REGISTER = Path("docs/security/governance/design-risk-register.md")
 ZERO_TRUST = Path("docs/security/architecture/admin-and-staging-zero-trust-access.md")
 SECURITY_DOCS = Path("docs/security")
+GLOBAL_RUNBOOK = Path("docs/runbooks/global-verification.md")
 
 
 def _docs_text() -> str:
@@ -24,6 +25,13 @@ def _section(text: str, heading: str) -> str:
     marker = f"## {heading}"
     start = text.index(marker)
     next_heading = text.find("\n## ", start + len(marker))
+    return text[start:] if next_heading == -1 else text[start:next_heading]
+
+
+def _subsection(text: str, heading: str) -> str:
+    marker = f"### {heading}"
+    start = text.index(marker)
+    next_heading = text.find("\n### ", start + len(marker))
     return text[start:] if next_heading == -1 else text[start:next_heading]
 
 
@@ -115,6 +123,139 @@ def test_documentation_has_no_numbered_issue_references():
     )
 
 
+def test_global_verification_runbook_is_linked_from_main_docs():
+    assert GLOBAL_RUNBOOK.is_file()
+    for path in (
+        Path("README.md"),
+        Path("docs/OPERATIONS.md"),
+        Path("docs/DEPLOYMENT.md"),
+        Path("docs/security/README.md"),
+    ):
+        text = path.read_text(encoding="utf-8")
+        assert "global-verification.md" in text, path
+
+
+def test_global_verification_runbook_keeps_required_contexts_and_baselines():
+    runbook = GLOBAL_RUNBOOK.read_text(encoding="utf-8")
+
+    for heading in (
+        "Local Windows/PowerShell Checks",
+        "Normal CI-Equivalent Checks",
+        "Docker And Image Checks",
+        "EC2 Host Checks",
+        "Nginx And TLS Checks",
+        "Certbot Renewal Checks",
+        "Cloudflare Access And Staging Boundary Checks",
+        "Tailscale And Private Admin Checks",
+        "Database Privilege And Migration-Baseline Checks",
+        "Audit Chain, Audit Anchor, And Security Alerts",
+        "Backup And Restore Verification",
+        "Grafana/Loki Observability Checks",
+        "Emergency And Break-Glass Checks",
+    ):
+        assert f"### {heading}" in runbook
+
+    for required in (
+        "git diff --check",
+        ".\\.venv\\Scripts\\python.exe -m pytest -q -n auto",
+        ".\\.venv\\Scripts\\python.exe -m pytest -q -n auto --cov=. --cov-config=.coveragerc --cov-report=xml:coverage.xml --cov-report=term",
+        "python -m flask --app wsgi:app verify-migration-baseline",
+        "python -m flask --app wsgi:app verify-runtime-db-privileges",
+        "python -m flask --app wsgi:app verify-audit-log-chain",
+        "python -m flask --app wsgi:app check-security-alerts --report-only --no-delivery",
+        "sudo /usr/local/sbin/verify-tailscale-admin-access --mode serve",
+        "sudo certbot certificates",
+        "sudo nginx -t",
+    ):
+        assert required in runbook
+
+    local_section = _subsection(runbook, "Local Windows/PowerShell Checks")
+    ec2_section = _subsection(runbook, "EC2 Host Checks")
+    assert "sudo " not in local_section
+    assert "Run on the relevant EC2 host" in ec2_section
+    assert "sudo systemctl" in ec2_section
+
+
+def test_global_verification_runbook_documents_current_domains_and_path_groups():
+    runbook = GLOBAL_RUNBOOK.read_text(encoding="utf-8")
+
+    for required in (
+        "sitbank.pp.ua",
+        "www.sitbank.pp.ua",
+        "staging-sitbank.pp.ua",
+        "https://admin-sitbank.tailca101b.ts.net/",
+        "/etc/nginx/sites-enabled",
+        "/etc/nginx/sites-available",
+        "/etc/nginx/snippets",
+        "/etc/nginx/conf.d",
+        "/var/log/nginx",
+        "/etc/letsencrypt/live/sitbank.pp.ua",
+        "/etc/letsencrypt/live/staging-sitbank.pp.ua",
+        "/etc/letsencrypt/renewal",
+        "/etc/letsencrypt/archive",
+        "/root/.secrets/certbot/production.ini",
+        "/root/.secrets/certbot/staging.ini",
+        "/etc/systemd/system/sitbank*.service",
+        "/etc/systemd/system/sitbank*.timer",
+        "/opt/sitbank-bootstrap",
+        "/usr/local/sbin/sitbank-container-deploy",
+        "/etc/sudoers.d",
+        "/var/lib/sitbank/evidence",
+        "/var/backups/sitbank",
+        "/root/.config/sitbank-backups/age-identity.txt",
+        "/var/lib/sitbank/security-audit.anchor",
+        "/run/state/security-alert-state.json",
+        "/etc/sitbank-observability",
+        "ops/cloudflare/provision-staging-access",
+        "ops/tailscale/*",
+    ):
+        assert required in runbook
+
+    assert "duckdns.org" not in runbook.casefold()
+    assert "admin.sitbank.pp.ua" not in runbook
+    assert "admin-sitbank.pp.ua" not in runbook
+
+
+def test_global_verification_runbook_marks_secret_paths_as_not_safe_to_print():
+    runbook = GLOBAL_RUNBOOK.read_text(encoding="utf-8")
+    lines = runbook.splitlines()
+
+    for path in (
+        "/root/.secrets/certbot/production.ini",
+        "/root/.secrets/certbot/staging.ini",
+        "/etc/sitbank/secrets",
+        "/etc/sitbank-staging/secrets",
+        "/run/secrets",
+        "/root/.config/sitbank-backups/age-identity.txt",
+        "/etc/sitbank-observability/secrets",
+        "/etc/letsencrypt/archive",
+    ):
+        assert any(
+            path in line and "never print" in line.casefold()
+            for line in lines
+        ), path
+
+
+def test_global_verification_runbook_avoids_unsafe_secret_discovery_commands():
+    runbook = GLOBAL_RUNBOOK.read_text(encoding="utf-8").casefold()
+
+    for forbidden in (
+        "cat /run/secrets",
+        "cat /etc/sitbank/secrets",
+        "cat /etc/sitbank-staging/secrets",
+        "cat /root/.secrets/certbot",
+        "cat /root/.config/sitbank-backups/age-identity.txt",
+        "printenv",
+        "env |",
+        "docker inspect",
+        "set -x",
+        "private key-----",
+        "paste raw provider exports",
+        "ln -s /etc/letsencrypt",
+    ):
+        assert forbidden not in runbook
+
+
 def test_privileged_email_domain_docs_are_workplace_only():
     docs = _docs_text()
     normalized_docs = " ".join(docs.split()).casefold()
@@ -191,6 +332,118 @@ def test_security_alert_delivery_docs_match_admin_controls():
         "delivery bypasses CSRF",
         "delivery bypasses TOTP",
         "delivery bypasses admin",
+    ):
+        assert forbidden.casefold() not in combined.casefold()
+
+
+def test_audit_anchor_docs_distinguish_stale_drift_from_tampering():
+    audit_docs = (
+        SECURITY_DOCS / "assurance" / "audit-and-alerting.md"
+    ).read_text(encoding="utf-8")
+    operations = Path("docs/OPERATIONS.md").read_text(encoding="utf-8")
+    runbook = GLOBAL_RUNBOOK.read_text(encoding="utf-8")
+    combined = " ".join(f"{audit_docs}\n{operations}\n{runbook}".split())
+
+    for required in (
+        "anchor_validated=true",
+        "anchor_stale=true",
+        "anchor_refresh_required=true",
+        "anchor_event_id",
+        "latest_event_id",
+        "events_since_anchor",
+        "normal append-only audit rows",
+        "does not emit a critical `audit_anchor_mismatch` alert",
+        "audit_chain_verification_failed",
+        "event_hash_mismatch",
+        "previous_hash_mismatch",
+        "unsupported hash algorithms",
+        "Do not blindly refresh anchors",
+        "preserving evidence",
+        "check-security-alerts --report-only --no-delivery",
+        "alert_count=0",
+    ):
+        assert required in combined
+
+    for forbidden in (
+        "refresh anchors until alerts stop",
+        "ignore audit_anchor_mismatch",
+        "delete the old anchor",
+        "overwrite the anchor before preserving evidence",
+    ):
+        assert forbidden.casefold() not in combined.casefold()
+
+
+def test_session_management_docs_match_single_session_review_ui():
+    template = Path("app/templates/sessions.html").read_text(encoding="utf-8")
+    session_docs = (
+        SECURITY_DOCS / "architecture" / "session-management.md"
+    ).read_text(encoding="utf-8")
+    access_docs = (
+        SECURITY_DOCS / "architecture" / "access-control.md"
+    ).read_text(encoding="utf-8")
+    combined = " ".join(f"{session_docs}\n{access_docs}".split()).casefold()
+
+    for required in (
+        "only one active customer/admin session is allowed per runtime namespace",
+        "a new successful login replaces previous active sessions in that namespace",
+        "old browser tabs may still display stale html until the next request",
+        "the session-management page is for reviewing the current active session and recent past sessions",
+        "protected revoke-other endpoint",
+        "not linked from the session-management page",
+    ):
+        assert required in combined
+
+    assert "Current session" in template
+    assert "Past Sessions" in template
+    assert "ended_reason_display" in template
+    assert "url_for('web.sessions_revoke_others_submit')" not in template
+    assert "Revoke all other sessions" not in template
+    assert "session-revoke-totp-code" not in template
+
+
+def test_payee_audit_docs_require_references_and_bounded_metadata():
+    audit_docs = (
+        SECURITY_DOCS / "assurance" / "audit-and-alerting.md"
+    ).read_text(encoding="utf-8")
+    privacy_docs = (
+        SECURITY_DOCS / "governance" / "privacy-and-pdpa.md"
+    ).read_text(encoding="utf-8")
+    combined = " ".join(f"{audit_docs}\n{privacy_docs}".split()).casefold()
+
+    for required in (
+        "payee audit calls must avoid raw account identifiers",
+        "customer-controlled free text at the call site",
+        "payee_account_ref",
+        "bounded lengths",
+        "instead of raw account numbers or customer-entered nicknames",
+    ):
+        assert required in combined
+
+
+def test_mfa_kek_rotation_docs_match_rewrap_cli_safety():
+    operations = Path("docs/OPERATIONS.md").read_text(encoding="utf-8")
+    crypto_docs = (
+        SECURITY_DOCS / "architecture" / "cryptography-and-authentication.md"
+    ).read_text(encoding="utf-8")
+    combined = " ".join(f"{operations}\n{crypto_docs}".split())
+
+    for required in (
+        "### MFA KEK Rotation",
+        "Rotate MFA KEKs in staging first, then production",
+        "Target MFA KEK id is not configured",
+        "rewrap-mfa-deks --from-kek-id <old-kek-id> --to-kek-id <new-kek-id> --dry-run",
+        "commits only if all matching rows rewrap successfully",
+        "Remove the old KEK",
+        "post-verification action",
+        "rollback window",
+        "Do not print, paste, or commit KEK values",
+        "or decrypted MFA material",
+    ):
+        assert required in combined
+    for forbidden in (
+        "cat /etc/sitbank/secrets/mfa_kek_keys_json",
+        "print MFA_KEK_KEYS_JSON",
+        "echo $MFA_KEK_KEYS_JSON",
     ):
         assert forbidden.casefold() not in combined.casefold()
 
