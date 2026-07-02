@@ -369,6 +369,11 @@ def verify_audit_hash_chain(*, anchor: Mapping[str, Any] | None = None) -> dict[
         "errors": errors,
         "anchor_validated": None,
         "anchor_errors": [],
+        "anchor_status": "not_configured",
+        "anchor_stale": False,
+        "anchor_event_id": None,
+        "events_since_anchor": None,
+        "anchor_refresh_required": False,
     }
     if anchor is not None:
         _compare_audit_anchor(result, anchor)
@@ -610,31 +615,273 @@ def _append_chain_error(
 
 def _compare_audit_anchor(result: dict[str, Any], anchor: Mapping[str, Any]) -> None:
     anchor_errors: list[dict[str, Any]] = []
+    result["anchor_status"] = "checking"
+    result["anchor_validated"] = False
+    result["anchor_stale"] = False
+    result["anchor_refresh_required"] = False
+
+    anchor_values = _validated_anchor_values(result, anchor, anchor_errors)
+    anchor_event_id = anchor_values.get("latest_event_id")
+    result["anchor_event_id"] = anchor_event_id
+    if anchor_errors:
+        _set_critical_anchor_errors(result, anchor_errors)
+        return
+
+    chain_valid = result.get("valid") is True
+    if not chain_valid:
+        result["anchor_status"] = "not_checked_due_chain_failure"
+        result["anchor_errors"] = []
+        return
+
+    if _anchor_matches_current_head(result, anchor):
+        result["anchor_validated"] = True
+        result["anchor_status"] = "validated"
+        result["anchor_errors"] = []
+        result["events_since_anchor"] = 0
+        return
+
+    if _anchor_is_append_only_stale(result, anchor_values):
+        result["anchor_status"] = "stale"
+        result["anchor_stale"] = True
+        result["anchor_refresh_required"] = True
+        result["anchor_errors"] = []
+        result["events_since_anchor"] = int(result["event_count"]) - int(anchor_values["event_count"])
+        return
+
+    for field in _ANCHOR_CURRENT_HEAD_FIELDS:
+        if anchor.get(field) != result.get(field):
+            _append_chain_error(
+                anchor_errors,
+                int(result.get("latest_event_id") or 0),
+                "anchor_mismatch",
+                field=field,
+            )
+    if anchor_errors:
+        _set_critical_anchor_errors(result, anchor_errors)
+
+
+_ANCHOR_CURRENT_HEAD_FIELDS = (
+    "hash_algorithm",
+    "chain_start",
+    "event_count",
+    "verified_event_count",
+    "legacy_unhashed_event_count",
+    "latest_event_id",
+    "latest_event_hash",
+)
+
+
+def _validated_anchor_values(
+    result: Mapping[str, Any],
+    anchor: Mapping[str, Any],
+    anchor_errors: list[dict[str, Any]],
+) -> dict[str, Any]:
+    event_id_for_error = int(result.get("latest_event_id") or 0)
+    values: dict[str, Any] = {}
+    for field in ("hash_algorithm", "chain_start"):
+        values[field] = anchor.get(field)
+        if anchor.get(field) != result.get(field):
+            _append_chain_error(
+                anchor_errors,
+                event_id_for_error,
+                "anchor_mismatch",
+                field=field,
+            )
+    if anchor.get("valid") is not True:
+        _append_chain_error(
+            anchor_errors,
+            event_id_for_error,
+            "anchor_malformed",
+            field="valid",
+        )
     for field in (
-        "hash_algorithm",
-        "chain_start",
         "event_count",
         "verified_event_count",
         "legacy_unhashed_event_count",
-        "latest_event_id",
-        "latest_event_hash",
     ):
-        if anchor.get(field) == result.get(field):
-            continue
+        values[field] = _anchor_non_negative_int(
+            anchor,
+            field,
+            event_id_for_error=event_id_for_error,
+            anchor_errors=anchor_errors,
+        )
+    values["latest_event_id"] = _anchor_latest_event_id(
+        result,
+        anchor,
+        event_id_for_error=event_id_for_error,
+        anchor_errors=anchor_errors,
+    )
+    values["latest_event_hash"] = _anchor_latest_event_hash(
+        result,
+        anchor,
+        event_id_for_error=event_id_for_error,
+        anchor_errors=anchor_errors,
+    )
+    if anchor_errors:
+        return values
+
+    _validate_anchor_position(result, values, anchor_errors)
+    if anchor_errors:
+        return values
+    _validate_anchor_event_hash(values, anchor_errors)
+    return values
+
+
+def _anchor_non_negative_int(
+    anchor: Mapping[str, Any],
+    field: str,
+    *,
+    event_id_for_error: int,
+    anchor_errors: list[dict[str, Any]],
+) -> int | None:
+    value = anchor.get(field)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         _append_chain_error(
             anchor_errors,
-            int(result.get("latest_event_id") or 0),
-            "anchor_mismatch",
+            event_id_for_error,
+            "anchor_malformed",
             field=field,
         )
-    if anchor_errors:
-        result["errors"].extend(anchor_errors)
-        result["valid"] = False
-        result["anchor_validated"] = False
-        result["anchor_errors"] = anchor_errors
-    else:
-        result["anchor_validated"] = True
-        result["anchor_errors"] = []
+        return None
+    return int(value)
+
+
+def _anchor_latest_event_id(
+    result: Mapping[str, Any],
+    anchor: Mapping[str, Any],
+    *,
+    event_id_for_error: int,
+    anchor_errors: list[dict[str, Any]],
+) -> int | None:
+    value = anchor.get("latest_event_id")
+    if value is None and result.get("latest_event_id") is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        _append_chain_error(
+            anchor_errors,
+            event_id_for_error,
+            "anchor_malformed",
+            field="latest_event_id",
+        )
+        return None
+    return int(value)
+
+
+def _anchor_latest_event_hash(
+    result: Mapping[str, Any],
+    anchor: Mapping[str, Any],
+    *,
+    event_id_for_error: int,
+    anchor_errors: list[dict[str, Any]],
+) -> str | None:
+    value = anchor.get("latest_event_hash")
+    if value is None and result.get("latest_event_hash") is None:
+        return None
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+        _append_chain_error(
+            anchor_errors,
+            event_id_for_error,
+            "anchor_malformed",
+            field="latest_event_hash",
+        )
+        return None
+    return value
+
+
+def _validate_anchor_position(
+    result: Mapping[str, Any],
+    anchor_values: Mapping[str, Any],
+    anchor_errors: list[dict[str, Any]],
+) -> None:
+    latest_event_id = result.get("latest_event_id")
+    anchor_event_id = anchor_values.get("latest_event_id")
+    event_id_for_error = int(latest_event_id or 0)
+    if anchor_event_id is not None and latest_event_id is not None and anchor_event_id > int(latest_event_id):
+        _append_chain_error(
+            anchor_errors,
+            event_id_for_error,
+            "anchor_current_behind",
+            field="latest_event_id",
+        )
+    for field in (
+        "event_count",
+        "verified_event_count",
+        "legacy_unhashed_event_count",
+    ):
+        anchor_count = anchor_values.get(field)
+        if anchor_count is not None and int(anchor_count) > int(result.get(field) or 0):
+            _append_chain_error(
+                anchor_errors,
+                event_id_for_error,
+                "anchor_current_behind",
+                field=field,
+            )
+
+
+def _validate_anchor_event_hash(
+    anchor_values: Mapping[str, Any],
+    anchor_errors: list[dict[str, Any]],
+) -> None:
+    anchor_event_id = anchor_values.get("latest_event_id")
+    anchor_event_hash = anchor_values.get("latest_event_hash")
+    if anchor_event_id is None and anchor_event_hash is None:
+        return
+    event_id_for_error = int(anchor_event_id or 0)
+    anchored_event = db.session.get(SecurityAuditEvent, anchor_event_id)
+    if anchored_event is None or not anchored_event.event_hash:
+        _append_chain_error(
+            anchor_errors,
+            event_id_for_error,
+            "anchor_event_missing",
+        )
+        return
+    if not hmac.compare_digest(str(anchored_event.event_hash), str(anchor_event_hash)):
+        _append_chain_error(
+            anchor_errors,
+            event_id_for_error,
+            "anchor_event_hash_mismatch",
+        )
+
+
+def _anchor_matches_current_head(result: Mapping[str, Any], anchor: Mapping[str, Any]) -> bool:
+    return all(anchor.get(field) == result.get(field) for field in _ANCHOR_CURRENT_HEAD_FIELDS)
+
+
+def _anchor_is_append_only_stale(
+    result: Mapping[str, Any],
+    anchor_values: Mapping[str, Any],
+) -> bool:
+    anchor_event_id = anchor_values.get("latest_event_id")
+    latest_event_id = result.get("latest_event_id")
+    if anchor_event_id is None or latest_event_id is None:
+        return False
+    if int(anchor_event_id) >= int(latest_event_id):
+        return False
+    anchor_event_count = anchor_values.get("event_count")
+    if anchor_event_count is None or int(anchor_event_count) >= int(result.get("event_count") or 0):
+        return False
+    return all(
+        int(anchor_values[field]) <= int(result.get(field) or 0)
+        for field in (
+            "event_count",
+            "verified_event_count",
+            "legacy_unhashed_event_count",
+        )
+        if anchor_values.get(field) is not None
+    )
+
+
+def _set_critical_anchor_errors(
+    result: dict[str, Any],
+    anchor_errors: list[dict[str, Any]],
+) -> None:
+    result["errors"].extend(anchor_errors)
+    result["valid"] = False
+    result["anchor_validated"] = False
+    result["anchor_stale"] = False
+    result["anchor_refresh_required"] = False
+    result["anchor_status"] = "critical"
+    result["anchor_errors"] = anchor_errors
 
 
 def _log_audit_record(event: SecurityAuditEvent, *, path: str | None, method: str | None) -> None:

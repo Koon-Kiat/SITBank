@@ -34,5 +34,9 @@ evidence, and governance records remain easy to navigate.
 - [Security gap register](governance/security-gap-register.md)
 - [Security governance](governance/security-governance.md)
 
+## Cross-Functional Runbooks
+
+- [Global verification and EC2 path inventory](../runbooks/global-verification.md)
+
 When a document moves, update repository references and the path-sensitive
 documentation tests in the same change.

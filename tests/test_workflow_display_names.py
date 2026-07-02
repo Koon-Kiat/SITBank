@@ -19,6 +19,7 @@ EXPECTED_CI_NAMES = {
     "workflow-security": "Workflow security",
     "dependency-review": "Dependency review",
     "test": "Test and security checks",
+    "playwright-e2e": "Playwright E2E browser tests",
     "sonarqube": "SonarQube analysis",
     "sonarqube-comment": "SonarQube PR comment",
     "image-test": "Container image test",

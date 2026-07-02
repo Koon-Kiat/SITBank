@@ -9,6 +9,10 @@ staging gates. A push to `main` pauses at the protected `production`
 environment for reviewer approval; operators do not dispatch production
 directly.
 
+For one-stop safe verification commands and EC2 operational path inventory,
+start with `docs/runbooks/global-verification.md`, then follow the deeper
+runbooks linked from that page.
+
 ## Runtime Secrets
 
 Keep root-managed secret files in `/etc/sitbank/secrets` and `/etc/sitbank-staging/secrets`. The container reads only mounted files under `/run/secrets`; long-lived application secrets are not exported into the Compose process environment.
@@ -50,7 +54,48 @@ status check, update the GitHub ruleset manually only after the new context has
 completed successfully; repository commits cannot mutate or prove that
 provider-side setting.
 
-MFA/TOTP seed encryption uses envelope encryption. Keep old KEKs in `mfa_kek_keys_json` until `rewrap-mfa-deks` has moved stored records to the new active KEK. Then update `MFA_KEK_ACTIVE_ID` and the root-managed keyring together.
+MFA/TOTP seed encryption uses envelope encryption. Keep old KEKs in
+`mfa_kek_keys_json` until `rewrap-mfa-deks` has moved stored records to the new
+active KEK.
+
+### MFA KEK Rotation
+
+Rotate MFA KEKs in staging first, then production. Do not print, paste, or
+commit KEK values, TOTP seeds, wrapped DEKs, ciphertext, nonces, recovery
+codes, QR codes, or decrypted MFA material.
+
+1. Add the new key id and base64 key value to the root-managed
+   `/etc/sitbank-staging/secrets/mfa_kek_keys_json` file while keeping the old
+   key id present. Repeat later for `/etc/sitbank/secrets/mfa_kek_keys_json`
+   only after staging passes.
+2. Keep `MFA_KEK_ACTIVE_ID` on the old key until the new key id is present and
+   `production-check` passes. The error `Target MFA KEK id is not configured`
+   means the target id has not been added to the runtime keyring yet.
+3. Run the staging dry run and verify only counts and key ids are displayed:
+
+   ```bash
+   sudo docker exec sitbank-staging-app python -m flask --app wsgi:app production-check
+   sudo docker exec sitbank-staging-app python -m flask --app wsgi:app rewrap-mfa-deks --from-kek-id <old-kek-id> --to-kek-id <new-kek-id> --dry-run
+   ```
+
+4. Run the staging rewrap. The command commits only if all matching rows
+   rewrap successfully; on any failure it rolls back and reports that no
+   changes were committed.
+
+   ```bash
+   sudo docker exec sitbank-staging-app python -m flask --app wsgi:app rewrap-mfa-deks --from-kek-id <old-kek-id> --to-kek-id <new-kek-id>
+   sudo docker exec sitbank-staging-app python -m flask --app wsgi:app production-check
+   sudo docker exec sitbank-staging-app python -m flask --app wsgi:app check-security-alerts --report-only --no-delivery
+   ```
+
+5. After staging evidence is reviewed, repeat the same dry run and rewrap in
+   production with the production app container. Confirm an encrypted database
+   backup exists before production rotation.
+6. Set `MFA_KEK_ACTIVE_ID` to the new id only after the new key is present and
+   configuration validation passes. New MFA enrollments then use the new KEK.
+7. Remove the old KEK from the root-managed keyring only after all rows have
+   been rewrapped, post-rotation checks pass, rollback evidence is preserved,
+   and the approved rollback window has closed.
 
 ## Disposable Registration Data Reset
 
@@ -457,6 +502,15 @@ This exception is temporary with a review/remove-by date: 2026-06-26. The full C
 
 Application rollback restores the previous signed image digest and runtime bundle. Database rollback requires an explicit backup/restore decision because Alembic migrations must remain backward-compatible and are not automatically reversed.
 
+For migration `20260702_0020`, run staging first and preserve sanitized
+`db current`, `db heads`, `verify-migration-baseline`, and
+`verify-runtime-db-privileges` output before production. Confirm an encrypted
+production backup exists before production `db upgrade`. The migration
+recomputes any missing `transactions.transaction_hash` values from existing
+transaction fields and then makes the column non-null; rollback should use an
+explicit restore decision if production verification fails, not manual
+schema-edit commands.
+
 ## Encrypted Backup Operations
 
 Create database backups with the host-managed encrypted helper:
@@ -552,14 +606,35 @@ host path outside the database volume and repository. The app validates that the
 configured path is absolute, non-world-writable, outside the application and
 database directories, and readable/writable by the runtime where the host can
 check it. `verify-audit-log-chain` and `check-security-alerts` use the
-configured anchor automatically and fail or alert when it is unreadable or does
-not match the current chain head.
+configured anchor automatically. A valid chain can be ahead of the saved
+anchor after normal append-only audit activity; that reports `anchor_stale`,
+`events_since_anchor`, and `anchor_refresh_required` without sending a critical
+`audit_anchor_mismatch` alert. Unreadable or malformed anchors, anchor rollback,
+anchored event hash changes, missing anchored rows, current chain behind the
+anchor, chain rewind, row tampering, tail deletion, missing hashes after the
+chain starts, and unsupported hash algorithms remain critical.
 
-On an anchor mismatch, stop rotating anchors, preserve the current database and
-the mismatched anchor as incident evidence, run
-`python -m flask --app wsgi:app verify-audit-log-chain --anchor /var/lib/sitbank/security-audit.anchor`,
-and investigate possible row tampering, chain rewind, or tail deletion before
-resuming routine deployments.
+Do not blindly refresh anchors. When `anchor_status=stale` and the chain is
+valid, refresh only after preserving evidence:
+
+1. Preserve the current verification output and anchor metadata in root-only
+   evidence storage. Record the command, timestamp, environment, `anchor_event_id`,
+   `latest_event_id`, and `events_since_anchor`; do not include HMAC keys or
+   raw sensitive metadata.
+2. Run
+   `python -m flask --app wsgi:app verify-audit-log-chain --anchor /var/lib/sitbank/security-audit.anchor`
+   and confirm `valid=true`, `anchor_stale=true`, and `anchor_refresh_required=true`.
+3. Export the refreshed sanitized anchor with
+   `python -m flask --app wsgi:app export-audit-log-anchor --output /var/lib/sitbank/security-audit.anchor`.
+4. Rerun
+   `python -m flask --app wsgi:app check-security-alerts --report-only --no-delivery`
+   and restart or resume the alert timer only after `alert_count=0` or after all
+   remaining alerts are separately explained and preserved.
+
+On `audit_anchor_mismatch` or `audit_chain_verification_failed`, stop rotating
+anchors, preserve the current database and anchor as incident evidence, and
+investigate row tampering, chain rewind, anchor corruption, or tail deletion
+before resuming routine deployments.
 
 The current banking implementation audits public transaction validation,
 TOTP-backed transaction authorization checks, and local transfer execution.
@@ -627,7 +702,11 @@ count and identity baselines outside the application database and emits critical
 rewind or shrink. Keep `SECURITY_AUDIT_ANCHOR_PATH` set to the protected local
 anchor so `check-security-alerts` emits critical
 `audit_chain_verification_failed` or `audit_anchor_mismatch` alerts for chain
-tampering, rewind, or tail deletion detectable from the anchor.
+tampering, rewind, anchor corruption, or tail deletion detectable from the
+anchor. Valid append-only drift after the last exported anchor is reported as
+`anchor_stale`/`anchor_refresh_required` and should be refreshed with the
+evidence-preserving workflow above rather than delivered as a critical webhook
+alert.
 
 Admin/root users may review the same safe report in the private admin runtime
 with `GET /alerts`. That browser review is read-only and must not send alerts.

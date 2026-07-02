@@ -7,6 +7,10 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .pytest-tmp/
+.playwright-browsers/
+playwright-report/
+test-results/
+tests/e2e/artifacts/
 .coverage
 coverage.xml
 coverage/
