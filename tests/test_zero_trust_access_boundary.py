@@ -289,10 +289,20 @@ def test_provider_credentials_are_not_committed_or_required_by_ci():
     ci_workflow = Path(".github/workflows/ci-deploy.yml").read_text(encoding="utf-8")
     workflow = yaml.safe_load(ci_workflow)
     private_gate = workflow["jobs"]["verify-private-admin-tailnet"]
-    other_jobs = {
+    oauth_job_names = {
+        "deploy-staging",
+        "deploy-production",
+        "verify-private-admin-tailnet",
+    }
+    oauth_jobs = {
         name: job
         for name, job in workflow["jobs"].items()
-        if name != "verify-private-admin-tailnet"
+        if name in oauth_job_names
+    }
+    non_oauth_jobs = {
+        name: job
+        for name, job in workflow["jobs"].items()
+        if name not in oauth_job_names
     }
     tracked_text = []
     for path in _tracked_files():
@@ -311,8 +321,18 @@ def test_provider_credentials_are_not_committed_or_required_by_ci():
     assert private_gate["environment"] == {"name": "admin-tailscale"}
     assert "TS_OAUTH_CLIENT_ID" in str(private_gate)
     assert "TS_OAUTH_SECRET" in str(private_gate)
-    assert "TS_OAUTH_CLIENT_ID" not in str(other_jobs)
-    assert "TS_OAUTH_SECRET" not in str(other_jobs)
+    assert set(oauth_jobs) == oauth_job_names
+    assert {
+        name: job["environment"]["name"] for name, job in oauth_jobs.items()
+    } == {
+        "deploy-staging": "staging",
+        "deploy-production": "production",
+        "verify-private-admin-tailnet": "admin-tailscale",
+    }
+    assert all("TS_OAUTH_CLIENT_ID" in str(job) for job in oauth_jobs.values())
+    assert all("TS_OAUTH_SECRET" in str(job) for job in oauth_jobs.values())
+    assert "TS_OAUTH_CLIENT_ID" not in str(non_oauth_jobs)
+    assert "TS_OAUTH_SECRET" not in str(non_oauth_jobs)
 
     forbidden_patterns = (
         r"tskey-(?:auth|api)-[A-Za-z0-9_-]{12,}",

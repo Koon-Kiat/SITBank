@@ -4,6 +4,11 @@ Security owner roles, milestone/release review cadence, accepted-risk handling,
 and off-repo evidence expectations are defined in
 `docs/security/governance/security-governance.md`.
 
+Production deployment is environment-approved automatic after successful
+staging gates. A push to `main` pauses at the protected `production`
+environment for reviewer approval; operators do not dispatch production
+directly.
+
 ## Runtime Secrets
 
 Keep root-managed secret files in `/etc/sitbank/secrets` and `/etc/sitbank-staging/secrets`. The container reads only mounted files under `/run/secrets`; long-lived application secrets are not exported into the Compose process environment.
@@ -151,7 +156,7 @@ configure command with `--confirm` and one explicit mode:
 - `interactive` uses approved browser authentication.
 
 OAuth is preferred. The OAuth client needs **Keys > Auth Keys > Write** and
-`tag:sitbank-admin`. Auth keys must be short-lived, one-off where possible,
+`tag:admin-sitbank`. Auth keys must be short-lived, one-off where possible,
 pre-approved where required, and tagged. Read a secret without echo, preserve
 only the required variable through `sudo`, and unset it immediately after the
 command. Never paste it into history, logs, tickets, screenshots, or files.
@@ -211,16 +216,20 @@ evidence; the protected GitHub workflow below separately supplies
 tailnet-client reachability evidence. Operators must still retain live ACL,
 tag, device-approval, membership, and offboarding evidence.
 
-The manual **Verify private Tailscale admin access** workflow and the direct
-production post-deploy gate are the only GitHub-hosted jobs approved to join
-the tailnet. The direct production job runs after deployment and public
-production TLS verification because a reusable-workflow call did not receive
-the protected environment secrets. Both use the protected `admin-tailscale`
-environment. Production uses `TS_OAUTH_CLIENT_ID`/`TS_OAUTH_SECRET`; a manual
-run may select `authkey` and use `TAILSCALE_AUTH_KEY`. The environment must require manual
-approval and restrict branches to `main`. Either credential must be restricted
-to `tag:github-ci`; that tag may access only `tag:admin-sitbank:443` and must
-not administer the tailnet or provide broad SSH access.
+The staging and production deployment jobs and the protected private-admin
+verification jobs are the only GitHub-hosted jobs approved to join the
+tailnet. Deployment uses separate `tag:github-ci-staging-deploy` and
+`tag:github-ci-prod-deploy` identities with access only to the matching EC2
+host on port `22`. The direct production admin-verification job runs after
+deployment and public production TLS verification because a reusable-workflow
+call did not receive the protected environment secrets. That direct job and
+the manual verification workflow use the protected `admin-tailscale`
+environment. The direct job uses `TS_OAUTH_CLIENT_ID`/`TS_OAUTH_SECRET`; a
+manual run may select `authkey` and use `TAILSCALE_AUTH_KEY`. The environment
+must require manual approval and restrict branches to `main`. Either credential
+must be restricted to `tag:github-ci-admin-verify`; that tag may access only
+`tag:admin-sitbank:443` and must not administer the tailnet or provide broad
+SSH access.
 
 Run the workflow after private DNS, certificates, Tailscale ACLs/tags, Serve
 configuration, or the admin edge changes. It first confirms the private URL is
@@ -331,14 +340,16 @@ enter the private dashboard.
 
 ## EC2 SSH And Deployment Access Operations
 
-EC2 SSH hardening is deferred and is not implemented by this branch.
-There is no repository OpenSSH drop-in, UFW rollout, security-group migration,
-or deployment-source allowlisting runbook to apply from this checkout.
+GitHub Actions deployment SSH uses protected, environment-specific Tailscale
+OAuth identities and private EC2 targets. After staging and production deploy
+successfully through those paths, remove public TCP `22` from the AWS security
+group and host firewall and retain sanitized provider evidence.
 
-Keep the existing approved deployment path in place until a separate reviewed
-change designs and tests the EC2 host, AWS security-group, GitHub Actions, and
-rollback impact together. Do not claim root SSH, password SSH, `AllowUsers`,
-UFW, or TCP `22` ingress has been hardened from repository evidence alone.
+OpenSSH daemon and UFW hardening automation remains deferred. There is no
+repository OpenSSH drop-in or UFW rollout, so do not claim root SSH, password
+SSH, `AllowUsers`, or host-firewall policy has been hardened from repository
+evidence alone. Tailscale SSH remains disabled; deployment continues to use
+OpenSSH with pinned known hosts and the restricted deploy user.
 
 ## Repository Secret Scan Operations
 

@@ -14,6 +14,15 @@ The tested, scanned, signed, and deployed digest must be identical. Deployments 
 Production never skips disabled, skipped, or failed staging. It runs only after
 release verification and staging deployment both succeed on `main`, with
 `PROD_DEPLOY_ENABLED = true` and GitHub production environment approval.
+Production deployment is environment-approved automatic after successful
+staging gates. The environment approval is a manual gate, not a manual-only
+production dispatch path.
+
+Configure the GitHub `production` Environment with required trusted reviewers,
+deployment branches limited to `main`, and production-only variables and
+secrets. Repository files describe that contract but do not prove the live
+provider-side reviewers or branch rules; retain a sanitized settings review as
+release evidence.
 
 ## Pull Request Policy and Dependency Review
 
@@ -43,12 +52,12 @@ Manual pre-merge staging:
 
 Feature-branch workflow and deployment scripts are never executed with environment secrets. The only accepted migration mode for existing EC2 deployment files is `adopt-existing`, and it must still pass wrapper hash validation before app deployment.
 
-The SSH deployment jobs assume the configured EC2 deploy user is reachable from
-an approved source. GitHub-hosted runners do not have stable source IPs, so
-repo-side SSH hardening is deferred to avoid accidentally breaking
-deployment. Move deployment behind an allowlisted self-hosted runner, bastion,
-VPN egress, or OIDC plus AWS Systems Manager only in a separate reviewed change
-that tests rollback and GitHub Actions reachability.
+The SSH deployment jobs join Tailscale before any `ssh` or `scp` command.
+Staging uses `tag:github-ci-staging-deploy` and production uses
+`tag:github-ci-prod-deploy`; each protected environment stores its own
+`TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET`. OpenSSH still requires the
+environment-specific deploy key, pinned known-hosts entry, and
+`StrictHostKeyChecking=yes`. Tailscale SSH remains disabled.
 
 ## Environment Variables
 
@@ -75,6 +84,13 @@ comma-separated list of exactly 7 workplace email addresses from
 `ADMIN_ALLOWED_EMAIL_DOMAINS`. The deployment workflow maps it into the
 prefixed renderer input for the target environment and writes
 `ROOT_ADMIN_EMAILS` into the signed runtime `container.env`.
+
+`STAGING_PUBLIC_HOST` and `PROD_PUBLIC_HOST` are public HTTPS verification
+names. `STAGING_EC2_HOST` and `PROD_EC2_HOST` are private Tailscale MagicDNS
+names or `100.x.y.z` addresses used only for deployment SSH. Regenerate the
+matching `*_EC2_KNOWN_HOSTS` value for that private target and verify its
+fingerprint out of band before saving it. After private deployment succeeds,
+remove public port `22` exposure from the EC2 security group and host firewall.
 
 For production only, also set:
 
@@ -168,11 +184,13 @@ Its `admin-tailscale` environment must require trusted maintainer approval and
 permit only `main`. The production caller explicitly uses `auth_mode: oauth`;
 store `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET` in that environment.
 Configure the OAuth client with **Keys > Auth Keys > Write**, restricted to
-`tag:github-ci`. Manual runs may select `auth_mode: authkey` and use
+`tag:github-ci-admin-verify`. Manual runs may select `auth_mode: authkey` and use
 the environment's optional `TAILSCALE_AUTH_KEY`, which must be short-lived,
 tagged, ephemeral, and pre-approved when required. Each run selects exactly
 one mode. The tag cannot administer the tailnet or use broad SSH and may reach
-only `tag:admin-sitbank:443`.
+only `tag:admin-sitbank:443`. The admin verification tag cannot reach either
+EC2 deployment SSH destination, and the deployment tags cannot reach the
+private admin HTTPS destination.
 
 The workflow fails if the private URL responds before enrollment, then joins
 the tailnet, requires `https://admin-sitbank.tailca101b.ts.net/login` to return

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 
 import pytest
@@ -48,6 +49,16 @@ def test_issue_policy_parses_markdown_headings_without_regex_backtracking():
 
     assert {"needs-triage", "network-security", "zero-trust", "staging"} <= set(labels)
     assert not {"mfa", "database", "admin"} & set(labels)
+
+
+def test_cloudflare_rules_share_the_canonical_policy_path():
+    matching_rules = [
+        rule.label
+        for rule in policy.RULES
+        if policy.CLOUDFLARE_POLICY_PATH in rule.paths
+    ]
+
+    assert matching_rules == ["network-security", "zero-trust", "staging"]
 
 
 @pytest.mark.parametrize(
@@ -177,6 +188,36 @@ def test_compute_command_validates_kind_and_paths(tmp_path):
         policy.main(["compute", "--kind", "pr", "--input", str(invalid_path)])
     with pytest.raises(ValueError, match="kind must"):
         policy.compute_labels(kind="discussion", title="Example")
+
+
+def test_compute_command_reads_standard_input_and_rejects_non_object_input(
+    monkeypatch, capsys
+):
+    monkeypatch.setattr(
+        "sys.stdin",
+        io.StringIO('{"title":"Harden staging network boundary","paths":[]}'),
+    )
+    assert policy.main(["compute", "--kind", "issue"]) == 0
+    emitted_labels = capsys.readouterr().out.splitlines()
+    assert emitted_labels[0] == "needs-triage"
+    assert set(emitted_labels[1:]) == {"security", "network-security"}
+
+    monkeypatch.setattr("sys.stdin", io.StringIO("[]"))
+    with pytest.raises(ValueError, match="label input must be a JSON object"):
+        policy.main(["compute", "--kind", "issue"])
+
+
+@pytest.mark.parametrize("kind", ["issue", "pr"])
+def test_compute_command_rejects_non_object_event_item(tmp_path, kind):
+    event_key = "issue" if kind == "issue" else "pull_request"
+    invalid_path = tmp_path / f"invalid-{kind}.json"
+    invalid_path.write_text(json.dumps({event_key: []}), encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match=f"{event_key} label input must be a JSON object",
+    ):
+        policy.main(["compute", "--kind", kind, "--input", str(invalid_path)])
 
 
 def test_definitions_are_complete_safe_and_cli_serializable(capsys):

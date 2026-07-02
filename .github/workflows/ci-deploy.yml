@@ -801,6 +801,8 @@ jobs:
         env:
           STAGING_EC2_KNOWN_HOSTS: ${{ secrets.STAGING_EC2_KNOWN_HOSTS }}
           STAGING_EC2_SSH_PRIVATE_KEY_B64: ${{ secrets.STAGING_EC2_SSH_PRIVATE_KEY_B64 }}
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
         run: |
           required=(
             IMAGE_DIGEST
@@ -828,6 +830,8 @@ jobs:
             STAGING_TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED
             STAGING_EC2_KNOWN_HOSTS
             STAGING_EC2_SSH_PRIVATE_KEY_B64
+            TS_OAUTH_CLIENT_ID
+            TS_OAUTH_SECRET
           )
           missing=0
           for name in "${required[@]}"; do
@@ -868,6 +872,14 @@ jobs:
             > "registry-staging-${RELEASE_SHA}.credentials"
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Join the staging deploy tailnet
+        uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:github-ci-staging-deploy
+          ping: ${{ vars.STAGING_EC2_HOST }}
 
       - name: Configure verified SSH
         env:
@@ -980,6 +992,11 @@ jobs:
             "registry-staging-${RELEASE_SHA}.credentials" \
             "turnstile-staging-${RELEASE_SHA}.secret"
 
+      - name: Disconnect staging deploy tailnet
+        if: ${{ always() }}
+        run: |
+          sudo tailscale logout > /dev/null 2>&1 || true
+
   verify-staging-tls:
     if: >-
       always() &&
@@ -1046,6 +1063,8 @@ jobs:
         env:
           PROD_EC2_KNOWN_HOSTS: ${{ secrets.PROD_EC2_KNOWN_HOSTS }}
           PROD_EC2_SSH_PRIVATE_KEY_B64: ${{ secrets.PROD_EC2_SSH_PRIVATE_KEY_B64 }}
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
         run: |
           required=(
             IMAGE_DIGEST
@@ -1071,6 +1090,8 @@ jobs:
             PROD_TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED
             PROD_EC2_KNOWN_HOSTS
             PROD_EC2_SSH_PRIVATE_KEY_B64
+            TS_OAUTH_CLIENT_ID
+            TS_OAUTH_SECRET
           )
           missing=0
           for name in "${required[@]}"; do
@@ -1111,6 +1132,14 @@ jobs:
             > "registry-${RELEASE_SHA}.credentials"
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Join the production deploy tailnet
+        uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:github-ci-prod-deploy
+          ping: ${{ vars.PROD_EC2_HOST }}
 
       - name: Configure verified SSH
         env:
@@ -1223,6 +1252,11 @@ jobs:
             "registry-${RELEASE_SHA}.credentials" \
             "turnstile-${RELEASE_SHA}.secret"
 
+      - name: Disconnect production deploy tailnet
+        if: ${{ always() }}
+        run: |
+          sudo tailscale logout > /dev/null 2>&1 || true
+
   verify-production-tls:
     if: >-
       always() &&
@@ -1281,7 +1315,7 @@ jobs:
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:github-ci
+          tags: tag:github-ci-admin-verify
           ping: ${{ env.TAILSCALE_PRIVATE_ADMIN_HOST }}
 
       - name: Verify private admin entrypoint
