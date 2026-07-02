@@ -83,6 +83,8 @@ jobs:
         env:
           SSH_PRIVATE_KEY_B64: ${{ secrets.STAGING_EC2_SSH_PRIVATE_KEY_B64 }}
           SSH_KNOWN_HOSTS: ${{ secrets.STAGING_EC2_KNOWN_HOSTS }}
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
         shell: bash
         run: |
           required=(
@@ -91,6 +93,8 @@ jobs:
             REMOTE_USER
             SSH_PRIVATE_KEY_B64
             SSH_KNOWN_HOSTS
+            TS_OAUTH_CLIENT_ID
+            TS_OAUTH_SECRET
           )
           missing=0
           for name in "${required[@]}"; do
@@ -121,6 +125,14 @@ jobs:
           cosign sign-blob --yes \
             --bundle "${archive}.sigstore.json" \
             "${archive}"
+
+      - name: Join the staging bootstrap tailnet
+        uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:github-ci-staging-deploy
+          ping: ${{ vars.STAGING_EC2_HOST }}
 
       - name: Configure verified SSH
         env:
@@ -212,6 +224,11 @@ jobs:
             "bootstrap-${TARGET}-${TRUSTED_SHA}.tar.gz" \
             "bootstrap-${TARGET}-${TRUSTED_SHA}.tar.gz.sigstore.json"
 
+      - name: Disconnect staging bootstrap tailnet
+        if: ${{ always() }}
+        shell: bash
+        run: sudo tailscale logout > /dev/null 2>&1 || true
+
   bootstrap-production:
     if: inputs.target_environment == 'production'
     needs: validate-request
@@ -241,6 +258,8 @@ jobs:
         env:
           SSH_PRIVATE_KEY_B64: ${{ secrets.PROD_EC2_SSH_PRIVATE_KEY_B64 }}
           SSH_KNOWN_HOSTS: ${{ secrets.PROD_EC2_KNOWN_HOSTS }}
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
         shell: bash
         run: |
           required=(
@@ -249,6 +268,8 @@ jobs:
             REMOTE_USER
             SSH_PRIVATE_KEY_B64
             SSH_KNOWN_HOSTS
+            TS_OAUTH_CLIENT_ID
+            TS_OAUTH_SECRET
           )
           missing=0
           for name in "${required[@]}"; do
@@ -279,6 +300,14 @@ jobs:
           cosign sign-blob --yes \
             --bundle "${archive}.sigstore.json" \
             "${archive}"
+
+      - name: Join the production bootstrap tailnet
+        uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:github-ci-prod-deploy
+          ping: ${{ vars.PROD_EC2_HOST }}
 
       - name: Configure verified SSH
         env:
@@ -369,3 +398,8 @@ jobs:
             ~/.ssh/bootstrap_key \
             "bootstrap-${TARGET}-${TRUSTED_SHA}.tar.gz" \
             "bootstrap-${TARGET}-${TRUSTED_SHA}.tar.gz.sigstore.json"
+
+      - name: Disconnect production bootstrap tailnet
+        if: ${{ always() }}
+        shell: bash
+        run: sudo tailscale logout > /dev/null 2>&1 || true

@@ -105,10 +105,13 @@ fall back to a legacy owner or project. Scanner evidence is valid only when the
 same run imports both `coverage.xml` and `coverage/lcov.info` for the resolved
 source commit.
 
-The reviewed main-branch cleartext-protocol findings in
-`ops/container/smoke-test.sh` are false positives: those URLs address only
-named containers on an isolated ephemeral Docker smoke network, while public
-and production traffic remains HTTPS-only. CodeQL findings for the mandated
+The reviewed main-branch cleartext-protocol finding in
+`ops/container/smoke-test.sh` is an intentional private-only exception: the
+URL and its ZAP baseline sink address only a named container on the isolated
+ephemeral Docker smoke network and carry narrow line-scoped dispositions.
+Public, staging, production, admin, deployment, and observability traffic
+remain HTTPS/TLS or private OpenSSH-over-Tailscale as applicable. CodeQL
+findings for the mandated
 HIBP SHA-1 range lookup, keyed HMAC/PBKDF2 constructions, a non-verifier
 configuration fingerprint, and exact trusted static-document assertions are
 also alert-specific false positives. Each provider disposition carries its

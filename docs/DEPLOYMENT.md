@@ -221,9 +221,11 @@ only `tag:github-ci-staging-deploy`; the production client may advertise only
 `tag:github-ci-prod-deploy`. Regenerate `STAGING_EC2_KNOWN_HOSTS` and
 `PROD_EC2_KNOWN_HOSTS` for their private Tailscale targets and verify the SSH
 fingerprints out of band. Keep the existing OpenSSH private keys and strict
-host-key checking. Do not enable Tailscale SSH or Funnel. After both private
-deployments are proven, remove public SSH exposure from the EC2 firewall and
-security group.
+host-key checking. Both the deployment and trusted-main bootstrap workflows
+join with the matching environment OAuth client before any SSH or SCP to the
+private host and always log out afterward. Do not enable Tailscale SSH or
+Funnel. After both private deployment and bootstrap paths are proven, remove
+public SSH exposure from the EC2 firewall and security group.
 
 ### Tailscale Deployment Rollout
 
@@ -247,6 +249,13 @@ its protected environment. Remove public port `22` only after both private
 paths pass. Committed files and tests do not prove live Tailscale, GitHub
 Environment, security-group, or host-firewall state; retain sanitized operator
 evidence separately.
+
+Once `STAGING_EC2_HOST` and `PROD_EC2_HOST` use a Tailscale IP or MagicDNS
+name, both bootstrap and deployment require the private tailnet path; public
+SSH is not a workflow fallback. Retain an approved host-recovery path such as
+AWS console or SSM access. A temporary security-group exception is break-glass
+only: authorize it explicitly, restrict its source and lifetime, record the
+change, and remove it immediately after recovery.
 
 ### Protected Private-Admin Verification Environment
 

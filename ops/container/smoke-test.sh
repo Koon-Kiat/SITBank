@@ -498,7 +498,7 @@ if [[ "${RUN_ZAP_BASELINE:-false}" == "true" ]]; then
 -config replacer.full_list(0).matchtype=REQ_HEADER \
 -config replacer.full_list(0).matchstr=X-Forwarded-Proto \
 -config replacer.full_list(0).replacement=https" \
-            -t "${zap_baseline_target}"
+            -t "${zap_baseline_target}"  # NOSONAR - isolated ephemeral Docker network
 fi
 
 if [[ "${RUN_ZAP_DAST:-false}" == "true" ]]; then

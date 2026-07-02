@@ -2422,9 +2422,22 @@ def test_private_deploy_docs_separate_public_https_from_private_ssh_targets():
         "tag:sitbank-prod-ec2:22",
         "Tailscale SSH remains disabled",
         "remove public port `22`",
+        "public SSH is not a workflow fallback",
+        "both bootstrap and deployment require the private tailnet path",
+        "AWS console or SSM",
         "do not prove live Tailscale",
     ):
         assert required in docs
+    for path in (
+        Path("docs/GITHUB_ACTIONS.md"),
+        Path("docs/DEPLOYMENT.md"),
+        Path("docs/OPERATIONS.md"),
+        Path("docs/security/architecture/admin-and-staging-zero-trust-access.md"),
+    ):
+        document = path.read_text(encoding="utf-8")
+        assert "bootstrap" in document.lower()
+        assert "tag:github-ci-staging-deploy" in document
+        assert "tag:github-ci-prod-deploy" in document
     assert not re.search(r"tag:github-ci(?!-)", docs)
     assert "18.188.152.24" not in Path(
         "docs/security/architecture/cloudflare-staging-access.md"
@@ -2495,6 +2508,58 @@ def test_manual_bootstrap_workflow_uses_only_signed_trusted_main_sources():
         assert checkout["with"]["ref"] == "${{ github.workflow_sha }}"
         assert checkout["with"]["persist-credentials"] is False
         assert checkout["with"]["fetch-depth"] == 0
+        configuration_step = next(
+            step
+            for step in job["steps"]
+            if step["name"] == f"Verify {target} bootstrap configuration"
+        )
+        assert configuration_step["env"]["TS_OAUTH_CLIENT_ID"] == (
+            "${{ secrets.TS_OAUTH_CLIENT_ID }}"
+        )
+        assert configuration_step["env"]["TS_OAUTH_SECRET"] == (
+            "${{ secrets.TS_OAUTH_SECRET }}"
+        )
+        assert "TS_OAUTH_CLIENT_ID" in configuration_step["run"]
+        assert "TS_OAUTH_SECRET" in configuration_step["run"]
+        tailnet_step = next(
+            step
+            for step in job["steps"]
+            if step["name"] == f"Join the {target} bootstrap tailnet"
+        )
+        deploy_workflow = yaml.safe_load(
+            Path(".github/workflows/ci-deploy.yml").read_text(encoding="utf-8")
+        )
+        deploy_tailnet_step = next(
+            step
+            for step in deploy_workflow["jobs"][f"deploy-{target}"]["steps"]
+            if step["name"] == f"Join the {target} deploy tailnet"
+        )
+        assert tailnet_step["uses"] == deploy_tailnet_step["uses"]
+        assert tailnet_step["with"] == {
+            "oauth-client-id": "${{ secrets.TS_OAUTH_CLIENT_ID }}",
+            "oauth-secret": "${{ secrets.TS_OAUTH_SECRET }}",
+            "tags": (
+                "tag:github-ci-staging-deploy"
+                if target == "staging"
+                else "tag:github-ci-prod-deploy"
+            ),
+            "ping": f"${{{{ vars.{prefix}_EC2_HOST }}}}",
+        }
+        tailnet_index = job["steps"].index(tailnet_step)
+        remote_command_indexes = [
+            index
+            for index, step in enumerate(job["steps"])
+            if "REMOTE_HOST" in str(step.get("run", ""))
+            and re.search(r"\b(?:ssh|scp)\b", str(step.get("run", "")))
+        ]
+        assert remote_command_indexes
+        assert all(tailnet_index < index for index in remote_command_indexes)
+        cleanup_step = job["steps"][-1]
+        assert cleanup_step["name"] == f"Disconnect {target} bootstrap tailnet"
+        assert cleanup_step["if"] == "${{ always() }}"
+        assert cleanup_step["run"] == (
+            "sudo tailscale logout > /dev/null 2>&1 || true"
+        )
         step_text = "\n".join(
             str(step.get("run", "")) for step in job["steps"]
         )
@@ -2529,6 +2594,7 @@ def test_manual_bootstrap_workflow_uses_only_signed_trusted_main_sources():
     assert "PROD_EC2_SSH_PRIVATE_KEY_B64" in workflow_text
     assert "STAGING_EC2_KNOWN_HOSTS" in workflow_text
     assert "PROD_EC2_KNOWN_HOSTS" in workflow_text
+    assert "tag:github-ci-admin-verify" not in workflow_text
 
 
 def test_root_bootstrap_wrapper_authenticates_and_limits_privileged_updates():

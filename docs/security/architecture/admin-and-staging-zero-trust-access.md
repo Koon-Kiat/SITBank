@@ -50,13 +50,13 @@ Category: [Security architecture](../README.md#architecture).
 
 ## Protected GitHub CI Tailnet Verification
 
-The staging and production deployment jobs, the manual **Verify private
-Tailscale admin access** workflow, and the direct production post-deploy gate
-temporarily join a GitHub-hosted runner to the tailnet. The project accepts
-this narrow credential exposure because no trusted self-hosted tailnet runner
-is available. This exception applies only to protected environment jobs. It
-does not put pull-request CI, scheduled public TLS scans, or other
-GitHub-hosted jobs inside the tailnet.
+The staging and production deployment and trusted-main bootstrap jobs, the
+manual **Verify private Tailscale admin access** workflow, and the direct
+production post-deploy gate temporarily join a GitHub-hosted runner to the
+tailnet. The project accepts this narrow credential exposure because no
+trusted self-hosted tailnet runner is available. This exception applies only
+to protected environment jobs. It does not put pull-request CI, scheduled
+public TLS scans, or other GitHub-hosted jobs inside the tailnet.
 
 `workflow_dispatch` supports on-demand checks. The trusted production workflow
 defines a direct required gate after `deploy-production` and
@@ -73,9 +73,13 @@ Auth Keys > Write**; an auth key must be short-lived, one-off where possible,
 ephemeral, tagged, and pre-approved when required. Both modes are restricted
 to `tag:github-ci-admin-verify`, which may reach only
 `tag:admin-sitbank:443` and cannot administer the tailnet or use broad SSH.
-Each run selects exactly one mode. Staging and production deployment use
-separate OAuth clients and source tags that can reach only the matching EC2
-destination tag on port `22`.
+Each run selects exactly one mode. Staging and production deployment and
+bootstrap use separate OAuth clients and source tags that can reach only the
+matching EC2 destination tag on port `22`. Bootstrap joins before any remote
+OpenSSH operation and logs out on every completion path, matching deployment.
+Public SSH is not a fallback once the EC2 host variables select private
+Tailscale targets; approved AWS console/SSM or a narrowly authorized temporary
+security-group exception remains the host-recovery boundary.
 
 Each approved run:
 

@@ -52,8 +52,9 @@ Manual pre-merge staging:
 
 Feature-branch workflow and deployment scripts are never executed with environment secrets. The only accepted migration mode for existing EC2 deployment files is `adopt-existing`, and it must still pass wrapper hash validation before app deployment.
 
-The SSH deployment jobs join Tailscale before any `ssh` or `scp` command.
-Staging uses `tag:github-ci-staging-deploy` and production uses
+The SSH deployment jobs and trusted-main EC2 bootstrap jobs join Tailscale
+before any `ssh` or `scp` command and always log out afterward. Staging uses
+`tag:github-ci-staging-deploy` and production uses
 `tag:github-ci-prod-deploy`; each protected environment stores its own
 `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET`. OpenSSH still requires the
 environment-specific deploy key, pinned known-hosts entry, and
@@ -87,10 +88,13 @@ prefixed renderer input for the target environment and writes
 
 `STAGING_PUBLIC_HOST` and `PROD_PUBLIC_HOST` are public HTTPS verification
 names. `STAGING_EC2_HOST` and `PROD_EC2_HOST` are private Tailscale MagicDNS
-names or `100.x.y.z` addresses used only for deployment SSH. Regenerate the
-matching `*_EC2_KNOWN_HOSTS` value for that private target and verify its
-fingerprint out of band before saving it. After private deployment succeeds,
-remove public port `22` exposure from the EC2 security group and host firewall.
+names or `100.x.y.z` addresses used only for deployment and bootstrap OpenSSH.
+Regenerate the matching `*_EC2_KNOWN_HOSTS` value for that private target and
+verify its fingerprint out of band before saving it. After both private paths
+succeed, remove public port `22` exposure from the EC2 security group and host
+firewall. Public SSH is not a workflow fallback; retain approved AWS
+console/SSM access or a tightly scoped, time-limited security-group break-glass
+procedure for host recovery.
 
 For production only, also set:
 
