@@ -66,6 +66,10 @@ if [[ "${direct_exit}" -eq 0 && "${direct_status}" =~ ^(400|403)$ ]]; then
     echo "Staging direct origin failed closed with HTTP ${direct_status}"
     exit 0
 fi
+if [[ "${direct_exit}" -eq 7 ]]; then
+    echo "Staging direct origin failed closed by rejecting the connection"
+    exit 0
+fi
 if [[ "${direct_exit}" =~ ^(35|52|56)$ ]]; then
     echo "Staging direct origin failed closed during TLS client-certificate verification"
     exit 0

@@ -925,8 +925,9 @@ testssl.sh --warnings batch --color 0 https://staging-sitbank.pp.ua
 Expected: unauthenticated browser traffic receives the Cloudflare Access
 challenge at `staging-sitbank.pp.ua` before reaching staging, approved operators can pass Cloudflare
 Access and then reach the normal staging controls, direct EC2-origin access to
-`/` is rejected during TLS client-certificate verification or returns the
-approved Nginx `400`/`403` denial without Cloudflare's origin-pull certificate,
+`/` is rejected during TLS client-certificate verification, rejected at the
+connection layer, or returns the approved Nginx `400`/`403` denial without
+Cloudflare's origin-pull certificate,
 direct loopback Flask access to `/` returns `403` without an Access assertion,
 external `/health/ready` is unavailable, local app and Nginx readiness
 succeed, and the
