@@ -27,7 +27,7 @@ approved retention and evidence-preservation decision.
 | Payee and transaction records | Retain while needed for customer banking history, dispute, audit, and integrity review | Do not remove related audit evidence silently |
 | Security audit events | Retain for 7 years | `docs/OPERATIONS.md` states application code must not silently auto-delete audit rows |
 | Alert reports and alert dedupe state | Preserve incident-relevant reports; dedupe state may be operational | Keep reports that support incident review outside transient delivery channels |
-| Password reset tokens and transactions | Short-lived and one-time use | Expiry exists; periodic disposal automation beyond state cleanup should be tracked before claiming it |
+| Password reset tokens and transactions | Short-lived and one-time use | Expired transactions and unreferenced expired tokens are included in the approved security-state cleanup command |
 | Manual recovery requests | Retain while active and while needed for review evidence | Public request does not unlock, freeze, or mutate an account by itself |
 | Staff invite metadata | Retain while needed for invite lifecycle and staff onboarding accountability | Raw invite tokens must not be stored or logged |
 | Registration OTP challenges | Short-lived, one-time use | Raw OTP is not stored; email hashes and OTP HMACs are security metadata |
@@ -72,12 +72,29 @@ Security audit rows must not be silently auto-deleted by application code or
 scheduled jobs. If disposal after retention is approved, keep a retained
 summary of the deleted date range and approval.
 
+## Approved Security-State Cleanup
+
+`python -m flask --app wsgi:app security run-retention-cleanup` reviews
+approved low-risk temporary security-state categories and defaults to dry-run.
+It reports category-level counts for expired server-side sessions, auth
+attempt counters, TOTP replay records, registration OTP challenges, password
+reset transactions, unreferenced expired password reset tokens, security alert
+dedupe rows, and closed circuit-breaker state past retention. Mutating cleanup
+requires `--confirm`.
+
+The command does not delete or anonymize customer accounts, staff/admin
+accounts, payees, transactions, manual recovery requests, staff invites,
+security audit events, investigation or held records, alert reports, or
+encrypted backup archives. Treat those categories as preserved until a reviewed
+retention decision and evidence-preserving procedure exist.
+
 ## Current Retention Automation Gap
 
-The repository expires and cleans up selected security state. A complete
-retention/disposal scheduler for all personal-data categories, manual recovery
-metadata, staff invites, password reset records, alert reports, or encrypted
-backup archives remains tracked in `docs/security/governance/security-gap-register.md`.
+The repository expires and cleans up selected temporary security state through
+a dry-run-by-default operator command. A complete retention/disposal scheduler
+for all personal-data categories, manual recovery metadata, staff invites,
+alert reports, or encrypted backup archives remains tracked in
+`docs/security/governance/security-gap-register.md`.
 
 ## Backup Retention
 
@@ -90,3 +107,7 @@ restore preflight before any restore. Do not keep persistent plaintext `.dump`,
 Backup deletion must be operator-approved and should consider audit retention,
 incident evidence, and restore requirements. Do not delete the only usable
 backup during an incident.
+
+Backup scheduling, restore drills, and encrypted-archive pruning are
+host/operator-owned. Keep schedule evidence and restore-drill records outside
+the repository, and never include decrypted content or age identity material.
