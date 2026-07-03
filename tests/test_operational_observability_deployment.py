@@ -98,6 +98,7 @@ def test_private_grafana_loki_alloy_deployment_files_exist_and_are_private():
     assert services["alloy"]["command"] == [
         "run",
         "--server.http.listen-addr=127.0.0.1:12345",
+        "--storage.path=/var/lib/alloy",
         "/etc/alloy/config.alloy",
     ]
     assert compose["networks"]["observability"]["internal"] is True
@@ -126,6 +127,19 @@ def test_private_grafana_loki_alloy_deployment_files_exist_and_are_private():
     assert compose["secrets"]["grafana_admin_password"]["file"] == (
         "/etc/sitbank-observability/secrets/grafana_admin_password"
     )
+
+    alloy_storage_mount = next(
+        volume
+        for volume in services["alloy"]["volumes"]
+        if volume["target"] == "/var/lib/alloy"
+    )
+    assert alloy_storage_mount == {
+        "type": "bind",
+        "source": "/var/lib/sitbank-observability/alloy",
+        "target": "/var/lib/alloy",
+        "read_only": False,
+        "bind": {"create_host_path": False},
+    }
 
 
 def test_loki_retention_and_grafana_datasource_are_configured_without_credentials():
@@ -259,10 +273,12 @@ def test_observability_bootstrap_and_docs_keep_credentials_out_of_repo():
         "/etc/sitbank-observability/observability.env",
         "/etc/sitbank-observability/secrets/grafana_admin_user",
         "/etc/sitbank-observability/secrets/grafana_admin_password",
+        "/var/lib/sitbank-observability/alloy",
         "root:root mode 0600",
         "docker compose --env-file",
         "Grafana listens only on `127.0.0.1:3000`",
         "Loki listens only on `127.0.0.1:3100`",
+        "Alloy keeps only its runtime state under `/var/lib/alloy`",
         "The admin audit viewer remains backed by `SecurityAuditEvent`, not Loki",
     ):
         assert required in normalized_combined
