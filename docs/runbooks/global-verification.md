@@ -290,7 +290,16 @@ Expected safe success indicators: Grafana listens only on `127.0.0.1:3000`,
 Loki listens only on `127.0.0.1:3100`, Alloy publishes no host listener, and
 public SITBank Nginx routes do not proxy observability services. Grafana
 credentials, datasource credentials, Loki credentials, broad log-reader
-credentials, and raw log exports are never safe to print.
+credentials, raw logs, cookies, sessions, Access assertions, and provider
+exports are not safe to print.
+
+After bootstrap or private-access changes, run the manual protected
+`.github/workflows/observability-private-verify.yml` workflow from `main`
+against `observability-staging` or `observability-production`. The retained
+artifact is `observability-evidence/private-observability.json` and contains
+only sanitized pass/fail evidence for private Grafana health, anonymous API
+denial, non-admin verifier role, Loki datasource health, and public
+Grafana/Loki route denial.
 
 ### Emergency And Break-Glass Checks
 

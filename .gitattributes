@@ -18,6 +18,7 @@ ops/deploy/verify-staging-edge-boundary text eol=lf
 ops/deploy/verify-tailscale-admin-access text eol=lf
 ops/deploy/verify-production-nginx-boundary text eol=lf
 ops/tailscale/* text eol=lf
+ops/observability/* text eol=lf
 ops/backups/* text eol=lf
 ops/sudoers/* text eol=lf
 scripts/ci-local text eol=lf

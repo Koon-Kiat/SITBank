@@ -1,0 +1,112 @@
+name: Verify private Grafana Loki observability
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: Environment whose private observability stack should be verified.
+        required: true
+        default: staging
+        type: choice
+        options:
+          - staging
+          - production
+
+permissions: {}
+
+concurrency:
+  group: private-observability-verification-${{ inputs.target_environment }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify private Grafana Loki observability
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    environment:
+      name: observability-${{ inputs.target_environment }}
+    env:
+      OBSERVABILITY_TARGET_ENV: ${{ inputs.target_environment }}
+      GRAFANA_PRIVATE_URL: ${{ vars.GRAFANA_PRIVATE_URL }}
+      OBSERVABILITY_PUBLIC_PROBE_URLS: ${{ vars.OBSERVABILITY_PUBLIC_PROBE_URLS }}
+      GRAFANA_HEALTH_TOKEN: ${{ secrets.GRAFANA_HEALTH_TOKEN }}
+
+    steps:
+      - name: Check out trusted repository state
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+
+      - name: Validate private observability target
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${GRAFANA_PRIVATE_URL}" =~ ^https://([^/@]+)\.ts\.net/?$ ]]; then
+            :
+          else
+            echo "::error::GRAFANA_PRIVATE_URL must be a private https Tailscale URL from the protected observability environment."
+            exit 1
+          fi
+          if [[ "${GRAFANA_PRIVATE_URL,,}" == *"sitbank.pp.ua"* ]]; then
+            echo "::error::GRAFANA_PRIVATE_URL must not be a public SITBank hostname."
+            exit 1
+          fi
+          if [[ -z "${GRAFANA_HEALTH_TOKEN}" ]]; then
+            echo "::error::GRAFANA_HEALTH_TOKEN is required in the protected observability environment."
+            exit 1
+          fi
+          if curl --silent --show-error --max-time 8 \
+            --output /dev/null "${GRAFANA_PRIVATE_URL%/}/api/health"; then
+            echo "::error::Private Grafana responded before the protected runner joined the tailnet."
+            exit 1
+          fi
+
+      - name: Join the approved observability tailnet
+        uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:github-ci-observability-verify
+
+      - name: Verify private Grafana and public Loki denial
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$(tailscale status --json | jq -r '.BackendState')" != "Running" ]]; then
+            echo "::error::The protected runner did not establish a running tailnet session."
+            exit 1
+          fi
+
+          python ops/observability/verify-private-observability \
+            --target-environment "${OBSERVABILITY_TARGET_ENV}" \
+            --grafana-url "${GRAFANA_PRIVATE_URL}" \
+            --evidence-file "observability-evidence/private-observability.json"
+
+          {
+            echo "## Private Grafana/Loki verification"
+            echo
+            echo "- Target environment: \`${OBSERVABILITY_TARGET_ENV}\`"
+            echo "- Evidence: \`observability-evidence/private-observability.json\`"
+            echo "- Private Grafana, Grafana anonymous denial, Loki datasource health, least-privilege verifier role, and public observability route denial checks passed."
+            echo "- No operator password, browser session, cookie, MFA value, raw log, or API response body is retained."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload sanitized private observability evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: private-observability-verification-${{ inputs.target_environment }}
+          path: observability-evidence/private-observability.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Disconnect observability tailnet session
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          sudo tailscale logout > /dev/null 2>&1 || true

@@ -41,6 +41,15 @@ Normal access uses a private Tailscale URL such as
 `https://grafana-sitbank.tailca101b.ts.net/` mapped to local Grafana. SSH local
 port forwarding is bootstrap or break-glass only, not the normal access model.
 
+Live Grafana/Loki evidence is collected only by
+`.github/workflows/observability-private-verify.yml`, a manually dispatched
+`main`-only workflow protected by `observability-staging` or
+`observability-production`. It joins Tailscale with the
+`tag:github-ci-observability-verify` identity, uses a least-privilege Grafana
+health token, and uploads only sanitized pass/fail evidence. Pull requests,
+forks, public TLS scans, and untrusted branches do not receive Tailscale or
+Grafana/Loki credentials.
+
 Do not expose Grafana publicly through production, staging, customer, admin, or
 unknown-host Nginx routes. Do not proxy, iframe, embed, or link authenticated
 Grafana sessions through Flask or the admin runtime.
@@ -58,6 +67,9 @@ from `/etc/sitbank-observability/secrets/*` and provisions Loki as a datasource
 without committed datasource credentials. Do not commit Grafana admin
 passwords, Loki tokens, API keys, datasource passwords, webhook URLs, cookies,
 session values, or provider exports.
+The protected live verifier's service account token is allowed only as a
+GitHub Environment secret and must be least-privilege, non-admin, rotated on
+operator offboarding, and excluded from artifacts and job summaries.
 
 ## Collection Guidance
 
