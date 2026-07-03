@@ -90,8 +90,13 @@ loki.source.journal "sitbank_systemd" {
 
 loki.process "redact_sensitive" {
   stage.replace {
-    expression = "(?i)(authorization|cookie|csrf|session|password|token|secret|totp|recovery|database_url|smtp_password)(=|: )[^\\s&]+"
-    replace = "$1$2[REDACTED]"
+    expression = "(?i)((?:authorization|cookie|cf-access-jwt-assertion)(?:=|: ))[^\\r\\n]+"
+    replace = "$1[REDACTED]"
+  }
+
+  stage.replace {
+    expression = "(?i)((?:csrf|session|password|token|secret|totp|recovery|database_url|smtp_(?:username|password)|api[_-]?key|webhook[_-]?url|cloudflare[_-]?(?:api[_-]?)?token|tailscale[_-]?(?:auth[_-]?)?key|ssh[_-]?(?:private[_-]?)?key)(?:=|: ))[^\\s]+"
+    replace = "$1[REDACTED]"
   }
 
   stage.drop {

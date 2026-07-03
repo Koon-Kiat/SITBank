@@ -125,6 +125,13 @@ Alloy collects only:
 The collector labels are coarse and non-secret: `service`, `environment`,
 `host_role`, and `source`.
 
+Alloy redacts recognized authorization, cookie, CSRF, session, password,
+token, secret, TOTP, recovery-code, database URL, SMTP credential, API key,
+webhook URL, Cloudflare token, Tailscale key, and SSH key fields before writing
+to Loki, and drops raw request-body, environment-dump, and private-key-block
+lines. Treat this as defense in depth rather than approval to collect sensitive
+paths or raw command transcripts.
+
 Do not add home directories, shell history, environment dumps, raw command
 transcripts, secret files, request bodies, authorization headers, cookies, CSRF
 tokens, session IDs, reset links, TOTP values, recovery codes, database URLs,
