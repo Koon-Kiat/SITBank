@@ -3153,6 +3153,7 @@ def test_linux_deployment_artifacts_are_forced_to_lf_and_reject_crlf():
         Path("ops/deploy/verify-certbot-host-state"),
         Path("ops/deploy/verify-staging-edge-boundary"),
         Path("ops/deploy/verify-tailscale-admin-access"),
+        Path("ops/observability/verify-private-observability"),
         Path("ops/tailscale/install-tailscale"),
         Path("ops/tailscale/configure-admin-access"),
         Path("ops/tailscale/verify-admin-access"),
@@ -3181,6 +3182,7 @@ def test_linux_deployment_artifacts_are_forced_to_lf_and_reject_crlf():
     assert "ops/deploy/verify-certbot-host-state text eol=lf" in attributes
     assert "ops/deploy/verify-staging-edge-boundary text eol=lf" in attributes
     assert "ops/deploy/verify-tailscale-admin-access text eol=lf" in attributes
+    assert "ops/observability/* text eol=lf" in attributes
     assert "ops/tailscale/* text eol=lf" in attributes
     assert "ops/backups/* text eol=lf" in attributes
     assert "ops/sudoers/* text eol=lf" in attributes
@@ -3189,6 +3191,120 @@ def test_linux_deployment_artifacts_are_forced_to_lf_and_reject_crlf():
 
     assert "Refusing to install CRLF-formatted Linux file" in bootstrap
     assert "grep -q $'\\r$'" in bootstrap
+
+
+def test_private_observability_workflow_is_manual_protected_and_sanitized():
+    workflow_path = Path(".github/workflows/observability-private-verify.yml")
+    workflow_text = workflow_path.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(workflow_text)
+    triggers = workflow[True]
+    verify = workflow["jobs"]["verify"]
+
+    assert workflow["name"] == "Verify private Grafana Loki observability"
+    assert set(triggers) == {"workflow_dispatch"}
+    assert "pull_request" not in workflow_text
+    assert "pull_request_target" not in workflow_text
+    assert workflow["permissions"] == {}
+    assert workflow["concurrency"] == {
+        "group": "private-observability-verification-${{ inputs.target_environment }}",
+        "cancel-in-progress": False,
+    }
+    assert triggers["workflow_dispatch"]["inputs"]["target_environment"]["options"] == [
+        "staging",
+        "production",
+    ]
+    assert verify["if"] == "github.ref == 'refs/heads/main'"
+    assert verify["runs-on"] == "ubuntu-24.04"
+    assert verify["permissions"] == {"contents": "read"}
+    assert verify["environment"]["name"] == (
+        "observability-${{ inputs.target_environment }}"
+    )
+    assert verify["env"] == {
+        "OBSERVABILITY_TARGET_ENV": "${{ inputs.target_environment }}",
+        "GRAFANA_PRIVATE_URL": "${{ vars.GRAFANA_PRIVATE_URL }}",
+        "OBSERVABILITY_PUBLIC_PROBE_URLS": (
+            "${{ vars.OBSERVABILITY_PUBLIC_PROBE_URLS }}"
+        ),
+        "GRAFANA_HEALTH_TOKEN": "${{ secrets.GRAFANA_HEALTH_TOKEN }}",
+    }
+    assert "GRAFANA_PRIVATE_URL must be a private https Tailscale URL" in workflow_text
+    assert "responded before the protected runner joined the tailnet" in workflow_text
+    assert "tag:github-ci-observability-verify" in workflow_text
+    assert "ops/observability/verify-private-observability" in workflow_text
+    assert "observability-evidence/private-observability.json" in workflow_text
+    assert "operator password" in workflow_text
+    assert "raw log" in workflow_text
+    assert "sudo tailscale logout" in workflow_text
+    assert "set -x" not in workflow_text
+    assert "printenv" not in workflow_text
+    assert "env |" not in workflow_text
+    assert "docker compose" not in workflow_text
+    assert "tailscale funnel" not in workflow_text
+    assert "tailscale serve" not in workflow_text
+
+    uses = _workflow_uses(workflow_text)
+    assert uses == [
+        "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+        "tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8",
+        "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+    ]
+    _assert_pinned_actions(uses, context="Private observability workflow")
+
+    docs = "\n".join(
+        Path(path).read_text(encoding="utf-8")
+        for path in (
+            "docs/GITHUB_ACTIONS.md",
+            "docs/OPERATIONS.md",
+            "docs/runbooks/private-observability-grafana-loki.md",
+            "docs/security/assurance/operational-observability.md",
+        )
+    )
+    for required in (
+        "observability-staging",
+        "observability-production",
+        "GRAFANA_PRIVATE_URL",
+        "GRAFANA_HEALTH_TOKEN",
+        "tag:github-ci-observability-verify",
+        "least-privilege",
+        "anonymous API denial",
+        "public denial probes",
+        "not a pull-request",
+    ):
+        assert required in docs
+    assert "operator passwords" in docs
+    assert "browser sessions" in docs
+    assert "raw logs" in docs
+
+
+def test_private_observability_static_policy_keeps_public_routes_closed():
+    nginx_combined = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in Path("ops/nginx").glob("*.conf")
+    )
+    public_runtime = "\n".join(
+        path.read_text(encoding="utf-8")
+        for root in (Path("app"),)
+        for path in [*root.rglob("*.py"), *root.rglob("*.html"), *root.rglob("*.js")]
+        if path.is_file()
+    )
+    ignored = Path(".gitignore").read_text(encoding="utf-8")
+
+    for forbidden in ("/grafana", "/loki", "/logs", "/metrics"):
+        assert f"location {forbidden}" not in nginx_combined.casefold()
+    assert not re.search(r"proxy_pass\s+http://127\.0\.0\.1:(3000|3100)", nginx_combined)
+    assert not re.search(r"proxy_pass\s+http://(?:grafana|loki)", nginx_combined.casefold())
+    assert "grafana" not in public_runtime.casefold()
+    assert "loki" not in public_runtime.casefold()
+    assert "<iframe" not in public_runtime.casefold()
+    for required in (
+        "observability-evidence/",
+        "private-observability*.json",
+        "grafana-*.json",
+        "loki-*.json",
+        "storage-state*.json",
+        "*.har",
+    ):
+        assert required in ignored
 
 
 def test_staging_edge_verifier_accepts_connection_rejection_as_fail_closed(

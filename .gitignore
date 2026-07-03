@@ -48,6 +48,12 @@ appendonly.aof*
 *.pem
 *.pdf
 cloudflare-access-evidence*.json
+observability-evidence/
+private-observability*.json
+grafana-*.json
+loki-*.json
+storage-state*.json
+*.har
 .vscode/
 compose.dev.yml
 docker-compose.dev.yml
