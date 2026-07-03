@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 
 
 DAST_COOKIE_RE = re.compile(r"^__Host-sitbank_session=[A-Za-z0-9._~-]+$")
+TURNSTILE_TEST_TOKEN = "XXXX.DUMMY.TOKEN.XXXX"
 
 
 class DastClient:
@@ -127,7 +128,11 @@ def create_authenticated_cookie(
     client.request(
         "POST",
         "/auth/login",
-        payload={"identifier": username, "password": password},
+        payload={
+            "identifier": username,
+            "password": password,
+            "cf-turnstile-response": TURNSTILE_TEST_TOKEN,
+        },
         csrf_token=csrf_token,
         expected_status=200,
     )

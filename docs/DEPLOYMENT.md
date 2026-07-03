@@ -533,7 +533,10 @@ Release verification runs `ops/container/smoke-test.sh` against the exact image
 digest that will be deployed. When authenticated DAST is enabled, the helper
 creates only synthetic customer identities, restricts the target to loopback or
 the explicit smoke container host, and keeps real customer, staff, and admin
-credentials out of the scan path.
+credentials out of the scan path. Its synthetic login submits Cloudflare's
+documented public dummy token only with the official always-pass Turnstile test
+keys configured by the isolated smoke harness; deployed environments continue
+to use their protected real Turnstile credentials.
 
 DAST cookie handling is intentionally file-based. `auth-cookie` and
 `zap-replacer.properties` are created under `umask 077`, written as `0600`
@@ -685,7 +688,7 @@ served through DNS and the deployed edge.
 
 ## Production Edge and Network Hardening
 
-The reviewed production bootstrap installs and enables the production edge from `ops/nginx/sitbank-default.conf`, `ops/nginx/sitbank-production.conf`, `ops/nginx/sitbank-production-rate-limits.conf`, `ops/nginx-proxy-headers.conf`, and `ops/nginx/sitbank-tls-policy.conf`. `PUBLIC_BIND_ADDRESS` in root-owned `deploy.conf` must be the exact public/VPC IPv4 address assigned to Nginx; loopback, Tailscale `100.64.0.0/10`, wildcard, and malformed values fail bootstrap. During the first transition from a deploy config without this key, bootstrap derives the kernel's default-route source IPv4, validates it under the same policy, and persists it for subsequent deployments; operators with multiple egress interfaces must pass the intended address explicitly. The bootstrap renders every public port `80`/`443` listener onto that address, while Tailscale Serve owns its private HTTPS listener. The shared default config owns unknown-host rejection without wildcard public listeners. Any change to these files or `PUBLIC_BIND_ADDRESS` requires a target bootstrap after merge.
+The reviewed production bootstrap installs and enables the production edge from `ops/nginx/sitbank-default.conf`, `ops/nginx/sitbank-production.conf`, `ops/nginx/sitbank-production-rate-limits.conf`, `ops/nginx-proxy-headers.conf`, and `ops/nginx/sitbank-tls-policy.conf`. `PUBLIC_BIND_ADDRESS` in root-owned `deploy.conf` must be the exact public/VPC IPv4 address assigned to Nginx; loopback, Tailscale `100.64.0.0/10`, wildcard, and malformed values fail bootstrap. During the first transition from a deploy config without this key, bootstrap derives the kernel's default-route source IPv4, validates it under the same policy, and persists it for subsequent deployments. If route lookup does not return a valid source IPv4, bootstrap fails before changing Nginx; operators with multiple egress interfaces must pass the intended address explicitly. The bootstrap renders every public port `80`/`443` listener onto that address, while Tailscale Serve owns its private HTTPS listener. The shared default config owns unknown-host rejection without wildcard public listeners. Any change to these files or `PUBLIC_BIND_ADDRESS` requires a target bootstrap after merge.
 
 Production bootstrap also installs
 `/usr/local/sbin/verify-production-nginx-boundary`. Bootstrap runs it after

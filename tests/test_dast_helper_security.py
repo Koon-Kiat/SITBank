@@ -327,6 +327,12 @@ def test_create_authenticated_cookie_runs_login_and_mfa_sequence(monkeypatch):
         "/auth/mfa/setup",
         "/auth/mfa/setup/verify",
     ]
+    assert calls[1][2]["payload"] == {
+        "identifier": "zapabc123",
+        "password": "DAST-fake-random-A9!",
+        "cf-turnstile-response": module.TURNSTILE_TEST_TOKEN,
+    }
+    assert module.TURNSTILE_TEST_TOKEN == "XXXX.DUMMY.TOKEN.XXXX"
     assert calls[-1][2]["payload"] == {"totp_code": "123456"}
 
 
