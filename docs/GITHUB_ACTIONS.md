@@ -39,7 +39,10 @@ and status checks use the display names:
 | `verify-private-admin-tailnet` | `Verify private admin tailnet` |
 
 Bootstrap, Cloudflare verification, label automation, reusable SonarQube, and
-manual private-tailnet jobs follow the same explicit naming policy.
+manual private-tailnet jobs follow the same explicit naming policy. The
+manual **Verify private Grafana Loki observability** workflow is a protected
+post-deployment evidence workflow for the private observability stack, not a
+pull-request or public TLS check.
 `tests/test_workflow_display_names.py` enforces the policy across every
 `.github/workflows/*.yml` file while allowing the intentional TLS matrix name
 `Scan ${{ matrix.target.label }}`.
@@ -309,6 +312,30 @@ used by workflows.
 The separate `ops/tailscale/` host automation installs Tailscale and configures
 the production Serve mapping only after explicit operator confirmation. It is
 never called by either verification job, pull requests, or normal CI.
+
+## Private Observability Verification
+
+`.github/workflows/observability-private-verify.yml` is manual-only,
+`main`-only, read-only, and protected by either `observability-staging` or
+`observability-production`. It verifies the private Grafana/Loki deployment
+after observability bootstrap, Grafana provisioning, Tailscale ACL/DNS changes,
+or operator credential rotation. It is intentionally separate from PR-safe
+static tests and from public TLS evidence because Grafana is a private operator
+tool and Loki is not Internet-facing.
+
+Configure each protected environment with `GRAFANA_PRIVATE_URL`,
+optional `OBSERVABILITY_PUBLIC_PROBE_URLS`, `GRAFANA_HEALTH_TOKEN`,
+`TS_OAUTH_CLIENT_ID`, and `TS_OAUTH_SECRET`. The Tailscale OAuth client should
+be restricted to `tag:github-ci-observability-verify`, and the Grafana token
+must be a least-privilege non-admin health token. Do not store operator
+passwords, browser sessions, cookies, MFA values, raw Loki logs, datasource
+credentials, or Grafana admin credentials in GitHub.
+
+The workflow checks that private Grafana is unreachable before joining the
+tailnet, joins Tailscale, verifies Grafana API health, anonymous API denial,
+non-admin verifier role, Loki datasource health, and public denial probes for
+`/grafana`, `/loki`, `/logs`, and `/metrics`. It uploads only sanitized JSON
+evidence for 30 days and logs out of Tailscale at completion.
 
 ## Gitleaks
 

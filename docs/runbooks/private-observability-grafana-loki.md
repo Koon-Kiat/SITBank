@@ -59,6 +59,44 @@ Do not print the secret file contents.
 
 ## Verification
 
+### Protected Live Workflow
+
+Run **Verify private Grafana Loki observability** from `main` after the private
+observability stack, Tailscale DNS/ACLs, Grafana credentials, or datasource
+provisioning changes. Select `staging` or `production`; the job uses the
+matching protected GitHub Environment `observability-staging` or
+`observability-production`.
+
+Each environment must require trusted maintainer approval and restrict
+deployment branches to `main`. Configure:
+
+- `GRAFANA_PRIVATE_URL` as the private Tailscale HTTPS URL, for example
+  `https://grafana-sitbank.tailca101b.ts.net/`;
+- optional `OBSERVABILITY_PUBLIC_PROBE_URLS` as newline-separated public
+  denial probes for `/grafana`, `/loki`, `/logs`, and `/metrics`;
+- `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET` for a narrowly scoped Tailscale
+  OAuth client tagged `tag:github-ci-observability-verify`;
+- `GRAFANA_HEALTH_TOKEN` as a least-privilege Grafana service account token
+  that can read `/api/health`, its own `/api/user` role, datasources, and
+  datasource health.
+
+Do not store operator passwords, browser sessions, cookies, MFA values,
+Grafana admin credentials, Loki credentials, datasource passwords, raw logs, or
+provider exports in GitHub secrets or artifacts. The token must not have
+Grafana admin privileges. The workflow first confirms the private URL is not
+reachable from the public runner, then joins Tailscale, verifies Grafana API
+health, verifies anonymous API denial, checks the verifier role is not admin,
+checks Loki datasource health through Grafana, and verifies public SITBank
+paths do not expose Grafana or Loki. It uploads only
+`observability-evidence/private-observability.json`, a sanitized summary with
+HTTP status codes and check names, not raw API responses.
+
+The protected workflow is live network-path evidence. It is not a pull-request
+check and must never run on forks, untrusted branches, or public GitHub-hosted
+TLS jobs.
+
+### Host Checks
+
 ```bash
 sudo docker compose --env-file /etc/sitbank-observability/observability.env -f /etc/sitbank-observability/compose.yml ps
 sudo ss -ltnp | grep -E ':(3000|3100)([[:space:]]|$)'

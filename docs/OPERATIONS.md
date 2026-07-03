@@ -342,6 +342,17 @@ operator verification steps are in
 Provider automation and origin assertion details are in
 `docs/security/architecture/cloudflare-staging-access.md`.
 
+Run the manual **Verify private Grafana Loki observability** workflow from
+`main` after private observability bootstrap, Grafana datasource changes,
+Tailscale ACL/DNS changes, or token rotation. The workflow uses the protected
+`observability-staging` or `observability-production` environment, joins
+Tailscale with `tag:github-ci-observability-verify`, verifies private Grafana
+health, anonymous denial, non-admin verifier role, Loki datasource health, and
+public denial probes, then uploads only sanitized evidence. It must not run on
+pull requests or public TLS jobs and must not receive operator passwords,
+browser sessions, cookies, MFA values, raw logs, datasource credentials, or
+Grafana admin credentials.
+
 ## Production Cloudflare Origin Operations
 
 Production requires Cloudflare Authenticated Origin Pull in addition to
@@ -854,7 +865,9 @@ The `pp.ua` DNS-01 migration and DuckDNS retirement are complete. Keep retired
 names out of active Nginx, Certbot, workflow, and TLS-scan configuration. Use
 `docs/runbooks/private-observability-grafana-loki.md` for the private
 Grafana/Loki/Alloy stack; Grafana remains private and is not exposed through
-the SITBank admin app.
+the SITBank admin app. Live Grafana/Loki evidence is collected only by the
+protected private observability workflow, never by public GitHub-hosted TLS
+scan jobs.
 
 The normal public TLS scan deliberately excludes the private Tailscale admin hostname
 `admin-sitbank.tailca101b.ts.net`; a GitHub-hosted public runner cannot reach

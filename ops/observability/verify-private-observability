@@ -1,0 +1,343 @@
+#!/usr/bin/env python3
+"""Verify private Grafana/Loki posture and write sanitized evidence."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess  # nosec B404
+import sys
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable, Sequence
+from urllib.parse import urlparse
+
+
+DEFAULT_PUBLIC_PROBES = (
+    "https://sitbank.pp.ua/grafana",
+    "https://sitbank.pp.ua/loki",
+    "https://sitbank.pp.ua/logs",
+    "https://sitbank.pp.ua/metrics",
+    "https://www.sitbank.pp.ua/grafana",
+    "https://www.sitbank.pp.ua/loki",
+    "https://staging-sitbank.pp.ua/grafana",
+    "https://staging-sitbank.pp.ua/loki",
+    "https://staging-sitbank.pp.ua/logs",
+    "https://staging-sitbank.pp.ua/metrics",
+)
+SECRET_MARKERS = (
+    "authorization:",
+    "cookie:",
+    "cf-access-jwt-assertion",
+    "grafana_session",
+    "x-grafana-org-id",
+)
+PUBLIC_EXPOSURE_PATHS = ("/grafana", "/loki", "/logs", "/metrics")
+
+
+class VerificationError(RuntimeError):
+    """Raised when a required observability assertion fails."""
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    returncode: int
+    stdout: str = ""
+    stderr: str = ""
+
+
+Runner = Callable[[Sequence[str]], CommandResult]
+
+
+def run_command(arguments: Sequence[str]) -> CommandResult:
+    executable = shutil.which(arguments[0])
+    if executable is None:
+        raise VerificationError(f"required command is not installed: {arguments[0]}")
+    try:
+        completed = subprocess.run(  # nosec B603
+            [executable, *arguments[1:]],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise VerificationError(f"could not run required command: {arguments[0]}") from exc
+    return CommandResult(completed.returncode, completed.stdout, completed.stderr)
+
+
+def _safe_json_load(raw: str, description: str) -> Any:
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise VerificationError(f"{description} did not return valid JSON") from exc
+
+
+def _safe_url_label(url: str) -> str:
+    parsed = urlparse(url)
+    return f"{parsed.hostname or '<invalid>'}{parsed.path or '/'}"
+
+
+def _validate_private_grafana_url(url: str) -> str:
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        raise VerificationError("GRAFANA_PRIVATE_URL must be an https URL without credentials")
+    hostname = parsed.hostname.casefold()
+    if hostname in {"sitbank.pp.ua", "www.sitbank.pp.ua", "staging-sitbank.pp.ua"}:
+        raise VerificationError("GRAFANA_PRIVATE_URL must not be a public SITBank hostname")
+    if not hostname.endswith(".ts.net"):
+        raise VerificationError("GRAFANA_PRIVATE_URL must use a private Tailscale DNS hostname")
+    return url.rstrip("/")
+
+
+def _validate_public_probe_url(url: str) -> str:
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        raise VerificationError("Public probe URLs must be https URLs without credentials")
+    if parsed.hostname.casefold().endswith(".ts.net"):
+        raise VerificationError("Public probes must not target private Tailscale hostnames")
+    if not any((parsed.path or "/").startswith(path) for path in PUBLIC_EXPOSURE_PATHS):
+        raise VerificationError("Public probes must target reviewed observability-denial paths")
+    return url
+
+
+def _public_probe_urls(raw: str | None) -> list[str]:
+    values = [
+        value.strip()
+        for value in (raw.splitlines() if raw else DEFAULT_PUBLIC_PROBES)
+        if value.strip()
+    ]
+    if not values:
+        raise VerificationError("At least one public observability probe URL is required")
+    return [_validate_public_probe_url(value) for value in values]
+
+
+def _curl(
+    runner: Runner,
+    url: str,
+    *,
+    token: str | None = None,
+) -> tuple[int, str]:
+    command = [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--location",
+        "--max-time",
+        "15",
+        "--header",
+        "Accept: application/json",
+    ]
+    if token:
+        command.extend(["--header", f"Authorization: Bearer {token}"])
+    command.append(url)
+    result = runner(tuple(command))
+    if result.returncode != 0:
+        raise VerificationError(f"request failed for {_safe_url_label(url)}")
+    return result.returncode, result.stdout
+
+
+def _curl_status_headers(runner: Runner, url: str) -> tuple[str, str]:
+    result = runner(
+        (
+            "curl",
+            "--silent",
+            "--show-error",
+            "--location-trusted",
+            "--max-redirs",
+            "0",
+            "--max-time",
+            "15",
+            "--output",
+            "/dev/null",
+            "--dump-header",
+            "-",
+            "--write-out",
+            "\nSITBANK_HTTP_CODE:%{http_code}\n",
+            url,
+        )
+    )
+    if result.returncode not in {0, 22, 47}:
+        return "000", ""
+    status = "000"
+    for line in result.stdout.splitlines():
+        if line.startswith("SITBANK_HTTP_CODE:"):
+            status = line.split(":", 1)[1].strip()
+    return status, result.stdout
+
+
+def verify_private_grafana(
+    runner: Runner,
+    grafana_url: str,
+    token: str,
+) -> list[dict[str, str]]:
+    checks: list[dict[str, str]] = []
+    if not token:
+        raise VerificationError("GRAFANA_HEALTH_TOKEN is required for private API verification")
+
+    _curl(runner, f"{grafana_url}/api/health", token=token)
+    checks.append({"name": "grafana_api_health", "result": "pass"})
+
+    anonymous_status, _headers = _curl_status_headers(runner, f"{grafana_url}/api/user")
+    if anonymous_status not in {"401", "403"}:
+        raise VerificationError("Grafana anonymous API access is not denied")
+    checks.append(
+        {
+            "name": "grafana_anonymous_disabled",
+            "result": "pass",
+            "http_status": anonymous_status,
+        }
+    )
+
+    _code, user_raw = _curl(runner, f"{grafana_url}/api/user", token=token)
+    user = _safe_json_load(user_raw, "Grafana authenticated user API")
+    if isinstance(user, dict) and (
+        user.get("isGrafanaAdmin") is True or str(user.get("orgRole", "")).casefold() == "admin"
+    ):
+        raise VerificationError("Grafana verification token has administrative privileges")
+    checks.append({"name": "grafana_verifier_role_least_privilege", "result": "pass"})
+
+    _code, datasources_raw = _curl(runner, f"{grafana_url}/api/datasources", token=token)
+    datasources = _safe_json_load(datasources_raw, "Grafana datasource API")
+    if not isinstance(datasources, list):
+        raise VerificationError("Grafana datasource API returned an unexpected schema")
+    loki_sources = [
+        source for source in datasources
+        if isinstance(source, dict) and str(source.get("type", "")).casefold() == "loki"
+    ]
+    if not loki_sources:
+        raise VerificationError("Grafana has no Loki datasource to verify")
+    for source in loki_sources:
+        uid = source.get("uid")
+        if not isinstance(uid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", uid):
+            raise VerificationError("Grafana Loki datasource UID is missing or unsafe")
+        _curl(runner, f"{grafana_url}/api/datasources/uid/{uid}/health", token=token)
+    checks.append(
+        {
+            "name": "loki_datasource_health",
+            "result": "pass",
+            "datasource_count": str(len(loki_sources)),
+        }
+    )
+    return checks
+
+
+def verify_public_denials(
+    runner: Runner,
+    public_urls: Sequence[str],
+) -> list[dict[str, str]]:
+    checks: list[dict[str, str]] = []
+    failures: list[str] = []
+    for url in public_urls:
+        status, headers = _curl_status_headers(runner, url)
+        header_text = headers.casefold()
+        if status == "200" or "location:" in header_text and re.search(r"/(?:grafana|loki)(?:/|$)", header_text):
+            failures.append(f"{_safe_url_label(url)} returned public observability access evidence")
+        if any(marker in header_text for marker in SECRET_MARKERS):
+            failures.append(f"{_safe_url_label(url)} returned sensitive observability headers")
+        checks.append(
+            {
+                "name": "public_observability_denial",
+                "result": "pass" if not failures else "fail",
+                "target": _safe_url_label(url),
+                "http_status": status,
+            }
+        )
+    if failures:
+        raise VerificationError("\n".join(failures))
+    return checks
+
+
+def _write_evidence(
+    path: Path,
+    *,
+    target_environment: str,
+    grafana_url: str,
+    checks: Sequence[dict[str, str]],
+    token: str,
+) -> None:
+    parsed = urlparse(grafana_url)
+    evidence = {
+        "schema": 1,
+        "result": "pass",
+        "verification": "private-grafana-loki",
+        "target_environment": target_environment,
+        "workflow_trigger": "manual_protected",
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "private_grafana_host": parsed.hostname,
+        "checks": list(checks),
+        "sanitization": {
+            "raw_http_bodies_retained": False,
+            "credentials_retained": False,
+            "cookies_retained": False,
+            "access_assertions_retained": False,
+        },
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(evidence, indent=2, sort_keys=True) + "\n"
+    if token and token in text:
+        raise VerificationError("sanitized evidence unexpectedly contains the Grafana token")
+    path.write_text(text, encoding="utf-8")
+
+
+def parse_args(argv: Sequence[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--target-environment",
+        choices=("staging", "production"),
+        default=os.environ.get("OBSERVABILITY_TARGET_ENV", "staging"),
+    )
+    parser.add_argument(
+        "--grafana-url",
+        default=os.environ.get("GRAFANA_PRIVATE_URL", ""),
+    )
+    parser.add_argument(
+        "--public-probe-url",
+        action="append",
+        default=[],
+        help="Public URL that must not expose Grafana/Loki; repeatable.",
+    )
+    parser.add_argument(
+        "--evidence-file",
+        default=os.environ.get(
+            "OBSERVABILITY_EVIDENCE_FILE",
+            "observability-evidence/private-observability.json",
+        ),
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+    try:
+        grafana_url = _validate_private_grafana_url(args.grafana_url)
+        public_urls = args.public_probe_url or _public_probe_urls(
+            os.environ.get("OBSERVABILITY_PUBLIC_PROBE_URLS")
+        )
+        public_urls = [_validate_public_probe_url(url) for url in public_urls]
+        token = os.environ.get("GRAFANA_HEALTH_TOKEN", "")
+        checks = [
+            *verify_private_grafana(run_command, grafana_url, token),
+            *verify_public_denials(run_command, public_urls),
+        ]
+        _write_evidence(
+            Path(args.evidence_file),
+            target_environment=args.target_environment,
+            grafana_url=grafana_url,
+            checks=checks,
+            token=token,
+        )
+    except VerificationError as exc:
+        for line in str(exc).splitlines():
+            print(f"ERROR: {line}", file=sys.stderr)
+        return 1
+    print(f"Sanitized private observability evidence written to {args.evidence_file}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import json
 import re
+import runpy
 from pathlib import Path
 
+import pytest
 import yaml
 
 
 OBS_ROOT = Path("ops/observability")
+VERIFIER_PATH = OBS_ROOT / "verify-private-observability"
 
 
 def _read_observability_files() -> str:
@@ -217,3 +220,125 @@ def test_observability_bootstrap_and_docs_keep_credentials_out_of_repo():
 
     assert "SSH local port forwarding is allowed only for bootstrap" in docs
     assert "No public Nginx production, staging, customer, or admin route" in docs
+
+
+def test_private_observability_verifier_accepts_safe_mocked_live_state(tmp_path):
+    module = runpy.run_path(str(VERIFIER_PATH))
+    token = "fake-grafana-health-token"
+    calls = []
+
+    def fake_runner(arguments):
+        command = tuple(arguments)
+        calls.append(command)
+        url = command[-1]
+        if url.endswith("/api/health"):
+            return module["CommandResult"](0, '{"database":"ok"}')
+        if url.endswith("/api/user") and "Authorization: Bearer " + token in command:
+            return module["CommandResult"](
+                0,
+                json.dumps({"login": "sitbank-verifier", "orgRole": "Viewer"}),
+            )
+        if url.endswith("/api/user"):
+            return module["CommandResult"](
+                0,
+                "HTTP/2 401\r\n\nSITBANK_HTTP_CODE:401\n",
+            )
+        if url.endswith("/api/datasources"):
+            return module["CommandResult"](
+                0,
+                json.dumps([{"uid": "sitbank-loki", "type": "loki"}]),
+            )
+        if url.endswith("/api/datasources/uid/sitbank-loki/health"):
+            return module["CommandResult"](0, '{"status":"OK"}')
+        if "/grafana" in url or "/loki" in url:
+            return module["CommandResult"](
+                0,
+                "HTTP/2 404\r\n\nSITBANK_HTTP_CODE:404\n",
+            )
+        raise AssertionError(command)
+
+    grafana_url = "https://grafana-sitbank.tailca101b.ts.net"
+    checks = [
+        *module["verify_private_grafana"](fake_runner, grafana_url, token),
+        *module["verify_public_denials"](
+            fake_runner,
+            ("https://sitbank.pp.ua/grafana", "https://staging-sitbank.pp.ua/loki"),
+        ),
+    ]
+    evidence = tmp_path / "private-observability.json"
+    module["_write_evidence"](
+        evidence,
+        target_environment="staging",
+        grafana_url=grafana_url,
+        checks=checks,
+        token=token,
+    )
+
+    evidence_text = evidence.read_text(encoding="utf-8")
+    evidence_json = json.loads(evidence_text)
+    assert evidence_json["result"] == "pass"
+    assert evidence_json["workflow_trigger"] == "manual_protected"
+    assert evidence_json["private_grafana_host"] == "grafana-sitbank.tailca101b.ts.net"
+    assert {check["name"] for check in evidence_json["checks"]} >= {
+        "grafana_api_health",
+        "grafana_anonymous_disabled",
+        "grafana_verifier_role_least_privilege",
+        "loki_datasource_health",
+        "public_observability_denial",
+    }
+    assert token not in evidence_text
+    assert "Authorization" not in evidence_text
+    assert "grafana_session" not in evidence_text
+    assert any(
+        "Authorization: Bearer " + token in command
+        for command in calls
+    )
+
+
+def test_private_observability_verifier_fails_closed_on_public_exposure_and_admin_token():
+    module = runpy.run_path(str(VERIFIER_PATH))
+
+    with pytest.raises(module["VerificationError"], match="public SITBank"):
+        module["_validate_private_grafana_url"]("https://sitbank.pp.ua")
+    with pytest.raises(module["VerificationError"], match="Tailscale"):
+        module["_validate_private_grafana_url"]("https://grafana.example.com")
+    with pytest.raises(module["VerificationError"], match="without credentials"):
+        module["_validate_private_grafana_url"](
+            "https://user:pass@grafana-sitbank.tailca101b.ts.net"
+        )
+    with pytest.raises(module["VerificationError"], match="private Tailscale"):
+        module["_validate_public_probe_url"](
+            "https://grafana-sitbank.tailca101b.ts.net/grafana"
+        )
+
+    def admin_runner(arguments):
+        url = tuple(arguments)[-1]
+        if url.endswith("/api/health"):
+            return module["CommandResult"](0, "{}")
+        if url.endswith("/api/user") and "Authorization: Bearer token" in tuple(arguments):
+            return module["CommandResult"](0, json.dumps({"orgRole": "Admin"}))
+        if url.endswith("/api/user"):
+            return module["CommandResult"](
+                0,
+                "HTTP/2 401\r\n\nSITBANK_HTTP_CODE:401\n",
+            )
+        raise AssertionError(arguments)
+
+    with pytest.raises(module["VerificationError"], match="administrative privileges"):
+        module["verify_private_grafana"](
+            admin_runner,
+            "https://grafana-sitbank.tailca101b.ts.net",
+            "token",
+        )
+
+    def public_runner(arguments):
+        return module["CommandResult"](
+            0,
+            "HTTP/2 200\r\nserver: grafana\r\n\nSITBANK_HTTP_CODE:200\n",
+        )
+
+    with pytest.raises(module["VerificationError"], match="public observability"):
+        module["verify_public_denials"](
+            public_runner,
+            ("https://sitbank.pp.ua/grafana",),
+        )
