@@ -353,6 +353,31 @@ def verify_admin_listener(
         )
 
 
+def verify_no_wildcard_https_listener(runner: Runner) -> None:
+    output = _require_success(
+        runner(("ss", "-H", "-ltnp")),
+        "HTTPS listening-socket inspection",
+    )
+    wildcard_addresses = {
+        "*:443",
+        "0.0.0.0:443",
+        "[::]:443",
+        ":::443",
+    }
+    observed = sorted(
+        {
+            line.split()[3]
+            for line in output.splitlines()
+            if len(line.split()) >= 4 and line.split()[3] in wildcard_addresses
+        }
+    )
+    if observed:
+        raise VerificationError(
+            "wildcard HTTPS listener can intercept Tailscale Serve: "
+            + ", ".join(observed)
+        )
+
+
 def verify_local_admin_readiness(
     runner: Runner,
     loopback_host: str,
@@ -474,6 +499,10 @@ def verify_host(
     if mode == "serve":
         checks.extend(
             [
+                (
+                    "no wildcard HTTPS listener can intercept Tailscale Serve",
+                    lambda: verify_no_wildcard_https_listener(runner),
+                ),
                 (
                     "Tailscale Serve maps only the private HTTPS endpoint to "
                     "the admin loopback service",

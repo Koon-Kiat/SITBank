@@ -48,8 +48,31 @@ def test_current_production_boundary_passes_active_config_validation():
         "OK: production HTTPS origin-pull verification is active",
         "OK: production six-month HSTS policy is active",
         "OK: default HTTPS rejects unknown hosts",
+        "OK: public Nginx HTTPS listeners exclude Tailscale interfaces",
         "OK: public production admin access is denied",
     ]
+
+
+def test_production_boundary_requires_configured_non_wildcard_bind_address():
+    rendered = _valid_configuration().replace(
+        "__SITBANK_PUBLIC_BIND_ADDRESS__",
+        "10.0.1.25",
+    )
+
+    verifier.verify_configuration(
+        rendered,
+        public_bind_address="10.0.1.25",
+    )
+    with pytest.raises(verifier.VerificationError, match="wildcard HTTPS"):
+        verifier.verify_configuration(
+            rendered.replace("10.0.1.25:443", "0.0.0.0:443"),
+            public_bind_address="10.0.1.25",
+        )
+    with pytest.raises(verifier.VerificationError, match="not bound"):
+        verifier.verify_configuration(
+            rendered,
+            public_bind_address="10.0.1.26",
+        )
 
 
 def test_nginx_dump_runner_is_bounded_and_does_not_use_a_shell(monkeypatch):
@@ -237,7 +260,7 @@ def test_production_bootstrap_installs_and_deploy_invokes_active_verifier():
     assert b"\r\n" not in SCRIPT_PATH.read_bytes()
 
 
-def test_verifier_rejects_arguments_without_inspecting_host():
+def test_verifier_rejects_unknown_arguments_without_inspecting_host():
     result = subprocess.run(
         [sys.executable, str(SCRIPT_PATH), "--unexpected"],
         check=False,
@@ -246,7 +269,7 @@ def test_verifier_rejects_arguments_without_inspecting_host():
     )
 
     assert result.returncode == 2
-    assert "does not accept arguments" in result.stderr
+    assert "unrecognized arguments" in result.stderr
 
 
 def test_main_success_uses_process_arguments_when_not_supplied(

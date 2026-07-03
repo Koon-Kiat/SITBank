@@ -8,6 +8,7 @@ from app.models import RecoveryCode, User
 from app.security.audit import audit_event
 from app.security.email import send_security_email
 from app.security.session_hmac import active_hmac_hex
+from sqlalchemy import and_, or_
 
 
 RECOVERY_CODE_COUNT = 10
@@ -43,7 +44,8 @@ def generate_recovery_codes_for_user(
         db.session.add(
             RecoveryCode(
                 user_id=user.id,
-                code_hmac=_recovery_code_hmac(code),
+                code_hmac=_recovery_code_hmac(user.id, purpose, code),
+                hmac_version=2,
                 purpose=purpose,
             )
         )
@@ -61,20 +63,34 @@ def consume_recovery_code(
     purpose: str = RECOVERY_CODE_PURPOSE_TOTP,
     commit: bool = True,
 ) -> bool:
-    result = db.session.execute(
-        db.update(RecoveryCode)
+    bound_hmac = _recovery_code_hmac(user.id, purpose, code)
+    legacy_hmac = _legacy_recovery_code_hmac(code)
+    statement = (
+        db.select(RecoveryCode)
         .where(
             RecoveryCode.user_id == user.id,
-            RecoveryCode.code_hmac == _recovery_code_hmac(code),
             RecoveryCode.purpose == purpose,
             RecoveryCode.used_at.is_(None),
+            or_(
+                and_(
+                    RecoveryCode.hmac_version >= 2,
+                    RecoveryCode.code_hmac == bound_hmac,
+                ),
+                and_(
+                    RecoveryCode.hmac_version == 1,
+                    RecoveryCode.code_hmac == legacy_hmac,
+                ),
+            ),
         )
-        .values(used_at=_utcnow())
     )
-    if result.rowcount != 1:
+    if db.engine.dialect.name == "postgresql":
+        statement = statement.with_for_update()
+    record = db.session.execute(statement).scalar_one_or_none()
+    if record is None:
         if commit:
             db.session.rollback()
         return False
+    record.used_at = _utcnow()
     if commit:
         db.session.commit()
     return True
@@ -106,7 +122,18 @@ def send_recovery_code_used_notification(user: User) -> None:
     send_security_email(user.email, "SITBank recovery code used", body)
 
 
-def _recovery_code_hmac(code: str) -> str:
+def _recovery_code_hmac(user_id: int, purpose: str, code: str) -> str:
+    return active_hmac_hex(
+        (
+            "recovery-code:v2:"
+            f"{int(user_id)}:{str(purpose or '').strip().casefold()}:"
+            f"{_normalize_recovery_code(code)}"
+        ),
+        length=64,
+    )
+
+
+def _legacy_recovery_code_hmac(code: str) -> str:
     return active_hmac_hex(f"recovery-code:{_normalize_recovery_code(code)}", length=64)
 
 

@@ -186,6 +186,11 @@ class TestConfig:
     )
     SIT_WORKPLACE_EMAIL_DOMAINS = ADMIN_ALLOWED_EMAIL_DOMAINS
     STAFF_INVITE_ALIAS_SEPARATORS = ("+",)
+    CUSTOMER_EMAIL_PLUS_ALIAS_DOMAINS = frozenset({"gmail.com", "googlemail.com"})
+    CUSTOMER_EMAIL_DOT_INSENSITIVE_DOMAINS = frozenset({"gmail.com", "googlemail.com"})
+    CUSTOMER_TEMP_EMAIL_DOMAINS = frozenset(
+        {"10minutemail.com", "guerrillamail.com", "mailinator.com", "temp-mail.org", "yopmail.com"}
+    )
     ROOT_ADMIN_EMAILS = frozenset(
         {
             "root1@sit.singaporetech.edu.sg",
@@ -193,8 +198,6 @@ class TestConfig:
             "root3@sit.singaporetech.edu.sg",
             "root4@sit.singaporetech.edu.sg",
             "root5@sit.singaporetech.edu.sg",
-            "root6@sit.singaporetech.edu.sg",
-            "root7@sit.singaporetech.edu.sg",
         }
     )
     STAFF_INVITE_TTL_SECONDS = 24 * 60 * 60
@@ -207,6 +210,7 @@ class TestConfig:
     TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED = False
     TURNSTILE_CUSTOMER_REGISTER_ENABLED = False
     TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED = False
+    TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED = False
     TURNSTILE_ADMIN_LOGIN_ENABLED = False
     TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED = True
     TURNSTILE_FAIL_CLOSED_IN_PRODUCTION = True

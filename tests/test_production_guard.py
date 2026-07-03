@@ -20,7 +20,7 @@ from conftest import TestConfig
 
 EXPLICIT_ROOT_ADMIN_EMAILS = frozenset(
     f"chief{index}@sit.singaporetech.edu.sg"
-    for index in range(1, 8)
+    for index in range(1, 6)
 )
 
 
@@ -41,6 +41,17 @@ def _production_app(monkeypatch, *, app_mode: str = "customer"):
         PASSWORD_MIN_LENGTH=MIN_PRODUCTION_PASSWORD_LENGTH,
         SECURITY_ALERT_ENABLED=True,
         SECURITY_ALERT_WEBHOOK_URL="https://hooks.example.test/sitbank-security-alerts",
+        TURNSTILE_ENABLED=True,
+        TURNSTILE_SITE_KEY="1x00000000000000000000AA",
+        TURNSTILE_SECRET_KEY="1x0000000000000000000000000000000AA",
+        TURNSTILE_CUSTOMER_LOGIN_ENABLED=True,
+        TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED=True,
+        TURNSTILE_CUSTOMER_REGISTER_ENABLED=True,
+        TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED=True,
+        TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED=True,
+        TURNSTILE_ADMIN_LOGIN_ENABLED=True,
+        TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED=True,
+        TURNSTILE_FAIL_CLOSED_IN_PRODUCTION=True,
     )
     if app_mode == "admin":
         app.config["RATELIMIT_KEY_PREFIX"] = "ospbank:admin:ratelimit:"
@@ -141,7 +152,7 @@ def test_mode_helpers_report_every_isolation_misconfiguration(monkeypatch):
         "Admin session key prefix must be isolated",
         "Admin auth security-state prefix must be isolated",
         "Admin rate-limit key prefix must be isolated",
-        "ROOT_ADMIN_EMAILS must configure exactly 7 root administrators",
+        "ROOT_ADMIN_EMAILS must configure exactly 5 root administrators",
         "Admin runtime must not register customer routes",
     } <= set(admin_result.failures)
 
@@ -176,8 +187,6 @@ def test_admin_validator_rejects_root_admin_allowlist_outside_admin_domains(monk
             "root3@sit.singaporetech.edu.sg",
             "root4@sit.singaporetech.edu.sg",
             "root5@sit.singaporetech.edu.sg",
-            "root6@sit.singaporetech.edu.sg",
-            "root7@sit.singaporetech.edu.sg",
         }
     )
 
@@ -208,8 +217,6 @@ def test_admin_validator_rejects_root_admin_allowlist_outside_admin_domains(monk
                 "chief3@sit.singaporetech.edu.sg",
                 "chief4@sit.singaporetech.edu.sg",
                 "chief5@sit.singaporetech.edu.sg",
-                "chief6@sit.singaporetech.edu.sg",
-                "chief7@sit.singaporetech.edu.sg",
             ),
             "ROOT_ADMIN_EMAILS must not contain duplicate email addresses",
         ),
@@ -220,8 +227,6 @@ def test_admin_validator_rejects_root_admin_allowlist_outside_admin_domains(monk
                 "chief3@sit.singaporetech.edu.sg",
                 "chief4@sit.singaporetech.edu.sg",
                 "chief5@sit.singaporetech.edu.sg",
-                "chief6@sit.singaporetech.edu.sg",
-                "chief7@sit.singaporetech.edu.sg",
             ),
             "ROOT_ADMIN_EMAILS must not contain placeholder, demo, or example identities",
         ),

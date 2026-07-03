@@ -108,8 +108,6 @@ def test_root_admin_allowlist_rejects_builtin_default_in_production(emails):
                 "chief3@sit.singaporetech.edu.sg",
                 "chief4@sit.singaporetech.edu.sg",
                 "chief5@sit.singaporetech.edu.sg",
-                "chief6@sit.singaporetech.edu.sg",
-                "chief7@sit.singaporetech.edu.sg",
             ],
             "duplicate",
         ),
@@ -120,8 +118,6 @@ def test_root_admin_allowlist_rejects_builtin_default_in_production(emails):
                 "chief3@sit.singaporetech.edu.sg",
                 "chief4@sit.singaporetech.edu.sg",
                 "chief5@sit.singaporetech.edu.sg",
-                "chief6@sit.singaporetech.edu.sg",
-                "chief7@sit.singaporetech.edu.sg",
             ],
             "placeholder",
         ),
@@ -132,8 +128,6 @@ def test_root_admin_allowlist_rejects_builtin_default_in_production(emails):
                 "chief3@sit.singaporetech.edu.sg",
                 "chief4@sit.singaporetech.edu.sg",
                 "chief5@sit.singaporetech.edu.sg",
-                "chief6@sit.singaporetech.edu.sg",
-                "chief7@sit.singaporetech.edu.sg",
             ],
             "approved admin workplace domains",
         ),
@@ -162,8 +156,6 @@ def test_root_admin_allowlist_rejects_malformed_collection_and_placeholder_shape
             "chief3@sit.singaporetech.edu.sg",
             "chief4@sit.singaporetech.edu.sg",
             "chief5@sit.singaporetech.edu.sg",
-            "chief6@sit.singaporetech.edu.sg",
-            "chief7@sit.singaporetech.edu.sg",
         ),
         allowed_domains=frozenset({"sit.singaporetech.edu.sg"}),
         reject_default=True,
@@ -175,8 +167,6 @@ def test_root_admin_allowlist_rejects_malformed_collection_and_placeholder_shape
             "chief3@sit.singaporetech.edu.sg",
             "chief4@sit.singaporetech.edu.sg",
             "chief5@sit.singaporetech.edu.sg",
-            "chief6@sit.singaporetech.edu.sg",
-            "chief7@sit.singaporetech.edu.sg",
         ),
         allowed_domains=frozenset({"sit.singaporetech.edu.sg"}),
         reject_default=True,
@@ -188,15 +178,13 @@ def test_root_admin_allowlist_rejects_malformed_collection_and_placeholder_shape
             "chief3@sit.singaporetech.edu.sg",
             "chief4@sit.singaporetech.edu.sg",
             "chief5@sit.singaporetech.edu.sg",
-            "chief6@sit.singaporetech.edu.sg",
-            "chief7@sit.singaporetech.edu.sg",
         ),
         allowed_domains=frozenset({"sit.singaporetech.edu.sg"}),
         reject_default=True,
     )
 
     assert non_collection_failures == [
-        "ROOT_ADMIN_EMAILS must configure exactly 7 root administrators"
+        "ROOT_ADMIN_EMAILS must configure exactly 5 root administrators"
     ]
     assert "ROOT_ADMIN_EMAILS must not contain empty entries" in empty_entry_failures
     assert "ROOT_ADMIN_EMAILS must use approved admin workplace domains" in missing_at_failures
@@ -213,7 +201,7 @@ def test_root_admin_allowlist_rejects_malformed_collection_and_placeholder_shape
 def test_root_admin_allowlist_accepts_explicit_non_placeholder_workplace_set():
     emails = frozenset(
         f"chief{index}@sit.singaporetech.edu.sg"
-        for index in range(1, 8)
+        for index in range(1, 6)
     )
 
     assert root_admin_email_allowlist_failures(
@@ -226,7 +214,7 @@ def test_root_admin_allowlist_accepts_explicit_non_placeholder_workplace_set():
 def test_root_admin_allowlist_can_load_from_secret_file(monkeypatch, tmp_path):
     value = ",".join(
         f"chief{index}@sit.singaporetech.edu.sg"
-        for index in range(1, 8)
+        for index in range(1, 6)
     )
     secret_file = tmp_path / "root_admin_emails"
     secret_file.write_text(value, encoding="utf-8")
@@ -245,7 +233,7 @@ def test_root_admin_allowlist_can_load_from_secret_file(monkeypatch, tmp_path):
 def test_root_admin_allowlist_can_load_from_direct_environment(monkeypatch):
     value = ",".join(
         f"chief{index}@sit.singaporetech.edu.sg"
-        for index in range(1, 8)
+        for index in range(1, 6)
     )
     monkeypatch.setenv("ROOT_ADMIN_EMAILS", value)
     monkeypatch.delenv("ROOT_ADMIN_EMAILS_FILE", raising=False)
@@ -256,6 +244,25 @@ def test_root_admin_allowlist_can_load_from_direct_environment(monkeypatch):
         allowed_domains=frozenset({"sit.singaporetech.edu.sg"}),
         app_env="production",
         deployment_target="production",
+    ) == frozenset(value.split(","))
+
+
+def test_staging_root_admin_allowlist_requires_exactly_two(monkeypatch):
+    value = (
+        "stagechief1@sit.singaporetech.edu.sg,"
+        "stagechief2@singaporetech.edu.sg"
+    )
+    monkeypatch.setenv("ROOT_ADMIN_EMAILS", value)
+    monkeypatch.delenv("ROOT_ADMIN_EMAILS_FILE", raising=False)
+
+    assert _root_admin_email_set(
+        "ROOT_ADMIN_EMAILS",
+        default="placeholder@example.test",
+        allowed_domains=frozenset(
+            {"sit.singaporetech.edu.sg", "singaporetech.edu.sg"}
+        ),
+        app_env="production",
+        deployment_target="staging",
     ) == frozenset(value.split(","))
 
 
@@ -274,7 +281,7 @@ def test_root_admin_allowlist_rejects_direct_and_file(monkeypatch, tmp_path):
     secret_file.write_text(
         ",".join(
             f"chief{index}@sit.singaporetech.edu.sg"
-            for index in range(1, 8)
+            for index in range(1, 6)
         ),
         encoding="utf-8",
     )

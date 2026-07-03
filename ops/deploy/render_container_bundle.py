@@ -38,8 +38,10 @@ TURNSTILE_BOOLEAN_NAMES = (
     "TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED",
     "TURNSTILE_CUSTOMER_REGISTER_ENABLED",
     "TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED",
+    "TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED",
     "TURNSTILE_ADMIN_LOGIN_ENABLED",
     "TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED",
+    "TURNSTILE_FAIL_CLOSED_IN_PRODUCTION",
 )
 
 DEPLOYMENT_PROFILES = {
@@ -150,8 +152,11 @@ def _root_admin_emails(prefix: str) -> str:
     name = _prefixed(prefix, "ROOT_ADMIN_EMAILS")
     value = _value(name)
     emails = [item.strip().casefold() for item in value.split(",") if item.strip()]
-    if len(emails) != 7 or len(set(emails)) != 7:
-        raise RuntimeError(f"{name} must contain exactly 7 unique workplace email addresses")
+    required_count = 2 if prefix == "STAGING" else 5
+    if len(emails) != required_count or len(set(emails)) != required_count:
+        raise RuntimeError(
+            f"{name} must contain exactly {required_count} unique workplace email addresses"
+        )
     for email in emails:
         if not re.fullmatch(
             r"(?=\S{1,128}@\S{1,253}$)[^@\x00-\x1f\x7f]+@[^@\x00-\x1f\x7f]+",
@@ -171,36 +176,14 @@ def _turnstile_environment(prefix: str) -> dict[str, str]:
         value = _value(prefixed_name).casefold()
         if value not in {"true", "false"}:
             raise RuntimeError(f"{prefixed_name} must be true or false")
+        if value != "true":
+            raise RuntimeError(f"{prefixed_name} must be true for production-like deployment")
         values[name] = value
 
     site_key_name = _prefixed(prefix, "TURNSTILE_SITE_KEY")
     values["TURNSTILE_SITE_KEY"] = _value(site_key_name)
     values["TURNSTILE_VERIFY_URL"] = OFFICIAL_TURNSTILE_VERIFY_URL
 
-    customer_flags = (
-        "TURNSTILE_CUSTOMER_LOGIN_ENABLED",
-        "TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED",
-        "TURNSTILE_CUSTOMER_REGISTER_ENABLED",
-        "TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED",
-    )
-    if values["TURNSTILE_ENABLED"] == "true" and not any(
-        values[name] == "true" for name in customer_flags
-    ):
-        raise RuntimeError(
-            f"{_prefixed(prefix, 'TURNSTILE_ENABLED')} requires at least one customer route flag"
-        )
-    if values["TURNSTILE_ENABLED"] == "false" and any(
-        values[name] == "true" for name in customer_flags
-    ):
-        raise RuntimeError("Turnstile customer route flags require TURNSTILE_ENABLED=true")
-    for admin_name in (
-        "TURNSTILE_ADMIN_LOGIN_ENABLED",
-        "TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED",
-    ):
-        if values[admin_name] != "false":
-            raise RuntimeError(
-                f"{_prefixed(prefix, admin_name)} must remain false for the customer rollout"
-            )
     return values
 
 

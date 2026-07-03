@@ -39,6 +39,7 @@ from app.auth.password_reset import (
     request_password_reset,
     select_reset_mfa_method,
     verify_reset_totp,
+    verify_reset_recovery_code,
 )
 from app.auth.mfa_policy import has_enrolled_mfa_method
 from app.auth.registration_otp import (
@@ -390,14 +391,31 @@ def forgot_password_submit():
     except TurnstileError:
         flash(_CHALLENGE_VERIFICATION_FAILED_MESSAGE, "error")
         return render_template(_FORGOT_PASSWORD_TEMPLATE, form=form), 400
+    except AuthError as exc:
+        flash(exc.message, "error")
+        return render_template(_FORGOT_PASSWORD_TEMPLATE, form=form), exc.status_code
     flash(result["message"], "success")
     return redirect(url_for(_LOGIN_ENDPOINT))
 
 
-@web_bp.get("/reset-password")
+@web_bp.route("/reset-password", methods=["GET", "POST"])
 @limiter.limit("10 per 15 minutes", key_func=get_remote_address)
 def reset_password_exchange():
-    token = request.args.get("token", "")
+    if request.method == "GET":
+        return render_template(
+            "reset_password_landing.html",
+            form=CsrfOnlyForm(),
+            token=request.args.get("token", ""),
+        )
+    form = CsrfOnlyForm()
+    if not form.validate_on_submit():
+        flash(_SECURITY_TOKEN_EXPIRED_MESSAGE, "error")
+        return render_template(
+            "reset_password_landing.html",
+            form=form,
+            token=request.form.get("token", ""),
+        ), 400
+    token = request.form.get("token", "")
     try:
         exchange_reset_token(token)
     except AuthError as exc:
@@ -434,6 +452,7 @@ def reset_password_continue_submit():
 
     handlers = {
         "verify_totp": _handle_reset_totp,
+        "verify_recovery_code": _handle_reset_recovery_code,
         "select_mfa_method": _handle_reset_mfa_selection,
         "complete": _handle_reset_completion,
     }
@@ -454,6 +473,19 @@ def _handle_reset_totp(transaction: dict):
         flash(exc.message, "error")
         return _render_reset_continue(transaction, status_code=exc.status_code)
     flash("Authentication code verified.", "success")
+    return _render_reset_continue(transaction)
+
+
+def _handle_reset_recovery_code(transaction: dict):
+    form = AuthenticationCodeForm()
+    if not form.validate_on_submit():
+        return _render_reset_continue(transaction, status_code=400)
+    try:
+        transaction = verify_reset_recovery_code(form.totp_code.data)
+    except AuthError as exc:
+        flash(exc.message, "error")
+        return _render_reset_continue(transaction, status_code=exc.status_code)
+    flash("Recovery code verified.", "success")
     return _render_reset_continue(transaction)
 
 
@@ -511,7 +543,15 @@ def account_recovery_submit():
     form = ManualRecoveryForm()
     if not form.validate_on_submit():
         return render_template("account_recovery.html", form=form), 400
-    result = request_manual_recovery(form.identifier.data)
+    try:
+        require_turnstile("customer_manual_recovery")
+        result = request_manual_recovery(form.identifier.data)
+    except TurnstileError:
+        flash(_CHALLENGE_VERIFICATION_FAILED_MESSAGE, "error")
+        return render_template("account_recovery.html", form=form), 400
+    except AuthError as exc:
+        flash(exc.message, "error")
+        return render_template("account_recovery.html", form=form), exc.status_code
     flash(result["message"], "success")
     return redirect(url_for(_LOGIN_ENDPOINT))
 

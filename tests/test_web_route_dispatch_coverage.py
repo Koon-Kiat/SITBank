@@ -443,6 +443,10 @@ def test_login_and_password_recovery_edge_responses(app, monkeypatch):
     with app.test_request_context("/reset-password?token=expired"):
         monkeypatch.setattr(routes, "exchange_reset_token", _raise_auth_error())
         response = unwrap(routes.reset_password_exchange)()
+        assert response == "rendered"
+
+    with app.test_request_context("/reset-password?token=expired", method="POST"):
+        response = unwrap(routes.reset_password_exchange)()
         assert response.status_code == 302
         assert response.headers["Location"].endswith("/forgot-password")
 

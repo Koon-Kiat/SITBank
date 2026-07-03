@@ -44,7 +44,9 @@ PERSONAL_EMAIL_DOMAINS = frozenset(
         "protonmail.com",
     }
 )
-ROOT_ADMIN_EMAIL_COUNT = 7
+STAGING_ROOT_ADMIN_EMAIL_COUNT = 2
+PRODUCTION_ROOT_ADMIN_EMAIL_COUNT = 5
+ROOT_ADMIN_EMAIL_COUNT = PRODUCTION_ROOT_ADMIN_EMAIL_COUNT
 DEFAULT_ROOT_ADMIN_EMAILS = frozenset(
     f"root{index}@sit.singaporetech.edu.sg"
     for index in range(1, ROOT_ADMIN_EMAIL_COUNT + 1)
@@ -414,6 +416,13 @@ def _csv_domain_set(name: str, *, default: str, reject_personal: bool = True) ->
     return domains
 
 
+def _csv_public_domain_set(name: str, *, default: str) -> frozenset[str]:
+    domains = _csv_env_set(name, default=default)
+    if any(not _valid_config_domain(domain, reject_personal=False) for domain in domains):
+        raise RuntimeError(f"{name} must contain only valid email domains")
+    return domains
+
+
 def _valid_config_domain(domain: str, *, reject_personal: bool) -> bool:
     normalized = str(domain or "").strip().casefold()
     if not normalized or _looks_placeholder(normalized):
@@ -458,31 +467,52 @@ def root_admin_email_allowlist_failures(
     *,
     allowed_domains: object,
     reject_default: bool,
+    required_count: int = ROOT_ADMIN_EMAIL_COUNT,
 ) -> list[str]:
-    emails, failures = _normalized_root_admin_email_values(values)
+    emails, failures = _normalized_root_admin_email_values(
+        values,
+        required_count=required_count,
+    )
     if emails is None:
         return failures
 
-    failures.extend(_root_admin_email_shape_failures(emails, allowed_domains))
+    failures.extend(
+        _root_admin_email_shape_failures(
+            emails,
+            allowed_domains,
+            required_count=required_count,
+        )
+    )
     if reject_default and frozenset(emails) == DEFAULT_ROOT_ADMIN_EMAILS:
         failures.append("ROOT_ADMIN_EMAILS must be explicitly configured for production/admin runtime")
     return failures
 
 
-def _normalized_root_admin_email_values(values: object) -> tuple[tuple[str, ...] | None, list[str]]:
+def _normalized_root_admin_email_values(
+    values: object,
+    *,
+    required_count: int,
+) -> tuple[tuple[str, ...] | None, list[str]]:
     if not isinstance(values, (set, frozenset, list, tuple)):
-        return None, ["ROOT_ADMIN_EMAILS must configure exactly 7 root administrators"]
+        return None, [
+            f"ROOT_ADMIN_EMAILS must configure exactly {required_count} root administrators"
+        ]
     emails = tuple(str(item or "").strip().casefold() for item in values)
     return emails, []
 
 
-def _root_admin_email_shape_failures(emails: tuple[str, ...], allowed_domains: object) -> list[str]:
+def _root_admin_email_shape_failures(
+    emails: tuple[str, ...],
+    allowed_domains: object,
+    *,
+    required_count: int,
+) -> list[str]:
     failures: list[str] = []
     if any(not item for item in emails):
         failures.append("ROOT_ADMIN_EMAILS must not contain empty entries")
-    if len(emails) != ROOT_ADMIN_EMAIL_COUNT:
+    if len(emails) != required_count:
         failures.append(
-            f"ROOT_ADMIN_EMAILS must configure exactly {ROOT_ADMIN_EMAIL_COUNT} root administrators"
+            f"ROOT_ADMIN_EMAILS must configure exactly {required_count} root administrators"
         )
     if len(set(emails)) != len(emails):
         failures.append("ROOT_ADMIN_EMAILS must not contain duplicate email addresses")
@@ -505,14 +535,25 @@ def _root_admin_email_set(
     deployment_target: str,
 ) -> frozenset[str]:
     emails = _csv_env_or_file_values(name, default=default)
+    required_count = _required_root_admin_email_count(
+        app_env=app_env,
+        deployment_target=deployment_target,
+    )
     failures = root_admin_email_allowlist_failures(
         emails,
         allowed_domains=allowed_domains,
         reject_default=_production_like(app_env, deployment_target),
+        required_count=required_count,
     )
     if failures:
         raise RuntimeError(failures[0])
     return frozenset(emails)
+
+
+def _required_root_admin_email_count(*, app_env: str, deployment_target: str) -> int:
+    if str(deployment_target or "").strip().casefold() == "staging":
+        return STAGING_ROOT_ADMIN_EMAIL_COUNT
+    return PRODUCTION_ROOT_ADMIN_EMAIL_COUNT
 
 
 def _email_domain(value: str) -> str:
@@ -1399,6 +1440,18 @@ class Config:
         for item in os.getenv("STAFF_INVITE_ALIAS_SEPARATORS", "+").split(",")
         if item
     )
+    CUSTOMER_EMAIL_PLUS_ALIAS_DOMAINS = _csv_public_domain_set(
+        "CUSTOMER_EMAIL_PLUS_ALIAS_DOMAINS",
+        default="gmail.com,googlemail.com",
+    )
+    CUSTOMER_EMAIL_DOT_INSENSITIVE_DOMAINS = _csv_public_domain_set(
+        "CUSTOMER_EMAIL_DOT_INSENSITIVE_DOMAINS",
+        default="gmail.com,googlemail.com",
+    )
+    CUSTOMER_TEMP_EMAIL_DOMAINS = _csv_public_domain_set(
+        "CUSTOMER_TEMP_EMAIL_DOMAINS",
+        default="10minutemail.com,guerrillamail.com,mailinator.com,temp-mail.org,yopmail.com",
+    )
     ROOT_ADMIN_EMAILS = _root_admin_email_set(
         "ROOT_ADMIN_EMAILS",
         default=DEFAULT_ROOT_ADMIN_EMAILS_CSV,
@@ -1434,6 +1487,10 @@ class Config:
     TURNSTILE_CUSTOMER_REGISTER_ENABLED = _optional_bool("TURNSTILE_CUSTOMER_REGISTER_ENABLED", default=False)
     TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED = _optional_bool(
         "TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED",
+        default=False,
+    )
+    TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED = _optional_bool(
+        "TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED",
         default=False,
     )
     TURNSTILE_ADMIN_LOGIN_ENABLED = _optional_bool("TURNSTILE_ADMIN_LOGIN_ENABLED", default=False)

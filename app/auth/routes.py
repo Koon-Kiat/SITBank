@@ -33,6 +33,7 @@ from .password_reset import (
     request_password_reset,
     select_reset_mfa_method,
     verify_reset_totp,
+    verify_reset_recovery_code,
     exchange_reset_token,
 )
 from .schemas import (
@@ -47,6 +48,7 @@ from .schemas import (
     RegisterSchema,
     RegistrationOtpRequestSchema,
     RegistrationOtpVerifySchema,
+    RecoveryCodeSchema,
     ResetTokenExchangeSchema,
     TerminateSessionSchema,
     TotpSchema,
@@ -192,13 +194,6 @@ def register():
             {
                 "message": "Registration successful",
                 "warnings": warnings,
-                "user": {
-                    "id": user.id,
-                    "username": user.username,
-                    "email": user.email,
-                    "mfa_enabled": user.mfa_enabled,
-                    "is_frozen": user.is_frozen,
-                },
             }
         ),
         201,
@@ -253,6 +248,14 @@ def password_reset_totp():
     return jsonify(verify_reset_totp(data["totp_code"]))
 
 
+@auth_bp.post("/password-reset/mfa/recovery-code")
+@limiter.limit("5 per 5 minutes", key_func=get_remote_address)
+@limiter.limit("5 per 5 minutes", key_func=mfa_principal)
+def password_reset_recovery_code():
+    data = RecoveryCodeSchema().load(request.get_json(silent=False) or {})
+    return jsonify(verify_reset_recovery_code(data["recovery_code"]))
+
+
 @auth_bp.post("/password-reset/mfa/webauthn/options")
 @limiter.limit("5 per 5 minutes", key_func=get_remote_address)
 @limiter.limit("5 per 5 minutes", key_func=mfa_principal)
@@ -280,6 +283,7 @@ def password_reset_complete():
 @limiter.limit("3 per hour", key_func=request_principal)
 def manual_recovery_request():
     data = _load_payload(ManualRecoverySchema(), ManualRecoveryForm)
+    require_turnstile("customer_manual_recovery")
     return jsonify(request_manual_recovery(data["identifier"]))
 
 

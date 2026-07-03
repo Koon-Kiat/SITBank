@@ -51,7 +51,11 @@ PYTHON_SLIM_TRIXIE_IMAGE = (
 )
 
 ROOT_ADMIN_EMAILS_VALUE = ",".join(
-    f"chief{index}@sit.singaporetech.edu.sg" for index in range(1, 8)
+    f"chief{index}@sit.singaporetech.edu.sg" for index in range(1, 6)
+)
+STAGING_ROOT_ADMIN_EMAILS_VALUE = (
+    "stagechief1@sit.singaporetech.edu.sg,"
+    "stagechief2@sit.singaporetech.edu.sg"
 )
 
 DEPLOYMENT_VALUES = {
@@ -86,8 +90,10 @@ DEPLOYMENT_VALUES = {
     "PROD_TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED": "true",
     "PROD_TURNSTILE_CUSTOMER_REGISTER_ENABLED": "true",
     "PROD_TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED": "true",
-    "PROD_TURNSTILE_ADMIN_LOGIN_ENABLED": "false",
-    "PROD_TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED": "false",
+    "PROD_TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED": "true",
+    "PROD_TURNSTILE_ADMIN_LOGIN_ENABLED": "true",
+    "PROD_TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED": "true",
+    "PROD_TURNSTILE_FAIL_CLOSED_IN_PRODUCTION": "true",
     "PROD_WTF_CSRF_SECRET_KEY": "csrf-secret-with-enough-length-for-production",
 }
 
@@ -104,6 +110,10 @@ def _set_prefixed_deployment_values(monkeypatch, prefix: str, public_host: str):
             value = public_host
         monkeypatch.setenv(target_name, value)
     if prefix == "STAGING":
+        monkeypatch.setenv(
+            "STAGING_ROOT_ADMIN_EMAILS",
+            STAGING_ROOT_ADMIN_EMAILS_VALUE,
+        )
         monkeypatch.setenv(
             "STAGING_CLOUDFLARE_ACCESS_AUD",
             "0123456789abcdef0123456789abcdef",
@@ -250,7 +260,7 @@ def _nginx_server_block(config: str, server_name: str) -> str:
         blocks.append(block)
     assert blocks, f"Missing Nginx server block for {server_name}"
     for block in blocks:
-        if "listen 443 ssl http2;" in block:
+        if re.search(r"listen\s+\S+:443\s+ssl\s+http2;", block):
             return block
     return blocks[0]
 
@@ -273,14 +283,16 @@ def _nginx_http_server_block(config: str, server_name: str) -> str:
         blocks.append(block)
     assert blocks, f"Missing Nginx server block for {server_name}"
     for block in blocks:
-        if "listen 80;" in block and "listen 443" not in block:
+        if re.search(r"listen\s+\S+:80;", block) and ":443" not in block:
             return block
     raise AssertionError(f"Missing Nginx HTTP server block for {server_name}")
 
 
 def _nginx_https_server_prelocation(config: str, *, server_name: str | None = None) -> str:
     server = _nginx_server_block(config, server_name) if server_name else config
-    https_start = server.index("listen 443 ssl http2;")
+    https_match = re.search(r"listen\s+\S+:443\s+ssl\s+http2;", server)
+    assert https_match
+    https_start = https_match.start()
     first_location = server.index("\n    location ", https_start)
     return server[https_start:first_location]
 
@@ -771,7 +783,7 @@ def test_container_bundle_accepts_staging_prefix(monkeypatch):
     assert secrets["database_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_URL"]
     assert secrets["session_lookup_hmac_key"] == DEPLOYMENT_VALUES["PROD_SESSION_LOOKUP_HMAC_KEY"]
     assert secrets["database_migration_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_MIGRATION_URL"]
-    assert secrets["root_admin_emails"] == ROOT_ADMIN_EMAILS_VALUE
+    assert secrets["root_admin_emails"] == STAGING_ROOT_ADMIN_EMAILS_VALUE
     assert secrets["security_audit_hmac_key"] == DEPLOYMENT_VALUES["PROD_SECURITY_AUDIT_HMAC_KEY"]
 
 
@@ -813,21 +825,16 @@ def test_staging_bundle_rejects_invalid_cloudflare_access_config(
     [
         ("", "STAGING_ROOT_ADMIN_EMAILS"),
         (
-            "root1@sit.singaporetech.edu.sg,root2@sit.singaporetech.edu.sg",
-            "exactly 7 unique",
+            "root1@sit.singaporetech.edu.sg",
+            "exactly 2 unique",
         ),
         (
-            ",".join(["root1@sit.singaporetech.edu.sg"] * 7),
-            "exactly 7 unique",
+            ",".join(["root1@sit.singaporetech.edu.sg"] * 2),
+            "exactly 2 unique",
         ),
         (
             "root1@example.com,"
-            "root2@sit.singaporetech.edu.sg,"
-            "root3@sit.singaporetech.edu.sg,"
-            "root4@sit.singaporetech.edu.sg,"
-            "root5@sit.singaporetech.edu.sg,"
-            "root6@sit.singaporetech.edu.sg,"
-            "root7@sit.singaporetech.edu.sg",
+            "root2@sit.singaporetech.edu.sg",
             "SIT workplace",
         ),
     ],
@@ -1269,7 +1276,7 @@ def test_container_bundle_writer_quotes_dollar_values_and_separates_files(
     )
 
 
-def test_turnstile_renderer_maps_public_flags_and_rejects_unsafe_admin_rollout(
+def test_turnstile_renderer_maps_all_required_public_auth_flags(
     monkeypatch,
 ):
     _set_deployment_values(monkeypatch)
@@ -1278,30 +1285,26 @@ def test_turnstile_renderer_maps_public_flags_and_rejects_unsafe_admin_rollout(
 
     assert environment["TURNSTILE_ENABLED"] == "true"
     assert environment["TURNSTILE_CUSTOMER_LOGIN_ENABLED"] == "true"
-    assert environment["TURNSTILE_ADMIN_LOGIN_ENABLED"] == "false"
-    assert environment["TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED"] == "false"
+    assert environment["TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED"] == "true"
+    assert environment["TURNSTILE_ADMIN_LOGIN_ENABLED"] == "true"
+    assert environment["TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED"] == "true"
+    assert environment["TURNSTILE_FAIL_CLOSED_IN_PRODUCTION"] == "true"
     assert environment["TURNSTILE_VERIFY_URL"] == (
         "https://challenges.cloudflare.com/turnstile/v0/siteverify"
     )
 
-    monkeypatch.setenv("PROD_TURNSTILE_ADMIN_LOGIN_ENABLED", "true")
-    with pytest.raises(RuntimeError, match="must remain false"):
+    monkeypatch.setenv("PROD_TURNSTILE_ADMIN_LOGIN_ENABLED", "false")
+    with pytest.raises(RuntimeError, match="must be true for production-like"):
         build_container_environment()
 
 
-def test_turnstile_renderer_fails_when_enabled_without_customer_route(
+def test_turnstile_renderer_fails_when_any_required_route_is_disabled(
     monkeypatch,
 ):
     _set_deployment_values(monkeypatch)
-    for name in (
-        "PROD_TURNSTILE_CUSTOMER_LOGIN_ENABLED",
-        "PROD_TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED",
-        "PROD_TURNSTILE_CUSTOMER_REGISTER_ENABLED",
-        "PROD_TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED",
-    ):
-        monkeypatch.setenv(name, "false")
+    monkeypatch.setenv("PROD_TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED", "false")
 
-    with pytest.raises(RuntimeError, match="requires at least one customer route flag"):
+    with pytest.raises(RuntimeError, match="must be true for production-like"):
         build_container_environment()
 
 
@@ -1314,7 +1317,7 @@ def test_turnstile_renderer_rejects_invalid_booleans_and_disabled_route_flags(
         build_container_environment()
 
     monkeypatch.setenv("PROD_TURNSTILE_ENABLED", "false")
-    with pytest.raises(RuntimeError, match="route flags require"):
+    with pytest.raises(RuntimeError, match="must be true for production-like"):
         build_container_environment()
 
 
@@ -2183,7 +2186,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     )
     assert (
         staging_deploy_env["STAGING_ROOT_ADMIN_EMAILS"]
-        == "${{ secrets.ROOT_ADMIN_EMAILS }}"
+        == "${{ secrets.STAGING_ROOT_ADMIN_EMAILS }}"
     )
     assert staging_deploy_env["STAGING_SMTP_HOST"] == "${{ vars.STAGING_SMTP_HOST }}"
     assert (
@@ -2212,7 +2215,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     )
     assert (
         production_deploy_env["PROD_ROOT_ADMIN_EMAILS"]
-        == "${{ secrets.ROOT_ADMIN_EMAILS }}"
+        == "${{ secrets.PROD_ROOT_ADMIN_EMAILS }}"
     )
     assert production_deploy_env["PROD_SMTP_HOST"] == "${{ vars.PROD_SMTP_HOST }}"
     workflow_text = Path(".github/workflows/ci-deploy.yml").read_text(encoding="utf-8")
@@ -3323,12 +3326,14 @@ def test_nginx_default_server_is_shared_for_same_host_production_and_staging():
     staging_nginx = Path("ops/nginx/sitbank-staging.conf").read_text(encoding="utf-8")
     combined = "\n".join([default_nginx, production_nginx, staging_nginx])
 
-    assert combined.count("listen 80 default_server;") == 1
-    assert combined.count("listen [::]:80 default_server;") == 1
-    assert combined.count("listen 443 ssl http2 default_server;") == 1
-    assert combined.count("listen [::]:443 ssl http2 default_server;") == 1
+    bind = "__SITBANK_PUBLIC_BIND_ADDRESS__"
+    assert combined.count(f"listen {bind}:80 default_server;") == 1
+    assert combined.count(f"listen {bind}:443 ssl http2 default_server;") == 1
     assert "listen 80 default_server;" not in production_nginx
     assert "listen 80 default_server;" not in staging_nginx
+    assert "listen 443 ssl http2;" not in combined
+    assert "listen [::]:443" not in combined
+    assert "listen 0.0.0.0:443" not in combined
     assert (
         "server_name sitbank.pp.ua www.sitbank.pp.ua 18.188.152.24;"
         in combined
@@ -3422,18 +3427,16 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
 
     assert Path("ops/nginx/sitbank-default.conf").exists()
     assert Path("ops/nginx/sitbank-staging-rate-limits.conf").exists()
-    assert "listen 80 default_server;" in default_nginx
-    assert "listen [::]:80 default_server;" in default_nginx
-    assert "listen 443 ssl http2 default_server;" in default_nginx
-    assert "listen [::]:443 ssl http2 default_server;" in default_nginx
+    assert "listen __SITBANK_PUBLIC_BIND_ADDRESS__:80 default_server;" in default_nginx
+    assert "listen __SITBANK_PUBLIC_BIND_ADDRESS__:443 ssl http2 default_server;" in default_nginx
     assert "server_name _;" in default_nginx
     assert "ssl_reject_handshake on;" in default_nginx
     assert "return 444;" in default_nginx
-    assert "listen 80;" in nginx
+    assert "listen __SITBANK_PUBLIC_BIND_ADDRESS__:80;" in nginx
     assert "listen 80 default_server;" not in nginx
     assert "listen 443 ssl http2 default_server;" not in nginx
     assert "server_name _;" not in nginx
-    assert "listen 443 ssl http2;" in nginx
+    assert "listen __SITBANK_PUBLIC_BIND_ADDRESS__:443 ssl http2;" in nginx
     assert "server_name staging-sitbank.pp.ua;" in nginx
     assert "duckdns.org" not in nginx
     assert "ssl_certificate /etc/letsencrypt/live/staging-sitbank.pp.ua/fullchain.pem;" in nginx
@@ -3554,15 +3557,17 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     assert "EDGE_DEFAULTS_FILE=\"/etc/nginx/conf.d/sitbank-default.conf\"" in bootstrap
     assert "ops/nginx/sitbank-default.conf" in bootstrap
     assert "ops/nginx/sitbank-staging-rate-limits.conf" in bootstrap
+    assert "ip -4 route get 1.1.1.1" in bootstrap
     assert "sitbank-staging-rate-limits.$(date -u +%Y%m%dT%H%M%SZ).conf" in bootstrap
     assert '"nginx-sitbank-default"' in bootstrap
     assert '${backup_prefix}.$(date -u +%Y%m%dT%H%M%SZ).conf' in bootstrap
-    assert "nginx-sitbank-staging.$(date -u +%Y%m%dT%H%M%SZ).conf" in bootstrap
+    assert '"staging Nginx config"' in bootstrap
+    assert '"nginx-sitbank-staging"' in bootstrap
     assert "&& ! cmp -s \\" in bootstrap
     assert '"${repo_root}/ops/nginx/sitbank-staging.conf" \\' in bootstrap
     assert "refresh_enabled_sibling_site" in bootstrap
     assert "&& -e /etc/nginx/sites-enabled/sitbank" in bootstrap
-    assert '"${staging_site}"; then' in bootstrap
+    assert '"${staging_site}" \\' in bootstrap
     assert "if [[ ! -e /etc/nginx/sites-available/sitbank-staging" not in bootstrap
     staging_site_install = bootstrap.index('"${repo_root}/ops/nginx/sitbank-staging.conf"')
     assert staging_site_install < bootstrap.index("nginx -t", staging_site_install)
@@ -3596,21 +3601,19 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     assert Path("ops/nginx/sitbank-production.conf").exists()
     assert not Path("ops/nginx/admin-verification.html").exists()
     assert Path("ops/nginx/sitbank-production-rate-limits.conf").exists()
-    assert "listen 80 default_server;" in default_nginx
-    assert "listen [::]:80 default_server;" in default_nginx
-    assert "listen 443 ssl http2 default_server;" in default_nginx
-    assert "listen [::]:443 ssl http2 default_server;" in default_nginx
+    assert "listen __SITBANK_PUBLIC_BIND_ADDRESS__:80 default_server;" in default_nginx
+    assert "listen __SITBANK_PUBLIC_BIND_ADDRESS__:443 ssl http2 default_server;" in default_nginx
     assert "server_name _;" in default_nginx
     assert "ssl_reject_handshake on;" in default_nginx
     assert "return 444;" in default_nginx
-    assert "listen 80;" in nginx
+    assert "listen __SITBANK_PUBLIC_BIND_ADDRESS__:80;" in nginx
     assert "return 301 https://sitbank.pp.ua$request_uri;" in nginx
     assert "server_name sitbank.pp.ua www.sitbank.pp.ua 18.188.152.24;" in nginx
     assert "server_name www.sitbank.pp.ua;" in nginx
     assert "listen 80 default_server;" not in nginx
     assert "listen 443 ssl http2 default_server;" not in nginx
     assert "server_name _;" not in nginx
-    assert "listen 443 ssl http2;" in nginx
+    assert "listen __SITBANK_PUBLIC_BIND_ADDRESS__:443 ssl http2;" in nginx
     assert "server_name sitbank.pp.ua;" in nginx
     assert "www.sitbank.pp.ua" in nginx
     assert "ssl_certificate /etc/letsencrypt/live/sitbank.pp.ua/fullchain.pem;" in nginx
@@ -3750,7 +3753,8 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     assert "/var/lib/sitbank" in bootstrap
     assert "install -d -o sitbank-container -g 10001 -m 0750 /var/lib/sitbank" in deploy_script
     assert "Refusing to replace unsafe production Nginx rate-limit file" in bootstrap
-    assert "Refusing to replace unsafe production Nginx config" in bootstrap
+    assert "Refusing to replace unsafe ${label}" in bootstrap
+    assert '"production Nginx config"' in bootstrap
     assert "Conflicting Nginx production site for ${production_hostname}" in bootstrap
     assert '"${PRODUCTION_PUBLIC_HOST}"' in bootstrap
     assert '"${PRODUCTION_PUBLIC_WWW_HOST}"' in bootstrap
@@ -3758,7 +3762,7 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     assert "nginx-sitbank-production-rate-limits.$(date -u +%Y%m%dT%H%M%SZ).conf" in bootstrap
     assert '"nginx-sitbank-default"' in bootstrap
     assert '${backup_prefix}.$(date -u +%Y%m%dT%H%M%SZ).conf' in bootstrap
-    assert "nginx-sitbank-production.$(date -u +%Y%m%dT%H%M%SZ).conf" in bootstrap
+    assert '"nginx-sitbank-production"' in bootstrap
     assert "/etc/nginx/sites-enabled/sitbank" in bootstrap
     assert "&& -e /etc/nginx/sites-enabled/sitbank-staging" in bootstrap
 

@@ -16,6 +16,12 @@ class AuthBackoffRequired(RuntimeError):
         self.retry_after = retry_after
 
 
+class DurableRateLimitExceeded(RuntimeError):
+    def __init__(self, retry_after: int) -> None:
+        super().__init__("Durable request limit is active")
+        self.retry_after = retry_after
+
+
 LOGIN_BACKOFF_START_ATTEMPTS = 3
 
 
@@ -56,7 +62,7 @@ def mfa_principal() -> str:
 
 
 def _backoff_start_attempts(scope: str) -> int:
-    if scope == "login":
+    if scope in {"login", "admin_login"}:
         return LOGIN_BACKOFF_START_ATTEMPTS
     return 1
 
@@ -109,6 +115,39 @@ def clear_failures(scope: str, principal: str) -> None:
     if counter is not None:
         db.session.delete(counter)
         db.session.commit()
+
+
+def consume_durable_rate_limit(
+    scope: str,
+    principal: str,
+    *,
+    limit: int,
+    window_seconds: int,
+) -> int:
+    if limit < 1 or window_seconds < 1:
+        raise ValueError("Durable rate-limit bounds must be positive")
+    now = _utcnow()
+    counter = _load_counter(scope, principal, lock=True)
+    if counter is None:
+        counter = AuthAttemptCounter(
+            scope=scope,
+            principal_hash=_counter_hash(scope, principal),
+            ip_hash=_ip_hash_from_principal(principal),
+            failure_count=0,
+            window_started_at=now,
+            window_expires_at=now + timedelta(seconds=window_seconds),
+            created_at=now,
+            updated_at=now,
+        )
+        db.session.add(counter)
+    if int(counter.failure_count or 0) >= limit:
+        retry_after = max(1, int((_as_utc(counter.window_expires_at) - now).total_seconds()))
+        db.session.rollback()
+        raise DurableRateLimitExceeded(retry_after)
+    counter.failure_count = int(counter.failure_count or 0) + 1
+    counter.updated_at = now
+    db.session.commit()
+    return int(counter.failure_count)
 
 
 def _load_counter(scope: str, principal: str, *, lock: bool = False) -> AuthAttemptCounter | None:

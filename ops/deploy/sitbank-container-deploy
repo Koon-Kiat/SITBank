@@ -101,6 +101,10 @@ if [[ ! "${PUBLIC_HOST}" =~ ^[A-Za-z0-9.-]+$ ]]; then
     echo "Invalid configured public host" >&2
     exit 1
 fi
+if [[ ! "${PUBLIC_BIND_ADDRESS:-}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+    echo "Invalid configured public bind address" >&2
+    exit 1
+fi
 
 expected_identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/ci-deploy.yml@refs/heads/main"
 if [[ "${COSIGN_CERTIFICATE_IDENTITY:-}" != "${expected_identity}" ]]; then
@@ -118,7 +122,8 @@ readonly turnstile_credential_path="${INCOMING_DIR}/turnstile-${input_stem}.secr
 readonly root_admin_emails_path="${INCOMING_DIR}/root-admin-emails-${input_stem}.secret"
 
 if [[ "${target}" == "production" ]]; then
-    /usr/local/sbin/verify-production-nginx-boundary
+    /usr/local/sbin/verify-production-nginx-boundary \
+        --public-bind-address "${PUBLIC_BIND_ADDRESS}"
 fi
 
 exec 9>"${LOCK_FILE}"
@@ -232,7 +237,7 @@ install_root_admin_allowlist() {
         exit 2
     fi
     validate_input_file "${root_admin_emails_path}"
-    python3 - "${root_admin_emails_path}" <<'PY'
+    python3 - "${root_admin_emails_path}" "${target}" <<'PY'
 from pathlib import Path
 import sys
 
@@ -251,9 +256,12 @@ def workplace_email_domain(email):
 
 
 value = Path(sys.argv[1]).read_text(encoding="utf-8")
+required_count = 2 if sys.argv[2] == "staging" else 5
 emails = [item.strip().casefold() for item in value.split(",") if item.strip()]
-if len(emails) != 7 or len(set(emails)) != 7:
-    raise SystemExit("Root-admin allowlist must contain exactly 7 unique workplace email addresses")
+if len(emails) != required_count or len(set(emails)) != required_count:
+    raise SystemExit(
+        f"Root-admin allowlist must contain exactly {required_count} unique workplace email addresses"
+    )
 for email in emails:
     domain = workplace_email_domain(email)
     if domain is None:
@@ -375,6 +383,9 @@ install_runtime_bundle() {
         APP_ENV
         COMMON_PASSWORDS_MIN_ENTRIES
         COMMON_PASSWORDS_PATH
+        CUSTOMER_EMAIL_DOT_INSENSITIVE_DOMAINS
+        CUSTOMER_EMAIL_PLUS_ALIAS_DOMAINS
+        CUSTOMER_TEMP_EMAIL_DOMAINS
         DEPLOYMENT_TARGET
         HIBP_CIRCUIT_FAILURE_THRESHOLD
         HIBP_CIRCUIT_OPEN_SECONDS
@@ -403,10 +414,12 @@ install_runtime_bundle() {
         TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED
         TURNSTILE_ADMIN_LOGIN_ENABLED
         TURNSTILE_CUSTOMER_LOGIN_ENABLED
+        TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED
         TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED
         TURNSTILE_CUSTOMER_REGISTER_ENABLED
         TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED
         TURNSTILE_ENABLED
+        TURNSTILE_FAIL_CLOSED_IN_PRODUCTION
         TURNSTILE_SITE_KEY
         TURNSTILE_VERIFY_URL
     )

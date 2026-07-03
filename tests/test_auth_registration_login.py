@@ -658,8 +658,68 @@ def test_registration_rejects_duplicate_phone_with_generic_error(client):
 
     assert created.status_code == 302
     assert duplicate_phone.status_code == 400
-    assert b"That username or phone number is already in use" in duplicate_phone.data
+    assert b"Registration could not be completed with those details" in duplicate_phone.data
     assert db.session.query(User).count() == 1
+
+
+def test_registration_prevents_canonical_email_alias_duplicates(client):
+    created = register(
+        client,
+        email="first.last+signup@gmail.com",
+    )
+    with client.session_transaction() as sess:
+        sess[REGISTRATION_OTP_VERIFIED_EMAIL_KEY] = "firstlast@gmail.com"
+        sess[REGISTRATION_OTP_VERIFIED_AT_KEY] = int(time.time())
+    duplicate = client.post(
+        "/register",
+        data={
+            "username": "alias02",
+            "email": "firstlast@gmail.com",
+            "full_name": "Alias User",
+            "phone_number": "91234568",
+            "password": "correct horse battery staple",
+            "confirm_password": "correct horse battery staple",
+        },
+    )
+    user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
+
+    assert created.status_code == 302
+    assert duplicate.status_code == 400
+    assert b"Registration could not be completed with those details" in duplicate.data
+    assert user.email == "first.last+signup@gmail.com"
+    assert user.registration_email_canonical == "firstlast@gmail.com"
+
+
+def test_registration_rejects_configured_temporary_email_domain(client):
+    response = client.post(
+        "/register/otp/request",
+        data={"email": "customer@mailinator.com"},
+    )
+
+    assert response.status_code == 400
+    assert b"Registration could not be started for that email" in response.data
+
+
+def test_json_registration_returns_minimum_success_payload(client):
+    verify_registration_email(client, "minimal@example.com")
+
+    response = client.post(
+        "/auth/register",
+        json={
+            "username": "minimal01",
+            "email": "minimal@example.com",
+            "full_name": "Minimal User",
+            "phone_number": "91234567",
+            "password": "correct horse battery staple",
+            "confirm_password": "correct horse battery staple",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.get_json() == {
+        "message": "Registration successful",
+        "warnings": [],
+    }
 
 def test_api_registration_rejects_client_supplied_account_number(client):
     response = client.post(
@@ -788,7 +848,7 @@ def test_login_rate_limits_include_per_minute_and_daily_limits(client):
 
     assert limited.status_code == 429
 
-def test_login_identifier_limit_is_scoped_by_source_ip(client):
+def test_account_lockout_cannot_be_bypassed_from_a_different_source_ip(client):
     register(client)
 
     attacker_ip = "198.51.100.10"
@@ -799,8 +859,8 @@ def test_login_identifier_limit_is_scoped_by_source_ip(client):
     response = api_login_from_ip(client, victim_ip)
     payload = response.get_json()
 
-    assert response.status_code == 200
-    assert payload["mfa_setup_required"] is True
+    assert response.status_code == 401
+    assert payload == {"error": "Invalid username or password"}
 
 def test_request_principal_is_hashed_and_ip_scoped(app):
     from app.security.rate_limits import request_principal
@@ -828,14 +888,14 @@ def test_request_principal_is_hashed_and_ip_scoped(app):
     assert "example" not in first_key.casefold()
     assert "198.51.100.10" not in first_key
 
-def test_repeated_password_failures_do_not_freeze_account(app, client):
+def test_repeated_password_failures_lock_known_customer_account(app, client):
     from app.auth.services import AuthError, authenticate_primary
     from app.security.rate_limits import clear_failures
 
     register(client)
     user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
 
-    for _attempt in range(10):
+    for _attempt in range(3):
         with app.test_request_context(
             "/auth/login",
             method="POST",
@@ -848,18 +908,17 @@ def test_repeated_password_failures_do_not_freeze_account(app, client):
 
     db.session.refresh(user)
 
-    assert user.is_frozen is False
-    assert user.security_locked_at is None
-    assert user.security_lock_reason is None
-    assert db.session.query(SecurityAuditEvent).filter_by(event_type="account_lock", outcome="locked").count() == 0
+    assert user.is_frozen is True
+    assert user.security_locked_at is not None
+    assert user.security_lock_reason == "password_failed_attempts"
+    assert db.session.query(SecurityAuditEvent).filter_by(event_type="account_lock", outcome="locked").count() == 1
 
     clear_failures("login", "127.0.0.1:alice01")
     response = login(client)
     db.session.refresh(user)
 
-    assert response.status_code == 302
-    assert response.headers["Location"].endswith("/mfa/setup")
-    assert user.failed_login_count == 0
+    assert response.status_code == 401
+    assert user.failed_login_count == 3
 
 def test_repeated_mfa_failures_freeze_account(app, client):
     from flask import session
@@ -923,7 +982,7 @@ def test_unknown_and_known_login_failures_use_same_backoff_path(client):
     assert known_response.status_code == 401
     assert unknown_response.status_code == 401
     assert known_response.get_json() == unknown_response.get_json()
-    assert user.failed_login_count == 0
+    assert user.failed_login_count == 1
 
 def test_hash_password_uses_configured_pbkdf2_iterations(app):
     with app.app_context():

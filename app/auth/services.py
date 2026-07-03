@@ -33,7 +33,11 @@ from app.auth.mfa_policy import (
 from app.security.audit import audit_event, audit_event_required, audit_reference, principal_reference
 from app.security.crypto import decrypt_mfa_secret, encrypt_mfa_secret
 from app.security.email import send_security_email
-from app.security.identity_policy import IdentityPolicyError, require_customer_email
+from app.security.identity_policy import (
+    IdentityPolicyError,
+    canonicalize_customer_email,
+    require_customer_email,
+)
 from app.security.password_history import (
     PasswordReuseError,
     assert_password_not_reused,
@@ -83,6 +87,8 @@ AUTH_BACKOFF_ERROR = "Too many failed attempts. Please wait before trying again.
 ACCOUNT_AUTH_UNAVAILABLE_ERROR = "Authentication unavailable for this account"
 PROFILE_UPDATE_ERROR = "Profile could not be updated with those details"
 AUTH_LOCK_THRESHOLD = 10
+CUSTOMER_PASSWORD_LOCK_THRESHOLD = 3
+PRIVILEGED_PASSWORD_LOCK_THRESHOLD = 2
 AUTH_LOCK_WINDOW_SECONDS = 15 * 60
 MFA_REPLACEMENT_NONCE_KEY = "mfa_replacement_secret_nonce"
 MFA_REPLACEMENT_CIPHERTEXT_KEY = "mfa_replacement_secret_ciphertext"
@@ -196,16 +202,29 @@ def _find_user_by_username_or_email(username: str, email: str) -> User | None:
     ).scalar_one_or_none()
 
 
-def _find_user_by_registration_fields(username: str, email: str, phone_number: str) -> User | None:
-    return db.session.execute(
-        db.select(User).where(
-            or_(
-                func.lower(User.username) == _normalize(username),
-                func.lower(User.email) == _normalize(email),
-                User.phone_number == phone_number.strip(),
-            )
-        )
-    ).scalar_one_or_none()
+def _registration_duplicate_reason(
+    username: str,
+    canonical_email: str,
+    phone_number: str,
+) -> str | None:
+    checks = (
+        (
+            "duplicate_username",
+            func.lower(User.username) == _normalize(username),
+        ),
+        (
+            "duplicate_email",
+            User.registration_email_canonical == canonical_email,
+        ),
+        (
+            "duplicate_phone",
+            User.phone_number == phone_number.strip(),
+        ),
+    )
+    for reason, condition in checks:
+        if db.session.execute(db.select(User.id).where(condition).limit(1)).scalar_one_or_none():
+            return reason
+    return None
 
 
 def _generate_account_number() -> str:
@@ -225,6 +244,7 @@ def register_user(data: dict[str, Any]) -> tuple[User, list[str]]:
         )
     except RegistrationOtpError as exc:
         raise AuthError(str(exc), exc.status_code) from exc
+    canonical_email = canonicalize_customer_email(normalized_email)
 
     if data.get("password") != data.get("confirm_password"):
         audit_event("registration", "failure", metadata={"reason": "password_mismatch"})
@@ -236,13 +256,19 @@ def register_user(data: dict[str, Any]) -> tuple[User, list[str]]:
         audit_event("registration", "failure", metadata={"reason": "password_policy"})
         raise AuthError(str(exc), 400) from exc
 
-    if _find_user_by_registration_fields(data["username"], normalized_email, data["phone_number"]):
-        audit_event("registration", "failure", metadata={"reason": "duplicate_identifier"})
-        raise AuthError("That username or phone number is already in use. Please try different details.", 400)
+    duplicate_reason = _registration_duplicate_reason(
+        data["username"],
+        canonical_email,
+        data["phone_number"],
+    )
+    if duplicate_reason:
+        audit_event("registration", "failure", metadata={"reason": duplicate_reason})
+        raise AuthError("Registration could not be completed with those details", 400)
 
     user = User(
         username=data["username"].strip(),
         email=normalized_email,
+        registration_email_canonical=canonical_email,
         password_hash=hash_password(data["password"]),
         account_type="customer",
         account_status="active",
@@ -258,7 +284,7 @@ def register_user(data: dict[str, Any]) -> tuple[User, list[str]]:
     except IntegrityError as exc:
         db.session.rollback()
         audit_event("registration", "failure", metadata={"reason": "integrity_error"})
-        raise AuthError("That username or phone number is already in use. Please try different details.", 400) from exc
+        raise AuthError("Registration could not be completed with those details", 400) from exc
     consume_verified_registration_email(normalized_email)
     audit_event(
         "registration",
@@ -300,17 +326,48 @@ def authenticate_primary(identifier: str, password: str) -> dict[str, Any]:
             },
         )
         record_failure("login", principal)
+        if user is not None and user.account_type == "customer":
+            user.failed_login_count = int(user.failed_login_count or 0) + 1
+            _record_user_security_failure(
+                user,
+                "password",
+                "password_failed_attempts",
+            )
         raise AuthError(GENERIC_LOGIN_ERROR, 401)
 
-    ensure_account_can_authenticate(user)
+    if (
+        user.security_locked_at is not None
+        and user.security_lock_reason in {"password_failed_attempts", "mfa_failed_attempts"}
+    ):
+        audit_event(
+            "login",
+            "blocked",
+            user=user,
+            metadata={"reason": user.security_lock_reason},
+        )
+        raise AuthError(GENERIC_LOGIN_ERROR, 401)
 
-    user.failed_login_count = 0
-    user.last_login_at = datetime.now(timezone.utc)
+    if user.is_frozen:
+        audit_event(
+            "login",
+            "blocked",
+            user=user,
+            metadata={"reason": user.security_lock_reason or "account_frozen"},
+        )
+        raise AuthError(ACCOUNT_AUTH_UNAVAILABLE_ERROR, 403)
+
+    if user.security_locked_at is not None:
+        audit_event(
+            "login",
+            "blocked",
+            user=user,
+            metadata={"reason": user.security_lock_reason or "account_unavailable"},
+        )
+        raise AuthError(GENERIC_LOGIN_ERROR, 401)
+
     if password_hash_needs_rehash(user.password_hash):
         user.password_hash = hash_password(password)
     db.session.commit()
-    clear_failures("login", principal)
-    _clear_user_security_failures(user, "password")
 
     if user.mfa_enabled:
         begin_password_authenticated_session(user.id)
@@ -325,6 +382,11 @@ def authenticate_primary(identifier: str, password: str) -> dict[str, Any]:
         mfa_verified=False,
         auth_context=PASSWORD_BOOTSTRAP_AUTH_CONTEXT,
     )
+    user.failed_login_count = 0
+    user.last_login_at = datetime.now(timezone.utc)
+    db.session.commit()
+    clear_failures("login", principal)
+    _clear_user_security_failures(user, "password")
     legacy_passkey_count = enrolled_webauthn_credential_count(user)
     metadata = {"mfa_required": False}
     if legacy_passkey_count > 0:
@@ -361,6 +423,8 @@ def generate_mfa_setup(user: User) -> dict[str, str]:
     user.mfa_secret_nonce = nonce
     user.mfa_secret_ciphertext = ciphertext
     user.mfa_enabled = False
+    user.mfa_pending_started_at = datetime.now(timezone.utc)
+    user.mfa_pending_session_hash = _mfa_setup_session_hash()
     db.session.commit()
     audit_event("mfa_setup_generate", "success", user=user)
 
@@ -370,16 +434,20 @@ def generate_mfa_setup(user: User) -> dict[str, str]:
 def pending_mfa_setup(user: User) -> dict[str, str] | None:
     if user.mfa_enabled or not user.mfa_secret_nonce or not user.mfa_secret_ciphertext:
         return None
-
-    secret = _mfa_secret_for_user(user)
-    return _mfa_setup_payload(user, secret)
+    _require_active_pending_mfa_setup(user, raise_error=False)
+    # Setup material is returned only by generate_mfa_setup. A page refresh
+    # intentionally requires a safe restart instead of redisplaying the secret.
+    return None
 
 
 def verify_mfa_setup(user: User, code: str) -> dict[str, Any]:
+    _require_active_pending_mfa_setup(user)
     if not _verify_totp_for_user(user, code, "mfa_setup"):
         _handle_mfa_verification_failure(user, "mfa_setup_verify")
 
     user.mfa_enabled = True
+    user.mfa_pending_started_at = None
+    user.mfa_pending_session_hash = None
     recovery_codes = generate_recovery_codes_for_user(user, commit=False, audit=False)
     session_id = rotate_authenticated_session_after_mfa(user.id)
     audit_event_required(
@@ -425,10 +493,9 @@ def generate_mfa_replacement(user: User, code: str | None, stepup_token: str | N
 def pending_mfa_replacement(user: User) -> dict[str, str] | None:
     if not user.mfa_enabled:
         return None
-    secret = _pending_mfa_replacement_secret(user)
-    if secret is None:
-        return None
-    return _mfa_setup_payload(user, secret)
+    _pending_mfa_replacement_secret(user)
+    # Replacement material is shown only in the response that creates it.
+    return None
 
 
 def verify_mfa_replacement(user: User, code: str) -> dict[str, Any]:
@@ -487,6 +554,9 @@ def complete_pending_mfa(code: str) -> dict[str, Any]:
     user.last_login_at = datetime.now(timezone.utc)
     user.failed_login_count = 0
     db.session.commit()
+    clear_failures("login", _auth_principal(user.username))
+    clear_failures("login", _auth_principal(user.email))
+    _clear_user_security_failures(user, "password")
     _clear_user_security_failures(user, "mfa")
     recovery_codes_remaining = unused_recovery_code_count(user)
     session_id = establish_authenticated_session(
@@ -730,6 +800,7 @@ def _commit_profile_update(
     user.username = normalized_username
     if email_changed:
         user.email = normalized_email
+        user.registration_email_canonical = canonicalize_customer_email(normalized_email)
     try:
         db.session.commit()
     except IntegrityError as exc:
@@ -748,11 +819,12 @@ def _commit_profile_update(
 
 
 def _reject_duplicate_profile_identifiers(user: User, username_lookup: str, normalized_email: str) -> None:
+    canonical_email = canonicalize_customer_email(normalized_email)
     duplicate_user = db.session.execute(
         db.select(User).where(
             or_(
                 func.lower(User.username) == username_lookup,
-                func.lower(User.email) == normalized_email,
+                User.registration_email_canonical == canonical_email,
             ),
             User.id != user.id,
         )
@@ -1079,7 +1151,7 @@ def _record_user_security_failure(user: User, scope: str, lock_reason: str) -> N
     counter.window_expires_at = now + timedelta(seconds=AUTH_LOCK_WINDOW_SECONDS)
     attempts = int(counter.failure_count)
     db.session.commit()
-    if attempts >= AUTH_LOCK_THRESHOLD:
+    if attempts >= _user_security_lock_threshold(user, scope):
         _lock_user_account(user, lock_reason, scope, attempts)
 
 
@@ -1114,6 +1186,14 @@ def _lock_user_account(user: User, reason: str, scope: str, attempts: int) -> No
             "revoked_sessions": revoked,
         },
     )
+
+
+def _user_security_lock_threshold(user: User, scope: str) -> int:
+    if scope == "password" and user.account_type in {"staff", "admin", "root_admin"}:
+        return PRIVILEGED_PASSWORD_LOCK_THRESHOLD
+    if scope == "password":
+        return CUSTOMER_PASSWORD_LOCK_THRESHOLD
+    return AUTH_LOCK_THRESHOLD
 
 
 def _totp(secret: str) -> pyotp.TOTP:
@@ -1225,7 +1305,7 @@ def _pending_mfa_replacement_secret(user: User) -> str | None:
     except (TypeError, ValueError):
         _clear_pending_mfa_replacement()
         return None
-    if age > current_app.config["PENDING_MFA_MAX_AGE_SECONDS"]:
+    if age < 0 or age > current_app.config["PENDING_MFA_MAX_AGE_SECONDS"]:
         _clear_pending_mfa_replacement()
         return None
     try:
@@ -1240,6 +1320,41 @@ def _clear_pending_mfa_replacement() -> None:
     session.pop(MFA_REPLACEMENT_CIPHERTEXT_KEY, None)
     session.pop(MFA_REPLACEMENT_STARTED_AT_KEY, None)
     session.modified = True
+
+
+def _require_active_pending_mfa_setup(
+    user: User,
+    *,
+    raise_error: bool = True,
+) -> bool:
+    started_at = user.mfa_pending_started_at
+    binding = str(user.mfa_pending_session_hash or "")
+    active = bool(started_at and binding)
+    if active:
+        age = (datetime.now(timezone.utc) - _as_utc(started_at)).total_seconds()
+        active = (
+            0 <= age <= int(current_app.config["PENDING_MFA_MAX_AGE_SECONDS"])
+            and hmac.compare_digest(binding, _mfa_setup_session_hash())
+        )
+    if active:
+        return True
+    if started_at or binding or user.mfa_secret_nonce or user.mfa_secret_ciphertext:
+        user.mfa_secret_nonce = None
+        user.mfa_secret_ciphertext = None
+        user.mfa_pending_started_at = None
+        user.mfa_pending_session_hash = None
+        db.session.commit()
+        audit_event("mfa_setup_pending", "expired", user=user)
+    if raise_error:
+        raise AuthError("MFA setup expired. Start again.", 401)
+    return False
+
+
+def _mfa_setup_session_hash() -> str:
+    return active_hmac_hex(
+        f"mfa-setup-session:{current_session_id()}",
+        length=64,
+    )
 
 
 def _b64encode(value: bytes) -> str:

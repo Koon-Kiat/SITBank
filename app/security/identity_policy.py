@@ -7,6 +7,18 @@ from flask import current_app
 
 
 EMAIL_RE = re.compile(r"^(?=\S{1,128}@\S{1,253}$)[^@\x00-\x1f\x7f]+@[^@\x00-\x1f\x7f]+$")
+DEFAULT_CUSTOMER_EMAIL_PLUS_ALIAS_DOMAINS = frozenset({"gmail.com", "googlemail.com"})
+DEFAULT_CUSTOMER_EMAIL_DOT_INSENSITIVE_DOMAINS = frozenset({"gmail.com", "googlemail.com"})
+DEFAULT_CUSTOMER_TEMP_EMAIL_DOMAINS = frozenset(
+    {
+        "10minutemail.com",
+        "guerrillamail.com",
+        "mailinator.com",
+        "temp-mail.org",
+        "yopmail.com",
+    }
+)
+CUSTOMER_EMAIL_DOMAIN_ALIASES = {"googlemail.com": "gmail.com"}
 
 
 class IdentityPolicyError(ValueError):
@@ -56,8 +68,11 @@ def customer_email_policy_violation(email: str) -> str | None:
         return "invalid_email"
     if normalized in root_admin_emails():
         return "root_admin_allowlisted_email"
-    if _email_domain(normalized) in admin_allowed_email_domains():
+    domain = _email_domain(normalized)
+    if domain in admin_allowed_email_domains():
         return "admin_email_domain"
+    if domain in customer_temp_email_domains():
+        return "temporary_email_domain"
     return None
 
 
@@ -66,6 +81,47 @@ def require_customer_email(email: str) -> str:
     if reason:
         raise IdentityPolicyError(reason)
     return normalize_identity_email(email)
+
+
+def canonicalize_customer_email(
+    email: str,
+    *,
+    plus_alias_domains: Iterable[str] | None = None,
+    dot_insensitive_domains: Iterable[str] | None = None,
+) -> str:
+    normalized = normalize_identity_email(email)
+    local, _separator, domain = normalized.rpartition("@")
+    plus_domains = _normalized_domain_set(
+        plus_alias_domains
+        if plus_alias_domains is not None
+        else _config_set(
+            "CUSTOMER_EMAIL_PLUS_ALIAS_DOMAINS",
+            default=DEFAULT_CUSTOMER_EMAIL_PLUS_ALIAS_DOMAINS,
+        )
+    )
+    dot_domains = _normalized_domain_set(
+        dot_insensitive_domains
+        if dot_insensitive_domains is not None
+        else _config_set(
+            "CUSTOMER_EMAIL_DOT_INSENSITIVE_DOMAINS",
+            default=DEFAULT_CUSTOMER_EMAIL_DOT_INSENSITIVE_DOMAINS,
+        )
+    )
+    if domain in plus_domains:
+        local = local.partition("+")[0]
+    if domain in dot_domains:
+        local = local.replace(".", "")
+    canonical_domain = CUSTOMER_EMAIL_DOMAIN_ALIASES.get(domain, domain)
+    if not local:
+        raise IdentityPolicyError("invalid_email")
+    return f"{local}@{canonical_domain}"
+
+
+def customer_temp_email_domains() -> frozenset[str]:
+    return _config_set(
+        "CUSTOMER_TEMP_EMAIL_DOMAINS",
+        default=DEFAULT_CUSTOMER_TEMP_EMAIL_DOMAINS,
+    )
 
 
 def require_privileged_workplace_email(email: str) -> str:
@@ -79,10 +135,17 @@ def require_admin_workplace_email(email: str) -> str:
     return require_privileged_workplace_email(email)
 
 
-def _config_set(name: str, *, fallback_name: str | None = None) -> frozenset[str]:
+def _config_set(
+    name: str,
+    *,
+    fallback_name: str | None = None,
+    default: Iterable[str] = (),
+) -> frozenset[str]:
     value = current_app.config.get(name)
     if value is None and fallback_name:
         value = current_app.config.get(fallback_name)
+    if value is None:
+        value = default
     return frozenset(_iter_config_values(value))
 
 
@@ -106,3 +169,7 @@ def _valid_email_parts(local: str, separator: str, domain: str) -> bool:
 
 def _email_domain(email: str) -> str:
     return email.rpartition("@")[2].casefold()
+
+
+def _normalized_domain_set(values: Iterable[str]) -> frozenset[str]:
+    return frozenset(str(value or "").strip().casefold() for value in values if str(value or "").strip())
