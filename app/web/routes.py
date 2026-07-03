@@ -84,6 +84,7 @@ from app.extensions import db, limiter
 from app.models import Transaction
 from app.auth.recovery_codes import RECOVERY_CODE_LOW_THRESHOLD, unused_recovery_code_count
 from app.security.rate_limits import mfa_principal, request_principal
+from app.security.http_errors import rate_limit_response
 from app.security.sessions import (
     has_recent_fresh_mfa,
 )
@@ -217,6 +218,8 @@ def register_otp_request():
         flash(_CHALLENGE_VERIFICATION_FAILED_MESSAGE, "error")
         return _render_register_email_form(otp_request_form=form), 400
     except RegistrationOtpError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return _render_register_email_form(otp_request_form=form, resend_cooldown=exc.retry_after if exc.status_code == 429 else None), exc.status_code
     flash(result["message"], "info")
@@ -242,6 +245,8 @@ def register_otp_verify():
     try:
         result = verify_registration_otp(pending_email, form.otp_code.data)
     except RegistrationOtpError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return _render_register_email_form(otp_request_form=request_form, otp_verify_form=form), exc.status_code
     flash(result["message"], "success")
@@ -279,6 +284,8 @@ def register_submit():
         flash(_CHALLENGE_VERIFICATION_FAILED_MESSAGE, "error")
         return _render_register_details_form(form, verified_email=verified_email), 400
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         verified_email = current_verified_registration_email()
         if verified_email:
@@ -355,6 +362,8 @@ def login_submit():
         flash(_CHALLENGE_VERIFICATION_FAILED_MESSAGE, "error")
         return render_template(_LOGIN_TEMPLATE, form=form), 400
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return render_template(_LOGIN_TEMPLATE, form=form), exc.status_code
 
@@ -393,6 +402,8 @@ def forgot_password_submit():
         flash(_CHALLENGE_VERIFICATION_FAILED_MESSAGE, "error")
         return render_template(_FORGOT_PASSWORD_TEMPLATE, form=form), 400
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return render_template(_FORGOT_PASSWORD_TEMPLATE, form=form), exc.status_code
     flash(result["message"], "success")
@@ -420,6 +431,8 @@ def reset_password_exchange():
     try:
         exchange_reset_token(token)
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return redirect(url_for(_FORGOT_PASSWORD_ENDPOINT))
     return redirect(url_for(_RESET_PASSWORD_CONTINUE_ENDPOINT))
@@ -430,6 +443,8 @@ def reset_password_continue():
     try:
         transaction = current_reset_transaction()
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return redirect(url_for(_FORGOT_PASSWORD_ENDPOINT))
     return render_template(
@@ -448,6 +463,8 @@ def reset_password_continue_submit():
     try:
         transaction = current_reset_transaction()
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return redirect(url_for(_FORGOT_PASSWORD_ENDPOINT))
 
@@ -471,6 +488,8 @@ def _handle_reset_totp(transaction: dict):
     try:
         transaction = verify_reset_totp(form.totp_code.data)
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return _render_reset_continue(transaction, status_code=exc.status_code)
     flash("Authentication code verified.", "success")
@@ -484,6 +503,8 @@ def _handle_reset_recovery_code(transaction: dict):
     try:
         transaction = verify_reset_recovery_code(form.totp_code.data)
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return _render_reset_continue(transaction, status_code=exc.status_code)
     flash("Recovery code verified.", "success")
@@ -497,6 +518,8 @@ def _handle_reset_mfa_selection(transaction: dict):
     try:
         transaction = select_reset_mfa_method(request.form.get("mfa_method", ""))
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return _render_reset_continue(transaction, status_code=exc.status_code)
     flash("Verification method selected.", "success")
@@ -513,6 +536,8 @@ def _handle_reset_completion(transaction: dict):
             form.confirm_new_password.data,
         )
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return _render_reset_continue(transaction, status_code=exc.status_code)
     for warning in result.get("warnings", []):
@@ -551,6 +576,8 @@ def account_recovery_submit():
         flash(_CHALLENGE_VERIFICATION_FAILED_MESSAGE, "error")
         return render_template(_ACCOUNT_RECOVERY_TEMPLATE, form=form), 400
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return render_template(_ACCOUNT_RECOVERY_TEMPLATE, form=form), exc.status_code
     flash(result["message"], "success")
@@ -585,6 +612,8 @@ def mfa_verify_submit():
     try:
         complete_pending_mfa(form.totp_code.data)
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return render_template(_MFA_VERIFY_TEMPLATE, form=form), exc.status_code
 
@@ -696,6 +725,8 @@ def profile_submit():
             form.email_verification_code.data,
         )
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return render_template(
             _PROFILE_TEMPLATE,
@@ -823,6 +854,8 @@ def _handle_mfa_setup_start(forms: dict[str, FlaskForm]):
     try:
         setup = generate_mfa_setup(g.current_user)
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return redirect(url_for(_DASHBOARD_ENDPOINT))
     flash("Scan the QR code, then enter the current code to enable MFA.", "info")
@@ -840,6 +873,8 @@ def _handle_mfa_setup_verify(forms: dict[str, FlaskForm]):
     try:
         result = verify_mfa_setup(g.current_user, verify_form.totp_code.data)
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return _render_mfa_management(forms, status_code=exc.status_code)
     flash("MFA is now enabled.", "success")
@@ -857,6 +892,8 @@ def _handle_mfa_replace_start(forms: dict[str, FlaskForm]):
             replace_form.stepup_token.data,
         )
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return _render_mfa_management(forms, status_code=exc.status_code)
     flash("Scan the replacement QR code, then verify the new authenticator code.", "info")
@@ -873,6 +910,8 @@ def _handle_mfa_replace_verify(forms: dict[str, FlaskForm]):
     try:
         result = verify_mfa_replacement(g.current_user, verify_form.totp_code.data)
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return _render_mfa_management(forms, status_code=exc.status_code)
     flash("Authenticator MFA replaced. Other sessions were revoked.", "success")
@@ -890,6 +929,8 @@ def _handle_recovery_code_regeneration(forms: dict[str, FlaskForm]):
             regenerate_form.stepup_token.data,
         )
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return _render_mfa_management(forms, status_code=exc.status_code)
     flash("Recovery codes regenerated.", "success")
@@ -948,6 +989,8 @@ def password_change_submit():
             form.stepup_token.data,
         )
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return render_template(_PASSWORD_CHANGE_TEMPLATE, form=form, recent_mfa=recent_mfa), exc.status_code
 
@@ -984,6 +1027,8 @@ def sessions_terminate_submit(session_ref: str):
     try:
         terminate_session_for_user(g.current_user, session_ref)
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return redirect(url_for(_SESSIONS_ENDPOINT)), exc.status_code
     flash("Session terminated.", "success")
@@ -1007,6 +1052,8 @@ def sessions_revoke_others_submit():
         )
         revoked = terminate_other_sessions_for_user(g.current_user)
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return redirect(url_for(_SESSIONS_ENDPOINT)), exc.status_code
     flash(f"Terminated {revoked} other session(s).", "success")
@@ -1033,6 +1080,8 @@ def freeze_account_submit():
     try:
         freeze_own_account(g.current_user, form.totp_code.data, form.stepup_token.data)
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return render_template(_FREEZE_TEMPLATE, user=g.current_user, form=form), exc.status_code
 

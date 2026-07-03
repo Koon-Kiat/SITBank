@@ -71,9 +71,15 @@ playwright install --with-deps chromium`, and runs `python -m pytest -q
 tests/e2e` with `SITBANK_RUN_E2E=1` and `PLAYWRIGHT_BROWSERS_PATH` set to
 `.playwright-browsers`. The tests use a loopback Flask server from the pytest
 app fixture for authentication, MFA, session, banking, and boundary
-regressions. They do not prove live staging or production provider state and do
+regressions. Coverage includes registration, password reset, manual recovery, payee, transfer, session management, password change, account freeze, and customer/admin isolation.
+They do not prove live staging or production provider state and do
 not target staging, production, or private-admin hosts. Browser cache, reports,
 traces, screenshots, and videos are ignored and are not uploaded by the job.
+
+The Python suite uses a per-worker app and database schema with per-test state
+cleanup, and the custom full-history secret scan reads streaming Git object
+batches. These runtime optimizations do not add marker exclusions, scoped test
+paths, or weaker security checks.
 
 Changing a job display name can change its required status-check context even
 when the internal ID is unchanged. Repository files do not update GitHub

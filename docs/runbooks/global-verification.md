@@ -55,9 +55,23 @@ $env:SITBANK_RUN_E2E = "1"
 ```
 
 The browser tests cover authentication, MFA, session, banking, and boundary
-regressions against a loopback Flask server. They do not prove live staging or
-production provider state and do not target staging, production, or the private
-admin hostname.
+regressions, including registration, password reset, manual recovery, payee,
+transfer, session management, password change, account freeze, and
+customer/admin isolation, against a loopback Flask server. They do not prove
+live staging or production provider state and do not target staging,
+production, or the private admin hostname.
+
+For runtime profiling, keep the command unscoped and do not add marker
+exclusions:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q -n auto --durations=50 --durations-min=0.1
+.\.venv\Scripts\python.exe -m pytest -q -n auto --cov=. --cov-config=.coveragerc --cov-report=xml:coverage.xml --cov-report=term --durations=50 --durations-min=0.1
+```
+
+The suite optimization uses a per-worker app and database schema plus
+per-test cleanup. Full-history secret scanning uses streaming Git object
+batches. Neither optimization removes security, deployment, or browser tests.
 
 ### Normal CI-Equivalent Checks
 

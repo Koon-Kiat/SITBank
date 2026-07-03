@@ -4,6 +4,7 @@ import os
 
 import pytest
 
+from app.security.http_errors import CSRF_ERROR_MESSAGE, RATE_LIMIT_MESSAGE
 from app.extensions import db
 from app.models import User
 from app.security.passwords import hash_password
@@ -44,6 +45,9 @@ def test_login_page_renders_with_security_headers_and_no_console_errors(
     console_errors = record_console_errors(browser_page)
 
     response = browser_page.goto(f"{live_server}/login", wait_until="load")
+    if console_errors == ["Failed to load resource: net::ERR_NO_BUFFER_SPACE"]:
+        console_errors.clear()
+        response = browser_page.reload(wait_until="load")
 
     assert response is not None
     assert response.status == 200
@@ -81,3 +85,40 @@ def test_password_login_reaches_mfa_setup_without_external_services(
     browser_page.wait_for_url("**/mfa/setup", wait_until="load")
     browser_page.get_by_role("heading", name="MFA setup").wait_for()
     assert console_errors == []
+
+
+def test_login_csrf_failure_stays_a_branded_security_token_400(
+    app,
+    live_server,
+    browser_page,
+):
+    app.config["WTF_CSRF_ENABLED"] = True
+    browser_page.goto(f"{live_server}/login", wait_until="load")
+    browser_page.locator("input[name='identifier']").fill("fake-customer")
+    browser_page.locator("input[name='password']").fill("clearly-fake-password")
+    browser_page.locator("input[name='csrf_token']").evaluate(
+        "(element) => { element.value = 'invalid-test-token'; }"
+    )
+    browser_page.locator("button[type='submit']").click()
+
+    browser_page.get_by_role("heading", name="400").wait_for()
+    browser_page.get_by_text(CSRF_ERROR_MESSAGE, exact=True).wait_for()
+    assert RATE_LIMIT_MESSAGE not in browser_page.content()
+
+
+def test_repeated_login_failures_use_the_standard_branded_429(
+    live_server,
+    browser_page,
+):
+    for _attempt in range(4):
+        browser_page.goto(f"{live_server}/login", wait_until="load")
+        browser_page.locator("input[name='identifier']").fill("unknown-e2e-customer")
+        browser_page.locator("input[name='password']").fill("clearly-fake-password")
+        browser_page.locator("button[type='submit']").click()
+        browser_page.wait_for_load_state("load")
+        if browser_page.get_by_role("heading", name="429").count():
+            break
+
+    browser_page.get_by_role("heading", name="429").wait_for()
+    browser_page.get_by_text(RATE_LIMIT_MESSAGE, exact=True).wait_for()
+    assert "Authentication backoff" not in browser_page.content()

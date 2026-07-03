@@ -93,14 +93,20 @@ def test_tracked_files_and_historical_blobs_parse_git_output(monkeypatch):
             return SimpleNamespace(
                 stdout="a" * 40 + " app.py\n" + "b" * 40 + " tree\n" + "a" * 40 + " duplicate.py\n"
             )
-        object_id = command[-1]
-        return SimpleNamespace(stdout="blob\n" if object_id == "a" * 40 else "tree\n")
+        if command[:2] == ["git", "cat-file"]:
+            return SimpleNamespace(
+                stdout=(
+                    ("a" * 40) + " blob 10\n"
+                    + ("b" * 40) + " tree 0\n"
+                )
+            )
+        raise AssertionError(f"unexpected command: {command}")
 
     monkeypatch.setattr(scanner.subprocess, "run", fake_run)
 
     assert scanner.tracked_files() == [Path("app.py"), Path("docs/README.md")]
     assert scanner.historical_blobs() == [("a" * 40, "app.py")]
-    assert any(command[:2] == ["git", "cat-file"] for command in calls)
+    assert any("--batch-check=" in command[-1] for command in calls)
 
 
 def test_scan_history_skips_forbidden_and_large_blobs_and_scans_small_content(monkeypatch):
@@ -115,14 +121,20 @@ def test_scan_history_skips_forbidden_and_large_blobs_and_scans_small_content(mo
     )
     scanned = []
 
-    def fake_run(command, **kwargs):
-        object_id = command[-1]
-        if command[2] == "-s":
-            size = scanner.MAX_HISTORY_BLOB_BYTES + 1 if object_id == "b" * 40 else 10
-            return SimpleNamespace(stdout=f"{size}\n")
-        return SimpleNamespace(stdout=b"safe")
-
-    monkeypatch.setattr(scanner.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        scanner,
+        "_batch_object_metadata",
+        lambda _object_ids: {
+            "a" * 40: ("blob", 10),
+            "b" * 40: ("blob", scanner.MAX_HISTORY_BLOB_BYTES + 1),
+            "c" * 40: ("blob", 10),
+        },
+    )
+    monkeypatch.setattr(
+        scanner,
+        "_read_blob_batch",
+        lambda object_ids: iter((object_id, b"safe") for object_id in object_ids),
+    )
     monkeypatch.setattr(
         scanner,
         "scan_content",

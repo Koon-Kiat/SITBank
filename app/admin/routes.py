@@ -22,6 +22,12 @@ from app.security.production_guard import (
     validate_production_security_prerequisites,
 )
 from app.security.rate_limits import request_principal
+from app.security.http_errors import (
+    CSRF_ERROR_MESSAGE,
+    rate_limit_response,
+    request_wants_json,
+    safe_error_response,
+)
 from app.security.turnstile import TurnstileError, require_turnstile
 
 from .services import (
@@ -257,6 +263,14 @@ class StaffInviteVerifySchema(Schema):
 
 @admin_bp.errorhandler(AuthError)
 def handle_auth_error(error: AuthError):
+    if error.status_code == 429:
+        response, status_code = rate_limit_response()
+        if error.retry_after is not None:
+            response.headers["Retry-After"] = str(error.retry_after)
+            response.headers["X-Auth-Retry-After"] = str(error.retry_after)
+        return response, status_code
+    if not request_wants_json():
+        return safe_error_response(error.message, error.status_code)
     response = jsonify({"error": error.message})
     if error.retry_after is not None:
         response.headers["Retry-After"] = str(error.retry_after)
@@ -266,12 +280,12 @@ def handle_auth_error(error: AuthError):
 
 @admin_bp.errorhandler(ValidationError)
 def handle_validation_error(_error: ValidationError):
-    return jsonify({"error": "Invalid request"}), 400
+    return safe_error_response("Invalid request", 400)
 
 
 @admin_bp.errorhandler(TurnstileError)
 def handle_turnstile_error(_error: TurnstileError):
-    return jsonify({"error": "Challenge verification failed"}), 400
+    return safe_error_response("Challenge verification failed", 400)
 
 
 def _payload(schema: Schema) -> dict:
@@ -290,12 +304,7 @@ def _request_fields() -> set[str]:
 
 
 def _wants_json() -> bool:
-    if request.is_json:
-        return True
-    best = request.accept_mimetypes.best_match([_JSON_MIME_TYPE, _HTML_MIME_TYPE])
-    return best == _JSON_MIME_TYPE and (
-        request.accept_mimetypes[_JSON_MIME_TYPE] >= request.accept_mimetypes[_HTML_MIME_TYPE]
-    )
+    return request_wants_json()
 
 
 def _safe_alert_text(value: Any, limit: int = 120) -> str:
@@ -785,6 +794,8 @@ def login():
         flash("Invalid request", "error")
         return _render_login_form(form, status_code=400)
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return _render_login_form(form, status_code=exc.status_code)
 
@@ -823,6 +834,8 @@ def mfa_verify():
     try:
         complete_admin_mfa_login(form.totp_code.data)
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return _render_mfa_form(form, status_code=exc.status_code)
 
@@ -838,8 +851,8 @@ def logout():
     form = AdminCsrfOnlyForm()
     if not request.is_json and not form.validate_on_submit():
         if wants_json:
-            return jsonify({"error": "Security token expired or invalid"}), 400
-        flash("Security token expired or invalid. Please try again.", "error")
+            return jsonify({"error": CSRF_ERROR_MESSAGE}), 400
+        flash(CSRF_ERROR_MESSAGE, "error")
         return redirect(url_for(_ADMIN_LOGIN_FORM_ENDPOINT)), 303
     logout_admin_session()
     if not wants_json:
