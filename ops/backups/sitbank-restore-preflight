@@ -29,6 +29,125 @@ validate_identifier() {
     fi
 }
 
+canonical_path() {
+    realpath -e -- "$1" 2>/dev/null || fail "Restore preflight path could not be resolved" 2
+}
+
+is_under_dir() {
+    local candidate="$1"
+    local root="$2"
+    [[ -n "${root}" ]] || return 1
+    case "${candidate}/" in
+        "${root%/}/"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+reject_workspace_path() {
+    local label="$1"
+    local resolved_path="$2"
+    local workspace_path
+
+    if is_under_dir "${resolved_path}" "${repo_root}"; then
+        fail "${label} must not be stored inside the repository workspace" 2
+    fi
+
+    for workspace_var in GITHUB_WORKSPACE RUNNER_WORKSPACE; do
+        workspace_path="${!workspace_var:-}"
+        [[ -n "${workspace_path}" && -d "${workspace_path}" ]] || continue
+        workspace_path="$(canonical_path "${workspace_path}")"
+        if is_under_dir "${resolved_path}" "${workspace_path}"; then
+            fail "${label} must not be stored inside CI workspace paths" 2
+        fi
+    done
+}
+
+require_allowed_owner() {
+    local label="$1"
+    local path="$2"
+    local owner
+    owner="$(stat -c '%U' -- "${path}")"
+    if [[ "${allowed_file_owners}" != *",${owner},"* ]]; then
+        fail "${label} owner must be an approved OS user" 2
+    fi
+}
+
+require_private_file_mode() {
+    local path="$1"
+    local message="$2"
+    local mode
+    local group_digit
+    local other_digit
+    mode="$(stat -c '%a' -- "${path}")"
+    group_digit="${mode: -2:1}"
+    other_digit="${mode: -1}"
+    if (( (10#${group_digit} & 7) != 0 || (10#${other_digit} & 7) != 0 )); then
+        fail "${message}" 2
+    fi
+}
+
+require_safe_parent_dir() {
+    local label="$1"
+    local resolved_path="$2"
+    local parent_dir
+    local parent_mode
+    local parent_group_digit
+    local parent_other_digit
+    parent_dir="$(dirname -- "${resolved_path}")"
+
+    if [[ ! -d "${parent_dir}" || -L "${parent_dir}" ]]; then
+        fail "${label} parent directory must be a real host directory" 2
+    fi
+    require_allowed_owner "${label} parent directory" "${parent_dir}"
+    parent_mode="$(stat -c '%a' -- "${parent_dir}")"
+    parent_group_digit="${parent_mode: -2:1}"
+    parent_other_digit="${parent_mode: -1}"
+    if (( (10#${parent_group_digit} & 2) != 0 || (10#${parent_other_digit} & 2) != 0 )); then
+        fail "${label} parent directory must not be group-writable or world-writable" 2
+    fi
+}
+
+validate_encrypted_backup_file() {
+    if [[ ! -f "${backup_file}" || -L "${backup_file}" ]]; then
+        fail "Encrypted backup file must be a regular file" 2
+    fi
+    if [[ "${backup_file}" != *.age ]]; then
+        fail "Encrypted backup file must use the .age suffix" 2
+    fi
+
+    resolved_backup_file="$(canonical_path "${backup_file}")"
+    reject_workspace_path "Encrypted backup file" "${resolved_backup_file}"
+    require_allowed_owner "Encrypted backup file" "${resolved_backup_file}"
+    require_private_file_mode \
+        "${resolved_backup_file}" \
+        "Encrypted backup file must not be world-readable or group/other-accessible"
+    require_safe_parent_dir "Encrypted backup file" "${resolved_backup_file}"
+}
+
+validate_identity_file() {
+    if [[ ! -f "${identity_file}" || -L "${identity_file}" ]]; then
+        fail "Decryption identity must be a host-only regular file" 2
+    fi
+
+    resolved_identity_file="$(canonical_path "${identity_file}")"
+    reject_workspace_path "Decryption identity" "${resolved_identity_file}"
+    require_allowed_owner "Decryption identity" "${resolved_identity_file}"
+    require_private_file_mode \
+        "${resolved_identity_file}" \
+        "Decryption identity must not be group-readable or world-readable and must not be group/other-writable or executable"
+    require_safe_parent_dir "Decryption identity" "${resolved_identity_file}"
+    if ! grep -q "AGE-SECRET-KEY" "${resolved_identity_file}"; then
+        fail "Decryption identity file does not look like an age identity" 2
+    fi
+}
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+candidate_repo_root="$(cd "${script_dir}/../.." && pwd -P)"
+repo_root=""
+if [[ -d "${candidate_repo_root}/.git" || ( -d "${candidate_repo_root}/app" && -d "${candidate_repo_root}/ops" ) ]]; then
+    repo_root="${candidate_repo_root}"
+fi
+
 environment=""
 backup_file=""
 target_database=""
@@ -86,35 +205,14 @@ current_user="$(id -un)"
 if [[ "${allowed_users}" != *",${current_user},"* ]]; then
     fail "Restore preflight must run as an approved OS user or approved sudoers target" 1
 fi
+allowed_file_owners=",${SITBANK_RESTORE_ALLOWED_FILE_OWNERS:-root},"
 
 [[ -n "${backup_file}" ]] || fail "--backup-file is required" 2
 [[ -n "${target_database}" ]] || fail "--target-database is required" 2
 validate_identifier "${target_database}"
 [[ -n "${identity_file}" ]] || fail "SITBANK_RESTORE_AGE_IDENTITY_FILE or --identity-file is required" 2
 
-if [[ ! -f "${backup_file}" || -L "${backup_file}" ]]; then
-    fail "Encrypted backup file must be a regular file" 2
-fi
-if [[ "${backup_file}" != *.age ]]; then
-    fail "Encrypted backup file must use the .age suffix" 2
-fi
-backup_mode="$(stat -c '%a' -- "${backup_file}")"
-backup_other_digit="${backup_mode: -1}"
-if (( (10#${backup_other_digit} & 4) != 0 )); then
-    fail "Encrypted backup file must not be world-readable" 2
-fi
+validate_encrypted_backup_file
+validate_identity_file
 
-if [[ ! -f "${identity_file}" || -L "${identity_file}" ]]; then
-    fail "Decryption identity must be a host-only regular file" 2
-fi
-identity_mode="$(stat -c '%a' -- "${identity_file}")"
-identity_group_digit="${identity_mode: -2:1}"
-identity_other_digit="${identity_mode: -1}"
-if (( (10#${identity_group_digit} & 4) != 0 || (10#${identity_other_digit} & 4) != 0 )); then
-    fail "Decryption identity must not be group-readable or world-readable" 2
-fi
-if ! grep -q "AGE-SECRET-KEY" "${identity_file}"; then
-    fail "Decryption identity file does not look like an age identity" 2
-fi
-
-echo "restore_preflight_passed environment=${environment} backup_file=${backup_file} target_database=${target_database} identity_file=host-managed"
+echo "restore_preflight_passed environment=${environment} backup_file=validated-host-managed target_database=${target_database} identity_file=host-managed"

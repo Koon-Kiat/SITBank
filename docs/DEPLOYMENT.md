@@ -203,8 +203,11 @@ remain outside the repository and outside application containers. Bootstrap
 installs `age`, `/usr/local/sbin/sitbank-backup-encrypted`, and
 `/usr/local/sbin/sitbank-restore-preflight`; encrypted backups are stored under
 `/var/backups/sitbank` or `/var/backups/sitbank-staging` as root-owned mode
-`0600` `.pgdump.age` files. Restore checks are explicit operator preflights,
-not Flask routes or deployment defaults.
+`0600` `.pgdump.age` files. Restore checks are explicit operator preflights
+that validate owner, mode, parent directory safety, repository/CI-workspace
+exclusion, target database, and host-only identity material; they are not Flask
+routes or deployment defaults. Recurring backup timers, restore drills, and
+encrypted-archive pruning remain host/operator-owned evidence.
 
 Deploy the signed image through the restricted wrapper so it runs
 `production-check`, `db upgrade`, `apply-runtime-db-privileges`,
