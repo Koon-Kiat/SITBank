@@ -16,6 +16,13 @@ from app.models import Payee, SecurityAuditEvent, User
 from app.security.rate_limits import clear_failures
 
 
+def test_account_number_route_pattern_is_ascii_only():
+    from app.banking.routes import _ACCOUNT_RE
+
+    assert _ACCOUNT_RE.fullmatch("012345678901")
+    assert _ACCOUNT_RE.fullmatch("٠١٢٣٤٥٦٧٨٩٠١") is None
+
+
 def _user(username: str) -> User:
     return db.session.execute(db.select(User).where(User.username == username)).scalar_one()
 

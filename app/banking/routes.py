@@ -53,7 +53,7 @@ banking_bp = Blueprint("banking", __name__, url_prefix="/banking")
 
 _PENDING_PAYEE_TTL = 300  # seconds; user has 5 min to complete MFA after step 1
 _PENDING_TRANSFER_TTL = 300  # seconds; user has 5 min to confirm after MFA step-up
-_ACCOUNT_RE = re.compile(r"^[0-9]{12}$")
+_ACCOUNT_RE = re.compile(r"^\d{12}$", flags=re.ASCII)
 _REQUEST_EXPIRED_MESSAGE = "Request expired. Please start again."
 _NO_PENDING_TRANSFER_MESSAGE = "No pending transfer. Please start again."
 _PAYEES_ENDPOINT = "banking.payees"
