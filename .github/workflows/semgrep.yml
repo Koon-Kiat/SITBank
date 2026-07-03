@@ -31,9 +31,11 @@ jobs:
           persist-credentials: false
 
       - name: Run local OSS Semgrep scan
+        id: scan
         shell: bash
         run: |
           set -euo pipefail
+          set +e
           docker run --rm \
             --volume "${GITHUB_WORKSPACE}:/src:ro" \
             --workdir /src \
@@ -47,6 +49,7 @@ jobs:
               --config p/github-actions \
               --severity ERROR \
               --error \
+              --json \
               --exclude .venv \
               --exclude venv \
               --exclude .pytest_cache \
@@ -56,4 +59,39 @@ jobs:
               --exclude node_modules \
               --exclude dist \
               --exclude build \
-              .
+              . > "${RUNNER_TEMP}/semgrep-summary.json"
+          scan_status=$?
+          set -e
+          exit "${scan_status}"
+
+      - name: Summarize SAST
+        if: ${{ always() }}
+        shell: bash
+        env:
+          SCAN_OUTCOME: ${{ steps.scan.outcome }}
+        run: |
+          finding_count="unknown"
+          if [[ -s "${RUNNER_TEMP}/semgrep-summary.json" ]] \
+            && jq empty "${RUNNER_TEMP}/semgrep-summary.json" 2>/dev/null; then
+            finding_count="$(jq '(.results // []) | length' "${RUNNER_TEMP}/semgrep-summary.json")"
+          elif [[ "${SCAN_OUTCOME}" == "success" ]]; then
+            finding_count="0"
+          fi
+          {
+            echo "## Semgrep high-severity SAST"
+            echo
+            echo "- Status: **${SCAN_OUTCOME}**"
+            echo "- Scope: Python, Flask, security-audit, OWASP Top 10, and GitHub Actions rules."
+            echo "- ERROR-severity findings: \`${finding_count}\`"
+            if [[ -s "${RUNNER_TEMP}/semgrep-summary.json" ]] \
+              && jq empty "${RUNNER_TEMP}/semgrep-summary.json" 2>/dev/null; then
+              echo
+              echo "| Rule | Path | Line | Message |"
+              echo "| --- | --- | ---: | --- |"
+              jq -r '(.results // [])[:20][] | "| `\(.check_id)` | `\(.path)` | \(.start.line) | \((.extra.message // "") | gsub("[|\\r\\n]"; " ")) |"' \
+                "${RUNNER_TEMP}/semgrep-summary.json"
+            fi
+            echo
+            echo "- Decision: any configured ERROR-severity finding blocks this job."
+            echo "- Full raw scanner payloads are not copied into this summary."
+          } >> "${GITHUB_STEP_SUMMARY}"

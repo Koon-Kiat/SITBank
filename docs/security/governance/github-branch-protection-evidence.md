@@ -26,6 +26,10 @@ two checks would otherwise collide.
   smoke, browser/e2e checks, label/comment automation, scheduled scans, manual
   workflows, and post-merge deployment jobs reporting-only until separately
   reviewed and approved as stable blocking checks.
+- Keep `Non-deploy security summary / Consolidated non-deploy security`
+  reporting-only unless a separate ruleset review promotes it. The rollup is
+  read-only convenience evidence; individual required security checks remain
+  the authoritative branch-protection contexts.
 - Do not require staging deployment, production deployment, live TLS evidence,
   or the private-admin tailnet gate before a pull request can merge. Those
   controls run after merge to `main`.

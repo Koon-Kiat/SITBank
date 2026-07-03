@@ -232,11 +232,13 @@ sudo /usr/local/sbin/verify-tailscale-admin-access --mode serve
 ```
 
 Expected output is one `OK:` line for each of these assertions: Tailscale is
-running; Funnel is disabled; port `5002` listens only on `127.0.0.1`; local
+running; Tailscale SSH and Funnel are disabled; port `5002` listens only on
+`127.0.0.1`; local
 admin readiness returns `200`; Nginx has no admin upstream or private
 Tailscale hostname; Serve exposes only
 `admin-sitbank.tailca101b.ts.net:443` to
-`http://127.0.0.1:5002`; and the private `/login` URL returns `200`. Any
+`http://127.0.0.1:5002`; and an unauthenticated `GET` to the private `/login`
+URL returns `200`. Any
 `ERROR:` line and nonzero exit is a failed preflight. Investigate the named
 control; do not enable Funnel, broaden the listener, or add an Nginx admin
 route to make the check pass.
@@ -364,6 +366,21 @@ curl.exe -I http://18.188.152.24/
 curl.exe -k -I https://18.188.152.24/
 curl.exe -k --resolve sitbank.pp.ua:443:18.188.152.24 -I https://sitbank.pp.ua/
 ```
+
+On the production host, also run:
+
+```bash
+sudo nginx -t
+sudo /usr/local/sbin/verify-production-nginx-boundary
+```
+
+Normal production deployment invokes the active-config verifier before
+changing the runtime. A failure means loaded Nginx state is stale or
+ambiguous; do not bypass the gate or copy templates from an untrusted release.
+Rerun the trusted production bootstrap, verify Cloudflare Authenticated Origin
+Pull remains enabled using sanitized provider evidence, rerun the verifier,
+and only then retry deployment. The verifier prints named pass/fail controls,
+not the full `nginx -T` configuration.
 
 The proxied site succeeds, raw HTTP redirects to the canonical hostname, and
 both direct HTTPS requests fail closed without returning SITBank application
@@ -894,10 +911,11 @@ production release depend on its API.
 For the Cloudflare Access-protected staging target, an unauthenticated
 `302 Found` response is the expected Access challenge and is accepted by the
 TLS evidence workflow. The staging gate still requires TLS 1.0 and TLS 1.1 to
-be not offered, TLS 1.2 and TLS 1.3 to be offered, certificate
-hostname/trust and chain checks to be OK, the certificate to be unexpired,
-HSTS to meet the scanner minimum, no insecure redirect finding, and a final
-`overall_grade` of `A` or `A+`. Generic LUCKY13 wording and
+be not offered and TLS 1.3 to be offered. TLS 1.2 is permitted for
+compatibility but is not required. Certificate hostname/trust and chain checks
+must be OK, the certificate must be unexpired, HSTS must meet the scanner
+minimum, insecure redirects must be absent, and the final `overall_grade` must
+be `A` or `A+`. Generic LUCKY13 wording and
 `cipherlist_OBSOLETED: offered` on Cloudflare Universal SSL are retained as
 review evidence for protected staging, not automatic failures.
 

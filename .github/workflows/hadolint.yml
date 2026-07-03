@@ -52,10 +52,55 @@ jobs:
           "${binary}" --version
 
       - name: Scan every discovered Dockerfile
+        id: scan
         shell: bash
         run: |
           set -euo pipefail
+          set +e
           xargs --null --no-run-if-empty \
             "${RUNNER_TEMP}/hadolint" \
             --failure-threshold style \
+            --format json \
+            > "${RUNNER_TEMP}/hadolint-report.json" \
             < "${RUNNER_TEMP}/hadolint-targets"
+          scan_status=$?
+          set -e
+          exit "${scan_status}"
+
+      - name: Summarize Dockerfile lint
+        if: ${{ always() }}
+        shell: bash
+        env:
+          SCAN_OUTCOME: ${{ steps.scan.outcome }}
+        run: |
+          target_count="unknown"
+          if [[ -f "${RUNNER_TEMP}/hadolint-targets" ]]; then
+            target_count="$(
+              python3 -c 'import pathlib,sys; print(len([v for v in pathlib.Path(sys.argv[1]).read_bytes().split(b"\0") if v]))' \
+                "${RUNNER_TEMP}/hadolint-targets"
+            )"
+          fi
+          finding_count="unknown"
+          if [[ -s "${RUNNER_TEMP}/hadolint-report.json" ]] \
+            && jq empty "${RUNNER_TEMP}/hadolint-report.json" 2>/dev/null; then
+            finding_count="$(jq 'length' "${RUNNER_TEMP}/hadolint-report.json")"
+          elif [[ "${SCAN_OUTCOME}" == "success" ]]; then
+            finding_count="0"
+          fi
+          {
+            echo "## Hadolint"
+            echo
+            echo "- Status: **${SCAN_OUTCOME}**"
+            echo "- Scanned Dockerfiles: \`${target_count}\`"
+            echo "- Findings at style or higher: \`${finding_count}\`"
+            if [[ -s "${RUNNER_TEMP}/hadolint-report.json" ]] \
+              && jq empty "${RUNNER_TEMP}/hadolint-report.json" 2>/dev/null; then
+              echo
+              echo "| Level | Rule | File | Line | Message |"
+              echo "| --- | --- | --- | ---: | --- |"
+              jq -r '.[:20][] | "| \(.level) | `\(.code)` | `\(.file)` | \(.line) | \(.message | gsub("[|\\r\\n]"; " ")) |"' \
+                "${RUNNER_TEMP}/hadolint-report.json"
+            fi
+            echo
+            echo "- Decision: findings at the configured style threshold block this job."
+          } >> "${GITHUB_STEP_SUMMARY}"

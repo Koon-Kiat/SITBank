@@ -3044,7 +3044,6 @@ def test_live_tls_scan_has_cloudflare_access_staging_acceptance_policy():
         "missing or lower than A for Cloudflare Access staging",
         "TLS1: missing TLS 1.0 evidence",
         "TLS1_1: missing TLS 1.1 evidence",
-        "TLS1_2: missing or not offered",
         "TLS1_3: missing or not offered",
         "cert_trust: missing certificate hostname/trust evidence",
         "cert_chain_of_trust: missing certificate chain evidence",
@@ -3064,6 +3063,16 @@ def test_live_tls_scan_has_cloudflare_access_staging_acceptance_policy():
     assert 'id == "TLS1" or id == "TLS1_1"' in staging_policy
     assert 'id == "cert_trust"' in staging_policy
     assert 'id == "cert_chain_of_trust"' in staging_policy
+    staging_findings = workflow_text[
+        workflow_text.index('. as $items'):
+        workflow_text.index('else\n                  $items[]')
+    ]
+    assert 'protocol_offered_ok($items; "TLS1_2")' not in staging_findings
+    assert 'protocol_offered_ok($items; "TLS1_3")' in staging_findings
+    assert (
+        "TLS 1.3 is required; TLS 1.2 is optional; TLS 1.0 and TLS 1.1 "
+        "are prohibited."
+    ) in workflow_text
 
     production_policy = workflow_text[
         workflow_text.index("def production_public_violation:"):
