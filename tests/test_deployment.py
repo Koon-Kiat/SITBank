@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import os
 import re
+import shutil
 import subprocess
 import sys
 import importlib.util
@@ -628,10 +629,27 @@ def test_staff_invite_personal_email_migration_allows_workplace_only_invites():
     assert "nullable=False" not in migration
 
 
+def test_account_identifier_length_migration_preserves_legacy_rows_and_blocks_unsafe_downgrade():
+    migration = Path(
+        "migrations/versions/20260703_0024_harden_banking_identifiers.py"
+    ).read_text(encoding="utf-8")
+    deployment_docs = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
+
+    assert 'revision = "20260703_0024"' in migration
+    assert 'down_revision = "20260703_0023"' in migration
+    assert '"account_number"' in migration
+    assert "String(length=12)" in migration
+    assert "String(length=9)" in migration
+    assert "Cannot safely downgrade account_number length" in migration
+    assert "Migration `20260703_0024`" in deployment_docs
+    assert "12-digit account numbers" in deployment_docs
+
+
 def test_migration_baseline_drift_metadata_matches_reviewed_migrations():
     from app.models import (
         ManualRecoveryRequest,
         PendingTransfer,
+        Payee,
         RecoveryCode,
         StaffInvite,
         Transaction,
@@ -648,6 +666,8 @@ def test_migration_baseline_drift_metadata_matches_reviewed_migrations():
 
     assert User.__table__.c.phone_number.unique is None
     assert User.__table__.c.account_number.unique is None
+    assert User.__table__.c.account_number.type.length == 12
+    assert Payee.__table__.c.account_number.type.length == 12
     assert any(index.name == "ix_users_phone_number" and index.unique for index in user_indexes)
     assert any(index.name == "ix_users_account_number" and index.unique for index in user_indexes)
     assert any(index.name == "ix_recovery_codes_code_hmac" and index.unique for index in recovery_indexes)
@@ -3285,6 +3305,62 @@ def test_private_observability_static_policy_keeps_public_routes_closed():
         "*.har",
     ):
         assert required in ignored
+
+
+def test_staging_edge_verifier_accepts_connection_rejection_as_fail_closed(
+    tmp_path,
+    monkeypatch,
+):
+    if shutil.which("bash") is None:
+        pytest.skip("bash is not installed")
+    bash_probe = subprocess.run(
+        ["bash", "-lc", "printf ok"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if bash_probe.returncode != 0 or bash_probe.stdout != "ok":
+        pytest.skip("bash is not usable")
+
+    fake_curl = tmp_path / "curl"
+    fake_curl.write_text(
+        """#!/usr/bin/env bash
+set -Eeuo pipefail
+direct=0
+for arg in "$@"; do
+    if [[ "${arg}" == "--resolve" ]]; then
+        direct=1
+    fi
+done
+if [[ "${direct}" -eq 1 ]]; then
+    exit 7
+fi
+printf '%s\n' \
+    'HTTP/2 302' \
+    'location: https://small-boat-a77f.cloudflareaccess.com/cdn-cgi/access/login' \
+    'server: cloudflare' \
+    'cf-ray: fake-ray' \
+    ''
+""",
+        encoding="utf-8",
+        newline="\n",
+    )
+    fake_curl.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+
+    result = subprocess.run(
+        [
+            "bash",
+            "ops/deploy/verify-staging-edge-boundary",
+            "staging-sitbank.pp.ua",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "failed closed by rejecting the connection" in result.stdout
 
 
 def test_certbot_host_state_verifier_enforces_host_managed_tls():

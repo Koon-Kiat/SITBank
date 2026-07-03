@@ -327,6 +327,10 @@ def test_registration_hashes_password_with_pbkdf2(client):
 
     assert response.status_code == 302
     user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
+    assert user.account_number is not None
+    assert len(user.account_number) == 12
+    assert user.account_number.startswith("012")
+    assert user.account_number.isdigit()
     assert not user.password_hash.endswith("correct horse battery staple")
     assert user.password_hash.startswith(f"{PBKDF2_PREFIX}$v1$i=600000$")
 

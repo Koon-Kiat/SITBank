@@ -70,7 +70,10 @@ the hashed development dependencies, installs Chromium with `python -m
 playwright install --with-deps chromium`, and runs `python -m pytest -q
 tests/e2e` with `SITBANK_RUN_E2E=1` and `PLAYWRIGHT_BROWSERS_PATH` set to
 `.playwright-browsers`. The tests use a loopback Flask server from the pytest
-app fixture and do not target staging, production, or private-admin hosts.
+app fixture for authentication, MFA, session, banking, and boundary
+regressions. They do not prove live staging or production provider state and do
+not target staging, production, or private-admin hosts. Browser cache, reports,
+traces, screenshots, and videos are ignored and are not uploaded by the job.
 
 Changing a job display name can change its required status-check context even
 when the internal ID is unchanged. Repository files do not update GitHub

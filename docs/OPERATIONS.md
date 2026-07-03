@@ -179,9 +179,9 @@ entry before deployment.
 
 Expected: the loopback Flask root returns `403` without an Access assertion,
 local Flask and Nginx staging readiness return exact non-redirect `200`
-responses, direct Nginx origin access fails TLS client-certificate verification
-or returns the approved Nginx `400`/`403` denial without Cloudflare's
-origin-pull client certificate, and the
+responses, direct Nginx origin access fails TLS client-certificate verification,
+rejects the connection, or returns the approved Nginx `400`/`403` denial
+without Cloudflare's origin-pull client certificate, and the
 private admin URL is reachable only from an approved tailnet path. Tailscale
 Funnel must stay disabled for SITBank admin.
 Tailscale is the private network/device boundary for admin access; it does not
@@ -695,19 +695,43 @@ investigate row tampering, chain rewind, anchor corruption, or tail deletion
 before resuming routine deployments.
 
 The current banking implementation audits public transaction validation,
-TOTP-backed transaction authorization checks, and local transfer execution.
+TOTP-backed transaction authorization checks, Local Transfer execution, and
+PayUp execution. New customer account numbers are 12 digits; legacy 9-digit
+account numbers remain accepted for existing rows and payee lookup while the
+schema is widened.
+
 Local transfer performs final ledger movement: the sender balance is debited,
 the recipient balance is credited, and a `Transaction` record is created in a
 single atomic commit. The two-step transfer flow requires MFA step-up before a
-DB-backed `PendingTransfer` record is created; the single-use confirmation token
-is consumed atomically with `SELECT FOR UPDATE` to prevent concurrent
-double-submit replay. Row locks are acquired in ascending `id` order to prevent
-deadlocks. Payee ownership and cooldown are enforced at the service layer
-independently of the route layer. Transfer amounts are validated to at most two
-decimal places. Recipient account state is checked before funds move.
-Blocked authorization failures, including payee ownership mismatches, are
-audited safely using opaque references so raw account numbers, payee details,
-and pending transfer tokens do not appear in the audit log.
+DB-backed `PendingTransfer` record is created. The browser session keeps only
+the raw single-use confirmation token; the database stores a keyed verifier.
+Confirmation consumes the record atomically with `SELECT FOR UPDATE` to prevent
+concurrent double-submit replay. Row locks are acquired in ascending `id` order
+to prevent deadlocks. Payee ownership and cooldown are enforced at the service
+layer independently of the route layer. Transfer amounts are validated to at
+most two decimal places. Recipient account state is checked before funds move.
+The Local Transfer daily limit remains a documented placeholder until a limit is
+implemented for that channel.
+
+PayUp lookup requires an authenticator code before SITBank reveals the
+recipient name for a phone number. Unknown, unavailable, and revoked recipients
+return the same generic `Invalid phone number` response and the audit metadata
+uses opaque references instead of raw phone numbers. PayUp has a per-customer
+daily limit stored on `users.payup_daily_limit` and reset at midnight Singapore
+time. The default limit is SGD 500; customers can choose a preset or custom
+value from transfer settings with TOTP step-up. Confirmation recomputes whether
+the transfer brings today's cumulative PayUp spend to at least 80% of the limit
+under the current database state. If so, a fresh authenticator code is required
+before funds move.
+
+Completed Local Transfer and PayUp rows store an HMAC-SHA256 transaction hash
+over canonical transaction fields. Required audit writes are part of the same
+business transaction boundary; if a required success audit fails, ledger
+mutation rolls back. Customer-initiated account freezes send a security email
+and produce an immediate `account_freeze` alert. Blocked authorization
+failures, including payee ownership mismatches, are audited safely using opaque
+references so raw account numbers, phone numbers, payee details, exact transfer
+amounts, and pending transfer tokens do not appear in the audit log.
 
 The admin boundary audits root-admin-controlled staff invite onboarding,
 admin login success/failure, TOTP verification, admin step-up, admin data

@@ -23,7 +23,7 @@ class User(db.Model):
     account_status = db.Column(db.String(32), nullable=False, default="active", index=True)
     full_name = db.Column(db.String(128), nullable=False)
     phone_number = db.Column(db.String(8), nullable=True)
-    account_number = db.Column(db.String(9), nullable=True)
+    account_number = db.Column(db.String(12), nullable=True)
     staff_personal_email = db.Column(db.String(255), nullable=True)
     workplace_email_verified_at = db.Column(db.DateTime(timezone=True), nullable=True)
     password_changed_at = db.Column(db.DateTime(timezone=True), nullable=True)
@@ -643,7 +643,7 @@ class Payee(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
     nickname = db.Column(db.String(64), nullable=False)
-    account_number = db.Column(db.String(9), nullable=False)
+    account_number = db.Column(db.String(12), nullable=False)
     recipient_name = db.Column(db.String(128), nullable=False)
     created_at = db.Column(
         db.DateTime(timezone=True),
