@@ -1576,6 +1576,19 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "apply-runtime-db-privileges" in smoke_test
     assert "verify-runtime-db-privileges" in smoke_test
     assert "python -m flask --app admin_wsgi:app production-check" in smoke_test
+    for turnstile_setting in (
+        "TURNSTILE_ENABLED=true",
+        "TURNSTILE_SITE_KEY=1x00000000000000000000AA",
+        "TURNSTILE_CUSTOMER_LOGIN_ENABLED=true",
+        "TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED=true",
+        "TURNSTILE_CUSTOMER_REGISTER_ENABLED=true",
+        "TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED=true",
+        "TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED=true",
+        "TURNSTILE_ADMIN_LOGIN_ENABLED=true",
+        "TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED=true",
+        "TURNSTILE_FAIL_CLOSED_IN_PRODUCTION=true",
+    ):
+        assert turnstile_setting in smoke_test
     assert "admin_wsgi:app" in smoke_test
     assert "SITBank admin application did not become ready" in smoke_test
     assert smoke_test.index("db upgrade") < smoke_test.index("apply-runtime-db-privileges")
