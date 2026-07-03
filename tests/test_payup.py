@@ -16,10 +16,11 @@ from app.banking.services import (
     execute_payup_transfer,
     payup_amount_used_today,
     payup_requires_step_up,
+    payup_transfer_token_verifier,
     sgt_day_start_utc,
 )
 from app.extensions import db
-from app.models import PayupPendingTransfer, Transaction, User
+from app.models import PayupPendingTransfer, SecurityAuditEvent, Transaction, User
 
 
 def _make_payup_pending(
@@ -32,7 +33,7 @@ def _make_payup_pending(
 ) -> str:
     token = os.urandom(32).hex()
     pending = PayupPendingTransfer(
-        token=token,
+        token=payup_transfer_token_verifier(token),
         user_id=user.id,
         recipient_user_id=recipient.id,
         amount=amount,
@@ -44,12 +45,29 @@ def _make_payup_pending(
     return token
 
 
+def _totp_code(secret: str, timestamp: int | None = None) -> str:
+    return pyotp.TOTP(secret, digits=6, interval=30).at(timestamp or int(time.time()))
+
+
+def _payup_lookup_data(
+    payup_context: dict,
+    phone_number: str = "81234567",
+    timestamp: int | None = None,
+    totp_code: str | None = None,
+) -> dict[str, str]:
+    return {
+        "phone_number": phone_number,
+        "totp_code": totp_code or _totp_code(payup_context["alice_secret"], timestamp),
+    }
+
+
 def _make_payup_transaction(
     sender: User,
     recipient: User,
     amount: Decimal,
     *,
     created_at: datetime | None = None,
+    reference: str = "",
     status: str = "completed",
 ) -> Transaction:
     txn = Transaction(
@@ -59,7 +77,7 @@ def _make_payup_transaction(
         recipient_id=recipient.id,
         payee_id=None,
         amount=amount,
-        reference="",
+        reference=reference,
         status=status,
         transaction_type="payup",
         created_at=created_at or datetime.now(timezone.utc),
@@ -161,6 +179,8 @@ def test_execute_payup_transfer_debits_sender_and_credits_recipient(app, payup_c
     bob_before = Decimal(str(bob.balance))
     amount = Decimal("100.00")
     token = _make_payup_pending(alice, bob, amount, reference="Lunch")
+    pending = PayupPendingTransfer.query.filter_by(token=payup_transfer_token_verifier(token)).one()
+    assert pending.token != token
 
     with app.test_request_context("/banking/payup/confirm", method="POST"):
         txn_ref = execute_payup_transfer(sender=alice, confirmation_token=token, authorized=False)
@@ -285,7 +305,7 @@ def test_execute_payup_transfer_expired_token_blocked(app, payup_context):
 # ── Phone lookup route ───────────────────────────────────────────────────────────
 
 def test_payup_phone_lookup_success_redirects_to_amount(client, payup_context):
-    response = client.post("/banking/payup", data={"phone_number": "81234567"})
+    response = client.post("/banking/payup", data=_payup_lookup_data(payup_context))
 
     assert response.status_code == 302
     assert "payup/amount" in response.headers["Location"]
@@ -297,14 +317,76 @@ def test_payup_phone_lookup_success_redirects_to_amount(client, payup_context):
 
 
 def test_payup_phone_lookup_unknown_number_shows_error(client, payup_context):
-    response = client.post("/banking/payup", data={"phone_number": "89999999"})
+    response = client.post(
+        "/banking/payup",
+        data=_payup_lookup_data(payup_context, phone_number="89999999"),
+    )
+    event = db.session.query(SecurityAuditEvent).filter_by(
+        event_type="payup_lookup",
+        outcome="failure",
+    ).one()
 
     assert response.status_code == 400
     assert b"Invalid phone number" in response.data
+    assert response.data.count(b"Bob Recipient") == 0
+    assert "89999999" not in str(event.event_metadata)
+
+
+def test_payup_phone_lookup_requires_totp_before_name_disclosure(client, payup_context):
+    response = client.post("/banking/payup", data={"phone_number": "81234567"})
+
+    assert response.status_code == 400
+    assert b"Bob Recipient" not in response.data
+    with client.session_transaction() as sess:
+        assert "pending_payup_recipient" not in sess
+
+
+def test_payup_phone_lookup_invalid_totp_does_not_disclose_recipient(client, payup_context):
+    response = client.post(
+        "/banking/payup",
+        data=_payup_lookup_data(payup_context, totp_code="000000"),
+    )
+
+    assert response.status_code == 401
+    assert b"Bob Recipient" not in response.data
+    with client.session_transaction() as sess:
+        assert "pending_payup_recipient" not in sess
+
+
+def test_payup_unavailable_recipient_matches_unknown_number_response(client, payup_context, monkeypatch):
+    bob = payup_context["bob"]
+    bob.account_status = "revoked"
+    db.session.commit()
+    first_step = int(time.time())
+    second_step = first_step + 31
+
+    monkeypatch.setattr("app.auth.services.time.time", lambda: first_step)
+    unavailable = client.post(
+        "/banking/payup",
+        data=_payup_lookup_data(payup_context, timestamp=first_step),
+    )
+    monkeypatch.setattr("app.auth.services.time.time", lambda: second_step)
+    unknown = client.post(
+        "/banking/payup",
+        data=_payup_lookup_data(
+            payup_context,
+            phone_number="89999999",
+            timestamp=second_step,
+        ),
+    )
+
+    assert unavailable.status_code == 400
+    assert unknown.status_code == 400
+    assert b"Invalid phone number" in unavailable.data
+    assert b"Invalid phone number" in unknown.data
+    assert b"Bob Recipient" not in unavailable.data
 
 
 def test_payup_phone_lookup_self_number_blocked(client, payup_context):
-    response = client.post("/banking/payup", data={"phone_number": "91234567"})
+    response = client.post(
+        "/banking/payup",
+        data=_payup_lookup_data(payup_context, phone_number="91234567"),
+    )
 
     assert response.status_code == 400
     assert b"own phone number" in response.data
@@ -313,7 +395,7 @@ def test_payup_phone_lookup_self_number_blocked(client, payup_context):
 # ── Amount step: daily limit enforcement ─────────────────────────────────────────
 
 def test_payup_amount_rejects_amount_exceeding_daily_limit(client, payup_context):
-    client.post("/banking/payup", data={"phone_number": "81234567"})
+    client.post("/banking/payup", data=_payup_lookup_data(payup_context))
 
     response = client.post("/banking/payup/amount", data={"amount": "600.00"})
 
@@ -327,7 +409,7 @@ def test_payup_amount_rejects_amount_exceeding_available_balance(client, payup_c
     alice.balance = Decimal("50.00")
     db.session.commit()
 
-    client.post("/banking/payup", data={"phone_number": "81234567"})
+    client.post("/banking/payup", data=_payup_lookup_data(payup_context))
 
     # Under the 500 SGD daily limit, but over the 50.00 available balance.
     response = client.post("/banking/payup/amount", data={"amount": "100.00"})
@@ -338,19 +420,24 @@ def test_payup_amount_rejects_amount_exceeding_available_balance(client, payup_c
 
 
 def test_payup_amount_accepts_amount_under_limit(client, payup_context):
-    client.post("/banking/payup", data={"phone_number": "81234567"})
+    client.post("/banking/payup", data=_payup_lookup_data(payup_context))
 
     response = client.post("/banking/payup/amount", data={"amount": "100.00"})
 
     assert response.status_code == 302
     assert "payup/confirm" in response.headers["Location"]
     assert PayupPendingTransfer.query.count() == 1
+    pending = PayupPendingTransfer.query.one()
+    with client.session_transaction() as sess:
+        raw_token = sess["pending_payup_token"]
+    assert pending.token == payup_transfer_token_verifier(raw_token)
+    assert pending.token != raw_token
 
 
 # ── Full route flow: conditional MFA step-up ─────────────────────────────────────
 
 def test_complete_payup_route_flow_below_threshold_no_mfa(client, payup_context):
-    client.post("/banking/payup", data={"phone_number": "81234567"})
+    client.post("/banking/payup", data=_payup_lookup_data(payup_context))
     client.post("/banking/payup/amount", data={"amount": "100.00", "reference": "Lunch"})
 
     confirm_page = client.get("/banking/payup/confirm")
@@ -365,7 +452,7 @@ def test_complete_payup_route_flow_below_threshold_no_mfa(client, payup_context)
 def test_complete_payup_route_flow_crossing_threshold_requires_mfa(client, payup_context, monkeypatch):
     alice_secret = payup_context["alice_secret"]
 
-    client.post("/banking/payup", data={"phone_number": "81234567"})
+    client.post("/banking/payup", data=_payup_lookup_data(payup_context))
     client.post("/banking/payup/amount", data={"amount": "450.00"})
 
     confirm_page = client.get("/banking/payup/confirm")
@@ -378,7 +465,7 @@ def test_complete_payup_route_flow_crossing_threshold_requires_mfa(client, payup
     assert Transaction.query.count() == 0
 
     stepup_time = int(time.time())
-    totp_code = pyotp.TOTP(alice_secret, digits=6, interval=30).at(stepup_time)
+    totp_code = _totp_code(alice_secret, stepup_time)
     monkeypatch.setattr("app.auth.services.time.time", lambda: stepup_time)
 
     confirm_submit = client.post("/banking/payup/confirm", data={"totp_code": totp_code})
@@ -386,11 +473,63 @@ def test_complete_payup_route_flow_crossing_threshold_requires_mfa(client, payup
     assert Transaction.query.filter_by(transaction_type="payup").count() == 1
 
 
+def test_payup_confirm_rechecks_stepup_when_usage_changes_after_amount_entry(client, payup_context):
+    alice = payup_context["alice"]
+    bob = payup_context["bob"]
+
+    client.post("/banking/payup", data=_payup_lookup_data(payup_context))
+    client.post("/banking/payup/amount", data={"amount": "100.00", "reference": "Late stepup"})
+    _make_payup_transaction(alice, bob, Decimal("300.00"), reference="Earlier PayUp")
+
+    response = client.post("/banking/payup/confirm", data={})
+
+    assert response.status_code == 403
+    assert b"Authenticator code" in response.data
+    assert Transaction.query.filter_by(reference="Late stepup", transaction_type="payup").count() == 0
+    with client.session_transaction() as sess:
+        assert sess.get("pending_payup_token")
+
+
 def test_payup_confirm_rejects_wrong_totp_code(client, payup_context):
-    client.post("/banking/payup", data={"phone_number": "81234567"})
+    client.post("/banking/payup", data=_payup_lookup_data(payup_context))
     client.post("/banking/payup/amount", data={"amount": "450.00"})
 
     response = client.post("/banking/payup/confirm", data={"totp_code": "000000"})
 
     assert response.status_code == 401
     assert Transaction.query.count() == 0
+
+
+def test_payup_and_transfer_limit_posts_require_csrf_when_enabled(app, client, payup_context):
+    alice = payup_context["alice"]
+    bob = payup_context["bob"]
+    token = _make_payup_pending(alice, bob, Decimal("10.00"))
+    original = app.config["WTF_CSRF_ENABLED"]
+    app.config["WTF_CSRF_ENABLED"] = True
+    try:
+        with client.session_transaction() as sess:
+            sess["pending_payup_recipient"] = {
+                "recipient_user_id": bob.id,
+                "recipient_name": bob.full_name,
+                "recipient_phone": bob.phone_number,
+                "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+            }
+        lookup = client.post("/banking/payup", data=_payup_lookup_data(payup_context))
+        amount = client.post("/banking/payup/amount", data={"amount": "10.00"})
+        with client.session_transaction() as sess:
+            sess["pending_payup_token"] = token
+        confirm = client.post("/banking/payup/confirm", data={})
+        limit_update = client.post(
+            "/banking/settings/transfer-limits",
+            data={
+                "payup_limit": "1000",
+                "totp_code": _totp_code(payup_context["alice_secret"]),
+            },
+        )
+    finally:
+        app.config["WTF_CSRF_ENABLED"] = original
+
+    assert lookup.status_code == 400
+    assert amount.status_code == 400
+    assert confirm.status_code == 400
+    assert limit_update.status_code == 400

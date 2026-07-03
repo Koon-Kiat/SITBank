@@ -49,7 +49,7 @@ applicable unless a frontend package manager is added.
 | Trivy image scans | `.github/workflows/ci-deploy.yml` | Uses pinned Trivy `v0.71.2` for built-image and repository filesystem scans; `.trivyignore` exceptions are tested |
 | CodeQL | `.github/workflows/codeql.yml` | Runs Python security-extended static analysis when the repository is public |
 | SonarQube Cloud | `.github/workflows/ci-deploy.yml`, `.github/workflows/sonarqube.yml`, `sonar-project.properties` | Reuses the CI test job's `coverage.xml` artifact to report private-repository code quality, duplication, maintainability, and security findings without rerunning pytest; initial quality gate is non-blocking |
-| Playwright E2E | `.github/workflows/ci-deploy.yml`, `tests/e2e/` | Installs Chromium in a dedicated CI job and exercises browser-rendered customer login, protected redirects, security headers, and MFA-onboarding navigation against a loopback Flask server |
+| Playwright E2E | `.github/workflows/ci-deploy.yml`, `tests/e2e/` | Installs Chromium in a dedicated CI job and exercises browser-rendered authentication, MFA, session, banking, and boundary regressions against a loopback Flask server |
 | Bandit | `scripts/ci-local`, `.github/workflows/ci-deploy.yml` | Runs a high-confidence Python security scan |
 | Custom repository secret scanner | `ops/security/scan_repository_secrets.py` | Scans tracked files and, in CI/local CI, git history for private keys and common token formats |
 | Gitleaks | `.github/workflows/gitleaks.yml`, `.gitleaks.toml` | Independently scans all refs with the built-in Gitleaks rules, redacted output, no production secrets, and no SARIF or raw report upload |
@@ -107,7 +107,7 @@ deployment.
 | Audit, alerts, and redaction | `tests/test_audit_alerting.py`, `tests/test_audit_metadata_sanitization.py` |
 | Deployment, Nginx, Docker, workflows, and runtime contracts | `tests/test_deployment.py` |
 | UI security regressions | `tests/test_authenticated_portal_ui.py`, `tests/test_dashboard.py` |
-| Browser E2E smoke paths | `tests/e2e/test_customer_auth_browser.py` |
+| Browser E2E regressions | `tests/e2e/test_customer_auth_browser.py`, `tests/e2e/test_customer_security_browser.py` |
 
 Payee ownership, direct banking MFA gating, pre-TOTP lookup blocking,
 duplicate/self-payee protections, expiry behavior, and removal IDOR are covered
@@ -118,8 +118,10 @@ Admin route authorization has a separate generated route-inventory matrix in
 tests for staff invites, manual recovery, maker-checker approval, and the
 manual-only root-admin bootstrap boundary.
 
-Playwright E2E browser tests are opt-in for local unscoped pytest because they
-require browser binaries. To run them locally:
+Playwright E2E browser tests cover authentication, MFA, session, banking, and
+boundary regressions against a loopback Flask server. They are opt-in for local
+unscoped pytest because they require browser binaries, and they do not prove
+live staging or production provider state. To run them locally:
 
 ```powershell
 $env:PLAYWRIGHT_BROWSERS_PATH = ".playwright-browsers"

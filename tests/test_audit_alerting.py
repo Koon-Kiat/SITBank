@@ -569,6 +569,7 @@ def test_security_alert_evaluator_cli_and_output_are_sanitized(app):
             audit_event("rate_limit", "blocked", metadata={"authorization": raw_token})
         audit_event("security_audit_write_failed", "failure", metadata={"token": raw_token})
         audit_event("account_lock", "locked", metadata={"reason": "mfa_failed"})
+        audit_event("account_freeze", "success", metadata={"reason": "customer_requested"})
         audit_event("webauthn_clone_detected", "locked", metadata={"credential_id": "credential-ref"})
         audit_event("session_integrity", "failure", metadata={"reason": "invalid_signature"})
 
@@ -599,6 +600,7 @@ def test_security_alert_evaluator_cli_and_output_are_sanitized(app):
     for expected in (
         "security_audit_write_failed",
         "account_lock",
+        "account_freeze",
         "webauthn_clone_detected",
         "session_integrity_failure",
         "login_failure_burst",

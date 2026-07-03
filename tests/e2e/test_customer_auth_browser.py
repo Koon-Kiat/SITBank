@@ -7,7 +7,7 @@ import pytest
 from app.extensions import db
 from app.models import User
 from app.security.passwords import hash_password
-from tests.e2e.support import RUN_E2E_ENV, browser_page, live_server
+from tests.e2e.support import RUN_E2E_ENV, browser_page, live_server, record_console_errors
 
 
 pytestmark = [pytest.mark.e2e]
@@ -41,7 +41,7 @@ def test_login_page_renders_with_security_headers_and_no_console_errors(
     live_server,
     browser_page,
 ):
-    console_errors = _record_console_errors(browser_page)
+    console_errors = record_console_errors(browser_page)
 
     response = browser_page.goto(f"{live_server}/login", wait_until="load")
 
@@ -57,7 +57,7 @@ def test_unauthenticated_dashboard_redirects_to_customer_login(
     live_server,
     browser_page,
 ):
-    console_errors = _record_console_errors(browser_page)
+    console_errors = record_console_errors(browser_page)
 
     browser_page.goto(f"{live_server}/dashboard", wait_until="load")
 
@@ -71,7 +71,7 @@ def test_password_login_reaches_mfa_setup_without_external_services(
     browser_page,
     e2e_customer,
 ):
-    console_errors = _record_console_errors(browser_page)
+    console_errors = record_console_errors(browser_page)
 
     browser_page.goto(f"{live_server}/login", wait_until="load")
     browser_page.locator("input[name='identifier']").fill(e2e_customer["username"])
@@ -81,14 +81,3 @@ def test_password_login_reaches_mfa_setup_without_external_services(
     browser_page.wait_for_url("**/mfa/setup", wait_until="load")
     browser_page.get_by_role("heading", name="MFA setup").wait_for()
     assert console_errors == []
-
-
-def _record_console_errors(page):
-    errors: list[str] = []
-
-    def collect_error(message):
-        if message.type == "error":
-            errors.append(message.text)
-
-    page.on("console", collect_error)
-    return errors

@@ -71,3 +71,66 @@ def test_private_admin_docs_reject_wildcard_public_https():
     assert "`PUBLIC_BIND_ADDRESS`" in deployment
     assert "without wildcard public listeners" in deployment
     assert "reject wildcard\nport `443`" in architecture
+
+
+def test_payup_security_docs_match_current_banking_contract():
+    docs = "\n".join(
+        Path(path).read_text(encoding="utf-8")
+        for path in (
+            "docs/OPERATIONS.md",
+            "docs/DEPLOYMENT.md",
+            "docs/security/architecture/access-control.md",
+            "docs/security/assurance/secure-coding.md",
+            "docs/security/assurance/feature-security-checklist.md",
+        )
+    )
+
+    for required in (
+        "PayUp lookup requires an authenticator code",
+        "Invalid phone number",
+        "daily limit stored on `users.payup_daily_limit`",
+        "midnight Singapore time",
+        "at least 80% of the limit",
+        "The Local Transfer daily limit remains a documented placeholder",
+        "keyed verifier",
+        "HMAC-SHA256 transaction hash",
+        "Migration `20260703_0022` adds PayUp support",
+        "`payup_pending_transfers`",
+        "`transactions.transaction_type`",
+        "Migration `20260703_0024` widens `users.account_number`",
+        "12-digit account numbers",
+    ):
+        assert required in docs
+
+    stale_phrases = (
+        "PayUp lookup reveals recipient name before MFA",
+        "PayUp lookup does not require MFA",
+        "Local Transfer daily limit is enforced",
+    )
+    for stale in stale_phrases:
+        assert stale not in docs
+
+
+def test_feature_security_checklist_is_indexed_and_avoids_external_overclaims():
+    index = Path("docs/security/README.md").read_text(encoding="utf-8")
+    checklist = Path("docs/security/assurance/feature-security-checklist.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Feature security checklist" in index
+    for required in (
+        "Current Feature Status",
+        "PayUp",
+        "Root-admin bootstrap and allowlist",
+        "Staff/admin maker-checker",
+        "Browser E2E",
+        "do not prove live staging or production provider state",
+        "stale-documentation test",
+    ):
+        assert required in checklist
+    for forbidden in (
+        "live provider state is verified",
+        "branch protection is enforced",
+        "SonarQube gate is passing",
+    ):
+        assert forbidden not in checklist

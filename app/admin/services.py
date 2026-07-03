@@ -12,7 +12,7 @@ from typing import Any
 import pyotp
 from flask import current_app, request, session, url_for
 from sqlalchemy import String, cast, func, or_
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.auth.password_reset import (
     MANUAL_RECOVERY_ACTIVE_STATUSES,
@@ -671,7 +671,6 @@ def _execute_staff_account_lifecycle(
             "revoked_sessions": revoked_sessions,
         },
     )
-    db.session.commit()
     return {"message": "Staff account updated", "account": public_staff_account(target, actor)}
 
 
@@ -1660,11 +1659,23 @@ def approve_admin_action_request_as_root_admin(
         )
         raise AuthError(FRESH_MFA_REQUIRED_ERROR, 403)
 
+    try:
+        result = _execute_admin_action_request(actor, request_record)
+    except (SQLAlchemyError, RuntimeError, TypeError, ValueError) as exc:
+        db.session.rollback()
+        failed_request = _admin_action_request_or_error(request_id)
+        _mark_admin_action_request_execution_failed(
+            actor,
+            failed_request,
+            reason="execution_error",
+            error_type=type(exc).__name__,
+        )
+        raise AuthError("Admin action request execution failed", 409) from exc
+
     request_record.approver_id = actor.id
     request_record.status = "executed"
     request_record.decided_at = _utcnow()
-    result = _execute_admin_action_request(actor, request_record)
-    request_record.executed_at = _utcnow()
+    request_record.executed_at = request_record.decided_at
     audit_event_required(
         "admin_action_request_executed",
         "success",
@@ -1847,26 +1858,12 @@ def _create_admin_action_request(
 
 
 def _execute_admin_action_request(actor: User, request_record: AdminActionRequest) -> dict[str, Any]:
-    try:
-        if request_record.operation_type in STAFF_ACTION_OPERATION_TYPES.values():
-            return _execute_staff_admin_action_request(actor, request_record)
-        if request_record.operation_type in {"manual_recovery_approve", "manual_recovery_deny"}:
-            return _execute_manual_recovery_transition_admin_action_request(actor, request_record)
-        if request_record.operation_type == "manual_recovery_complete":
-            return _execute_manual_recovery_complete_admin_action_request(actor, request_record)
-    except (TypeError, ValueError):
-        _mark_admin_action_request_execution_failed(actor, request_record)
-        raise
-    audit_event(
-        "admin_action_request_execute",
-        "failure",
-        user=actor,
-        metadata={
-            "reason": "unsupported_operation",
-            "request_ref": audit_reference("admin_action_request", request_record.id),
-            "operation_type": request_record.operation_type,
-        },
-    )
+    if request_record.operation_type in STAFF_ACTION_OPERATION_TYPES.values():
+        return _execute_staff_admin_action_request(actor, request_record)
+    if request_record.operation_type in {"manual_recovery_approve", "manual_recovery_deny"}:
+        return _execute_manual_recovery_transition_admin_action_request(actor, request_record)
+    if request_record.operation_type == "manual_recovery_complete":
+        return _execute_manual_recovery_complete_admin_action_request(actor, request_record)
     raise AuthError("Admin action request cannot be executed", 409)
 
 
@@ -1926,14 +1923,23 @@ def _execute_manual_recovery_complete_admin_action_request(
     return {"message": "Manual recovery request completed", "request": result}
 
 
-def _mark_admin_action_request_execution_failed(actor: User, request_record: AdminActionRequest) -> None:
+def _mark_admin_action_request_execution_failed(
+    actor: User,
+    request_record: AdminActionRequest,
+    *,
+    reason: str,
+    error_type: str,
+) -> None:
+    request_record.approver_id = actor.id
     request_record.status = "execution_failed"
     request_record.decided_at = request_record.decided_at or _utcnow()
-    audit_event(
+    audit_event_required(
         "admin_action_request_execute",
         "failure",
         user=actor,
         metadata={
+            "reason": reason,
+            "error_type": str(error_type or "")[:80],
             "request_ref": audit_reference("admin_action_request", request_record.id),
             "operation_type": request_record.operation_type,
         },

@@ -7,6 +7,7 @@ def test_account_freeze_is_durable_and_blocks_group_a_sensitive_actions(client):
     from app.auth.services import FrozenAccountError
     from app.banking.services import ensure_outbound_transfer_allowed
     from app.security.crypto import encrypt_mfa_secret
+    from app.security.email import password_reset_outbox
 
     register(client)
     login(client)
@@ -27,6 +28,8 @@ def test_account_freeze_is_durable_and_blocks_group_a_sensitive_actions(client):
 
     assert response.status_code == 302
     assert user.is_frozen is True
+    assert password_reset_outbox()[-1]["to"] == "alice@example.com"
+    assert password_reset_outbox()[-1]["subject"] == "SITBank account frozen"
     with current_app.test_request_context("/banking/outbound-transfer", method="POST"):
         with pytest.raises(FrozenAccountError):
             ensure_outbound_transfer_allowed(user)
@@ -38,6 +41,11 @@ def test_account_freeze_is_durable_and_blocks_group_a_sensitive_actions(client):
     )
     assert event.user_id == user.id
     assert event.event_metadata["reason"] == "account_frozen"
+    assert db.session.query(SecurityAuditEvent).filter_by(
+        event_type="account_freeze_notification",
+        outcome="queued",
+        user_id=user.id,
+    ).count() == 1
 
 def test_frozen_account_cannot_create_new_login_session(client):
     register(client)

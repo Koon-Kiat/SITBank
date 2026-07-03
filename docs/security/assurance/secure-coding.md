@@ -30,6 +30,7 @@ Examples of server-side validation:
 | Control | Evidence |
 | --- | --- |
 | Client-supplied account numbers are rejected during registration | `tests/test_auth_registration_login.py::test_api_registration_rejects_client_supplied_account_number` |
+| New customer account numbers are server-generated as 12 digits while legacy 9-digit identifiers remain accepted for preserved rows | `app/auth/services.py::_generate_account_number()`, `tests/test_auth_registration_login.py::test_registration_hashes_password_with_pbkdf2`, `tests/test_payee_management_security.py::test_payee_lookup_accepts_new_twelve_digit_account_numbers` |
 | Staff invite acceptance rejects privileged forged fields such as `role`, `workplace_email`, `email`, `account_type`, `customer_user_id`, and `is_admin` | `app/admin/services.py::_reject_forged_invite_fields()` |
 | Transaction payloads reject server-controlled fields and unsafe business values | `tests/test_banking_transaction_security.py::test_future_transaction_payload_guardrails_reject_server_controlled_fields`, `tests/test_banking_transaction_security.py::test_public_transaction_payload_business_rules_reject_unsafe_values` |
 | Route inventory records method-level auth, CSRF, rate-limit, and step-up decisions | `tests/test_route_inventory_security.py` |
@@ -84,7 +85,7 @@ tests.
 | Secure, HttpOnly, SameSite Strict cookies | `config.py`, `tests/test_session_management.py::test_login_sets_secure_session_cookie_and_hides_raw_session_id` |
 | Absolute authenticated session lifetime | `app/security/sessions.py`, `config.py`, `tests/test_session_absolute_lifetime.py` |
 | CSRF on unsafe customer routes | `app/extensions.py`, `app/__init__.py`, `tests/test_route_inventory_security.py::test_route_inventory_has_complete_security_decisions` |
-| Explicit CSRF regression tests | `tests/test_account_security_actions.py`, `tests/test_admin_manual_recovery.py`, `tests/test_route_inventory_security.py` |
+| Explicit CSRF regression tests | `tests/test_account_security_actions.py`, `tests/test_admin_manual_recovery.py`, `tests/test_payup.py::test_payup_and_transfer_limit_posts_require_csrf_when_enabled`, `tests/test_route_inventory_security.py` |
 
 Fully authenticated customer sessions default to a 12-hour absolute lifetime,
 and admin sessions default to a 4-hour absolute lifetime. The `auth_created_at`
@@ -104,6 +105,7 @@ customer route inventory prevents silent addition of unclassified routes.
 | Admin routes use a generated route inventory | `tests/test_admin_route_inventory_security.py` |
 | High-risk customer actions use TOTP step-up | `app/auth/services.py::verify_high_risk_authorization()` |
 | Payee routes filter by current user id | `app/banking/routes.py` |
+| PayUp recipient lookup uses TOTP before name disclosure and confirmation recomputes conditional step-up at the current daily-limit state | `app/banking/routes.py`, `app/banking/services.py`, `tests/test_payup.py` |
 | Session management uses public references, ownership checks, and absolute lifetime enforcement | `app/auth/services.py::terminate_session_for_user()`, `app/security/sessions.py` |
 
 Customer and admin route-inventory matrices are intentionally separate so each
@@ -142,6 +144,7 @@ Audit integrity uses an HMAC-SHA256 hash chain.
 | Audit metadata redaction | `app/security/audit.py`, `tests/test_audit_metadata_sanitization.py` |
 | Structured logs are sanitized | `tests/test_audit_alerting.py::test_structured_audit_log_output_is_sanitized` |
 | Required audit writes can fail closed for critical actions | `app/security/audit.py::audit_event_required()`, `tests/test_audit_alerting.py` |
+| Banking pending-token database rows store keyed verifiers, and transaction rows store HMAC-SHA256 integrity hashes over canonical fields | `app/banking/services.py`, `tests/test_local_transfer_security.py`, `tests/test_payup.py` |
 | Audit chain records, verifies, and exports anchors | `tests/test_audit_alerting.py::test_audit_hash_chain_records_verifies_and_exports_anchor` |
 | Runtime database privilege verifier checks append-only audit behavior | `app/ops/db_privileges.py`, `tests/test_deployment.py::test_audit_operations_runbook_and_append_only_privileges_are_present` |
 | 500 handler logs sanitized context | `tests/test_audit_alerting.py::test_500_handler_logs_sanitized_context` |

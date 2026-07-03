@@ -9,6 +9,7 @@ import pytest
 
 from app.extensions import db
 from app.models import AdminActionRequest, ManualRecoveryRequest, SecurityAuditEvent, User
+from app.security.audit import AuditWriteError
 from app.security.crypto import encrypt_mfa_secret
 from app.security.email import password_reset_outbox
 from app.security.passwords import hash_password
@@ -210,6 +211,79 @@ def test_staff_lifecycle_requires_maker_checker_before_execution(admin_client):
         event_type="staff_account_deactivated",
         outcome="success",
     ).count() == 1
+
+
+def test_staff_lifecycle_audit_failure_rolls_back_target_and_marks_request_failed(
+    admin_client,
+    monkeypatch,
+):
+    from app.admin import services as admin_services
+
+    _root1, root1_secret = _create_staff_identity(
+        username="root-one",
+        email=ROOT1_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    root2, root2_secret = _create_staff_identity(
+        username="root-two",
+        email=ROOT2_EMAIL,
+        account_type="root_admin",
+        phone_number="91234568",
+    )
+    target, _target_secret = _create_staff_identity(
+        username="target-admin",
+        email="target.admin@sit.singaporetech.edu.sg",
+        account_type="admin",
+        phone_number="91234569",
+    )
+    _login_admin(admin_client, root1_secret, ROOT1_EMAIL)
+    approver_client = admin_client.application.test_client()
+    _login_admin(approver_client, root2_secret, ROOT2_EMAIL)
+
+    requested = admin_client.post(
+        f"/staff/{target.id}/deactivate",
+        json={"totp_code": _totp(root1_secret)},
+    )
+    request_id = requested.get_json()["request"]["id"]
+    original_required_audit = admin_services.audit_event_required
+
+    def fail_staff_lifecycle_audit(event_type, outcome, **kwargs):
+        if event_type == "staff_account_deactivated":
+            raise AuditWriteError("required audit failed")
+        return original_required_audit(event_type, outcome, **kwargs)
+
+    monkeypatch.setattr(
+        admin_services,
+        "audit_event_required",
+        fail_staff_lifecycle_audit,
+    )
+
+    failed = approver_client.post(
+        f"/admin-action-requests/{request_id}/approve",
+        json={"totp_code": _totp(root2_secret)},
+    )
+
+    db.session.expire_all()
+    persisted_target = db.session.get(User, target.id)
+    action_request = db.session.get(AdminActionRequest, request_id)
+
+    assert failed.status_code == 409
+    assert failed.get_json()["error"] == "Admin action request execution failed"
+    assert persisted_target.account_status == "active"
+    assert action_request.status == "execution_failed"
+    assert action_request.approver_id == root2.id
+    assert action_request.executed_at is None
+    failure_event = db.session.query(SecurityAuditEvent).filter_by(
+        event_type="admin_action_request_execute",
+        outcome="failure",
+    ).one()
+    assert failure_event.event_metadata["reason"] == "execution_error"
+    assert failure_event.event_metadata["error_type"] == "AuditWriteError"
+    assert db.session.query(SecurityAuditEvent).filter_by(
+        event_type="staff_account_deactivated",
+        outcome="success",
+    ).count() == 0
 
 
 def test_manual_recovery_approval_and_completion_use_different_approver(admin_client):

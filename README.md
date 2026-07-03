@@ -71,14 +71,14 @@ Common local test commands:
 .\.venv\Scripts\python.exe -m pytest -q -m deployment
 .\.venv\Scripts\python.exe -m pytest -q -m "not slow"
 
-# Playwright browser E2E smoke tests
+# Playwright browser E2E regression tests
 $env:PLAYWRIGHT_BROWSERS_PATH = ".playwright-browsers"
 .\.venv\Scripts\python.exe -m playwright install chromium
 $env:SITBANK_RUN_E2E = "1"
 .\.venv\Scripts\python.exe -m pytest -q tests/e2e
 ```
 
-The `not slow` and focused marker commands are for local iteration only. Pull requests and protected CI still run the full pytest suite, including security, deployment, database session integrity, CSRF, MFA, compatibility-route regression checks, route inventory, production guard, dependency lock, and secret-scanning checks. Playwright E2E browser tests run in CI through a dedicated Chromium job; local unscoped pytest runs collect them but skip unless `SITBANK_RUN_E2E=1` is set, and the tests start a loopback Flask server rather than using staging or production hosts.
+The `not slow` and focused marker commands are for local iteration only. Pull requests and protected CI still run the full pytest suite, including security, deployment, database session integrity, CSRF, MFA, compatibility-route regression checks, route inventory, production guard, dependency lock, and secret-scanning checks. Playwright E2E browser tests run in CI through a dedicated Chromium job; local unscoped pytest runs collect them but skip unless `SITBANK_RUN_E2E=1` is set. The browser suite covers authentication, MFA, session, banking, and boundary regressions against a loopback Flask server. These tests do not prove live staging or production provider state and never target staging, production, or the private admin hostname.
 
 On non-Windows shells, use `python -m playwright install chromium` before
 `python -m pytest -q tests/e2e`.

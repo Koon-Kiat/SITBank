@@ -54,8 +54,10 @@ $env:SITBANK_RUN_E2E = "1"
 .\.venv\Scripts\python.exe -m pytest -q tests/e2e
 ```
 
-The browser tests start a loopback Flask server. They do not target staging,
-production, or the private admin hostname.
+The browser tests cover authentication, MFA, session, banking, and boundary
+regressions against a loopback Flask server. They do not prove live staging or
+production provider state and do not target staging, production, or the private
+admin hostname.
 
 ### Normal CI-Equivalent Checks
 

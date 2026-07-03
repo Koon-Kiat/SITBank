@@ -30,6 +30,7 @@ IMMEDIATE_ALERT_EVENT_TYPES = {
     "password_reset_token_reused": "password_reset_token_reused",
     "password_reset_webauthn_failed": "password_reset_webauthn_failed",
     "manual_recovery_requested": "manual_recovery_requested",
+    "account_freeze": "account_freeze",
 }
 TRANSACTION_EVENT_TYPES = {
     "banking_outbound_transfer",

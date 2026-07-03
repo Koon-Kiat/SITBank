@@ -955,7 +955,7 @@ ROUTE_SECURITY_INVENTORY = {
         "classification": "payup_transfer",
         "csrf": "required",
         "rate_limit": "per_route",
-        "step_up": "not_required",
+        "step_up": "required",
         "public_justification": "",
     },
     "banking.payup_amount": {

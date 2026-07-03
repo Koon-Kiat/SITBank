@@ -229,7 +229,7 @@ def _registration_duplicate_reason(
 
 def _generate_account_number() -> str:
     for _ in range(10):
-        candidate = "012" + "".join(str(secrets.randbelow(10)) for _ in range(6))
+        candidate = "012" + "".join(str(secrets.randbelow(10)) for _ in range(9))
         if not db.session.execute(db.select(User).where(User.account_number == candidate)).scalar_one_or_none():
             return candidate
     raise AuthError("Could not generate a unique account number", 500)
@@ -638,11 +638,26 @@ def freeze_own_account(user: User, code: str, stepup_token: str | None = None) -
         session_id=session_id,
         metadata={"revoked_other_sessions": revoked},
     )
+    _send_account_freeze_notification(user)
     return {
         "message": "Account frozen. Unfreeze requires manual support review.",
         "session_ref": public_session_reference(session_id),
         "revoked_other_sessions": revoked,
     }
+
+
+def _send_account_freeze_notification(user: User) -> None:
+    body = (
+        "Your SITBank account was frozen from an authenticated session. "
+        "If you did not request this, contact SITBank support through the approved recovery path."
+    )
+    try:
+        send_security_email(user.email, "SITBank account frozen", body)
+    except Exception as exc:
+        current_app.logger.warning("account_freeze_notification_failed error=%s", type(exc).__name__)
+        audit_event("account_freeze_notification", "failure", user=user, metadata={"reason": "email_delivery_failed"})
+        return
+    audit_event("account_freeze_notification", "queued", user=user)
 
 
 def logout_current_session() -> None:

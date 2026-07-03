@@ -14,9 +14,15 @@ from pathlib import Path
 import pytest
 
 from app.auth.services import AuthError
-from app.banking.services import execute_local_transfer
+from app.banking.services import (
+    _amount_audit_band,
+    execute_local_transfer,
+    local_transfer_token_verifier,
+    transaction_hash_matches,
+)
 from app.extensions import db
 from app.models import Payee, PendingTransfer, SecurityAuditEvent, Transaction, User
+from app.security.audit import AuditWriteError
 from app.security.passwords import hash_password
 
 
@@ -72,7 +78,7 @@ def _make_pending_transfer(
 ) -> str:
     token = os.urandom(32).hex()
     pending = PendingTransfer(
-        token=token,
+        token=local_transfer_token_verifier(token),
         user_id=user.id,
         payee_id=payee.id,
         amount=amount,
@@ -371,6 +377,8 @@ def test_replay_attack_second_consume_fails(app, sec_ctx):
 
     assert exc_info.value.status_code == 409
     assert Transaction.query.count() == 1
+    pending = PendingTransfer.query.filter_by(token=local_transfer_token_verifier(token)).one()
+    assert pending.token != token
 
 
 def test_sequential_double_submit_results_in_one_transaction(app, sec_ctx):
@@ -534,8 +542,17 @@ def test_success_audit_metadata_contains_safe_reference_fields(app, sec_ctx):
     meta = event.event_metadata
     assert "reference_present" in meta
     assert "reference_length" in meta
+    assert "amount" not in meta
+    assert meta["amount_band"] == "under_100"
     assert meta["reference_present"] is True
     assert meta["reference_length"] == len("Rent")
+
+
+def test_amount_audit_band_uses_coarse_ranges():
+    assert _amount_audit_band(Decimal("-50.00")) == "under_100"
+    assert _amount_audit_band(Decimal("100.00")) == "100_to_999"
+    assert _amount_audit_band(Decimal("1000.00")) == "1000_to_9999"
+    assert _amount_audit_band(Decimal("10000.00")) == "10000_or_more"
 
 
 def test_empty_reference_reflected_in_audit_metadata(app, sec_ctx):
@@ -613,6 +630,29 @@ def test_failed_transfer_leaves_balances_unchanged(app, sec_ctx):
     assert Transaction.query.count() == 0
 
 
+def test_required_audit_failure_rolls_back_ledger_mutation(app, sec_ctx, monkeypatch):
+    alice = sec_ctx["alice"]
+    bob = sec_ctx["bob"]
+    payee = sec_ctx["payee"]
+    token = _make_pending_transfer(alice, payee, Decimal("10.00"))
+    alice_before = Decimal(str(alice.balance))
+    bob_before = Decimal(str(bob.balance))
+
+    def fail_required_audit(*_args, **_kwargs):
+        raise AuditWriteError("audit unavailable")
+
+    monkeypatch.setattr("app.banking.services.audit_event_required", fail_required_audit)
+
+    with app.test_request_context("/banking/transfer/confirm", method="POST"):
+        with pytest.raises(AuditWriteError):
+            execute_local_transfer(sender=alice, payee=payee, confirmation_token=token)
+
+    db.session.expire_all()
+    assert Decimal(str(db.session.get(User, alice.id).balance)) == alice_before
+    assert Decimal(str(db.session.get(User, bob.id).balance)) == bob_before
+    assert Transaction.query.count() == 0
+
+
 # ── Transaction content hash (tamper-evidence) ────────────────────────────────
 
 def test_transaction_hash_is_stored_on_success(app, sec_ctx):
@@ -625,7 +665,8 @@ def test_transaction_hash_is_stored_on_success(app, sec_ctx):
 
     txn = Transaction.query.filter_by(transaction_ref=txn_ref).one()
     assert txn.transaction_hash, "transaction_hash must be set"
-    assert len(txn.transaction_hash) == 64, "SHA-256 hex digest is 64 characters"
+    assert len(txn.transaction_hash) == 64, "HMAC-SHA256 hex digest is 64 characters"
+    assert transaction_hash_matches(txn)
 
 
 def test_transaction_hash_changes_when_amount_changes(app, sec_ctx):
@@ -658,6 +699,21 @@ def test_transaction_hash_changes_when_amount_changes(app, sec_ctx):
 
 # ── Consumed token stores transaction reference ────────────────────────────────
 
+def test_transaction_hash_verification_detects_amount_tampering(app, sec_ctx):
+    alice = sec_ctx["alice"]
+    payee = sec_ctx["payee"]
+    token = _make_pending_transfer(alice, payee, Decimal("10.00"))
+
+    with app.test_request_context("/banking/transfer/confirm", method="POST"):
+        txn_ref = execute_local_transfer(sender=alice, payee=payee, confirmation_token=token)
+
+    txn = Transaction.query.filter_by(transaction_ref=txn_ref).one()
+    assert transaction_hash_matches(txn)
+
+    txn.amount = Decimal("10.01")
+    assert not transaction_hash_matches(txn)
+
+
 def test_consumed_token_stores_transaction_ref(app, sec_ctx):
     alice = sec_ctx["alice"]
     payee = sec_ctx["payee"]
@@ -667,6 +723,6 @@ def test_consumed_token_stores_transaction_ref(app, sec_ctx):
         txn_ref = execute_local_transfer(sender=alice, payee=payee, confirmation_token=token)
 
     db.session.expire_all()
-    pending = PendingTransfer.query.filter_by(token=token).one()
+    pending = PendingTransfer.query.filter_by(token=local_transfer_token_verifier(token)).one()
     assert pending.consumed_at is not None
     assert pending.consumed_transaction_ref == txn_ref

@@ -7,7 +7,7 @@ from wtforms.validators import InputRequired, Length, Optional, Regexp
 from app.auth.schemas import PHONE_RE, STEP_UP_TOKEN_RE, TOTP_RE
 
 
-ACCOUNT_NUMBER_RE = r"^[0-9]{9}$"
+ACCOUNT_NUMBER_RE = r"^(?:[0-9]{9}|[0-9]{12})$"
 NICKNAME_RE = r"^[A-Za-z0-9 '\-]{1,64}$"
 AMOUNT_RE = r"^\d+(\.\d{1,2})?$"
 REFERENCE_RE = r"^[A-Za-z0-9 '\-.,/]{0,128}$"
@@ -82,7 +82,7 @@ class AddPayeeForm(FlaskForm):
         "Account number",
         validators=[
             InputRequired(),
-            Regexp(ACCOUNT_NUMBER_RE, message="Account number must be exactly 9 digits"),
+            Regexp(ACCOUNT_NUMBER_RE, message="Account number must be 9 or 12 digits"),
         ],
     )
     totp_code = _totp_code_field()
@@ -97,6 +97,8 @@ class PayupPhoneForm(FlaskForm):
             Regexp(PHONE_RE, message="Enter a valid Singapore phone number (8 digits starting with 8 or 9)"),
         ],
     )
+    totp_code = _totp_code_field()
+    stepup_token = _stepup_token_field()
 
 
 class PayupAmountForm(FlaskForm):

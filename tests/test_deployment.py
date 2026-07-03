@@ -628,10 +628,27 @@ def test_staff_invite_personal_email_migration_allows_workplace_only_invites():
     assert "nullable=False" not in migration
 
 
+def test_account_identifier_length_migration_preserves_legacy_rows_and_blocks_unsafe_downgrade():
+    migration = Path(
+        "migrations/versions/20260703_0024_harden_banking_identifiers.py"
+    ).read_text(encoding="utf-8")
+    deployment_docs = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
+
+    assert 'revision = "20260703_0024"' in migration
+    assert 'down_revision = "20260703_0023"' in migration
+    assert '"account_number"' in migration
+    assert "String(length=12)" in migration
+    assert "String(length=9)" in migration
+    assert "Cannot safely downgrade account_number length" in migration
+    assert "Migration `20260703_0024`" in deployment_docs
+    assert "12-digit account numbers" in deployment_docs
+
+
 def test_migration_baseline_drift_metadata_matches_reviewed_migrations():
     from app.models import (
         ManualRecoveryRequest,
         PendingTransfer,
+        Payee,
         RecoveryCode,
         StaffInvite,
         Transaction,
@@ -648,6 +665,8 @@ def test_migration_baseline_drift_metadata_matches_reviewed_migrations():
 
     assert User.__table__.c.phone_number.unique is None
     assert User.__table__.c.account_number.unique is None
+    assert User.__table__.c.account_number.type.length == 12
+    assert Payee.__table__.c.account_number.type.length == 12
     assert any(index.name == "ix_users_phone_number" and index.unique for index in user_indexes)
     assert any(index.name == "ix_users_account_number" and index.unique for index in user_indexes)
     assert any(index.name == "ix_recovery_codes_code_hmac" and index.unique for index in recovery_indexes)
