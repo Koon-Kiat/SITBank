@@ -16,6 +16,7 @@ evidence, and governance records remain easy to navigate.
 ## Assurance
 
 - [Audit and alerting](assurance/audit-and-alerting.md)
+- [Feature security checklist](assurance/feature-security-checklist.md)
 - [Operational observability with Grafana and Loki](assurance/operational-observability.md)
 - [Repository secret scanning](assurance/secret-scanning.md)
 - [Secure coding](assurance/secure-coding.md)

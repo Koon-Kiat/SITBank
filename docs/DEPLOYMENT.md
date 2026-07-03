@@ -136,6 +136,18 @@ choosing an account. Run this migration in staging first and resolve any
 reported alias collision through a reviewed account-recovery process before
 production rollout.
 
+Migration `20260703_0022` adds PayUp support with `users.payup_daily_limit`,
+the `transactions.transaction_type` constraint, and the
+`payup_pending_transfers` table. After upgrade, verify PayUp lookup, amount,
+confirmation, daily-limit, and transfer-limit settings through staging before
+production rollout.
+
+Migration `20260703_0024` widens `users.account_number` and
+`payees.account_number` from 9 to 12 characters. New registrations receive
+12-digit account numbers while legacy 9-digit rows remain valid. The downgrade
+refuses to narrow the columns when any 12-digit account number exists, which
+prevents truncating customer or payee identifiers.
+
 ## Deployment Prerequisites
 
 Install `/etc/sitbank/secrets/security_alert_webhook_url` or

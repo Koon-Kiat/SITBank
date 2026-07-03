@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import uuid
 from collections.abc import Mapping, MutableMapping
@@ -16,7 +17,8 @@ from app.banking.forms import TRANSFER_LIMIT_PRESETS
 from app.extensions import db
 from app.banking.schemas import MAX_TRANSACTION_AMOUNT, MIN_TRANSACTION_AMOUNT, PublicTransactionSchema
 from app.models import Payee, Transaction, User
-from app.security.audit import audit_event, audit_event_required, audit_reference
+from app.security.audit import AuditWriteError, audit_event, audit_event_required, audit_reference
+from app.security.session_hmac import active_hmac_hex
 
 
 PAYUP_STEP_UP_THRESHOLD = Decimal("0.80")
@@ -34,6 +36,39 @@ TRANSFER_RISKS = frozenset(
         TRANSFER_RISK_LARGE_TRANSFER,
     }
 )
+
+
+def local_transfer_token_verifier(token: str) -> str:
+    """Keyed verifier for local-transfer confirmation tokens."""
+    return active_hmac_hex(f"local-transfer-confirmation:{str(token or '')}", length=64)
+
+
+def payup_transfer_token_verifier(token: str) -> str:
+    """Keyed verifier for PayUp confirmation tokens."""
+    return active_hmac_hex(f"payup-transfer-confirmation:{str(token or '')}", length=64)
+
+
+def transaction_hash_matches(transaction: Transaction) -> bool:
+    expected = _transaction_hash(
+        transaction.transaction_ref,
+        int(transaction.sender_id),
+        int(transaction.recipient_id),
+        Decimal(str(transaction.amount)),
+        transaction.reference or "",
+        transaction.created_at,
+    )
+    return hmac.compare_digest(str(transaction.transaction_hash or ""), expected)
+
+
+def _amount_audit_band(amount: Decimal) -> str:
+    normalized = Decimal(str(amount)).copy_abs()
+    if normalized < Decimal("100"):
+        return "under_100"
+    if normalized < Decimal("1000"):
+        return "100_to_999"
+    if normalized < Decimal("10000"):
+        return "1000_to_9999"
+    return "10000_or_more"
 
 
 def ensure_outbound_transfer_allowed(user: User) -> None:
@@ -387,7 +422,7 @@ def execute_local_transfer(
     pending_tfr = db.session.execute(
         db.select(PendingTransfer)
         .where(
-            PendingTransfer.token == confirmation_token,
+            PendingTransfer.token == local_transfer_token_verifier(confirmation_token),
             PendingTransfer.user_id == sender.id,
             PendingTransfer.payee_id == payee.id,
             PendingTransfer.consumed_at.is_(None),
@@ -431,7 +466,7 @@ def execute_local_transfer(
         audit_outbound_transfer(
             sender,
             "failure",
-            metadata={"reason": "invalid_amount_precision", "amount": str(amount)},
+            metadata={"reason": "invalid_amount_precision", "amount_band": _amount_audit_band(amount)},
         )
         db.session.commit()
         raise AuthError("Transfer amount must have at most two decimal places.", 400)
@@ -441,7 +476,7 @@ def execute_local_transfer(
         audit_outbound_transfer(
             sender,
             "failure",
-            metadata={"reason": "amount_out_of_range", "amount": str(amount)},
+            metadata={"reason": "amount_out_of_range", "amount_band": _amount_audit_band(amount)},
         )
         db.session.commit()
         raise AuthError("Transfer amount is out of the allowed range.", 400)
@@ -452,7 +487,7 @@ def execute_local_transfer(
         audit_outbound_transfer(
             sender,
             "failure",
-            metadata={"reason": "insufficient_funds", "amount": str(amount)},
+            metadata={"reason": "insufficient_funds", "amount_band": _amount_audit_band(amount)},
             payee_account=audit_reference("payee_account", payee.account_number),
         )
         db.session.commit()
@@ -480,20 +515,34 @@ def execute_local_transfer(
     )
     pending_tfr.consumed_transaction_ref = txn_ref
 
-    # A09: do not log raw reference — replace with safe metadata that
-    # cannot leak customer free-text into the security audit log.
-    audit_outbound_transfer(
-        sender,
-        "success",
-        metadata={
-            "amount": str(amount),
-            "reference_present": bool(reference),
-            "reference_length": len(reference),
-        },
-        transaction_reference=audit_reference("transaction_reference", txn_ref),
-        payee_account=audit_reference("payee_account", payee.account_number),
-    )
+    _audit_local_transfer_success(sender, payee, amount, reference, txn_ref)
     return txn_ref
+
+
+def _audit_local_transfer_success(
+    sender: User,
+    payee: Payee,
+    amount: Decimal,
+    reference: str,
+    txn_ref: str,
+) -> None:
+    # A09: do not log raw reference; replace it with safe metadata that
+    # cannot leak customer free-text into the security audit log.
+    try:
+        audit_outbound_transfer(
+            sender,
+            "success",
+            metadata={
+                "amount_band": _amount_audit_band(amount),
+                "reference_present": bool(reference),
+                "reference_length": len(reference),
+            },
+            transaction_reference=audit_reference("transaction_reference", txn_ref),
+            payee_account=audit_reference("payee_account", payee.account_number),
+        )
+    except AuditWriteError:
+        db.session.rollback()
+        raise
 
 
 def sgt_day_start_utc(now: datetime | None = None) -> datetime:
@@ -553,7 +602,7 @@ def _load_and_lock_payup_pending_transfer(sender: User, confirmation_token: str)
     pending_tfr = db.session.execute(
         db.select(PayupPendingTransfer)
         .where(
-            PayupPendingTransfer.token == confirmation_token,
+            PayupPendingTransfer.token == payup_transfer_token_verifier(confirmation_token),
             PayupPendingTransfer.user_id == sender.id,
             PayupPendingTransfer.consumed_at.is_(None),
         )
@@ -601,7 +650,7 @@ def _validate_payup_amount(sender: User, pending_tfr) -> Decimal:
             "failure",
             metadata={
                 "reason": "invalid_amount_precision",
-                "amount": str(amount),
+                "amount_band": _amount_audit_band(amount),
                 "transfer_channel": "payup",
             },
         )
@@ -615,7 +664,7 @@ def _validate_payup_amount(sender: User, pending_tfr) -> Decimal:
             "failure",
             metadata={
                 "reason": "amount_out_of_range",
-                "amount": str(amount),
+                "amount_band": _amount_audit_band(amount),
                 "transfer_channel": "payup",
             },
         )
@@ -690,7 +739,7 @@ def execute_payup_transfer(
             "failure",
             metadata={
                 "reason": "payup_daily_limit_exceeded",
-                "amount": str(amount),
+                "amount_band": _amount_audit_band(amount),
                 "transfer_channel": "payup",
             },
         )
@@ -713,7 +762,7 @@ def execute_payup_transfer(
             "failure",
             metadata={
                 "reason": "insufficient_funds",
-                "amount": str(amount),
+                "amount_band": _amount_audit_band(amount),
                 "transfer_channel": "payup",
             },
         )
@@ -743,18 +792,22 @@ def execute_payup_transfer(
     )
     pending_tfr.consumed_transaction_ref = txn_ref
 
-    audit_outbound_transfer(
-        sender,
-        "success",
-        metadata={
-            "amount": str(amount),
-            "reference_present": bool(reference),
-            "reference_length": len(reference),
-            "transfer_channel": "payup",
-            "step_up_used": requires_step_up,
-        },
-        transaction_reference=audit_reference("transaction_reference", txn_ref),
-    )
+    try:
+        audit_outbound_transfer(
+            sender,
+            "success",
+            metadata={
+                "amount_band": _amount_audit_band(amount),
+                "reference_present": bool(reference),
+                "reference_length": len(reference),
+                "transfer_channel": "payup",
+                "step_up_used": requires_step_up,
+            },
+            transaction_reference=audit_reference("transaction_reference", txn_ref),
+        )
+    except AuditWriteError:
+        db.session.rollback()
+        raise
     return txn_ref
 
 
@@ -766,11 +819,11 @@ def _transaction_hash(
     reference: str,
     created_at: datetime,
 ) -> str:
-    """SHA-256 of the canonical transaction fields for tamper-evidence."""
+    """HMAC-SHA256 of canonical transaction fields for keyed tamper evidence."""
     canonical = json.dumps(
         {
             "amount": str(amount),
-            "created_at": created_at.isoformat(),
+            "created_at": _canonical_transaction_timestamp(created_at),
             "recipient_id": recipient_id,
             "reference": reference,
             "sender_id": sender_id,
@@ -779,7 +832,13 @@ def _transaction_hash(
         separators=(",", ":"),
         sort_keys=True,
     )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return active_hmac_hex(f"banking-transaction:{canonical}", length=64)
+
+
+def _canonical_transaction_timestamp(created_at: datetime) -> str:
+    if created_at.tzinfo is not None:
+        created_at = created_at.astimezone(timezone.utc).replace(tzinfo=None)
+    return created_at.isoformat(timespec="microseconds")
 
 
 def _requires_durable_audit(action: str, outcome: str) -> bool:

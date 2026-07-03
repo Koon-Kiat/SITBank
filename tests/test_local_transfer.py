@@ -11,7 +11,7 @@ import pyotp
 
 from _auth_flow_helpers import enable_mfa_for_user, login, mark_recent_mfa, register
 from app.auth.services import AuthError
-from app.banking.services import execute_local_transfer
+from app.banking.services import execute_local_transfer, local_transfer_token_verifier
 from app.extensions import db
 from app.models import Payee, PendingTransfer, SecurityAuditEvent, Transaction, User
 from app.security.passwords import hash_password
@@ -27,7 +27,7 @@ def _make_pending_transfer(
 ) -> str:
     token = os.urandom(32).hex()
     pending = PendingTransfer(
-        token=token,
+        token=local_transfer_token_verifier(token),
         user_id=user.id,
         payee_id=payee.id,
         amount=amount,
