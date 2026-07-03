@@ -10,6 +10,7 @@ WORKFLOW_PATH = Path(".github/workflows/sonarqube.yml")
 CI_WORKFLOW_PATH = Path(".github/workflows/ci-deploy.yml")
 PROPERTIES_PATH = Path("sonar-project.properties")
 SONAR_DOC_PATH = Path("docs/security/assurance/sonarqube.md")
+SONAR_AGENT_RULES_PATH = Path("docs/codex/sonarqube-rules.md")
 
 
 def _workflow() -> tuple[str, dict]:
@@ -181,6 +182,7 @@ def test_sonarqube_properties_define_scope_coverage_and_reporting_policy():
         "admin_wsgi.py",
     ]
     assert properties["sonar.tests"] == "tests"
+    assert properties["sonar.python.version"] == "3.12"
     assert properties["sonar.python.coverage.reportPaths"] == "coverage.xml"
     assert properties["sonar.javascript.lcov.reportPaths"] == "coverage/lcov.info"
     assert properties["sonar.qualitygate.wait"] == "false"
@@ -193,6 +195,18 @@ def test_sonarqube_properties_define_scope_coverage_and_reporting_policy():
     coverage_config = Path(".coveragerc").read_text(encoding="utf-8")
     assert "source = ." in coverage_config
     assert "tests/*" in coverage_config
+
+
+def test_agent_policy_requires_every_sonar_finding_to_be_dispositioned():
+    agents = Path("AGENTS.md").read_text(encoding="utf-8")
+    rules = SONAR_AGENT_RULES_PATH.read_text(encoding="utf-8")
+    normalized_agents = " ".join(agents.split())
+
+    assert "docs/codex/sonarqube-rules.md" in agents
+    assert "even when the quality gate passes" in normalized_agents
+    assert "Fix every actionable issue" in rules
+    assert "Mark an issue false positive only when" in rules
+    assert "Do not mark an issue false positive merely to clear a dashboard" in rules
 
 
 def test_sonarqube_docs_record_cloud_public_repo_and_nonblocking_policy():

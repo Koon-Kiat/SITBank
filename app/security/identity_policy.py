@@ -7,8 +7,11 @@ from flask import current_app
 
 
 EMAIL_RE = re.compile(r"^(?=\S{1,128}@\S{1,253}$)[^@\x00-\x1f\x7f]+@[^@\x00-\x1f\x7f]+$")
-DEFAULT_CUSTOMER_EMAIL_PLUS_ALIAS_DOMAINS = frozenset({"gmail.com", "googlemail.com"})
-DEFAULT_CUSTOMER_EMAIL_DOT_INSENSITIVE_DOMAINS = frozenset({"gmail.com", "googlemail.com"})
+GMAIL_DOMAIN = "gmail.com"
+GOOGLEMAIL_DOMAIN = "googlemail.com"
+GOOGLE_CUSTOMER_EMAIL_DOMAINS = frozenset({GMAIL_DOMAIN, GOOGLEMAIL_DOMAIN})
+DEFAULT_CUSTOMER_EMAIL_PLUS_ALIAS_DOMAINS = GOOGLE_CUSTOMER_EMAIL_DOMAINS
+DEFAULT_CUSTOMER_EMAIL_DOT_INSENSITIVE_DOMAINS = GOOGLE_CUSTOMER_EMAIL_DOMAINS
 DEFAULT_CUSTOMER_TEMP_EMAIL_DOMAINS = frozenset(
     {
         "10minutemail.com",
@@ -18,7 +21,7 @@ DEFAULT_CUSTOMER_TEMP_EMAIL_DOMAINS = frozenset(
         "yopmail.com",
     }
 )
-CUSTOMER_EMAIL_DOMAIN_ALIASES = {"googlemail.com": "gmail.com"}
+CUSTOMER_EMAIL_DOMAIN_ALIASES = {GOOGLEMAIL_DOMAIN: GMAIL_DOMAIN}
 
 
 class IdentityPolicyError(ValueError):

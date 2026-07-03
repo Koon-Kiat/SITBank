@@ -188,7 +188,7 @@ def register_otp_verify():
 def register():
     data = _load_payload(RegisterSchema(), RegisterForm)
     require_turnstile("customer_register")
-    user, warnings = register_user(data)
+    _, warnings = register_user(data)
     return (
         jsonify(
             {

@@ -1277,9 +1277,9 @@ def _like_escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-def authenticate_admin_primary(workplace_email: str, password: str) -> dict[str, Any]:
+def _normalize_admin_login_email(workplace_email: str, password: str) -> str:
     try:
-        normalized_email = normalize_workplace_email(workplace_email)
+        return normalize_workplace_email(workplace_email)
     except AuthError as exc:
         normalized_email = _normalize_email(workplace_email)
         principal = _auth_principal(normalized_email)
@@ -1297,14 +1297,22 @@ def authenticate_admin_primary(workplace_email: str, password: str) -> dict[str,
         )
         record_failure("admin_login", principal)
         raise AuthError(GENERIC_ADMIN_LOGIN_ERROR, 401) from exc
+
+
+def _admin_password_matches(user: User | None, password: str) -> bool:
+    if not is_password_raw_length_safe(password):
+        return False
+    candidate_hash = user.password_hash if user else _dummy_password_hash()
+    return verify_password(password, candidate_hash)
+
+
+def authenticate_admin_primary(workplace_email: str, password: str) -> dict[str, Any]:
+    normalized_email = _normalize_admin_login_email(workplace_email, password)
     principal = _auth_principal(normalized_email)
     _enforce_auth_backoff("admin_login", principal)
 
     user = _staff_user_by_workplace_email(normalized_email)
-    password_ok = False
-    if is_password_raw_length_safe(password):
-        candidate_hash = user.password_hash if user else _dummy_password_hash()
-        password_ok = verify_password(password, candidate_hash)
+    password_ok = _admin_password_matches(user, password)
 
     if (
         user is None

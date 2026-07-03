@@ -536,7 +536,6 @@ def _root_admin_email_set(
 ) -> frozenset[str]:
     emails = _csv_env_or_file_values(name, default=default)
     required_count = _required_root_admin_email_count(
-        app_env=app_env,
         deployment_target=deployment_target,
     )
     failures = root_admin_email_allowlist_failures(
@@ -550,7 +549,7 @@ def _root_admin_email_set(
     return frozenset(emails)
 
 
-def _required_root_admin_email_count(*, app_env: str, deployment_target: str) -> int:
+def _required_root_admin_email_count(*, deployment_target: str) -> int:
     if str(deployment_target or "").strip().casefold() == "staging":
         return STAGING_ROOT_ADMIN_EMAIL_COUNT
     return PRODUCTION_ROOT_ADMIN_EMAIL_COUNT

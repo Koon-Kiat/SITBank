@@ -177,7 +177,6 @@ def _validate_admin_mode_and_routes(
         allowed_domains=app.config.get("ADMIN_ALLOWED_EMAIL_DOMAINS") or (),
         reject_default=True,
         required_count=_required_root_admin_email_count(
-            app_env=str(app.config.get("APP_ENV") or ""),
             deployment_target=str(app.config.get("DEPLOYMENT_TARGET") or ""),
         ),
     )

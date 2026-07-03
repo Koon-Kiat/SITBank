@@ -299,71 +299,59 @@ def register_user(data: dict[str, Any]) -> tuple[User, list[str]]:
     return user, password_policy_warnings
 
 
+def _customer_password_matches(user: User | None, password: str) -> bool:
+    if not is_password_raw_length_safe(password):
+        return False
+    candidate_hash = user.password_hash if user else _dummy_password_hash()
+    return verify_password(password, candidate_hash)
+
+
+def _validate_customer_primary_credentials(
+    user: User | None,
+    identifier: str,
+    password: str,
+    principal: str,
+) -> User:
+    failure_reason = "invalid_credentials"
+    password_ok = _customer_password_matches(user, password)
+    if user is not None and getattr(user, "account_type", "customer") != "customer":
+        password_ok = False
+        failure_reason = "not_customer_identity"
+    if user is not None and password_ok:
+        return user
+    audit_event(
+        "login",
+        "failure",
+        user=user,
+        metadata={
+            "known_user": user is not None,
+            "reason": failure_reason,
+            "principal_ref": principal_reference(identifier),
+        },
+    )
+    record_failure("login", principal)
+    if user is not None and user.account_type == "customer":
+        user.failed_login_count = int(user.failed_login_count or 0) + 1
+        _record_user_security_failure(
+            user,
+            "password",
+            "password_failed_attempts",
+        )
+    raise AuthError(GENERIC_LOGIN_ERROR, 401)
+
+
 def authenticate_primary(identifier: str, password: str) -> dict[str, Any]:
     principal = _auth_principal(identifier)
     user = _find_user_by_identifier(identifier)
     _enforce_auth_backoff("login", principal)
-    failure_reason = "invalid_credentials"
+    user = _validate_customer_primary_credentials(
+        user,
+        identifier,
+        password,
+        principal,
+    )
 
-    password_ok = False
-    if is_password_raw_length_safe(password):
-        candidate_hash = user.password_hash if user else _dummy_password_hash()
-        password_ok = verify_password(password, candidate_hash)
-
-    if user is not None and getattr(user, "account_type", "customer") != "customer":
-        password_ok = False
-        failure_reason = "not_customer_identity"
-
-    if user is None or not password_ok:
-        audit_event(
-            "login",
-            "failure",
-            user=user,
-            metadata={
-                "known_user": user is not None,
-                "reason": failure_reason,
-                "principal_ref": principal_reference(identifier),
-            },
-        )
-        record_failure("login", principal)
-        if user is not None and user.account_type == "customer":
-            user.failed_login_count = int(user.failed_login_count or 0) + 1
-            _record_user_security_failure(
-                user,
-                "password",
-                "password_failed_attempts",
-            )
-        raise AuthError(GENERIC_LOGIN_ERROR, 401)
-
-    if (
-        user.security_locked_at is not None
-        and user.security_lock_reason in {"password_failed_attempts", "mfa_failed_attempts"}
-    ):
-        audit_event(
-            "login",
-            "blocked",
-            user=user,
-            metadata={"reason": user.security_lock_reason},
-        )
-        raise AuthError(GENERIC_LOGIN_ERROR, 401)
-
-    if user.is_frozen:
-        audit_event(
-            "login",
-            "blocked",
-            user=user,
-            metadata={"reason": user.security_lock_reason or "account_frozen"},
-        )
-        raise AuthError(ACCOUNT_AUTH_UNAVAILABLE_ERROR, 403)
-
-    if user.security_locked_at is not None:
-        audit_event(
-            "login",
-            "blocked",
-            user=user,
-            metadata={"reason": user.security_lock_reason or "account_unavailable"},
-        )
-        raise AuthError(GENERIC_LOGIN_ERROR, 401)
+    _enforce_customer_login_account_state(user)
 
     if password_hash_needs_rehash(user.password_hash):
         user.password_hash = hash_password(password)
@@ -407,6 +395,29 @@ def authenticate_primary(identifier: str, password: str) -> dict[str, Any]:
         "session_ref": public_session_reference(session_id),
         "user": _public_user(user),
     }
+
+
+def _enforce_customer_login_account_state(user: User) -> None:
+    automatic_lock_reasons = {"password_failed_attempts", "mfa_failed_attempts"}
+    if (
+        user.security_locked_at is not None
+        and user.security_lock_reason in automatic_lock_reasons
+    ):
+        message = GENERIC_LOGIN_ERROR
+        status_code = 401
+        reason = user.security_lock_reason
+    elif user.is_frozen:
+        message = ACCOUNT_AUTH_UNAVAILABLE_ERROR
+        status_code = 403
+        reason = user.security_lock_reason or "account_frozen"
+    elif user.security_locked_at is not None:
+        message = GENERIC_LOGIN_ERROR
+        status_code = 401
+        reason = user.security_lock_reason or "account_unavailable"
+    else:
+        return
+    audit_event("login", "blocked", user=user, metadata={"reason": reason})
+    raise AuthError(message, status_code)
 
 
 def generate_mfa_setup(user: User) -> dict[str, str]:

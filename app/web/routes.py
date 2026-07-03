@@ -105,6 +105,7 @@ _FORGOT_PASSWORD_TEMPLATE = "forgot_password.html"
 _PROFILE_TEMPLATE = "profile.html"
 _PASSWORD_CHANGE_TEMPLATE = "password_change.html"
 _FREEZE_TEMPLATE = "freeze.html"
+_ACCOUNT_RECOVERY_TEMPLATE = "account_recovery.html"
 _SECURITY_TOKEN_EXPIRED_MESSAGE = "Security token expired. Please try again."
 _CHALLENGE_VERIFICATION_FAILED_MESSAGE = "Challenge verification failed"
 
@@ -533,7 +534,7 @@ def _render_reset_continue(transaction: dict, *, status_code: int = 200):
 def account_recovery():
     if getattr(g, "current_user", None) is not None:
         return redirect(url_for(_DASHBOARD_ENDPOINT))
-    return render_template("account_recovery.html", form=ManualRecoveryForm())
+    return render_template(_ACCOUNT_RECOVERY_TEMPLATE, form=ManualRecoveryForm())
 
 
 @web_bp.post("/account-recovery")
@@ -542,16 +543,16 @@ def account_recovery():
 def account_recovery_submit():
     form = ManualRecoveryForm()
     if not form.validate_on_submit():
-        return render_template("account_recovery.html", form=form), 400
+        return render_template(_ACCOUNT_RECOVERY_TEMPLATE, form=form), 400
     try:
         require_turnstile("customer_manual_recovery")
         result = request_manual_recovery(form.identifier.data)
     except TurnstileError:
         flash(_CHALLENGE_VERIFICATION_FAILED_MESSAGE, "error")
-        return render_template("account_recovery.html", form=form), 400
+        return render_template(_ACCOUNT_RECOVERY_TEMPLATE, form=form), 400
     except AuthError as exc:
         flash(exc.message, "error")
-        return render_template("account_recovery.html", form=form), exc.status_code
+        return render_template(_ACCOUNT_RECOVERY_TEMPLATE, form=form), exc.status_code
     flash(result["message"], "success")
     return redirect(url_for(_LOGIN_ENDPOINT))
 
