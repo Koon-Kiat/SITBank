@@ -1000,6 +1000,7 @@ def test_compose_secret_mounts_match_runtime_contract():
         "SECURITY_ALERT_WEBHOOK_URL_FILE": "/run/secrets/security_alert_webhook_url",
         "SMTP_USERNAME_FILE": "/run/secrets/smtp_username",
         "SMTP_PASSWORD_FILE": "/run/secrets/smtp_password",
+        "TURNSTILE_SECRET_KEY_FILE": "/run/secrets/turnstile_secret_key",
     }
     expected_admin_secrets = {
         **{name: name for name in ADMIN_SECRET_FILES},
@@ -1007,6 +1008,7 @@ def test_compose_secret_mounts_match_runtime_contract():
         "security_alert_webhook_url": "security_alert_webhook_url",
         "smtp_username": "smtp_username",
         "smtp_password": "smtp_password",
+        "turnstile_secret_key": "turnstile_secret_key",
     }
     for path, secret_root, base_extra_secrets in (
         (

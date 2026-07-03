@@ -224,6 +224,7 @@ services:
       SECURITY_ALERT_WEBHOOK_URL_FILE: /run/secrets/security_alert_webhook_url
       SMTP_USERNAME_FILE: /run/secrets/smtp_username
       SMTP_PASSWORD_FILE: /run/secrets/smtp_password
+      TURNSTILE_SECRET_KEY_FILE: /run/secrets/turnstile_secret_key
     secrets:
       - source: admin_secret_key
         target: admin_secret_key
@@ -249,6 +250,8 @@ services:
         target: smtp_username
       - source: smtp_password
         target: smtp_password
+      - source: turnstile_secret_key
+        target: turnstile_secret_key
     volumes:
       - type: bind
         source: /etc/sitbank-staging/common-passwords.txt
