@@ -11,6 +11,8 @@ from app.security.production_guard import (
     ProductionStartupSecurityError,
     _validate_admin_mode_and_routes,
     _validate_customer_mode_and_routes,
+    _validate_registration_identity_policy,
+    _validate_turnstile_policy,
     enforce_production_startup_guard,
     validate_production_security_prerequisites,
 )
@@ -70,6 +72,41 @@ def test_shared_validator_accepts_safe_customer_production_configuration(monkeyp
     assert result.details["password_min_length"] == MIN_PRODUCTION_PASSWORD_LENGTH
     assert result.details["session_hmac_key_count"] == 2
     assert result.details["mfa_kek_count"] == 2
+
+
+def test_identity_and_turnstile_readiness_reject_missing_policy_inputs(monkeypatch):
+    app = _production_app(monkeypatch)
+    app.config.update(
+        TURNSTILE_SECRET_KEY="",
+        CUSTOMER_EMAIL_PLUS_ALIAS_DOMAINS=(),
+        CUSTOMER_EMAIL_DOT_INSENSITIVE_DOMAINS=("gmail.com",),
+        CUSTOMER_TEMP_EMAIL_DOMAINS=(),
+    )
+    result = ProductionReadinessResult()
+
+    _validate_turnstile_policy(app, result)
+    _validate_registration_identity_policy(app, result)
+
+    assert "TURNSTILE_SECRET_KEY must be configured" in result.failures
+    assert "CUSTOMER_EMAIL_PLUS_ALIAS_DOMAINS must be configured" in result.failures
+    assert any(
+        failure.startswith("CUSTOMER_EMAIL_DOT_INSENSITIVE_DOMAINS")
+        for failure in result.failures
+    )
+    assert "CUSTOMER_TEMP_EMAIL_DOMAINS must be configured" in result.failures
+
+    app.config.update(
+        CUSTOMER_EMAIL_PLUS_ALIAS_DOMAINS=("gmail.com",),
+        CUSTOMER_EMAIL_DOT_INSENSITIVE_DOMAINS=("gmail.com",),
+        CUSTOMER_TEMP_EMAIL_DOMAINS=("sit.singaporetech.edu.sg",),
+    )
+    overlap_result = ProductionReadinessResult()
+    _validate_registration_identity_policy(app, overlap_result)
+
+    assert (
+        "CUSTOMER_TEMP_EMAIL_DOMAINS must not include workplace domains"
+        in overlap_result.failures
+    )
 
 
 def test_shared_validator_rejects_weak_production_password_minimum(monkeypatch):
