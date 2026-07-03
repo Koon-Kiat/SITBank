@@ -101,10 +101,24 @@ def test_private_grafana_loki_alloy_deployment_files_exist_and_are_private():
         "--storage.path=/var/lib/alloy",
         "/etc/alloy/config.alloy",
     ]
-    assert compose["networks"]["observability"]["internal"] is True
+    assert services["grafana"]["networks"] == ["host-loopback", "observability"]
+    assert services["loki"]["networks"] == ["host-loopback", "observability"]
+    assert services["alloy"]["networks"] == ["observability"]
+    assert compose["networks"]["host-loopback"] == {
+        "name": "sitbank-observability-loopback",
+        "driver": "bridge",
+        "internal": False,
+    }
+    assert compose["networks"]["observability"] == {
+        "name": "sitbank-observability",
+        "driver": "bridge",
+        "internal": True,
+    }
 
     for service_name, service in services.items():
         assert "0.0.0.0:" not in str(service.get("ports", []))
+        assert "[::]:" not in str(service.get("ports", []))
+        assert "*:" not in str(service.get("ports", []))
         assert service["restart"] == "unless-stopped"
         assert service["security_opt"] == ["no-new-privileges:true"]
         assert service["cap_drop"] == ["ALL"]
@@ -278,6 +292,8 @@ def test_observability_bootstrap_and_docs_keep_credentials_out_of_repo():
         "docker compose --env-file",
         "Grafana listens only on `127.0.0.1:3000`",
         "Loki listens only on `127.0.0.1:3100`",
+        "`sitbank-observability-loopback` is a bridge network used only for "
+        "Docker's host-loopback port publishing",
         "Alloy keeps only its runtime state under `/var/lib/alloy`",
         "The admin audit viewer remains backed by `SecurityAuditEvent`, not Loki",
     ):
@@ -669,6 +685,44 @@ def test_verify_private_grafana_fails_closed_for_unsafe_grafana_states():
             )
 
 
+def test_verify_host_loopback_readiness_requires_local_grafana_and_loki():
+    module = _load_verifier_module()
+
+    def ready_runner(arguments):
+        url = tuple(arguments)[-1]
+        if url == "http://127.0.0.1:3000/login":
+            return _status_headers(module, "200")
+        if url == "http://127.0.0.1:3100/ready":
+            return _status_headers(module, "200")
+        raise AssertionError(arguments)
+
+    assert module["verify_host_loopback_readiness"](ready_runner) == [
+        {
+            "name": "grafana_host_loopback_login",
+            "result": "pass",
+            "target": "127.0.0.1/login",
+            "http_status": "200",
+        },
+        {
+            "name": "loki_host_loopback_ready",
+            "result": "pass",
+            "target": "127.0.0.1/ready",
+            "http_status": "200",
+        },
+    ]
+
+    def failing_runner(arguments):
+        url = tuple(arguments)[-1]
+        if url == "http://127.0.0.1:3000/login":
+            return _status_headers(module, "200")
+        if url == "http://127.0.0.1:3100/ready":
+            return module["CommandResult"](7, "", "connection refused")
+        raise AssertionError(arguments)
+
+    with pytest.raises(module["VerificationError"], match="127.0.0.1/ready"):
+        module["verify_host_loopback_readiness"](failing_runner)
+
+
 def test_verify_public_denials_accepts_closed_statuses_and_sanitizes_records():
     module = _load_verifier_module()
     statuses = {
@@ -799,12 +853,14 @@ def test_parse_args_restricts_target_environment_and_accepts_overrides(tmp_path)
             "https://sitbank.pp.ua/grafana",
             "--evidence-file",
             str(evidence_path),
+            "--verify-host-loopback",
         ]
     )
     assert args.target_environment == "production"
     assert args.grafana_url == PRIVATE_GRAFANA_URL
     assert args.public_probe_url == ["https://sitbank.pp.ua/grafana"]
     assert args.evidence_file == str(evidence_path)
+    assert args.verify_host_loopback is True
 
     with pytest.raises(SystemExit):
         module["parse_args"](["--target-environment", "development"])
@@ -823,6 +879,11 @@ def test_main_success_uses_env_and_writes_evidence_override(
         command = tuple(arguments)
         calls.append(command)
         url = command[-1]
+        if url in {
+            "http://127.0.0.1:3000/login",
+            "http://127.0.0.1:3100/ready",
+        }:
+            return _status_headers(module, "200")
         if url.startswith(PRIVATE_GRAFANA_URL):
             return grafana_runner(command)
         return _status_headers(module, "404")
@@ -840,6 +901,7 @@ def test_main_success_uses_env_and_writes_evidence_override(
         [
             "--target-environment",
             "production",
+            "--verify-host-loopback",
             "--evidence-file",
             str(evidence_path),
         ]
@@ -851,6 +913,10 @@ def test_main_success_uses_env_and_writes_evidence_override(
     assert captured.err == ""
     assert evidence["target_environment"] == "production"
     assert evidence["private_grafana_host"] == "grafana-sitbank.tailca101b.ts.net"
+    assert {
+        "grafana_host_loopback_login",
+        "loki_host_loopback_ready",
+    } <= {check["name"] for check in evidence["checks"]}
     assert FAKE_GRAFANA_TOKEN not in evidence_path.read_text(encoding="utf-8")
     assert any(f"Authorization: Bearer {FAKE_GRAFANA_TOKEN}" in call for call in calls)
 

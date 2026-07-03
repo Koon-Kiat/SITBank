@@ -8,12 +8,20 @@ Grafana Alloy stack from `ops/observability/`.
 - Grafana binds to `127.0.0.1:3000` on the EC2 host.
 - Loki binds to `127.0.0.1:3100` on the EC2 host.
 - Alloy does not publish a host port.
+- Grafana and Loki also join `sitbank-observability-loopback`.
+  `sitbank-observability-loopback` is a bridge network used only for Docker's
+  host-loopback port publishing. The private boundary is the explicit
+  `127.0.0.1` host binding plus no public Nginx/Tailscale Funnel route.
+- `sitbank-observability` remains an internal service network for
+  container-to-container traffic.
 - Normal operator access uses a private Tailscale path such as
   `https://grafana-sitbank.tailca101b.ts.net/` mapped to local Grafana.
 - SSH local port forwarding is allowed only for bootstrap or break-glass
   troubleshooting.
 - No public Nginx production, staging, customer, or admin route proxies Grafana,
   Loki, or Alloy.
+- Private browser access must use SSH local forwarding or a reviewed private
+  Tailscale access design, not public Nginx.
 - The SITBank Flask and admin runtimes do not receive Grafana credentials, Loki
   credentials, datasource credentials, or broad log-reader credentials.
 
@@ -101,18 +109,32 @@ The protected workflow is live network-path evidence. It is not a pull-request
 check and must never run on forks, untrusted branches, or public GitHub-hosted
 TLS jobs.
 
+When running the verifier directly on EC2, pass `--verify-host-loopback` to
+include the local Grafana and Loki readiness checks in the sanitized evidence.
+Do not use that flag from a GitHub-hosted runner because `127.0.0.1` would be
+the runner, not the EC2 host.
+
 ### Host Checks
 
 ```bash
 sudo docker compose --env-file /etc/sitbank-observability/observability.env -f /etc/sitbank-observability/compose.yml ps
-sudo ss -ltnp | grep -E ':(3000|3100)([[:space:]]|$)'
-curl -fsS http://127.0.0.1:3100/ready
+sudo docker network inspect sitbank-observability --format '{{.Internal}}'
+sudo docker network inspect sitbank-observability-loopback --format '{{.Internal}}'
+sudo docker port sitbank-grafana 3000/tcp
+sudo docker port sitbank-loki 3100/tcp
+test -z "$(sudo docker port sitbank-alloy)"
+sudo ss -ltnp | grep -E '127\.0\.0\.1:(3000|3100)([[:space:]]|$)'
+sudo ss -ltnp | grep -E '0\.0\.0\.0:(3000|3100)|\[::\]:(3000|3100)|\*:(3000|3100)' && exit 1 || true
 curl -fsSI http://127.0.0.1:3000/login
+curl -fsS http://127.0.0.1:3100/ready
 sudo nginx -T | grep -iE 'grafana|loki' && exit 1 || true
 ```
 
 Expected:
 
+- `sitbank-observability` reports `true` for `Internal`.
+- `sitbank-observability-loopback` reports `false` for `Internal` so Docker's
+  host-loopback port publishing works on EC2.
 - Grafana listens only on `127.0.0.1:3000`.
 - Loki listens only on `127.0.0.1:3100`.
 - Alloy publishes no host listener.
