@@ -3219,10 +3219,12 @@ done
 if [[ "${direct}" -eq 1 ]]; then
     exit 7
 fi
-printf 'HTTP/2 302\\r\\n'
-printf 'location: https://small-boat-a77f.cloudflareaccess.com/cdn-cgi/access/login\\r\\n'
-printf 'server: cloudflare\\r\\n'
-printf 'cf-ray: fake-ray\\r\\n\\r\\n'
+printf '%s\n' \
+    'HTTP/2 302' \
+    'location: https://small-boat-a77f.cloudflareaccess.com/cdn-cgi/access/login' \
+    'server: cloudflare' \
+    'cf-ray: fake-ray' \
+    ''
 """,
         encoding="utf-8",
         newline="\n",
