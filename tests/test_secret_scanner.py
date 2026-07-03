@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -109,6 +110,76 @@ def test_tracked_files_and_historical_blobs_parse_git_output(monkeypatch):
     assert any("--batch-check=" in command[-1] for command in calls)
 
 
+class _FakeBatchProcess:
+    def __init__(self, output: bytes, *, return_code: int = 0, missing_pipe=False):
+        self.stdin = None if missing_pipe else io.BytesIO()
+        self.stdout = io.BytesIO(output)
+        self.stderr = io.BytesIO()
+        self.return_code = return_code
+        self.finished = False
+        self.killed = False
+
+    def wait(self):
+        self.finished = True
+        return self.return_code
+
+    def poll(self):
+        return self.return_code if self.finished else None
+
+    def kill(self):
+        self.killed = True
+        self.finished = True
+
+
+def test_batch_helpers_handle_empty_input_and_missing_pipes(monkeypatch):
+    assert scanner._batch_object_metadata([]) == {}
+    assert list(scanner._read_blob_batch([])) == []
+
+    process = _FakeBatchProcess(b"", missing_pipe=True)
+    monkeypatch.setattr(scanner.subprocess, "Popen", lambda *_args, **_kwargs: process)
+
+    with pytest.raises(RuntimeError, match="could not open safe pipes"):
+        list(scanner._read_blob_batch(["a" * 40]))
+    assert process.killed is True
+
+
+@pytest.mark.parametrize(
+    ("output", "return_code", "message"),
+    [
+        (
+            (("b" * 40) + " blob 4\nsafe\n").encode(),
+            0,
+            "unexpected history object metadata",
+        ),
+        (
+            (("a" * 40) + " blob 4\nsafex").encode(),
+            0,
+            "malformed history object content",
+        ),
+        (
+            (("a" * 40) + " blob 4\nsafe\n").encode(),
+            1,
+            "history object scan failed",
+        ),
+    ],
+)
+def test_blob_batch_fails_closed_for_invalid_git_output(
+    monkeypatch,
+    output,
+    return_code,
+    message,
+):
+    process = _FakeBatchProcess(output, return_code=return_code)
+    monkeypatch.setattr(scanner.subprocess, "Popen", lambda *_args, **_kwargs: process)
+
+    with pytest.raises(RuntimeError, match=message):
+        list(scanner._read_blob_batch(["a" * 40]))
+
+    assert process.stdin.closed is True
+    assert process.stdout.closed is True
+    assert process.stderr.closed is True
+
+
 def test_scan_history_skips_forbidden_and_large_blobs_and_scans_small_content(monkeypatch):
     monkeypatch.setattr(
         scanner,
@@ -117,6 +188,7 @@ def test_scan_history_skips_forbidden_and_large_blobs_and_scans_small_content(mo
             ("a" * 40, ".env"),
             ("b" * 40, "large.py"),
             ("c" * 40, "small.py"),
+            ("d" * 40, "tree-entry"),
         ],
     )
     scanned = []
@@ -128,6 +200,7 @@ def test_scan_history_skips_forbidden_and_large_blobs_and_scans_small_content(mo
             "a" * 40: ("blob", 10),
             "b" * 40: ("blob", scanner.MAX_HISTORY_BLOB_BYTES + 1),
             "c" * 40: ("blob", 10),
+            "d" * 40: ("tree", 10),
         },
     )
     monkeypatch.setattr(
