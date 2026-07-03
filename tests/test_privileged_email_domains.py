@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from app.security.identity_policy import (
+    DEFAULT_CUSTOMER_TEMP_EMAIL_DOMAINS,
     IdentityPolicyError,
     _iter_config_values,
     _valid_email_parts,
@@ -70,5 +71,5 @@ def test_identity_policy_config_sets_support_fallback_defaults_and_strings(app):
         )
 
         app.config.pop("CUSTOMER_TEMP_EMAIL_DOMAINS", None)
-        assert "mailinator.com" in customer_temp_email_domains()
+        assert customer_temp_email_domains() == DEFAULT_CUSTOMER_TEMP_EMAIL_DOMAINS
         assert _iter_config_values(None) == ()
