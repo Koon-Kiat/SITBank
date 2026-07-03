@@ -55,6 +55,19 @@ Bootstrap also creates root-owned runtime state directories under
 `/var/lib/sitbank-observability/alloy`, so the container can remain
 `read_only: true` while its remoting/config services have writable storage.
 
+Bootstrap resolves the host `adm` and `systemd-journal` numeric GIDs with
+`getent` and writes only these non-secret values to `observability.env`:
+
+```text
+ALLOY_NGINX_LOG_GROUP_ID=<host-adm-gid>
+ALLOY_JOURNAL_GROUP_ID=<host-systemd-journal-gid>
+```
+
+Compose passes those values to Alloy through `group_add`. Nginx log files
+remain `0640` and group-readable by `adm`; Journal files remain group-readable
+by `systemd-journal`. Do not chmod host logs to `0644`, make logs
+world-readable, or add broad host users/groups to work around collector access.
+
 ## Bootstrap
 
 From a reviewed checkout on EC2:
@@ -153,6 +166,12 @@ Alloy collects only:
 The collector labels are coarse and non-secret: `service`, `environment`,
 `host_role`, and `source`.
 
+Alloy reads each allowlisted systemd unit through its own
+`loki.source.journal` block with a single exact `_SYSTEMD_UNIT=<unit>` match.
+The journal sources read the mounted `/var/log/journal` path. Do not use `OR`
+or `+` expressions in journal `matches`; Alloy supports exact field matches
+and combines multiple matches as logical AND.
+
 Alloy redacts recognized authorization, cookie, CSRF, session, password,
 token, secret, TOTP, recovery-code, database URL, SMTP credential, API key,
 webhook URL, Cloudflare token, Tailscale key, and SSH key fields before writing
@@ -165,6 +184,25 @@ transcripts, secret files, request bodies, authorization headers, cookies, CSRF
 tokens, session IDs, reset links, TOTP values, recovery codes, database URLs,
 SMTP credentials, Cloudflare tokens, Tailscale keys, SSH keys, or raw provider
 exports to collector paths.
+
+Verify only labels and sanitized samples when checking Loki. Do not paste raw
+log bodies into issues or chat:
+
+```bash
+curl -fsS http://127.0.0.1:3100/loki/api/v1/label/source/values
+curl -fsS http://127.0.0.1:3100/loki/api/v1/label/service/values
+curl -fsG http://127.0.0.1:3100/loki/api/v1/query_range \
+  --data-urlencode 'query={source="nginx_access"}' \
+  --data-urlencode 'limit=5'
+curl -fsG http://127.0.0.1:3100/loki/api/v1/query_range \
+  --data-urlencode 'query={source="systemd"}' \
+  --data-urlencode 'limit=5'
+```
+
+Expected stream labels include `source="nginx_access"`,
+`source="nginx_error"`, `source="container"`, and `source="systemd"` after
+matching activity occurs. Systemd streams are limited to
+`sitbank-security-alerts`, `certbot`, and `docker`.
 
 ## Retention
 
@@ -197,3 +235,9 @@ Rollback stops the containers but intentionally leaves
 `/var/lib/sitbank-observability/alloy` and the Grafana/Loki state directories
 in place for review or a later restart. Remove state only through a separate
 approved retention decision.
+
+The generated `ALLOY_NGINX_LOG_GROUP_ID` and `ALLOY_JOURNAL_GROUP_ID` entries
+are non-secret and inert after the containers stop. If observability is
+permanently disabled, remove those two lines with `sudoedit` only after the
+stack is down; do not alter `/var/log/nginx` or journal file modes as part of
+rollback.

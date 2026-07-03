@@ -76,11 +76,38 @@ loki.source.docker "sitbank_containers" {
   forward_to = [loki.process.redact_sensitive.receiver]
 }
 
-loki.source.journal "sitbank_systemd" {
+loki.source.journal "sitbank_security_alerts" {
+  path = "/var/log/journal"
   max_age = "12h"
-  matches = "_SYSTEMD_UNIT=sitbank-security-alerts.service OR _SYSTEMD_UNIT=certbot.service OR _SYSTEMD_UNIT=docker.service"
+  matches = "_SYSTEMD_UNIT=sitbank-security-alerts.service"
   labels = {
-    service = "sitbank-systemd",
+    service = "sitbank-security-alerts",
+    environment = "production",
+    host_role = "edge",
+    source = "systemd",
+  }
+  forward_to = [loki.process.redact_sensitive.receiver]
+}
+
+loki.source.journal "certbot" {
+  path = "/var/log/journal"
+  max_age = "12h"
+  matches = "_SYSTEMD_UNIT=certbot.service"
+  labels = {
+    service = "certbot",
+    environment = "production",
+    host_role = "edge",
+    source = "systemd",
+  }
+  forward_to = [loki.process.redact_sensitive.receiver]
+}
+
+loki.source.journal "docker" {
+  path = "/var/log/journal"
+  max_age = "12h"
+  matches = "_SYSTEMD_UNIT=docker.service"
+  labels = {
+    service = "docker",
     environment = "production",
     host_role = "edge",
     source = "systemd",

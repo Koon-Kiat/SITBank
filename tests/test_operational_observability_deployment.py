@@ -92,18 +92,23 @@ def test_private_grafana_loki_alloy_deployment_files_exist_and_are_private():
     services = compose["services"]
 
     assert set(services) == {"grafana", "loki", "alloy"}
+    alloy = services["alloy"]
     assert services["grafana"]["ports"] == ["127.0.0.1:3000:3000"]
     assert services["loki"]["ports"] == ["127.0.0.1:3100:3100"]
-    assert "ports" not in services["alloy"]
-    assert services["alloy"]["command"] == [
+    assert "ports" not in alloy
+    assert alloy["command"] == [
         "run",
         "--server.http.listen-addr=127.0.0.1:12345",
         "--storage.path=/var/lib/alloy",
         "/etc/alloy/config.alloy",
     ]
+    assert alloy["group_add"] == [
+        "${ALLOY_NGINX_LOG_GROUP_ID:?ALLOY_NGINX_LOG_GROUP_ID must be rendered by bootstrap from the host adm group}",
+        "${ALLOY_JOURNAL_GROUP_ID:?ALLOY_JOURNAL_GROUP_ID must be rendered by bootstrap from the host systemd-journal group}",
+    ]
     assert services["grafana"]["networks"] == ["host-loopback", "observability"]
     assert services["loki"]["networks"] == ["host-loopback", "observability"]
-    assert services["alloy"]["networks"] == ["observability"]
+    assert alloy["networks"] == ["observability"]
     assert compose["networks"]["host-loopback"] == {
         "name": "sitbank-observability-loopback",
         "driver": "bridge",
@@ -144,7 +149,7 @@ def test_private_grafana_loki_alloy_deployment_files_exist_and_are_private():
 
     alloy_storage_mount = next(
         volume
-        for volume in services["alloy"]["volumes"]
+        for volume in alloy["volumes"]
         if volume["target"] == "/var/lib/alloy"
     )
     assert alloy_storage_mount == {
@@ -193,6 +198,17 @@ def test_loki_retention_and_grafana_datasource_are_configured_without_credential
 
 def test_alloy_collects_only_approved_sources_and_redacts_sensitive_patterns():
     alloy = (OBS_ROOT / "alloy" / "config.alloy").read_text(encoding="utf-8")
+    journal_matches = re.findall(r'matches = "([^"]+)"', alloy)
+
+    assert set(journal_matches) == {
+        "_SYSTEMD_UNIT=sitbank-security-alerts.service",
+        "_SYSTEMD_UNIT=certbot.service",
+        "_SYSTEMD_UNIT=docker.service",
+    }
+    for journal_match in journal_matches:
+        assert " OR " not in journal_match
+        assert "+" not in journal_match
+        assert re.fullmatch(r"_SYSTEMD_UNIT=[A-Za-z0-9_.@-]+", journal_match)
 
     for required in (
         '/var/log/nginx/sitbank.access.log',
@@ -206,6 +222,10 @@ def test_alloy_collects_only_approved_sources_and_redacts_sensitive_patterns():
         'target_label = "environment"',
         'target_label = "host_role"',
         'replacement = "container"',
+        'loki.source.journal "sitbank_security_alerts"',
+        'loki.source.journal "certbot"',
+        'loki.source.journal "docker"',
+        'path = "/var/log/journal"',
         "_SYSTEMD_UNIT=sitbank-security-alerts.service",
         "_SYSTEMD_UNIT=certbot.service",
         "_SYSTEMD_UNIT=docker.service",
@@ -288,10 +308,17 @@ def test_observability_bootstrap_and_docs_keep_credentials_out_of_repo():
         "/etc/sitbank-observability/secrets/grafana_admin_user",
         "/etc/sitbank-observability/secrets/grafana_admin_password",
         "/var/lib/sitbank-observability/alloy",
+        "ALLOY_NGINX_LOG_GROUP_ID",
+        "ALLOY_JOURNAL_GROUP_ID",
+        "getent group",
+        "host_group_gid adm \"Nginx log files\"",
+        "host_group_gid systemd-journal \"systemd journal files\"",
         "root:root mode 0600",
         "docker compose --env-file",
         "Grafana listens only on `127.0.0.1:3000`",
         "Loki listens only on `127.0.0.1:3100`",
+        "Nginx log files remain `0640` and group-readable by `adm`",
+        "Journal files remain group-readable by `systemd-journal`",
         "`sitbank-observability-loopback` is a bridge network used only for "
         "Docker's host-loopback port publishing",
         "Alloy keeps only its runtime state under `/var/lib/alloy`",
@@ -302,6 +329,11 @@ def test_observability_bootstrap_and_docs_keep_credentials_out_of_repo():
     assert "cat \"${secret_file}\"" not in bootstrap
     assert "printenv" not in bootstrap
     assert "env |" not in bootstrap
+    assert "chmod 644" not in bootstrap
+    assert "chmod 0644 /var/log" not in bootstrap
+    assert "chmod -R" not in bootstrap
+    assert "chown -R" not in bootstrap
+    assert "usermod" not in bootstrap
     assert "GF_SECURITY_ADMIN_PASSWORD=" not in combined
     assert "loki_" + "token=" not in combined.casefold()
     assert "datasource_" + "password=" not in combined.casefold()

@@ -13,6 +13,59 @@ usage() {
     echo "Usage: bootstrap-observability-ec2 [repo-root]" >&2
 }
 
+host_group_gid() {
+    local group_name="$1"
+    local purpose="$2"
+    local group_entry gid
+
+    if ! group_entry="$(getent group "${group_name}")"; then
+        echo "Missing required host group for ${purpose}: ${group_name}" >&2
+        exit 1
+    fi
+
+    gid="${group_entry#*:}"
+    gid="${gid#*:}"
+    gid="${gid%%:*}"
+    if [[ ! "${gid}" =~ ^[0-9]+$ ]]; then
+        echo "Could not resolve a numeric GID for host group: ${group_name}" >&2
+        exit 1
+    fi
+    printf '%s' "${gid}"
+}
+
+set_observability_env_value() {
+    local key="$1"
+    local value="$2"
+    local tmp mode owner group
+
+    if [[ ! "${key}" =~ ^[A-Z0-9_]+$ || ! "${value}" =~ ^[0-9]+$ ]]; then
+        echo "Invalid generated observability environment value for ${key}" >&2
+        exit 1
+    fi
+
+    mode="$(stat -c '%a' -- "${OBS_ENV_FILE}")"
+    owner="$(stat -c '%U' -- "${OBS_ENV_FILE}")"
+    group="$(stat -c '%G' -- "${OBS_ENV_FILE}")"
+    tmp="$(mktemp "${OBS_ENV_FILE}.XXXXXX")"
+    awk -v key="${key}" -v value="${value}" '
+        BEGIN { found = 0 }
+        $0 ~ "^" key "=" {
+            print key "=" value
+            found = 1
+            next
+        }
+        { print }
+        END {
+            if (found == 0) {
+                print key "=" value
+            }
+        }
+    ' "${OBS_ENV_FILE}" >"${tmp}"
+    chown "${owner}:${group}" "${tmp}"
+    chmod "${mode}" "${tmp}"
+    mv -f "${tmp}" "${OBS_ENV_FILE}"
+}
+
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     usage
     exit 0
@@ -94,6 +147,11 @@ if grep -Eiq '(password|token|secret|key)[[:space:]]*=' "${OBS_ENV_FILE}"; then
     echo "${OBS_ENV_FILE} must contain non-secret image references and private URL settings only." >&2
     exit 1
 fi
+
+alloy_nginx_log_gid="$(host_group_gid adm "Nginx log files")"
+alloy_journal_gid="$(host_group_gid systemd-journal "systemd journal files")"
+set_observability_env_value ALLOY_NGINX_LOG_GROUP_ID "${alloy_nginx_log_gid}"
+set_observability_env_value ALLOY_JOURNAL_GROUP_ID "${alloy_journal_gid}"
 
 docker compose --env-file "${OBS_ENV_FILE}" -f "${OBS_COMPOSE_FILE}" config >/dev/null
 docker compose --env-file "${OBS_ENV_FILE}" -f "${OBS_COMPOSE_FILE}" up -d
