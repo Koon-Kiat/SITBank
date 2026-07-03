@@ -41,6 +41,12 @@ Do not put passwords, tokens, API keys, webhook URLs, cookies, database URLs, or
 SMTP credentials in `observability.env`. Secret files must be `root:root` mode
 `0600`.
 
+Bootstrap also creates root-owned runtime state directories under
+`/var/lib/sitbank-observability`. Alloy keeps only its runtime state under
+`/var/lib/alloy`, backed by
+`/var/lib/sitbank-observability/alloy`, so the container can remain
+`read_only: true` while its remoting/config services have writable storage.
+
 ## Bootstrap
 
 From a reviewed checkout on EC2:
@@ -164,3 +170,8 @@ sudo ss -ltnp | grep -E ':(3000|3100)([[:space:]]|$)' && exit 1 || true
 Disabling observability must not change SITBank customer, staging, or admin app
 routing. The admin audit viewer remains backed by `SecurityAuditEvent`, not
 Loki.
+
+Rollback stops the containers but intentionally leaves
+`/var/lib/sitbank-observability/alloy` and the Grafana/Loki state directories
+in place for review or a later restart. Remove state only through a separate
+approved retention decision.

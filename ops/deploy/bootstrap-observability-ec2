@@ -47,8 +47,10 @@ install -d -o root -g root -m 0755 "${OBS_ROOT}/grafana/dashboards"
 install -d -o root -g root -m 0755 "${OBS_ROOT}/loki"
 install -d -o root -g root -m 0755 "${OBS_ROOT}/alloy"
 install -d -o root -g root -m 0700 "${OBS_ROOT}/secrets"
+install -d -o root -g root -m 0755 "${OBS_DATA_ROOT}"
 install -d -o 472 -g 472 -m 0750 "${OBS_DATA_ROOT}/grafana"
 install -d -o 10001 -g 10001 -m 0750 "${OBS_DATA_ROOT}/loki"
+install -d -o root -g root -m 0750 "${OBS_DATA_ROOT}/alloy"
 
 install -o root -g root -m 0644 \
     "${repo_root}/ops/observability/compose.observability.yml" \
