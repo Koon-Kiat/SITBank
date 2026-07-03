@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import json
 import os
 from datetime import timedelta
@@ -316,20 +317,89 @@ def pytest_collection_modifyitems(config, items):
                 item.add_marker(getattr(pytest.mark, marker_name))
 
 
+def pytest_xdist_auto_num_workers(config) -> int:
+    del config
+    return min(os.cpu_count() or 1, 4)
+
+
+def _clear_database_rows(flask_app) -> None:
+    from app.extensions import db
+
+    with flask_app.app_context():
+        db.session.remove()
+        with db.engine.begin() as connection:
+            for table in reversed(db.metadata.sorted_tables):
+                connection.execute(table.delete())
+            if db.engine.dialect.name == "sqlite":
+                has_sequence = connection.exec_driver_sql(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type = 'table' AND name = 'sqlite_sequence'"
+                ).scalar()
+                if has_sequence:
+                    connection.exec_driver_sql("DELETE FROM sqlite_sequence")
+        db.session.remove()
+
+
+def _restore_test_app_state(flask_app, baseline_config: dict) -> None:
+    from app.extensions import limiter
+
+    flask_app.config.clear()
+    flask_app.config.update(copy.deepcopy(baseline_config))
+    flask_app.extensions["password_reset_outbox"] = []
+    flask_app.extensions.pop("e2e_fake_password_hashes", None)
+    with flask_app.app_context():
+        limiter.reset()
+    _clear_database_rows(flask_app)
+
+
+@pytest.fixture(scope="session")
+def _worker_app():
+    from app import create_app
+    from app.extensions import db
+
+    flask_app = create_app(TestConfig)
+    with flask_app.app_context():
+        db.create_all()
+    baseline_config = copy.deepcopy(dict(flask_app.config))
+    try:
+        yield flask_app, baseline_config
+    finally:
+        with flask_app.app_context():
+            db.session.remove()
+            db.drop_all()
+            db.engine.dispose()
+
+
 @pytest.fixture()
-def app(monkeypatch):
+def app(_worker_app, monkeypatch):
+    from app.security import passwords
+
+    monkeypatch.setattr(passwords, "_is_password_pwned_by_hibp", lambda _password: False)
+    flask_app, baseline_config = _worker_app
+    _restore_test_app_state(flask_app, baseline_config)
+    try:
+        with flask_app.app_context():
+            yield flask_app
+    finally:
+        _restore_test_app_state(flask_app, baseline_config)
+
+
+@pytest.fixture()
+def mutable_app(monkeypatch):
     from app import create_app
     from app.extensions import db
     from app.security import passwords
 
     monkeypatch.setattr(passwords, "_is_password_pwned_by_hibp", lambda _password: False)
-
     flask_app = create_app(TestConfig)
     with flask_app.app_context():
         db.create_all()
-        yield flask_app
-        db.session.remove()
-        db.drop_all()
+        try:
+            yield flask_app
+        finally:
+            db.session.remove()
+            db.drop_all()
+            db.engine.dispose()
 
 
 @pytest.fixture()

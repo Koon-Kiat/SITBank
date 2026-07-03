@@ -3751,6 +3751,17 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     assert "limit_req_zone $binary_remote_addr zone=sitbank_staging_app:10m rate=10r/s;" in rate_limits
     assert "limit_req_status 429;" in nginx
     assert "limit_req_log_level warn;" in nginx
+    assert "error_page 429 = @sitbank_rate_limited;" in nginx
+    assert "location @sitbank_rate_limited {" in nginx
+    assert "Too many attempts. Please try again later." in nginx
+    assert "proxy_pass" not in _nginx_location_bodies(
+        nginx,
+        "@sitbank_rate_limited",
+    )[0]
+    auth_error_bodies = _nginx_location_bodies(nginx, "@sitbank_rate_limited_json")
+    assert len(auth_error_bodies) == 1
+    assert "default_type application/json;" in auth_error_bodies[0]
+    assert "proxy_pass" not in auth_error_bodies[0]
     assert "limit_req_status" not in rate_limits
     assert "limit_req_log_level" not in rate_limits
     for selector in ("= /login", "= /register", "= /mfa/verify", "^~ /auth/"):
@@ -3940,6 +3951,21 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
         assert zone in rate_limits
     assert "limit_req_status 429;" in nginx
     assert "limit_req_log_level warn;" in nginx
+    assert "error_page 429 = @sitbank_rate_limited;" in nginx
+    browser_error_bodies = _nginx_location_bodies(
+        customer_nginx,
+        "@sitbank_rate_limited",
+    )
+    assert len(browser_error_bodies) == 1
+    assert "Too many attempts. Please try again later." in browser_error_bodies[0]
+    assert "proxy_pass" not in browser_error_bodies[0]
+    api_error_bodies = _nginx_location_bodies(
+        customer_nginx,
+        "@sitbank_rate_limited_json",
+    )
+    assert len(api_error_bodies) == 1
+    assert "default_type application/json;" in api_error_bodies[0]
+    assert "proxy_pass" not in api_error_bodies[0]
     assert "limit_req_status" not in rate_limits
     assert "limit_req_log_level" not in rate_limits
 

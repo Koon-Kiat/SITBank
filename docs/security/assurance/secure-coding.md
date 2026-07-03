@@ -87,6 +87,16 @@ tests.
 | CSRF on unsafe customer routes | `app/extensions.py`, `app/__init__.py`, `tests/test_route_inventory_security.py::test_route_inventory_has_complete_security_decisions` |
 | Explicit CSRF regression tests | `tests/test_account_security_actions.py`, `tests/test_admin_manual_recovery.py`, `tests/test_payup.py::test_payup_and_transfer_limit_posts_require_csrf_when_enabled`, `tests/test_route_inventory_security.py` |
 
+Customer and private-admin browser rate-limit responses use one safe branded
+429 message whether Flask-Limiter, durable authentication backoff, or Nginx
+blocks first. Nginx serves its 429 page or `/auth/*` JSON directly from an
+internal named location and never proxies a rejected request back into Flask.
+Missing, stale, or invalid CSRF tokens remain a distinct branded HTTP 400.
+JSON auth/admin callers continue to receive structured errors. These response
+normalizations do not change CSRF, MFA/TOTP step-up, Flask-Limiter, durable
+backoff, Nginx `limit_req`, audit, alert, Tailscale, Cloudflare, or
+customer/admin isolation controls.
+
 Fully authenticated customer sessions default to a 12-hour absolute lifetime,
 and admin sessions default to a 4-hour absolute lifetime. The `auth_created_at`
 timestamp is stored server-side and is not refreshed by ordinary activity,
