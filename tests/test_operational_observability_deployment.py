@@ -134,6 +134,9 @@ def test_private_grafana_loki_alloy_deployment_files_exist_and_are_private():
     grafana = services["grafana"]
     assert grafana["environment"]["GF_AUTH_ANONYMOUS_ENABLED"] == "false"
     assert grafana["environment"]["GF_USERS_ALLOW_SIGN_UP"] == "false"
+    assert grafana["environment"]["GF_SERVER_SERVE_FROM_SUB_PATH"] == (
+        "${GRAFANA_SERVE_FROM_SUB_PATH:-false}"
+    )
     assert grafana["environment"]["GF_SECURITY_ADMIN_USER__FILE"] == (
         "/run/secrets/grafana_admin_user"
     )
@@ -317,6 +320,14 @@ def test_observability_bootstrap_and_docs_keep_credentials_out_of_repo():
         "docker compose --env-file",
         "Grafana listens only on `127.0.0.1:3000`",
         "Loki listens only on `127.0.0.1:3100`",
+        "GRAFANA_PRIVATE_ROOT_URL=https://admin-sitbank.tailca101b.ts.net/grafana/",
+        "GRAFANA_SERVE_FROM_SUB_PATH=true",
+        "Private Tailscale Serve Browser Access Plan",
+        "sudo tailscale serve --bg --https=443 --set-path=/grafana http://127.0.0.1:3000",
+        "sudo tailscale serve --https=443 --set-path=/grafana off",
+        "verify-tailscale-admin-access --mode serve",
+        "https://admin-sitbank.tailca101b.ts.net/grafana/",
+        "https://sitbank.pp.ua/grafana",
         "Nginx log files remain `0640` and group-readable by `adm`",
         "Journal files remain group-readable by `systemd-journal`",
         "`sitbank-observability-loopback` is a bridge network used only for "
@@ -334,6 +345,13 @@ def test_observability_bootstrap_and_docs_keep_credentials_out_of_repo():
     assert "chmod -R" not in bootstrap
     assert "chown -R" not in bootstrap
     assert "usermod" not in bootstrap
+    assert "tailscale serve reset" not in docs
+    assert "grafana.sitbank.pp.ua" not in docs
+    assert "grafana-staging.pp.ua" not in docs
+    assert "0.0.0.0:3000" not in docs
+    assert "0.0.0.0:3100" not in docs
+    assert "ufw allow 3000" not in docs.casefold()
+    assert "ufw allow 3100" not in docs.casefold()
     assert "GF_SECURITY_ADMIN_PASSWORD=" not in combined
     assert "loki_" + "token=" not in combined.casefold()
     assert "datasource_" + "password=" not in combined.casefold()

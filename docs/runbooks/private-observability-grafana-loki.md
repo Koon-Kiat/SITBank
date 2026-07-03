@@ -43,11 +43,23 @@ GRAFANA_IMAGE=example.invalid/grafana@sha256:<reviewed-digest>
 LOKI_IMAGE=example.invalid/loki@sha256:<reviewed-digest>
 ALLOY_IMAGE=example.invalid/alloy@sha256:<reviewed-digest>
 GRAFANA_PRIVATE_ROOT_URL=https://grafana-sitbank.tailca101b.ts.net/
+GRAFANA_SERVE_FROM_SUB_PATH=false
 ```
 
 Do not put passwords, tokens, API keys, webhook URLs, cookies, database URLs, or
 SMTP credentials in `observability.env`. Secret files must be `root:root` mode
 `0600`.
+
+For the reviewed Tailscale Serve path model, change only the non-secret
+Grafana URL settings before rerunning observability bootstrap:
+
+```text
+GRAFANA_PRIVATE_ROOT_URL=https://admin-sitbank.tailca101b.ts.net/grafana/
+GRAFANA_SERVE_FROM_SUB_PATH=true
+```
+
+Keep `GRAFANA_SERVE_FROM_SUB_PATH=false` when Grafana is served at a private
+hostname root such as `https://grafana-sitbank.tailca101b.ts.net/`.
 
 Bootstrap also creates root-owned runtime state directories under
 `/var/lib/sitbank-observability`. Alloy keeps only its runtime state under
@@ -153,6 +165,100 @@ Expected:
 - Alloy publishes no host listener.
 - Public SITBank Nginx configs contain no Grafana or Loki route.
 - The private Tailscale URL reaches Grafana only for approved operators.
+
+### Private Tailscale Serve Browser Access Plan
+
+The preferred convenient browser path is
+`https://admin-sitbank.tailca101b.ts.net/grafana/`, served by Tailscale Serve
+from the existing private admin tailnet hostname to Grafana's loopback
+listener at `http://127.0.0.1:3000`. This keeps Grafana behind the same private
+tailnet access boundary as the admin app and avoids a public DNS hostname.
+
+Do not run these commands until an approved operator has confirmed the live
+Serve configuration. Tailscale Serve supports path mounts with `--set-path` and
+local reverse-proxy targets, while Tailscale Funnel is the public sharing mode;
+Funnel must remain disabled. The backend target must stay on localhost.
+
+Preflight on EC2:
+
+```bash
+sudo tailscale status --json | jq -r '.BackendState'
+sudo tailscale serve status
+sudo tailscale serve status --json | jq .
+sudo tailscale funnel status --json | jq .
+sudo /usr/local/sbin/verify-tailscale-admin-access --mode serve
+curl -fsSI http://127.0.0.1:3000/login
+curl -fsS http://127.0.0.1:3100/ready
+sudo nginx -T | grep -iE 'grafana|loki' && exit 1 || true
+```
+
+Expected before change:
+
+- Tailscale backend is `Running`.
+- Funnel status proves Funnel is disabled.
+- Existing Serve config contains the approved admin root mapping to
+  `http://127.0.0.1:5002` and no unexpected public or stale handlers.
+- Grafana and Loki are healthy on host loopback.
+- Public Nginx still has no Grafana or Loki route.
+
+If the current Serve status is missing the admin root mapping, contains
+unexpected handlers, or does not prove Funnel is disabled, stop and repair the
+admin Tailscale configuration first. Do not reset the entire Serve
+configuration as a shortcut because that can remove the admin root mapping.
+
+After updating `observability.env` to the `/grafana/` root URL and
+`GRAFANA_SERVE_FROM_SUB_PATH=true`, rerun
+`sudo ops/deploy/bootstrap-observability-ec2 "$(pwd)"`, then add the path
+mapping:
+
+```bash
+sudo tailscale serve --bg --https=443 --set-path=/grafana http://127.0.0.1:3000
+```
+
+Verification:
+
+```bash
+sudo tailscale serve status
+sudo tailscale serve status --json | jq .
+sudo tailscale funnel status --json | jq .
+curl -fsSI http://127.0.0.1:3000/login
+curl -fsS http://127.0.0.1:3100/ready
+curl -fsSI https://admin-sitbank.tailca101b.ts.net/grafana/login
+curl -fsSI https://sitbank.pp.ua/grafana
+curl -fsSI https://sitbank.pp.ua/loki
+curl -fsSI https://staging-sitbank.pp.ua/grafana
+sudo ss -ltnp | grep -E '0\.0\.0\.0:(3000|3100)|\[::\]:(3000|3100)|\*:(3000|3100)' && exit 1 || true
+sudo nginx -T | grep -iE 'grafana|loki' && exit 1 || true
+```
+
+Expected after change:
+
+- `https://admin-sitbank.tailca101b.ts.net/grafana/` reaches Grafana only from
+  approved tailnet clients.
+- `https://admin-sitbank.tailca101b.ts.net/` still reaches the admin app.
+- Funnel remains disabled.
+- Loki is not served directly.
+- Public SITBank hostnames do not expose Grafana or Loki.
+- No `0.0.0.0`, public IPv4, or public IPv6 listener exists for ports `3000`
+  or `3100`.
+
+Rollback the Grafana path only:
+
+```bash
+sudo tailscale serve --https=443 --set-path=/grafana off
+sudo tailscale serve status
+sudo /usr/local/sbin/verify-tailscale-admin-access --mode serve
+```
+
+Then set `GRAFANA_PRIVATE_ROOT_URL` back to the reviewed private hostname root
+or temporary SSH-forwarding URL model, set `GRAFANA_SERVE_FROM_SUB_PATH=false`,
+and rerun observability bootstrap. Rollback must preserve the admin root Serve
+mapping, leave Funnel disabled, and avoid any public Nginx or firewall change.
+
+Alternative design: a separate private `grafana-sitbank.tailca101b.ts.net`
+Serve hostname avoids path-prefix behavior but requires separate hostname/tag
+and ACL review. Do not implement that alternative without a separate reviewed
+automation change.
 
 ## Approved Log Sources
 
