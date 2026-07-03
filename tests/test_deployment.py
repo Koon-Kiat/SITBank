@@ -3356,6 +3356,31 @@ def test_nginx_default_server_is_shared_for_same_host_production_and_staging():
     assert "server_name staging-sitbank.pp.ua;" in combined
 
 
+def test_bootstrap_default_route_source_parser_is_valid_awk():
+    bootstrap = Path("ops/deploy/bootstrap-container-ec2").read_text(
+        encoding="utf-8"
+    )
+    parser = re.search(
+        r"ip -4 route get 1\.1\.1\.1 \\\n\s+\| awk '([^']+)'",
+        bootstrap,
+    )
+    assert parser
+
+    try:
+        result = subprocess.run(
+            ["awk", parser.group(1)],
+            input="1.1.1.1 via 10.0.1.1 dev eth0 src 10.0.1.25 uid 0\n",
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        pytest.skip("awk is not installed")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "10.0.1.25\n"
+
+
 def test_nginx_tls_policy_pins_strong_suites_curves_and_session_hardening():
     tls_policy_path = Path("ops/nginx/sitbank-tls-policy.conf")
     tls_policy = tls_policy_path.read_text(encoding="utf-8")

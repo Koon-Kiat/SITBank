@@ -97,7 +97,7 @@ fi
 if [[ -z "${public_bind_address}" ]]; then
     public_bind_address="$(
         ip -4 route get 1.1.1.1 \
-            | awk '{ for (index = 1; index <= NF; index++) if ($index == "src") { print $(index + 1); exit } }'
+            | awk '{ for (field_index = 1; field_index <= NF; field_index++) if ($field_index == "src") { print $(field_index + 1); exit } }'
     )"
 fi
 if ! python3 - "${public_bind_address}" <<'PY'
