@@ -97,6 +97,9 @@ services:
     image: ${ALLOY_IMAGE:?ALLOY_IMAGE must be an immutable digest reference}
     container_name: sitbank-alloy
     user: "0:0"
+    group_add:
+      - "${ALLOY_NGINX_LOG_GROUP_ID:?ALLOY_NGINX_LOG_GROUP_ID must be rendered by bootstrap from the host adm group}"
+      - "${ALLOY_JOURNAL_GROUP_ID:?ALLOY_JOURNAL_GROUP_ID must be rendered by bootstrap from the host systemd-journal group}"
     read_only: true
     init: true
     restart: unless-stopped
