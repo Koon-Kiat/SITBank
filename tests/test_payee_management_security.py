@@ -6,7 +6,6 @@ from datetime import datetime, timedelta, timezone
 import pyotp
 
 from _auth_flow_helpers import (
-    add_security_keys_for_user,
     enable_mfa_for_user,
     login,
     mark_recent_mfa,
@@ -71,18 +70,6 @@ def test_banking_routes_require_totp_mfa_on_direct_access(client):
     assert add_response.headers["Location"].endswith("/mfa/setup")
 
 
-def test_legacy_passkey_only_user_cannot_access_banking_routes(client):
-    register(client)
-    login(client)
-    user = _user("alice01")
-    add_security_keys_for_user(user)
-
-    response = client.get("/banking/payees")
-
-    assert response.status_code == 302
-    assert response.headers["Location"].endswith("/mfa/setup")
-
-
 def test_totp_user_can_access_banking_routes(client):
     register(client)
     _login_mfa_customer(client)
@@ -99,14 +86,14 @@ def test_payee_lookup_does_not_reveal_recipient_before_totp(app, client):
         username="alice01",
         email="alice@example.com",
         phone="91234567",
-        account="012345678",
+        account="012345678000",
     )
     bob = _register_customer(
         bob_client,
         username="bob02",
         email="bob@example.com",
         phone="81234567",
-        account="012555999",
+        account="012555999000",
     )
     _login_mfa_customer(client)
 
@@ -132,14 +119,14 @@ def test_payee_lookup_requires_totp_before_confirmation(app, client, monkeypatch
         username="alice01",
         email="alice@example.com",
         phone="91234567",
-        account="012345678",
+        account="012345678000",
     )
     bob = _register_customer(
         bob_client,
         username="bob02",
         email="bob@example.com",
         phone="81234567",
-        account="012555999",
+        account="012555999000",
     )
     _alice, secret = _login_mfa_customer(client)
     totp_time = _freeze_totp_verifier(monkeypatch)
@@ -199,47 +186,13 @@ def test_payee_lookup_accepts_new_twelve_digit_account_numbers(app, client, monk
     assert db.session.query(Payee).filter_by(account_number="012555999123").count() == 1
 
 
-def test_payee_add_rejects_passkey_stepup_token(app, client):
-    bob_client = app.test_client()
-    _register_customer(
-        client,
-        username="alice01",
-        email="alice@example.com",
-        phone="91234567",
-        account="012345678",
-    )
-    bob = _register_customer(
-        bob_client,
-        username="bob02",
-        email="bob@example.com",
-        phone="81234567",
-        account="012555999",
-    )
-    _alice, secret = _login_mfa_customer(client)
-
-    response = client.post(
-        "/banking/payees/add",
-        data={
-            "nickname": "Bob",
-            "account_number": bob.account_number,
-            "totp_code": _current_totp(secret),
-            "stepup_token": "A" * 40,
-        },
-    )
-
-    assert response.status_code == 403
-    assert b"authenticator code" in response.data
-    with client.session_transaction() as sess:
-        assert "pending_payee" not in sess
-
-
 def test_invalid_payee_lookup_is_generic_and_audited(client, monkeypatch):
     _register_customer(
         client,
         username="alice01",
         email="alice@example.com",
         phone="91234567",
-        account="012345678",
+        account="012345678000",
     )
     _alice, secret = _login_mfa_customer(client)
     totp_time = _freeze_totp_verifier(monkeypatch)
@@ -248,7 +201,7 @@ def test_invalid_payee_lookup_is_generic_and_audited(client, monkeypatch):
         "/banking/payees/add",
         data={
             "nickname": "Missing",
-            "account_number": "012000999",
+            "account_number": "012000999000",
             "totp_code": _current_totp(secret, totp_time),
         },
     )
@@ -257,7 +210,7 @@ def test_invalid_payee_lookup_is_generic_and_audited(client, monkeypatch):
     assert response.status_code == 400
     assert b"Could not add that payee" in response.data
     assert "account_ref" in event.event_metadata
-    assert "012000999" not in str(event.event_metadata)
+    assert "012000999000" not in str(event.event_metadata)
 
 
 def test_invalid_payee_lookup_blocks_after_durable_rate_limit(client, monkeypatch):
@@ -266,7 +219,7 @@ def test_invalid_payee_lookup_blocks_after_durable_rate_limit(client, monkeypatc
         username="alice01",
         email="alice@example.com",
         phone="91234567",
-        account="012345678",
+        account="012345678000",
     )
     _alice, secret = _login_mfa_customer(client)
     base_time = int(time.time())
@@ -279,7 +232,7 @@ def test_invalid_payee_lookup_blocks_after_durable_rate_limit(client, monkeypatc
             "/banking/payees/add",
             data={
                 "nickname": "Missing",
-                "account_number": "012000999",
+                "account_number": "012000999000",
                 "totp_code": _current_totp(secret, timestamp),
             },
         )
@@ -292,7 +245,7 @@ def test_invalid_payee_lookup_blocks_after_durable_rate_limit(client, monkeypatc
         outcome="blocked",
     ).one()
     assert blocked_event.event_metadata["reason"] == "durable_rate_limit"
-    assert "012000999" not in str(blocked_event.event_metadata)
+    assert "012000999000" not in str(blocked_event.event_metadata)
 
 
 def test_payee_add_and_remove_audit_metadata_uses_safe_references(app, client, monkeypatch):
@@ -302,14 +255,14 @@ def test_payee_add_and_remove_audit_metadata_uses_safe_references(app, client, m
         username="alice01",
         email="alice@example.com",
         phone="91234567",
-        account="012345678",
+        account="012345678000",
     )
     bob = _register_customer(
         bob_client,
         username="bob02",
         email="bob@example.com",
         phone="81234567",
-        account="012555999",
+        account="012555999000",
     )
     _alice, secret = _login_mfa_customer(client)
     totp_time = _freeze_totp_verifier(monkeypatch)
@@ -359,14 +312,14 @@ def test_self_and_duplicate_payee_are_rejected_before_pending_state(app, client,
         username="alice01",
         email="alice@example.com",
         phone="91234567",
-        account="012345678",
+        account="012345678000",
     )
     bob = _register_customer(
         bob_client,
         username="bob02",
         email="bob@example.com",
         phone="81234567",
-        account="012555999",
+        account="012555999000",
     )
     db.session.add(Payee(user_id=alice.id, nickname="Existing", account_number=bob.account_number, recipient_name=bob.full_name))
     db.session.commit()
@@ -403,14 +356,14 @@ def test_pending_payee_confirmation_expires(app, client):
         username="alice01",
         email="alice@example.com",
         phone="91234567",
-        account="012345678",
+        account="012345678000",
     )
     bob = _register_customer(
         bob_client,
         username="bob02",
         email="bob@example.com",
         phone="81234567",
-        account="012555999",
+        account="012555999000",
     )
     _login_mfa_customer(client)
     with client.session_transaction() as sess:
@@ -437,14 +390,14 @@ def test_payee_removal_enforces_ownership_and_totp(app, client):
         username="alice01",
         email="alice@example.com",
         phone="91234567",
-        account="012345678",
+        account="012345678000",
     )
     bob = _register_customer(
         bob_client,
         username="bob02",
         email="bob@example.com",
         phone="81234567",
-        account="012555999",
+        account="012555999000",
     )
     payee = Payee(user_id=bob.id, nickname="Alice", account_number=alice.account_number, recipient_name=alice.full_name)
     db.session.add(payee)
@@ -468,7 +421,7 @@ def test_payee_routes_cover_missing_expired_and_unauthorized_pending_state(clien
         username="alice01",
         email="alice@example.com",
         phone="91234567",
-        account="012345678",
+        account="012345678000",
     )
     _login_mfa_customer(client)
 
@@ -480,7 +433,7 @@ def test_payee_routes_cover_missing_expired_and_unauthorized_pending_state(clien
     with client.session_transaction() as session_state:
         session_state["pending_payee"] = {
             "nickname": "Expired",
-            "account_number": "012000999",
+            "account_number": "012000999000",
             "authorization_action": "payee_add",
             "authorized_at": datetime.now(timezone.utc).isoformat(),
             "expires_at": (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(),
@@ -490,7 +443,7 @@ def test_payee_routes_cover_missing_expired_and_unauthorized_pending_state(clien
     with client.session_transaction() as session_state:
         session_state["pending_payee"] = {
             "nickname": "Unauthorized",
-            "account_number": "012000999",
+            "account_number": "012000999000",
             "authorization_action": "other",
             "authorized_at": datetime.now(timezone.utc).isoformat(),
             "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
@@ -529,14 +482,14 @@ def test_payee_confirmation_handles_missing_duplicate_and_removal_paths(
         username="alice01",
         email="alice@example.com",
         phone="91234567",
-        account="012345678",
+        account="012345678000",
     )
     bob = _register_customer(
         bob_client,
         username="bob02",
         email="bob@example.com",
         phone="81234567",
-        account="012555999",
+        account="012555999000",
     )
     _alice, secret = _login_mfa_customer(client)
     totp_time = _freeze_totp_verifier(monkeypatch)
@@ -551,7 +504,7 @@ def test_payee_confirmation_handles_missing_duplicate_and_removal_paths(
         }
 
     with client.session_transaction() as session_state:
-        session_state["pending_payee"] = pending("012000999", "Missing")
+        session_state["pending_payee"] = pending("012000999000", "Missing")
     missing = client.post("/banking/payees/confirm")
 
     existing = Payee(

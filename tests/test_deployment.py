@@ -588,48 +588,20 @@ def test_dast_session_creator_matches_registration_contract():
     assert "0o644" not in source
 
 
-def test_registration_field_migration_preserves_unknown_phones_and_randomizes_accounts():
+def test_registration_field_migration_targets_current_reset_schema_without_backfills():
     migration = Path(
         "migrations/versions/20260622_0008_add_user_registration_fields.py"
     ).read_text(encoding="utf-8")
 
-    assert "SET phone_number = '9'" not in migration
-    assert "SET phone_number = NULL" in migration
-    assert "row_number() OVER (ORDER BY id)" not in migration
-    assert "secrets.randbelow" in migration
+    assert "UPDATE users" not in migration
+    assert "secrets.randbelow" not in migration
+    assert "String(12)" in migration
     assert "postgresql_where=sa.text(\"phone_number IS NOT NULL\")" in migration
     assert "sqlite_where=sa.text(\"phone_number IS NOT NULL\")" in migration
-    assert "SET full_name = username" in migration
+    assert "full_name" in migration
 
 
-def test_privileged_user_contact_field_migration_repairs_production_schema_drift():
-    migration = Path(
-        "migrations/versions/20260629_0017_relax_privileged_user_contact_fields.py"
-    ).read_text(encoding="utf-8")
-
-    assert 'revision = "20260629_0017"' in migration
-    assert 'down_revision = "20260628_0016"' in migration
-    assert "ALTER TABLE users ALTER COLUMN phone_number DROP NOT NULL" in migration
-    assert "ALTER TABLE users ALTER COLUMN account_number DROP NOT NULL" in migration
-    assert "SET phone_number" not in migration
-    assert "SET account_number" not in migration
-
-
-def test_staff_invite_personal_email_migration_allows_workplace_only_invites():
-    migration = Path(
-        "migrations/versions/20260630_0018_staff_invites_workplace_email_only.py"
-    ).read_text(encoding="utf-8")
-
-    assert 'revision = "20260630_0018"' in migration
-    assert 'down_revision = "20260629_0017"' in migration
-    assert '"staff_invites"' in migration
-    assert '"personal_email_normalized"' in migration
-    assert "nullable=True" in migration
-    assert "UPDATE staff_invites" not in migration
-    assert "nullable=False" not in migration
-
-
-def test_account_identifier_length_migration_preserves_legacy_rows_and_blocks_unsafe_downgrade():
+def test_account_identifier_migration_enforces_current_twelve_digit_schema():
     migration = Path(
         "migrations/versions/20260703_0024_harden_banking_identifiers.py"
     ).read_text(encoding="utf-8")
@@ -637,12 +609,29 @@ def test_account_identifier_length_migration_preserves_legacy_rows_and_blocks_un
 
     assert 'revision = "20260703_0024"' in migration
     assert 'down_revision = "20260703_0023"' in migration
-    assert '"account_number"' in migration
-    assert "String(length=12)" in migration
-    assert "String(length=9)" in migration
-    assert "Cannot safely downgrade account_number length" in migration
+    assert "account_number" in migration
+    assert "length(account_number) = 12" in migration
+    assert "ck_users_account_number_format" in migration
+    assert "ck_payees_account_number_format" in migration
+    assert "String(length=9)" not in migration
     assert "Migration `20260703_0024`" in deployment_docs
-    assert "12-digit account numbers" in deployment_docs
+    assert "enforces exactly 12 decimal digits" in deployment_docs
+
+
+def test_password_history_migration_uses_current_nonnullable_schema_without_backfill():
+    from app.models import User
+
+    migration = Path(
+        "migrations/versions/20260701_0019_current_password_history.py"
+    ).read_text(encoding="utf-8")
+
+    assert User.__table__.c.password_changed_at.nullable is False
+    assert 'down_revision = "20260628_0016"' in migration
+    assert '"password_changed_at"' in migration
+    assert "nullable=False" in migration
+    assert "server_default=sa.func.now()" in migration
+    assert "UPDATE users" not in migration
+    assert "personal_email_normalized" not in migration
 
 
 def test_migration_baseline_drift_metadata_matches_reviewed_migrations():
@@ -734,8 +723,6 @@ def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypa
     assert set(environment) == set(PRODUCTION_NON_SECRET_RUNTIME_ENVIRONMENT)
     assert environment["APP_ENV"] == "production"
     assert environment["DEPLOYMENT_TARGET"] == "production"
-    assert "WEBAUTHN_RP_ID" not in environment
-    assert "WEBAUTHN_RP_ORIGIN" not in environment
     assert environment["PASSWORD_RESET_BASE_URL"] == "https://sitbank.pp.ua"
     assert environment["PASSWORD_RESET_EMAIL_BACKEND"] == "smtp"
     assert environment["PASSWORD_RESET_EMAIL_FROM"] == DEPLOYMENT_VALUES["PROD_PASSWORD_RESET_EMAIL_FROM"]
@@ -790,8 +777,6 @@ def test_container_bundle_accepts_staging_prefix(monkeypatch):
         == "sitbank.cloudflareaccess.com"
     )
     assert environment["STAGING_CLOUDFLARE_ACCESS_JWKS_CACHE_TTL_SECONDS"] == "300"
-    assert "WEBAUTHN_RP_ID" not in environment
-    assert "WEBAUTHN_RP_ORIGIN" not in environment
     assert environment["PASSWORD_RESET_BASE_URL"] == "https://staging.sitbank.example"
     assert environment["PAYEE_COOLDOWN_SECONDS"] == "43200"
     assert "ROOT_ADMIN_EMAILS" not in environment
@@ -1265,8 +1250,6 @@ def test_environment_only_bundle_accepts_staging_prefix(monkeypatch, tmp_path):
     assert "ADMIN_SESSION_HMAC_ACTIVE_KEY_ID='2026-06-admin'" in environment
     assert "MFA_KEK_ACTIVE_ID='2026-06-mfa'" in environment
     assert "ROOT_ADMIN_EMAILS=" not in environment
-    assert "WEBAUTHN_RP_ID" not in environment
-    assert "WEBAUTHN_RP_ORIGIN" not in environment
     assert "APP_BIND_PORT='5001'" in deployment
     assert "COMPOSE_PROJECT_NAME='sitbank-staging'" in deployment
     assert "CONFIG_ROOT='/etc/sitbank-staging'" in deployment
@@ -3943,7 +3926,6 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
         "limit_req_zone $binary_remote_addr zone=sitbank_prod_app:10m rate=20r/s;",
         "limit_req_zone $binary_remote_addr zone=sitbank_prod_auth:10m rate=5r/m;",
         "limit_req_zone $binary_remote_addr zone=sitbank_prod_register:10m rate=2r/m;",
-        "limit_req_zone $binary_remote_addr zone=sitbank_prod_challenge:10m rate=3r/m;",
         "limit_req_zone $binary_remote_addr zone=sitbank_prod_security:10m rate=10r/m;",
         "limit_req_zone $binary_remote_addr zone=sitbank_prod_admin:10m rate=2r/s;",
         "limit_req_zone $binary_remote_addr zone=sitbank_prod_admin_auth:10m rate=3r/m;",
@@ -3976,9 +3958,8 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
         "= /auth/mfa/verify": "sitbank_prod_auth",
         "= /register": "sitbank_prod_register",
         "= /auth/register": "sitbank_prod_register",
-        "~ ^/auth/webauthn/(?:register|authenticate|step-up)/(?:options|verify)$": "sitbank_prod_challenge",
-        "~ ^/(?:account|password|profile|security-keys|sessions)(?:/|$)": "sitbank_prod_security",
-        "~ ^/auth/(?:account|mfa|password|sessions|webauthn/credentials)(?:/|$)": "sitbank_prod_security",
+            "~ ^/(?:account|password|profile|sessions)(?:/|$)": "sitbank_prod_security",
+            "~ ^/auth/(?:account|mfa|password|sessions)(?:/|$)": "sitbank_prod_security",
         "/auth/": "sitbank_prod_auth",
     }
     for selector, zone in expected_location_limits.items():
@@ -4320,7 +4301,6 @@ def test_migration_baseline_and_existing_database_runbook_are_present():
 
     assert 'revision = "20260610_0001"' in migration
     assert '"users"' in migration
-    assert '"webauthn_credentials"' in migration
     assert '"security_audit_events"' in migration
     assert 'revision = "20260618_0002"' in audit_hash_migration
     assert 'down_revision = "20260610_0001"' in audit_hash_migration
@@ -4449,7 +4429,6 @@ def test_migration_baseline_renders_offline_sql(app):
 
     assert result.exit_code == 0, result.output
     assert "CREATE TABLE users" in result.output
-    assert "CREATE TABLE webauthn_credentials" in result.output
     assert "CREATE TABLE registration_invites" in result.output
     assert "DROP TABLE registration_invites" in result.output
     assert "CREATE TABLE security_audit_events" in result.output

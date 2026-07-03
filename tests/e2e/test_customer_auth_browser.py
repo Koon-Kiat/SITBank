@@ -31,7 +31,7 @@ def e2e_customer(app):
                 password_hash=hash_password(_CUSTOMER_PASSWORD),
                 full_name="E2E Customer",
                 phone_number="91234567",
-                account_number="123456789",
+                account_number="123456789000",
             )
         )
         db.session.commit()

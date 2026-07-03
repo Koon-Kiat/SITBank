@@ -171,7 +171,7 @@ def _generate_synthetic_phone_number() -> str:
 
 
 def _generate_synthetic_account_number() -> str:
-    return "012" + str(secrets.randbelow(1_000_000)).zfill(6)
+    return str(secrets.randbelow(1_000_000_000_000)).zfill(12)
 
 
 def create_dast_user(

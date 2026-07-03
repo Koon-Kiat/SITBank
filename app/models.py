@@ -26,7 +26,11 @@ class User(db.Model):
     account_number = db.Column(db.String(12), nullable=True)
     staff_personal_email = db.Column(db.String(255), nullable=True)
     workplace_email_verified_at = db.Column(db.DateTime(timezone=True), nullable=True)
-    password_changed_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    password_changed_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
     force_password_change = db.Column(db.Boolean, nullable=False, default=False)
     force_password_change_reason = db.Column(db.String(80), nullable=True)
     force_password_change_at = db.Column(db.DateTime(timezone=True), nullable=True)
@@ -36,8 +40,6 @@ class User(db.Model):
     mfa_enabled = db.Column(db.Boolean, nullable=False, default=False)
     mfa_pending_started_at = db.Column(db.DateTime(timezone=True), nullable=True)
     mfa_pending_session_hash = db.Column(db.String(64), nullable=True)
-    mfa_step_up_preference = db.Column(db.String(32), nullable=False, default="totp")
-
     balance = db.Column(
         db.Numeric(12, 2),
         nullable=False,
@@ -96,49 +98,21 @@ class User(db.Model):
             name="ck_users_account_status",
         ),
         db.CheckConstraint("balance >= 0", name="ck_users_balance_non_negative"),
+        db.CheckConstraint(
+            (
+                "account_number IS NULL OR (length(account_number) = 12 AND "
+                + " AND ".join(
+                    f"substr(account_number, {position}, 1) BETWEEN '0' AND '9'"
+                    for position in range(1, 13)
+                )
+                + ")"
+            ),
+            name="ck_users_account_number_format",
+        ),
     )
 
     def __repr__(self) -> str:
         return f"<User id={self.id!r} username={self.username!r}>"
-
-
-class WebAuthnCredential(db.Model):
-    __tablename__ = "webauthn_credentials"
-
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
-    credential_id = db.Column(db.LargeBinary, nullable=False, unique=True)
-    credential_public_key = db.Column(db.LargeBinary, nullable=False)
-    sign_count = db.Column(db.Integer, nullable=False, default=0)
-    label = db.Column(db.String(80), nullable=False)
-    aaguid = db.Column(db.String(36), nullable=False, index=True)
-    attestation_format = db.Column(db.String(32), nullable=False)
-    transports = db.Column(db.JSON, nullable=False, default=list)
-    credential_device_type = db.Column(db.String(32), nullable=False)
-    credential_backed_up = db.Column(db.Boolean, nullable=False, default=False)
-    credential_kind = db.Column(db.String(32), nullable=False, default="passkey")
-    created_at = db.Column(
-        db.DateTime(timezone=True),
-        nullable=False,
-        default=lambda: datetime.now(timezone.utc),
-    )
-    last_used_at = db.Column(db.DateTime(timezone=True), nullable=True)
-
-    user = db.relationship(
-        "User",
-        backref=db.backref(
-            "webauthn_credentials",
-            cascade=_CASCADE_DELETE_ORPHAN,
-            lazy="selectin",
-        ),
-    )
-
-    __table_args__ = (
-        Index("ix_webauthn_credentials_user_label_lower", user_id, func.lower(label), unique=True),
-    )
-
-    def __repr__(self) -> str:
-        return f"<WebAuthnCredential id={self.id!r} user_id={self.user_id!r} label={self.label!r}>"
 
 
 class PasswordResetToken(db.Model):
@@ -293,13 +267,14 @@ class AdminActionRequest(db.Model):
             (
                 "operation_type IN ("
                 "'staff_deactivate', 'staff_reactivate', 'staff_reset_activation', "
-                "'manual_recovery_approve', 'manual_recovery_deny', 'manual_recovery_complete'"
+                "'manual_recovery_approve', 'manual_recovery_deny', 'manual_recovery_complete', "
+                "'customer_security_unlock'"
                 ")"
             ),
             name="ck_admin_action_requests_operation_type",
         ),
         db.CheckConstraint(
-            "target_type IN ('staff_user', 'manual_recovery_request')",
+            "target_type IN ('staff_user', 'manual_recovery_request', 'customer_user')",
             name="ck_admin_action_requests_target_type",
         ),
         db.CheckConstraint(
@@ -462,7 +437,6 @@ class StaffInvite(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     token_hash = db.Column(db.String(64), nullable=False, unique=True, index=True)
-    personal_email_normalized = db.Column(db.String(255), nullable=True, index=True)
     workplace_email_normalized = db.Column(db.String(255), nullable=False, index=True)
     role = db.Column(db.String(32), nullable=False)
     status = db.Column(db.String(32), nullable=False, default="pending", index=True)
@@ -658,6 +632,16 @@ class Payee(db.Model):
 
     __table_args__ = (
         db.UniqueConstraint("user_id", "account_number", name="uq_payees_user_account"),
+        db.CheckConstraint(
+            (
+                "length(account_number) = 12 AND "
+                + " AND ".join(
+                    f"substr(account_number, {position}, 1) BETWEEN '0' AND '9'"
+                    for position in range(1, 13)
+                )
+            ),
+            name="ck_payees_account_number_format",
+        ),
     )
 
     def __repr__(self) -> str:

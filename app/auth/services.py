@@ -27,7 +27,6 @@ from app.auth.registration_otp import (
 )
 from app.auth.mfa_policy import (
     PASSWORD_BOOTSTRAP_AUTH_CONTEXT,
-    enrolled_webauthn_credential_count,
     has_enrolled_mfa_method,
 )
 from app.security.audit import audit_event, audit_event_required, audit_reference, principal_reference
@@ -116,15 +115,6 @@ MFA_NOT_ENABLED_ERROR = "MFA is not enabled"
 
 def _normalize(value: str) -> str:
     return value.strip().casefold()
-
-
-def _normalize_step_up_preference(value: str | None) -> str:
-    normalized = str(value or "totp").strip().casefold()
-    if normalized == "passkey":
-        raise AuthError("Passkey verification preference is no longer available", 400)
-    if normalized != "totp":
-        raise AuthError("Invalid verification preference", 400)
-    return normalized
 
 
 def _ensure_step_up_preference_enrolled(user: User, preference: str) -> None:
@@ -229,7 +219,7 @@ def _registration_duplicate_reason(
 
 def _generate_account_number() -> str:
     for _ in range(10):
-        candidate = "012" + "".join(str(secrets.randbelow(10)) for _ in range(9))
+        candidate = "".join(str(secrets.randbelow(10)) for _ in range(12))
         if not db.session.execute(db.select(User).where(User.account_number == candidate)).scalar_one_or_none():
             return candidate
     raise AuthError("Could not generate a unique account number", 500)
@@ -375,23 +365,17 @@ def authenticate_primary(identifier: str, password: str) -> dict[str, Any]:
     db.session.commit()
     clear_failures("login", principal)
     _clear_user_security_failures(user, "password")
-    legacy_passkey_count = enrolled_webauthn_credential_count(user)
-    metadata = {"mfa_required": False}
-    if legacy_passkey_count > 0:
-        metadata["legacy_passkey_credentials"] = legacy_passkey_count
-        audit_event(
-            "legacy_passkey_mfa_migration_required",
-            "required",
-            user=user,
-            session_id=session_id,
-            metadata={"legacy_passkey_credentials": legacy_passkey_count},
-        )
-    audit_event("login", "success", user=user, session_id=session_id, metadata=metadata)
+    audit_event(
+        "login",
+        "success",
+        user=user,
+        session_id=session_id,
+        metadata={"mfa_required": False},
+    )
     return {
         "message": "MFA setup required",
         "mfa_required": False,
         "mfa_setup_required": True,
-        "legacy_passkey_migration_required": legacy_passkey_count > 0,
         "session_ref": public_session_reference(session_id),
         "user": _public_user(user),
     }
@@ -478,7 +462,7 @@ def verify_mfa_setup(user: User, code: str) -> dict[str, Any]:
     }
 
 
-def generate_mfa_replacement(user: User, code: str | None, stepup_token: str | None = None) -> dict[str, str]:
+def generate_mfa_replacement(user: User, code: str | None) -> dict[str, str]:
     ensure_account_not_frozen(user, "MFA replacement")
     if not user.mfa_enabled:
         audit_event("mfa_replace_start", "failure", user=user, metadata={"reason": "mfa_not_enabled"})
@@ -487,7 +471,6 @@ def generate_mfa_replacement(user: User, code: str | None, stepup_token: str | N
     verify_high_risk_authorization(
         user,
         code,
-        stepup_token,
         "mfa_replace_start",
     )
 
@@ -588,7 +571,6 @@ def complete_pending_mfa(code: str) -> dict[str, Any]:
 def regenerate_totp_recovery_codes(
     user: User,
     code: str | None,
-    stepup_token: str | None = None,
 ) -> dict[str, Any]:
     ensure_account_not_frozen(user, "recovery code regeneration")
     if not user.mfa_enabled:
@@ -597,7 +579,6 @@ def regenerate_totp_recovery_codes(
     verify_high_risk_authorization(
         user,
         code,
-        stepup_token,
         "recovery_codes_regenerate",
     )
 
@@ -617,12 +598,11 @@ def regenerate_totp_recovery_codes(
     }
 
 
-def freeze_own_account(user: User, code: str, stepup_token: str | None = None) -> dict[str, Any]:
+def freeze_own_account(user: User, code: str) -> dict[str, Any]:
     ensure_account_not_frozen(user, "account freeze")
     verify_high_risk_authorization(
         user,
         code,
-        stepup_token,
         "account_freeze",
         rotate_session_on_success=False,
     )
@@ -685,7 +665,6 @@ def update_profile_details(
     username: str,
     email: str,
     code: str | None,
-    stepup_token: str | None = None,
     email_verification_code: str | None = None,
 ) -> dict[str, Any]:
     normalized_username, username_lookup, normalized_email, email_changed = _profile_update_values(
@@ -707,7 +686,6 @@ def update_profile_details(
             username=normalized_username,
             normalized_email=normalized_email,
             code=code,
-            stepup_token=stepup_token,
             email_verification_code=email_verification_code,
         )
         if pending_result is not None:
@@ -716,7 +694,6 @@ def update_profile_details(
         verify_high_risk_authorization(
             user,
             code,
-            stepup_token,
             "profile_update",
         )
 
@@ -744,14 +721,12 @@ def _handle_profile_email_change(
     username: str,
     normalized_email: str,
     code: str | None,
-    stepup_token: str | None,
     email_verification_code: str | None,
 ) -> dict[str, Any] | None:
     if not email_verification_code:
         verify_high_risk_authorization(
             user,
             code,
-            stepup_token,
             "profile_email_change_request",
         )
         _create_profile_email_change_challenge(
@@ -769,7 +744,6 @@ def _handle_profile_email_change(
     verify_high_risk_authorization(
         user,
         code,
-        stepup_token,
         "profile_email_change_commit",
     )
     return None
@@ -945,7 +919,6 @@ def change_password(
     new_password: str,
     confirm_new_password: str,
     code: str | None,
-    stepup_token: str | None = None,
 ) -> dict[str, Any]:
     ensure_account_not_frozen(user, "password change")
     if new_password != confirm_new_password:
@@ -970,7 +943,6 @@ def change_password(
     verify_high_risk_authorization(
         user,
         code,
-        stepup_token,
         "password_change",
         rotate_session_on_success=False,
     )
@@ -1058,7 +1030,6 @@ def verify_fresh_mfa_for_action(
 def verify_high_risk_authorization(
     user: User,
     code: str | None,
-    stepup_token: str | None,
     action: str,
     *,
     rotate_session_on_success: bool = True,
@@ -1067,9 +1038,6 @@ def verify_high_risk_authorization(
     if not has_enrolled_mfa_method(user):
         audit_event(action, "failure", user=user, metadata={"reason": "mfa_not_enabled"})
         raise AuthError("MFA is required for this action", 403)
-    if stepup_token:
-        audit_event(action, "failure", user=user, metadata={"reason": "passkey_step_up_disabled"})
-        raise AuthError("Enter an authenticator code to verify this action", 403)
     if not code:
         audit_event(action, "failure", user=user, metadata={"reason": "missing_mfa_step_up"})
         raise AuthError("MFA verification is required for this action", 403)
@@ -1406,7 +1374,6 @@ def _public_user(user: User) -> dict[str, Any]:
         "email": user.email,
         "account_type": user.account_type,
         "mfa_enabled": user.mfa_enabled,
-        "mfa_step_up_preference": user.mfa_step_up_preference,
         "is_frozen": user.is_frozen,
     }
 

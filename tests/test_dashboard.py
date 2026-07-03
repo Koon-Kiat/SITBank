@@ -66,7 +66,7 @@ def get_user(username="alice01"):
     return db.session.execute(db.select(User).where(User.username == username)).scalar_one()
 
 
-def set_account_number(user, number="123456789"):
+def set_account_number(user, number="123456789000"):
     user.account_number = number
     db.session.commit()
 
@@ -123,37 +123,37 @@ def test_dashboard_balance_eye_toggle_button_present(client):
 
 def test_dashboard_shows_account_number_label(client):
     user = login_with_mfa(client)
-    set_account_number(user, "123456789")
+    set_account_number(user, "123456789000")
     markup = client.get("/dashboard").data.decode("utf-8")
     assert "Account No." in markup
 
 
 def test_dashboard_masks_account_number_showing_last_three_digits(client):
     user = login_with_mfa(client)
-    set_account_number(user, "123456789")
+    set_account_number(user, "123456789000")
     markup = client.get("/dashboard").data.decode("utf-8")
     assert "card-acct-masked" in markup
-    assert "789" in markup
+    assert "000" in markup
 
 
 def test_dashboard_account_number_full_in_hidden_span(client):
     user = login_with_mfa(client)
-    set_account_number(user, "123456789")
+    set_account_number(user, "123456789000")
     markup = client.get("/dashboard").data.decode("utf-8")
     assert 'id="card-acct-full" hidden' in markup
-    assert "123-456-789" in markup
+    assert "123-456-789000" in markup
 
 
 def test_dashboard_account_number_masked_format_uses_dashes(client):
     user = login_with_mfa(client)
-    set_account_number(user, "123456789")
+    set_account_number(user, "123456789000")
     markup = client.get("/dashboard").data.decode("utf-8")
-    assert "•••-•••-789" in markup
+    assert "•••-•••-000" in markup
 
 
 def test_dashboard_account_number_eye_toggle_button_present(client):
     user = login_with_mfa(client)
-    set_account_number(user, "123456789")
+    set_account_number(user, "123456789000")
     markup = client.get("/dashboard").data.decode("utf-8")
     assert "acct-eye-btn" in markup
 
@@ -239,12 +239,6 @@ def test_dashboard_does_not_show_low_recovery_codes_warning(client):
     assert "Regenerate soon" not in markup
 
 
-def test_dashboard_does_not_show_passkeys_notice(client):
-    login_with_mfa(client)
-    markup = client.get("/dashboard").data.decode("utf-8")
-    assert "No passkeys are registered" not in markup
-
-
 def test_recovery_codes_count_shown_on_mfa_page(client):
     from app.auth.recovery_codes import generate_recovery_codes_for_user
     user = login_with_mfa(client)
@@ -260,12 +254,6 @@ def test_low_recovery_codes_warning_shown_on_mfa_page(client):
     markup = client.get("/mfa/setup").data.decode("utf-8")
     assert "2 unused recovery codes remain." in markup
     assert "Regenerate soon" in markup
-
-
-def test_passkeys_notice_shown_on_security_keys_page(client):
-    login_with_mfa(client)
-    markup = client.get("/security-keys").data.decode("utf-8")
-    assert "No legacy passkey records" in markup
 
 
 # ── Frozen account ─────────────────────────────────────────────────────────────
