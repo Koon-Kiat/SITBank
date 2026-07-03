@@ -20,7 +20,8 @@ does not require or read the API token. `--apply` reconciles the Access
 application, approved-operator policy, and proxied DNS record only after the
 exact confirmation phrase. `--verify` makes read-only API calls, checks that an
 unauthenticated edge request receives the Access challenge, and proves that a
-direct request to the EC2 origin is blocked by Nginx or the network.
+direct request to the EC2 origin is blocked by Nginx, TLS client-certificate
+verification, or the network.
 
 Category: [Security architecture](../README.md#architecture).
 

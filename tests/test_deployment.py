@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import os
 import re
+import shutil
 import subprocess
 import sys
 import importlib.util
@@ -3188,6 +3189,62 @@ def test_linux_deployment_artifacts_are_forced_to_lf_and_reject_crlf():
 
     assert "Refusing to install CRLF-formatted Linux file" in bootstrap
     assert "grep -q $'\\r$'" in bootstrap
+
+
+def test_staging_edge_verifier_accepts_connection_rejection_as_fail_closed(
+    tmp_path,
+    monkeypatch,
+):
+    if shutil.which("bash") is None:
+        pytest.skip("bash is not installed")
+    bash_probe = subprocess.run(
+        ["bash", "-lc", "printf ok"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if bash_probe.returncode != 0 or bash_probe.stdout != "ok":
+        pytest.skip("bash is not usable")
+
+    fake_curl = tmp_path / "curl"
+    fake_curl.write_text(
+        """#!/usr/bin/env bash
+set -Eeuo pipefail
+direct=0
+for arg in "$@"; do
+    if [[ "${arg}" == "--resolve" ]]; then
+        direct=1
+    fi
+done
+if [[ "${direct}" -eq 1 ]]; then
+    exit 7
+fi
+printf '%s\n' \
+    'HTTP/2 302' \
+    'location: https://small-boat-a77f.cloudflareaccess.com/cdn-cgi/access/login' \
+    'server: cloudflare' \
+    'cf-ray: fake-ray' \
+    ''
+""",
+        encoding="utf-8",
+        newline="\n",
+    )
+    fake_curl.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+
+    result = subprocess.run(
+        [
+            "bash",
+            "ops/deploy/verify-staging-edge-boundary",
+            "staging-sitbank.pp.ua",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "failed closed by rejecting the connection" in result.stdout
 
 
 def test_certbot_host_state_verifier_enforces_host_managed_tls():

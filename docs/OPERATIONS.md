@@ -179,9 +179,9 @@ entry before deployment.
 
 Expected: the loopback Flask root returns `403` without an Access assertion,
 local Flask and Nginx staging readiness return exact non-redirect `200`
-responses, direct Nginx origin access fails TLS client-certificate verification
-or returns the approved Nginx `400`/`403` denial without Cloudflare's
-origin-pull client certificate, and the
+responses, direct Nginx origin access fails TLS client-certificate verification,
+rejects the connection, or returns the approved Nginx `400`/`403` denial
+without Cloudflare's origin-pull client certificate, and the
 private admin URL is reachable only from an approved tailnet path. Tailscale
 Funnel must stay disabled for SITBank admin.
 Tailscale is the private network/device boundary for admin access; it does not

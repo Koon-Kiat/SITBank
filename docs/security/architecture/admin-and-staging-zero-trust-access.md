@@ -315,7 +315,8 @@ ssl_verify_client on;
 This server-level gate covers every public TLS location, including
 `/health/live`, and prevents a future location from omitting a copied check.
 Direct-origin connections without Cloudflare's client certificate fail the
-TLS client-certificate exchange. Nginx readiness is isolated on
+TLS client-certificate exchange or are rejected at the connection layer.
+Nginx readiness is isolated on
 `127.0.0.1:8081` and `[::1]:8081`; the public TLS `/health/ready` location
 does not proxy to Flask. The local readiness location sets the forwarded scheme
 to `https` explicitly, and the deployment wrapper requires an exact `200` plus
@@ -468,8 +469,8 @@ curl --fail http://127.0.0.1:5001/health/ready
 Expected: local readiness succeeds through loopback, a direct request to the
 Flask staging root returns `403` without an Access assertion, and direct Nginx
 origin access to `/` fails the TLS client-certificate exchange without
-Cloudflare's authenticated origin-pull client certificate or returns an
-approved Nginx `400`/`403` fail-closed denial.
+Cloudflare's authenticated origin-pull client certificate, is rejected at the
+connection layer, or returns an approved Nginx `400`/`403` fail-closed denial.
 
 The automated verification proves that the Access application and narrow
 policy match, DNS is proxied, the audience exists, unauthenticated edge traffic
