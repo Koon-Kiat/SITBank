@@ -215,7 +215,6 @@ def test_customer_mfa_handlers_use_standard_429(
     form = SimpleNamespace(
         validate_on_submit=lambda: True,
         totp_code=SimpleNamespace(data="000000"),
-        stepup_token=SimpleNamespace(data="clearly-fake-step-up-token"),
     )
     monkeypatch.setattr(
         routes,

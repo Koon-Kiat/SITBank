@@ -3,21 +3,20 @@ from pathlib import Path
 from app.models import StaffInvite
 
 
-MIGRATION = Path("migrations/versions/20260701_0019_password_history_and_staff_invite_portability.py")
+MIGRATIONS = Path("migrations/versions")
 
 
-def test_staff_invite_personal_email_model_is_nullable():
-    assert StaffInvite.__table__.c.personal_email_normalized.nullable is True
+def test_staff_invite_schema_has_no_personal_email_binding():
+    assert "personal_email_normalized" not in StaffInvite.__table__.c
 
 
-def test_portable_staff_invite_nullability_migration_uses_batch_mode():
-    text = MIGRATION.read_text(encoding="utf-8")
+def test_migrations_have_no_personal_email_binding_or_portability_backfill():
+    texts = [
+        path.read_text(encoding="utf-8")
+        for path in MIGRATIONS.glob("*.py")
+        if path.name != "__init__.py"
+    ]
+    combined = "\n".join(texts)
 
-    assert 'down_revision = "20260630_0018"' in text
-    assert 'op.batch_alter_table("staff_invites"' in text
-    assert "copy_from=_staff_invites_table()" in text
-    assert '"personal_email_normalized"' in text
-    assert "nullable=True" in text
-    assert "op.get_bind().dialect" not in text
-    assert "postgresql" not in text.casefold()
-    assert "UPDATE staff_invites" not in text
+    assert "personal_email_normalized" not in combined
+    assert "staff_invite_portability" not in combined

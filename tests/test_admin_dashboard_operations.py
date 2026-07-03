@@ -326,7 +326,6 @@ def test_admin_browser_form_payload_strips_csrf_token_for_invites(admin_client):
     assert response.status_code == 303
     assert response.headers["Location"].endswith("/invites")
     assert invite.workplace_email_normalized == "staff.person@sit.singaporetech.edu.sg"
-    assert invite.personal_email_normalized is None
 
 
 def test_admin_browser_login_rejects_customer_accounts_with_generic_error(admin_client):
@@ -339,7 +338,7 @@ def test_admin_browser_login_rejects_customer_accounts_with_generic_error(admin_
             account_status="active",
             full_name="Customer Admin Try",
             phone_number="91234567",
-            account_number="100000001",
+            account_number="100000001000",
             mfa_enabled=True,
         )
     )
@@ -411,8 +410,6 @@ def test_dashboard_renders_role_navigation_and_audits_access(admin_client):
     assert "Business operations" in staff_body
     assert "Staff invites" not in staff_body
     assert "Manual recovery" not in staff_body
-    assert "security_keys" not in staff_body
-    assert "webauthn/register" not in staff_body.casefold()
     assert [staff_audit.status_code, staff_accounts.status_code, staff_alerts.status_code, staff_invites.status_code] == [
         403,
         403,
@@ -1106,6 +1103,3 @@ def test_admin_templates_do_not_render_inline_script_or_sensitive_fields():
         "csrf_token() }}\" data",
     ):
         assert forbidden not in combined
-    assert "security_keys" not in combined
-    assert "webauthn" not in combined.casefold()
-    assert "passkey" not in combined.casefold()

@@ -101,8 +101,6 @@ def bootstrap_root_admin(
     user.workplace_email_verified_at = datetime.now(timezone.utc)
     user.mfa_secret_nonce, user.mfa_secret_ciphertext = encrypt_mfa_secret(secret, user.id)
     user.mfa_enabled = True
-    user.mfa_step_up_preference = "totp"
-
     try:
         db.session.commit()
     except IntegrityError as exc:

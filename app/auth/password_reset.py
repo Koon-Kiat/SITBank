@@ -11,7 +11,7 @@ from flask import current_app, has_request_context, request, session
 from sqlalchemy import func, or_
 
 from app.extensions import db
-from app.models import ManualRecoveryRequest, PasswordResetToken, PasswordResetTransaction, User, WebAuthnCredential
+from app.models import ManualRecoveryRequest, PasswordResetToken, PasswordResetTransaction, User
 from app.security.audit import (
     audit_event,
     audit_event_required,
@@ -55,12 +55,9 @@ GENERIC_AUTHENTICATION_CODE_ERROR = "Invalid authentication code."
 GENERIC_VERIFICATION_METHOD_ERROR = "Invalid verification method."
 RESET_MFA_TOTP = "totp"
 RESET_MFA_RECOVERY_CODE = "recovery_code"
-RESET_MFA_MANUAL_RECOVERY = "manual_recovery"
 RESET_MFA_NONE = "none"
 RESET_MFA_METHODS = frozenset({RESET_MFA_TOTP, RESET_MFA_RECOVERY_CODE})
-RESET_MFA_PUBLIC_METHODS = frozenset(
-    {RESET_MFA_TOTP, RESET_MFA_RECOVERY_CODE, RESET_MFA_MANUAL_RECOVERY}
-)
+RESET_MFA_PUBLIC_METHODS = RESET_MFA_METHODS
 RESET_MFA_METHOD_ALIASES = {
     "authenticator": RESET_MFA_TOTP,
     RESET_MFA_TOTP: RESET_MFA_TOTP,
@@ -329,8 +326,6 @@ def complete_password_reset(new_password: str, confirm_new_password: str) -> dic
     user = _transaction_user(transaction)
     if transaction["mfa_required"] != "none" and not transaction.get("mfa_verified"):
         audit_event("password_reset_failed", "failure", user=user, metadata={"reason": "missing_mfa"})
-        if transaction["mfa_required"] == RESET_MFA_MANUAL_RECOVERY:
-            raise AuthError("Manual account recovery is required before resetting the password", 403)
         raise AuthError("MFA verification is required before resetting the password", 403)
     if new_password != confirm_new_password:
         audit_event("password_reset_failed", "failure", user=user, metadata={"reason": "password_mismatch"})
@@ -527,19 +522,16 @@ def complete_manual_recovery_request(request_id: int, *, reason: str | None = No
         )
         raise AuthError("Manual recovery request cannot be completed", 409)
 
-    removed_credentials = list(
-        db.session.execute(
-            db.select(WebAuthnCredential).where(WebAuthnCredential.user_id == user.id)
-        ).scalars()
-    )
-    for credential in removed_credentials:
-        db.session.delete(credential)
     user.mfa_enabled = False
     user.mfa_secret_nonce = None
     user.mfa_secret_ciphertext = None
     user.mfa_pending_started_at = None
     user.mfa_pending_session_hash = None
-    revoked_sessions = revoke_all_sessions(user.id, ended_reason="manual_recovery")
+    revoked_sessions = revoke_all_sessions(
+        user.id,
+        ended_reason="manual_recovery",
+        component="customer",
+    )
     old_status = request_record.status
     _set_manual_recovery_status(request_record, MANUAL_RECOVERY_STATUS_COMPLETED, now)
     request_record.completed_at = now
@@ -550,7 +542,6 @@ def complete_manual_recovery_request(request_id: int, *, reason: str | None = No
         "new_status": MANUAL_RECOVERY_STATUS_COMPLETED,
         "reason": reason,
         "revoked_sessions": revoked_sessions,
-        "removed_legacy_passkey_credentials": len(removed_credentials),
         "mfa_reenrollment_required": True,
     }
     if has_request_context():
@@ -565,7 +556,6 @@ def complete_manual_recovery_request(request_id: int, *, reason: str | None = No
     result.update(
         {
             "revoked_sessions": revoked_sessions,
-            "removed_legacy_passkey_credentials": len(removed_credentials),
             "mfa_reenrollment_required": True,
         }
     )
@@ -618,7 +608,7 @@ def reset_transaction_user_and_id(*, required_method: str | None = None) -> tupl
             user,
             required_method,
             submitted_factor=required_method,
-            error_message="Security key verification failed",
+            error_message=GENERIC_AUTHENTICATION_CODE_ERROR,
         )
     return user, transaction["transaction_id"]
 
@@ -923,10 +913,8 @@ def _mfa_requirement(user: User) -> str:
 
 def _reset_mfa_policy(user: User) -> dict[str, Any]:
     available_methods = _available_reset_mfa_methods_for_user(user)
-    preferred_method = _profile_preference_to_reset_method(user.mfa_step_up_preference)
-    if preferred_method not in available_methods:
-        preferred_method = None
-    default_method = preferred_method or _fallback_reset_mfa_method(available_methods)
+    preferred_method = RESET_MFA_TOTP if RESET_MFA_TOTP in available_methods else None
+    default_method = _fallback_reset_mfa_method(available_methods)
     return {
         "available_methods": available_methods,
         "preferred_method": preferred_method,
@@ -940,19 +928,7 @@ def _available_reset_mfa_methods_for_user(user: User) -> list[str]:
         methods.append(RESET_MFA_TOTP)
         if unused_recovery_code_count(user) > 0:
             methods.append(RESET_MFA_RECOVERY_CODE)
-    elif _legacy_passkey_credential_count(user) > 0:
-        methods.append(RESET_MFA_MANUAL_RECOVERY)
     return methods
-
-
-def _legacy_passkey_credential_count(user: User) -> int:
-    if user.id is None:
-        return 0
-    return int(
-        db.session.execute(
-            db.select(func.count(WebAuthnCredential.id)).where(WebAuthnCredential.user_id == user.id)
-        ).scalar_one()
-    )
 
 
 def _available_reset_mfa_methods_from_transaction(transaction: dict[str, Any]) -> list[str]:
@@ -971,12 +947,10 @@ def _available_reset_mfa_methods_from_transaction(transaction: dict[str, Any]) -
 def _fallback_reset_mfa_method(available_methods: list[str]) -> str:
     if RESET_MFA_TOTP in available_methods:
         return RESET_MFA_TOTP
-    if RESET_MFA_MANUAL_RECOVERY in available_methods:
-        return RESET_MFA_MANUAL_RECOVERY
     return RESET_MFA_NONE
 
 
-def _profile_preference_to_reset_method(value: str | None) -> str | None:
+def _reset_method_alias(value: str | None) -> str | None:
     normalized = str(value or "").strip().casefold()
     return RESET_MFA_METHOD_ALIASES.get(normalized)
 
@@ -990,9 +964,7 @@ def _normalize_reset_mfa_method(value: str | None) -> str:
 
 
 def _public_reset_mfa_method(value: Any) -> str | None:
-    if str(value or "").strip().casefold() == RESET_MFA_MANUAL_RECOVERY:
-        return RESET_MFA_MANUAL_RECOVERY
-    method = _profile_preference_to_reset_method(str(value or ""))
+    method = _reset_method_alias(str(value or ""))
     return method if method in RESET_MFA_METHODS else None
 
 

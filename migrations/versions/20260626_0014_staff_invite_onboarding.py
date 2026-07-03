@@ -7,7 +7,6 @@ Create Date: 2026-06-26 00:14:00
 
 from alembic import op
 import sqlalchemy as sa
-from sqlalchemy import text
 
 
 revision = "20260626_0014"
@@ -17,15 +16,13 @@ depends_on = None
 
 
 def upgrade() -> None:
-    dialect = op.get_context().dialect.name
-
     op.add_column(
         "users",
-        sa.Column("account_type", sa.String(length=32), nullable=True),
+        sa.Column("account_type", sa.String(length=32), nullable=False, server_default="customer"),
     )
     op.add_column(
         "users",
-        sa.Column("account_status", sa.String(length=32), nullable=True),
+        sa.Column("account_status", sa.String(length=32), nullable=False, server_default="active"),
     )
     op.add_column(
         "users",
@@ -35,12 +32,8 @@ def upgrade() -> None:
         "users",
         sa.Column("workplace_email_verified_at", sa.DateTime(timezone=True), nullable=True),
     )
-    op.execute(text("UPDATE users SET account_type = 'customer' WHERE account_type IS NULL"))
-    op.execute(text("UPDATE users SET account_status = 'active' WHERE account_status IS NULL"))
-    if dialect != "sqlite":
-        op.alter_column("users", "account_type", existing_type=sa.String(32), nullable=False)
-        op.alter_column("users", "account_status", existing_type=sa.String(32), nullable=False)
-        op.alter_column("users", "account_number", existing_type=sa.String(9), nullable=True)
+    if op.get_context().dialect.name != "sqlite":
+        op.alter_column("users", "account_number", existing_type=sa.String(12), nullable=True)
         op.create_check_constraint(
             "ck_users_account_type",
             "users",
@@ -58,7 +51,6 @@ def upgrade() -> None:
         "staff_invites",
         sa.Column("id", sa.Integer(), nullable=False),
         sa.Column("token_hash", sa.String(length=64), nullable=False),
-        sa.Column("personal_email_normalized", sa.String(length=255), nullable=False),
         sa.Column("workplace_email_normalized", sa.String(length=255), nullable=False),
         sa.Column("role", sa.String(length=32), nullable=False),
         sa.Column("status", sa.String(length=32), nullable=False),
@@ -90,7 +82,6 @@ def upgrade() -> None:
     op.create_index("ix_staff_invites_created_at", "staff_invites", ["created_at"])
     op.create_index("ix_staff_invites_created_by_user_id", "staff_invites", ["created_by_user_id"])
     op.create_index("ix_staff_invites_expires_at", "staff_invites", ["expires_at"])
-    op.create_index("ix_staff_invites_personal_email_normalized", "staff_invites", ["personal_email_normalized"])
     op.create_index("ix_staff_invites_revoked_by_user_id", "staff_invites", ["revoked_by_user_id"])
     op.create_index("ix_staff_invites_setup_user_id", "staff_invites", ["setup_user_id"])
     op.create_index("ix_staff_invites_status", "staff_invites", ["status"])
@@ -137,7 +128,6 @@ def downgrade() -> None:
     op.drop_index("ix_staff_invites_status", table_name="staff_invites")
     op.drop_index("ix_staff_invites_setup_user_id", table_name="staff_invites")
     op.drop_index("ix_staff_invites_revoked_by_user_id", table_name="staff_invites")
-    op.drop_index("ix_staff_invites_personal_email_normalized", table_name="staff_invites")
     op.drop_index("ix_staff_invites_expires_at", table_name="staff_invites")
     op.drop_index("ix_staff_invites_created_by_user_id", table_name="staff_invites")
     op.drop_index("ix_staff_invites_created_at", table_name="staff_invites")
@@ -149,7 +139,7 @@ def downgrade() -> None:
     if dialect != "sqlite":
         op.drop_constraint("ck_users_account_status", "users", type_="check")
         op.drop_constraint("ck_users_account_type", "users", type_="check")
-        op.alter_column("users", "account_number", existing_type=sa.String(9), nullable=False)
+        op.alter_column("users", "account_number", existing_type=sa.String(12), nullable=False)
     op.drop_column("users", "workplace_email_verified_at")
     op.drop_column("users", "staff_personal_email")
     op.drop_column("users", "account_status")

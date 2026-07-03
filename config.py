@@ -1095,7 +1095,6 @@ def _admin_runtime_overrides(config: dict) -> dict[str, object]:
         "RATELIMIT_KEY_PREFIX": config.get("ADMIN_RATELIMIT_KEY_PREFIX")
         or os.getenv("ADMIN_RATELIMIT_KEY_PREFIX", "ospbank:admin:ratelimit:"),
         "ADMIN_AUTH_ENABLED": True,
-        "ADMIN_WEBAUTHN_PHASE": "disabled",
         "ADMIN_STEP_UP_PHASE": "totp",
     }
 

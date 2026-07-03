@@ -108,8 +108,8 @@ def payup_context(app, client):
 
     alice = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
     bob = db.session.execute(db.select(User).where(User.username == "bob02")).scalar_one()
-    alice.account_number = "111111111"
-    bob.account_number = "222222222"
+    alice.account_number = "111111111000"
+    bob.account_number = "222222222000"
     alice.balance = Decimal("5000.00")
     bob.balance = Decimal("1000.00")
     alice.account_type = bob.account_type = "customer"

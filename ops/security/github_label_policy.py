@@ -21,7 +21,7 @@ LABEL_DEFINITIONS: dict[str, tuple[str, str]] = {
     "customer": ("Customer application, routes, accounts, or customer-facing behavior.", "1d76db"),
     "banking": ("Accounts, transfers, payees, balances, freezes, funds, or transaction safety.", "0052cc"),
     "auth": ("Login, registration, credential handling, identity proofing, or authentication policy.", "c5def5"),
-    "mfa": ("TOTP, passkeys, WebAuthn, recovery codes, step-up, or MFA lifecycle.", "5319e7"),
+    "mfa": ("TOTP, recovery codes, step-up, or MFA lifecycle.", "5319e7"),
     "session": ("Cookies, server sessions, CSRF-linked state, rotation, revocation, or session HMAC.", "0b7285"),
     "audit": ("Audit logs, hash chains, metadata, alerting, or audit events.", "d93f0b"),
     "deployment": ("Deployment workflows, containers, EC2, Nginx, systemd, bootstrap, or release gates.", "006b75"),
@@ -112,15 +112,13 @@ RULES: tuple[LabelRule, ...] = (
     ),
     LabelRule(
         "mfa",
-        ("mfa", "totp", "webauthn", "passkey", "recovery code", "step-up", "second factor"),
+        ("mfa", "totp", "recovery code", "step-up", "second factor"),
         (
             "app/auth/mfa_policy.py",
             "app/auth/recovery_codes.py",
-            "app/auth/webauthn_services.py",
             "tests/test_mfa_*.py",
-            "tests/test_webauthn_*.py",
         ),
-        ("mfa", "totp", "webauthn", "passkey"),
+        ("mfa", "totp", "recovery"),
     ),
     LabelRule(
         "admin",

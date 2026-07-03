@@ -306,9 +306,8 @@ redisplayed. Staff invite MFA setup uses the same bounded lifecycle.
 Recovery codes are generated as random 16-byte values encoded as grouped hex,
 stored as versioned, user-and-purpose-bound HMACs, consumed once, and used only
 as explicit recovery-code factors. The reset API does not accept a recovery
-code through the TOTP field. Legacy password-reset WebAuthn endpoints remain
-registered as compatibility surfaces but return `410 Gone`; they do not
-advertise or initiate passkey reset.
+code through the TOTP field. Retired browser-credential reset URLs are not
+registered and return `404`.
 
 ### Password Reset
 

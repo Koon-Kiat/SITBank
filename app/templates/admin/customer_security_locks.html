@@ -1,0 +1,51 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Customer security locks - SITBank Admin{% endblock %}
+
+{% block content %}
+<section class="dashboard-section" aria-labelledby="customer-security-locks-heading">
+  <div class="section-heading">
+    <div>
+      <h1 id="customer-security-locks-heading">Customer security locks</h1>
+      <p class="muted">Only automatic password or authenticator lockouts are shown. A different root admin must approve every unlock.</p>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">Customer</th>
+          <th scope="col">Reference</th>
+          <th scope="col">Automatic lock</th>
+          <th scope="col">Locked at</th>
+          <th scope="col">Request unlock</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for customer in customers %}
+        <tr>
+          <td>{{ customer.username }}</td>
+          <td>{{ customer.customer_ref }}</td>
+          <td>{{ customer.lock_reason|replace("_", " ") }}</td>
+          <td>{{ customer.locked_at }}</td>
+          <td>
+            <form method="post" action="{{ url_for('admin.customer_security_unlock_request', user_id=customer.id) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <label for="reason-{{ customer.id }}">Reviewed support reason</label>
+              <input id="reason-{{ customer.id }}" name="reason" type="text" maxlength="512" required>
+              <label for="totp-{{ customer.id }}">Authenticator code</label>
+              <input id="totp-{{ customer.id }}" name="totp_code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
+              <button class="button small" type="submit">Request unlock</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="5">No eligible automatic customer lockouts.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

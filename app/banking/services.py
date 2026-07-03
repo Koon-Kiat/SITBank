@@ -158,14 +158,13 @@ def verify_transfer_step_up(
     transfer_risk: str,
     *,
     totp_code: str | None = None,
-    stepup_token: str | None = None,
     action: str = "transaction_authorization",
 ) -> None:
     from app.auth.services import verify_high_risk_authorization
 
     ensure_outbound_transfer_allowed(user)
     transfer_step_up_requirement(transfer_risk)
-    verify_high_risk_authorization(user, totp_code, stepup_token, action)
+    verify_high_risk_authorization(user, totp_code, action)
 
 
 def public_transaction_payload_hash(payload: Mapping[str, object]) -> str:

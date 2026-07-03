@@ -22,10 +22,11 @@ def _text(path: Path) -> str:
 
 
 def _tracked_files() -> list[str]:
-    return subprocess.check_output(
+    paths = subprocess.check_output(
         ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
         text=True,
     ).splitlines()
+    return [path for path in paths if Path(path).exists()]
 
 
 def _bash_user_or_skip() -> tuple[str, str]:

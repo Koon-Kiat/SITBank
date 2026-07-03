@@ -97,15 +97,28 @@ codes, QR codes, or decrypted MFA material.
    been rewrapped, post-rotation checks pass, rollback evidence is preserved,
    and the approved rollback window has closed.
 
-## Disposable Registration Data Reset
+## Disposable Database Reset
 
-If a development, staging, or demo database contains only seeded/test users from
-before the registration-field migration, prefer an explicit reset/recreate over
-preserving fake contact data. Confirm the target environment, confirm there are
-no real users, take any required backup, then run the normal bootstrap or
-deployment migration path for that environment. Production-like databases must
-not be reset by scripts or deployment automation without a separate approved
-maintenance record.
+Use the guarded `reset-demo-database` command documented in
+`docs/DEPLOYMENT.md` only for an environment confirmed to contain disposable
+project data. Stop customer and admin traffic, run staging first, retain
+sanitized verification evidence, and never add the command to routine deploy
+automation. Production additionally requires a protected approval and a fresh
+encrypted host-managed backup. After reset, rerun migration-baseline, runtime
+privilege, production-readiness, and customer/admin isolation checks before
+returning the services to traffic.
+
+## Customer Security Unlock
+
+Only root admins in the private admin runtime can request an unlock, and only
+for customer locks created automatically by password or MFA failure thresholds.
+The requester supplies a support reason and current TOTP. A different active
+root admin must approve the HMAC-protected request with a separate current TOTP;
+self-approval, identity-linked customer accounts, manual freezes, stale lock
+state, and lower roles fail closed. Approval clears the matching password/MFA
+failure counters and lock fields, revokes customer sessions, writes required
+audit evidence, and queues a customer security notice. It does not disable MFA,
+change credentials, clear unrelated throttles, or expose a customer-app route.
 
 ## Admin And Staging Access Operations
 
@@ -741,9 +754,8 @@ before resuming routine deployments.
 
 The current banking implementation audits public transaction validation,
 TOTP-backed transaction authorization checks, Local Transfer execution, and
-PayUp execution. New customer account numbers are 12 digits; legacy 9-digit
-account numbers remain accepted for existing rows and payee lookup while the
-schema is widened.
+PayUp execution. Customer and payee account numbers are exactly 12 decimal
+digits across form, route, service, model, and database validation.
 
 Local transfer performs final ledger movement: the sender balance is debited,
 the recipient balance is credited, and a `Transaction` record is created in a

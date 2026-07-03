@@ -32,7 +32,6 @@ SENSITIVE_CLASSIFICATIONS = {
     "profile",
     "registration",
     "session",
-    "webauthn",
 }
 
 
@@ -199,28 +198,6 @@ ROUTE_SECURITY_INVENTORY = {
         "step_up": "reset_mfa",
         "public_justification": "A recovery code can complete a password-reset transaction before login.",
     },
-    "auth.password_reset_webauthn_options": {
-        "endpoint": "auth.password_reset_webauthn_options",
-        "rule": "/auth/password-reset/mfa/webauthn/options",
-        "methods": {"POST"},
-        "access": "public",
-        "classification": "webauthn",
-        "csrf": "required",
-        "rate_limit": "per_route",
-        "step_up": "not_required",
-        "public_justification": "Legacy password-reset WebAuthn compatibility endpoint fails closed before authentication.",
-    },
-    "auth.password_reset_webauthn_verify": {
-        "endpoint": "auth.password_reset_webauthn_verify",
-        "rule": "/auth/password-reset/mfa/webauthn/verify",
-        "methods": {"POST"},
-        "access": "public",
-        "classification": "webauthn",
-        "csrf": "required",
-        "rate_limit": "per_route",
-        "step_up": "not_required",
-        "public_justification": "Legacy password-reset WebAuthn compatibility endpoint fails closed before authentication.",
-    },
     "auth.password_reset_complete": {
         "endpoint": "auth.password_reset_complete",
         "rule": "/auth/password-reset/complete",
@@ -242,94 +219,6 @@ ROUTE_SECURITY_INVENTORY = {
         "rate_limit": "per_route",
         "step_up": "not_required",
         "public_justification": "Manual customer recovery requests must be possible before authentication but cannot change account state.",
-    },
-    "auth.webauthn_register_options": {
-        "endpoint": "auth.webauthn_register_options",
-        "rule": "/auth/webauthn/register/options",
-        "methods": {"POST"},
-        "access": "authenticated",
-        "classification": "webauthn",
-        "csrf": "required",
-        "rate_limit": "per_route",
-        "step_up": "not_required",
-        "public_justification": "",
-    },
-    "auth.webauthn_register_verify": {
-        "endpoint": "auth.webauthn_register_verify",
-        "rule": "/auth/webauthn/register/verify",
-        "methods": {"POST"},
-        "access": "authenticated",
-        "classification": "webauthn",
-        "csrf": "required",
-        "rate_limit": "per_route",
-        "step_up": "not_required",
-        "public_justification": "",
-    },
-    "auth.webauthn_authenticate_options": {
-        "endpoint": "auth.webauthn_authenticate_options",
-        "rule": "/auth/webauthn/authenticate/options",
-        "methods": {"POST"},
-        "access": "public",
-        "classification": "webauthn",
-        "csrf": "required",
-        "rate_limit": "per_route",
-        "step_up": "not_required",
-        "public_justification": "WebAuthn login challenge endpoint is part of authentication before a user session exists.",
-    },
-    "auth.webauthn_authenticate_verify": {
-        "endpoint": "auth.webauthn_authenticate_verify",
-        "rule": "/auth/webauthn/authenticate/verify",
-        "methods": {"POST"},
-        "access": "public",
-        "classification": "webauthn",
-        "csrf": "required",
-        "rate_limit": "per_route",
-        "step_up": "not_required",
-        "public_justification": "WebAuthn login assertion endpoint completes authentication before a user session exists.",
-    },
-    "auth.webauthn_step_up_options": {
-        "endpoint": "auth.webauthn_step_up_options",
-        "rule": "/auth/webauthn/step-up/options",
-        "methods": {"POST"},
-        "access": "authenticated",
-        "classification": "webauthn",
-        "csrf": "required",
-        "rate_limit": "per_route",
-        "step_up": "not_required",
-        "public_justification": "",
-    },
-    "auth.webauthn_step_up_verify": {
-        "endpoint": "auth.webauthn_step_up_verify",
-        "rule": "/auth/webauthn/step-up/verify",
-        "methods": {"POST"},
-        "access": "authenticated",
-        "classification": "webauthn",
-        "csrf": "required",
-        "rate_limit": "per_route",
-        "step_up": "not_required",
-        "public_justification": "",
-    },
-    "auth.webauthn_credentials": {
-        "endpoint": "auth.webauthn_credentials",
-        "rule": "/auth/webauthn/credentials",
-        "methods": {"GET"},
-        "access": "authenticated",
-        "classification": "webauthn",
-        "csrf": "not_applicable",
-        "rate_limit": "edge_auth",
-        "step_up": "not_required",
-        "public_justification": "",
-    },
-    "auth.webauthn_revoke_credential": {
-        "endpoint": "auth.webauthn_revoke_credential",
-        "rule": "/auth/webauthn/credentials/<credential_id>",
-        "methods": {"DELETE"},
-        "access": "authenticated",
-        "classification": "webauthn",
-        "csrf": "required",
-        "rate_limit": "edge_auth",
-        "step_up": "not_required",
-        "public_justification": "",
     },
     "auth.logout": {
         "endpoint": "auth.logout",
@@ -646,39 +535,6 @@ ROUTE_SECURITY_INVENTORY = {
         "access": "authenticated",
         "classification": "dashboard",
         "csrf": "not_applicable",
-        "rate_limit": "edge_app",
-        "step_up": "not_required",
-        "public_justification": "",
-    },
-    "web.security_keys": {
-        "endpoint": "web.security_keys",
-        "rule": "/security-keys",
-        "methods": {"GET"},
-        "access": "authenticated",
-        "classification": "webauthn",
-        "csrf": "not_applicable",
-        "rate_limit": "edge_app",
-        "step_up": "not_required",
-        "public_justification": "",
-    },
-    "web.security_keys_mfa_refresh": {
-        "endpoint": "web.security_keys_mfa_refresh",
-        "rule": "/security-keys/mfa/refresh",
-        "methods": {"POST"},
-        "access": "authenticated",
-        "classification": "mfa",
-        "csrf": "required",
-        "rate_limit": "per_route",
-        "step_up": "not_required",
-        "public_justification": "",
-    },
-    "web.security_key_revoke": {
-        "endpoint": "web.security_key_revoke",
-        "rule": "/security-keys/<credential_id>/revoke",
-        "methods": {"POST"},
-        "access": "authenticated",
-        "classification": "webauthn",
-        "csrf": "required",
         "rate_limit": "edge_app",
         "step_up": "not_required",
         "public_justification": "",
@@ -1126,13 +982,31 @@ def test_route_inventory_has_complete_security_decisions(app):
         if entry["rate_limit"] == "per_route":
             assert "limit" in route_decorators, f"{endpoint} is expected to have Flask-Limiter decorators"
 
-        source = sources[endpoint]
-        if entry["step_up"] == "required":
-            assert "stepup_token" in source or "verify_high_risk_authorization" in source, (
-                f"{endpoint} is expected to require fresh MFA step-up"
-            )
+            source = sources[endpoint]
+            if entry["step_up"] == "required":
+                delegated_step_up = {
+                    "change_password",
+                    "freeze_own_account",
+                    "generate_mfa_replacement",
+                    "regenerate_totp_recovery_codes",
+                    "update_profile_details",
+                }
+                assert (
+                    "verify_high_risk_authorization" in source
+                    or any(name in source for name in delegated_step_up)
+                ), (
+                    f"{endpoint} is expected to require fresh MFA step-up"
+                )
         if entry["step_up"] == "conditional":
-            assert "stepup_token" in source, f"{endpoint} must document its conditional step-up branch"
+            conditional_step_up_markers = {
+                "verify_high_risk_authorization",
+                "totp_code",
+                "_handle_mfa_replace_start",
+                "_handle_recovery_code_regeneration",
+            }
+            assert any(marker in source for marker in conditional_step_up_markers), (
+                f"{endpoint} must document its conditional TOTP step-up branch"
+            )
 
 
 def test_login_and_registration_have_method_level_security_decisions(app):

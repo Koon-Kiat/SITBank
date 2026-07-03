@@ -80,10 +80,6 @@ from .registration_otp import (
 
 
 auth_bp = Blueprint("auth", __name__, url_prefix="/auth")
-PASSKEY_DISABLED_MESSAGE = (
-    "Passkey authentication is no longer available. "
-    "Use authenticator MFA or manual account recovery."
-)
 
 AUTH_MFA_ONBOARDING_ALLOWED_ENDPOINTS = {
     "auth.csrf_token",
@@ -256,20 +252,6 @@ def password_reset_recovery_code():
     return jsonify(verify_reset_recovery_code(data["recovery_code"]))
 
 
-@auth_bp.post("/password-reset/mfa/webauthn/options")
-@limiter.limit("5 per 5 minutes", key_func=get_remote_address)
-@limiter.limit("5 per 5 minutes", key_func=mfa_principal)
-def password_reset_webauthn_options():
-    raise AuthError(PASSKEY_DISABLED_MESSAGE, 410)
-
-
-@auth_bp.post("/password-reset/mfa/webauthn/verify")
-@limiter.limit("5 per 5 minutes", key_func=get_remote_address)
-@limiter.limit("5 per 5 minutes", key_func=mfa_principal)
-def password_reset_webauthn_verify():
-    raise AuthError(PASSKEY_DISABLED_MESSAGE, 410)
-
-
 @auth_bp.post("/password-reset/complete")
 @limiter.limit("5 per 15 minutes", key_func=get_remote_address)
 @limiter.limit("5 per 15 minutes", key_func=mfa_principal)
@@ -285,69 +267,6 @@ def manual_recovery_request():
     data = _load_payload(ManualRecoverySchema(), ManualRecoveryForm)
     require_turnstile("customer_manual_recovery")
     return jsonify(request_manual_recovery(data["identifier"]))
-
-
-@auth_bp.post("/webauthn/register/options")
-@login_required
-@not_frozen_required
-@limiter.limit("5 per 5 minutes", key_func=get_remote_address)
-@limiter.limit("5 per 5 minutes", key_func=mfa_principal)
-def webauthn_register_options():
-    raise AuthError(PASSKEY_DISABLED_MESSAGE, 410)
-
-
-@auth_bp.post("/webauthn/register/verify")
-@login_required
-@not_frozen_required
-@limiter.limit("5 per 5 minutes", key_func=get_remote_address)
-@limiter.limit("5 per 5 minutes", key_func=mfa_principal)
-def webauthn_register_verify():
-    raise AuthError(PASSKEY_DISABLED_MESSAGE, 410)
-
-
-@auth_bp.post("/webauthn/authenticate/options")
-@limiter.limit("5 per 5 minutes", key_func=get_remote_address)
-@limiter.limit("5 per 5 minutes", key_func=request_principal)
-def webauthn_authenticate_options():
-    raise AuthError(PASSKEY_DISABLED_MESSAGE, 410)
-
-
-@auth_bp.post("/webauthn/authenticate/verify")
-@limiter.limit("5 per 5 minutes", key_func=get_remote_address)
-@limiter.limit("5 per 5 minutes", key_func=request_principal)
-def webauthn_authenticate_verify():
-    raise AuthError(PASSKEY_DISABLED_MESSAGE, 410)
-
-
-@auth_bp.post("/webauthn/step-up/options")
-@login_required
-@not_frozen_required
-@limiter.limit("5 per 5 minutes", key_func=get_remote_address)
-@limiter.limit("5 per 5 minutes", key_func=mfa_principal)
-def webauthn_step_up_options():
-    raise AuthError(PASSKEY_DISABLED_MESSAGE, 410)
-
-
-@auth_bp.post("/webauthn/step-up/verify")
-@login_required
-@not_frozen_required
-@limiter.limit("5 per 5 minutes", key_func=get_remote_address)
-@limiter.limit("5 per 5 minutes", key_func=mfa_principal)
-def webauthn_step_up_verify():
-    raise AuthError(PASSKEY_DISABLED_MESSAGE, 410)
-
-
-@auth_bp.get("/webauthn/credentials")
-@login_required
-def webauthn_credentials():
-    raise AuthError(PASSKEY_DISABLED_MESSAGE, 410)
-
-
-@auth_bp.delete("/webauthn/credentials/<credential_id>")
-@login_required
-@not_frozen_required
-def webauthn_revoke_credential(credential_id: str):
-    raise AuthError(PASSKEY_DISABLED_MESSAGE, 410)
 
 
 @auth_bp.post("/logout")
@@ -395,7 +314,7 @@ def mfa_setup_verify():
 @limiter.limit("5 per 5 minutes", key_func=mfa_principal)
 def mfa_replace_start():
     data = HighRiskTotpSchema().load(request.get_json(silent=False) or {})
-    return jsonify(generate_mfa_replacement(g.current_user, data.get("totp_code"), data.get("stepup_token")))
+    return jsonify(generate_mfa_replacement(g.current_user, data.get("totp_code")))
 
 
 @auth_bp.post("/mfa/replace/verify")
@@ -419,7 +338,6 @@ def mfa_recovery_codes_regenerate():
         regenerate_totp_recovery_codes(
             g.current_user,
             data.get("totp_code"),
-            data.get("stepup_token"),
         )
     )
 
@@ -460,7 +378,6 @@ def revoke_other_sessions():
     verify_high_risk_authorization(
         g.current_user,
         data.get("totp_code"),
-        data.get("stepup_token"),
         "session_revoke_others",
     )
     revoked = terminate_other_sessions_for_user(g.current_user)
@@ -474,7 +391,7 @@ def revoke_other_sessions():
 @limiter.limit("5 per 5 minutes", key_func=mfa_principal)
 def freeze_account():
     data = _load_payload(HighRiskTotpSchema(), MfaOrStepUpForm)
-    return jsonify(freeze_own_account(g.current_user, data.get("totp_code"), data.get("stepup_token")))
+    return jsonify(freeze_own_account(g.current_user, data.get("totp_code")))
 
 
 @auth_bp.post("/password/change")
@@ -491,6 +408,5 @@ def password_change():
             data["new_password"],
             data["confirm_new_password"],
             data.get("totp_code"),
-            data.get("stepup_token"),
         )
     )

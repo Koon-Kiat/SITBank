@@ -13,7 +13,6 @@ class _StubForm:
     def __init__(self, *, valid: bool = True):
         self._valid = valid
         self.totp_code = SimpleNamespace(data="123456")
-        self.stepup_token = SimpleNamespace(data="")
         self.identifier = SimpleNamespace(data="alice01")
         self.password = SimpleNamespace(data="old-password")
         self.email = SimpleNamespace(data="alice@example.com")

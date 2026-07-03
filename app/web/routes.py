@@ -74,10 +74,6 @@ from app.auth.services import (
     verify_mfa_replacement,
     verify_mfa_setup,
 )
-from app.auth.webauthn_services import (
-    list_credentials_for_user,
-    webauthn_credential_count,
-)
 from sqlalchemy import or_
 
 from app.extensions import db, limiter
@@ -371,10 +367,7 @@ def login_submit():
         flash("Enter your authenticator code to finish signing in.", "info")
         return redirect(url_for("web.mfa_verify"))
     if result.get("mfa_setup_required"):
-        if result.get("legacy_passkey_migration_required"):
-            flash("Passkey sign-in is unavailable. Set up authenticator MFA or request account recovery.", "warning")
-        else:
-            flash("Set up authenticator MFA before continuing.", "warning")
+        flash("Set up authenticator MFA before continuing.", "warning")
         return redirect(url_for(_MFA_SETUP_ENDPOINT))
 
     flash("Login successful.", "success")
@@ -642,42 +635,9 @@ def dashboard():
     return render_template(
         "dashboard.html",
         user=g.current_user,
-        credential_count=g.webauthn_credential_count,
-        required_count=g.webauthn_required_count,
         logout_form=CsrfOnlyForm(),
         transactions=recent_txns,
     )
-
-
-@web_bp.get("/security-keys")
-@web_login_required
-@web_not_frozen_required
-def security_keys():
-    credentials = list_credentials_for_user(g.current_user)
-    return render_template(
-        "security_keys.html",
-        user=g.current_user,
-        credentials=credentials,
-        credential_count=webauthn_credential_count(g.current_user),
-    )
-
-
-@web_bp.post("/security-keys/mfa/refresh")
-@web_login_required
-@web_not_frozen_required
-@limiter.limit("5 per 5 minutes", key_func=get_remote_address)
-@limiter.limit("5 per 5 minutes", key_func=mfa_principal)
-def security_keys_mfa_refresh():
-    flash("Passkey registration is unavailable. Use authenticator MFA.", "warning")
-    return redirect(url_for("web.security_keys"))
-
-
-@web_bp.post("/security-keys/<credential_id>/revoke")
-@web_login_required
-@web_not_frozen_required
-def security_key_revoke(credential_id: str):
-    flash("Legacy passkey records are removed through manual account recovery.", "warning")
-    return redirect(url_for("web.security_keys"))
 
 
 @web_bp.get("/profile")
@@ -721,7 +681,6 @@ def profile_submit():
             form.username.data,
             form.email.data,
             form.totp_code.data,
-            form.stepup_token.data,
             form.email_verification_code.data,
         )
     except AuthError as exc:
@@ -780,7 +739,7 @@ def mfa_setup():
 @limiter.limit("5 per 5 minutes", key_func=get_remote_address)
 @limiter.limit("5 per 5 minutes", key_func=mfa_principal)
 def mfa_setup_submit():
-    """Dispatch MFA actions; replacement handlers validate conditional stepup_token."""
+    """Dispatch authenticator MFA management actions."""
     action = request.form.get("action")
     forms = _mfa_management_forms()
     handlers = {
@@ -889,7 +848,6 @@ def _handle_mfa_replace_start(forms: dict[str, FlaskForm]):
         replacement = generate_mfa_replacement(
             g.current_user,
             replace_form.totp_code.data,
-            replace_form.stepup_token.data,
         )
     except AuthError as exc:
         if exc.status_code == 429:
@@ -926,7 +884,6 @@ def _handle_recovery_code_regeneration(forms: dict[str, FlaskForm]):
         result = regenerate_totp_recovery_codes(
             g.current_user,
             regenerate_form.totp_code.data,
-            regenerate_form.stepup_token.data,
         )
     except AuthError as exc:
         if exc.status_code == 429:
@@ -986,7 +943,6 @@ def password_change_submit():
             form.new_password.data,
             form.confirm_new_password.data,
             form.totp_code.data,
-            form.stepup_token.data,
         )
     except AuthError as exc:
         if exc.status_code == 429:
@@ -1047,7 +1003,6 @@ def sessions_revoke_others_submit():
         verify_high_risk_authorization(
             g.current_user,
             form.totp_code.data,
-            form.stepup_token.data,
             "session_revoke_others",
         )
         revoked = terminate_other_sessions_for_user(g.current_user)
@@ -1078,7 +1033,7 @@ def freeze_account_submit():
         return render_template(_FREEZE_TEMPLATE, user=g.current_user, form=form), 400
 
     try:
-        freeze_own_account(g.current_user, form.totp_code.data, form.stepup_token.data)
+        freeze_own_account(g.current_user, form.totp_code.data)
     except AuthError as exc:
         if exc.status_code == 429:
             return rate_limit_response()

@@ -34,15 +34,15 @@ def payee_idor_context(app, client):
     bob = db.session.execute(
         db.select(User).where(User.username == "bob02")
     ).scalar_one()
-    alice.account_number = "012345678"
-    bob.account_number = "012555999"
+    alice.account_number = "012345678000"
+    bob.account_number = "012555999000"
     alice.account_type = bob.account_type = "customer"
     alice.account_status = bob.account_status = "active"
 
     bob_payee = Payee(
         user_id=bob.id,
         nickname="Bob Private Payee",
-        account_number="987654321",
+        account_number="987654321987",
         recipient_name="Private Recipient",
     )
     db.session.add(bob_payee)
@@ -105,7 +105,7 @@ def test_payee_list_only_shows_current_users_payees(client, payee_idor_context):
     alice_payee = Payee(
         user_id=alice.id,
         nickname="Alice Visible Payee",
-        account_number="123456789",
+        account_number="123456789000",
         recipient_name="Visible Recipient",
     )
     db.session.add(alice_payee)

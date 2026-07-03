@@ -96,7 +96,6 @@ def test_admin_runtime_config_is_separate_and_stricter(monkeypatch):
     assert customer_app.config["SQLALCHEMY_DATABASE_URI"] != admin_app.config["SQLALCHEMY_DATABASE_URI"]
     assert admin_app.config["SQLALCHEMY_MIGRATION_DATABASE_URI"] is None
     assert admin_app.config["ADMIN_AUTH_ENABLED"] is True
-    assert admin_app.config["ADMIN_WEBAUTHN_PHASE"] == "disabled"
     assert admin_app.config["PERMANENT_SESSION_LIFETIME"] == timedelta(minutes=5)
     assert admin_app.config["PERMANENT_SESSION_LIFETIME"] < customer_app.config["PERMANENT_SESSION_LIFETIME"]
 

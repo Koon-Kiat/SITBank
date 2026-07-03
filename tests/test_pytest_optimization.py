@@ -35,7 +35,6 @@ def test_security_test_marker_inventory_covers_required_files():
         "tests/test_route_inventory_security.py",
         "tests/test_secret_scanner.py",
         "tests/test_session_management.py",
-        "tests/test_webauthn_lifecycle.py",
     }
 
     assert expected_security_files <= conftest.SECURITY_TEST_FILES

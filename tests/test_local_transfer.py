@@ -86,8 +86,8 @@ def transfer_context(app, client):
 
     alice = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
     bob = db.session.execute(db.select(User).where(User.username == "bob02")).scalar_one()
-    alice.account_number = "111111111"
-    bob.account_number = "222222222"
+    alice.account_number = "111111111000"
+    bob.account_number = "222222222000"
     alice.balance = Decimal("5000.00")
     bob.balance = Decimal("1000.00")
     alice.account_type = bob.account_type = "customer"
@@ -112,7 +112,7 @@ def transfer_context(app, client):
 
 def test_transfer_blocked_during_cooldown(client, transfer_context):
     alice = transfer_context["alice"]
-    cooldown_payee = _make_cooldown_payee(alice, "333333333", "Carol")
+    cooldown_payee = _make_cooldown_payee(alice, "333333333000", "Carol")
 
     response = client.get(f"/banking/transfer/{cooldown_payee.id}")
 
@@ -123,7 +123,7 @@ def test_transfer_blocked_during_cooldown(client, transfer_context):
 
 def test_transfer_submit_blocked_during_cooldown(client, transfer_context):
     alice = transfer_context["alice"]
-    cooldown_payee = _make_cooldown_payee(alice, "444444444", "Dave")
+    cooldown_payee = _make_cooldown_payee(alice, "444444444000", "Dave")
 
     response = client.post(
         f"/banking/transfer/{cooldown_payee.id}",
@@ -142,7 +142,7 @@ def test_transfer_page_returns_404_for_other_users_payee(app, client, transfer_c
         email="carol@example.com",
         full_name="Carol Other",
         phone_number="71234567",
-        account_number="555555555",
+        account_number="555555555000",
         account_status="active",
         account_type="customer",
         password_hash=hash_password("correct horse battery staple"),
@@ -151,7 +151,7 @@ def test_transfer_page_returns_404_for_other_users_payee(app, client, transfer_c
     db.session.add(carol)
     db.session.commit()
 
-    carol_payee = _make_active_payee(carol, "666666666", "Eve")
+    carol_payee = _make_active_payee(carol, "666666666000", "Eve")
 
     # Alice (logged in via `client`) tries to access Carol's payee
     response = client.get(f"/banking/transfer/{carol_payee.id}")
@@ -168,7 +168,7 @@ def test_transfer_submit_idor_check_runs_before_mfa(app, client, transfer_contex
         email="carol04@example.com",
         full_name="Carol Other",
         phone_number="61234567",
-        account_number="777777777",
+        account_number="777777777000",
         account_status="active",
         account_type="customer",
         password_hash=hash_password("correct horse battery staple"),
@@ -177,7 +177,7 @@ def test_transfer_submit_idor_check_runs_before_mfa(app, client, transfer_contex
     db.session.add(carol)
     db.session.commit()
 
-    carol_payee = _make_active_payee(carol, "888888888", "Frank")
+    carol_payee = _make_active_payee(carol, "888888888000", "Frank")
 
     mfa_mock = Mock(side_effect=AssertionError("MFA reached before IDOR check"))
     monkeypatch.setattr(banking_routes, "verify_high_risk_authorization", mfa_mock)

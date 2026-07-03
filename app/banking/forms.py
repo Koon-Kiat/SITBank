@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from flask_wtf import FlaskForm
-from wtforms import HiddenField, SelectField, StringField
+from wtforms import SelectField, StringField
 from wtforms.validators import InputRequired, Length, Optional, Regexp
 
-from app.auth.schemas import PHONE_RE, STEP_UP_TOKEN_RE, TOTP_RE
+from app.auth.schemas import PHONE_RE, TOTP_RE
 
 
-ACCOUNT_NUMBER_RE = r"^(?:[0-9]{9}|[0-9]{12})$"
+ACCOUNT_NUMBER_RE = r"^[0-9]{12}$"
 NICKNAME_RE = r"^[A-Za-z0-9 '\-]{1,64}$"
 AMOUNT_RE = r"^\d+(\.\d{1,2})?$"
 REFERENCE_RE = r"^[A-Za-z0-9 '\-.,/]{0,128}$"
@@ -19,7 +19,6 @@ TRANSFER_LIMIT_CHOICES = [(value, f"SGD {value}") for value in TRANSFER_LIMIT_PR
 
 _AUTHENTICATOR_CODE_LABEL = "Authenticator code"
 _MFA_CODE_LENGTH_MESSAGE = "MFA code must be exactly 6 digits"
-_INVALID_STEP_UP_TOKEN_MESSAGE = "Invalid step-up token"
 
 
 def _totp_code_field(*, required: bool = True) -> StringField:
@@ -28,15 +27,6 @@ def _totp_code_field(*, required: bool = True) -> StringField:
         validators=[
             InputRequired() if required else Optional(),
             Regexp(TOTP_RE, message=_MFA_CODE_LENGTH_MESSAGE),
-        ],
-    )
-
-
-def _stepup_token_field() -> HiddenField:
-    return HiddenField(
-        validators=[
-            Optional(),
-            Regexp(STEP_UP_TOKEN_RE, message=_INVALID_STEP_UP_TOKEN_MESSAGE),
         ],
     )
 
@@ -82,11 +72,10 @@ class AddPayeeForm(FlaskForm):
         "Account number",
         validators=[
             InputRequired(),
-            Regexp(ACCOUNT_NUMBER_RE, message="Account number must be 9 or 12 digits"),
+            Regexp(ACCOUNT_NUMBER_RE, message="Account number must be exactly 12 digits"),
         ],
     )
     totp_code = _totp_code_field()
-    stepup_token = _stepup_token_field()
 
 
 class PayupPhoneForm(FlaskForm):
@@ -98,7 +87,6 @@ class PayupPhoneForm(FlaskForm):
         ],
     )
     totp_code = _totp_code_field()
-    stepup_token = _stepup_token_field()
 
 
 class PayupAmountForm(FlaskForm):
@@ -108,7 +96,6 @@ class PayupAmountForm(FlaskForm):
 
 class PayupConfirmForm(FlaskForm):
     totp_code = _totp_code_field(required=False)
-    stepup_token = _stepup_token_field()
 
 
 class TransferLimitsForm(FlaskForm):
@@ -122,11 +109,9 @@ class TransferLimitsForm(FlaskForm):
         ],
     )
     totp_code = _totp_code_field()
-    stepup_token = _stepup_token_field()
 
 
 class TransferForm(FlaskForm):
     amount = _amount_field()
     reference = _reference_field()
     totp_code = _totp_code_field()
-    stepup_token = _stepup_token_field()

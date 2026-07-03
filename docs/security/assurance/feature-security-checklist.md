@@ -10,7 +10,7 @@ Category: [Security assurance](../README.md#assurance).
 
 | Feature or boundary | Current security status | Evidence |
 | --- | --- | --- |
-| Customer registration | Email OTP is required before account creation; client-supplied account numbers and admin-domain customer emails are rejected; new account numbers are 12-digit server-generated identifiers | `app/auth/registration_otp.py`, `app/auth/services.py`, `tests/test_auth_registration_login.py` |
+| Customer registration | Email OTP is required before account creation; client-supplied account numbers and admin-domain customer emails are rejected; account numbers contain exactly 12 independently random decimal digits | `app/auth/registration_otp.py`, `app/auth/services.py`, `tests/test_auth_registration_login.py` |
 | Customer login and MFA | Password login uses generic errors, PBKDF2 password hashing, failed-attempt controls, encrypted TOTP seeds, recovery-code fallback, and TOTP replay prevention | `app/auth/services.py`, `app/security/passwords.py`, `tests/test_auth_registration_login.py`, `tests/test_mfa_lifecycle.py` |
 | Customer sessions | Server-side sessions use opaque cookie identifiers, HMAC-signed payloads, absolute lifetime enforcement, risk drift handling, and scoped session termination | `app/security/sessions.py`, `tests/test_session_management.py`, `tests/test_session_absolute_lifetime.py`, `tests/test_session_risk_binding.py` |
 | CSRF | Global Flask-WTF CSRF is expected on unsafe browser routes and is tracked by route inventories plus targeted runtime tests | `app/extensions.py`, `tests/test_route_inventory_security.py`, `tests/test_payup.py` |

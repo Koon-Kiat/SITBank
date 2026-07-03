@@ -17,15 +17,11 @@ Regression tests may still mention Redis to prove the runtime contract requires
 the session lookup HMAC key and does not accidentally reintroduce old storage
 configuration.
 
-## Browser Credential Compatibility
+## Removed Browser-Credential Experiment
 
-WebAuthn, passkey, security-key, and FIDO-related work remains as disabled
-compatibility code, historical database shape, checked-in metadata fixtures, and
-regression coverage. Current user-facing MFA is TOTP with recovery-code support.
-Existing browser-credential rows are retained only for inactive inventory,
-audit, and manual-recovery decisions; they do not satisfy MFA, login, reset, or
-step-up policy.
-
-Regression tests may still mention these technologies to prove compatibility
-endpoints fail closed, inactive credential rows cannot satisfy MFA, and retired
-routes do not regain active behavior without review.
+The earlier WebAuthn/FIDO experiment has been removed from the application,
+migration baseline, dependencies, templates, operational metadata, and active
+tests. The retired URLs are unregistered and therefore return the normal `404`
+response. There is no browser-credential compatibility data to preserve after
+the authorized disposable-database reset. Reintroducing another authentication
+factor requires a separate reviewed design and migration.

@@ -52,7 +52,7 @@ def test_design_risk_register_covers_required_decisions():
     for required in (
         "Separate admin/customer deployment boundary",
         "TOTP baseline MFA",
-        "No WebAuthn/passkeys in approved staff/admin flow",
+        "TOTP-only active MFA surface",
         "PostgreSQL-backed server-side session architecture",
         "Production startup fail-closed guard",
         "Admin route inventory testing",

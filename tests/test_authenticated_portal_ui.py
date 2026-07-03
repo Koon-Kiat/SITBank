@@ -7,38 +7,21 @@ def test_security_management_pages_use_polished_stepup_ui(client):
     register(client)
     login(client)
     user, _secret = enable_mfa_for_user()
-    add_security_keys_for_user(user)
-    first_key = db.session.execute(
-        db.select(WebAuthnCredential)
-        .where(WebAuthnCredential.user_id == user.id)
-        .order_by(WebAuthnCredential.id.asc())
-    ).scalars().first()
-    first_key.last_used_at = datetime(2026, 6, 5, 15, 11, tzinfo=timezone.utc)
-    db.session.commit()
 
     mfa_page = client.get("/mfa/setup")
-    keys_page = client.get("/security-keys")
     sessions_page = client.get("/sessions")
     freeze_page = client.get("/account/freeze")
     css = Path("app/static/css/app.css").read_text(encoding="utf-8")
     mfa_markup = mfa_page.data.decode("utf-8")
-    keys_markup = keys_page.data.decode("utf-8")
     sessions_markup = sessions_page.data.decode("utf-8")
     freeze_markup = freeze_page.data.decode("utf-8")
 
     assert mfa_page.status_code == 200
-    assert keys_page.status_code == 200
     assert sessions_page.status_code == 200
     assert freeze_page.status_code == 200
     assert 'class="mfa-step is-muted"' in mfa_markup
     assert ".mfa-step.is-muted .step-number" in css
     assert "background: var(--primary);" in css
-    assert "AAGUID" not in keys_markup
-    assert "11111111-1111-1111-1111-111111111111" not in keys_markup
-    assert 'name="credential_kind"' not in keys_markup
-    assert "Passkeys are unavailable" in keys_markup
-    assert "Inactive legacy passkey record" in keys_markup
-    assert "Verify and revoke" not in keys_markup
     assert "Active Sessions" in sessions_markup
     assert "Past Sessions" in sessions_markup
     assert 'class="button danger-button full"' in freeze_markup
@@ -102,11 +85,9 @@ def test_authenticated_layout_contains_working_profile_menu_destinations(client)
     assert 'href="/password/change"' in markup
     assert "Authenticator MFA" in markup
     assert "Active Sessions" in markup
-    assert "Passkeys" not in markup
     assert "Freeze Account" in markup
     assert "Log Out" in markup
     assert markup.index('href="/mfa/setup"') < markup.index('href="/sessions"')
-    assert "No passkeys are registered" not in markup
     assert "unused recovery codes remain" not in markup
     assert "Transaction-ready" not in markup
 
@@ -130,32 +111,6 @@ def test_dashboard_bank_card_masks_account_details_and_loads_toggle_script(clien
     assert 'aria-label="Show balance"' in markup
     assert '/static/js/dashboard.js' in markup
 
-def test_security_key_page_redirects_unenrolled_users_to_mfa_setup(client):
-    register(client)
-    login(client)
-
-    response = client.get("/security-keys")
-
-    assert response.status_code == 302
-    assert response.headers["Location"].endswith("/mfa/setup")
-
-def test_legacy_passkey_empty_state_lives_on_legacy_page_not_dashboard(client):
-    register(client)
-    login(client)
-    user, _secret = enable_mfa_for_user()
-    mark_recent_mfa(client, user)
-
-    dashboard_response = client.get("/dashboard")
-    keys_response = client.get("/security-keys")
-    dashboard_markup = dashboard_response.data.decode("utf-8")
-    keys_markup = keys_response.data.decode("utf-8")
-
-    assert dashboard_response.status_code == 200
-    assert keys_response.status_code == 200
-    assert "No legacy passkey records" not in dashboard_markup
-    assert "No legacy passkey records" in keys_markup
-    assert "This account has no stored passkey credential records." in keys_markup
-
 def test_public_layout_does_not_expose_authenticated_account_actions(client):
     response = client.get("/login")
     markup = response.data.decode("utf-8")
@@ -163,8 +118,6 @@ def test_public_layout_does_not_expose_authenticated_account_actions(client):
     assert response.status_code == 200
     assert "data-account-menu" not in markup
     assert "Edit Profile" not in markup
-    assert "data-webauthn-login-form" not in markup
-    assert "Windows Hello" not in markup
     assert 'href="/profile"' not in markup
     assert 'action="/logout"' not in markup
 
@@ -229,9 +182,6 @@ def test_authenticated_brand_link_targets_dashboard(client):
     assert response.status_code == 200
     assert '<a class="brand" href="/dashboard"' in markup
 
-def test_webauthn_browser_script_is_not_shipped():
-    assert not Path("app/static/js/webauthn.js").exists()
-
 def test_production_env_docs_require_pbkdf2_pepper_not_bcrypt():
     required = Path("ops/production-env.required").read_text(encoding="utf-8")
     readme = Path("README.md").read_text(encoding="utf-8")
@@ -252,20 +202,5 @@ def test_production_env_docs_require_pbkdf2_pepper_not_bcrypt():
     ):
         assert setting in required
         assert setting in readme
-    assert "WEBAUTHN_APPROVED_AAGUIDS_PATH" not in required
-    assert "WEBAUTHN_MDS_CACHE_PATH" not in required
     assert "BCRYPT_ROUNDS" not in required
     assert "BCRYPT_ROUNDS" not in readme
-
-def test_checked_in_fido_allowlist_is_not_empty_or_test_placeholder():
-    approved = json.loads(Path("ops/fido-approved-aaguids.json").read_text(encoding="utf-8"))
-    cache = json.loads(Path("ops/fido-mds-cache.json").read_text(encoding="utf-8"))
-    approved_aaguids = approved["approved_aaguids"]
-    legacy_level1_aaguids = approved.get("legacy_level1_approved_aaguids", [])
-    configured_aaguids = approved_aaguids + legacy_level1_aaguids
-    cache_aaguids = {entry["aaguid"] for entry in cache["entries"]}
-
-    assert len(configured_aaguids) >= 1
-    assert "11111111-1111-1111-1111-111111111111" not in configured_aaguids
-    assert set(approved_aaguids).issubset(cache_aaguids)
-    assert "2fc0579f-8113-47ea-b116-bb5a8db9202a" in legacy_level1_aaguids

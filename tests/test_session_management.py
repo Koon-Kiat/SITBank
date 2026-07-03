@@ -300,8 +300,6 @@ def test_sessions_page_keeps_review_controls_without_bulk_revoke_action(app, cli
     assert "Revoke all other sessions" not in markup
     assert 'name="totp_code"' not in markup
     assert "Authenticator code" not in markup
-    assert "webauthn" not in markup.casefold()
-    assert "passkey step-up" not in markup.casefold()
 
 
 def test_web_session_terminate_requires_csrf_when_enabled(app, client):

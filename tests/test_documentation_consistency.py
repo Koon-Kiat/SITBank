@@ -40,6 +40,7 @@ def test_root_admin_docs_match_environment_specific_counts():
             "docs/OPERATIONS.md",
         )
     )
+    docs = " ".join(docs.split())
 
     assert "exactly 7" not in docs
     assert "STAGING_ROOT_ADMIN_EMAILS" in docs
@@ -57,7 +58,8 @@ def test_authentication_boundary_docs_cover_current_contracts():
     assert "scanner-safe GET landing page" in auth
     assert "CSRF-protected POST" in auth
     assert "user-and-purpose-bound HMACs" in auth
-    assert "`410 Gone`" in auth
+    assert "Retired browser-credential reset URLs are not" in auth
+    assert "registered and return `404`" in auth
     assert "canonicalized before OTP issuance" in operations
     assert "temporary-email domains are rejected" in operations
 
@@ -84,6 +86,7 @@ def test_payup_security_docs_match_current_banking_contract():
             "docs/security/assurance/feature-security-checklist.md",
         )
     )
+    docs = " ".join(docs.split())
 
     for required in (
         "PayUp lookup requires an authenticator code",
@@ -97,8 +100,8 @@ def test_payup_security_docs_match_current_banking_contract():
         "Migration `20260703_0022` adds PayUp support",
         "`payup_pending_transfers`",
         "`transactions.transaction_type`",
-        "Migration `20260703_0024` widens `users.account_number`",
-        "12-digit account numbers",
+        "Migration `20260703_0024` enforces exactly 12 decimal digits",
+        "account numbers are exactly 12 decimal digits",
     ):
         assert required in docs
 
@@ -108,6 +111,38 @@ def test_payup_security_docs_match_current_banking_contract():
         "Local Transfer daily limit is enforced",
     )
     for stale in stale_phrases:
+        assert stale not in docs
+
+
+def test_auth_schema_reset_and_customer_unlock_docs_match_current_contract():
+    docs = "\n".join(
+        Path(path).read_text(encoding="utf-8")
+        for path in (
+            "docs/DEPLOYMENT.md",
+            "docs/OPERATIONS.md",
+            "docs/security/architecture/access-control.md",
+            "docs/security/architecture/session-management.md",
+            "docs/security/governance/legacy-and-out-of-scope-technology.md",
+        )
+    )
+
+    for required in (
+        "reset-demo-database --target staging",
+        'RESET STAGING DEMO DATABASE"',
+        "reset-demo-database --target production",
+        "--staging-verified --approved --backup-file",
+        "exactly 12 decimal digits",
+        "different active\nroot admin",
+        "missing, malformed, or unsupported structured context",
+        "retired URLs are unregistered",
+    ):
+        assert required in docs
+    for stale in (
+        "legacy 9-digit rows remain valid",
+        "A matching legacy `risk_fingerprint` is accepted",
+        "disabled\ncompatibility code",
+        "`staff_invites.personal_email_normalized` nullable",
+    ):
         assert stale not in docs
 
 

@@ -133,7 +133,6 @@ def test_root_admin_can_create_hashed_staff_invite(admin_client):
     assert response.status_code == 201
     assert response.get_json()["invite"]["workplace_email"] == "staff.person@sit.singaporetech.edu.sg"
     assert "personal_email_ref" not in response.get_json()["invite"]
-    assert invite.personal_email_normalized is None
     assert invite.token_hash != token
     assert token not in json.dumps(invite.__dict__, default=str)
     assert invite.expires_at.replace(tzinfo=timezone.utc) > datetime.now(timezone.utc)
@@ -395,7 +394,7 @@ def test_separation_guard_blocks_linked_staff_acting_on_own_customer(admin_app):
         account_status="active",
         full_name="Same Person",
         phone_number="91234568",
-        account_number="012123456",
+        account_number="012123456000",
     )
     db.session.add(customer)
     db.session.flush()
@@ -418,4 +417,4 @@ def test_separation_guard_blocks_linked_staff_acting_on_own_customer(admin_app):
     ).one()
     assert event.user_id == staff.id
     assert event.event_metadata["action_type"] == "balance_edit"
-    assert "012123456" not in json.dumps(event.event_metadata)
+    assert "012123456000" not in json.dumps(event.event_metadata)

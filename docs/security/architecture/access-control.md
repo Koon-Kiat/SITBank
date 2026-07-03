@@ -150,7 +150,8 @@ existing role model rather than by adding new roles. Current mapping:
   review, and safe staff/admin status visibility.
 - `root_admin`: privileged platform administration, including staff/admin
   invites, invite revocation, staff/admin lifecycle request creation, manual
-  recovery review, and maker-checker approval of selected highest-risk changes.
+  recovery review, eligible automatic customer-lock requests, and maker-checker
+  approval of selected highest-risk changes.
 
 Server-rendered navigation is only a usability layer. Every admin route also
 calls the appropriate `require_staff_session()`, `require_admin_session()`, or
@@ -172,6 +173,7 @@ changes.
 | Admin/root alert review uses the existing report path without sending alerts on GET | `app/admin/routes.py::alerts()`, `app/security/alerts.py::build_security_alert_report()` | `tests/test_admin_dashboard_operations.py::test_alert_review_is_admin_only_and_does_not_send_alerts` |
 | Admin/root manual alert delivery is POST-only, CSRF-protected, current-TOTP-gated, dedupe-aware, and audited | `app/admin/routes.py::alert_delivery()`, `app/security/alerts.py::build_security_alert_report()` | `tests/test_admin_dashboard_operations.py::test_alert_manual_delivery_browser_requires_csrf_when_enabled`, `tests/test_admin_dashboard_operations.py::test_alert_manual_delivery_reuses_builder_and_audits_delivered`, `tests/test_admin_dashboard_operations.py::test_alert_manual_delivery_respects_dedupe_and_returns_safe_json`, `tests/test_admin_dashboard_operations.py::test_alert_manual_delivery_blocks_invalid_totp`, `tests/test_admin_dashboard_operations.py::test_alert_manual_delivery_audits_configuration_failure` |
 | Root-admin staff/admin lifecycle actions require maker-checker approval before final state change | `AdminActionRequest` in `app/models.py`; `app/admin/services.py::transition_staff_account_as_root_admin()` and `approve_admin_action_request_as_root_admin()` | `tests/test_admin_maker_checker.py::test_staff_lifecycle_requires_maker_checker_before_execution`, `tests/test_admin_dashboard_operations.py::test_root_manages_staff_lifecycle_with_totp_and_safe_audit` |
+| Customer security unlock is root-only, limited to automatic password/MFA lock reasons, TOTP-gated, identity-separated, and executed only by a different root admin; execution clears only relevant counters, revokes customer sessions, audits, and notifies | `app/admin/services.py::request_customer_security_unlock()` and `_execute_customer_security_unlock_admin_action_request()` | `tests/test_admin_maker_checker.py::test_customer_security_unlock_requires_separate_root_and_clears_only_lock_state`, `tests/test_admin_maker_checker.py::test_customer_security_unlock_fails_closed_for_identity_overlap_and_stale_lock` |
 | Staff/customer self-action guard | `app/admin/separation.py::assert_not_self_customer_action()` | `tests/test_admin_staff_invites.py::test_separation_guard_blocks_linked_staff_acting_on_own_customer`, `tests/test_admin_manual_recovery.py::test_root_admin_cannot_transition_own_customer_manual_recovery` |
 | Admin session context drift | Any detected coarse-network, browser-family, or detailed User-Agent drift revokes the admin session and requires full login | `app/security/sessions.py`, `tests/test_session_risk_binding.py::test_admin_context_change_revokes_session_under_stricter_policy` |
 
