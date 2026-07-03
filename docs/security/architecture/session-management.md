@@ -84,6 +84,12 @@ These network boundaries do not merge session state: customer and admin
 cookies, lookup HMAC keys, session key prefixes, rate-limit prefixes, and
 runtime database roles remain separate.
 
+Admin browser mutations, including logout, require CSRF validation. Admin
+logout revokes only the current admin-side session and clears only the admin
+cookie; customer and admin cookies cannot satisfy each other's authentication
+or authorization checks. Root-admin, admin, and staff route tests exercise
+role allowlists and deny cross-role access to maker/checker actions.
+
 Transport protections:
 
 | Control | Evidence |

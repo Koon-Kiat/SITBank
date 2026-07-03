@@ -164,6 +164,8 @@ def test_audit_viewer_filters_sorting_pagination_and_safe_search(admin_client):
             "severity": "high",
             "target_staff_ref": "target-ref-123",
             "note": "visible staff invite review",
+            "source_kind": "network",
+            "source_display": "203.0.113.10",
         },
         created_at=datetime(2026, 6, 28, 12, 0, tzinfo=timezone.utc),
         correlation_id="audit-request-1",
@@ -212,7 +214,8 @@ def test_audit_viewer_filters_sorting_pagination_and_safe_search(admin_client):
     assert displayed_event["actor_role"] == "admin"
     assert displayed_event["actor_summary"] == f"user:{admin.id} (admin, security.admin@sit.singaporetech.edu.sg)"
     assert displayed_event["source_kind"] == "network"
-    assert displayed_event["source_display"] == "203.0.113.10"
+    assert displayed_event["source_display"] == "203.0.113.0/24"
+    assert displayed_event["ip_address"] == "203.0.113.0/24"
     assert displayed_event["request_id"] == "audit-request-1"
     assert displayed_event["target_ref"] == "target-ref-123"
     assert "staff_invite_created" in filtered_payload["event_type_options"]
@@ -230,6 +233,35 @@ def test_audit_viewer_filters_sorting_pagination_and_safe_search(admin_client):
     assert field_search.status_code == 200
     assert any(event["event_type"] == "staff_invite_created" for event in field_search.get_json()["events"])
     assert "sql" not in invalid.get_data(as_text=True).casefold()
+
+
+def test_root_admin_audit_view_retains_full_ip_for_investigation(admin_client):
+    root_email = sorted(TestConfig.ROOT_ADMIN_EMAILS)[0]
+    root, root_secret = _create_identity(
+        username="root-auditor",
+        email=root_email,
+        account_type="root_admin",
+        phone_number="91234569",
+    )
+    event = _audit_event(
+        event_type="admin_login",
+        user_id=root.id,
+        metadata={
+            "source_kind": "network",
+            "source_display": "203.0.113.10",
+        },
+    )
+    _login_admin(admin_client, root_secret, root_email)
+
+    response = admin_client.get(
+        f"/audit-logs/{event.id}",
+        headers={"Accept": "application/json"},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()["event"]
+    assert payload["ip_address"] == "203.0.113.10"
+    assert payload["source_display"] == "203.0.113.10"
 
 
 def test_audit_event_detail_redacts_existing_unsafe_metadata_and_escapes_html(admin_client):

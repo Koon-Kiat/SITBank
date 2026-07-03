@@ -19,6 +19,7 @@ _ACTION_CONFIG = {
     "customer_register_otp": "TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED",
     "customer_register": "TURNSTILE_CUSTOMER_REGISTER_ENABLED",
     "customer_password_reset": "TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED",
+    "customer_manual_recovery": "TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED",
     "admin_login": "TURNSTILE_ADMIN_LOGIN_ENABLED",
     "admin_invite_accept": "TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED",
 }
@@ -64,6 +65,15 @@ def verify_turnstile_token(token: str | None, *, expected_action: str | None = N
 
 def require_turnstile(action: str, token: str | None = None) -> None:
     config_key = _turnstile_action_config_key(action)
+    if (
+        _production_like()
+        and current_app.config.get("TURNSTILE_FAIL_CLOSED_IN_PRODUCTION", True)
+        and (
+            not current_app.config.get("TURNSTILE_ENABLED", False)
+            or not current_app.config.get(config_key, False)
+        )
+    ):
+        raise TurnstileError(_CHALLENGE_FAILED_MESSAGE)
     if not _turnstile_required_for_config(config_key):
         return
     validate_turnstile_runtime_config(action)

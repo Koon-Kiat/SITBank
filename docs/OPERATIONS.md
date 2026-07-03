@@ -371,12 +371,16 @@ On the production host, also run:
 
 ```bash
 sudo nginx -t
-sudo /usr/local/sbin/verify-production-nginx-boundary
+sudo /usr/local/sbin/verify-production-nginx-boundary \
+  --public-bind-address "$(sudo awk -F= '$1 == "PUBLIC_BIND_ADDRESS" {print $2}' /etc/sitbank/deploy.conf)"
 ```
 
 Normal production deployment invokes the active-config verifier before
 changing the runtime. A failure means loaded Nginx state is stale or
-ambiguous; do not bypass the gate or copy templates from an untrusted release.
+ambiguous. Confirm `PUBLIC_BIND_ADDRESS` is the host's exact public/VPC IPv4
+address and that `ss -H -ltnp` has no wildcard port `443` listener; public
+Nginx must not intercept the private Tailscale Serve HTTPS listener. Do not
+bypass the gate or copy templates from an untrusted release.
 Rerun the trusted production bootstrap, verify Cloudflare Authenticated Origin
 Pull remains enabled using sanitized provider evidence, rerun the verifier,
 and only then retry deployment. The verifier prints named pass/fail controls,
@@ -389,12 +393,13 @@ content. See
 
 ## Root Admin Bootstrap
 
-Root admins remain a fixed allowlisted group. `ROOT_ADMIN_EMAILS` must contain
-exactly 7 approved admin workplace email addresses from
+Root admins remain a fixed allowlisted group. Staging must contain exactly 2
+approved workplace addresses and production exactly 5 from
 `ADMIN_ALLOWED_EMAIL_DOMAINS` before any database user can become `root_admin`;
 normal customer registration and staff invites must not create `root_admin`
-accounts. Configure `ROOT_ADMIN_EMAILS` as a protected GitHub environment
-secret in both `staging` and `production` before deploying this command. The
+accounts. Configure `STAGING_ROOT_ADMIN_EMAILS` and
+`PROD_ROOT_ADMIN_EMAILS` as their respective protected GitHub environment
+secrets before deploying this command. The
 deployment workflow installs it as `/etc/sitbank*/secrets/root_admin_emails`
 and the containers read it through `ROOT_ADMIN_EMAILS_FILE`. Do not commit,
 print, screenshot, or paste the real allowlist into GitHub issues, pull
@@ -1040,8 +1045,16 @@ request a six-digit registration verification code from `/register`, receive it
 by email, verify it in the same browser session, and then complete account
 creation with the same normalized email address. Codes expire after 5 minutes,
 are one-time use, and requesting a new code invalidates the previous code. The
-application stores only an HMAC of the code in PostgreSQL; raw codes must never
+application stores only an HMAC under the active session-HMAC key in
+PostgreSQL; raw codes must never
 be recorded in runbooks, tickets, logs, Discord, Telegram, or screenshots.
+
+Customer identity is canonicalized before OTP issuance and final creation.
+Configured plus-alias and dot-insensitive domains collapse to one canonical
+identity, and configured temporary-email domains are rejected. Duplicate and
+ineligible requests return the same minimal public response; precise reason
+codes remain only in redacted audit metadata. Treat canonicalization policy
+changes as a data migration and collision-review event.
 
 Registration OTP delivery uses the same security email backend and SMTP
 settings as password reset email:
@@ -1079,16 +1092,18 @@ Enable only the routes intended for the environment:
 - `TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED`
 - `TURNSTILE_CUSTOMER_REGISTER_ENABLED`
 - `TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED`
+- `TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED`
 - `TURNSTILE_ADMIN_LOGIN_ENABLED`
 - `TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED`
 
-Production and staging require `TURNSTILE_ENABLED=true`,
+Production and staging require every listed flag,
+`TURNSTILE_FAIL_CLOSED_IN_PRODUCTION=true`, `TURNSTILE_ENABLED=true`,
 `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` or `TURNSTILE_SECRET_KEY_FILE`, and
 the official verifier URL
 `https://challenges.cloudflare.com/turnstile/v0/siteverify`. Local/test
-verifier overrides are for isolated mocks only. Roll back by disabling the
-affected route flag or `TURNSTILE_ENABLED`; do not point production at a custom
-verifier host.
+verifier overrides are for isolated mocks only. Disabling a required flag is a
+readiness failure, not a production rollback mechanism; do not point a
+production-like environment at a custom verifier host.
 
 GitHub Environment variables use the `PROD_TURNSTILE_*` and
 `STAGING_TURNSTILE_*` prefixes; the renderer emits unprefixed runtime keys and
@@ -1097,5 +1112,5 @@ secrets `PROD_TURNSTILE_SECRET_KEY` and `STAGING_TURNSTILE_SECRET_KEY`.
 Deployment installs them as separate root-managed
 `/etc/sitbank*/secrets/turnstile_secret_key` files and never writes the value
 to `container.env`. Production and staging use separate widgets for
-`sitbank.pp.ua`/`www.sitbank.pp.ua` and `staging-sitbank.pp.ua`. Keep both
-admin route flags false; the admin app remains private behind Tailscale.
+`sitbank.pp.ua`/`www.sitbank.pp.ua` and `staging-sitbank.pp.ua`. The admin app remains private behind Tailscale while its public-auth entry routes retain
+Turnstile defense in depth.

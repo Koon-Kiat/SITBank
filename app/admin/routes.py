@@ -139,6 +139,10 @@ class AdminTotpSchema(Schema):
     )
 
 
+class AdminCsrfOnlyForm(FlaskForm):
+    pass
+
+
 class AdminLoginForm(FlaskForm):
     workplace_email = StringField(
         "Workplace email",
@@ -828,10 +832,16 @@ def mfa_verify():
 
 @admin_bp.post("/logout")
 def logout():
-    logout_admin_session()
     wants_json = request.is_json or (
         request.accept_mimetypes[_JSON_MIME_TYPE] > request.accept_mimetypes[_HTML_MIME_TYPE]
     )
+    form = AdminCsrfOnlyForm()
+    if not request.is_json and not form.validate_on_submit():
+        if wants_json:
+            return jsonify({"error": "Security token expired or invalid"}), 400
+        flash("Security token expired or invalid. Please try again.", "error")
+        return redirect(url_for(_ADMIN_LOGIN_FORM_ENDPOINT)), 303
+    logout_admin_session()
     if not wants_json:
         flash("Logged out.", "success")
         return redirect(url_for(_ADMIN_LOGIN_FORM_ENDPOINT)), 303

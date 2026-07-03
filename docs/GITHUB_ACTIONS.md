@@ -145,12 +145,12 @@ set these environment variables:
 - `<PREFIX>_PASSWORD_RESET_EMAIL_FROM`
 - `<PREFIX>_SMTP_HOST`
 
-`ROOT_ADMIN_EMAILS` is sensitive privileged-identity configuration, not a
-repository variable. Store it as a protected environment secret named
-`ROOT_ADMIN_EMAILS` separately in both the `staging` and `production`
-environments. It must be a comma-separated list of exactly 7 workplace email
-addresses from `ADMIN_ALLOWED_EMAIL_DOMAINS`. The deployment workflow maps the
-secret into the prefixed renderer input for the target environment, validates
+Root-admin allowlists are sensitive privileged-identity configuration, not
+repository variables. Store `STAGING_ROOT_ADMIN_EMAILS` in the protected
+`staging` environment with exactly 2 workplace addresses and
+`PROD_ROOT_ADMIN_EMAILS` in `production` with exactly 5 workplace addresses.
+Every address must belong to `ADMIN_ALLOWED_EMAIL_DOMAINS`. The deployment
+workflow maps only the target's secret into the renderer input and validates
 only its shape, and installs it as the root-managed secret file
 `/etc/sitbank*/secrets/root_admin_emails`. Do not copy the real allowlist into
 issues, pull requests, screenshots, logs, or job summaries.

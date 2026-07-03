@@ -12,6 +12,28 @@ def _invalid_totp(secret: str) -> str:
     return "000000" if current != "000000" else "000001"
 
 
+def test_recovery_code_generation_rejects_unsafe_count():
+    from app.auth.recovery_codes import generate_recovery_codes_for_user
+
+    with pytest.raises(ValueError, match="between 1 and 20"):
+        generate_recovery_codes_for_user(None, count=0)
+
+
+def test_recovery_code_low_inventory_threshold(client):
+    from app.auth.recovery_codes import (
+        generate_recovery_codes_for_user,
+        recovery_code_count_is_low,
+    )
+
+    register(client)
+    user = db.session.execute(
+        db.select(User).where(User.username == "alice01")
+    ).scalar_one()
+    generate_recovery_codes_for_user(user, count=2)
+
+    assert recovery_code_count_is_low(user)
+
+
 def test_mfa_setup_stores_encrypted_secret_and_rejects_replay(client, monkeypatch):
     register(client)
     login(client)
@@ -36,9 +58,9 @@ def test_mfa_setup_stores_encrypted_secret_and_rejects_replay(client, monkeypatc
     replay_response = client.post("/mfa/setup", data={"action": "verify", "totp_code": code})
 
     assert setup_page.status_code == 200
-    assert "Manual setup key" in setup_markup
-    assert 'id="manual-entry-secret"' in setup_markup
-    assert f'value="{secret}"' in setup_markup
+    assert "Manual setup key" not in setup_markup
+    assert 'id="manual-entry-secret"' not in setup_markup
+    assert f'value="{secret}"' not in setup_markup
     assert verify_response.status_code == 200
     assert replay_response.status_code == 401
 
@@ -431,12 +453,51 @@ def test_pending_mfa_restart_replaces_previous_setup_secret(client, monkeypatch)
 
     assert first_setup.status_code == 200
     assert first_page.status_code == 200
-    assert b"Restart Setup" in first_page.data
-    assert 'class="button full" type="submit">Restart Setup' in first_page_markup
+    assert b"Restart Setup" not in first_page.data
+    assert 'class="button full" type="submit">Restart Setup' not in first_page_markup
     assert second_setup.status_code == 200
     assert first_secret != second_secret
     assert old_secret_response.status_code == 401
     assert new_secret_response.status_code == 200
+
+
+def test_pending_mfa_setup_expires_and_clears_secret(app, client):
+    register(client)
+    login(client)
+    assert client.post("/mfa/setup", data={"action": "start"}).status_code == 200
+    user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
+    user.mfa_pending_started_at = datetime.now(timezone.utc) - timedelta(
+        seconds=app.config["PENDING_MFA_MAX_AGE_SECONDS"] + 1
+    )
+    db.session.commit()
+
+    page = client.get("/mfa/setup")
+    db.session.refresh(user)
+
+    assert page.status_code == 200
+    assert user.mfa_secret_nonce is None
+    assert user.mfa_secret_ciphertext is None
+    assert user.mfa_pending_started_at is None
+    assert user.mfa_pending_session_hash is None
+
+
+def test_pending_mfa_setup_is_bound_to_starting_session(app, client):
+    register(client)
+    login(client)
+    assert client.post("/mfa/setup", data={"action": "start"}).status_code == 200
+    user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
+    secret = decrypt_test_mfa_secret(user)
+    code = pyotp.TOTP(secret, digits=6, interval=30).now()
+    second_client = app.test_client()
+    assert login(second_client).status_code == 302
+
+    cross_session = second_client.post(
+        "/mfa/setup",
+        data={"action": "verify", "totp_code": code},
+    )
+
+    assert cross_session.status_code == 401
+    assert b"MFA setup expired. Start again." in cross_session.data
 
 def test_mfa_management_page_shows_replacement_controls_when_enabled(client):
     register(client)

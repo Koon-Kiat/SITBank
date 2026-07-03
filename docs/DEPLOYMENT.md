@@ -129,6 +129,13 @@ preserved, the migration leaves unknown legacy phone numbers as `NULL`, keeps
 uniqueness only for real non-null phone numbers, and assigns non-enumerable
 server-generated account numbers to preserved rows.
 
+Migration `20260703_0023` adds canonical customer registration email identity,
+MFA setup-session binding timestamps, and versioned recovery-code HMACs. It
+backfills canonical customer email values and aborts on a collision instead of
+choosing an account. Run this migration in staging first and resolve any
+reported alias collision through a reviewed account-recovery process before
+production rollout.
+
 ## Deployment Prerequisites
 
 Install `/etc/sitbank/secrets/security_alert_webhook_url` or
@@ -143,8 +150,8 @@ Python's default certificate validation and hostname checking; do not configure
 production or staging with unverifiable SMTP TLS.
 
 Turnstile is disabled until `TURNSTILE_ENABLED=true` and route-specific flags
-are set. Customer login, registration OTP, registration submit, password reset,
-optional admin login, and admin invite acceptance each have separate
+are set. Customer login, registration OTP, registration submit, password
+reset, manual recovery, admin login, and admin invite acceptance each have separate
 `TURNSTILE_*_ENABLED` flags. Production and staging must use the official
 Cloudflare Siteverify endpoint
 `https://challenges.cloudflare.com/turnstile/v0/siteverify`; local/test mocks
@@ -163,12 +170,13 @@ Environment secrets. The trusted deployment installs each credential as
 `/etc/sitbank*/secrets/turnstile_secret_key`; Compose exposes only
 `TURNSTILE_SECRET_KEY_FILE=/run/secrets/turnstile_secret_key`.
 
-For this customer rollout, set the four
-`*_TURNSTILE_CUSTOMER_*_ENABLED` variables to `true` and both
-`*_TURNSTILE_ADMIN_*_ENABLED` variables to `false`. This wiring adds no public
-admin hostname and does not replace rate limits, CSRF, MFA, Cloudflare Access,
-or Tailscale. The production hostname transition itself is tracked separately
-and is not implemented by this Turnstile wiring.
+Production-like readiness fails closed unless Turnstile, the site and secret
+keys, `TURNSTILE_FAIL_CLOSED_IN_PRODUCTION`, and every runtime-relevant
+customer and admin route flag are enabled. This includes
+`TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED`. Private admin networking remains
+a separate boundary; it does not justify disabling bot protection. This wiring
+adds no public admin hostname and does not replace rate limits, CSRF, MFA,
+Cloudflare Access, or Tailscale.
 
 Install the host-managed backup encryption recipients file before running
 database cutover or scheduled backups:
@@ -396,10 +404,11 @@ ephemeral tailnet node. Neither control proves live ACL membership, device
 approval, or operator offboarding state, which remains operator-owned
 evidence.
 
-Set `ROOT_ADMIN_EMAILS` as a protected environment secret in both the
-`staging` and `production` GitHub environments before deploying admin bootstrap
-support. It is sensitive privileged-identity configuration: the value must be
-exactly 7 comma-separated SIT workplace email addresses. The deployment
+Set `STAGING_ROOT_ADMIN_EMAILS` in the protected `staging` environment and
+`PROD_ROOT_ADMIN_EMAILS` in the protected `production` environment before
+deploying admin bootstrap support. They are sensitive privileged-identity
+configuration: staging must contain exactly 2 comma-separated SIT workplace
+email addresses and production must contain exactly 5. The deployment
 workflow validates the secret without printing it, uploads it as a restricted
 deployment input, and installs it as `/etc/sitbank*/secrets/root_admin_emails`
 so `sitbank-admin` and `sitbank-staging-admin` can enforce the fixed root-admin
@@ -676,7 +685,7 @@ served through DNS and the deployed edge.
 
 ## Production Edge and Network Hardening
 
-The reviewed production bootstrap installs and enables the production edge from `ops/nginx/sitbank-default.conf`, `ops/nginx/sitbank-production.conf`, `ops/nginx/sitbank-production-rate-limits.conf`, `ops/nginx-proxy-headers.conf`, and `ops/nginx/sitbank-tls-policy.conf`. The shared default config owns unknown-host rejection so production and staging can run on the same EC2 without duplicate Nginx `default_server` listeners. Any change to those files requires a production bootstrap after merge.
+The reviewed production bootstrap installs and enables the production edge from `ops/nginx/sitbank-default.conf`, `ops/nginx/sitbank-production.conf`, `ops/nginx/sitbank-production-rate-limits.conf`, `ops/nginx-proxy-headers.conf`, and `ops/nginx/sitbank-tls-policy.conf`. `PUBLIC_BIND_ADDRESS` in root-owned `deploy.conf` must be the exact public/VPC IPv4 address assigned to Nginx; loopback, Tailscale `100.64.0.0/10`, wildcard, and malformed values fail bootstrap. During the first transition from a deploy config without this key, bootstrap derives the kernel's default-route source IPv4, validates it under the same policy, and persists it for subsequent deployments; operators with multiple egress interfaces must pass the intended address explicitly. The bootstrap renders every public port `80`/`443` listener onto that address, while Tailscale Serve owns its private HTTPS listener. The shared default config owns unknown-host rejection without wildcard public listeners. Any change to these files or `PUBLIC_BIND_ADDRESS` requires a target bootstrap after merge.
 
 Production bootstrap also installs
 `/usr/local/sbin/verify-production-nginx-boundary`. Bootstrap runs it after
@@ -684,8 +693,10 @@ Nginx reload, and every normal production deploy runs it before deployment
 starts. The verifier inspects the loaded `nginx -T` state and fails closed if
 the raw-IP HTTP redirect, production Authenticated Origin Pull CA/client
 verification, six-month HSTS, default HTTPS rejection, or public-admin denial
-is stale. Normal deploy does not repair Nginx. Rerun the trusted production
-bootstrap, confirm Cloudflare Authenticated Origin Pull remains enabled with
+is stale, if a wildcard HTTPS listener exists, or if the configured exact bind
+address does not own the public listeners. Normal deploy does not repair Nginx.
+This configuration requires a production bootstrap after merge. Rerun the
+trusted production bootstrap, confirm Cloudflare Authenticated Origin Pull remains enabled with
 sanitized provider evidence, and then retry deployment. Repository and host
 checks do not by themselves prove live Cloudflare provider settings.
 
