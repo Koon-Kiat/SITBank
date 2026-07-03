@@ -14,6 +14,7 @@ services:
       GF_PATHS_PROVISIONING: /etc/grafana/provisioning
       GF_PATHS_DATA: /var/lib/grafana
       GF_SERVER_ROOT_URL: ${GRAFANA_PRIVATE_ROOT_URL:?GRAFANA_PRIVATE_ROOT_URL must be the private Tailscale URL}
+      GF_SERVER_SERVE_FROM_SUB_PATH: ${GRAFANA_SERVE_FROM_SUB_PATH:-false}
       GF_SECURITY_ADMIN_USER__FILE: /run/secrets/grafana_admin_user
       GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
       GF_AUTH_ANONYMOUS_ENABLED: "false"
