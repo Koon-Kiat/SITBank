@@ -40,12 +40,10 @@
           <label for="{{ form.totp_code.id }}">Authenticator code</label>
           {{ form.totp_code(inputmode="numeric", autocomplete="one-time-code", maxlength="6", placeholder="6-digit code") }}
           {% for error in form.totp_code.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
-          {{ form.stepup_token() }}
           <p class="hint">This transfer brings you to 80% or more of your daily PayUp limit, so an authenticator code is required.</p>
         </div>
         {% else %}
         {{ form.totp_code(type="hidden") }}
-        {{ form.stepup_token() }}
         {% endif %}
         <button class="button full" type="submit">Confirm Transfer</button>
       </form>

@@ -214,11 +214,11 @@ names. It does not contain cookies, raw session ids, raw context values, or
 session payloads. Standard audit request columns remain governed by
 `docs/security/assurance/audit-and-alerting.md`.
 
-Legacy authenticated sessions without the structured context are migrated on
-their next request. A matching legacy `risk_fingerprint` is accepted and
-upgraded; a mismatch requires customer reauthentication or revokes an admin
-session. A session with no prior fingerprint is initialized without pretending
-that historical context was verified.
+Sessions with missing, malformed, or unsupported structured context never use
+the old fingerprint as an authentication shortcut. Customer sessions are
+marked for full reauthentication before sensitive actions, while the stricter
+admin policy revokes the session and requires a fresh login. A subsequent
+authenticated session receives only the current versioned context.
 
 Focused coverage is in `tests/test_session_risk_binding.py`. It verifies
 customer/admin context creation, low/medium/high handling, strict admin

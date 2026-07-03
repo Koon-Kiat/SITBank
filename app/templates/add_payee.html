@@ -47,7 +47,6 @@
           <label for="{{ form.totp_code.id }}">Authenticator code</label>
           {{ form.totp_code(inputmode="numeric", autocomplete="one-time-code", maxlength="6", placeholder="6-digit code") }}
           {% for error in form.totp_code.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
-          {{ form.stepup_token() }}
           <p class="hint">Required before recipient details are looked up.</p>
         </div>
         <button class="button full" type="submit">Look Up Recipient</button>

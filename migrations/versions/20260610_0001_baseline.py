@@ -48,44 +48,6 @@ def upgrade() -> None:
     )
 
     op.create_table(
-        "webauthn_credentials",
-        sa.Column("id", sa.Integer(), nullable=False),
-        sa.Column("user_id", sa.Integer(), nullable=False),
-        sa.Column("credential_id", sa.LargeBinary(), nullable=False),
-        sa.Column("credential_public_key", sa.LargeBinary(), nullable=False),
-        sa.Column("sign_count", sa.Integer(), nullable=False),
-        sa.Column("label", sa.String(length=80), nullable=False),
-        sa.Column("aaguid", sa.String(length=36), nullable=False),
-        sa.Column("attestation_format", sa.String(length=32), nullable=False),
-        sa.Column("transports", sa.JSON(), nullable=False),
-        sa.Column("credential_device_type", sa.String(length=32), nullable=False),
-        sa.Column("credential_backed_up", sa.Boolean(), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),
-        sa.ForeignKeyConstraint(["user_id"], ["users.id"]),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("credential_id", name="uq_webauthn_credentials_credential_id"),
-    )
-    op.create_index(
-        "ix_webauthn_credentials_aaguid",
-        "webauthn_credentials",
-        ["aaguid"],
-        unique=False,
-    )
-    op.create_index(
-        "ix_webauthn_credentials_user_id",
-        "webauthn_credentials",
-        ["user_id"],
-        unique=False,
-    )
-    op.create_index(
-        "ix_webauthn_credentials_user_label_lower",
-        "webauthn_credentials",
-        ["user_id", sa.text("lower(label)")],
-        unique=True,
-    )
-
-    op.create_table(
         "security_audit_events",
         sa.Column("id", sa.Integer(), nullable=False),
         sa.Column("event_type", sa.String(length=80), nullable=False),
@@ -139,14 +101,6 @@ def downgrade() -> None:
     op.drop_index("ix_security_audit_events_created_at", table_name="security_audit_events")
     op.drop_index("ix_security_audit_events_correlation_id", table_name="security_audit_events")
     op.drop_table("security_audit_events")
-
-    op.drop_index(
-        "ix_webauthn_credentials_user_label_lower",
-        table_name="webauthn_credentials",
-    )
-    op.drop_index("ix_webauthn_credentials_user_id", table_name="webauthn_credentials")
-    op.drop_index("ix_webauthn_credentials_aaguid", table_name="webauthn_credentials")
-    op.drop_table("webauthn_credentials")
 
     op.drop_index("ix_users_username_lower", table_name="users")
     op.drop_index("ix_users_email_lower", table_name="users")

@@ -31,7 +31,14 @@ from app.auth.services import (
     _verify_totp_for_user,
 )
 from app.extensions import db
-from app.models import AdminActionRequest, ManualRecoveryRequest, SecurityAuditEvent, StaffInvite, User
+from app.models import (
+    AdminActionRequest,
+    AuthAttemptCounter,
+    ManualRecoveryRequest,
+    SecurityAuditEvent,
+    StaffInvite,
+    User,
+)
 from app.security.audit import audit_event, audit_event_required, audit_reference, principal_reference
 from app.security.crypto import encrypt_mfa_secret
 from app.security.email import send_security_email
@@ -101,6 +108,9 @@ MANUAL_RECOVERY_STATUS_OPERATION_TYPES = {
 }
 ADMIN_ACTION_EXECUTION_REASON = "maker_checker_approved"
 ADMIN_ACTION_APPROVAL_REQUIRED_MESSAGE = "Admin action approval required"
+AUTOMATIC_CUSTOMER_LOCK_REASONS = frozenset(
+    {"password_failed_attempts", "mfa_failed_attempts"}
+)
 GENERIC_ADMIN_LOGIN_ERROR = "Invalid workplace email, password, or authentication code"
 ADMIN_INDEX_ENDPOINT = "admin.index"
 FRESH_MFA_REQUIRED_ERROR = "Fresh MFA verification is required"
@@ -501,6 +511,12 @@ def admin_navigation_for(user: User) -> list[dict[str, str]]:
                     "group": "root",
                 },
                 {
+                    "label": "Customer locks",
+                    "href": url_for("admin.customer_security_locks"),
+                    "endpoint": "admin.customer_security_locks",
+                    "group": "root",
+                },
+                {
                     "label": "Approvals",
                     "href": url_for("admin.admin_action_requests"),
                     "endpoint": "admin.admin_action_requests",
@@ -548,6 +564,98 @@ def staff_accounts_for_admin(actor: User) -> list[dict[str, Any]]:
         ).scalars()
     )
     return [public_staff_account(user, actor) for user in users]
+
+
+def locked_customers_for_admin(actor: User) -> list[dict[str, Any]]:
+    _require_active_root_admin(actor, "customer_security_unlock_review")
+    customers = list(
+        db.session.execute(
+            db.select(User)
+            .where(
+                User.account_type == ACCOUNT_CUSTOMER,
+                User.is_frozen.is_(True),
+                User.security_locked_at.is_not(None),
+                User.security_lock_reason.in_(tuple(AUTOMATIC_CUSTOMER_LOCK_REASONS)),
+            )
+            .order_by(User.security_locked_at.asc(), User.id.asc())
+        ).scalars()
+    )
+    audit_event("customer_security_unlock_review", "success", user=actor)
+    return [
+        {
+            "id": customer.id,
+            "customer_ref": audit_reference("customer_user", customer.id),
+            "username": customer.username,
+            "lock_reason": customer.security_lock_reason,
+            "locked_at": _utc_iso(customer.security_locked_at),
+        }
+        for customer in customers
+    ]
+
+
+def request_customer_security_unlock(
+    actor: User,
+    target_user_id: int,
+    reason: str,
+    totp_code: str | None,
+) -> dict[str, Any]:
+    _require_active_root_admin(actor, "customer_security_unlock_request")
+    clean_reason = _require_manual_recovery_reason(
+        reason,
+        "customer_security_unlock_request",
+        actor,
+    )
+    target = _locked_customer_for_update(
+        target_user_id,
+        actor=actor,
+        event_type="customer_security_unlock_request",
+    )
+    _assert_not_self_customer_action(actor, target, "customer_security_unlock")
+    if not totp_code or not _verify_totp_for_user(
+        actor,
+        totp_code,
+        "customer_security_unlock_request",
+    ):
+        audit_event(
+            "customer_security_unlock_request",
+            "failure",
+            user=actor,
+            metadata={
+                "reason": "invalid_totp_step_up",
+                "target_customer_ref": audit_reference("customer_user", target.id),
+            },
+        )
+        raise AuthError(FRESH_MFA_REQUIRED_ERROR, 403)
+
+    request_record = _create_admin_action_request(
+        actor,
+        operation_type="customer_security_unlock",
+        target_type="customer_user",
+        target_id=str(target.id),
+        operation_payload={
+            "action": "unlock",
+            "lock_reason": str(target.security_lock_reason),
+            "locked_at": _utc_iso(target.security_locked_at),
+        },
+        reason=clean_reason,
+    )
+    audit_event(
+        "customer_security_unlock_requested",
+        "success",
+        user=actor,
+        metadata={
+            "request_ref": audit_reference("admin_action_request", request_record.id),
+            "target_customer_ref": audit_reference("customer_user", target.id),
+            "previous_lock_reason": target.security_lock_reason,
+            "actor_role": actor.account_type,
+            "reason_present": True,
+            "reason_length": len(clean_reason),
+        },
+    )
+    return {
+        "message": ADMIN_ACTION_APPROVAL_REQUIRED_MESSAGE,
+        "request": public_admin_action_request(request_record),
+    }
 
 
 def transition_staff_account_as_root_admin(
@@ -873,7 +981,7 @@ def _admin_security_notices(actor: User) -> list[dict[str, str]]:
         {
             "severity": "info",
             "title": "Authenticator MFA required",
-            "message": "Staff/admin access uses workplace login plus TOTP; passkeys and WebAuthn are not offered in this workflow.",
+            "message": "Staff/admin access uses workplace login plus authenticator TOTP.",
         },
         {
             "severity": "warning",
@@ -1421,7 +1529,6 @@ def create_staff_invite(
     now = _utcnow()
     invite = StaffInvite(
         token_hash=invite_token_hash(token),
-        personal_email_normalized=None,
         workplace_email_normalized=normalized_workplace,
         role=normalized_role,
         status="pending",
@@ -1672,6 +1779,7 @@ def approve_admin_action_request_as_root_admin(
         )
         raise AuthError("Admin action request execution failed", 409) from exc
 
+    notification_user_id = result.pop("_notification_user_id", None)
     request_record.approver_id = actor.id
     request_record.status = "executed"
     request_record.decided_at = _utcnow()
@@ -1689,6 +1797,8 @@ def approve_admin_action_request_as_root_admin(
         },
     )
     db.session.commit()
+    if notification_user_id is not None:
+        _send_customer_security_unlock_notification(int(notification_user_id))
     return {
         "message": "Admin action request approved and executed",
         "request": public_admin_action_request(request_record),
@@ -1739,6 +1849,17 @@ def reject_admin_action_request_as_root_admin(
         },
     )
     db.session.commit()
+    if request_record.operation_type == "customer_security_unlock":
+        audit_event(
+            "customer_security_unlock_denied",
+            "blocked",
+            user=actor,
+            metadata={
+                "request_ref": audit_reference("admin_action_request", request_record.id),
+                "target_customer_ref": _admin_action_target_ref(request_record),
+                "actor_role": actor.account_type,
+            },
+        )
     return {"message": "Admin action request rejected", "request": public_admin_action_request(request_record)}
 
 
@@ -1864,6 +1985,8 @@ def _execute_admin_action_request(actor: User, request_record: AdminActionReques
         return _execute_manual_recovery_transition_admin_action_request(actor, request_record)
     if request_record.operation_type == "manual_recovery_complete":
         return _execute_manual_recovery_complete_admin_action_request(actor, request_record)
+    if request_record.operation_type == "customer_security_unlock":
+        return _execute_customer_security_unlock_admin_action_request(actor, request_record)
     raise AuthError("Admin action request cannot be executed", 409)
 
 
@@ -1921,6 +2044,84 @@ def _execute_manual_recovery_complete_admin_action_request(
         },
     )
     return {"message": "Manual recovery request completed", "request": result}
+
+
+def _execute_customer_security_unlock_admin_action_request(
+    actor: User,
+    request_record: AdminActionRequest,
+) -> dict[str, Any]:
+    target = _locked_customer_for_update(
+        int(request_record.target_id),
+        actor=actor,
+        event_type="customer_security_unlock_execute",
+    )
+    _assert_not_self_customer_action(actor, target, "customer_security_unlock")
+    expected_reason = str(
+        (request_record.operation_payload or {}).get("lock_reason") or ""
+    )
+    expected_locked_at = str(
+        (request_record.operation_payload or {}).get("locked_at") or ""
+    )
+    current_reason = str(target.security_lock_reason or "").casefold()
+    current_locked_at = _utc_iso(target.security_locked_at).casefold()
+    if not (
+        hmac.compare_digest(current_reason, expected_reason)
+        and hmac.compare_digest(current_locked_at, expected_locked_at)
+    ):
+        audit_event(
+            "customer_security_unlock_execute",
+            "blocked",
+            user=actor,
+            metadata={
+                "reason": "stale_lock_state",
+                "request_ref": audit_reference("admin_action_request", request_record.id),
+                "target_customer_ref": audit_reference("customer_user", target.id),
+            },
+        )
+        raise AuthError("Customer security lock state changed", 409)
+
+    previous_lock_reason = str(target.security_lock_reason)
+    relevant_counters = list(
+        db.session.execute(
+            db.select(AuthAttemptCounter).where(
+                AuthAttemptCounter.user_id == target.id,
+                AuthAttemptCounter.scope.in_(
+                    ("user_security:password", "user_security:mfa")
+                ),
+            )
+        ).scalars()
+    )
+    for counter in relevant_counters:
+        db.session.delete(counter)
+
+    target.is_frozen = False
+    target.security_locked_at = None
+    target.security_lock_reason = None
+    target.failed_login_count = 0
+    revoked_sessions = revoke_all_sessions(
+        target.id,
+        ended_reason="security_unlock",
+        component="customer",
+    )
+    audit_event_required(
+        "customer_security_unlock_completed",
+        "success",
+        user=actor,
+        metadata={
+            "request_ref": audit_reference("admin_action_request", request_record.id),
+            "target_customer_ref": audit_reference("customer_user", target.id),
+            "previous_lock_reason": previous_lock_reason,
+            "actor_role": actor.account_type,
+            "revoked_sessions": revoked_sessions,
+            "cleared_user_security_counters": len(relevant_counters),
+        },
+    )
+    return {
+        "message": "Customer security lock cleared",
+        "customer_ref": audit_reference("customer_user", target.id),
+        "revoked_sessions": revoked_sessions,
+        "_notification_user_id": target.id,
+    }
 
 
 def _mark_admin_action_request_execution_failed(
@@ -2067,7 +2268,7 @@ def _safe_admin_action_payload(payload: dict[str, Any]) -> dict[str, str]:
     safe: dict[str, str] = {}
     for key, value in dict(payload or {}).items():
         key_text = str(key or "").strip()
-        if key_text not in {"action", "status"}:
+        if key_text not in {"action", "status", "lock_reason", "locked_at"}:
             continue
         value_text = str(value or "").strip().casefold()
         if value_text:
@@ -2094,6 +2295,94 @@ def _require_active_root_admin(actor: User, event_type: str) -> None:
         return
     audit_event(event_type, "blocked", user=actor, metadata={"reason": "not_active_root_admin"})
     raise AuthError("Forbidden", 403)
+
+
+def _locked_customer_for_update(
+    target_user_id: int,
+    *,
+    actor: User,
+    event_type: str,
+) -> User:
+    target = db.session.execute(
+        db.select(User)
+        .where(User.id == int(target_user_id))
+        .with_for_update()
+    ).scalar_one_or_none()
+    valid = bool(
+        target is not None
+        and target.account_type == ACCOUNT_CUSTOMER
+        and target.is_frozen
+        and target.security_locked_at is not None
+        and target.security_lock_reason in AUTOMATIC_CUSTOMER_LOCK_REASONS
+    )
+    if valid:
+        return target
+    audit_event(
+        event_type,
+        "blocked",
+        user=actor,
+        metadata={
+            "reason": "target_not_eligible",
+            "target_customer_ref": audit_reference(
+                "customer_user",
+                target_user_id,
+            ),
+        },
+    )
+    raise AuthError("Customer security lock is not eligible for unlock", 409)
+
+
+def _assert_not_self_customer_action(
+    actor: User,
+    target: User,
+    action_type: str,
+) -> None:
+    from app.admin.separation import assert_not_self_customer_action
+
+    assert_not_self_customer_action(actor, target, action_type)
+
+
+def _send_customer_security_unlock_notification(user_id: int) -> None:
+    user = db.session.get(User, int(user_id))
+    if user is None or user.account_type != ACCOUNT_CUSTOMER:
+        audit_event(
+            "customer_security_unlock_notification",
+            "failure",
+            metadata={
+                "reason": "customer_unavailable",
+                "target_customer_ref": audit_reference("customer_user", user_id),
+            },
+        )
+        return
+    body = (
+        "Your SITBank account security lock was cleared after an approved "
+        "support review. Existing sessions were revoked. You may retry normal "
+        "login or password reset; authenticator MFA and all rate limits still apply. "
+        "If you did not request help, contact support immediately."
+    )
+    try:
+        send_security_email(
+            user.email,
+            "SITBank account security lock cleared",
+            body,
+        )
+    except Exception as exc:
+        current_app.logger.warning(
+            "customer_security_unlock_notification_failed error=%s",
+            type(exc).__name__,
+        )
+        audit_event(
+            "customer_security_unlock_notification",
+            "failure",
+            user=user,
+            metadata={"reason": "email_delivery_failed"},
+        )
+        return
+    audit_event(
+        "customer_security_unlock_notification",
+        "queued",
+        user=user,
+    )
 
 
 def invite_info(token: str) -> dict[str, Any]:

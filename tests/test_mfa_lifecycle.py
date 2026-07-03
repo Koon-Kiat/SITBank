@@ -204,14 +204,13 @@ def test_invalid_recovery_code_attempt_uses_generic_error_and_audits_failure(cli
     assert response.get_json()["error"] == "Incorrect code. Check your authenticator and try again."
     assert db.session.query(SecurityAuditEvent).filter_by(event_type="mfa_recovery_code_verify", outcome="failure").count() == 1
 
-def test_recovery_code_satisfies_totp_login_even_when_passkeys_are_registered(client):
+def test_recovery_code_satisfies_totp_login(client):
     from app.auth.recovery_codes import generate_recovery_codes_for_user
 
     register(client)
     login(client)
     user, _secret = enable_mfa_for_user()
     recovery_codes = generate_recovery_codes_for_user(user)
-    add_security_keys_for_user(user)
 
     client.post("/logout")
     with client.session_transaction() as sess:
@@ -255,23 +254,6 @@ def test_recovery_code_regeneration_requires_fresh_totp_stepup(client):
         outcome="failure",
     ).count() >= 2
 
-
-def test_recovery_code_regeneration_rejects_passkey_stepup_token(client):
-    from app.auth.recovery_codes import generate_recovery_codes_for_user
-
-    register(client)
-    login(client)
-    user, _secret = enable_mfa_for_user()
-    generate_recovery_codes_for_user(user, count=3)
-
-    response = client.post(
-        "/auth/mfa/recovery-codes/regenerate",
-        json={"stepup_token": "a" * 32},
-    )
-
-    assert response.status_code == 403
-    assert response.get_json()["error"] == "Enter an authenticator code to verify this action"
-    assert db.session.query(RecoveryCode).filter_by(user_id=user.id, used_at=None).count() == 3
 
 
 def test_recovery_code_regeneration_with_valid_totp_revokes_old_unused_codes(client):
@@ -534,7 +516,6 @@ def test_mfa_replacement_keeps_old_secret_until_new_code_is_verified(client, mon
     register(client)
     login(client)
     user, old_secret = enable_mfa_for_user()
-    add_security_keys_for_user(user)
     mark_recent_mfa(client, user)
 
     start_time = int(time.time())

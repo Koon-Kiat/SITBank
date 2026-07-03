@@ -53,7 +53,7 @@ banking_bp = Blueprint("banking", __name__, url_prefix="/banking")
 
 _PENDING_PAYEE_TTL = 300  # seconds; user has 5 min to complete MFA after step 1
 _PENDING_TRANSFER_TTL = 300  # seconds; user has 5 min to confirm after MFA step-up
-_ACCOUNT_RE = re.compile(r"^(?:\d{9}|\d{12})$")
+_ACCOUNT_RE = re.compile(r"^\d{12}$", flags=re.ASCII)
 _REQUEST_EXPIRED_MESSAGE = "Request expired. Please start again."
 _NO_PENDING_TRANSFER_MESSAGE = "No pending transfer. Please start again."
 _PAYEES_ENDPOINT = "banking.payees"
@@ -181,7 +181,6 @@ def payees_add_submit():
         verify_high_risk_authorization(
             g.current_user,
             form.totp_code.data,
-            form.stepup_token.data,
             "payee_add",
         )
     except AuthError as exc:
@@ -360,7 +359,6 @@ def payees_remove_submit(payee_id: int):
         verify_high_risk_authorization(
             g.current_user,
             form.totp_code.data,
-            form.stepup_token.data,
             "payee_remove",
         )
     except AuthError as exc:
@@ -435,7 +433,6 @@ def transfer_submit(payee_id: int):
         verify_high_risk_authorization(
             g.current_user,
             form.totp_code.data,
-            form.stepup_token.data,
             "transfer",
         )
     except AuthError as exc:
@@ -565,7 +562,6 @@ def payup_submit():
         verify_high_risk_authorization(
             g.current_user,
             form.totp_code.data,
-            form.stepup_token.data,
             "payup_lookup",
         )
     except AuthError as exc:
@@ -765,7 +761,6 @@ def payup_confirm_submit():
             verify_high_risk_authorization(
                 g.current_user,
                 form.totp_code.data,
-                form.stepup_token.data,
                 "payup_transfer",
             )
             authorized = True
@@ -839,7 +834,6 @@ def transfer_limits_submit():
         verify_high_risk_authorization(
             g.current_user,
             form.totp_code.data,
-            form.stepup_token.data,
             "transfer_limits_change",
         )
     except AuthError as exc:

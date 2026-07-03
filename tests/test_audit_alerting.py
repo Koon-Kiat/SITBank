@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 
 from _auth_flow_helpers import *
 
@@ -146,7 +147,7 @@ def test_required_audit_waits_for_caller_commit_before_persisting(app):
         password_hash=hash_password("correct horse battery staple"),
         full_name="Audit Boundary",
         phone_number="81234567",
-        account_number="012345678",
+        account_number="012345678000",
     )
     db.session.add(user)
     db.session.commit()
@@ -171,7 +172,7 @@ def test_required_audit_success_is_committed_by_the_caller(app):
         password_hash=hash_password("correct horse battery staple"),
         full_name="Audit Commit",
         phone_number="82345678",
-        account_number="012456789",
+        account_number="012456789000",
     )
     db.session.add(user)
     db.session.commit()
@@ -197,7 +198,7 @@ def test_required_audit_failure_leaves_business_rollback_to_caller(app, monkeypa
         password_hash=hash_password("correct horse battery staple"),
         full_name="Audit Failure",
         phone_number="83456789",
-        account_number="012567890",
+        account_number="012567890000",
     )
     db.session.add(user)
     db.session.commit()
@@ -217,30 +218,6 @@ def test_required_audit_failure_leaves_business_rollback_to_caller(app, monkeypa
     persisted = db.session.get(User, user_id)
     assert persisted.full_name == "Audit Failure"
     assert db.session.query(SecurityAuditEvent).filter_by(event_type="required_failure").count() == 0
-
-def test_webauthn_audit_wrapper_can_use_required_writer(monkeypatch):
-    from app.security import audit as audit_module
-
-    calls = []
-    monkeypatch.setattr(
-        audit_module,
-        "audit_event_required",
-        lambda event_type, outcome, **kwargs: calls.append((event_type, outcome, kwargs)),
-    )
-    monkeypatch.setattr(
-        audit_module,
-        "audit_event",
-        lambda *_args, **_kwargs: pytest.fail("required WebAuthn audit must not use best-effort writer"),
-    )
-
-    audit_module.audit_webauthn_event("register", "success", credential_id=b"credential-id", required=True)
-
-    assert calls
-    assert calls[0][0] == "webauthn_register"
-    assert calls[0][1] == "success"
-    metadata = calls[0][2]["metadata"]
-    assert metadata["credential_ref"]
-    assert "credential_id" not in metadata
 
 def test_audit_system_writer_uses_append_only_runtime_read_path(app, monkeypatch):
     from app.security import audit as audit_module
@@ -513,7 +490,7 @@ def test_security_alerts_detect_database_table_regression_from_external_state(ap
         password_hash=hash_password("correct horse battery staple"),
         full_name="Alice Test",
         phone_number="91234567",
-        account_number="012" + "".join(str(secrets.randbelow(10)) for _ in range(6)),
+        account_number="".join(str(secrets.randbelow(10)) for _ in range(12)),
     )
     db.session.add(user)
     db.session.commit()
@@ -570,7 +547,6 @@ def test_security_alert_evaluator_cli_and_output_are_sanitized(app):
         audit_event("security_audit_write_failed", "failure", metadata={"token": raw_token})
         audit_event("account_lock", "locked", metadata={"reason": "mfa_failed"})
         audit_event("account_freeze", "success", metadata={"reason": "customer_requested"})
-        audit_event("webauthn_clone_detected", "locked", metadata={"credential_id": "credential-ref"})
         audit_event("session_integrity", "failure", metadata={"reason": "invalid_signature"})
 
     with app.test_request_context(
@@ -601,7 +577,6 @@ def test_security_alert_evaluator_cli_and_output_are_sanitized(app):
         "security_audit_write_failed",
         "account_lock",
         "account_freeze",
-        "webauthn_clone_detected",
         "session_integrity_failure",
         "login_failure_burst",
         "auth_backoff_or_rate_limit_burst",
@@ -737,8 +712,8 @@ def test_security_alert_webhook_delivery_redacts_final_payload_fields(monkeypatc
         "session_id": "session-id-secret",
         "totp_code": "123456",
         "recovery_codes": ["recovery-code-one", "recovery-code-two"],
-        "webauthn_challenge": "webauthn-challenge-secret",
-        "webauthn_assertion": {
+        "authentication_challenge": "authentication-challenge-secret",
+        "authentication_assertion": {
             "clientDataJSON": "client-data-json-secret",
             "authenticatorData": "authenticator-data-secret",
             "signature": "signature-secret",
@@ -799,8 +774,8 @@ def test_security_alert_webhook_delivery_redacts_final_payload_fields(monkeypatc
     assert delivered_alert["session_id"] == "[redacted]"
     assert delivered_alert["totp_code"] == "[redacted]"
     assert delivered_alert["recovery_codes"] == "[redacted]"
-    assert delivered_alert["webauthn_challenge"] == "[redacted]"
-    assert delivered_alert["webauthn_assertion"] == "[redacted]"
+    assert delivered_alert["authentication_challenge"] == "[redacted]"
+    assert delivered_alert["authentication_assertion"] == "[redacted]"
     assert delivered_alert["hmac_key"] == "[redacted]"
     assert delivered_alert["mfa_kek"] == "[redacted]"
     assert delivered_alert["smtp_username"] == "[redacted]"
@@ -831,7 +806,7 @@ def test_security_alert_webhook_delivery_redacts_final_payload_fields(monkeypatc
         "123456",
         "recovery-code-one",
         "recovery-code-two",
-        "webauthn-challenge-secret",
+        "authentication-challenge-secret",
         "client-data-json-secret",
         "authenticator-data-secret",
         "signature-secret",

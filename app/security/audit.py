@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import hashlib
 import hmac
 import json
@@ -283,49 +282,6 @@ def audit_system_event(
         return
 
     _log_audit_record(event, path=None, method=None)
-
-
-def audit_webauthn_event(
-    action: str,
-    outcome: str,
-    *,
-    user: User | None = None,
-    user_id: int | None = None,
-    credential_id: bytes | str | None = None,
-    label: str | None = None,
-    aaguid: str | None = None,
-    metadata: dict[str, Any] | None = None,
-    session_id: str | None = None,
-    required: bool = False,
-) -> None:
-    credential_ref = None
-    if isinstance(credential_id, bytes):
-        credential_value = _bytes_to_base64url(credential_id)
-        credential_ref = audit_reference("webauthn_credential", credential_value) or "[unavailable]"
-    elif credential_id:
-        credential_ref = audit_reference("webauthn_credential", credential_id) or "[unavailable]"
-
-    event_metadata = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "action": action,
-        "credential_ref": credential_ref,
-        "label": label,
-        "aaguid": aaguid,
-    }
-    event_metadata.update(metadata or {})
-    writer = audit_event_required if required else audit_event
-    writer(
-        f"webauthn_{action}",
-        outcome,
-        user=user,
-        user_id=user_id,
-        metadata=event_metadata,
-        session_id=session_id,
-    )
-
-
-def _bytes_to_base64url(value: bytes) -> str:
-    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
 
 
 def verify_audit_hash_chain(*, anchor: Mapping[str, Any] | None = None) -> dict[str, Any]:

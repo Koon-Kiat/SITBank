@@ -11,6 +11,43 @@ def test_registration_rejects_common_password(client):
     assert response.status_code == 400
     assert db.session.query(User).count() == 0
 
+
+def test_account_number_generation_randomizes_all_twelve_positions(app, monkeypatch):
+    from app.auth import services as auth_services
+
+    digits = iter([9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 9, 8])
+    monkeypatch.setattr(auth_services.secrets, "randbelow", lambda _limit: next(digits))
+
+    assert auth_services._generate_account_number() == "987654321098"
+
+
+@pytest.mark.parametrize(
+    "invalid_account_number",
+    ["123456789", "1234567890123", "12345678901x"],
+)
+def test_user_account_number_database_constraint_rejects_noncurrent_formats(
+    app,
+    invalid_account_number,
+):
+    from sqlalchemy.exc import IntegrityError
+
+    user = User(
+        username=f"invalid-{len(invalid_account_number)}-{invalid_account_number[-1]}",
+        email=f"invalid-{len(invalid_account_number)}-{invalid_account_number[-1]}@example.test",
+        password_hash="clearly-fake-password-hash",
+        account_type="customer",
+        account_status="active",
+        full_name="Invalid Account Fixture",
+        phone_number=None,
+        account_number=invalid_account_number,
+    )
+    db.session.add(user)
+
+    with pytest.raises(IntegrityError):
+        db.session.commit()
+    db.session.rollback()
+
+
 def test_registration_uses_local_fallback_when_live_password_check_is_unavailable(client, monkeypatch):
     from app.security.passwords import HIBP_FALLBACK_WARNING, LivePasswordCheckUnavailable
 
@@ -329,7 +366,8 @@ def test_registration_hashes_password_with_pbkdf2(client):
     user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
     assert user.account_number is not None
     assert len(user.account_number) == 12
-    assert user.account_number.startswith("012")
+    assert user.account_number.isascii()
+    assert user.account_number.isdigit()
     assert user.account_number.isdigit()
     assert not user.password_hash.endswith("correct horse battery staple")
     assert user.password_hash.startswith(f"{PBKDF2_PREFIX}$v1$i=600000$")
@@ -355,7 +393,6 @@ def test_long_unicode_password_can_register_login_and_change(client, monkeypatch
     response = register(client, password=long_password)
     login_response = login(client, password=long_password)
     user, secret = enable_mfa_for_user()
-    add_security_keys_for_user(user)
     old_hash = user.password_hash
     change_time = int(time.time())
     monkeypatch.setattr("app.auth.services.time.time", lambda: change_time)
@@ -384,7 +421,6 @@ def test_password_templates_do_not_truncate_and_show_max_length_guidance(client)
     register(client)
     login(client)
     user, _secret = enable_mfa_for_user()
-    add_security_keys_for_user(user)
     change_response = client.get("/password/change")
 
     assert register_response.status_code == 200

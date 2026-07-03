@@ -22,13 +22,11 @@ from app.security.session_hmac import active_hmac_hex
 IMMEDIATE_ALERT_EVENT_TYPES = {
     "security_audit_write_failed": "security_audit_write_failed",
     "account_lock": "account_lock",
-    "webauthn_clone_detected": "webauthn_clone_detected",
     "audit_chain_verification_failed": "audit_chain_verification_failed",
     "audit_anchor_mismatch": "audit_anchor_mismatch",
     "audit_append_only_protection_failed": "audit_append_only_protection_failed",
     "runtime_db_privilege_verification_failed": "runtime_db_privilege_verification_failed",
     "password_reset_token_reused": "password_reset_token_reused",
-    "password_reset_webauthn_failed": "password_reset_webauthn_failed",
     "manual_recovery_requested": "manual_recovery_requested",
     "account_freeze": "account_freeze",
 }
@@ -36,15 +34,11 @@ TRANSACTION_EVENT_TYPES = {
     "banking_outbound_transfer",
     "banking_scheduled_transfer_execution",
     "banking_transaction_authorization",
-    "webauthn_transaction_stage",
-    "webauthn_transaction_options",
-    "webauthn_transaction_verify",
 }
 PASSWORD_RESET_EVENT_TYPES = {
     "password_reset_requested",
     "password_reset_failed",
     "password_reset_mfa_failed",
-    "password_reset_webauthn_failed",
     "password_reset_token_reused",
     "manual_recovery_requested",
 }
