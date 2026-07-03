@@ -167,7 +167,9 @@ the production widget covers `sitbank.pp.ua` and `www.sitbank.pp.ua`, while the
 staging widget covers `staging-sitbank.pp.ua`. Store server credentials only as
 the `PROD_TURNSTILE_SECRET_KEY` and `STAGING_TURNSTILE_SECRET_KEY` GitHub
 Environment secrets. The trusted deployment installs each credential as
-`/etc/sitbank*/secrets/turnstile_secret_key`; Compose exposes only
+`/etc/sitbank*/secrets/turnstile_secret_key`; Compose mounts that
+environment-specific credential read-only into both the customer and admin
+runtimes and exposes only
 `TURNSTILE_SECRET_KEY_FILE=/run/secrets/turnstile_secret_key`.
 
 Production-like readiness fails closed unless Turnstile, the site and secret
@@ -772,7 +774,10 @@ production admin URL `https://admin-sitbank.tailca101b.ts.net/`; staging admin
 must use the same private-network pattern through an approved tailnet path. Do
 not enable Tailscale Funnel and do not add a public staging admin Nginx server
 block. Staging admin secrets must be root-managed under
-`/etc/sitbank-staging/secrets` and must not reuse customer runtime secrets.
+`/etc/sitbank-staging/secrets`. Admin Flask, session, password-pepper, and
+database secrets must not reuse customer runtime secrets; only the
+environment-specific Turnstile server credential is shared because both
+runtimes enforce their configured public-auth challenges.
 
 ## Staging Edge Setup
 
