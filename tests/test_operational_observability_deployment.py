@@ -37,12 +37,47 @@ def _load_verifier_module():
     return runpy.run_path(str(VERIFIER_PATH))
 
 
+def _decode_hcl_string(value: str) -> str:
+    return json.loads(f'"{value}"')
+
+
+def _alloy_redaction_blocks(alloy: str):
+    return [
+        (_decode_hcl_string(expression), _decode_hcl_string(replacement))
+        for expression, replacement in re.findall(
+            r'stage\.replace\s*{\s*expression = "((?:\\.|[^"])*)"\s*'
+            r'replace = "((?:\\.|[^"])*)"',
+            alloy,
+            re.S,
+        )
+    ]
+
+
+def _apply_alloy_replacements(alloy: str, line: str) -> str:
+    redacted = line
+    for expression, replacement in _alloy_redaction_blocks(alloy):
+        pattern = re.compile(expression)
+
+        def replace_match(match):
+            value = replacement
+            for index, group in enumerate(match.groups(), start=1):
+                value = value.replace(f"${index}", group or "")
+            return value
+
+        redacted = pattern.sub(replace_match, redacted)
+    return redacted
+
+
 def _status_headers(module, status: str, *headers: str):
     header_text = "\r\n".join([f"HTTP/2 {status}", *headers])
     return module["CommandResult"](
         0,
         f"{header_text}\r\n\r\nSITBANK_HTTP_CODE:{status}\n",
     )
+
+
+def _api_response(module, body: str = "{}", status: str = "200"):
+    return module["CommandResult"](0, f"{body}\nSITBANK_HTTP_CODE:{status}\n")
 
 
 def _make_grafana_runner(
@@ -52,6 +87,12 @@ def _make_grafana_runner(
     anonymous_status: str = "401",
     user=None,
     datasources=None,
+    health_status: str = "200",
+    user_status: str = "200",
+    datasources_status: str = "200",
+    datasource_health_status: str = "200",
+    health_body: str = '{"database":"ok"}',
+    datasource_health_body: str = '{"status":"OK"}',
     datasource_health_returncode: int = 0,
 ):
     user_payload = (
@@ -69,17 +110,17 @@ def _make_grafana_runner(
         command = tuple(arguments)
         url = command[-1]
         if url.endswith("/api/health"):
-            return module["CommandResult"](0, '{"database":"ok"}')
+            return _api_response(module, health_body, health_status)
         if url.endswith("/api/user") and f"Authorization: Bearer {token}" in command:
-            return module["CommandResult"](0, json.dumps(user_payload))
+            return _api_response(module, json.dumps(user_payload), user_status)
         if url.endswith("/api/user"):
             return _status_headers(module, anonymous_status)
         if url.endswith("/api/datasources"):
-            return module["CommandResult"](0, json.dumps(datasource_payload))
+            return _api_response(module, json.dumps(datasource_payload), datasources_status)
         if re.search(r"/api/datasources/uid/.+/health$", url):
             return module["CommandResult"](
                 datasource_health_returncode,
-                '{"status":"OK"}',
+                f"{datasource_health_body}\nSITBANK_HTTP_CODE:{datasource_health_status}\n",
             )
         raise AssertionError(command)
 
@@ -162,6 +203,18 @@ def test_private_grafana_loki_alloy_deployment_files_exist_and_are_private():
         "read_only": False,
         "bind": {"create_host_path": False},
     }
+    docker_socket_mount = next(
+        volume
+        for volume in alloy["volumes"]
+        if volume["target"] == "/var/run/docker.sock"
+    )
+    assert docker_socket_mount == {
+        "type": "bind",
+        "source": "/var/run/docker.sock",
+        "target": "/var/run/docker.sock",
+        "read_only": True,
+        "bind": {"create_host_path": False},
+    }
 
 
 def test_loki_retention_and_grafana_datasource_are_configured_without_credentials():
@@ -196,7 +249,31 @@ def test_loki_retention_and_grafana_datasource_are_configured_without_credential
     assert "password" not in str(loki_datasource).casefold()
     assert "token" not in str(loki_datasource).casefold()
     assert dashboard["uid"] == "sitbank-operational-overview"
+    assert dashboard["version"] >= 2
+    assert "Recent operational errors" not in json.dumps(dashboard)
     assert "SecurityAuditEvent" not in json.dumps(dashboard)
+    panel_titles = {panel["title"] for panel in dashboard["panels"]}
+    assert panel_titles >= {
+        "Log ingestion by service and source",
+        "Nginx 4xx and 5xx trend",
+        "Recent Nginx requests",
+        "App and admin container failures",
+        "Systemd failures for monitored units",
+        "Deployment and rollback signals",
+    }
+    for panel in dashboard["panels"]:
+        assert panel.get("description")
+        assert "Worry" in panel["description"]
+        assert "check" in panel["description"].casefold()
+    variables = {entry["name"] for entry in dashboard["templating"]["list"]}
+    assert variables == {"environment", "service", "source"}
+    dashboard_text = json.dumps(dashboard).casefold()
+    assert "error_count: 0" in dashboard_text
+    assert "account_id" not in dashboard_text
+    assert "user_id" not in dashboard_text
+    assert "session_id" not in dashboard_text
+    assert "request_id" not in dashboard_text
+    assert "ip_address" not in dashboard_text
 
 
 def test_alloy_collects_only_approved_sources_and_redacts_sensitive_patterns():
@@ -235,12 +312,14 @@ def test_alloy_collects_only_approved_sources_and_redacts_sensitive_patterns():
         "loki.process \"redact_sensitive\"",
         "[REDACTED]",
         "authorization|cookie|cf-access-jwt-assertion",
-        "smtp_(?:username|password)",
+        "cf[_-]?access[_-]?jwt[_-]?assertion",
+        "smtp[_-]?(?:username|password)",
         "api[_-]?key",
         "webhook[_-]?url",
         "cloudflare[_-]?(?:api[_-]?)?token",
         "tailscale[_-]?(?:auth[_-]?)?key",
         "ssh[_-]?(?:private[_-]?)?key",
+        "request[_ -]?body",
         "BEGIN (RSA |EC |OPENSSH |)PRIVATE KEY",
         "loki.write \"local\"",
         "http://loki:3100/loki/api/v1/push",
@@ -263,6 +342,63 @@ def test_alloy_collects_only_approved_sources_and_redacts_sensitive_patterns():
     )
     for forbidden in forbidden_sources:
         assert forbidden not in alloy
+    for forbidden_endpoint in (
+        "containers/create",
+        "containers/.*/start",
+        "containers/.*/exec",
+        "images/create",
+        "build",
+        "volumes/create",
+        "networks/create",
+    ):
+        assert forbidden_endpoint not in alloy.casefold()
+
+
+def test_alloy_redaction_handles_structured_and_header_style_samples():
+    alloy = (OBS_ROOT / "alloy" / "config.alloy").read_text(encoding="utf-8")
+    samples = (
+        (
+            '{"token":"fake-token","password": "fake-password","safe":"ok"}',
+            ("fake-token", "fake-password"),
+        ),
+        (
+            'authorization="Bearer fake" cookie="grafana_session=fake" service=sitbank-app',
+            ("Bearer fake", "grafana_session=fake"),
+        ),
+        (
+            "Authorization: Bearer fake Cf-Access-Jwt-Assertion: fake-assertion",
+            ("Bearer fake", "fake-assertion"),
+        ),
+        (
+            "database_url=postgres://fake-user:fake-pass@db/sitbank smtp_password=fake",
+            ("postgres://fake-user:fake-pass@db/sitbank", "smtp_password=fake"),
+        ),
+        (
+            "tailscale_auth_key=fake-tskey cloudflare_api_token=fake-cloudflare",
+            ("fake-tskey", "fake-cloudflare"),
+        ),
+    )
+    for line, forbidden_values in samples:
+        redacted = _apply_alloy_replacements(alloy, line)
+        assert "[REDACTED]" in redacted
+        for value in forbidden_values:
+            assert value not in redacted
+        assert "safe" in redacted or "service=sitbank-app" in redacted or "[REDACTED]" in redacted
+
+    drop_expressions = [
+        _decode_hcl_string(expression)
+        for expression in re.findall(
+            r'stage\.drop\s*{\s*expression = "((?:\\.|[^"])*)"',
+            alloy,
+            re.S,
+        )
+    ]
+    for forbidden_line in (
+        "request_body={\"password\":\"fake\"}",
+        "environment dump: PASSWORD=fake",
+        "-----BEGIN OPENSSH " + "PRIVATE KEY-----",
+    ):
+        assert any(re.search(expression, forbidden_line) for expression in drop_expressions)
 
 
 def test_sitbank_containers_opt_in_to_observability_without_exposing_ports():
@@ -323,15 +459,24 @@ def test_observability_bootstrap_and_docs_keep_credentials_out_of_repo():
         "GRAFANA_PRIVATE_ROOT_URL=https://admin-sitbank.tailca101b.ts.net/grafana/",
         "GRAFANA_SERVE_FROM_SUB_PATH=true",
         "Private Tailscale Serve Browser Access Plan",
-        "sudo tailscale serve --bg --https=443 --set-path=/grafana http://127.0.0.1:3000",
+        "sudo tailscale serve --bg --https=443 --set-path=/grafana http://127.0.0.1:3000/grafana",
         "sudo tailscale serve --https=443 --set-path=/grafana off",
         "verify-tailscale-admin-access --mode serve",
         "https://admin-sitbank.tailca101b.ts.net/grafana/",
+        "https://admin-sitbank.tailca101b.ts.net/loki",
+        "GF_SERVER_SERVE_FROM_SUB_PATH",
+        "explicit HTTP `200` status validation",
         "https://sitbank.pp.ua/grafana",
         "Nginx log files remain `0640` and group-readable by `adm`",
         "Journal files remain group-readable by `systemd-journal`",
         "`sitbank-observability-loopback` is a bridge network used only for "
         "Docker's host-loopback port publishing",
+        "This loopback bridge is not an ingress security boundary by itself",
+        "Container log discovery currently uses the read-only host Docker socket",
+        "accepted residual risk",
+        "header-style, JSON-field, quoted logfmt, and unquoted key/value",
+        "The provisioned `SITBank Operational Overview` dashboard",
+        "Grafana-native alerts remain an operational follow-up",
         "Alloy keeps only its runtime state under `/var/lib/alloy`",
         "The admin audit viewer remains backed by `SecurityAuditEvent`, not Loki",
     ):
@@ -352,6 +497,8 @@ def test_observability_bootstrap_and_docs_keep_credentials_out_of_repo():
     assert "0.0.0.0:3100" not in docs
     assert "ufw allow 3000" not in docs.casefold()
     assert "ufw allow 3100" not in docs.casefold()
+    assert "tailscale funnel" in docs.casefold()
+    assert "funnel must remain disabled" in docs.casefold()
     assert "GF_SECURITY_ADMIN_PASSWORD=" not in combined
     assert "loki_" + "token=" not in combined.casefold()
     assert "datasource_" + "password=" not in combined.casefold()
@@ -379,10 +526,10 @@ def test_private_observability_verifier_accepts_safe_mocked_live_state(tmp_path)
         calls.append(command)
         url = command[-1]
         if url.endswith("/api/health"):
-            return module["CommandResult"](0, '{"database":"ok"}')
+            return _api_response(module, '{"database":"ok"}')
         if url.endswith("/api/user") and "Authorization: Bearer " + token in command:
-            return module["CommandResult"](
-                0,
+            return _api_response(
+                module,
                 json.dumps({"login": "sitbank-verifier", "orgRole": "Viewer"}),
             )
         if url.endswith("/api/user"):
@@ -391,12 +538,12 @@ def test_private_observability_verifier_accepts_safe_mocked_live_state(tmp_path)
                 "HTTP/2 401\r\n\nSITBANK_HTTP_CODE:401\n",
             )
         if url.endswith("/api/datasources"):
-            return module["CommandResult"](
-                0,
+            return _api_response(
+                module,
                 json.dumps([{"uid": "sitbank-loki", "type": "loki"}]),
             )
         if url.endswith("/api/datasources/uid/sitbank-loki/health"):
-            return module["CommandResult"](0, '{"status":"OK"}')
+            return _api_response(module, '{"status":"OK"}')
         if "/grafana" in url or "/loki" in url:
             return module["CommandResult"](
                 0,
@@ -404,7 +551,7 @@ def test_private_observability_verifier_accepts_safe_mocked_live_state(tmp_path)
             )
         raise AssertionError(command)
 
-    grafana_url = "https://grafana-sitbank.tailca101b.ts.net"
+    grafana_url = "https://admin-sitbank.tailca101b.ts.net/grafana"
     checks = [
         *module["verify_private_grafana"](fake_runner, grafana_url, token),
         *module["verify_public_denials"](
@@ -425,7 +572,7 @@ def test_private_observability_verifier_accepts_safe_mocked_live_state(tmp_path)
     evidence_json = json.loads(evidence_text)
     assert evidence_json["result"] == "pass"
     assert evidence_json["workflow_trigger"] == "manual_protected"
-    assert evidence_json["private_grafana_host"] == "grafana-sitbank.tailca101b.ts.net"
+    assert evidence_json["private_grafana_host"] == "admin-sitbank.tailca101b.ts.net"
     assert {check["name"] for check in evidence_json["checks"]} >= {
         "grafana_api_health",
         "grafana_anonymous_disabled",
@@ -438,6 +585,10 @@ def test_private_observability_verifier_accepts_safe_mocked_live_state(tmp_path)
     assert "grafana_session" not in evidence_text
     assert any(
         "Authorization: Bearer " + token in command
+        for command in calls
+    )
+    assert any(
+        "https://admin-sitbank.tailca101b.ts.net/grafana/api/health" in command
         for command in calls
     )
 
@@ -461,9 +612,9 @@ def test_private_observability_verifier_fails_closed_on_public_exposure_and_admi
     def admin_runner(arguments):
         url = tuple(arguments)[-1]
         if url.endswith("/api/health"):
-            return module["CommandResult"](0, "{}")
+            return _api_response(module, "{}")
         if url.endswith("/api/user") and "Authorization: Bearer token" in tuple(arguments):
-            return module["CommandResult"](0, json.dumps({"orgRole": "Admin"}))
+            return _api_response(module, json.dumps({"orgRole": "Admin"}))
         if url.endswith("/api/user"):
             return module["CommandResult"](
                 0,
@@ -500,6 +651,19 @@ def test_private_grafana_url_validation_accepts_only_private_tailscale_https():
         )
         == "https://grafana-sitbank.tailca101b.ts.net"
     )
+    assert (
+        module["_validate_private_grafana_url"](
+            "https://admin-sitbank.tailca101b.ts.net/grafana/"
+        )
+        == "https://admin-sitbank.tailca101b.ts.net/grafana"
+    )
+    assert (
+        module["_grafana_url"](
+            "https://admin-sitbank.tailca101b.ts.net/grafana",
+            "/api/health",
+        )
+        == "https://admin-sitbank.tailca101b.ts.net/grafana/api/health"
+    )
 
     invalid_urls = (
         ("http://grafana-sitbank.tailca101b.ts.net", "https URL"),
@@ -511,6 +675,7 @@ def test_private_grafana_url_validation_accepts_only_private_tailscale_https():
         ("https://www.sitbank.pp.ua", "public SITBank"),
         ("https://staging-sitbank.pp.ua", "public SITBank"),
         ("https://grafana.example.com", "Tailscale"),
+        ("https://admin-sitbank.tailca101b.ts.net/prometheus/", "empty or /grafana"),
     )
     for url, message in invalid_urls:
         with pytest.raises(module["VerificationError"], match=message):
@@ -568,6 +733,14 @@ def test_safe_json_load_and_url_label_handle_bad_inputs_safely():
     assert module["_safe_url_label"]("not a url") == "<invalid>not a url"
     assert module["_safe_url_label"]("https:///grafana") == "<invalid>/grafana"
 
+    with pytest.raises(module["VerificationError"], match="did not report an HTTP status"):
+        module["_split_curl_body_status"]('{"ok": true}', "Grafana health API")
+    with pytest.raises(module["VerificationError"], match="invalid HTTP status"):
+        module["_split_curl_body_status"](
+            '{"ok": true}\nSITBANK_HTTP_CODE:not-a-status\n',
+            "Grafana health API",
+        )
+
 
 def test_run_command_fails_closed_and_returns_nonzero_results(monkeypatch):
     module = _load_verifier_module()
@@ -609,10 +782,10 @@ def test_curl_builds_safe_headers_and_raises_on_request_failure():
 
     def ok_runner(arguments):
         calls.append(tuple(arguments))
-        return module["CommandResult"](0, '{"ok":true}')
+        return _api_response(module, '{"ok":true}')
 
     assert module["_curl"](ok_runner, f"{PRIVATE_GRAFANA_URL}/api/health") == (
-        0,
+        "200",
         '{"ok":true}',
     )
     assert "Accept: application/json" in calls[-1]
@@ -692,8 +865,28 @@ def test_verify_private_grafana_fails_closed_for_unsafe_grafana_states():
 
     unsafe_cases = (
         (
+            _make_grafana_runner(module, health_status="500"),
+            "Grafana health API returned HTTP 500",
+        ),
+        (
+            _make_grafana_runner(module, health_body="{bad json"),
+            "Grafana health API did not return valid JSON",
+        ),
+        (
+            _make_grafana_runner(module, health_body="[]"),
+            "Grafana health API returned an unexpected schema",
+        ),
+        (
             _make_grafana_runner(module, anonymous_status="200"),
             "anonymous API access",
+        ),
+        (
+            _make_grafana_runner(module, user_status="403"),
+            "Grafana authenticated user API returned HTTP 403",
+        ),
+        (
+            _make_grafana_runner(module, user=[]),
+            "authenticated user API returned an unexpected schema",
         ),
         (
             _make_grafana_runner(module, user={"isGrafanaAdmin": True}),
@@ -706,6 +899,10 @@ def test_verify_private_grafana_fails_closed_for_unsafe_grafana_states():
         (
             _make_grafana_runner(module, datasources={"unexpected": "schema"}),
             "unexpected schema",
+        ),
+        (
+            _make_grafana_runner(module, datasources_status="401"),
+            "Grafana datasource API returned HTTP 401",
         ),
         (
             _make_grafana_runner(
@@ -724,6 +921,14 @@ def test_verify_private_grafana_fails_closed_for_unsafe_grafana_states():
         (
             _make_grafana_runner(module, datasource_health_returncode=28),
             "request failed",
+        ),
+        (
+            _make_grafana_runner(module, datasource_health_status="500"),
+            "Grafana Loki datasource health API returned HTTP 500",
+        ),
+        (
+            _make_grafana_runner(module, datasource_health_body='{"status":"FAIL"}'),
+            "datasource health API returned an unexpected schema",
         ),
     )
     for runner, message in unsafe_cases:
@@ -806,6 +1011,10 @@ def test_verify_public_denials_accepts_closed_statuses_and_sanitizes_records():
     ("status", "header", "message"),
     (
         ("200", "server: nginx", "public observability"),
+        ("404", "server: grafana", "public observability"),
+        ("403", "x-grafana-user: disabled", "public observability"),
+        ("500", "server: loki", "public observability"),
+        ("404", "x-loki-warning: fake", "public observability"),
         ("302", "location: https://sitbank.pp.ua/grafana/login", "public observability"),
         ("302", "location: https://sitbank.pp.ua/loki/", "public observability"),
         ("404", "authorization: Bearer fake", "sensitive observability headers"),

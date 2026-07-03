@@ -36,11 +36,20 @@ SECRET_MARKERS = (
     "grafana_session",
     "x-grafana-org-id",
 )
+OBSERVABILITY_HEADER_MARKERS = (
+    "server: grafana",
+    "x-grafana-",
+    "grafana_session",
+    "server: loki",
+    "x-loki-",
+)
 PUBLIC_EXPOSURE_PATHS = ("/grafana", "/loki", "/logs", "/metrics")
+PRIVATE_GRAFANA_PATHS = ("", "/", "/grafana", "/grafana/")
 HOST_LOOPBACK_READINESS_TARGETS = (
     ("grafana_host_loopback_login", "http://127.0.0.1:3000/login"),
     ("loki_host_loopback_ready", "http://127.0.0.1:3100/ready"),
 )
+HTTP_STATUS_MARKER = "SITBANK_HTTP_CODE:"
 
 
 class VerificationError(RuntimeError):
@@ -95,7 +104,24 @@ def _validate_private_grafana_url(url: str) -> str:
         raise VerificationError("GRAFANA_PRIVATE_URL must not be a public SITBank hostname")
     if not hostname.endswith(".ts.net"):
         raise VerificationError("GRAFANA_PRIVATE_URL must use a private Tailscale DNS hostname")
+    if (parsed.path or "") not in PRIVATE_GRAFANA_PATHS:
+        raise VerificationError("GRAFANA_PRIVATE_URL path must be empty or /grafana/")
     return url.rstrip("/")
+
+
+def _grafana_url(grafana_url: str, path: str) -> str:
+    return f"{grafana_url.rstrip('/')}/{path.lstrip('/')}"
+
+
+def _split_curl_body_status(raw: str, description: str) -> tuple[str, str]:
+    marker = f"\n{HTTP_STATUS_MARKER}"
+    if marker not in raw:
+        raise VerificationError(f"{description} did not report an HTTP status")
+    body, status_text = raw.rsplit(marker, 1)
+    status = status_text.strip().splitlines()[0] if status_text.strip() else ""
+    if not re.fullmatch(r"[0-9]{3}", status):
+        raise VerificationError(f"{description} returned an invalid HTTP status")
+    return status, body.rstrip("\r\n")
 
 
 def _validate_public_probe_url(url: str) -> str:
@@ -129,7 +155,7 @@ def _curl(
     url: str,
     *,
     token: str | None = None,
-) -> tuple[int, str]:
+) -> tuple[str, str]:
     command = [
         "curl",
         "--silent",
@@ -139,6 +165,8 @@ def _curl(
         "15",
         "--header",
         "Accept: application/json",
+        "--write-out",
+        f"\n{HTTP_STATUS_MARKER}%{{http_code}}\n",
     ]
     if token:
         command.extend(["--header", f"Authorization: Bearer {token}"])
@@ -146,7 +174,21 @@ def _curl(
     result = runner(tuple(command))
     if result.returncode != 0:
         raise VerificationError(f"request failed for {_safe_url_label(url)}")
-    return result.returncode, result.stdout
+    return _split_curl_body_status(result.stdout, _safe_url_label(url))
+
+
+def _curl_json(
+    runner: Runner,
+    url: str,
+    *,
+    token: str | None,
+    description: str,
+    expected_status: str = "200",
+) -> Any:
+    status, raw = _curl(runner, url, token=token)
+    if status != expected_status:
+        raise VerificationError(f"{description} returned HTTP {status}, expected {expected_status}")
+    return _safe_json_load(raw, description)
 
 
 def _curl_status_headers(runner: Runner, url: str) -> tuple[str, str]:
@@ -165,7 +207,7 @@ def _curl_status_headers(runner: Runner, url: str) -> tuple[str, str]:
             "--dump-header",
             "-",
             "--write-out",
-            "\nSITBANK_HTTP_CODE:%{http_code}\n",
+            f"\n{HTTP_STATUS_MARKER}%{{http_code}}\n",
             url,
         )
     )
@@ -187,10 +229,20 @@ def verify_private_grafana(
     if not token:
         raise VerificationError("GRAFANA_HEALTH_TOKEN is required for private API verification")
 
-    _curl(runner, f"{grafana_url}/api/health", token=token)
+    health = _curl_json(
+        runner,
+        _grafana_url(grafana_url, "/api/health"),
+        token=token,
+        description="Grafana health API",
+    )
+    if not isinstance(health, dict):
+        raise VerificationError("Grafana health API returned an unexpected schema")
     checks.append({"name": "grafana_api_health", "result": "pass"})
 
-    anonymous_status, _headers = _curl_status_headers(runner, f"{grafana_url}/api/user")
+    anonymous_status, _headers = _curl_status_headers(
+        runner,
+        _grafana_url(grafana_url, "/api/user"),
+    )
     if anonymous_status not in {"401", "403"}:
         raise VerificationError("Grafana anonymous API access is not denied")
     checks.append(
@@ -201,16 +253,24 @@ def verify_private_grafana(
         }
     )
 
-    _code, user_raw = _curl(runner, f"{grafana_url}/api/user", token=token)
-    user = _safe_json_load(user_raw, "Grafana authenticated user API")
-    if isinstance(user, dict) and (
-        user.get("isGrafanaAdmin") is True or str(user.get("orgRole", "")).casefold() == "admin"
-    ):
+    user = _curl_json(
+        runner,
+        _grafana_url(grafana_url, "/api/user"),
+        token=token,
+        description="Grafana authenticated user API",
+    )
+    if not isinstance(user, dict):
+        raise VerificationError("Grafana authenticated user API returned an unexpected schema")
+    if user.get("isGrafanaAdmin") is True or str(user.get("orgRole", "")).casefold() == "admin":
         raise VerificationError("Grafana verification token has administrative privileges")
     checks.append({"name": "grafana_verifier_role_least_privilege", "result": "pass"})
 
-    _code, datasources_raw = _curl(runner, f"{grafana_url}/api/datasources", token=token)
-    datasources = _safe_json_load(datasources_raw, "Grafana datasource API")
+    datasources = _curl_json(
+        runner,
+        _grafana_url(grafana_url, "/api/datasources"),
+        token=token,
+        description="Grafana datasource API",
+    )
     if not isinstance(datasources, list):
         raise VerificationError("Grafana datasource API returned an unexpected schema")
     loki_sources = [
@@ -223,7 +283,16 @@ def verify_private_grafana(
         uid = source.get("uid")
         if not isinstance(uid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", uid):
             raise VerificationError("Grafana Loki datasource UID is missing or unsafe")
-        _curl(runner, f"{grafana_url}/api/datasources/uid/{uid}/health", token=token)
+        datasource_health = _curl_json(
+            runner,
+            _grafana_url(grafana_url, f"/api/datasources/uid/{uid}/health"),
+            token=token,
+            description="Grafana Loki datasource health API",
+        )
+        if not isinstance(datasource_health, dict) or str(
+            datasource_health.get("status", "")
+        ).casefold() not in {"ok", "success"}:
+            raise VerificationError("Grafana Loki datasource health API returned an unexpected schema")
     checks.append(
         {
             "name": "loki_datasource_health",
@@ -263,14 +332,22 @@ def verify_public_denials(
     for url in public_urls:
         status, headers = _curl_status_headers(runner, url)
         header_text = headers.casefold()
-        if status == "200" or "location:" in header_text and re.search(r"/(?:grafana|loki)(?:/|$)", header_text):
+        url_failures: list[str] = []
+        if (
+            status == "200"
+            or "location:" in header_text
+            and re.search(r"/(?:grafana|loki)(?:/|$)", header_text)
+            or any(marker in header_text for marker in OBSERVABILITY_HEADER_MARKERS)
+        ):
+            url_failures.append("public observability access evidence")
             failures.append(f"{_safe_url_label(url)} returned public observability access evidence")
         if any(marker in header_text for marker in SECRET_MARKERS):
+            url_failures.append("sensitive observability headers")
             failures.append(f"{_safe_url_label(url)} returned sensitive observability headers")
         checks.append(
             {
                 "name": "public_observability_denial",
-                "result": "pass" if not failures else "fail",
+                "result": "pass" if not url_failures else "fail",
                 "target": _safe_url_label(url),
                 "http_status": status,
             }

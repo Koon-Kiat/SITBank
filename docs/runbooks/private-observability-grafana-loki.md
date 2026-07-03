@@ -14,8 +14,8 @@ Grafana Alloy stack from `ops/observability/`.
   `127.0.0.1` host binding plus no public Nginx/Tailscale Funnel route.
 - `sitbank-observability` remains an internal service network for
   container-to-container traffic.
-- Normal operator access uses a private Tailscale path such as
-  `https://grafana-sitbank.tailca101b.ts.net/` mapped to local Grafana.
+- Normal operator access uses the private Tailscale path
+  `https://admin-sitbank.tailca101b.ts.net/grafana/` mapped to local Grafana.
 - SSH local port forwarding is allowed only for bootstrap or break-glass
   troubleshooting.
 - No public Nginx production, staging, customer, or admin route proxies Grafana,
@@ -110,7 +110,7 @@ Each environment must require trusted maintainer approval and restrict
 deployment branches to `main`. Configure:
 
 - `GRAFANA_PRIVATE_URL` as the private Tailscale HTTPS URL, for example
-  `https://grafana-sitbank.tailca101b.ts.net/`;
+  `https://admin-sitbank.tailca101b.ts.net/grafana/`;
 - optional `OBSERVABILITY_PUBLIC_PROBE_URLS` as newline-separated public
   denial probes for `/grafana`, `/loki`, `/logs`, and `/metrics`;
 - `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_SECRET` for a narrowly scoped Tailscale
@@ -124,9 +124,11 @@ Grafana admin credentials, Loki credentials, datasource passwords, raw logs, or
 provider exports in GitHub secrets or artifacts. The token must not have
 Grafana admin privileges. The workflow first confirms the private URL is not
 reachable from the public runner, then joins Tailscale, verifies Grafana API
-health, verifies anonymous API denial, checks the verifier role is not admin,
-checks Loki datasource health through Grafana, and verifies public SITBank
-paths do not expose Grafana or Loki. It uploads only
+health with explicit HTTP `200` status validation, verifies anonymous API
+denial, checks the verifier role is not admin, checks Loki datasource health
+through Grafana with explicit HTTP `200` status and response-schema
+validation, and verifies public SITBank paths do not expose Grafana or Loki. It
+uploads only
 `observability-evidence/private-observability.json`, a sanitized summary with
 HTTP status codes and check names, not raw API responses.
 
@@ -145,6 +147,9 @@ the runner, not the EC2 host.
 sudo docker compose --env-file /etc/sitbank-observability/observability.env -f /etc/sitbank-observability/compose.yml ps
 sudo docker network inspect sitbank-observability --format '{{.Internal}}'
 sudo docker network inspect sitbank-observability-loopback --format '{{.Internal}}'
+sudo docker inspect sitbank-grafana --format '{{json .NetworkSettings.Networks}}'
+sudo docker inspect sitbank-loki --format '{{json .NetworkSettings.Networks}}'
+sudo docker inspect sitbank-alloy --format '{{json .NetworkSettings.Networks}}'
 sudo docker port sitbank-grafana 3000/tcp
 sudo docker port sitbank-loki 3100/tcp
 test -z "$(sudo docker port sitbank-alloy)"
@@ -159,7 +164,10 @@ Expected:
 
 - `sitbank-observability` reports `true` for `Internal`.
 - `sitbank-observability-loopback` reports `false` for `Internal` so Docker's
-  host-loopback port publishing works on EC2.
+  host-loopback port publishing works on EC2. This loopback bridge is not an
+  ingress security boundary by itself.
+- Only Grafana and Loki attach to `sitbank-observability-loopback`; Alloy
+  attaches only to the internal `sitbank-observability` network.
 - Grafana listens only on `127.0.0.1:3000`.
 - Loki listens only on `127.0.0.1:3100`.
 - Alloy publishes no host listener.
@@ -171,8 +179,9 @@ Expected:
 The preferred convenient browser path is
 `https://admin-sitbank.tailca101b.ts.net/grafana/`, served by Tailscale Serve
 from the existing private admin tailnet hostname to Grafana's loopback
-listener at `http://127.0.0.1:3000`. This keeps Grafana behind the same private
-tailnet access boundary as the admin app and avoids a public DNS hostname.
+subpath at `http://127.0.0.1:3000/grafana`. This keeps Grafana behind the same
+private tailnet access boundary as the admin app and avoids a public DNS
+hostname.
 
 Do not run these commands until an approved operator has confirmed the live
 Serve configuration. Tailscale Serve supports path mounts with `--set-path` and
@@ -212,7 +221,7 @@ After updating `observability.env` to the `/grafana/` root URL and
 mapping:
 
 ```bash
-sudo tailscale serve --bg --https=443 --set-path=/grafana http://127.0.0.1:3000
+sudo tailscale serve --bg --https=443 --set-path=/grafana http://127.0.0.1:3000/grafana
 ```
 
 Verification:
@@ -224,9 +233,12 @@ sudo tailscale funnel status --json | jq .
 curl -fsSI http://127.0.0.1:3000/login
 curl -fsS http://127.0.0.1:3100/ready
 curl -fsSI https://admin-sitbank.tailca101b.ts.net/grafana/login
+curl -fsSI https://admin-sitbank.tailca101b.ts.net/loki && exit 1 || true
+curl -fsSI https://admin-sitbank.tailca101b.ts.net/metrics && exit 1 || true
 curl -fsSI https://sitbank.pp.ua/grafana
 curl -fsSI https://sitbank.pp.ua/loki
 curl -fsSI https://staging-sitbank.pp.ua/grafana
+sudo docker exec sitbank-grafana sh -c 'test "${GF_SERVER_ROOT_URL}" = "https://admin-sitbank.tailca101b.ts.net/grafana/" && test "${GF_SERVER_SERVE_FROM_SUB_PATH}" = "true"'
 sudo ss -ltnp | grep -E '0\.0\.0\.0:(3000|3100)|\[::\]:(3000|3100)|\*:(3000|3100)' && exit 1 || true
 sudo nginx -T | grep -iE 'grafana|loki' && exit 1 || true
 ```
@@ -236,6 +248,10 @@ Expected after change:
 - `https://admin-sitbank.tailca101b.ts.net/grafana/` reaches Grafana only from
   approved tailnet clients.
 - `https://admin-sitbank.tailca101b.ts.net/` still reaches the admin app.
+- `https://admin-sitbank.tailca101b.ts.net/loki` and `/metrics` do not expose
+  Loki, Grafana, or Alloy.
+- Grafana reports `GF_SERVER_ROOT_URL` with the `/grafana/` suffix and
+  `GF_SERVER_SERVE_FROM_SUB_PATH=true`.
 - Funnel remains disabled.
 - Loki is not served directly.
 - Public SITBank hostnames do not expose Grafana or Loki.
@@ -278,12 +294,24 @@ The journal sources read the mounted `/var/log/journal` path. Do not use `OR`
 or `+` expressions in journal `matches`; Alloy supports exact field matches
 and combines multiple matches as logical AND.
 
-Alloy redacts recognized authorization, cookie, CSRF, session, password,
-token, secret, TOTP, recovery-code, database URL, SMTP credential, API key,
-webhook URL, Cloudflare token, Tailscale key, and SSH key fields before writing
-to Loki, and drops raw request-body, environment-dump, and private-key-block
-lines. Treat this as defense in depth rather than approval to collect sensitive
-paths or raw command transcripts.
+Alloy redacts recognized authorization, cookie, Cloudflare Access assertion,
+CSRF, session, password, token, secret, TOTP, recovery-code, database URL, SMTP
+credential, API key, webhook URL, Cloudflare token, Tailscale key, and SSH key
+fields in header-style, JSON-field, quoted logfmt, and unquoted key/value log
+lines before writing to Loki. It drops raw request-body, environment-dump, and
+private-key-block lines. Treat this as defense in depth rather than approval to
+collect sensitive paths or raw command transcripts.
+
+Container log discovery currently uses the read-only host Docker socket so
+Alloy can keep collection opt-in through `sitbank.log_collect=true` labels.
+This is an accepted residual risk until a reviewed socket proxy or file-based
+label-preserving model is implemented. Compensating controls are: the socket
+mount is read-only, Alloy has no host port, `read_only: true`, `cap_drop: ALL`,
+`no-new-privileges:true`, no Docker mutation endpoints are configured in Alloy,
+only labelled SITBank containers are kept, logs pass through redaction before
+Loki, and Grafana/Loki remain private. Remove this residual acceptance when a
+least-privilege Docker API proxy or equivalent collector model is available and
+tested.
 
 Do not add home directories, shell history, environment dumps, raw command
 transcripts, secret files, request bodies, authorization headers, cookies, CSRF
@@ -309,6 +337,22 @@ Expected stream labels include `source="nginx_access"`,
 `source="nginx_error"`, `source="container"`, and `source="systemd"` after
 matching activity occurs. Systemd streams are limited to
 `sitbank-security-alerts`, `certbot`, and `docker`.
+
+## Dashboard And Operational Alerts
+
+The provisioned `SITBank Operational Overview` dashboard uses readable
+time-series and log panels for log ingestion, Nginx 4xx/5xx trends, recent
+Nginx requests, app/admin container failures, monitored systemd failures, and
+deployment or rollback signals. Each panel describes what it shows, when to
+worry, and what to check next. Variables are limited to coarse `environment`,
+`service`, and `source` selectors; do not add high-cardinality labels such as
+full paths, IP addresses, request IDs, account IDs, user IDs, session IDs, or
+free-text values.
+
+Grafana-native alerts remain an operational follow-up until notification
+contact points can be provisioned without committed webhook URLs, tokens, or
+other secrets. Do not use Grafana alerts as a substitute for SITBank
+`SecurityAuditEvent` alerting or the admin audit viewer.
 
 ## Retention
 
