@@ -19,6 +19,21 @@ def test_recovery_code_generation_rejects_unsafe_count():
         generate_recovery_codes_for_user(None, count=0)
 
 
+def test_recovery_code_low_inventory_threshold(client):
+    from app.auth.recovery_codes import (
+        generate_recovery_codes_for_user,
+        recovery_code_count_is_low,
+    )
+
+    register(client)
+    user = db.session.execute(
+        db.select(User).where(User.username == "alice01")
+    ).scalar_one()
+    generate_recovery_codes_for_user(user, count=2)
+
+    assert recovery_code_count_is_low(user)
+
+
 def test_mfa_setup_stores_encrypted_secret_and_rejects_replay(client, monkeypatch):
     register(client)
     login(client)
