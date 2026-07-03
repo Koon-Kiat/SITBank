@@ -268,6 +268,32 @@ def test_privileged_email_domain_docs_are_workplace_only():
     assert "staff_invite_personal_email_domains" not in normalized_docs
 
 
+def test_staff_invite_acceptance_docs_cover_minimal_metadata_and_restart_controls():
+    docs = _docs_text()
+    normalized_docs = " ".join(docs.split()).casefold()
+
+    for required in (
+        "public invite lookup returns only minimal acceptance metadata",
+        "does not expose the workplace email, role, or status before setup starts",
+        "referrer-policy: no-referrer",
+        "bound to the browser session that started setup",
+        "repeated setup restarts are capped",
+        "root-admin totp reset",
+        "do not repair locked invites by editing production rows ad hoc",
+        "staff invite password fields are length-bounded at the request schema",
+        "migration `20260704_0025` persists staff invite acceptance session binding",
+        "staff_invite_accept_reset",
+    ):
+        assert required in normalized_docs
+
+    for stale_claim in (
+        "invite lookup exposes workplace email",
+        "invite info returns workplace email and role",
+        "restarting invite acceptance is unlimited",
+    ):
+        assert stale_claim not in normalized_docs
+
+
 def test_operational_observability_keeps_loki_out_of_admin_app():
     observability = (
         SECURITY_DOCS / "assurance" / "operational-observability.md"

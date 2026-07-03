@@ -423,6 +423,14 @@ Privileged root-admin, admin, and staff accounts use approved SIT workplace
 email domains only. Do not configure personal-provider domains in
 `ADMIN_ALLOWED_EMAIL_DOMAINS`; staff invites are delivered to the workplace
 email and do not collect personal backup email contacts.
+Invite acceptance links expose only minimal public setup metadata before the
+staff member starts the protected setup step. The setup flow uses `no-store`
+and no-referrer response headers, binds verification to the browser session
+that started setup, and caps repeated restarts that would otherwise rotate
+passwords, TOTP setup secrets, or workplace verification codes. If an active
+invite becomes locked by the restart cap, a root admin should use the invite
+screen's reset action with a fresh TOTP code; do not unlock it by editing
+database rows directly.
 The admin `production-check` command reports
 `privileged_email_noncompliant_accounts` as a count when legacy privileged rows
 use non-approved domains. Operators must remediate those accounts to approved

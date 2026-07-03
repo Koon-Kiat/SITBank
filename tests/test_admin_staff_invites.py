@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pyotp
 import pytest
@@ -114,6 +114,43 @@ def _latest_workplace_code() -> str:
     match = re.search(r"\b([0-9]{6})\b", body)
     assert match, body
     return match.group(1)
+
+
+def _staff_invite_start_payload(**overrides):
+    payload = {
+        "full_name": "Staff Person",
+        "phone_number": "91234568",
+        "password": STAFF_PASSWORD,
+        "confirm_password": STAFF_PASSWORD,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _assert_invite_acceptance_security_headers(response):
+    cache_control = response.headers.get("Cache-Control", "")
+    assert "no-store" in cache_control
+    assert "private" in cache_control
+    assert response.headers.get("Pragma") == "no-cache"
+    assert response.headers.get("Referrer-Policy") == "no-referrer"
+
+
+def _insert_invite_for_token(token: str, creator: User, **overrides) -> StaffInvite:
+    from app.admin.services import invite_token_hash
+
+    defaults = {
+        "token_hash": invite_token_hash(token),
+        "workplace_email_normalized": "staff.person@sit.singaporetech.edu.sg",
+        "role": "staff",
+        "status": "pending",
+        "created_by_user_id": creator.id,
+        "expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
+    }
+    defaults.update(overrides)
+    invite = StaffInvite(**defaults)
+    db.session.add(invite)
+    db.session.commit()
+    return invite
 
 
 def test_root_admin_can_create_hashed_staff_invite(admin_client):
@@ -272,6 +309,215 @@ def test_turnstile_verifier_rejects_non_https_verify_url(admin_app):
             verify_turnstile_token("browser-token")
 
 
+def test_invite_info_returns_minimal_metadata_and_no_store_headers(admin_client):
+    _root, secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    _login_admin(admin_client, secret)
+    assert _create_invite(admin_client, secret).status_code == 201
+    token = _latest_invite_token()
+
+    response = admin_client.get(f"/invites/accept/{token}")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload == {
+        "message": "Invite can be accepted",
+        "invite": {
+            "expires_at": payload["invite"]["expires_at"],
+            "acceptance_started": False,
+            "acceptance_locked": False,
+        },
+    }
+    assert "workplace_email" not in payload["invite"]
+    assert "role" not in payload["invite"]
+    assert "status" not in payload["invite"]
+    assert "staff.person@sit.singaporetech.edu.sg" not in response.get_data(as_text=True)
+    _assert_invite_acceptance_security_headers(response)
+
+
+def test_invite_info_closed_tokens_return_generic_errors_and_no_token_audit(admin_client):
+    root, _secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    closed_cases = [
+        ("expired", {"expires_at": datetime.now(timezone.utc) - timedelta(minutes=1)}),
+        ("revoked", {"status": "revoked", "revoked_at": datetime.now(timezone.utc)}),
+        ("used", {"status": "accepted", "used_at": datetime.now(timezone.utc)}),
+    ]
+
+    missing_token = "MissingInviteToken000000000000000000000000"
+    missing = admin_client.get(f"/invites/accept/{missing_token}")
+    assert missing.status_code == 401
+    assert missing.get_json() == {"error": "Invite link is invalid or expired"}
+    _assert_invite_acceptance_security_headers(missing)
+
+    for index, (case, overrides) in enumerate(closed_cases):
+        token = f"ClosedInviteToken{index:02d}0000000000000000000000"
+        _insert_invite_for_token(token, root, **overrides)
+
+        response = admin_client.get(f"/invites/accept/{token}")
+
+        assert response.status_code == 401, case
+        assert response.get_json() == {"error": "Invite link is invalid or expired"}
+        assert "staff.person@sit.singaporetech.edu.sg" not in response.get_data(as_text=True)
+        _assert_invite_acceptance_security_headers(response)
+
+    events = db.session.query(SecurityAuditEvent).filter_by(event_type="staff_invite_invalid_attempt").all()
+    serialized_metadata = json.dumps([event.event_metadata for event in events], default=str)
+    assert missing_token not in serialized_metadata
+    assert "token" not in serialized_metadata.casefold()
+
+
+def test_invite_acceptance_restart_limit_and_root_reset(admin_client):
+    _root, root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    _login_admin(admin_client, root_secret)
+    assert _create_invite(admin_client, root_secret).status_code == 201
+    token = _latest_invite_token()
+
+    for index in range(3):
+        start = admin_client.post(
+            f"/invites/accept/{token}/start",
+            json=_staff_invite_start_payload(
+                password=f"{STAFF_PASSWORD} {index}",
+                confirm_password=f"{STAFF_PASSWORD} {index}",
+            ),
+        )
+        assert start.status_code == 200
+
+    workplace_verification_deliveries = [
+        item for item in password_reset_outbox() if item["subject"] == "SITBank workplace email verification code"
+    ]
+    assert len(workplace_verification_deliveries) == 3
+
+    locked = admin_client.post(
+        f"/invites/accept/{token}/start",
+        json=_staff_invite_start_payload(
+            password=f"{STAFF_PASSWORD} locked",
+            confirm_password=f"{STAFF_PASSWORD} locked",
+        ),
+    )
+    invite = db.session.execute(db.select(StaffInvite)).scalar_one()
+    setup_user_id = invite.setup_user_id
+
+    assert locked.status_code == 429
+    _assert_invite_acceptance_security_headers(locked)
+    db.session.refresh(invite)
+    assert invite.acceptance_start_count == 3
+    assert invite.acceptance_locked_at is not None
+    assert len(
+        [
+            item
+            for item in password_reset_outbox()
+            if item["subject"] == "SITBank workplace email verification code"
+        ]
+    ) == 3
+    assert setup_user_id is not None
+
+    reset = admin_client.post(
+        f"/invites/{invite.id}/reset-acceptance",
+        json={"totp_code": _stable_totp(root_secret)},
+    )
+
+    assert reset.status_code == 200
+    db.session.refresh(invite)
+    assert invite.status == "pending"
+    assert invite.acceptance_start_count == 0
+    assert invite.acceptance_locked_at is None
+    assert invite.acceptance_session_hash is None
+    assert invite.setup_user_id is None
+    assert db.session.get(User, setup_user_id) is None
+
+    restarted = admin_client.post(
+        f"/invites/accept/{token}/start",
+        json=_staff_invite_start_payload(
+            password=f"{STAFF_PASSWORD} reset",
+            confirm_password=f"{STAFF_PASSWORD} reset",
+        ),
+    )
+    assert restarted.status_code == 200
+
+
+def test_invite_acceptance_verification_is_bound_to_start_session(admin_app, admin_client):
+    _root, root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    _login_admin(admin_client, root_secret)
+    assert _create_invite(admin_client, root_secret).status_code == 201
+    token = _latest_invite_token()
+    start = admin_client.post(f"/invites/accept/{token}/start", json=_staff_invite_start_payload())
+    setup = start.get_json()["totp_setup"]
+    workplace_code = _latest_workplace_code()
+    totp_code = _stable_totp(setup["manual_entry_secret"])
+
+    second_browser = admin_app.test_client()
+    mismatched_session = second_browser.post(
+        f"/invites/accept/{token}/verify",
+        json={"totp_code": totp_code, "workplace_verification_code": workplace_code},
+    )
+    original_session = admin_client.post(
+        f"/invites/accept/{token}/verify",
+        json={"totp_code": totp_code, "workplace_verification_code": workplace_code},
+    )
+
+    assert mismatched_session.status_code == 401
+    assert mismatched_session.get_json() == {"error": "Invite link is invalid or expired"}
+    _assert_invite_acceptance_security_headers(mismatched_session)
+    assert original_session.status_code == 200
+
+
+def test_invite_acceptance_schema_bounds_password_before_service_policy(admin_client, monkeypatch):
+    _root, root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    _login_admin(admin_client, root_secret)
+    assert _create_invite(admin_client, root_secret).status_code == 201
+    token = _latest_invite_token()
+
+    def fail_if_service_policy_runs(*_args, **_kwargs):
+        raise AssertionError(
+            "start_invite_acceptance should not run for schema-level password length failures"
+        )
+
+    monkeypatch.setattr("app.admin.routes.start_invite_acceptance", fail_if_service_policy_runs)
+
+    too_short = admin_client.post(
+        f"/invites/accept/{token}/start",
+        json=_staff_invite_start_payload(password="short", confirm_password="short"),
+    )
+    too_long_password = "A" * 257
+    too_long = admin_client.post(
+        f"/invites/accept/{token}/start",
+        json=_staff_invite_start_payload(password=too_long_password, confirm_password=too_long_password),
+    )
+
+    assert too_short.status_code == 400
+    assert too_long.status_code == 400
+    _assert_invite_acceptance_security_headers(too_short)
+    _assert_invite_acceptance_security_headers(too_long)
+    assert (
+        db.session.query(User).filter_by(email="staff.person@sit.singaporetech.edu.sg").one_or_none()
+        is None
+    )
+
+
 def test_staff_invite_acceptance_activates_only_after_workplace_code_and_totp(admin_client):
     _root, root_secret = _create_staff_identity(
         username="root-admin",
@@ -286,22 +532,15 @@ def test_staff_invite_acceptance_activates_only_after_workplace_code_and_totp(ad
     info = admin_client.get(f"/invites/accept/{token}")
     forged_start = admin_client.post(
         f"/invites/accept/{token}/start",
-        json={
-            "full_name": "Staff Person",
-            "phone_number": "91234568",
-            "password": STAFF_PASSWORD,
-            "confirm_password": STAFF_PASSWORD,
-            "role": "admin",
-        },
+        json=_staff_invite_start_payload(
+            role="admin",
+            workplace_email="attacker@sit.singaporetech.edu.sg",
+            personal_email="attacker@example.com",
+        ),
     )
     start = admin_client.post(
         f"/invites/accept/{token}/start",
-        json={
-            "full_name": "Staff Person",
-            "phone_number": "91234568",
-            "password": STAFF_PASSWORD,
-            "confirm_password": STAFF_PASSWORD,
-        },
+        json=_staff_invite_start_payload(),
     )
     setup = start.get_json()["totp_setup"]
     staff_user = db.session.execute(
@@ -321,7 +560,10 @@ def test_staff_invite_acceptance_activates_only_after_workplace_code_and_totp(ad
     db.session.refresh(staff_user)
 
     assert info.status_code == 200
-    assert info.get_json()["invite"]["role"] == "staff"
+    assert set(info.get_json()["invite"]) == {"expires_at", "acceptance_started", "acceptance_locked"}
+    assert "staff.person@sit.singaporetech.edu.sg" not in info.get_data(as_text=True)
+    assert "role" not in info.get_json()["invite"]
+    _assert_invite_acceptance_security_headers(info)
     assert forged_start.status_code == 400
     assert start.status_code == 200
     assert staff_user.account_type == "staff"

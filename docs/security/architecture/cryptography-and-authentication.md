@@ -349,6 +349,16 @@ workplace email and do not collect a personal backup email. Invite acceptance
 validates the token, workplace email policy, password policy, optional
 Turnstile, workplace verification code, and TOTP setup before activating the
 account.
+The public invite lookup returns only minimal acceptance metadata and does not
+expose the workplace email, role, or status before setup starts. Invite
+acceptance responses are marked `no-store` with `Referrer-Policy: no-referrer`,
+and the post-start verification step is bound to the browser session that
+started setup. Repeated setup restarts are capped so an invite cannot
+indefinitely reset passwords, TOTP secrets, or workplace verification codes;
+locked active invites require a root-admin TOTP reset before another setup
+attempt. This root-admin TOTP reset clears only pending acceptance state for an
+active invite. Staff invite password fields are length-bounded at the request
+schema before the service-level password policy runs.
 
 Evidence: `app/admin/routes.py`, `app/admin/services.py`,
 `app/admin/separation.py`, `admin_wsgi.py`, `config.py`, and
@@ -356,6 +366,9 @@ Evidence: `app/admin/routes.py`, `app/admin/services.py`,
 
 Tests: `tests/test_admin_staff_invites.py::test_root_admin_can_create_hashed_staff_invite`,
 `tests/test_admin_staff_invites.py::test_only_root_admin_with_totp_stepup_can_create_invites`,
+`tests/test_admin_staff_invites.py::test_invite_info_returns_minimal_metadata_and_no_store_headers`,
+`tests/test_admin_staff_invites.py::test_invite_acceptance_restart_limit_and_root_reset`,
+`tests/test_admin_staff_invites.py::test_invite_acceptance_verification_is_bound_to_start_session`,
 `tests/test_admin_staff_invites.py::test_staff_invite_acceptance_activates_only_after_workplace_code_and_totp`,
 `tests/test_admin_staff_invites.py::test_customer_registration_cannot_create_staff_or_admin_roles`,
 and `tests/test_admin_isolation.py::test_customer_and_admin_apps_have_isolated_route_surfaces`.

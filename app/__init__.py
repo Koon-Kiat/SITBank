@@ -48,6 +48,7 @@ def create_app(config_object: type[Config] = Config, *, app_mode: str = "custome
     migrate.init_app(app, db)
     csrf.init_app(app)
     limiter.init_app(app)
+    register_invite_acceptance_response_headers(app)
     talisman.init_app(
         app,
         force_https=app.config["TALISMAN_FORCE_HTTPS"],
@@ -233,6 +234,25 @@ def register_datetime_template_helpers(app: Flask) -> None:
         if value.tzinfo is None:
             value = value.replace(tzinfo=timezone.utc)
         return value.astimezone(singapore_tz)
+
+
+def register_invite_acceptance_response_headers(app: Flask) -> None:
+    invite_acceptance_endpoints = frozenset(
+        {
+            "admin.invite_accept_info",
+            "admin.invite_accept_start",
+            "admin.invite_accept_verify",
+        }
+    )
+
+    @app.after_request
+    def invite_acceptance_headers(response):
+        if request.endpoint in invite_acceptance_endpoints:
+            response.headers["Cache-Control"] = "no-store, no-cache, max-age=0, private"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+            response.headers["Referrer-Policy"] = "no-referrer"
+        return response
 
 
 def register_no_store_headers(app: Flask) -> None:
