@@ -117,6 +117,8 @@ def test_private_tailnet_workflow_checks_private_reachability_and_tls():
     assert '"https://${TAILSCALE_PRIVATE_ADMIN_HOST}/login"' in text
     assert "The admin verification target must be a hostname" in text
     assert "getent ahostsv4" in text
+    assert "--request GET" in text
+    assert "--head" not in text
     assert "--write-out '%{http_code}'" in text
     assert '"${private_status}" != "200"' in text
     assert "--insecure" not in text

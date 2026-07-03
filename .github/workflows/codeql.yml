@@ -31,6 +31,7 @@ jobs:
           persist-credentials: false
 
       - name: Initialize CodeQL
+        id: initialize
         uses: github/codeql-action/init@8aad20d150bbac5944a9f9d289da16a4b0d87c1e
         with:
           build-mode: none
@@ -38,6 +39,24 @@ jobs:
           queries: security-extended
 
       - name: Analyze Python
+        id: analyze
         uses: github/codeql-action/analyze@8aad20d150bbac5944a9f9d289da16a4b0d87c1e
         with:
           category: /language:python
+
+      - name: Summarize CodeQL analysis
+        if: ${{ always() }}
+        shell: bash
+        env:
+          INITIALIZE_OUTCOME: ${{ steps.initialize.outcome }}
+          ANALYZE_OUTCOME: ${{ steps.analyze.outcome }}
+        run: |
+          {
+            echo "## CodeQL Python analysis"
+            echo
+            echo "- Status: **${ANALYZE_OUTCOME}**"
+            echo "- Scope: repository Python source with \`security-extended\` queries."
+            echo "- Initialization: \`${INITIALIZE_OUTCOME}\`"
+            echo "- Decision: blocking CodeQL analysis must complete successfully."
+            echo "- Detailed findings remain in GitHub code scanning."
+          } >> "${GITHUB_STEP_SUMMARY}"

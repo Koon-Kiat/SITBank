@@ -40,7 +40,11 @@ def test_scorecard_workflow_is_informational_automatic_and_pinned():
 
 def test_scorecard_evidence_has_bounded_non_mutating_artifact_upload():
     text, workflow = _load(WORKFLOW_PATH)
-    upload = workflow["jobs"]["scorecard"]["steps"][1]
+    upload = next(
+        step
+        for step in workflow["jobs"]["scorecard"]["steps"]
+        if step["name"] == "Upload informational Scorecard evidence"
+    )
 
     assert upload["with"] == {
         "name": "openssf-scorecard-results",
@@ -48,6 +52,7 @@ def test_scorecard_evidence_has_bounded_non_mutating_artifact_upload():
         "if-no-files-found": "error",
         "retention-days": "30",
     }
+    assert upload["if"] == "${{ always() }}"
     lowered = text.casefold()
     for forbidden in (
         "tailscale",

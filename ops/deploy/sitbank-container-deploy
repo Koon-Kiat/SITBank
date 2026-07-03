@@ -117,6 +117,10 @@ readonly signature_path="${INCOMING_DIR}/runtime-${input_stem}.sigstore.json"
 readonly turnstile_credential_path="${INCOMING_DIR}/turnstile-${input_stem}.secret"
 readonly root_admin_emails_path="${INCOMING_DIR}/root-admin-emails-${input_stem}.secret"
 
+if [[ "${target}" == "production" ]]; then
+    /usr/local/sbin/verify-production-nginx-boundary
+fi
+
 exec 9>"${LOCK_FILE}"
 if ! flock -n 9; then
     echo "Another ${target} deployment is already running" >&2

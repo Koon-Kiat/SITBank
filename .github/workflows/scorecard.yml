@@ -19,6 +19,7 @@ jobs:
 
     steps:
       - name: Run OpenSSF Scorecard
+        id: scorecard
         uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a
         with:
           results_file: scorecard-results.sarif
@@ -26,7 +27,29 @@ jobs:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           publish_results: false
 
+      - name: Summarize informational Scorecard evidence
+        if: ${{ always() }}
+        shell: bash
+        env:
+          SCORECARD_OUTCOME: ${{ steps.scorecard.outcome }}
+        run: |
+          result_count="unknown"
+          if [[ -s scorecard-results.sarif ]] \
+            && jq empty scorecard-results.sarif 2>/dev/null; then
+            result_count="$(jq '[.runs[]?.results[]?] | length' scorecard-results.sarif)"
+          fi
+          {
+            echo "## OpenSSF Scorecard"
+            echo
+            echo "- Status: **${SCORECARD_OUTCOME}**"
+            echo "- Scope: default-branch repository supply-chain posture."
+            echo "- Informational SARIF results: \`${result_count}\`"
+            echo "- Artifact: \`openssf-scorecard-results\`"
+            echo "- Decision: informational evidence only; detailed review remains in the SARIF artifact."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
       - name: Upload informational Scorecard evidence
+        if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: openssf-scorecard-results

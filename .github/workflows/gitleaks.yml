@@ -49,10 +49,12 @@ jobs:
           "${install_dir}/gitleaks" version
 
       - name: Scan repository and all Git history with redacted output
+        id: scan
         shell: bash
         run: |
           set -euo pipefail
 
+          set +e
           "${RUNNER_TEMP}/gitleaks-bin/gitleaks" git \
             --config .gitleaks.toml \
             --log-opts=--all \
@@ -60,4 +62,32 @@ jobs:
             --no-banner \
             --no-color \
             --verbose \
+            --report-format json \
+            --report-path "${RUNNER_TEMP}/gitleaks-report.json" \
             .
+          scan_status=$?
+          set -e
+          exit "${scan_status}"
+
+      - name: Summarize secret scan
+        if: ${{ always() }}
+        shell: bash
+        env:
+          SCAN_OUTCOME: ${{ steps.scan.outcome }}
+        run: |
+          finding_count="unknown"
+          if [[ -s "${RUNNER_TEMP}/gitleaks-report.json" ]] \
+            && jq empty "${RUNNER_TEMP}/gitleaks-report.json" 2>/dev/null; then
+            finding_count="$(jq 'length' "${RUNNER_TEMP}/gitleaks-report.json")"
+          elif [[ "${SCAN_OUTCOME}" == "success" ]]; then
+            finding_count="0"
+          fi
+          {
+            echo "## Gitleaks full-history secret scan"
+            echo
+            echo "- Status: **${SCAN_OUTCOME}**"
+            echo "- Scope: all refs in complete repository Git history."
+            echo "- Redacted finding count: \`${finding_count}\`"
+            echo "- Decision: any detected secret blocks the job."
+            echo "- Matched values are never included in this summary."
+          } >> "${GITHUB_STEP_SUMMARY}"

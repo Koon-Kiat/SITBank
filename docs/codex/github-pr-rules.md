@@ -196,7 +196,7 @@ Run relevant targeted tests when practical, then run:
 
 ```powershell
 git diff --check
-.\.venv\Scripts\python.exe -m pytest -q -n auto
+.\.venv\Scripts\python.exe -m pytest -q -n 4
 ```
 
 If coverage-relevant source code, workflow tests, documentation checks, or test structure changed, generate coverage for SonarQube/SonarCloud import and ensure coverage remains at least 90% without weakening the quality gate.

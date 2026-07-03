@@ -84,7 +84,7 @@ tests.
 | Secure, HttpOnly, SameSite Strict cookies | `config.py`, `tests/test_session_management.py::test_login_sets_secure_session_cookie_and_hides_raw_session_id` |
 | Absolute authenticated session lifetime | `app/security/sessions.py`, `config.py`, `tests/test_session_absolute_lifetime.py` |
 | CSRF on unsafe customer routes | `app/extensions.py`, `app/__init__.py`, `tests/test_route_inventory_security.py::test_route_inventory_has_complete_security_decisions` |
-| Explicit CSRF regression tests | `tests/test_account_security_actions.py`, `tests/test_route_inventory_security.py` |
+| Explicit CSRF regression tests | `tests/test_account_security_actions.py`, `tests/test_admin_manual_recovery.py`, `tests/test_route_inventory_security.py` |
 
 Fully authenticated customer sessions default to a 12-hour absolute lifetime,
 and admin sessions default to a 4-hour absolute lifetime. The `auth_created_at`

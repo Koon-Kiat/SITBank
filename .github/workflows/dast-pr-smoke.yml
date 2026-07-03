@@ -57,6 +57,21 @@ jobs:
             echo "blocking-threshold=zap-fail-alert-or-smoke-regression"
             echo "outcome=${SMOKE_OUTCOME}"
           } > pr-dast-report/summary.txt
+          if [[ "${SMOKE_OUTCOME}" == "success" ]]; then
+            blocking_findings="0"
+          else
+            blocking_findings="unavailable; inspect the bounded job log"
+          fi
+          {
+            echo "## PR DAST smoke"
+            echo
+            echo "- Status: **${SMOKE_OUTCOME}**"
+            echo "- Target: isolated local ephemeral application."
+            echo "- Authentication: synthetic local session."
+            echo "- Blocking finding count: ${blocking_findings}."
+            echo "- Artifact: \`pr-dast-smoke-${GITHUB_RUN_ID}\` contains the sanitized scope/outcome summary."
+            echo "- Decision: any ZAP fail alert or smoke regression blocks this job."
+          } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload sanitized DAST summary
         if: ${{ always() }}
