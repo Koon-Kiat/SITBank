@@ -75,21 +75,21 @@ def test_url_like_mass_assignment_field_is_rejected(client):
     assert response.get_json() == {"error": "Invalid request"}
 
 
-def test_server_errors_do_not_disclose_tracebacks(app):
-    original = app.config.get("PROPAGATE_EXCEPTIONS")
-    app.config["PROPAGATE_EXCEPTIONS"] = False
+def test_server_errors_do_not_disclose_tracebacks(mutable_app):
+    original = mutable_app.config.get("PROPAGATE_EXCEPTIONS")
+    mutable_app.config["PROPAGATE_EXCEPTIONS"] = False
 
-    @app.get("/_owasp-error-disclosure-test")
+    @mutable_app.get("/_owasp-error-disclosure-test")
     def raise_for_error_disclosure_test():
         raise RuntimeError("sensitive-internal-marker")
 
     try:
-        response = app.test_client().get(
+        response = mutable_app.test_client().get(
             "/_owasp-error-disclosure-test",
             headers={"Accept": "application/json"},
         )
     finally:
-        app.config["PROPAGATE_EXCEPTIONS"] = original
+        mutable_app.config["PROPAGATE_EXCEPTIONS"] = original
 
     assert response.status_code == 500
     assert response.get_json() == {

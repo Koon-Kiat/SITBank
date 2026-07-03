@@ -45,6 +45,24 @@ def test_default_mode_reports_docker_checks_skipped_when_docker_is_unavailable(
     assert "OVERALL: PASS (PARTIAL" in output
 
 
+def test_full_suite_command_remains_unscoped_and_has_no_marker_exclusions(
+    ci_local_module,
+):
+    command = dict(ci_local_module.PYTHON_CHECKS)["Full parallel test suite"]
+
+    assert command[:6] == (
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "-n",
+        "auto",
+    )
+    assert "-m" not in command[3:]
+    assert "tests" not in command
+    assert not any(str(argument).startswith("tests/") for argument in command)
+
+
 def test_strict_mode_fails_when_docker_is_unavailable(
     ci_local_module, monkeypatch, capsys
 ):

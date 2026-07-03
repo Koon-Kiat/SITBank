@@ -107,7 +107,7 @@ deployment.
 | Audit, alerts, and redaction | `tests/test_audit_alerting.py`, `tests/test_audit_metadata_sanitization.py` |
 | Deployment, Nginx, Docker, workflows, and runtime contracts | `tests/test_deployment.py` |
 | UI security regressions | `tests/test_authenticated_portal_ui.py`, `tests/test_dashboard.py` |
-| Browser E2E regressions | `tests/e2e/test_customer_auth_browser.py`, `tests/e2e/test_customer_security_browser.py` |
+| Browser E2E regressions | `tests/e2e/test_customer_auth_browser.py`, `tests/e2e/test_customer_mfa_browser.py`, `tests/e2e/test_customer_registration_recovery_browser.py`, `tests/e2e/test_customer_banking_browser.py`, `tests/e2e/test_session_security_browser.py`, `tests/e2e/test_customer_admin_boundary_browser.py`, `tests/e2e/test_sensitive_browser_artifacts.py` |
 
 Payee ownership, direct banking MFA gating, pre-TOTP lookup blocking,
 duplicate/self-payee protections, expiry behavior, and removal IDOR are covered
@@ -119,7 +119,9 @@ tests for staff invites, manual recovery, maker-checker approval, and the
 manual-only root-admin bootstrap boundary.
 
 Playwright E2E browser tests cover authentication, MFA, session, banking, and
-boundary regressions against a loopback Flask server. They are opt-in for local
+boundary regressions, including registration, password reset, manual recovery,
+payee, transfer, session management, password change, account freeze, and
+customer/admin isolation, against a loopback Flask server. They are opt-in for local
 unscoped pytest because they require browser binaries, and they do not prove
 live staging or production provider state. To run them locally:
 
@@ -136,6 +138,17 @@ playwright install --with-deps chromium`, sets `SITBANK_RUN_E2E=1`, and runs
 ignored local paths such as `.playwright-browsers`, `playwright-report`, and
 `test-results`; the workflow does not upload traces, videos, cookies, or
 browser profiles.
+
+The normal suite reuses one Flask app and database schema per xdist worker.
+Every test still receives isolated database rows, server-side sessions,
+rate-limit state, fake delivery state, and app configuration. Tests that
+specifically prove factory, admin/customer database, migration, hashing,
+authentication, MFA, or session-creation behavior continue to use their real
+paths. Xdist `auto` is capped at four workers so high-core hosts do not
+overcommit the in-memory SQLite test workload. The history secret scanner preserves full reachable-history coverage
+while reading metadata and content through streaming Git object batches.
+There are no marker exclusions or scoped test paths in the required full-suite
+command.
 
 ## Local Security Commands
 

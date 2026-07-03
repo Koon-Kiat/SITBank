@@ -259,6 +259,14 @@ request, final registration submit, and password-reset request. Turnstile is
 defense in depth only; CSRF, rate limits, password screening, MFA, sessions,
 audit logging, and authorization remain enforced.
 
+Customer browser routes use the same branded `Too many attempts` response when
+durable auth backoff, Flask-Limiter, or Nginx `limit_req` rejects a request.
+Nginx renders the browser 429 from an internal location instead of proxying the
+rejected request, while `/auth/*` keeps structured JSON. CSRF failures remain a
+separate HTTP 400 with security-token wording and a route back to a fresh form.
+No threshold, Turnstile, session, audit, or alert control is relaxed for this
+presentation contract.
+
 Customer login uses username or email plus password. Three failed customer
 password attempts, or two failed privileged password attempts, lock the user
 record and revoke active sessions across source IPs. Counters clear only after

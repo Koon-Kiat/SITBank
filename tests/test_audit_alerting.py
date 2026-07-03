@@ -988,15 +988,15 @@ def test_security_alert_config_validation_and_db_dedupe(app, monkeypatch):
     with pytest.raises(AlertConfigurationError, match="DEDUPE"):
         validate_security_alert_config(environ={"SECURITY_ALERT_DEDUPE_TTL_SECONDS": "1"})
 
-def test_500_handler_logs_sanitized_context(app, client, caplog):
-    app.config["PROPAGATE_EXCEPTIONS"] = False
+def test_500_handler_logs_sanitized_context(mutable_app, caplog):
+    mutable_app.config["PROPAGATE_EXCEPTIONS"] = False
 
-    @app.post("/explode")
+    @mutable_app.post("/explode")
     def explode():
         raise RuntimeError("boom")
 
-    caplog.set_level("ERROR", logger=app.logger.name)
-    response = client.post(
+    caplog.set_level("ERROR", logger=mutable_app.logger.name)
+    response = mutable_app.test_client().post(
         "/explode?password=query-secret",
         data={"password": "form-secret"},
         headers={
