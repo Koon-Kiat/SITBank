@@ -101,6 +101,7 @@ services:
     command:
       - run
       - --server.http.listen-addr=127.0.0.1:12345
+      - --storage.path=/var/lib/alloy
       - /etc/alloy/config.alloy
     volumes:
       - type: bind
@@ -125,6 +126,12 @@ services:
         source: /var/run/docker.sock
         target: /var/run/docker.sock
         read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /var/lib/sitbank-observability/alloy
+        target: /var/lib/alloy
+        read_only: false
         bind:
           create_host_path: false
     tmpfs:
