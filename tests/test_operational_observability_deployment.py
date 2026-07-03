@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import re
 import runpy
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -11,6 +13,8 @@ import yaml
 
 OBS_ROOT = Path("ops/observability")
 VERIFIER_PATH = OBS_ROOT / "verify-private-observability"
+PRIVATE_GRAFANA_URL = "https://grafana-sitbank.tailca101b.ts.net"
+FAKE_GRAFANA_TOKEN = "fake-grafana-health-token"
 
 
 def _read_observability_files() -> str:
@@ -27,6 +31,59 @@ def _read_observability_files() -> str:
         for path in paths
         if path.is_file()
     )
+
+
+def _load_verifier_module():
+    return runpy.run_path(str(VERIFIER_PATH))
+
+
+def _status_headers(module, status: str, *headers: str):
+    header_text = "\r\n".join([f"HTTP/2 {status}", *headers])
+    return module["CommandResult"](
+        0,
+        f"{header_text}\r\n\r\nSITBANK_HTTP_CODE:{status}\n",
+    )
+
+
+def _make_grafana_runner(
+    module,
+    *,
+    token: str = FAKE_GRAFANA_TOKEN,
+    anonymous_status: str = "401",
+    user=None,
+    datasources=None,
+    datasource_health_returncode: int = 0,
+):
+    user_payload = (
+        {"login": "sitbank-verifier", "orgRole": "Viewer"}
+        if user is None
+        else user
+    )
+    datasource_payload = (
+        [{"uid": "sitbank-loki", "type": "loki"}]
+        if datasources is None
+        else datasources
+    )
+
+    def fake_runner(arguments):
+        command = tuple(arguments)
+        url = command[-1]
+        if url.endswith("/api/health"):
+            return module["CommandResult"](0, '{"database":"ok"}')
+        if url.endswith("/api/user") and f"Authorization: Bearer {token}" in command:
+            return module["CommandResult"](0, json.dumps(user_payload))
+        if url.endswith("/api/user"):
+            return _status_headers(module, anonymous_status)
+        if url.endswith("/api/datasources"):
+            return module["CommandResult"](0, json.dumps(datasource_payload))
+        if re.search(r"/api/datasources/uid/.+/health$", url):
+            return module["CommandResult"](
+                datasource_health_returncode,
+                '{"status":"OK"}',
+            )
+        raise AssertionError(command)
+
+    return fake_runner
 
 
 def test_private_grafana_loki_alloy_deployment_files_exist_and_are_private():
@@ -342,3 +399,469 @@ def test_private_observability_verifier_fails_closed_on_public_exposure_and_admi
             public_runner,
             ("https://sitbank.pp.ua/grafana",),
         )
+
+
+def test_private_grafana_url_validation_accepts_only_private_tailscale_https():
+    module = _load_verifier_module()
+
+    assert (
+        module["_validate_private_grafana_url"](
+            "https://grafana-sitbank.tailca101b.ts.net/"
+        )
+        == "https://grafana-sitbank.tailca101b.ts.net"
+    )
+
+    invalid_urls = (
+        ("http://grafana-sitbank.tailca101b.ts.net", "https URL"),
+        ("https:///grafana", "https URL"),
+        (
+            "https://user:pass@grafana-sitbank.tailca101b.ts.net",
+            "without credentials",
+        ),
+        ("https://www.sitbank.pp.ua", "public SITBank"),
+        ("https://staging-sitbank.pp.ua", "public SITBank"),
+        ("https://grafana.example.com", "Tailscale"),
+    )
+    for url, message in invalid_urls:
+        with pytest.raises(module["VerificationError"], match=message):
+            module["_validate_private_grafana_url"](url)
+
+
+def test_public_probe_url_validation_allows_only_public_observability_denials():
+    module = _load_verifier_module()
+
+    for path in ("/grafana", "/grafana/login", "/loki", "/logs", "/metrics"):
+        url = f"https://sitbank.pp.ua{path}"
+        assert module["_validate_public_probe_url"](url) == url
+
+    invalid_urls = (
+        ("http://sitbank.pp.ua/grafana", "https URLs"),
+        ("https://user:pass@sitbank.pp.ua/grafana", "without credentials"),
+        (
+            "https://grafana-sitbank.tailca101b.ts.net/grafana",
+            "private Tailscale",
+        ),
+        ("https://sitbank.pp.ua/health/ready", "observability-denial paths"),
+        ("https://sitbank.pp.ua/grafana-public", "observability-denial paths"),
+    )
+    for url, message in invalid_urls:
+        with pytest.raises(module["VerificationError"], match=message):
+            module["_validate_public_probe_url"](url)
+
+
+def test_public_probe_urls_use_defaults_and_validate_custom_input():
+    module = _load_verifier_module()
+
+    assert module["_public_probe_urls"](None) == list(module["DEFAULT_PUBLIC_PROBES"])
+    assert module["_public_probe_urls"]("") == list(module["DEFAULT_PUBLIC_PROBES"])
+    assert module["_public_probe_urls"](
+        "https://sitbank.pp.ua/grafana\n\nhttps://staging-sitbank.pp.ua/loki\n"
+    ) == ["https://sitbank.pp.ua/grafana", "https://staging-sitbank.pp.ua/loki"]
+
+    with pytest.raises(module["VerificationError"], match="At least one"):
+        module["_public_probe_urls"](" \n\t\n")
+    with pytest.raises(module["VerificationError"], match="observability-denial"):
+        module["_public_probe_urls"]("https://sitbank.pp.ua/health/ready")
+
+
+def test_safe_json_load_and_url_label_handle_bad_inputs_safely():
+    module = _load_verifier_module()
+
+    assert module["_safe_json_load"]('{"ok": true}', "Grafana") == {"ok": True}
+    with pytest.raises(module["VerificationError"], match="valid JSON"):
+        module["_safe_json_load"]("{bad json", "Grafana")
+
+    assert (
+        module["_safe_url_label"]("https://sitbank.pp.ua/grafana?token=fake")
+        == "sitbank.pp.ua/grafana"
+    )
+    assert module["_safe_url_label"]("not a url") == "<invalid>not a url"
+    assert module["_safe_url_label"]("https:///grafana") == "<invalid>/grafana"
+
+
+def test_run_command_fails_closed_and_returns_nonzero_results(monkeypatch):
+    module = _load_verifier_module()
+
+    monkeypatch.setattr(module["shutil"], "which", lambda _command: None)
+    with pytest.raises(module["VerificationError"], match="not installed"):
+        module["run_command"](("curl", "--version"))
+
+    monkeypatch.setattr(module["shutil"], "which", lambda _command: "C:/fake/curl.exe")
+
+    def fake_run(arguments, **kwargs):
+        assert arguments == ["C:/fake/curl.exe", "--fail"]
+        assert kwargs["check"] is False
+        assert kwargs["capture_output"] is True
+        assert kwargs["text"] is True
+        assert kwargs["timeout"] == 20
+        return subprocess.CompletedProcess(arguments, 7, "stdout", "stderr")
+
+    monkeypatch.setattr(module["subprocess"], "run", fake_run)
+    result = module["run_command"](("curl", "--fail"))
+    assert result == module["CommandResult"](7, "stdout", "stderr")
+
+    for exception in (
+        OSError("synthetic failure"),
+        subprocess.TimeoutExpired("curl", 20),
+    ):
+
+        def failing_run(_arguments, **_kwargs):
+            raise exception
+
+        monkeypatch.setattr(module["subprocess"], "run", failing_run)
+        with pytest.raises(module["VerificationError"], match="could not run"):
+            module["run_command"](("curl", "--fail"))
+
+
+def test_curl_builds_safe_headers_and_raises_on_request_failure():
+    module = _load_verifier_module()
+    calls = []
+
+    def ok_runner(arguments):
+        calls.append(tuple(arguments))
+        return module["CommandResult"](0, '{"ok":true}')
+
+    assert module["_curl"](ok_runner, f"{PRIVATE_GRAFANA_URL}/api/health") == (
+        0,
+        '{"ok":true}',
+    )
+    assert "Accept: application/json" in calls[-1]
+    assert not any("Authorization:" in argument for argument in calls[-1])
+
+    module["_curl"](
+        ok_runner,
+        f"{PRIVATE_GRAFANA_URL}/api/user",
+        token=FAKE_GRAFANA_TOKEN,
+    )
+    assert "Accept: application/json" in calls[-1]
+    assert f"Authorization: Bearer {FAKE_GRAFANA_TOKEN}" in calls[-1]
+
+    def failing_runner(_arguments):
+        return module["CommandResult"](28, "", "timeout")
+
+    with pytest.raises(module["VerificationError"], match="request failed"):
+        module["_curl"](failing_runner, f"{PRIVATE_GRAFANA_URL}/api/health")
+
+
+def test_curl_status_headers_parses_statuses_and_handles_curl_failures():
+    module = _load_verifier_module()
+
+    for returncode in (0, 22, 47):
+
+        def runner(_arguments, code=returncode):
+            return module["CommandResult"](
+                code,
+                "HTTP/2 403\r\nx-safe: true\r\n\r\nSITBANK_HTTP_CODE:403\n",
+            )
+
+        status, headers = module["_curl_status_headers"](
+            runner,
+            "https://sitbank.pp.ua/grafana",
+        )
+        assert status == "403"
+        assert "x-safe: true" in headers
+
+    def unexpected_failure(_arguments):
+        return module["CommandResult"](
+            6,
+            "HTTP/2 000\r\n\r\nSITBANK_HTTP_CODE:000\n",
+        )
+
+    assert module["_curl_status_headers"](
+        unexpected_failure,
+        "https://sitbank.pp.ua/grafana",
+    ) == ("000", "")
+
+    def redirect_denial(_arguments):
+        return module["CommandResult"](
+            47,
+            (
+                "HTTP/2 302\r\n"
+                "location: https://sitbank.pp.ua/login\r\n\r\n"
+                "SITBANK_HTTP_CODE:302\n"
+            ),
+        )
+
+    status, headers = module["_curl_status_headers"](
+        redirect_denial,
+        "https://sitbank.pp.ua/grafana",
+    )
+    assert status == "302"
+    assert "location: https://sitbank.pp.ua/login" in headers
+
+
+def test_verify_private_grafana_fails_closed_for_unsafe_grafana_states():
+    module = _load_verifier_module()
+
+    with pytest.raises(module["VerificationError"], match="TOKEN is required"):
+        module["verify_private_grafana"](
+            _make_grafana_runner(module),
+            PRIVATE_GRAFANA_URL,
+            "",
+        )
+
+    unsafe_cases = (
+        (
+            _make_grafana_runner(module, anonymous_status="200"),
+            "anonymous API access",
+        ),
+        (
+            _make_grafana_runner(module, user={"isGrafanaAdmin": True}),
+            "administrative privileges",
+        ),
+        (
+            _make_grafana_runner(module, user={"orgRole": "Admin"}),
+            "administrative privileges",
+        ),
+        (
+            _make_grafana_runner(module, datasources={"unexpected": "schema"}),
+            "unexpected schema",
+        ),
+        (
+            _make_grafana_runner(
+                module,
+                datasources=[{"uid": "prometheus", "type": "prometheus"}],
+            ),
+            "no Loki datasource",
+        ),
+        (
+            _make_grafana_runner(
+                module,
+                datasources=[{"uid": "../unsafe", "type": "loki"}],
+            ),
+            "UID is missing or unsafe",
+        ),
+        (
+            _make_grafana_runner(module, datasource_health_returncode=28),
+            "request failed",
+        ),
+    )
+    for runner, message in unsafe_cases:
+        with pytest.raises(module["VerificationError"], match=message):
+            module["verify_private_grafana"](
+                runner,
+                PRIVATE_GRAFANA_URL,
+                FAKE_GRAFANA_TOKEN,
+            )
+
+
+def test_verify_public_denials_accepts_closed_statuses_and_sanitizes_records():
+    module = _load_verifier_module()
+    statuses = {
+        "https://sitbank.pp.ua/grafana": "404",
+        "https://staging-sitbank.pp.ua/loki": "403",
+    }
+
+    def closed_runner(arguments):
+        return _status_headers(module, statuses[tuple(arguments)[-1]])
+
+    checks = module["verify_public_denials"](closed_runner, tuple(statuses))
+    assert checks == [
+        {
+            "name": "public_observability_denial",
+            "result": "pass",
+            "target": "sitbank.pp.ua/grafana",
+            "http_status": "404",
+        },
+        {
+            "name": "public_observability_denial",
+            "result": "pass",
+            "target": "staging-sitbank.pp.ua/loki",
+            "http_status": "403",
+        },
+    ]
+    assert "HTTP/2" not in json.dumps(checks)
+    assert "location:" not in json.dumps(checks).casefold()
+
+
+@pytest.mark.parametrize(
+    ("status", "header", "message"),
+    (
+        ("200", "server: nginx", "public observability"),
+        ("302", "location: https://sitbank.pp.ua/grafana/login", "public observability"),
+        ("302", "location: https://sitbank.pp.ua/loki/", "public observability"),
+        ("404", "authorization: Bearer fake", "sensitive observability headers"),
+        ("404", "cookie: grafana_session=fake", "sensitive observability headers"),
+        ("404", "cf-access-jwt-assertion: fake", "sensitive observability headers"),
+        ("404", "set-cookie: grafana_session=fake", "sensitive observability headers"),
+        ("404", "x-grafana-org-id: 1", "sensitive observability headers"),
+    ),
+)
+def test_verify_public_denials_fails_closed_on_exposure_or_sensitive_headers(
+    status,
+    header,
+    message,
+):
+    module = _load_verifier_module()
+
+    def public_runner(_arguments):
+        return _status_headers(module, status, header)
+
+    with pytest.raises(module["VerificationError"], match=message):
+        module["verify_public_denials"](
+            public_runner,
+            ("https://sitbank.pp.ua/grafana",),
+        )
+
+
+def test_write_evidence_creates_parent_and_retains_only_sanitized_fields(tmp_path):
+    module = _load_verifier_module()
+    evidence_path = tmp_path / "nested" / "private-observability.json"
+    checks = [
+        {
+            "name": "public_observability_denial",
+            "result": "pass",
+            "target": "sitbank.pp.ua/grafana",
+            "http_status": "404",
+        }
+    ]
+
+    module["_write_evidence"](
+        evidence_path,
+        target_environment="production",
+        grafana_url=PRIVATE_GRAFANA_URL,
+        checks=checks,
+        token=FAKE_GRAFANA_TOKEN,
+    )
+
+    evidence_text = evidence_path.read_text(encoding="utf-8")
+    evidence = json.loads(evidence_text)
+    assert evidence["target_environment"] == "production"
+    assert evidence["private_grafana_host"] == "grafana-sitbank.tailca101b.ts.net"
+    assert evidence["checks"] == checks
+    assert evidence["sanitization"] == {
+        "access_assertions_retained": False,
+        "cookies_retained": False,
+        "credentials_retained": False,
+        "raw_http_bodies_retained": False,
+    }
+    for forbidden in (
+        FAKE_GRAFANA_TOKEN,
+        "Authorization: Bearer",
+        "grafana_session=fake",
+        "cf-access-jwt-assertion: fake",
+        "raw response body",
+    ):
+        assert forbidden not in evidence_text
+
+
+def test_write_evidence_refuses_to_write_if_token_would_be_retained(tmp_path):
+    module = _load_verifier_module()
+    evidence_path = tmp_path / "nested" / "private-observability.json"
+
+    with pytest.raises(module["VerificationError"], match="contains the Grafana token"):
+        module["_write_evidence"](
+            evidence_path,
+            target_environment="staging",
+            grafana_url=PRIVATE_GRAFANA_URL,
+            checks=[{"name": "unsafe", "result": FAKE_GRAFANA_TOKEN}],
+            token=FAKE_GRAFANA_TOKEN,
+        )
+
+    assert not evidence_path.exists()
+
+
+def test_parse_args_restricts_target_environment_and_accepts_overrides(tmp_path):
+    module = _load_verifier_module()
+    evidence_path = tmp_path / "private-observability.json"
+
+    args = module["parse_args"](
+        [
+            "--target-environment",
+            "production",
+            "--grafana-url",
+            PRIVATE_GRAFANA_URL,
+            "--public-probe-url",
+            "https://sitbank.pp.ua/grafana",
+            "--evidence-file",
+            str(evidence_path),
+        ]
+    )
+    assert args.target_environment == "production"
+    assert args.grafana_url == PRIVATE_GRAFANA_URL
+    assert args.public_probe_url == ["https://sitbank.pp.ua/grafana"]
+    assert args.evidence_file == str(evidence_path)
+
+    with pytest.raises(SystemExit):
+        module["parse_args"](["--target-environment", "development"])
+
+
+def test_main_success_uses_env_and_writes_evidence_override(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    module = _load_verifier_module()
+    grafana_runner = _make_grafana_runner(module)
+    calls = []
+
+    def fake_run_command(arguments):
+        command = tuple(arguments)
+        calls.append(command)
+        url = command[-1]
+        if url.startswith(PRIVATE_GRAFANA_URL):
+            return grafana_runner(command)
+        return _status_headers(module, "404")
+
+    monkeypatch.setitem(module["main"].__globals__, "run_command", fake_run_command)
+    monkeypatch.setenv("GRAFANA_PRIVATE_URL", f"{PRIVATE_GRAFANA_URL}/")
+    monkeypatch.setenv("GRAFANA_HEALTH_TOKEN", FAKE_GRAFANA_TOKEN)
+    monkeypatch.setenv(
+        "OBSERVABILITY_PUBLIC_PROBE_URLS",
+        "https://sitbank.pp.ua/grafana\nhttps://www.sitbank.pp.ua/loki\n",
+    )
+    evidence_path = tmp_path / "custom" / "private-observability.json"
+
+    assert module["main"](
+        [
+            "--target-environment",
+            "production",
+            "--evidence-file",
+            str(evidence_path),
+        ]
+    ) == 0
+
+    captured = capsys.readouterr()
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    assert f"written to {evidence_path}" in captured.out
+    assert captured.err == ""
+    assert evidence["target_environment"] == "production"
+    assert evidence["private_grafana_host"] == "grafana-sitbank.tailca101b.ts.net"
+    assert FAKE_GRAFANA_TOKEN not in evidence_path.read_text(encoding="utf-8")
+    assert any(f"Authorization: Bearer {FAKE_GRAFANA_TOKEN}" in call for call in calls)
+
+
+def test_main_failure_returns_one_and_prints_sanitized_error(monkeypatch, capsys):
+    module = _load_verifier_module()
+    monkeypatch.setenv("GRAFANA_HEALTH_TOKEN", FAKE_GRAFANA_TOKEN)
+
+    result = module["main"](
+        [
+            "--grafana-url",
+            "https://sitbank.pp.ua",
+            "--public-probe-url",
+            "https://sitbank.pp.ua/grafana",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "ERROR: GRAFANA_PRIVATE_URL must not be a public SITBank hostname" in captured.err
+    assert FAKE_GRAFANA_TOKEN not in captured.err
+
+
+def test_script_entrypoint_exits_with_sanitized_failure(monkeypatch, capsys):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(VERIFIER_PATH), "--grafana-url", "https://sitbank.pp.ua"],
+    )
+    monkeypatch.setenv("GRAFANA_HEALTH_TOKEN", FAKE_GRAFANA_TOKEN)
+
+    with pytest.raises(SystemExit) as exc_info:
+        runpy.run_path(str(VERIFIER_PATH), run_name="__main__")
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "ERROR: GRAFANA_PRIVATE_URL must not be a public SITBank hostname" in captured.err
+    assert FAKE_GRAFANA_TOKEN not in captured.err

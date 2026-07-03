@@ -100,7 +100,11 @@ def _validate_public_probe_url(url: str) -> str:
         raise VerificationError("Public probe URLs must be https URLs without credentials")
     if parsed.hostname.casefold().endswith(".ts.net"):
         raise VerificationError("Public probes must not target private Tailscale hostnames")
-    if not any((parsed.path or "/").startswith(path) for path in PUBLIC_EXPOSURE_PATHS):
+    path = parsed.path or "/"
+    if not any(
+        path == allowed or path.startswith(f"{allowed}/")
+        for allowed in PUBLIC_EXPOSURE_PATHS
+    ):
         raise VerificationError("Public probes must target reviewed observability-denial paths")
     return url
 
