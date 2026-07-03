@@ -41,15 +41,40 @@ def _decode_hcl_string(value: str) -> str:
     return json.loads(f'"{value}"')
 
 
+def _hcl_assignment_value(line: str) -> str:
+    _key, raw_value = line.split("=", 1)
+    value = raw_value.strip()
+    assert value.startswith('"') and value.endswith('"')
+    return _decode_hcl_string(value[1:-1])
+
+
+def _alloy_stage_blocks(alloy: str, block_name: str) -> list[dict[str, str]]:
+    lines = alloy.splitlines()
+    blocks: list[dict[str, str]] = []
+    index = 0
+    while index < len(lines):
+        if lines[index].strip() != f"{block_name} {{":
+            index += 1
+            continue
+        index += 1
+        block: dict[str, str] = {}
+        while index < len(lines) and lines[index].strip() != "}":
+            line = lines[index].strip()
+            if "=" in line:
+                key = line.split("=", 1)[0].strip()
+                if key in {"expression", "replace"}:
+                    block[key] = _hcl_assignment_value(line)
+            index += 1
+        blocks.append(block)
+        index += 1
+    return blocks
+
+
 def _alloy_redaction_blocks(alloy: str):
     return [
-        (_decode_hcl_string(expression), _decode_hcl_string(replacement))
-        for expression, replacement in re.findall(
-            r'stage\.replace\s*{\s*expression = "((?:\\.|[^"])*)"\s*'
-            r'replace = "((?:\\.|[^"])*)"',
-            alloy,
-            re.S,
-        )
+        (block["expression"], block["replace"])
+        for block in _alloy_stage_blocks(alloy, "stage.replace")
+        if "expression" in block and "replace" in block
     ]
 
 
@@ -386,12 +411,9 @@ def test_alloy_redaction_handles_structured_and_header_style_samples():
         assert "safe" in redacted or "service=sitbank-app" in redacted or "[REDACTED]" in redacted
 
     drop_expressions = [
-        _decode_hcl_string(expression)
-        for expression in re.findall(
-            r'stage\.drop\s*{\s*expression = "((?:\\.|[^"])*)"',
-            alloy,
-            re.S,
-        )
+        block["expression"]
+        for block in _alloy_stage_blocks(alloy, "stage.drop")
+        if "expression" in block
     ]
     for forbidden_line in (
         "request_body={\"password\":\"fake\"}",
