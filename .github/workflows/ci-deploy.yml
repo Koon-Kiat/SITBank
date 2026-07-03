@@ -821,7 +821,7 @@ jobs:
       STAGING_PASSWORD_PBKDF2_ITERATIONS: ${{ vars.STAGING_PASSWORD_PBKDF2_ITERATIONS }}
       STAGING_MFA_ISSUER_NAME: ${{ vars.STAGING_MFA_ISSUER_NAME }}
       STAGING_PASSWORD_RESET_EMAIL_FROM: ${{ vars.STAGING_PASSWORD_RESET_EMAIL_FROM }}
-      STAGING_ROOT_ADMIN_EMAILS: ${{ secrets.ROOT_ADMIN_EMAILS }}
+      STAGING_ROOT_ADMIN_EMAILS: ${{ secrets.STAGING_ROOT_ADMIN_EMAILS }}
       STAGING_SMTP_HOST: ${{ vars.STAGING_SMTP_HOST }}
       STAGING_CLOUDFLARE_ACCESS_AUD: ${{ vars.STAGING_CLOUDFLARE_ACCESS_AUD }}
       STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN: ${{ vars.STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN }}
@@ -831,8 +831,10 @@ jobs:
       STAGING_TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED: ${{ vars.STAGING_TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED }}
       STAGING_TURNSTILE_CUSTOMER_REGISTER_ENABLED: ${{ vars.STAGING_TURNSTILE_CUSTOMER_REGISTER_ENABLED }}
       STAGING_TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED: ${{ vars.STAGING_TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED }}
+      STAGING_TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED: ${{ vars.STAGING_TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED }}
       STAGING_TURNSTILE_ADMIN_LOGIN_ENABLED: ${{ vars.STAGING_TURNSTILE_ADMIN_LOGIN_ENABLED }}
       STAGING_TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED: ${{ vars.STAGING_TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED }}
+      STAGING_TURNSTILE_FAIL_CLOSED_IN_PRODUCTION: ${{ vars.STAGING_TURNSTILE_FAIL_CLOSED_IN_PRODUCTION }}
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
@@ -869,8 +871,10 @@ jobs:
             STAGING_TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED
             STAGING_TURNSTILE_CUSTOMER_REGISTER_ENABLED
             STAGING_TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED
+            STAGING_TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED
             STAGING_TURNSTILE_ADMIN_LOGIN_ENABLED
             STAGING_TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED
+            STAGING_TURNSTILE_FAIL_CLOSED_IN_PRODUCTION
             STAGING_EC2_KNOWN_HOSTS
             STAGING_EC2_SSH_PRIVATE_KEY_B64
             TS_OAUTH_CLIENT_ID
@@ -977,8 +981,8 @@ jobs:
 
           value = os.environ.get("STAGING_ROOT_ADMIN_EMAILS", "")
           emails = [item.strip().casefold() for item in value.split(",") if item.strip()]
-          if len(emails) != 7 or len(set(emails)) != 7:
-              print("::error::STAGING_ROOT_ADMIN_EMAILS must contain exactly 7 unique workplace email addresses.", file=sys.stderr)
+          if len(emails) != 2 or len(set(emails)) != 2:
+              print("::error::STAGING_ROOT_ADMIN_EMAILS must contain exactly 2 unique workplace email addresses.", file=sys.stderr)
               raise SystemExit(1)
           for email in emails:
               if not re.fullmatch(r"(?=\S{1,128}@\S{1,253}$)[^@\x00-\x1f\x7f]+@[^@\x00-\x1f\x7f]+", email):
@@ -1114,7 +1118,7 @@ jobs:
       PROD_PASSWORD_PBKDF2_ITERATIONS: ${{ vars.PROD_PASSWORD_PBKDF2_ITERATIONS }}
       PROD_MFA_ISSUER_NAME: ${{ vars.PROD_MFA_ISSUER_NAME }}
       PROD_PASSWORD_RESET_EMAIL_FROM: ${{ vars.PROD_PASSWORD_RESET_EMAIL_FROM }}
-      PROD_ROOT_ADMIN_EMAILS: ${{ secrets.ROOT_ADMIN_EMAILS }}
+      PROD_ROOT_ADMIN_EMAILS: ${{ secrets.PROD_ROOT_ADMIN_EMAILS }}
       PROD_SMTP_HOST: ${{ vars.PROD_SMTP_HOST }}
       PROD_TURNSTILE_ENABLED: ${{ vars.PROD_TURNSTILE_ENABLED }}
       PROD_TURNSTILE_SITE_KEY: ${{ vars.PROD_TURNSTILE_SITE_KEY }}
@@ -1122,8 +1126,10 @@ jobs:
       PROD_TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED: ${{ vars.PROD_TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED }}
       PROD_TURNSTILE_CUSTOMER_REGISTER_ENABLED: ${{ vars.PROD_TURNSTILE_CUSTOMER_REGISTER_ENABLED }}
       PROD_TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED: ${{ vars.PROD_TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED }}
+      PROD_TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED: ${{ vars.PROD_TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED }}
       PROD_TURNSTILE_ADMIN_LOGIN_ENABLED: ${{ vars.PROD_TURNSTILE_ADMIN_LOGIN_ENABLED }}
       PROD_TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED: ${{ vars.PROD_TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED }}
+      PROD_TURNSTILE_FAIL_CLOSED_IN_PRODUCTION: ${{ vars.PROD_TURNSTILE_FAIL_CLOSED_IN_PRODUCTION }}
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
@@ -1158,8 +1164,10 @@ jobs:
             PROD_TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED
             PROD_TURNSTILE_CUSTOMER_REGISTER_ENABLED
             PROD_TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED
+            PROD_TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED
             PROD_TURNSTILE_ADMIN_LOGIN_ENABLED
             PROD_TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED
+            PROD_TURNSTILE_FAIL_CLOSED_IN_PRODUCTION
             PROD_EC2_KNOWN_HOSTS
             PROD_EC2_SSH_PRIVATE_KEY_B64
             TS_OAUTH_CLIENT_ID
@@ -1266,8 +1274,8 @@ jobs:
 
           value = os.environ.get("PROD_ROOT_ADMIN_EMAILS", "")
           emails = [item.strip().casefold() for item in value.split(",") if item.strip()]
-          if len(emails) != 7 or len(set(emails)) != 7:
-              print("::error::PROD_ROOT_ADMIN_EMAILS must contain exactly 7 unique workplace email addresses.", file=sys.stderr)
+          if len(emails) != 5 or len(set(emails)) != 5:
+              print("::error::PROD_ROOT_ADMIN_EMAILS must contain exactly 5 unique workplace email addresses.", file=sys.stderr)
               raise SystemExit(1)
           for email in emails:
               if not re.fullmatch(r"(?=\S{1,128}@\S{1,253}$)[^@\x00-\x1f\x7f]+@[^@\x00-\x1f\x7f]+", email):

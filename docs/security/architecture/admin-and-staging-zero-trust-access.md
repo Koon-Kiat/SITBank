@@ -180,7 +180,7 @@ control with three explicit modes:
 - `--mode serve` proves the node is running, Tailscale SSH and Funnel are
   disabled, the admin
   listener is only `127.0.0.1:5002`, local readiness works, Nginx has no admin
-  upstream/private hostname, Serve maps only the approved private HTTPS
+  upstream/private hostname or wildcard port `443` listener, Serve maps only the approved private HTTPS
   endpoint to `http://127.0.0.1:5002`, and an unauthenticated `GET /login`
   returns `200`.
 - `--mode ssh` proves the same local Tailscale, Tailscale-SSH-disabled,
@@ -188,6 +188,13 @@ control with three explicit modes:
   port-forward diagnostics. It does not claim to test a remote tunnel.
 - `--mode documentation-only` checks arguments and warns that no live
   verification occurred. It is not acceptable production evidence.
+
+Public Nginx port `80` and `443` listeners are rendered onto the exact
+operator-configured `PUBLIC_BIND_ADDRESS`. A wildcard listener could intercept
+the Tailscale Serve HTTPS socket and is therefore a deployment failure. The
+production Nginx verifier and live Tailscale preflight both reject wildcard
+port `443`; bootstrap also rejects loopback and Tailscale addresses as the
+public bind value.
 
 Run the primary check on EC2:
 

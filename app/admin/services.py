@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import json
 import re
 import secrets
@@ -23,7 +24,9 @@ from app.auth.password_reset import (
 )
 from app.auth.services import (
     AuthError,
+    _clear_user_security_failures,
     _dummy_password_hash,
+    _record_user_security_failure,
     _totp,
     _verify_totp_for_user,
 )
@@ -50,6 +53,10 @@ from app.security.passwords import (
 from app.security.password_history import mark_password_changed, replace_user_password
 from app.security.rate_limits import AuthBackoffRequired, apply_exponential_backoff, clear_failures, record_failure
 from app.security.session_hmac import active_hmac_hex
+from app.security.rate_limits import (
+    DurableRateLimitExceeded,
+    consume_durable_rate_limit,
+)
 from app.security.sessions import (
     begin_password_authenticated_session,
     establish_authenticated_session,
@@ -647,6 +654,8 @@ def _execute_staff_account_lifecycle(
         target.mfa_enabled = False
         target.mfa_secret_nonce = None
         target.mfa_secret_ciphertext = None
+        target.mfa_pending_started_at = None
+        target.mfa_pending_session_hash = None
         target.workplace_email_verified_at = None
         revoked_sessions = revoke_all_sessions(target.id, ended_reason="revoked")
         event_type = "staff_activation_reset"
@@ -674,7 +683,14 @@ def recent_audit_events_for_dashboard(actor: User, *, limit: int = 5) -> list[di
             db.select(SecurityAuditEvent).order_by(SecurityAuditEvent.created_at.desc(), SecurityAuditEvent.id.desc()).limit(limit)
         ).scalars()
     )
-    return [public_audit_event(event, include_metadata=False) for event in events]
+    return [
+        public_audit_event(
+            event,
+            include_metadata=False,
+            reveal_full_ip=is_root_admin(actor),
+        )
+        for event in events
+    ]
 
 
 def query_audit_events_for_admin(actor: User, args: dict[str, Any]) -> dict[str, Any]:
@@ -718,7 +734,14 @@ def query_audit_events_for_admin(actor: User, args: dict[str, Any]) -> dict[str,
         },
     )
     return {
-        "events": [public_audit_event(event, include_metadata=False) for event in events],
+        "events": [
+            public_audit_event(
+                event,
+                include_metadata=False,
+                reveal_full_ip=is_root_admin(actor),
+            )
+            for event in events
+        ],
         "filters": filters,
         "page": page,
         "per_page": per_page,
@@ -746,7 +769,11 @@ def audit_event_detail_for_admin(actor: User, event_id: int) -> dict[str, Any]:
         user=actor,
         metadata={"audit_event_ref": audit_reference("security_audit_event", event.id)},
     )
-    return public_audit_event(event, include_metadata=True)
+    return public_audit_event(
+        event,
+        include_metadata=True,
+        reveal_full_ip=is_root_admin(actor),
+    )
 
 
 def public_staff_account(user: User, actor: User) -> dict[str, Any]:
@@ -765,9 +792,18 @@ def public_staff_account(user: User, actor: User) -> dict[str, Any]:
     }
 
 
-def public_audit_event(event: SecurityAuditEvent, *, include_metadata: bool) -> dict[str, Any]:
+def public_audit_event(
+    event: SecurityAuditEvent,
+    *,
+    include_metadata: bool,
+    reveal_full_ip: bool = False,
+) -> dict[str, Any]:
     metadata = event.event_metadata if isinstance(event.event_metadata, dict) else {}
-    source_kind, source_display = _audit_source(event, metadata)
+    source_kind, source_display = _audit_source(
+        event,
+        metadata,
+        reveal_full_ip=reveal_full_ip,
+    )
     created_at_utc = _utc_iso(event.created_at)
     activity, description, investigation_hint = _audit_event_description(event.event_type)
     payload = {
@@ -780,7 +816,7 @@ def public_audit_event(event: SecurityAuditEvent, *, include_metadata: bool) -> 
         "actor_user_id": event.user_id,
         "actor_role": _audit_actor_role(event, metadata),
         "actor_summary": _audit_actor_summary(event, metadata),
-        "ip_address": event.ip_address,
+        "ip_address": _audit_ip_display(event.ip_address, reveal_full_ip=reveal_full_ip),
         "source_kind": source_kind,
         "source_display": source_display,
         "target_ref": _audit_target_ref(metadata),
@@ -964,11 +1000,16 @@ def _audit_event_description(event_type: str) -> tuple[str, str, str]:
 def _audit_source(
     event: SecurityAuditEvent,
     metadata: dict[str, Any],
+    *,
+    reveal_full_ip: bool = False,
 ) -> tuple[str, str]:
     configured_kind = _safe_filter(metadata.get("source_kind"), 40)
     configured_display = _safe_filter(metadata.get("source_display"), 80)
     if configured_kind and configured_display:
-        return configured_kind, configured_display
+        return configured_kind, _audit_ip_display(
+            configured_display,
+            reveal_full_ip=reveal_full_ip,
+        )
 
     source = _safe_filter(event.ip_address, 64)
     source_key = source.casefold()
@@ -979,7 +1020,19 @@ def _audit_source(
         return "system", "System or scheduled control"
     if event.user_id is None and source_key in {"", "unknown"}:
         return "system", "System"
-    return "network", source or "unknown"
+    return "network", _audit_ip_display(source, reveal_full_ip=reveal_full_ip)
+
+
+def _audit_ip_display(value: str | None, *, reveal_full_ip: bool) -> str:
+    source = _safe_filter(value, 64)
+    if reveal_full_ip or not source:
+        return source or "unknown"
+    try:
+        address = ipaddress.ip_address(source)
+    except ValueError:
+        return source
+    prefix = 24 if address.version == 4 else 64
+    return str(ipaddress.ip_network(f"{address}/{prefix}", strict=False))
 
 
 def _audit_target_ref(metadata: dict[str, Any]) -> str:
@@ -1224,9 +1277,9 @@ def _like_escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-def authenticate_admin_primary(workplace_email: str, password: str) -> dict[str, Any]:
+def _normalize_admin_login_email(workplace_email: str, password: str) -> str:
     try:
-        normalized_email = normalize_workplace_email(workplace_email)
+        return normalize_workplace_email(workplace_email)
     except AuthError as exc:
         normalized_email = _normalize_email(workplace_email)
         principal = _auth_principal(normalized_email)
@@ -1244,14 +1297,22 @@ def authenticate_admin_primary(workplace_email: str, password: str) -> dict[str,
         )
         record_failure("admin_login", principal)
         raise AuthError(GENERIC_ADMIN_LOGIN_ERROR, 401) from exc
+
+
+def _admin_password_matches(user: User | None, password: str) -> bool:
+    if not is_password_raw_length_safe(password):
+        return False
+    candidate_hash = user.password_hash if user else _dummy_password_hash()
+    return verify_password(password, candidate_hash)
+
+
+def authenticate_admin_primary(workplace_email: str, password: str) -> dict[str, Any]:
+    normalized_email = _normalize_admin_login_email(workplace_email, password)
     principal = _auth_principal(normalized_email)
     _enforce_auth_backoff("admin_login", principal)
 
     user = _staff_user_by_workplace_email(normalized_email)
-    password_ok = False
-    if is_password_raw_length_safe(password):
-        candidate_hash = user.password_hash if user else _dummy_password_hash()
-        password_ok = verify_password(password, candidate_hash)
+    password_ok = _admin_password_matches(user, password)
 
     if (
         user is None
@@ -1270,18 +1331,22 @@ def authenticate_admin_primary(workplace_email: str, password: str) -> dict[str,
             },
         )
         record_failure("admin_login", principal)
+        if user is not None and not password_ok:
+            user.failed_login_count = int(user.failed_login_count or 0) + 1
+            _record_user_security_failure(
+                user,
+                "password",
+                "password_failed_attempts",
+            )
         raise AuthError(GENERIC_ADMIN_LOGIN_ERROR, 401)
 
     if user.is_frozen or user.security_locked_at is not None:
         audit_event("admin_login", "blocked", user=user, metadata={"reason": user.security_lock_reason or "locked"})
         raise AuthError(GENERIC_ADMIN_LOGIN_ERROR, 401)
 
-    user.failed_login_count = 0
-    user.last_login_at = _utcnow()
     if password_hash_needs_rehash(user.password_hash):
         user.password_hash = hash_password(password)
     db.session.commit()
-    clear_failures("admin_login", principal)
     begin_password_authenticated_session(user.id)
     audit_event("admin_login_password", "success", user=user, metadata={"mfa_required": True})
     return {"message": "MFA verification required", "mfa_required": True}
@@ -1298,6 +1363,11 @@ def complete_admin_mfa_login(totp_code: str) -> dict[str, Any]:
     if not _verify_totp_for_user(user, totp_code, "admin_mfa_login"):
         audit_event("admin_mfa_login", "failure", user=user)
         raise AuthError(GENERIC_ADMIN_LOGIN_ERROR, 401)
+    user.failed_login_count = 0
+    user.last_login_at = _utcnow()
+    db.session.commit()
+    clear_failures("admin_login", _auth_principal(user.email))
+    _clear_user_security_failures(user, "password")
     session_id = establish_authenticated_session(
         user_id=user.id,
         mfa_verified=True,
@@ -2021,6 +2091,7 @@ def _require_active_root_admin(actor: User, event_type: str) -> None:
 
 
 def invite_info(token: str) -> dict[str, Any]:
+    _consume_invite_probe_limit(token)
     invite = _active_invite_by_token(token, audit_failures=True)
     _ensure_invite_identity_policy(invite, "staff_invite_info")
     return {
@@ -2044,6 +2115,7 @@ def start_invite_acceptance(
     turnstile_token: str | None,
     request_fields: set[str],
 ) -> dict[str, Any]:
+    _consume_invite_probe_limit(token)
     _reject_forged_invite_fields(request_fields)
     try:
         require_turnstile("admin_invite_accept", turnstile_token)
@@ -2094,6 +2166,8 @@ def start_invite_acceptance(
     secret = pyotp.random_base32(length=32)
     user.mfa_secret_nonce, user.mfa_secret_ciphertext = encrypt_mfa_secret(secret, user.id)
     user.mfa_enabled = False
+    user.mfa_pending_started_at = _utcnow()
+    user.mfa_pending_session_hash = _staff_invite_mfa_binding(invite.id)
     invite.status = "totp_pending"
     invite.last_attempt_at = _utcnow()
     try:
@@ -2134,12 +2208,22 @@ def verify_invite_acceptance(
     workplace_verification_code: str,
     request_fields: set[str],
 ) -> dict[str, Any]:
+    _consume_invite_probe_limit(token)
     _reject_forged_invite_fields(request_fields)
     invite = _active_invite_by_token(token, lock=True, audit_failures=True)
     _ensure_invite_identity_policy(invite, "staff_invite_accept")
     user = db.session.get(User, invite.setup_user_id) if invite.setup_user_id else None
     if user is None or user.account_status != "setup_pending" or user.account_type != invite.role:
         audit_event("staff_invite_accept", "failure", metadata={"reason": "setup_missing"})
+        raise AuthError(GENERIC_INVITE_ERROR, 401)
+    if not _staff_invite_mfa_setup_is_active(user, invite.id):
+        user.mfa_secret_nonce = None
+        user.mfa_secret_ciphertext = None
+        user.mfa_pending_started_at = None
+        user.mfa_pending_session_hash = None
+        invite.status = "pending"
+        db.session.commit()
+        audit_event("staff_totp_setup", "expired", user=user)
         raise AuthError(GENERIC_INVITE_ERROR, 401)
     if not TOTP_RE.fullmatch(str(totp_code or "")):
         audit_event("staff_totp_setup", "failure", user=user, metadata={"reason": "invalid_format"})
@@ -2158,6 +2242,8 @@ def verify_invite_acceptance(
 
     now = _utcnow()
     user.mfa_enabled = True
+    user.mfa_pending_started_at = None
+    user.mfa_pending_session_hash = None
     user.account_status = "active"
     user.workplace_email_verified_at = now
     invite.status = "accepted"
@@ -2172,6 +2258,46 @@ def verify_invite_acceptance(
         "message": "Staff account activated",
         "user": public_admin_user(user),
     }
+
+
+def _staff_invite_mfa_binding(invite_id: int) -> str:
+    return active_hmac_hex(f"staff-invite-mfa:{int(invite_id)}", length=64)
+
+
+def _consume_invite_probe_limit(token: str) -> None:
+    try:
+        consume_durable_rate_limit(
+            "staff_invite_probe",
+            f"{request.remote_addr or 'unknown'}:{str(token or '')}",
+            limit=10,
+            window_seconds=15 * 60,
+        )
+    except DurableRateLimitExceeded as exc:
+        audit_event(
+            "staff_invite_accept",
+            "blocked",
+            metadata={"reason": "durable_rate_limit"},
+        )
+        raise AuthError(
+            "Too many attempts. Please try again later.",
+            429,
+            retry_after=exc.retry_after,
+        ) from exc
+
+
+def _staff_invite_mfa_setup_is_active(user: User, invite_id: int) -> bool:
+    started_at = user.mfa_pending_started_at
+    if started_at is None:
+        return False
+    age = (_utcnow() - _as_utc(started_at)).total_seconds()
+    expected_binding = _staff_invite_mfa_binding(invite_id)
+    return (
+        0 <= age <= int(current_app.config["PENDING_MFA_MAX_AGE_SECONDS"])
+        and hmac.compare_digest(
+            str(user.mfa_pending_session_hash or ""),
+            expected_binding,
+        )
+    )
 
 
 def public_admin_user(user: User) -> dict[str, Any]:

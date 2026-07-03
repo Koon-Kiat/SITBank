@@ -102,7 +102,7 @@ class ForgotPasswordSchema(TurnstileTokenMixin, Schema):
     email = fields.Email(required=True, validate=validate.Length(max=255))
 
 
-class ManualRecoverySchema(Schema):
+class ManualRecoverySchema(TurnstileTokenMixin, Schema):
     identifier = fields.Str(required=True, validate=validate.Length(min=1, max=255))
 
 
@@ -126,10 +126,14 @@ class AuthenticationCodeSchema(Schema):
     totp_code = fields.Str(required=True, load_only=True, validate=validate.Length(min=1, max=80))
 
 
+class RecoveryCodeSchema(Schema):
+    recovery_code = fields.Str(required=True, load_only=True, validate=validate.Length(min=1, max=80))
+
+
 class PasswordResetMfaMethodSchema(Schema):
     method = fields.Str(
         required=True,
-        validate=validate.OneOf(["totp", "authenticator"]),
+        validate=validate.OneOf(["totp", "authenticator", "recovery", "recovery_code"]),
     )
 
 

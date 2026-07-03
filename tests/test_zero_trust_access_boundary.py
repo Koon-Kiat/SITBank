@@ -35,7 +35,7 @@ def _nginx_server_block(config: str, server_name: str) -> str:
         blocks.append(config[start:] if end == -1 else config[start:end])
     assert blocks, f"Missing Nginx server block for {server_name}"
     for block in blocks:
-        if "listen 443 ssl http2;" in block:
+        if "listen __SITBANK_PUBLIC_BIND_ADDRESS__:443 ssl http2;" in block:
             return block
     return blocks[0]
 
@@ -104,8 +104,11 @@ def test_staging_nginx_blocks_direct_origin_bypass_but_keeps_local_health():
     ).read_text(encoding="utf-8")
     bootstrap = Path("ops/deploy/bootstrap-container-ec2").read_text(encoding="utf-8")
 
-    assert "listen 80 default_server;" in default_nginx
-    assert "listen 443 ssl http2 default_server;" in default_nginx
+    assert "listen __SITBANK_PUBLIC_BIND_ADDRESS__:80 default_server;" in default_nginx
+    assert (
+        "listen __SITBANK_PUBLIC_BIND_ADDRESS__:443 ssl http2 default_server;"
+        in default_nginx
+    )
     assert "ssl_reject_handshake on;" in default_nginx
     assert "return 444;" in default_nginx
 

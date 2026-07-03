@@ -92,6 +92,53 @@ def test_production_enabled_route_requires_site_key(app):
             turnstile.require_turnstile("customer_login", "browser-token")
 
 
+def test_production_route_flag_disabled_fails_closed(app):
+    app.config.update(
+        APP_ENV="production",
+        DEPLOYMENT_TARGET="production",
+        TURNSTILE_ENABLED=True,
+        TURNSTILE_SECRET_KEY="fake-turnstile-secret",
+        TURNSTILE_SITE_KEY="fake-site-key",
+        TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED=False,
+        TURNSTILE_FAIL_CLOSED_IN_PRODUCTION=True,
+        TURNSTILE_VERIFY_URL=turnstile.OFFICIAL_TURNSTILE_VERIFY_URL,
+    )
+
+    with app.test_request_context("/auth/account-recovery", method="POST"):
+        with pytest.raises(turnstile.TurnstileError):
+            turnstile.require_turnstile(
+                "customer_manual_recovery",
+                "browser-token",
+            )
+
+
+def test_manual_recovery_uses_dedicated_turnstile_action(app, client, monkeypatch):
+    app.config.update(
+        TURNSTILE_ENABLED=True,
+        TURNSTILE_SECRET_KEY="fake-turnstile-secret",
+        TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED=True,
+    )
+    calls = []
+    monkeypatch.setattr(
+        turnstile,
+        "verify_turnstile_token",
+        lambda token, *, expected_action=None: calls.append((token, expected_action)),
+    )
+
+    response = client.post(
+        "/auth/account-recovery",
+        json={
+            "identifier": "missing@example.com",
+            "cf-turnstile-response": "manual-recovery-token",
+        },
+    )
+
+    assert response.status_code == 200
+    assert calls == [
+        ("manual-recovery-token", "customer_manual_recovery")
+    ]
+
+
 def test_unknown_turnstile_action_fails_closed_even_when_disabled(app):
     app.config.update(TURNSTILE_ENABLED=False)
 

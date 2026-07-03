@@ -11,7 +11,7 @@ network_name="sitbank-smoke-$RANDOM-$$"
 readonly postgres_container="smoke-postgres"
 readonly app_container="sitbank-smoke"
 readonly admin_container="sitbank-admin-smoke"
-readonly root_admin_emails="chief1@sit.singaporetech.edu.sg,chief2@sit.singaporetech.edu.sg,chief3@sit.singaporetech.edu.sg,chief4@sit.singaporetech.edu.sg,chief5@sit.singaporetech.edu.sg,chief6@sit.singaporetech.edu.sg,chief7@sit.singaporetech.edu.sg"
+readonly root_admin_emails="chief1@sit.singaporetech.edu.sg,chief2@sit.singaporetech.edu.sg,chief3@sit.singaporetech.edu.sg,chief4@sit.singaporetech.edu.sg,chief5@sit.singaporetech.edu.sg"
 
 random_test_secret() {
     od -An -N24 -tx1 /dev/urandom | tr -d '[:space:]'
@@ -370,6 +370,16 @@ docker_args=(
     --env SMTP_USERNAME_FILE=/run/secrets/smtp_username
     --env SMTP_PASSWORD_FILE=/run/secrets/smtp_password
     --env TURNSTILE_SECRET_KEY_FILE=/run/secrets/turnstile_secret_key
+    --env TURNSTILE_ENABLED=true
+    --env TURNSTILE_SITE_KEY=1x00000000000000000000AA
+    --env TURNSTILE_CUSTOMER_LOGIN_ENABLED=true
+    --env TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED=true
+    --env TURNSTILE_CUSTOMER_REGISTER_ENABLED=true
+    --env TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED=true
+    --env TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED=true
+    --env TURNSTILE_ADMIN_LOGIN_ENABLED=true
+    --env TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED=true
+    --env TURNSTILE_FAIL_CLOSED_IN_PRODUCTION=true
     --env PASSWORD_PBKDF2_ITERATIONS=600000
     --env PASSWORD_RESET_ENABLED=true
     --env PASSWORD_RESET_TOKEN_TTL_SECONDS=1800

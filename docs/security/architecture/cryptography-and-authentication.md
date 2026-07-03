@@ -181,7 +181,7 @@ host files from `/etc/sitbank/secrets` or `/etc/sitbank-staging/secrets` into
 
 | Secret or key | Purpose | Configuration evidence | Validation or rotation evidence |
 | --- | --- | --- | --- |
-| `SECRET_KEY` / `ADMIN_SECRET_KEY` | Flask application secret and registration OTP HMAC key | `config.py`, `compose.prod.yml`, `compose.staging.yml` | Minimum 32 characters in production; direct value and `_FILE` are mutually exclusive |
+| `SECRET_KEY` / `ADMIN_SECRET_KEY` | Flask application secret | `config.py`, `compose.prod.yml`, `compose.staging.yml` | Minimum 32 characters in production; direct value and `_FILE` are mutually exclusive |
 | `WTF_CSRF_SECRET_KEY` / admin variant | Flask-WTF CSRF signing | `config.py`, `app/extensions.py`, `app/__init__.py` | Minimum 32 characters; `production-check` fails if too short or CSRF is disabled |
 | `SESSION_HMAC_KEYS_JSON` / admin variant | Keyring for database session payload signatures and public references | `config.py`, `app/security/session_hmac.py` | 32-byte base64 values, active key id must exist; old keys can remain during rotation |
 | `SESSION_LOOKUP_HMAC_KEY` / admin variant | HMAC of browser session IDs before database lookup | `config.py`, `app/security/sessions.py` | Must decode to exactly 32 bytes; customer and admin keys are separate |
@@ -222,7 +222,8 @@ listed below.
 | Session payload integrity | HMAC-SHA256 over canonical envelope including key id, payload, and binding context | `app/security/session_hmac.py`, `app/security/sessions.py` | Rejects tampered or copied database session payloads |
 | Session lookup hashing | HMAC-SHA256 over opaque browser session id | `app/security/sessions.py` | Stores only lookup hashes, not raw browser session IDs |
 | Password hashing | HMAC-SHA256 pepper followed by PBKDF2-HMAC-SHA256 with 600,000+ iterations, 32-byte salt, 32-byte derived key | `app/security/passwords.py` | Password storage with per-password salt and server-side pepper |
-| Recovery codes | HMAC-SHA256 using the active session HMAC keyring | `app/auth/recovery_codes.py` | Stores one-time recovery-code verifiers without storing raw codes |
+| Registration OTP | HMAC-SHA256 using the active session HMAC keyring | `app/auth/registration_otp.py` | Keeps OTP verification independent from the Flask cookie-signing key |
+| Recovery codes | Versioned HMAC-SHA256 using the active session HMAC keyring, bound to user id and purpose | `app/auth/recovery_codes.py` | Prevents a stored verifier from being replayed for another user or purpose; legacy version 1 rows remain consumable only in their original user/purpose scope |
 | Password reset verifier | HMAC-SHA256 using the active session HMAC keyring | `app/auth/password_reset.py` | Stores reset verifier HMACs; raw verifier appears only in the emailed URL |
 | Staff invite and workplace verification | HMAC-SHA256 using the active session HMAC keyring | `app/admin/services.py` | Stores invite tokens and workplace verification codes without raw values |
 | Audit log chain | HMAC-SHA256 over canonical audit event JSON | `app/security/audit.py` | Makes audit event ordering and contents tamper-evident |
@@ -242,7 +243,12 @@ Customer registration requires a verified personal/customer email OTP before
 `register_user` creates a customer account. `app/security/identity_policy.py`
 reserves configured admin workplace domains and root-admin allowlisted emails
 for staff/admin/root-admin identities, so they cannot be used for customer
-registration or customer profile email changes. Evidence:
+registration or customer profile email changes. Registration canonicalizes
+configured plus aliases and dot-insensitive domains, maps configured equivalent
+domains, and rejects configured temporary-email domains before OTP issuance.
+The canonical value has a customer-only unique index. Public duplicate and
+ineligible outcomes are deliberately identical and minimal; redacted audit
+reason codes retain operational detail. Evidence:
 `app/auth/registration_otp.py`, `app/auth/services.py`,
 `app/auth/routes.py`, and `app/web/routes.py`.
 
@@ -253,7 +259,11 @@ request, final registration submit, and password-reset request. Turnstile is
 defense in depth only; CSRF, rate limits, password screening, MFA, sessions,
 audit logging, and authorization remain enforced.
 
-Customer login uses username or email plus password. `authenticate_primary()`
+Customer login uses username or email plus password. Three failed customer
+password attempts, or two failed privileged password attempts, lock the user
+record and revoke active sessions across source IPs. Counters clear only after
+the full password-plus-MFA flow succeeds; IP/principal backoff remains an
+additional control. `authenticate_primary()`
 uses a dummy password hash for unknown users to reduce user-enumeration timing
 differences, returns the generic message `Invalid username or password`, and
 rejects non-customer account types on the customer app. If TOTP is enabled,
@@ -280,17 +290,26 @@ The repository implements authenticator-app TOTP. TOTP secrets are generated
 with `pyotp.random_base32(length=32)` and stored through AES-GCM envelope
 encryption. Verification records a replay digest in `totp_replay_records`, so
 the same accepted TOTP step and code cannot be replayed for the same scope.
+Initial and replacement setup secrets are displayed only on their creation
+response. Pending setup is bound to the initiating session and expires under
+`PENDING_MFA_MAX_AGE_SECONDS`; expired material is cleared rather than
+redisplayed. Staff invite MFA setup uses the same bounded lifecycle.
 
 Recovery codes are generated as random 16-byte values encoded as grouped hex,
-stored as HMACs, consumed once, and used only as TOTP recovery factors.
+stored as versioned, user-and-purpose-bound HMACs, consumed once, and used only
+as explicit recovery-code factors. The reset API does not accept a recovery
+code through the TOTP field. Legacy password-reset WebAuthn endpoints remain
+registered as compatibility surfaces but return `410 Gone`; they do not
+advertise or initiate passkey reset.
 
 ### Password Reset
 
 Customer password reset uses a one-time `selector.verifier` URL. The selector
 is stored for lookup; the verifier is stored only as an HMAC. Exchanging the
-URL token creates a short-lived server-side reset transaction and clears the
+URL token requires a CSRF-protected POST from a scanner-safe GET landing page.
+The POST creates a short-lived server-side reset transaction and clears the
 raw URL token from continued browser flow. TOTP users must verify TOTP or a
-TOTP recovery code before completing reset; no-MFA users can reset but remain
+separately submitted recovery code before completing reset; no-MFA users can reset but remain
 in MFA-onboarding state on next login. Admin-like accounts are blocked from
 the customer reset flow.
 
@@ -300,6 +319,7 @@ Evidence: `app/auth/password_reset.py`, `app/auth/routes.py`,
 
 Tests: `tests/test_password_reset.py::test_forgot_password_response_is_generic_and_token_is_hashed`,
 `tests/test_password_reset.py::test_reset_token_exchanges_once_into_tokenless_transaction`,
+`tests/test_password_reset.py::test_reset_link_get_does_not_consume_token`,
 `tests/test_password_reset.py::test_totp_user_must_verify_totp_before_password_reset`,
 `tests/test_password_reset.py::test_recovery_codes_are_hashed_single_use_reset_factors`,
 and `tests/test_password_reset.py::test_admin_like_customer_domain_reset_fails_closed`.

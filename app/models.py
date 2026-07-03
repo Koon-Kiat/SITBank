@@ -17,6 +17,7 @@ class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(64), nullable=False)
     email = db.Column(db.String(255), nullable=False)
+    registration_email_canonical = db.Column(db.String(255), nullable=True)
     password_hash = db.Column(db.String(255), nullable=False)
     account_type = db.Column(db.String(32), nullable=False, default="customer", index=True)
     account_status = db.Column(db.String(32), nullable=False, default="active", index=True)
@@ -33,6 +34,8 @@ class User(db.Model):
     mfa_secret_ciphertext = db.Column(db.LargeBinary, nullable=True)
     mfa_secret_nonce = db.Column(db.LargeBinary(12), nullable=True)
     mfa_enabled = db.Column(db.Boolean, nullable=False, default=False)
+    mfa_pending_started_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    mfa_pending_session_hash = db.Column(db.String(64), nullable=True)
     mfa_step_up_preference = db.Column(db.String(32), nullable=False, default="totp")
 
     balance = db.Column(
@@ -69,6 +72,13 @@ class User(db.Model):
     __table_args__ = (
         Index("ix_users_username_lower", func.lower(username), unique=True),
         Index("ix_users_email_lower", func.lower(email), unique=True),
+        Index(
+            "ix_users_registration_email_canonical",
+            "registration_email_canonical",
+            unique=True,
+            postgresql_where=registration_email_canonical.isnot(None),
+            sqlite_where=registration_email_canonical.isnot(None),
+        ),
         Index(
             "ix_users_phone_number",
             "phone_number",
@@ -159,6 +169,7 @@ class RecoveryCode(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
     code_hmac = db.Column(db.String(64), nullable=False, unique=True, index=True)
+    hmac_version = db.Column(db.Integer, nullable=False, default=2, server_default="2")
     purpose = db.Column(db.String(40), nullable=False, default="totp_recovery")
     created_at = db.Column(
         db.DateTime(timezone=True),

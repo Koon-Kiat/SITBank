@@ -447,7 +447,7 @@ def test_passkey_only_user_cannot_fall_back_to_email_only_reset(app, client):
         ).scalars().first()
         assert wrong_factor_event is not None
         assert wrong_factor_event.event_metadata["reason"] == "wrong_factor"
-        assert wrong_factor_event.event_metadata["submitted_factor"] == "authentication_code"
+        assert wrong_factor_event.event_metadata["submitted_factor"] == "totp"
 
 
 def test_password_reset_webauthn_options_fail_closed(app, client):
@@ -487,7 +487,14 @@ def test_totp_recovery_code_still_works_when_passkey_is_registered(app, client):
     _request_reset(client, "resetkey@example.com")
     token = _reset_token(app)
     exchanged = _exchange(client, token)
-    recovery_attempt = client.post("/auth/password-reset/mfa/totp", json={"totp_code": codes[0]})
+    selected = client.post(
+        "/auth/password-reset/mfa/method",
+        json={"method": "recovery_code"},
+    )
+    recovery_attempt = client.post(
+        "/auth/password-reset/mfa/recovery-code",
+        json={"recovery_code": codes[0]},
+    )
     transaction = client.get("/auth/password-reset/transaction")
     completed = client.post(
         "/auth/password-reset/complete",
@@ -496,6 +503,7 @@ def test_totp_recovery_code_still_works_when_passkey_is_registered(app, client):
 
     assert exchanged.status_code == 200
     assert exchanged.get_json()["mfa_required"] == "totp"
+    assert selected.status_code == 200
     assert recovery_attempt.status_code == 200
     assert recovery_attempt.get_json()["mfa_verified"] is True
     assert transaction.get_json()["mfa_verified"] is True
@@ -530,7 +538,8 @@ def test_password_reset_totp_only_ui_shows_authenticator_recovery_code_method(ap
     assert exchanged.status_code == 200
     assert exchanged.get_json()["mfa_required"] == "totp"
     assert exchanged.get_json()["available_mfa_methods"] == ["totp"]
-    assert "Authenticator code or recovery code" in markup
+    assert "Authenticator code" in markup
+    assert "Use a recovery code" not in markup
     assert "Verify with passkey" not in markup
     assert "Use passkey or security key" not in markup
 
@@ -552,7 +561,7 @@ def test_password_reset_passkey_only_ui_requires_manual_recovery(app, client):
     assert "Account recovery required" in markup
     assert "Request account recovery" in markup
     assert "Verify with passkey" not in markup
-    assert "Authenticator code or recovery code" not in markup
+    assert "Use a recovery code" not in markup
 
 
 @pytest.mark.parametrize(
@@ -585,7 +594,7 @@ def test_password_reset_defaults_to_profile_preferred_method_for_dual_mfa_user(
     assert payload["available_mfa_methods"] == ["totp"]
     assert payload["preferred_mfa_method"] in {expected_method, None}
     assert payload["default_mfa_method"] == expected_method
-    assert "Authenticator code or recovery code" in markup
+    assert "Authenticator code" in markup
     assert "Use passkey or security key" not in markup
 
 
@@ -626,10 +635,18 @@ def test_recovery_code_satisfies_totp_reset_when_legacy_passkey_is_registered(ap
     _request_reset(client, "resetwrongfactor@example.com")
     token = _reset_token(app)
     exchanged = _exchange(client, token)
-    recovery_attempt = client.post("/auth/password-reset/mfa/totp", json={"totp_code": codes[0]})
+    selected = client.post(
+        "/auth/password-reset/mfa/method",
+        json={"method": "recovery_code"},
+    )
+    recovery_attempt = client.post(
+        "/auth/password-reset/mfa/recovery-code",
+        json={"recovery_code": codes[0]},
+    )
     transaction = client.get("/auth/password-reset/transaction")
 
     assert exchanged.get_json()["mfa_required"] == "totp"
+    assert selected.status_code == 200
     assert recovery_attempt.status_code == 200
     assert recovery_attempt.get_json()["mfa_verified"] is True
     assert transaction.get_json()["mfa_verified"] is True
@@ -860,8 +877,18 @@ def test_recovery_codes_are_hashed_single_use_reset_factors(app, client):
     _request_reset(client, "reset07@example.com")
     token = _reset_token(app)
     assert _exchange(client, token).status_code == 200
-    verified = client.post("/auth/password-reset/mfa/totp", json={"totp_code": codes[0]})
-    reused = client.post("/auth/password-reset/mfa/totp", json={"totp_code": codes[0]})
+    assert client.post(
+        "/auth/password-reset/mfa/method",
+        json={"method": "recovery_code"},
+    ).status_code == 200
+    verified = client.post(
+        "/auth/password-reset/mfa/recovery-code",
+        json={"recovery_code": codes[0]},
+    )
+    reused = client.post(
+        "/auth/password-reset/mfa/recovery-code",
+        json={"recovery_code": codes[0]},
+    )
 
     assert verified.status_code == 200
     assert verified.get_json()["recovery_code_verified"] is True
@@ -884,7 +911,55 @@ def test_recovery_codes_are_hashed_single_use_reset_factors(app, client):
         assert codes[0] not in audit_text
 
 
-def test_separate_password_reset_recovery_code_endpoint_is_removed(app, client):
+def test_recovery_code_hmac_is_bound_to_user_and_purpose(app):
+    from app.auth.recovery_codes import _recovery_code_hmac
+
+    with app.app_context():
+        first = _create_user("boundcode1", "boundcode1@example.com")
+        second = _create_user(
+            "boundcode2",
+            "boundcode2@example.com",
+            phone_number="91234568",
+        )
+        code = "fake-recovery-code"
+
+        first_digest = _recovery_code_hmac(first.id, "totp_recovery", code)
+        second_digest = _recovery_code_hmac(second.id, "totp_recovery", code)
+        other_purpose_digest = _recovery_code_hmac(first.id, "password_reset", code)
+
+    assert len({first_digest, second_digest, other_purpose_digest}) == 3
+
+
+def test_web_reset_landing_get_is_scanner_safe_and_post_requires_csrf(app, client):
+    with app.app_context():
+        _create_user("scannerreset", "scannerreset@example.com")
+    _request_reset(client, "scannerreset@example.com")
+    token = _reset_token(app)
+
+    first_get = client.get(f"/reset-password?token={token}")
+    second_get = client.get(f"/reset-password?token={token}")
+    with app.app_context():
+        token_record = db.session.execute(db.select(PasswordResetToken)).scalar_one()
+        assert token_record.exchanged_at is None
+        assert token_record.used_at is None
+
+    app.config["WTF_CSRF_ENABLED"] = True
+    missing_csrf = client.post("/reset-password", data={"token": token})
+    csrf_token = client.get("/auth/csrf-token").get_json()["csrf_token"]
+    exchanged = client.post(
+        "/reset-password",
+        data={"token": token, "csrf_token": csrf_token},
+    )
+
+    assert first_get.status_code == 200
+    assert second_get.status_code == 200
+    assert token in first_get.get_data(as_text=True)
+    assert missing_csrf.status_code == 400
+    assert exchanged.status_code == 302
+    assert exchanged.headers["Location"].endswith("/reset-password/continue")
+
+
+def test_password_reset_recovery_code_requires_explicit_method_selection(app, client):
     with app.app_context():
         user, _secret = _create_totp_user("reset08", "reset08@example.com")
         with app.test_request_context("/"):
@@ -894,10 +969,23 @@ def test_separate_password_reset_recovery_code_endpoint_is_removed(app, client):
     token = _reset_token(app)
     assert _exchange(client, token).status_code == 200
 
-    response = client.post("/auth/password-reset/mfa/recovery-code", json={"recovery_code": codes[0]})
+    rejected = client.post(
+        "/auth/password-reset/mfa/recovery-code",
+        json={"recovery_code": codes[0]},
+    )
+    selected = client.post(
+        "/auth/password-reset/mfa/method",
+        json={"method": "recovery_code"},
+    )
+    response = client.post(
+        "/auth/password-reset/mfa/recovery-code",
+        json={"recovery_code": codes[0]},
+    )
 
-    assert response.status_code == 404
+    assert rejected.status_code == 400
+    assert selected.status_code == 200
+    assert response.status_code == 200
     with app.app_context():
         assert db.session.execute(
             db.select(func.count(RecoveryCode.id)).where(RecoveryCode.used_at.is_not(None))
-        ).scalar_one() == 0
+        ).scalar_one() == 1

@@ -15,7 +15,10 @@ def test_production_http_ip_redirect_and_https_origin_pull_are_fail_closed():
     assert "server_name sitbank.pp.ua www.sitbank.pp.ua 18.188.152.24;" in production
     assert "return 301 https://sitbank.pp.ua$request_uri;" in production
     assert "18.188.152.24" not in default
-    assert "listen 443 ssl http2 default_server;" in default
+    assert (
+        "listen __SITBANK_PUBLIC_BIND_ADDRESS__:443 ssl http2 default_server;"
+        in default
+    )
     assert "ssl_reject_handshake on;" in default
     assert production.count(
         "ssl_client_certificate "

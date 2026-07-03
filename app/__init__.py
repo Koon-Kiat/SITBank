@@ -130,6 +130,7 @@ def register_forced_password_change_guard(app: Flask) -> None:
             "auth.password_reset_transaction",
             "auth.password_reset_mfa_method",
             "auth.password_reset_totp",
+            "auth.password_reset_recovery_code",
             "auth.password_reset_complete",
             "auth.manual_recovery_request",
             "web.logout",

@@ -26,7 +26,14 @@ from app.security.password_history import (
     replace_user_password,
 )
 from app.security.passwords import PasswordPolicyError, validate_password_policy
-from app.security.rate_limits import AuthBackoffRequired, apply_exponential_backoff, clear_failures, record_failure
+from app.security.rate_limits import (
+    AuthBackoffRequired,
+    DurableRateLimitExceeded,
+    apply_exponential_backoff,
+    clear_failures,
+    consume_durable_rate_limit,
+    record_failure,
+)
 from app.security.session_hmac import active_hmac_hex
 from app.security.sessions import revoke_all_sessions, rotate_session_id
 
@@ -34,6 +41,7 @@ from .recovery_codes import (
     consume_recovery_code,
     generate_recovery_codes_for_user,
     send_recovery_code_used_notification,
+    unused_recovery_code_count,
 )
 from .services import AuthError, _verify_totp_for_user
 
@@ -46,13 +54,18 @@ RESET_TRANSACTION_SESSION_KEY = "password_reset_transaction_id"
 GENERIC_AUTHENTICATION_CODE_ERROR = "Invalid authentication code."
 GENERIC_VERIFICATION_METHOD_ERROR = "Invalid verification method."
 RESET_MFA_TOTP = "totp"
+RESET_MFA_RECOVERY_CODE = "recovery_code"
 RESET_MFA_MANUAL_RECOVERY = "manual_recovery"
 RESET_MFA_NONE = "none"
-RESET_MFA_METHODS = frozenset({RESET_MFA_TOTP})
-RESET_MFA_PUBLIC_METHODS = frozenset({RESET_MFA_TOTP, RESET_MFA_MANUAL_RECOVERY})
+RESET_MFA_METHODS = frozenset({RESET_MFA_TOTP, RESET_MFA_RECOVERY_CODE})
+RESET_MFA_PUBLIC_METHODS = frozenset(
+    {RESET_MFA_TOTP, RESET_MFA_RECOVERY_CODE, RESET_MFA_MANUAL_RECOVERY}
+)
 RESET_MFA_METHOD_ALIASES = {
     "authenticator": RESET_MFA_TOTP,
     RESET_MFA_TOTP: RESET_MFA_TOTP,
+    "recovery": RESET_MFA_RECOVERY_CODE,
+    RESET_MFA_RECOVERY_CODE: RESET_MFA_RECOVERY_CODE,
 }
 MANUAL_RECOVERY_STATUS_PENDING = "pending"
 MANUAL_RECOVERY_STATUS_UNDER_REVIEW = "under_review"
@@ -108,6 +121,12 @@ MANUAL_RECOVERY_ALLOWED_TRANSITIONS = {
 
 def request_password_reset(identifier: str) -> dict[str, str]:
     normalized = _normalize(identifier)
+    _consume_public_recovery_limit(
+        "password_reset_request",
+        normalized,
+        limit=5,
+        window_seconds=15 * 60,
+    )
     user = _find_customer_user(normalized)
     audit_event(
         "password_reset_requested",
@@ -210,7 +229,17 @@ def current_reset_transaction() -> dict[str, Any]:
 
 
 def verify_reset_totp(code: str) -> dict[str, Any]:
-    return _verify_reset_authentication_code(code, submitted_factor="authentication_code")
+    return _verify_reset_authentication_code(
+        code,
+        required_method=RESET_MFA_TOTP,
+    )
+
+
+def verify_reset_recovery_code(code: str) -> dict[str, Any]:
+    return _verify_reset_authentication_code(
+        code,
+        required_method=RESET_MFA_RECOVERY_CODE,
+    )
 
 
 def select_reset_mfa_method(method: str) -> dict[str, Any]:
@@ -249,18 +278,26 @@ def select_reset_mfa_method(method: str) -> dict[str, Any]:
     return _public_transaction(transaction)
 
 
-def _verify_reset_authentication_code(code: str, *, submitted_factor: str) -> dict[str, Any]:
+def _verify_reset_authentication_code(
+    code: str,
+    *,
+    required_method: str,
+) -> dict[str, Any]:
     transaction = _load_current_transaction()
     user = _transaction_user(transaction)
     _require_selected_reset_mfa_method(
         transaction,
         user,
-        RESET_MFA_TOTP,
-        submitted_factor=submitted_factor,
+        required_method,
+        submitted_factor=required_method,
         error_message=GENERIC_AUTHENTICATION_CODE_ERROR,
     )
 
-    if _is_totp_code(code):
+    if required_method == RESET_MFA_TOTP:
+        if not _is_totp_code(code):
+            _record_transaction_failure(transaction, "totp_failed")
+            audit_event("password_reset_mfa_failed", "failure", user=user, metadata={"factor": "totp"})
+            raise AuthError(GENERIC_AUTHENTICATION_CODE_ERROR, 401)
         if not _verify_totp_for_user(user, code, "password_reset_mfa"):
             _record_transaction_failure(transaction, "totp_failed")
             audit_event("password_reset_mfa_failed", "failure", user=user, metadata={"factor": "totp"})
@@ -351,6 +388,12 @@ def complete_password_reset(new_password: str, confirm_new_password: str) -> dic
 
 
 def request_manual_recovery(identifier: str) -> dict[str, str]:
+    _consume_public_recovery_limit(
+        "manual_recovery_request",
+        _normalize(identifier),
+        limit=3,
+        window_seconds=60 * 60,
+    )
     now = _utcnow()
     user = _find_customer_user(identifier)
     identifier_ref = principal_reference(identifier) or active_hmac_hex(
@@ -494,6 +537,8 @@ def complete_manual_recovery_request(request_id: int, *, reason: str | None = No
     user.mfa_enabled = False
     user.mfa_secret_nonce = None
     user.mfa_secret_ciphertext = None
+    user.mfa_pending_started_at = None
+    user.mfa_pending_session_hash = None
     revoked_sessions = revoke_all_sessions(user.id, ended_reason="manual_recovery")
     old_status = request_record.status
     _set_manual_recovery_status(request_record, MANUAL_RECOVERY_STATUS_COMPLETED, now)
@@ -893,6 +938,8 @@ def _available_reset_mfa_methods_for_user(user: User) -> list[str]:
     methods: list[str] = []
     if user.mfa_enabled:
         methods.append(RESET_MFA_TOTP)
+        if unused_recovery_code_count(user) > 0:
+            methods.append(RESET_MFA_RECOVERY_CODE)
     elif _legacy_passkey_credential_count(user) > 0:
         methods.append(RESET_MFA_MANUAL_RECOVERY)
     return methods
@@ -1044,6 +1091,29 @@ def _enforce_reset_backoff(scope: str, principal: str) -> None:
     except AuthBackoffRequired as exc:
         audit_event("auth_backoff", "blocked", metadata={"scope": scope, "retry_after": exc.retry_after})
         raise AuthError("Too many attempts. Please try again later.", 429, retry_after=exc.retry_after) from exc
+
+
+def _consume_public_recovery_limit(
+    scope: str,
+    principal: str,
+    *,
+    limit: int,
+    window_seconds: int,
+) -> None:
+    try:
+        consume_durable_rate_limit(
+            scope,
+            f"{_client_ip()}:{principal}",
+            limit=limit,
+            window_seconds=window_seconds,
+        )
+    except DurableRateLimitExceeded as exc:
+        audit_event(scope, "blocked", metadata={"reason": "durable_rate_limit"})
+        raise AuthError(
+            "Too many attempts. Please try again later.",
+            429,
+            retry_after=exc.retry_after,
+        ) from exc
 
 
 def _is_totp_code(code: str) -> bool:

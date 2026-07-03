@@ -95,6 +95,8 @@ class FakeRunner:
             return verifier.CommandResult(0, self.serve_status)
         if command == ("ss", "-H", "-ltn"):
             return verifier.CommandResult(0, self.listener_output)
+        if command == ("ss", "-H", "-ltnp"):
+            return verifier.CommandResult(0, self.listener_output)
         if command == ("nginx", "-T"):
             return verifier.CommandResult(0, self.nginx_output)
         if command[0] == "curl":
@@ -114,9 +116,9 @@ def test_script_exists_has_safe_contract_and_is_installed_by_production_bootstra
     assert '("tailscale", "serve", "status", "--json")' in script
     assert '("tailscale", "funnel", "status", "--json")' in script
     assert '("ss", "-H", "-ltn")' in script
+    assert '("ss", "-H", "-ltnp")' in script
     assert "127.0.0.1" in script
-    assert "0.0.0.0" not in script
-    assert "[::]" not in script
+    assert "wildcard HTTPS listener" in script
     assert "TAILSCALE_AUTH_KEY" not in script
     assert "TS_AUTHKEY" not in script
     assert "TS_OAUTH_SECRET" not in script
@@ -226,12 +228,13 @@ def test_serve_mode_verifies_all_private_host_controls():
         runner,
     )
 
-    assert len(messages) == 8
+    assert len(messages) == 9
     assert ("tailscale", "status", "--json") in runner.calls
     assert ("tailscale", "debug", "prefs") in runner.calls
     assert ("tailscale", "funnel", "status", "--json") in runner.calls
     assert ("tailscale", "serve", "status", "--json") in runner.calls
     assert ("ss", "-H", "-ltn") in runner.calls
+    assert ("ss", "-H", "-ltnp") in runner.calls
     assert ("nginx", "-T") in runner.calls
     assert any(
         command[-1] == f"https://{PRIVATE_HOST}/login"
@@ -294,6 +297,31 @@ def test_listener_check_fails_closed_on_non_loopback_binding(
         match="non-approved listener",
     ):
         verifier.verify_admin_listener(runner, "127.0.0.1", 5002)
+
+
+@pytest.mark.parametrize(
+    "wildcard_listener",
+    ("0.0.0.0:443", "[::]:443", "*:443"),
+)
+def test_serve_mode_rejects_wildcard_https_listener(wildcard_listener: str):
+    runner = FakeRunner(
+        listener_output=(
+            "LISTEN 0 4096 127.0.0.1:5002 0.0.0.0:*\n"
+            f"LISTEN 0 511 {wildcard_listener} 0.0.0.0:*\n"
+        )
+    )
+
+    with pytest.raises(
+        verifier.VerificationError,
+        match="wildcard HTTPS listener",
+    ):
+        verifier.verify_host(
+            "serve",
+            "127.0.0.1",
+            5002,
+            PRIVATE_HOST,
+            runner,
+        )
 
 
 def test_funnel_check_fails_closed_when_any_endpoint_is_enabled():

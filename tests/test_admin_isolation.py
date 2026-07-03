@@ -168,3 +168,80 @@ def test_admin_login_failures_are_audited_and_redacted(monkeypatch):
 
         db.session.remove()
         db.drop_all()
+
+
+def test_privileged_password_failures_lock_more_strictly(monkeypatch):
+    from app import create_app
+
+    admin_app = create_app(TestConfig, app_mode="admin")
+    with admin_app.app_context():
+        db.create_all()
+        user = User(
+            username="security-admin",
+            email="security.admin@sit.singaporetech.edu.sg",
+            password_hash=hash_password("correct horse battery staple"),
+            account_type="admin",
+            account_status="active",
+            full_name="Security Admin",
+            phone_number="91234567",
+            account_number=None,
+            mfa_enabled=True,
+        )
+        db.session.add(user)
+        db.session.commit()
+        client = admin_app.test_client()
+
+        responses = [
+            client.post(
+                "/login",
+                json={
+                    "workplace_email": user.email,
+                    "password": f"wrong-password-{index}",
+                },
+            )
+            for index in range(2)
+        ]
+        db.session.refresh(user)
+
+        assert [response.status_code for response in responses] == [401, 401]
+        assert all(
+            response.get_json()
+            == {"error": "Invalid workplace email, password, or authentication code"}
+            for response in responses
+        )
+        assert user.security_locked_at is not None
+        assert user.security_lock_reason == "password_failed_attempts"
+
+        db.session.remove()
+        db.drop_all()
+
+
+def test_admin_logout_requires_valid_csrf_token(monkeypatch):
+    from app import create_app
+
+    admin_app = create_app(TestConfig, app_mode="admin")
+    admin_app.config["WTF_CSRF_ENABLED"] = True
+    with admin_app.app_context():
+        db.create_all()
+        client = admin_app.test_client()
+        token = client.get("/csrf-token").get_json()["csrf_token"]
+
+        missing = client.post("/logout", json={})
+        invalid = client.post(
+            "/logout",
+            json={},
+            headers={"X-CSRFToken": "invalid"},
+        )
+        valid = client.post(
+            "/logout",
+            json={},
+            headers={"X-CSRFToken": token},
+        )
+
+        assert missing.status_code == 400
+        assert invalid.status_code == 400
+        assert valid.status_code == 200
+        assert valid.get_json() == {"message": "Logged out"}
+
+        db.session.remove()
+        db.drop_all()

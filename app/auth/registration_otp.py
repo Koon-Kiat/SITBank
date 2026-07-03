@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import hashlib
 import hmac
 import secrets
 import time
 from datetime import datetime, timedelta, timezone
 
-from flask import current_app, session
+from flask import current_app, request, session
 from sqlalchemy import func
 
 from app.extensions import db
@@ -15,10 +14,15 @@ from app.security.audit import audit_event, audit_reference
 from app.security.email import send_security_email
 from app.security.identity_policy import (
     IdentityPolicyError,
+    canonicalize_customer_email,
     customer_email_policy_violation,
     require_customer_email,
 )
 from app.security.session_hmac import active_hmac_hex
+from app.security.rate_limits import (
+    DurableRateLimitExceeded,
+    consume_durable_rate_limit,
+)
 
 
 GENERIC_OTP_SENT_MESSAGE = "Check your inbox. If this address is valid, a verification code has been sent."
@@ -51,6 +55,25 @@ def is_approved_registration_email(email: str) -> bool:
 
 
 def request_registration_otp(email: str) -> dict[str, str]:
+    normalized_input = normalize_registration_email(email)
+    try:
+        consume_durable_rate_limit(
+            "registration_otp_request",
+            f"{request.remote_addr or 'unknown'}:{normalized_input}",
+            limit=10,
+            window_seconds=60 * 60,
+        )
+    except DurableRateLimitExceeded as exc:
+        audit_event(
+            "registration_otp",
+            "blocked",
+            metadata={"reason": "durable_rate_limit"},
+        )
+        raise RegistrationOtpError(
+            "Please wait before requesting another code.",
+            429,
+            retry_after=exc.retry_after,
+        ) from exc
     try:
         normalized_email = require_customer_email(email)
     except IdentityPolicyError as exc:
@@ -263,9 +286,10 @@ def _email_hash(email: str) -> str:
 
 
 def _otp_hmac(email: str, otp_code: str) -> str:
-    key = str(current_app.config["SECRET_KEY"]).encode("utf-8")
-    payload = f"registration-otp:v1:{normalize_registration_email(email)}:{otp_code}".encode("utf-8")
-    return hmac.new(key, payload, hashlib.sha256).hexdigest()
+    return active_hmac_hex(
+        f"registration-otp:v2:{normalize_registration_email(email)}:{otp_code}",
+        length=64,
+    )
 
 
 def _load_otp_challenge(
@@ -302,8 +326,12 @@ def _clear_registration_progress_state() -> None:
 
 
 def _user_by_email(email: str) -> User | None:
+    canonical_email = canonicalize_customer_email(email)
     return db.session.execute(
-        db.select(User).where(func.lower(User.email) == normalize_registration_email(email))
+        db.select(User).where(
+            User.registration_email_canonical == canonical_email,
+            User.account_type == "customer",
+        )
     ).scalar_one_or_none()
 
 

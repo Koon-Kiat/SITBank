@@ -335,7 +335,10 @@ def test_root_admin_allowlist_docs_treat_identities_as_sensitive_secrets():
     normalized = " ".join(combined.split())
 
     for required in (
-        "protected environment secret named `ROOT_ADMIN_EMAILS`",
+        "`STAGING_ROOT_ADMIN_EMAILS`",
+        "`PROD_ROOT_ADMIN_EMAILS`",
+        "staging must contain exactly 2",
+        "production must contain exactly 5",
         "sensitive privileged-identity configuration",
         "/etc/sitbank*/secrets/root_admin_emails",
         "ROOT_ADMIN_EMAILS_FILE",

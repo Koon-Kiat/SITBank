@@ -121,6 +121,12 @@ If coverage-relevant source code, workflow tests, documentation checks, or test 
 
 Ensure total coverage remains at least 90% and do not weaken the SonarQube/SonarCloud quality gate.
 
+Follow `docs/codex/sonarqube-rules.md` for every SonarQube or SonarCloud
+analysis. Resolve every issue reported for the current branch or pull request
+by fixing it or, when evidence shows the rule does not apply, documenting the
+reason and marking it false positive. Do this even when the quality gate
+passes.
+
 ## Security engineering rules
 
 Follow `docs/codex/security-rules.md` for security-sensitive code, tests, docs, deployment, and operations changes.
