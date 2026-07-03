@@ -37,6 +37,10 @@ SECRET_MARKERS = (
     "x-grafana-org-id",
 )
 PUBLIC_EXPOSURE_PATHS = ("/grafana", "/loki", "/logs", "/metrics")
+HOST_LOOPBACK_READINESS_TARGETS = (
+    ("grafana_host_loopback_login", "http://127.0.0.1:3000/login"),
+    ("loki_host_loopback_ready", "http://127.0.0.1:3100/ready"),
+)
 
 
 class VerificationError(RuntimeError):
@@ -230,6 +234,26 @@ def verify_private_grafana(
     return checks
 
 
+def verify_host_loopback_readiness(runner: Runner) -> list[dict[str, str]]:
+    checks: list[dict[str, str]] = []
+    failures: list[str] = []
+    for name, url in HOST_LOOPBACK_READINESS_TARGETS:
+        status, _headers = _curl_status_headers(runner, url)
+        checks.append(
+            {
+                "name": name,
+                "result": "pass" if status == "200" else "fail",
+                "target": _safe_url_label(url),
+                "http_status": status,
+            }
+        )
+        if status != "200":
+            failures.append(f"{_safe_url_label(url)} did not return HTTP 200")
+    if failures:
+        raise VerificationError("\n".join(failures))
+    return checks
+
+
 def verify_public_denials(
     runner: Runner,
     public_urls: Sequence[str],
@@ -312,6 +336,11 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
             "observability-evidence/private-observability.json",
         ),
     )
+    parser.add_argument(
+        "--verify-host-loopback",
+        action="store_true",
+        help="Also verify EC2-local Grafana and Loki loopback readiness.",
+    )
     return parser.parse_args(argv)
 
 
@@ -325,6 +354,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         public_urls = [_validate_public_probe_url(url) for url in public_urls]
         token = os.environ.get("GRAFANA_HEALTH_TOKEN", "")
         checks = [
+            *(
+                verify_host_loopback_readiness(run_command)
+                if args.verify_host_loopback
+                else []
+            ),
             *verify_private_grafana(run_command, grafana_url, token),
             *verify_public_denials(run_command, public_urls),
         ]

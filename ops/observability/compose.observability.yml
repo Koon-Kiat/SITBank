@@ -52,6 +52,7 @@ services:
     pids_limit: 256
     mem_limit: 512m
     networks:
+      - host-loopback
       - observability
     depends_on:
       - loki
@@ -89,6 +90,7 @@ services:
     pids_limit: 256
     mem_limit: 768m
     networks:
+      - host-loopback
       - observability
 
   alloy:
@@ -154,6 +156,11 @@ secrets:
     file: /etc/sitbank-observability/secrets/grafana_admin_password
 
 networks:
+  host-loopback:
+    name: sitbank-observability-loopback
+    driver: bridge
+    internal: false
   observability:
     name: sitbank-observability
+    driver: bridge
     internal: true
