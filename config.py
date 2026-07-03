@@ -33,6 +33,22 @@ CONFIG_DOMAIN_RE = re.compile(
     r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])$"
 )
 CONFIG_EMAIL_RE = re.compile(r"^(?=.{1,255}$)(?=.{1,128}@)[^@\x00-\x1f\x7f]+@[^@\x00-\x1f\x7f]+$")
+ROOT_ADMIN_NUMERIC_PLACEHOLDER_RE = re.compile(
+    r"^([a-z][a-z_-]*)(\d+)$"
+)
+ROOT_ADMIN_NUMERIC_PLACEHOLDER_PREFIXES = frozenset(
+    {
+        "admin",
+        "changeme",
+        "demo",
+        "example",
+        "placeholder",
+        "replaceme",
+        "root",
+        "rootadmin",
+        "test",
+    }
+)
 PERSONAL_EMAIL_DOMAINS = frozenset(
     {
         "gmail.com",
@@ -457,6 +473,11 @@ def _root_admin_email_has_placeholder_identity(value: str) -> bool:
         return True
     if local in ROOT_ADMIN_PLACEHOLDER_LOCAL_PARTS:
         return True
+    numeric_placeholder = ROOT_ADMIN_NUMERIC_PLACEHOLDER_RE.fullmatch(local)
+    if numeric_placeholder:
+        normalized_prefix = numeric_placeholder.group(1).replace("-", "").replace("_", "")
+        if normalized_prefix in ROOT_ADMIN_NUMERIC_PLACEHOLDER_PREFIXES:
+            return True
     if any(token in local for token in ("placeholder", "example", "demo", "changeme", "replace")):
         return True
     return domain in {"example.com", "example.test"}
@@ -481,6 +502,7 @@ def root_admin_email_allowlist_failures(
             emails,
             allowed_domains,
             required_count=required_count,
+            allow_builtin_default=not reject_default and frozenset(emails) == DEFAULT_ROOT_ADMIN_EMAILS,
         )
     )
     if reject_default and frozenset(emails) == DEFAULT_ROOT_ADMIN_EMAILS:
@@ -506,6 +528,7 @@ def _root_admin_email_shape_failures(
     allowed_domains: object,
     *,
     required_count: int,
+    allow_builtin_default: bool = False,
 ) -> list[str]:
     failures: list[str] = []
     if any(not item for item in emails):
@@ -521,7 +544,7 @@ def _root_admin_email_shape_failures(
     email_set = frozenset(emails)
     if any(not _valid_config_email(item) for item in emails) or not _all_email_domains_allowed(email_set, allowed):
         failures.append("ROOT_ADMIN_EMAILS must use approved admin workplace domains")
-    if any(_root_admin_email_has_placeholder_identity(item) for item in emails):
+    if not allow_builtin_default and any(_root_admin_email_has_placeholder_identity(item) for item in emails):
         failures.append("ROOT_ADMIN_EMAILS must not contain placeholder, demo, or example identities")
     return failures
 

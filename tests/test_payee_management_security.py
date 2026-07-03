@@ -165,6 +165,40 @@ def test_payee_lookup_requires_totp_before_confirmation(app, client, monkeypatch
     assert payee.recipient_name == bob.full_name
 
 
+def test_payee_lookup_accepts_new_twelve_digit_account_numbers(app, client, monkeypatch):
+    bob_client = app.test_client()
+    _register_customer(
+        client,
+        username="alice01",
+        email="alice@example.com",
+        phone="91234567",
+        account="012345678901",
+    )
+    bob = _register_customer(
+        bob_client,
+        username="bob02",
+        email="bob@example.com",
+        phone="81234567",
+        account="012555999123",
+    )
+    _alice, secret = _login_mfa_customer(client)
+    totp_time = _freeze_totp_verifier(monkeypatch)
+
+    lookup = client.post(
+        "/banking/payees/add",
+        data={
+            "nickname": "Bob",
+            "account_number": bob.account_number,
+            "totp_code": _current_totp(secret, totp_time),
+        },
+    )
+    save = client.post("/banking/payees/confirm")
+
+    assert lookup.status_code == 302
+    assert save.status_code == 302
+    assert db.session.query(Payee).filter_by(account_number="012555999123").count() == 1
+
+
 def test_payee_add_rejects_passkey_stepup_token(app, client):
     bob_client = app.test_client()
     _register_customer(
@@ -224,6 +258,41 @@ def test_invalid_payee_lookup_is_generic_and_audited(client, monkeypatch):
     assert b"Could not add that payee" in response.data
     assert "account_ref" in event.event_metadata
     assert "012000999" not in str(event.event_metadata)
+
+
+def test_invalid_payee_lookup_blocks_after_durable_rate_limit(client, monkeypatch):
+    _register_customer(
+        client,
+        username="alice01",
+        email="alice@example.com",
+        phone="91234567",
+        account="012345678",
+    )
+    _alice, secret = _login_mfa_customer(client)
+    base_time = int(time.time())
+
+    response = None
+    for attempt in range(6):
+        timestamp = base_time + (attempt * 31)
+        monkeypatch.setattr("app.auth.services.time.time", lambda timestamp=timestamp: timestamp)
+        response = client.post(
+            "/banking/payees/add",
+            data={
+                "nickname": "Missing",
+                "account_number": "012000999",
+                "totp_code": _current_totp(secret, timestamp),
+            },
+        )
+
+    assert response is not None
+    assert response.status_code == 429
+    assert b"Could not add that payee" in response.data
+    blocked_event = db.session.query(SecurityAuditEvent).filter_by(
+        event_type="payee_lookup",
+        outcome="blocked",
+    ).one()
+    assert blocked_event.event_metadata["reason"] == "durable_rate_limit"
+    assert "012000999" not in str(blocked_event.event_metadata)
 
 
 def test_payee_add_and_remove_audit_metadata_uses_safe_references(app, client, monkeypatch):

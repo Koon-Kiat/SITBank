@@ -519,6 +519,7 @@ def test_security_docs_are_grouped_and_indexed_by_purpose():
         },
         "assurance": {
             "audit-and-alerting.md",
+            "feature-security-checklist.md",
             "operational-observability.md",
             "secret-scanning.md",
             "secure-coding.md",

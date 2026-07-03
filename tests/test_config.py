@@ -198,6 +198,39 @@ def test_root_admin_allowlist_rejects_malformed_collection_and_placeholder_shape
     )
 
 
+@pytest.mark.parametrize(
+    "placeholder_email",
+    [
+        "root8@sit.singaporetech.edu.sg",
+        "root-admin8@sit.singaporetech.edu.sg",
+        "root_admin8@sit.singaporetech.edu.sg",
+        "admin1@sit.singaporetech.edu.sg",
+        "demo1@sit.singaporetech.edu.sg",
+        "test1@sit.singaporetech.edu.sg",
+        "example1@sit.singaporetech.edu.sg",
+        "placeholder1@sit.singaporetech.edu.sg",
+        "changeme1@sit.singaporetech.edu.sg",
+        "replace1@sit.singaporetech.edu.sg",
+    ],
+)
+def test_root_admin_allowlist_rejects_numeric_placeholder_identities(placeholder_email):
+    emails = [
+        *(f"chief{index}@sit.singaporetech.edu.sg" for index in range(1, 7)),
+        placeholder_email,
+    ]
+
+    failures = root_admin_email_allowlist_failures(
+        emails,
+        allowed_domains=frozenset({"sit.singaporetech.edu.sg"}),
+        reject_default=True,
+        required_count=7,
+    )
+
+    assert "ROOT_ADMIN_EMAILS must not contain placeholder, demo, or example identities" in failures
+    assert "ROOT_ADMIN_EMAILS must configure exactly" not in " ".join(failures)
+    assert "ROOT_ADMIN_EMAILS must use approved admin workplace domains" not in failures
+
+
 def test_root_admin_allowlist_accepts_explicit_non_placeholder_workplace_set():
     emails = frozenset(
         f"chief{index}@sit.singaporetech.edu.sg"

@@ -35,13 +35,16 @@ from app.banking.schemas import MAX_TRANSACTION_AMOUNT, MIN_TRANSACTION_AMOUNT
 from app.banking.services import (
     execute_local_transfer,
     execute_payup_transfer,
+    local_transfer_token_verifier,
     payup_amount_used_today,
     payup_requires_step_up,
+    payup_transfer_token_verifier,
     resolve_transfer_limit_choice,
 )
 from app.extensions import db, limiter
 from app.models import Payee, PayupPendingTransfer, PendingTransfer, User
 from app.security.audit import audit_event, audit_reference
+from app.security.rate_limits import DurableRateLimitExceeded, consume_durable_rate_limit
 from app.security.rate_limits import mfa_principal
 from app.web.routes import web_login_required, web_not_frozen_required
 
@@ -50,7 +53,7 @@ banking_bp = Blueprint("banking", __name__, url_prefix="/banking")
 
 _PENDING_PAYEE_TTL = 300  # seconds; user has 5 min to complete MFA after step 1
 _PENDING_TRANSFER_TTL = 300  # seconds; user has 5 min to confirm after MFA step-up
-_ACCOUNT_RE = re.compile(r"^\d{9}$")
+_ACCOUNT_RE = re.compile(r"^(?:\d{9}|\d{12})$")
 _REQUEST_EXPIRED_MESSAGE = "Request expired. Please start again."
 _NO_PENDING_TRANSFER_MESSAGE = "No pending transfer. Please start again."
 _PAYEES_ENDPOINT = "banking.payees"
@@ -187,6 +190,22 @@ def payees_add_submit():
 
     recipient = User.query.filter_by(account_number=account_number).first()
     if not recipient:
+        try:
+            failed_count = consume_durable_rate_limit(
+                "payee_lookup_failure",
+                f"user:{g.current_user.id}",
+                limit=5,
+                window_seconds=60 * 60,
+            )
+        except DurableRateLimitExceeded as exc:
+            audit_event(
+                "payee_lookup",
+                "blocked",
+                user=g.current_user,
+                metadata={"reason": "durable_rate_limit", "retry_after": exc.retry_after},
+            )
+            flash("Could not add that payee. Check the details and try again.", "error")
+            return render_template(_ADD_PAYEE_TEMPLATE, form=form), 429
         audit_event(
             "payee_lookup",
             "failure",
@@ -194,6 +213,7 @@ def payees_add_submit():
             metadata={
                 "reason": "recipient_not_found",
                 "account_ref": audit_reference("payee_account", account_number),
+                "failed_lookup_count": failed_count,
             },
         )
         flash("Could not add that payee. Check the details and try again.", "error")
@@ -427,7 +447,7 @@ def transfer_submit(payee_id: int):
     # client never controls the transfer parameters.
     token = os.urandom(32).hex()
     pending_tfr = PendingTransfer(
-        token=token,
+        token=local_transfer_token_verifier(token),
         user_id=g.current_user.id,
         payee_id=payee_id,
         amount=amount,
@@ -452,7 +472,7 @@ def transfer_confirm(payee_id: int):
         return redirect(url_for(_PAYEES_ENDPOINT))
 
     pending_tfr = PendingTransfer.query.filter_by(
-        token=token,
+        token=local_transfer_token_verifier(token),
         user_id=g.current_user.id,
         payee_id=payee_id,
         consumed_at=None,
@@ -540,6 +560,17 @@ def payup_submit():
     if phone_number == g.current_user.phone_number:
         flash("You cannot PayUp to your own phone number.", "error")
         return render_template(_PAYUP_TEMPLATE, form=form), 400
+
+    try:
+        verify_high_risk_authorization(
+            g.current_user,
+            form.totp_code.data,
+            form.stepup_token.data,
+            "payup_lookup",
+        )
+    except AuthError as exc:
+        flash(exc.message, "error")
+        return render_template(_PAYUP_TEMPLATE, form=form), exc.status_code
 
     recipient = User.query.filter_by(phone_number=phone_number).first()
     if not recipient or recipient.account_status not in ("active", "locked"):
@@ -649,7 +680,7 @@ def payup_amount_submit():
 
     token = os.urandom(32).hex()
     pending_tfr = PayupPendingTransfer(
-        token=token,
+        token=payup_transfer_token_verifier(token),
         user_id=g.current_user.id,
         recipient_user_id=pending["recipient_user_id"],
         amount=amount,
@@ -675,7 +706,7 @@ def payup_confirm():
         return redirect(url_for(_PAYUP_ENDPOINT))
 
     pending_tfr = PayupPendingTransfer.query.filter_by(
-        token=token,
+        token=payup_transfer_token_verifier(token),
         user_id=g.current_user.id,
         consumed_at=None,
     ).first()
@@ -717,7 +748,7 @@ def payup_confirm_submit():
         return redirect(url_for(_PAYUP_ENDPOINT))
 
     pending_tfr = PayupPendingTransfer.query.filter_by(
-        token=token,
+        token=payup_transfer_token_verifier(token),
         user_id=g.current_user.id,
         consumed_at=None,
     ).first()

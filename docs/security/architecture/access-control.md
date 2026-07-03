@@ -98,6 +98,19 @@ configuration fails closed unless the cooldown is at least 12 hours.
 | Add payee confirmation | Pending payee state exists only after `payee_add` TOTP authorization, is consumed before insert, recipient is reloaded from the database, and duplicate checks are repeated | `app/banking/routes.py::payees_confirm_submit()` |
 | Remove payee | Payee is loaded with `id` and current `user_id`; TOTP step-up is required | `app/banking/routes.py::payees_remove_submit()` |
 
+Local Transfer and PayUp share the banking service boundary for final ledger
+movement. Pending confirmation tokens are kept raw only in the browser session;
+the database stores keyed verifiers. Service execution reloads pending transfer
+records, validates ownership, account state, amount, replay state, and lock
+order, then writes balances and a transaction row in one required-audit-backed
+commit.
+
+| Action | Authorization control | Evidence |
+| --- | --- | --- |
+| Local Transfer confirmation | Payee must belong to the sender, be outside cooldown, and pass final recipient-account checks before ledger movement | `app/banking/services.py::execute_local_transfer()`, `tests/test_local_transfer_security.py` |
+| PayUp phone lookup | `payup_lookup` TOTP step-up runs before recipient name disclosure; unknown and unavailable recipients return the same generic response | `app/banking/routes.py::payup_submit()`, `tests/test_payup.py::test_payup_phone_lookup_requires_totp_before_name_disclosure` |
+| PayUp amount and confirmation | Daily PayUp limit resets at midnight Singapore time; confirmation recomputes the 80% step-up requirement under current usage before executing | `app/banking/services.py::payup_requires_step_up()`, `tests/test_payup.py::test_payup_confirm_rechecks_stepup_when_usage_changes_after_amount_entry` |
+
 Transfer payload validation and future transaction-risk primitives are in
 `app/banking/services.py` and `app/banking/schemas.py`, covered by
 `tests/test_banking_transaction_security.py`.
@@ -162,6 +175,16 @@ changes.
 | Staff/customer self-action guard | `app/admin/separation.py::assert_not_self_customer_action()` | `tests/test_admin_staff_invites.py::test_separation_guard_blocks_linked_staff_acting_on_own_customer`, `tests/test_admin_manual_recovery.py::test_root_admin_cannot_transition_own_customer_manual_recovery` |
 | Admin session context drift | Any detected coarse-network, browser-family, or detailed User-Agent drift revokes the admin session and requires full login | `app/security/sessions.py`, `tests/test_session_risk_binding.py::test_admin_context_change_revokes_session_under_stricter_policy` |
 
+Root-admin allowlist validation rejects placeholder/demo/default identities
+including numeric shapes such as `root8`, `root-admin8`, `admin1`, and `demo1`
+even when the count and workplace domain checks pass.
+
+Root-admin maker-checker approval executes the requested operation before
+marking the request `executed`. Staff lifecycle operations use the caller's
+transaction boundary for the target mutation, request state, and required audit
+write, so an execution error rolls back the staff-account change and records
+`execution_failed` instead of leaving a partially executed approval.
+
 Production Nginx does not publish the admin app. The admin application access
 path is the Tailscale Serve URL `https://admin-sitbank.tailca101b.ts.net/`;
 operators open `/login`, complete the normal Flask admin password and TOTP
@@ -220,6 +243,8 @@ High-risk customer actions use `verify_high_risk_authorization()` in
 | Terminate one session | Authenticated user, current-user ownership, public reference | `app/auth/services.py::terminate_session_for_user()`, `tests/test_pentest_auth_bypass.py::test_cannot_terminate_other_users_session` |
 | Payee add confirmation | Authenticated user, pending payee state, recipient revalidation, TOTP step-up | `app/banking/routes.py::payees_confirm_submit()` |
 | Payee removal | Authenticated user, payee ownership check, TOTP step-up | `app/banking/routes.py::payees_remove_submit()` |
+| PayUp phone lookup | Authenticated MFA-ready customer, CSRF, rate limit, and TOTP step-up before recipient name disclosure | `app/banking/routes.py::payup_submit()`, `tests/test_payup.py` |
+| PayUp confirmation near limit | Authenticated customer, pending PayUp verifier, daily-limit recomputation, and TOTP step-up when the transfer reaches at least 80% of the daily PayUp limit | `app/banking/routes.py::payup_confirm_submit()`, `tests/test_payup.py` |
 | Staff invite create/revoke | Root admin session and TOTP code | `app/admin/services.py::create_staff_invite()`, `app/admin/services.py::revoke_staff_invite()` |
 | Staff/admin account lifecycle | Requesting root admin session, CSRF, rate limit, TOTP step-up, no self-management, durable maker-checker request, different active root-admin approver with fresh TOTP, HMAC integrity, expiry, and safe audit metadata | `app/admin/services.py::transition_staff_account_as_root_admin()`, `app/admin/services.py::approve_admin_action_request_as_root_admin()`, `tests/test_admin_maker_checker.py` |
 | Manual recovery public request | No step-up because the caller is unauthenticated; it creates only a pending request and does not unlock or mutate the account | `app/auth/password_reset.py::request_manual_recovery()`, `tests/test_password_reset.py::test_manual_recovery_request_does_not_freeze_or_unlock_account` |
