@@ -120,6 +120,12 @@ def test_database_privilege_command_failure_delivers_alert(app, monkeypatch):
 
 def test_audit_alert_expiry_and_cleanup_commands(app, monkeypatch, tmp_path):
     runner = app.test_cli_runner()
+    audit_events = []
+    monkeypatch.setattr(
+        commands,
+        "audit_system_event",
+        lambda *args, **kwargs: audit_events.append((args, kwargs)),
+    )
     anchor = {"event_id": 1, "event_hash": "0" * 64}
     monkeypatch.setattr(commands, "audit_log_anchor", lambda: anchor)
     exported = runner.invoke(args=["export-audit-log-anchor"])
@@ -170,6 +176,41 @@ def test_audit_alert_expiry_and_cleanup_commands(app, monkeypatch, tmp_path):
     cleaned = runner.invoke(args=["cleanup-security-state", "--limit", "8"])
     assert cleaned.exit_code == 0
     assert json.loads(cleaned.output) == {"limit": 8}
+
+    from app.security import retention
+
+    retention_calls = []
+
+    def fake_retention_cleanup(*, limit, dry_run, confirm):
+        retention_calls.append(
+            {"limit": limit, "dry_run": dry_run, "confirm": confirm}
+        )
+        return {
+            "mode": "dry_run" if dry_run else "confirmed",
+            "dry_run": dry_run,
+            "retention_days": 30,
+            "batch_limit": limit,
+            "category_counts": {"expired_sessions_marked": 2},
+            "scheduling": "external_or_open",
+        }
+
+    monkeypatch.setattr(retention, "run_retention_cleanup", fake_retention_cleanup)
+    dry_run = runner.invoke(args=["security", "run-retention-cleanup", "--limit", "9"])
+    assert dry_run.exit_code == 0
+    dry_run_payload = json.loads(dry_run.output)
+    assert dry_run_payload["mode"] == "dry_run"
+    assert dry_run_payload["category_counts"] == {"expired_sessions_marked": 2}
+
+    confirmed = runner.invoke(
+        args=["security", "run-retention-cleanup", "--limit", "9", "--confirm"]
+    )
+    assert confirmed.exit_code == 0
+    assert json.loads(confirmed.output)["mode"] == "confirmed"
+    assert retention_calls == [
+        {"limit": 9, "dry_run": True, "confirm": False},
+        {"limit": 9, "dry_run": False, "confirm": True},
+    ]
+    assert audit_events[-1][0][:2] == ("retention_cleanup", "confirmed")
 
 
 def test_ops_helpers_normalize_time_anchor_env_and_alert_metadata(tmp_path, monkeypatch):

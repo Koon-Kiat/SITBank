@@ -268,9 +268,12 @@ sudo /usr/local/sbin/sitbank-restore-preflight --environment staging --backup-fi
 
 Expected safe success indicators: encrypted `.pgdump.age` archives are
 root-owned mode `0600`, restore preflight validates the selected encrypted
-archive and target database, and plaintext temporary files are removed by the
-helper. Raw database dumps, decrypted backups, age identity files, and backup
-private material are never safe to print or upload.
+archive owner/mode, parent directory, repository/CI-workspace exclusion, target
+database, and host-only age identity, and plaintext temporary files are removed
+by the helper. Raw database dumps, decrypted backups, age identity files, and
+backup private material are never safe to print or upload. Recurring backup
+schedules, restore drills, and encrypted-archive pruning remain external
+operator evidence.
 
 ### Grafana/Loki Observability Checks
 

@@ -34,6 +34,10 @@ def register_ops_commands(app: Flask) -> None:  # NOSONAR
     def admin_cli() -> None:
         """Admin-only management commands."""
 
+    @app.cli.group("security")
+    def security_cli() -> None:
+        """Security and privacy operations commands."""
+
     @admin_cli.command("bootstrap-root")
     @click.option(
         "--email",
@@ -288,6 +292,45 @@ def register_ops_commands(app: Flask) -> None:  # NOSONAR
         from app.security.state_cleanup import cleanup_expired_security_state
 
         result = cleanup_expired_security_state(limit=limit)
+        click.echo(json.dumps(result, separators=(",", ":"), sort_keys=True))
+
+    @security_cli.command("run-retention-cleanup")
+    @click.option(
+        "--limit",
+        type=int,
+        default=None,
+        help="Maximum rows per approved state table.",
+    )
+    @click.option(
+        "--confirm",
+        is_flag=True,
+        help="Apply the cleanup. Without this flag the command is a dry-run.",
+    )
+    def run_retention_cleanup_command(limit: int | None, confirm: bool) -> None:
+        """Review or apply approved temporary security-state retention cleanup."""
+        from app.security.retention import RetentionCleanupError, run_retention_cleanup
+
+        try:
+            result = run_retention_cleanup(
+                limit=limit,
+                dry_run=not confirm,
+                confirm=confirm,
+            )
+        except RetentionCleanupError as exc:
+            raise click.ClickException(str(exc)) from exc
+
+        audit_system_event(
+            "retention_cleanup",
+            result["mode"],
+            metadata={
+                "mode": result["mode"],
+                "dry_run": result["dry_run"],
+                "retention_days": result["retention_days"],
+                "batch_limit": result["batch_limit"],
+                "category_counts": result["category_counts"],
+                "scheduling": result["scheduling"],
+            },
+        )
         click.echo(json.dumps(result, separators=(",", ":"), sort_keys=True))
 
     @app.cli.command("rewrap-mfa-deks")

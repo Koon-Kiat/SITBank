@@ -589,6 +589,12 @@ identity files stay host-only, for example under
 `/root/.config/sitbank-backups/`, and must not be copied into the repo,
 application container, tickets, chat, or audit metadata.
 
+Recurring backup schedules are host/operator-owned. This repository installs
+and tests the helper and preflight scripts, but it does not currently install a
+systemd backup timer or prune encrypted backup archives. Retain external
+schedule, restore-drill, and archive-disposal evidence with the host change
+record.
+
 Run restore preflight before any restore operation:
 
 ```bash
@@ -607,10 +613,49 @@ sudo /usr/local/sbin/sitbank-restore-preflight \
 
 The preflight is non-destructive. It checks the approved OS user, explicit
 environment, explicit target database, encrypted backup path, backup
-permissions, host-only age identity, and production confirmation. Do not run a
-production restore during normal verification. Do not commit `.dump`, `.sql`,
-`.backup`, `.pgdump`, decrypted dumps, age identity files, GPG private keys, or
-database credentials.
+owner/mode, parent directory safety, repository/CI-workspace exclusion,
+host-only age identity ownership and mode, and production confirmation. Success
+output intentionally reports only that the backup file was validated by host
+policy; do not paste raw backup or identity paths into tickets unless the
+approved host change record requires metadata. Do not run a production restore
+during normal verification. Do not commit `.dump`, `.sql`, `.backup`,
+`.pgdump`, decrypted dumps, age identity files, GPG private keys, or database
+credentials.
+
+For non-production restore drills, record only safe evidence:
+
+- change record, approver, environment, and target database name;
+- backup archive basename plus owner/mode evidence, not decrypted contents;
+- restore preflight success output;
+- post-restore application smoke-test result and audit-chain verification;
+- confirmation that plaintext dumps and identity material were not copied out
+  of the host-controlled paths.
+
+## Retention Cleanup Operations
+
+The PDPA-aligned operator command for approved temporary security-state cleanup
+defaults to dry-run and reports category-level counts:
+
+```bash
+python -m flask --app wsgi:app security run-retention-cleanup
+python -m flask --app wsgi:app security run-retention-cleanup --limit 500
+python -m flask --app wsgi:app security run-retention-cleanup --confirm
+```
+
+Without `--confirm`, the command does not mutate rows. With `--confirm`, it
+applies only the bounded cleanup implemented in `app/security/state_cleanup.py`
+for expired server-side sessions, auth counters, TOTP replay records,
+registration OTP challenges, password reset transactions, security alert
+dedupe rows, expired password reset tokens that are no longer referenced by
+transactions, and closed circuit-breaker state past retention. It must not
+delete or truncate accounts, payees, transactions, staff/admin records,
+manual-recovery evidence, staff invites, security audit events, investigation
+holds, or encrypted backup archives.
+
+The command writes a sanitized system audit event with mode, retention days,
+batch limit, scheduling status, and category counts only. Full personal-data
+retention/disposal scheduling and encrypted-backup archive pruning remain
+tracked as governance/operator work, not hidden application behavior.
 
 ## Audit Operations
 

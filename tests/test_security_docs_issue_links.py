@@ -81,7 +81,7 @@ def test_design_risk_register_uses_current_follow_up_status():
     assert "Baseline review remains" in next(
         line for line in design.splitlines() if "Reporting-only SonarQube" in line
     )
-    assert "Runtime verification hardening remains" in next(
+    assert "Backup schedule and restore-drill evidence remain external" in next(
         line for line in design.splitlines() if "Encrypted backup helper" in line
     )
     zero_trust_row = next(
