@@ -453,12 +453,15 @@ as a raw process argument. Release smoke enables
 isolated smoke app container so Cloudflare's official dummy-token response can
 authenticate the synthetic DAST user with the official test keys; production
 readiness rejects that flag outside the smoke target. ZAP loads the
-authenticated-cookie replacer from a restricted
-`-configfile` path, and the cookie/config directory is removed by the smoke-test
-cleanup trap on success or failure. Do not upload `auth-cookie` or
-`zap-replacer.properties`, do not print environment dumps or shell-expanded
-secret values, and investigate immediately if either file or a session value
-appears in logs, summaries, or artifacts.
+authenticated-cookie replacer from a restricted `-configfile` path. That same
+restricted config pins the smoke request identity headers (`User-Agent`,
+`X-Forwarded-For`, and `X-Forwarded-Proto`) so the authenticated crawl matches
+the server-side session risk context without weakening reauthentication checks.
+The cookie/config directory is removed by the smoke-test cleanup trap on
+success or failure. Do not upload `auth-cookie` or `zap-replacer.properties`,
+do not print environment dumps or shell-expanded secret values, and investigate
+immediately if either file or a session value appears in logs, summaries, or
+artifacts.
 
 ## SonarQube Cloud
 

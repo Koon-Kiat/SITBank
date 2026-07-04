@@ -577,6 +577,14 @@ def test_dast_session_creator_matches_registration_contract():
     source = Path("ops/container/create_dast_session.py").read_text(encoding="utf-8")
 
     assert "create_dast_user(" in source
+    assert "issue_dast_session_cookie(" in source
+    assert "establish_authenticated_session(" in source
+    assert 'client.request("GET", "/auth/sessions", expected_status=200)' in source
+    assert '"User-Agent": DAST_USER_AGENT' in source
+    assert '"X-Forwarded-For": DAST_FORWARDED_FOR' in source
+    assert "replacer.full_list(3).matchstr=User-Agent" in source
+    assert '"/auth/login"' not in source
+    assert '"cf-turnstile-response"' not in source
     assert "hash_password(password)" in source
     assert "@sit.singaporetech.edu.sg" in source
     assert "create_registration_invite" not in source

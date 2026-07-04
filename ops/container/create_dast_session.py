@@ -15,7 +15,9 @@ from sqlalchemy.exc import IntegrityError
 
 
 DAST_COOKIE_RE = re.compile(r"^__Host-sitbank_session=[A-Za-z0-9._~-]+$")
-TURNSTILE_TEST_TOKEN = "XXXX.DUMMY.TOKEN.XXXX"
+DAST_FORWARDED_FOR = "127.0.0.1"
+DAST_FORWARDED_PROTO = "https"
+DAST_USER_AGENT = "sitbank-dast-session"
 
 
 class DastClient:
@@ -36,7 +38,7 @@ class DastClient:
             # The smoke test connects over HTTP but sets X-Forwarded-Proto=https to
             # exercise production proxy behavior. Flask-WTF SSL-strict CSRF checks
             # therefore require a same-origin HTTPS Referer.
-            ("https", parsed.netloc, "/", "", "")
+            (DAST_FORWARDED_PROTO, parsed.netloc, "/", "", "")
         )
         self.cookies: dict[str, str] = {}
 
@@ -52,7 +54,9 @@ class DastClient:
         body = None
         headers = {
             "Accept": "application/json",
-            "X-Forwarded-Proto": "https",
+            "User-Agent": DAST_USER_AGENT,
+            "X-Forwarded-For": DAST_FORWARDED_FOR,
+            "X-Forwarded-Proto": DAST_FORWARDED_PROTO,
         }
         if payload is not None:
             body = json.dumps(payload).encode("utf-8")
@@ -103,14 +107,12 @@ def create_authenticated_cookie(
     *,
     allowed_hosts: set[str] | None = None,
 ) -> str:
-    import pyotp
-
     client = DastClient(base_url, allowed_hosts=allowed_hosts)
     suffix = secrets.token_hex(6)
     username = f"zap{suffix}"
     email = f"{username}@sit.singaporetech.edu.sg"
     password = f"DAST-{secrets.token_urlsafe(24)}-A9!"  # NOSONAR - ephemeral generated test credential
-    create_dast_user(
+    user_id = create_dast_user(
         username=username,
         email=email,
         password=password,
@@ -118,52 +120,59 @@ def create_authenticated_cookie(
         phone_number=_generate_synthetic_phone_number(),
     )
 
-    csrf_token = str(
-        client.request(
-            "GET",
-            "/auth/csrf-token",
-            expected_status=200,
-        )["csrf_token"]
+    session_cookie = issue_dast_session_cookie(
+        user_id=user_id,
+        session_base_url=client.csrf_referrer,
     )
-    client.request(
-        "POST",
-        "/auth/login",
-        payload={
-            "identifier": username,
-            "password": password,
-            "cf-turnstile-response": TURNSTILE_TEST_TOKEN,
-        },
-        csrf_token=csrf_token,
-        expected_status=200,
-    )
+    cookie = f"__Host-sitbank_session={session_cookie}"
+    _validate_cookie_header(cookie)
+    client.cookies["__Host-sitbank_session"] = session_cookie
+    client.request("GET", "/auth/sessions", expected_status=200)
+    return cookie
 
-    csrf_token = str(
-        client.request(
-            "GET",
-            "/auth/csrf-token",
-            expected_status=200,
-        )["csrf_token"]
-    )
-    setup = client.request(
-        "POST",
-        "/auth/mfa/setup",
-        payload={},
-        csrf_token=csrf_token,
-        expected_status=200,
-    )
-    code = pyotp.TOTP(str(setup["manual_entry_secret"])).now()
-    client.request(
-        "POST",
-        "/auth/mfa/setup/verify",
-        payload={"totp_code": code},
-        csrf_token=csrf_token,
-        expected_status=200,
-    )
 
-    session_cookie = client.cookies.get("__Host-sitbank_session")
-    if not session_cookie:
+def issue_dast_session_cookie(*, user_id: int, session_base_url: str) -> str:
+    from flask import session
+
+    from app import create_app
+    from app.extensions import db
+    from app.models import User
+    from app.security.sessions import establish_authenticated_session
+
+    app = create_app()
+    with app.app_context():
+        user = db.session.get(User, int(user_id))
+        if user is None:
+            raise RuntimeError("Synthetic DAST user was not found")
+        user.mfa_enabled = True
+        db.session.commit()
+        with app.test_request_context(
+            "/",
+            base_url=session_base_url,
+            environ_base={"REMOTE_ADDR": DAST_FORWARDED_FOR},
+            headers={"User-Agent": DAST_USER_AGENT},
+        ):
+            establish_authenticated_session(
+                user_id=user.id,
+                mfa_verified=True,
+                auth_context="dast_smoke",
+            )
+            response = app.response_class("")
+            app.session_interface.save_session(app, session, response)
+        cookie = _cookie_value_from_headers(response.headers.get_all("Set-Cookie"))
+    if not cookie:
         raise RuntimeError("Authenticated DAST session cookie was not issued")
-    return f"__Host-sitbank_session={session_cookie}"
+    return cookie
+
+
+def _cookie_value_from_headers(headers: list[str]) -> str:
+    for header in headers:
+        parsed = http.cookies.SimpleCookie()
+        parsed.load(header)
+        morsel = parsed.get("__Host-sitbank_session")
+        if morsel is not None:
+            return morsel.value
+    return ""
 
 
 def _generate_synthetic_phone_number() -> str:
@@ -181,7 +190,7 @@ def create_dast_user(
     password: str,
     full_name: str,
     phone_number: str,
-) -> None:
+) -> int:
     from app import create_app
     from app.extensions import db
     from app.models import User
@@ -189,8 +198,9 @@ def create_dast_user(
 
     app = create_app()
     with app.app_context():
-        if db.session.execute(db.select(User).where(User.username == username)).scalar_one_or_none():
-            return
+        existing = db.session.execute(db.select(User).where(User.username == username)).scalar_one_or_none()
+        if existing:
+            return int(existing.id)
         for attempt in range(20):
             candidate_phone = phone_number if attempt == 0 else _generate_synthetic_phone_number()
             if db.session.execute(db.select(User).where(User.phone_number == candidate_phone)).scalar_one_or_none():
@@ -205,19 +215,19 @@ def create_dast_user(
                     break
             if account_number is None:
                 continue
-            db.session.add(
-                User(
-                    username=username,
-                    email=email,
-                    password_hash=hash_password(password),
-                    full_name=full_name,
-                    phone_number=candidate_phone,
-                    account_number=account_number,
-                )
+            user = User(
+                username=username,
+                email=email,
+                password_hash=hash_password(password),
+                full_name=full_name,
+                phone_number=candidate_phone,
+                account_number=account_number,
+                mfa_enabled=True,
             )
+            db.session.add(user)
             try:
                 db.session.commit()
-                return
+                return int(user.id)
             except IntegrityError:
                 db.session.rollback()
         raise RuntimeError("Could not create a unique synthetic DAST user")
@@ -241,7 +251,17 @@ def write_zap_replacer_config(path: Path, cookie: str, *, allowed_root: Path) ->
             "replacer.full_list(1).enabled=true",
             "replacer.full_list(1).matchtype=REQ_HEADER",
             "replacer.full_list(1).matchstr=X-Forwarded-Proto",
-            "replacer.full_list(1).replacement=https",
+            f"replacer.full_list(1).replacement={DAST_FORWARDED_PROTO}",
+            "replacer.full_list(2).description=trusted-forwarded-for",
+            "replacer.full_list(2).enabled=true",
+            "replacer.full_list(2).matchtype=REQ_HEADER",
+            "replacer.full_list(2).matchstr=X-Forwarded-For",
+            f"replacer.full_list(2).replacement={DAST_FORWARDED_FOR}",
+            "replacer.full_list(3).description=dast-session-user-agent",
+            "replacer.full_list(3).enabled=true",
+            "replacer.full_list(3).matchtype=REQ_HEADER",
+            "replacer.full_list(3).matchstr=User-Agent",
+            f"replacer.full_list(3).replacement={DAST_USER_AGENT}",
         )
     )
     _write_secret_file(path, f"{config}\n", allowed_root=allowed_root)
