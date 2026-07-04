@@ -117,17 +117,27 @@ loki.source.journal "docker" {
 
 loki.process "redact_sensitive" {
   stage.replace {
-    expression = "(?i)((?:authorization|cookie|cf-access-jwt-assertion)(?:=|: ))[^\\r\\n]+"
+    expression = "(?i)((?:authorization|cookie|cf-access-jwt-assertion)\\s*[:=]\\s*)[^\\r\\n,;]+"
     replace = "$1[REDACTED]"
   }
 
   stage.replace {
-    expression = "(?i)((?:csrf|session|password|token|secret|totp|recovery|database_url|smtp_(?:username|password)|api[_-]?key|webhook[_-]?url|cloudflare[_-]?(?:api[_-]?)?token|tailscale[_-]?(?:auth[_-]?)?key|ssh[_-]?(?:private[_-]?)?key)(?:=|: ))[^\\s]+"
+    expression = "(?i)(\"(?:authorization|cookie|cf[_-]?access[_-]?jwt[_-]?assertion|csrf|csrf[_-]?token|session|session[_-]?id|password|token|secret|totp|recovery|recovery[_-]?code|database[_-]?url|smtp[_-]?(?:username|password)|api[_-]?key|webhook[_-]?url|cloudflare[_-]?(?:api[_-]?)?token|tailscale[_-]?(?:auth[_-]?)?key|ssh[_-]?(?:private[_-]?)?key)\"\\s*:\\s*\")[^\"]+(\")"
+    replace = "$1[REDACTED]$2"
+  }
+
+  stage.replace {
+    expression = "(?i)((?:authorization|cookie|cf[_-]?access[_-]?jwt[_-]?assertion|csrf|csrf[_-]?token|session|session[_-]?id|password|token|secret|totp|recovery|recovery[_-]?code|database[_-]?url|smtp[_-]?(?:username|password)|api[_-]?key|webhook[_-]?url|cloudflare[_-]?(?:api[_-]?)?token|tailscale[_-]?(?:auth[_-]?)?key|ssh[_-]?(?:private[_-]?)?key)\\s*=\\s*\")[^\"]+(\")"
+    replace = "$1[REDACTED]$2"
+  }
+
+  stage.replace {
+    expression = "(?i)((?:csrf|csrf[_-]?token|session|session[_-]?id|password|token|secret|totp|recovery|recovery[_-]?code|database[_-]?url|smtp[_-]?(?:username|password)|api[_-]?key|webhook[_-]?url|cloudflare[_-]?(?:api[_-]?)?token|tailscale[_-]?(?:auth[_-]?)?key|ssh[_-]?(?:private[_-]?)?key)\\s*[:=]\\s*)[^\\s,;]+"
     replace = "$1[REDACTED]"
   }
 
   stage.drop {
-    expression = "(?i)(request_body|raw_body|environment dump|BEGIN (RSA |EC |OPENSSH |)PRIVATE KEY)"
+    expression = "(?i)(request[_ -]?body|raw[_ -]?body|environment dump|env dump|BEGIN (RSA |EC |OPENSSH |)PRIVATE KEY|-----BEGIN [A-Z ]*PRIVATE KEY-----)"
   }
 
   forward_to = [loki.write.local.receiver]

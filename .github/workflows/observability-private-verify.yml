@@ -45,10 +45,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ "${GRAFANA_PRIVATE_URL}" =~ ^https://([^/@]+)\.ts\.net/?$ ]]; then
+          if [[ "${GRAFANA_PRIVATE_URL}" =~ ^https://admin-sitbank\.tailca101b\.ts\.net/grafana/?$ ]]; then
             :
           else
-            echo "::error::GRAFANA_PRIVATE_URL must be a private https Tailscale URL from the protected observability environment."
+            echo "::error::GRAFANA_PRIVATE_URL must be the approved private https Tailscale Grafana subpath URL from the protected observability environment: https://admin-sitbank.tailca101b.ts.net/grafana/."
             exit 1
           fi
           if [[ "${GRAFANA_PRIVATE_URL,,}" == *"sitbank.pp.ua"* ]]; then

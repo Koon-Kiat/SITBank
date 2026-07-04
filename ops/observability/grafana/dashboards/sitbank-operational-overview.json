@@ -9,6 +9,7 @@
         "type": "loki",
         "uid": "sitbank-loki"
       },
+      "description": "Shows whether expected operational log streams are still arriving. Worry when an environment or service drops to zero outside a planned stop; check Alloy health, container labels, and Loki ingestion next.",
       "fieldConfig": {
         "defaults": {},
         "overrides": []
@@ -23,17 +24,22 @@
       "options": {},
       "targets": [
         {
-          "expr": "sum by (service, environment) (count_over_time({host_role=~\"edge|app|observability\"}[5m]))",
+          "expr": "sum by (service, environment, source) (count_over_time({environment=~\"$environment\", service=~\"$service\", source=~\"$source\"}[$__interval]))",
           "refId": "A"
         }
       ],
-      "title": "Operational log volume by service",
+      "title": "Log ingestion by service and source",
       "type": "timeseries"
     },
     {
       "datasource": {
         "type": "loki",
         "uid": "sitbank-loki"
+      },
+      "description": "Counts Nginx 4xx and 5xx responses by environment. Worry about sustained 5xx or unexpected 4xx spikes; check recent request table, deployment events, and upstream readiness next.",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
       },
       "gridPos": {
         "h": 8,
@@ -42,16 +48,118 @@
         "y": 0
       },
       "id": 2,
-      "options": {
-        "showLabels": true
-      },
+      "options": {},
       "targets": [
         {
-          "expr": "{service=~\"nginx|sitbank-app|sitbank-admin|sitbank-security-alerts|certbot\"} |= \"error\"",
+          "expr": "sum by (environment) (count_over_time({source=\"nginx_access\", environment=~\"$environment\"} |~ \"\\\\s[45][0-9][0-9]\\\\s\" [$__interval]))",
           "refId": "A"
         }
       ],
-      "title": "Recent operational errors",
+      "title": "Nginx 4xx and 5xx trend",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "sitbank-loki"
+      },
+      "description": "Lists recent edge requests without promoting path, IP, request ID, user, account, or session values to Loki labels. Worry about failed readiness, blocked origin checks, or repeated suspicious paths; keep copied evidence sanitized.",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 8
+      },
+      "id": 3,
+      "options": {
+        "showLabels": false,
+        "sortOrder": "Descending"
+      },
+      "targets": [
+        {
+          "expr": "{source=\"nginx_access\", environment=~\"$environment\"}",
+          "refId": "A"
+        }
+      ],
+      "title": "Recent Nginx requests",
+      "type": "logs"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "sitbank-loki"
+      },
+      "description": "Shows application and admin container lines that look like real failures while ignoring harmless counters such as error_count: 0. Worry about repeated exceptions, tracebacks, failed migrations, or readiness failures; check the deployment window and app health next.",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 17
+      },
+      "id": 4,
+      "options": {
+        "showLabels": true,
+        "sortOrder": "Descending"
+      },
+      "targets": [
+        {
+          "expr": "{source=\"container\", environment=~\"$environment\", service=~\"sitbank-app|sitbank-admin\"} |~ \"(?i)(\\\\berror\\\\b|\\\\bfailed\\\\b|traceback|exception)\" != \"error_count: 0\"",
+          "refId": "A"
+        }
+      ],
+      "title": "App and admin container failures",
+      "type": "logs"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "sitbank-loki"
+      },
+      "description": "Shows failures from approved systemd units only: security alerts, Docker, and Certbot. Worry about failed timers, failed cert renewals, Docker restarts, or alert jobs exiting nonzero; check systemd status and sanitized host evidence next.",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 17
+      },
+      "id": 5,
+      "options": {
+        "showLabels": true,
+        "sortOrder": "Descending"
+      },
+      "targets": [
+        {
+          "expr": "{source=\"systemd\", service=~\"sitbank-security-alerts|docker|certbot\"} |~ \"(?i)(failed|failure|error|exited|timeout)\"",
+          "refId": "A"
+        }
+      ],
+      "title": "Systemd failures for monitored units",
+      "type": "logs"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "sitbank-loki"
+      },
+      "description": "Highlights deployment, bootstrap, migration, and rollback lines when they are present in collected container or systemd logs. Worry about rollback, failed upgrade, privilege verification failure, or readiness failure; check the deployment runbook for the next command.",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 26
+      },
+      "id": 6,
+      "options": {
+        "showLabels": true,
+        "sortOrder": "Descending"
+      },
+      "targets": [
+        {
+          "expr": "{environment=~\"$environment\", source=~\"container|systemd\"} |~ \"(?i)(deploy|bootstrap|rollback|migration|db upgrade|readiness|runtime privileges)\"",
+          "refId": "A"
+        }
+      ],
+      "title": "Deployment and rollback signals",
       "type": "logs"
     }
   ],
@@ -61,7 +169,47 @@
     "operations"
   ],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "current": {
+          "selected": true,
+          "text": "production|staging",
+          "value": "production|staging"
+        },
+        "hide": 0,
+        "label": "Environment",
+        "name": "environment",
+        "options": [],
+        "query": "production|staging",
+        "type": "textbox"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": "nginx|sitbank-app|sitbank-admin|sitbank-security-alerts|docker|certbot",
+          "value": "nginx|sitbank-app|sitbank-admin|sitbank-security-alerts|docker|certbot"
+        },
+        "hide": 0,
+        "label": "Service",
+        "name": "service",
+        "options": [],
+        "query": "nginx|sitbank-app|sitbank-admin|sitbank-security-alerts|docker|certbot",
+        "type": "textbox"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": "nginx_access|nginx_error|container|systemd",
+          "value": "nginx_access|nginx_error|container|systemd"
+        },
+        "hide": 0,
+        "label": "Source",
+        "name": "source",
+        "options": [],
+        "query": "nginx_access|nginx_error|container|systemd",
+        "type": "textbox"
+      }
+    ]
   },
   "time": {
     "from": "now-6h",
@@ -69,5 +217,5 @@
   },
   "title": "SITBank Operational Overview",
   "uid": "sitbank-operational-overview",
-  "version": 1
+  "version": 2
 }
