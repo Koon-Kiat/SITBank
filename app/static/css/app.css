@@ -1944,6 +1944,180 @@ th {
 
 /* ── End banking dashboard ─────────────────────────── */
 
+/* ── Monthly statement ──────────────────────────────── */
+
+.statement-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-5);
+  flex-wrap: wrap;
+}
+
+.statement-period-form {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.statement-period-field {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.statement-period-field label {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.statement-period-field input,
+.statement-period-field select {
+  min-height: 44px;
+}
+
+.statement-period-field input[type="number"] {
+  width: 9ch;
+}
+
+.statement-period-nav {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.statement-period-nav .icon {
+  width: 16px;
+  height: 16px;
+}
+
+.statement-summary {
+  display: grid;
+  gap: var(--space-6);
+  border-radius: var(--radius);
+  background: linear-gradient(135deg, var(--primary) 0%, var(--accent) 100%);
+  padding: var(--space-7);
+  box-shadow: var(--shadow);
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+.statement-summary-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.statement-summary-eyebrow {
+  margin: 0 0 var(--space-1);
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.statement-summary-period {
+  color: #ffffff;
+  font-size: 1.4rem;
+}
+
+.statement-flow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  flex-wrap: wrap;
+}
+
+.statement-balance-block {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.statement-balance-amount {
+  margin: 0;
+  color: #ffffff;
+  font-size: 1.9rem;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.statement-balance-block.is-closing .statement-balance-amount {
+  font-size: 2.4rem;
+}
+
+.statement-flow-arrow {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.statement-flow-arrow .icon {
+  width: 26px;
+  height: 26px;
+}
+
+.statement-delta {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  border-radius: 999px;
+  padding: 3px 10px;
+  background: rgba(255, 255, 255, 0.18);
+  color: #ffffff;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.statement-delta.is-negative {
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.statement-txn-not-counted {
+  opacity: 0.55;
+}
+
+@media (max-width: 640px) {
+  .statement-flow {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-4);
+  }
+
+  .statement-flow-arrow {
+    transform: rotate(90deg);
+  }
+
+  .statement-period-form {
+    width: 100%;
+  }
+
+  .statement-period-field input[type="number"] {
+    width: 100%;
+  }
+}
+
+@media print {
+  .site-header,
+  .site-footer,
+  .statement-toolbar,
+  .statement-summary-header .button {
+    display: none;
+  }
+
+  .statement-summary {
+    box-shadow: none;
+  }
+}
+
+/* ── End monthly statement ──────────────────────────── */
+
 /* Admin dashboard */
 .admin-page {
   display: grid;

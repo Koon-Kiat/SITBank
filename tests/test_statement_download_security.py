@@ -21,6 +21,27 @@ def test_statement_view_shows_current_month_by_default(client):
     assert "Monthly Statement" in response.data.decode("utf-8")
 
 
+def test_statement_view_shows_balance_summary_and_period_nav(client):
+    login_with_mfa(client)
+    markup = client.get("/banking/statement").data.decode("utf-8")
+    assert "statement-summary" in markup
+    assert "Opening balance" in markup
+    assert "Closing balance" in markup
+    assert "statement-period-nav" in markup
+
+
+def test_statement_view_rejects_invalid_period_without_crashing(client):
+    login_with_mfa(client)
+    # A period well before the account's creation date always triggers the
+    # rejection path deterministically (unlike a "future month," which would
+    # need date-relative logic since `year` is clamped server-side).
+    response = client.get("/banking/statement?year=2020&month=1")
+    assert response.status_code == 200
+    markup = response.data.decode("utf-8")
+    assert "did not exist yet" in markup
+    assert "statement-summary" not in markup
+
+
 def test_statement_download_returns_csv_with_safe_headers(client):
     alice = login_with_mfa(client)
     client.post("/logout")
