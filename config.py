@@ -1561,6 +1561,10 @@ class Config:
         "TURNSTILE_FAIL_CLOSED_IN_PRODUCTION",
         default=True,
     )
+    TURNSTILE_ALLOW_TEST_ACTION = _optional_bool(
+        "TURNSTILE_ALLOW_TEST_ACTION",
+        default=False,
+    )
     PROFILE_EMAIL_CHANGE_TTL_SECONDS = _int_env(
         "PROFILE_EMAIL_CHANGE_TTL_SECONDS",
         default="300",
