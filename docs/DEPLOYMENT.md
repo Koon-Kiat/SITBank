@@ -463,6 +463,12 @@ allowlist for root-admin, admin, and staff identities. Do not set it to
 personal-provider domains; staff invites use the workplace email and do not
 collect personal backup email contacts. The current invite schema stores only
 the approved workplace email and has no personal-email compatibility field.
+Migration `20260704_0026` persists staff invite acceptance session binding,
+restart counters, and lock timestamps. It does not store raw invite tokens,
+TOTP secrets, passwords, or workplace verification codes. After deployment,
+root admins can reset a locked active invite acceptance attempt through the
+admin invite screen with a fresh TOTP step-up; do not repair locked invites by
+editing production rows ad hoc.
 
 Production admin does not use a public DNS hostname. Keep admin access on the
 private Tailscale Serve URL `https://admin-sitbank.tailca101b.ts.net/` and do

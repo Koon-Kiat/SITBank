@@ -54,6 +54,7 @@ from .services import (
     require_admin_session,
     require_root_admin_session,
     require_staff_session,
+    reset_staff_invite_acceptance,
     reject_admin_action_request_as_root_admin,
     request_customer_security_unlock,
     revoke_staff_invite,
@@ -72,6 +73,7 @@ _TOTP_PATTERN = r"^[0-9]{6}$"
 _MFA_CODE_ERROR = "MFA code must be exactly 6 digits"
 _JSON_MIME_TYPE = "application/json"
 _HTML_MIME_TYPE = "text/html"
+_ADMIN_INVITES_ENDPOINT = "admin.invites"
 _ADMIN_LOGIN_FORM_ENDPOINT = "admin.login_form"
 _STAFF_ACCOUNTS_ENDPOINT = "admin.staff_accounts"
 _ADMIN_ACTION_REQUESTS_ENDPOINT = "admin.admin_action_requests"
@@ -104,6 +106,8 @@ _MANUAL_RECOVERY_FILTER_LINKED = "linked"
 _MANUAL_RECOVERY_FILTER_ACTIVE = "active"
 _MANUAL_RECOVERY_FILTER_UNLINKED = "unlinked"
 _MANUAL_RECOVERY_FILTER_CLOSED = "closed"
+
+
 _MANUAL_RECOVERY_STATUSES = frozenset(
     {
         _MANUAL_RECOVERY_STATUS_PENDING,
@@ -243,8 +247,8 @@ class CustomerSecurityUnlockSchema(Schema):
 class StaffInviteStartSchema(Schema):
     full_name = fields.Str(required=True, validate=validate.Length(min=1, max=120))
     phone_number = fields.Str(required=True, validate=validate.Regexp(r"^[89][0-9]{7}$"))
-    password = fields.Str(required=True, load_only=True)
-    confirm_password = fields.Str(required=True, load_only=True)
+    password = fields.Str(required=True, load_only=True, validate=validate.Length(min=8, max=256))
+    confirm_password = fields.Str(required=True, load_only=True, validate=validate.Length(min=8, max=256))
     turnstile_token = fields.Str(required=False, load_only=True, allow_none=True)
     cf_turnstile_response = fields.Str(
         required=False,
@@ -902,7 +906,7 @@ def invite_create():
     if _wants_json():
         return jsonify(result), 201
     flash("Staff/admin invite created.", "success")
-    return redirect(url_for("admin.invites")), 303
+    return redirect(url_for(_ADMIN_INVITES_ENDPOINT)), 303
 
 
 @admin_bp.post("/invites/<int:invite_id>/revoke")
@@ -914,7 +918,20 @@ def invite_revoke(invite_id: int):
     if _wants_json():
         return jsonify(result)
     flash("Staff/admin invite revoked.", "success")
-    return redirect(url_for("admin.invites")), 303
+    return redirect(url_for(_ADMIN_INVITES_ENDPOINT)), 303
+
+
+@admin_bp.post("/invites/<int:invite_id>/reset-acceptance")
+@limiter.limit(_ADMIN_RATE_LIMIT_HOURLY, key_func=get_remote_address)
+@limiter.limit(_ADMIN_RATE_LIMIT_STEP_UP, key_func=request_principal)
+def invite_reset_acceptance(invite_id: int):
+    actor = require_root_admin_session()
+    data = _payload(StaffInviteRevokeSchema())
+    result = reset_staff_invite_acceptance(actor, invite_id, data[_ADMIN_TOTP_CODE_FIELD])
+    if _wants_json():
+        return jsonify(result)
+    flash("Staff/admin invite acceptance reset.", "success")
+    return redirect(url_for(_ADMIN_INVITES_ENDPOINT)), 303
 
 
 @admin_bp.get("/staff")

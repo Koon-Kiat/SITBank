@@ -120,6 +120,8 @@ INVALID_WORKPLACE_EMAIL_ERROR = "Invalid workplace email"
 GENERIC_INVITE_ERROR = "Invite link is invalid or expired"
 GENERIC_WORKPLACE_VERIFICATION_ERROR = "Workplace verification failed"
 ADMIN_AUTH_BACKOFF_ERROR = "Too many attempts. Please try again later."
+INVITE_ACCEPTANCE_SESSION_KEY = "staff_invite_acceptance_session"
+STAFF_INVITE_MAX_ACCEPTANCE_STARTS = 3
 STAFF_USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{3,64}$")
 FULL_NAME_RE = re.compile(r"^[^\x00-\x1f\x7f<>]{1,120}$")
 PHONE_RE = re.compile(r"^[89]\d{7}$", re.ASCII)
@@ -1596,6 +1598,51 @@ def revoke_staff_invite(actor: User, invite_id: int, totp_code: str | None) -> d
     return {"message": "Invite revoked", "invite": public_invite(invite)}
 
 
+def reset_staff_invite_acceptance(actor: User, invite_id: int, totp_code: str | None) -> dict[str, Any]:
+    if not is_root_admin(actor):
+        raise AuthError("Forbidden", 403)
+    if not totp_code or not _verify_totp_for_user(actor, totp_code, "staff_invite_accept_reset"):
+        audit_event(
+            "staff_invite_accept_reset",
+            "failure",
+            user=actor,
+            metadata={"reason": "invalid_totp_step_up"},
+        )
+        raise AuthError(FRESH_MFA_REQUIRED_ERROR, 403)
+    invite = db.session.get(StaffInvite, int(invite_id))
+    if invite is None or invite.status not in ACTIVE_INVITE_STATUSES:
+        raise AuthError("Invite not found", 404)
+
+    setup_user = db.session.get(User, invite.setup_user_id) if invite.setup_user_id else None
+    if setup_user is not None:
+        if (
+            setup_user.account_status != "setup_pending"
+            or setup_user.email.casefold() != invite.workplace_email_normalized.casefold()
+        ):
+            audit_event(
+                "staff_invite_accept_reset",
+                "blocked",
+                user=actor,
+                metadata={**_invite_audit_metadata(invite), "reason": "setup_user_not_resettable"},
+            )
+            raise AuthError(GENERIC_INVITE_ERROR, 409)
+        invite.setup_user_id = None
+        db.session.flush()
+        db.session.delete(setup_user)
+
+    _clear_invite_acceptance_state(invite)
+    invite.status = "pending"
+    invite.last_attempt_at = _utcnow()
+    audit_event_required(
+        "staff_invite_accept_reset",
+        "success",
+        user=actor,
+        metadata=_invite_audit_metadata(invite),
+    )
+    db.session.commit()
+    return {"message": "Invite acceptance reset", "invite": public_invite(invite)}
+
+
 def manual_recovery_requests_for_admin(actor: User) -> list[dict[str, Any]]:
     if not is_root_admin(actor):
         audit_event("manual_recovery_admin_review", "blocked", user=actor, metadata={"reason": "not_root_admin"})
@@ -2390,12 +2437,11 @@ def invite_info(token: str) -> dict[str, Any]:
     invite = _active_invite_by_token(token, audit_failures=True)
     _ensure_invite_identity_policy(invite, "staff_invite_info")
     return {
-        "message": "Invite found",
+        "message": "Invite can be accepted",
         "invite": {
-            "workplace_email": invite.workplace_email_normalized,
-            "role": invite.role,
             "expires_at": _utc_iso(invite.expires_at),
-            "status": invite.status,
+            "acceptance_started": invite.status == "totp_pending",
+            "acceptance_locked": invite.acceptance_locked_at is not None,
         },
     }
 
@@ -2420,6 +2466,8 @@ def start_invite_acceptance(
 
     invite = _active_invite_by_token(token, lock=True, audit_failures=True)
     _ensure_invite_identity_policy(invite, "staff_invite_accept")
+    session_hash = _invite_acceptance_session_hash(invite.id, create=True)
+    _ensure_invite_acceptance_can_start(invite, session_hash)
     name = validate_full_name(full_name)
     phone = validate_phone_number(phone_number)
     if password != confirm_password:
@@ -2451,6 +2499,7 @@ def start_invite_acceptance(
         db.session.flush()
         invite.setup_user_id = user.id
     else:
+        _ensure_invite_acceptance_session(invite, session_hash)
         if user.account_status != "setup_pending" or user.account_type != invite.role:
             raise AuthError(GENERIC_INVITE_ERROR, 401)
         user.full_name = name
@@ -2465,6 +2514,9 @@ def start_invite_acceptance(
     user.mfa_pending_session_hash = _staff_invite_mfa_binding(invite.id)
     invite.status = "totp_pending"
     invite.last_attempt_at = _utcnow()
+    invite.acceptance_session_hash = session_hash
+    invite.acceptance_started_at = _utcnow()
+    invite.acceptance_start_count = int(invite.acceptance_start_count or 0) + 1
     try:
         _send_workplace_verification(invite)
         audit_event_required(
@@ -2507,6 +2559,17 @@ def verify_invite_acceptance(
     _reject_forged_invite_fields(request_fields)
     invite = _active_invite_by_token(token, lock=True, audit_failures=True)
     _ensure_invite_identity_policy(invite, "staff_invite_accept")
+    if invite.acceptance_locked_at is not None:
+        audit_event(
+            "staff_invite_accept",
+            "blocked",
+            metadata={**_invite_audit_metadata(invite), "reason": "restart_limit"},
+        )
+        raise AuthError(INVITE_ACCEPTANCE_ERROR, 429)
+    _ensure_invite_acceptance_session(
+        invite,
+        _invite_acceptance_session_hash(invite.id, create=False),
+    )
     user = db.session.get(User, invite.setup_user_id) if invite.setup_user_id else None
     if user is None or user.account_status != "setup_pending" or user.account_type != invite.role:
         audit_event("staff_invite_accept", "failure", metadata={"reason": "setup_missing"})
@@ -2545,6 +2608,7 @@ def verify_invite_acceptance(
     invite.used_at = now
     invite.used_by_user_id = user.id
     invite.workplace_verified_at = now
+    invite.acceptance_session_hash = None
     audit_event_required("staff_totp_setup", "success", user=user, metadata={"method": "totp"})
     audit_event_required("staff_workplace_verification", "success", user=user, metadata=_invite_audit_metadata(invite))
     audit_event_required("staff_account_activated", "success", user=user, metadata=_invite_audit_metadata(invite))
@@ -2557,6 +2621,65 @@ def verify_invite_acceptance(
 
 def _staff_invite_mfa_binding(invite_id: int) -> str:
     return active_hmac_hex(f"staff-invite-mfa:{int(invite_id)}", length=64)
+
+
+def _invite_acceptance_session_hash(invite_id: int, *, create: bool) -> str:
+    raw_value = session.get(INVITE_ACCEPTANCE_SESSION_KEY)
+    if not isinstance(raw_value, str) or len(raw_value) < 32:
+        if not create:
+            return ""
+        raw_value = secrets.token_urlsafe(32)
+        session[INVITE_ACCEPTANCE_SESSION_KEY] = raw_value
+        session.permanent = True
+        session.modified = True
+    return active_hmac_hex(
+        f"staff-invite-acceptance-session:{int(invite_id)}:{raw_value}",
+        length=64,
+    )
+
+
+def _ensure_invite_acceptance_can_start(invite: StaffInvite, session_hash: str) -> None:
+    if invite.acceptance_locked_at is not None:
+        audit_event(
+            "staff_invite_accept",
+            "blocked",
+            metadata={**_invite_audit_metadata(invite), "reason": "restart_limit"},
+        )
+        raise AuthError(INVITE_ACCEPTANCE_ERROR, 429)
+    if invite.acceptance_session_hash:
+        _ensure_invite_acceptance_session(invite, session_hash)
+    if int(invite.acceptance_start_count or 0) >= STAFF_INVITE_MAX_ACCEPTANCE_STARTS:
+        invite.acceptance_locked_at = _utcnow()
+        audit_event(
+            "staff_invite_accept",
+            "blocked",
+            metadata={**_invite_audit_metadata(invite), "reason": "restart_limit"},
+        )
+        db.session.commit()
+        raise AuthError(INVITE_ACCEPTANCE_ERROR, 429)
+
+
+def _ensure_invite_acceptance_session(invite: StaffInvite, session_hash: str) -> None:
+    if not invite.acceptance_session_hash:
+        return
+    if not session_hash or not hmac.compare_digest(str(invite.acceptance_session_hash), str(session_hash)):
+        audit_event(
+            "staff_invite_accept",
+            "blocked",
+            metadata={**_invite_audit_metadata(invite), "reason": "session_mismatch"},
+        )
+        raise AuthError(GENERIC_INVITE_ERROR, 401)
+
+
+def _clear_invite_acceptance_state(invite: StaffInvite) -> None:
+    invite.acceptance_session_hash = None
+    invite.acceptance_started_at = None
+    invite.acceptance_start_count = 0
+    invite.acceptance_locked_at = None
+    invite.workplace_verification_code_hmac = None
+    invite.workplace_verification_sent_at = None
+    invite.workplace_verification_expires_at = None
+    invite.workplace_verified_at = None
 
 
 def _consume_invite_probe_limit(token: str) -> None:
@@ -2616,6 +2739,9 @@ def public_invite(invite: StaffInvite) -> dict[str, Any]:
         "expires_at": _utc_iso(invite.expires_at),
         "used_at": _utc_iso(invite.used_at) if invite.used_at else None,
         "revoked_at": _utc_iso(invite.revoked_at) if invite.revoked_at else None,
+        "acceptance_start_count": int(invite.acceptance_start_count or 0),
+        "acceptance_locked": invite.acceptance_locked_at is not None,
+        "acceptance_locked_at": _utc_iso(invite.acceptance_locked_at) if invite.acceptance_locked_at else None,
     }
 
 
