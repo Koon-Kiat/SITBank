@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from app.extensions import db
 from app.models import SecurityAuditEvent, TransactionDispute
+from app.security.rate_limits import DurableRateLimitExceeded
+from sqlalchemy.exc import IntegrityError
 from test_dashboard import login_with_mfa
 from test_transaction_history_idor import _create_transaction, _second_customer
 
@@ -57,6 +59,13 @@ def test_second_open_dispute_on_same_transaction_is_blocked(client):
     )
     assert first.status_code == 302
 
+    duplicate_get = client.get(
+        f"/transactions/{txn.id}/dispute",
+        follow_redirects=True,
+    )
+    assert duplicate_get.status_code == 200
+    assert b"already exists" in duplicate_get.data
+
     second = client.post(
         f"/transactions/{txn.id}/dispute",
         data={"issue_type": "other", "reason": "Second report on the same transaction"},
@@ -73,6 +82,81 @@ def test_second_open_dispute_on_same_transaction_is_blocked(client):
     )
     assert len(disputes) == 1
     assert disputes[0].reason == "First report"
+
+
+def test_dispute_create_durable_rate_limit_blocks_without_persisting(client, monkeypatch):
+    alice = login_with_mfa(client)
+    client.post("/logout")
+    bob, bob_secret = _second_customer(client)
+    txn = _create_transaction(alice, bob)
+
+    from test_transaction_history_idor import _login_customer
+
+    _login_customer(client, "bob02", bob_secret)
+
+    def block_dispute_submission(*_args, **_kwargs):
+        raise DurableRateLimitExceeded(3600)
+
+    monkeypatch.setattr("app.web.routes.consume_durable_rate_limit", block_dispute_submission)
+
+    response = client.post(
+        f"/transactions/{txn.id}/dispute",
+        data={"issue_type": "other", "reason": "Daily dispute limit should block this."},
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"Too many issue reports submitted today" in response.data
+
+    disputes = (
+        db.session.execute(
+            db.select(TransactionDispute).where(TransactionDispute.transaction_id == txn.id)
+        )
+        .scalars()
+        .all()
+    )
+    assert disputes == []
+
+    blocked_event = db.session.execute(
+        db.select(SecurityAuditEvent).where(
+            SecurityAuditEvent.event_type == "transaction_dispute_create",
+            SecurityAuditEvent.outcome == "blocked",
+        )
+    ).scalar_one()
+    assert blocked_event.event_metadata["reason"] == "durable_rate_limit"
+    assert blocked_event.event_metadata["retry_after"] == 3600
+
+
+def test_dispute_create_handles_concurrent_open_dispute_race(client, monkeypatch):
+    alice = login_with_mfa(client)
+    client.post("/logout")
+    bob, bob_secret = _second_customer(client)
+    txn = _create_transaction(alice, bob)
+
+    from test_transaction_history_idor import _login_customer
+
+    _login_customer(client, "bob02", bob_secret)
+
+    def fail_flush_with_duplicate_open_dispute(_objects=None):
+        raise IntegrityError("duplicate open dispute", {}, Exception("fake duplicate"))
+
+    monkeypatch.setattr("app.web.routes.db.session.flush", fail_flush_with_duplicate_open_dispute)
+
+    response = client.post(
+        f"/transactions/{txn.id}/dispute",
+        data={"issue_type": "other", "reason": "Concurrent duplicate report"},
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"already exists" in response.data
+
+    disputes = (
+        db.session.execute(
+            db.select(TransactionDispute).where(TransactionDispute.transaction_id == txn.id)
+        )
+        .scalars()
+        .all()
+    )
+    assert disputes == []
 
 
 def test_dispute_create_rejects_missing_csrf_free_fields(client):

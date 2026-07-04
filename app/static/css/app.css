@@ -485,8 +485,8 @@ img {
 }
 
 .auth-intro .notice-icon {
-  background: rgba(255, 255, 255, 0.14);
-  color: #ffffff;
+  background: #ffffff;
+  color: var(--primary);
   box-shadow: none;
 }
 

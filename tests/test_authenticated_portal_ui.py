@@ -66,6 +66,16 @@ def test_theme_assets_are_csp_compatible_and_store_only_theme_preference(client)
     assert 'fill="#c8102e"' in logo
     assert 'fill="#ffffff"' in logo
 
+
+def test_auth_intro_notice_icon_uses_contrasting_solid_surface():
+    stylesheet = Path("app/static/css/app.css").read_text(encoding="utf-8")
+    notice_icon_rule = stylesheet.split(".auth-intro .notice-icon {", 1)[1].split("}", 1)[0]
+
+    assert "background: #ffffff;" in notice_icon_rule
+    assert "color: var(--primary);" in notice_icon_rule
+    assert "rgba(255, 255, 255, 0.14)" not in notice_icon_rule
+
+
 def test_authenticated_layout_contains_working_profile_menu_destinations(client):
     register(client)
     login(client)

@@ -731,6 +731,7 @@ def transaction_detail(transaction_id: int):
 
 _DISPUTE_ALREADY_OPEN_MESSAGE = "An open issue report already exists for this transaction."
 _DISPUTE_FORM_TEMPLATE = "transaction_dispute_form.html"
+_TRANSACTION_DETAIL_ENDPOINT = "web.transaction_detail"
 
 
 def _owned_transaction_or_404(transaction_id: int) -> Transaction:
@@ -760,7 +761,7 @@ def transaction_dispute_new(transaction_id: int):
     txn = _owned_transaction_or_404(transaction_id)
     if _open_dispute_for_transaction(txn.id) is not None:
         flash(_DISPUTE_ALREADY_OPEN_MESSAGE, "warning")
-        return redirect(url_for("web.transaction_detail", transaction_id=txn.id))
+        return redirect(url_for(_TRANSACTION_DETAIL_ENDPOINT, transaction_id=txn.id))
     form = TransactionDisputeForm()
     return render_template(_DISPUTE_FORM_TEMPLATE, form=form, transaction=txn)
 
@@ -778,7 +779,7 @@ def transaction_dispute_create(transaction_id: int):
 
     if _open_dispute_for_transaction(txn.id) is not None:
         flash(_DISPUTE_ALREADY_OPEN_MESSAGE, "warning")
-        return redirect(url_for("web.transaction_detail", transaction_id=txn.id))
+        return redirect(url_for(_TRANSACTION_DETAIL_ENDPOINT, transaction_id=txn.id))
 
     try:
         consume_durable_rate_limit(
@@ -795,7 +796,7 @@ def transaction_dispute_create(transaction_id: int):
             metadata={"reason": "durable_rate_limit", "retry_after": exc.retry_after},
         )
         flash("Too many issue reports submitted today. Please try again tomorrow.", "error")
-        return redirect(url_for("web.transaction_detail", transaction_id=txn.id))
+        return redirect(url_for(_TRANSACTION_DETAIL_ENDPOINT, transaction_id=txn.id))
 
     dispute = TransactionDispute(
         transaction_id=txn.id,
@@ -821,13 +822,13 @@ def transaction_dispute_create(transaction_id: int):
     except IntegrityError:
         db.session.rollback()
         flash(_DISPUTE_ALREADY_OPEN_MESSAGE, "warning")
-        return redirect(url_for("web.transaction_detail", transaction_id=txn.id))
+        return redirect(url_for(_TRANSACTION_DETAIL_ENDPOINT, transaction_id=txn.id))
     except AuditWriteError:
         db.session.rollback()
         raise
 
     flash("Issue reported. Our staff will review it shortly.", "success")
-    return redirect(url_for("web.transaction_detail", transaction_id=txn.id))
+    return redirect(url_for(_TRANSACTION_DETAIL_ENDPOINT, transaction_id=txn.id))
 
 
 @web_bp.get("/disputes")

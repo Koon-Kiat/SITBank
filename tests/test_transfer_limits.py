@@ -146,6 +146,7 @@ def test_transfer_limit_resolver_accepts_bounded_values(choice, custom_value, ex
         ("custom", "99.99"),
         ("custom", "10000.01"),
         ("custom", "750.001"),
+        ("custom", "not-a-number"),
         ("custom", "NaN"),
         ("custom", "Infinity"),
         ("bogus", "750.00"),
