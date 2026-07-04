@@ -114,27 +114,41 @@ production backup before production `db upgrade`. After the migration, run
 reported drift with ad hoc production `ALTER TABLE`, `DROP INDEX`, or
 `DROP CONSTRAINT` commands.
 
-## Registration Schema Reset For Disposable Environments
+## Disposable Database Reset
 
-The registration schema requires verified email, full name, phone number, and a
-server-generated account number for new customers. Existing disposable
-development, staging, or demo databases with no real users may be reset or
-recreated before applying the registration migration so fake phone numbers and
-predictable account numbers are not preserved as long-lived data.
+The current schema intentionally has no compatibility backfill for obsolete
+user, invite, browser-credential, session-risk, or 9-digit account-number
+state. Reset only an environment confirmed to contain disposable project data.
+Stop both customer and admin services first, preserve the maintenance record,
+and run the command in the normal application image with that environment's
+runtime configuration and schema-owner migration URL.
 
-Do not drop or recreate a production-like database automatically. Any reset must
-be an explicit operator action after confirming the environment has no real
-users and after taking any required backup. If an existing database must be
-preserved, the migration leaves unknown legacy phone numbers as `NULL`, keeps
-uniqueness only for real non-null phone numbers, and assigns non-enumerable
-server-generated account numbers to preserved rows.
+Run staging preflight and execution first:
+
+```bash
+python -m flask --app wsgi:app reset-demo-database --target staging --disposable-data-confirmed
+python -m flask --app wsgi:app reset-demo-database --target staging --execute --disposable-data-confirmed --confirm "RESET STAGING DEMO DATABASE"
+```
+
+Do not place this command in deployment automation. Production requires the
+successful staging evidence, protected manual approval, and a fresh encrypted
+root-managed mode-`0600` backup outside the repository/CI workspace:
+
+```bash
+sudo /usr/local/sbin/sitbank-backup-encrypted --environment production
+python -m flask --app wsgi:app reset-demo-database --target production --disposable-data-confirmed
+python -m flask --app wsgi:app reset-demo-database --target production --execute --disposable-data-confirmed --staging-verified --approved --backup-file /var/backups/sitbank/sitbank-production-sitbank_db-<timestamp>.pgdump.age --confirm "RESET PRODUCTION DEMO DATABASE"
+```
+
+The executing operator must substitute the exact backup created for this
+maintenance window. The reset drops the selected database's reflected schema,
+applies the complete Alembic chain, and then verifies that user/payee account
+numbers satisfy the current format. It never runs during normal deployment.
 
 Migration `20260703_0023` adds canonical customer registration email identity,
-MFA setup-session binding timestamps, and versioned recovery-code HMACs. It
-backfills canonical customer email values and aborts on a collision instead of
-choosing an account. Run this migration in staging first and resolve any
-reported alias collision through a reviewed account-recovery process before
-production rollout.
+MFA setup-session binding timestamps, and versioned recovery-code HMACs.
+Current registration writes the canonical identity directly; the authorized
+reset replaces old customer rows instead of inferring canonical identity.
 
 Migration `20260703_0022` adds PayUp support with `users.payup_daily_limit`,
 the `transactions.transaction_type` constraint, and the
@@ -142,11 +156,18 @@ the `transactions.transaction_type` constraint, and the
 confirmation, daily-limit, and transfer-limit settings through staging before
 production rollout.
 
-Migration `20260703_0024` widens `users.account_number` and
-`payees.account_number` from 9 to 12 characters. New registrations receive
-12-digit account numbers while legacy 9-digit rows remain valid. The downgrade
-refuses to narrow the columns when any 12-digit account number exists, which
-prevents truncating customer or payee identifiers.
+Migration `20260703_0024` enforces exactly 12 decimal digits for non-null
+`users.account_number` and all `payees.account_number` values. Registration
+randomizes all 12 positions independently; route and form validation match the
+database constraints. The migration does not convert obsolete identifiers.
+
+Migration `20260704_0025` adds nullable transaction-integrity key id,
+algorithm, and version metadata. Existing rows remain explicitly legacy;
+new Local Transfer and PayUp rows use the dedicated
+`TRANSACTION_LEDGER_HMAC_KEYS_JSON` keyring and cover transaction type plus all
+stored ledger fields. Provision the environment-specific root-managed keyring
+and matching `TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID` before `db upgrade` and
+application restart. Do not reuse session or audit HMAC keys.
 
 ## Deployment Prerequisites
 
@@ -440,11 +461,9 @@ bootstrap wrapper.
 `ADMIN_ALLOWED_EMAIL_DOMAINS` defines the approved privileged workplace-domain
 allowlist for root-admin, admin, and staff identities. Do not set it to
 personal-provider domains; staff invites use the workplace email and do not
-collect personal backup email contacts. The migration chain keeps
-`staff_invites.personal_email_normalized` nullable for portable SQLite and
-PostgreSQL upgrades; do not synthesize personal email data for privileged
-invites.
-Migration `20260704_0025` persists staff invite acceptance session binding,
+collect personal backup email contacts. The current invite schema stores only
+the approved workplace email and has no personal-email compatibility field.
+Migration `20260704_0026` persists staff invite acceptance session binding,
 restart counters, and lock timestamps. It does not store raw invite tokens,
 TOTP secrets, passwords, or workplace verification codes. After deployment,
 root admins can reset a locked active invite acceptance attempt through the

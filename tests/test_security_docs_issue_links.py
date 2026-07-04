@@ -281,7 +281,7 @@ def test_staff_invite_acceptance_docs_cover_minimal_metadata_and_restart_control
         "root-admin totp reset",
         "do not repair locked invites by editing production rows ad hoc",
         "staff invite password fields are length-bounded at the request schema",
-        "migration `20260704_0025` persists staff invite acceptance session binding",
+        "migration `20260704_0026` persists staff invite acceptance session binding",
         "staff_invite_accept_reset",
     ):
         assert required in normalized_docs
@@ -445,6 +445,13 @@ def test_audit_anchor_docs_distinguish_stale_drift_from_tampering():
         "alert_count=0",
     ):
         assert required in combined
+    for scheduled_control in (
+        "sitbank-audit-anchor-refresh@{staging,production}.timer",
+        "refresh-audit-log-anchor",
+        "rebaseline-security-alert-state",
+        "--intentional-reset",
+    ):
+        assert scheduled_control in combined
 
     for forbidden in (
         "refresh anchors until alerts stop",

@@ -98,10 +98,6 @@ def register_current_user_loader(app: Flask) -> None:
         from flask import g, session
 
         g.current_user = None
-        g.webauthn_credential_count = 0
-        g.legacy_passkey_credential_count = 0
-        g.webauthn_required_count = 0
-        g.passkey_ready = False
         g.mfa_ready = False
         g.high_risk_ready = False
         user_id = session.get("user_id")
@@ -109,10 +105,6 @@ def register_current_user_loader(app: Flask) -> None:
             g.current_user = db.session.get(User, user_id)
             if g.current_user is not None:
                 from app.auth.mfa_policy import has_enrolled_mfa_method
-                from app.auth.webauthn_services import webauthn_credential_count
-
-                g.webauthn_credential_count = webauthn_credential_count(g.current_user)
-                g.legacy_passkey_credential_count = g.webauthn_credential_count
                 g.mfa_ready = has_enrolled_mfa_method(g.current_user)
                 g.high_risk_ready = g.mfa_ready
 
@@ -170,7 +162,7 @@ def register_forced_password_change_guard(app: Flask) -> None:
                     "code": "password_change_required",
                 }
             ), 403
-        return render_template("error.html", message="Password change required", status_code=403), 403
+        return safe_error_response("Password change required", 403)
 
 
 def register_error_handlers(app: Flask) -> None:

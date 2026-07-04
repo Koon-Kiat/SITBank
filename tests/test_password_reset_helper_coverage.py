@@ -10,34 +10,33 @@ from app.auth.services import AuthError
 from app.security.rate_limits import AuthBackoffRequired
 
 
-def test_reset_mfa_method_helpers_cover_legacy_and_invalid_values(monkeypatch):
-    no_id = SimpleNamespace(id=None, mfa_enabled=False, mfa_step_up_preference=None)
-    assert password_reset._legacy_passkey_credential_count(no_id) == 0
-    assert password_reset._available_reset_mfa_methods_for_user(no_id) == []
+def test_reset_mfa_method_helpers_cover_current_and_invalid_values(monkeypatch):
+    no_mfa = SimpleNamespace(id=None, mfa_enabled=False)
+    assert password_reset._available_reset_mfa_methods_for_user(no_mfa) == []
     assert password_reset._fallback_reset_mfa_method([]) == password_reset.RESET_MFA_NONE
-    assert password_reset._fallback_reset_mfa_method(
-        [password_reset.RESET_MFA_MANUAL_RECOVERY]
-    ) == password_reset.RESET_MFA_MANUAL_RECOVERY
     assert password_reset._available_reset_mfa_methods_from_transaction(
-        {"available_mfa_methods": ["totp", "TOTP", "invalid", "manual_recovery"]}
-    ) == ["totp", "manual_recovery"]
+        {"available_mfa_methods": ["totp", "TOTP", "invalid", "recovery_code"]}
+    ) == ["totp", "recovery_code"]
     assert password_reset._available_reset_mfa_methods_from_transaction(
         {"mfa_required": "invalid"}
     ) == []
     with pytest.raises(AuthError):
         password_reset._normalize_reset_mfa_method("invalid")
-    assert password_reset._public_reset_mfa_method("manual_recovery") == (
-        password_reset.RESET_MFA_MANUAL_RECOVERY
+    assert password_reset._public_reset_mfa_method("recovery") == (
+        password_reset.RESET_MFA_RECOVERY_CODE
     )
 
     monkeypatch.setattr(
         password_reset,
-        "_available_reset_mfa_methods_for_user",
-        lambda _user: [password_reset.RESET_MFA_TOTP],
+        "unused_recovery_code_count",
+        lambda _user: 1,
     )
-    assert password_reset._mfa_requirement(
-        SimpleNamespace(mfa_step_up_preference="totp")
-    ) == password_reset.RESET_MFA_TOTP
+    mfa_user = SimpleNamespace(id=1, mfa_enabled=True)
+    assert password_reset._available_reset_mfa_methods_for_user(mfa_user) == [
+        password_reset.RESET_MFA_TOTP,
+        password_reset.RESET_MFA_RECOVERY_CODE,
+    ]
+    assert password_reset._mfa_requirement(mfa_user) == password_reset.RESET_MFA_TOTP
 
 
 def test_reset_token_helpers_fail_closed_for_every_reason(app, monkeypatch):

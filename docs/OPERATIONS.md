@@ -97,15 +97,28 @@ codes, QR codes, or decrypted MFA material.
    been rewrapped, post-rotation checks pass, rollback evidence is preserved,
    and the approved rollback window has closed.
 
-## Disposable Registration Data Reset
+## Disposable Database Reset
 
-If a development, staging, or demo database contains only seeded/test users from
-before the registration-field migration, prefer an explicit reset/recreate over
-preserving fake contact data. Confirm the target environment, confirm there are
-no real users, take any required backup, then run the normal bootstrap or
-deployment migration path for that environment. Production-like databases must
-not be reset by scripts or deployment automation without a separate approved
-maintenance record.
+Use the guarded `reset-demo-database` command documented in
+`docs/DEPLOYMENT.md` only for an environment confirmed to contain disposable
+project data. Stop customer and admin traffic, run staging first, retain
+sanitized verification evidence, and never add the command to routine deploy
+automation. Production additionally requires a protected approval and a fresh
+encrypted host-managed backup. After reset, rerun migration-baseline, runtime
+privilege, production-readiness, and customer/admin isolation checks before
+returning the services to traffic.
+
+## Customer Security Unlock
+
+Only root admins in the private admin runtime can request an unlock, and only
+for customer locks created automatically by password or MFA failure thresholds.
+The requester supplies a support reason and current TOTP. A different active
+root admin must approve the HMAC-protected request with a separate current TOTP;
+self-approval, identity-linked customer accounts, manual freezes, stale lock
+state, and lower roles fail closed. Approval clears the matching password/MFA
+failure counters and lock fields, revokes customer sessions, writes required
+audit evidence, and queues a customer security notice. It does not disable MFA,
+change credentials, clear unrelated throttles, or expose a customer-app route.
 
 ## Admin And Staging Access Operations
 
@@ -347,11 +360,14 @@ Run the manual **Verify private Grafana Loki observability** workflow from
 Tailscale ACL/DNS changes, or token rotation. The workflow uses the protected
 `observability-staging` or `observability-production` environment, joins
 Tailscale with `tag:github-ci-observability-verify`, verifies private Grafana
-health, anonymous denial, non-admin verifier role, Loki datasource health, and
-public denial probes, then uploads only sanitized evidence. It must not run on
-pull requests or public TLS jobs and must not receive operator passwords,
-browser sessions, cookies, MFA values, raw logs, datasource credentials, or
-Grafana admin credentials.
+health with explicit HTTP `200` status, anonymous denial, non-admin verifier
+role, Loki datasource health with explicit HTTP `200` status and schema
+validation, direct private `/loki` and `/metrics` denial, and public denial
+probes, then uploads only sanitized evidence. The private Grafana URL must be
+the approved `https://admin-sitbank.tailca101b.ts.net/grafana/` Tailscale
+subpath. It must not run on pull requests or public TLS jobs and must not
+receive operator passwords, browser sessions, cookies, MFA values, raw logs,
+datasource credentials, or Grafana admin credentials.
 
 ## Production Cloudflare Origin Operations
 
@@ -661,9 +677,15 @@ manual-recovery evidence, staff invites, security audit events, investigation
 holds, or encrypted backup archives.
 
 The command writes a sanitized system audit event with mode, retention days,
-batch limit, scheduling status, and category counts only. Full personal-data
-retention/disposal scheduling and encrypted-backup archive pruning remain
-tracked as governance/operator work, not hidden application behavior.
+batch limit, scheduling status, and category counts only. The legacy
+`cleanup-security-state` entry point now routes through the same dry-run and
+confirmation boundary. Weekly `sitbank-retention-review@staging.timer` and
+`sitbank-retention-review@production.timer` runs are dry-run reports only;
+operators review the aggregate report and separately authorize any confirmed
+cleanup. Record the reviewer, approval, report timestamp, target, and bounded
+categories in the external change record before running `--confirm`; command
+output remains aggregate-only. Full personal-data disposal and encrypted-backup archive pruning
+remain governance/operator work, not hidden application behavior.
 
 ## Audit Operations
 
@@ -698,11 +720,13 @@ python -m flask --app wsgi:app verify-audit-log-chain
 python -m flask --app wsgi:app verify-audit-log-chain --anchor /var/lib/sitbank/security-audit.anchor
 ```
 
-Export a sanitized anchor at least daily and after security-sensitive releases:
+Refresh the sanitized anchor manually, or through the daily target-aware
+systemd timer, after security-sensitive releases:
 
 ```bash
-python -m flask --app wsgi:app export-audit-log-anchor
-python -m flask --app wsgi:app export-audit-log-anchor --output /var/lib/sitbank/security-audit.anchor
+python -m flask --app wsgi:app refresh-audit-log-anchor
+sudo sitbank-container-runtime staging refresh-audit-log-anchor
+sudo sitbank-container-runtime production refresh-audit-log-anchor
 ```
 
 Operators are responsible for moving anchor JSON to immutable storage, WORM
@@ -725,8 +749,14 @@ anchored event hash changes, missing anchored rows, current chain behind the
 anchor, chain rewind, row tampering, tail deletion, missing hashes after the
 chain starts, and unsupported hash algorithms remain critical.
 
-Do not blindly refresh anchors. When `anchor_status=stale` and the chain is
-valid, refresh only after preserving evidence:
+Do not blindly refresh anchors. `refresh-audit-log-anchor` and
+`sitbank-audit-anchor-refresh@{staging,production}.timer` refuse malformed,
+mismatched, missing, permission-unsafe, or invalid-chain state. They accept
+only an exactly validated anchor or an append-only stale anchor whose anchored
+event still verifies. `check-security-alerts` never rotates an anchor. When
+`anchor_status=stale` and the chain is valid, preserve evidence as follows.
+This is the required evidence-preserving workflow:
+When preserving evidence, record only the sanitized fields listed below.
 
 1. Preserve the current verification output and anchor metadata in root-only
    evidence storage. Record the command, timestamp, environment, `anchor_event_id`,
@@ -735,8 +765,7 @@ valid, refresh only after preserving evidence:
 2. Run
    `python -m flask --app wsgi:app verify-audit-log-chain --anchor /var/lib/sitbank/security-audit.anchor`
    and confirm `valid=true`, `anchor_stale=true`, and `anchor_refresh_required=true`.
-3. Export the refreshed sanitized anchor with
-   `python -m flask --app wsgi:app export-audit-log-anchor --output /var/lib/sitbank/security-audit.anchor`.
+3. Run `python -m flask --app wsgi:app refresh-audit-log-anchor`.
 4. Rerun
    `python -m flask --app wsgi:app check-security-alerts --report-only --no-delivery`
    and restart or resume the alert timer only after `alert_count=0` or after all
@@ -749,9 +778,8 @@ before resuming routine deployments.
 
 The current banking implementation audits public transaction validation,
 TOTP-backed transaction authorization checks, Local Transfer execution, and
-PayUp execution. New customer account numbers are 12 digits; legacy 9-digit
-account numbers remain accepted for existing rows and payee lookup while the
-schema is widened.
+PayUp execution. Customer and payee account numbers are exactly 12 decimal
+digits across form, route, service, model, and database validation.
 
 Local transfer performs final ledger movement: the sender balance is debited,
 the recipient balance is credited, and a `Transaction` record is created in a
@@ -778,7 +806,14 @@ under the current database state. If so, a fresh authenticator code is required
 before funds move.
 
 Completed Local Transfer and PayUp rows store an HMAC-SHA256 transaction hash
-over canonical transaction fields. Required audit writes are part of the same
+under the dedicated `TRANSACTION_LEDGER_HMAC_KEYS_JSON` key id and explicit
+integrity version. The canonical payload covers transaction reference, sender,
+recipient, payee id, amount, customer reference, status, transfer type, and
+creation time. Rows without integrity metadata remain explicitly legacy and
+use compatibility verification; they are not represented as current keyed
+ledger assurance. Legacy session-keyed rows verify only while their historical
+session HMAC key remains configured; migration-generated SHA-256 rows retain
+their explicit lower-assurance compatibility check. Required audit writes are part of the same
 business transaction boundary; if a required success audit fails, ledger
 mutation rolls back. Customer-initiated account freezes send a security email
 and produce an immediate `account_freeze` alert. Blocked authorization
@@ -842,6 +877,15 @@ anchor. Valid append-only drift after the last exported anchor is reported as
 `anchor_stale`/`anchor_refresh_required` and should be refreshed with the
 evidence-preserving workflow above rather than delivered as a critical webhook
 alert.
+
+After an approved intentional database reset, use
+`sitbank-container-runtime <target> rebaseline-security-alert-state
+--intentional-reset --reason "<change record>"`. The command refuses missing
+acknowledgement/reason, an invalid audit chain, or a critical/mismatched
+anchor; it backs up the previous state, writes the protected-table snapshot
+atomically with owner-only mode, and audits only a keyed reason reference and
+bounded metadata. Never delete or hand-edit the state JSON to clear an
+unexplained regression.
 
 Admin/root users may review the same safe report in the private admin runtime
 with `GET /alerts`. That browser review is read-only and must not send alerts.

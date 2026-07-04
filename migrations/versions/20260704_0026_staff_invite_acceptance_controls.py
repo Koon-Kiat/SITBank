@@ -1,16 +1,16 @@
 """Add staff invite acceptance restart controls.
 
-Revision ID: 20260704_0025
-Revises: 20260703_0024
-Create Date: 2026-07-04 04:00:00
+Revision ID: 20260704_0026
+Revises: 20260704_0025
+Create Date: 2026-07-04 13:00:00
 """
 
 from alembic import op
 import sqlalchemy as sa
 
 
-revision = "20260704_0025"
-down_revision = "20260703_0024"
+revision = "20260704_0026"
+down_revision = "20260704_0025"
 branch_labels = None
 depends_on = None
 

@@ -11,7 +11,7 @@ def test_payee_cooldown_status_uses_server_created_timestamp():
     payee = Payee(
         user_id=1,
         nickname="Rent",
-        account_number="123456789",
+        account_number="123456789000",
         recipient_name="Recipient",
         created_at=created_at,
     )
@@ -28,7 +28,7 @@ def test_payee_cooldown_status_marks_payee_active_after_cooldown():
     payee = Payee(
         user_id=1,
         nickname="Rent",
-        account_number="123456789",
+        account_number="123456789000",
         recipient_name="Recipient",
         created_at=datetime.now(timezone.utc) - timedelta(seconds=61),
     )

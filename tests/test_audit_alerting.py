@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import secrets
+from pathlib import Path
 
 from _auth_flow_helpers import *
 
@@ -146,7 +148,7 @@ def test_required_audit_waits_for_caller_commit_before_persisting(app):
         password_hash=hash_password("correct horse battery staple"),
         full_name="Audit Boundary",
         phone_number="81234567",
-        account_number="012345678",
+        account_number="012345678000",
     )
     db.session.add(user)
     db.session.commit()
@@ -171,7 +173,7 @@ def test_required_audit_success_is_committed_by_the_caller(app):
         password_hash=hash_password("correct horse battery staple"),
         full_name="Audit Commit",
         phone_number="82345678",
-        account_number="012456789",
+        account_number="012456789000",
     )
     db.session.add(user)
     db.session.commit()
@@ -197,7 +199,7 @@ def test_required_audit_failure_leaves_business_rollback_to_caller(app, monkeypa
         password_hash=hash_password("correct horse battery staple"),
         full_name="Audit Failure",
         phone_number="83456789",
-        account_number="012567890",
+        account_number="012567890000",
     )
     db.session.add(user)
     db.session.commit()
@@ -217,30 +219,6 @@ def test_required_audit_failure_leaves_business_rollback_to_caller(app, monkeypa
     persisted = db.session.get(User, user_id)
     assert persisted.full_name == "Audit Failure"
     assert db.session.query(SecurityAuditEvent).filter_by(event_type="required_failure").count() == 0
-
-def test_webauthn_audit_wrapper_can_use_required_writer(monkeypatch):
-    from app.security import audit as audit_module
-
-    calls = []
-    monkeypatch.setattr(
-        audit_module,
-        "audit_event_required",
-        lambda event_type, outcome, **kwargs: calls.append((event_type, outcome, kwargs)),
-    )
-    monkeypatch.setattr(
-        audit_module,
-        "audit_event",
-        lambda *_args, **_kwargs: pytest.fail("required WebAuthn audit must not use best-effort writer"),
-    )
-
-    audit_module.audit_webauthn_event("register", "success", credential_id=b"credential-id", required=True)
-
-    assert calls
-    assert calls[0][0] == "webauthn_register"
-    assert calls[0][1] == "success"
-    metadata = calls[0][2]["metadata"]
-    assert metadata["credential_ref"]
-    assert "credential_id" not in metadata
 
 def test_audit_system_writer_uses_append_only_runtime_read_path(app, monkeypatch):
     from app.security import audit as audit_module
@@ -513,7 +491,7 @@ def test_security_alerts_detect_database_table_regression_from_external_state(ap
         password_hash=hash_password("correct horse battery staple"),
         full_name="Alice Test",
         phone_number="91234567",
-        account_number="012" + "".join(str(secrets.randbelow(10)) for _ in range(6)),
+        account_number="".join(str(secrets.randbelow(10)) for _ in range(12)),
     )
     db.session.add(user)
     db.session.commit()
@@ -541,6 +519,219 @@ def test_security_alerts_detect_database_table_regression_from_external_state(ap
     assert {"table:security_audit_events", "table:users"} <= regressed_sources
     assert persisted_state["tables"]["security_audit_events"]["count"] == 1
     assert persisted_state["tables"]["users"]["count"] == 1
+
+
+def test_audit_anchor_refresh_accepts_only_valid_or_append_only_stale_state(
+    app,
+    tmp_path,
+):
+    from app.security.audit import (
+        audit_event,
+        verify_audit_hash_chain,
+        write_audit_log_anchor,
+    )
+
+    anchor_path = tmp_path / "security-audit.anchor"
+    app.config["SECURITY_AUDIT_ANCHOR_PATH"] = str(anchor_path)
+    with app.test_request_context("/audit/initial", method="POST"):
+        audit_event("anchor_initial", "success")
+    write_audit_log_anchor(anchor_path)
+    with app.test_request_context("/audit/after", method="POST"):
+        audit_event("anchor_after", "success")
+
+    refreshed = app.test_cli_runner().invoke(args=["refresh-audit-log-anchor"])
+    refreshed_payload = json.loads(refreshed.output)
+    refreshed_anchor = json.loads(anchor_path.read_text(encoding="utf-8"))
+    verification = verify_audit_hash_chain(anchor=refreshed_anchor)
+
+    assert refreshed.exit_code == 0, refreshed.output
+    assert refreshed_payload["previous_anchor_status"] == "stale"
+    assert refreshed_payload["anchor_status"] == "validated"
+    assert refreshed_payload["anchor_refresh_required"] is False
+    assert verification["valid"] is True
+    assert verification["anchor_status"] == "validated"
+
+    corrupted = dict(refreshed_anchor)
+    corrupted["latest_event_hash"] = "f" * 64
+    anchor_path.write_text(json.dumps(corrupted), encoding="utf-8")
+    if os.name != "nt":
+        anchor_path.chmod(0o600)
+    refused = app.test_cli_runner().invoke(args=["refresh-audit-log-anchor"])
+
+    assert refused.exit_code != 0
+    assert "validation failed" in refused.output
+    assert json.loads(anchor_path.read_text(encoding="utf-8")) == corrupted
+
+
+def test_audit_anchor_writes_and_refresh_reject_unsafe_file_shapes(app, tmp_path):
+    from app.security.audit import refresh_audit_log_anchor, write_audit_log_anchor
+
+    directory_target = tmp_path / "anchor-directory"
+    directory_target.mkdir()
+    with pytest.raises(RuntimeError, match="regular file"):
+        write_audit_log_anchor(directory_target)
+
+    malformed = tmp_path / "malformed.anchor"
+    malformed.write_text("{", encoding="utf-8")
+    object_list = tmp_path / "list.anchor"
+    object_list.write_text("[]", encoding="utf-8")
+    if os.name != "nt":
+        malformed.chmod(0o600)
+        object_list.chmod(0o600)
+
+    with pytest.raises(RuntimeError, match="unreadable or malformed"):
+        refresh_audit_log_anchor(malformed)
+    with pytest.raises(RuntimeError, match="JSON object"):
+        refresh_audit_log_anchor(object_list)
+
+
+def test_security_alert_rebaseline_is_acknowledged_audited_and_atomic(
+    app,
+    tmp_path,
+):
+    from app.security.audit import audit_event, write_audit_log_anchor
+
+    anchor_path = tmp_path / "security-audit.anchor"
+    state_path = tmp_path / "security-alert-state.json"
+    app.config["SECURITY_AUDIT_ANCHOR_PATH"] = str(anchor_path)
+    app.config["SECURITY_ALERT_STATE_PATH"] = str(state_path)
+    with app.test_request_context("/audit/current", method="POST"):
+        audit_event("rebaseline_current", "success")
+    write_audit_log_anchor(anchor_path)
+    stale_state = {
+        "message": "security_alert_database_integrity_state",
+        "version": 1,
+        "generated_at": "2026-07-01T00:00:00Z",
+        "tables": {
+            "security_audit_events": {"count": 999, "max_id": 999},
+            "users": {"count": 999, "max_id": 999},
+        },
+    }
+    state_path.write_text(json.dumps(stale_state), encoding="utf-8")
+    if os.name != "nt":
+        state_path.chmod(0o600)
+
+    runner = app.test_cli_runner()
+    no_ack = runner.invoke(
+        args=["rebaseline-security-alert-state", "--reason", "approved reset"]
+    )
+    no_reason = runner.invoke(
+        args=["rebaseline-security-alert-state", "--intentional-reset"]
+    )
+    raw_reason = "Approved staging reset; fake ticket SEC-411"
+    completed = runner.invoke(
+        args=[
+            "rebaseline-security-alert-state",
+            "--intentional-reset",
+            "--reason",
+            raw_reason,
+        ]
+    )
+
+    assert no_ack.exit_code != 0
+    assert no_reason.exit_code != 0
+    assert completed.exit_code == 0, completed.output
+    payload = json.loads(completed.output)
+    assert payload["message"] == "security_alert_state_rebaselined"
+    assert payload["backup_path"]
+    assert Path(payload["backup_path"]).exists()
+    assert json.loads(Path(payload["backup_path"]).read_text(encoding="utf-8")) == stale_state
+    assert raw_reason not in completed.output
+    assert raw_reason not in state_path.read_text(encoding="utf-8")
+    outcomes = [
+        event.outcome
+        for event in db.session.query(SecurityAuditEvent)
+        .filter_by(event_type="security_alert_state_rebaseline")
+        .order_by(SecurityAuditEvent.id)
+    ]
+    assert outcomes == ["started", "completed"]
+    assert all(
+        raw_reason not in json.dumps(event.event_metadata)
+        for event in db.session.query(SecurityAuditEvent).all()
+    )
+
+
+def test_security_alert_rebaseline_restores_backup_when_atomic_write_fails(
+    app,
+    tmp_path,
+    monkeypatch,
+):
+    from app.security import alerts
+    from app.security.audit import audit_event, write_audit_log_anchor
+
+    anchor_path = tmp_path / "security-audit.anchor"
+    state_path = tmp_path / "security-alert-state.json"
+    app.config["SECURITY_AUDIT_ANCHOR_PATH"] = str(anchor_path)
+    app.config["SECURITY_ALERT_STATE_PATH"] = str(state_path)
+    with app.test_request_context("/audit/current", method="POST"):
+        audit_event("rebaseline_write_failure", "success")
+    write_audit_log_anchor(anchor_path)
+    original_state = {
+        "message": "security_alert_database_integrity_state",
+        "version": 1,
+        "generated_at": "2026-07-01T00:00:00Z",
+        "tables": {
+            "security_audit_events": {"count": 99, "max_id": 99},
+            "users": {"count": 99, "max_id": 99},
+        },
+    }
+    state_path.write_text(json.dumps(original_state), encoding="utf-8")
+    if os.name != "nt":
+        state_path.chmod(0o600)
+    monkeypatch.setattr(
+        alerts,
+        "_write_database_integrity_state",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            alerts.AlertConfigurationError("fake atomic write failure")
+        ),
+    )
+
+    with pytest.raises(
+        alerts.AlertConfigurationError,
+        match="fake atomic write failure",
+    ):
+        alerts.rebaseline_database_integrity_state(
+            intentional_reset=True,
+            reason="Approved fake recovery drill",
+        )
+
+    assert json.loads(state_path.read_text(encoding="utf-8")) == original_state
+    outcomes = [
+        event.outcome
+        for event in db.session.query(SecurityAuditEvent)
+        .filter_by(event_type="security_alert_state_rebaseline")
+        .order_by(SecurityAuditEvent.id)
+    ]
+    assert outcomes == ["started", "failed"]
+
+
+def test_security_alert_rebaseline_refuses_blank_reason_and_missing_paths(
+    app,
+    tmp_path,
+):
+    from app.security import alerts
+
+    with app.app_context():
+        with pytest.raises(alerts.AlertConfigurationError, match="non-empty"):
+            alerts.rebaseline_database_integrity_state(
+                intentional_reset=True,
+                reason="",
+            )
+
+        app.config["SECURITY_ALERT_STATE_PATH"] = None
+        app.config["SECURITY_AUDIT_ANCHOR_PATH"] = None
+        with pytest.raises(alerts.AlertConfigurationError, match="STATE_PATH"):
+            alerts.rebaseline_database_integrity_state(
+                intentional_reset=True,
+                reason="Approved fake reset",
+            )
+
+        app.config["SECURITY_ALERT_STATE_PATH"] = str(tmp_path / "state.json")
+        with pytest.raises(alerts.AlertConfigurationError, match="ANCHOR_PATH"):
+            alerts.rebaseline_database_integrity_state(
+                intentional_reset=True,
+                reason="Approved fake reset",
+            )
 
 def test_security_alert_evaluator_cli_and_output_are_sanitized(app):
     from app.security.alerts import evaluate_security_alerts
@@ -570,7 +761,6 @@ def test_security_alert_evaluator_cli_and_output_are_sanitized(app):
         audit_event("security_audit_write_failed", "failure", metadata={"token": raw_token})
         audit_event("account_lock", "locked", metadata={"reason": "mfa_failed"})
         audit_event("account_freeze", "success", metadata={"reason": "customer_requested"})
-        audit_event("webauthn_clone_detected", "locked", metadata={"credential_id": "credential-ref"})
         audit_event("session_integrity", "failure", metadata={"reason": "invalid_signature"})
 
     with app.test_request_context(
@@ -601,7 +791,6 @@ def test_security_alert_evaluator_cli_and_output_are_sanitized(app):
         "security_audit_write_failed",
         "account_lock",
         "account_freeze",
-        "webauthn_clone_detected",
         "session_integrity_failure",
         "login_failure_burst",
         "auth_backoff_or_rate_limit_burst",
@@ -737,8 +926,8 @@ def test_security_alert_webhook_delivery_redacts_final_payload_fields(monkeypatc
         "session_id": "session-id-secret",
         "totp_code": "123456",
         "recovery_codes": ["recovery-code-one", "recovery-code-two"],
-        "webauthn_challenge": "webauthn-challenge-secret",
-        "webauthn_assertion": {
+        "authentication_challenge": "authentication-challenge-secret",
+        "authentication_assertion": {
             "clientDataJSON": "client-data-json-secret",
             "authenticatorData": "authenticator-data-secret",
             "signature": "signature-secret",
@@ -799,8 +988,8 @@ def test_security_alert_webhook_delivery_redacts_final_payload_fields(monkeypatc
     assert delivered_alert["session_id"] == "[redacted]"
     assert delivered_alert["totp_code"] == "[redacted]"
     assert delivered_alert["recovery_codes"] == "[redacted]"
-    assert delivered_alert["webauthn_challenge"] == "[redacted]"
-    assert delivered_alert["webauthn_assertion"] == "[redacted]"
+    assert delivered_alert["authentication_challenge"] == "[redacted]"
+    assert delivered_alert["authentication_assertion"] == "[redacted]"
     assert delivered_alert["hmac_key"] == "[redacted]"
     assert delivered_alert["mfa_kek"] == "[redacted]"
     assert delivered_alert["smtp_username"] == "[redacted]"
@@ -831,7 +1020,7 @@ def test_security_alert_webhook_delivery_redacts_final_payload_fields(monkeypatc
         "123456",
         "recovery-code-one",
         "recovery-code-two",
-        "webauthn-challenge-secret",
+        "authentication-challenge-secret",
         "client-data-json-secret",
         "authenticator-data-secret",
         "signature-secret",

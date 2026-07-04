@@ -18,7 +18,11 @@ from app.extensions import db
 from app.banking.schemas import MAX_TRANSACTION_AMOUNT, MIN_TRANSACTION_AMOUNT, PublicTransactionSchema
 from app.models import Payee, Transaction, User
 from app.security.audit import AuditWriteError, audit_event, audit_event_required, audit_reference
-from app.security.session_hmac import active_hmac_hex
+from app.security.session_hmac import active_hmac_hex, candidate_hmac_hex
+from app.security.transaction_integrity import (
+    sign_transaction_integrity,
+    transaction_integrity_status,
+)
 
 
 PAYUP_STEP_UP_THRESHOLD = Decimal("0.80")
@@ -49,15 +53,14 @@ def payup_transfer_token_verifier(token: str) -> str:
 
 
 def transaction_hash_matches(transaction: Transaction) -> bool:
-    expected = _transaction_hash(
-        transaction.transaction_ref,
-        int(transaction.sender_id),
-        int(transaction.recipient_id),
-        Decimal(str(transaction.amount)),
-        transaction.reference or "",
-        transaction.created_at,
+    integrity_status = transaction_integrity_status(transaction)
+    if integrity_status != "legacy":
+        return integrity_status == "valid"
+    expected = str(transaction.transaction_hash or "")
+    return any(
+        hmac.compare_digest(expected, candidate)
+        for candidate in _legacy_transaction_hash_candidates(transaction)
     )
-    return hmac.compare_digest(str(transaction.transaction_hash or ""), expected)
 
 
 def _amount_audit_band(amount: Decimal) -> str:
@@ -158,14 +161,13 @@ def verify_transfer_step_up(
     transfer_risk: str,
     *,
     totp_code: str | None = None,
-    stepup_token: str | None = None,
     action: str = "transaction_authorization",
 ) -> None:
     from app.auth.services import verify_high_risk_authorization
 
     ensure_outbound_transfer_allowed(user)
     transfer_step_up_requirement(transfer_risk)
-    verify_high_risk_authorization(user, totp_code, stepup_token, action)
+    verify_high_risk_authorization(user, totp_code, action)
 
 
 def public_transaction_payload_hash(payload: Mapping[str, object]) -> str:
@@ -488,15 +490,28 @@ def execute_local_transfer(
             sender,
             "failure",
             metadata={"reason": "insufficient_funds", "amount_band": _amount_audit_band(amount)},
-            payee_account=audit_reference("payee_account", payee.account_number),
+            payee_account=payee.account_number,
         )
         db.session.commit()
         raise AuthError("Insufficient funds.", 400)
 
     txn_ref = str(uuid.uuid4())
     txn_created_at = datetime.now(timezone.utc)
-    txn_hash = _transaction_hash(
-        txn_ref, locked_sender.id, locked_recipient.id, amount, reference, txn_created_at
+    (
+        txn_hash,
+        integrity_key_id,
+        integrity_algorithm,
+        integrity_version,
+    ) = sign_transaction_integrity(
+        transaction_ref=txn_ref,
+        sender_id=locked_sender.id,
+        recipient_id=locked_recipient.id,
+        payee_id=payee.id,
+        amount=amount,
+        reference=reference,
+        status="completed",
+        transaction_type="local_transfer",
+        created_at=txn_created_at,
     )
     locked_sender.balance -= amount
     locked_recipient.balance += amount
@@ -504,12 +519,16 @@ def execute_local_transfer(
         Transaction(
             transaction_ref=txn_ref,
             transaction_hash=txn_hash,
+            transaction_integrity_key_id=integrity_key_id,
+            transaction_integrity_algorithm=integrity_algorithm,
+            transaction_integrity_version=integrity_version,
             sender_id=locked_sender.id,
             recipient_id=locked_recipient.id,
             payee_id=payee.id,
             amount=amount,
             reference=reference,
             status="completed",
+            transaction_type="local_transfer",
             created_at=txn_created_at,
         )
     )
@@ -537,8 +556,8 @@ def _audit_local_transfer_success(
                 "reference_present": bool(reference),
                 "reference_length": len(reference),
             },
-            transaction_reference=audit_reference("transaction_reference", txn_ref),
-            payee_account=audit_reference("payee_account", payee.account_number),
+            transaction_reference=txn_ref,
+            payee_account=payee.account_number,
         )
     except AuditWriteError:
         db.session.rollback()
@@ -771,8 +790,21 @@ def execute_payup_transfer(
 
     txn_ref = str(uuid.uuid4())
     txn_created_at = datetime.now(timezone.utc)
-    txn_hash = _transaction_hash(
-        txn_ref, locked_sender.id, locked_recipient.id, amount, reference, txn_created_at
+    (
+        txn_hash,
+        integrity_key_id,
+        integrity_algorithm,
+        integrity_version,
+    ) = sign_transaction_integrity(
+        transaction_ref=txn_ref,
+        sender_id=locked_sender.id,
+        recipient_id=locked_recipient.id,
+        payee_id=None,
+        amount=amount,
+        reference=reference,
+        status="completed",
+        transaction_type="payup",
+        created_at=txn_created_at,
     )
     locked_sender.balance -= amount
     locked_recipient.balance += amount
@@ -780,6 +812,9 @@ def execute_payup_transfer(
         Transaction(
             transaction_ref=txn_ref,
             transaction_hash=txn_hash,
+            transaction_integrity_key_id=integrity_key_id,
+            transaction_integrity_algorithm=integrity_algorithm,
+            transaction_integrity_version=integrity_version,
             sender_id=locked_sender.id,
             recipient_id=locked_recipient.id,
             payee_id=None,
@@ -803,7 +838,7 @@ def execute_payup_transfer(
                 "transfer_channel": "payup",
                 "step_up_used": requires_step_up,
             },
-            transaction_reference=audit_reference("transaction_reference", txn_ref),
+            transaction_reference=txn_ref,
         )
     except AuditWriteError:
         db.session.rollback()
@@ -811,28 +846,30 @@ def execute_payup_transfer(
     return txn_ref
 
 
-def _transaction_hash(
-    transaction_ref: str,
-    sender_id: int,
-    recipient_id: int,
-    amount: Decimal,
-    reference: str,
-    created_at: datetime,
-) -> str:
-    """HMAC-SHA256 of canonical transaction fields for keyed tamper evidence."""
-    canonical = json.dumps(
-        {
-            "amount": str(amount),
-            "created_at": _canonical_transaction_timestamp(created_at),
-            "recipient_id": recipient_id,
-            "reference": reference,
-            "sender_id": sender_id,
-            "transaction_ref": transaction_ref,
-        },
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-    return active_hmac_hex(f"banking-transaction:{canonical}", length=64)
+def _legacy_transaction_hash_candidates(transaction: Transaction):
+    """Yield pre-ledger-format digests without upgrading their assurance status."""
+    timestamps = {
+        _canonical_transaction_timestamp(transaction.created_at),
+        transaction.created_at.isoformat(),
+    }
+    for timestamp in timestamps:
+        canonical = json.dumps(
+            {
+                "amount": str(transaction.amount),
+                "created_at": timestamp,
+                "recipient_id": int(transaction.recipient_id),
+                "reference": transaction.reference or "",
+                "sender_id": int(transaction.sender_id),
+                "transaction_ref": transaction.transaction_ref,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        yield hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        yield from candidate_hmac_hex(
+            f"banking-transaction:{canonical}",
+            length=64,
+        )
 
 
 def _canonical_transaction_timestamp(created_at: datetime) -> str:

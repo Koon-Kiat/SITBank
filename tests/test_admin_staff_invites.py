@@ -170,7 +170,6 @@ def test_root_admin_can_create_hashed_staff_invite(admin_client):
     assert response.status_code == 201
     assert response.get_json()["invite"]["workplace_email"] == "staff.person@sit.singaporetech.edu.sg"
     assert "personal_email_ref" not in response.get_json()["invite"]
-    assert invite.personal_email_normalized is None
     assert invite.token_hash != token
     assert token not in json.dumps(invite.__dict__, default=str)
     assert invite.expires_at.replace(tzinfo=timezone.utc) > datetime.now(timezone.utc)
@@ -427,10 +426,11 @@ def test_invite_acceptance_restart_limit_and_root_reset(admin_client):
 
     reset = admin_client.post(
         f"/invites/{invite.id}/reset-acceptance",
-        json={"totp_code": _stable_totp(root_secret)},
+        data={"totp_code": _stable_totp(root_secret)},
     )
 
-    assert reset.status_code == 200
+    assert reset.status_code == 303
+    assert reset.headers["Location"].endswith("/invites")
     db.session.refresh(invite)
     assert invite.status == "pending"
     assert invite.acceptance_start_count == 0
@@ -447,6 +447,215 @@ def test_invite_acceptance_restart_limit_and_root_reset(admin_client):
         ),
     )
     assert restarted.status_code == 200
+
+
+def test_invite_acceptance_reset_returns_json_for_api_clients(admin_client):
+    root, root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    _login_admin(admin_client, root_secret)
+    invite = _insert_invite_for_token(
+        "JsonResetInviteToken0000000000000000000",
+        root,
+        status="totp_pending",
+        acceptance_session_hash="1" * 64,
+        acceptance_start_count=2,
+        acceptance_locked_at=datetime.now(timezone.utc),
+    )
+
+    reset = admin_client.post(
+        f"/invites/{invite.id}/reset-acceptance",
+        json={"totp_code": _stable_totp(root_secret)},
+    )
+
+    assert reset.status_code == 200
+    assert reset.get_json()["message"] == "Invite acceptance reset"
+    db.session.refresh(invite)
+    assert invite.status == "pending"
+    assert invite.acceptance_session_hash is None
+    assert invite.acceptance_locked_at is None
+
+
+def test_invite_acceptance_reset_rejects_invalid_actors_step_up_and_missing_invites(admin_client):
+    from app.admin.services import reset_staff_invite_acceptance
+    from app.auth.services import AuthError
+
+    root, root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    staff, _staff_secret = _create_staff_identity(
+        username="staff-user",
+        email="staff.user@sit.singaporetech.edu.sg",
+        account_type="staff",
+        phone_number="91234568",
+    )
+    invite = _insert_invite_for_token("ResetGuardInviteToken000000000000000000", root)
+
+    with pytest.raises(AuthError) as forbidden:
+        reset_staff_invite_acceptance(staff, invite.id, None)
+    assert forbidden.value.status_code == 403
+    assert forbidden.value.message == "Forbidden"
+
+    with pytest.raises(AuthError) as invalid_step_up:
+        reset_staff_invite_acceptance(root, invite.id, "not-a-code")
+    assert invalid_step_up.value.status_code == 403
+    assert invalid_step_up.value.message == "Fresh MFA verification is required"
+
+    other_root, other_root_secret = _create_staff_identity(
+        username="second-root-admin",
+        email="root2@sit.singaporetech.edu.sg",
+        account_type="root_admin",
+        phone_number="91234569",
+    )
+    _login_admin(admin_client, other_root_secret, email=other_root.email)
+    missing = admin_client.post(
+        f"/invites/{invite.id + 1000}/reset-acceptance",
+        json={"totp_code": _stable_totp(other_root_secret)},
+    )
+
+    assert missing.status_code == 404
+    assert missing.get_json() == {"error": "Invite not found"}
+
+
+def test_invite_acceptance_reset_blocks_non_resettable_setup_users(admin_client):
+    root, root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    setup_user = User(
+        username="active-staff",
+        email="staff.person@sit.singaporetech.edu.sg",
+        password_hash=hash_password(STAFF_PASSWORD),
+        account_type="staff",
+        account_status="active",
+        full_name="Active Staff",
+        phone_number="91234568",
+        account_number=None,
+        workplace_email_verified_at=datetime.now(timezone.utc),
+    )
+    db.session.add(setup_user)
+    db.session.flush()
+    invite = _insert_invite_for_token(
+        "NonResettableInviteToken0000000000000000",
+        root,
+        status="totp_pending",
+        setup_user_id=setup_user.id,
+        acceptance_session_hash="0" * 64,
+        acceptance_start_count=1,
+        acceptance_started_at=datetime.now(timezone.utc),
+    )
+    _login_admin(admin_client, root_secret)
+
+    blocked = admin_client.post(
+        f"/invites/{invite.id}/reset-acceptance",
+        json={"totp_code": _stable_totp(root_secret)},
+    )
+
+    assert blocked.status_code == 409
+    assert blocked.get_json() == {"error": "Invite link is invalid or expired"}
+    db.session.refresh(invite)
+    db.session.refresh(setup_user)
+    assert invite.setup_user_id == setup_user.id
+    assert setup_user.account_status == "active"
+
+
+def test_invite_acceptance_verify_rejects_locked_invites(admin_client):
+    root, _root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    token = "LockedVerifyInviteToken00000000000000000"
+    _insert_invite_for_token(
+        token,
+        root,
+        status="totp_pending",
+        acceptance_locked_at=datetime.now(timezone.utc),
+        acceptance_start_count=3,
+    )
+
+    locked = admin_client.post(
+        f"/invites/accept/{token}/verify",
+        json={"totp_code": "123456", "workplace_verification_code": "654321"},
+    )
+
+    assert locked.status_code == 429
+    _assert_invite_acceptance_security_headers(locked)
+
+    start_token = "LockedStartInviteToken000000000000000000"
+    _insert_invite_for_token(
+        start_token,
+        root,
+        acceptance_locked_at=datetime.now(timezone.utc),
+        acceptance_start_count=3,
+    )
+    locked_start = admin_client.post(
+        f"/invites/accept/{start_token}/start",
+        json=_staff_invite_start_payload(),
+    )
+
+    assert locked_start.status_code == 429
+    _assert_invite_acceptance_security_headers(locked_start)
+
+
+def test_invite_acceptance_restarts_existing_setup_user_without_legacy_session_hash(admin_client):
+    root, _root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    setup_user = User(
+        username="legacy-staff",
+        email="staff.person@sit.singaporetech.edu.sg",
+        password_hash=hash_password(f"{STAFF_PASSWORD} old"),
+        account_type="staff",
+        account_status="setup_pending",
+        full_name="Legacy Staff",
+        phone_number="91234568",
+        account_number=None,
+        staff_personal_email="legacy.staff@example.test",
+    )
+    db.session.add(setup_user)
+    db.session.flush()
+    token = "LegacySessionInviteToken000000000000000"
+    invite = _insert_invite_for_token(
+        token,
+        root,
+        status="totp_pending",
+        setup_user_id=setup_user.id,
+        acceptance_session_hash=None,
+        acceptance_start_count=1,
+        acceptance_started_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+    )
+
+    restarted = admin_client.post(
+        f"/invites/accept/{token}/start",
+        json=_staff_invite_start_payload(
+            full_name="Updated Staff",
+            phone_number="92345678",
+            password=f"{STAFF_PASSWORD} legacy",
+            confirm_password=f"{STAFF_PASSWORD} legacy",
+        ),
+    )
+
+    assert restarted.status_code == 200
+    db.session.refresh(invite)
+    db.session.refresh(setup_user)
+    assert setup_user.full_name == "Updated Staff"
+    assert setup_user.phone_number == "92345678"
+    assert setup_user.staff_personal_email is None
+    assert invite.acceptance_session_hash is not None
+    assert invite.acceptance_start_count == 2
 
 
 def test_invite_acceptance_verification_is_bound_to_start_session(admin_app, admin_client):
@@ -637,7 +846,7 @@ def test_separation_guard_blocks_linked_staff_acting_on_own_customer(admin_app):
         account_status="active",
         full_name="Same Person",
         phone_number="91234568",
-        account_number="012123456",
+        account_number="012123456000",
     )
     db.session.add(customer)
     db.session.flush()
@@ -660,4 +869,4 @@ def test_separation_guard_blocks_linked_staff_acting_on_own_customer(admin_app):
     ).one()
     assert event.user_id == staff.id
     assert event.event_metadata["action_type"] == "balance_edit"
-    assert "012123456" not in json.dumps(event.event_metadata)
+    assert "012123456000" not in json.dumps(event.event_metadata)

@@ -47,6 +47,7 @@ from .services import (
     query_audit_events_for_admin,
     invite_info,
     logout_admin_session,
+    locked_customers_for_admin,
     manual_recovery_requests_for_admin,
     public_invites_for_root_admin,
     public_admin_user,
@@ -55,6 +56,7 @@ from .services import (
     require_staff_session,
     reset_staff_invite_acceptance,
     reject_admin_action_request_as_root_admin,
+    request_customer_security_unlock,
     revoke_staff_invite,
     staff_accounts_for_admin,
     start_invite_acceptance,
@@ -225,6 +227,15 @@ class ManualRecoveryCompleteSchema(Schema):
 
 
 class AdminActionDecisionSchema(Schema):
+    totp_code = fields.Str(
+        required=True,
+        load_only=True,
+        validate=validate.Regexp(_TOTP_PATTERN, error=_MFA_CODE_ERROR),
+    )
+
+
+class CustomerSecurityUnlockSchema(Schema):
+    reason = fields.Str(required=True, validate=validate.Length(min=1, max=512))
     totp_code = fields.Str(
         required=True,
         load_only=True,
@@ -935,6 +946,39 @@ def staff_accounts():
         user=public_admin_user(actor),
         navigation=admin_navigation_for(actor),
     )
+
+
+@admin_bp.get("/customer-security-locks")
+def customer_security_locks():
+    actor = require_root_admin_session()
+    customers = locked_customers_for_admin(actor)
+    if _wants_json():
+        return jsonify({"customers": customers})
+    return render_template(
+        "admin/customer_security_locks.html",
+        customers=customers,
+        actor=actor,
+        user=public_admin_user(actor),
+        navigation=admin_navigation_for(actor),
+    )
+
+
+@admin_bp.post("/customers/<int:user_id>/security-unlock-requests")
+@limiter.limit(_ADMIN_RATE_LIMIT_HOURLY, key_func=get_remote_address)
+@limiter.limit(_ADMIN_RATE_LIMIT_STEP_UP, key_func=request_principal)
+def customer_security_unlock_request(user_id: int):
+    actor = require_root_admin_session()
+    data = _payload(CustomerSecurityUnlockSchema())
+    result = request_customer_security_unlock(
+        actor,
+        user_id,
+        data["reason"],
+        data[_ADMIN_TOTP_CODE_FIELD],
+    )
+    if _wants_json():
+        return jsonify(result), 202
+    flash("Customer unlock request created for separate approval.", "success")
+    return redirect(url_for("admin.customer_security_locks")), 303
 
 
 @admin_bp.post("/staff/<int:user_id>/deactivate")

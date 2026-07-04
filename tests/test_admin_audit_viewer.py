@@ -60,7 +60,7 @@ def _create_identity(
         account_status="active",
         full_name=username.replace("-", " ").title(),
         phone_number=phone_number,
-        account_number="100000001" if account_type == "customer" else None,
+        account_number="100000001000" if account_type == "customer" else None,
         workplace_email_verified_at=datetime.now(timezone.utc) if account_type != "customer" else None,
         mfa_enabled=False,
     )
@@ -136,7 +136,7 @@ def test_audit_viewer_authorization_denies_unauthenticated_customer_and_staff(ad
     staff_response = admin_client.get("/audit-logs")
 
     assert unauthenticated.status_code == 401
-    assert customer_response.status_code == 403
+    assert customer_response.status_code == 401
     assert staff_response.status_code == 403
     assert db.session.query(SecurityAuditEvent).filter_by(
         event_type="admin_role_authorization",

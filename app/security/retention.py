@@ -77,7 +77,7 @@ def run_retention_cleanup(
         "approved_categories": list(APPROVED_SECURITY_STATE_CATEGORIES),
         "preserved_categories": list(PRESERVED_RETENTION_CATEGORIES),
         "category_counts": counts,
-        "scheduling": "external_or_open",
+        "scheduling": "weekly_operator_reviewed_dry_run",
     }
 
 

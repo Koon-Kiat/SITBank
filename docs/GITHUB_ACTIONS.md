@@ -151,6 +151,7 @@ set these environment variables:
 - `<PREFIX>_EC2_DEPLOY_USER`
 - `<PREFIX>_PUBLIC_HOST`
 - `<PREFIX>_MFA_KEK_ACTIVE_ID`
+- `<PREFIX>_TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID`
 - `<PREFIX>_SESSION_HMAC_ACTIVE_KEY_ID`
 - `<PREFIX>_PASSWORD_PBKDF2_ITERATIONS`
 - `<PREFIX>_MFA_ISSUER_NAME`
@@ -243,6 +244,10 @@ tokens, JWTs, service tokens, cookies, session identifiers, CSRF values, and
 private-key blocks before printing handled errors.
 
 `<PREFIX>_MFA_KEK_ACTIVE_ID` must match a key identifier in the root-managed `/etc/sitbank*/secrets/mfa_kek_keys_json` file on EC2. Do not put `MFA_KEK_KEYS_JSON` in GitHub Actions; the KEK keyring is a long-lived secret and remains host-managed.
+`<PREFIX>_TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID` must match a key identifier
+in `/etc/sitbank*/secrets/transaction_ledger_hmac_keys_json`. Keep the
+transaction-ledger keyring host-managed and separate from session and audit
+HMAC material.
 `<PREFIX>_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID` must match a key identifier in
 `/etc/sitbank*/secrets/admin_session_hmac_keys_json`. Do not put admin Flask,
 CSRF, session-HMAC, session-lookup HMAC, password-pepper, or database secret values in GitHub
@@ -332,7 +337,9 @@ or operator credential rotation. It is intentionally separate from PR-safe
 static tests and from public TLS evidence because Grafana is a private operator
 tool and Loki is not Internet-facing.
 
-Configure each protected environment with `GRAFANA_PRIVATE_URL`,
+Configure each protected environment with `GRAFANA_PRIVATE_URL` set to the
+approved private subpath URL,
+`https://admin-sitbank.tailca101b.ts.net/grafana/`,
 optional `OBSERVABILITY_PUBLIC_PROBE_URLS`, `GRAFANA_HEALTH_TOKEN`,
 `TS_OAUTH_CLIENT_ID`, and `TS_OAUTH_SECRET`. The Tailscale OAuth client should
 be restricted to `tag:github-ci-observability-verify`, and the Grafana token
@@ -341,10 +348,14 @@ passwords, browser sessions, cookies, MFA values, raw Loki logs, datasource
 credentials, or Grafana admin credentials in GitHub.
 
 The workflow checks that private Grafana is unreachable before joining the
-tailnet, joins Tailscale, verifies Grafana API health, anonymous API denial,
-non-admin verifier role, Loki datasource health, and public denial probes for
-`/grafana`, `/loki`, `/logs`, and `/metrics`. It uploads only sanitized JSON
-evidence for 30 days and logs out of Tailscale at completion.
+tailnet, joins Tailscale, verifies Grafana API health with explicit HTTP `200`
+status, verifies anonymous API denial, verifies the non-admin verifier role,
+checks Loki datasource health through Grafana with explicit HTTP `200` status
+and schema validation, verifies direct private `/loki` and `/metrics` denial
+on the Tailscale host, and runs public denial probes for `/grafana`, `/loki`,
+`/logs`, and `/metrics`. It fails closed when private or public responses
+include Grafana/Loki-identifying headers or cookies, uploads only sanitized
+JSON evidence for 30 days, and logs out of Tailscale at completion.
 
 ## Gitleaks
 

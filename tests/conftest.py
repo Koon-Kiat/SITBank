@@ -27,6 +27,11 @@ TEST_MFA_KEK_KEYS = {
     "test-mfa-current": b"4" * 32,
     "test-mfa-previous": b"5" * 32,
 }
+TEST_TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID = "test-ledger-current"
+TEST_TRANSACTION_LEDGER_HMAC_KEYS = {
+    "test-ledger-current": b"b" * 32,
+    "test-ledger-previous": b"c" * 32,
+}
 
 
 def _encoded_keyring(keys: dict[str, bytes]) -> str:
@@ -54,6 +59,12 @@ os.environ.setdefault(
 )
 os.environ["MFA_KEK_ACTIVE_ID"] = TEST_MFA_KEK_ACTIVE_ID
 os.environ["MFA_KEK_KEYS_JSON"] = _encoded_keyring(TEST_MFA_KEK_KEYS)
+os.environ["TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID"] = (
+    TEST_TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID
+)
+os.environ["TRANSACTION_LEDGER_HMAC_KEYS_JSON"] = _encoded_keyring(
+    TEST_TRANSACTION_LEDGER_HMAC_KEYS
+)
 os.environ.setdefault(
     "PASSWORD_PEPPER_B64",
     base64.b64encode(b"1" * 32).decode("ascii"),
@@ -98,6 +109,10 @@ class TestConfig:
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     MFA_KEK_ACTIVE_ID = TEST_MFA_KEK_ACTIVE_ID
     MFA_KEK_KEYS = TEST_MFA_KEK_KEYS
+    TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID = (
+        TEST_TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID
+    )
+    TRANSACTION_LEDGER_HMAC_KEYS = TEST_TRANSACTION_LEDGER_HMAC_KEYS
     PASSWORD_PEPPER_B64 = os.environ["PASSWORD_PEPPER_B64"]
     ADMIN_PASSWORD_PEPPER_B64 = os.environ["ADMIN_PASSWORD_PEPPER_B64"]
     PASSWORD_PBKDF2_ITERATIONS = int(os.environ["PASSWORD_PBKDF2_ITERATIONS"])
@@ -263,7 +278,6 @@ SECURITY_TEST_FILES = frozenset(
         "tests/test_session_management.py",
         "tests/test_session_risk_binding.py",
         "tests/test_local_transfer_security.py",
-        "tests/test_webauthn_lifecycle.py",
     }
 )
 DEPLOYMENT_TEST_FILES = frozenset(
@@ -289,7 +303,6 @@ SLOW_TEST_FILES = frozenset(
         "tests/test_session_absolute_lifetime.py",
         "tests/test_session_management.py",
         "tests/test_session_risk_binding.py",
-        "tests/test_webauthn_lifecycle.py",
     }
 )
 SERIAL_TEST_FILES = frozenset()

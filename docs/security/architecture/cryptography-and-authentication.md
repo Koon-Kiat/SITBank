@@ -186,15 +186,23 @@ host files from `/etc/sitbank/secrets` or `/etc/sitbank-staging/secrets` into
 | `SESSION_HMAC_KEYS_JSON` / admin variant | Keyring for database session payload signatures and public references | `config.py`, `app/security/session_hmac.py` | 32-byte base64 values, active key id must exist; old keys can remain during rotation |
 | `SESSION_LOOKUP_HMAC_KEY` / admin variant | HMAC of browser session IDs before database lookup | `config.py`, `app/security/sessions.py` | Must decode to exactly 32 bytes; customer and admin keys are separate |
 | `MFA_KEK_KEYS_JSON` | Key-encryption keys for MFA secret envelope encryption | `config.py`, `app/security/crypto.py` | Keyring supports active id and `flask rewrap-mfa-deks` for rewrapping stored DEKs |
+| `TRANSACTION_LEDGER_HMAC_KEYS_JSON` | Dedicated keyring for transaction-ledger integrity | `config.py`, `app/security/transaction_integrity.py` | 32-byte base64 values; the active id must exist and old ids remain available while rows signed by them are retained |
 | `PASSWORD_PEPPER_B64` / admin variant | 32-byte pepper before PBKDF2 password hashing | `config.py`, `app/security/passwords.py` | Must decode to exactly 32 bytes |
 | `SECURITY_AUDIT_HMAC_KEY` | HMAC key for audit hash-chain integrity | `config.py`, `app/security/audit.py` | Required and at least 32 characters in production; verified by `production-check` |
 | SMTP credentials | Password reset and staff invite email delivery | `config.py`, `app/security/email.py`, Compose files | Production requires SMTP host, credentials, and `SMTP_USE_TLS=true` |
+
+Transaction-ledger HMAC protects against an attacker who can modify database
+rows but does not possess the separate ledger key. It is keyed integrity, not
+asymmetric legal non-repudiation: an operator with both database-write access
+and ledger-key access could forge a row. Separation of duties, audit-chain
+evidence, root-managed key files, and access review remain required.
 
 Tests covering key validation include
 `tests/test_config.py::test_required_configuration_accepts_direct_or_file_exclusively`,
 `tests/test_config.py::test_secret_file_rejects_empty_multiline_and_symlink`,
 `tests/test_config.py::test_session_lookup_hmac_key_decodes_to_32_bytes`,
 `tests/test_config.py::test_session_hmac_keyring_requires_active_32_byte_key`,
+`tests/test_transaction_integrity.py`,
 `tests/test_mfa_envelope_crypto.py::test_mfa_keyring_config_fails_closed`, and
 `tests/test_deployment.py::test_container_bundle_keyring_validation_normalizes_ids_and_rejects_duplicates`.
 
@@ -306,9 +314,8 @@ redisplayed. Staff invite MFA setup uses the same bounded lifecycle.
 Recovery codes are generated as random 16-byte values encoded as grouped hex,
 stored as versioned, user-and-purpose-bound HMACs, consumed once, and used only
 as explicit recovery-code factors. The reset API does not accept a recovery
-code through the TOTP field. Legacy password-reset WebAuthn endpoints remain
-registered as compatibility surfaces but return `410 Gone`; they do not
-advertise or initiate passkey reset.
+code through the TOTP field. Retired browser-credential reset URLs are not
+registered and return `404`.
 
 ### Password Reset
 
