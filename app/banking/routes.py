@@ -948,6 +948,11 @@ def _csv_safe(value: str) -> str:
     return text
 
 
+def _adjacent_period(year: int, month: int, *, delta: int) -> tuple[int, int]:
+    zero_based = (year * 12 + (month - 1)) + delta
+    return zero_based // 12, zero_based % 12 + 1
+
+
 @banking_bp.get("/statement")
 @web_login_required
 @web_not_frozen_required
@@ -958,7 +963,22 @@ def statement():
     except AuthError as exc:
         flash(exc.message, "error")
         data = None
-    return render_template(_STATEMENT_TEMPLATE, user=g.current_user, statement=data, year=year, month=month)
+    now_sgt = datetime.now(timezone.utc).astimezone(_SGT_STATEMENT_OFFSET)
+    prev_year, prev_month = _adjacent_period(year, month, delta=-1)
+    next_year, next_month = _adjacent_period(year, month, delta=1)
+    has_next_period = (year, month) < (now_sgt.year, now_sgt.month)
+    return render_template(
+        _STATEMENT_TEMPLATE,
+        user=g.current_user,
+        statement=data,
+        year=year,
+        month=month,
+        prev_year=prev_year,
+        prev_month=prev_month,
+        next_year=next_year,
+        next_month=next_month,
+        has_next_period=has_next_period,
+    )
 
 
 @banking_bp.get("/statement/download")
