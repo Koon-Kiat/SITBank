@@ -32,6 +32,7 @@ from app.security.session_hmac import (
 SESSION_RISK_REAUTH_REQUIRED_KEY = "risk_reauth_required"
 JSON_MIME_TYPE = "application/json"
 WEB_LOGIN_ENDPOINT = "web.login"
+ADMIN_LOGIN_ENDPOINT = "admin.login_form"
 SESSION_RISK_FINGERPRINT_KEY = "risk_fingerprint"
 SESSION_RISK_CONTEXT_KEY = "risk_context"
 SESSION_RISK_CONTEXT_VERSION = 1
@@ -1026,13 +1027,20 @@ def _wants_session_json_response() -> bool:
 def _session_expired_response(message: str = "Session expired"):
     if _wants_session_json_response():
         return jsonify({"error": message}), 401
-    return redirect(url_for(WEB_LOGIN_ENDPOINT, session_expired=1))
+    return redirect(url_for(_login_endpoint(), session_expired=1))
 
 
 def _session_revoked_response():
     if _wants_session_json_response():
         return jsonify({"error": "Session revoked"}), 401
-    return redirect(url_for(WEB_LOGIN_ENDPOINT, session_expired=1))
+    return redirect(url_for(_login_endpoint(), session_expired=1))
+
+
+def _login_endpoint() -> str:
+    """Return the login endpoint registered by the isolated runtime."""
+    if current_app.config.get("APP_MODE") == "admin":
+        return ADMIN_LOGIN_ENDPOINT
+    return WEB_LOGIN_ENDPOINT
 
 
 def register_session_hooks(app: Flask) -> None:
@@ -1080,13 +1088,16 @@ def _revoked_session_response_if_required():
     if record is None or record.revoked_at is None:
         return None
     session.clear()
-    if request.endpoint in {
+    public_endpoints = {
+        _login_endpoint(),
+        "admin.login",
         "main.index",
         WEB_LOGIN_ENDPOINT,
         "web.login_submit",
         "web.register_form",
         "web.register_submit",
-    }:
+    }
+    if request.endpoint in public_endpoints:
         return None
     return _session_revoked_response()
 
@@ -1119,7 +1130,7 @@ def _pending_mfa_expiry_response(now: int):
         ), 401
     flash("MFA challenge expired. Please log in again.", "warning")
     rotate_session_id()
-    return redirect(url_for(WEB_LOGIN_ENDPOINT))
+    return redirect(url_for(_login_endpoint()))
 
 
 def _absolute_lifetime_expiry_response(now: int):

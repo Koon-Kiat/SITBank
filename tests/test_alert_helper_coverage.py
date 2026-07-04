@@ -70,6 +70,42 @@ def test_database_integrity_state_roundtrip_and_validation(tmp_path):
         alerts._load_database_integrity_state(missing_tables)
 
 
+def test_database_integrity_state_path_rejects_unsafe_shapes(
+    tmp_path,
+    monkeypatch,
+):
+    with pytest.raises(alerts.AlertConfigurationError, match="absolute"):
+        alerts._validate_security_state_path(
+            type(tmp_path)("relative-security-state.json")
+        )
+
+    state_path = tmp_path / "security-state.json"
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            type(state_path),
+            "is_symlink",
+            lambda self: self == state_path,
+        )
+        with pytest.raises(alerts.AlertConfigurationError, match="symlink"):
+            alerts._validate_security_state_path(state_path)
+
+    directory_path = tmp_path / "state-directory"
+    directory_path.mkdir()
+    with pytest.raises(alerts.AlertConfigurationError, match="regular file"):
+        alerts._validate_security_state_path(directory_path)
+
+    nested_path = tmp_path / "unsafe-parent" / "state.json"
+    nested_path.parent.mkdir()
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            type(nested_path),
+            "is_symlink",
+            lambda self: self == nested_path.parent,
+        )
+        with pytest.raises(alerts.AlertConfigurationError, match="parent directory"):
+            alerts._validate_security_state_path(nested_path)
+
+
 def test_database_integrity_regression_alerts_fail_closed_and_report_rewind():
     now = datetime(2026, 1, 2, tzinfo=timezone.utc)
     assert alerts._database_integrity_regression_alerts(

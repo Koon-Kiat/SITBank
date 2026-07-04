@@ -17,8 +17,20 @@ from sqlalchemy import MetaData, and_, column, create_engine, func, select, tabl
 from app.admin.bootstrap_root import RootAdminBootstrapError, bootstrap_root_admin
 from app.extensions import db
 from app.models import User
-from app.security.alerts import build_security_alert_report, deliver_security_alerts
-from app.security.audit import audit_log_anchor, audit_system_event, verify_audit_hash_chain, write_audit_log_anchor
+from app.security.alerts import (
+    build_security_alert_report,
+    deliver_security_alerts,
+    rebaseline_database_integrity_state,
+)
+from app.security.audit import (
+    AuditWriteError,
+    audit_log_anchor,
+    audit_system_event,
+    audit_system_event_required,
+    refresh_audit_log_anchor,
+    verify_audit_hash_chain,
+    write_audit_log_anchor,
+)
 from app.security.crypto import (
     is_enveloped_mfa_secret,
     mfa_envelope_kek_id,
@@ -344,6 +356,45 @@ def register_ops_commands(app: Flask) -> None:  # NOSONAR
         payload = json.dumps(anchor, separators=(",", ":"), sort_keys=True)
         click.echo(payload)
 
+    @app.cli.command("refresh-audit-log-anchor")
+    def refresh_audit_log_anchor_command() -> None:
+        """Refresh a configured anchor after fail-closed chain validation."""
+        configured_path = str(
+            app.config.get("SECURITY_AUDIT_ANCHOR_PATH") or ""
+        ).strip()
+        if not configured_path:
+            raise click.ClickException("SECURITY_AUDIT_ANCHOR_PATH is required")
+        try:
+            result = refresh_audit_log_anchor(Path(configured_path))
+        except Exception as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(json.dumps(result, separators=(",", ":"), sort_keys=True))
+
+    @app.cli.command("rebaseline-security-alert-state")
+    @click.option(
+        "--intentional-reset",
+        is_flag=True,
+        help="Acknowledge that the current database state is an approved reset.",
+    )
+    @click.option(
+        "--reason",
+        required=True,
+        help="Non-empty operator reason; only a keyed reference and length are retained.",
+    )
+    def rebaseline_security_alert_state_command(
+        intentional_reset: bool,
+        reason: str,
+    ) -> None:
+        """Safely replace database-regression state after an approved reset."""
+        try:
+            result = rebaseline_database_integrity_state(
+                intentional_reset=intentional_reset,
+                reason=reason,
+            )
+        except Exception as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(json.dumps(result, separators=(",", ":"), sort_keys=True))
+
     @app.cli.command("check-security-alerts")
     @click.option("--report-only", is_flag=True, help="Exit zero even when active alerts are found.")
     @click.option("--no-delivery", is_flag=True, help="Skip configured webhook delivery and only print JSON.")
@@ -368,11 +419,14 @@ def register_ops_commands(app: Flask) -> None:  # NOSONAR
 
     @app.cli.command("cleanup-security-state")
     @click.option("--limit", type=int, default=None, help="Maximum rows per state table to clean.")
-    def cleanup_security_state_command(limit: int | None) -> None:
-        """Clean expired DB-backed sessions and security state."""
-        from app.security.state_cleanup import cleanup_expired_security_state
-
-        result = cleanup_expired_security_state(limit=limit)
+    @click.option(
+        "--confirm",
+        is_flag=True,
+        help="Apply cleanup. Without this flag the compatibility command is dry-run only.",
+    )
+    def cleanup_security_state_command(limit: int | None, confirm: bool) -> None:
+        """Compatibility wrapper for confirm-gated retention cleanup."""
+        result = _run_audited_retention_cleanup(limit=limit, confirm=confirm)
         click.echo(json.dumps(result, separators=(",", ":"), sort_keys=True))
 
     @security_cli.command("run-retention-cleanup")
@@ -389,8 +443,32 @@ def register_ops_commands(app: Flask) -> None:  # NOSONAR
     )
     def run_retention_cleanup_command(limit: int | None, confirm: bool) -> None:
         """Review or apply approved temporary security-state retention cleanup."""
+        result = _run_audited_retention_cleanup(limit=limit, confirm=confirm)
+        click.echo(json.dumps(result, separators=(",", ":"), sort_keys=True))
+
+    def _run_audited_retention_cleanup(
+        *,
+        limit: int | None,
+        confirm: bool,
+    ) -> dict:
         from app.security.retention import RetentionCleanupError, run_retention_cleanup
 
+        requested_metadata = {
+            "mode": "confirmed" if confirm else "dry_run",
+            "dry_run": not confirm,
+            "batch_limit_requested": limit,
+        }
+        if confirm:
+            try:
+                audit_system_event_required(
+                    "retention_cleanup",
+                    "started",
+                    metadata=requested_metadata,
+                )
+            except AuditWriteError as exc:
+                raise click.ClickException(
+                    "Retention cleanup refused because audit evidence is unavailable"
+                ) from exc
         try:
             result = run_retention_cleanup(
                 limit=limit,
@@ -398,21 +476,44 @@ def register_ops_commands(app: Flask) -> None:  # NOSONAR
                 confirm=confirm,
             )
         except RetentionCleanupError as exc:
+            if confirm:
+                audit_system_event(
+                    "retention_cleanup",
+                    "failed",
+                    metadata={
+                        **requested_metadata,
+                        "error_type": type(exc).__name__,
+                    },
+                )
             raise click.ClickException(str(exc)) from exc
 
-        audit_system_event(
-            "retention_cleanup",
-            result["mode"],
-            metadata={
-                "mode": result["mode"],
-                "dry_run": result["dry_run"],
-                "retention_days": result["retention_days"],
-                "batch_limit": result["batch_limit"],
-                "category_counts": result["category_counts"],
-                "scheduling": result["scheduling"],
-            },
-        )
-        click.echo(json.dumps(result, separators=(",", ":"), sort_keys=True))
+        completed_metadata = {
+            "mode": result["mode"],
+            "dry_run": result["dry_run"],
+            "retention_days": result["retention_days"],
+            "batch_limit": result["batch_limit"],
+            "category_counts": result["category_counts"],
+            "scheduling": result["scheduling"],
+        }
+        if confirm:
+            try:
+                audit_system_event_required(
+                    "retention_cleanup",
+                    "completed",
+                    metadata=completed_metadata,
+                )
+            except AuditWriteError as exc:
+                raise click.ClickException(
+                    "Retention cleanup completed with started audit evidence, "
+                    "but completion evidence failed"
+                ) from exc
+        else:
+            audit_system_event(
+                "retention_cleanup",
+                "dry_run",
+                metadata=completed_metadata,
+            )
+        return result
 
     @app.cli.command("rewrap-mfa-deks")
     @click.option("--from-kek-id", required=True, help="Existing KEK id wrapping the target DEKs.")

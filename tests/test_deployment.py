@@ -71,6 +71,8 @@ DEPLOYMENT_VALUES = {
     "PROD_DATABASE_URL": "postgresql+psycopg2://bank:secret@127.0.0.1/bank",
     "PROD_MFA_KEK_ACTIVE_ID": "2026-06-mfa",
     "PROD_MFA_KEK_KEYS_JSON": '{"2026-06-mfa":"NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ="}',
+    "PROD_TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID": "2026-07-ledger",
+    "PROD_TRANSACTION_LEDGER_HMAC_KEYS_JSON": '{"2026-07-ledger":"YmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmI="}',
     "PROD_PASSWORD_PEPPER_B64": "MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE=",
     "PROD_PUBLIC_HOST": "sitbank.pp.ua",
     "PROD_SECRET_KEY": "secret-key-with-$-and-enough-length-for-production",
@@ -734,6 +736,7 @@ def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypa
     assert environment["ADMIN_SESSION_KEY_PREFIX"] == "admin-session:"
     assert environment["ADMIN_RATELIMIT_KEY_PREFIX"] == "ospbank:admin:ratelimit:"
     assert environment["MFA_KEK_ACTIVE_ID"] == "2026-06-mfa"
+    assert environment["TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID"] == "2026-07-ledger"
     assert environment["COMMON_PASSWORDS_PATH"] == "/run/config/common-passwords.txt"
     assert environment["SECURITY_ALERT_STATE_PATH"] == "/run/state/security-alert-state.json"
     assert environment["SECURITY_AUDIT_ANCHOR_PATH"] == "/var/lib/sitbank/security-audit.anchor"
@@ -748,6 +751,10 @@ def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypa
     assert secrets["admin_secret_key"] == DEPLOYMENT_VALUES["PROD_ADMIN_SECRET_KEY"]
     assert secrets["database_migration_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_MIGRATION_URL"]
     assert secrets["mfa_kek_keys_json"] == DEPLOYMENT_VALUES["PROD_MFA_KEK_KEYS_JSON"]
+    assert (
+        secrets["transaction_ledger_hmac_keys_json"]
+        == DEPLOYMENT_VALUES["PROD_TRANSACTION_LEDGER_HMAC_KEYS_JSON"]
+    )
     assert secrets["root_admin_emails"] == ROOT_ADMIN_EMAILS_VALUE
     assert secrets["security_audit_hmac_key"] == DEPLOYMENT_VALUES["PROD_SECURITY_AUDIT_HMAC_KEY"]
     assert secrets["smtp_username"] == DEPLOYMENT_VALUES["PROD_SMTP_USERNAME"]
@@ -783,6 +790,7 @@ def test_container_bundle_accepts_staging_prefix(monkeypatch):
     assert environment["SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06"
     assert environment["ADMIN_SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06-admin"
     assert environment["MFA_KEK_ACTIVE_ID"] == "2026-06-mfa"
+    assert environment["TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID"] == "2026-07-ledger"
     assert environment["SECURITY_AUDIT_ANCHOR_PATH"] == "/run/state/security-audit.anchor"
     assert secrets["secret_key"] == DEPLOYMENT_VALUES["PROD_SECRET_KEY"]
     assert secrets["database_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_URL"]
@@ -3510,6 +3518,55 @@ def test_security_alert_scheduler_units_are_committed_and_safe():
         assert required in docs
 
 
+def test_anchor_refresh_and_retention_review_schedulers_are_fail_closed():
+    runtime = Path("ops/deploy/sitbank-container-runtime").read_text(
+        encoding="utf-8"
+    )
+    bootstrap = Path("ops/deploy/bootstrap-container-ec2").read_text(
+        encoding="utf-8"
+    )
+    anchor_service = Path(
+        "ops/systemd/sitbank-audit-anchor-refresh@.service"
+    ).read_text(encoding="utf-8")
+    anchor_timer = Path(
+        "ops/systemd/sitbank-audit-anchor-refresh@.timer"
+    ).read_text(encoding="utf-8")
+    retention_service = Path(
+        "ops/systemd/sitbank-retention-review@.service"
+    ).read_text(encoding="utf-8")
+    retention_timer = Path(
+        "ops/systemd/sitbank-retention-review@.timer"
+    ).read_text(encoding="utf-8")
+
+    assert (
+        "ExecStart=/usr/local/sbin/sitbank-container-runtime %i "
+        "refresh-audit-log-anchor"
+    ) in anchor_service
+    assert "OnCalendar=*-*-* 02:15:00" in anchor_timer
+    assert "Persistent=true" in anchor_timer
+    assert (
+        "ExecStart=/usr/local/sbin/sitbank-container-runtime %i "
+        "retention-cleanup-report"
+    ) in retention_service
+    assert "OnCalendar=Mon *-*-* 03:15:00" in retention_timer
+    assert "--confirm" not in retention_service
+    assert "security run-retention-cleanup" in runtime
+    assert "rebaseline-security-alert-state" in runtime
+    assert '"$@"' in runtime
+    assert (
+        'systemctl enable --now "sitbank-audit-anchor-refresh@${target}.timer"'
+        in bootstrap
+    )
+    assert (
+        'systemctl enable --now "sitbank-retention-review@${target}.timer"'
+        in bootstrap
+    )
+    for service in (anchor_service, retention_service):
+        assert "NoNewPrivileges=true" in service
+        assert "ProtectSystem=strict" in service
+        assert "ReadWritePaths=/run/docker.sock" in service
+
+
 def test_nginx_default_server_is_shared_for_same_host_production_and_staging():
     default_nginx = Path("ops/nginx/sitbank-default.conf").read_text(encoding="utf-8")
     production_nginx = Path("ops/nginx/sitbank-production.conf").read_text(encoding="utf-8")
@@ -3737,6 +3794,9 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     assert "error_page 429 = @sitbank_rate_limited;" in nginx
     assert "location @sitbank_rate_limited {" in nginx
     assert "Too many attempts. Please try again later." in nginx
+    assert 'href="/static/css/app.css"' in nginx
+    assert 'class="brand-name">SITBank' in nginx
+    assert 'class="panel narrow empty-state"' in nginx
     assert "proxy_pass" not in _nginx_location_bodies(
         nginx,
         "@sitbank_rate_limited",
@@ -3940,6 +4000,9 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     )
     assert len(browser_error_bodies) == 1
     assert "Too many attempts. Please try again later." in browser_error_bodies[0]
+    assert 'href="/static/css/app.css"' in browser_error_bodies[0]
+    assert 'class="brand-name">SITBank' in browser_error_bodies[0]
+    assert 'class="panel narrow empty-state"' in browser_error_bodies[0]
     assert "proxy_pass" not in browser_error_bodies[0]
     api_error_bodies = _nginx_location_bodies(
         customer_nginx,

@@ -161,6 +161,14 @@ Migration `20260703_0024` enforces exactly 12 decimal digits for non-null
 randomizes all 12 positions independently; route and form validation match the
 database constraints. The migration does not convert obsolete identifiers.
 
+Migration `20260704_0025` adds nullable transaction-integrity key id,
+algorithm, and version metadata. Existing rows remain explicitly legacy;
+new Local Transfer and PayUp rows use the dedicated
+`TRANSACTION_LEDGER_HMAC_KEYS_JSON` keyring and cover transaction type plus all
+stored ledger fields. Provision the environment-specific root-managed keyring
+and matching `TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID` before `db upgrade` and
+application restart. Do not reuse session or audit HMAC keys.
+
 ## Deployment Prerequisites
 
 Install `/etc/sitbank/secrets/security_alert_webhook_url` or

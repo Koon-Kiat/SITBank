@@ -43,7 +43,12 @@ from app.banking.services import (
 )
 from app.extensions import db, limiter
 from app.models import Payee, PayupPendingTransfer, PendingTransfer, User
-from app.security.audit import audit_event, audit_reference
+from app.security.audit import (
+    AuditWriteError,
+    audit_event,
+    audit_event_required,
+    audit_reference,
+)
 from app.security.rate_limits import DurableRateLimitExceeded, consume_durable_rate_limit
 from app.security.rate_limits import mfa_principal
 from app.web.routes import web_login_required, web_not_frozen_required
@@ -313,18 +318,26 @@ def payees_confirm_submit():
     )
     try:
         db.session.add(payee)
+        db.session.flush([payee])
+        audit_event_required(
+            "payee_add",
+            "success",
+            user=g.current_user,
+            metadata={
+                "payee_account_ref": audit_reference(
+                    "payee_account",
+                    account_number,
+                )
+            },
+        )
         db.session.commit()
     except IntegrityError:
         db.session.rollback()
         flash(_DUPLICATE_PAYEE_MESSAGE, "error")
         return redirect(url_for(_PAYEES_ENDPOINT))
-
-    audit_event(
-        "payee_add",
-        "success",
-        user=g.current_user,
-        metadata={"payee_account_ref": audit_reference("payee_account", account_number)},
-    )
+    except AuditWriteError:
+        db.session.rollback()
+        raise
 
     cooldown_seconds = current_app.config.get("PAYEE_COOLDOWN_SECONDS", 60)
     cooldown_label = _format_cooldown_remaining(cooldown_seconds)
@@ -365,18 +378,25 @@ def payees_remove_submit(payee_id: int):
         flash(exc.message, "error")
         return render_template(_REMOVE_PAYEE_TEMPLATE, form=form, payee=payee), exc.status_code
 
-    audit_event(
-        "payee_remove",
-        "success",
-        user=g.current_user,
-        metadata={
-            "payee_account_ref": audit_reference("payee_account", payee.account_number),
-            "nickname_present": bool(payee.nickname),
-            "nickname_length": len(payee.nickname or ""),
-        },
-    )
-    db.session.delete(payee)
-    db.session.commit()
+    try:
+        db.session.delete(payee)
+        audit_event_required(
+            "payee_remove",
+            "success",
+            user=g.current_user,
+            metadata={
+                "payee_account_ref": audit_reference(
+                    "payee_account",
+                    payee.account_number,
+                ),
+                "nickname_present": bool(payee.nickname),
+                "nickname_length": len(payee.nickname or ""),
+            },
+        )
+        db.session.commit()
+    except AuditWriteError:
+        db.session.rollback()
+        raise
 
     flash("Payee removed.", "success")
     return redirect(url_for(_PAYEES_ENDPOINT))

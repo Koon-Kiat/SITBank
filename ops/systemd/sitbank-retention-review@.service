@@ -1,0 +1,17 @@
+[Unit]
+Description=SITBank %i retention dry-run report
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=HOME=/tmp
+ExecStart=/usr/local/sbin/sitbank-container-runtime %i retention-cleanup-report
+TimeoutStartSec=90
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/run/docker.sock

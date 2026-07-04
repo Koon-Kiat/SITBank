@@ -23,6 +23,7 @@ from app.models import (
 )
 from app.security.alerts import validate_security_alert_config
 from app.security.audit import validate_audit_integrity_config
+from app.security.transaction_integrity import validate_transaction_integrity_config
 from app.security.cloudflare_access import validate_cloudflare_access_config
 from app.security.passwords import (
     validate_common_password_dictionary,
@@ -394,6 +395,13 @@ def _validate_alert_and_audit_policy(result: ProductionReadinessResult) -> None:
         _failure(result, "Audit integrity configuration check", exc)
     else:
         result.details["audit_hmac_key_length"] = audit_key_length
+
+    try:
+        ledger_key_count = validate_transaction_integrity_config()
+    except Exception as exc:
+        _failure(result, "Transaction ledger HMAC configuration check", exc)
+    else:
+        result.details["transaction_ledger_hmac_key_count"] = ledger_key_count
 
 
 def _validate_edge_policy(app: Flask, result: ProductionReadinessResult) -> None:

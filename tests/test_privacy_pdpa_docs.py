@@ -69,6 +69,14 @@ def test_retention_doc_distinguishes_deactivation_deletion_and_anonymization():
         "docs/security/governance/security-gap-register.md",
     ):
         assert required in text
+    for scheduled_control in (
+        "sitbank-retention-review@staging.timer",
+        "sitbank-retention-review@production.timer",
+        "aggregate-only dry-run report",
+        "timer never passes that flag",
+        "complete retention/disposal scheduler",
+    ):
+        assert scheduled_control in text
 
 
 def test_incident_response_doc_covers_required_workflows_and_evidence_rules():
@@ -112,5 +120,7 @@ def test_gap_register_updated_for_privacy_docs_and_retention_automation_gap():
     assert "PDPA data inventory and retention schedule" not in current_open
     assert "Dedicated incident response runbook" not in current_open
     assert "Automated retention and disposal jobs" in current_open
+    assert "Weekly target-aware timers generate aggregate dry-run reports" in current_open
+    assert "do not turn the report timer into unattended deletion" in current_open
     assert "Privacy and PDPA documentation" in register
     assert "Incident response runbook" in register

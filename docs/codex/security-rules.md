@@ -23,6 +23,13 @@ Apply these principles by default:
 
 Do not weaken an existing security control to make implementation easier. If a control must change, the replacement must be documented, tested, and at least as secure.
 
+Every implementation must also harden the changed trust boundary against
+recurrence. Cover adjacent bypasses, malformed and stale state, unsafe
+configuration, partial failure, replay, and cross-runtime behavior where
+relevant. Prefer one centralized invariant plus positive, negative, and
+fail-closed tests over isolated call-site patches. Keep the added hardening
+proportionate and reviewable.
+
 ## Identity and access rules
 
 Preserve customer, staff, admin, and root-admin identity separation.

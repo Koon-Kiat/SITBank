@@ -407,6 +407,7 @@ install_runtime_bundle() {
         SECURITY_ALERT_TIMEOUT_SECONDS
         SECURITY_AUDIT_ANCHOR_PATH
         SESSION_HMAC_ACTIVE_KEY_ID
+        TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID
         SMTP_HOST
         SMTP_PORT
         SMTP_USE_TLS
@@ -499,6 +500,7 @@ validate_staging_isolation() {
         database_url \
         database_migration_url \
         mfa_kek_keys_json \
+        transaction_ledger_hmac_keys_json \
         password_pepper_b64 \
         security_audit_hmac_key \
         admin_secret_key \
@@ -802,6 +804,7 @@ required_secrets=(
     database_url
     database_migration_url
     mfa_kek_keys_json
+    transaction_ledger_hmac_keys_json
     password_pepper_b64
     root_admin_emails
     security_audit_hmac_key

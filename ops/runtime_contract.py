@@ -7,6 +7,7 @@ CUSTOMER_APP_SECRET_INPUTS = {
     "SESSION_LOOKUP_HMAC_KEY": "session_lookup_hmac_key",
     "DATABASE_URL": "database_url",
     "MFA_KEK_KEYS_JSON": "mfa_kek_keys_json",
+    "TRANSACTION_LEDGER_HMAC_KEYS_JSON": "transaction_ledger_hmac_keys_json",
     "PASSWORD_PEPPER_B64": "password_pepper_b64",
     "ROOT_ADMIN_EMAILS": "root_admin_emails",
     "SECURITY_AUDIT_HMAC_KEY": "security_audit_hmac_key",
@@ -23,6 +24,7 @@ ADMIN_APP_SECRET_INPUTS = {
     "ADMIN_SESSION_LOOKUP_HMAC_KEY": "admin_session_lookup_hmac_key",
     "ADMIN_DATABASE_URL": "admin_database_url",
     "MFA_KEK_KEYS_JSON": "mfa_kek_keys_json",
+    "TRANSACTION_LEDGER_HMAC_KEYS_JSON": "transaction_ledger_hmac_keys_json",
     "ADMIN_PASSWORD_PEPPER_B64": "admin_password_pepper_b64",
     "ROOT_ADMIN_EMAILS": "root_admin_emails",
 }
@@ -128,6 +130,7 @@ NON_SECRET_RUNTIME_ENVIRONMENT = tuple(
             "MFA_KEK_ACTIVE_ID",
             "MFA_ISSUER_NAME",
             "SESSION_HMAC_ACTIVE_KEY_ID",
+            "TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID",
             "SMTP_HOST",
             *NON_SECRET_DEFAULTS,
             *POLICY_CONFIG_PATHS,

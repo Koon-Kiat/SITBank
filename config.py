@@ -104,6 +104,7 @@ CUSTOMER_RUNTIME_SECRET_ENV_NAMES = {
     "SESSION_LOOKUP_HMAC_KEY": "SESSION_LOOKUP_HMAC_KEY",
     "SQLALCHEMY_DATABASE_URI": "DATABASE_URL",
     "MFA_KEK_KEYS": "MFA_KEK_KEYS_JSON",
+    "TRANSACTION_LEDGER_HMAC_KEYS": "TRANSACTION_LEDGER_HMAC_KEYS_JSON",
     "PASSWORD_PEPPER_B64": "PASSWORD_PEPPER_B64",
     "SECURITY_AUDIT_HMAC_KEY": "SECURITY_AUDIT_HMAC_KEY",
 }
@@ -115,6 +116,7 @@ ADMIN_RUNTIME_SECRET_ENV_NAMES = {
     "SESSION_LOOKUP_HMAC_KEY": "ADMIN_SESSION_LOOKUP_HMAC_KEY",
     "SQLALCHEMY_DATABASE_URI": "ADMIN_DATABASE_URL",
     "MFA_KEK_KEYS": "MFA_KEK_KEYS_JSON",
+    "TRANSACTION_LEDGER_HMAC_KEYS": "TRANSACTION_LEDGER_HMAC_KEYS_JSON",
     "PASSWORD_PEPPER_B64": "ADMIN_PASSWORD_PEPPER_B64",
     "SECURITY_AUDIT_HMAC_KEY": "SECURITY_AUDIT_HMAC_KEY",
 }
@@ -929,6 +931,13 @@ def _customer_runtime_overrides(config: dict) -> dict[str, object]:
             lambda: _required_env("MFA_KEK_ACTIVE_ID"),
         )
     )
+    transaction_ledger_active_key_id = str(
+        _configured_value(
+            config,
+            "TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID",
+            lambda: _required_env("TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID"),
+        )
+    )
     return {
         "APP_MODE": "customer",
         "SECRET_ENV_NAMES": CUSTOMER_RUNTIME_SECRET_ENV_NAMES,
@@ -984,6 +993,16 @@ def _customer_runtime_overrides(config: dict) -> dict[str, object]:
                 active_label="MFA_KEK_ACTIVE_ID",
             ),
         ),
+        "TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID": transaction_ledger_active_key_id,
+        "TRANSACTION_LEDGER_HMAC_KEYS": _configured_value(
+            config,
+            "TRANSACTION_LEDGER_HMAC_KEYS",
+            lambda: _required_keyring(
+                "TRANSACTION_LEDGER_HMAC_KEYS_JSON",
+                active_key_id=transaction_ledger_active_key_id,
+                active_label="TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID",
+            ),
+        ),
         "PASSWORD_PEPPER_B64": _configured_value(
             config,
             "PASSWORD_PEPPER_B64",
@@ -1027,6 +1046,13 @@ def _admin_runtime_overrides(config: dict) -> dict[str, object]:
             config,
             "MFA_KEK_ACTIVE_ID",
             lambda: _required_env("MFA_KEK_ACTIVE_ID"),
+        )
+    )
+    transaction_ledger_active_key_id = str(
+        _configured_value(
+            config,
+            "TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID",
+            lambda: _required_env("TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID"),
         )
     )
     return {
@@ -1074,6 +1100,16 @@ def _admin_runtime_overrides(config: dict) -> dict[str, object]:
                 "MFA_KEK_KEYS_JSON",
                 active_key_id=mfa_kek_active_id,
                 active_label="MFA_KEK_ACTIVE_ID",
+            ),
+        ),
+        "TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID": transaction_ledger_active_key_id,
+        "TRANSACTION_LEDGER_HMAC_KEYS": _configured_value(
+            config,
+            "TRANSACTION_LEDGER_HMAC_KEYS",
+            lambda: _required_keyring(
+                "TRANSACTION_LEDGER_HMAC_KEYS_JSON",
+                active_key_id=transaction_ledger_active_key_id,
+                active_label="TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID",
             ),
         ),
         "PASSWORD_PEPPER_B64": _configured_value(
@@ -1173,6 +1209,8 @@ class Config:
 
     MFA_KEK_ACTIVE_ID = None
     MFA_KEK_KEYS = None
+    TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID = None
+    TRANSACTION_LEDGER_HMAC_KEYS = None
     PASSWORD_PEPPER_B64 = None
     PASSWORD_PBKDF2_ITERATIONS = int(os.getenv("PASSWORD_PBKDF2_ITERATIONS", "600000"))
     if PASSWORD_PBKDF2_ITERATIONS < 600000:

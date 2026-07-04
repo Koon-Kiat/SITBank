@@ -34,7 +34,7 @@ def test_retention_cleanup_defaults_to_dry_run_and_preserves_categories(app, mon
     )
     assert "security_audit_events" in result["preserved_categories"]
     assert "transactions" in result["preserved_categories"]
-    assert result["scheduling"] == "external_or_open"
+    assert result["scheduling"] == "weekly_operator_reviewed_dry_run"
 
 
 def test_retention_cleanup_requires_confirmation_for_mutation(app, monkeypatch):

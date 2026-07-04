@@ -299,6 +299,8 @@ printf 'postgresql+psycopg2://ci_owner:%s@%s:5432/ci' \
     > "${work_dir}/secrets/database_migration_url"
 printf '%s' '{"ci-mfa":"NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ="}' \
     > "${work_dir}/secrets/mfa_kek_keys_json"
+printf '%s' '{"ci-ledger":"YmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmI="}' \
+    > "${work_dir}/secrets/transaction_ledger_hmac_keys_json"
 printf '%s' 'MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE=' \
     > "${work_dir}/secrets/password_pepper_b64"
 printf '%s' 'ci-audit-hmac-key-that-is-long-enough-for-container-tests' \
@@ -353,6 +355,8 @@ docker_args=(
     --env DATABASE_URL_FILE=/run/secrets/database_url
     --env MFA_KEK_ACTIVE_ID=ci-mfa
     --env MFA_KEK_KEYS_JSON_FILE=/run/secrets/mfa_kek_keys_json
+    --env TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID=ci-ledger
+    --env TRANSACTION_LEDGER_HMAC_KEYS_JSON_FILE=/run/secrets/transaction_ledger_hmac_keys_json
     --env PAYEE_COOLDOWN_SECONDS=43200
     --env PASSWORD_PEPPER_B64_FILE=/run/secrets/password_pepper_b64
     --env SECURITY_AUDIT_HMAC_KEY_FILE=/run/secrets/security_audit_hmac_key
