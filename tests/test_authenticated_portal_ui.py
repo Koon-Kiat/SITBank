@@ -76,6 +76,18 @@ def test_auth_intro_notice_icon_uses_contrasting_solid_surface():
     assert "rgba(255, 255, 255, 0.14)" not in notice_icon_rule
 
 
+def test_statement_delta_badge_uses_contrasting_solid_surfaces():
+    stylesheet = Path("app/static/css/app.css").read_text(encoding="utf-8")
+    delta_rule = stylesheet.split(".statement-delta {", 1)[1].split("}", 1)[0]
+    negative_delta_rule = stylesheet.split(".statement-delta.is-negative {", 1)[1].split("}", 1)[0]
+
+    assert "background: #ffffff;" in delta_rule
+    assert "color: #8f1024;" in delta_rule
+    assert "rgba(255, 255, 255, 0.18)" not in delta_rule
+    assert "background: #111111;" in negative_delta_rule
+    assert "color: #ffffff;" in negative_delta_rule
+
+
 def test_authenticated_layout_contains_working_profile_menu_destinations(client):
     register(client)
     login(client)
