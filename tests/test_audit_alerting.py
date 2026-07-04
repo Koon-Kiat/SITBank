@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import secrets
+from pathlib import Path
 
 from _auth_flow_helpers import *
 
@@ -518,6 +519,219 @@ def test_security_alerts_detect_database_table_regression_from_external_state(ap
     assert {"table:security_audit_events", "table:users"} <= regressed_sources
     assert persisted_state["tables"]["security_audit_events"]["count"] == 1
     assert persisted_state["tables"]["users"]["count"] == 1
+
+
+def test_audit_anchor_refresh_accepts_only_valid_or_append_only_stale_state(
+    app,
+    tmp_path,
+):
+    from app.security.audit import (
+        audit_event,
+        verify_audit_hash_chain,
+        write_audit_log_anchor,
+    )
+
+    anchor_path = tmp_path / "security-audit.anchor"
+    app.config["SECURITY_AUDIT_ANCHOR_PATH"] = str(anchor_path)
+    with app.test_request_context("/audit/initial", method="POST"):
+        audit_event("anchor_initial", "success")
+    write_audit_log_anchor(anchor_path)
+    with app.test_request_context("/audit/after", method="POST"):
+        audit_event("anchor_after", "success")
+
+    refreshed = app.test_cli_runner().invoke(args=["refresh-audit-log-anchor"])
+    refreshed_payload = json.loads(refreshed.output)
+    refreshed_anchor = json.loads(anchor_path.read_text(encoding="utf-8"))
+    verification = verify_audit_hash_chain(anchor=refreshed_anchor)
+
+    assert refreshed.exit_code == 0, refreshed.output
+    assert refreshed_payload["previous_anchor_status"] == "stale"
+    assert refreshed_payload["anchor_status"] == "validated"
+    assert refreshed_payload["anchor_refresh_required"] is False
+    assert verification["valid"] is True
+    assert verification["anchor_status"] == "validated"
+
+    corrupted = dict(refreshed_anchor)
+    corrupted["latest_event_hash"] = "f" * 64
+    anchor_path.write_text(json.dumps(corrupted), encoding="utf-8")
+    if os.name != "nt":
+        anchor_path.chmod(0o600)
+    refused = app.test_cli_runner().invoke(args=["refresh-audit-log-anchor"])
+
+    assert refused.exit_code != 0
+    assert "validation failed" in refused.output
+    assert json.loads(anchor_path.read_text(encoding="utf-8")) == corrupted
+
+
+def test_audit_anchor_writes_and_refresh_reject_unsafe_file_shapes(app, tmp_path):
+    from app.security.audit import refresh_audit_log_anchor, write_audit_log_anchor
+
+    directory_target = tmp_path / "anchor-directory"
+    directory_target.mkdir()
+    with pytest.raises(RuntimeError, match="regular file"):
+        write_audit_log_anchor(directory_target)
+
+    malformed = tmp_path / "malformed.anchor"
+    malformed.write_text("{", encoding="utf-8")
+    object_list = tmp_path / "list.anchor"
+    object_list.write_text("[]", encoding="utf-8")
+    if os.name != "nt":
+        malformed.chmod(0o600)
+        object_list.chmod(0o600)
+
+    with pytest.raises(RuntimeError, match="unreadable or malformed"):
+        refresh_audit_log_anchor(malformed)
+    with pytest.raises(RuntimeError, match="JSON object"):
+        refresh_audit_log_anchor(object_list)
+
+
+def test_security_alert_rebaseline_is_acknowledged_audited_and_atomic(
+    app,
+    tmp_path,
+):
+    from app.security.audit import audit_event, write_audit_log_anchor
+
+    anchor_path = tmp_path / "security-audit.anchor"
+    state_path = tmp_path / "security-alert-state.json"
+    app.config["SECURITY_AUDIT_ANCHOR_PATH"] = str(anchor_path)
+    app.config["SECURITY_ALERT_STATE_PATH"] = str(state_path)
+    with app.test_request_context("/audit/current", method="POST"):
+        audit_event("rebaseline_current", "success")
+    write_audit_log_anchor(anchor_path)
+    stale_state = {
+        "message": "security_alert_database_integrity_state",
+        "version": 1,
+        "generated_at": "2026-07-01T00:00:00Z",
+        "tables": {
+            "security_audit_events": {"count": 999, "max_id": 999},
+            "users": {"count": 999, "max_id": 999},
+        },
+    }
+    state_path.write_text(json.dumps(stale_state), encoding="utf-8")
+    if os.name != "nt":
+        state_path.chmod(0o600)
+
+    runner = app.test_cli_runner()
+    no_ack = runner.invoke(
+        args=["rebaseline-security-alert-state", "--reason", "approved reset"]
+    )
+    no_reason = runner.invoke(
+        args=["rebaseline-security-alert-state", "--intentional-reset"]
+    )
+    raw_reason = "Approved staging reset; fake ticket SEC-411"
+    completed = runner.invoke(
+        args=[
+            "rebaseline-security-alert-state",
+            "--intentional-reset",
+            "--reason",
+            raw_reason,
+        ]
+    )
+
+    assert no_ack.exit_code != 0
+    assert no_reason.exit_code != 0
+    assert completed.exit_code == 0, completed.output
+    payload = json.loads(completed.output)
+    assert payload["message"] == "security_alert_state_rebaselined"
+    assert payload["backup_path"]
+    assert Path(payload["backup_path"]).exists()
+    assert json.loads(Path(payload["backup_path"]).read_text(encoding="utf-8")) == stale_state
+    assert raw_reason not in completed.output
+    assert raw_reason not in state_path.read_text(encoding="utf-8")
+    outcomes = [
+        event.outcome
+        for event in db.session.query(SecurityAuditEvent)
+        .filter_by(event_type="security_alert_state_rebaseline")
+        .order_by(SecurityAuditEvent.id)
+    ]
+    assert outcomes == ["started", "completed"]
+    assert all(
+        raw_reason not in json.dumps(event.event_metadata)
+        for event in db.session.query(SecurityAuditEvent).all()
+    )
+
+
+def test_security_alert_rebaseline_restores_backup_when_atomic_write_fails(
+    app,
+    tmp_path,
+    monkeypatch,
+):
+    from app.security import alerts
+    from app.security.audit import audit_event, write_audit_log_anchor
+
+    anchor_path = tmp_path / "security-audit.anchor"
+    state_path = tmp_path / "security-alert-state.json"
+    app.config["SECURITY_AUDIT_ANCHOR_PATH"] = str(anchor_path)
+    app.config["SECURITY_ALERT_STATE_PATH"] = str(state_path)
+    with app.test_request_context("/audit/current", method="POST"):
+        audit_event("rebaseline_write_failure", "success")
+    write_audit_log_anchor(anchor_path)
+    original_state = {
+        "message": "security_alert_database_integrity_state",
+        "version": 1,
+        "generated_at": "2026-07-01T00:00:00Z",
+        "tables": {
+            "security_audit_events": {"count": 99, "max_id": 99},
+            "users": {"count": 99, "max_id": 99},
+        },
+    }
+    state_path.write_text(json.dumps(original_state), encoding="utf-8")
+    if os.name != "nt":
+        state_path.chmod(0o600)
+    monkeypatch.setattr(
+        alerts,
+        "_write_database_integrity_state",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            alerts.AlertConfigurationError("fake atomic write failure")
+        ),
+    )
+
+    with pytest.raises(
+        alerts.AlertConfigurationError,
+        match="fake atomic write failure",
+    ):
+        alerts.rebaseline_database_integrity_state(
+            intentional_reset=True,
+            reason="Approved fake recovery drill",
+        )
+
+    assert json.loads(state_path.read_text(encoding="utf-8")) == original_state
+    outcomes = [
+        event.outcome
+        for event in db.session.query(SecurityAuditEvent)
+        .filter_by(event_type="security_alert_state_rebaseline")
+        .order_by(SecurityAuditEvent.id)
+    ]
+    assert outcomes == ["started", "failed"]
+
+
+def test_security_alert_rebaseline_refuses_blank_reason_and_missing_paths(
+    app,
+    tmp_path,
+):
+    from app.security import alerts
+
+    with app.app_context():
+        with pytest.raises(alerts.AlertConfigurationError, match="non-empty"):
+            alerts.rebaseline_database_integrity_state(
+                intentional_reset=True,
+                reason="",
+            )
+
+        app.config["SECURITY_ALERT_STATE_PATH"] = None
+        app.config["SECURITY_AUDIT_ANCHOR_PATH"] = None
+        with pytest.raises(alerts.AlertConfigurationError, match="STATE_PATH"):
+            alerts.rebaseline_database_integrity_state(
+                intentional_reset=True,
+                reason="Approved fake reset",
+            )
+
+        app.config["SECURITY_ALERT_STATE_PATH"] = str(tmp_path / "state.json")
+        with pytest.raises(alerts.AlertConfigurationError, match="ANCHOR_PATH"):
+            alerts.rebaseline_database_integrity_state(
+                intentional_reset=True,
+                reason="Approved fake reset",
+            )
 
 def test_security_alert_evaluator_cli_and_output_are_sanitized(app):
     from app.security.alerts import evaluate_security_alerts

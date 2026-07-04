@@ -239,6 +239,40 @@ def audit_system_event(
     user_id: int | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> None:
+    _write_system_audit_event(
+        event_type,
+        outcome,
+        user_id=user_id,
+        metadata=metadata,
+        required=False,
+    )
+
+
+def audit_system_event_required(
+    event_type: str,
+    outcome: str,
+    *,
+    user_id: int | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    """Commit a standalone system audit event or fail the operation closed."""
+    _write_system_audit_event(
+        event_type,
+        outcome,
+        user_id=user_id,
+        metadata=metadata,
+        required=True,
+    )
+
+
+def _write_system_audit_event(
+    event_type: str,
+    outcome: str,
+    *,
+    user_id: int | None,
+    metadata: dict[str, Any] | None,
+    required: bool,
+) -> None:
     clean_event_type = _clean_audit_text(event_type, 80)
     clean_outcome = _clean_audit_text(outcome, 24)
     clean_metadata = {**_sanitize_metadata(metadata or {}), "actor": "system"}
@@ -279,6 +313,10 @@ def audit_system_event(
             metadata=clean_metadata,
             error_type=type(exc).__name__,
         )
+        if required:
+            raise AuditWriteError(
+                "Required system audit event could not be recorded"
+            ) from exc
         return
 
     _log_audit_record(event, path=None, method=None)
@@ -409,6 +447,57 @@ def write_audit_log_anchor(path: Path) -> dict[str, Any]:
         if temporary_path.exists():
             temporary_path.unlink()
     return anchor
+
+
+def refresh_audit_log_anchor(path: Path) -> dict[str, Any]:
+    """Refresh only a validated or append-only stale configured anchor."""
+    validate_existing_audit_anchor_path(path)
+    try:
+        existing_anchor = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Configured audit anchor is unreadable or malformed") from exc
+    if not isinstance(existing_anchor, dict):
+        raise RuntimeError("Configured audit anchor must contain a JSON object")
+
+    try:
+        _lock_audit_chain_for_insert()
+        verification = verify_audit_hash_chain(anchor=existing_anchor)
+        if (
+            verification.get("valid") is not True
+            or verification.get("anchor_status") not in {"validated", "stale"}
+        ):
+            raise RuntimeError(
+                "Audit anchor refresh refused because chain or anchor validation failed"
+            )
+        previous_status = str(verification["anchor_status"])
+        refreshed_anchor = write_audit_log_anchor(path)
+        if refreshed_anchor.get("valid") is not True:
+            raise RuntimeError("Audit anchor refresh refused because the chain is invalid")
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        raise
+
+    return {
+        "message": "security_audit_anchor_refreshed",
+        "previous_anchor_status": previous_status,
+        "anchor_status": "validated",
+        "anchor_refresh_required": False,
+        "event_count": int(refreshed_anchor.get("event_count") or 0),
+        "latest_event_id": refreshed_anchor.get("latest_event_id"),
+    }
+
+
+def validate_existing_audit_anchor_path(path: Path) -> None:
+    if not path.is_absolute():
+        raise RuntimeError("Configured audit anchor path must be absolute")
+    if path.is_symlink() or not path.is_file():
+        raise RuntimeError("Configured audit anchor must be a regular non-symlink file")
+    parent = path.parent
+    if not parent.is_dir() or any(item.is_symlink() for item in path.parents):
+        raise RuntimeError("Configured audit anchor parent directory is unsafe")
+    if os.name != "nt" and path.stat().st_mode & 0o077:
+        raise RuntimeError("Configured audit anchor permissions must be owner-only")
 
 
 def _sanitize_metadata(metadata: dict[str, Any]) -> dict[str, Any]:

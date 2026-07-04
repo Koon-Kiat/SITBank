@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh the validated SITBank %i audit anchor daily
+
+[Timer]
+OnCalendar=*-*-* 02:15:00
+RandomizedDelaySec=30min
+AccuracySec=1min
+Persistent=true
+Unit=sitbank-audit-anchor-refresh@%i.service
+
+[Install]
+WantedBy=timers.target

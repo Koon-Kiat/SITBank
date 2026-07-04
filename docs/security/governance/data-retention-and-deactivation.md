@@ -82,18 +82,28 @@ reset transactions, unreferenced expired password reset tokens, security alert
 dedupe rows, and closed circuit-breaker state past retention. Mutating cleanup
 requires `--confirm`.
 
+`cleanup-security-state` is a compatibility wrapper for this same workflow and
+is also dry-run unless `--confirm` is supplied. Confirmed cleanup commits a
+required `started` audit event before mutation and then records `completed` or
+`failed` evidence; a missing start event fails closed before cleanup.
+
 The command does not delete or anonymize customer accounts, staff/admin
 accounts, payees, transactions, manual recovery requests, staff invites,
 security audit events, investigation or held records, alert reports, or
 encrypted backup archives. Treat those categories as preserved until a reviewed
 retention decision and evidence-preserving procedure exist.
 
-## Current Retention Automation Gap
+## Operator-Reviewed Retention Schedule
 
-The repository expires and cleans up selected temporary security state through
-a dry-run-by-default operator command. A complete retention/disposal scheduler
-for all personal-data categories, manual recovery metadata, staff invites,
-alert reports, or encrypted backup archives remains tracked in
+The `sitbank-retention-review@staging.timer` and
+`sitbank-retention-review@production.timer` units generate a weekly,
+aggregate-only dry-run report. The report must be reviewed by the application
+owner and the destructive command must be separately approved and run with
+`--confirm`; the timer never passes that flag. Broad unattended disposal,
+including personal-data categories, manual recovery metadata, staff invites,
+alert reports, and encrypted backups, remains out of scope and tracked in the
+gap register. A complete retention/disposal scheduler across those preserved
+categories does not exist; track that remaining scope in
 `docs/security/governance/security-gap-register.md`.
 
 ## Backup Retention

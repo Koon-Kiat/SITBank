@@ -4,6 +4,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import pyotp
+import pytest
 
 from _auth_flow_helpers import (
     enable_mfa_for_user,
@@ -419,6 +420,53 @@ def test_payee_removal_enforces_ownership_and_totp(app, client):
 
     assert get_response.status_code == 404
     assert post_response.status_code == 404
+    assert db.session.get(Payee, payee.id) is not None
+
+
+def test_payee_removal_rolls_back_when_required_audit_fails(
+    app,
+    client,
+    monkeypatch,
+):
+    from app.security.audit import AuditWriteError
+
+    bob_client = app.test_client()
+    alice = _register_customer(
+        client,
+        username="alice01",
+        email="alice@example.com",
+        phone="91234567",
+        account="012345678000",
+    )
+    bob = _register_customer(
+        bob_client,
+        username="bob02",
+        email="bob@example.com",
+        phone="81234567",
+        account="012555999000",
+    )
+    payee = Payee(
+        user_id=alice.id,
+        nickname="Bob",
+        account_number=bob.account_number,
+        recipient_name=bob.full_name,
+    )
+    db.session.add(payee)
+    db.session.commit()
+    _alice, secret = _login_mfa_customer(client)
+    monkeypatch.setattr(
+        "app.banking.routes.audit_event_required",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AuditWriteError("fake audit failure")
+        ),
+    )
+
+    with pytest.raises(AuditWriteError, match="fake audit failure"):
+        client.post(
+            f"/banking/payees/{payee.id}/remove",
+            data={"totp_code": _current_totp(secret)},
+        )
+
     assert db.session.get(Payee, payee.id) is not None
 
 

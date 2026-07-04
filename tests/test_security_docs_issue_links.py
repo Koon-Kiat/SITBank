@@ -419,6 +419,13 @@ def test_audit_anchor_docs_distinguish_stale_drift_from_tampering():
         "alert_count=0",
     ):
         assert required in combined
+    for scheduled_control in (
+        "sitbank-audit-anchor-refresh@{staging,production}.timer",
+        "refresh-audit-log-anchor",
+        "rebaseline-security-alert-state",
+        "--intentional-reset",
+    ):
+        assert scheduled_control in combined
 
     for forbidden in (
         "refresh anchors until alerts stop",

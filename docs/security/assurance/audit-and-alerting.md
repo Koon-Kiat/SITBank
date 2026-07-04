@@ -99,6 +99,7 @@ Operators verify and anchor the chain with:
 python -m flask --app wsgi:app verify-audit-log-chain
 python -m flask --app wsgi:app verify-audit-log-chain --anchor /var/lib/sitbank/security-audit.anchor
 python -m flask --app wsgi:app export-audit-log-anchor --output /var/lib/sitbank/security-audit.anchor
+python -m flask --app wsgi:app refresh-audit-log-anchor
 ```
 
 `SECURITY_AUDIT_ANCHOR_PATH` points production checks and alerting at the
@@ -122,6 +123,12 @@ hash-chain integrity:
 Chain rewind, tail deletion, malformed rows, missing append-only controls, and
 runtime database privilege failures are treated as high-priority operational
 signals.
+
+The daily `sitbank-audit-anchor-refresh@{staging,production}.timer` uses the
+target-aware container wrapper. Refresh accepts only an exactly validated or
+append-only stale anchor and atomically preserves owner-only permissions. It
+refuses malformed, missing, mismatched, or invalid-chain states; alert checking
+does not rotate anchors.
 
 ## Alerting
 
@@ -147,6 +154,13 @@ Alert rules cover at least:
 - login, auth backoff, transaction failure, and rate-limit bursts
 - alert table regression signals from `SECURITY_ALERT_STATE_PATH`
 - alert delivery failures
+
+After an approved reset, `rebaseline-security-alert-state
+--intentional-reset --reason ...` verifies the audit chain and configured
+anchor, backs up the previous baseline, and atomically snapshots the same
+protected tables. Unknown loss, chain failure, anchor mismatch, missing
+acknowledgement, or missing reason fails closed. Output and audit evidence use
+only table metrics and a keyed reason reference.
 
 Alert severity values are configured in `app/security/alerts.py` and filtered
 by `SECURITY_ALERT_MIN_SEVERITY`. Delivery supports HTTPS webhooks such as
