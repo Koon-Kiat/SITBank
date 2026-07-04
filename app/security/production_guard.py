@@ -50,6 +50,19 @@ from config import (
 
 
 PRIVILEGED_ACCOUNT_TYPES = frozenset({"staff", "admin", "root_admin"})
+TURNSTILE_ACTION_FLAGS_BY_APP_MODE = {
+    "customer": (
+        "TURNSTILE_CUSTOMER_LOGIN_ENABLED",
+        "TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED",
+        "TURNSTILE_CUSTOMER_REGISTER_ENABLED",
+        "TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED",
+        "TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED",
+    ),
+    "admin": (
+        "TURNSTILE_ADMIN_LOGIN_ENABLED",
+        "TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED",
+    ),
+}
 
 
 @dataclass
@@ -479,22 +492,15 @@ def _validate_turnstile_policy(app: Flask, result: ProductionReadinessResult) ->
         result.failures.append("TURNSTILE_SITE_KEY must be configured")
     if not str(app.config.get("TURNSTILE_SECRET_KEY") or "").strip():
         result.failures.append("TURNSTILE_SECRET_KEY must be configured")
+    _validate_turnstile_action_flags(app, result)
 
-    action_flags = {
-        "customer": (
-            "TURNSTILE_CUSTOMER_LOGIN_ENABLED",
-            "TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED",
-            "TURNSTILE_CUSTOMER_REGISTER_ENABLED",
-            "TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED",
-            "TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED",
-        ),
-        "admin": (
-            "TURNSTILE_ADMIN_LOGIN_ENABLED",
-            "TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED",
-        ),
-    }
+
+def _validate_turnstile_action_flags(
+    app: Flask,
+    result: ProductionReadinessResult,
+) -> None:
     app_mode = str(app.config.get("APP_MODE") or "").strip().casefold()
-    for flag in action_flags.get(app_mode, ()):
+    for flag in TURNSTILE_ACTION_FLAGS_BY_APP_MODE.get(app_mode, ()):
         if app.config.get(flag) is not True:
             result.failures.append(f"{flag} must be true")
 
