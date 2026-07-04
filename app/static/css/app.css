@@ -2069,14 +2069,15 @@ th {
   width: fit-content;
   border-radius: 999px;
   padding: 3px 10px;
-  background: rgba(255, 255, 255, 0.18);
-  color: #ffffff;
+  background: #ffffff;
+  color: #8f1024;
   font-size: 0.82rem;
   font-weight: 700;
 }
 
 .statement-delta.is-negative {
-  background: rgba(0, 0, 0, 0.2);
+  background: #111111;
+  color: #ffffff;
 }
 
 .statement-txn-not-counted {
