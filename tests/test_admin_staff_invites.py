@@ -251,6 +251,29 @@ def test_invite_creation_accepts_configured_admin_email_domains(admin_client):
     assert response.get_json()["invite"]["workplace_email"] == "staff.second-domain@singaporetech.edu.sg"
 
 
+def test_staff_invite_revoke_redirects_html_clients(admin_client):
+    _root, secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    _login_admin(admin_client, secret)
+    assert _create_invite(admin_client, secret).status_code == 201
+    invite = db.session.execute(db.select(StaffInvite)).scalar_one()
+
+    response = admin_client.post(
+        f"/invites/{invite.id}/revoke",
+        data={"totp_code": _stable_totp(secret)},
+    )
+
+    assert response.status_code == 303
+    assert response.headers["Location"].endswith("/invites")
+    db.session.refresh(invite)
+    assert invite.status == "revoked"
+    assert invite.revoked_at is not None
+
+
 def test_invite_acceptance_requires_turnstile_when_enabled(admin_app, admin_client, monkeypatch):
     admin_app.config["TURNSTILE_ENABLED"] = True
     admin_app.config["TURNSTILE_SECRET_KEY"] = "turnstile-secret"

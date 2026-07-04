@@ -73,6 +73,7 @@ _TOTP_PATTERN = r"^[0-9]{6}$"
 _MFA_CODE_ERROR = "MFA code must be exactly 6 digits"
 _JSON_MIME_TYPE = "application/json"
 _HTML_MIME_TYPE = "text/html"
+_ADMIN_INVITES_ENDPOINT = "admin.invites"
 _ADMIN_LOGIN_FORM_ENDPOINT = "admin.login_form"
 _STAFF_ACCOUNTS_ENDPOINT = "admin.staff_accounts"
 _ADMIN_ACTION_REQUESTS_ENDPOINT = "admin.admin_action_requests"
@@ -905,7 +906,7 @@ def invite_create():
     if _wants_json():
         return jsonify(result), 201
     flash("Staff/admin invite created.", "success")
-    return redirect(url_for("admin.invites")), 303
+    return redirect(url_for(_ADMIN_INVITES_ENDPOINT)), 303
 
 
 @admin_bp.post("/invites/<int:invite_id>/revoke")
@@ -917,7 +918,7 @@ def invite_revoke(invite_id: int):
     if _wants_json():
         return jsonify(result)
     flash("Staff/admin invite revoked.", "success")
-    return redirect(url_for("admin.invites")), 303
+    return redirect(url_for(_ADMIN_INVITES_ENDPOINT)), 303
 
 
 @admin_bp.post("/invites/<int:invite_id>/reset-acceptance")
@@ -930,7 +931,7 @@ def invite_reset_acceptance(invite_id: int):
     if _wants_json():
         return jsonify(result)
     flash("Staff/admin invite acceptance reset.", "success")
-    return redirect(url_for("admin.invites")), 303
+    return redirect(url_for(_ADMIN_INVITES_ENDPOINT)), 303
 
 
 @admin_bp.get("/staff")
