@@ -449,11 +449,14 @@ Synthetic DAST users remain the only authenticated scan identities. The smoke
 helper writes the authenticated session cookie and ZAP replacer configuration to
 temporary `0600` files created under `umask 077`; the DAST cookie is not passed
 as a raw process argument. ZAP loads the authenticated-cookie replacer from a
-restricted `-configfile` path, and the cookie/config directory is removed by the
-smoke-test cleanup trap on success or failure. Do not upload `auth-cookie` or
-`zap-replacer.properties`, do not print environment dumps or shell-expanded
-secret values, and investigate immediately if either file or a session value
-appears in logs, summaries, or artifacts.
+restricted `-configfile` path. That same restricted config pins the smoke
+request identity headers (`User-Agent`, `X-Forwarded-For`, and
+`X-Forwarded-Proto`) so the authenticated crawl matches the server-side session
+risk context without weakening reauthentication checks. The cookie/config
+directory is removed by the smoke-test cleanup trap on success or failure. Do
+not upload `auth-cookie` or `zap-replacer.properties`, do not print environment
+dumps or shell-expanded secret values, and investigate immediately if either
+file or a session value appears in logs, summaries, or artifacts.
 
 ## SonarQube Cloud
 
