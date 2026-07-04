@@ -13,6 +13,10 @@ class TurnstileError(ValueError):
 
 _CHALLENGE_FAILED_MESSAGE = "Challenge verification failed"
 OFFICIAL_TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+TURNSTILE_TEST_SITE_KEY = "1x00000000000000000000AA"
+TURNSTILE_TEST_SECRET_KEY = "1x0000000000000000000000000000000AA"
+TURNSTILE_TEST_TOKEN = "XXXX.DUMMY.TOKEN.XXXX"
+TURNSTILE_TEST_ACTION = "test"
 _TURNSTILE_TOKEN_FIELDS = ("cf-turnstile-response", "turnstile_token")
 _ACTION_CONFIG = {
     "customer_login": "TURNSTILE_CUSTOMER_LOGIN_ENABLED",
@@ -59,7 +63,8 @@ def verify_turnstile_token(token: str | None, *, expected_action: str | None = N
         raise TurnstileError(_CHALLENGE_FAILED_MESSAGE) from exc
     if not isinstance(result, dict) or result.get("success") is not True:
         raise TurnstileError(_CHALLENGE_FAILED_MESSAGE)
-    if expected_action and result.get("action") != expected_action:
+    action_matches = not expected_action or result.get("action") == expected_action
+    if not action_matches and not _accepts_test_action(token_text, result):
         raise TurnstileError(_CHALLENGE_FAILED_MESSAGE)
 
 
@@ -149,6 +154,19 @@ def _turnstile_action_config_key(action: str) -> str:
     if not config_key:
         raise TurnstileError(_CHALLENGE_FAILED_MESSAGE)
     return config_key
+
+
+def _accepts_test_action(token: str, result: dict[str, object]) -> bool:
+    return (
+        current_app.config.get("TURNSTILE_ALLOW_TEST_ACTION") is True
+        and token == TURNSTILE_TEST_TOKEN
+        and result.get("action") == TURNSTILE_TEST_ACTION
+        and str(current_app.config.get("DEPLOYMENT_TARGET") or "").strip().casefold() == "smoke"
+        and str(current_app.config.get("TURNSTILE_SITE_KEY") or "").strip()
+        == TURNSTILE_TEST_SITE_KEY
+        and str(current_app.config.get("TURNSTILE_SECRET_KEY") or "").strip()
+        == TURNSTILE_TEST_SECRET_KEY
+    )
 
 
 def _turnstile_required_for_config(config_key: str) -> bool:
