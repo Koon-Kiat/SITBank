@@ -359,9 +359,12 @@ status, verifies anonymous API denial, verifies the non-admin verifier role,
 checks Loki datasource health through Grafana with explicit HTTP `200` status
 and schema validation, verifies direct private `/loki` and `/metrics` denial
 on the Tailscale host, and runs public denial probes for `/grafana`, `/loki`,
-`/logs`, and `/metrics`. It fails closed when private or public responses
-include Grafana/Loki-identifying headers or cookies, uploads only sanitized
-JSON evidence for 30 days, and logs out of Tailscale at completion.
+`/logs`, and `/metrics`. Cloudflare Access challenges, generic Cloudflare
+headers, and app/Nginx `401`, `403`, or `404` responses count as public-denial
+evidence. The verifier fails closed when private or public responses include
+Grafana/Loki-identifying headers, `grafana_session` cookies, or redirects to
+Grafana/Loki login paths, uploads only sanitized JSON evidence for 30 days,
+and logs out of Tailscale at completion.
 
 ## Gitleaks
 
