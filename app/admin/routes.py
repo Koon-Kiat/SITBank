@@ -45,6 +45,8 @@ from .services import (
     create_staff_invite,
     audit_event_detail_for_admin,
     query_audit_events_for_admin,
+    dispute_detail_for_staff,
+    disputes_for_staff,
     invite_info,
     logout_admin_session,
     locked_customers_for_admin,
@@ -52,9 +54,11 @@ from .services import (
     public_invites_for_root_admin,
     public_admin_user,
     require_admin_session,
+    require_plain_staff_session,
     require_root_admin_session,
     require_staff_session,
     reset_staff_invite_acceptance,
+    transition_dispute_status_for_staff,
     reject_admin_action_request_as_root_admin,
     request_customer_security_unlock,
     revoke_staff_invite,
@@ -77,6 +81,7 @@ _ADMIN_INVITES_ENDPOINT = "admin.invites"
 _ADMIN_LOGIN_FORM_ENDPOINT = "admin.login_form"
 _STAFF_ACCOUNTS_ENDPOINT = "admin.staff_accounts"
 _ADMIN_ACTION_REQUESTS_ENDPOINT = "admin.admin_action_requests"
+_DISPUTES_ENDPOINT = "admin.disputes"
 _ADMIN_ALERTS_ENDPOINT = "admin.alerts"
 _ADMIN_LOGIN_TEMPLATE = "admin/login.html"
 _ADMIN_MFA_VERIFY_TEMPLATE = "admin/mfa_verify.html"
@@ -233,6 +238,14 @@ class AdminActionDecisionSchema(Schema):
         load_only=True,
         validate=validate.Regexp(_TOTP_PATTERN, error=_MFA_CODE_ERROR),
     )
+
+
+class DisputeStatusChangeSchema(Schema):
+    status = fields.Str(
+        required=True,
+        validate=validate.OneOf(["under_review", "resolved", "rejected"]),
+    )
+    resolution_note = fields.Str(required=False, load_default="", validate=validate.Length(max=1000))
 
 
 class CustomerSecurityUnlockSchema(Schema):
@@ -1106,6 +1119,57 @@ def admin_action_request_cancel(request_id: int):
         return jsonify(result)
     flash("Admin action request cancelled.", "success")
     return redirect(url_for(_ADMIN_ACTION_REQUESTS_ENDPOINT)), 303
+
+
+@admin_bp.get("/disputes")
+def disputes():
+    actor = require_plain_staff_session()
+    dispute_list = disputes_for_staff(actor)
+    if _wants_json():
+        return jsonify({"disputes": dispute_list})
+    return render_template(
+        "admin/disputes.html",
+        disputes=dispute_list,
+        selected_dispute=None,
+        actor=actor,
+        user=public_admin_user(actor),
+        navigation=admin_navigation_for(actor),
+    )
+
+
+@admin_bp.get("/disputes/<int:dispute_id>")
+def dispute_detail(dispute_id: int):
+    actor = require_plain_staff_session()
+    dispute_record = dispute_detail_for_staff(actor, dispute_id)
+    if _wants_json():
+        return jsonify({"dispute": dispute_record})
+    dispute_list = disputes_for_staff(actor)
+    return render_template(
+        "admin/disputes.html",
+        disputes=dispute_list,
+        selected_dispute=dispute_record,
+        actor=actor,
+        user=public_admin_user(actor),
+        navigation=admin_navigation_for(actor),
+    )
+
+
+@admin_bp.post("/disputes/<int:dispute_id>/status")
+@limiter.limit(_ADMIN_RATE_LIMIT_HOURLY, key_func=get_remote_address)
+@limiter.limit(_ADMIN_RATE_LIMIT_STEP_UP, key_func=request_principal)
+def dispute_transition(dispute_id: int):
+    actor = require_plain_staff_session()
+    data = _payload(DisputeStatusChangeSchema())
+    result = transition_dispute_status_for_staff(
+        actor,
+        dispute_id,
+        data["status"],
+        data.get("resolution_note"),
+    )
+    if _wants_json():
+        return jsonify(result)
+    flash("Dispute status updated.", "success")
+    return redirect(url_for("admin.dispute_detail", dispute_id=dispute_id)), 303
 
 
 @admin_bp.get("/audit-logs")

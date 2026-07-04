@@ -93,20 +93,38 @@
         <span class="badge neutral">Set up MFA first</span>
       </a>
       {% endif %}
+      {% if g.mfa_ready %}
+      <a class="bank-quick-btn" href="{{ url_for('web.transactions') }}">
+        <span class="bank-quick-icon" aria-hidden="true">
+          <svg class="icon" focusable="false"><use href="#icon-session"></use></svg>
+        </span>
+        <span>Past Transaction</span>
+      </a>
+      {% else %}
       <a class="bank-quick-btn is-disabled" aria-disabled="true">
         <span class="bank-quick-icon" aria-hidden="true">
           <svg class="icon" focusable="false"><use href="#icon-session"></use></svg>
         </span>
         <span>Past Transaction</span>
-        <span class="badge neutral">Coming soon</span>
+        <span class="badge neutral">Set up MFA first</span>
       </a>
+      {% endif %}
+      {% if g.mfa_ready %}
+      <a class="bank-quick-btn" href="{{ url_for('banking.statement') }}">
+        <span class="bank-quick-icon" aria-hidden="true">
+          <svg class="icon" focusable="false"><use href="#icon-education"></use></svg>
+        </span>
+        <span>Monthly Statement</span>
+      </a>
+      {% else %}
       <a class="bank-quick-btn is-disabled" aria-disabled="true">
         <span class="bank-quick-icon" aria-hidden="true">
           <svg class="icon" focusable="false"><use href="#icon-education"></use></svg>
         </span>
         <span>Monthly Statement</span>
-        <span class="badge neutral">Coming soon</span>
+        <span class="badge neutral">Set up MFA first</span>
       </a>
+      {% endif %}
     </div>
   </div>
 
@@ -114,7 +132,7 @@
   <div class="panel">
     <div class="section-header dashboard-txn-header">
       <h2>Recent Transactions</h2>
-      <a href="#" class="muted dashboard-txn-more">More...</a>
+      <a href="{{ url_for('web.transactions') }}" class="muted dashboard-txn-more">More...</a>
     </div>
     {% if transactions %}
     <div class="table-wrap">

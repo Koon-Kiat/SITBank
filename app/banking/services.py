@@ -10,7 +10,7 @@ from decimal import Decimal, InvalidOperation
 
 from flask import current_app
 from marshmallow import ValidationError
-from sqlalchemy import func
+from sqlalchemy import func, or_
 
 from app.auth.services import AuthError, ensure_account_not_frozen
 from app.extensions import db
@@ -578,6 +578,92 @@ def sgt_day_start_utc(now: datetime | None = None) -> datetime:
         hour=0, minute=0, second=0, microsecond=0
     )
     return day_start_sgt.astimezone(timezone.utc)
+
+
+def sgt_month_bounds_utc(year: int, month: int) -> tuple[datetime, datetime]:
+    """UTC [start, end) instants for the given SGT calendar month."""
+    start_sgt = datetime(year, month, 1, tzinfo=_SGT_OFFSET)
+    end_sgt = (start_sgt.replace(day=28) + timedelta(days=4)).replace(day=1)
+    return start_sgt.astimezone(timezone.utc), end_sgt.astimezone(timezone.utc)
+
+
+def _signed_net_amount(user: User, *, start: datetime | None, end: datetime | None) -> Decimal:
+    """Net signed sum of the user's completed transactions in [start, end)."""
+    conditions = [
+        or_(Transaction.sender_id == user.id, Transaction.recipient_id == user.id),
+        Transaction.status == "completed",
+    ]
+    if start is not None:
+        conditions.append(Transaction.created_at >= start)
+    if end is not None:
+        conditions.append(Transaction.created_at < end)
+    rows = db.session.execute(
+        db.select(Transaction.sender_id, Transaction.recipient_id, Transaction.amount).where(*conditions)
+    ).all()
+    net = Decimal("0")
+    for sender_id, _recipient_id, amount in rows:
+        signed = Decimal(str(amount))
+        net += -signed if sender_id == user.id else signed
+    return net
+
+
+def statement_for_period(user: User, year: int, month: int) -> dict:
+    """Derive a statement (opening/closing balance + transactions) for an SGT calendar month.
+
+    ``User.balance`` is a live running total with no per-transaction snapshot, so the
+    period's opening/closing balance is derived from it by re-reading the balance and
+    querying transaction history back-to-back in this session. A transfer that commits
+    between those reads could shift the derived figures by that transfer's amount; this
+    is accepted for a read-only statement (unlike money-movement paths elsewhere, which
+    use row locking) and is not expected to be user-visible in practice.
+    """
+    if month < 1 or month > 12:
+        raise AuthError("Enter a valid month.", 400)
+
+    period_start_utc, period_end_utc = sgt_month_bounds_utc(year, month)
+    if period_start_utc > datetime.now(timezone.utc):
+        raise AuthError("Cannot generate a statement for a future period.", 400)
+
+    account_created_at = user.created_at
+    if account_created_at is not None:
+        if account_created_at.tzinfo is None:
+            account_created_at = account_created_at.replace(tzinfo=timezone.utc)
+        if period_end_utc <= account_created_at:
+            raise AuthError("This account did not exist yet during the requested period.", 400)
+
+    db.session.refresh(user)
+    live_balance = Decimal(str(user.balance))
+    net_after = _signed_net_amount(user, start=period_end_utc, end=None)
+    closing_balance = live_balance - net_after
+
+    period_transactions = (
+        db.session.execute(
+            db.select(Transaction)
+            .where(
+                or_(Transaction.sender_id == user.id, Transaction.recipient_id == user.id),
+                Transaction.created_at >= period_start_utc,
+                Transaction.created_at < period_end_utc,
+            )
+            .order_by(Transaction.created_at.asc(), Transaction.id.asc())
+        )
+        .scalars()
+        .all()
+    )
+    net_within = Decimal("0")
+    for txn in period_transactions:
+        if txn.status != "completed":
+            continue
+        signed = Decimal(str(txn.amount))
+        net_within += -signed if txn.sender_id == user.id else signed
+    opening_balance = closing_balance - net_within
+
+    return {
+        "period_start": period_start_utc,
+        "period_end": period_end_utc,
+        "opening_balance": opening_balance,
+        "closing_balance": closing_balance,
+        "transactions": period_transactions,
+    }
 
 
 def payup_amount_used_today(user: User) -> Decimal:

@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+
+{% block title %}Monthly Statement | SITBank{% endblock %}
+
+{% block content %}
+<section class="security-page profile-page">
+  <div class="dashboard-header">
+    <div class="page-heading">
+      <p class="eyebrow">Account</p>
+      <h1>Monthly Statement</h1>
+    </div>
+    <div class="button-row">
+      <a class="button secondary" href="{{ url_for('web.dashboard') }}">Back to Dashboard</a>
+    </div>
+  </div>
+
+  <div class="panel">
+    <form method="get" action="{{ url_for('banking.statement') }}" class="button-row">
+      <div class="form-group">
+        <label for="statement-year">Year</label>
+        <input id="statement-year" type="number" name="year" value="{{ year }}" min="2000" max="{{ year }}">
+      </div>
+      <div class="form-group">
+        <label for="statement-month">Month</label>
+        <select id="statement-month" name="month">
+          {% for m in range(1, 13) %}
+          <option value="{{ m }}" {% if m == month %}selected{% endif %}>{{ "%02d"|format(m) }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <button class="button" type="submit">View Statement</button>
+    </form>
+  </div>
+
+  {% if statement %}
+  <div class="panel">
+    <div class="section-header">
+      <h2>{{ year }}-{{ "%02d"|format(month) }}</h2>
+      <a class="button secondary small" href="{{ url_for('banking.statement_download', year=year, month=month) }}">Download CSV</a>
+    </div>
+    <dl class="profile-detail-list">
+      <div>
+        <dt>Opening Balance (SGD)</dt>
+        <dd>{{ statement.opening_balance }}</dd>
+      </div>
+      <div>
+        <dt>Closing Balance (SGD)</dt>
+        <dd>{{ statement.closing_balance }}</dd>
+      </div>
+    </dl>
+    {% if statement.transactions %}
+    <div class="table-wrap">
+      <table aria-label="Statement transactions">
+        <thead>
+          <tr>
+            <th>Type</th>
+            <th>Counterparty</th>
+            <th>Reference</th>
+            <th>Amount (SGD)</th>
+            <th>Status</th>
+            <th>Date</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for txn in statement.transactions %}
+          <tr>
+            <td>
+              {% if txn.sender_id == user.id %}
+              <span class="badge neutral">Sent</span>
+              {% else %}
+              <span class="badge">Received</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if txn.sender_id == user.id %}
+              {{ txn.recipient.full_name or txn.recipient.username }}
+              {% else %}
+              {{ txn.sender.full_name or txn.sender.username }}
+              {% endif %}
+            </td>
+            <td>{{ txn.reference or "—" }}</td>
+            <td>
+              {% if txn.sender_id == user.id %}
+              <span class="muted">−{{ txn.amount }}</span>
+              {% else %}
+              +{{ txn.amount }}
+              {% endif %}
+            </td>
+            <td>{{ txn.status|capitalize }}{% if txn.status != "completed" %} (not counted){% endif %}</td>
+            <td><time datetime="{{ txn.created_at.isoformat() }}">{{ (txn.created_at | sgt).strftime('%d %b %Y, %H:%M') }} SGT</time></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="muted">No transactions for this period.</p>
+    {% endif %}
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

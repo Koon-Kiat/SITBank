@@ -30,6 +30,7 @@ STEP_UP_DECISIONS = {
 GUARD_DECISIONS = {
     "none",
     "require_staff_session",
+    "require_plain_staff_session",
     "require_admin_session",
     "require_root_admin_session",
     "invite_token_validation",
@@ -374,6 +375,48 @@ ADMIN_ROUTE_SECURITY_INVENTORY = {
         "expected_guard": "require_root_admin_session",
         "public_justification": "",
     },
+    "admin.disputes": {
+        "endpoint": "admin.disputes",
+        "rule": "/disputes",
+        "methods": {"GET"},
+        "access": "staff_session",
+        "role": "staff",
+        "classification": "transaction_dispute",
+        "csrf": "not_applicable",
+        "rate_limit": "admin_session",
+        "step_up": "not_required",
+        "state_changing": False,
+        "expected_guard": "require_plain_staff_session",
+        "public_justification": "",
+    },
+    "admin.dispute_detail": {
+        "endpoint": "admin.dispute_detail",
+        "rule": "/disputes/<int:dispute_id>",
+        "methods": {"GET"},
+        "access": "staff_session",
+        "role": "staff",
+        "classification": "transaction_dispute",
+        "csrf": "not_applicable",
+        "rate_limit": "admin_session",
+        "step_up": "not_required",
+        "state_changing": False,
+        "expected_guard": "require_plain_staff_session",
+        "public_justification": "",
+    },
+    "admin.dispute_transition": {
+        "endpoint": "admin.dispute_transition",
+        "rule": "/disputes/<int:dispute_id>/status",
+        "methods": {"POST"},
+        "access": "staff_session",
+        "role": "staff",
+        "classification": "transaction_dispute",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "not_required",
+        "state_changing": True,
+        "expected_guard": "require_plain_staff_session",
+        "public_justification": "",
+    },
     "admin.audit_logs": {
         "endpoint": "admin.audit_logs",
         "rule": "/audit-logs",
@@ -634,6 +677,8 @@ def test_admin_route_inventory_has_complete_security_decisions():
 
         if entry["expected_guard"] == "require_staff_session":
             assert "require_staff_session" in source, f"{endpoint} must call require_staff_session"
+        if entry["expected_guard"] == "require_plain_staff_session":
+            assert "require_plain_staff_session" in source, f"{endpoint} must call require_plain_staff_session"
         if entry["expected_guard"] == "require_admin_session":
             assert "require_admin_session" in source, f"{endpoint} must call require_admin_session"
         if entry["expected_guard"] == "require_root_admin_session":
