@@ -118,6 +118,10 @@ def test_dast_session_helper_writes_restricted_cookie_and_zap_config(tmp_path):
     zap_config = config_path.read_text(encoding="utf-8")
     assert f"replacer.full_list(0).replacement={cookie}" in zap_config
     assert "replacer.full_list(1).replacement=https" in zap_config
+    assert "replacer.full_list(2).matchstr=X-Forwarded-For" in zap_config
+    assert "replacer.full_list(2).replacement=127.0.0.1" in zap_config
+    assert "replacer.full_list(3).matchstr=User-Agent" in zap_config
+    assert "replacer.full_list(3).replacement=sitbank-dast-session" in zap_config
     if os.name != "nt":
         assert stat.S_IMODE(cookie_path.stat().st_mode) == 0o600
         assert stat.S_IMODE(config_path.stat().st_mode) == 0o600
@@ -195,6 +199,8 @@ def test_dast_docs_describe_secret_file_cookie_model():
         "DAST cookie is not passed as a raw process argument",
         "ZAP loads the authenticated-cookie replacer from a restricted",
         "Synthetic DAST users remain the only authenticated scan identities",
+        "server-side session risk context",
+        "`User-Agent`, `X-Forwarded-For`, and",
         "auth-cookie` or `zap-replacer.properties",
         "tests/test_dast_helper_security.py",
     ):
@@ -248,6 +254,9 @@ def test_dast_client_request_builds_safe_json_request_and_captures_cookies(monke
     assert timeout == 15
     assert request.full_url == "http://127.0.0.1:5000/auth/example"
     assert json.loads(request.data) == {"value": "fake"}
+    assert request.headers["User-agent"] == module.DAST_USER_AGENT
+    assert request.headers["X-forwarded-for"] == module.DAST_FORWARDED_FOR
+    assert request.headers["X-forwarded-proto"] == module.DAST_FORWARDED_PROTO
     assert request.headers["X-csrftoken"] == "fake-csrf"
     assert request.headers["Referer"] == "https://127.0.0.1:5000/"
     assert client.cookies == {"__Host-sitbank_session": "fake-session"}
@@ -482,6 +491,30 @@ def test_issue_dast_session_cookie_persists_mfa_session(app, monkeypatch):
     assert loaded_session["auth_context"] == "dast_smoke"
     assert loaded_session["mfa_verified_at"]
     assert loaded_session["fresh_mfa_verified_at"]
+
+    headers = {
+        "Cookie": f"{app.config['SESSION_COOKIE_NAME']}={cookie_value}",
+        "User-Agent": module.DAST_USER_AGENT,
+        "X-Forwarded-For": module.DAST_FORWARDED_FOR,
+        "X-Forwarded-Proto": module.DAST_FORWARDED_PROTO,
+    }
+    sessions_response = app.test_client(use_cookies=False).get(
+        "/auth/sessions",
+        base_url="https://smoke:5000/",
+        headers=headers,
+        environ_overrides={"REMOTE_ADDR": module.DAST_FORWARDED_FOR},
+    )
+    assert sessions_response.status_code == 200, sessions_response.get_data(as_text=True)
+    assert sessions_response.get_json()["sessions"][0]["current"] is True
+
+    mismatched_response = app.test_client(use_cookies=False).get(
+        "/auth/sessions",
+        base_url="https://smoke:5000/",
+        headers={**headers, "User-Agent": "Mozilla/5.0 Firefox/122.0"},
+        environ_overrides={"REMOTE_ADDR": "203.0.113.20"},
+    )
+    assert mismatched_response.status_code == 401
+    assert mismatched_response.get_json()["error"] == "Session verification required"
 
 
 def test_issue_dast_session_cookie_rejects_missing_synthetic_user(app, monkeypatch):

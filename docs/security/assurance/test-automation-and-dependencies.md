@@ -301,12 +301,14 @@ sets `umask 077`, writes each secret file as `0600`, validates the cookie shape
 inside the container, mounts the DAST directory read-only into ZAP, and passes
 the non-secret scanner home option `-dir /zap/wrk/.ZAP` plus
 `-configfile /run/dast/zap-replacer.properties` on the host-visible ZAP command
-line. ZAP loads the authenticated-cookie replacer from a restricted file, so the
-DAST cookie is not passed as a raw process argument. The temporary directory is
-removed by the smoke-test cleanup trap on success and failure. ZAP's own cache,
-browser profile, and report workspace run on container tmpfs so scanner-owned
-files are discarded with the container instead of becoming host cleanup
-artifacts.
+line. ZAP loads the authenticated-cookie replacer plus the non-secret
+`User-Agent`, `X-Forwarded-For`, and `X-Forwarded-Proto` smoke identity headers
+from a restricted file, so the DAST cookie is not passed as a raw process
+argument and the crawl matches the server-side session risk context. The
+temporary directory is removed by the smoke-test cleanup trap on success and
+failure. ZAP's own cache, browser profile, and report workspace run on container
+tmpfs so scanner-owned files are discarded with the container instead of
+becoming host cleanup artifacts.
 
 The DAST bind-mount directory is relaxed for container UID compatibility, but
 the secret files inside remain owner-only and are not uploaded as GitHub

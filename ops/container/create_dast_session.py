@@ -15,6 +15,9 @@ from sqlalchemy.exc import IntegrityError
 
 
 DAST_COOKIE_RE = re.compile(r"^__Host-sitbank_session=[A-Za-z0-9._~-]+$")
+DAST_FORWARDED_FOR = "127.0.0.1"
+DAST_FORWARDED_PROTO = "https"
+DAST_USER_AGENT = "sitbank-dast-session"
 
 
 class DastClient:
@@ -35,7 +38,7 @@ class DastClient:
             # The smoke test connects over HTTP but sets X-Forwarded-Proto=https to
             # exercise production proxy behavior. Flask-WTF SSL-strict CSRF checks
             # therefore require a same-origin HTTPS Referer.
-            ("https", parsed.netloc, "/", "", "")
+            (DAST_FORWARDED_PROTO, parsed.netloc, "/", "", "")
         )
         self.cookies: dict[str, str] = {}
 
@@ -51,7 +54,9 @@ class DastClient:
         body = None
         headers = {
             "Accept": "application/json",
-            "X-Forwarded-Proto": "https",
+            "User-Agent": DAST_USER_AGENT,
+            "X-Forwarded-For": DAST_FORWARDED_FOR,
+            "X-Forwarded-Proto": DAST_FORWARDED_PROTO,
         }
         if payload is not None:
             body = json.dumps(payload).encode("utf-8")
@@ -144,8 +149,8 @@ def issue_dast_session_cookie(*, user_id: int, session_base_url: str) -> str:
         with app.test_request_context(
             "/",
             base_url=session_base_url,
-            environ_base={"REMOTE_ADDR": "127.0.0.1"},
-            headers={"User-Agent": "sitbank-dast-session"},
+            environ_base={"REMOTE_ADDR": DAST_FORWARDED_FOR},
+            headers={"User-Agent": DAST_USER_AGENT},
         ):
             establish_authenticated_session(
                 user_id=user.id,
@@ -246,7 +251,17 @@ def write_zap_replacer_config(path: Path, cookie: str, *, allowed_root: Path) ->
             "replacer.full_list(1).enabled=true",
             "replacer.full_list(1).matchtype=REQ_HEADER",
             "replacer.full_list(1).matchstr=X-Forwarded-Proto",
-            "replacer.full_list(1).replacement=https",
+            f"replacer.full_list(1).replacement={DAST_FORWARDED_PROTO}",
+            "replacer.full_list(2).description=trusted-forwarded-for",
+            "replacer.full_list(2).enabled=true",
+            "replacer.full_list(2).matchtype=REQ_HEADER",
+            "replacer.full_list(2).matchstr=X-Forwarded-For",
+            f"replacer.full_list(2).replacement={DAST_FORWARDED_FOR}",
+            "replacer.full_list(3).description=dast-session-user-agent",
+            "replacer.full_list(3).enabled=true",
+            "replacer.full_list(3).matchtype=REQ_HEADER",
+            "replacer.full_list(3).matchstr=User-Agent",
+            f"replacer.full_list(3).replacement={DAST_USER_AGENT}",
         )
     )
     _write_secret_file(path, f"{config}\n", allowed_root=allowed_root)
