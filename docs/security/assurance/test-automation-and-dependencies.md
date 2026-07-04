@@ -302,11 +302,14 @@ inside the container, mounts the DAST directory read-only into ZAP, and passes
 the non-secret scanner home option `-dir /zap/wrk/.ZAP` plus
 `-configfile /run/dast/zap-replacer.properties` on the host-visible ZAP command
 line. ZAP loads the authenticated-cookie replacer from a restricted file, so the
-DAST cookie is not passed as a raw process argument. The temporary directory is
-removed by the smoke-test cleanup trap on success and failure. ZAP's own cache,
-browser profile, and report workspace run on container tmpfs so scanner-owned
-files are discarded with the container instead of becoming host cleanup
-artifacts.
+DAST cookie is not passed as a raw process argument. The same restricted config
+also pins the synthetic `X-Forwarded-For: 127.0.0.1` header and
+`User-Agent: sitbank-dast-session` header used when minting the cookie, keeping
+session-risk binding active without depending on transient Docker container IPs
+or scanner defaults. The temporary directory is removed by the smoke-test
+cleanup trap on success and failure. ZAP's own cache, browser profile, and
+report workspace run on container tmpfs so scanner-owned files are discarded
+with the container instead of becoming host cleanup artifacts.
 
 The DAST bind-mount directory is relaxed for container UID compatibility, but
 the secret files inside remain owner-only and are not uploaded as GitHub

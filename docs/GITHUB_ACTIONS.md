@@ -448,12 +448,14 @@ recorded in `docs/security/governance/github-branch-protection-evidence.md`.
 Synthetic DAST users remain the only authenticated scan identities. The smoke
 helper writes the authenticated session cookie and ZAP replacer configuration to
 temporary `0600` files created under `umask 077`; the DAST cookie is not passed
-as a raw process argument. ZAP loads the authenticated-cookie replacer from a
-restricted `-configfile` path, and the cookie/config directory is removed by the
-smoke-test cleanup trap on success or failure. Do not upload `auth-cookie` or
-`zap-replacer.properties`, do not print environment dumps or shell-expanded
-secret values, and investigate immediately if either file or a session value
-appears in logs, summaries, or artifacts.
+as a raw process argument. ZAP loads the authenticated-cookie replacer, the
+synthetic `X-Forwarded-For: 127.0.0.1` header, and the
+`User-Agent: sitbank-dast-session` header from a restricted `-configfile` path
+so the session-risk binding used to mint the cookie matches the smoke scan. The
+cookie/config directory is removed by the smoke-test cleanup trap on success or
+failure. Do not upload `auth-cookie` or `zap-replacer.properties`, do not print
+environment dumps or shell-expanded secret values, and investigate immediately
+if either file or a session value appears in logs, summaries, or artifacts.
 
 ## SonarQube Cloud
 

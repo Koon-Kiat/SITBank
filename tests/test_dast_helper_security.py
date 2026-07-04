@@ -118,6 +118,14 @@ def test_dast_session_helper_writes_restricted_cookie_and_zap_config(tmp_path):
     zap_config = config_path.read_text(encoding="utf-8")
     assert f"replacer.full_list(0).replacement={cookie}" in zap_config
     assert "replacer.full_list(1).replacement=https" in zap_config
+    assert (
+        f"replacer.full_list(2).replacement={create_dast_session.DAST_FORWARDED_FOR}"
+        in zap_config
+    )
+    assert (
+        f"replacer.full_list(3).replacement={create_dast_session.DAST_USER_AGENT}"
+        in zap_config
+    )
     if os.name != "nt":
         assert stat.S_IMODE(cookie_path.stat().st_mode) == 0o600
         assert stat.S_IMODE(config_path.stat().st_mode) == 0o600
@@ -196,6 +204,8 @@ def test_dast_docs_describe_secret_file_cookie_model():
         "ZAP loads the authenticated-cookie replacer from a restricted",
         "Synthetic DAST users remain the only authenticated scan identities",
         "auth-cookie` or `zap-replacer.properties",
+        "X-Forwarded-For: 127.0.0.1",
+        "sitbank-dast-session",
         "tests/test_dast_helper_security.py",
     ):
         assert required in docs
@@ -249,6 +259,9 @@ def test_dast_client_request_builds_safe_json_request_and_captures_cookies(monke
     assert request.full_url == "http://127.0.0.1:5000/auth/example"
     assert json.loads(request.data) == {"value": "fake"}
     assert request.headers["X-csrftoken"] == "fake-csrf"
+    assert request.headers["User-agent"] == module.DAST_USER_AGENT
+    assert request.headers["X-forwarded-for"] == module.DAST_FORWARDED_FOR
+    assert request.headers["X-forwarded-proto"] == "https"
     assert request.headers["Referer"] == "https://127.0.0.1:5000/"
     assert client.cookies == {"__Host-sitbank_session": "fake-session"}
 

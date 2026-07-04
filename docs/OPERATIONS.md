@@ -1099,14 +1099,18 @@ and `zap-replacer.properties` as temporary `0600` files under `umask 077`, and
 passes only non-secret startup options plus
 `-configfile /run/dast/zap-replacer.properties` to ZAP. The non-secret
 `-dir /zap/wrk/.ZAP` option gives the scanner UID a writable ZAP home without
-relaxing cookie-file permissions. ZAP's cache, browser profile, and report
-workspace run on container tmpfs and are discarded with the scanner container, so
-host cleanup does not depend on deleting scanner-owned cache files. The cookie is
-not passed as a raw process argument, and neither file belongs in GitHub
-artifacts, job summaries, chat, screenshots, or issue comments. If a DAST cookie
-or full replacer config is exposed, cancel the run, remove the artifact, treat
-the synthetic session as compromised until the run cleanup completes, and review
-the workflow/script change before retrying.
+relaxing cookie-file permissions. The restricted replacer file also fixes the
+synthetic `X-Forwarded-For: 127.0.0.1` header and
+`User-Agent: sitbank-dast-session` header used to mint the session cookie, so
+normal session-risk checks stay enabled during the smoke scan. ZAP's cache,
+browser profile, and report workspace run on container tmpfs and are discarded
+with the scanner container, so host cleanup does not depend on deleting
+scanner-owned cache files. The cookie is not passed as a raw process argument,
+and neither file belongs in GitHub artifacts, job summaries, chat, screenshots,
+or issue comments. If a DAST cookie or full replacer config is exposed, cancel
+the run, remove the artifact, treat the synthetic session as compromised until
+the run cleanup completes, and review the workflow/script change before
+retrying.
 
 Pull requests additionally run a 12-minute local-only DAST smoke against an
 ephemeral image and database. Its two-minute unauthenticated ZAP baseline
