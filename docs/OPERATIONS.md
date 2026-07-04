@@ -360,11 +360,14 @@ Run the manual **Verify private Grafana Loki observability** workflow from
 Tailscale ACL/DNS changes, or token rotation. The workflow uses the protected
 `observability-staging` or `observability-production` environment, joins
 Tailscale with `tag:github-ci-observability-verify`, verifies private Grafana
-health, anonymous denial, non-admin verifier role, Loki datasource health, and
-public denial probes, then uploads only sanitized evidence. It must not run on
-pull requests or public TLS jobs and must not receive operator passwords,
-browser sessions, cookies, MFA values, raw logs, datasource credentials, or
-Grafana admin credentials.
+health with explicit HTTP `200` status, anonymous denial, non-admin verifier
+role, Loki datasource health with explicit HTTP `200` status and schema
+validation, direct private `/loki` and `/metrics` denial, and public denial
+probes, then uploads only sanitized evidence. The private Grafana URL must be
+the approved `https://admin-sitbank.tailca101b.ts.net/grafana/` Tailscale
+subpath. It must not run on pull requests or public TLS jobs and must not
+receive operator passwords, browser sessions, cookies, MFA values, raw logs,
+datasource credentials, or Grafana admin credentials.
 
 ## Production Cloudflare Origin Operations
 
