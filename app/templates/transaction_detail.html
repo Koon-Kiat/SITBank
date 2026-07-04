@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+
+{% block title %}Transaction {{ transaction.transaction_ref[:8]|upper }} | SITBank{% endblock %}
+
+{% block content %}
+<section class="security-page profile-page">
+  <div class="dashboard-header">
+    <div class="page-heading">
+      <p class="eyebrow">Transaction</p>
+      <h1>{{ transaction.transaction_ref[:8]|upper }}</h1>
+    </div>
+    <div class="button-row">
+      <a class="button secondary" href="{{ url_for('web.transactions') }}">Back to Transactions</a>
+    </div>
+  </div>
+
+  <div class="panel">
+    <dl class="profile-detail-list">
+      <div>
+        <dt>Type</dt>
+        <dd>
+          {% if transaction.sender_id == user.id %}
+          <span class="badge neutral">Sent</span>
+          {% else %}
+          <span class="badge">Received</span>
+          {% endif %}
+        </dd>
+      </div>
+      <div>
+        <dt>{{ "Recipient" if transaction.sender_id == user.id else "Sender" }}</dt>
+        <dd>
+          {% if transaction.sender_id == user.id %}
+          {{ transaction.recipient.full_name or transaction.recipient.username }}
+          {% else %}
+          {{ transaction.sender.full_name or transaction.sender.username }}
+          {% endif %}
+        </dd>
+      </div>
+      <div>
+        <dt>Method</dt>
+        <dd>{{ "PayUp" if transaction.transaction_type == "payup" else "Local Transfer" }}</dd>
+      </div>
+      <div>
+        <dt>Reference</dt>
+        <dd>{{ transaction.reference or "—" }}</dd>
+      </div>
+      <div>
+        <dt>Amount (SGD)</dt>
+        <dd>
+          {% if transaction.sender_id == user.id %}
+          <span class="muted">−{{ transaction.amount }}</span>
+          {% else %}
+          +{{ transaction.amount }}
+          {% endif %}
+        </dd>
+      </div>
+      <div>
+        <dt>Date</dt>
+        <dd><time datetime="{{ transaction.created_at.isoformat() }}">{{ (transaction.created_at | sgt).strftime('%d %b %Y, %H:%M') }} SGT</time></dd>
+      </div>
+      <div>
+        <dt>Status</dt>
+        <dd>{{ transaction.status|capitalize }}</dd>
+      </div>
+    </dl>
+  </div>
+
+  <div class="panel">
+    <div class="section-header">
+      <h2>Dispute Status</h2>
+    </div>
+    {% if disputes %}
+    <div class="table-wrap">
+      <table aria-label="My disputes for this transaction">
+        <thead>
+          <tr>
+            <th>Issue Type</th>
+            <th>Filed</th>
+            <th>Status</th>
+            <th>Resolution</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for dispute in disputes %}
+          <tr>
+            <td>{{ dispute.issue_type.replace('_', ' ')|capitalize }}</td>
+            <td><time datetime="{{ dispute.created_at.isoformat() }}">{{ (dispute.created_at | sgt).strftime('%d %b %Y, %H:%M') }} SGT</time></td>
+            <td><span class="badge {{ 'neutral' if dispute.status in ('open', 'under_review') else '' }}">{{ dispute.status.replace('_', ' ')|capitalize }}</span></td>
+            <td>{{ dispute.resolution_note or "—" }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="muted">You have not reported any issues on this transaction.</p>
+    {% endif %}
+
+    {% if has_open_dispute %}
+    <p class="muted">An issue report for this transaction is already open. Please wait for staff to review it.</p>
+    {% else %}
+    <a class="button secondary" href="{{ url_for('web.transaction_dispute_new', transaction_id=transaction.id) }}">Report an Issue</a>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}
