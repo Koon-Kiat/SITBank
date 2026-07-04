@@ -448,9 +448,13 @@ recorded in `docs/security/governance/github-branch-protection-evidence.md`.
 Synthetic DAST users remain the only authenticated scan identities. The smoke
 helper writes the authenticated session cookie and ZAP replacer configuration to
 temporary `0600` files created under `umask 077`; the DAST cookie is not passed
-as a raw process argument. ZAP loads the authenticated-cookie replacer from a
-restricted `-configfile` path, and the cookie/config directory is removed by the
-smoke-test cleanup trap on success or failure. Do not upload `auth-cookie` or
+as a raw process argument. Release smoke enables
+`TURNSTILE_ALLOW_TEST_ACTION=true` only on the isolated smoke app container so
+Cloudflare's official dummy-token response can authenticate the synthetic DAST
+user with the official test keys; production readiness rejects that flag for
+real deployments. ZAP loads the authenticated-cookie replacer from a restricted
+`-configfile` path, and the cookie/config directory is removed by the smoke-test
+cleanup trap on success or failure. Do not upload `auth-cookie` or
 `zap-replacer.properties`, do not print environment dumps or shell-expanded
 secret values, and investigate immediately if either file or a session value
 appears in logs, summaries, or artifacts.

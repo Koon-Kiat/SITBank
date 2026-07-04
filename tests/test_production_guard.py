@@ -109,6 +109,16 @@ def test_identity_and_turnstile_readiness_reject_missing_policy_inputs(monkeypat
     )
 
 
+def test_production_readiness_rejects_turnstile_test_action_allowance(monkeypatch):
+    app = _production_app(monkeypatch)
+    app.config["TURNSTILE_ALLOW_TEST_ACTION"] = True
+    result = ProductionReadinessResult()
+
+    _validate_turnstile_policy(app, result)
+
+    assert "TURNSTILE_ALLOW_TEST_ACTION must be false" in result.failures
+
+
 def test_shared_validator_rejects_weak_production_password_minimum(monkeypatch):
     app = _production_app(monkeypatch)
     app.config["PASSWORD_MIN_LENGTH"] = MIN_PRODUCTION_PASSWORD_LENGTH - 1

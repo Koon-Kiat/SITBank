@@ -401,6 +401,10 @@ docker_args=(
     --volume "${secrets_mount_source}:/run/secrets:ro"
     --volume "${config_mount_source}:/run/config:ro"
 )
+smoke_app_docker_args=(
+    "${docker_args[@]}"
+    --env TURNSTILE_ALLOW_TEST_ACTION=true
+)
 app_command=(
     python -m gunicorn
     --workers 3
@@ -461,7 +465,7 @@ docker run --rm "${migration_docker_args[@]}" "${IMAGE}" \
     python -m flask --app wsgi:app verify-runtime-db-privileges
 
 docker run --detach --name "${app_container}" \
-    "${docker_args[@]}" "${IMAGE}" "${app_command[@]}" >/dev/null
+    "${smoke_app_docker_args[@]}" "${IMAGE}" "${app_command[@]}" >/dev/null
 docker run --detach --name "${admin_container}" \
     "${docker_args[@]}" "${IMAGE}" "${admin_command[@]}" >/dev/null
 ready=0

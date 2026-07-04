@@ -471,6 +471,8 @@ def _validate_turnstile_policy(app: Flask, result: ProductionReadinessResult) ->
         result.failures.append("TURNSTILE_ENABLED must be true for production-like runtimes")
     if app.config.get("TURNSTILE_FAIL_CLOSED_IN_PRODUCTION") is not True:
         result.failures.append("TURNSTILE_FAIL_CLOSED_IN_PRODUCTION must be true")
+    if app.config.get("TURNSTILE_ALLOW_TEST_ACTION") is True:
+        result.failures.append("TURNSTILE_ALLOW_TEST_ACTION must be false")
     if not str(app.config.get("TURNSTILE_SITE_KEY") or "").strip():
         result.failures.append("TURNSTILE_SITE_KEY must be configured")
     if not str(app.config.get("TURNSTILE_SECRET_KEY") or "").strip():

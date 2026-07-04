@@ -290,6 +290,7 @@ Authenticated DAST session creation is handled by
 | The script emits an authenticated session cookie for ZAP rather than real user credentials | `ops/container/create_dast_session.py` |
 | DAST cookie is not passed as a raw process argument | `tests/test_dast_helper_security.py::test_smoke_test_keeps_dast_cookie_out_of_host_command_arguments` |
 | Temporary cookie and ZAP config files are created with restrictive permissions and cleanup | `tests/test_dast_helper_security.py::test_dast_secret_files_are_restricted_and_cleaned_up_by_contract` |
+| Turnstile dummy-token action is accepted only in release smoke | `tests/test_turnstile_public_auth.py::test_turnstile_verifier_accepts_test_action_only_for_explicit_test_keys` |
 
 `ops/container/dast-smoke.sh` provides a local smoke-oriented DAST path using
 synthetic secrets and a synthetic local test user. No real customer, admin, or
@@ -298,8 +299,11 @@ staff credentials are required by the DAST scripts in the repository.
 The authenticated release/scheduled DAST path stores `auth-cookie` and
 `zap-replacer.properties` only in the smoke-test temporary directory. The helper
 sets `umask 077`, writes each secret file as `0600`, validates the cookie shape
-inside the container, mounts the DAST directory read-only into ZAP, and passes
-the non-secret scanner home option `-dir /zap/wrk/.ZAP` plus
+inside the container, mounts the DAST directory read-only into ZAP, and submits
+Cloudflare's official dummy token only to the isolated smoke app with official
+test keys and `TURNSTILE_ALLOW_TEST_ACTION=true`. Production readiness rejects
+that flag for real deployments. The ZAP command passes the non-secret scanner
+home option `-dir /zap/wrk/.ZAP` plus
 `-configfile /run/dast/zap-replacer.properties` on the host-visible ZAP command
 line. ZAP loads the authenticated-cookie replacer from a restricted file, so the
 DAST cookie is not passed as a raw process argument. The temporary directory is
