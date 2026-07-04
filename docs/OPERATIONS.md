@@ -363,11 +363,14 @@ Tailscale with `tag:github-ci-observability-verify`, verifies private Grafana
 health with explicit HTTP `200` status, anonymous denial, non-admin verifier
 role, Loki datasource health with explicit HTTP `200` status and schema
 validation, direct private `/loki` and `/metrics` denial, and public denial
-probes, then uploads only sanitized evidence. The private Grafana URL must be
-the approved `https://admin-sitbank.tailca101b.ts.net/grafana/` Tailscale
-subpath. It must not run on pull requests or public TLS jobs and must not
-receive operator passwords, browser sessions, cookies, MFA values, raw logs,
-datasource credentials, or Grafana admin credentials.
+probes, then uploads only sanitized evidence. Cloudflare Access challenges,
+generic Cloudflare headers, and app/Nginx `401`, `403`, or `404` responses are
+valid public-denial evidence; Grafana/Loki headers, `grafana_session` cookies,
+or redirects to Grafana/Loki login paths fail closed. The private Grafana URL
+must be the approved `https://admin-sitbank.tailca101b.ts.net/grafana/`
+Tailscale subpath. It must not run on pull requests or public TLS jobs and
+must not receive operator passwords, browser sessions, cookies, MFA values, raw
+logs, datasource credentials, or Grafana admin credentials.
 
 ## Production Cloudflare Origin Operations
 
@@ -796,14 +799,17 @@ implemented for that channel.
 
 PayUp lookup requires an authenticator code before SITBank reveals the
 recipient name for a phone number. Unknown, unavailable, and revoked recipients
-return the same generic `Invalid phone number` response and the audit metadata
-uses opaque references instead of raw phone numbers. PayUp has a per-customer
-daily limit stored on `users.payup_daily_limit` and reset at midnight Singapore
-time. The default limit is SGD 500; customers can choose a preset or custom
-value from transfer settings with TOTP step-up. Confirmation recomputes whether
-the transfer brings today's cumulative PayUp spend to at least 80% of the limit
-under the current database state. If so, a fresh authenticator code is required
-before funds move.
+return the same generic `Invalid phone number` response, including self-phone
+lookups, and the audit metadata uses opaque references instead of raw phone
+numbers. Repeated failed PayUp phone lookups consume the durable
+`payup_lookup_failure` counter scoped to the authenticated customer. PayUp has a
+per-customer daily limit stored on `users.payup_daily_limit` and reset at
+midnight Singapore time. The default limit is SGD 500; presets are SGD 100,
+500, 1000, 3000, 5000, and 10000. Custom limits must be between SGD 100.00 and
+SGD 10000.00 with cents precision, and changing the value requires TOTP
+step-up. Confirmation recomputes whether the transfer brings today's cumulative
+PayUp spend to at least 80% of the limit under the current database state. If
+so, a fresh authenticator code is required before funds move.
 
 Completed Local Transfer and PayUp rows store an HMAC-SHA256 transaction hash
 under the dedicated `TRANSACTION_LEDGER_HMAC_KEYS_JSON` key id and explicit
@@ -820,6 +826,83 @@ and produce an immediate `account_freeze` alert. Blocked authorization
 failures, including payee ownership mismatches, are audited safely using opaque
 references so raw account numbers, phone numbers, payee details, exact transfer
 amounts, and pending transfer tokens do not appear in the audit log.
+
+### Transaction Ledger HMAC Key Provisioning
+
+The transaction-ledger HMAC keyring is an EC2 root-managed secret file, not a
+GitHub Actions variable, secret, workflow input, issue attachment, or CI
+artifact. GitHub stores only the active key id:
+`STAGING_TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID` for staging and
+`PROD_TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID` for production. The active id must
+match a key in the host file. The container reads the keyring through
+`/run/secrets/transaction_ledger_hmac_keys_json`; do not put the keyring in the
+signed runtime bundle or in GitHub environment secrets.
+
+- Staging keyring path, provisioned and verified first:
+  `/etc/sitbank-staging/secrets/transaction_ledger_hmac_keys_json`
+- Production keyring path:
+  `/etc/sitbank/secrets/transaction_ledger_hmac_keys_json`
+
+Generate the keyring directly on the target EC2 host, starting with staging.
+Use distinct key ids and key bytes per environment, and do not reuse session,
+audit, MFA, or admin HMAC material. The example below is safe to adapt by
+changing `KEYRING_PATH` and `KEY_ID`; it writes only to a root-owned file with
+restrictive permissions:
+
+```bash
+KEYRING_PATH=/etc/sitbank-staging/secrets/transaction_ledger_hmac_keys_json
+KEY_ID=2026-07-ledger-01
+sudo install -d -o root -g sitbank-container -m 0750 "$(dirname "${KEYRING_PATH}")"
+sudo KEY_ID="${KEY_ID}" python3 - <<'PY' | sudo tee "${KEYRING_PATH}" >/dev/null
+import base64
+import json
+import os
+import secrets
+
+key_id = os.environ["KEY_ID"]
+print(json.dumps({key_id: base64.b64encode(secrets.token_bytes(32)).decode("ascii")}))
+PY
+sudo chown root:sitbank-container "${KEYRING_PATH}"
+sudo chmod 0640 "${KEYRING_PATH}"
+```
+
+For production, repeat the process with
+`KEYRING_PATH=/etc/sitbank/secrets/transaction_ledger_hmac_keys_json` only after
+staging has passed deployment and transaction-integrity verification. Safe
+verification prints only key ids and decoded byte lengths, never key material:
+
+```bash
+KEYRING_PATH=/etc/sitbank-staging/secrets/transaction_ledger_hmac_keys_json
+sudo KEYRING_PATH="${KEYRING_PATH}" python3 - <<'PY'
+import base64
+import json
+import os
+from pathlib import Path
+
+path = Path(os.environ["KEYRING_PATH"])
+data = json.loads(path.read_text(encoding="utf-8"))
+for key_id, encoded_key in sorted(data.items()):
+    decoded_key = base64.b64decode(encoded_key, validate=True)
+    print(f"{key_id}: {len(decoded_key)} bytes")
+PY
+```
+
+Safe output looks like `2026-07-ledger-01: 32 bytes`; it must not include
+base64 values, decoded bytes, session ids, database URLs, or other secrets. Do
+not paste, screenshot, commit, upload, or log key material, and do not include
+key material in issues, pull requests, job summaries, provider exports, or
+chat transcripts.
+
+Before deployment, set only the matching GitHub environment active-id variable
+to the chosen key id. Do not configure `STAGING_TRANSACTION_LEDGER_HMAC_KEYS_JSON`
+or `PROD_TRANSACTION_LEDGER_HMAC_KEYS_JSON`. The deployment wrapper adopts the
+existing EC2 secret file and validates that the active id is present and all key
+values decode to exactly 32 bytes; it does not generate, upload, replace, print,
+or bundle the keyring. For rotation, add the new 32-byte key under a new id,
+update only the matching GitHub environment's active key id, deploy staging
+first, then production, and retain old key ids while rows signed by them remain
+in the database. Rollback must keep both the previous and new key ids available
+until no retained row references them.
 
 The admin boundary audits root-admin-controlled staff invite onboarding,
 admin login success/failure, TOTP verification, admin step-up, admin data

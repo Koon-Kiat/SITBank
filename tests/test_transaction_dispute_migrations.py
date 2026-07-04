@@ -38,7 +38,7 @@ def test_transaction_disputes_migration_is_chained_and_portable():
     text = DISPUTES_MIGRATION.read_text(encoding="utf-8")
 
     assert 'revision = "20260705_0027"' in text
-    assert 'down_revision = "20260704_0026"' in text
+    assert 'down_revision = "20260704_0027"' in text
     assert '"transaction_disputes"' in text
     assert "postgresql_where=" in text
     assert "sqlite_where=" in text

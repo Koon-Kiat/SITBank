@@ -1,7 +1,7 @@
 """Add transaction dispute reporting table.
 
 Revision ID: 20260705_0027
-Revises: 20260704_0026
+Revises: 20260704_0027
 Create Date: 2026-07-05 00:27:00
 """
 
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 revision = "20260705_0027"
-down_revision = "20260704_0026"
+down_revision = "20260704_0027"
 branch_labels = None
 depends_on = None
 

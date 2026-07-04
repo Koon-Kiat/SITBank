@@ -119,10 +119,14 @@ reachable from the public runner, then joins Tailscale, verifies Grafana API
 health with explicit HTTP `200` status validation, verifies anonymous API
 denial, checks the verifier role is not admin, checks Loki datasource health
 through Grafana with explicit HTTP `200` status and response-schema
-validation, and verifies public SITBank paths do not expose Grafana or Loki. It
-uploads only
+validation, and verifies public SITBank paths do not expose Grafana or Loki.
+Cloudflare Access challenges, generic Cloudflare edge headers, and app/Nginx
+`401`, `403`, and `404` denials are valid public-denial evidence; Grafana/Loki
+server headers, `x-grafana-*` or `x-loki-*` headers, `grafana_session` cookies,
+and public redirects to Grafana/Loki login paths fail closed. It uploads only
 `observability-evidence/private-observability.json`, a sanitized summary with
-HTTP status codes and check names, not raw API responses.
+target labels, HTTP status codes, denial categories, and check names, not raw
+headers, cookies, redirect URLs, or API responses.
 
 The protected workflow is live network-path evidence. It is not a pull-request
 check and must never run on forks, untrusted branches, or public GitHub-hosted

@@ -13,8 +13,13 @@ from marshmallow import ValidationError
 from sqlalchemy import func, or_
 
 from app.auth.services import AuthError, ensure_account_not_frozen
-from app.banking.forms import TRANSFER_LIMIT_PRESETS
 from app.extensions import db
+from app.banking.limits import (
+    PAYUP_DAILY_LIMIT_MAX,
+    PAYUP_DAILY_LIMIT_MIN,
+    PAYUP_DAILY_LIMIT_PRECISION,
+    PAYUP_DAILY_LIMIT_PRESETS,
+)
 from app.banking.schemas import MAX_TRANSACTION_AMOUNT, MIN_TRANSACTION_AMOUNT, PublicTransactionSchema
 from app.models import Payee, Transaction, User
 from app.security.audit import AuditWriteError, audit_event, audit_event_required, audit_reference
@@ -686,17 +691,26 @@ def payup_requires_step_up(user: User, amount: Decimal) -> bool:
 
 def resolve_transfer_limit_choice(choice: str, custom_value: str | None) -> Decimal:
     """Resolve a TransferLimitsForm selection into a validated Decimal amount."""
-    if choice in TRANSFER_LIMIT_PRESETS:
-        return Decimal(choice)
-    if choice == "custom":
-        if not custom_value:
+    choice_text = str(choice or "").strip()
+    if choice_text in PAYUP_DAILY_LIMIT_PRESETS:
+        return Decimal(choice_text).quantize(PAYUP_DAILY_LIMIT_PRECISION)
+    if choice_text == "custom":
+        custom_text = str(custom_value or "").strip()
+        if not custom_text:
             raise AuthError("Enter a custom amount.", 400)
+        if "." in custom_text and len(custom_text.rsplit(".", 1)[1]) > 2:
+            raise AuthError("Custom amount must use cents precision.", 400)
         try:
-            amount = Decimal(custom_value.strip())
+            amount = Decimal(custom_text)
         except InvalidOperation as exc:
             raise AuthError("Enter a valid custom amount.", 400) from exc
-        if amount <= Decimal("100"):
-            raise AuthError("Custom amount must be greater than SGD 100.", 400)
+        if not amount.is_finite():
+            raise AuthError("Enter a valid custom amount.", 400)
+        amount = amount.quantize(PAYUP_DAILY_LIMIT_PRECISION)
+        if amount < PAYUP_DAILY_LIMIT_MIN:
+            raise AuthError("Custom amount must be at least SGD 100.00.", 400)
+        if amount > PAYUP_DAILY_LIMIT_MAX:
+            raise AuthError("Custom amount must not exceed SGD 10000.00.", 400)
         return amount
     raise AuthError("Invalid limit selection.", 400)
 

@@ -245,9 +245,15 @@ private-key blocks before printing handled errors.
 
 `<PREFIX>_MFA_KEK_ACTIVE_ID` must match a key identifier in the root-managed `/etc/sitbank*/secrets/mfa_kek_keys_json` file on EC2. Do not put `MFA_KEK_KEYS_JSON` in GitHub Actions; the KEK keyring is a long-lived secret and remains host-managed.
 `<PREFIX>_TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID` must match a key identifier
-in `/etc/sitbank*/secrets/transaction_ledger_hmac_keys_json`. Keep the
-transaction-ledger keyring host-managed and separate from session and audit
-HMAC material.
+in `/etc/sitbank-staging/secrets/transaction_ledger_hmac_keys_json` for staging
+or `/etc/sitbank/secrets/transaction_ledger_hmac_keys_json` for production.
+Keep the transaction-ledger keyring host-managed and separate from session and
+audit HMAC material. Do not configure
+`STAGING_TRANSACTION_LEDGER_HMAC_KEYS_JSON` or
+`PROD_TRANSACTION_LEDGER_HMAC_KEYS_JSON` in GitHub Actions; deployment adopts
+the existing EC2 secret file and validates that the active key id is present
+and every key value decodes to exactly 32 bytes. The deployment wrapper does
+not generate, replace, print, upload, or bundle the keyring.
 `<PREFIX>_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID` must match a key identifier in
 `/etc/sitbank*/secrets/admin_session_hmac_keys_json`. Do not put admin Flask,
 CSRF, session-HMAC, session-lookup HMAC, password-pepper, or database secret values in GitHub
@@ -353,9 +359,12 @@ status, verifies anonymous API denial, verifies the non-admin verifier role,
 checks Loki datasource health through Grafana with explicit HTTP `200` status
 and schema validation, verifies direct private `/loki` and `/metrics` denial
 on the Tailscale host, and runs public denial probes for `/grafana`, `/loki`,
-`/logs`, and `/metrics`. It fails closed when private or public responses
-include Grafana/Loki-identifying headers or cookies, uploads only sanitized
-JSON evidence for 30 days, and logs out of Tailscale at completion.
+`/logs`, and `/metrics`. Cloudflare Access challenges, generic Cloudflare
+headers, and app/Nginx `401`, `403`, or `404` responses count as public-denial
+evidence. The verifier fails closed when private or public responses include
+Grafana/Loki-identifying headers, `grafana_session` cookies, or redirects to
+Grafana/Loki login paths, uploads only sanitized JSON evidence for 30 days,
+and logs out of Tailscale at completion.
 
 ## Gitleaks
 
@@ -440,11 +449,14 @@ Synthetic DAST users remain the only authenticated scan identities. The smoke
 helper writes the authenticated session cookie and ZAP replacer configuration to
 temporary `0600` files created under `umask 077`; the DAST cookie is not passed
 as a raw process argument. ZAP loads the authenticated-cookie replacer from a
-restricted `-configfile` path, and the cookie/config directory is removed by the
-smoke-test cleanup trap on success or failure. Do not upload `auth-cookie` or
-`zap-replacer.properties`, do not print environment dumps or shell-expanded
-secret values, and investigate immediately if either file or a session value
-appears in logs, summaries, or artifacts.
+restricted `-configfile` path. That same restricted config pins the smoke
+request identity headers (`User-Agent`, `X-Forwarded-For`, and
+`X-Forwarded-Proto`) so the authenticated crawl matches the server-side session
+risk context without weakening reauthentication checks. The cookie/config
+directory is removed by the smoke-test cleanup trap on success or failure. Do
+not upload `auth-cookie` or `zap-replacer.properties`, do not print environment
+dumps or shell-expanded secret values, and investigate immediately if either
+file or a session value appears in logs, summaries, or artifacts.
 
 ## SonarQube Cloud
 

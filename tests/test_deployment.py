@@ -577,6 +577,14 @@ def test_dast_session_creator_matches_registration_contract():
     source = Path("ops/container/create_dast_session.py").read_text(encoding="utf-8")
 
     assert "create_dast_user(" in source
+    assert "issue_dast_session_cookie(" in source
+    assert "establish_authenticated_session(" in source
+    assert 'client.request("GET", "/auth/sessions", expected_status=200)' in source
+    assert '"User-Agent": DAST_USER_AGENT' in source
+    assert '"X-Forwarded-For": DAST_FORWARDED_FOR' in source
+    assert "replacer.full_list(3).matchstr=User-Agent" in source
+    assert '"/auth/login"' not in source
+    assert '"cf-turnstile-response"' not in source
     assert "hash_password(password)" in source
     assert "@sit.singaporetech.edu.sg" in source
     assert "create_registration_invite" not in source
@@ -751,10 +759,8 @@ def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypa
     assert secrets["admin_secret_key"] == DEPLOYMENT_VALUES["PROD_ADMIN_SECRET_KEY"]
     assert secrets["database_migration_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_MIGRATION_URL"]
     assert secrets["mfa_kek_keys_json"] == DEPLOYMENT_VALUES["PROD_MFA_KEK_KEYS_JSON"]
-    assert (
-        secrets["transaction_ledger_hmac_keys_json"]
-        == DEPLOYMENT_VALUES["PROD_TRANSACTION_LEDGER_HMAC_KEYS_JSON"]
-    )
+    assert "TRANSACTION_LEDGER_HMAC_KEYS_JSON" not in SECRET_INPUTS
+    assert "transaction_ledger_hmac_keys_json" not in secrets
     assert secrets["root_admin_emails"] == ROOT_ADMIN_EMAILS_VALUE
     assert secrets["security_audit_hmac_key"] == DEPLOYMENT_VALUES["PROD_SECURITY_AUDIT_HMAC_KEY"]
     assert secrets["smtp_username"] == DEPLOYMENT_VALUES["PROD_SMTP_USERNAME"]
@@ -982,6 +988,9 @@ def test_container_bundle_builds_two_key_rotation_ring(monkeypatch):
 def test_runtime_secret_inventory_matches_config_and_renderer():
     assert SECRET_INPUTS == PRODUCTION_SECRET_INPUTS
     assert NON_SECRET_DEFAULTS == CONTRACT_NON_SECRET_DEFAULTS
+    assert "TRANSACTION_LEDGER_HMAC_KEYS_JSON" in CONFIG_SECRET_INPUTS
+    assert "TRANSACTION_LEDGER_HMAC_KEYS_JSON" not in DEPLOYMENT_SECRET_INPUTS
+    assert "TRANSACTION_LEDGER_HMAC_KEYS_JSON" not in PRODUCTION_SECRET_INPUTS
     _assert_sets_equal(
         _config_secret_inputs(),
         set(CONFIG_SECRET_INPUTS),
@@ -1773,6 +1782,18 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "apply_admin_runtime_db_privileges" in deploy_script
     assert "verify-runtime-db-privileges" in deploy_script
     assert "validate_production_admin_isolation" in deploy_script
+    assert "validate_transaction_ledger_hmac_secret" in deploy_script
+    ledger_validator = re.search(
+        r"validate_transaction_ledger_hmac_secret\(\) \{(.*?)\n\}",
+        deploy_script,
+        flags=re.DOTALL,
+    )
+    assert ledger_validator is not None
+    assert "TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID" in ledger_validator.group(1)
+    assert "base64.b64decode" in ledger_validator.group(1)
+    assert "len(decoded_key) != 32" in ledger_validator.group(1)
+    assert "active key id is not present in the host keyring" in ledger_validator.group(1)
+    assert "print(" not in ledger_validator.group(1)
     assert "ADMIN_APP_BIND_PORT='5002'" in deploy_script
     assert "ADMIN_PUBLIC_HOST" not in deploy_script
     assert "Admin runtime database URL is required for production" in deploy_script

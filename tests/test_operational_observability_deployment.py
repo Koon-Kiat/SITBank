@@ -1024,16 +1024,86 @@ def test_verify_public_denials_accepts_closed_statuses_and_sanitizes_records():
             "result": "pass",
             "target": "sitbank.pp.ua/grafana",
             "http_status": "404",
+            "denial_category": "not_found_denial",
         },
         {
             "name": "public_observability_denial",
             "result": "pass",
             "target": "staging-sitbank.pp.ua/loki",
             "http_status": "403",
+            "denial_category": "http_auth_denial",
         },
     ]
     assert "HTTP/2" not in json.dumps(checks)
     assert "location:" not in json.dumps(checks).casefold()
+
+
+def test_verify_public_denials_accepts_cloudflare_access_denials_without_raw_metadata():
+    module = _load_verifier_module()
+    urls = (
+        "https://staging-sitbank.pp.ua/grafana",
+        "https://staging-sitbank.pp.ua/loki",
+        "https://staging-sitbank.pp.ua/logs",
+        "https://staging-sitbank.pp.ua/metrics",
+    )
+
+    def cloudflare_access_runner(arguments):
+        url = tuple(arguments)[-1]
+        status = "302" if url.endswith("/grafana") else "403"
+        return _status_headers(
+            module,
+            status,
+            "server: cloudflare",
+            "cf-ray: fake-ray-id",
+            "cf-access-jwt-assertion: fake-access-assertion",
+            "set-cookie: CF_Authorization=fake-access-cookie; HttpOnly; Secure",
+            "location: /cdn-cgi/access/login",
+            "x-frame-options: DENY",
+        )
+
+    checks = module["verify_public_denials"](cloudflare_access_runner, urls)
+
+    assert {check["target"] for check in checks} == {
+        "staging-sitbank.pp.ua/grafana",
+        "staging-sitbank.pp.ua/loki",
+        "staging-sitbank.pp.ua/logs",
+        "staging-sitbank.pp.ua/metrics",
+    }
+    assert all(check["result"] == "pass" for check in checks)
+    assert all(check["denial_category"] == "cloudflare_access_denial" for check in checks)
+    serialized = json.dumps(checks)
+    assert "cf-access-jwt-assertion" not in serialized
+    assert "CF_Authorization" not in serialized
+    assert "/cdn-cgi/access/login" not in serialized
+
+
+def test_verify_public_denials_accepts_app_and_nginx_denials():
+    module = _load_verifier_module()
+    statuses = {
+        "https://sitbank.pp.ua/grafana": "404",
+        "https://sitbank.pp.ua/loki": "401",
+        "https://sitbank.pp.ua/logs": "403",
+        "https://sitbank.pp.ua/metrics": "404",
+    }
+
+    def denial_runner(arguments):
+        return _status_headers(
+            module,
+            statuses[tuple(arguments)[-1]],
+            "server: nginx",
+            "x-content-type-options: nosniff",
+            "content-security-policy: default-src 'self'",
+        )
+
+    checks = module["verify_public_denials"](denial_runner, tuple(statuses))
+
+    assert [check["result"] for check in checks] == ["pass", "pass", "pass", "pass"]
+    assert [check["denial_category"] for check in checks] == [
+        "not_found_denial",
+        "http_auth_denial",
+        "http_auth_denial",
+        "not_found_denial",
+    ]
 
 
 def test_verify_private_direct_denials_keep_loki_and_metrics_unserved():
@@ -1054,12 +1124,14 @@ def test_verify_private_direct_denials_keep_loki_and_metrics_unserved():
             "result": "pass",
             "target": "admin-sitbank.tailca101b.ts.net/loki",
             "http_status": "404",
+            "denial_category": "not_found_denial",
         },
         {
             "name": "private_direct_observability_denial",
             "result": "pass",
             "target": "admin-sitbank.tailca101b.ts.net/metrics",
             "http_status": "403",
+            "denial_category": "http_auth_denial",
         },
     ]
 
@@ -1083,14 +1155,12 @@ def test_verify_private_direct_denials_keep_loki_and_metrics_unserved():
         ("404", "x-loki-warning: fake", "public observability"),
         ("302", "location: https://sitbank.pp.ua/grafana/login", "public observability"),
         ("302", "location: https://sitbank.pp.ua/loki/", "public observability"),
-        ("404", "authorization: Bearer fake", "sensitive observability headers"),
-        ("404", "cookie: grafana_session=fake", "sensitive observability headers"),
-        ("404", "cf-access-jwt-assertion: fake", "sensitive observability headers"),
-        ("404", "set-cookie: grafana_session=fake", "sensitive observability headers"),
-        ("404", "x-grafana-org-id: 1", "sensitive observability headers"),
+        ("404", "cookie: grafana_session=fake", "public observability"),
+        ("404", "set-cookie: grafana_session=fake", "public observability"),
+        ("404", "x-grafana-org-id: 1", "public observability"),
     ),
 )
-def test_verify_public_denials_fails_closed_on_exposure_or_sensitive_headers(
+def test_verify_public_denials_fails_closed_on_observability_exposure(
     status,
     header,
     message,
@@ -1116,6 +1186,7 @@ def test_write_evidence_creates_parent_and_retains_only_sanitized_fields(tmp_pat
             "result": "pass",
             "target": "sitbank.pp.ua/grafana",
             "http_status": "404",
+            "denial_category": "not_found_denial",
         }
     ]
 
@@ -1143,6 +1214,9 @@ def test_write_evidence_creates_parent_and_retains_only_sanitized_fields(tmp_pat
         "Authorization: Bearer",
         "grafana_session=fake",
         "cf-access-jwt-assertion: fake",
+        "location:",
+        "cloudflareaccess.",
+        "redirect_url=",
         "raw response body",
     ):
         assert forbidden not in evidence_text
@@ -1162,6 +1236,31 @@ def test_write_evidence_refuses_to_write_if_token_would_be_retained(tmp_path):
         )
 
     assert not evidence_path.exists()
+
+
+def test_write_evidence_refuses_raw_headers_cookies_and_redirects(tmp_path):
+    module = _load_verifier_module()
+    evidence_path = tmp_path / "private-observability.json"
+
+    unsafe_checks = [
+        {"name": "unsafe", "result": "pass", "raw_header": "authorization: Bearer fake"},
+        {"name": "unsafe", "result": "pass", "raw_header": "set-cookie: grafana_session=fake"},
+        {
+            "name": "unsafe",
+            "result": "pass",
+            "raw_location": "https://example.cloudflareaccess.test/cdn-cgi/access/login?redirect_url=fake",
+        },
+    ]
+    for check in unsafe_checks:
+        with pytest.raises(module["VerificationError"], match="raw observability metadata"):
+            module["_write_evidence"](
+                evidence_path,
+                target_environment="staging",
+                grafana_url=PRIVATE_GRAFANA_URL,
+                checks=[check],
+                token=FAKE_GRAFANA_TOKEN,
+            )
+        assert not evidence_path.exists()
 
 
 def test_parse_args_restricts_target_environment_and_accepts_overrides(tmp_path):

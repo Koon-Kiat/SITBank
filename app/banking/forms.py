@@ -5,6 +5,7 @@ from wtforms import SelectField, StringField, TextAreaField
 from wtforms.validators import InputRequired, Length, Optional, Regexp
 
 from app.auth.schemas import PHONE_RE, TOTP_RE
+from app.banking.limits import PAYUP_DAILY_LIMIT_CHOICES, PAYUP_DAILY_LIMIT_PRESETS
 from app.models import DISPUTE_ISSUE_TYPES
 
 
@@ -13,10 +14,8 @@ NICKNAME_RE = r"^[A-Za-z0-9 '\-]{1,64}$"
 AMOUNT_RE = r"^\d+(\.\d{1,2})?$"
 REFERENCE_RE = r"^[A-Za-z0-9 '\-.,/]{0,128}$"
 
-TRANSFER_LIMIT_PRESETS = ("100", "500", "1000", "3000", "5000", "10000")
-TRANSFER_LIMIT_CHOICES = [(value, f"SGD {value}") for value in TRANSFER_LIMIT_PRESETS] + [
-    ("custom", "Custom amount"),
-]
+TRANSFER_LIMIT_PRESETS = PAYUP_DAILY_LIMIT_PRESETS
+TRANSFER_LIMIT_CHOICES = PAYUP_DAILY_LIMIT_CHOICES
 
 _AUTHENTICATOR_CODE_LABEL = "Authenticator code"
 _MFA_CODE_LENGTH_MESSAGE = "MFA code must be exactly 6 digits"

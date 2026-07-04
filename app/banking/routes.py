@@ -81,6 +81,8 @@ _PAYUP_CONFIRM_TEMPLATE = "payup_confirm.html"
 _PAYUP_ENDPOINT = "banking.payup"
 _NO_PENDING_PAYUP_RECIPIENT_MESSAGE = "No pending PayUp request. Please start again."
 _INVALID_PHONE_MESSAGE = "Invalid phone number."
+_PAYUP_LOOKUP_FAILURE_LIMIT = 5
+_PAYUP_LOOKUP_FAILURE_WINDOW_SECONDS = 60 * 60
 
 _TRANSFER_LIMITS_TEMPLATE = "transfer_limits.html"
 _TRANSFER_LIMITS_ENDPOINT = "banking.transfer_limits"
@@ -136,6 +138,41 @@ def _cooldown_status(payee: Payee, cooldown_seconds: int) -> dict:
         "expires_at": expires_at.isoformat(),
         "available_at": expires_at.strftime("%Y-%m-%d %H:%M UTC"),
     }
+
+
+def _record_failed_payup_lookup(reason: str, phone_number: str) -> None:
+    try:
+        failure_count = consume_durable_rate_limit(
+            "payup_lookup_failure",
+            f"user:{g.current_user.id}",
+            limit=_PAYUP_LOOKUP_FAILURE_LIMIT,
+            window_seconds=_PAYUP_LOOKUP_FAILURE_WINDOW_SECONDS,
+        )
+    except DurableRateLimitExceeded as exc:
+        audit_event(
+            "payup_lookup",
+            "blocked",
+            user=g.current_user,
+            metadata={
+                "reason": "durable_rate_limit",
+                "retry_after": exc.retry_after,
+            },
+        )
+        raise AuthError(
+            _INVALID_PHONE_MESSAGE,
+            429,
+            retry_after=exc.retry_after,
+        ) from exc
+    audit_event(
+        "payup_lookup",
+        "failure",
+        user=g.current_user,
+        metadata={
+            "reason": reason,
+            "phone_ref": audit_reference("payup_phone", phone_number),
+            "failure_count": failure_count,
+        },
+    )
 
 
 # ── Payee list ─────────────────────────────────────────────────────────────────
@@ -579,10 +616,6 @@ def payup_submit():
 
     phone_number = form.phone_number.data.strip()
 
-    if phone_number == g.current_user.phone_number:
-        flash("You cannot PayUp to your own phone number.", "error")
-        return render_template(_PAYUP_TEMPLATE, form=form), 400
-
     try:
         verify_high_risk_authorization(
             g.current_user,
@@ -594,13 +627,17 @@ def payup_submit():
         return render_template(_PAYUP_TEMPLATE, form=form), exc.status_code
 
     recipient = User.query.filter_by(phone_number=phone_number).first()
-    if not recipient or recipient.account_status not in ("active", "locked"):
-        audit_event(
-            "payup_lookup",
-            "failure",
-            user=g.current_user,
-            metadata={"reason": "recipient_not_found"},
-        )
+    if (
+        not recipient
+        or recipient.id == g.current_user.id
+        or recipient.account_status != "active"
+        or recipient.is_frozen
+    ):
+        try:
+            _record_failed_payup_lookup("recipient_unavailable", phone_number)
+        except AuthError as exc:
+            flash(exc.message, "error")
+            return render_template(_PAYUP_TEMPLATE, form=form), exc.status_code
         flash(_INVALID_PHONE_MESSAGE, "error")
         return render_template(_PAYUP_TEMPLATE, form=form), 400
 

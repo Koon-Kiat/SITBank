@@ -7,6 +7,9 @@ import pytest
 import pyotp
 
 from _auth_flow_helpers import enable_mfa_for_user, login, mark_recent_mfa, register
+from app.auth.services import AuthError
+from app.banking.limits import PAYUP_DAILY_LIMIT_MAX, PAYUP_DAILY_LIMIT_MIN
+from app.banking.services import resolve_transfer_limit_choice
 from app.extensions import db
 from app.models import User
 
@@ -76,7 +79,7 @@ def test_transfer_limits_post_custom_amount_above_100_succeeds(client, limits_co
     assert Decimal(str(alice.payup_daily_limit)) == Decimal("750.00")
 
 
-def test_transfer_limits_post_custom_amount_not_above_100_rejected(client, limits_context, monkeypatch):
+def test_transfer_limits_post_custom_amount_at_minimum_succeeds(client, limits_context, monkeypatch):
     alice_secret = limits_context["alice_secret"]
     code = _fresh_totp(alice_secret, monkeypatch)
 
@@ -85,11 +88,72 @@ def test_transfer_limits_post_custom_amount_not_above_100_rejected(client, limit
         data={"payup_limit": "custom", "payup_limit_custom": "100.00", "totp_code": code},
     )
 
+    assert response.status_code == 302
+    db.session.expire_all()
+    alice = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
+    assert Decimal(str(alice.payup_daily_limit)) == PAYUP_DAILY_LIMIT_MIN
+
+
+def test_transfer_limits_post_custom_amount_below_minimum_rejected(client, limits_context, monkeypatch):
+    alice_secret = limits_context["alice_secret"]
+    code = _fresh_totp(alice_secret, monkeypatch)
+
+    response = client.post(
+        "/banking/settings/transfer-limits",
+        data={"payup_limit": "custom", "payup_limit_custom": "99.99", "totp_code": code},
+    )
+
     assert response.status_code == 400
-    assert b"greater than SGD 100" in response.data
+    assert b"at least SGD 100.00" in response.data
     db.session.expire_all()
     alice = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
     assert Decimal(str(alice.payup_daily_limit)) == Decimal("500.00")
+
+
+def test_transfer_limits_post_custom_amount_above_maximum_rejected(client, limits_context, monkeypatch):
+    alice_secret = limits_context["alice_secret"]
+    code = _fresh_totp(alice_secret, monkeypatch)
+
+    response = client.post(
+        "/banking/settings/transfer-limits",
+        data={"payup_limit": "custom", "payup_limit_custom": "10000.01", "totp_code": code},
+    )
+
+    assert response.status_code == 400
+    assert b"must not exceed SGD 10000.00" in response.data
+    db.session.expire_all()
+    alice = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
+    assert Decimal(str(alice.payup_daily_limit)) == Decimal("500.00")
+
+
+@pytest.mark.parametrize(
+    ("choice", "custom_value", "expected"),
+    [
+        ("100", None, PAYUP_DAILY_LIMIT_MIN),
+        ("custom", "100.00", PAYUP_DAILY_LIMIT_MIN),
+        ("custom", "10000.00", PAYUP_DAILY_LIMIT_MAX),
+        ("custom", "750.55", Decimal("750.55")),
+    ],
+)
+def test_transfer_limit_resolver_accepts_bounded_values(choice, custom_value, expected):
+    assert resolve_transfer_limit_choice(choice, custom_value) == expected
+
+
+@pytest.mark.parametrize(
+    ("choice", "custom_value"),
+    [
+        ("custom", ""),
+        ("custom", "99.99"),
+        ("custom", "10000.01"),
+        ("custom", "750.001"),
+        ("custom", "NaN"),
+        ("custom", "Infinity"),
+        ("bogus", "750.00"),
+    ],
+)
+def test_transfer_limit_resolver_rejects_unbounded_or_malformed_values(choice, custom_value):
+    with pytest.raises(AuthError):
+        resolve_transfer_limit_choice(choice, custom_value)
 
 
 def test_transfer_limits_post_missing_totp_fails_closed(client, limits_context):
