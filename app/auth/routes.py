@@ -128,6 +128,19 @@ def _load_payload(schema: Schema, form_cls) -> dict:
     }
 
 
+def _first_validation_message(error: ValidationError) -> str:
+    stack = [error.messages]
+    while stack:
+        value = stack.pop(0)
+        if isinstance(value, str):
+            return value
+        if isinstance(value, dict):
+            stack.extend(value.values())
+        elif isinstance(value, list):
+            stack.extend(value)
+    return "Invalid request"
+
+
 @auth_bp.errorhandler(AuthError)
 def handle_auth_error(error: AuthError):
     response = jsonify({"error": error.message})
@@ -256,7 +269,13 @@ def password_reset_recovery_code():
 @limiter.limit("5 per 15 minutes", key_func=get_remote_address)
 @limiter.limit("5 per 15 minutes", key_func=mfa_principal)
 def password_reset_complete():
-    data = _load_payload(PasswordResetSchema(), PasswordResetForm)
+    try:
+        data = _load_payload(PasswordResetSchema(), PasswordResetForm)
+    except ValidationError as exc:
+        message = _first_validation_message(exc)
+        if message.startswith("Password must be "):
+            raise AuthError(message, 400) from exc
+        raise
     return jsonify(complete_password_reset(data["new_password"], data["confirm_new_password"]))
 
 

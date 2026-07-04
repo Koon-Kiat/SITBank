@@ -17,6 +17,7 @@ from app.auth.password_reset import (
     generate_recovery_codes_for_user,
     transition_manual_recovery_request,
 )
+from app.auth.recovery_codes import consume_recovery_code, unused_recovery_code_count
 import app.auth.services as auth_services
 from app.auth.services import AuthError
 from app.extensions import db
@@ -24,6 +25,7 @@ from app.models import ManualRecoveryRequest, PasswordResetToken, RecoveryCode, 
 from app.security.crypto import encrypt_mfa_secret
 from app.security.email import password_reset_outbox
 from app.security.passwords import PASSWORD_MAX_CHARS, PASSWORD_MIN_LENGTH, hash_password, verify_password
+from app.security.session_hmac import active_hmac_hex
 
 
 VALID_PASSWORD = "Correct-Horse-Battery-Staple-2026!"
@@ -664,6 +666,36 @@ def test_recovery_code_hmac_is_bound_to_user_and_purpose(app):
         other_purpose_digest = _recovery_code_hmac(first.id, "password_reset", code)
 
     assert len({first_digest, second_digest, other_purpose_digest}) == 3
+
+
+def test_legacy_recovery_code_hmac_rows_are_not_consumable_or_advertised(app, client):
+    with app.app_context():
+        user, _secret = _create_totp_user("legacyreset", "legacyreset@example.com")
+        legacy_code = "legacy-code-0001"
+        legacy_digest = active_hmac_hex(
+            f"recovery-code:{''.join(char for char in legacy_code.casefold() if char.isalnum())}",
+            length=64,
+        )
+        db.session.add(
+            RecoveryCode(
+                user_id=user.id,
+                code_hmac=legacy_digest,
+                hmac_version=1,
+                purpose="totp_recovery",
+            )
+        )
+        db.session.commit()
+
+    _request_reset(client, "legacyreset@example.com")
+    exchanged = _exchange(client, _reset_token(app))
+
+    with app.app_context():
+        user = db.session.execute(db.select(User).where(User.username == "legacyreset")).scalar_one()
+        assert unused_recovery_code_count(user) == 0
+        assert consume_recovery_code(user, legacy_code) is False
+
+    assert exchanged.status_code == 200
+    assert exchanged.get_json()["available_mfa_methods"] == ["totp"]
 
 
 def test_web_reset_landing_get_is_scanner_safe_and_post_requires_csrf(app, client):

@@ -245,9 +245,15 @@ private-key blocks before printing handled errors.
 
 `<PREFIX>_MFA_KEK_ACTIVE_ID` must match a key identifier in the root-managed `/etc/sitbank*/secrets/mfa_kek_keys_json` file on EC2. Do not put `MFA_KEK_KEYS_JSON` in GitHub Actions; the KEK keyring is a long-lived secret and remains host-managed.
 `<PREFIX>_TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID` must match a key identifier
-in `/etc/sitbank*/secrets/transaction_ledger_hmac_keys_json`. Keep the
-transaction-ledger keyring host-managed and separate from session and audit
-HMAC material.
+in `/etc/sitbank-staging/secrets/transaction_ledger_hmac_keys_json` for staging
+or `/etc/sitbank/secrets/transaction_ledger_hmac_keys_json` for production.
+Keep the transaction-ledger keyring host-managed and separate from session and
+audit HMAC material. Do not configure
+`STAGING_TRANSACTION_LEDGER_HMAC_KEYS_JSON` or
+`PROD_TRANSACTION_LEDGER_HMAC_KEYS_JSON` in GitHub Actions; deployment adopts
+the existing EC2 secret file and validates that the active key id is present
+and every key value decodes to exactly 32 bytes. The deployment wrapper does
+not generate, replace, print, upload, or bundle the keyring.
 `<PREFIX>_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID` must match a key identifier in
 `/etc/sitbank*/secrets/admin_session_hmac_keys_json`. Do not put admin Flask,
 CSRF, session-HMAC, session-lookup HMAC, password-pepper, or database secret values in GitHub

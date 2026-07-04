@@ -169,6 +169,14 @@ stored ledger fields. Provision the environment-specific root-managed keyring
 and matching `TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID` before `db upgrade` and
 application restart. Do not reuse session or audit HMAC keys.
 
+Migration `20260704_0027` hardens PayUp daily-limit bounds, staff invite
+acceptance verification lockouts, and recovery-code compatibility. It adds the
+`ck_users_payup_daily_limit_bounds` database check, stores invite verification
+failure lockout counters on `staff_invites`, and marks unused legacy
+recovery-code HMAC rows consumed. After upgrade, verify transfer-limit settings,
+PayUp lookup throttling, invite acceptance/reset, and password-reset MFA in
+staging before production rollout.
+
 ## Deployment Prerequisites
 
 Install `/etc/sitbank/secrets/security_alert_webhook_url` or

@@ -13,6 +13,8 @@ ACCEPTANCE_CONTROLS_MIGRATION = (
 
 def test_staff_invite_schema_has_no_personal_email_binding():
     assert "personal_email_normalized" not in StaffInvite.__table__.c
+    assert "acceptance_session_hash" in StaffInvite.__table__.c
+    assert "acceptance_verify_locked_at" in StaffInvite.__table__.c
 
 
 def test_staff_invite_acceptance_control_model_columns_are_bounded():
@@ -48,3 +50,19 @@ def test_migrations_have_no_personal_email_binding_or_portability_backfill():
 
     assert "personal_email_normalized" not in combined
     assert "staff_invite_portability" not in combined
+
+
+def test_security_boundary_migration_hardens_invites_payup_and_recovery_codes():
+    migration = (MIGRATIONS / "20260704_0027_security_boundary_hardening.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'revision = "20260704_0027"' in migration
+    assert 'down_revision = "20260704_0026"' in migration
+    assert "acceptance_verify_count" in migration
+    assert "acceptance_verify_locked_at" in migration
+    assert "ck_users_payup_daily_limit_bounds" in migration
+    assert "payup_daily_limit >= 100.00" in migration
+    assert "payup_daily_limit <= 10000.00" in migration
+    assert "UPDATE recovery_codes SET used_at = CURRENT_TIMESTAMP" in migration
+    assert "hmac_version < 2" in migration

@@ -629,6 +629,46 @@ if session_lookup_key == admin_session_lookup_key:
 PY
 }
 
+validate_transaction_ledger_hmac_secret() {
+    python3 - \
+        "${SECRET_DIR}/transaction_ledger_hmac_keys_json" \
+        "${CONTAINER_ENV}" <<'PY'
+from pathlib import Path
+import base64
+import binascii
+import json
+import re
+import sys
+
+keyring_path = Path(sys.argv[1])
+environment_path = Path(sys.argv[2])
+active_id = ""
+for line in environment_path.read_text(encoding="utf-8").splitlines():
+    if line.startswith("TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID="):
+        active_id = line.split("=", 1)[1].strip().strip("'")
+        break
+if not re.fullmatch(r"[A-Za-z0-9._-]{1,32}", active_id or ""):
+    raise SystemExit("Transaction ledger HMAC active key id is missing or invalid")
+try:
+    keyring = json.loads(keyring_path.read_text(encoding="utf-8"))
+except json.JSONDecodeError as exc:
+    raise SystemExit("Transaction ledger HMAC keyring must be valid JSON") from exc
+if not isinstance(keyring, dict) or not keyring:
+    raise SystemExit("Transaction ledger HMAC keyring must contain at least one key")
+if active_id not in keyring:
+    raise SystemExit("Transaction ledger HMAC active key id is not present in the host keyring")
+for key_id, encoded_key in keyring.items():
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,32}", str(key_id or "")):
+        raise SystemExit("Transaction ledger HMAC keyring contains an invalid key id")
+    try:
+        decoded_key = base64.b64decode(str(encoded_key), validate=True)
+    except binascii.Error as exc:
+        raise SystemExit("Transaction ledger HMAC keyring contains invalid base64") from exc
+    if len(decoded_key) != 32:
+        raise SystemExit("Transaction ledger HMAC keys must decode to exactly 32 bytes")
+PY
+}
+
 prepare_dependencies() {
     if [[ "${target}" == "staging" ]]; then
         dependencies_prepared=1
@@ -860,6 +900,7 @@ for secret_file in "${required_secrets[@]}"; do
 done
 validate_staging_isolation
 validate_production_admin_isolation
+validate_transaction_ledger_hmac_secret
 if [[ "${target}" == "staging" ]]; then
     /usr/local/sbin/verify-staging-edge-boundary "${PUBLIC_HOST}"
 fi

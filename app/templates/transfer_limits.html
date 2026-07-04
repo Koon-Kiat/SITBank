@@ -38,9 +38,9 @@
         </div>
         <div class="form-group" data-limit-custom-group="payup" {% if form.payup_limit.data != 'custom' %}hidden{% endif %}>
           <label for="{{ form.payup_limit_custom.id }}">Custom amount (SGD)</label>
-          {{ form.payup_limit_custom(type="number", step="0.01", min="100.01", autocomplete="off", placeholder="e.g. 750.00", inputmode="decimal", data_limit_custom="payup") }}
+          {{ form.payup_limit_custom(type="number", step="0.01", min="100.00", max="10000.00", autocomplete="off", placeholder="e.g. 750.00", inputmode="decimal", data_limit_custom="payup") }}
           {% for error in form.payup_limit_custom.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
-          <p class="hint">Must be more than SGD 100.</p>
+          <p class="hint">Must be between SGD 100.00 and SGD 10000.00.</p>
         </div>
 
         <hr class="form-divider">

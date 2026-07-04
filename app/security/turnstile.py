@@ -59,7 +59,7 @@ def verify_turnstile_token(token: str | None, *, expected_action: str | None = N
         raise TurnstileError(_CHALLENGE_FAILED_MESSAGE) from exc
     if not isinstance(result, dict) or result.get("success") is not True:
         raise TurnstileError(_CHALLENGE_FAILED_MESSAGE)
-    if expected_action and result.get("action") not in {None, expected_action}:
+    if expected_action and result.get("action") != expected_action:
         raise TurnstileError(_CHALLENGE_FAILED_MESSAGE)
 
 

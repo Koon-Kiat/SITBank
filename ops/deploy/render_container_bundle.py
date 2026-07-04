@@ -366,11 +366,6 @@ def build_container_bundle(
         secrets["mfa_kek_keys_json"],
         active_key_id=environment["MFA_KEK_ACTIVE_ID"],
     )
-    _validate_keyring(
-        _prefixed(prefix, "TRANSACTION_LEDGER_HMAC_KEYS_JSON"),
-        secrets["transaction_ledger_hmac_keys_json"],
-        active_key_id=environment["TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID"],
-    )
     _validate_b64_key(
         _prefixed(prefix, "PASSWORD_PEPPER_B64"),
         secrets["password_pepper_b64"],
@@ -381,7 +376,7 @@ def build_container_bundle(
         if environment["ADMIN_SESSION_HMAC_ACTIVE_KEY_ID"] != admin_active_key_id:
             raise RuntimeError("Admin session HMAC active key identifiers do not match")
         for source, target in ADMIN_SECRET_INPUTS.items():
-            if source == "ADMIN_SESSION_HMAC_KEYS_JSON":
+            if source in {"ADMIN_SESSION_HMAC_KEYS_JSON", "TRANSACTION_LEDGER_HMAC_KEYS_JSON"}:
                 continue
             secrets[target] = _value(_prefixed(prefix, source))
         _validate_b64_key(

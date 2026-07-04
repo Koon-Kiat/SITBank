@@ -346,17 +346,26 @@ def test_invite_info_returns_minimal_metadata_and_no_store_headers(admin_client)
     payload = response.get_json()
 
     assert response.status_code == 200
-    assert payload == {
-        "message": "Invite can be accepted",
-        "invite": {
-            "expires_at": payload["invite"]["expires_at"],
-            "acceptance_started": False,
-            "acceptance_locked": False,
-        },
-    }
-    assert "workplace_email" not in payload["invite"]
-    assert "role" not in payload["invite"]
-    assert "status" not in payload["invite"]
+    assert payload == {"message": "Invite can be accepted"}
+    forbidden_response_text = (
+        "workplace_email",
+        "role",
+        "status",
+        "expires_at",
+        "acceptance_started",
+        "acceptance_locked",
+        "acceptance_start_count",
+        "acceptance_verify_count",
+        "acceptance_locked_at",
+        "acceptance_verify_locked_at",
+        "setup_user",
+        "setup_user_id",
+        "used_by_user_id",
+        "revoked_by_user_id",
+    )
+    for forbidden in forbidden_response_text:
+        assert forbidden not in payload
+        assert forbidden not in response.get_data(as_text=True)
     assert "staff.person@sit.singaporetech.edu.sg" not in response.get_data(as_text=True)
     _assert_invite_acceptance_security_headers(response)
 
@@ -395,6 +404,41 @@ def test_invite_info_closed_tokens_return_generic_errors_and_no_token_audit(admi
     serialized_metadata = json.dumps([event.event_metadata for event in events], default=str)
     assert missing_token not in serialized_metadata
     assert "token" not in serialized_metadata.casefold()
+
+
+def test_invite_info_does_not_reveal_started_or_locked_acceptance_state(admin_client):
+    root, secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    _login_admin(admin_client, secret)
+    assert _create_invite(admin_client, secret).status_code == 201
+    token = _latest_invite_token()
+
+    start = admin_client.post(
+        f"/invites/accept/{token}/start",
+        json=_staff_invite_start_payload(),
+    )
+    started_info = admin_client.get(f"/invites/accept/{token}")
+    locked_token = "LockedInviteInfoToken000000000000000000"
+    _insert_invite_for_token(
+        locked_token,
+        root,
+        acceptance_locked_at=datetime.now(timezone.utc),
+        acceptance_start_count=3,
+    )
+    locked_info = admin_client.get(f"/invites/accept/{locked_token}")
+
+    assert start.status_code == 200
+    assert started_info.status_code == 200
+    assert started_info.get_json() == {"message": "Invite can be accepted"}
+    assert "acceptance_" not in started_info.get_data(as_text=True)
+    assert "staff.person@sit.singaporetech.edu.sg" not in started_info.get_data(as_text=True)
+    assert locked_info.status_code == 401
+    assert locked_info.get_json() == {"error": "Invite link is invalid or expired"}
+    assert "acceptance_" not in locked_info.get_data(as_text=True)
 
 
 def test_invite_acceptance_restart_limit_and_root_reset(admin_client):
@@ -630,6 +674,69 @@ def test_invite_acceptance_verify_rejects_locked_invites(admin_client):
     _assert_invite_acceptance_security_headers(locked_start)
 
 
+def test_invite_acceptance_verify_failures_lock_until_root_reset(admin_app, admin_client, monkeypatch):
+    _root, root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    _login_admin(admin_client, root_secret)
+    assert _create_invite(admin_client, root_secret).status_code == 201
+    token = _latest_invite_token()
+
+    start = admin_client.post(
+        f"/invites/accept/{token}/start",
+        json=_staff_invite_start_payload(),
+    )
+    monkeypatch.setattr("app.admin.services._verify_totp_for_user", lambda *_args, **_kwargs: True)
+
+    failures = []
+    for expected_count in range(1, 6):
+        failed = admin_client.post(
+            f"/invites/accept/{token}/verify",
+            json={"totp_code": "123456", "workplace_verification_code": "000000"},
+        )
+        failures.append(failed.status_code)
+        db.session.remove()
+        persisted = db.session.execute(db.select(StaffInvite)).scalar_one()
+        assert persisted.acceptance_verify_count == expected_count
+    invite = db.session.execute(db.select(StaffInvite)).scalar_one()
+    invite_id = invite.id
+    assert invite.acceptance_verify_locked_at is not None
+
+    fresh_client = admin_app.test_client()
+    blocked_verify = fresh_client.post(
+        f"/invites/accept/{token}/verify",
+        json={"totp_code": "123456", "workplace_verification_code": "000000"},
+    )
+    blocked_start = fresh_client.post(
+        f"/invites/accept/{token}/start",
+        json=_staff_invite_start_payload(),
+    )
+    root_client = admin_app.test_client()
+    _login_admin(root_client, root_secret)
+    reset = root_client.post(
+        f"/invites/{invite_id}/reset-acceptance",
+        json={"totp_code": "123456"},
+    )
+    db.session.remove()
+    reset_invite = db.session.get(StaffInvite, invite_id)
+    restarted = fresh_client.post(
+        f"/invites/accept/{token}/start",
+        json=_staff_invite_start_payload(phone_number="92345679"),
+    )
+
+    assert start.status_code == 200
+    assert failures == [401, 401, 401, 401, 429]
+    assert blocked_verify.status_code == 429
+    assert blocked_start.status_code == 429
+    assert reset.status_code == 200
+    assert reset_invite.acceptance_verify_count == 0
+    assert reset_invite.acceptance_verify_locked_at is None
+    assert restarted.status_code == 200
+
+
 def test_invite_acceptance_restarts_existing_setup_user_without_legacy_session_hash(admin_client):
     root, _root_secret = _create_staff_identity(
         username="root-admin",
@@ -792,9 +899,9 @@ def test_staff_invite_acceptance_activates_only_after_workplace_code_and_totp(ad
     db.session.refresh(staff_user)
 
     assert info.status_code == 200
-    assert set(info.get_json()["invite"]) == {"expires_at", "acceptance_started", "acceptance_locked"}
+    assert info.get_json() == {"message": "Invite can be accepted"}
     assert "staff.person@sit.singaporetech.edu.sg" not in info.get_data(as_text=True)
-    assert "role" not in info.get_json()["invite"]
+    assert "role" not in info.get_data(as_text=True)
     _assert_invite_acceptance_security_headers(info)
     assert forged_start.status_code == 400
     assert start.status_code == 200
