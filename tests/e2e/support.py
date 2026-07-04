@@ -22,6 +22,8 @@ from app.security.passwords import hash_password
 
 RUN_E2E_ENV = "SITBANK_RUN_E2E"
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
+_TOTP_INTERVAL_SECONDS = 30
+_MIN_TOTP_SECONDS_REMAINING = 10
 
 
 @pytest.fixture()
@@ -256,6 +258,7 @@ def login_customer_with_mfa(
 
 
 def current_totp(secret: str) -> str:
+    _wait_for_stable_totp_window()
     return pyotp.TOTP(secret, digits=6, interval=30).now()
 
 
@@ -263,6 +266,12 @@ def totp_for_offset(secret: str, offset_seconds: int) -> str:
     return pyotp.TOTP(secret, digits=6, interval=30).at(
         int(time.time()) + offset_seconds
     )
+
+
+def _wait_for_stable_totp_window() -> None:
+    remaining = _TOTP_INTERVAL_SECONDS - (time.time() % _TOTP_INTERVAL_SECONDS)
+    if remaining < _MIN_TOTP_SECONDS_REMAINING:
+        time.sleep(remaining + 0.2)
 
 
 def record_console_errors(page) -> list[str]:
