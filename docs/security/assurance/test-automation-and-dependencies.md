@@ -301,8 +301,9 @@ The authenticated release/scheduled DAST path stores `auth-cookie` and
 sets `umask 077`, writes each secret file as `0600`, validates the cookie shape
 inside the container, mounts the DAST directory read-only into ZAP, and submits
 Cloudflare's official dummy token only to the isolated smoke app with official
-test keys and `TURNSTILE_ALLOW_TEST_ACTION=true`. Production readiness rejects
-that flag for real deployments. The ZAP command passes the non-secret scanner
+test keys, `DEPLOYMENT_TARGET=smoke`, and `TURNSTILE_ALLOW_TEST_ACTION=true`.
+Production readiness rejects that flag outside the smoke target. The ZAP
+command passes the non-secret scanner
 home option `-dir /zap/wrk/.ZAP` plus
 `-configfile /run/dast/zap-replacer.properties` on the host-visible ZAP command
 line. ZAP loads the authenticated-cookie replacer from a restricted file, so the

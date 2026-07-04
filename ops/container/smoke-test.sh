@@ -403,6 +403,7 @@ docker_args=(
 )
 smoke_app_docker_args=(
     "${docker_args[@]}"
+    --env DEPLOYMENT_TARGET=smoke
     --env TURNSTILE_ALLOW_TEST_ACTION=true
 )
 app_command=(

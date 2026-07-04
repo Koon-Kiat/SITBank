@@ -150,6 +150,7 @@ def test_turnstile_verifier_accepts_exact_provider_action(app, monkeypatch):
 def test_turnstile_verifier_accepts_test_action_only_for_explicit_test_keys(app, monkeypatch):
     app.config.update(
         TURNSTILE_ENABLED=True,
+        DEPLOYMENT_TARGET="smoke",
         TURNSTILE_SITE_KEY=turnstile.TURNSTILE_TEST_SITE_KEY,
         TURNSTILE_SECRET_KEY=turnstile.TURNSTILE_TEST_SECRET_KEY,
         TURNSTILE_ALLOW_TEST_ACTION=True,
@@ -173,6 +174,7 @@ def test_turnstile_verifier_accepts_test_action_only_for_explicit_test_keys(app,
     ("config_updates", "token"),
     (
         ({"TURNSTILE_ALLOW_TEST_ACTION": False}, turnstile.TURNSTILE_TEST_TOKEN),
+        ({"DEPLOYMENT_TARGET": "production"}, turnstile.TURNSTILE_TEST_TOKEN),
         ({"TURNSTILE_SITE_KEY": "fake-site-key"}, turnstile.TURNSTILE_TEST_TOKEN),
         (
             {"TURNSTILE_SECRET_KEY": "fake-turnstile-secret"},
@@ -189,6 +191,7 @@ def test_turnstile_verifier_rejects_test_action_without_full_test_contract(
 ):
     app.config.update(
         TURNSTILE_ENABLED=True,
+        DEPLOYMENT_TARGET="smoke",
         TURNSTILE_SITE_KEY=turnstile.TURNSTILE_TEST_SITE_KEY,
         TURNSTILE_SECRET_KEY=turnstile.TURNSTILE_TEST_SECRET_KEY,
         TURNSTILE_ALLOW_TEST_ACTION=True,

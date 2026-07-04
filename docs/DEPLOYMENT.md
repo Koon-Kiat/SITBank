@@ -586,10 +586,11 @@ the explicit smoke container host, and keeps real customer, staff, and admin
 credentials out of the scan path. Its synthetic login submits Cloudflare's
 documented public dummy token only with the official always-pass Turnstile test
 keys configured by the isolated smoke harness. The smoke app alone receives
-`TURNSTILE_ALLOW_TEST_ACTION=true` because the official dummy-token response
-uses the provider action `test`; production readiness rejects that flag for real
-deployments, which continue to use protected real Turnstile credentials and
-route-specific action validation.
+`DEPLOYMENT_TARGET=smoke` and `TURNSTILE_ALLOW_TEST_ACTION=true` because the
+official dummy-token response uses the provider action `test`; production
+readiness rejects that flag outside the smoke target. Real deployments continue
+to use protected real Turnstile credentials and route-specific action
+validation.
 
 DAST cookie handling is intentionally file-based. `auth-cookie` and
 `zap-replacer.properties` are created under `umask 077`, written as `0600`

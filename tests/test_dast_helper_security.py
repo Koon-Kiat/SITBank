@@ -66,6 +66,7 @@ def test_smoke_test_keeps_dast_cookie_out_of_host_command_arguments():
     assert '"${zap_mount_source}:/zap/wrk:rw"' not in smoke_test
     assert "export MSYS_NO_PATHCONV=1" in smoke_test
     assert "converted explicitly by docker_bind_source" in smoke_test
+    assert "--env DEPLOYMENT_TARGET=smoke" in smoke_test
     assert "--env TURNSTILE_ALLOW_TEST_ACTION=true" in smoke_test
     assert "python -m flask --app wsgi:app production-check" in smoke_test
     assert "docker run --rm \"${docker_args[@]}\" \"${IMAGE}\" \\" in smoke_test

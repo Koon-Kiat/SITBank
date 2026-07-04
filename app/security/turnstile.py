@@ -161,6 +161,7 @@ def _accepts_test_action(token: str, result: dict[str, object]) -> bool:
         current_app.config.get("TURNSTILE_ALLOW_TEST_ACTION") is True
         and token == TURNSTILE_TEST_TOKEN
         and result.get("action") == TURNSTILE_TEST_ACTION
+        and str(current_app.config.get("DEPLOYMENT_TARGET") or "").strip().casefold() == "smoke"
         and str(current_app.config.get("TURNSTILE_SITE_KEY") or "").strip()
         == TURNSTILE_TEST_SITE_KEY
         and str(current_app.config.get("TURNSTILE_SECRET_KEY") or "").strip()
