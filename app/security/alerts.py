@@ -221,7 +221,7 @@ def build_security_alert_report(
                     "delivered": True,
                     "deduped": True,
                 }
-    return {
+    report = {
         "message": "security_alert_report",
         "generated_at": _utc_iso(current_time),
         "alert_count": len(alerts),
@@ -232,6 +232,14 @@ def build_security_alert_report(
         "dedupe": dedupe,
         "delivery": delivery,
     }
+    report.update(
+        _security_report_observability_fields(
+            alerts=alerts,
+            audit_chain_status=audit_chain_status,
+            database_integrity_status=database_integrity_status,
+        )
+    )
+    return report
 
 
 def deliver_security_alerts(
@@ -643,6 +651,63 @@ def _database_integrity_alerts(
         "table_count": len(current_state["tables"]),
         "tables": current_state["tables"],
     }
+
+
+def _security_report_observability_fields(
+    *,
+    alerts: list[dict[str, Any]],
+    audit_chain_status: Mapping[str, Any],
+    database_integrity_status: Mapping[str, Any],
+) -> dict[str, Any]:
+    tables = database_integrity_status.get("tables")
+    if not isinstance(tables, Mapping):
+        tables = {}
+    audit_table = _database_table_metrics(tables, "security_audit_events")
+    users_table = _database_table_metrics(tables, "users")
+    alerting = bool(alerts)
+    return {
+        "event": "security_alert_report",
+        "environment": _current_observability_environment(),
+        "service": "sitbank-security-alerts",
+        "result": "active_alerts" if alerting else "success",
+        "status": "alerting" if alerting else "healthy",
+        "audit_chain_valid": audit_chain_status.get("valid"),
+        "audit_chain_anchor_status": _safe_text(
+            audit_chain_status.get("anchor_status"),
+            80,
+        ),
+        "audit_chain_anchor_refresh_required": bool(
+            audit_chain_status.get("anchor_refresh_required")
+        ),
+        "audit_chain_anchor_stale": bool(audit_chain_status.get("anchor_stale")),
+        "audit_chain_error_count": int(audit_chain_status.get("error_count") or 0),
+        "database_integrity_valid": database_integrity_status.get("valid"),
+        "database_integrity_security_audit_events_count": audit_table["count"],
+        "database_integrity_security_audit_events_max_id": audit_table["max_id"],
+        "database_integrity_users_count": users_table["count"],
+        "database_integrity_users_max_id": users_table["max_id"],
+    }
+
+
+def _database_table_metrics(
+    tables: Mapping[str, Any],
+    table_name: str,
+) -> dict[str, int | None]:
+    metrics = tables.get(table_name)
+    if not isinstance(metrics, Mapping):
+        return {"count": None, "max_id": None}
+    return {
+        "count": _state_optional_int(metrics.get("count")),
+        "max_id": _state_optional_int(metrics.get("max_id")),
+    }
+
+
+def _current_observability_environment() -> str:
+    if has_app_context():
+        value = current_app.config.get("APP_ENV")
+    else:
+        value = os.environ.get("APP_ENV")
+    return _safe_text(value or "unknown", 40)
 
 
 def _database_integrity_snapshot(current_time: datetime) -> dict[str, Any]:

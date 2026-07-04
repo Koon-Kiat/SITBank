@@ -1,0 +1,249 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "datasource": {
+          "type": "loki",
+          "uid": "sitbank-loki"
+        },
+        "enable": true,
+        "expr": "{environment=~\"$environment\", source=~\"container|systemd\"} |~ \"(?i)(deploy|deployment|bootstrap|rollback|migration)\"",
+        "iconColor": "rgba(87, 148, 242, 1)",
+        "name": "Deployment start completion and rollback signals"
+      }
+    ]
+  },
+  "editable": false,
+  "panels": [
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sitbank-prometheus"
+      },
+      "description": "Shows EC2 CPU usage from the private node exporter. Worry about sustained high CPU; check deployment events, container failures, and host process evidence next.",
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "targets": [
+        {
+          "expr": "100 - (avg by (instance, environment) (rate(node_cpu_seconds_total{mode=\"idle\", environment=~\"$environment\"}[$__rate_interval])) * 100)",
+          "refId": "A"
+        }
+      ],
+      "title": "EC2 CPU usage",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sitbank-prometheus"
+      },
+      "description": "Shows EC2 memory usage from host metrics. Worry about sustained pressure or sudden jumps after deploys; check container memory and restart signals next.",
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 0
+      },
+      "id": 2,
+      "targets": [
+        {
+          "expr": "(1 - (node_memory_MemAvailable_bytes{environment=~\"$environment\"} / node_memory_MemTotal_bytes{environment=~\"$environment\"})) * 100",
+          "refId": "A"
+        }
+      ],
+      "title": "EC2 memory usage",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sitbank-prometheus"
+      },
+      "description": "Shows EC2 filesystem usage while excluding pseudo-filesystems and Docker internals. Worry above the documented threshold; check Loki retention and application storage next.",
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 0
+      },
+      "id": 3,
+      "targets": [
+        {
+          "expr": "100 - ((node_filesystem_avail_bytes{environment=~\"$environment\", fstype!~\"tmpfs|overlay|squashfs|proc|sysfs\"} / node_filesystem_size_bytes{environment=~\"$environment\", fstype!~\"tmpfs|overlay|squashfs|proc|sysfs\"}) * 100)",
+          "refId": "A"
+        }
+      ],
+      "title": "EC2 disk usage and pressure",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "sitbank-loki"
+      },
+      "description": "Shows container restart, stop, OOM, and crash-like events from Docker/systemd and SITBank container logs. Worry about repeated restarts or OOM messages; check host resources next.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 7
+      },
+      "id": 4,
+      "options": {
+        "showLabels": true,
+        "sortOrder": "Descending"
+      },
+      "targets": [
+        {
+          "expr": "{environment=~\"$environment\", source=~\"container|systemd\"} |~ \"(?i)(restart|restarted|oom|out of memory|killed|exited|unhealthy)\"",
+          "refId": "A"
+        }
+      ],
+      "title": "Container restart count and recent restart events",
+      "type": "logs"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "sitbank-loki"
+      },
+      "description": "Shows PostgreSQL connectivity, storage, and connection-pressure warnings when they appear in app/admin/deployment logs. Worry about connection refused, too many connections, or storage pressure; check deployment state next.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 7
+      },
+      "id": 5,
+      "options": {
+        "showLabels": true,
+        "sortOrder": "Descending"
+      },
+      "targets": [
+        {
+          "expr": "{environment=~\"$environment\", source=~\"container|systemd\"} |~ \"(?i)(postgres|database|sqlalchemy|connection refused|too many connections|storage|disk full|db upgrade)\"",
+          "refId": "A"
+        }
+      ],
+      "title": "PostgreSQL connectivity storage and connection health",
+      "type": "logs"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "sitbank-loki"
+      },
+      "description": "Shows readiness and health check failures for Nginx, app, and admin paths. Worry about readiness failures after deploys; use local readiness on protected staging origins.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 15
+      },
+      "id": 6,
+      "options": {
+        "showLabels": true,
+        "sortOrder": "Descending"
+      },
+      "targets": [
+        {
+          "expr": "{environment=~\"$environment\", source=~\"nginx_access|container|systemd\"} | json | route=~\"/health/(ready|live)\" | status!~\"2..\"",
+          "refId": "A"
+        },
+        {
+          "expr": "{environment=~\"$environment\", source=~\"container|systemd\"} |~ \"(?i)(readiness|health check|/health/ready|/health/live)\" |~ \"(?i)(failed|failure|timeout|unhealthy|refused)\"",
+          "refId": "B"
+        }
+      ],
+      "title": "Nginx app and admin readiness check status",
+      "type": "logs"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "sitbank-loki"
+      },
+      "description": "Lists deployment start/completion, target environment, migration, bootstrap, and rollback lines. Worry about missing completion after start or rollback signals; check the deployment runbook.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 15
+      },
+      "id": 7,
+      "options": {
+        "showLabels": true,
+        "sortOrder": "Descending"
+      },
+      "targets": [
+        {
+          "expr": "{environment=~\"$environment\", source=~\"container|systemd\"} |~ \"(?i)(deploy|deployment|target=|environment=|completed|started|bootstrap|migration|rollback)\"",
+          "refId": "A"
+        }
+      ],
+      "title": "Last deployment time and target environment",
+      "type": "logs"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "sitbank-loki"
+      },
+      "description": "Highlights production and staging deployment guard failures. Worry about any nonzero value; do not bypass Cloudflare, Tailscale, cosign, readiness, database privilege, or production checks.",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 23
+      },
+      "id": 8,
+      "options": {
+        "showLabels": true,
+        "sortOrder": "Descending"
+      },
+      "targets": [
+        {
+          "expr": "{environment=~\"$environment\", source=~\"container|systemd\"} |~ \"(?i)(production-check|verify-runtime-db-privileges|cloudflare|tailscale|cosign|origin pull|authenticated origin|readiness|guard)\" |~ \"(?i)(failed|failure|denied|refused|invalid|mismatch|rollback)\"",
+          "refId": "A"
+        }
+      ],
+      "title": "Production staging deployment guard failures",
+      "type": "logs"
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": [
+    "sitbank",
+    "infrastructure",
+    "deployment"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": true,
+          "text": "production|staging",
+          "value": "production|staging"
+        },
+        "hide": 0,
+        "label": "Environment",
+        "name": "environment",
+        "options": [],
+        "query": "production|staging",
+        "type": "textbox"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "title": "SITBank Infrastructure And Deployment Health",
+  "uid": "sitbank-infrastructure-deployment-health",
+  "version": 1
+}
