@@ -1,19 +1,22 @@
-# Private Grafana Loki Observability Runbook
+# Private Grafana Loki Prometheus Observability Runbook
 
-Use this runbook to install and operate the private SITBank Grafana, Loki, and
-Grafana Alloy stack from `ops/observability/`.
+Use this runbook to install and operate the private SITBank Grafana, Loki,
+Grafana Alloy, Prometheus, and node exporter stack from `ops/observability/`.
 
 ## Access Model
 
 - Grafana binds to `127.0.0.1:3000` on the EC2 host.
 - Loki binds to `127.0.0.1:3100` on the EC2 host.
 - Alloy does not publish a host port.
+- Prometheus and node exporter do not publish host ports; they are reachable
+  only inside the internal `sitbank-observability` Docker network.
 - Grafana and Loki also join `sitbank-observability-loopback`.
   `sitbank-observability-loopback` is a bridge network used only for Docker's
   host-loopback port publishing. The private boundary is the explicit
   `127.0.0.1` host binding plus no public Nginx/Tailscale Funnel route.
 - `sitbank-observability` remains an internal service network for
-  container-to-container traffic.
+  container-to-container traffic between Grafana, Loki, Alloy, Prometheus, and
+  node exporter.
 - Normal operator access uses the private Tailscale path
   `https://admin-sitbank.tailca101b.ts.net/grafana/` mapped to local Grafana.
 - SSH local port forwarding is allowed only for bootstrap or break-glass
@@ -42,13 +45,18 @@ approved private Grafana subpath URL:
 GRAFANA_IMAGE=example.invalid/grafana@sha256:<reviewed-digest>
 LOKI_IMAGE=example.invalid/loki@sha256:<reviewed-digest>
 ALLOY_IMAGE=example.invalid/alloy@sha256:<reviewed-digest>
+PROMETHEUS_IMAGE=example.invalid/prometheus@sha256:<reviewed-digest>
+NODE_EXPORTER_IMAGE=example.invalid/node-exporter@sha256:<reviewed-digest>
+OBSERVABILITY_ENVIRONMENT=production
 GRAFANA_PRIVATE_ROOT_URL=https://admin-sitbank.tailca101b.ts.net/grafana/
 GRAFANA_SERVE_FROM_SUB_PATH=true
 ```
 
-Do not put passwords, tokens, API keys, webhook URLs, cookies, database URLs, or
-SMTP credentials in `observability.env`. Secret files must be `root:root` mode
-`0600`. The protected live verifier accepts only
+`OBSERVABILITY_ENVIRONMENT` must be `production` or `staging` for the target
+host so dashboard variables keep environments separated. Do not put passwords,
+tokens, API keys, webhook URLs, cookies, database URLs, or SMTP credentials in
+`observability.env`. Secret files must be `root:root` mode `0600`. The
+protected live verifier accepts only
 `https://admin-sitbank.tailca101b.ts.net/grafana/`; do not point it at an
 alternate hostname, root path, query string, custom port, or credential-bearing
 URL.
@@ -146,11 +154,15 @@ sudo docker network inspect sitbank-observability-loopback --format '{{.Internal
 sudo docker inspect sitbank-grafana --format '{{json .NetworkSettings.Networks}}'
 sudo docker inspect sitbank-loki --format '{{json .NetworkSettings.Networks}}'
 sudo docker inspect sitbank-alloy --format '{{json .NetworkSettings.Networks}}'
+sudo docker inspect sitbank-prometheus --format '{{json .NetworkSettings.Networks}}'
+sudo docker inspect sitbank-node-exporter --format '{{json .NetworkSettings.Networks}}'
 sudo docker port sitbank-grafana 3000/tcp
 sudo docker port sitbank-loki 3100/tcp
 test -z "$(sudo docker port sitbank-alloy)"
+test -z "$(sudo docker port sitbank-prometheus)"
+test -z "$(sudo docker port sitbank-node-exporter)"
 sudo ss -ltnp | grep -E '127\.0\.0\.1:(3000|3100)([[:space:]]|$)'
-sudo ss -ltnp | grep -E '0\.0\.0\.0:(3000|3100)|\[::\]:(3000|3100)|\*:(3000|3100)' && exit 1 || true
+sudo ss -ltnp | grep -E '0\.0\.0\.0:(3000|3100|9090|9100)|\[::\]:(3000|3100|9090|9100)|\*:(3000|3100|9090|9100)' && exit 1 || true
 curl -fsSI http://127.0.0.1:3000/login
 curl -fsS http://127.0.0.1:3100/ready
 sudo nginx -T | grep -iE 'grafana|loki' && exit 1 || true
@@ -166,9 +178,12 @@ Expected:
   attaches only to the internal `sitbank-observability` network.
 - Grafana listens only on `127.0.0.1:3000`.
 - Loki listens only on `127.0.0.1:3100`.
-- Alloy publishes no host listener.
+- Alloy, Prometheus, and node exporter publish no host listener.
 - Public SITBank Nginx configs contain no Grafana or Loki route.
 - The private Tailscale URL reaches Grafana only for approved operators.
+- The Grafana `SITBank Prometheus` datasource points to
+  `http://prometheus:9090` and the Prometheus `sitbank-node` job targets only
+  `node-exporter:9100`.
 
 ### Private Tailscale Serve Browser Access Plan
 
@@ -285,6 +300,21 @@ Alloy collects only:
 The collector labels are coarse and non-secret: `service`, `environment`,
 `host_role`, and `source`.
 
+Production and staging Nginx access logs use the reviewed
+`sitbank_access_json` format from `ops/nginx/sitbank-default.conf`. It records
+`message`, `event`, `service`, `result`, `status`, `method`, query-free
+`route`, upstream status, and timing fields. It deliberately uses `$uri`
+instead of `$request_uri` and does not log bodies, query strings, cookies,
+authorization headers, CSRF values, session IDs, client IP addresses, or raw
+request metadata.
+
+Application audit and error logs expose stable dashboard fields
+`event`, `environment`, `service`, `result`, `reason`, `route`, and `status`.
+Use those fields for Grafana/Loki queries instead of fragile free-text
+matching where structured records are available. Do not promote user IDs,
+emails, IPs, request IDs, account numbers, transaction references, or session
+references into labels.
+
 Alloy reads each allowlisted systemd unit through its own
 `loki.source.journal` block with a single exact `_SYSTEMD_UNIT=<unit>` match.
 The journal sources read the mounted `/var/log/journal` path. Do not use `OR`
@@ -337,14 +367,41 @@ matching activity occurs. Systemd streams are limited to
 
 ## Dashboard And Operational Alerts
 
-The provisioned `SITBank Operational Overview` dashboard uses readable
-time-series and log panels for log ingestion, Nginx 4xx/5xx trends, recent
-Nginx requests, app/admin container failures, monitored systemd failures, and
-deployment or rollback signals. Each panel describes what it shows, when to
-worry, and what to check next. Variables are limited to coarse `environment`,
-`service`, and `source` selectors; do not add high-cardinality labels such as
-full paths, IP addresses, request IDs, account IDs, user IDs, session IDs, or
-free-text values.
+The provisioned dashboard set is:
+
+- `SITBank Operational Overview` for log ingestion, Nginx 4xx/5xx trends,
+  recent Nginx requests, app/admin container failures, monitored systemd
+  failures, and deployment or rollback signals.
+- `SITBank Security Operations` for security alert count, deliverable alert
+  count, last successful `security_alert_report`, audit chain validity, audit
+  anchor status, audit anchor refresh-required/stale status, audit chain error
+  count, database integrity validity, tracked `security_audit_events` count and
+  max ID, and tracked `users` count and max ID.
+- `SITBank HTTP Health` for status classes, 429 rate-limit responses, 403/404,
+  500/502/503/504, route groups from the query-free route field, Nginx
+  upstream/backend errors, and login/register/MFA route volume.
+- `SITBank Infrastructure And Deployment Health` for EC2 CPU, memory, disk
+  usage and disk pressure, container restart or OOM events, PostgreSQL
+  connectivity/storage/connection-pressure log signals, Nginx/app/admin
+  readiness checks, last deployment time and target environment, deployment
+  guard failures, and deployment start/completion/rollback annotations.
+
+Normal values are zero active alerts, zero audit-chain errors, valid database
+integrity, no unexpected 5xx/502/503/504 spikes, 429s only during abusive
+bursts, CPU below 80% sustained, memory below 85%, filesystems below 80%, no
+repeated container restarts, and no deployment guard failures. Treat sustained
+CPU above 80%, memory above 85%, disk above 80% or rapidly increasing, any
+invalid audit/database integrity state, unexpected 5xx or backend errors,
+readiness failures, missing deployment completion, or guard failures as
+investigation triggers.
+
+Container CPU/memory and PostgreSQL connection-count exporter metrics are not
+enabled here. Those panels remain log-derived until a separate reviewed
+least-privilege exporter design is implemented. Each panel describes what it
+shows, when to worry, and what to check next. Variables are limited to coarse
+selectors; do not add high-cardinality labels such as full paths, IP
+addresses, request IDs, account IDs, user IDs, session IDs, or free-text
+values.
 
 Grafana-native alerts remain an operational follow-up until notification
 contact points can be provisioned without committed webhook URLs, tokens, or

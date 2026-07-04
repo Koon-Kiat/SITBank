@@ -1,0 +1,278 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": false,
+  "panels": [
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "sitbank-loki"
+      },
+      "description": "Shows active security alerts reported by the scheduled security alert job. Worry when this rises above zero; check the alert type panel and the admin audit viewer next.",
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "targets": [
+        {
+          "expr": "max_over_time({service=\"sitbank-security-alerts\", environment=~\"$environment\"} | json | message=\"security_alert_report\" | unwrap alert_count [$__interval])",
+          "refId": "A"
+        }
+      ],
+      "title": "Security alert count",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "sitbank-loki"
+      },
+      "description": "Shows alerts that remain after dedupe and delivery filtering. Worry when deliverable alerts stay nonzero; check webhook configuration and dedupe status next.",
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
+      "id": 2,
+      "targets": [
+        {
+          "expr": "max_over_time({service=\"sitbank-security-alerts\", environment=~\"$environment\"} | json | message=\"security_alert_report\" | unwrap deliverable_alert_count [$__interval])",
+          "refId": "A"
+        }
+      ],
+      "title": "Deliverable alert count",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "sitbank-loki"
+      },
+      "description": "Shows the most recent healthy security alert report. Worry when no success appears in the selected window; check the systemd timer and journal unit next.",
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "id": 3,
+      "options": {
+        "showLabels": true,
+        "sortOrder": "Descending"
+      },
+      "targets": [
+        {
+          "expr": "{service=\"sitbank-security-alerts\", environment=~\"$environment\"} | json | message=\"security_alert_report\" | result=\"success\" | line_format \"{{.generated_at}} result={{.result}} alerts={{.alert_count}}\"",
+          "refId": "A"
+        }
+      ],
+      "title": "Last successful security_alert_report",
+      "type": "logs"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "sitbank-loki"
+      },
+      "description": "Counts reports where the audit hash chain is invalid. Worry about any nonzero value; check the alert report JSON and audit verification runbook next.",
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 6
+      },
+      "id": 4,
+      "targets": [
+        {
+          "expr": "sum(count_over_time({service=\"sitbank-security-alerts\", environment=~\"$environment\"} | json | message=\"security_alert_report\" | audit_chain_valid=\"false\" [$__interval]))",
+          "refId": "A"
+        }
+      ],
+      "title": "Audit chain validity",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "sitbank-loki"
+      },
+      "description": "Lists audit anchor status from the security report. Worry about critical, malformed, mismatch, or unexpected not-configured states; check the anchor file and refresh procedure next.",
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 6
+      },
+      "id": 5,
+      "options": {
+        "showLabels": true,
+        "sortOrder": "Descending"
+      },
+      "targets": [
+        {
+          "expr": "{service=\"sitbank-security-alerts\", environment=~\"$environment\"} | json | message=\"security_alert_report\" | line_format \"{{.generated_at}} anchor={{.audit_chain_anchor_status}} stale={{.audit_chain_anchor_stale}} refresh_required={{.audit_chain_anchor_refresh_required}}\"",
+          "refId": "A"
+        }
+      ],
+      "title": "Audit anchor status",
+      "type": "logs"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "sitbank-loki"
+      },
+      "description": "Counts stale anchors or anchor refresh requirements. Worry when the value is nonzero outside expected append-only activity; check the chain before refreshing.",
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 12,
+        "y": 6
+      },
+      "id": 6,
+      "targets": [
+        {
+          "expr": "sum(count_over_time({service=\"sitbank-security-alerts\", environment=~\"$environment\"} | json | message=\"security_alert_report\" | audit_chain_anchor_refresh_required=\"true\" [$__interval])) + sum(count_over_time({service=\"sitbank-security-alerts\", environment=~\"$environment\"} | json | message=\"security_alert_report\" | audit_chain_anchor_stale=\"true\" [$__interval]))",
+          "refId": "A"
+        }
+      ],
+      "title": "Audit anchor refresh required",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "sitbank-loki"
+      },
+      "description": "Shows audit chain error counts from the structured report. Worry about any nonzero value; check only sanitized report fields and admin audit context next.",
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 18,
+        "y": 6
+      },
+      "id": 7,
+      "targets": [
+        {
+          "expr": "max_over_time({service=\"sitbank-security-alerts\", environment=~\"$environment\"} | json | message=\"security_alert_report\" | unwrap audit_chain_error_count [$__interval])",
+          "refId": "A"
+        }
+      ],
+      "title": "Audit chain error count",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "sitbank-loki"
+      },
+      "description": "Counts database integrity report failures. Worry about any nonzero value; check tracked table count and max ID panels before any rebaseline.",
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 0,
+        "y": 12
+      },
+      "id": 8,
+      "targets": [
+        {
+          "expr": "sum(count_over_time({service=\"sitbank-security-alerts\", environment=~\"$environment\"} | json | message=\"security_alert_report\" | database_integrity_valid=\"false\" [$__interval]))",
+          "refId": "A"
+        }
+      ],
+      "title": "Database integrity validity",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "sitbank-loki"
+      },
+      "description": "Shows tracked security_audit_events count and max ID from the security report. Worry when either value moves backward; check the database integrity runbook.",
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 8,
+        "y": 12
+      },
+      "id": 9,
+      "targets": [
+        {
+          "expr": "max_over_time({service=\"sitbank-security-alerts\", environment=~\"$environment\"} | json | message=\"security_alert_report\" | unwrap database_integrity_security_audit_events_count [$__interval])",
+          "legendFormat": "count",
+          "refId": "A"
+        },
+        {
+          "expr": "max_over_time({service=\"sitbank-security-alerts\", environment=~\"$environment\"} | json | message=\"security_alert_report\" | unwrap database_integrity_security_audit_events_max_id [$__interval])",
+          "legendFormat": "max_id",
+          "refId": "B"
+        }
+      ],
+      "title": "Tracked security_audit_events count and max ID",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "sitbank-loki"
+      },
+      "description": "Shows tracked users count and max ID from the security report. Worry when either value moves backward; check for possible database rewind evidence.",
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 16,
+        "y": 12
+      },
+      "id": 10,
+      "targets": [
+        {
+          "expr": "max_over_time({service=\"sitbank-security-alerts\", environment=~\"$environment\"} | json | message=\"security_alert_report\" | unwrap database_integrity_users_count [$__interval])",
+          "legendFormat": "count",
+          "refId": "A"
+        },
+        {
+          "expr": "max_over_time({service=\"sitbank-security-alerts\", environment=~\"$environment\"} | json | message=\"security_alert_report\" | unwrap database_integrity_users_max_id [$__interval])",
+          "legendFormat": "max_id",
+          "refId": "B"
+        }
+      ],
+      "title": "Tracked users count and max ID",
+      "type": "stat"
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": [
+    "sitbank",
+    "security",
+    "operations"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": true,
+          "text": "production|staging",
+          "value": "production|staging"
+        },
+        "hide": 0,
+        "label": "Environment",
+        "name": "environment",
+        "options": [],
+        "query": "production|staging",
+        "type": "textbox"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "title": "SITBank Security Operations",
+  "uid": "sitbank-security-operations",
+  "version": 1
+}

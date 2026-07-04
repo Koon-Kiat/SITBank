@@ -99,11 +99,13 @@ install -d -o root -g root -m 0755 "${OBS_ROOT}/grafana/provisioning/dashboards"
 install -d -o root -g root -m 0755 "${OBS_ROOT}/grafana/dashboards"
 install -d -o root -g root -m 0755 "${OBS_ROOT}/loki"
 install -d -o root -g root -m 0755 "${OBS_ROOT}/alloy"
+install -d -o root -g root -m 0755 "${OBS_ROOT}/prometheus"
 install -d -o root -g root -m 0700 "${OBS_ROOT}/secrets"
 install -d -o root -g root -m 0755 "${OBS_DATA_ROOT}"
 install -d -o 472 -g 472 -m 0750 "${OBS_DATA_ROOT}/grafana"
 install -d -o 10001 -g 10001 -m 0750 "${OBS_DATA_ROOT}/loki"
 install -d -o root -g root -m 0750 "${OBS_DATA_ROOT}/alloy"
+install -d -o 65534 -g 65534 -m 0750 "${OBS_DATA_ROOT}/prometheus"
 
 install -o root -g root -m 0644 \
     "${repo_root}/ops/observability/compose.observability.yml" \
@@ -114,15 +116,24 @@ install -o root -g root -m 0644 \
 install -o root -g root -m 0644 \
     "${repo_root}/ops/observability/grafana/provisioning/dashboards/sitbank.yml" \
     "${OBS_ROOT}/grafana/provisioning/dashboards/sitbank.yml"
-install -o root -g root -m 0644 \
-    "${repo_root}/ops/observability/grafana/dashboards/sitbank-operational-overview.json" \
-    "${OBS_ROOT}/grafana/dashboards/sitbank-operational-overview.json"
+for dashboard_path in "${repo_root}"/ops/observability/grafana/dashboards/*.json; do
+    if [[ ! -f "${dashboard_path}" ]]; then
+        echo "Missing committed Grafana dashboard JSON files" >&2
+        exit 1
+    fi
+    install -o root -g root -m 0644 \
+        "${dashboard_path}" \
+        "${OBS_ROOT}/grafana/dashboards/$(basename "${dashboard_path}")"
+done
 install -o root -g root -m 0644 \
     "${repo_root}/ops/observability/loki/loki.yml" \
     "${OBS_ROOT}/loki/loki.yml"
 install -o root -g root -m 0644 \
     "${repo_root}/ops/observability/alloy/config.alloy" \
     "${OBS_ROOT}/alloy/config.alloy"
+install -o root -g root -m 0644 \
+    "${repo_root}/ops/observability/prometheus/prometheus.yml" \
+    "${OBS_ROOT}/prometheus/prometheus.yml"
 
 for secret_file in "${GRAFANA_ADMIN_USER_FILE}" "${GRAFANA_ADMIN_PASSWORD_FILE}"; do
     if [[ ! -f "${secret_file}" ]]; then
@@ -140,7 +151,7 @@ for secret_file in "${GRAFANA_ADMIN_USER_FILE}" "${GRAFANA_ADMIN_PASSWORD_FILE}"
 done
 
 if [[ ! -f "${OBS_ENV_FILE}" ]]; then
-    echo "Missing ${OBS_ENV_FILE}; create it with GRAFANA_IMAGE, LOKI_IMAGE, ALLOY_IMAGE, and GRAFANA_PRIVATE_ROOT_URL." >&2
+    echo "Missing ${OBS_ENV_FILE}; create it with GRAFANA_IMAGE, LOKI_IMAGE, ALLOY_IMAGE, PROMETHEUS_IMAGE, NODE_EXPORTER_IMAGE, OBSERVABILITY_ENVIRONMENT, and GRAFANA_PRIVATE_ROOT_URL." >&2
     exit 1
 fi
 if grep -Eiq '(password|token|secret|key)[[:space:]]*=' "${OBS_ENV_FILE}"; then

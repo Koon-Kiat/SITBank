@@ -930,8 +930,16 @@ def _set_critical_anchor_errors(
 
 
 def _log_audit_record(event: SecurityAuditEvent, *, path: str | None, method: str | None) -> None:
+    reason = _metadata_reason(event.event_metadata or {})
     payload = {
         "message": "security_audit_event",
+        "event": event.event_type,
+        "environment": _current_environment(),
+        "service": _current_service(),
+        "result": event.outcome,
+        "reason": reason,
+        "route": path,
+        "status": "recorded",
         "event_id": event.id,
         "event_type": event.event_type,
         "outcome": event.outcome,
@@ -968,6 +976,14 @@ def _log_audit_write_failed(
 ) -> None:
     payload = {
         "message": "security_audit_write_failed",
+        "event": "security_audit_write_failed",
+        "environment": _current_environment(),
+        "service": _current_service(),
+        "result": "failure",
+        "reason": _clean_audit_text(error_type, 80),
+        "route": path,
+        "status": "audit_write_failed",
+        "target_event": event_type,
         "event_type": event_type,
         "outcome": outcome,
         "user_id": user_id,
@@ -982,6 +998,26 @@ def _log_audit_write_failed(
         "metadata": _sanitize_metadata(metadata),
     }
     current_app.logger.warning(json.dumps(payload, separators=(",", ":"), sort_keys=True))
+
+
+def _current_environment() -> str:
+    return _clean_audit_text(current_app.config.get("APP_ENV") or "unknown", 40)
+
+
+def _current_service() -> str:
+    app_mode = str(current_app.config.get("APP_MODE") or "").casefold()
+    if app_mode == "admin":
+        return "sitbank-admin"
+    if app_mode == "customer":
+        return "sitbank-app"
+    return "sitbank"
+
+
+def _metadata_reason(metadata: Mapping[str, Any]) -> str | None:
+    reason = metadata.get("reason")
+    if isinstance(reason, bool | int | float | str):
+        return _clean_audit_text(reason, 80) or None
+    return None
 
 
 def _utc_iso(value: datetime) -> str:
