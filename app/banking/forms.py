@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from flask_wtf import FlaskForm
-from wtforms import SelectField, StringField
+from wtforms import SelectField, StringField, TextAreaField
 from wtforms.validators import InputRequired, Length, Optional, Regexp
 
 from app.auth.schemas import PHONE_RE, TOTP_RE
+from app.models import DISPUTE_ISSUE_TYPES
 
 
 ACCOUNT_NUMBER_RE = r"^[0-9]{12}$"
@@ -115,3 +116,25 @@ class TransferForm(FlaskForm):
     amount = _amount_field()
     reference = _reference_field()
     totp_code = _totp_code_field()
+
+
+DISPUTE_ISSUE_TYPE_LABELS = {
+    "unauthorized_transaction": "Unauthorized transaction",
+    "duplicate_charge": "Duplicate charge",
+    "incorrect_amount": "Incorrect amount",
+    "recipient_service_issue": "Recipient/service issue",
+    "other": "Other",
+}
+DISPUTE_ISSUE_TYPE_CHOICES = [(value, DISPUTE_ISSUE_TYPE_LABELS[value]) for value in DISPUTE_ISSUE_TYPES]
+
+
+class TransactionDisputeForm(FlaskForm):
+    issue_type = SelectField(
+        "Issue type",
+        choices=DISPUTE_ISSUE_TYPE_CHOICES,
+        validators=[InputRequired()],
+    )
+    reason = TextAreaField(
+        "Reason",
+        validators=[InputRequired(), Length(min=1, max=1000)],
+    )

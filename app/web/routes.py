@@ -74,12 +74,20 @@ from app.auth.services import (
     verify_mfa_replacement,
     verify_mfa_setup,
 )
-from sqlalchemy import or_
+from sqlalchemy import func, or_
+from sqlalchemy.exc import IntegrityError
 
+from app.banking.forms import TransactionDisputeForm
 from app.extensions import db, limiter
-from app.models import Transaction
+from app.models import DISPUTE_OPEN_STATUSES, Transaction, TransactionDispute
 from app.auth.recovery_codes import RECOVERY_CODE_LOW_THRESHOLD, unused_recovery_code_count
-from app.security.rate_limits import mfa_principal, request_principal
+from app.security.audit import AuditWriteError, audit_event, audit_event_required, audit_reference
+from app.security.rate_limits import (
+    DurableRateLimitExceeded,
+    consume_durable_rate_limit,
+    mfa_principal,
+    request_principal,
+)
 from app.security.http_errors import rate_limit_response
 from app.security.sessions import (
     has_recent_fresh_mfa,
@@ -638,6 +646,203 @@ def dashboard():
         logout_form=CsrfOnlyForm(),
         transactions=recent_txns,
     )
+
+
+_TRANSACTIONS_PER_PAGE = 20
+
+
+def _bounded_page(value) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = 1
+    return min(max(parsed, 1), 100000)
+
+
+def _owned_transactions_statement():
+    return db.select(Transaction).where(
+        or_(
+            Transaction.sender_id == g.current_user.id,
+            Transaction.recipient_id == g.current_user.id,
+        )
+    )
+
+
+@web_bp.get("/transactions")
+@web_login_required
+def transactions():
+    page = _bounded_page(request.args.get("page"))
+    statement = _owned_transactions_statement().order_by(
+        Transaction.created_at.desc(), Transaction.id.desc()
+    )
+    total = db.session.execute(db.select(func.count()).select_from(statement.subquery())).scalar_one()
+    txns = (
+        db.session.execute(
+            statement.limit(_TRANSACTIONS_PER_PAGE).offset((page - 1) * _TRANSACTIONS_PER_PAGE)
+        )
+        .scalars()
+        .all()
+    )
+    total_pages = max(1, (int(total or 0) + _TRANSACTIONS_PER_PAGE - 1) // _TRANSACTIONS_PER_PAGE)
+    return render_template(
+        "transactions.html",
+        user=g.current_user,
+        transactions=txns,
+        page=page,
+        total_pages=total_pages,
+    )
+
+
+@web_bp.get("/transactions/<int:transaction_id>")
+@web_login_required
+def transaction_detail(transaction_id: int):
+    # Ownership check — prevents IDOR
+    txn = Transaction.query.filter(
+        Transaction.id == transaction_id,
+        or_(
+            Transaction.sender_id == g.current_user.id,
+            Transaction.recipient_id == g.current_user.id,
+        ),
+    ).first_or_404()
+    my_disputes = (
+        db.session.execute(
+            db.select(TransactionDispute)
+            .where(
+                TransactionDispute.transaction_id == txn.id,
+                TransactionDispute.reporter_id == g.current_user.id,
+            )
+            .order_by(TransactionDispute.created_at.desc())
+        )
+        .scalars()
+        .all()
+    )
+    # Checked transaction-wide (not just this viewer's own reports) so the "Report an
+    # Issue" link is hidden whenever a submission would be blocked server-side,
+    # regardless of which party on the transaction filed the open dispute.
+    has_open_dispute = _open_dispute_for_transaction(txn.id) is not None
+    return render_template(
+        "transaction_detail.html",
+        user=g.current_user,
+        transaction=txn,
+        disputes=my_disputes,
+        has_open_dispute=has_open_dispute,
+    )
+
+
+_DISPUTE_ALREADY_OPEN_MESSAGE = "An open issue report already exists for this transaction."
+_DISPUTE_FORM_TEMPLATE = "transaction_dispute_form.html"
+
+
+def _owned_transaction_or_404(transaction_id: int) -> Transaction:
+    return Transaction.query.filter(
+        Transaction.id == transaction_id,
+        or_(
+            Transaction.sender_id == g.current_user.id,
+            Transaction.recipient_id == g.current_user.id,
+        ),
+    ).first_or_404()
+
+
+def _open_dispute_for_transaction(transaction_id: int) -> TransactionDispute | None:
+    return db.session.execute(
+        db.select(TransactionDispute).where(
+            TransactionDispute.transaction_id == transaction_id,
+            TransactionDispute.status.in_(DISPUTE_OPEN_STATUSES),
+        )
+    ).scalar_one_or_none()
+
+
+@web_bp.get("/transactions/<int:transaction_id>/dispute")
+@web_login_required
+@web_not_frozen_required
+def transaction_dispute_new(transaction_id: int):
+    # Ownership check — prevents IDOR
+    txn = _owned_transaction_or_404(transaction_id)
+    if _open_dispute_for_transaction(txn.id) is not None:
+        flash(_DISPUTE_ALREADY_OPEN_MESSAGE, "warning")
+        return redirect(url_for("web.transaction_detail", transaction_id=txn.id))
+    form = TransactionDisputeForm()
+    return render_template(_DISPUTE_FORM_TEMPLATE, form=form, transaction=txn)
+
+
+@web_bp.post("/transactions/<int:transaction_id>/dispute")
+@limiter.limit("10 per hour", key_func=mfa_principal)
+@web_login_required
+@web_not_frozen_required
+def transaction_dispute_create(transaction_id: int):
+    # A01: ownership re-checked independently of the GET step
+    txn = _owned_transaction_or_404(transaction_id)
+    form = TransactionDisputeForm()
+    if not form.validate_on_submit():
+        return render_template(_DISPUTE_FORM_TEMPLATE, form=form, transaction=txn), 400
+
+    if _open_dispute_for_transaction(txn.id) is not None:
+        flash(_DISPUTE_ALREADY_OPEN_MESSAGE, "warning")
+        return redirect(url_for("web.transaction_detail", transaction_id=txn.id))
+
+    try:
+        consume_durable_rate_limit(
+            "transaction_dispute_create",
+            f"user:{g.current_user.id}",
+            limit=5,
+            window_seconds=24 * 60 * 60,
+        )
+    except DurableRateLimitExceeded as exc:
+        audit_event(
+            "transaction_dispute_create",
+            "blocked",
+            user=g.current_user,
+            metadata={"reason": "durable_rate_limit", "retry_after": exc.retry_after},
+        )
+        flash("Too many issue reports submitted today. Please try again tomorrow.", "error")
+        return redirect(url_for("web.transaction_detail", transaction_id=txn.id))
+
+    dispute = TransactionDispute(
+        transaction_id=txn.id,
+        reporter_id=g.current_user.id,
+        issue_type=form.issue_type.data,
+        reason=form.reason.data.strip(),
+        status="open",
+    )
+    try:
+        db.session.add(dispute)
+        db.session.flush([dispute])
+        audit_event_required(
+            "transaction_dispute_create",
+            "success",
+            user=g.current_user,
+            metadata={
+                "transaction_ref": audit_reference("transaction", txn.transaction_ref),
+                "issue_type": dispute.issue_type,
+                "reason_length": len(dispute.reason),
+            },
+        )
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        flash(_DISPUTE_ALREADY_OPEN_MESSAGE, "warning")
+        return redirect(url_for("web.transaction_detail", transaction_id=txn.id))
+    except AuditWriteError:
+        db.session.rollback()
+        raise
+
+    flash("Issue reported. Our staff will review it shortly.", "success")
+    return redirect(url_for("web.transaction_detail", transaction_id=txn.id))
+
+
+@web_bp.get("/disputes")
+@web_login_required
+def my_disputes():
+    disputes = (
+        db.session.execute(
+            db.select(TransactionDispute)
+            .where(TransactionDispute.reporter_id == g.current_user.id)
+            .order_by(TransactionDispute.created_at.desc())
+        )
+        .scalars()
+        .all()
+    )
+    return render_template("my_disputes.html", disputes=disputes)
 
 
 @web_bp.get("/profile")

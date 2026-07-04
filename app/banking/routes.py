@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import io
 import os
 import re
 from datetime import datetime, timedelta, timezone
@@ -7,11 +9,13 @@ from math import ceil
 
 from flask import (
     Blueprint,
+    Response,
     current_app,
     flash,
     g,
     redirect,
     render_template,
+    request,
     session,
     url_for,
 )
@@ -40,6 +44,7 @@ from app.banking.services import (
     payup_requires_step_up,
     payup_transfer_token_verifier,
     resolve_transfer_limit_choice,
+    statement_for_period,
 )
 from app.extensions import db, limiter
 from app.models import Payee, PayupPendingTransfer, PendingTransfer, User
@@ -871,3 +876,97 @@ def transfer_limits_submit():
     )
     flash("Daily transfer limits updated.", "success")
     return redirect(url_for(_TRANSFER_LIMITS_ENDPOINT))
+
+
+# ── Monthly statement ───────────────────────────────────────────────────────────
+
+_STATEMENT_TEMPLATE = "statement.html"
+_STATEMENT_ENDPOINT = "banking.statement"
+_SGT_STATEMENT_OFFSET = timezone(timedelta(hours=8))
+
+
+def _bounded_int(value, *, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return min(max(parsed, minimum), maximum)
+
+
+def _requested_statement_period() -> tuple[int, int]:
+    now_sgt = datetime.now(timezone.utc).astimezone(_SGT_STATEMENT_OFFSET)
+    year = _bounded_int(request.args.get("year"), default=now_sgt.year, minimum=2000, maximum=now_sgt.year)
+    month = _bounded_int(request.args.get("month"), default=now_sgt.month, minimum=1, maximum=12)
+    return year, month
+
+
+_CSV_FORMULA_TRIGGER_CHARS = ("=", "+", "-", "@")
+
+
+def _csv_safe(value: str) -> str:
+    """Neutralize spreadsheet formula injection (OWASP A03) in exported cell values."""
+    text = str(value or "")
+    if text.startswith(_CSV_FORMULA_TRIGGER_CHARS):
+        return "'" + text
+    return text
+
+
+@banking_bp.get("/statement")
+@web_login_required
+@web_not_frozen_required
+def statement():
+    year, month = _requested_statement_period()
+    try:
+        data = statement_for_period(g.current_user, year, month)
+    except AuthError as exc:
+        flash(exc.message, "error")
+        data = None
+    return render_template(_STATEMENT_TEMPLATE, user=g.current_user, statement=data, year=year, month=month)
+
+
+@banking_bp.get("/statement/download")
+@limiter.limit("10 per hour", key_func=mfa_principal)
+@web_login_required
+@web_not_frozen_required
+def statement_download():
+    year, month = _requested_statement_period()
+    try:
+        data = statement_for_period(g.current_user, year, month)
+    except AuthError as exc:
+        flash(exc.message, "error")
+        return redirect(url_for(_STATEMENT_ENDPOINT, year=year, month=month))
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["Date", "Type", "Counterparty", "Reference", "Amount (SGD)", "Status"])
+    for txn in data["transactions"]:
+        is_sender = txn.sender_id == g.current_user.id
+        counterparty = txn.recipient if is_sender else txn.sender
+        counterparty_name = (counterparty.full_name or counterparty.username) if counterparty else ""
+        writer.writerow(
+            [
+                txn.created_at.astimezone(_SGT_STATEMENT_OFFSET).strftime("%Y-%m-%d %H:%M"),
+                "PayUp" if txn.transaction_type == "payup" else "Local Transfer",
+                _csv_safe(counterparty_name),
+                _csv_safe(txn.reference or ""),
+                f"-{txn.amount}" if is_sender else f"{txn.amount}",
+                txn.status,
+            ]
+        )
+
+    try:
+        audit_event_required(
+            "statement_export",
+            "success",
+            user=g.current_user,
+            metadata={"period_ref": audit_reference("statement_period", f"{year:04d}-{month:02d}")},
+        )
+        db.session.commit()
+    except AuditWriteError:
+        db.session.rollback()
+        raise
+
+    filename = f"sitbank-statement-{year:04d}-{month:02d}.csv"
+    response = Response(buffer.getvalue(), mimetype="text/csv")
+    response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response

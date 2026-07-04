@@ -142,10 +142,14 @@ admin runtime authorization checks.
 The staff/admin/root separation requirement is implemented through this
 existing role model rather than by adding new roles. Current mapping:
 
-- `staff`: bank-staff business-operation responsibility. No customer support,
-  transaction review, or fraud review admin routes are registered yet, so the
-  dashboard renders a disabled staff business-operation placeholder instead of
-  linking to fake tools.
+- `staff`: bank-staff business-operation responsibility, including the
+  transaction dispute review queue (`admin.disputes`, `admin.dispute_detail`,
+  `admin.dispute_transition`), gated by `require_plain_staff_session` so
+  `admin`/`root_admin` sessions are excluded from that queue and retain only
+  audit-log oversight of dispute events. No other customer support or fraud
+  review admin routes are registered yet, so the dashboard otherwise renders a
+  disabled staff business-operation placeholder instead of linking to fake
+  tools.
 - `admin`: technical/security administration, including audit review, alert
   review, and safe staff/admin status visibility.
 - `root_admin`: privileged platform administration, including staff/admin
