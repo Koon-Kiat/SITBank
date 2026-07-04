@@ -175,16 +175,16 @@ def test_dashboard_quick_actions_have_correct_labels(client):
     assert "Monthly Statement" in markup
 
 
-def test_dashboard_remaining_quick_actions_are_coming_soon(client):
+def test_dashboard_no_quick_actions_are_coming_soon_once_mfa_ready(client):
     login_with_mfa(client)
     markup = client.get("/dashboard").data.decode("utf-8")
-    assert markup.count("Coming soon") == 2
+    assert markup.count("Coming soon") == 0
 
 
-def test_dashboard_quick_actions_are_disabled(client):
+def test_dashboard_quick_actions_are_all_enabled_once_mfa_ready(client):
     login_with_mfa(client)
     markup = client.get("/dashboard").data.decode("utf-8")
-    assert markup.count("is-disabled") >= 2
+    assert markup.count("is-disabled") == 0
 
 
 def test_dashboard_local_transfer_links_to_payees_when_mfa_ready(client):
@@ -199,6 +199,20 @@ def test_dashboard_payup_links_to_payup_when_mfa_ready(client):
     markup = client.get("/dashboard").data.decode("utf-8")
     assert 'href="/banking/payup"' in markup
     assert "PayUp" in markup
+
+
+def test_dashboard_past_transaction_links_to_transactions_when_mfa_ready(client):
+    login_with_mfa(client)
+    markup = client.get("/dashboard").data.decode("utf-8")
+    assert 'href="/transactions"' in markup
+    assert "Past Transaction" in markup
+
+
+def test_dashboard_monthly_statement_links_to_statement_when_mfa_ready(client):
+    login_with_mfa(client)
+    markup = client.get("/dashboard").data.decode("utf-8")
+    assert 'href="/banking/statement"' in markup
+    assert "Monthly Statement" in markup
 
 
 # ── Recent transactions panel ──────────────────────────────────────────────────
@@ -219,6 +233,7 @@ def test_dashboard_recent_transactions_has_more_link(client):
     login_with_mfa(client)
     markup = client.get("/dashboard").data.decode("utf-8")
     assert "More..." in markup
+    assert 'href="/transactions"' in markup
 
 
 # ── Security notices relocated off dashboard ───────────────────────────────────

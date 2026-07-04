@@ -732,6 +732,76 @@ class Transaction(db.Model):
         return f"<Transaction id={self.id!r} ref={self.transaction_ref!r} amount={self.amount!r}>"
 
 
+DISPUTE_ISSUE_TYPES = (
+    "unauthorized_transaction",
+    "duplicate_charge",
+    "incorrect_amount",
+    "recipient_service_issue",
+    "other",
+)
+DISPUTE_OPEN_STATUSES = ("open", "under_review")
+
+
+class TransactionDispute(db.Model):
+    __tablename__ = "transaction_disputes"
+
+    id = db.Column(db.Integer, primary_key=True)
+    transaction_id = db.Column(db.Integer, db.ForeignKey("transactions.id"), nullable=False, index=True)
+    reporter_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
+    issue_type = db.Column(db.String(32), nullable=False)
+    reason = db.Column(db.Text, nullable=False)
+    status = db.Column(db.String(32), nullable=False, default="open", index=True)
+    resolver_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=True, index=True)
+    resolution_note = db.Column(db.Text, nullable=True)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+    )
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+    decided_at = db.Column(db.DateTime(timezone=True), nullable=True)
+
+    transaction = db.relationship("Transaction", backref=db.backref("disputes", lazy="selectin"))
+    reporter = db.relationship(
+        "User",
+        foreign_keys=[reporter_id],
+        backref="filed_transaction_disputes",
+    )
+    resolver = db.relationship(
+        "User",
+        foreign_keys=[resolver_id],
+        backref="resolved_transaction_disputes",
+    )
+
+    __table_args__ = (
+        db.CheckConstraint(
+            "issue_type IN ('unauthorized_transaction', 'duplicate_charge', 'incorrect_amount', "
+            "'recipient_service_issue', 'other')",
+            name="ck_transaction_disputes_issue_type",
+        ),
+        db.CheckConstraint(
+            "status IN ('open', 'under_review', 'resolved', 'rejected')",
+            name="ck_transaction_disputes_status",
+        ),
+        Index(
+            "ux_transaction_disputes_one_open_per_txn",
+            "transaction_id",
+            unique=True,
+            postgresql_where=status.in_(DISPUTE_OPEN_STATUSES),
+            sqlite_where=status.in_(DISPUTE_OPEN_STATUSES),
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return f"<TransactionDispute id={self.id!r} transaction_id={self.transaction_id!r} status={self.status!r}>"
+
+
 class _PendingTransferColumnsMixin:
     """Columns shared by PendingTransfer and PayupPendingTransfer."""
 

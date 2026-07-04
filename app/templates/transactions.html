@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+
+{% block title %}Past Transactions | SITBank{% endblock %}
+
+{% block content %}
+<section class="security-page profile-page">
+  <div class="dashboard-header">
+    <div class="page-heading">
+      <p class="eyebrow">Account</p>
+      <h1>Past Transactions</h1>
+      <p class="muted">All transfers you've sent or received.</p>
+    </div>
+    <div class="button-row">
+      <a class="button secondary" href="{{ url_for('web.dashboard') }}">Back to Dashboard</a>
+    </div>
+  </div>
+
+  {% if transactions %}
+  <div class="panel">
+    <div class="table-wrap">
+      <table aria-label="Past transactions">
+        <thead>
+          <tr>
+            <th>Type</th>
+            <th>Transaction ID</th>
+            <th>Recipient</th>
+            <th>Method</th>
+            <th>Reference</th>
+            <th>Amount (SGD)</th>
+            <th>Date</th>
+            <th><span class="sr-only">Actions</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for txn in transactions %}
+          <tr>
+            <td>
+              {% if txn.sender_id == user.id %}
+              <span class="badge neutral">Sent</span>
+              {% else %}
+              <span class="badge">Received</span>
+              {% endif %}
+            </td>
+            <td title="{{ txn.transaction_ref }}">{{ txn.transaction_ref[:8]|upper }}</td>
+            <td>
+              {% if txn.sender_id == user.id %}
+              {{ txn.recipient.full_name or txn.recipient.username }}
+              {% else %}
+              {{ txn.sender.full_name or txn.sender.username }}
+              {% endif %}
+            </td>
+            <td>
+              {% if txn.transaction_type == 'payup' %}
+              PayUp
+              {% else %}
+              Local Transfer
+              {% endif %}
+            </td>
+            <td>{{ txn.reference or "—" }}</td>
+            <td>
+              {% if txn.sender_id == user.id %}
+              <span class="muted">−{{ txn.amount }}</span>
+              {% else %}
+              +{{ txn.amount }}
+              {% endif %}
+            </td>
+            <td><time datetime="{{ txn.created_at.isoformat() }}">{{ (txn.created_at | sgt).strftime('%d %b %Y, %H:%M') }} SGT</time></td>
+            <td><a class="button secondary small" href="{{ url_for('web.transaction_detail', transaction_id=txn.id) }}">View</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if total_pages > 1 %}
+    <nav class="button-row" aria-label="Pagination">
+      {% if page > 1 %}
+      <a class="button secondary small" href="{{ url_for('web.transactions', page=page - 1) }}">Previous</a>
+      {% endif %}
+      <span class="muted">Page {{ page }} of {{ total_pages }}</span>
+      {% if page < total_pages %}
+      <a class="button secondary small" href="{{ url_for('web.transactions', page=page + 1) }}">Next</a>
+      {% endif %}
+    </nav>
+    {% endif %}
+  </div>
+  {% else %}
+  <div class="panel">
+    <div class="empty-state dashboard-txn-empty">
+      <p class="muted">No transactions to display.</p>
+    </div>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

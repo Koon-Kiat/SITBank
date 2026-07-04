@@ -37,9 +37,10 @@ from app.models import (
     ManualRecoveryRequest,
     SecurityAuditEvent,
     StaffInvite,
+    TransactionDispute,
     User,
 )
-from app.security.audit import audit_event, audit_event_required, audit_reference, principal_reference
+from app.security.audit import AuditWriteError, audit_event, audit_event_required, audit_reference, principal_reference
 from app.security.crypto import encrypt_mfa_secret
 from app.security.email import send_security_email
 from app.security.identity_policy import (
@@ -238,6 +239,21 @@ AUDIT_EVENT_DESCRIPTIONS = {
         "A Cloudflare Access assertion or boundary check rejected a request.",
         "Review source kind, route, and policy reason without copying assertions.",
     ),
+    "dispute_detail_view": (
+        "Dispute detail opened",
+        "A plain staff account opened a transaction dispute detail page.",
+        "Read-only investigation activity; correlate with later status-change events.",
+    ),
+    "dispute_queue_access": (
+        "Dispute queue access denied",
+        "An admin or root-admin session was blocked from the transaction dispute queue.",
+        "This queue is deliberately staff-only; admin/root-admin oversight is via this audit log.",
+    ),
+    "dispute_queue_review": (
+        "Dispute queue reviewed",
+        "A plain staff account opened the transaction dispute queue.",
+        "Use this to correlate who reviewed pending customer transaction disputes.",
+    ),
     "host_deploy_wrapper": (
         "Deployment wrapper check",
         "A trusted host deployment wrapper or deployment probe reported status.",
@@ -363,10 +379,25 @@ AUDIT_EVENT_DESCRIPTIONS = {
         "A staff/admin workplace verification code delivery attempt was recorded.",
         "Investigate provider delivery without exposing the verification code.",
     ),
+    "statement_export": (
+        "Monthly statement exported",
+        "A customer downloaded a CSV monthly statement for a chosen period.",
+        "Correlate the period reference; the exported file content itself is not logged.",
+    ),
     "tailscale_admin_access": (
         "Tailscale admin access check",
         "A private admin access verification checked the Tailscale boundary.",
         "Confirm the admin host remains private and Funnel is not enabled.",
+    ),
+    "transaction_dispute_create": (
+        "Transaction dispute filed",
+        "A customer reported an issue on a transaction they were a party to.",
+        "Review the transaction and issue-type reference; raw reason text is not logged here.",
+    ),
+    "transaction_dispute_status_change": (
+        "Transaction dispute status changed",
+        "A plain staff account transitioned a transaction dispute's status.",
+        "Review the from/to status and dispute reference; resolution text is not logged here.",
     ),
 }
 AUDIT_FIELD_LEGEND = {
@@ -428,6 +459,139 @@ def require_staff_session() -> User:
     return user
 
 
+def is_plain_staff_user(user: User | None) -> bool:
+    """True only when account_type is exactly 'staff' — excludes admin/root_admin.
+
+    Unlike ``is_staff_user`` (staff-tier-or-above), the dispute review queue is a
+    business-operations tool that admin/root_admin must not access directly; their
+    oversight is limited to the generic audit log viewer.
+    """
+    return bool(user is not None and (user.account_type or ACCOUNT_CUSTOMER) == ACCOUNT_STAFF)
+
+
+def require_plain_staff_session() -> User:
+    user = require_staff_session()
+    if not is_plain_staff_user(user):
+        audit_event("dispute_queue_access", "blocked", user=user, metadata={"reason": "admin_or_root_admin_excluded"})
+        raise AuthError("Forbidden", 403)
+    return user
+
+
+DISPUTE_STATUS_TRANSITIONS = {
+    "open": frozenset({"under_review", "resolved", "rejected"}),
+    "under_review": frozenset({"resolved", "rejected"}),
+    "resolved": frozenset(),
+    "rejected": frozenset(),
+}
+
+
+def _require_plain_staff(actor: User, event_type: str) -> None:
+    if is_plain_staff_user(actor):
+        return
+    audit_event(event_type, "blocked", user=actor, metadata={"reason": "admin_or_root_admin_excluded"})
+    raise AuthError("Forbidden", 403)
+
+
+def _transaction_dispute_or_404(dispute_id: int) -> TransactionDispute:
+    dispute = db.session.get(TransactionDispute, dispute_id)
+    if dispute is None:
+        raise AuthError("Not found", 404)
+    return dispute
+
+
+def public_transaction_dispute(dispute: TransactionDispute) -> dict[str, Any]:
+    transaction = dispute.transaction
+    reporter = dispute.reporter
+    return {
+        "id": dispute.id,
+        "transaction_id": dispute.transaction_id,
+        "transaction_ref": transaction.transaction_ref if transaction else None,
+        "reporter_ref": audit_reference("customer_user", dispute.reporter_id),
+        "reporter_username": reporter.username if reporter else None,
+        "issue_type": dispute.issue_type,
+        "reason": dispute.reason,
+        "status": dispute.status,
+        "resolver_ref": audit_reference("staff_user", dispute.resolver_id) if dispute.resolver_id else None,
+        "resolution_note": dispute.resolution_note,
+        "created_at": dispute.created_at.isoformat() if dispute.created_at else None,
+        "decided_at": dispute.decided_at.isoformat() if dispute.decided_at else None,
+    }
+
+
+def disputes_for_staff(actor: User) -> list[dict[str, Any]]:
+    _require_plain_staff(actor, "dispute_queue_review")
+    disputes = list(
+        db.session.execute(
+            db.select(TransactionDispute).order_by(
+                TransactionDispute.created_at.desc(),
+                TransactionDispute.id.desc(),
+            )
+        ).scalars()
+    )
+    audit_event("dispute_queue_review", "success", user=actor)
+    return [public_transaction_dispute(item) for item in disputes]
+
+
+def dispute_detail_for_staff(actor: User, dispute_id: int) -> dict[str, Any]:
+    _require_plain_staff(actor, "dispute_detail_view")
+    dispute = _transaction_dispute_or_404(dispute_id)
+    audit_event(
+        "dispute_detail_view",
+        "success",
+        user=actor,
+        metadata={"dispute_ref": audit_reference("transaction_dispute", dispute.id)},
+    )
+    return public_transaction_dispute(dispute)
+
+
+def transition_dispute_status_for_staff(
+    actor: User,
+    dispute_id: int,
+    new_status: str,
+    resolution_note: str | None,
+) -> dict[str, Any]:
+    _require_plain_staff(actor, "transaction_dispute_status_change")
+    dispute = _transaction_dispute_or_404(dispute_id)
+    allowed_next = DISPUTE_STATUS_TRANSITIONS.get(dispute.status, frozenset())
+    if new_status not in allowed_next:
+        audit_event(
+            "transaction_dispute_status_change",
+            "blocked",
+            user=actor,
+            metadata={
+                "reason": "illegal_transition",
+                "dispute_ref": audit_reference("transaction_dispute", dispute.id),
+                "from_status": dispute.status,
+                "to_status": new_status,
+            },
+        )
+        raise AuthError("Invalid status transition", 409)
+
+    from_status = dispute.status
+    dispute.status = new_status
+    dispute.resolver_id = actor.id
+    note_text = str(resolution_note or "").strip()
+    dispute.resolution_note = note_text or None
+    if new_status in {"resolved", "rejected"}:
+        dispute.decided_at = _utcnow()
+    try:
+        audit_event_required(
+            "transaction_dispute_status_change",
+            "success",
+            user=actor,
+            metadata={
+                "dispute_ref": audit_reference("transaction_dispute", dispute.id),
+                "from_status": from_status,
+                "to_status": new_status,
+            },
+        )
+        db.session.commit()
+    except AuditWriteError:
+        db.session.rollback()
+        raise
+    return public_transaction_dispute(dispute)
+
+
 def require_root_admin_session() -> User:
     user = require_staff_session()
     if not is_root_admin(user):
@@ -471,6 +635,14 @@ def admin_navigation_for(user: User) -> list[dict[str, str]]:
                 "label": "Business operations",
                 "href": url_for(ADMIN_INDEX_ENDPOINT),
                 "endpoint": ADMIN_INDEX_ENDPOINT,
+                "group": "business",
+            }
+        )
+        items.append(
+            {
+                "label": "Disputes",
+                "href": url_for("admin.disputes"),
+                "endpoint": "admin.disputes",
                 "group": "business",
             }
         )
