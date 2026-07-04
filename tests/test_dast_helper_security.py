@@ -7,7 +7,6 @@ import os
 import stat
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -43,8 +42,9 @@ def test_static_dast_helpers_import_without_pyotp(monkeypatch):
     account_number = module._generate_synthetic_account_number()
     assert len(account_number) == 12
     assert account_number.isdigit()
-    with pytest.raises(ModuleNotFoundError, match="pyotp"):
-        module.create_authenticated_cookie("http://localhost:5000")
+    assert "pyotp" not in Path("ops/container/create_dast_session.py").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_smoke_test_keeps_dast_cookie_out_of_host_command_arguments():
@@ -281,7 +281,7 @@ def test_dast_client_rejects_bad_status_and_non_object_json(monkeypatch):
         client.request("GET", "/list", expected_status=200)
 
 
-def test_create_authenticated_cookie_runs_login_and_mfa_sequence(monkeypatch):
+def test_create_authenticated_cookie_mints_session_without_public_login(monkeypatch):
     module = _load_create_dast_session_module()
     created_users = []
     calls = []
@@ -290,28 +290,31 @@ def test_create_authenticated_cookie_runs_login_and_mfa_sequence(monkeypatch):
         def __init__(self, base_url, *, allowed_hosts):
             assert base_url == "http://smoke:5000"
             assert allowed_hosts == {"smoke"}
-            self.cookies = {"__Host-sitbank_session": "fake-session"}
+            self.csrf_referrer = "https://smoke:5000/"
+            self.cookies = {}
 
         def request(self, method, path, **kwargs):
             calls.append((method, path, kwargs))
-            if path == "/auth/csrf-token":
-                return {"csrf_token": "fake-csrf"}
-            if path == "/auth/mfa/setup":
-                return {"manual_entry_secret": "fake-totp-secret"}
+            assert self.cookies == {"__Host-sitbank_session": "fake-session"}
             return {}
 
     monkeypatch.setattr(module, "DastClient", FakeClient)
-    monkeypatch.setattr(module, "create_dast_user", lambda **kwargs: created_users.append(kwargs))
+    monkeypatch.setattr(
+        module,
+        "create_dast_user",
+        lambda **kwargs: created_users.append(kwargs) or 42,
+    )
+    monkeypatch.setattr(
+        module,
+        "issue_dast_session_cookie",
+        lambda *, user_id, session_base_url: (
+            calls.append(("ISSUE", session_base_url, {"user_id": user_id}))
+            or "fake-session"
+        ),
+    )
     monkeypatch.setattr(module.secrets, "token_hex", lambda _size: "abc123")
     monkeypatch.setattr(module.secrets, "token_urlsafe", lambda _size: "fake-random")
     monkeypatch.setattr(module, "_generate_synthetic_phone_number", lambda: "91234567")
-    monkeypatch.setitem(
-        sys.modules,
-        "pyotp",
-        SimpleNamespace(
-            TOTP=lambda _secret: SimpleNamespace(now=lambda: "123456")
-        ),
-    )
 
     cookie = module.create_authenticated_cookie(
         "http://smoke:5000",
@@ -322,48 +325,18 @@ def test_create_authenticated_cookie_runs_login_and_mfa_sequence(monkeypatch):
     assert created_users[0]["username"] == "zapabc123"
     assert created_users[0]["email"].endswith("@sit.singaporetech.edu.sg")
     assert created_users[0]["phone_number"] == "91234567"
-    assert [path for _, path, _ in calls] == [
-        "/auth/csrf-token",
-        "/auth/login",
-        "/auth/csrf-token",
-        "/auth/mfa/setup",
-        "/auth/mfa/setup/verify",
+    assert calls == [
+        ("ISSUE", "https://smoke:5000/", {"user_id": 42}),
+        ("GET", "/auth/sessions", {"expected_status": 200}),
     ]
-    assert calls[1][2]["payload"] == {
-        "identifier": "zapabc123",
-        "password": "DAST-fake-random-A9!",
-        "cf-turnstile-response": module.TURNSTILE_TEST_TOKEN,
-    }
-    assert module.TURNSTILE_TEST_TOKEN == "XXXX.DUMMY.TOKEN.XXXX"
-    assert calls[-1][2]["payload"] == {"totp_code": "123456"}
 
 
 def test_create_authenticated_cookie_requires_issued_session_cookie(monkeypatch):
     module = _load_create_dast_session_module()
 
-    class FakeClient:
-        cookies = {}
-
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-        def request(self, _method, path, **_kwargs):
-            if path == "/auth/csrf-token":
-                return {"csrf_token": "fake"}
-            if path == "/auth/mfa/setup":
-                return {"manual_entry_secret": "fake"}
-            return {}
-
-    monkeypatch.setattr(module, "DastClient", FakeClient)
-    monkeypatch.setattr(module, "create_dast_user", lambda **_kwargs: None)
-    monkeypatch.setitem(
-        sys.modules,
-        "pyotp",
-        SimpleNamespace(
-            TOTP=lambda _secret: SimpleNamespace(now=lambda: "123456")
-        ),
-    )
-    with pytest.raises(RuntimeError, match="was not issued"):
+    monkeypatch.setattr(module, "create_dast_user", lambda **_kwargs: 42)
+    monkeypatch.setattr(module, "issue_dast_session_cookie", lambda **_kwargs: "")
+    with pytest.raises(RuntimeError, match="malformed"):
         module.create_authenticated_cookie("http://localhost:5000")
 
 
