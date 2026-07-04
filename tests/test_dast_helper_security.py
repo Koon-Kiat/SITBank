@@ -7,7 +7,6 @@ import os
 import stat
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -43,8 +42,9 @@ def test_static_dast_helpers_import_without_pyotp(monkeypatch):
     account_number = module._generate_synthetic_account_number()
     assert len(account_number) == 12
     assert account_number.isdigit()
-    with pytest.raises(ModuleNotFoundError, match="pyotp"):
-        module.create_authenticated_cookie("http://localhost:5000")
+    assert "pyotp" not in Path("ops/container/create_dast_session.py").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_smoke_test_keeps_dast_cookie_out_of_host_command_arguments():
@@ -281,7 +281,7 @@ def test_dast_client_rejects_bad_status_and_non_object_json(monkeypatch):
         client.request("GET", "/list", expected_status=200)
 
 
-def test_create_authenticated_cookie_runs_login_and_mfa_sequence(monkeypatch):
+def test_create_authenticated_cookie_mints_session_without_public_login(monkeypatch):
     module = _load_create_dast_session_module()
     created_users = []
     calls = []
@@ -290,28 +290,31 @@ def test_create_authenticated_cookie_runs_login_and_mfa_sequence(monkeypatch):
         def __init__(self, base_url, *, allowed_hosts):
             assert base_url == "http://smoke:5000"
             assert allowed_hosts == {"smoke"}
-            self.cookies = {"__Host-sitbank_session": "fake-session"}
+            self.csrf_referrer = "https://smoke:5000/"
+            self.cookies = {}
 
         def request(self, method, path, **kwargs):
             calls.append((method, path, kwargs))
-            if path == "/auth/csrf-token":
-                return {"csrf_token": "fake-csrf"}
-            if path == "/auth/mfa/setup":
-                return {"manual_entry_secret": "fake-totp-secret"}
+            assert self.cookies == {"__Host-sitbank_session": "fake-session"}
             return {}
 
     monkeypatch.setattr(module, "DastClient", FakeClient)
-    monkeypatch.setattr(module, "create_dast_user", lambda **kwargs: created_users.append(kwargs))
+    monkeypatch.setattr(
+        module,
+        "create_dast_user",
+        lambda **kwargs: created_users.append(kwargs) or 42,
+    )
+    monkeypatch.setattr(
+        module,
+        "issue_dast_session_cookie",
+        lambda *, user_id, session_base_url: (
+            calls.append(("ISSUE", session_base_url, {"user_id": user_id}))
+            or "fake-session"
+        ),
+    )
     monkeypatch.setattr(module.secrets, "token_hex", lambda _size: "abc123")
     monkeypatch.setattr(module.secrets, "token_urlsafe", lambda _size: "fake-random")
     monkeypatch.setattr(module, "_generate_synthetic_phone_number", lambda: "91234567")
-    monkeypatch.setitem(
-        sys.modules,
-        "pyotp",
-        SimpleNamespace(
-            TOTP=lambda _secret: SimpleNamespace(now=lambda: "123456")
-        ),
-    )
 
     cookie = module.create_authenticated_cookie(
         "http://smoke:5000",
@@ -322,49 +325,176 @@ def test_create_authenticated_cookie_runs_login_and_mfa_sequence(monkeypatch):
     assert created_users[0]["username"] == "zapabc123"
     assert created_users[0]["email"].endswith("@sit.singaporetech.edu.sg")
     assert created_users[0]["phone_number"] == "91234567"
-    assert [path for _, path, _ in calls] == [
-        "/auth/csrf-token",
-        "/auth/login",
-        "/auth/csrf-token",
-        "/auth/mfa/setup",
-        "/auth/mfa/setup/verify",
+    assert calls == [
+        ("ISSUE", "https://smoke:5000/", {"user_id": 42}),
+        ("GET", "/auth/sessions", {"expected_status": 200}),
     ]
-    assert calls[1][2]["payload"] == {
-        "identifier": "zapabc123",
-        "password": "DAST-fake-random-A9!",
-        "cf-turnstile-response": module.TURNSTILE_TEST_TOKEN,
-    }
-    assert module.TURNSTILE_TEST_TOKEN == "XXXX.DUMMY.TOKEN.XXXX"
-    assert calls[-1][2]["payload"] == {"totp_code": "123456"}
 
 
 def test_create_authenticated_cookie_requires_issued_session_cookie(monkeypatch):
     module = _load_create_dast_session_module()
 
-    class FakeClient:
-        cookies = {}
-
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-        def request(self, _method, path, **_kwargs):
-            if path == "/auth/csrf-token":
-                return {"csrf_token": "fake"}
-            if path == "/auth/mfa/setup":
-                return {"manual_entry_secret": "fake"}
-            return {}
-
-    monkeypatch.setattr(module, "DastClient", FakeClient)
-    monkeypatch.setattr(module, "create_dast_user", lambda **_kwargs: None)
-    monkeypatch.setitem(
-        sys.modules,
-        "pyotp",
-        SimpleNamespace(
-            TOTP=lambda _secret: SimpleNamespace(now=lambda: "123456")
-        ),
-    )
-    with pytest.raises(RuntimeError, match="was not issued"):
+    monkeypatch.setattr(module, "create_dast_user", lambda **_kwargs: 42)
+    monkeypatch.setattr(module, "issue_dast_session_cookie", lambda **_kwargs: "")
+    with pytest.raises(RuntimeError, match="malformed"):
         module.create_authenticated_cookie("http://localhost:5000")
+
+
+def test_create_dast_user_persists_mfa_user_and_reuses_username(app, monkeypatch):
+    module = _load_create_dast_session_module()
+    import app as app_module
+
+    from app.extensions import db
+    from app.models import User
+    from app.security.passwords import verify_password
+
+    monkeypatch.setattr(app_module, "create_app", lambda: app)
+    monkeypatch.setattr(module, "_generate_synthetic_account_number", lambda: "123456789012")
+
+    user_id = module.create_dast_user(
+        username="zapreal",
+        email="zapreal@sit.singaporetech.edu.sg",
+        password="DAST-Correct-Horse-Battery-Staple-2026-A9!",
+        full_name="DAST Real User",
+        phone_number="91234567",
+    )
+
+    user = db.session.get(User, user_id)
+    assert user is not None
+    assert user.username == "zapreal"
+    assert user.email == "zapreal@sit.singaporetech.edu.sg"
+    assert user.full_name == "DAST Real User"
+    assert user.phone_number == "91234567"
+    assert user.account_number == "123456789012"
+    assert user.mfa_enabled is True
+    assert verify_password(
+        "DAST-Correct-Horse-Battery-Staple-2026-A9!",
+        user.password_hash,
+    )
+
+    reused_id = module.create_dast_user(
+        username="zapreal",
+        email="other@sit.singaporetech.edu.sg",
+        password="DAST-Other-Correct-Horse-Battery-Staple-2026-A9!",
+        full_name="Other DAST User",
+        phone_number="91234568",
+    )
+
+    assert reused_id == user_id
+    assert db.session.query(User).filter_by(username="zapreal").count() == 1
+
+
+def test_create_dast_user_avoids_colliding_phone_numbers(app, monkeypatch):
+    module = _load_create_dast_session_module()
+    import app as app_module
+
+    from app.extensions import db
+    from app.models import User
+
+    monkeypatch.setattr(app_module, "create_app", lambda: app)
+    monkeypatch.setattr(module, "_generate_synthetic_phone_number", lambda: "91234568")
+    monkeypatch.setattr(module, "_generate_synthetic_account_number", lambda: "123456789013")
+    db.session.add(
+        User(
+            username="existingphone",
+            email="existingphone@sit.singaporetech.edu.sg",
+            password_hash="not-used",
+            full_name="Existing Phone",
+            phone_number="91234567",
+            account_number="123456789012",
+            mfa_enabled=True,
+        )
+    )
+    db.session.commit()
+
+    user_id = module.create_dast_user(
+        username="zapcollision",
+        email="zapcollision@sit.singaporetech.edu.sg",
+        password="DAST-Correct-Horse-Battery-Staple-2026-A9!",
+        full_name="DAST Collision User",
+        phone_number="91234567",
+    )
+
+    user = db.session.get(User, user_id)
+    assert user is not None
+    assert user.phone_number == "91234568"
+    assert user.account_number == "123456789013"
+
+
+def test_issue_dast_session_cookie_persists_mfa_session(app, monkeypatch):
+    module = _load_create_dast_session_module()
+    import app as app_module
+
+    from flask import request
+
+    from app.extensions import db
+    from app.models import ServerSideSession, User
+    from app.security.sessions import session_lookup_hash
+
+    monkeypatch.setattr(app_module, "create_app", lambda: app)
+    user = User(
+        username="dastuser",
+        email="dastuser@sit.singaporetech.edu.sg",
+        password_hash="not-used-by-dast-session-test",
+        full_name="DAST User",
+        phone_number="91234567",
+        account_number="123456789012",
+        mfa_enabled=False,
+    )
+    db.session.add(user)
+    db.session.commit()
+
+    cookie_value = module.issue_dast_session_cookie(
+        user_id=user.id,
+        session_base_url="https://smoke:5000/",
+    )
+
+    assert module.DAST_COOKIE_RE.fullmatch(
+        f"__Host-sitbank_session={cookie_value}"
+    )
+    db.session.remove()
+    user = db.session.get(User, user.id)
+    assert user is not None
+    assert user.mfa_enabled is True
+    record = db.session.execute(
+        db.select(ServerSideSession).where(
+            ServerSideSession.session_lookup_hash == session_lookup_hash(cookie_value)
+        )
+    ).scalar_one()
+    assert record.component == "customer"
+    assert record.user_id == user.id
+    assert record.payload_format == "session-hmac-v2"
+    assert record.ip_address == "127.0.0.1"
+    assert record.user_agent == "sitbank-dast-session"
+
+    with app.test_request_context(
+        "/auth/sessions",
+        base_url="https://smoke:5000/",
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        headers={
+            "Cookie": f"{app.config['SESSION_COOKIE_NAME']}={cookie_value}",
+            "User-Agent": "sitbank-dast-session",
+        },
+    ):
+        loaded_session = app.session_interface.open_session(app, request)
+
+    assert loaded_session["user_id"] == user.id
+    assert loaded_session["auth_context"] == "dast_smoke"
+    assert loaded_session["mfa_verified_at"]
+    assert loaded_session["fresh_mfa_verified_at"]
+
+
+def test_issue_dast_session_cookie_rejects_missing_synthetic_user(app, monkeypatch):
+    module = _load_create_dast_session_module()
+    import app as app_module
+
+    monkeypatch.setattr(app_module, "create_app", lambda: app)
+
+    with pytest.raises(RuntimeError, match="Synthetic DAST user was not found"):
+        module.issue_dast_session_cookie(
+            user_id=999,
+            session_base_url="https://smoke:5000/",
+        )
 
 
 def test_synthetic_identifiers_have_expected_shape(monkeypatch):
