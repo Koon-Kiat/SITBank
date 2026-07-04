@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import json
 import os
 from datetime import timedelta
@@ -25,6 +26,11 @@ TEST_MFA_KEK_ACTIVE_ID = "test-mfa-current"
 TEST_MFA_KEK_KEYS = {
     "test-mfa-current": b"4" * 32,
     "test-mfa-previous": b"5" * 32,
+}
+TEST_TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID = "test-ledger-current"
+TEST_TRANSACTION_LEDGER_HMAC_KEYS = {
+    "test-ledger-current": b"b" * 32,
+    "test-ledger-previous": b"c" * 32,
 }
 
 
@@ -53,6 +59,12 @@ os.environ.setdefault(
 )
 os.environ["MFA_KEK_ACTIVE_ID"] = TEST_MFA_KEK_ACTIVE_ID
 os.environ["MFA_KEK_KEYS_JSON"] = _encoded_keyring(TEST_MFA_KEK_KEYS)
+os.environ["TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID"] = (
+    TEST_TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID
+)
+os.environ["TRANSACTION_LEDGER_HMAC_KEYS_JSON"] = _encoded_keyring(
+    TEST_TRANSACTION_LEDGER_HMAC_KEYS
+)
 os.environ.setdefault(
     "PASSWORD_PEPPER_B64",
     base64.b64encode(b"1" * 32).decode("ascii"),
@@ -97,6 +109,10 @@ class TestConfig:
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     MFA_KEK_ACTIVE_ID = TEST_MFA_KEK_ACTIVE_ID
     MFA_KEK_KEYS = TEST_MFA_KEK_KEYS
+    TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID = (
+        TEST_TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID
+    )
+    TRANSACTION_LEDGER_HMAC_KEYS = TEST_TRANSACTION_LEDGER_HMAC_KEYS
     PASSWORD_PEPPER_B64 = os.environ["PASSWORD_PEPPER_B64"]
     ADMIN_PASSWORD_PEPPER_B64 = os.environ["ADMIN_PASSWORD_PEPPER_B64"]
     PASSWORD_PBKDF2_ITERATIONS = int(os.environ["PASSWORD_PBKDF2_ITERATIONS"])
@@ -262,7 +278,6 @@ SECURITY_TEST_FILES = frozenset(
         "tests/test_session_management.py",
         "tests/test_session_risk_binding.py",
         "tests/test_local_transfer_security.py",
-        "tests/test_webauthn_lifecycle.py",
     }
 )
 DEPLOYMENT_TEST_FILES = frozenset(
@@ -288,7 +303,6 @@ SLOW_TEST_FILES = frozenset(
         "tests/test_session_absolute_lifetime.py",
         "tests/test_session_management.py",
         "tests/test_session_risk_binding.py",
-        "tests/test_webauthn_lifecycle.py",
     }
 )
 SERIAL_TEST_FILES = frozenset()
@@ -316,20 +330,89 @@ def pytest_collection_modifyitems(config, items):
                 item.add_marker(getattr(pytest.mark, marker_name))
 
 
+def pytest_xdist_auto_num_workers(config) -> int:
+    del config
+    return min(os.cpu_count() or 1, 4)
+
+
+def _clear_database_rows(flask_app) -> None:
+    from app.extensions import db
+
+    with flask_app.app_context():
+        db.session.remove()
+        with db.engine.begin() as connection:
+            for table in reversed(db.metadata.sorted_tables):
+                connection.execute(table.delete())
+            if db.engine.dialect.name == "sqlite":
+                has_sequence = connection.exec_driver_sql(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type = 'table' AND name = 'sqlite_sequence'"
+                ).scalar()
+                if has_sequence:
+                    connection.exec_driver_sql("DELETE FROM sqlite_sequence")
+        db.session.remove()
+
+
+def _restore_test_app_state(flask_app, baseline_config: dict) -> None:
+    from app.extensions import limiter
+
+    flask_app.config.clear()
+    flask_app.config.update(copy.deepcopy(baseline_config))
+    flask_app.extensions["password_reset_outbox"] = []
+    flask_app.extensions.pop("e2e_fake_password_hashes", None)
+    with flask_app.app_context():
+        limiter.reset()
+    _clear_database_rows(flask_app)
+
+
+@pytest.fixture(scope="session")
+def _worker_app():
+    from app import create_app
+    from app.extensions import db
+
+    flask_app = create_app(TestConfig)
+    with flask_app.app_context():
+        db.create_all()
+    baseline_config = copy.deepcopy(dict(flask_app.config))
+    try:
+        yield flask_app, baseline_config
+    finally:
+        with flask_app.app_context():
+            db.session.remove()
+            db.drop_all()
+            db.engine.dispose()
+
+
 @pytest.fixture()
-def app(monkeypatch):
+def app(_worker_app, monkeypatch):
+    from app.security import passwords
+
+    monkeypatch.setattr(passwords, "_is_password_pwned_by_hibp", lambda _password: False)
+    flask_app, baseline_config = _worker_app
+    _restore_test_app_state(flask_app, baseline_config)
+    try:
+        with flask_app.app_context():
+            yield flask_app
+    finally:
+        _restore_test_app_state(flask_app, baseline_config)
+
+
+@pytest.fixture()
+def mutable_app(monkeypatch):
     from app import create_app
     from app.extensions import db
     from app.security import passwords
 
     monkeypatch.setattr(passwords, "_is_password_pwned_by_hibp", lambda _password: False)
-
     flask_app = create_app(TestConfig)
     with flask_app.app_context():
         db.create_all()
-        yield flask_app
-        db.session.remove()
-        db.drop_all()
+        try:
+            yield flask_app
+        finally:
+            db.session.remove()
+            db.drop_all()
+            db.engine.dispose()
 
 
 @pytest.fixture()

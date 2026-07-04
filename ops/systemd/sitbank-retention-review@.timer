@@ -1,0 +1,12 @@
+[Unit]
+Description=Generate the operator-reviewed SITBank %i retention report weekly
+
+[Timer]
+OnCalendar=Mon *-*-* 03:15:00
+RandomizedDelaySec=30min
+AccuracySec=1min
+Persistent=true
+Unit=sitbank-retention-review@%i.service
+
+[Install]
+WantedBy=timers.target

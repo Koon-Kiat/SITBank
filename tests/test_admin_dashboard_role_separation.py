@@ -60,7 +60,7 @@ def _create_identity(
         account_status="active" if active else "setup_pending",
         full_name=username.replace("-", " ").title(),
         phone_number=phone_number,
-        account_number="100000001" if account_type == "customer" else None,
+        account_number="100000001000" if account_type == "customer" else None,
         workplace_email_verified_at=datetime.now(timezone.utc) if active and account_type != "customer" else None,
         mfa_enabled=False,
     )
@@ -100,13 +100,13 @@ def test_admin_dashboard_denies_unauthenticated_and_customer_sessions(admin_clie
 
     customer_response = admin_client.get("/")
     denied_event = db.session.query(SecurityAuditEvent).filter_by(
-        event_type="admin_access_denied",
-        outcome="blocked",
+        event_type="session_risk",
+        outcome="revoked",
     ).one()
 
     assert unauthenticated.status_code == 401
-    assert customer_response.status_code == 403
-    assert denied_event.event_metadata["reason"] == "not_active_staff"
+    assert customer_response.status_code == 401
+    assert denied_event.event_metadata["signals"] == ["session_context"]
     assert "password" not in str(denied_event.event_metadata).casefold()
     assert "csrf" not in str(denied_event.event_metadata).casefold()
 

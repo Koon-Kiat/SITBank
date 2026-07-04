@@ -304,6 +304,10 @@ def build_container_environment(prefix: str = "PROD") -> dict[str, str]:
         "PASSWORD_RESET_BASE_URL": f"https://{public_host}",  # NOSONAR - configuration name, not a credential
         "PASSWORD_RESET_EMAIL_FROM": _value(_prefixed(prefix, "PASSWORD_RESET_EMAIL_FROM")),
         "SESSION_HMAC_ACTIVE_KEY_ID": _active_key_id(prefix),
+        "TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID": _validate_key_id(
+            _prefixed(prefix, "TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID"),
+            _value(_prefixed(prefix, "TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID")),
+        ),
         "SMTP_HOST": _value(_prefixed(prefix, "SMTP_HOST")),
     }
     for name, default in NON_SECRET_DEFAULTS.items():
@@ -361,6 +365,11 @@ def build_container_bundle(
         _prefixed(prefix, "MFA_KEK_KEYS_JSON"),
         secrets["mfa_kek_keys_json"],
         active_key_id=environment["MFA_KEK_ACTIVE_ID"],
+    )
+    _validate_keyring(
+        _prefixed(prefix, "TRANSACTION_LEDGER_HMAC_KEYS_JSON"),
+        secrets["transaction_ledger_hmac_keys_json"],
+        active_key_id=environment["TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID"],
     )
     _validate_b64_key(
         _prefixed(prefix, "PASSWORD_PEPPER_B64"),

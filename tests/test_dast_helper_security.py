@@ -40,7 +40,9 @@ def test_static_dast_helpers_import_without_pyotp(monkeypatch):
 
     module = _load_create_dast_session_module()
 
-    assert module._generate_synthetic_account_number().startswith("012")
+    account_number = module._generate_synthetic_account_number()
+    assert len(account_number) == 12
+    assert account_number.isdigit()
     with pytest.raises(ModuleNotFoundError, match="pyotp"):
         module.create_authenticated_cookie("http://localhost:5000")
 
@@ -370,7 +372,7 @@ def test_synthetic_identifiers_have_expected_shape(monkeypatch):
     monkeypatch.setattr(module.secrets, "randbelow", lambda _limit: 42)
 
     assert module._generate_synthetic_phone_number() == "91000042"
-    assert module._generate_synthetic_account_number() == "012000042"
+    assert module._generate_synthetic_account_number() == "000000000042"
 
 
 def test_main_writes_both_restricted_outputs(monkeypatch, tmp_path):

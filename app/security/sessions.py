@@ -32,6 +32,7 @@ from app.security.session_hmac import (
 SESSION_RISK_REAUTH_REQUIRED_KEY = "risk_reauth_required"
 JSON_MIME_TYPE = "application/json"
 WEB_LOGIN_ENDPOINT = "web.login"
+ADMIN_LOGIN_ENDPOINT = "admin.login_form"
 SESSION_RISK_FINGERPRINT_KEY = "risk_fingerprint"
 SESSION_RISK_CONTEXT_KEY = "risk_context"
 SESSION_RISK_CONTEXT_VERSION = 1
@@ -48,6 +49,10 @@ SESSION_END_REASON_LABELS = {
     "rotated": "Session refreshed",
     "integrity_failure": "Session integrity failure",
     "session_cap": "Replaced by a new sign-in",
+    "password_change": "Password changed",
+    "password_reset": "Password reset",
+    "manual_recovery": "Manual recovery completed",
+    "security_unlock": "Security lock cleared",
     "ended": "Ended",
 }
 _SESSION_STORE_LOCK = threading.RLock()
@@ -534,24 +539,12 @@ def _user_agent_family(value: str) -> str:
     return token.group(1) if token else "unknown"
 
 
-def _legacy_session_risk_fingerprint_matches() -> bool:
-    stored = session.get(SESSION_RISK_FINGERPRINT_KEY)
-    if not stored:
-        return True
-    current = current_session_risk_fingerprint()
-    if hmac.compare_digest(str(stored), current):
-        return True
-    return matches_hmac(
-        str(stored),
-        _current_session_risk_message(),
-        length=32,
-    )
-
-
 def _session_risk_context_changes() -> set[str]:
     stored = session.get(SESSION_RISK_CONTEXT_KEY)
-    if not isinstance(stored, dict) or stored.get("version") != SESSION_RISK_CONTEXT_VERSION:
-        return set() if _legacy_session_risk_fingerprint_matches() else {"legacy_context"}
+    if not isinstance(stored, dict):
+        return {"session_context"}
+    if stored.get("version") != SESSION_RISK_CONTEXT_VERSION:
+        return {"session_context"}
 
     ip_network = _normalized_ip_context(request.remote_addr or "")
     user_agent = _normalized_user_agent(request.user_agent.string or "unknown")
@@ -600,7 +593,10 @@ def _store_current_session_risk_context(*, clear_reauth: bool) -> None:
 
 def _touch_session_risk_context() -> None:
     stored = session.get(SESSION_RISK_CONTEXT_KEY)
-    if not isinstance(stored, dict):
+    if (
+        not isinstance(stored, dict)
+        or stored.get("version") != SESSION_RISK_CONTEXT_VERSION
+    ):
         _store_current_session_risk_context(clear_reauth=False)
         return
     updated = dict(stored)
@@ -726,13 +722,18 @@ def _current_session_record() -> ServerSideSession | None:
     return _session_record_for_sid(session_id)
 
 
-def _active_session_records(user_id: int) -> list[ServerSideSession]:
+def _active_session_records(
+    user_id: int,
+    *,
+    component: str | None = None,
+) -> list[ServerSideSession]:
     now = _utcnow()
+    session_component = str(component or _session_component())
     records = list(
         db.session.execute(
             db.select(ServerSideSession)
             .where(
-                ServerSideSession.component == _session_component(),
+                ServerSideSession.component == session_component,
                 ServerSideSession.user_id == user_id,
                 ServerSideSession.revoked_at.is_(None),
                 ServerSideSession.ended_at.is_(None),
@@ -913,9 +914,14 @@ def revoke_other_sessions(user_id: int, *, ended_reason: str = "revoked") -> int
     return revoked
 
 
-def revoke_all_sessions(user_id: int, *, ended_reason: str = "revoked") -> int:
+def revoke_all_sessions(
+    user_id: int,
+    *,
+    ended_reason: str = "revoked",
+    component: str | None = None,
+) -> int:
     revoked = 0
-    for record in _active_session_records(user_id):
+    for record in _active_session_records(user_id, component=component):
         _end_session_record(record, ended_reason=ended_reason, now=_utcnow())
         revoked += 1
     return revoked
@@ -1021,13 +1027,20 @@ def _wants_session_json_response() -> bool:
 def _session_expired_response(message: str = "Session expired"):
     if _wants_session_json_response():
         return jsonify({"error": message}), 401
-    return redirect(url_for(WEB_LOGIN_ENDPOINT, session_expired=1))
+    return redirect(url_for(_login_endpoint(), session_expired=1))
 
 
 def _session_revoked_response():
     if _wants_session_json_response():
         return jsonify({"error": "Session revoked"}), 401
-    return redirect(url_for(WEB_LOGIN_ENDPOINT, session_expired=1))
+    return redirect(url_for(_login_endpoint(), session_expired=1))
+
+
+def _login_endpoint() -> str:
+    """Return the login endpoint registered by the isolated runtime."""
+    if current_app.config.get("APP_MODE") == "admin":
+        return ADMIN_LOGIN_ENDPOINT
+    return WEB_LOGIN_ENDPOINT
 
 
 def register_session_hooks(app: Flask) -> None:
@@ -1075,13 +1088,16 @@ def _revoked_session_response_if_required():
     if record is None or record.revoked_at is None:
         return None
     session.clear()
-    if request.endpoint in {
+    public_endpoints = {
+        _login_endpoint(),
+        "admin.login",
         "main.index",
         WEB_LOGIN_ENDPOINT,
         "web.login_submit",
         "web.register_form",
         "web.register_submit",
-    }:
+    }
+    if request.endpoint in public_endpoints:
         return None
     return _session_revoked_response()
 
@@ -1114,7 +1130,7 @@ def _pending_mfa_expiry_response(now: int):
         ), 401
     flash("MFA challenge expired. Please log in again.", "warning")
     rotate_session_id()
-    return redirect(url_for(WEB_LOGIN_ENDPOINT))
+    return redirect(url_for(_login_endpoint()))
 
 
 def _absolute_lifetime_expiry_response(now: int):

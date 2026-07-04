@@ -93,6 +93,16 @@ For high-risk security, deployment, authentication, authorization, cryptography,
 
 ## Required workflow
 
+### Implementation hardening requirement
+
+Every implementation must include proportionate hardening of the boundary it
+changes. Do not stop at the observed happy-path defect: identify the adjacent
+bypass, failure, replay, misconfiguration, stale-state, and cross-runtime
+paths that could recreate the gap, centralize the invariant where practical,
+and add negative regression tests. Keep this hardening focused on the touched
+trust boundary; it does not authorize unrelated rewrites or weaker
+compatibility behavior.
+
 Before changing code:
 
 - Read the issue completely.

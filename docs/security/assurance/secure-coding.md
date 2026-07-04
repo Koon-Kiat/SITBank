@@ -30,7 +30,7 @@ Examples of server-side validation:
 | Control | Evidence |
 | --- | --- |
 | Client-supplied account numbers are rejected during registration | `tests/test_auth_registration_login.py::test_api_registration_rejects_client_supplied_account_number` |
-| New customer account numbers are server-generated as 12 digits while legacy 9-digit identifiers remain accepted for preserved rows | `app/auth/services.py::_generate_account_number()`, `tests/test_auth_registration_login.py::test_registration_hashes_password_with_pbkdf2`, `tests/test_payee_management_security.py::test_payee_lookup_accepts_new_twelve_digit_account_numbers` |
+| Customer and payee account numbers are exactly 12 independently random decimal digits, with matching route, form, model, and database constraints | `app/auth/services.py::_generate_account_number()`, `tests/test_auth_registration_login.py::test_account_number_generation_randomizes_all_twelve_positions`, `tests/test_deployment.py::test_account_identifier_migration_enforces_current_twelve_digit_schema` |
 | Staff invite acceptance rejects privileged forged fields such as `role`, `workplace_email`, `email`, `account_type`, `customer_user_id`, and `is_admin` | `app/admin/services.py::_reject_forged_invite_fields()` |
 | Transaction payloads reject server-controlled fields and unsafe business values | `tests/test_banking_transaction_security.py::test_future_transaction_payload_guardrails_reject_server_controlled_fields`, `tests/test_banking_transaction_security.py::test_public_transaction_payload_business_rules_reject_unsafe_values` |
 | Route inventory records method-level auth, CSRF, rate-limit, and step-up decisions | `tests/test_route_inventory_security.py` |
@@ -86,6 +86,22 @@ tests.
 | Absolute authenticated session lifetime | `app/security/sessions.py`, `config.py`, `tests/test_session_absolute_lifetime.py` |
 | CSRF on unsafe customer routes | `app/extensions.py`, `app/__init__.py`, `tests/test_route_inventory_security.py::test_route_inventory_has_complete_security_decisions` |
 | Explicit CSRF regression tests | `tests/test_account_security_actions.py`, `tests/test_admin_manual_recovery.py`, `tests/test_payup.py::test_payup_and_transfer_limit_posts_require_csrf_when_enabled`, `tests/test_route_inventory_security.py` |
+
+Customer and private-admin browser rate-limit responses use one safe branded
+429 message whether Flask-Limiter, durable authentication backoff, or Nginx
+blocks first. Nginx serves its 429 page or `/auth/*` JSON directly from an
+internal named location and never proxies a rejected request back into Flask.
+Missing, stale, or invalid CSRF tokens remain a distinct branded HTTP 400.
+JSON auth/admin callers continue to receive structured errors. These response
+normalizations do not change CSRF, MFA/TOTP step-up, Flask-Limiter, durable
+backoff, Nginx `limit_req`, audit, alert, Tailscale, Cloudflare, or
+customer/admin isolation controls.
+
+Shared session and error helpers select login and error endpoints from
+`APP_MODE`. Admin browser templates and redirects must use only `admin.*`
+endpoints and `admin/error.html`; registering customer blueprints in the admin
+runtime is never an error-handling workaround. Static and runtime isolation
+tests reject customer endpoint references in admin templates and expiry paths.
 
 Fully authenticated customer sessions default to a 12-hour absolute lifetime,
 and admin sessions default to a 4-hour absolute lifetime. The `auth_created_at`

@@ -71,9 +71,15 @@ playwright install --with-deps chromium`, and runs `python -m pytest -q
 tests/e2e` with `SITBANK_RUN_E2E=1` and `PLAYWRIGHT_BROWSERS_PATH` set to
 `.playwright-browsers`. The tests use a loopback Flask server from the pytest
 app fixture for authentication, MFA, session, banking, and boundary
-regressions. They do not prove live staging or production provider state and do
+regressions. Coverage includes registration, password reset, manual recovery, payee, transfer, session management, password change, account freeze, and customer/admin isolation.
+They do not prove live staging or production provider state and do
 not target staging, production, or private-admin hosts. Browser cache, reports,
 traces, screenshots, and videos are ignored and are not uploaded by the job.
+
+The Python suite uses a per-worker app and database schema with per-test state
+cleanup, and the custom full-history secret scan reads streaming Git object
+batches. These runtime optimizations do not add marker exclusions, scoped test
+paths, or weaker security checks.
 
 Changing a job display name can change its required status-check context even
 when the internal ID is unchanged. Repository files do not update GitHub
@@ -145,6 +151,7 @@ set these environment variables:
 - `<PREFIX>_EC2_DEPLOY_USER`
 - `<PREFIX>_PUBLIC_HOST`
 - `<PREFIX>_MFA_KEK_ACTIVE_ID`
+- `<PREFIX>_TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID`
 - `<PREFIX>_SESSION_HMAC_ACTIVE_KEY_ID`
 - `<PREFIX>_PASSWORD_PBKDF2_ITERATIONS`
 - `<PREFIX>_MFA_ISSUER_NAME`
@@ -237,6 +244,10 @@ tokens, JWTs, service tokens, cookies, session identifiers, CSRF values, and
 private-key blocks before printing handled errors.
 
 `<PREFIX>_MFA_KEK_ACTIVE_ID` must match a key identifier in the root-managed `/etc/sitbank*/secrets/mfa_kek_keys_json` file on EC2. Do not put `MFA_KEK_KEYS_JSON` in GitHub Actions; the KEK keyring is a long-lived secret and remains host-managed.
+`<PREFIX>_TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID` must match a key identifier
+in `/etc/sitbank*/secrets/transaction_ledger_hmac_keys_json`. Keep the
+transaction-ledger keyring host-managed and separate from session and audit
+HMAC material.
 `<PREFIX>_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID` must match a key identifier in
 `/etc/sitbank*/secrets/admin_session_hmac_keys_json`. Do not put admin Flask,
 CSRF, session-HMAC, session-lookup HMAC, password-pepper, or database secret values in GitHub

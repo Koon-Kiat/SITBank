@@ -1,17 +1,16 @@
 from __future__ import annotations
 
 from flask_wtf import FlaskForm
-from wtforms import HiddenField, PasswordField, StringField
+from wtforms import PasswordField, StringField
 from wtforms.validators import Email, EqualTo, InputRequired, Length, Optional, Regexp, ValidationError
 
 from app.security.passwords import password_max_chars, password_min_length
 
-from .schemas import FULL_NAME_RE, PHONE_RE, REGISTRATION_OTP_RE, STEP_UP_TOKEN_RE, TOTP_RE, USERNAME_RE
+from .schemas import FULL_NAME_RE, PHONE_RE, REGISTRATION_OTP_RE, TOTP_RE, USERNAME_RE
 
 
 _INVALID_USERNAME_MESSAGE = "Username can only contain letters, numbers, underscores ( _ ), dots ( . ), and hyphens ( - )"
 _PASSWORDS_MUST_MATCH_MESSAGE = "Passwords do not match. Please re-enter your password."
-_INVALID_STEP_UP_TOKEN_MESSAGE = "Invalid step-up token"
 _AUTHENTICATOR_CODE_LABEL = "Authenticator code"
 _MFA_CODE_ERROR = "MFA code must be exactly 6 digits"
 _VERIFICATION_CODE_ERROR = "Verification code must be exactly 6 digits"
@@ -163,14 +162,6 @@ class ProfileForm(FlaskForm):
             Regexp(TOTP_RE, message=_MFA_CODE_ERROR),
         ],
     )
-    stepup_token = HiddenField(
-        validators=[
-            Optional(),
-            Regexp(STEP_UP_TOKEN_RE, message=_INVALID_STEP_UP_TOKEN_MESSAGE),
-        ],
-    )
-
-
 class TotpForm(FlaskForm):
     totp_code = StringField(
         "MFA code",
@@ -179,25 +170,8 @@ class TotpForm(FlaskForm):
             Regexp(TOTP_RE, message=_MFA_CODE_ERROR),
         ],
     )
-    stepup_token = HiddenField(
-        validators=[
-            Optional(),
-            Regexp(STEP_UP_TOKEN_RE, message=_INVALID_STEP_UP_TOKEN_MESSAGE),
-        ],
-    )
-
-
 class AuthenticationCodeForm(FlaskForm):
     totp_code = StringField("Authentication code", validators=[InputRequired(), Length(max=80)])
-
-
-class StepUpTokenForm(FlaskForm):
-    stepup_token = HiddenField(
-        validators=[
-            Optional(),
-            Regexp(STEP_UP_TOKEN_RE, message=_INVALID_STEP_UP_TOKEN_MESSAGE),
-        ],
-    )
 
 
 class MfaOrStepUpForm(FlaskForm):
@@ -208,14 +182,6 @@ class MfaOrStepUpForm(FlaskForm):
             Regexp(TOTP_RE, message=_MFA_CODE_ERROR),
         ],
     )
-    stepup_token = HiddenField(
-        validators=[
-            Optional(),
-            Regexp(STEP_UP_TOKEN_RE, message=_INVALID_STEP_UP_TOKEN_MESSAGE),
-        ],
-    )
-
-
 class PasswordChangeForm(FlaskForm):
     current_password = PasswordField("Current password", validators=[InputRequired(), password_length(minimum=1)])
     new_password = PasswordField("New password", validators=[InputRequired(), password_length()])
@@ -234,14 +200,6 @@ class PasswordChangeForm(FlaskForm):
             Regexp(TOTP_RE, message=_MFA_CODE_ERROR),
         ],
     )
-    stepup_token = HiddenField(
-        validators=[
-            Optional(),
-            Regexp(STEP_UP_TOKEN_RE, message=_INVALID_STEP_UP_TOKEN_MESSAGE),
-        ],
-    )
-
-
 class PasswordResetForm(FlaskForm):
     new_password = PasswordField("New password", validators=[InputRequired()])
     confirm_new_password = PasswordField(

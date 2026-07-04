@@ -88,7 +88,7 @@ def _create_customer(username: str = "recover-admin01") -> tuple[User, str]:
         account_status="active",
         full_name="Recover Customer",
         phone_number=f"8{int(datetime.now(timezone.utc).timestamp()) % 10000000:07d}",
-        account_number=f"123{int(datetime.now(timezone.utc).timestamp()) % 1000000:06d}",
+        account_number=f"123{int(datetime.now(timezone.utc).timestamp()) % 1000000000:09d}",
     )
     db.session.add(user)
     db.session.flush()

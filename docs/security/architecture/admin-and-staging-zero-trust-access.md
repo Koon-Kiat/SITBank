@@ -593,6 +593,13 @@ origin or admin listener. They do not replace Flask login, CSRF, rate limiting,
 root-admin authorization, admin TOTP, admin/customer route isolation, admin
 cookie isolation, or database runtime role separation.
 
+Private admin browser rate limits and durable backoff render one admin-branded
+HTTP 429 response; invalid or expired CSRF tokens render a distinct
+admin-branded HTTP 400. Admin JSON-only and negotiated API requests retain
+structured errors. This response handling does not expose Tailscale identity
+details or weaken private reachability, separate admin cookies/signing keys,
+TOTP step-up, audit logging, alerts, or maker-checker authorization.
+
 Readiness remains restricted:
 
 - Production customer `/health/ready` is loopback-only.

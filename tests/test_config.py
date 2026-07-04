@@ -33,15 +33,6 @@ from config import (
 )
 
 
-def test_webauthn_runtime_environment_is_not_required():
-    customer_runtime_keys = set(config.CUSTOMER_RUNTIME_SECRET_ENV_NAMES)
-
-    assert "WEBAUTHN_RP_ID" not in customer_runtime_keys
-    assert "WEBAUTHN_RP_ORIGIN" not in customer_runtime_keys
-    assert not hasattr(config, "_required_webauthn_rp_id")
-    assert not hasattr(config, "_required_webauthn_origin")
-
-
 def test_admin_allowed_email_domains_accept_configured_workplace_domains(monkeypatch):
     monkeypatch.setenv(
         "ADMIN_ALLOWED_EMAIL_DOMAINS",

@@ -27,7 +27,7 @@ The principal taxonomy is:
   authentication policy.
 - `session`: cookies, server sessions, CSRF-linked state, rotation, revocation,
   session HMAC, or session-bound decisions.
-- `mfa`: TOTP, passkeys, WebAuthn, recovery codes, step-up, or MFA lifecycle.
+- `mfa`: TOTP, recovery codes, step-up, or MFA lifecycle.
 - `admin`: admin application, routes, sessions, deployment boundary,
   root-admin bootstrap, or admin-only operations.
 - `customer`: customer application, routes, accounts, or customer behavior.

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hmac
 import json
 import os
+import stat as stat_module
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -9,12 +11,26 @@ import click
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
 from flask import Flask
+from flask_migrate import upgrade as upgrade_database
+from sqlalchemy import MetaData, and_, column, create_engine, func, select, table
 
 from app.admin.bootstrap_root import RootAdminBootstrapError, bootstrap_root_admin
 from app.extensions import db
 from app.models import User
-from app.security.alerts import build_security_alert_report, deliver_security_alerts
-from app.security.audit import audit_log_anchor, audit_system_event, verify_audit_hash_chain, write_audit_log_anchor
+from app.security.alerts import (
+    build_security_alert_report,
+    deliver_security_alerts,
+    rebaseline_database_integrity_state,
+)
+from app.security.audit import (
+    AuditWriteError,
+    audit_log_anchor,
+    audit_system_event,
+    audit_system_event_required,
+    refresh_audit_log_anchor,
+    verify_audit_hash_chain,
+    write_audit_log_anchor,
+)
 from app.security.crypto import (
     is_enveloped_mfa_secret,
     mfa_envelope_kek_id,
@@ -125,6 +141,83 @@ def register_ops_commands(app: Flask) -> None:  # NOSONAR
             )
 
         click.echo("Database schema matches current migration metadata")
+
+    @app.cli.command("reset-demo-database")
+    @click.option(
+        "--target",
+        type=click.Choice(["staging", "production"], case_sensitive=True),
+        required=True,
+    )
+    @click.option("--execute", is_flag=True, help="Apply the destructive reset after preflight.")
+    @click.option("--confirm", help="Exact environment-specific destructive confirmation phrase.")
+    @click.option(
+        "--disposable-data-confirmed",
+        is_flag=True,
+        help="Confirm that the target contains only disposable project/demo data.",
+    )
+    @click.option(
+        "--staging-verified",
+        is_flag=True,
+        help="Confirm the equivalent reset completed and was verified in staging.",
+    )
+    @click.option(
+        "--approved",
+        is_flag=True,
+        help="Confirm the required manual production approval was obtained.",
+    )
+    @click.option(
+        "--backup-file",
+        type=click.Path(exists=True, dir_okay=False, path_type=Path),
+        help="Fresh encrypted production backup created by sitbank-backup-encrypted.",
+    )
+    def reset_demo_database_command(
+        target: str,
+        execute: bool,
+        confirm: str | None,
+        disposable_data_confirmed: bool,
+        staging_verified: bool,
+        approved: bool,
+        backup_file: Path | None,
+    ) -> None:
+        """Destructively recreate an explicitly disposable staging/production DB."""
+
+        _validate_demo_reset_preflight(
+            app,
+            target=target,
+            execute=execute,
+            confirm=confirm,
+            disposable_data_confirmed=disposable_data_confirmed,
+            staging_verified=staging_verified,
+            approved=approved,
+            backup_file=backup_file,
+        )
+        if not execute:
+            click.echo(
+                f"Demo database reset preflight passed: target={target} execute=false"
+            )
+            return
+
+        migration_url = str(
+            app.config.get("SQLALCHEMY_MIGRATION_DATABASE_URI") or ""
+        )
+        engine = create_engine(migration_url)
+        try:
+            metadata = MetaData()
+            metadata.reflect(bind=engine)
+            metadata.drop_all(bind=engine)
+        finally:
+            engine.dispose()
+
+        upgrade_database()
+        malformed = _malformed_account_number_count(db.engine)
+        if malformed:
+            raise click.ClickException(
+                "Reset verification failed: malformed account numbers remain"
+            )
+        click.echo(
+            f"Demo database reset completed: target={target} "
+            "schema=current malformed_account_numbers=0"
+        )
 
     @app.cli.command("production-check")
     def production_check() -> None:
@@ -263,6 +356,45 @@ def register_ops_commands(app: Flask) -> None:  # NOSONAR
         payload = json.dumps(anchor, separators=(",", ":"), sort_keys=True)
         click.echo(payload)
 
+    @app.cli.command("refresh-audit-log-anchor")
+    def refresh_audit_log_anchor_command() -> None:
+        """Refresh a configured anchor after fail-closed chain validation."""
+        configured_path = str(
+            app.config.get("SECURITY_AUDIT_ANCHOR_PATH") or ""
+        ).strip()
+        if not configured_path:
+            raise click.ClickException("SECURITY_AUDIT_ANCHOR_PATH is required")
+        try:
+            result = refresh_audit_log_anchor(Path(configured_path))
+        except Exception as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(json.dumps(result, separators=(",", ":"), sort_keys=True))
+
+    @app.cli.command("rebaseline-security-alert-state")
+    @click.option(
+        "--intentional-reset",
+        is_flag=True,
+        help="Acknowledge that the current database state is an approved reset.",
+    )
+    @click.option(
+        "--reason",
+        required=True,
+        help="Non-empty operator reason; only a keyed reference and length are retained.",
+    )
+    def rebaseline_security_alert_state_command(
+        intentional_reset: bool,
+        reason: str,
+    ) -> None:
+        """Safely replace database-regression state after an approved reset."""
+        try:
+            result = rebaseline_database_integrity_state(
+                intentional_reset=intentional_reset,
+                reason=reason,
+            )
+        except Exception as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(json.dumps(result, separators=(",", ":"), sort_keys=True))
+
     @app.cli.command("check-security-alerts")
     @click.option("--report-only", is_flag=True, help="Exit zero even when active alerts are found.")
     @click.option("--no-delivery", is_flag=True, help="Skip configured webhook delivery and only print JSON.")
@@ -287,11 +419,14 @@ def register_ops_commands(app: Flask) -> None:  # NOSONAR
 
     @app.cli.command("cleanup-security-state")
     @click.option("--limit", type=int, default=None, help="Maximum rows per state table to clean.")
-    def cleanup_security_state_command(limit: int | None) -> None:
-        """Clean expired DB-backed sessions and security state."""
-        from app.security.state_cleanup import cleanup_expired_security_state
-
-        result = cleanup_expired_security_state(limit=limit)
+    @click.option(
+        "--confirm",
+        is_flag=True,
+        help="Apply cleanup. Without this flag the compatibility command is dry-run only.",
+    )
+    def cleanup_security_state_command(limit: int | None, confirm: bool) -> None:
+        """Compatibility wrapper for confirm-gated retention cleanup."""
+        result = _run_audited_retention_cleanup(limit=limit, confirm=confirm)
         click.echo(json.dumps(result, separators=(",", ":"), sort_keys=True))
 
     @security_cli.command("run-retention-cleanup")
@@ -308,8 +443,32 @@ def register_ops_commands(app: Flask) -> None:  # NOSONAR
     )
     def run_retention_cleanup_command(limit: int | None, confirm: bool) -> None:
         """Review or apply approved temporary security-state retention cleanup."""
+        result = _run_audited_retention_cleanup(limit=limit, confirm=confirm)
+        click.echo(json.dumps(result, separators=(",", ":"), sort_keys=True))
+
+    def _run_audited_retention_cleanup(
+        *,
+        limit: int | None,
+        confirm: bool,
+    ) -> dict:
         from app.security.retention import RetentionCleanupError, run_retention_cleanup
 
+        requested_metadata = {
+            "mode": "confirmed" if confirm else "dry_run",
+            "dry_run": not confirm,
+            "batch_limit_requested": limit,
+        }
+        if confirm:
+            try:
+                audit_system_event_required(
+                    "retention_cleanup",
+                    "started",
+                    metadata=requested_metadata,
+                )
+            except AuditWriteError as exc:
+                raise click.ClickException(
+                    "Retention cleanup refused because audit evidence is unavailable"
+                ) from exc
         try:
             result = run_retention_cleanup(
                 limit=limit,
@@ -317,21 +476,44 @@ def register_ops_commands(app: Flask) -> None:  # NOSONAR
                 confirm=confirm,
             )
         except RetentionCleanupError as exc:
+            if confirm:
+                audit_system_event(
+                    "retention_cleanup",
+                    "failed",
+                    metadata={
+                        **requested_metadata,
+                        "error_type": type(exc).__name__,
+                    },
+                )
             raise click.ClickException(str(exc)) from exc
 
-        audit_system_event(
-            "retention_cleanup",
-            result["mode"],
-            metadata={
-                "mode": result["mode"],
-                "dry_run": result["dry_run"],
-                "retention_days": result["retention_days"],
-                "batch_limit": result["batch_limit"],
-                "category_counts": result["category_counts"],
-                "scheduling": result["scheduling"],
-            },
-        )
-        click.echo(json.dumps(result, separators=(",", ":"), sort_keys=True))
+        completed_metadata = {
+            "mode": result["mode"],
+            "dry_run": result["dry_run"],
+            "retention_days": result["retention_days"],
+            "batch_limit": result["batch_limit"],
+            "category_counts": result["category_counts"],
+            "scheduling": result["scheduling"],
+        }
+        if confirm:
+            try:
+                audit_system_event_required(
+                    "retention_cleanup",
+                    "completed",
+                    metadata=completed_metadata,
+                )
+            except AuditWriteError as exc:
+                raise click.ClickException(
+                    "Retention cleanup completed with started audit evidence, "
+                    "but completion evidence failed"
+                ) from exc
+        else:
+            audit_system_event(
+                "retention_cleanup",
+                "dry_run",
+                metadata=completed_metadata,
+            )
+        return result
 
     @app.cli.command("rewrap-mfa-deks")
     @click.option("--from-kek-id", required=True, help="Existing KEK id wrapping the target DEKs.")
@@ -442,6 +624,119 @@ def _users_with_mfa_secret() -> list[User]:
             .order_by(User.id.asc())
         ).scalars()
     )
+
+
+def _validate_demo_reset_preflight(
+    app: Flask,
+    *,
+    target: str,
+    execute: bool,
+    confirm: str | None,
+    disposable_data_confirmed: bool,
+    staging_verified: bool,
+    approved: bool,
+    backup_file: Path | None,
+) -> None:
+    configured_target = str(
+        app.config.get("DEPLOYMENT_TARGET") or ""
+    ).strip().casefold()
+    if configured_target != target:
+        raise click.ClickException(
+            "Reset target does not match DEPLOYMENT_TARGET"
+        )
+    if not app.config.get("SQLALCHEMY_MIGRATION_DATABASE_URI"):
+        raise click.ClickException(
+            "DATABASE_MIGRATION_URL or DATABASE_MIGRATION_URL_FILE is required"
+        )
+    if not disposable_data_confirmed:
+        raise click.ClickException(
+            "Refusing reset without --disposable-data-confirmed"
+        )
+    if not execute:
+        return
+
+    expected_confirmation = f"RESET {target.upper()} DEMO DATABASE"
+    if not hmac.compare_digest(str(confirm or ""), expected_confirmation):
+        raise click.ClickException(
+            f"Confirmation must exactly match: {expected_confirmation}"
+        )
+    if target == "staging":
+        return
+    if not staging_verified:
+        raise click.ClickException(
+            "Production reset requires --staging-verified"
+        )
+    if not approved:
+        raise click.ClickException("Production reset requires --approved")
+    _validate_fresh_encrypted_backup(backup_file)
+
+
+def _validate_fresh_encrypted_backup(backup_file: Path | None) -> None:
+    if backup_file is None:
+        raise click.ClickException(
+            "Production reset requires --backup-file"
+        )
+    if backup_file.is_symlink() or not backup_file.is_file():
+        raise click.ClickException(
+            "Production backup must be a regular non-symlink file"
+        )
+    resolved_backup = backup_file.resolve(strict=True)
+    workspace_roots = [Path.cwd().resolve()]
+    workspace_roots.extend(
+        Path(value).resolve()
+        for name in ("GITHUB_WORKSPACE", "RUNNER_WORKSPACE")
+        if (value := os.environ.get(name))
+    )
+    if any(resolved_backup.is_relative_to(root) for root in workspace_roots):
+        raise click.ClickException(
+            "Production backup must not be stored inside a repository or CI workspace"
+        )
+    if not backup_file.name.endswith(".pgdump.age"):
+        raise click.ClickException(
+            "Production backup must be an encrypted .pgdump.age file"
+        )
+    if "production" not in backup_file.name.casefold():
+        raise click.ClickException(
+            "Production backup filename must identify the production target"
+        )
+    file_stat = backup_file.stat()
+    if file_stat.st_size <= 0:
+        raise click.ClickException("Production backup must not be empty")
+    if os.name == "posix" and stat_module.S_IMODE(file_stat.st_mode) & 0o077:
+        raise click.ClickException(
+            "Production backup must not grant group or other permissions"
+        )
+    age_seconds = datetime.now(timezone.utc).timestamp() - file_stat.st_mtime
+    if age_seconds < 0 or age_seconds > 24 * 60 * 60:
+        raise click.ClickException(
+            "Production backup must have been created within the last 24 hours"
+        )
+
+
+def _malformed_account_number_count(engine) -> int:
+    users = table("users", column("account_number"))
+    payees = table("payees", column("account_number"))
+
+    def format_is_current(column):
+        return and_(
+            func.length(column) == 12,
+            *[
+                func.substr(column, position, 1).between("0", "9")
+                for position in range(1, 13)
+            ],
+        )
+
+    malformed_users = select(func.count()).select_from(users).where(
+        users.c.account_number.is_not(None),
+        ~format_is_current(users.c.account_number),
+    )
+    malformed_payees = select(func.count()).select_from(payees).where(
+        ~format_is_current(payees.c.account_number),
+    )
+    with engine.connect() as connection:
+        user_count = int(connection.execute(malformed_users).scalar_one() or 0)
+        payee_count = int(connection.execute(malformed_payees).scalar_one() or 0)
+    return user_count + payee_count
 
 
 def _validate_mfa_rewrap_preflight(

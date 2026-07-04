@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.auth import decorators, webauthn_services
+from app.auth import decorators
 from app.auth.services import AuthError
 from app.security import email, turnstile
 
@@ -174,69 +174,3 @@ def test_auth_decorators_enforce_each_boundary(app, monkeypatch):
         assert decorators.not_frozen_required(view)()[1] == 403
         g.current_user = user
         assert decorators.not_frozen_required(view)() == "allowed"
-
-
-def test_webauthn_legacy_helpers_and_disabled_operations(app, monkeypatch):
-    user = SimpleNamespace(id=None)
-    assert webauthn_services.webauthn_credential_count(user) == 0
-    assert webauthn_services.has_webauthn_credentials(user) is False
-    assert webauthn_services.has_full_webauthn_access(user) is False
-    assert webauthn_services.webauthn_required_for_user(user) is False
-    assert webauthn_services.current_webauthn_credential_reference() is None
-    assert webauthn_services.list_credentials_for_user(user) == []
-    assert webauthn_services._step_up_token_cache_key("fake") == (
-        webauthn_services.STEP_UP_TOKEN_PREFIX + "fake"
-    )
-    encoded = webauthn_services.bytes_to_base64url(b"credential")
-    assert webauthn_services.base64url_to_bytes(encoded) == b"credential"
-    with pytest.raises(AuthError, match="Invalid credential reference"):
-        webauthn_services.base64url_to_bytes("\N{SNOWMAN}")
-
-    audits = []
-    monkeypatch.setattr(
-        webauthn_services,
-        "audit_event",
-        lambda *args, **kwargs: audits.append((args, kwargs)),
-    )
-    calls = [
-        lambda: webauthn_services.begin_registration_options(user, "label"),
-        lambda: webauthn_services.verify_registration(user, {}),
-        webauthn_services.begin_authentication_options,
-        lambda: webauthn_services.verify_authentication({}),
-        lambda: webauthn_services.begin_step_up_options(user, "transfer"),
-        lambda: webauthn_services.verify_step_up(user, "transfer", {}),
-        lambda: webauthn_services.begin_password_reset_options(user, "transaction"),
-        lambda: webauthn_services.verify_password_reset_assertion(user, "transaction", {}),
-        lambda: webauthn_services.consume_step_up_token(user, "transfer", None),
-        lambda: webauthn_services.revoke_credential(
-            user,
-            "credential",
-            stepup_token="fake",
-            stepup_already_consumed=True,
-        ),
-        lambda: webauthn_services.stage_transaction_security_key_context(user, {}),
-        lambda: webauthn_services.begin_transaction_security_key_challenge(user, "reference"),
-        lambda: webauthn_services.verify_transaction_security_key_challenge(user, {}),
-    ]
-    for call in calls:
-        with pytest.raises(AuthError) as exc:
-            call()
-        assert exc.value.status_code == 410
-    assert len(audits) == len(calls)
-
-    now = datetime(2026, 1, 2, tzinfo=timezone.utc)
-    item = SimpleNamespace(
-        id=4,
-        credential_id=b"credential",
-        label="Legacy",
-        aaguid="fake-aaguid",
-        attestation_format="packed",
-        credential_kind="passkey",
-        created_at=now,
-        last_used_at=None,
-    )
-    public = webauthn_services._public_legacy_credential(item)
-    assert public["active"] is False
-    assert public["decommissioned"] is True
-    assert public["created_at"] == "2026-01-02T00:00:00+00:00"
-    assert public["last_used_at"] is None
