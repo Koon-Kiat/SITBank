@@ -666,9 +666,15 @@ manual-recovery evidence, staff invites, security audit events, investigation
 holds, or encrypted backup archives.
 
 The command writes a sanitized system audit event with mode, retention days,
-batch limit, scheduling status, and category counts only. Full personal-data
-retention/disposal scheduling and encrypted-backup archive pruning remain
-tracked as governance/operator work, not hidden application behavior.
+batch limit, scheduling status, and category counts only. The legacy
+`cleanup-security-state` entry point now routes through the same dry-run and
+confirmation boundary. Weekly `sitbank-retention-review@staging.timer` and
+`sitbank-retention-review@production.timer` runs are dry-run reports only;
+operators review the aggregate report and separately authorize any confirmed
+cleanup. Record the reviewer, approval, report timestamp, target, and bounded
+categories in the external change record before running `--confirm`; command
+output remains aggregate-only. Full personal-data disposal and encrypted-backup archive pruning
+remain governance/operator work, not hidden application behavior.
 
 ## Audit Operations
 
@@ -703,11 +709,13 @@ python -m flask --app wsgi:app verify-audit-log-chain
 python -m flask --app wsgi:app verify-audit-log-chain --anchor /var/lib/sitbank/security-audit.anchor
 ```
 
-Export a sanitized anchor at least daily and after security-sensitive releases:
+Refresh the sanitized anchor manually, or through the daily target-aware
+systemd timer, after security-sensitive releases:
 
 ```bash
-python -m flask --app wsgi:app export-audit-log-anchor
-python -m flask --app wsgi:app export-audit-log-anchor --output /var/lib/sitbank/security-audit.anchor
+python -m flask --app wsgi:app refresh-audit-log-anchor
+sudo sitbank-container-runtime staging refresh-audit-log-anchor
+sudo sitbank-container-runtime production refresh-audit-log-anchor
 ```
 
 Operators are responsible for moving anchor JSON to immutable storage, WORM
@@ -730,8 +738,14 @@ anchored event hash changes, missing anchored rows, current chain behind the
 anchor, chain rewind, row tampering, tail deletion, missing hashes after the
 chain starts, and unsupported hash algorithms remain critical.
 
-Do not blindly refresh anchors. When `anchor_status=stale` and the chain is
-valid, refresh only after preserving evidence:
+Do not blindly refresh anchors. `refresh-audit-log-anchor` and
+`sitbank-audit-anchor-refresh@{staging,production}.timer` refuse malformed,
+mismatched, missing, permission-unsafe, or invalid-chain state. They accept
+only an exactly validated anchor or an append-only stale anchor whose anchored
+event still verifies. `check-security-alerts` never rotates an anchor. When
+`anchor_status=stale` and the chain is valid, preserve evidence as follows.
+This is the required evidence-preserving workflow:
+When preserving evidence, record only the sanitized fields listed below.
 
 1. Preserve the current verification output and anchor metadata in root-only
    evidence storage. Record the command, timestamp, environment, `anchor_event_id`,
@@ -740,8 +754,7 @@ valid, refresh only after preserving evidence:
 2. Run
    `python -m flask --app wsgi:app verify-audit-log-chain --anchor /var/lib/sitbank/security-audit.anchor`
    and confirm `valid=true`, `anchor_stale=true`, and `anchor_refresh_required=true`.
-3. Export the refreshed sanitized anchor with
-   `python -m flask --app wsgi:app export-audit-log-anchor --output /var/lib/sitbank/security-audit.anchor`.
+3. Run `python -m flask --app wsgi:app refresh-audit-log-anchor`.
 4. Rerun
    `python -m flask --app wsgi:app check-security-alerts --report-only --no-delivery`
    and restart or resume the alert timer only after `alert_count=0` or after all
@@ -782,7 +795,14 @@ under the current database state. If so, a fresh authenticator code is required
 before funds move.
 
 Completed Local Transfer and PayUp rows store an HMAC-SHA256 transaction hash
-over canonical transaction fields. Required audit writes are part of the same
+under the dedicated `TRANSACTION_LEDGER_HMAC_KEYS_JSON` key id and explicit
+integrity version. The canonical payload covers transaction reference, sender,
+recipient, payee id, amount, customer reference, status, transfer type, and
+creation time. Rows without integrity metadata remain explicitly legacy and
+use compatibility verification; they are not represented as current keyed
+ledger assurance. Legacy session-keyed rows verify only while their historical
+session HMAC key remains configured; migration-generated SHA-256 rows retain
+their explicit lower-assurance compatibility check. Required audit writes are part of the same
 business transaction boundary; if a required success audit fails, ledger
 mutation rolls back. Customer-initiated account freezes send a security email
 and produce an immediate `account_freeze` alert. Blocked authorization
@@ -846,6 +866,15 @@ anchor. Valid append-only drift after the last exported anchor is reported as
 `anchor_stale`/`anchor_refresh_required` and should be refreshed with the
 evidence-preserving workflow above rather than delivered as a critical webhook
 alert.
+
+After an approved intentional database reset, use
+`sitbank-container-runtime <target> rebaseline-security-alert-state
+--intentional-reset --reason "<change record>"`. The command refuses missing
+acknowledgement/reason, an invalid audit chain, or a critical/mismatched
+anchor; it backs up the previous state, writes the protected-table snapshot
+atomically with owner-only mode, and audits only a keyed reason reference and
+bounded metadata. Never delete or hand-edit the state JSON to clear an
+unexplained regression.
 
 Admin/root users may review the same safe report in the private admin runtime
 with `GET /alerts`. That browser review is read-only and must not send alerts.

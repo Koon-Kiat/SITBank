@@ -22,7 +22,7 @@ from app.banking.services import (
 )
 from app.extensions import db
 from app.models import Payee, PendingTransfer, SecurityAuditEvent, Transaction, User
-from app.security.audit import AuditWriteError
+from app.security.audit import AuditWriteError, audit_reference
 from app.security.passwords import hash_password
 
 
@@ -513,7 +513,11 @@ def test_raw_reference_not_in_success_audit_metadata(app, sec_ctx):
     token = _make_pending_transfer(alice, payee, Decimal("10.00"), reference=secret_ref)
 
     with app.test_request_context("/banking/transfer/confirm", method="POST"):
-        execute_local_transfer(sender=alice, payee=payee, confirmation_token=token)
+        execute_local_transfer(
+            sender=alice,
+            payee=payee,
+            confirmation_token=token,
+        )
 
     event = db.session.execute(
         db.select(SecurityAuditEvent).where(
@@ -533,7 +537,11 @@ def test_success_audit_metadata_contains_safe_reference_fields(app, sec_ctx):
     token = _make_pending_transfer(alice, payee, Decimal("10.00"), reference="Rent")
 
     with app.test_request_context("/banking/transfer/confirm", method="POST"):
-        execute_local_transfer(sender=alice, payee=payee, confirmation_token=token)
+        txn_ref = execute_local_transfer(
+            sender=alice,
+            payee=payee,
+            confirmation_token=token,
+        )
 
     event = db.session.execute(
         db.select(SecurityAuditEvent).where(
@@ -550,6 +558,14 @@ def test_success_audit_metadata_contains_safe_reference_fields(app, sec_ctx):
     assert meta["amount_band"] == "under_100"
     assert meta["reference_present"] is True
     assert meta["reference_length"] == len("Rent")
+    assert meta["transaction_ref"] == audit_reference(
+        "transaction_reference",
+        txn_ref,
+    )
+    assert meta["payee_account_ref"] == audit_reference(
+        "payee_account",
+        payee.account_number,
+    )
 
 
 def test_amount_audit_band_uses_coarse_ranges():
@@ -672,6 +688,10 @@ def test_transaction_hash_is_stored_on_success(app, sec_ctx):
     txn = Transaction.query.filter_by(transaction_ref=txn_ref).one()
     assert txn.transaction_hash, "transaction_hash must be set"
     assert len(txn.transaction_hash) == 64, "HMAC-SHA256 hex digest is 64 characters"
+    assert txn.transaction_type == "local_transfer"
+    assert txn.transaction_integrity_key_id
+    assert txn.transaction_integrity_algorithm == "hmac-sha256"
+    assert txn.transaction_integrity_version == 1
     assert transaction_hash_matches(txn)
 
 

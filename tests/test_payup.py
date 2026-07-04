@@ -18,6 +18,7 @@ from app.banking.services import (
     payup_requires_step_up,
     payup_transfer_token_verifier,
     sgt_day_start_utc,
+    transaction_hash_matches,
 )
 from app.extensions import db
 from app.models import PayupPendingTransfer, SecurityAuditEvent, Transaction, User
@@ -202,6 +203,10 @@ def test_execute_payup_transfer_debits_sender_and_credits_recipient(app, payup_c
     assert txn.status == "completed"
     assert txn.transaction_type == "payup"
     assert txn.payee_id is None
+    assert txn.transaction_integrity_key_id
+    assert txn.transaction_integrity_algorithm == "hmac-sha256"
+    assert txn.transaction_integrity_version == 1
+    assert transaction_hash_matches(txn)
 
 
 def test_execute_payup_transfer_self_transfer_blocked(app, payup_context):

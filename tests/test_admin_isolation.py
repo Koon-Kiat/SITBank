@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import time
 from datetime import timedelta
 
 from app.extensions import db
@@ -244,3 +245,38 @@ def test_admin_logout_requires_valid_csrf_token(monkeypatch):
 
         db.session.remove()
         db.drop_all()
+
+
+def test_admin_login_and_pending_mfa_expiry_never_resolve_customer_routes(monkeypatch):
+    from app import create_app
+
+    admin_app = create_app(TestConfig, app_mode="admin")
+    with admin_app.app_context():
+        db.create_all()
+        client = admin_app.test_client()
+
+        login_page = client.get("/login")
+        with client.session_transaction() as session_state:
+            session_state["pending_mfa_user_id"] = 999
+            session_state["password_authenticated_at"] = int(time.time()) - 120
+            session_state["last_activity_at"] = int(time.time())
+        expired = client.get("/mfa/verify", headers={"Accept": "text/html"})
+
+        assert login_page.status_code == 200
+        assert b"SITBank Admin" in login_page.data
+        assert expired.status_code == 302
+        assert expired.headers["Location"].endswith("/login")
+        assert "web.login" not in expired.headers["Location"]
+
+        db.session.remove()
+        db.drop_all()
+
+
+def test_admin_templates_do_not_reference_customer_blueprint_endpoints():
+    from pathlib import Path
+
+    admin_templates = Path("app/templates/admin")
+    for template_path in admin_templates.glob("*.html"):
+        source = template_path.read_text(encoding="utf-8")
+        assert "url_for('web." not in source
+        assert 'url_for("web.' not in source

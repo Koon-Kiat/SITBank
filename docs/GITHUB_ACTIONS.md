@@ -151,6 +151,7 @@ set these environment variables:
 - `<PREFIX>_EC2_DEPLOY_USER`
 - `<PREFIX>_PUBLIC_HOST`
 - `<PREFIX>_MFA_KEK_ACTIVE_ID`
+- `<PREFIX>_TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID`
 - `<PREFIX>_SESSION_HMAC_ACTIVE_KEY_ID`
 - `<PREFIX>_PASSWORD_PBKDF2_ITERATIONS`
 - `<PREFIX>_MFA_ISSUER_NAME`
@@ -243,6 +244,10 @@ tokens, JWTs, service tokens, cookies, session identifiers, CSRF values, and
 private-key blocks before printing handled errors.
 
 `<PREFIX>_MFA_KEK_ACTIVE_ID` must match a key identifier in the root-managed `/etc/sitbank*/secrets/mfa_kek_keys_json` file on EC2. Do not put `MFA_KEK_KEYS_JSON` in GitHub Actions; the KEK keyring is a long-lived secret and remains host-managed.
+`<PREFIX>_TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID` must match a key identifier
+in `/etc/sitbank*/secrets/transaction_ledger_hmac_keys_json`. Keep the
+transaction-ledger keyring host-managed and separate from session and audit
+HMAC material.
 `<PREFIX>_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID` must match a key identifier in
 `/etc/sitbank*/secrets/admin_session_hmac_keys_json`. Do not put admin Flask,
 CSRF, session-HMAC, session-lookup HMAC, password-pepper, or database secret values in GitHub

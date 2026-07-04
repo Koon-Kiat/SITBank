@@ -97,6 +97,12 @@ normalizations do not change CSRF, MFA/TOTP step-up, Flask-Limiter, durable
 backoff, Nginx `limit_req`, audit, alert, Tailscale, Cloudflare, or
 customer/admin isolation controls.
 
+Shared session and error helpers select login and error endpoints from
+`APP_MODE`. Admin browser templates and redirects must use only `admin.*`
+endpoints and `admin/error.html`; registering customer blueprints in the admin
+runtime is never an error-handling workaround. Static and runtime isolation
+tests reject customer endpoint references in admin templates and expiry paths.
+
 Fully authenticated customer sessions default to a 12-hour absolute lifetime,
 and admin sessions default to a 4-hour absolute lifetime. The `auth_created_at`
 timestamp is stored server-side and is not refreshed by ordinary activity,

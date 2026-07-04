@@ -133,6 +133,10 @@ linux_runtime_files=(
     "${repo_root}/ops/deploy/sitbank-container-bootstrap"
     "${repo_root}/ops/deploy/sitbank-container-deploy"
     "${repo_root}/ops/deploy/sitbank-container-runtime"
+    "${repo_root}/ops/systemd/sitbank-audit-anchor-refresh@.service"
+    "${repo_root}/ops/systemd/sitbank-audit-anchor-refresh@.timer"
+    "${repo_root}/ops/systemd/sitbank-retention-review@.service"
+    "${repo_root}/ops/systemd/sitbank-retention-review@.timer"
     "${repo_root}/ops/deploy/sitbank-database-cutover"
     "${repo_root}/ops/deploy/verify-certbot-host-state"
     "${repo_root}/ops/deploy/verify-cloudflare-origin-pull-ca"
@@ -324,6 +328,15 @@ fi
 install -o root -g root -m 0644 \
     "${repo_root}/${systemd_source}" \
     "/etc/systemd/system/${systemd_service}"
+for scheduled_unit in \
+    sitbank-audit-anchor-refresh@.service \
+    sitbank-audit-anchor-refresh@.timer \
+    sitbank-retention-review@.service \
+    sitbank-retention-review@.timer; do
+    install -o root -g root -m 0644 \
+        "${repo_root}/ops/systemd/${scheduled_unit}" \
+        "/etc/systemd/system/${scheduled_unit}"
+done
 if [[ "${target}" == "production" ]]; then
     install -o root -g root -m 0644 \
         "${repo_root}/ops/systemd/${alert_systemd_service}" \
@@ -608,6 +621,8 @@ fi
 visudo -cf /etc/sudoers.d/sitbank-container-deploy
 systemctl daemon-reload
 systemctl enable "${systemd_service}"
+systemctl enable --now "sitbank-audit-anchor-refresh@${target}.timer"
+systemctl enable --now "sitbank-retention-review@${target}.timer"
 if [[ "${target}" == "production" ]]; then
     systemctl enable --now "${alert_systemd_timer}"
 fi

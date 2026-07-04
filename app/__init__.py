@@ -161,7 +161,7 @@ def register_forced_password_change_guard(app: Flask) -> None:
                     "code": "password_change_required",
                 }
             ), 403
-        return render_template("error.html", message="Password change required", status_code=403), 403
+        return safe_error_response("Password change required", 403)
 
 
 def register_error_handlers(app: Flask) -> None:

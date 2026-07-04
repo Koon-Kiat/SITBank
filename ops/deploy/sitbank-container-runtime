@@ -7,11 +7,11 @@ if [[ "${EUID}" -ne 0 ]]; then
 fi
 
 target="production"
-if [[ "$#" -eq 2 ]]; then
-    target="${1:-}"
+if [[ "$#" -ge 2 && "${1:-}" =~ ^(staging|production)$ ]]; then
+    target="${1}"
     shift
-elif [[ "$#" -ne 1 ]]; then
-    echo "Usage: sitbank-container-runtime [staging|production] up|down" >&2
+elif [[ "$#" -lt 1 ]]; then
+    echo "Usage: sitbank-container-runtime [staging|production] command [options]" >&2
     exit 2
 fi
 
@@ -50,23 +50,47 @@ fi
 
 export SITBANK_IMAGE="${image}"
 
-case "${1:-}" in
+command="${1:-}"
+shift
+
+case "${command}" in
     up)
+        [[ "$#" -eq 0 ]] || exit 2
         exec docker compose --project-name "${COMPOSE_PROJECT}" \
             --file "${COMPOSE_FILE}" \
             up --detach --no-build --pull never --remove-orphans
         ;;
     down)
+        [[ "$#" -eq 0 ]] || exit 2
         exec docker compose --project-name "${COMPOSE_PROJECT}" \
             --file "${COMPOSE_FILE}" down --remove-orphans
         ;;
     check-security-alerts)
+        [[ "$#" -eq 0 ]] || exit 2
         exec docker compose --project-name "${COMPOSE_PROJECT}" \
             --file "${COMPOSE_FILE}" \
             exec -T app python -m flask --app wsgi:app check-security-alerts
         ;;
+    refresh-audit-log-anchor)
+        [[ "$#" -eq 0 ]] || exit 2
+        exec docker compose --project-name "${COMPOSE_PROJECT}" \
+            --file "${COMPOSE_FILE}" \
+            exec -T app python -m flask --app wsgi:app refresh-audit-log-anchor
+        ;;
+    retention-cleanup-report)
+        [[ "$#" -eq 0 ]] || exit 2
+        exec docker compose --project-name "${COMPOSE_PROJECT}" \
+            --file "${COMPOSE_FILE}" \
+            exec -T app python -m flask --app wsgi:app security run-retention-cleanup
+        ;;
+    rebaseline-security-alert-state)
+        exec docker compose --project-name "${COMPOSE_PROJECT}" \
+            --file "${COMPOSE_FILE}" \
+            exec -T app python -m flask --app wsgi:app \
+            rebaseline-security-alert-state "$@"
+        ;;
     *)
-        echo "Usage: sitbank-container-runtime [staging|production] up|down|check-security-alerts" >&2
+        echo "Unsupported SITBank container runtime command" >&2
         exit 2
         ;;
 esac
