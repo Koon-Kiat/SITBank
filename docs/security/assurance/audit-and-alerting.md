@@ -38,7 +38,7 @@ Representative event families include:
 | Password reset and manual recovery | `password_reset_requested`, `password_reset_token_exchanged`, `password_reset_mfa_failed`, `password_reset_completed`, `manual_recovery_requested`, `manual_recovery_admin_transition`, `manual_recovery_completed` | `app/auth/password_reset.py`, `app/admin/services.py` |
 | Session management | `session_terminate`, protected backend `session_revoke_others`, `session_integrity`, `session_expired`, `session_risk` | `app/auth/services.py`, `app/security/sessions.py` |
 | Account security | `password_change`, account detail updates, `account_freeze` | `app/auth/services.py` |
-| Admin and staff operations | `admin_dashboard_access`, `staff_invite_create`, `staff_invite_revoked`, `staff_invite_accept`, `staff_account_activated`, `staff_account_deactivated`, `staff_account_reactivated`, `staff_activation_reset`, `audit_log_view`, `security_alert_review`, `security_alert_delivery`, `admin_access_denied` | `app/admin/services.py`, `app/admin/routes.py` |
+| Admin and staff operations | `admin_dashboard_access`, `staff_invite_create`, `staff_invite_revoked`, `staff_invite_accept`, `staff_invite_accept_reset`, `staff_account_activated`, `staff_account_deactivated`, `staff_account_reactivated`, `staff_activation_reset`, `audit_log_view`, `security_alert_review`, `security_alert_delivery`, `admin_access_denied` | `app/admin/services.py`, `app/admin/routes.py` |
 | Banking and payees | `payee_lookup`, `payee_add`, `payee_remove`, transaction validation events | `app/banking/routes.py`, `app/banking/services.py` |
 | Operations | `mfa_dek_rewrap`, audit chain verification/export, alert checks | `app/ops/commands.py`, `app/security/audit.py`, `app/security/alerts.py` |
 
