@@ -36,30 +36,22 @@ Create root-owned local files before bootstrap:
 ```
 
 `observability.env` contains non-secret immutable image references and the
-private root URL only:
+approved private Grafana subpath URL:
 
 ```text
 GRAFANA_IMAGE=example.invalid/grafana@sha256:<reviewed-digest>
 LOKI_IMAGE=example.invalid/loki@sha256:<reviewed-digest>
 ALLOY_IMAGE=example.invalid/alloy@sha256:<reviewed-digest>
-GRAFANA_PRIVATE_ROOT_URL=https://grafana-sitbank.tailca101b.ts.net/
-GRAFANA_SERVE_FROM_SUB_PATH=false
-```
-
-Do not put passwords, tokens, API keys, webhook URLs, cookies, database URLs, or
-SMTP credentials in `observability.env`. Secret files must be `root:root` mode
-`0600`.
-
-For the reviewed Tailscale Serve path model, change only the non-secret
-Grafana URL settings before rerunning observability bootstrap:
-
-```text
 GRAFANA_PRIVATE_ROOT_URL=https://admin-sitbank.tailca101b.ts.net/grafana/
 GRAFANA_SERVE_FROM_SUB_PATH=true
 ```
 
-Keep `GRAFANA_SERVE_FROM_SUB_PATH=false` when Grafana is served at a private
-hostname root such as `https://grafana-sitbank.tailca101b.ts.net/`.
+Do not put passwords, tokens, API keys, webhook URLs, cookies, database URLs, or
+SMTP credentials in `observability.env`. Secret files must be `root:root` mode
+`0600`. The protected live verifier accepts only
+`https://admin-sitbank.tailca101b.ts.net/grafana/`; do not point it at an
+alternate hostname, root path, query string, custom port, or credential-bearing
+URL.
 
 Bootstrap also creates root-owned runtime state directories under
 `/var/lib/sitbank-observability`. Alloy keeps only its runtime state under
@@ -266,15 +258,16 @@ sudo tailscale serve status
 sudo /usr/local/sbin/verify-tailscale-admin-access --mode serve
 ```
 
-Then set `GRAFANA_PRIVATE_ROOT_URL` back to the reviewed private hostname root
-or temporary SSH-forwarding URL model, set `GRAFANA_SERVE_FROM_SUB_PATH=false`,
-and rerun observability bootstrap. Rollback must preserve the admin root Serve
+If rollback disables normal browser access, restore the reviewed `/grafana/`
+Serve path or use a separately approved temporary SSH-forwarding model for
+break-glass diagnostics. Do not point the protected live verifier at an
+alternate hostname or root path. Rollback must preserve the admin root Serve
 mapping, leave Funnel disabled, and avoid any public Nginx or firewall change.
 
-Alternative design: a separate private `grafana-sitbank.tailca101b.ts.net`
-Serve hostname avoids path-prefix behavior but requires separate hostname/tag
-and ACL review. Do not implement that alternative without a separate reviewed
-automation change.
+Alternative design: a separate private Grafana Serve hostname could avoid
+path-prefix behavior but would require separate hostname, tag, ACL, workflow,
+and verifier review. Do not implement that alternative without a separate
+reviewed automation change.
 
 ## Approved Log Sources
 

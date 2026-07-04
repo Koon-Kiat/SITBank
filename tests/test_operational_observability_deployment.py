@@ -13,7 +13,7 @@ import yaml
 
 OBS_ROOT = Path("ops/observability")
 VERIFIER_PATH = OBS_ROOT / "verify-private-observability"
-PRIVATE_GRAFANA_URL = "https://grafana-sitbank.tailca101b.ts.net"
+PRIVATE_GRAFANA_URL = "https://admin-sitbank.tailca101b.ts.net/grafana"
 FAKE_GRAFANA_TOKEN = "fake-grafana-health-token"
 
 
@@ -566,7 +566,7 @@ def test_private_observability_verifier_accepts_safe_mocked_live_state(tmp_path)
             )
         if url.endswith("/api/datasources/uid/sitbank-loki/health"):
             return _api_response(module, '{"status":"OK"}')
-        if "/grafana" in url or "/loki" in url:
+        if "/grafana" in url or "/loki" in url or "/metrics" in url:
             return module["CommandResult"](
                 0,
                 "HTTP/2 404\r\n\nSITBANK_HTTP_CODE:404\n",
@@ -576,6 +576,7 @@ def test_private_observability_verifier_accepts_safe_mocked_live_state(tmp_path)
     grafana_url = "https://admin-sitbank.tailca101b.ts.net/grafana"
     checks = [
         *module["verify_private_grafana"](fake_runner, grafana_url, token),
+        *module["verify_private_direct_denials"](fake_runner, grafana_url),
         *module["verify_public_denials"](
             fake_runner,
             ("https://sitbank.pp.ua/grafana", "https://staging-sitbank.pp.ua/loki"),
@@ -600,6 +601,7 @@ def test_private_observability_verifier_accepts_safe_mocked_live_state(tmp_path)
         "grafana_anonymous_disabled",
         "grafana_verifier_role_least_privilege",
         "loki_datasource_health",
+        "private_direct_observability_denial",
         "public_observability_denial",
     }
     assert token not in evidence_text
@@ -626,6 +628,10 @@ def test_private_observability_verifier_fails_closed_on_public_exposure_and_admi
         module["_validate_private_grafana_url"](
             "https://user:pass@grafana-sitbank.tailca101b.ts.net"
         )
+    with pytest.raises(module["VerificationError"], match="approved private"):
+        module["_validate_private_grafana_url"](
+            "https://grafana-sitbank.tailca101b.ts.net/grafana/"
+        )
     with pytest.raises(module["VerificationError"], match="private Tailscale"):
         module["_validate_public_probe_url"](
             "https://grafana-sitbank.tailca101b.ts.net/grafana"
@@ -647,7 +653,7 @@ def test_private_observability_verifier_fails_closed_on_public_exposure_and_admi
     with pytest.raises(module["VerificationError"], match="administrative privileges"):
         module["verify_private_grafana"](
             admin_runner,
-            "https://grafana-sitbank.tailca101b.ts.net",
+            PRIVATE_GRAFANA_URL,
             "token",
         )
 
@@ -669,12 +675,6 @@ def test_private_grafana_url_validation_accepts_only_private_tailscale_https():
 
     assert (
         module["_validate_private_grafana_url"](
-            "https://grafana-sitbank.tailca101b.ts.net/"
-        )
-        == "https://grafana-sitbank.tailca101b.ts.net"
-    )
-    assert (
-        module["_validate_private_grafana_url"](
             "https://admin-sitbank.tailca101b.ts.net/grafana/"
         )
         == "https://admin-sitbank.tailca101b.ts.net/grafana"
@@ -694,10 +694,17 @@ def test_private_grafana_url_validation_accepts_only_private_tailscale_https():
             "https://user:pass@grafana-sitbank.tailca101b.ts.net",
             "without credentials",
         ),
+        ("https://admin-sitbank.tailca101b.ts.net/grafana/?token=fake", "query"),
+        ("https://admin-sitbank.tailca101b.ts.net:443/grafana/", "custom ports"),
         ("https://www.sitbank.pp.ua", "public SITBank"),
         ("https://staging-sitbank.pp.ua", "public SITBank"),
         ("https://grafana.example.com", "Tailscale"),
-        ("https://admin-sitbank.tailca101b.ts.net/prometheus/", "empty or /grafana"),
+        (
+            "https://grafana-sitbank.tailca101b.ts.net/grafana/",
+            "approved private Grafana",
+        ),
+        ("https://admin-sitbank.tailca101b.ts.net/", "/grafana"),
+        ("https://admin-sitbank.tailca101b.ts.net/prometheus/", "/grafana"),
     )
     for url, message in invalid_urls:
         with pytest.raises(module["VerificationError"], match=message):
@@ -1029,6 +1036,43 @@ def test_verify_public_denials_accepts_closed_statuses_and_sanitizes_records():
     assert "location:" not in json.dumps(checks).casefold()
 
 
+def test_verify_private_direct_denials_keep_loki_and_metrics_unserved():
+    module = _load_verifier_module()
+    statuses = {
+        "https://admin-sitbank.tailca101b.ts.net/loki": "404",
+        "https://admin-sitbank.tailca101b.ts.net/metrics": "403",
+    }
+
+    def closed_runner(arguments):
+        return _status_headers(module, statuses[tuple(arguments)[-1]])
+
+    checks = module["verify_private_direct_denials"](closed_runner, PRIVATE_GRAFANA_URL)
+
+    assert checks == [
+        {
+            "name": "private_direct_observability_denial",
+            "result": "pass",
+            "target": "admin-sitbank.tailca101b.ts.net/loki",
+            "http_status": "404",
+        },
+        {
+            "name": "private_direct_observability_denial",
+            "result": "pass",
+            "target": "admin-sitbank.tailca101b.ts.net/metrics",
+            "http_status": "403",
+        },
+    ]
+
+    def exposed_runner(arguments):
+        url = tuple(arguments)[-1]
+        if url.endswith("/loki"):
+            return _status_headers(module, "404", "server: loki")
+        return _status_headers(module, "404")
+
+    with pytest.raises(module["VerificationError"], match="private direct observability"):
+        module["verify_private_direct_denials"](exposed_runner, PRIVATE_GRAFANA_URL)
+
+
 @pytest.mark.parametrize(
     ("status", "header", "message"),
     (
@@ -1086,7 +1130,7 @@ def test_write_evidence_creates_parent_and_retains_only_sanitized_fields(tmp_pat
     evidence_text = evidence_path.read_text(encoding="utf-8")
     evidence = json.loads(evidence_text)
     assert evidence["target_environment"] == "production"
-    assert evidence["private_grafana_host"] == "grafana-sitbank.tailca101b.ts.net"
+    assert evidence["private_grafana_host"] == "admin-sitbank.tailca101b.ts.net"
     assert evidence["checks"] == checks
     assert evidence["sanitization"] == {
         "access_assertions_retained": False,
@@ -1193,7 +1237,7 @@ def test_main_success_uses_env_and_writes_evidence_override(
     assert f"written to {evidence_path}" in captured.out
     assert captured.err == ""
     assert evidence["target_environment"] == "production"
-    assert evidence["private_grafana_host"] == "grafana-sitbank.tailca101b.ts.net"
+    assert evidence["private_grafana_host"] == "admin-sitbank.tailca101b.ts.net"
     assert {
         "grafana_host_loopback_login",
         "loki_host_loopback_ready",

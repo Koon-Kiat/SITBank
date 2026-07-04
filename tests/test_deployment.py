@@ -3218,9 +3218,12 @@ def test_private_observability_workflow_is_manual_protected_and_sanitized():
         ),
         "GRAFANA_HEALTH_TOKEN": "${{ secrets.GRAFANA_HEALTH_TOKEN }}",
     }
-    assert "GRAFANA_PRIVATE_URL must be a private https Tailscale URL" in workflow_text
-    assert "optionally ending in /grafana/" in workflow_text
-    assert "/grafana/?)?" in workflow_text
+    assert (
+        "GRAFANA_PRIVATE_URL must be the approved private https Tailscale "
+        "Grafana subpath URL"
+    ) in workflow_text
+    assert "https://admin-sitbank.tailca101b.ts.net/grafana/" in workflow_text
+    assert r"^https://admin-sitbank\.tailca101b\.ts\.net/grafana/?$" in workflow_text
     assert "responded before the protected runner joined the tailnet" in workflow_text
     assert "tag:github-ci-observability-verify" in workflow_text
     assert "ops/observability/verify-private-observability" in workflow_text
@@ -3262,6 +3265,7 @@ def test_private_observability_workflow_is_manual_protected_and_sanitized():
         "least-privilege",
         "explicit HTTP `200` status",
         "anonymous API denial",
+        "direct private `/loki` and `/metrics` denial",
         "public denial probes",
         "not a pull-request",
     ):

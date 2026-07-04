@@ -59,9 +59,11 @@ health token, and uploads only sanitized pass/fail evidence. Pull requests,
 forks, public TLS scans, and untrusted branches do not receive Tailscale or
 Grafana/Loki credentials. The verifier supports the approved `/grafana/`
 subpath and requires explicit HTTP `200` statuses plus schema validation for
-private Grafana user, datasource, and Loki datasource-health responses. Public
-denial probes fail closed when response headers or cookies identify Grafana or
-Loki exposure, even on non-`200` statuses.
+private Grafana user, datasource, and Loki datasource-health responses. Loki is
+checked only through Grafana's datasource API; direct private `/loki` and
+`/metrics` requests must remain denied. Public denial probes fail closed when
+response headers or cookies identify Grafana or Loki exposure, even on
+non-`200` statuses.
 
 Do not expose Grafana publicly through production, staging, customer, admin, or
 unknown-host Nginx routes. Do not proxy, iframe, embed, or link authenticated

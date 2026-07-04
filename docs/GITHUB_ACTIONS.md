@@ -337,8 +337,9 @@ or operator credential rotation. It is intentionally separate from PR-safe
 static tests and from public TLS evidence because Grafana is a private operator
 tool and Loki is not Internet-facing.
 
-Configure each protected environment with `GRAFANA_PRIVATE_URL`
-(for example, `https://admin-sitbank.tailca101b.ts.net/grafana/`),
+Configure each protected environment with `GRAFANA_PRIVATE_URL` set to the
+approved private subpath URL,
+`https://admin-sitbank.tailca101b.ts.net/grafana/`,
 optional `OBSERVABILITY_PUBLIC_PROBE_URLS`, `GRAFANA_HEALTH_TOKEN`,
 `TS_OAUTH_CLIENT_ID`, and `TS_OAUTH_SECRET`. The Tailscale OAuth client should
 be restricted to `tag:github-ci-observability-verify`, and the Grafana token
@@ -350,10 +351,11 @@ The workflow checks that private Grafana is unreachable before joining the
 tailnet, joins Tailscale, verifies Grafana API health with explicit HTTP `200`
 status, verifies anonymous API denial, verifies the non-admin verifier role,
 checks Loki datasource health through Grafana with explicit HTTP `200` status
-and schema validation, and runs public denial probes for `/grafana`, `/loki`,
-`/logs`, and `/metrics`. It fails closed when public responses include
-Grafana/Loki-identifying headers or cookies, uploads only sanitized JSON
-evidence for 30 days, and logs out of Tailscale at completion.
+and schema validation, verifies direct private `/loki` and `/metrics` denial
+on the Tailscale host, and runs public denial probes for `/grafana`, `/loki`,
+`/logs`, and `/metrics`. It fails closed when private or public responses
+include Grafana/Loki-identifying headers or cookies, uploads only sanitized
+JSON evidence for 30 days, and logs out of Tailscale at completion.
 
 ## Gitleaks
 

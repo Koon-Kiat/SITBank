@@ -44,7 +44,9 @@ OBSERVABILITY_HEADER_MARKERS = (
     "x-loki-",
 )
 PUBLIC_EXPOSURE_PATHS = ("/grafana", "/loki", "/logs", "/metrics")
-PRIVATE_GRAFANA_PATHS = ("", "/", "/grafana", "/grafana/")
+APPROVED_GRAFANA_HOST = "admin-sitbank.tailca101b.ts.net"
+APPROVED_GRAFANA_PATH = "/grafana"
+PRIVATE_DIRECT_EXPOSURE_PATHS = ("/loki", "/metrics")
 HOST_LOOPBACK_READINESS_TARGETS = (
     ("grafana_host_loopback_login", "http://127.0.0.1:3000/login"),
     ("loki_host_loopback_ready", "http://127.0.0.1:3100/ready"),
@@ -97,16 +99,35 @@ def _safe_url_label(url: str) -> str:
 
 def _validate_private_grafana_url(url: str) -> str:
     parsed = urlparse(url)
-    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
-        raise VerificationError("GRAFANA_PRIVATE_URL must be an https URL without credentials")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise VerificationError("GRAFANA_PRIVATE_URL must be an https URL") from exc
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or port is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise VerificationError(
+            "GRAFANA_PRIVATE_URL must be an https URL without credentials, "
+            "query strings, fragments, or custom ports"
+        )
     hostname = parsed.hostname.casefold()
     if hostname in {"sitbank.pp.ua", "www.sitbank.pp.ua", "staging-sitbank.pp.ua"}:
         raise VerificationError("GRAFANA_PRIVATE_URL must not be a public SITBank hostname")
     if not hostname.endswith(".ts.net"):
         raise VerificationError("GRAFANA_PRIVATE_URL must use a private Tailscale DNS hostname")
-    if (parsed.path or "") not in PRIVATE_GRAFANA_PATHS:
-        raise VerificationError("GRAFANA_PRIVATE_URL path must be empty or /grafana/")
-    return url.rstrip("/")
+    if hostname != APPROVED_GRAFANA_HOST:
+        raise VerificationError(
+            "GRAFANA_PRIVATE_URL must use the approved private Grafana Tailscale hostname"
+        )
+    if parsed.path not in {APPROVED_GRAFANA_PATH, f"{APPROVED_GRAFANA_PATH}/"}:
+        raise VerificationError("GRAFANA_PRIVATE_URL path must be /grafana/")
+    return f"https://{APPROVED_GRAFANA_HOST}{APPROVED_GRAFANA_PATH}"
 
 
 def _grafana_url(grafana_url: str, path: str) -> str:
@@ -126,8 +147,23 @@ def _split_curl_body_status(raw: str, description: str) -> tuple[str, str]:
 
 def _validate_public_probe_url(url: str) -> str:
     parsed = urlparse(url)
-    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
-        raise VerificationError("Public probe URLs must be https URLs without credentials")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise VerificationError("Public probe URLs must be https URLs") from exc
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or port is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise VerificationError(
+            "Public probe URLs must be https URLs without credentials, "
+            "query strings, fragments, or custom ports"
+        )
     if parsed.hostname.casefold().endswith(".ts.net"):
         raise VerificationError("Public probes must not target private Tailscale hostnames")
     path = parsed.path or "/"
@@ -357,6 +393,45 @@ def verify_public_denials(
     return checks
 
 
+def verify_private_direct_denials(
+    runner: Runner,
+    grafana_url: str,
+) -> list[dict[str, str]]:
+    parsed = urlparse(grafana_url)
+    hostname = parsed.hostname or APPROVED_GRAFANA_HOST
+    checks: list[dict[str, str]] = []
+    failures: list[str] = []
+    for path in PRIVATE_DIRECT_EXPOSURE_PATHS:
+        url = f"https://{hostname}{path}"
+        status, headers = _curl_status_headers(runner, url)
+        header_text = headers.casefold()
+        url_failures: list[str] = []
+        if (
+            status == "200"
+            or "location:" in header_text
+            and re.search(r"/(?:grafana|loki)(?:/|$)", header_text)
+            or any(marker in header_text for marker in OBSERVABILITY_HEADER_MARKERS)
+        ):
+            url_failures.append("private direct observability access evidence")
+            failures.append(
+                f"{_safe_url_label(url)} returned private direct observability access evidence"
+            )
+        if any(marker in header_text for marker in SECRET_MARKERS):
+            url_failures.append("sensitive observability headers")
+            failures.append(f"{_safe_url_label(url)} returned sensitive observability headers")
+        checks.append(
+            {
+                "name": "private_direct_observability_denial",
+                "result": "pass" if not url_failures else "fail",
+                "target": _safe_url_label(url),
+                "http_status": status,
+            }
+        )
+    if failures:
+        raise VerificationError("\n".join(failures))
+    return checks
+
+
 def _write_evidence(
     path: Path,
     *,
@@ -437,6 +512,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 else []
             ),
             *verify_private_grafana(run_command, grafana_url, token),
+            *verify_private_direct_denials(run_command, grafana_url),
             *verify_public_denials(run_command, public_urls),
         ]
         _write_evidence(
