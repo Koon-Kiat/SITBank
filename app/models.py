@@ -5,6 +5,8 @@ from decimal import Decimal
 
 from sqlalchemy import Index, func
 
+from app.banking.limits import PAYUP_DAILY_LIMIT_DEFAULT, PAYUP_DAILY_LIMIT_MAX, PAYUP_DAILY_LIMIT_MIN
+
 from .extensions import db
 
 _USER_ID_FOREIGN_KEY = "users.id"
@@ -49,8 +51,8 @@ class User(db.Model):
     payup_daily_limit = db.Column(
         db.Numeric(10, 2),
         nullable=False,
-        default=Decimal("500.00"),
-        server_default="500.00",
+        default=PAYUP_DAILY_LIMIT_DEFAULT,
+        server_default=str(PAYUP_DAILY_LIMIT_DEFAULT),
     )
 
     is_frozen = db.Column(db.Boolean, nullable=False, default=False)
@@ -98,6 +100,13 @@ class User(db.Model):
             name="ck_users_account_status",
         ),
         db.CheckConstraint("balance >= 0", name="ck_users_balance_non_negative"),
+        db.CheckConstraint(
+            (
+                f"payup_daily_limit >= {PAYUP_DAILY_LIMIT_MIN} "
+                f"AND payup_daily_limit <= {PAYUP_DAILY_LIMIT_MAX}"
+            ),
+            name="ck_users_payup_daily_limit_bounds",
+        ),
         db.CheckConstraint(
             (
                 "account_number IS NULL OR (length(account_number) = 12 AND "
@@ -462,6 +471,8 @@ class StaffInvite(db.Model):
     workplace_verification_sent_at = db.Column(db.DateTime(timezone=True), nullable=True)
     workplace_verification_expires_at = db.Column(db.DateTime(timezone=True), nullable=True)
     workplace_verified_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    acceptance_verify_count = db.Column(db.Integer, nullable=False, default=0, server_default="0")
+    acceptance_verify_locked_at = db.Column(db.DateTime(timezone=True), nullable=True)
 
     created_by = db.relationship("User", foreign_keys=[created_by_user_id], backref="created_staff_invites")
     setup_user = db.relationship("User", foreign_keys=[setup_user_id], backref="pending_staff_invites")

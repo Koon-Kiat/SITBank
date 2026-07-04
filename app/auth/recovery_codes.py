@@ -8,7 +8,6 @@ from app.models import RecoveryCode, User
 from app.security.audit import audit_event
 from app.security.email import send_security_email
 from app.security.session_hmac import active_hmac_hex
-from sqlalchemy import and_, or_
 
 
 RECOVERY_CODE_COUNT = 10
@@ -64,23 +63,14 @@ def consume_recovery_code(
     commit: bool = True,
 ) -> bool:
     bound_hmac = _recovery_code_hmac(user.id, purpose, code)
-    legacy_hmac = _legacy_recovery_code_hmac(code)
     statement = (
         db.select(RecoveryCode)
         .where(
             RecoveryCode.user_id == user.id,
             RecoveryCode.purpose == purpose,
             RecoveryCode.used_at.is_(None),
-            or_(
-                and_(
-                    RecoveryCode.hmac_version >= 2,
-                    RecoveryCode.code_hmac == bound_hmac,
-                ),
-                and_(
-                    RecoveryCode.hmac_version == 1,
-                    RecoveryCode.code_hmac == legacy_hmac,
-                ),
-            ),
+            RecoveryCode.hmac_version >= 2,
+            RecoveryCode.code_hmac == bound_hmac,
         )
     )
     if db.engine.dialect.name == "postgresql":
@@ -103,6 +93,7 @@ def unused_recovery_code_count(user: User, *, purpose: str = RECOVERY_CODE_PURPO
                 RecoveryCode.user_id == user.id,
                 RecoveryCode.purpose == purpose,
                 RecoveryCode.used_at.is_(None),
+                RecoveryCode.hmac_version >= 2,
             )
         ).scalar_one()
     )
@@ -131,10 +122,6 @@ def _recovery_code_hmac(user_id: int, purpose: str, code: str) -> str:
         ),
         length=64,
     )
-
-
-def _legacy_recovery_code_hmac(code: str) -> str:
-    return active_hmac_hex(f"recovery-code:{_normalize_recovery_code(code)}", length=64)
 
 
 def _new_recovery_code() -> str:

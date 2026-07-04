@@ -55,6 +55,8 @@ def test_production_reset_requires_staging_approval_and_fresh_encrypted_backup(
     backup = tmp_path / "sitbank-production-sitbank_db-20260704T010203Z.pgdump.age"
     backup.write_bytes(b"clearly-fake-encrypted-backup")
     backup.chmod(0o600)
+    fresh_timestamp = datetime.now(timezone.utc).timestamp()
+    os.utime(backup, (fresh_timestamp, fresh_timestamp))
 
     for overrides, expected in (
         ({"staging_verified": False}, "staging-verified"),

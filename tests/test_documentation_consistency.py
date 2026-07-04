@@ -54,10 +54,14 @@ def test_authentication_boundary_docs_cover_current_contracts():
         "docs/security/architecture/cryptography-and-authentication.md"
     ).read_text(encoding="utf-8")
     operations = Path("docs/OPERATIONS.md").read_text(encoding="utf-8")
+    auth_flat = " ".join(auth.split())
 
     assert "scanner-safe GET landing page" in auth
     assert "CSRF-protected POST" in auth
     assert "user-and-purpose-bound HMACs" in auth
+    assert "Legacy version 1 HMAC rows are not advertised" in auth_flat
+    assert "provider response `action` to exactly match" in auth_flat
+    assert "same-browser acceptance session binding" in auth_flat
     assert "Retired browser-credential reset URLs are not" in auth
     assert "registered and return `404`" in auth
     assert "canonicalized before OTP issuance" in operations
@@ -93,11 +97,15 @@ def test_payup_security_docs_match_current_banking_contract():
         "Invalid phone number",
         "daily limit stored on `users.payup_daily_limit`",
         "midnight Singapore time",
+        "presets are SGD 100, 500, 1000, 3000, 5000, and 10000",
+        "between SGD 100.00 and SGD 10000.00 with cents precision",
+        "`payup_lookup_failure`",
         "at least 80% of the limit",
         "The Local Transfer daily limit remains a documented placeholder",
         "keyed verifier",
         "HMAC-SHA256 transaction hash",
         "Migration `20260703_0022` adds PayUp support",
+        "Migration `20260704_0027` hardens PayUp daily-limit bounds",
         "`payup_pending_transfers`",
         "`transactions.transaction_type`",
         "Migration `20260703_0024` enforces exactly 12 decimal digits",
@@ -109,6 +117,7 @@ def test_payup_security_docs_match_current_banking_contract():
         "PayUp lookup reveals recipient name before MFA",
         "PayUp lookup does not require MFA",
         "Local Transfer daily limit is enforced",
+        "greater than SGD 100",
     )
     for stale in stale_phrases:
         assert stale not in docs
@@ -169,3 +178,55 @@ def test_feature_security_checklist_is_indexed_and_avoids_external_overclaims():
         "SonarQube gate is passing",
     ):
         assert forbidden not in checklist
+
+
+def test_rate_limit_layering_docs_match_current_controls():
+    access_control = Path("docs/security/architecture/access-control.md").read_text(
+        encoding="utf-8"
+    )
+    access_control = " ".join(access_control.split())
+
+    for required in (
+        "Layered Rate-Limit Policy",
+        "Cloudflare WAF/rate-limit provider evidence",
+        "`sitbank_prod_auth`",
+        "`sitbank_staging_login`",
+        "`payee_lookup_failure`",
+        "`payup_lookup_failure`",
+        "Staging and production Nginx rate-limit files intentionally differ",
+        "Repository tests do not claim live Cloudflare",
+    ):
+        assert required in access_control
+
+
+def test_transaction_ledger_hmac_key_docs_keep_keyring_on_ec2():
+    docs = "\n".join(
+        Path(path).read_text(encoding="utf-8")
+        for path in (
+            "docs/GITHUB_ACTIONS.md",
+            "docs/OPERATIONS.md",
+        )
+    )
+    docs = " ".join(docs.split())
+
+    for required in (
+        "STAGING_TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID",
+        "PROD_TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID",
+        "/etc/sitbank-staging/secrets/transaction_ledger_hmac_keys_json",
+        "/etc/sitbank/secrets/transaction_ledger_hmac_keys_json",
+        "/run/secrets/transaction_ledger_hmac_keys_json",
+        "starting with staging",
+        "staging has passed deployment and transaction-integrity verification",
+        "prints only key ids and decoded byte lengths",
+        "never key material",
+        "Do not paste, screenshot, commit, upload, or log key material",
+        "Do not configure",
+        "deployment adopts the existing EC2 secret file",
+        "all key values decode to exactly 32 bytes",
+        "does not generate, upload, replace, print, or bundle the keyring",
+        "retain old key ids while rows signed by them remain in the database",
+    ):
+        assert required in docs
+    assert "`STAGING_TRANSACTION_LEDGER_HMAC_KEYS_JSON`" in docs
+    assert "`PROD_TRANSACTION_LEDGER_HMAC_KEYS_JSON`" in docs
+    assert "Safe output looks like `2026-07-ledger-01: 32 bytes`" in docs
