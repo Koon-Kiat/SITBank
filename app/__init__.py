@@ -203,6 +203,17 @@ def register_error_handlers(app: Flask) -> None:
             json.dumps(
                 {
                     "message": "system_error",
+                    "event": "system_error",
+                    "environment": app.config.get("APP_ENV") or "unknown",
+                    "service": (
+                        "sitbank-admin"
+                        if app.config.get("APP_MODE") == "admin"
+                        else "sitbank-app"
+                    ),
+                    "result": "failure",
+                    "reason": type(original_error).__name__,
+                    "route": request.path,
+                    "status": 500,
                     "correlation_id": getattr(g, "correlation_id", ""),
                     "path": request.path,
                     "method": request.method,

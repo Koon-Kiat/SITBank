@@ -58,6 +58,12 @@ def test_structured_audit_log_output_is_sanitized(app, caplog):
 
     assert payload["path"] == "/audit/hygiene"
     assert payload["method"] == "POST"
+    assert payload["event"] == "audit_hygiene"
+    assert payload["environment"]
+    assert payload["service"] == "sitbank-app"
+    assert payload["result"] == "success"
+    assert payload["route"] == "/audit/hygiene"
+    assert payload["status"] == "recorded"
     assert payload["session_ref"] != raw_session_id
     assert len(payload["session_ref"]) == 16
     assert payload["hash_algorithm"] == "hmac-sha256-v1"
@@ -104,6 +110,12 @@ def test_audit_write_failure_warning_is_sanitized(app, caplog, monkeypatch):
     payload = log_payloads(caplog, "security_audit_write_failed")[-1]
 
     assert payload["event_type"] == "audit_failure"
+    assert payload["event"] == "security_audit_write_failed"
+    assert payload["target_event"] == "audit_failure"
+    assert payload["result"] == "failure"
+    assert payload["route"] == "/audit/fail"
+    assert payload["status"] == "audit_write_failed"
+    assert payload["service"] == "sitbank-app"
     assert payload["error_type"] == "RuntimeError"
     assert payload["metadata"]["password"] == "[redacted]"
     assert payload["metadata"]["token"] == "[redacted]"
@@ -135,6 +147,10 @@ def test_required_audit_write_failure_raises_and_logs_sanitized_warning(app, cap
     payload = log_payloads(caplog, "security_audit_write_failed")[-1]
 
     assert payload["event_type"] == "banking_transaction_authorization"
+    assert payload["event"] == "security_audit_write_failed"
+    assert payload["target_event"] == "banking_transaction_authorization"
+    assert payload["result"] == "failure"
+    assert payload["status"] == "audit_write_failed"
     assert payload["metadata"]["authorization"] == "[redacted]"
     assert "database password leaked" not in logs
     assert "token-secret" not in logs
@@ -808,7 +824,14 @@ def test_security_alert_evaluator_cli_and_output_are_sanitized(app):
         assert forbidden not in serialized_alerts
         assert forbidden not in report_only.output
     assert report_only.exit_code == 0, report_only.output
-    assert json.loads(report_only.output)["alert_count"] >= len(alert_types)
+    report_payload = json.loads(report_only.output)
+    assert report_payload["alert_count"] >= len(alert_types)
+    assert report_payload["event"] == "security_alert_report"
+    assert report_payload["service"] == "sitbank-security-alerts"
+    assert report_payload["result"] == "active_alerts"
+    assert report_payload["audit_chain_error_count"] == 0
+    assert "database_integrity_security_audit_events_count" in report_payload
+    assert "database_integrity_users_max_id" in report_payload
     assert strict.exit_code != 0
 
 def test_security_alert_webhook_delivery_is_sanitized(monkeypatch):
@@ -1200,6 +1223,12 @@ def test_500_handler_logs_sanitized_context(mutable_app, caplog):
     assert response.status_code == 500
     assert payload["path"] == "/explode"
     assert payload["method"] == "POST"
+    assert payload["event"] == "system_error"
+    assert payload["service"] == "sitbank-app"
+    assert payload["result"] == "failure"
+    assert payload["reason"] == "RuntimeError"
+    assert payload["route"] == "/explode"
+    assert payload["status"] == 500
     assert payload["exception_type"] == "RuntimeError"
     assert payload["correlation_id"]
     for forbidden in (

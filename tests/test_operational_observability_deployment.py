@@ -157,11 +157,13 @@ def test_private_grafana_loki_alloy_deployment_files_exist_and_are_private():
     compose = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
     services = compose["services"]
 
-    assert set(services) == {"grafana", "loki", "alloy"}
+    assert set(services) == {"grafana", "loki", "alloy", "prometheus", "node-exporter"}
     alloy = services["alloy"]
     assert services["grafana"]["ports"] == ["127.0.0.1:3000:3000"]
     assert services["loki"]["ports"] == ["127.0.0.1:3100:3100"]
     assert "ports" not in alloy
+    assert "ports" not in services["prometheus"]
+    assert "ports" not in services["node-exporter"]
     assert alloy["command"] == [
         "run",
         "--server.http.listen-addr=127.0.0.1:12345",
@@ -175,6 +177,8 @@ def test_private_grafana_loki_alloy_deployment_files_exist_and_are_private():
     assert services["grafana"]["networks"] == ["host-loopback", "observability"]
     assert services["loki"]["networks"] == ["host-loopback", "observability"]
     assert alloy["networks"] == ["observability"]
+    assert services["prometheus"]["networks"] == ["observability"]
+    assert services["node-exporter"]["networks"] == ["observability"]
     assert compose["networks"]["host-loopback"] == {
         "name": "sitbank-observability-loopback",
         "driver": "bridge",
@@ -209,6 +213,7 @@ def test_private_grafana_loki_alloy_deployment_files_exist_and_are_private():
     assert grafana["environment"]["GF_SECURITY_ADMIN_PASSWORD__FILE"] == (
         "/run/secrets/grafana_admin_password"
     )
+    assert "prometheus" in grafana["depends_on"]
     assert compose["secrets"]["grafana_admin_user"]["file"] == (
         "/etc/sitbank-observability/secrets/grafana_admin_user"
     )
@@ -240,6 +245,23 @@ def test_private_grafana_loki_alloy_deployment_files_exist_and_are_private():
         "read_only": True,
         "bind": {"create_host_path": False},
     }
+    prometheus = services["prometheus"]
+    assert prometheus["environment"]["OBSERVABILITY_ENVIRONMENT"] == (
+        "${OBSERVABILITY_ENVIRONMENT:?OBSERVABILITY_ENVIRONMENT must be staging or production}"
+    )
+    assert "--config.expand-env" in prometheus["command"]
+    assert "--storage.tsdb.retention.time=168h" in prometheus["command"]
+    assert prometheus["depends_on"] == ["node-exporter"]
+    assert "password" not in json.dumps(prometheus).casefold()
+    assert "token" not in json.dumps(prometheus).casefold()
+
+    node_exporter = services["node-exporter"]
+    assert node_exporter["pid"] == "host"
+    assert "--path.procfs=/host/proc" in node_exporter["command"]
+    assert "--path.sysfs=/host/sys" in node_exporter["command"]
+    assert "--path.rootfs=/host/root" in node_exporter["command"]
+    assert all(volume["read_only"] is True for volume in node_exporter["volumes"])
+    assert "docker.sock" not in json.dumps(node_exporter)
 
 
 def test_loki_retention_and_grafana_datasource_are_configured_without_credentials():
@@ -253,14 +275,12 @@ def test_loki_retention_and_grafana_datasource_are_configured_without_credential
             / "loki.yml"
         ).read_text(encoding="utf-8")
     )
-    dashboard = json.loads(
-        (
-            OBS_ROOT
-            / "grafana"
-            / "dashboards"
-            / "sitbank-operational-overview.json"
-        ).read_text(encoding="utf-8")
-    )
+    dashboard_dir = OBS_ROOT / "grafana" / "dashboards"
+    dashboards = {
+        path.name: json.loads(path.read_text(encoding="utf-8"))
+        for path in dashboard_dir.glob("*.json")
+    }
+    dashboard = dashboards["sitbank-operational-overview.json"]
 
     assert loki["compactor"]["retention_enabled"] is True
     assert loki["limits_config"]["retention_period"] == "168h"
@@ -271,8 +291,24 @@ def test_loki_retention_and_grafana_datasource_are_configured_without_credential
     assert loki_datasource["type"] == "loki"
     assert loki_datasource["url"] == "http://loki:3100"
     assert loki_datasource["access"] == "proxy"
-    assert "password" not in str(loki_datasource).casefold()
-    assert "token" not in str(loki_datasource).casefold()
+    prometheus_datasource = datasource["datasources"][1]
+    assert prometheus_datasource["type"] == "prometheus"
+    assert prometheus_datasource["uid"] == "sitbank-prometheus"
+    assert prometheus_datasource["url"] == "http://prometheus:9090"
+    assert "password" not in str(datasource).casefold()
+    assert "token" not in str(datasource).casefold()
+    assert set(dashboards) == {
+        "sitbank-operational-overview.json",
+        "sitbank-security-operations.json",
+        "sitbank-http-health.json",
+        "sitbank-infrastructure-deployment-health.json",
+    }
+    assert {item["uid"] for item in dashboards.values()} == {
+        "sitbank-operational-overview",
+        "sitbank-security-operations",
+        "sitbank-http-health",
+        "sitbank-infrastructure-deployment-health",
+    }
     assert dashboard["uid"] == "sitbank-operational-overview"
     assert dashboard["version"] >= 2
     assert "Recent operational errors" not in json.dumps(dashboard)
@@ -299,6 +335,102 @@ def test_loki_retention_and_grafana_datasource_are_configured_without_credential
     assert "session_id" not in dashboard_text
     assert "request_id" not in dashboard_text
     assert "ip_address" not in dashboard_text
+
+
+def test_observability_dashboards_cover_security_http_and_infrastructure_health():
+    dashboard_dir = OBS_ROOT / "grafana" / "dashboards"
+    dashboards = {
+        path.name: json.loads(path.read_text(encoding="utf-8"))
+        for path in dashboard_dir.glob("*.json")
+    }
+    security = dashboards["sitbank-security-operations.json"]
+    http = dashboards["sitbank-http-health.json"]
+    infrastructure = dashboards["sitbank-infrastructure-deployment-health.json"]
+
+    assert {panel["title"] for panel in security["panels"]} >= {
+        "Security alert count",
+        "Deliverable alert count",
+        "Last successful security_alert_report",
+        "Audit chain validity",
+        "Audit anchor status",
+        "Audit anchor refresh required",
+        "Audit chain error count",
+        "Database integrity validity",
+        "Tracked security_audit_events count and max ID",
+        "Tracked users count and max ID",
+    }
+    assert {panel["title"] for panel in http["panels"]} >= {
+        "Requests by status class",
+        "429 rate-limit responses",
+        "403 and 404 responses",
+        "500 502 503 504 responses",
+        "Top requested paths or route groups",
+        "Nginx upstream and backend errors",
+        "Login register and MFA route volume",
+    }
+    assert {panel["title"] for panel in infrastructure["panels"]} >= {
+        "EC2 CPU usage",
+        "EC2 memory usage",
+        "EC2 disk usage and pressure",
+        "Container restart count and recent restart events",
+        "PostgreSQL connectivity storage and connection health",
+        "Nginx app and admin readiness check status",
+        "Last deployment time and target environment",
+        "Production staging deployment guard failures",
+    }
+    assert infrastructure["annotations"]["list"][0]["name"] == (
+        "Deployment start completion and rollback signals"
+    )
+    for dashboard in dashboards.values():
+        for panel in dashboard["panels"]:
+            assert panel.get("description")
+            assert "Worry" in panel["description"]
+            assert "check" in panel["description"].casefold()
+        dashboard_text = json.dumps(dashboard).casefold()
+        for forbidden in (
+            "authorization",
+            "cookie",
+            "csrf",
+            "session_id",
+            "totp",
+            "recovery_code",
+            "password=",
+            "token=",
+            "request_body",
+            "response_body",
+        ):
+            assert forbidden not in dashboard_text
+
+
+def test_nginx_structured_access_logs_omit_sensitive_request_data():
+    default_nginx = Path("ops/nginx/sitbank-default.conf").read_text(encoding="utf-8")
+    production_nginx = Path("ops/nginx/sitbank-production.conf").read_text(encoding="utf-8")
+    staging_nginx = Path("ops/nginx/sitbank-staging.conf").read_text(encoding="utf-8")
+    log_format = default_nginx.split("server {", 1)[0]
+
+    assert "log_format sitbank_access_json escape=json" in log_format
+    for required in (
+        '"message":"nginx_access"',
+        '"event":"http_request"',
+        '"service":"nginx"',
+        '"status":$status',
+        '"method":"$request_method"',
+        '"route":"$uri"',
+        '"upstream_status":"$upstream_status"',
+    ):
+        assert required in log_format
+    for forbidden in (
+        "$request_uri",
+        "$args",
+        "$query_string",
+        "$http_authorization",
+        "$http_cookie",
+        "$remote_addr",
+        "$request_body",
+    ):
+        assert forbidden not in log_format
+    assert "access_log /var/log/nginx/sitbank.access.log sitbank_access_json;" in production_nginx
+    assert "access_log /var/log/nginx/sitbank-staging.access.log sitbank_access_json;" in staging_nginx
 
 
 def test_alloy_collects_only_approved_sources_and_redacts_sensitive_patterns():
@@ -478,6 +610,10 @@ def test_observability_bootstrap_and_docs_keep_credentials_out_of_repo():
         "docker compose --env-file",
         "Grafana listens only on `127.0.0.1:3000`",
         "Loki listens only on `127.0.0.1:3100`",
+        "Prometheus and node exporter do not publish host ports",
+        "PROMETHEUS_IMAGE=example.invalid/prometheus@sha256:<reviewed-digest>",
+        "NODE_EXPORTER_IMAGE=example.invalid/node-exporter@sha256:<reviewed-digest>",
+        "OBSERVABILITY_ENVIRONMENT=production",
         "GRAFANA_PRIVATE_ROOT_URL=https://admin-sitbank.tailca101b.ts.net/grafana/",
         "GRAFANA_SERVE_FROM_SUB_PATH=true",
         "Private Tailscale Serve Browser Access Plan",
@@ -489,6 +625,10 @@ def test_observability_bootstrap_and_docs_keep_credentials_out_of_repo():
         "GF_SERVER_SERVE_FROM_SUB_PATH",
         "explicit HTTP `200` status validation",
         "https://sitbank.pp.ua/grafana",
+        "http://prometheus:9090",
+        "node-exporter:9100",
+        "sitbank_access_json",
+        "`route`, upstream status, and timing fields",
         "Nginx log files remain `0640` and group-readable by `adm`",
         "Journal files remain group-readable by `systemd-journal`",
         "`sitbank-observability-loopback` is a bridge network used only for "
@@ -497,7 +637,12 @@ def test_observability_bootstrap_and_docs_keep_credentials_out_of_repo():
         "Container log discovery currently uses the read-only host Docker socket",
         "accepted residual risk",
         "header-style, JSON-field, quoted logfmt, and unquoted key/value",
-        "The provisioned `SITBank Operational Overview` dashboard",
+        "`SITBank Operational Overview`",
+        "`SITBank Security Operations`",
+        "`SITBank HTTP Health`",
+        "`SITBank Infrastructure And Deployment Health`",
+        "Application audit and error logs expose stable dashboard fields",
+        "Container CPU/memory and PostgreSQL connection-count exporter metrics are not",
         "Grafana-native alerts remain an operational follow-up",
         "Alloy keeps only its runtime state under `/var/lib/alloy`",
         "The admin audit viewer remains backed by `SecurityAuditEvent`, not Loki",

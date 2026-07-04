@@ -1,10 +1,13 @@
-# Operational Observability With Grafana And Loki
+# Operational Observability With Grafana Loki And Prometheus
 
 SITBank separates operational log search from the banking admin application.
-Grafana, Loki, and Grafana Alloy are implemented as a private host-side
-observability deployment for Nginx, container, deployment, systemd, and
-host-operation evidence. The SITBank admin app remains a purpose-built viewer
-for `SecurityAuditEvent` rows and sanitized security alert summaries only.
+Grafana, Loki, and Grafana Alloy are implemented alongside Prometheus and node
+exporter inside the private host-side observability boundary.
+Grafana, Loki, Grafana Alloy, Prometheus, and node exporter are implemented as
+a private host-side observability deployment for Nginx, container, deployment,
+systemd, host-resource, and host-operation evidence. The SITBank admin app
+remains a purpose-built viewer for `SecurityAuditEvent` rows and sanitized
+security alert summaries only.
 
 Category: [Security assurance](../README.md#assurance).
 
@@ -16,7 +19,11 @@ The reviewed deployment files are:
 - `ops/observability/loki/loki.yml`;
 - `ops/observability/alloy/config.alloy`;
 - `ops/observability/grafana/provisioning/datasources/loki.yml`;
+- `ops/observability/prometheus/prometheus.yml`;
 - `ops/observability/grafana/dashboards/sitbank-operational-overview.json`;
+- `ops/observability/grafana/dashboards/sitbank-security-operations.json`;
+- `ops/observability/grafana/dashboards/sitbank-http-health.json`;
+- `ops/observability/grafana/dashboards/sitbank-infrastructure-deployment-health.json`;
 - `ops/deploy/bootstrap-observability-ec2`;
 - `docs/runbooks/private-observability-grafana-loki.md`.
 
@@ -26,6 +33,8 @@ Use Grafana and Loki for operational evidence such as:
 - container stdout/stderr for the customer and admin runtimes;
 - deployment wrapper, bootstrap, rollback, and migration wrapper logs;
 - systemd status for SITBank services, timers, and deployment-adjacent units;
+- EC2 CPU, memory, filesystem usage, and disk pressure from the private node
+  exporter through Prometheus;
 - host-side Tailscale, Cloudflare verification, Certbot, and Nginx checks when
   the collected record is sanitized and operator-approved.
 
@@ -37,7 +46,8 @@ credentials.
 ## Access Model
 
 Grafana is private to approved operators. The Compose deployment binds Grafana
-to `127.0.0.1:3000`, Loki to `127.0.0.1:3100`, and publishes no Alloy port.
+to `127.0.0.1:3000`, Loki to `127.0.0.1:3100`, and publishes no Alloy,
+Prometheus, or node-exporter host port.
 Normal access uses the private Tailscale path
 `https://admin-sitbank.tailca101b.ts.net/grafana/`, mapped to Grafana's
 loopback subpath at `http://127.0.0.1:3000/grafana`. SSH local port forwarding
@@ -49,6 +59,9 @@ That bridge is not the ingress security boundary. The private boundary is the
 explicit `127.0.0.1` host binding, no public Nginx route, no Tailscale Funnel,
 no public firewall opening, and protected tailnet access. Alloy attaches only
 to the internal `sitbank-observability` network and publishes no host port.
+Prometheus and node exporter also attach only to that internal network; Grafana
+reaches Prometheus over `http://prometheus:9090`, and Prometheus reaches node
+exporter over `node-exporter:9100`.
 
 Live Grafana/Loki evidence is collected only by
 `.github/workflows/observability-private-verify.yml`, a manually dispatched
@@ -94,6 +107,22 @@ SITBank Nginx access/error logs, Docker logs only from containers labelled
 arbitrary home directories, shell history, environment dumps, raw command
 transcripts, or secret files.
 
+The production and staging Nginx access logs use the committed
+`sitbank_access_json` format. It records stable JSON fields such as `event`,
+`service`, `result`, `status`, `method`, `route`, `upstream_status`, and
+timing values. The `route` field uses Nginx `$uri`, not `$request_uri`, so
+query strings are not written to the dashboard source. The format does not log
+request or response bodies, cookies, authorization headers, CSRF values,
+session identifiers, client IP addresses, or raw query strings.
+
+Application audit and error logs use the same dashboard-friendly field names:
+`event`, `environment`, `service`, `result`, `reason`, `route`, and `status`.
+Existing safe audit fields remain available for investigation, and sensitive
+metadata continues to be redacted before logging. Dashboard queries should use
+stable `event`/`message` names and coarse labels; do not promote user IDs,
+emails, IP addresses, request IDs, account numbers, session references, or
+transaction references into Loki labels.
+
 Container log discovery currently keeps the read-only host Docker socket so
 Alloy can preserve label-based opt-in collection. This is an accepted residual
 risk, not a claim that the raw Docker socket is least privilege. Compensating
@@ -124,6 +153,14 @@ raw request bodies.
 Loki retention is bounded in `ops/observability/loki/loki.yml` with
 `retention_enabled: true` and `retention_period: 168h`.
 
+Prometheus stores private host metrics for the same 168-hour window. The
+committed Prometheus config scrapes only node exporter with the
+`OBSERVABILITY_ENVIRONMENT` label. Container CPU/memory and PostgreSQL
+connection-count exporter metrics are not enabled by this repository change;
+the current container and PostgreSQL panels use log-derived restart,
+connectivity, storage-pressure, and connection-pressure signals until a
+separate least-privilege exporter design is reviewed.
+
 ## Dashboards And Alerts
 
 Grafana dashboards should focus on operational questions:
@@ -134,12 +171,38 @@ Grafana dashboards should focus on operational questions:
 - Certbot renewal status and TLS edge verification failures;
 - Cloudflare/Tailscale verification command outcomes without raw tokens.
 
-The provisioned `SITBank Operational Overview` dashboard contains described
-panels for log ingestion, Nginx 4xx/5xx trends, recent Nginx requests,
-app/admin container failures, monitored systemd failures, and deployment or
-rollback signals. Variables stay coarse (`environment`, `service`, `source`);
-do not add full paths, IP addresses, request IDs, account IDs, user IDs,
-session IDs, or free-text values as Loki labels.
+The provisioned dashboard set is:
+
+- `SITBank Operational Overview`: log ingestion, Nginx 4xx/5xx trends, recent
+  structured Nginx requests, app/admin container failures, monitored systemd
+  failures, and deployment or rollback signals.
+- `SITBank Security Operations`: security alert count, deliverable alert
+  count, last successful `security_alert_report`, audit chain validity, audit
+  anchor status/stale/refresh-required state, audit chain error count,
+  database integrity validity, and tracked `security_audit_events`/`users`
+  count and max ID.
+- `SITBank HTTP Health`: requests by `2xx`/`3xx`/`4xx`/`5xx`, 429 rate-limit
+  responses, 403/404 responses, 500/502/503/504 responses, route groups from
+  the query-free `route` field, Nginx upstream/backend errors, and
+  login/register/MFA route volume.
+- `SITBank Infrastructure And Deployment Health`: EC2 CPU, memory, disk usage
+  and pressure from node exporter; container restart or OOM signals;
+  PostgreSQL connectivity/storage/connection-pressure log signals; Nginx,
+  app, and admin readiness failures; last deployment time and target
+  environment; deployment guard failures; and deployment annotations.
+
+Normal healthy values are zero active security alerts, zero audit-chain errors,
+valid database integrity, no sustained 5xx/502/503/504 responses, expected
+429s only under abusive bursts, CPU below 80% sustained, memory below 85%,
+filesystems below 80% usage, no repeated container restarts, and no deployment
+guard failures. Investigate sustained CPU above 80%, memory above 85%, disk
+above 80% or rapidly growing, any audit/database invalidity, any unexpected
+5xx spike, repeated 429s on auth paths, stale audit anchors without a verified
+append-only explanation, readiness failures, or missing deployment completion.
+
+Variables stay coarse (`environment`, `service`, `source`, and status class
+where present); do not add full paths, IP addresses, request IDs, account IDs,
+user IDs, session IDs, or free-text values as Loki labels.
 
 Grafana alerts may notify operators about operational failure patterns, but
 contact points are intentionally deferred until they can be provisioned without
