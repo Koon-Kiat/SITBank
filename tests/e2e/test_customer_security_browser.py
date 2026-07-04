@@ -94,6 +94,57 @@ def test_payup_lookup_browser_flow_requires_totp_before_recipient_name(
     assert console_errors == []
 
 
+def test_account_menu_reaches_transfer_limits_and_toggles_custom_field(
+    live_server,
+    browser_page,
+    e2e_mfa_customer,
+):
+    console_errors = record_console_errors(browser_page)
+
+    login_customer_with_mfa(browser_page, live_server, e2e_mfa_customer)
+    browser_page.locator("#account-menu-button").click()
+    browser_page.get_by_role("menuitem", name="Daily Transfer Limit").click()
+    browser_page.wait_for_url("**/banking/settings/transfer-limits", wait_until="load")
+
+    custom_group = browser_page.locator("[data-limit-custom-group='payup']")
+    browser_page.locator("select[name='payup_limit']").select_option("custom")
+    assert custom_group.is_visible()
+    browser_page.locator("select[name='payup_limit']").select_option("500")
+    assert not custom_group.is_visible()
+    assert console_errors == []
+
+
+def test_payup_amount_page_reveals_balance_and_account_number(
+    live_server,
+    browser_page,
+    e2e_payup_pair,
+):
+    sender = e2e_payup_pair["sender"]
+    recipient = e2e_payup_pair["recipient"]
+    console_errors = record_console_errors(browser_page)
+
+    login_customer_with_mfa(browser_page, live_server, sender)
+    browser_page.goto(f"{live_server}/banking/payup", wait_until="load")
+    browser_page.locator("input[name='phone_number']").fill(recipient["phone_number"])
+    browser_page.locator("input[name='totp_code']").fill(current_totp(sender["secret"]))
+    browser_page.get_by_role("button", name="Continue").click()
+    browser_page.wait_for_url("**/banking/payup/amount", wait_until="load")
+
+    assert browser_page.locator("#payup-balance-masked").is_visible()
+    assert browser_page.locator("#payup-acct-masked").is_visible()
+    assert not browser_page.locator("#payup-balance-full").is_visible()
+    assert not browser_page.locator("#payup-acct-full").is_visible()
+
+    browser_page.locator("#payup-bal-eye-btn").click()
+    browser_page.locator("#payup-acct-eye-btn").click()
+
+    assert browser_page.locator("#payup-balance-full").is_visible()
+    assert browser_page.locator("#payup-acct-full").is_visible()
+    assert browser_page.locator("#payup-bal-eye-btn").get_attribute("aria-pressed") == "true"
+    assert browser_page.locator("#payup-acct-eye-btn").get_attribute("aria-pressed") == "true"
+    assert console_errors == []
+
+
 def test_customer_app_does_not_register_admin_browser_surface(
     live_server,
     browser_page,

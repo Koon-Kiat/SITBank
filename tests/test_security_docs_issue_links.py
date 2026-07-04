@@ -273,8 +273,8 @@ def test_staff_invite_acceptance_docs_cover_minimal_metadata_and_restart_control
     normalized_docs = " ".join(docs.split()).casefold()
 
     for required in (
-        "public invite lookup returns only minimal acceptance metadata",
-        "does not expose the workplace email, role, or status before setup starts",
+        "public invite lookup returns only a generic valid-link message",
+        "exposes no acceptance metadata, setup state, workplace email, role, status, user id, counter, or lock timestamp",
         "referrer-policy: no-referrer",
         "bound to the browser session that started setup",
         "repeated setup restarts are capped",

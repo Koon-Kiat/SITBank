@@ -231,7 +231,7 @@ listed below.
 | Session lookup hashing | HMAC-SHA256 over opaque browser session id | `app/security/sessions.py` | Stores only lookup hashes, not raw browser session IDs |
 | Password hashing | HMAC-SHA256 pepper followed by PBKDF2-HMAC-SHA256 with 600,000+ iterations, 32-byte salt, 32-byte derived key | `app/security/passwords.py` | Password storage with per-password salt and server-side pepper |
 | Registration OTP | HMAC-SHA256 using the active session HMAC keyring | `app/auth/registration_otp.py` | Keeps OTP verification independent from the Flask cookie-signing key |
-| Recovery codes | Versioned HMAC-SHA256 using the active session HMAC keyring, bound to user id and purpose | `app/auth/recovery_codes.py` | Prevents a stored verifier from being replayed for another user or purpose; legacy version 1 rows remain consumable only in their original user/purpose scope |
+| Recovery codes | Versioned HMAC-SHA256 using the active session HMAC keyring, bound to user id and purpose | `app/auth/recovery_codes.py` | Prevents a stored verifier from being replayed for another user or purpose; legacy version 1 rows are no longer accepted and the 20260704_0027 migration consumes unused legacy rows |
 | Password reset verifier | HMAC-SHA256 using the active session HMAC keyring | `app/auth/password_reset.py` | Stores reset verifier HMACs; raw verifier appears only in the emailed URL |
 | Staff invite and workplace verification | HMAC-SHA256 using the active session HMAC keyring | `app/admin/services.py` | Stores invite tokens and workplace verification codes without raw values |
 | Audit log chain | HMAC-SHA256 over canonical audit event JSON | `app/security/audit.py` | Makes audit event ordering and contents tamper-evident |
@@ -265,7 +265,10 @@ Cloudflare Turnstile challenges when `TURNSTILE_ENABLED` and the matching route
 flag are enabled. The covered customer routes are login, registration OTP
 request, final registration submit, and password-reset request. Turnstile is
 defense in depth only; CSRF, rate limits, password screening, MFA, sessions,
-audit logging, and authorization remain enforced.
+audit logging, and authorization remain enforced. In staging and production,
+the verifier requires the provider response `action` to exactly match the
+server-selected expected action for each protected route; missing, blank,
+malformed, or mismatched actions fail closed.
 
 Customer browser routes use the same branded `Too many attempts` response when
 durable auth backoff, Flask-Limiter, or Nginx `limit_req` rejects a request.
@@ -312,8 +315,9 @@ response. Pending setup is bound to the initiating session and expires under
 redisplayed. Staff invite MFA setup uses the same bounded lifecycle.
 
 Recovery codes are generated as random 16-byte values encoded as grouped hex,
-stored as versioned, user-and-purpose-bound HMACs, consumed once, and used only
-as explicit recovery-code factors. The reset API does not accept a recovery
+stored as current-version, user-and-purpose-bound HMACs, consumed once, and
+used only as explicit recovery-code factors. Legacy version 1 HMAC rows are
+not advertised and are not consumable. The reset API does not accept a recovery
 code through the TOTP field. Retired browser-credential reset URLs are not
 registered and return `404`.
 
@@ -322,11 +326,13 @@ registered and return `404`.
 Customer password reset uses a one-time `selector.verifier` URL. The selector
 is stored for lookup; the verifier is stored only as an HMAC. Exchanging the
 URL token requires a CSRF-protected POST from a scanner-safe GET landing page.
-The POST creates a short-lived server-side reset transaction and clears the
-raw URL token from continued browser flow. TOTP users must verify TOTP or a
-separately submitted recovery code before completing reset; no-MFA users can reset but remain
-in MFA-onboarding state on next login. Admin-like accounts are blocked from
-the customer reset flow.
+The POST marks the URL token exchanged before creating a short-lived
+server-side reset transaction and clears the raw URL token from continued
+browser flow; if the transaction is lost, the exchanged URL token cannot be
+replayed and the customer must request a fresh reset. TOTP users must verify
+TOTP or a separately submitted recovery code before completing reset; no-MFA
+users can reset but remain in MFA-onboarding state on next login. Admin-like
+accounts are blocked from the customer reset flow.
 
 Evidence: `app/auth/password_reset.py`, `app/auth/routes.py`,
 `app/web/routes.py`, and `app/models.py` (`PasswordResetToken` and
@@ -356,16 +362,18 @@ workplace email and do not collect a personal backup email. Invite acceptance
 validates the token, workplace email policy, password policy, optional
 Turnstile, workplace verification code, and TOTP setup before activating the
 account.
-The public invite lookup returns only minimal acceptance metadata and does not
-expose the workplace email, role, or status before setup starts. Invite
-acceptance responses are marked `no-store` with `Referrer-Policy: no-referrer`,
-and the post-start verification step is bound to the browser session that
-started setup. Repeated setup restarts are capped so an invite cannot
+The public invite lookup returns only a generic valid-link message and exposes
+no acceptance metadata, setup state, workplace email, role, status, user id,
+counter, or lock timestamp. Invite acceptance responses are marked `no-store` with `Referrer-Policy: no-referrer`,
+and the post-start verification step uses same-browser acceptance session
+binding and is bound to the browser session that started setup. Repeated setup restarts are capped so an invite cannot
 indefinitely reset passwords, TOTP secrets, or workplace verification codes;
 locked active invites require a root-admin TOTP reset before another setup
 attempt. This root-admin TOTP reset clears only pending acceptance state for an
 active invite. Staff invite password fields are length-bounded at the request
-schema before the service-level password policy runs.
+schema before the service-level password policy runs. Repeated invalid TOTP or
+workplace-code verification attempts also lock the active invite until a root
+admin resets, revokes, or reissues it.
 
 Evidence: `app/admin/routes.py`, `app/admin/services.py`,
 `app/admin/separation.py`, `admin_wsgi.py`, `config.py`, and
@@ -376,6 +384,7 @@ Tests: `tests/test_admin_staff_invites.py::test_root_admin_can_create_hashed_sta
 `tests/test_admin_staff_invites.py::test_invite_info_returns_minimal_metadata_and_no_store_headers`,
 `tests/test_admin_staff_invites.py::test_invite_acceptance_restart_limit_and_root_reset`,
 `tests/test_admin_staff_invites.py::test_invite_acceptance_verification_is_bound_to_start_session`,
+`tests/test_admin_staff_invites.py::test_invite_acceptance_verify_failures_lock_until_root_reset`,
 `tests/test_admin_staff_invites.py::test_staff_invite_acceptance_activates_only_after_workplace_code_and_totp`,
 `tests/test_admin_staff_invites.py::test_customer_registration_cannot_create_staff_or_admin_roles`,
 and `tests/test_admin_isolation.py::test_customer_and_admin_apps_have_isolated_route_surfaces`.

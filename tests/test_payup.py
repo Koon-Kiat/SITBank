@@ -21,7 +21,7 @@ from app.banking.services import (
     transaction_hash_matches,
 )
 from app.extensions import db
-from app.models import PayupPendingTransfer, SecurityAuditEvent, Transaction, User
+from app.models import AuthAttemptCounter, PayupPendingTransfer, SecurityAuditEvent, Transaction, User
 
 
 def _make_payup_pending(
@@ -335,6 +335,7 @@ def test_payup_phone_lookup_unknown_number_shows_error(client, payup_context):
     assert b"Invalid phone number" in response.data
     assert response.data.count(b"Bob Recipient") == 0
     assert "89999999" not in str(event.event_metadata)
+    assert event.event_metadata["failure_count"] == 1
 
 
 def test_payup_phone_lookup_requires_totp_before_name_disclosure(client, payup_context):
@@ -358,9 +359,25 @@ def test_payup_phone_lookup_invalid_totp_does_not_disclose_recipient(client, pay
         assert "pending_payup_recipient" not in sess
 
 
-def test_payup_unavailable_recipient_matches_unknown_number_response(client, payup_context, monkeypatch):
+@pytest.mark.parametrize(
+    ("status", "frozen"),
+    [
+        ("revoked", False),
+        ("locked", False),
+        ("setup_pending", False),
+        ("active", True),
+    ],
+)
+def test_payup_unavailable_recipient_matches_unknown_number_response(
+    client,
+    payup_context,
+    monkeypatch,
+    status,
+    frozen,
+):
     bob = payup_context["bob"]
-    bob.account_status = "revoked"
+    bob.account_status = status
+    bob.is_frozen = frozen
     db.session.commit()
     first_step = int(time.time())
     second_step = first_step + 31
@@ -394,7 +411,37 @@ def test_payup_phone_lookup_self_number_blocked(client, payup_context):
     )
 
     assert response.status_code == 400
-    assert b"own phone number" in response.data
+    assert b"Invalid phone number" in response.data
+    assert b"own phone number" not in response.data
+
+
+def test_payup_phone_lookup_failures_use_durable_user_scoped_limit(client, payup_context, monkeypatch):
+    base_time = int(time.time())
+    statuses = []
+
+    for index in range(6):
+        timestamp = base_time + (31 * index)
+        monkeypatch.setattr("app.auth.services.time.time", lambda timestamp=timestamp: timestamp)
+        response = client.post(
+            "/banking/payup",
+            data=_payup_lookup_data(
+                payup_context,
+                phone_number="89999999",
+                timestamp=timestamp,
+            ),
+        )
+        statuses.append(response.status_code)
+
+    counter = db.session.query(AuthAttemptCounter).filter_by(scope="payup_lookup_failure").one()
+    blocked = db.session.query(SecurityAuditEvent).filter_by(
+        event_type="payup_lookup",
+        outcome="blocked",
+    ).one()
+
+    assert statuses == [400, 400, 400, 400, 400, 429]
+    assert counter.failure_count == 5
+    assert blocked.event_metadata["reason"] == "durable_rate_limit"
+    assert "89999999" not in str(blocked.event_metadata)
 
 
 # ── Amount step: daily limit enforcement ─────────────────────────────────────────
