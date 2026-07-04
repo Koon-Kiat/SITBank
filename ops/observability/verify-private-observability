@@ -32,18 +32,25 @@ DEFAULT_PUBLIC_PROBES = (
 SECRET_MARKERS = (
     "authorization:",
     "cookie:",
+    "set-cookie:",
     "cf-access-jwt-assertion",
     "grafana_session",
     "x-grafana-org-id",
 )
-OBSERVABILITY_HEADER_MARKERS = (
-    "server: grafana",
+EVIDENCE_FORBIDDEN_MARKERS = (
+    *SECRET_MARKERS,
+    "location:",
+    "/cdn-cgi/access",
+    "cloudflareaccess.",
+    "redirect_url=",
+    "raw response",
+)
+OBSERVABILITY_HEADER_PREFIXES = (
     "x-grafana-",
-    "grafana_session",
-    "server: loki",
     "x-loki-",
 )
 PUBLIC_EXPOSURE_PATHS = ("/grafana", "/loki", "/logs", "/metrics")
+REDIRECT_STATUSES = {"301", "302", "303", "307", "308"}
 APPROVED_GRAFANA_HOST = "admin-sitbank.tailca101b.ts.net"
 APPROVED_GRAFANA_PATH = "/grafana"
 PRIVATE_DIRECT_EXPOSURE_PATHS = ("/loki", "/metrics")
@@ -256,6 +263,76 @@ def _curl_status_headers(runner: Runner, url: str) -> tuple[str, str]:
     return status, result.stdout
 
 
+def _header_entries(headers: str) -> list[tuple[str, str]]:
+    entries: list[tuple[str, str]] = []
+    for raw_line in headers.splitlines():
+        line = raw_line.strip()
+        if not line or ":" not in line or line.startswith(HTTP_STATUS_MARKER):
+            continue
+        name, value = line.split(":", 1)
+        entries.append((name.strip().casefold(), value.strip().casefold()))
+    return entries
+
+
+def _header_values(headers: str, name: str) -> list[str]:
+    lookup = name.casefold()
+    return [value for header_name, value in _header_entries(headers) if header_name == lookup]
+
+
+def _location_path(value: str) -> str:
+    parsed = urlparse(value.strip())
+    if parsed.scheme or parsed.netloc:
+        return parsed.path or "/"
+    if value.startswith("/"):
+        return value.split("?", 1)[0].split("#", 1)[0] or "/"
+    return ""
+
+
+def _redirects_to_observability(headers: str) -> bool:
+    for value in _header_values(headers, "location"):
+        path = _location_path(value).casefold()
+        if path in {"/grafana/login", "/loki"} or path.startswith(("/grafana/login/", "/loki/")):
+            return True
+    return False
+
+
+def _observability_exposure_reasons(headers: str) -> list[str]:
+    reasons: list[str] = []
+    entries = _header_entries(headers)
+    if any(name == "server" and value.startswith(("grafana", "loki")) for name, value in entries):
+        reasons.append("observability server header")
+    if any(name.startswith(OBSERVABILITY_HEADER_PREFIXES) for name, _value in entries):
+        reasons.append("observability response header")
+    if "grafana_session" in headers.casefold():
+        reasons.append("grafana session cookie")
+    if _redirects_to_observability(headers):
+        reasons.append("observability login redirect")
+    return reasons
+
+
+def _denial_category(status: str, headers: str) -> str:
+    header_text = headers.casefold()
+    location_paths = [_location_path(value).casefold() for value in _header_values(headers, "location")]
+    if (
+        "cf-access" in header_text
+        or "cf-ray:" in header_text
+        or "server: cloudflare" in header_text
+        or any(path.startswith("/cdn-cgi/access/") for path in location_paths)
+    ):
+        return "cloudflare_access_denial"
+    if status == "000":
+        return "network_denial"
+    if status == "404":
+        return "not_found_denial"
+    if status in {"401", "403"}:
+        return "http_auth_denial"
+    if status in REDIRECT_STATUSES:
+        return "redirect_denial"
+    if status == "200":
+        return "unexpected_success"
+    return "non_success_denial"
+
+
 def verify_private_grafana(
     runner: Runner,
     grafana_url: str,
@@ -367,25 +444,18 @@ def verify_public_denials(
     failures: list[str] = []
     for url in public_urls:
         status, headers = _curl_status_headers(runner, url)
-        header_text = headers.casefold()
         url_failures: list[str] = []
-        if (
-            status == "200"
-            or "location:" in header_text
-            and re.search(r"/(?:grafana|loki)(?:/|$)", header_text)
-            or any(marker in header_text for marker in OBSERVABILITY_HEADER_MARKERS)
-        ):
+        exposure_reasons = _observability_exposure_reasons(headers)
+        if status == "200" or exposure_reasons:
             url_failures.append("public observability access evidence")
             failures.append(f"{_safe_url_label(url)} returned public observability access evidence")
-        if any(marker in header_text for marker in SECRET_MARKERS):
-            url_failures.append("sensitive observability headers")
-            failures.append(f"{_safe_url_label(url)} returned sensitive observability headers")
         checks.append(
             {
                 "name": "public_observability_denial",
                 "result": "pass" if not url_failures else "fail",
                 "target": _safe_url_label(url),
                 "http_status": status,
+                "denial_category": _denial_category(status, headers),
             }
         )
     if failures:
@@ -404,27 +474,20 @@ def verify_private_direct_denials(
     for path in PRIVATE_DIRECT_EXPOSURE_PATHS:
         url = f"https://{hostname}{path}"
         status, headers = _curl_status_headers(runner, url)
-        header_text = headers.casefold()
         url_failures: list[str] = []
-        if (
-            status == "200"
-            or "location:" in header_text
-            and re.search(r"/(?:grafana|loki)(?:/|$)", header_text)
-            or any(marker in header_text for marker in OBSERVABILITY_HEADER_MARKERS)
-        ):
+        exposure_reasons = _observability_exposure_reasons(headers)
+        if status == "200" or exposure_reasons:
             url_failures.append("private direct observability access evidence")
             failures.append(
                 f"{_safe_url_label(url)} returned private direct observability access evidence"
             )
-        if any(marker in header_text for marker in SECRET_MARKERS):
-            url_failures.append("sensitive observability headers")
-            failures.append(f"{_safe_url_label(url)} returned sensitive observability headers")
         checks.append(
             {
                 "name": "private_direct_observability_denial",
                 "result": "pass" if not url_failures else "fail",
                 "target": _safe_url_label(url),
                 "http_status": status,
+                "denial_category": _denial_category(status, headers),
             }
         )
     if failures:
@@ -461,6 +524,9 @@ def _write_evidence(
     text = json.dumps(evidence, indent=2, sort_keys=True) + "\n"
     if token and token in text:
         raise VerificationError("sanitized evidence unexpectedly contains the Grafana token")
+    evidence_text = text.casefold()
+    if any(marker in evidence_text for marker in EVIDENCE_FORBIDDEN_MARKERS):
+        raise VerificationError("sanitized evidence unexpectedly contains raw observability metadata")
     path.write_text(text, encoding="utf-8")
 
 

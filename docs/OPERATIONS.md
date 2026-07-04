@@ -363,11 +363,14 @@ Tailscale with `tag:github-ci-observability-verify`, verifies private Grafana
 health with explicit HTTP `200` status, anonymous denial, non-admin verifier
 role, Loki datasource health with explicit HTTP `200` status and schema
 validation, direct private `/loki` and `/metrics` denial, and public denial
-probes, then uploads only sanitized evidence. The private Grafana URL must be
-the approved `https://admin-sitbank.tailca101b.ts.net/grafana/` Tailscale
-subpath. It must not run on pull requests or public TLS jobs and must not
-receive operator passwords, browser sessions, cookies, MFA values, raw logs,
-datasource credentials, or Grafana admin credentials.
+probes, then uploads only sanitized evidence. Cloudflare Access challenges,
+generic Cloudflare headers, and app/Nginx `401`, `403`, or `404` responses are
+valid public-denial evidence; Grafana/Loki headers, `grafana_session` cookies,
+or redirects to Grafana/Loki login paths fail closed. The private Grafana URL
+must be the approved `https://admin-sitbank.tailca101b.ts.net/grafana/`
+Tailscale subpath. It must not run on pull requests or public TLS jobs and
+must not receive operator passwords, browser sessions, cookies, MFA values, raw
+logs, datasource credentials, or Grafana admin credentials.
 
 ## Production Cloudflare Origin Operations
 
