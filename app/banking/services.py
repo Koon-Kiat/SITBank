@@ -695,24 +695,29 @@ def resolve_transfer_limit_choice(choice: str, custom_value: str | None) -> Deci
     if choice_text in PAYUP_DAILY_LIMIT_PRESETS:
         return Decimal(choice_text).quantize(PAYUP_DAILY_LIMIT_PRECISION)
     if choice_text == "custom":
-        custom_text = str(custom_value or "").strip()
-        if not custom_text:
-            raise AuthError("Enter a custom amount.", 400)
-        if "." in custom_text and len(custom_text.rsplit(".", 1)[1]) > 2:
-            raise AuthError("Custom amount must use cents precision.", 400)
-        try:
-            amount = Decimal(custom_text)
-        except InvalidOperation as exc:
-            raise AuthError("Enter a valid custom amount.", 400) from exc
-        if not amount.is_finite():
-            raise AuthError("Enter a valid custom amount.", 400)
-        amount = amount.quantize(PAYUP_DAILY_LIMIT_PRECISION)
-        if amount < PAYUP_DAILY_LIMIT_MIN:
-            raise AuthError("Custom amount must be at least SGD 100.00.", 400)
-        if amount > PAYUP_DAILY_LIMIT_MAX:
-            raise AuthError("Custom amount must not exceed SGD 10000.00.", 400)
-        return amount
+        return _resolve_custom_transfer_limit(custom_value)
     raise AuthError("Invalid limit selection.", 400)
+
+
+def _resolve_custom_transfer_limit(custom_value: str | None) -> Decimal:
+    custom_text = str(custom_value or "").strip()
+    if not custom_text:
+        raise AuthError("Enter a custom amount.", 400)
+    if "." in custom_text and len(custom_text.rsplit(".", 1)[1]) > 2:
+        raise AuthError("Custom amount must use cents precision.", 400)
+    try:
+        amount = Decimal(custom_text)
+    except InvalidOperation as exc:
+        raise AuthError("Enter a valid custom amount.", 400) from exc
+    if not amount.is_finite():
+        raise AuthError("Enter a valid custom amount.", 400)
+
+    amount = amount.quantize(PAYUP_DAILY_LIMIT_PRECISION)
+    if amount < PAYUP_DAILY_LIMIT_MIN:
+        raise AuthError("Custom amount must be at least SGD 100.00.", 400)
+    if amount > PAYUP_DAILY_LIMIT_MAX:
+        raise AuthError("Custom amount must not exceed SGD 10000.00.", 400)
+    return amount
 
 
 def _load_and_lock_payup_pending_transfer(sender: User, confirmation_token: str):
