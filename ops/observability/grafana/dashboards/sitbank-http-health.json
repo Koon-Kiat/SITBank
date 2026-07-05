@@ -1,220 +1,880 @@
 {
-  "annotations": {
-    "list": []
+  "apiVersion": "dashboard.grafana.app/v2beta1",
+  "kind": "Dashboard",
+  "metadata": {
+    "name": "sitbank-http-health"
   },
-  "editable": false,
-  "panels": [
-    {
-      "datasource": {
-        "type": "loki",
-        "uid": "sitbank-loki"
-      },
-      "description": "Counts structured Nginx access records by status class. Worry about sustained 5xx growth or unexpected 4xx spikes; check route and upstream panels next.",
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 0
-      },
-      "id": 1,
-      "targets": [
-        {
-          "expr": "sum(count_over_time({source=\"nginx_access\", environment=~\"$environment\"} | json | status=~\"2..\" [$__interval]))",
-          "legendFormat": "2xx",
-          "refId": "A"
-        },
-        {
-          "expr": "sum(count_over_time({source=\"nginx_access\", environment=~\"$environment\"} | json | status=~\"3..\" [$__interval]))",
-          "legendFormat": "3xx",
-          "refId": "B"
-        },
-        {
-          "expr": "sum(count_over_time({source=\"nginx_access\", environment=~\"$environment\"} | json | status=~\"4..\" [$__interval]))",
-          "legendFormat": "4xx",
-          "refId": "C"
-        },
-        {
-          "expr": "sum(count_over_time({source=\"nginx_access\", environment=~\"$environment\"} | json | status=~\"5..\" [$__interval]))",
-          "legendFormat": "5xx",
-          "refId": "D"
-        }
-      ],
-      "title": "Requests by status class",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "loki",
-        "uid": "sitbank-loki"
-      },
-      "description": "Shows 429 responses separately from other 4xx traffic. Worry about bursts on auth, registration, MFA, or password-reset routes; check rate-limit controls before changing limits.",
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 0
-      },
-      "id": 2,
-      "targets": [
-        {
-          "expr": "sum by (environment) (count_over_time({source=\"nginx_access\", environment=~\"$environment\"} | json | status=\"429\" [$__interval]))",
-          "refId": "A"
-        }
-      ],
-      "title": "429 rate-limit responses",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "loki",
-        "uid": "sitbank-loki"
-      },
-      "description": "Separates forbidden and missing-route responses. Worry when 403/404 spikes follow deploys or direct-origin probes; check Cloudflare, Nginx, and route inventory boundaries.",
-      "gridPos": {
-        "h": 7,
-        "w": 8,
-        "x": 0,
-        "y": 8
-      },
-      "id": 3,
-      "targets": [
-        {
-          "expr": "sum(count_over_time({source=\"nginx_access\", environment=~\"$environment\"} | json | status=~\"403|404\" [$__interval]))",
-          "refId": "A"
-        }
-      ],
-      "title": "403 and 404 responses",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "loki",
-        "uid": "sitbank-loki"
-      },
-      "description": "Tracks user-visible server and upstream failures. Worry about any sustained 500/502/503/504 value; check app readiness, container health, and deployment events next.",
-      "gridPos": {
-        "h": 7,
-        "w": 8,
-        "x": 8,
-        "y": 8
-      },
-      "id": 4,
-      "targets": [
-        {
-          "expr": "sum(count_over_time({source=\"nginx_access\", environment=~\"$environment\"} | json | status=~\"500|502|503|504\" [$__interval]))",
-          "refId": "A"
-        }
-      ],
-      "title": "500 502 503 504 responses",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "loki",
-        "uid": "sitbank-loki"
-      },
-      "description": "Lists recent routes from the structured `$uri` field, which excludes query strings. Worry about sensitive routes appearing with unexpected statuses; check copied evidence remains sanitized.",
-      "gridPos": {
-        "h": 7,
-        "w": 8,
-        "x": 16,
-        "y": 8
-      },
-      "id": 5,
-      "options": {
-        "showLabels": false,
-        "sortOrder": "Descending"
-      },
-      "targets": [
-        {
-          "expr": "{source=\"nginx_access\", environment=~\"$environment\"} | json | line_format \"{{.method}} {{.route}} {{.status}} upstream={{.upstream_status}}\"",
-          "refId": "A"
-        }
-      ],
-      "title": "Top requested paths or route groups",
-      "type": "logs"
-    },
-    {
-      "datasource": {
-        "type": "loki",
-        "uid": "sitbank-loki"
-      },
-      "description": "Shows upstream/backend errors from structured Nginx access records and Nginx error logs. Worry about connection refused, timeout, bad gateway, or upstream 5xx patterns; check app readiness next.",
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 15
-      },
-      "id": 6,
-      "options": {
-        "showLabels": true,
-        "sortOrder": "Descending"
-      },
-      "targets": [
-        {
-          "expr": "{source=\"nginx_access\", environment=~\"$environment\"} | json | upstream_status=~\"5..|502|503|504\"",
-          "refId": "A"
-        },
-        {
-          "expr": "{source=\"nginx_error\", environment=~\"$environment\"} |~ \"(?i)(upstream|connect\\(\\)|timed out|bad gateway|connection refused)\"",
-          "refId": "B"
-        }
-      ],
-      "title": "Nginx upstream and backend errors",
-      "type": "logs"
-    },
-    {
-      "datasource": {
-        "type": "loki",
-        "uid": "sitbank-loki"
-      },
-      "description": "Shows safe route volume for login, register, and MFA endpoints without body data, sensitive headers, or query strings. Worry about unusual bursts or 429 concentration; check rate-limit context next.",
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 15
-      },
-      "id": 7,
-      "targets": [
-        {
-          "expr": "sum by (route, status) (count_over_time({source=\"nginx_access\", environment=~\"$environment\"} | json | route=~\"/(login|register|mfa/verify|auth/login|auth/register|auth/mfa/verify)\" [$__interval]))",
-          "refId": "A"
-        }
-      ],
-      "title": "Login register and MFA route volume",
-      "type": "timeseries"
-    }
-  ],
-  "schemaVersion": 39,
-  "tags": [
-    "sitbank",
-    "http",
-    "operations"
-  ],
-  "templating": {
-    "list": [
+  "spec": {
+    "annotations": [
       {
-        "current": {
-          "selected": true,
-          "text": "production|staging",
-          "value": "production|staging"
-        },
-        "hide": 0,
-        "label": "Environment",
-        "name": "environment",
-        "options": [],
-        "query": "production|staging",
-        "type": "textbox"
+        "kind": "AnnotationQuery",
+        "spec": {
+          "builtIn": true,
+          "enable": true,
+          "hide": true,
+          "iconColor": "rgba(0, 211, 255, 1)",
+          "name": "Annotations & Alerts",
+          "query": {
+            "datasource": {
+              "name": "-- Grafana --"
+            },
+            "group": "grafana",
+            "kind": "DataQuery",
+            "spec": {},
+            "version": "v0"
+          }
+        }
+      }
+    ],
+    "cursorSync": "Off",
+    "editable": true,
+    "elements": {
+      "panel-1": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "sitbank-loki"
+                      },
+                      "group": "loki",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "direction": "backward",
+                        "editorMode": "code",
+                        "expr": "sum(\r\n  count_over_time(\r\n    {source=\"nginx_access\", environment=~\"$environment\"}\r\n    | json\r\n    | status=~\"2..\"\r\n    [$__interval]\r\n  )\r\n) or vector(0)",
+                        "legendFormat": "2xx",
+                        "queryType": "range"
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "sitbank-loki"
+                      },
+                      "group": "loki",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "direction": "backward",
+                        "editorMode": "code",
+                        "expr": "sum(\r\n  count_over_time(\r\n    {source=\"nginx_access\", environment=~\"$environment\"}\r\n    | json\r\n    | status=~\"3..\"\r\n    [$__interval]\r\n  )\r\n) or vector(0)",
+                        "legendFormat": "3xx",
+                        "queryType": "range"
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "B"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "sitbank-loki"
+                      },
+                      "group": "loki",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "direction": "backward",
+                        "editorMode": "code",
+                        "expr": "sum(\r\n  count_over_time(\r\n    {source=\"nginx_access\", environment=~\"$environment\"}\r\n    | json\r\n    | status=~\"4..\"\r\n    [$__interval]\r\n  )\r\n) or vector(0)",
+                        "legendFormat": "4xx",
+                        "queryType": "range"
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "C"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "sitbank-loki"
+                      },
+                      "group": "loki",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "direction": "backward",
+                        "editorMode": "code",
+                        "expr": "sum(\r\n  count_over_time(\r\n    {source=\"nginx_access\", environment=~\"$environment\"}\r\n    | json\r\n    | status=~\"5..\"\r\n    [$__interval]\r\n  )\r\n) or vector(0)",
+                        "legendFormat": "5xx",
+                        "queryType": "range"
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "D"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": []
+            }
+          },
+          "description": "Counts structured Nginx access records by status class. Worry about sustained 5xx growth or unexpected 4xx spikes; check route and upstream panels next.",
+          "id": 1,
+          "links": [],
+          "title": "Requests by status class",
+          "vizConfig": {
+            "group": "timeseries",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "custom": {
+                    "axisBorderShow": false,
+                    "axisCenteredZero": false,
+                    "axisColorMode": "text",
+                    "axisLabel": "",
+                    "axisPlacement": "auto",
+                    "barAlignment": 0,
+                    "barWidthFactor": 0.8,
+                    "drawStyle": "bars",
+                    "fillOpacity": 40,
+                    "gradientMode": "none",
+                    "hideFrom": {
+                      "legend": false,
+                      "tooltip": false,
+                      "viz": false
+                    },
+                    "insertNulls": false,
+                    "lineInterpolation": "linear",
+                    "lineWidth": 1,
+                    "pointSize": 5,
+                    "scaleDistribution": {
+                      "type": "linear"
+                    },
+                    "showPoints": "never",
+                    "showValues": false,
+                    "spanNulls": false,
+                    "stacking": {
+                      "group": "A",
+                      "mode": "normal"
+                    },
+                    "thresholdsStyle": {
+                      "mode": "off"
+                    }
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "color": "green",
+                        "value": 0
+                      },
+                      {
+                        "color": "red",
+                        "value": 80
+                      }
+                    ]
+                  }
+                },
+                "overrides": []
+              },
+              "options": {
+                "annotations": {
+                  "clustering": -1,
+                  "multiLane": false
+                },
+                "legend": {
+                  "calcs": [],
+                  "displayMode": "list",
+                  "placement": "bottom",
+                  "showLegend": true
+                },
+                "tooltip": {
+                  "hideZeros": false,
+                  "mode": "single",
+                  "sort": "none"
+                }
+              }
+            },
+            "version": "13.0.2"
+          }
+        }
+      },
+      "panel-2": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "sitbank-loki"
+                      },
+                      "group": "loki",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "direction": "backward",
+                        "editorMode": "code",
+                        "expr": "sum(\r\n  count_over_time(\r\n    {source=\"nginx_access\", environment=~\"$environment\"}\r\n    | json\r\n    | __error__=\"\"\r\n    | status=\"429\"\r\n    [$__range]\r\n  )\r\n) or vector(0)",
+                        "queryType": "instant"
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": []
+            }
+          },
+          "description": "Shows 429 responses separately from other 4xx traffic. Worry about bursts on auth, registration, MFA, or password-reset routes; check rate-limit controls before changing limits.",
+          "id": 2,
+          "links": [],
+          "title": "429 rate-limit responses",
+          "vizConfig": {
+            "group": "stat",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "color": "green",
+                        "value": 0
+                      },
+                      {
+                        "color": "yellow",
+                        "value": 1
+                      }
+                    ]
+                  }
+                },
+                "overrides": []
+              },
+              "options": {
+                "colorMode": "value",
+                "graphMode": "area",
+                "justifyMode": "auto",
+                "orientation": "auto",
+                "percentChangeColorMode": "standard",
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "showPercentChange": false,
+                "textMode": "auto",
+                "wideLayout": true
+              }
+            },
+            "version": "13.0.2"
+          }
+        }
+      },
+      "panel-3": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "sitbank-loki"
+                      },
+                      "group": "loki",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "direction": "backward",
+                        "editorMode": "code",
+                        "expr": "sum(\r\n  count_over_time(\r\n    {source=\"nginx_access\", environment=~\"$environment\"}\r\n    | json\r\n    | __error__=\"\"\r\n    | status=~\"40[34]\"\r\n    [$__range]\r\n  )\r\n) or vector(0)",
+                        "queryType": "instant"
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": []
+            }
+          },
+          "description": "Separates forbidden and missing-route responses. Worry when 403/404 spikes follow deploys or direct-origin probes; check Cloudflare, Nginx, and route inventory boundaries.",
+          "id": 3,
+          "links": [],
+          "title": "403 and 404 responses",
+          "vizConfig": {
+            "group": "stat",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "color": "green",
+                        "value": 0
+                      },
+                      {
+                        "color": "yellow",
+                        "value": 1
+                      }
+                    ]
+                  }
+                },
+                "overrides": []
+              },
+              "options": {
+                "colorMode": "value",
+                "graphMode": "area",
+                "justifyMode": "auto",
+                "orientation": "auto",
+                "percentChangeColorMode": "standard",
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "showPercentChange": false,
+                "textMode": "auto",
+                "wideLayout": true
+              }
+            },
+            "version": "13.0.2"
+          }
+        }
+      },
+      "panel-4": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "sitbank-loki"
+                      },
+                      "group": "loki",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "direction": "backward",
+                        "editorMode": "code",
+                        "expr": "sum(\r\n  count_over_time(\r\n    {source=\"nginx_access\", environment=~\"$environment\"}\r\n    | json\r\n    | __error__=\"\"\r\n    | status=~\"50[0234]\"\r\n    [$__range]\r\n  )\r\n) or vector(0)",
+                        "queryType": "instant"
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": []
+            }
+          },
+          "description": "Tracks user-visible server and upstream failures. Worry about any sustained 500/502/503/504 value; check app readiness, container health, and deployment events next.",
+          "id": 4,
+          "links": [],
+          "title": "500 502 503 504 responses",
+          "vizConfig": {
+            "group": "stat",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "color": "green",
+                        "value": 0
+                      },
+                      {
+                        "color": "red",
+                        "value": 1
+                      }
+                    ]
+                  }
+                },
+                "overrides": []
+              },
+              "options": {
+                "colorMode": "value",
+                "graphMode": "area",
+                "justifyMode": "auto",
+                "orientation": "auto",
+                "percentChangeColorMode": "standard",
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "showPercentChange": false,
+                "textMode": "auto",
+                "wideLayout": true
+              }
+            },
+            "version": "13.0.2"
+          }
+        }
+      },
+      "panel-5": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "sitbank-loki"
+                      },
+                      "group": "loki",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "direction": "backward",
+                        "editorMode": "code",
+                        "expr": "{source=\"nginx_access\", environment=~\"$environment\"} | json | line_format \"{{.method}} {{.route}} {{.status}} upstream={{.upstream_status}}\"",
+                        "queryType": "range"
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": []
+            }
+          },
+          "description": "Lists recent routes from the structured `$uri` field, which excludes query strings. Worry about sensitive routes appearing with unexpected statuses; check copied evidence remains sanitized.",
+          "id": 5,
+          "links": [],
+          "title": "Top requested paths or route groups",
+          "vizConfig": {
+            "group": "logs",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {},
+                "overrides": []
+              },
+              "options": {
+                "dedupStrategy": "none",
+                "enableInfiniteScrolling": false,
+                "enableLogDetails": true,
+                "prettifyLogMessage": true,
+                "showControls": false,
+                "showFieldSelector": false,
+                "showLabels": false,
+                "showLevel": true,
+                "showTime": true,
+                "sortOrder": "Descending",
+                "syntaxHighlighting": true,
+                "timestampResolution": "ms",
+                "unwrappedColumns": false,
+                "wrapLogMessage": false
+              }
+            },
+            "version": "13.0.2"
+          }
+        }
+      },
+      "panel-6": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "sitbank-loki"
+                      },
+                      "group": "loki",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "direction": "backward",
+                        "editorMode": "code",
+                        "expr": "{source=\"nginx_access\", environment=~\"$environment\"}\r\n| json\r\n| __error__=\"\"\r\n| upstream_status=~\"(^|.*, *)5[0-9][0-9]( *,.*|$)\"",
+                        "queryType": "range"
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "sitbank-loki"
+                      },
+                      "group": "loki",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "direction": "backward",
+                        "editorMode": "code",
+                        "expr": "{source=\"nginx_error\", environment=~\"$environment\"}\r\n|~ \"(?i)(upstream|connect\\\\(\\\\)|timed out|bad gateway|connection refused|no live upstreams|upstream prematurely closed)\"",
+                        "queryType": "range"
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "B"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": []
+            }
+          },
+          "description": "Shows upstream/backend errors from structured Nginx access records and Nginx error logs. Worry about connection refused, timeout, bad gateway, or upstream 5xx patterns; check app readiness next.",
+          "id": 6,
+          "links": [],
+          "title": "Nginx upstream and backend errors",
+          "vizConfig": {
+            "group": "logs",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {},
+                "overrides": []
+              },
+              "options": {
+                "dedupStrategy": "none",
+                "enableInfiniteScrolling": false,
+                "enableLogDetails": true,
+                "prettifyLogMessage": true,
+                "showControls": false,
+                "showFieldSelector": false,
+                "showLabels": true,
+                "showLevel": true,
+                "showTime": true,
+                "sortOrder": "Descending",
+                "syntaxHighlighting": true,
+                "timestampResolution": "ms",
+                "unwrappedColumns": false,
+                "wrapLogMessage": false
+              }
+            },
+            "version": "13.0.2"
+          }
+        }
+      },
+      "panel-7": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "sitbank-loki"
+                      },
+                      "group": "loki",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "direction": "backward",
+                        "editorMode": "code",
+                        "expr": "sum by (route, status) (\r\n  count_over_time(\r\n    {source=\"nginx_access\", environment=~\"$environment\"}\r\n    | json\r\n    | __error__=\"\"\r\n    | route=~\"^/(login|register|mfa/verify|auth/login|auth/register|auth/mfa/verify)$\"\r\n    [$__interval]\r\n  )\r\n)",
+                        "legendFormat": "{{route}} {{status}}",
+                        "queryType": "range"
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": []
+            }
+          },
+          "description": "Shows safe route volume for login, register, and MFA endpoints without body data, sensitive headers, or query strings. Worry about unusual bursts or 429 concentration; check rate-limit context next.",
+          "id": 7,
+          "links": [],
+          "title": "Login register and MFA route volume",
+          "vizConfig": {
+            "group": "timeseries",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "custom": {
+                    "axisBorderShow": false,
+                    "axisCenteredZero": false,
+                    "axisColorMode": "text",
+                    "axisLabel": "",
+                    "axisPlacement": "auto",
+                    "barAlignment": 0,
+                    "barWidthFactor": 0.6,
+                    "drawStyle": "bars",
+                    "fillOpacity": 0,
+                    "gradientMode": "none",
+                    "hideFrom": {
+                      "legend": false,
+                      "tooltip": false,
+                      "viz": false
+                    },
+                    "insertNulls": false,
+                    "lineInterpolation": "linear",
+                    "lineWidth": 1,
+                    "pointSize": 5,
+                    "scaleDistribution": {
+                      "type": "linear"
+                    },
+                    "showPoints": "never",
+                    "showValues": false,
+                    "spanNulls": false,
+                    "stacking": {
+                      "group": "A",
+                      "mode": "normal"
+                    },
+                    "thresholdsStyle": {
+                      "mode": "off"
+                    }
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "color": "green",
+                        "value": 0
+                      },
+                      {
+                        "color": "red",
+                        "value": 80
+                      }
+                    ]
+                  }
+                },
+                "overrides": []
+              },
+              "options": {
+                "annotations": {
+                  "clustering": -1,
+                  "multiLane": false
+                },
+                "legend": {
+                  "calcs": [],
+                  "displayMode": "list",
+                  "placement": "bottom",
+                  "showLegend": true
+                },
+                "tooltip": {
+                  "hideZeros": false,
+                  "mode": "single",
+                  "sort": "none"
+                }
+              }
+            },
+            "version": "13.0.2"
+          }
+        }
+      }
+    },
+    "layout": {
+      "kind": "GridLayout",
+      "spec": {
+        "items": [
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-1"
+              },
+              "height": 14,
+              "width": 24,
+              "x": 0,
+              "y": 0
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-3"
+              },
+              "height": 10,
+              "width": 12,
+              "x": 0,
+              "y": 14
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-2"
+              },
+              "height": 10,
+              "width": 12,
+              "x": 12,
+              "y": 14
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-4"
+              },
+              "height": 10,
+              "width": 12,
+              "x": 0,
+              "y": 24
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-7"
+              },
+              "height": 10,
+              "width": 12,
+              "x": 12,
+              "y": 24
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-5"
+              },
+              "height": 11,
+              "width": 24,
+              "x": 0,
+              "y": 34
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-6"
+              },
+              "height": 11,
+              "width": 24,
+              "x": 0,
+              "y": 45
+            }
+          }
+        ]
+      }
+    },
+    "links": [],
+    "liveNow": false,
+    "preload": false,
+    "tags": [
+      "sitbank",
+      "http",
+      "operations"
+    ],
+    "timeSettings": {
+      "autoRefresh": "",
+      "autoRefreshIntervals": [
+        "5s",
+        "10s",
+        "30s",
+        "1m",
+        "5m",
+        "15m",
+        "30m",
+        "1h",
+        "2h",
+        "1d"
+      ],
+      "fiscalYearStartMonth": 0,
+      "from": "now-6h",
+      "hideTimepicker": false,
+      "timezone": "browser",
+      "to": "now"
+    },
+    "title": "SITBank HTTP Health",
+    "variables": [
+      {
+        "kind": "TextVariable",
+        "spec": {
+          "current": {
+            "text": "production|staging",
+            "value": "production|staging"
+          },
+          "hide": "dontHide",
+          "label": "Environment",
+          "name": "environment",
+          "query": "production|staging",
+          "skipUrlSync": false
+        }
       }
     ]
-  },
-  "time": {
-    "from": "now-6h",
-    "to": "now"
-  },
-  "title": "SITBank HTTP Health",
-  "uid": "sitbank-http-health",
-  "version": 1
+  }
 }

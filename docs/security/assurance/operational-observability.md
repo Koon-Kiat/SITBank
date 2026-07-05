@@ -195,6 +195,12 @@ The provisioned dashboard set is:
   app, and admin readiness failures; last deployment time and target
   environment; deployment guard failures; and deployment annotations.
 
+Dashboard files use the Grafana v2 Kubernetes resource envelope with
+`apiVersion: dashboard.grafana.app/v2beta1`, `kind: Dashboard`, and a stable
+`metadata.name` matching the file name. Export dashboard changes as a complete
+V2 Resource, not as a bare `spec`, so file provisioning preserves dashboard
+identity and can validate every layout reference against its panel element.
+
 Normal healthy values are zero active security alerts, zero audit-chain errors,
 valid database integrity, no sustained 5xx/502/503/504 responses, expected
 429s only under abusive bursts, CPU below 80% sustained, memory below 85%,

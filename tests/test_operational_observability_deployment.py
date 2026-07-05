@@ -15,6 +15,30 @@ OBS_ROOT = Path("ops/observability")
 VERIFIER_PATH = OBS_ROOT / "verify-private-observability"
 PRIVATE_GRAFANA_URL = "https://admin-sitbank.tailca101b.ts.net/grafana"
 FAKE_GRAFANA_TOKEN = "fake-grafana-health-token"
+DASHBOARD_API_VERSION = "dashboard.grafana.app/v2beta1"
+
+
+def _dashboard_spec(resource: dict, expected_name: str) -> dict:
+    assert resource["apiVersion"] == DASHBOARD_API_VERSION
+    assert resource["kind"] == "Dashboard"
+    assert resource["metadata"]["name"] == expected_name
+
+    spec = resource["spec"]
+    elements = spec["elements"]
+    layout_items = spec["layout"]["spec"]["items"]
+    layout_names = [
+        item["spec"]["element"]["name"]
+        for item in layout_items
+        if item["spec"]["element"]["kind"] == "ElementReference"
+    ]
+    assert len(layout_names) == len(set(layout_names))
+    assert set(layout_names) == set(elements)
+    assert all(element["kind"] == "Panel" for element in elements.values())
+    return spec
+
+
+def _dashboard_panels(spec: dict) -> list[dict]:
+    return [element["spec"] for element in spec["elements"].values()]
 
 
 def _read_observability_files() -> str:
@@ -317,9 +341,21 @@ def test_loki_retention_and_grafana_datasource_are_configured_without_credential
         ).read_text(encoding="utf-8")
     )
     dashboard_dir = OBS_ROOT / "grafana" / "dashboards"
-    dashboards = {
+    dashboard_resources = {
         path.name: json.loads(path.read_text(encoding="utf-8"))
         for path in dashboard_dir.glob("*.json")
+    }
+    expected_names = {
+        "sitbank-operational-overview.json": "sitbank-operational-overview",
+        "sitbank-security-operations.json": "sitbank-security-operations",
+        "sitbank-http-health.json": "sitbank-http-health",
+        "sitbank-infrastructure-deployment-health.json": (
+            "sitbank-infrastructure-deployment-health"
+        ),
+    }
+    dashboards = {
+        filename: _dashboard_spec(dashboard_resources[filename], name)
+        for filename, name in expected_names.items()
     }
     dashboard = dashboards["sitbank-operational-overview.json"]
 
@@ -338,23 +374,11 @@ def test_loki_retention_and_grafana_datasource_are_configured_without_credential
     assert prometheus_datasource["url"] == "http://prometheus:9090"
     assert "password" not in str(datasource).casefold()
     assert "token" not in str(datasource).casefold()
-    assert set(dashboards) == {
-        "sitbank-operational-overview.json",
-        "sitbank-security-operations.json",
-        "sitbank-http-health.json",
-        "sitbank-infrastructure-deployment-health.json",
-    }
-    assert {item["uid"] for item in dashboards.values()} == {
-        "sitbank-operational-overview",
-        "sitbank-security-operations",
-        "sitbank-http-health",
-        "sitbank-infrastructure-deployment-health",
-    }
-    assert dashboard["uid"] == "sitbank-operational-overview"
-    assert dashboard["version"] >= 2
+    assert set(dashboard_resources) == set(expected_names)
     assert "Recent operational errors" not in json.dumps(dashboard)
     assert "SecurityAuditEvent" not in json.dumps(dashboard)
-    panel_titles = {panel["title"] for panel in dashboard["panels"]}
+    panels = _dashboard_panels(dashboard)
+    panel_titles = {panel["title"] for panel in panels}
     assert panel_titles >= {
         "Log ingestion by service and source",
         "Nginx 4xx and 5xx trend",
@@ -363,11 +387,11 @@ def test_loki_retention_and_grafana_datasource_are_configured_without_credential
         "Systemd failures for monitored units",
         "Deployment and rollback signals",
     }
-    for panel in dashboard["panels"]:
+    for panel in panels:
         assert panel.get("description")
         assert "Worry" in panel["description"]
         assert "check" in panel["description"].casefold()
-    variables = {entry["name"] for entry in dashboard["templating"]["list"]}
+    variables = {entry["spec"]["name"] for entry in dashboard["variables"]}
     assert variables == {"environment", "service", "source"}
     dashboard_text = json.dumps(dashboard).casefold()
     assert "error_count: 0" in dashboard_text
@@ -380,15 +404,24 @@ def test_loki_retention_and_grafana_datasource_are_configured_without_credential
 
 def test_observability_dashboards_cover_security_http_and_infrastructure_health():
     dashboard_dir = OBS_ROOT / "grafana" / "dashboards"
-    dashboards = {
+    dashboard_resources = {
         path.name: json.loads(path.read_text(encoding="utf-8"))
         for path in dashboard_dir.glob("*.json")
     }
-    security = dashboards["sitbank-security-operations.json"]
-    http = dashboards["sitbank-http-health.json"]
-    infrastructure = dashboards["sitbank-infrastructure-deployment-health.json"]
+    dashboards = {
+        filename: _dashboard_spec(resource, filename.removesuffix(".json"))
+        for filename, resource in dashboard_resources.items()
+    }
+    security = _dashboard_panels(
+        dashboards["sitbank-security-operations.json"]
+    )
+    http = _dashboard_panels(dashboards["sitbank-http-health.json"])
+    infrastructure_dashboard = dashboards[
+        "sitbank-infrastructure-deployment-health.json"
+    ]
+    infrastructure = _dashboard_panels(infrastructure_dashboard)
 
-    assert {panel["title"] for panel in security["panels"]} >= {
+    assert {panel["title"] for panel in security} >= {
         "Security alert count",
         "Deliverable alert count",
         "Last successful security_alert_report",
@@ -400,7 +433,24 @@ def test_observability_dashboards_cover_security_http_and_infrastructure_health(
         "Tracked security_audit_events count and max ID",
         "Tracked users count and max ID",
     }
-    assert {panel["title"] for panel in http["panels"]} >= {
+    tracked_audit_events = next(
+        panel
+        for panel in security
+        if panel["title"] == "Tracked security_audit_events count and max ID"
+    )
+    tracked_queries = {
+        query["spec"]["refId"]: query["spec"]["query"]["spec"]
+        for query in tracked_audit_events["data"]["spec"]["queries"]
+    }
+    assert tracked_queries["A"]["legendFormat"] == "count"
+    assert "database_integrity_security_audit_events_count" in (
+        tracked_queries["A"]["expr"]
+    )
+    assert tracked_queries["B"]["legendFormat"] == "max_id"
+    assert "database_integrity_security_audit_events_max_id" in (
+        tracked_queries["B"]["expr"]
+    )
+    assert {panel["title"] for panel in http} >= {
         "Requests by status class",
         "429 rate-limit responses",
         "403 and 404 responses",
@@ -409,7 +459,7 @@ def test_observability_dashboards_cover_security_http_and_infrastructure_health(
         "Nginx upstream and backend errors",
         "Login register and MFA route volume",
     }
-    assert {panel["title"] for panel in infrastructure["panels"]} >= {
+    assert {panel["title"] for panel in infrastructure} >= {
         "EC2 CPU usage",
         "EC2 memory usage",
         "EC2 disk usage and pressure",
@@ -419,11 +469,31 @@ def test_observability_dashboards_cover_security_http_and_infrastructure_health(
         "Last deployment time and target environment",
         "Production staging deployment guard failures",
     }
-    assert infrastructure["annotations"]["list"][0]["name"] == (
-        "Deployment start completion and rollback signals"
-    )
+    infrastructure_queries = {
+        panel["title"]: panel["data"]["spec"]["queries"][0]["spec"]["query"]["spec"][
+            "expr"
+        ]
+        for panel in infrastructure
+    }
+    restart_query = infrastructure_queries[
+        "Container restart count and recent restart events"
+    ].casefold()
+    for signal in ("restart", "oom", "out of memory", "killed", "unhealthy"):
+        assert signal in restart_query
+    for title in (
+        "Container restart count and recent restart events",
+        "PostgreSQL connectivity storage and connection health",
+        "Last deployment time and target environment",
+        "Production staging deployment guard failures",
+    ):
+        assert "| logfmt" not in infrastructure_queries[title]
+    annotation_names = {
+        annotation["spec"]["name"]
+        for annotation in infrastructure_dashboard["annotations"]
+    }
+    assert "Deployment start completion and rollback signals" in annotation_names
     for dashboard in dashboards.values():
-        for panel in dashboard["panels"]:
+        for panel in _dashboard_panels(dashboard):
             assert panel.get("description")
             assert "Worry" in panel["description"]
             assert "check" in panel["description"].casefold()
