@@ -28,6 +28,7 @@ from app.auth.mfa_policy import has_enrolled_mfa_method
 from app.auth.services import AuthError, verify_high_risk_authorization
 from app.banking.forms import (
     AddPayeeForm,
+    LOCAL_TRANSFER_LIMIT_PRESETS,
     PayupAmountForm,
     PayupConfirmForm,
     PayupNicknameForm,
@@ -41,9 +42,11 @@ from app.banking.services import (
     evaluate_payup_risk,
     execute_local_transfer,
     execute_payup_transfer,
+    local_transfer_amount_used_today,
     local_transfer_token_verifier,
     payup_amount_used_today,
     payup_transfer_token_verifier,
+    resolve_local_transfer_limit_choice,
     resolve_transfer_limit_choice,
     statement_for_period,
 )
@@ -592,7 +595,15 @@ def transfer(payee_id: int):
     if status["status"] != "active":
         flash(f"This payee is still in cooldown. Available in {status['remaining']}.", "warning")
         return redirect(url_for(_PAYEES_ENDPOINT))
-    return render_template(_TRANSFER_TEMPLATE, form=TransferForm(), payee=payee)
+    daily_limit = Decimal(str(g.current_user.local_transfer_daily_limit))
+    remaining = max(Decimal("0.00"), daily_limit - local_transfer_amount_used_today(g.current_user))
+    return render_template(
+        _TRANSFER_TEMPLATE,
+        form=TransferForm(),
+        payee=payee,
+        daily_limit=daily_limit,
+        remaining=remaining,
+    )
 
 
 @banking_bp.post("/transfer/<int:payee_id>")
@@ -607,23 +618,41 @@ def transfer_submit(payee_id: int):
         flash("Payee is still in cooldown.", "error")
         return redirect(url_for(_PAYEES_ENDPOINT))
 
+    daily_limit = Decimal(str(g.current_user.local_transfer_daily_limit))
+    remaining = max(Decimal("0.00"), daily_limit - local_transfer_amount_used_today(g.current_user))
+
     form = TransferForm()
     if not form.validate_on_submit():
-        return render_template(_TRANSFER_TEMPLATE, form=form, payee=payee), 400
+        return render_template(
+            _TRANSFER_TEMPLATE, form=form, payee=payee, daily_limit=daily_limit, remaining=remaining
+        ), 400
 
     # A03: parse as Decimal — never float — to avoid precision errors
     try:
         amount = Decimal(form.amount.data.strip())
     except InvalidOperation:
         flash("Invalid amount.", "error")
-        return render_template(_TRANSFER_TEMPLATE, form=form, payee=payee), 400
+        return render_template(
+            _TRANSFER_TEMPLATE, form=form, payee=payee, daily_limit=daily_limit, remaining=remaining
+        ), 400
 
     if amount < MIN_TRANSACTION_AMOUNT or amount > MAX_TRANSACTION_AMOUNT:
         flash(
             f"Amount must be between SGD {MIN_TRANSACTION_AMOUNT} and SGD {MAX_TRANSACTION_AMOUNT}.",
             "error",
         )
-        return render_template(_TRANSFER_TEMPLATE, form=form, payee=payee), 400
+        return render_template(
+            _TRANSFER_TEMPLATE, form=form, payee=payee, daily_limit=daily_limit, remaining=remaining
+        ), 400
+
+    if amount > remaining:
+        flash(
+            f"This transfer would exceed your daily Local Transfer limit. Remaining today: SGD {remaining}.",
+            "error",
+        )
+        return render_template(
+            _TRANSFER_TEMPLATE, form=form, payee=payee, daily_limit=daily_limit, remaining=remaining
+        ), 400
 
     # A07: MFA step-up required before pending state is created
     try:
@@ -634,7 +663,9 @@ def transfer_submit(payee_id: int):
         )
     except AuthError as exc:
         flash(exc.message, "error")
-        return render_template(_TRANSFER_TEMPLATE, form=form, payee=payee), exc.status_code
+        return render_template(
+            _TRANSFER_TEMPLATE, form=form, payee=payee, daily_limit=daily_limit, remaining=remaining
+        ), exc.status_code
 
     # A08: create a server-side pending transfer record bound to this user, payee,
     # amount, and reference. Store only the opaque token in the session so the
@@ -1139,13 +1170,22 @@ def payup_confirm_submit():
 # ── Settings: Daily Transfer Limit ──────────────────────────────────────────────
 
 def _prefill_transfer_limits_form(form: TransferLimitsForm) -> None:
-    current = Decimal(str(g.current_user.payup_daily_limit))
+    payup_current = Decimal(str(g.current_user.payup_daily_limit))
     for preset in TRANSFER_LIMIT_PRESETS:
-        if current == Decimal(preset):
+        if payup_current == Decimal(preset):
             form.payup_limit.data = preset
+            break
+    else:
+        form.payup_limit.data = "custom"
+        form.payup_limit_custom.data = str(payup_current.quantize(Decimal("0.01")))
+
+    local_transfer_current = Decimal(str(g.current_user.local_transfer_daily_limit))
+    for preset in LOCAL_TRANSFER_LIMIT_PRESETS:
+        if local_transfer_current == Decimal(preset):
+            form.local_transfer_limit.data = preset
             return
-    form.payup_limit.data = "custom"
-    form.payup_limit_custom.data = str(current.quantize(Decimal("0.01")))
+    form.local_transfer_limit.data = "custom"
+    form.local_transfer_limit_custom.data = str(local_transfer_current.quantize(Decimal("0.01")))
 
 
 @banking_bp.get("/settings/transfer-limits")
@@ -1168,6 +1208,9 @@ def transfer_limits_submit():
 
     try:
         payup_limit = resolve_transfer_limit_choice(form.payup_limit.data, form.payup_limit_custom.data)
+        local_transfer_limit = resolve_local_transfer_limit_choice(
+            form.local_transfer_limit.data, form.local_transfer_limit_custom.data
+        )
     except AuthError as exc:
         flash(exc.message, "error")
         return render_template(_TRANSFER_LIMITS_TEMPLATE, form=form), exc.status_code
@@ -1183,13 +1226,17 @@ def transfer_limits_submit():
         return render_template(_TRANSFER_LIMITS_TEMPLATE, form=form), exc.status_code
 
     g.current_user.payup_daily_limit = payup_limit
+    g.current_user.local_transfer_daily_limit = local_transfer_limit
     db.session.commit()
 
     audit_event(
         "transfer_limits_change",
         "success",
         user=g.current_user,
-        metadata={"payup_daily_limit": str(payup_limit)},
+        metadata={
+            "payup_daily_limit": str(payup_limit),
+            "local_transfer_daily_limit": str(local_transfer_limit),
+        },
     )
     flash("Daily transfer limits updated.", "success")
     return redirect(url_for(_TRANSFER_LIMITS_ENDPOINT))

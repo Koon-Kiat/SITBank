@@ -21,7 +21,7 @@
         <p class="eyebrow">How it works</p>
         <h2>Limits reset daily</h2>
       </div>
-      <p class="muted">This is the most you can send with PayUp each day. It resets every day at midnight. If you're close to reaching your limit, we'll ask for your authenticator code before completing the transfer. You'll also need your authenticator code whenever you change this limit.</p>
+      <p class="muted">This is the most you can send with PayUp or Local Transfer each day. Each method has its own limit, and both reset every day at midnight. If you're close to reaching your PayUp limit, we'll ask for your authenticator code before completing the transfer. You'll also need your authenticator code whenever you change either limit.</p>
     </article>
 
     <article class="profile-panel profile-card">
@@ -49,10 +49,17 @@
           <p class="eyebrow">Local Transfer</p>
           <h2>Daily limit</h2>
         </div>
-        <p class="muted">
-          <span class="badge neutral">Coming soon</span>
-          Local Transfer does not have a daily limit yet.
-        </p>
+        <div class="form-group">
+          <label for="{{ form.local_transfer_limit.id }}">Daily limit</label>
+          {{ form.local_transfer_limit(data_limit_select="local_transfer") }}
+          {% for error in form.local_transfer_limit.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+        </div>
+        <div class="form-group" data-limit-custom-group="local_transfer" {% if form.local_transfer_limit.data != 'custom' %}hidden{% endif %}>
+          <label for="{{ form.local_transfer_limit_custom.id }}">Custom amount (SGD)</label>
+          {{ form.local_transfer_limit_custom(type="number", step="0.01", min="100.00", max="10000.00", autocomplete="off", placeholder="e.g. 750.00", inputmode="decimal", data_limit_custom="local_transfer") }}
+          {% for error in form.local_transfer_limit_custom.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+          <p class="hint">Must be between SGD 100.00 and SGD 10000.00.</p>
+        </div>
 
         <hr class="form-divider">
 

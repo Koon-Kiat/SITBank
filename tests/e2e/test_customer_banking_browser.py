@@ -5,6 +5,8 @@ from decimal import Decimal
 
 import pytest
 
+from app.extensions import db
+from app.models import User
 from tests.e2e.support import (
     RUN_E2E_ENV,
     browser_page,
@@ -48,6 +50,14 @@ def e2e_banking_pair(app):
         full_name="E2E Banking Recipient",
         balance=Decimal("1000.00"),
     )
+    # Raise the sender's Local Transfer daily limit above the default SGD 500.00
+    # so this fixture's large test amounts (e.g. SGD 9000.00, used to prove
+    # server-side insufficient-funds handling) exercise balance validation
+    # rather than being pre-empted by the daily-limit check.
+    with app.app_context():
+        sender_user = db.session.get(User, int(sender["id"]))
+        sender_user.local_transfer_daily_limit = Decimal("10000.00")
+        db.session.commit()
     return {"sender": sender, "recipient": recipient}
 
 
