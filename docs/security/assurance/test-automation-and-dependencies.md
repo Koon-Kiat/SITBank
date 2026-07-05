@@ -25,7 +25,7 @@ Category: [Security assurance](../README.md#assurance).
 | `.github/workflows/shellcheck.yml` | Repository shell static analysis | Checksum-verified ShellCheck 0.11.0 scans all tracked `.sh` files and supported shell shebangs discovered by the shared helper |
 | `.github/workflows/hadolint.yml` | Dockerfile linting | Checksum-verified Hadolint 2.14.0 scans every tracked `Dockerfile` and `Dockerfile.*` discovered by the shared helper |
 | `.github/workflows/semgrep.yml` | Automatic SAST | Digest-pinned Semgrep 1.168.0 runs local/OSS ERROR-severity scanning with metrics disabled on PRs, `main`, manual reruns, and a weekly schedule without a token, source upload, or SARIF |
-| `.github/workflows/sonarqube.yml` | SonarQube Cloud code-quality analysis | Full pytest coverage plus reporting-only maintainability, duplication, reliability, and security dashboard analysis |
+| `.github/workflows/sonarqube.yml` | SonarQube Cloud code-quality analysis | Full pytest coverage plus a blocking trusted-run quality gate for maintainability, duplication, reliability, and security analysis |
 | `.github/workflows/tailscale-private-admin-verify.yml` | Protected private-tailnet verification | A manual job joins with an ephemeral tagged identity; the direct environment-bound production gate performs the same reachability check after production deploy plus public TLS |
 | `ops/tailscale/*` | Confirmation-gated Tailscale production-admin provisioning | Dry-run/confirm scripts install the authenticated package, support OAuth/auth-key/interactive enrollment, configure only private HTTPS to `127.0.0.1:5002`, delegate verification, and provide a non-secret ACL reference |
 | `ops/deploy/verify-tailscale-admin-access` | EC2-local private-admin posture verification | A non-mutating production-host check validates Tailscale/Funnel state, loopback binding, readiness, Nginx absence, narrow Serve mapping, and private HTTPS without accepting credentials |
@@ -48,7 +48,7 @@ applicable unless a frontend package manager is added.
 | GitHub dependency review | `.github/workflows/ci-deploy.yml` | Reviews dependency changes on public PRs targeting `main`; private repositories require `ENABLE_GITHUB_CODE_SECURITY=true`, while non-PR events intentionally skip it |
 | Trivy image scans | `.github/workflows/ci-deploy.yml` | Uses pinned Trivy `v0.71.2` for built-image and repository filesystem scans; `.trivyignore` exceptions are tested |
 | CodeQL | `.github/workflows/codeql.yml` | Runs Python security-extended static analysis when the repository is public |
-| SonarQube Cloud | `.github/workflows/ci-deploy.yml`, `.github/workflows/sonarqube.yml`, `sonar-project.properties` | Reuses the CI test job's `coverage.xml` artifact to report private-repository code quality, duplication, maintainability, and security findings without rerunning pytest; initial quality gate is non-blocking |
+| SonarQube Cloud | `.github/workflows/ci-deploy.yml`, `.github/workflows/sonarqube.yml`, `sonar-project.properties` | Reuses the CI test job's `coverage.xml` artifact without rerunning pytest; trusted PR and release-producing runs enforce the quality gate, and publication waits for SonarQube plus Playwright E2E |
 | Playwright E2E | `.github/workflows/ci-deploy.yml`, `tests/e2e/` | Installs Chromium in a dedicated CI job and exercises browser-rendered authentication, MFA, session, banking, and boundary regressions against a loopback Flask server |
 | Bandit | `scripts/ci-local`, `.github/workflows/ci-deploy.yml` | Runs a high-confidence Python security scan |
 | Custom repository secret scanner | `ops/security/scan_repository_secrets.py` | Scans tracked files and, in CI/local CI, git history for private keys and common token formats |
@@ -276,10 +276,10 @@ is covered by deployment tests.
 
 The CI test job runs full-suite coverage once and uploads `coverage.xml`; its
 downstream job calls reusable `.github/workflows/sonarqube.yml` to perform
-reporting-only SonarQube Cloud analysis for the private repository. The
-reusable job requires only `SONAR_TOKEN`, does not use deployment secrets or
-rerun pytest, and does not change the existing CodeQL policy. Plan eligibility,
-cloud source processing, scope,
+blocking SonarQube Cloud quality-gate analysis for trusted events. The reusable
+job requires only `SONAR_TOKEN`, does not use deployment secrets or rerun
+pytest, and does not change the existing CodeQL policy. Fork and Dependabot PRs
+skip the secret-backed scan explicitly. Plan eligibility, cloud source processing, scope,
 exclusions, token rotation, triage, and limitations are documented in
 `docs/security/assurance/sonarqube.md`.
 

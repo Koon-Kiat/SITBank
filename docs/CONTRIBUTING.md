@@ -121,11 +121,11 @@ before changing taxonomy or protected automation labels.
 Pull requests to `main` generate `coverage.xml` during the existing CI pytest
 run and pass it to the downstream SonarQube job, so the full suite is not run
 twice. The configured source/test scope is sent to SonarQube Cloud when the
-trusted workflow can access `SONAR_TOKEN`. The initial quality gate is reporting-only,
-so review the maintainability, duplication, reliability, security, and
-coverage dashboard without treating its gate as a merge or deployment
-approval. Fork pull requests run coverage but explicitly skip the secret-backed
-upload. See `docs/security/assurance/sonarqube.md` for scope, exclusions, private-project
+trusted workflow can access `SONAR_TOKEN`. Trusted pull requests and
+release-producing runs wait for and enforce the quality gate; image publication
+also waits for both SonarQube and Playwright E2E success. Fork and Dependabot
+pull requests run coverage but explicitly skip the secret-backed upload and PR
+comment. See `docs/security/assurance/sonarqube.md` for scope, exclusions,
 plan prerequisites, triage, and false-positive handling.
 
 ## Supply-Chain Evidence

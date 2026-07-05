@@ -191,7 +191,9 @@ timestamp/severity/event-type/actor sorting, and bounded pagination. The `q`
 search field is limited to approved safe fields: activity/event type, outcome,
 request ID, safe source display, target reference, actor user ID, actor
 username, and privileged workplace email. It does not search raw unbounded
-metadata.
+metadata. Customer personal email is never part of `q` search, including for
+root admins; email matching is limited to privileged account roles whose
+address also matches the configured workplace-domain allowlist.
 
 List rows render only safe top-level event fields. Detail pages pass metadata
 through the same display redaction used by tests, suppressing sensitive keys

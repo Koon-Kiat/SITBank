@@ -532,12 +532,15 @@ deployment credentials, or `SONAR_HOST_URL`. Scheduled CI runs skip the
 SonarQube job. Coverage retrieval uses the SHA-pinned
 `actions/download-artifact` v8.0.1 Node.js 24 action.
 
-The initial SonarQube quality gate is reporting-only and is not a release or
-deployment dependency. After a successful trusted internal pull-request scan,
+Trusted pull requests and release-producing runs wait for the SonarQube quality
+gate and fail when it fails. The `Publish container image` job depends directly
+on both `SonarQube analysis` and `Playwright E2E browser tests`, so a failed or
+missing gate prevents image publication and every downstream staging or
+production deployment. After a successful trusted internal pull-request scan,
 the separate `SonarQube PR comment` job (internal ID `sonarqube-comment`) uses
 SHA-pinned, Node.js 24
-`actions/github-script` to create or update one informational summary with
-workflow and dashboard links. The comment job has only `contents: read` and
+`actions/github-script` to create or update one summary describing the enforced
+gate, with workflow and dashboard links. The comment job has only `contents: read` and
 `pull-requests: write`; the scanner never receives that write capability. A
 hidden marker keeps reruns from creating duplicates.
 Fork and Dependabot pull requests receive neither the secret-backed cloud scan

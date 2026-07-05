@@ -106,20 +106,20 @@
           <dd>{{ selected_request.approver_ref or "not decided" }}</dd>
         </div>
         <div>
-          <dt>Created UTC</dt>
-          <dd>{{ selected_request.created_at or "n/a" }}</dd>
+          <dt>Created (SGT)</dt>
+          <dd>{% if selected_request.created_at %}<time datetime="{{ selected_request.created_at }}">{{ selected_request.created_at_display }}</time>{% else %}n/a{% endif %}</dd>
         </div>
         <div>
-          <dt>Expires UTC</dt>
-          <dd>{{ selected_request.expires_at or "n/a" }}</dd>
+          <dt>Expires (SGT)</dt>
+          <dd>{% if selected_request.expires_at %}<time datetime="{{ selected_request.expires_at }}">{{ selected_request.expires_at_display }}</time>{% else %}n/a{% endif %}</dd>
         </div>
         <div>
-          <dt>Decided UTC</dt>
-          <dd>{{ selected_request.decided_at or "not decided" }}</dd>
+          <dt>Decided (SGT)</dt>
+          <dd>{% if selected_request.decided_at %}<time datetime="{{ selected_request.decided_at }}">{{ selected_request.decided_at_display }}</time>{% else %}not decided{% endif %}</dd>
         </div>
         <div>
-          <dt>Executed UTC</dt>
-          <dd>{{ selected_request.executed_at or "not executed" }}</dd>
+          <dt>Executed (SGT)</dt>
+          <dd>{% if selected_request.executed_at %}<time datetime="{{ selected_request.executed_at }}">{{ selected_request.executed_at_display }}</time>{% else %}not executed{% endif %}</dd>
         </div>
         <div>
           <dt>Payload</dt>

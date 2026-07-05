@@ -157,6 +157,18 @@ def test_audit_viewer_filters_sorting_pagination_and_safe_search(admin_client):
         account_type="staff",
         phone_number="91234568",
     )
+    customer, _customer_secret = _create_identity(
+        username="audit-customer",
+        email="audit.customer@example.com",
+        account_type="customer",
+        phone_number="91234569",
+    )
+    noncompliant_admin, _noncompliant_secret = _create_identity(
+        username="noncompliant-admin",
+        email="admin.personal@example.com",
+        account_type="admin",
+        phone_number="91234570",
+    )
     matching = _audit_event(
         event_type="staff_invite_created",
         user_id=admin.id,
@@ -164,6 +176,7 @@ def test_audit_viewer_filters_sorting_pagination_and_safe_search(admin_client):
             "severity": "high",
             "target_staff_ref": "target-ref-123",
             "note": "visible staff invite review",
+            "session_id": "fake-session-marker",
             "source_kind": "network",
             "source_display": "203.0.113.10",
         },
@@ -178,6 +191,16 @@ def test_audit_viewer_filters_sorting_pagination_and_safe_search(admin_client):
         created_at=datetime(2026, 6, 29, 12, 0, tzinfo=timezone.utc),
         ip_address="203.0.113.99",
         correlation_id="audit-request-2",
+    )
+    customer_event = _audit_event(
+        event_type="profile_update",
+        user_id=customer.id,
+        correlation_id="audit-request-customer",
+    )
+    noncompliant_admin_event = _audit_event(
+        event_type="admin_login",
+        user_id=noncompliant_admin.id,
+        correlation_id="audit-request-noncompliant-admin",
     )
     _login_admin(admin_client, admin_secret, "security.admin@sit.singaporetech.edu.sg")
 
@@ -212,6 +235,18 @@ def test_audit_viewer_filters_sorting_pagination_and_safe_search(admin_client):
     )
     activity_search = admin_client.get(
         "/audit-logs?q=invite",
+        headers={"Accept": "application/json"},
+    )
+    customer_email_search = admin_client.get(
+        "/audit-logs?q=audit.customer@example.com",
+        headers={"Accept": "application/json"},
+    )
+    noncompliant_admin_email_search = admin_client.get(
+        "/audit-logs?q=admin.personal@example.com",
+        headers={"Accept": "application/json"},
+    )
+    sensitive_metadata_search = admin_client.get(
+        "/audit-logs?q=fake-session-marker",
         headers={"Accept": "application/json"},
     )
 
@@ -250,6 +285,21 @@ def test_audit_viewer_filters_sorting_pagination_and_safe_search(admin_client):
     assert any(event["event_type"] == "staff_invite_created" for event in target_search.get_json()["events"])
     assert activity_search.status_code == 200
     assert any(event["event_type"] == "staff_invite_created" for event in activity_search.get_json()["events"])
+    assert customer_email_search.status_code == 200
+    assert all(
+        event["id"] != customer_event.id
+        for event in customer_email_search.get_json()["events"]
+    )
+    assert noncompliant_admin_email_search.status_code == 200
+    assert all(
+        event["id"] != noncompliant_admin_event.id
+        for event in noncompliant_admin_email_search.get_json()["events"]
+    )
+    assert sensitive_metadata_search.status_code == 200
+    assert all(
+        event["id"] != matching.id
+        for event in sensitive_metadata_search.get_json()["events"]
+    )
     assert "sql" not in invalid.get_data(as_text=True).casefold()
 
 
