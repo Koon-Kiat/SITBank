@@ -569,7 +569,7 @@ def test_dast_session_creator_requires_loopback_or_explicit_smoke_host():
     with pytest.raises(ValueError, match="host is not allowed"):
         create_dast_session.DastClient(
             "http://unexpected-smoke:5000",
-            allowed_hosts={"sitbank-smoke"},
+            allowed_hosts={"unexpected-smoke"},
         )
 
 

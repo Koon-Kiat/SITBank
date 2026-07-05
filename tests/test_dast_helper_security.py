@@ -91,6 +91,11 @@ def test_dast_secret_files_are_restricted_and_cleaned_up_by_contract():
     assert "the cookie and ZAP config files inside remain 0600" in smoke_test
     assert "--output /run/dast/auth-cookie" in smoke_test
     assert "--zap-replacer-config-output /run/dast/zap-replacer.properties" in smoke_test
+    assert (
+        'docker run --rm "${docker_args[@]}" \\\n'
+        "        --env DEPLOYMENT_TARGET=smoke \\\n"
+        '        --volume "${create_dast_session_source}:/app/create_dast_session.py:ro"'
+    ) in smoke_test
     assert "os.umask(0o077)" in creator
     assert "os.open(path, flags, 0o600)" in creator
     assert "path.chmod(0o600)" in creator
@@ -355,7 +360,9 @@ def test_create_authenticated_cookie_requires_issued_session_cookie(monkeypatch)
         module.create_authenticated_cookie("http://localhost:5000")
 
 
-def test_create_dast_user_persists_mfa_user_and_reuses_username(app, monkeypatch):
+def test_create_dast_user_persists_mfa_user_and_rejects_username_collision(
+    app, monkeypatch
+):
     module = _load_create_dast_session_module()
     import app as app_module
 
@@ -387,15 +394,14 @@ def test_create_dast_user_persists_mfa_user_and_reuses_username(app, monkeypatch
         user.password_hash,
     )
 
-    reused_id = module.create_dast_user(
-        username="zapreal",
-        email="other@sit.singaporetech.edu.sg",
-        password="DAST-Other-Correct-Horse-Battery-Staple-2026-A9!",
-        full_name="Other DAST User",
-        phone_number="91234568",
-    )
-
-    assert reused_id == user_id
+    with pytest.raises(RuntimeError, match="username collision"):
+        module.create_dast_user(
+            username="zapreal",
+            email="other@sit.singaporetech.edu.sg",
+            password="DAST-Other-Correct-Horse-Battery-Staple-2026-A9!",
+            full_name="Other DAST User",
+            phone_number="91234568",
+        )
     assert db.session.query(User).filter_by(username="zapreal").count() == 1
 
 
@@ -447,21 +453,22 @@ def test_issue_dast_session_cookie_persists_mfa_session(app, monkeypatch):
     from app.security.sessions import session_lookup_hash
 
     monkeypatch.setattr(app_module, "create_app", lambda: app)
+    app.config["DEPLOYMENT_TARGET"] = "smoke"
     user = User(
-        username="dastuser",
-        email="dastuser@sit.singaporetech.edu.sg",
+        username="zapabcdef123456",
+        email="zapabcdef123456@sit.singaporetech.edu.sg",
         password_hash="not-used-by-dast-session-test",
-        full_name="DAST User",
+        full_name="DAST User abcdef123456",
         phone_number="91234567",
         account_number="123456789012",
-        mfa_enabled=False,
+        mfa_enabled=True,
     )
     db.session.add(user)
     db.session.commit()
 
     cookie_value = module.issue_dast_session_cookie(
         user_id=user.id,
-        session_base_url="https://smoke:5000/",
+        session_base_url="https://sitbank-smoke:5000/",
     )
 
     assert module.DAST_COOKIE_RE.fullmatch(
@@ -528,11 +535,154 @@ def test_issue_dast_session_cookie_rejects_missing_synthetic_user(app, monkeypat
     import app as app_module
 
     monkeypatch.setattr(app_module, "create_app", lambda: app)
+    app.config["DEPLOYMENT_TARGET"] = "smoke"
 
     with pytest.raises(RuntimeError, match="Synthetic DAST user was not found"):
         module.issue_dast_session_cookie(
             user_id=999,
-            session_base_url="https://smoke:5000/",
+            session_base_url="https://sitbank-smoke:5000/",
+        )
+
+
+@pytest.mark.parametrize(
+    "deployment_target",
+    ("", "testing", "staging", "production", "admin"),
+)
+def test_issue_dast_session_cookie_rejects_non_smoke_runtime(
+    app, monkeypatch, deployment_target
+):
+    module = _load_create_dast_session_module()
+    import app as app_module
+
+    monkeypatch.setattr(app_module, "create_app", lambda: app)
+    app.config["DEPLOYMENT_TARGET"] = deployment_target
+
+    with pytest.raises(RuntimeError, match="requires the smoke runtime"):
+        module.issue_dast_session_cookie(
+            user_id=1,
+            session_base_url="https://sitbank-smoke:5000/",
+        )
+
+
+@pytest.mark.parametrize(
+    ("username", "email", "full_name", "account_type"),
+    (
+        (
+            "realcustomer",
+            "realcustomer@sit.singaporetech.edu.sg",
+            "Real Customer",
+            "customer",
+        ),
+        (
+            "zapabcdef123456",
+            "different@sit.singaporetech.edu.sg",
+            "DAST User abcdef123456",
+            "customer",
+        ),
+        (
+            "zapabcdef123456",
+            "zapabcdef123456@sit.singaporetech.edu.sg",
+            "DAST User abcdef123456",
+            "staff",
+        ),
+        (
+            "zapabcdef123456",
+            "zapabcdef123456@sit.singaporetech.edu.sg",
+            "DAST User abcdef123456",
+            "admin",
+        ),
+        (
+            "zapabcdef123456",
+            "zapabcdef123456@sit.singaporetech.edu.sg",
+            "DAST User abcdef123456",
+            "root_admin",
+        ),
+    ),
+)
+def test_issue_dast_session_cookie_rejects_non_synthetic_or_privileged_users(
+    app,
+    monkeypatch,
+    username,
+    email,
+    full_name,
+    account_type,
+):
+    module = _load_create_dast_session_module()
+    import app as app_module
+
+    from app.extensions import db
+    from app.models import User
+
+    monkeypatch.setattr(app_module, "create_app", lambda: app)
+    app.config["DEPLOYMENT_TARGET"] = "smoke"
+    user = User(
+        username=username,
+        email=email,
+        password_hash="not-used-by-dast-session-test",
+        full_name=full_name,
+        phone_number="91234567",
+        account_number="123456789012",
+        account_type=account_type,
+        mfa_enabled=True,
+    )
+    db.session.add(user)
+    db.session.commit()
+
+    with pytest.raises(RuntimeError, match="requires a synthetic customer"):
+        module.issue_dast_session_cookie(
+            user_id=user.id,
+            session_base_url="https://sitbank-smoke:5000/",
+        )
+
+
+@pytest.mark.parametrize(
+    ("account_status", "mfa_enabled"),
+    (("locked", True), ("active", False)),
+)
+def test_issue_dast_session_cookie_rejects_stale_synthetic_users(
+    app, monkeypatch, account_status, mfa_enabled
+):
+    module = _load_create_dast_session_module()
+    import app as app_module
+
+    from app.extensions import db
+    from app.models import User
+
+    monkeypatch.setattr(app_module, "create_app", lambda: app)
+    app.config["DEPLOYMENT_TARGET"] = "smoke"
+    user = User(
+        username="zapabcdef123456",
+        email="zapabcdef123456@sit.singaporetech.edu.sg",
+        password_hash="not-used-by-dast-session-test",
+        full_name="DAST User abcdef123456",
+        phone_number="91234567",
+        account_number="123456789012",
+        account_status=account_status,
+        mfa_enabled=mfa_enabled,
+    )
+    db.session.add(user)
+    db.session.commit()
+
+    with pytest.raises(RuntimeError, match="requires a synthetic customer"):
+        module.issue_dast_session_cookie(
+            user_id=user.id,
+            session_base_url="https://sitbank-smoke:5000/",
+        )
+
+
+def test_issue_dast_session_cookie_rejects_unapproved_session_host(
+    app, monkeypatch
+):
+    module = _load_create_dast_session_module()
+    import app as app_module
+
+    monkeypatch.setattr(app_module, "create_app", lambda: app)
+    app.config["DEPLOYMENT_TARGET"] = "smoke"
+
+    with pytest.raises(RuntimeError, match="approved smoke host"):
+        module.issue_dast_session_cookie(
+            user_id=1,
+            session_base_url="https://customer.example.test/",
         )
 
 

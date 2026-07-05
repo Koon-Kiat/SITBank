@@ -53,7 +53,11 @@ GRAFANA_SERVE_FROM_SUB_PATH=true
 ```
 
 `OBSERVABILITY_ENVIRONMENT` must be `production` or `staging` for the target
-host so dashboard variables keep environments separated. Do not put passwords,
+host so dashboard variables keep environments separated. The trusted bootstrap
+renders this allowlisted value into Prometheus's root-owned config and fails
+closed on missing, invalid, duplicate, or unresolved placeholders before
+starting the stack. Prometheus is not started with the unsupported
+`--config.expand-env` flag. Do not put passwords,
 tokens, API keys, webhook URLs, cookies, database URLs, or SMTP credentials in
 `observability.env`. Secret files must be `root:root` mode `0600`. The
 protected live verifier accepts only
@@ -194,6 +198,9 @@ sudo ss -ltnp | grep -E '127\.0\.0\.1:(3000|3100)([[:space:]]|$)'
 sudo ss -ltnp | grep -E '0\.0\.0\.0:(3000|3100|9090|9100)|\[::\]:(3000|3100|9090|9100)|\*:(3000|3100|9090|9100)' && exit 1 || true
 curl -fsSI http://127.0.0.1:3000/login
 curl -fsS http://127.0.0.1:3100/ready
+sudo docker inspect sitbank-prometheus --format '{{.State.Status}} {{.RestartCount}}'
+sudo docker logs --tail 50 sitbank-prometheus
+sudo docker exec sitbank-grafana wget -qO- http://prometheus:9090/-/ready
 sudo nginx -T | grep -iE 'grafana|loki' && exit 1 || true
 ```
 
@@ -208,6 +215,10 @@ Expected:
 - Grafana listens only on `127.0.0.1:3000`.
 - Loki listens only on `127.0.0.1:3100`.
 - Alloy, Prometheus, and node exporter publish no host listener.
+- Prometheus reports `running` with a stable restart count, not a restarting
+  loop, and its logs contain no unsupported-flag or config-expansion error.
+- From inside Grafana, `http://prometheus:9090/-/ready` returns the Prometheus
+  ready response over the internal Docker network.
 - Public SITBank Nginx configs contain no Grafana or Loki route.
 - The private Tailscale URL reaches Grafana only for approved operators.
 - The Grafana `SITBank Prometheus` datasource points to

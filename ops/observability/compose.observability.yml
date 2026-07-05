@@ -68,12 +68,9 @@ services:
     restart: unless-stopped
     command:
       - --config.file=/etc/prometheus/prometheus.yml
-      - --config.expand-env
       - --storage.tsdb.path=/prometheus
       - --storage.tsdb.retention.time=168h
       - --web.listen-address=0.0.0.0:9090
-    environment:
-      OBSERVABILITY_ENVIRONMENT: ${OBSERVABILITY_ENVIRONMENT:?OBSERVABILITY_ENVIRONMENT must be staging or production}
     volumes:
       - type: bind
         source: /etc/sitbank-observability/prometheus/prometheus.yml

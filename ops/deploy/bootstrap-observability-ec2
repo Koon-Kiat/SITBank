@@ -66,6 +66,23 @@ set_observability_env_value() {
     mv -f "${tmp}" "${OBS_ENV_FILE}"
 }
 
+read_observability_env_value() {
+    local key="$1"
+    local count value
+
+    count="$(grep -Ec "^${key}=" "${OBS_ENV_FILE}" || true)"
+    if [[ "${count}" != "1" ]]; then
+        echo "${OBS_ENV_FILE} must contain exactly one ${key} setting" >&2
+        exit 1
+    fi
+    value="$(sed -n "s/^${key}=//p" "${OBS_ENV_FILE}")"
+    if [[ -z "${value}" || "${value}" == *$'\r'* || "${value}" == *$'\n'* ]]; then
+        echo "${OBS_ENV_FILE} contains an invalid ${key} setting" >&2
+        exit 1
+    fi
+    printf '%s' "${value}"
+}
+
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     usage
     exit 0
@@ -131,9 +148,6 @@ install -o root -g root -m 0644 \
 install -o root -g root -m 0644 \
     "${repo_root}/ops/observability/alloy/config.alloy" \
     "${OBS_ROOT}/alloy/config.alloy"
-install -o root -g root -m 0644 \
-    "${repo_root}/ops/observability/prometheus/prometheus.yml" \
-    "${OBS_ROOT}/prometheus/prometheus.yml"
 
 for secret_file in "${GRAFANA_ADMIN_USER_FILE}" "${GRAFANA_ADMIN_PASSWORD_FILE}"; do
     if [[ ! -f "${secret_file}" ]]; then
@@ -158,6 +172,30 @@ if grep -Eiq '(password|token|secret|key)[[:space:]]*=' "${OBS_ENV_FILE}"; then
     echo "${OBS_ENV_FILE} must contain non-secret image references and private URL settings only." >&2
     exit 1
 fi
+observability_environment="$(read_observability_env_value OBSERVABILITY_ENVIRONMENT)"
+if [[ "${observability_environment}" != "staging" \
+    && "${observability_environment}" != "production" ]]; then
+    echo "OBSERVABILITY_ENVIRONMENT must be staging or production" >&2
+    exit 1
+fi
+
+prometheus_renderer="${repo_root}/ops/observability/render_prometheus_config.py"
+prometheus_template="${repo_root}/ops/observability/prometheus/prometheus.yml"
+if [[ ! -f "${prometheus_renderer}" || -L "${prometheus_renderer}" \
+    || ! -f "${prometheus_template}" || -L "${prometheus_template}" ]]; then
+    echo "Trusted Prometheus renderer or template is missing or unsafe" >&2
+    exit 1
+fi
+prometheus_config_tmp="$(mktemp)"
+trap 'rm -f -- "${prometheus_config_tmp:-}"' EXIT
+python3 "${prometheus_renderer}" \
+    "${prometheus_template}" \
+    "${observability_environment}" >"${prometheus_config_tmp}"
+install -o root -g root -m 0644 \
+    "${prometheus_config_tmp}" \
+    "${OBS_ROOT}/prometheus/prometheus.yml"
+rm -f -- "${prometheus_config_tmp}"
+trap - EXIT
 
 alloy_nginx_log_gid="$(host_group_gid adm "Nginx log files")"
 alloy_journal_gid="$(host_group_gid systemd-journal "systemd journal files")"

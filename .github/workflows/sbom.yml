@@ -35,8 +35,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python_manifest_dir="$(mktemp -d sbom-python-manifests.XXXXXX)"
+          cleanup() {
+            rm -rf -- "${python_manifest_dir}"
+          }
+          trap cleanup EXIT
+          install -m 0600 requirements.lock \
+            "${python_manifest_dir}/runtime-requirements.txt"
+          install -m 0600 requirements-dev.lock \
+            "${python_manifest_dir}/development-requirements.txt"
           "${{ steps.syft.outputs.cmd }}" \
             dir:. \
+            --select-catalogers=-python-installed-package-cataloger \
             --output cyclonedx-json=sitbank-source-sbom-cyclonedx.json
           jq empty sitbank-source-sbom-cyclonedx.json
 
@@ -59,6 +69,8 @@ jobs:
               echo "- Services: \`$(jq '(.services // []) | length' sitbank-source-sbom-cyclonedx.json)\`"
               echo
               python ops/security/render_sbom_summary.py \
+                --python-manifest requirements.lock \
+                --python-manifest requirements-dev.lock \
                 sitbank-source-sbom-cyclonedx.json
             else
               echo "- Counts: unavailable because valid SBOM output was not produced."

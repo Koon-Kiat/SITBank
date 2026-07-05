@@ -536,6 +536,7 @@ if [[ "${RUN_ZAP_DAST:-false}" == "true" ]]; then
     chmod_host_path 0777 "${work_dir}/dast"
     dast_mount_source="$(docker_bind_source "${work_dir}/dast")"
     docker run --rm "${docker_args[@]}" \
+        --env DEPLOYMENT_TARGET=smoke \
         --volume "${create_dast_session_source}:/app/create_dast_session.py:ro" \
         --volume "${dast_mount_source}:/run/dast:rw" \
         "${IMAGE}" \
