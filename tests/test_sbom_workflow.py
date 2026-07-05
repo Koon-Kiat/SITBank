@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import re
 import runpy
+import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 
@@ -164,3 +166,57 @@ def test_sbom_summary_explicitly_reports_no_python_and_sanitizes_markdown():
     assert "No PyPI package URLs were detected" in summary
     assert "<unsafe>" not in summary
     assert "|`name`" not in summary
+
+
+def test_sbom_summary_input_path_is_confined_to_workspace(tmp_path):
+    validate_input_path = _summary_renderer()["_validated_input_path"]
+    workspace = tmp_path / "workspace"
+    nested = workspace / "evidence"
+    nested.mkdir(parents=True)
+    sbom_path = nested / "source.json"
+    sbom_path.write_text('{"components": []}', encoding="utf-8")
+
+    assert validate_input_path(
+        Path("evidence/source.json"), input_root=workspace
+    ) == sbom_path.resolve()
+
+    with pytest.raises(ValueError, match="relative path"):
+        validate_input_path(sbom_path, input_root=workspace)
+    with pytest.raises(ValueError, match="relative path"):
+        validate_input_path(Path("../source.json"), input_root=workspace)
+    with pytest.raises(ValueError, match="regular file"):
+        validate_input_path(Path("evidence"), input_root=workspace)
+
+
+def test_sbom_summary_input_path_rejects_symlink_escape(tmp_path):
+    validate_input_path = _summary_renderer()["_validated_input_path"]
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.json"
+    outside.write_text('{"components": []}', encoding="utf-8")
+    link = workspace / "source.json"
+    try:
+        link.symlink_to(outside)
+    except OSError as error:
+        pytest.skip(f"Symlink creation is unavailable: {error}")
+
+    with pytest.raises(ValueError, match="within the working directory"):
+        validate_input_path(Path("source.json"), input_root=workspace)
+
+
+def test_sbom_summary_main_reads_validated_relative_input(
+    tmp_path, monkeypatch, capsys
+):
+    main = _summary_renderer()["main"]
+    sbom_path = tmp_path / "source.json"
+    sbom_path.write_text(
+        '{"components": [{"name": "flask", "purl": "pkg:pypi/flask@3.1.2"}]}',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        sys, "argv", ["render_sbom_summary.py", "source.json"]
+    )
+
+    assert main() == 0
+    assert "| PyPI | 1 |" in capsys.readouterr().out
