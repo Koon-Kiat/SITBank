@@ -2328,20 +2328,40 @@ def _admin_action_user_summary(user: User | None, user_id: int | None) -> str:
 def _admin_action_target_summary(request_record: AdminActionRequest) -> str:
     target_type = str(request_record.target_type or "")
     target_id = str(request_record.target_id or "")
-    if target_type in {"staff_user", "customer_user"} and target_id.isdigit():
-        target = db.session.get(User, int(target_id))
-        if target is not None:
-            label = target.username or target.full_name or f"User {target.id}"
-            if target_type == "staff_user":
-                return f"{label} ({role_label(target.account_type)}, {target.email})"
-            return f"{label} (customer)"
-    if target_type == "manual_recovery_request" and target_id.isdigit():
-        request_record_target = db.session.get(ManualRecoveryRequest, int(target_id))
-        if request_record_target is not None:
-            customer = db.session.get(User, request_record_target.user_id) if request_record_target.user_id else None
-            customer_label = f" for {customer.username}" if customer else ""
-            return f"Manual recovery request #{request_record_target.id}{customer_label} ({request_record_target.status})"
+    if target_id.isdigit():
+        summary = _admin_action_known_target_summary(target_type, int(target_id))
+        if summary:
+            return summary
     return _admin_action_target_ref(request_record) or "Unknown target"
+
+
+def _admin_action_known_target_summary(target_type: str, target_id: int) -> str | None:
+    if target_type == "staff_user":
+        return _admin_action_user_target_summary(target_id, include_role=True)
+    if target_type == "customer_user":
+        return _admin_action_user_target_summary(target_id, include_role=False)
+    if target_type == "manual_recovery_request":
+        return _admin_action_manual_recovery_target_summary(target_id)
+    return None
+
+
+def _admin_action_user_target_summary(target_id: int, *, include_role: bool) -> str | None:
+    target = db.session.get(User, target_id)
+    if target is None:
+        return None
+    label = target.username or target.full_name or f"User {target.id}"
+    if include_role:
+        return f"{label} ({role_label(target.account_type)}, {target.email})"
+    return f"{label} (customer)"
+
+
+def _admin_action_manual_recovery_target_summary(target_id: int) -> str | None:
+    request_record_target = db.session.get(ManualRecoveryRequest, target_id)
+    if request_record_target is None:
+        return None
+    customer = db.session.get(User, request_record_target.user_id) if request_record_target.user_id else None
+    customer_label = f" for {customer.username}" if customer else ""
+    return f"Manual recovery request #{request_record_target.id}{customer_label} ({request_record_target.status})"
 
 
 def _create_admin_action_request(
