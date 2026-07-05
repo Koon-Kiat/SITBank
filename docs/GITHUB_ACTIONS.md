@@ -15,15 +15,17 @@ The publish job also creates a GitHub artifact attestation whose subject is the
 exact GHCR image name and Buildx digest, and pushes that attestation to the
 image registry. Release verification uses the GitHub attestation API's
 repository-scoped lookup for that exact image digest, rather than
-`--bundle-from-oci`, and checks the exact `ci-deploy.yml` signer workflow, the
-trusted `main` source ref, the resolved release commit, GitHub's OIDC issuer,
-and a non-self-hosted runner before any staging deployment. Public GitHub
-repositories use Sigstore's Public Good instance for GitHub artifact
-attestations, so the verifier must not use `--no-public-good`; the identity and
-source constraints remain mandatory. The API lookup also avoids selecting the
-separate BuildKit provenance stored in the OCI registry. Cosign signature and
-certificate-identity verification, Trivy, SBOM, and provenance checks remain
-independent required layers.
+`--bundle-from-oci`, and checks the exact scheme-free signer identity
+`github.com/Koon-Kiat/SITBank/.github/workflows/ci-deploy.yml`, the trusted
+`main` source ref, the resolved release commit, GitHub's OIDC issuer, and a
+non-self-hosted runner before any staging deployment. GitHub CLI requires
+`--signer-workflow` in `[host/]owner/repository/path` form; an `https://`
+prefix is not valid. Public GitHub repositories use Sigstore's Public Good
+instance for GitHub artifact attestations, so the verifier must not use
+`--no-public-good`; the identity and source constraints remain mandatory. The
+API lookup also avoids selecting the separate BuildKit provenance stored in the
+OCI registry. Cosign signature and certificate-identity verification, Trivy,
+SBOM, and provenance checks remain independent required layers.
 
 ## Workflow And Check Display Names
 

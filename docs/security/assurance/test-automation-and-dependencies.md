@@ -58,7 +58,7 @@ applicable unless a frontend package manager is added.
 | Semgrep | `.github/workflows/semgrep.yml` | Runs `p/python`, `p/flask`, `p/security-audit`, `p/owasp-top-ten`, and `p/github-actions` locally with `--metrics=off` and blocks ERROR severity |
 | Action hygiene | `.github/workflows/ci-deploy.yml` | Runs actionlint and zizmor; tests require actions to be SHA-pinned |
 | Image and artifact signing | `.github/workflows/ci-deploy.yml`, `.github/workflows/bootstrap-ec2.yml`, `ops/deploy/sitbank-container-deploy` | Uses cosign to sign/verify images and deployment artifacts |
-| Release provenance | `.github/workflows/ci-deploy.yml` | Creates and verifies a GitHub artifact attestation for the exact release image digest, trusted repository, main ref, release commit, signer workflow, GitHub OIDC issuer, and non-self-hosted runner before staging; public repositories allow Sigstore Public Good because GitHub artifact attestations use it, while the default GitHub API lookup avoids independent OCI BuildKit provenance; this is SLSA Build L1/L2-aligned evidence, not formal certification |
+| Release provenance | `.github/workflows/ci-deploy.yml` | Creates and verifies a GitHub artifact attestation for the exact release image digest, trusted repository, main ref, release commit, scheme-free `github.com/owner/repository/workflow` signer identity, GitHub OIDC issuer, and non-self-hosted runner before staging; public repositories allow Sigstore Public Good because GitHub artifact attestations use it, while the default GitHub API lookup avoids independent OCI BuildKit provenance; this is SLSA Build L1/L2-aligned evidence, not formal certification |
 
 Tests for this automation include:
 
