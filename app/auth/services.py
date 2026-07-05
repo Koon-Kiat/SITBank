@@ -31,7 +31,7 @@ from app.auth.mfa_policy import (
     PASSWORD_BOOTSTRAP_AUTH_CONTEXT,
     has_enrolled_mfa_method,
 )
-from app.security.audit import AuditWriteError, audit_event, audit_event_required, audit_reference, principal_reference
+from app.security.audit import audit_event, audit_event_required, audit_reference, principal_reference
 from app.security.crypto import decrypt_mfa_secret, encrypt_mfa_secret
 from app.security.email import send_security_email
 from app.security.identity_policy import (
@@ -107,6 +107,7 @@ PROFILE_EMAIL_PENDING_USERNAME_KEY = "profile_email_pending_username"
 PROFILE_EMAIL_PENDING_PHONE_HMAC_KEY = "profile_email_pending_phone_hmac"
 PROFILE_EMAIL_PENDING_CODE_HMAC_KEY = "profile_email_pending_code_hmac"
 PROFILE_EMAIL_PENDING_EXPIRES_AT_KEY = "profile_email_pending_expires_at"
+PROFILE_EMAIL_CHANGE_EXPIRED_MESSAGE = "Email verification expired. Request a new code."
 REGISTRATION_WELCOME_CREDIT_AMOUNT = Decimal("100.00")
 
 
@@ -288,7 +289,7 @@ def register_user(data: dict[str, Any]) -> tuple[User, list[str]]:
         db.session.rollback()
         audit_event("registration", "failure", metadata={"reason": "integrity_error"})
         raise AuthError("Registration could not be completed with those details", 400) from exc
-    except (AuditWriteError, RuntimeError) as exc:
+    except RuntimeError as exc:
         db.session.rollback()
         current_app.logger.warning("registration_welcome_credit_failed error=%s", type(exc).__name__)
         audit_event("registration", "failure", metadata={"reason": "welcome_credit_unavailable"})
@@ -865,7 +866,7 @@ def _profile_update_values(user: User, username: str, email: str, phone_number: 
     username_lookup = _normalize(normalized_username)
     submitted_email = email.strip().lower()
     normalized_phone = str(phone_number or "").strip()
-    if re.fullmatch(r"[89][0-9]{7}", normalized_phone) is None:
+    if re.fullmatch(r"[89]\d{7}", normalized_phone) is None:
         audit_event("profile_update", "blocked", user=user, metadata={"reason": "invalid_phone"})
         raise AuthError(PROFILE_UPDATE_ERROR, 400)
 
@@ -928,19 +929,19 @@ def _validate_profile_email_change_code(
         _reject_profile_email_change(
             user,
             reason="missing_or_expired_challenge",
-            message="Email verification expired. Request a new code.",
+            message=PROFILE_EMAIL_CHANGE_EXPIRED_MESSAGE,
         )
     if pending_change["email"] != normalized_email:
         _reject_profile_email_change(
             user,
             reason="superseded_challenge",
-            message="Email verification expired. Request a new code.",
+            message=PROFILE_EMAIL_CHANGE_EXPIRED_MESSAGE,
         )
     if pending_change["phone_hmac"] != _profile_phone_hmac(user, normalized_phone):
         _reject_profile_email_change(
             user,
             reason="superseded_challenge",
-            message="Email verification expired. Request a new code.",
+            message=PROFILE_EMAIL_CHANGE_EXPIRED_MESSAGE,
         )
     expected_hmac = str(pending_change["code_hmac"])
     submitted_hmac = _profile_email_code_hmac(

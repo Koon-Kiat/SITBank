@@ -14,6 +14,8 @@ _PASSWORDS_MUST_MATCH_MESSAGE = "Passwords do not match. Please re-enter your pa
 _AUTHENTICATOR_CODE_LABEL = "Authenticator code"
 _MFA_CODE_ERROR = "MFA code must be exactly 6 digits"
 _VERIFICATION_CODE_ERROR = "Verification code must be exactly 6 digits"
+_PHONE_NUMBER_LABEL = "Phone number"
+_PHONE_NUMBER_ERROR = "Enter a valid Singapore phone number (8 digits starting with 8 or 9)"
 
 
 def password_length(*, minimum: int | None = None):
@@ -47,10 +49,10 @@ class RegisterForm(FlaskForm):
         ],
     )
     phone_number = StringField(
-        "Phone number",
+        _PHONE_NUMBER_LABEL,
         validators=[
             InputRequired(),
-            Regexp(PHONE_RE, message="Enter a valid Singapore phone number (8 digits starting with 8 or 9)"),
+            Regexp(PHONE_RE, message=_PHONE_NUMBER_ERROR),
         ],
     )
     email = StringField("Email", validators=[InputRequired(), Email(), Length(max=255)])
@@ -83,10 +85,10 @@ class RegisterDetailsForm(FlaskForm):
         ],
     )
     phone_number = StringField(
-        "Phone number",
+        _PHONE_NUMBER_LABEL,
         validators=[
             InputRequired(),
-            Regexp(PHONE_RE, message="Enter a valid Singapore phone number (8 digits starting with 8 or 9)"),
+            Regexp(PHONE_RE, message=_PHONE_NUMBER_ERROR),
         ],
     )
     password = PasswordField("Password", validators=[InputRequired(), password_length()])
@@ -149,10 +151,10 @@ class ProfileForm(FlaskForm):
     )
     email = StringField("Email address", validators=[InputRequired(), Email(), Length(max=255)])
     phone_number = StringField(
-        "Phone number",
+        _PHONE_NUMBER_LABEL,
         validators=[
             InputRequired(),
-            Regexp(PHONE_RE, message="Enter a valid Singapore phone number (8 digits starting with 8 or 9)"),
+            Regexp(PHONE_RE, message=_PHONE_NUMBER_ERROR),
         ],
     )
     email_verification_code = StringField(
