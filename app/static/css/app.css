@@ -2129,6 +2129,7 @@ th {
 /* Admin dashboard */
 .admin-page {
   display: grid;
+  align-content: start;
   gap: var(--space-7);
 }
 
