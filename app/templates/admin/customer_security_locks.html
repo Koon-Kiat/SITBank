@@ -37,12 +37,16 @@
             <td>{{ customer.lock_reason|replace("_", " ") }}</td>
             <td><time datetime="{{ customer.locked_at }}">{{ customer.locked_at_display }}</time></td>
             <td>
-              <form method="post" action="{{ url_for('admin.customer_security_unlock_request', user_id=customer.id) }}">
+              <form class="admin-form" method="post" action="{{ url_for('admin.customer_security_unlock_request', user_id=customer.id) }}">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                <label for="reason-{{ customer.id }}">Reviewed support reason</label>
-                <input id="reason-{{ customer.id }}" name="reason" type="text" maxlength="512" required>
-                <label for="totp-{{ customer.id }}">Authenticator code</label>
-                <input id="totp-{{ customer.id }}" name="totp_code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
+                <div class="form-group">
+                  <label for="reason-{{ customer.id }}">Reviewed support reason</label>
+                  <input id="reason-{{ customer.id }}" name="reason" type="text" maxlength="512" required>
+                </div>
+                <div class="form-group">
+                  <label for="totp-{{ customer.id }}">Authenticator code</label>
+                  <input id="totp-{{ customer.id }}" name="totp_code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
+                </div>
                 <button class="button small" type="submit">Request unlock</button>
               </form>
             </td>
