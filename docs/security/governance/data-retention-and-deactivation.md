@@ -84,8 +84,9 @@ requires `--confirm`.
 
 `cleanup-security-state` is a compatibility wrapper for this same workflow and
 is also dry-run unless `--confirm` is supplied. Confirmed cleanup commits a
-required `started` audit event before mutation and then records `completed` or
-`failed` evidence; a missing start event fails closed before cleanup.
+required `started` audit event before mutation. The mutations and required
+`completed` event commit atomically; a missing start or completion event fails
+closed, mutations roll back, and a separate `failed` event is attempted.
 
 The command does not delete or anonymize customer accounts, staff/admin
 accounts, payees, transactions, manual recovery requests, staff invites,

@@ -170,9 +170,14 @@ def test_audit_alert_expiry_and_cleanup_commands(app, monkeypatch, tmp_path):
 
     retention_calls = []
 
-    def fake_retention_cleanup(*, limit, dry_run, confirm):
+    def fake_retention_cleanup(*, limit, dry_run, confirm, commit):
         retention_calls.append(
-            {"limit": limit, "dry_run": dry_run, "confirm": confirm}
+            {
+                "limit": limit,
+                "dry_run": dry_run,
+                "confirm": confirm,
+                "commit": commit,
+            }
         )
         return {
             "mode": "dry_run" if dry_run else "confirmed",
@@ -205,10 +210,10 @@ def test_audit_alert_expiry_and_cleanup_commands(app, monkeypatch, tmp_path):
     assert confirmed.exit_code == 0
     assert json.loads(confirmed.output)["mode"] == "confirmed"
     assert retention_calls == [
-        {"limit": 8, "dry_run": True, "confirm": False},
-        {"limit": 8, "dry_run": False, "confirm": True},
-        {"limit": 9, "dry_run": True, "confirm": False},
-        {"limit": 9, "dry_run": False, "confirm": True},
+        {"limit": 8, "dry_run": True, "confirm": False, "commit": True},
+        {"limit": 8, "dry_run": False, "confirm": True, "commit": False},
+        {"limit": 9, "dry_run": True, "confirm": False, "commit": True},
+        {"limit": 9, "dry_run": False, "confirm": True, "commit": False},
     ]
     assert any(
         args[:2] == ("retention_cleanup", "dry_run")
@@ -244,6 +249,54 @@ def test_confirmed_retention_cleanup_refuses_mutation_without_started_audit(
     assert result.exit_code != 0
     assert "audit evidence is unavailable" in result.output
     assert cleanup_calls == []
+
+
+def test_confirmed_retention_cleanup_rolls_back_when_completion_audit_fails(
+    app,
+    monkeypatch,
+):
+    from app.security import retention
+
+    commits = []
+    rollbacks = []
+    failed_events = []
+    monkeypatch.setattr(commands, "audit_system_event_required", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        commands,
+        "audit_system_event_in_transaction_required",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("fake completion failure")
+        ),
+    )
+    monkeypatch.setattr(
+        commands,
+        "audit_system_event",
+        lambda *args, **kwargs: failed_events.append((args, kwargs)),
+    )
+    monkeypatch.setattr(commands.db.session, "commit", lambda: commits.append(True))
+    monkeypatch.setattr(commands.db.session, "rollback", lambda: rollbacks.append(True))
+    monkeypatch.setattr(
+        retention,
+        "run_retention_cleanup",
+        lambda **_kwargs: {
+            "mode": "confirmed",
+            "dry_run": False,
+            "retention_days": 30,
+            "batch_limit": 100,
+            "category_counts": {"expired_sessions_marked": 1},
+            "scheduling": "weekly_operator_reviewed_dry_run",
+        },
+    )
+
+    result = app.test_cli_runner().invoke(
+        args=["security", "run-retention-cleanup", "--confirm"]
+    )
+
+    assert result.exit_code != 0
+    assert "rolled back because completion audit evidence" in result.output
+    assert commits == []
+    assert rollbacks == [True]
+    assert failed_events[0][0][:2] == ("retention_cleanup", "failed")
 
 
 def test_ops_helpers_normalize_time_anchor_env_and_alert_metadata(tmp_path, monkeypatch):

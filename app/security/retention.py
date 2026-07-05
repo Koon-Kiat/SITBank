@@ -42,6 +42,7 @@ def run_retention_cleanup(
     limit: int | None = None,
     dry_run: bool = True,
     confirm: bool = False,
+    commit: bool = True,
 ) -> dict[str, Any]:
     """Run the approved temporary security-state retention workflow."""
 
@@ -68,6 +69,7 @@ def run_retention_cleanup(
         now=now,
         limit=requested_limit,
         dry_run=dry_run,
+        commit=commit,
     )
     return {
         "mode": "dry_run" if dry_run else "confirmed",

@@ -407,6 +407,31 @@ def has_recent_fresh_mfa() -> bool:
     return _now() - verified_at <= current_app.config["FRESH_MFA_SECONDS"]
 
 
+def authenticated_session_age_seconds() -> int | None:
+    """Return a bounded authenticated-session age, or None for invalid state."""
+    if not session.get("user_id") or not current_session_id():
+        return None
+    created_at = session.get(AUTH_CREATED_AT_KEY)
+    if isinstance(created_at, bool):
+        return None
+    try:
+        age = _now() - int(created_at)
+    except (TypeError, ValueError):
+        return None
+    if age < 0 or age > int(current_app.config["SESSION_ABSOLUTE_LIFETIME_SECONDS"]):
+        return None
+    return age
+
+
+def authenticated_session_risk_is_stable() -> bool:
+    """Fail closed unless the current authenticated session risk is stable."""
+    if not session.get("user_id") or not current_session_id():
+        return False
+    if session.get(SESSION_RISK_REAUTH_REQUIRED_KEY):
+        return False
+    return _session_risk_severity(_session_risk_context_changes()) == "stable"
+
+
 def rotate_authenticated_session_after_mfa(user_id: int) -> str:
     login_time = session.get("login_at") or utc_now_iso()
     mark_fresh_mfa()

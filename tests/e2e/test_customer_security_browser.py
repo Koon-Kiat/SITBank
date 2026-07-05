@@ -74,7 +74,7 @@ def test_mfa_login_logout_then_protected_banking_redirects_to_login(
     assert console_errors == []
 
 
-def test_payup_lookup_browser_flow_requires_totp_before_recipient_name(
+def test_payup_lookup_browser_flow_masks_identity_and_skips_low_risk_step_up(
     live_server,
     browser_page,
     e2e_payup_pair,
@@ -86,11 +86,26 @@ def test_payup_lookup_browser_flow_requires_totp_before_recipient_name(
     login_customer_with_mfa(browser_page, live_server, sender)
     browser_page.goto(f"{live_server}/banking/payup", wait_until="load")
     browser_page.locator("input[name='phone_number']").fill(recipient["phone_number"])
-    browser_page.locator("input[name='totp_code']").fill(current_totp(sender["secret"]))
+    assert browser_page.locator("input[name='totp_code']").count() == 0
     browser_page.get_by_role("button", name="Continue").click()
     browser_page.wait_for_url("**/banking/payup/amount", wait_until="load")
 
-    browser_page.get_by_role("heading", name=f"Pay to {recipient['full_name']}").wait_for()
+    masked_name = " ".join(
+        part[0] + ("*" * min(max(len(part) - 1, 1), 8))
+        for part in recipient["full_name"].split()
+    )
+    browser_page.get_by_role("heading", name=f"Pay to {masked_name}").wait_for()
+    assert recipient["full_name"] not in browser_page.content()
+    assert recipient["phone_number"] in browser_page.content()
+
+    browser_page.locator("input[name='amount']").fill("100.00")
+    browser_page.get_by_role("button", name="Review Transfer").click()
+    browser_page.wait_for_url("**/banking/payup/confirm", wait_until="load")
+
+    assert masked_name in browser_page.content()
+    assert recipient["phone_number"] in browser_page.content()
+    assert "SGD 100.00" in browser_page.content()
+    assert not browser_page.get_by_label("Authenticator code").is_visible()
     assert console_errors == []
 
 
@@ -126,7 +141,7 @@ def test_payup_amount_page_reveals_balance_and_account_number(
     login_customer_with_mfa(browser_page, live_server, sender)
     browser_page.goto(f"{live_server}/banking/payup", wait_until="load")
     browser_page.locator("input[name='phone_number']").fill(recipient["phone_number"])
-    browser_page.locator("input[name='totp_code']").fill(current_totp(sender["secret"]))
+    assert browser_page.locator("input[name='totp_code']").count() == 0
     browser_page.get_by_role("button", name="Continue").click()
     browser_page.wait_for_url("**/banking/payup/amount", wait_until="load")
 

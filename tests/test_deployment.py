@@ -725,6 +725,25 @@ def test_transaction_hash_not_null_migration_is_data_preserving():
     assert "not manual schema-edit commands" in normalized_docs
 
 
+def test_transaction_integrity_enforcement_migration_fails_closed_after_backfill():
+    migration = Path(
+        "migrations/versions/20260705_0028_enforce_transaction_integrity.py"
+    ).read_text(encoding="utf-8")
+    deployment_docs = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
+
+    assert 'revision = "20260705_0028"' in migration
+    assert 'down_revision = "20260705_0027"' in migration
+    assert "SELECT COUNT(*) FROM transactions" in migration
+    assert "requires the controlled" in migration
+    assert migration.count("nullable=False") >= 4
+    assert "transaction_integrity_algorithm = 'hmac-sha256'" in migration
+    assert "transaction_integrity_version = 1" in migration
+    assert "Downgrade would re-enable legacy transaction integrity" in migration
+    assert "security backfill-transaction-integrity --confirm" in deployment_docs
+    assert "fresh encrypted backup" in deployment_docs
+    assert "fails closed" in deployment_docs
+
+
 def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypatch):
     _set_deployment_values(monkeypatch)
 
@@ -1909,11 +1928,40 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     }
     assert workflow["permissions"] == {}
     assert workflow["jobs"]["workflow-security"]["permissions"]["contents"] == "read"
-    assert workflow["jobs"]["publish"]["permissions"]["packages"] == "write"
-    assert "id-token" not in workflow["jobs"]["publish"]["permissions"]
-    assert "attestations" not in workflow["jobs"]["publish"]["permissions"]
+    assert workflow["jobs"]["publish"]["permissions"] == {
+        "contents": "read",
+        "id-token": "write",
+        "packages": "write",
+        "attestations": "write",
+        "artifact-metadata": "write",
+    }
+    pull_request_job_names = (
+        "resolve-source",
+        "workflow-security",
+        "dependency-review",
+        "test",
+        "playwright-e2e",
+        "sonarqube",
+        "sonarqube-comment",
+        "image-test",
+    )
+    for job_name in pull_request_job_names:
+        job = workflow["jobs"][job_name]
+        permissions = job.get("permissions", {})
+        for permission in (
+            "id-token",
+            "packages",
+            "attestations",
+            "artifact-metadata",
+        ):
+            assert permissions.get(permission) != "write"
+        for step in job.get("steps", ()):
+            assert not str(step.get("uses", "")).startswith("actions/attest@")
+            assert step.get("with", {}).get("push") is not True
+            assert "cosign sign" not in step.get("run", "")
     assert workflow["jobs"]["release-verify"]["permissions"]["id-token"] == "write"
     assert workflow["jobs"]["release-verify"]["permissions"]["packages"] == "write"
+    assert workflow["jobs"]["release-verify"]["permissions"]["attestations"] == "read"
     publish_condition = workflow["jobs"]["publish"]["if"]
     release_verify_condition = workflow["jobs"]["release-verify"]["if"]
     for condition in (publish_condition, release_verify_condition):
@@ -2367,6 +2415,42 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "secrets.EC2_" not in workflow_text
     assert "provenance: mode=max" in workflow_text
     assert "sbom: true" in workflow_text
+    attestation_step = next(
+        step
+        for step in workflow["jobs"]["publish"]["steps"]
+        if step["name"] == "Attest the exact published image digest"
+    )
+    assert (
+        attestation_step["uses"]
+        == "actions/attest@a1948c3f048ba23858d222213b7c278aabede763"
+    )
+    assert attestation_step["with"] == {
+        "subject-name": "${{ steps.image.outputs.repository }}",
+        "subject-digest": "${{ steps.push.outputs.digest }}",
+        "push-to-registry": True,
+        "show-summary": False,
+    }
+    assert "gh attestation verify \"oci://${IMAGE}\"" in workflow_text
+    assert "--repo \"${GITHUB_REPOSITORY}\"" in workflow_text
+    assert (
+        "--signer-workflow "
+        "\"${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/.github/workflows/ci-deploy.yml\""
+    ) in workflow_text
+    assert "--source-ref \"refs/heads/main\"" in workflow_text
+    assert "--source-digest \"${RELEASE_SHA}\"" in workflow_text
+    assert (
+        "--cert-identity "
+        "\"${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/.github/workflows/"
+        "ci-deploy.yml@refs/heads/main\""
+    ) in workflow_text
+    release_steps = [
+        step["name"] for step in workflow["jobs"]["release-verify"]["steps"]
+    ]
+    assert release_steps.index(
+        "Verify signed SLSA provenance for the exact digest"
+    ) < release_steps.index(
+        "Validate production and staging Compose models for the exact digest"
+    )
     assert "ignore-unfixed: false" in workflow_text
     assert "ignore-unfixed: true" in workflow_text
     assert workflow_text.count("Report all critical vulnerabilities") == 2
@@ -3138,6 +3222,7 @@ def test_only_sitbank_container_deployment_units_are_active():
     assert Path("ops/backups/sitbank-backup-encrypted").exists()
     assert Path("ops/backups/sitbank-restore-preflight").exists()
     assert Path("ops/deploy/sitbank-container-bootstrap").exists()
+    assert Path("ops/deploy/sitbank-observability-bootstrap").exists()
     assert Path("ops/deploy/sitbank-container-deploy").exists()
     assert Path("ops/deploy/sitbank-container-runtime").exists()
     assert Path("ops/deploy/sitbank-database-cutover").exists()
@@ -3146,6 +3231,7 @@ def test_only_sitbank_container_deployment_units_are_active():
     assert Path("ops/systemd/sitbank-security-alerts.service").exists()
     assert Path("ops/systemd/sitbank-security-alerts.timer").exists()
     assert Path("ops/sudoers/sitbank-container-deploy").exists()
+    assert Path("ops/sudoers/sitbank-observability-bootstrap").exists()
 
 
 def test_linux_deployment_artifacts_are_forced_to_lf_and_reject_crlf():
@@ -3159,6 +3245,7 @@ def test_linux_deployment_artifacts_are_forced_to_lf_and_reject_crlf():
         Path("compose.staging.yml"),
         Path("ops/deploy/bootstrap-container-ec2"),
         Path("ops/deploy/sitbank-container-bootstrap"),
+        Path("ops/deploy/sitbank-observability-bootstrap"),
         Path("ops/deploy/sitbank-container-deploy"),
         Path("ops/deploy/sitbank-container-runtime"),
         Path("ops/deploy/sitbank-database-cutover"),
@@ -3178,6 +3265,7 @@ def test_linux_deployment_artifacts_are_forced_to_lf_and_reject_crlf():
         Path("ops/nginx/sitbank-staging.conf"),
         Path("ops/nginx/sitbank-staging-rate-limits.conf"),
         Path("ops/sudoers/sitbank-container-deploy"),
+        Path("ops/sudoers/sitbank-observability-bootstrap"),
         Path("ops/systemd/sitbank-container.service"),
         Path("ops/systemd/sitbank-staging-container.service"),
         Path("ops/systemd/sitbank-security-alerts.service"),
@@ -3294,6 +3382,120 @@ def test_private_observability_workflow_is_manual_protected_and_sanitized():
     assert "operator passwords" in docs
     assert "browser sessions" in docs
     assert "raw logs" in docs
+
+
+def test_observability_bootstrap_workflow_and_wrapper_are_trusted_and_restricted():
+    workflow_path = Path(
+        ".github/workflows/bootstrap-observability-ec2.yml"
+    )
+    workflow_text = workflow_path.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(workflow_text)
+    triggers = workflow[True]
+    job = workflow["jobs"]["bootstrap"]
+    steps = job["steps"]
+
+    assert workflow["name"] == "Bootstrap private observability on EC2"
+    assert set(triggers) == {"workflow_dispatch"}
+    assert triggers["workflow_dispatch"]["inputs"]["target_environment"][
+        "options"
+    ] == ["staging", "production"]
+    assert workflow["permissions"] == {}
+    assert job["if"] == "github.ref == 'refs/heads/main'"
+    assert job["permissions"] == {
+        "contents": "read",
+        "id-token": "write",
+    }
+    assert job["environment"]["name"] == (
+        "observability-${{ inputs.target_environment }}"
+    )
+    checkout = next(
+        step
+        for step in steps
+        if step["name"] == "Check out trusted main workflow commit"
+    )
+    assert checkout["with"]["ref"] == "${{ github.workflow_sha }}"
+    assert checkout["with"]["persist-credentials"] is False
+    tailnet_index = next(
+        index
+        for index, step in enumerate(steps)
+        if step["name"]
+        == "Join the restricted observability bootstrap tailnet"
+    )
+    remote_indexes = [
+        index
+        for index, step in enumerate(steps)
+        if re.search(r"\b(?:ssh|scp)\b", str(step.get("run", "")))
+    ]
+    assert remote_indexes
+    assert all(tailnet_index < index for index in remote_indexes)
+    assert "tag:github-ci-observability-bootstrap" in workflow_text
+    assert "StrictHostKeyChecking=yes" in workflow_text
+    assert "StrictHostKeyChecking=no" not in workflow_text
+    assert ".sitbank-observability-bootstrap-commit" in workflow_text
+    assert "cosign sign-blob --yes" in workflow_text
+    assert (
+        "sudo -n /usr/local/sbin/sitbank-observability-bootstrap "
+        "'${TARGET}' '${TRUSTED_SHA}'"
+    ) in workflow_text
+    assert "actions/upload-artifact" not in workflow_text
+    assert "pull_request_target" not in workflow_text
+    assert "\npush:" not in workflow_text
+    _assert_pinned_actions(
+        _workflow_uses(workflow_text),
+        context="Observability bootstrap workflow",
+    )
+
+    wrapper = Path(
+        "ops/deploy/sitbank-observability-bootstrap"
+    ).read_text(encoding="utf-8")
+    sudoers = Path(
+        "ops/sudoers/sitbank-observability-bootstrap"
+    ).read_text(encoding="utf-8")
+    installer = Path("ops/deploy/bootstrap-container-ec2").read_text(
+        encoding="utf-8"
+    )
+    for required in (
+        "TARGET TRUSTED_MAIN_SHA",
+        "bootstrap-observability-ec2.yml@refs/heads/main",
+        'GITHUB_REPOSITORY:-}" != "Koon-Kiat/SITBank"',
+        "cosign verify-blob",
+        ".sitbank-observability-bootstrap-commit",
+        "100 * 1024 * 1024",
+        "os.O_RDONLY | os.O_NOFOLLOW",
+        "shutil.copyfileobj",
+        "trusted_archive_path",
+        "tarfile.open",
+        "member.isfile() or member.isdir()",
+        "/var/lock/sitbank-container-bootstrap.lock",
+        "/var/lock/sitbank-container-deploy.lock",
+        "/var/lock/sitbank-staging-container-deploy.lock",
+        "PROMETHEUS_IMAGE",
+        "NODE_EXPORTER_IMAGE",
+        "OBSERVABILITY_ENVIRONMENT",
+        "root:root:600",
+        "docker port sitbank-grafana 3000/tcp",
+        "docker port sitbank-loki 3100/tcp",
+        "sitbank-prometheus sitbank-node-exporter sitbank-alloy",
+        "docker network inspect sitbank-observability",
+        "Tailscale Funnel must remain disabled",
+        "environment=${target} result=success revision=${trusted_sha}",
+    ):
+        assert required in wrapper
+    assert "set -x" not in wrapper
+    assert "cat \"${OBS_ENV_FILE}\"" not in wrapper
+    assert sudoers.splitlines() == [
+        "sitbank-deploy ALL=(root) NOPASSWD: "
+        "/usr/local/sbin/sitbank-observability-bootstrap"
+    ]
+    assert "NOPASSWD: ALL" not in sudoers
+    assert "/bin/bash" not in sudoers
+    assert "sitbank-observability-bootstrap" in installer
+    assert "/etc/sudoers.d/sitbank-observability-bootstrap" in installer
+    assert (
+        "visudo -cf /etc/sudoers.d/sitbank-observability-bootstrap"
+        in installer
+    )
+    assert "bash \"${bootstrap_script}\"" not in installer
 
 
 def test_private_observability_static_policy_keeps_public_routes_closed():

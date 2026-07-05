@@ -16,7 +16,7 @@ from sqlalchemy import MetaData, and_, column, create_engine, func, select, tabl
 
 from app.admin.bootstrap_root import RootAdminBootstrapError, bootstrap_root_admin
 from app.extensions import db
-from app.models import User
+from app.models import Transaction, User
 from app.security.alerts import (
     build_security_alert_report,
     deliver_security_alerts,
@@ -26,7 +26,9 @@ from app.security.audit import (
     AuditWriteError,
     audit_log_anchor,
     audit_system_event,
+    audit_system_event_in_transaction_required,
     audit_system_event_required,
+    log_committed_system_audit_event,
     refresh_audit_log_anchor,
     verify_audit_hash_chain,
     write_audit_log_anchor,
@@ -37,6 +39,11 @@ from app.security.crypto import (
     rewrap_mfa_dek,
 )
 from app.security.production_guard import validate_production_security_prerequisites
+from app.security.transaction_integrity import (
+    sign_transaction_integrity,
+    transaction_integrity_status,
+    validate_transaction_integrity_config,
+)
 from app.ops.db_privileges import (
     apply_admin_runtime_database_privileges,
     apply_runtime_audit_table_privileges,
@@ -429,6 +436,20 @@ def register_ops_commands(app: Flask) -> None:  # NOSONAR
         result = _run_audited_retention_cleanup(limit=limit, confirm=confirm)
         click.echo(json.dumps(result, separators=(",", ":"), sort_keys=True))
 
+    @security_cli.command("backfill-transaction-integrity")
+    @click.option(
+        "--confirm",
+        is_flag=True,
+        help="Apply the backfill. Without this flag the command is validation-only.",
+    )
+    def backfill_transaction_integrity_command(confirm: bool) -> None:
+        """Backfill legacy transaction rows before integrity enforcement."""
+        try:
+            result = _backfill_transaction_integrity(confirm=confirm)
+        except RuntimeError as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(json.dumps(result, separators=(",", ":"), sort_keys=True))
+
     @security_cli.command("run-retention-cleanup")
     @click.option(
         "--limit",
@@ -474,8 +495,10 @@ def register_ops_commands(app: Flask) -> None:  # NOSONAR
                 limit=limit,
                 dry_run=not confirm,
                 confirm=confirm,
+                commit=not confirm,
             )
         except RetentionCleanupError as exc:
+            db.session.rollback()
             if confirm:
                 audit_system_event(
                     "retention_cleanup",
@@ -486,6 +509,20 @@ def register_ops_commands(app: Flask) -> None:  # NOSONAR
                     },
                 )
             raise click.ClickException(str(exc)) from exc
+        except Exception as exc:
+            db.session.rollback()
+            if confirm:
+                audit_system_event(
+                    "retention_cleanup",
+                    "failed",
+                    metadata={
+                        **requested_metadata,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+            raise click.ClickException(
+                "Retention cleanup failed and no cleanup changes were committed"
+            ) from exc
 
         completed_metadata = {
             "mode": result["mode"],
@@ -497,15 +534,26 @@ def register_ops_commands(app: Flask) -> None:  # NOSONAR
         }
         if confirm:
             try:
-                audit_system_event_required(
+                completed_event = audit_system_event_in_transaction_required(
                     "retention_cleanup",
                     "completed",
                     metadata=completed_metadata,
                 )
-            except AuditWriteError as exc:
+                db.session.commit()
+                log_committed_system_audit_event(completed_event)
+            except Exception as exc:
+                db.session.rollback()
+                audit_system_event(
+                    "retention_cleanup",
+                    "failed",
+                    metadata={
+                        **requested_metadata,
+                        "error_type": type(exc).__name__,
+                    },
+                )
                 raise click.ClickException(
-                    "Retention cleanup completed with started audit evidence, "
-                    "but completion evidence failed"
+                    "Retention cleanup rolled back because completion audit "
+                    "evidence could not be recorded"
                 ) from exc
         else:
             audit_system_event(
@@ -781,6 +829,182 @@ def _validate_mfa_rewrap_preflight(
         },
     )
     raise click.ClickException(message)
+
+
+def _backfill_transaction_integrity(*, confirm: bool) -> dict[str, object]:
+    validate_transaction_integrity_config()
+    requested_metadata = {
+        "mode": "confirmed" if confirm else "dry_run",
+        "dry_run": not confirm,
+    }
+    if confirm:
+        audit_system_event_required(
+            "transaction_integrity_backfill",
+            "started",
+            metadata=requested_metadata,
+        )
+
+    try:
+        rows = _load_transaction_integrity_backfill_rows(confirm=confirm)
+        legacy_rows, valid_existing = _classify_transaction_integrity_rows(rows)
+        if confirm:
+            _sign_transaction_integrity_rows(legacy_rows)
+            _commit_transaction_integrity_backfill(
+                rows=rows,
+                legacy_count=len(legacy_rows),
+                valid_existing=valid_existing,
+                requested_metadata=requested_metadata,
+            )
+        else:
+            _report_transaction_integrity_backfill_dry_run(
+                scanned_count=len(rows),
+                legacy_count=len(legacy_rows),
+                valid_existing=valid_existing,
+                requested_metadata=requested_metadata,
+            )
+    except Exception as exc:
+        _record_transaction_integrity_backfill_failure(
+            confirm=confirm,
+            requested_metadata=requested_metadata,
+            error_type=type(exc).__name__,
+        )
+        if isinstance(exc, RuntimeError):
+            raise
+        raise RuntimeError(
+            "Transaction integrity backfill failed without committing changes"
+        ) from exc
+
+    backfilled_count = len(legacy_rows) if confirm else 0
+    backfill_required_count = 0 if confirm else len(legacy_rows)
+    return {
+        "message": "transaction_integrity_backfill",
+        "mode": requested_metadata["mode"],
+        "scanned_count": len(rows),
+        "backfilled_count": backfilled_count,
+        "backfill_required_count": backfill_required_count,
+        "valid_existing_count": valid_existing,
+    }
+
+
+def _load_transaction_integrity_backfill_rows(
+    *,
+    confirm: bool,
+) -> list[Transaction]:
+    statement = db.select(Transaction).order_by(Transaction.id.asc())
+    if confirm and db.engine.dialect.name == "postgresql":
+        statement = statement.with_for_update()
+    return list(db.session.execute(statement).scalars())
+
+
+def _classify_transaction_integrity_rows(
+    rows: list[Transaction],
+) -> tuple[list[Transaction], int]:
+    legacy_rows: list[Transaction] = []
+    valid_existing = 0
+    for transaction in rows:
+        metadata = (
+            transaction.transaction_integrity_key_id,
+            transaction.transaction_integrity_algorithm,
+            transaction.transaction_integrity_version,
+        )
+        if all(value is None for value in metadata):
+            legacy_rows.append(transaction)
+        elif any(value is None for value in metadata):
+            raise RuntimeError(
+                "Transaction integrity backfill refused partial metadata"
+            )
+        elif transaction_integrity_status(transaction) != "valid":
+            raise RuntimeError(
+                "Transaction integrity backfill refused an invalid signed row"
+            )
+        else:
+            valid_existing += 1
+    return legacy_rows, valid_existing
+
+
+def _sign_transaction_integrity_rows(rows: list[Transaction]) -> None:
+    for transaction in rows:
+        (
+            transaction.transaction_hash,
+            transaction.transaction_integrity_key_id,
+            transaction.transaction_integrity_algorithm,
+            transaction.transaction_integrity_version,
+        ) = sign_transaction_integrity(
+            transaction_ref=transaction.transaction_ref,
+            sender_id=transaction.sender_id,
+            recipient_id=transaction.recipient_id,
+            payee_id=transaction.payee_id,
+            amount=transaction.amount,
+            reference=transaction.reference or "",
+            status=transaction.status,
+            transaction_type=transaction.transaction_type,
+            created_at=transaction.created_at,
+        )
+
+
+def _commit_transaction_integrity_backfill(
+    *,
+    rows: list[Transaction],
+    legacy_count: int,
+    valid_existing: int,
+    requested_metadata: dict[str, object],
+) -> None:
+    db.session.flush()
+    if any(
+        transaction_integrity_status(transaction) != "valid"
+        for transaction in rows
+    ):
+        raise RuntimeError("Transaction integrity backfill verification failed")
+    completed_event = audit_system_event_in_transaction_required(
+        "transaction_integrity_backfill",
+        "completed",
+        metadata={
+            **requested_metadata,
+            "scanned_count": len(rows),
+            "backfilled_count": legacy_count,
+            "valid_existing_count": valid_existing,
+        },
+    )
+    db.session.commit()
+    log_committed_system_audit_event(completed_event)
+
+
+def _report_transaction_integrity_backfill_dry_run(
+    *,
+    scanned_count: int,
+    legacy_count: int,
+    valid_existing: int,
+    requested_metadata: dict[str, object],
+) -> None:
+    db.session.rollback()
+    audit_system_event(
+        "transaction_integrity_backfill",
+        "dry_run",
+        metadata={
+            **requested_metadata,
+            "scanned_count": scanned_count,
+            "backfill_required_count": legacy_count,
+            "valid_existing_count": valid_existing,
+        },
+    )
+
+
+def _record_transaction_integrity_backfill_failure(
+    *,
+    confirm: bool,
+    requested_metadata: dict[str, object],
+    error_type: str,
+) -> None:
+    db.session.rollback()
+    if confirm:
+        audit_system_event(
+            "transaction_integrity_backfill",
+            "failed",
+            metadata={
+                **requested_metadata,
+                "error_type": error_type,
+            },
+        )
 
 
 def _utc_iso_or_none(value: datetime | None) -> str | None:

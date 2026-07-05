@@ -265,6 +265,32 @@ def audit_system_event_required(
     )
 
 
+def audit_system_event_in_transaction_required(
+    event_type: str,
+    outcome: str,
+    *,
+    user_id: int | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> SecurityAuditEvent:
+    """Flush a required system event into the caller-owned transaction."""
+    event = _write_system_audit_event(
+        event_type,
+        outcome,
+        user_id=user_id,
+        metadata=metadata,
+        required=True,
+        commit=False,
+    )
+    if event is None:  # pragma: no cover - required writes raise on failure.
+        raise AuditWriteError("Required system audit event could not be recorded")
+    return event
+
+
+def log_committed_system_audit_event(event: SecurityAuditEvent) -> None:
+    """Emit the structured log only after the caller commits the audit row."""
+    _log_audit_record(event, path=None, method=None)
+
+
 def _write_system_audit_event(
     event_type: str,
     outcome: str,
@@ -272,7 +298,8 @@ def _write_system_audit_event(
     user_id: int | None,
     metadata: dict[str, Any] | None,
     required: bool,
-) -> None:
+    commit: bool = True,
+) -> SecurityAuditEvent | None:
     clean_event_type = _clean_audit_text(event_type, 80)
     clean_outcome = _clean_audit_text(outcome, 24)
     clean_metadata = {**_sanitize_metadata(metadata or {}), "actor": "system"}
@@ -297,9 +324,11 @@ def _write_system_audit_event(
         event.event_hash = _compute_audit_event_hash(event)
         db.session.add(event)
         db.session.flush()
-        db.session.commit()
+        if commit:
+            db.session.commit()
     except Exception as exc:
-        db.session.rollback()
+        if commit:
+            db.session.rollback()
         _log_audit_write_failed(
             event_type=clean_event_type,
             outcome=clean_outcome,
@@ -317,9 +346,11 @@ def _write_system_audit_event(
             raise AuditWriteError(
                 "Required system audit event could not be recorded"
             ) from exc
-        return
+        return None
 
-    _log_audit_record(event, path=None, method=None)
+    if commit:
+        _log_audit_record(event, path=None, method=None)
+    return event
 
 
 def verify_audit_hash_chain(*, anchor: Mapping[str, Any] | None = None) -> dict[str, Any]:
