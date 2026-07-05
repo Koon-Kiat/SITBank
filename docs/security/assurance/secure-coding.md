@@ -62,6 +62,7 @@ user-controlled values safe.
 | Template autoescaping by framework convention | `app/templates/` |
 | No user-controlled `|safe` usage in templates | `tests/test_authenticated_portal_ui.py::test_templates_do_not_mark_user_controlled_data_safe` |
 | Account details are masked in authenticated UI | `tests/test_authenticated_portal_ui.py::test_dashboard_bank_card_masks_account_details_and_loads_toggle_script` |
+| Human-facing timestamps use UTC+8/SGT display text while UTC/ISO is limited to machine-readable attributes, APIs, exports, filters, and integrity fields | `app/time_display.py`, `tests/test_documentation_consistency.py::test_human_facing_templates_do_not_render_raw_machine_timestamps` |
 | Server errors do not disclose stack traces | `tests/test_owasp_regressions.py::test_server_errors_do_not_disclose_tracebacks` |
 
 Audit and application logs sanitize sensitive metadata before storage or output.
@@ -193,7 +194,7 @@ Actions.
 | Lockfile policy check | `ops/security/check_dependency_locks.py`, `tests/test_deployment.py::test_dependency_manifests_have_one_hashed_lockfile_source_of_truth` |
 | Vulnerability scans | `pip-audit` in `scripts/ci-local` and `.github/workflows/ci-deploy.yml`; Trivy image scans in CI |
 | Static analysis | Bandit and CodeQL cover Python/security patterns; checksum-verified ShellCheck 0.11.0 and Hadolint 2.14.0 scan discovered scripts/Dockerfiles; digest-pinned Semgrep 1.168.0 runs local/OSS ERROR-severity SAST with no token or source upload. Evidence: `.github/workflows/shellcheck.yml`, `.github/workflows/hadolint.yml`, `.github/workflows/semgrep.yml`, `ops/security/discover_lint_targets.py`, and `tests/test_static_analysis_workflows.py` |
-| Code-quality analysis | Reporting-only SonarQube Cloud analysis with full-suite `coverage.xml`, maintainability, duplication, reliability, and security dashboard evidence; see `docs/security/assurance/sonarqube.md` |
+| Code-quality analysis | Blocking SonarQube Cloud quality gate for trusted pull requests and release-producing runs, using full-suite `coverage.xml` plus maintainability, duplication, reliability, and security dashboard evidence; see `docs/security/assurance/sonarqube.md` |
 | Secret scanning | The custom repository secret scanner remains in main/local CI; the independent Gitleaks 8.30.1 workflow performs redacted full Git history scans with no production secrets or uploaded SARIF. Evidence: `ops/security/scan_repository_secrets.py`, `.github/workflows/gitleaks.yml`, `.gitleaks.toml`, `tests/test_secret_scanner.py`, `tests/test_gitleaks_workflow.py`, and `docs/security/assurance/secret-scanning.md` |
 | Pinned GitHub Actions and images | `.github/workflows/ci-deploy.yml`, `Dockerfile`, tests in `tests/test_deployment.py` |
 | Image signing and digest deployment | `.github/workflows/ci-deploy.yml`, `tests/test_deployment.py::test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest` |

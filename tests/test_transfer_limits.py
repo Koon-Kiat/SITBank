@@ -235,25 +235,27 @@ def test_local_transfer_limit_resolver_rejects_unbounded_or_malformed_values(cho
 def test_transfer_limits_post_missing_totp_fails_closed(client, limits_context):
     response = client.post(
         "/banking/settings/transfer-limits",
-        data={"payup_limit": "1000", "local_transfer_limit": "500"},
+        data={"payup_limit": "1000", "local_transfer_limit": "1000"},
     )
 
     assert response.status_code == 400
     db.session.expire_all()
     alice = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
     assert Decimal(str(alice.payup_daily_limit)) == Decimal("500.00")
+    assert Decimal(str(alice.local_transfer_daily_limit)) == Decimal("500.00")
 
 
 def test_transfer_limits_post_wrong_totp_fails_closed(client, limits_context):
     response = client.post(
         "/banking/settings/transfer-limits",
-        data={"payup_limit": "1000", "local_transfer_limit": "500", "totp_code": "000000"},
+        data={"payup_limit": "1000", "local_transfer_limit": "1000", "totp_code": "000000"},
     )
 
     assert response.status_code == 401
     db.session.expire_all()
     alice = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
     assert Decimal(str(alice.payup_daily_limit)) == Decimal("500.00")
+    assert Decimal(str(alice.local_transfer_daily_limit)) == Decimal("500.00")
 
 
 def test_transfer_limits_post_updates_local_transfer_limit_with_valid_preset_and_totp(

@@ -220,7 +220,7 @@ def test_same_context_customer_request_continues_and_checks_risk(client):
         assert not sess.get(SESSION_RISK_REAUTH_REQUIRED_KEY)
 
 
-def test_matching_legacy_customer_session_context_is_upgraded_without_reauth(
+def test_matching_legacy_fingerprint_without_context_requires_reauthentication(
     client,
 ):
     _login_customer(
@@ -240,11 +240,12 @@ def test_matching_legacy_customer_session_context_is_upgraded_without_reauth(
     assert response.status_code == 200
     with client.session_transaction() as sess:
         assert sess[SESSION_RISK_CONTEXT_KEY]["version"] == 1
-        assert not sess.get(SESSION_RISK_REAUTH_REQUIRED_KEY)
-    assert db.session.query(SecurityAuditEvent).filter_by(
+        assert sess.get(SESSION_RISK_REAUTH_REQUIRED_KEY) is True
+    event = db.session.query(SecurityAuditEvent).filter_by(
         event_type="session_risk",
         outcome="reauth_required",
-    ).count() == 0
+    ).one()
+    assert event.event_metadata["signals"] == ["session_context"]
 
 
 def test_missing_session_risk_context_with_tampered_fingerprint_requires_reauth(

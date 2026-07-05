@@ -107,7 +107,7 @@ def test_design_risk_register_rows_have_owner_status_and_review_tracking():
 
     assert "docs/security/governance/security-governance.md" in text
     assert "External operator / outside repo" in text
-    assert "Conditional accepted risk" in text
+    assert "Provider plan, token, and ruleset evidence remain external" in text
 
 
 def test_security_docs_explain_closed_gap_stale_doc_prevention():

@@ -837,6 +837,9 @@ inside the same transaction as the new customer row. The `registration_credits`
 ledger stores one credit per customer, fixed amount/status constraints, and
 HMAC-SHA256 integrity metadata under the transaction-ledger keyring; the browser
 and JSON registration paths both go through this server-side service boundary.
+Duplicate helper calls and retried requests do not add another ledger row or
+balance credit; the database uniqueness constraint remains the concurrency
+backstop, and any integrity or required-audit failure rolls back the transaction.
 
 Completed Local Transfer and PayUp rows store an HMAC-SHA256 transaction hash
 under the dedicated `TRANSACTION_LEDGER_HMAC_KEYS_JSON` key id and explicit

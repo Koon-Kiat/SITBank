@@ -11,7 +11,7 @@ from typing import Any
 
 import pyotp
 from flask import current_app, request, session, url_for
-from sqlalchemy import String, cast, func, or_
+from sqlalchemy import String, and_, cast, false, func, or_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.auth.password_reset import (
@@ -22,6 +22,7 @@ from app.auth.password_reset import (
     complete_manual_recovery_request,
     transition_manual_recovery_request,
 )
+from app.auth.schemas import PHONE_RE as AUTH_PHONE_RE
 from app.auth.services import (
     AuthError,
     _clear_user_security_failures,
@@ -137,7 +138,7 @@ STAFF_INVITE_MAX_ACCEPTANCE_STARTS = 3
 STAFF_INVITE_MAX_VERIFY_ATTEMPTS = 5
 STAFF_USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{3,64}$")
 FULL_NAME_RE = re.compile(r"^[^\x00-\x1f\x7f<>]{1,120}$")
-PHONE_RE = re.compile(r"^[89]\d{7}$", re.ASCII)
+PHONE_RE = re.compile(AUTH_PHONE_RE)
 TOTP_RE = re.compile(r"^\d{6}$")
 WORKPLACE_CODE_RE = re.compile(r"^\d{6}$")
 AUDIT_EVENT_TYPE_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
@@ -1501,7 +1502,7 @@ def _apply_audit_search_filter(statement, query: str):
         SecurityAuditEvent.user.has(
             or_(
                 User.username.ilike(pattern, escape="\\"),
-                User.email.ilike(pattern, escape="\\"),
+                _privileged_workplace_email_matches(pattern),
             )
         ),
     ]
@@ -1514,6 +1515,22 @@ def _apply_audit_search_filter(statement, query: str):
     if query.isdigit():
         search_fields.append(SecurityAuditEvent.user_id == int(query))
     return statement.where(or_(*search_fields))
+
+
+def _privileged_workplace_email_matches(pattern: str):
+    domain_matches = [
+        func.lower(User.email).like(
+            f"%@{_like_escape(domain)}",
+            escape="\\",
+        )
+        for domain in admin_allowed_email_domains()
+    ]
+    allowed_domain = or_(*domain_matches) if domain_matches else false()
+    return and_(
+        User.account_type.in_(tuple(STAFF_ACCOUNT_TYPES)),
+        allowed_domain,
+        User.email.ilike(pattern, escape="\\"),
+    )
 
 
 def _where_metadata_key_matches(statement, key: str, value: str, *, exact: bool):

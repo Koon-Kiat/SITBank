@@ -13,6 +13,7 @@ from sqlalchemy import text
 from wtforms import PasswordField, StringField
 from wtforms.validators import Email, InputRequired, Length, Regexp
 
+from app.auth.schemas import PHONE_RE
 from app.extensions import db, limiter
 from app.models import SecurityAuditEvent
 from app.security.alerts import AlertConfigurationError, build_security_alert_report
@@ -262,7 +263,7 @@ class CustomerSecurityUnlockSchema(Schema):
 
 class StaffInviteStartSchema(Schema):
     full_name = fields.Str(required=True, validate=validate.Length(min=1, max=120))
-    phone_number = fields.Str(required=True, validate=validate.Regexp(r"^[89][0-9]{7}$"))
+    phone_number = fields.Str(required=True, validate=validate.Regexp(PHONE_RE))
     password = fields.Str(required=True, load_only=True, validate=validate.Length(min=8, max=256))
     confirm_password = fields.Str(required=True, load_only=True, validate=validate.Length(min=8, max=256))
     turnstile_token = fields.Str(required=False, load_only=True, allow_none=True)

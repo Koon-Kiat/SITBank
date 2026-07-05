@@ -80,9 +80,11 @@ def test_open_gaps_use_current_status_without_tracker_numbers():
 def test_design_risk_register_uses_current_follow_up_status():
     design = DESIGN_REGISTER.read_text(encoding="utf-8")
 
-    assert "Baseline review remains" in next(
-        line for line in design.splitlines() if "Reporting-only SonarQube" in line
+    sonar_line = next(
+        line for line in design.splitlines() if "Blocking SonarQube quality gate" in line
     )
+    assert "Implemented as a blocking trusted-run gate" in sonar_line
+    assert "Provider plan, token, and ruleset evidence remain external" in sonar_line
     backup_line = next(
         line for line in design.splitlines() if "Encrypted backup helper" in line
     )

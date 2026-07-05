@@ -938,7 +938,7 @@ def test_payup_stepup_succeeds_after_clean_password_totp_login(
     ).count() == 0
 
 
-def test_payup_confirm_accepts_matching_legacy_session_context(
+def test_payup_confirm_rejects_missing_context_with_matching_legacy_fingerprint(
     client,
     payup_context,
     monkeypatch,
@@ -974,14 +974,14 @@ def test_payup_confirm_accepts_matching_legacy_session_context(
     assert mfa_response.status_code == 200
     assert lookup.status_code == 302
     assert amount.status_code == 302
-    assert confirm_page.status_code == 200
-    assert b"Authenticator code" in confirm_page.data
+    assert confirm_page.status_code == 302
+    assert confirm_page.headers["Location"].endswith("/banking/payup")
     assert confirm_submit.status_code == 302
-    assert Transaction.query.filter_by(transaction_type="payup").count() == 1
+    assert Transaction.query.filter_by(transaction_type="payup").count() == 0
     assert db.session.query(SecurityAuditEvent).filter_by(
         event_type="session_risk",
         outcome="reauth_required",
-    ).count() == 0
+    ).count() == 1
 
 
 def test_payup_confirm_rechecks_stepup_when_usage_changes_after_amount_entry(client, payup_context):

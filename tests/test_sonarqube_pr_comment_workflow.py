@@ -104,7 +104,7 @@ def test_untrusted_prs_skip_cloud_scan_and_comment_with_notice():
     assert "repository secrets/write permissions are not available" in script
 
 
-def test_comment_body_is_informational_and_constructs_safe_links():
+def test_comment_body_describes_blocking_gate_and_constructs_safe_links():
     _, ci = _ci_workflow()
     script = _comment_step(ci)["with"]["script"]
     normalized = " ".join(script.split())
@@ -112,9 +112,9 @@ def test_comment_body_is_informational_and_constructs_safe_links():
     for required in (
         "## SonarQube Cloud Analysis",
         "Workflow run",
-        "reporting-only",
-        "quality gate is not currently blocking",
-        "Full findings are available in SonarQube Cloud",
+        "Quality gate: enforced",
+        "must pass for trusted pull requests and release-producing runs",
+        "blocking quality gate for trusted runs",
         "does not replace pytest",
         "CodeQL",
         "Semgrep",
@@ -132,6 +132,8 @@ def test_comment_body_is_informational_and_constructs_safe_links():
     assert "https://sonarcloud.io/project/overview" in script
     assert "dashboardUrl.searchParams.set('id', projectKey)" in script
     assert "Full findings: check the SonarQube Cloud dashboard" in script
+    assert "reporting-only" not in normalized
+    assert "not currently blocking" not in normalized
 
 
 def test_comment_does_not_expose_secrets_or_add_inline_review_comments():

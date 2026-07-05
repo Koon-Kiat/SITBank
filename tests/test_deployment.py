@@ -1935,6 +1935,14 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         "attestations": "write",
         "artifact-metadata": "write",
     }
+    assert set(workflow["jobs"]["publish"]["needs"]) == {
+        "test",
+        "playwright-e2e",
+        "sonarqube",
+        "workflow-security",
+        "deployment-preflight",
+        "resolve-source",
+    }
     pull_request_job_names = (
         "resolve-source",
         "workflow-security",
@@ -2349,6 +2357,8 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         assert required_names <= set(_extract_bash_array(verify_step["run"], "required"))
     assert workflow["jobs"]["publish"]["needs"] == [
         "test",
+        "playwright-e2e",
+        "sonarqube",
         "workflow-security",
         "deployment-preflight",
         "resolve-source",

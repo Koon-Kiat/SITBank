@@ -399,10 +399,10 @@ jobs:
 
             - Workflow run: [view this run](${workflowUrl})
             - ${findings}
-            - Quality gate: reporting-only
-            - Blocking status: the quality gate is not currently blocking
+            - Quality gate: enforced
+            - Blocking status: this analysis must pass for trusted pull requests and release-producing runs
 
-            SonarQube Cloud is reporting-only for now. Full findings are available in SonarQube Cloud.
+            SonarQube Cloud is a blocking quality gate for trusted runs. Full findings are available in SonarQube Cloud.
 
             SonarQube Cloud is an additional code-quality and security analysis layer. It does not replace pytest, CodeQL, Semgrep, Bandit, Gitleaks, the custom repository secret scanner, dependency auditing, Trivy, ShellCheck, Hadolint, Syft, deployment tests, or production guard tests.
             `;
@@ -569,7 +569,13 @@ jobs:
           inputs.target_environment == 'staging'
         )
       )
-    needs: [test, workflow-security, deployment-preflight, resolve-source]
+    needs:
+      - test
+      - playwright-e2e
+      - sonarqube
+      - workflow-security
+      - deployment-preflight
+      - resolve-source
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

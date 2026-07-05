@@ -130,11 +130,10 @@ security findings; triage is documented in
 ## Pull-Request Summary Comment
 
 After a successful analysis for a trusted internal pull request, the workflow
-creates one informational `SonarQube Cloud Analysis` issue comment. It includes
-the workflow run, a dashboard link constructed from the validated
-`sonar.organization` and `sonar.projectKey` properties, the reporting-only
-status, and a reminder that the quality gate is not blocking. Full findings
-remain in the SonarQube Cloud dashboard.
+creates one `SonarQube Cloud Analysis` issue comment. It includes the workflow
+run, a dashboard link constructed from the validated `sonar.organization` and
+`sonar.projectKey` properties, and the enforced quality-gate status. Full
+findings remain in the SonarQube Cloud dashboard.
 
 The comment contains the hidden marker
 `<!-- sitbank-sonarqube-summary -->`. Reruns paginate existing comments and
@@ -181,26 +180,24 @@ standardized HMAC-SHA1 TOTP use, HIBP range lookup, keyed HMAC references, and
 isolated-container HTTP carry only line-scoped dispositions with an adjacent
 rationale; there are no file-wide exclusions.
 
-## Initial Quality-Gate And Triage Policy
+## Blocking Quality-Gate And Triage Policy
 
-The rollout is reporting-only. `sonar.qualitygate.wait=false` means the
-workflow uploads analysis but does not wait for or enforce the Sonar quality
-gate, and SonarQube is not part of the production deployment job. Scanner,
-test, credential, or upload failures still fail the workflow; only the remote
-quality-gate result is non-blocking. The PR summary comment is informational
-and does not change that policy.
+`sonar.qualitygate.wait=true` makes the scanner wait for and enforce the remote
+quality-gate result on trusted internal pull requests, pushes to `main`, and
+trusted manual release runs. The release workflow makes both SonarQube analysis
+and Playwright E2E direct dependencies of image publication. A scanner,
+credential, upload, timeout, or quality-gate failure therefore blocks image
+publication and all downstream staging and production deployment jobs.
 
-Maintainers should triage critical/high-confidence security and reliability
-findings promptly, assign maintainability and duplication work by impact, and
-record accepted findings in the pull request or issue. Mark a false positive
-in SonarQube only with a concise rationale and reviewer agreement; do not
-exclude security-sensitive code merely to improve metrics. A separate issue
-may enable blocking after the baseline is reviewed, false positives are
-handled, ownership and override rules are approved, and the interaction with
-CodeQL, Semgrep, dependency scanning, and deployment gates is documented.
+Maintainers must inspect all current branch or pull-request findings even when
+the quality gate passes. Fix actionable findings, and mark a false positive
+only with a concise durable rationale showing the rule does not apply; do not
+exclude security-sensitive code merely to improve metrics. The enforced gate
+does not replace CodeQL, Semgrep, dependency scanning, or deployment gates.
 
 Current limitations are the external plan/organization prerequisite, the
 manual `SONAR_TOKEN` setup, absent secret-backed analysis on fork pull
 requests and Dependabot pull requests, no summary comments for those untrusted
-events, intentionally absent inline comments, and the deliberately non-blocking
-quality gate. Existing CodeQL behavior is unchanged.
+events, and intentionally absent inline comments. Existing CodeQL behavior is
+unchanged. The untrusted-PR skip is explicit and does not expose repository or
+deployment secrets.
