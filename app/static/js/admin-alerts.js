@@ -10,8 +10,9 @@
       item.setAttribute("aria-expanded", item.dataset.alertRef === ref ? "true" : "false");
     });
 
-    if (window.history && typeof window.history.replaceState === "function") {
-      window.history.replaceState(null, "", link.href);
+    const browserHistory = globalThis.history;
+    if (browserHistory && typeof browserHistory.replaceState === "function") {
+      browserHistory.replaceState(null, "", link.href);
     }
     panel.focus({ preventScroll: true });
     if (typeof panel.scrollIntoView === "function") {

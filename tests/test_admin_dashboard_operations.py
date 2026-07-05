@@ -844,7 +844,8 @@ def test_alert_review_detail_links_use_loaded_panels_with_deep_link_fallback(
     assert "<dt>Technical source</dt><dd>table:security_audit_events</dd>" in body
     assert 'js/admin-alerts.js' in body
     assert "event.preventDefault()" in script
-    assert "window.history.replaceState" in script
+    assert "globalThis.history" in script
+    assert "browserHistory.replaceState" in script
 
 
 def test_alert_review_next_actions_cover_integrity_and_generic_alerts(admin_client, monkeypatch):
