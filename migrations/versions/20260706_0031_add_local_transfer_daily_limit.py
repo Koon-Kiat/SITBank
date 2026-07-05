@@ -1,16 +1,16 @@
 """Add local transfer daily limit.
 
-Revision ID: 20260705_0030
-Revises: 20260705_0029
-Create Date: 2026-07-05 00:00:00
+Revision ID: 20260706_0031
+Revises: 20260705_0030
+Create Date: 2026-07-06 00:00:00
 """
 
 from alembic import op
 import sqlalchemy as sa
 
 
-revision = "20260705_0030"
-down_revision = "20260705_0029"
+revision = "20260706_0031"
+down_revision = "20260705_0030"
 branch_labels = None
 depends_on = None
 
