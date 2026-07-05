@@ -58,7 +58,7 @@ applicable unless a frontend package manager is added.
 | Semgrep | `.github/workflows/semgrep.yml` | Runs `p/python`, `p/flask`, `p/security-audit`, `p/owasp-top-ten`, and `p/github-actions` locally with `--metrics=off` and blocks ERROR severity |
 | Action hygiene | `.github/workflows/ci-deploy.yml` | Runs actionlint and zizmor; tests require actions to be SHA-pinned |
 | Image and artifact signing | `.github/workflows/ci-deploy.yml`, `.github/workflows/bootstrap-ec2.yml`, `ops/deploy/sitbank-container-deploy` | Uses cosign to sign/verify images and deployment artifacts |
-| Release provenance | `.github/workflows/ci-deploy.yml` | Creates and verifies a GitHub artifact attestation for the exact release image digest, trusted repository, main ref, release commit, signer workflow, and GitHub OIDC issuer before staging; this is SLSA Build L1/L2-aligned evidence, not formal certification |
+| Release provenance | `.github/workflows/ci-deploy.yml` | Creates and verifies a GitHub artifact attestation for the exact release image digest, trusted repository, main ref, release commit, signer workflow, GitHub OIDC issuer, and non-self-hosted runner before staging; `--no-public-good` excludes separate Sigstore public-good BuildKit provenance; this is SLSA Build L1/L2-aligned evidence, not formal certification |
 
 Tests for this automation include:
 
@@ -364,8 +364,9 @@ and retains the `sitbank-source-sbom` CycloneDX JSON artifact for 30 days. It
 runs without secrets on pull requests, pushes to `main`, and manual dispatch.
 Its summary is a bounded preview with package-URL ecosystem counts and at most
 10 `pkg:pypi/` rows in a dedicated Python section; zero Python components is
-reported explicitly. The full artifact remains authoritative. Inspect its
-Python inventory with
+reported explicitly. The renderer reads only relative regular-file paths
+contained by the current workspace and rejects traversal and symlink escapes.
+The full artifact remains authoritative. Inspect its Python inventory with
 `jq -r '(.components // [])[] | select((.purl // "") | startswith("pkg:pypi/")) | [.name, .version, .purl] | @tsv' sitbank-source-sbom-cyclonedx.json`.
 It is separate from Buildx image attestation and is not vulnerability scanning.
 The existing Buildx `sbom: true` attestation remains required; an explicit

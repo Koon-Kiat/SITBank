@@ -119,11 +119,36 @@ def render_summary(document: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _validated_input_path(
+    input_path: Path, *, input_root: Path | None = None
+) -> Path:
+    root = (input_root if input_root is not None else Path.cwd()).resolve(
+        strict=True
+    )
+    if input_path.is_absolute() or ".." in input_path.parts:
+        raise ValueError(
+            "CycloneDX input must be a relative path within the working directory"
+        )
+
+    candidate = root / input_path
+    resolved_candidate = candidate.resolve(strict=True)
+    try:
+        resolved_candidate.relative_to(root)
+    except ValueError as error:
+        raise ValueError(
+            "CycloneDX input must be within the working directory"
+        ) from error
+    if not resolved_candidate.is_file():
+        raise ValueError("CycloneDX input must be a regular file")
+    return resolved_candidate
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("cyclonedx_json", type=Path)
     args = parser.parse_args()
-    document = json.loads(args.cyclonedx_json.read_text(encoding="utf-8"))
+    input_path = _validated_input_path(args.cyclonedx_json)
+    document = json.loads(input_path.read_text(encoding="utf-8"))
     if not isinstance(document, dict):
         raise ValueError("CycloneDX root must be an object")
     print(render_summary(document))
