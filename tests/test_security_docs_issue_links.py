@@ -52,7 +52,6 @@ def test_open_gaps_use_current_status_without_tracker_numbers():
     current_open = _section(register, "Current Open Gaps")
 
     for title, status in (
-        ("Automated retention and disposal jobs", "Open gap"),
         ("Authenticated DAST on ordinary pull requests", "Accepted risk / policy tradeoff"),
         ("EC2 SSH/UFW/security-group hardening deferred", "Deferred external prerequisite"),
         ("Device-bound session proof", "Accepted defense-in-depth gap"),
@@ -63,11 +62,14 @@ def test_open_gaps_use_current_status_without_tracker_numbers():
     implemented_controls = _section(register, "Implemented Controls")
     assert "Password history and forced password change" in implemented_controls
     assert "Single active customer/admin session cap" in implemented_controls
+    assert "Approved preserved-category retention/disposal procedures" in implemented_controls
 
     recently_closed = _section(register, "Recently Closed Gaps")
     for title in ("Admin dashboard role separation", "Admin audit-log viewer hardening"):
         row = next(line for line in recently_closed.splitlines() if title in line)
         assert "Solved" in row
+    row = next(line for line in recently_closed.splitlines() if "Automated retention and disposal jobs" in line)
+    assert "Solved" in row
 
     assert "Separate issue: No" not in register
     assert "Local Docker/Compose proof when Docker is unavailable" not in current_open
@@ -81,9 +83,11 @@ def test_design_risk_register_uses_current_follow_up_status():
     assert "Baseline review remains" in next(
         line for line in design.splitlines() if "Reporting-only SonarQube" in line
     )
-    assert "Backup schedule and restore-drill evidence remain external" in next(
+    backup_line = next(
         line for line in design.splitlines() if "Encrypted backup helper" in line
     )
+    assert "Backup schedule and restore-drill evidence remain external" in backup_line
+    assert "Archive pruning remains operator-approved" in backup_line
     zero_trust_row = next(
         line for line in design.splitlines() if "Zero-trust/private admin-staging" in line
     )

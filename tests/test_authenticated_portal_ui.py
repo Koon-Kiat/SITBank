@@ -113,6 +113,30 @@ def test_authenticated_layout_contains_working_profile_menu_destinations(client)
     assert "unused recovery codes remain" not in markup
     assert "Transaction-ready" not in markup
 
+
+def test_pre_mfa_account_menu_disables_password_action_and_keeps_mfa_path(client):
+    register(client)
+    login_response = login(client)
+    setup_response = client.get("/mfa/setup")
+    markup = setup_response.data.decode("utf-8")
+    stylesheet = Path("app/static/css/app.css").read_text(encoding="utf-8")
+
+    assert login_response.status_code == 302
+    assert login_response.headers["Location"].endswith("/mfa/setup")
+    assert setup_response.status_code == 200
+    assert 'data-account-menu' in markup
+    assert 'href="/password/change"' not in markup
+    assert (
+        '<span role="menuitem" class="is-disabled" aria-disabled="true">'
+        "Change Password</span>"
+    ) in markup
+    assert 'href="/mfa/setup"' in markup
+    assert "Authenticator MFA" in markup
+    assert "[role=\"menuitem\"].is-disabled" in stylesheet
+    assert ".account-panel [role=\"menuitem\"].is-disabled" in stylesheet
+    assert "pointer-events: none;" in stylesheet
+
+
 def test_dashboard_bank_card_masks_account_details_and_loads_toggle_script(client):
     register(client)
     login(client)

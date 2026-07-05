@@ -668,13 +668,15 @@ button:active {
 .button:disabled,
 button:disabled,
 .button.is-disabled,
-a.is-disabled {
+a.is-disabled,
+[role="menuitem"].is-disabled {
   cursor: not-allowed;
   opacity: 0.58;
 }
 
 .button.is-disabled,
-a.is-disabled {
+a.is-disabled,
+[role="menuitem"].is-disabled {
   pointer-events: none;
 }
 
@@ -872,6 +874,11 @@ button.full {
   font-weight: 650;
   text-align: left;
   text-decoration: none;
+}
+
+.account-panel [role="menuitem"].is-disabled {
+  background: var(--surface-strong);
+  color: var(--muted);
 }
 
 .account-panel a:hover,

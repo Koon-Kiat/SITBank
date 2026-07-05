@@ -90,7 +90,7 @@ the Nginx, Flask-Limiter, durable backoff, CSRF, MFA, or audit controls below.
 
 | Route family | Edge and Nginx layer | Flask and durable layer | Evidence |
 | --- | --- | --- | --- |
-| Customer login, registration, MFA, password reset, and manual recovery | Production uses customer auth/security Nginx rate-limit zones such as `sitbank_prod_auth`, `sitbank_prod_register`, and `sitbank_prod_security`; staging uses `sitbank_staging_login` behind Cloudflare Access and origin-pull enforcement | Route inventory requires explicit Flask-Limiter decisions; durable counters include login, registration OTP, password-reset request, manual-recovery request, and password-reset recovery-code scopes | `ops/nginx/sitbank-production-rate-limits.conf`, `ops/nginx/sitbank-staging-rate-limits.conf`, `tests/test_route_inventory_security.py`, `tests/test_rate_limit_error_ux.py` |
+| Customer login, registration, MFA, password reset, and manual recovery | Production uses customer auth/security Nginx rate-limit zones such as `sitbank_prod_auth`, `sitbank_prod_register`, and `sitbank_prod_security`; staging uses `sitbank_staging_login` behind Cloudflare Access and origin-pull enforcement | Route inventory requires explicit Flask-Limiter decisions; customer login MFA route limits are coarse defense in depth while the durable `customer_mfa_login` counter increments only after invalid TOTP or recovery-code evaluation; other durable counters include login, registration OTP, password-reset request, manual-recovery request, and password-reset recovery-code scopes | `ops/nginx/sitbank-production-rate-limits.conf`, `ops/nginx/sitbank-staging-rate-limits.conf`, `app/auth/services.py::complete_pending_mfa()`, `tests/test_auth_registration_login.py`, `tests/test_mfa_lifecycle.py`, `tests/test_route_inventory_security.py`, `tests/test_rate_limit_error_ux.py` |
 | Customer banking, Payee, PayUp, and session/security actions | Production uses app/security Nginx zones such as `sitbank_prod_app` and `sitbank_prod_security`; staging uses `sitbank_staging_app` behind the staging edge boundary | Unsafe banking routes are Flask-Limiter protected where listed; durable controls include `payee_lookup_failure`, `payup_lookup_failure`, and independent PayUp account, authenticated-session, source-network, and recipient scopes | `app/banking/routes.py`, `tests/test_payee_management_security.py`, `tests/test_payup.py`, `tests/test_deployment.py` |
 | Admin login, staff invite acceptance, audit, alerts, staff lifecycle, and manual recovery administration | Production admin is private through Tailscale Serve rather than public Nginx; staging admin is private operator access. Edge privacy is not a replacement for Flask controls | Admin route inventory requires explicit rate-limit decisions; admin MFA durable failure state increments only after an invalid TOTP, permits a correct code through the configured failure threshold, blocks the next invalid code, and resets after a new primary login or successful MFA | `app/admin/routes.py`, `app/admin/services.py`, `tests/test_admin_dashboard_operations.py`, `tests/test_admin_rbac_matrix.py`, `tests/test_tailscale_admin_access.py` |
 
@@ -108,6 +108,14 @@ pending staff user and source context, increments only after invalid TOTP
 verification, and returns safe retry metadata only after the configured
 threshold is exceeded. A valid TOTP below the threshold reaches verification.
 Do not replace this durable boundary with process-local limiter state.
+
+Customer pending-login MFA follows the same invariant for TOTP and one-time
+recovery codes. The browser and JSON `POST /mfa/verify` surfaces keep a coarse
+request limiter, but the authoritative `customer_mfa_login` threshold is
+PostgreSQL-backed, keyed by pending customer and source context, reset by a
+fresh primary-password login, and cleared after successful MFA. Wrong factors
+below the threshold return the generic MFA error rather than route-level `429`;
+the first invalid factor beyond the threshold returns safe retry metadata.
 
 ## Banking And Payee Authorization
 

@@ -690,8 +690,11 @@ confirmation boundary. Weekly `sitbank-retention-review@staging.timer` and
 operators review the aggregate report and separately authorize any confirmed
 cleanup. Record the reviewer, approval, report timestamp, target, and bounded
 categories in the external change record before running `--confirm`; command
-output remains aggregate-only. Full personal-data disposal and encrypted-backup archive pruning
-remain governance/operator work, not hidden application behavior.
+output remains aggregate-only. Full personal-data disposal and encrypted-backup
+archive pruning must follow
+`docs/security/governance/data-retention-and-deactivation.md` approved
+preserved-category procedures; they remain governance/operator work, not hidden
+application behavior.
 
 ## Audit Operations
 

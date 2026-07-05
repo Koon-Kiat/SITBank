@@ -11,6 +11,8 @@ from pathlib import Path
 ENVIRONMENT_PLACEHOLDER = "${OBSERVABILITY_ENVIRONMENT}"
 UNRESOLVED_PLACEHOLDER_RE = re.compile(r"\$\{[^}]+\}")
 VALID_ENVIRONMENTS = frozenset({"production", "staging"})
+PROMETHEUS_TEMPLATE_ROOT = Path(__file__).resolve().parent / "prometheus"
+TEMPLATE_PATH_ERROR = "Prometheus template must be a regular file inside the approved template directory"
 
 
 def render_prometheus_config(template: str, environment: str) -> str:
@@ -26,17 +28,40 @@ def render_prometheus_config(template: str, environment: str) -> str:
     return rendered
 
 
+def validate_prometheus_template_path(
+    candidate: Path,
+    *,
+    allowed_root: Path = PROMETHEUS_TEMPLATE_ROOT,
+) -> Path:
+    if ".." in candidate.parts:
+        raise ValueError(TEMPLATE_PATH_ERROR)
+    try:
+        root = allowed_root.resolve(strict=True)
+        resolved = candidate.resolve(strict=True)
+    except OSError as exc:
+        raise ValueError(TEMPLATE_PATH_ERROR) from exc
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(TEMPLATE_PATH_ERROR) from exc
+    if candidate.is_symlink() or resolved.is_symlink() or not resolved.is_file():
+        raise ValueError(TEMPLATE_PATH_ERROR)
+    return resolved
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("template", type=Path)
     parser.add_argument("environment")
     args = parser.parse_args()
 
-    if args.template.is_symlink() or not args.template.is_file():
-        raise ValueError("Prometheus template must be a regular non-symlink file")
+    try:
+        validated_template = validate_prometheus_template_path(args.template)
+    except ValueError as exc:
+        parser.error(str(exc))
     print(
         render_prometheus_config(
-            args.template.read_text(encoding="utf-8"),
+            validated_template.read_text(encoding="utf-8"),
             args.environment,
         ),
         end="",

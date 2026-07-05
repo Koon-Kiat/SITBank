@@ -191,6 +191,49 @@ def test_recovery_code_satisfies_pending_totp_login_once_and_notifies(app, clien
     assert db.session.query(SecurityAuditEvent).filter_by(event_type="mfa_recovery_code_verify", outcome="success").count() == 1
     assert password_reset_outbox()[-1]["subject"] == "SITBank recovery code used"
 
+
+def test_recovery_code_satisfies_pending_login_after_wrong_factors_below_threshold(
+    client,
+):
+    from app.auth.recovery_codes import generate_recovery_codes_for_user
+
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    recovery_codes = generate_recovery_codes_for_user(user)
+
+    client.post("/logout")
+    login(client)
+    for _attempt in range(5):
+        wrong = client.post(
+            "/auth/mfa/verify",
+            json={"totp_code": "not-a-valid-recovery-code"},
+        )
+        assert wrong.status_code == 401
+
+    verified = client.post(
+        "/auth/mfa/verify",
+        json={"totp_code": recovery_codes[0]},
+    )
+    client.post("/logout")
+    login(client)
+    reused = client.post(
+        "/auth/mfa/verify",
+        json={"totp_code": recovery_codes[0]},
+    )
+
+    assert verified.status_code == 200
+    assert verified.get_json()["recovery_codes_remaining"] == 9
+    assert reused.status_code == 401
+    assert (
+        db.session.query(RecoveryCode)
+        .filter_by(user_id=user.id)
+        .filter(RecoveryCode.used_at.is_not(None))
+        .count()
+        == 1
+    )
+
+
 def test_invalid_recovery_code_attempt_uses_generic_error_and_audits_failure(client):
     register(client)
     login(client)

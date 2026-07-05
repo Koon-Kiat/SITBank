@@ -34,6 +34,18 @@ def test_retention_cleanup_defaults_to_dry_run_and_preserves_categories(app, mon
     )
     assert "security_audit_events" in result["preserved_categories"]
     assert "transactions" in result["preserved_categories"]
+    for preserved_category in (
+        "customer_accounts",
+        "staff_admin_accounts",
+        "payees",
+        "transactions",
+        "security_audit_events",
+        "manual_recovery_requests",
+        "staff_invites",
+        "alert_reports",
+        "encrypted_backup_archives",
+    ):
+        assert preserved_category in result["preserved_categories"]
     assert result["scheduling"] == "weekly_operator_reviewed_dry_run"
 
 

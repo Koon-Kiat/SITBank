@@ -296,7 +296,7 @@ ROUTE_SECURITY_INVENTORY = {
         "csrf": "required",
         "rate_limit": "per_route",
         "step_up": "not_required",
-        "public_justification": "TOTP verification completes a pending login before a full user session exists.",
+        "public_justification": "MFA verification completes a pending login before a full user session exists; route limits are coarse defense in depth and the durable customer_mfa_login counter is authoritative for invalid factors.",
     },
     "auth.sessions_dashboard": {
         "endpoint": "auth.sessions_dashboard",
@@ -527,7 +527,7 @@ ROUTE_SECURITY_INVENTORY = {
         "csrf": "required",
         "rate_limit": "per_route",
         "step_up": "not_required",
-        "public_justification": "TOTP verification completes a pending login before a full user session exists.",
+        "public_justification": "MFA verification completes a pending login before a full user session exists; route limits are coarse defense in depth and the durable customer_mfa_login counter is authoritative for invalid factors.",
     },
     "web.dashboard": {
         "endpoint": "web.dashboard",
@@ -1101,3 +1101,28 @@ def test_login_and_registration_have_method_level_security_decisions(app):
     assert ROUTE_SECURITY_INVENTORY["web.register_submit"]["csrf"] == "required"
     assert ROUTE_SECURITY_INVENTORY["web.register_submit"]["rate_limit"] == "per_route"
     assert "verified customer email OTP" in ROUTE_SECURITY_INVENTORY["web.register_submit"]["public_justification"]
+
+
+def test_customer_login_mfa_uses_coarse_route_limit_and_durable_factor_counter():
+    auth_routes = ROUTE_MODULES["auth"].read_text(encoding="utf-8")
+    web_routes = ROUTE_MODULES["web"].read_text(encoding="utf-8")
+    services = Path("app/auth/services.py").read_text(encoding="utf-8")
+
+    auth_mfa_decorators = auth_routes.split('@auth_bp.post("/mfa/verify")', 1)[
+        1
+    ].split("def mfa_verify", 1)[0]
+    web_mfa_decorators = web_routes.split('@web_bp.post("/mfa/verify")', 1)[
+        1
+    ].split("def mfa_verify_submit", 1)[0]
+
+    for decorators in (auth_mfa_decorators, web_mfa_decorators):
+        assert '"30 per 5 minutes"' in decorators
+        assert '"5 per 5 minutes"' not in decorators
+
+    assert '"customer_mfa_login"' in services
+    assert "track_failures=False" in services
+    assert "CUSTOMER_MFA_FAILURE_LIMIT" in services
+    for endpoint in ("auth.mfa_verify", "web.mfa_verify_submit"):
+        justification = ROUTE_SECURITY_INVENTORY[endpoint]["public_justification"]
+        assert "coarse defense in depth" in justification
+        assert "authoritative for invalid factors" in justification

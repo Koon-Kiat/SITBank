@@ -27,6 +27,7 @@ PRESERVED_RETENTION_CATEGORIES = (
     "security_audit_events",
     "manual_recovery_requests",
     "staff_invites",
+    "alert_reports",
     "investigation_or_held_records",
     "encrypted_backup_archives",
 )

@@ -92,5 +92,6 @@ def test_gap_register_closes_threat_model_gap_but_keeps_other_open_items():
     implemented = register.split("## Implemented Controls", 1)[1].split("## Not Applicable Or Out Of Scope", 1)[0]
 
     assert "Threat model and design risk record" not in current_open
-    assert "Automated retention and disposal jobs" in current_open
+    assert "Automated retention and disposal jobs" not in current_open
+    assert "Approved preserved-category retention/disposal procedures" in implemented
     assert "Threat model and design risk register" in implemented

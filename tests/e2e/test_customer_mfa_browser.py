@@ -108,13 +108,17 @@ def test_mfa_failure_is_generic_and_repeated_attempts_use_branded_429(
         exact=True,
     ).wait_for()
 
-    for _attempt in range(3):
+    for _attempt in range(4):
         browser_page.locator("input[name='totp_code']").fill("000000")
         browser_page.get_by_role("button", name="Verify code").click()
         browser_page.wait_for_load_state("load")
-        if browser_page.get_by_role("heading", name="429").count():
-            break
+        browser_page.get_by_text(
+            "Incorrect code. Check your authenticator and try again.",
+            exact=True,
+        ).wait_for()
 
+    browser_page.locator("input[name='totp_code']").fill("000000")
+    browser_page.get_by_role("button", name="Verify code").click()
     browser_page.get_by_role("heading", name="429").wait_for()
     browser_page.get_by_text(
         "Too many attempts. Please try again later.",

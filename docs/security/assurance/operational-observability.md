@@ -157,8 +157,10 @@ Prometheus stores private host metrics for the same 168-hour window. The
 committed Prometheus config scrapes only node exporter with the
 `OBSERVABILITY_ENVIRONMENT` label. The trusted observability bootstrap accepts
 only `staging` or `production`, renders that label into the root-owned
-Prometheus config before container startup, and rejects missing or unresolved
-placeholders. Prometheus does not depend on runtime environment expansion.
+Prometheus config before container startup, and rejects template paths outside
+the reviewed `ops/observability/prometheus/` directory, missing files,
+directories, symlinks, missing placeholders, or unresolved placeholders.
+Prometheus does not depend on runtime environment expansion.
 Container CPU/memory and PostgreSQL
 connection-count exporter metrics are not enabled by this repository change;
 the current container and PostgreSQL panels use log-derived restart,

@@ -72,6 +72,33 @@ Security audit rows must not be silently auto-deleted by application code or
 scheduled jobs. If disposal after retention is approved, keep a retained
 summary of the deleted date range and approval.
 
+## Approved Preserved-Category Procedures
+
+The categories below are preserved by default and may be disposed of only by an
+operator-approved maintenance record. The approval must name the category,
+date range or record scope, reason, reviewer/approver, backup or rollback
+decision, and retained summary. The retained summary must be aggregate or
+opaque-reference only; do not copy personal data, raw alert bodies, manual
+recovery evidence, invite tokens, decrypted backups, database URLs, secrets, or
+raw audit payloads into issues, pull requests, screenshots, logs, or artifacts.
+
+| Preserved category | Disposal or preservation decision | Required evidence |
+| --- | --- | --- |
+| Customer and staff/admin account records | Preserve while an account, dispute, incident, recovery case, staff lifecycle record, audit obligation, or coursework evidence requirement remains active. Prefer deactivation/freeze/offboarding over deletion. | Approval record, account-reference range, access-disabled evidence, affected-session revocation summary where applicable |
+| Payees and transactions | Preserve for customer banking history, dispute handling, audit, integrity review, and restore validation. Disposal/anonymization requires a separate reviewed data minimization decision that proves related audit/dispute evidence remains coherent. | Date range, transaction/payee reference summary, dispute/incident hold check, backup/rollback decision |
+| Manual recovery requests | Preserve pending, under-review, approved, denied, expired, cancelled, and completed request metadata needed to reconstruct root-admin review and maker-checker decisions. | Case-reference summary, final state, reviewer/approver record, notification/audit evidence without raw recovery material |
+| Staff invite metadata | Preserve invite lifecycle metadata needed for privileged onboarding accountability; raw invite tokens remain non-stored/non-logged. Disposal requires proof the invite is terminal and no investigation hold applies. | Invite-reference summary, terminal state, workplace-domain evidence, approver record |
+| Alert reports | Preserve incident-relevant alert reports and delivery summaries until the related investigation or review window closes. Dedupe state may expire through approved temporary security-state cleanup, but report evidence must not be silently deleted. | Alert count/severity summary, delivery outcome, investigation link or reviewer note, sanitized retained location |
+| Security audit events | Preserve according to the 7-year audit-retention policy. Application code and timers must not delete audit-chain rows; any exceptional post-retention disposal requires a separate audit-chain integrity decision. | Audit date range, hash-chain verification outcome, approval record, retained aggregate summary |
+| Investigation or held records | Preserve until the hold owner releases the hold. Disposal before release is prohibited. | Hold owner, release approval, scope summary |
+| Encrypted backup archives | Preserve according to the operator backup policy, restore-drill needs, incident holds, and rollback requirements. Archive pruning is host/operator-owned and must never delete the only usable backup during an incident. | Archive basename-only summary, owner/mode evidence, restore-drill or replacement-backup evidence, approval record |
+
+No weekly timer or application route performs destructive disposal for these
+preserved categories. If future automation is proposed, it must start as a
+dry-run report, require a category allowlist, keep destructive execution behind
+explicit approval, fail closed on audit errors, and update this document and
+tests before use.
+
 ## Approved Security-State Cleanup
 
 `python -m flask --app wsgi:app security run-retention-cleanup` reviews
@@ -92,7 +119,7 @@ The command does not delete or anonymize customer accounts, staff/admin
 accounts, payees, transactions, manual recovery requests, staff invites,
 security audit events, investigation or held records, alert reports, or
 encrypted backup archives. Treat those categories as preserved until a reviewed
-retention decision and evidence-preserving procedure exist.
+retention decision and the evidence-preserving procedure above are satisfied.
 
 ## Operator-Reviewed Retention Schedule
 
@@ -102,10 +129,10 @@ aggregate-only dry-run report. The report must be reviewed by the application
 owner and the destructive command must be separately approved and run with
 `--confirm`; the timer never passes that flag. Broad unattended disposal,
 including personal-data categories, manual recovery metadata, staff invites,
-alert reports, and encrypted backups, remains out of scope and tracked in the
-gap register. A complete retention/disposal scheduler across those preserved
-categories does not exist; track that remaining scope in
-`docs/security/governance/security-gap-register.md`.
+alert reports, and encrypted backups, remains prohibited by the approval
+procedure above. No complete retention/disposal scheduler across those
+preserved categories exists by design; any future scheduler must be reviewed as
+a new change rather than inferred from the weekly report timer.
 
 ## Backup Retention
 

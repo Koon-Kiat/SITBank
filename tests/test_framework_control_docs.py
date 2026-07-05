@@ -78,7 +78,6 @@ def test_security_gap_register_is_single_source_with_required_fields():
         assert required_column in current_open
 
     for open_gap in (
-        "Automated retention and disposal jobs",
         "Authenticated DAST on ordinary pull requests",
         "EC2 SSH/UFW/security-group hardening deferred",
         "Device-bound session proof",
@@ -104,6 +103,7 @@ def test_security_gap_register_is_single_source_with_required_fields():
         "PDPA data inventory and retention schedule",
         "Dedicated incident response runbook",
         "Threat model and design risk record",
+        "Automated retention and disposal jobs",
     ):
         assert fixed_item not in current_open
 
@@ -115,6 +115,7 @@ def test_security_gap_register_is_single_source_with_required_fields():
     assert "Audit review workflow" in implemented
     assert "Admin dashboard separation of duties" in implemented
     assert "Privacy and PDPA documentation" in implemented
+    assert "Approved preserved-category retention/disposal procedures" in implemented
     assert "Incident response runbook" in implemented
     assert "Threat model and design risk register" in implemented
     assert "Security governance process" in implemented
