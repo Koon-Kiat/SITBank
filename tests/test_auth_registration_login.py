@@ -92,6 +92,34 @@ def test_registration_creates_single_welcome_credit_atomically(client):
     assert registration_credit_integrity_status(credit) == "valid"
     assert db.session.query(RegistrationCredit).filter_by(user_id=user.id).count() == 1
 
+
+def test_registration_welcome_credit_retry_is_idempotent(client):
+    from app.auth.services import _apply_registration_welcome_credit
+
+    response = register(client)
+    user = db.session.execute(
+        db.select(User).where(User.username == "alice01")
+    ).scalar_one()
+
+    with client.application.test_request_context("/register", method="POST"):
+        _apply_registration_welcome_credit(user)
+        _apply_registration_welcome_credit(user)
+        db.session.commit()
+
+    db.session.refresh(user)
+    credits = list(
+        db.session.execute(
+            db.select(RegistrationCredit).where(RegistrationCredit.user_id == user.id)
+        ).scalars()
+    )
+
+    assert response.status_code == 302
+    assert Decimal(str(user.balance)) == Decimal("100.00")
+    assert len(credits) == 1
+    assert Decimal(str(credits[0].amount)) == Decimal("100.00")
+    assert registration_credit_integrity_status(credits[0]) == "valid"
+
+
 def test_registration_rejects_live_breached_password(client, monkeypatch):
     monkeypatch.setattr("app.security.passwords._is_password_pwned_by_hibp", lambda _password: True)
 
@@ -682,6 +710,26 @@ def test_registration_requires_full_name_and_valid_phone_number(client):
     assert missing_name.status_code == 400
     assert invalid_phone.status_code == 400
     assert b"Enter a valid Singapore phone number" in invalid_phone.data
+    assert db.session.query(User).count() == 0
+
+
+def test_registration_rejects_unicode_digit_lookalike_phone(client):
+    verify_registration_email(client)
+
+    response = client.post(
+        "/register",
+        data={
+            "username": "alice01",
+            "email": "alice@example.com",
+            "full_name": "Alice Test",
+            "phone_number": "9１２３４５６７",
+            "password": "correct horse battery staple",
+            "confirm_password": "correct horse battery staple",
+        },
+    )
+
+    assert response.status_code == 400
+    assert b"Enter a valid Singapore phone number" in response.data
     assert db.session.query(User).count() == 0
 
 

@@ -214,14 +214,13 @@ names. It does not contain cookies, raw session ids, raw context values, or
 session payloads. Standard audit request columns remain governed by
 `docs/security/assurance/audit-and-alerting.md`.
 
-Sessions with missing, malformed, or unsupported structured context fail closed
-unless a customer session has no structured context and its existing legacy
-fingerprint HMAC still matches the current request context. In that narrow
-migration case, the server writes the structured context before sensitive-action
-checks continue. Missing context without a matching fingerprint, malformed or
-unsupported context, and all admin sessions with missing, malformed, or
-unsupported context require full reauthentication or revocation. A subsequent
-authenticated session receives only the current versioned context.
+Sessions with missing, malformed, or unsupported structured context require
+full reauthentication or are revoked. A legacy `risk_fingerprint` alone is not accepted
+for a customer or admin session and cannot recreate structured context. A
+subsequent authenticated session receives only the current
+versioned context. Existing sessions that predate structured context may need
+the user to sign in again after deployment; that is the intended fail-closed
+transition.
 
 Current clean customer password-plus-TOTP sessions are expected to use the same
 stable structured context for later profile update, Local Transfer, and PayUp

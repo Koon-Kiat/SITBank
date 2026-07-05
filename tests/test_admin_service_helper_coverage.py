@@ -329,7 +329,7 @@ def test_invite_identity_and_auth_backoff_fail_closed(app, monkeypatch):
         assert exc.value.retry_after == 17
 
 
-def test_audit_filter_and_display_helpers_cover_safe_branching():
+def test_audit_filter_and_display_helpers_cover_safe_branching(app):
     filters = services._audit_filters(
         {
             "event_type": "login_success",
@@ -358,7 +358,8 @@ def test_audit_filter_and_display_helpers_cover_safe_branching():
     assert services._apply_audit_actor_filter(statement, "bad") is statement
     assert services._apply_audit_actor_filter(statement, "12") is not statement
     assert services._apply_audit_search_filter(statement, "") is statement
-    assert services._apply_audit_search_filter(statement, "123") is not statement
+    with app.app_context():
+        assert services._apply_audit_search_filter(statement, "123") is not statement
     assert services._where_metadata_key_matches(
         statement,
         "severity",

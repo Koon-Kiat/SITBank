@@ -21,16 +21,17 @@ from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
 from app.models import AuthAttemptCounter, RegistrationCredit, TotpReplayRecord, User
+from app.auth.mfa_policy import (
+    PASSWORD_BOOTSTRAP_AUTH_CONTEXT,
+    has_enrolled_mfa_method,
+)
 from app.auth.registration_otp import (
     RegistrationOtpError,
     consume_verified_registration_email,
     require_current_verified_registration_email,
     require_verified_registration_email,
 )
-from app.auth.mfa_policy import (
-    PASSWORD_BOOTSTRAP_AUTH_CONTEXT,
-    has_enrolled_mfa_method,
-)
+from app.auth.schemas import PHONE_RE
 from app.security.audit import audit_event, audit_event_required, audit_reference, principal_reference
 from app.security.crypto import decrypt_mfa_secret, encrypt_mfa_secret
 from app.security.email import send_security_email
@@ -866,7 +867,7 @@ def _profile_update_values(user: User, username: str, email: str, phone_number: 
     username_lookup = _normalize(normalized_username)
     submitted_email = email.strip().lower()
     normalized_phone = str(phone_number or "").strip()
-    if re.fullmatch(r"[89]\d{7}", normalized_phone) is None:
+    if re.fullmatch(PHONE_RE, normalized_phone) is None:
         audit_event("profile_update", "blocked", user=user, metadata={"reason": "invalid_phone"})
         raise AuthError(PROFILE_UPDATE_ERROR, 400)
 

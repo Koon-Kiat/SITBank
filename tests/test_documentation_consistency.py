@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -153,8 +154,8 @@ def test_auth_schema_reset_and_customer_unlock_docs_match_current_contract():
         "exactly 12 decimal digits",
         "different active\nroot admin",
         "missing, malformed, or unsupported structured context",
-        "narrow\nmigration case",
-        "normal redeploy or bounded customer reauthentication",
+        "legacy `risk_fingerprint` alone is not accepted",
+        "sign in again after deployment",
         "do not relax TOTP replay checks",
         "retired URLs are unregistered",
     ):
@@ -162,6 +163,8 @@ def test_auth_schema_reset_and_customer_unlock_docs_match_current_contract():
     for stale in (
         "legacy 9-digit rows remain valid",
         "A matching legacy `risk_fingerprint` is accepted",
+        "narrow\nmigration case",
+        "server writes the structured context before sensitive-action",
         "disabled\ncompatibility code",
         "`staff_invites.personal_email_normalized` nullable",
     ):
@@ -204,6 +207,7 @@ def test_audit_viewer_docs_match_simple_search_and_sgt_timestamp_contract():
         "advanced filter disclosure",
         "actor username",
         "privileged workplace email",
+        "Customer personal email",
         "does not search raw unbounded metadata",
         "Visible UI timestamps display in UTC+8/SGT",
         "machine-readable UTC/ISO values remain",
@@ -214,6 +218,32 @@ def test_audit_viewer_docs_match_simple_search_and_sgt_timestamp_contract():
         "session reference, and numeric actor ID",
     ):
         assert stale not in audit_docs
+
+
+def test_human_facing_templates_do_not_render_raw_machine_timestamps():
+    timestamp_expression = re.compile(
+        r"{{[^{}]*(?:\.(?:created_at|updated_at|expires_at|decided_at|"
+        r"executed_at|generated_at|timestamp)(?:_utc)?\b|\|utc_iso\b)[^{}]*}}"
+    )
+    machine_attribute = re.compile(
+        r'(?:datetime|data-[a-z0-9_-]+|value)="[^"]*$',
+        re.IGNORECASE,
+    )
+    failures = []
+
+    for path in Path("app/templates").rglob("*.html"):
+        text = path.read_text(encoding="utf-8")
+        assert ".isoformat(" not in text
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            for match in timestamp_expression.finditer(line):
+                expression = match.group(0)
+                if "_display" in expression or "|sgt_datetime" in expression:
+                    continue
+                if machine_attribute.search(line[: match.start()]):
+                    continue
+                failures.append(f"{path}:{line_number}: {expression}")
+
+    assert failures == []
 
 
 def test_rate_limit_layering_docs_match_current_controls():

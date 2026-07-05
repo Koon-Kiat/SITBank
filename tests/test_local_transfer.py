@@ -389,7 +389,7 @@ def test_transfer_stepup_succeeds_after_clean_password_totp_login(
     ).count() == 0
 
 
-def test_transfer_stepup_accepts_matching_legacy_session_context(
+def test_transfer_stepup_rejects_missing_context_with_matching_legacy_fingerprint(
     client,
     transfer_context,
     monkeypatch,
@@ -416,26 +416,21 @@ def test_transfer_stepup_accepts_matching_legacy_session_context(
         f"/banking/transfer/{payee.id}",
         data={
             "amount": "25.00",
-            "reference": "Legacy context",
+            "reference": "Retired legacy context",
             "totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(stepup_time),
         },
     )
     with client.session_transaction() as sess:
-        assert sess.get("pending_transfer_token")
-
-    confirm_response = client.get(f"/banking/transfer/{payee.id}/confirm")
-    complete_response = client.post(f"/banking/transfer/{payee.id}/confirm")
+        assert not sess.get("pending_transfer_token")
 
     assert password_response.status_code == 302
     assert mfa_response.status_code == 200
-    assert submit_response.status_code == 302
-    assert confirm_response.status_code == 200
-    assert complete_response.status_code == 302
-    assert Transaction.query.filter_by(reference="Legacy context").count() == 1
+    assert submit_response.status_code == 401
+    assert Transaction.query.filter_by(reference="Retired legacy context").count() == 0
     assert db.session.query(SecurityAuditEvent).filter_by(
         event_type="session_risk",
         outcome="reauth_required",
-    ).count() == 0
+    ).count() == 1
 
 
 def test_transfer_route_handles_invalid_form_and_mfa_error(
