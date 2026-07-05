@@ -1152,12 +1152,19 @@ def _requested_statement_period() -> tuple[int, int]:
 
 
 _CSV_FORMULA_TRIGGER_CHARS = ("=", "+", "-", "@")
+_CSV_LEADING_NEUTRAL_RE = re.compile(r"^[\x00-\x20\x7f]*")
 
 
 def _csv_safe(value: str) -> str:
-    """Neutralize spreadsheet formula injection (OWASP A03) in exported cell values."""
+    """Neutralize spreadsheet formula injection (OWASP A03) in exported cell values.
+
+    Trigger characters hidden behind leading whitespace or control characters
+    (e.g. a leading tab or CR) still start a formula in common spreadsheet
+    parsers, so the check strips those before testing for a trigger.
+    """
     text = str(value or "")
-    if text.startswith(_CSV_FORMULA_TRIGGER_CHARS):
+    unmasked = _CSV_LEADING_NEUTRAL_RE.sub("", text)
+    if unmasked.startswith(_CSV_FORMULA_TRIGGER_CHARS):
         return "'" + text
     return text
 
