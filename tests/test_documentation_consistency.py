@@ -154,6 +154,8 @@ def test_auth_schema_reset_and_customer_unlock_docs_match_current_contract():
         "different active\nroot admin",
         "missing, malformed, or unsupported structured context",
         "narrow\nmigration case",
+        "normal redeploy or bounded customer reauthentication",
+        "do not relax TOTP replay checks",
         "retired URLs are unregistered",
     ):
         assert required in docs

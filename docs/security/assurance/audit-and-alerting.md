@@ -217,10 +217,15 @@ without copying secrets into issues, pull requests, screenshots, or chat.
 Authorized admin/root users can review current security alert report output at
 `GET /alerts`. This dashboard route calls `build_security_alert_report()` with
 delivery disabled; it does not send, resend, or acknowledge alerts. The browser
-view shows labeled report cards, actionable safe alert details, audit-chain and
-database-integrity status, delivery status, dedupe status, next action text,
-and links to existing authorized audit-event detail pages only when a related
-event row exists.
+view shows labeled report cards, readable SGT timestamps with UTC `datetime`
+values, friendly alert source summaries for first-pass triage, actionable safe
+alert details, audit-chain and database-integrity status, delivery status,
+dedupe status, next action text, and links to existing authorized audit-event
+detail pages only when a related event row exists. The JSON, CLI, webhook,
+dedupe, and audit-evidence report contract keeps machine-readable UTC values;
+the browser detail panel preserves sanitized technical source, status, window,
+reason, error type, related audit event, and recommended-action fields behind
+the summary view.
 
 Manual browser delivery is explicit and state-changing through
 `POST /alerts/deliver` only. The route requires the existing admin/root session

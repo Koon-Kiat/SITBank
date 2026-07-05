@@ -13,7 +13,7 @@
   </div>
   <section class="panel">
     <dl class="admin-metadata-grid">
-      <div><dt>Generated</dt><dd>{{ report.generated_at }}</dd></div>
+      <div><dt>Generated</dt><dd><time datetime="{{ report.generated_at_utc }}">{{ report.generated_at_display }}</time></dd></div>
       <div><dt>Active alerts</dt><dd>{{ report.alert_count }}</dd></div>
       <div><dt>Highest severity</dt><dd>{{ report.highest_severity }}</dd></div>
       <div><dt>Audit chain</dt><dd>{% if report.audit_chain.valid %}Valid{% else %}Attention required{% endif %}</dd></div>
@@ -57,8 +57,14 @@
             <td>{{ alert.alert_type }}</td>
             <td>{{ alert.severity }}</td>
             <td>{{ alert.count }}</td>
-            <td>{{ alert.source }}</td>
-            <td><a href="{{ alert.detail_url }}">Open</a></td>
+            <td>{{ alert.source_summary }}</td>
+            <td>
+              <a href="{{ alert.detail_url }}"
+                 data-alert-detail-link
+                 data-alert-ref="{{ alert.ref }}"
+                 aria-controls="alert-detail-{{ alert.ref }}"
+                 aria-expanded="{{ 'true' if alert.selected else 'false' }}">Open</a>
+            </td>
           </tr>
           {% else %}
           <tr>
@@ -69,27 +75,33 @@
       </table>
     </div>
   </section>
-  {% if report.selected_alert %}
-  <section class="panel">
+  {% for alert in report.alerts %}
+  <section class="panel alert-detail-panel"
+           id="alert-detail-{{ alert.ref }}"
+           data-alert-detail-panel
+           data-alert-ref="{{ alert.ref }}"
+           tabindex="-1"
+           {% if not alert.selected %}hidden{% endif %}>
     <div class="section-header">
       <h2>Alert Detail</h2>
     </div>
     <dl class="admin-metadata-grid">
-      <div><dt>Type</dt><dd>{{ report.selected_alert.alert_type }}</dd></div>
-      <div><dt>Severity</dt><dd>{{ report.selected_alert.severity }}</dd></div>
-      <div><dt>Source</dt><dd>{{ report.selected_alert.source }}</dd></div>
-      <div><dt>Count</dt><dd>{{ report.selected_alert.count }}</dd></div>
-      <div><dt>Window seconds</dt><dd>{{ report.selected_alert.window_seconds }}</dd></div>
-      <div><dt>Generated</dt><dd>{{ report.selected_alert.generated_at }}</dd></div>
-      <div><dt>Status</dt><dd>{{ report.selected_alert.status or "reported" }}</dd></div>
-      <div><dt>Reason</dt><dd>{{ report.selected_alert.reason or "not specified" }}</dd></div>
-      <div><dt>Error type</dt><dd>{{ report.selected_alert.error_type or "none" }}</dd></div>
-      <div><dt>Recommended action</dt><dd>{{ report.selected_alert.recommended_action }}</dd></div>
+      <div><dt>Type</dt><dd>{{ alert.alert_type }}</dd></div>
+      <div><dt>Severity</dt><dd>{{ alert.severity }}</dd></div>
+      <div><dt>Source summary</dt><dd>{{ alert.source_summary }}</dd></div>
+      <div><dt>Technical source</dt><dd>{{ alert.source }}</dd></div>
+      <div><dt>Count</dt><dd>{{ alert.count }}</dd></div>
+      <div><dt>Window seconds</dt><dd>{{ alert.window_seconds }}</dd></div>
+      <div><dt>Generated</dt><dd><time datetime="{{ alert.generated_at_utc }}">{{ alert.generated_at_display }}</time></dd></div>
+      <div><dt>Status</dt><dd>{{ alert.status or "reported" }}</dd></div>
+      <div><dt>Reason</dt><dd>{{ alert.reason or "not specified" }}</dd></div>
+      <div><dt>Error type</dt><dd>{{ alert.error_type or "none" }}</dd></div>
+      <div><dt>Recommended action</dt><dd>{{ alert.recommended_action }}</dd></div>
       <div>
         <dt>Related audit event</dt>
         <dd>
-          {% if report.selected_alert.event_url %}
-          <a href="{{ report.selected_alert.event_url }}">Open audit event {{ report.selected_alert.event_id }}</a>
+          {% if alert.event_url %}
+          <a href="{{ alert.event_url }}">Open audit event {{ alert.event_id }}</a>
           {% else %}
           No related audit event ID in this alert.
           {% endif %}
@@ -97,6 +109,10 @@
       </div>
     </dl>
   </section>
-  {% endif %}
+  {% endfor %}
 </section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/admin-alerts.js') }}" defer></script>
 {% endblock %}
