@@ -7,7 +7,7 @@
   <div class="dashboard-header">
     <div class="page-heading">
       <p class="eyebrow">PayUp</p>
-      <h1>Pay to {{ pending.recipient_name }}</h1>
+      <h1>Pay to {{ pending.recipient_label }}</h1>
       <p class="muted">Sending to {{ pending.recipient_phone }}</p>
     </div>
     <div class="button-row">
@@ -19,9 +19,12 @@
     <article class="profile-panel profile-summary">
       <div class="profile-panel-title">
         <p class="eyebrow">Pay to</p>
-        <h2>{{ pending.recipient_name }}</h2>
+        <h2>{{ pending.recipient_label }}</h2>
       </div>
       <p class="muted">Phone number: {{ pending.recipient_phone }}</p>
+      {% if pending.recipient_nickname %}
+      <p class="muted">PayUp nickname: {{ pending.recipient_nickname }}</p>
+      {% endif %}
       <p class="muted">Daily limit remaining: SGD {{ "%.2f"|format(remaining) }} of SGD {{ "%.2f"|format(daily_limit) }}.</p>
 
       <hr class="form-divider form-divider-tight">

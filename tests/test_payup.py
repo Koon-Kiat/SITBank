@@ -146,6 +146,8 @@ def payup_context(app, client):
     bob = db.session.execute(db.select(User).where(User.username == "bob02")).scalar_one()
     alice.account_number = "111111111000"
     bob.account_number = "222222222000"
+    alice.payup_nickname = "Alice PayUp"
+    bob.payup_nickname = "Bob PayUp"
     alice.balance = Decimal("5000.00")
     bob.balance = Decimal("1000.00")
     alice.account_type = bob.account_type = "customer"
@@ -156,7 +158,7 @@ def payup_context(app, client):
     alice, alice_secret = enable_mfa_for_user("alice01")
     mark_recent_mfa(client, alice)
 
-    return {"alice": alice, "alice_secret": alice_secret, "bob": bob}
+    return {"alice": alice, "alice_secret": alice_secret, "bob": bob, "bob_client": bob_client}
 
 
 # ── Daily-limit accounting ───────────────────────────────────────────────────────
@@ -459,6 +461,52 @@ def test_execute_payup_transfer_expired_token_blocked(app, payup_context):
 
 # ── Phone lookup route ───────────────────────────────────────────────────────────
 
+def test_execute_payup_transfer_requires_sender_nickname(app, payup_context):
+    alice = payup_context["alice"]
+    bob = payup_context["bob"]
+    alice.payup_nickname = None
+    db.session.commit()
+    token = _make_payup_pending(alice, bob, Decimal("50.00"))
+
+    with _payup_service_context(app, alice):
+        with pytest.raises(AuthError) as exc_info:
+            execute_payup_transfer(sender=alice, confirmation_token=token, authorized=False)
+
+    assert exc_info.value.status_code == 403
+    assert "display nickname" in exc_info.value.message
+    assert Transaction.query.count() == 0
+
+
+def test_payup_nickname_setup_saves_trimmed_display_name_without_raw_audit(client, payup_context):
+    alice = payup_context["alice"]
+    alice.payup_nickname = None
+    db.session.commit()
+
+    response = client.post("/banking/payup/nickname", data={"nickname": "  Alice New  "})
+    db.session.refresh(alice)
+    event = db.session.query(SecurityAuditEvent).filter_by(event_type="payup_nickname_update").one()
+
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/banking/payup")
+    assert alice.payup_nickname == "Alice New"
+    assert event.event_metadata == {"nickname_present": True, "nickname_length": 9}
+    assert "Alice New" not in str(event.event_metadata)
+
+
+def test_payup_requires_sender_nickname_before_lookup(client, payup_context):
+    alice = payup_context["alice"]
+    alice.payup_nickname = None
+    db.session.commit()
+
+    response = client.post("/banking/payup", data=_payup_lookup_data(payup_context))
+
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/banking/payup/nickname")
+    with client.session_transaction() as sess:
+        assert "pending_payup_recipient" not in sess
+        assert "pending_payup_token" not in sess
+
+
 def test_payup_phone_lookup_success_redirects_to_amount(client, payup_context):
     response = client.post("/banking/payup", data=_payup_lookup_data(payup_context))
 
@@ -471,6 +519,20 @@ def test_payup_phone_lookup_success_redirects_to_amount(client, payup_context):
     assert pending["recipient_user_id"] == payup_context["bob"].id
     assert "recipient_name" not in pending
     assert "recipient_phone" not in pending
+
+
+def test_payup_lookup_uses_committed_profile_phone_changes(client, payup_context):
+    bob = payup_context["bob"]
+    bob.phone_number = "82345678"
+    db.session.commit()
+
+    old_phone = client.post("/banking/payup", data=_payup_lookup_data(payup_context, phone_number="81234567"))
+    new_phone = client.post("/banking/payup", data=_payup_lookup_data(payup_context, phone_number="82345678"))
+
+    assert old_phone.status_code == 400
+    assert b"Invalid phone number" in old_phone.data
+    assert new_phone.status_code == 302
+    assert "payup/amount" in new_phone.headers["Location"]
 
 
 def test_payup_phone_lookup_unknown_number_shows_error(client, payup_context):
@@ -731,10 +793,20 @@ def test_complete_payup_route_flow_below_threshold_no_mfa(client, payup_context)
     confirm_page = client.get("/banking/payup/confirm")
     assert confirm_page.status_code == 200
     assert b"Authenticator code" not in confirm_page.data
+    assert b"From: Alice PayUp" in confirm_page.data
+    assert b"Source account ending in 1000" in confirm_page.data
+    assert b"To: 81234567" in confirm_page.data
+    assert b"Recipient nickname: Bob PayUp" in confirm_page.data
+    assert b"Bob Recipient" not in confirm_page.data
 
     confirm_submit = client.post("/banking/payup/confirm", data={})
     assert confirm_submit.status_code == 302
     assert Transaction.query.filter_by(reference="Lunch", transaction_type="payup").count() == 1
+
+    history = client.get("/transactions")
+    assert b"To: Bob PayUp" in history.data
+    assert b"Phone: 81234567" in history.data
+    assert b"Bob Recipient" not in history.data
 
 
 def test_low_risk_confirmations_use_payup_limits_not_legacy_mfa_limiter(

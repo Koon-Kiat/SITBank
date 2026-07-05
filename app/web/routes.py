@@ -856,6 +856,7 @@ def profile():
         pending_email_change["username"] if pending_email_change else g.current_user.username
     )
     form.email.data = pending_email_change["email"] if pending_email_change else g.current_user.email
+    form.phone_number.data = g.current_user.phone_number
     return render_template(
         _PROFILE_TEMPLATE,
         user=g.current_user,
@@ -886,6 +887,7 @@ def profile_submit():
             g.current_user,
             form.username.data,
             form.email.data,
+            form.phone_number.data,
             form.totp_code.data,
             form.email_verification_code.data,
         )

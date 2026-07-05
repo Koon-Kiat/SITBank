@@ -803,21 +803,27 @@ most two decimal places. Recipient account state is checked before funds move.
 The Local Transfer daily limit remains a documented placeholder until a limit is
 implemented for that channel.
 
-PayUp lookup returns only a masked recipient identity. Unknown, unavailable,
-and revoked recipients return the same generic `Invalid phone number`
-response, including self-phone lookups, and audit metadata uses opaque
-references instead of raw phone numbers. Durable lookup and confirmation
+PayUp senders must set a customer-owned PayUp display nickname before lookup,
+amount entry, or confirmation. The nickname is 2 to 128 characters, is stored on
+the account, and does not reuse saved `Payee.nickname` records. Unknown,
+unavailable, and revoked recipients return the same generic `Invalid phone
+number` response, including self-phone lookups, and audit metadata uses opaque
+references instead of raw phone numbers. Nickname audit metadata records only
+presence and length. The confirmation page shows the source account ending,
+sender nickname, recipient phone number, recipient PayUp nickname when set,
+amount, and reference; pending PayUp session state stores only server-resolved
+IDs, expiry, and keyed confirmation tokens. Durable lookup and confirmation
 limits are independently scoped to account, authenticated session, source
 network, and recipient. PayUp has a per-customer enable flag and daily limit,
-reset at midnight Singapore time. The default limit is SGD 500; presets are
-SGD 100, 500, 1000, 3000, 5000, and 10000. Custom limits must be between SGD
+reset at midnight Singapore time. The default limit is SGD 500; presets are SGD
+100, 500, 1000, 3000, 5000, and 10000. Custom limits must be between SGD
 100.00 and SGD 10000.00 with cents precision, and changing the value requires
-TOTP step-up. A centralized policy blocks invalid or unavailable risk state
-and recomputes at confirmation and again under the sender lock. It requires
-fresh TOTP for stale sessions, recent sensitive account changes, transfers at
-least 80% of the daily limit, or amounts outside the quick-transfer and
-quick-daily caps. Low-risk transfers within those caps do not require an
-additional code. These PayUp posts rely on the dedicated durable
+TOTP step-up. A centralized policy blocks invalid or unavailable risk state and
+recomputes at confirmation and again under the sender lock. It requires fresh
+TOTP for stale sessions, recent sensitive account changes such as profile email
+or phone changes, transfers at least 80% of the daily limit, or amounts outside
+the quick-transfer and quick-daily caps. Low-risk transfers within those caps do
+not require an additional code. These PayUp posts rely on the dedicated durable
 account/session/source/recipient limits plus the existing edge controls; they
 do not retain an older MFA-principal route limit that can undercut the
 configured PayUp policy. SITBank currently has no general successful-transfer
@@ -825,6 +831,12 @@ notification channel to reuse, so successful PayUp execution is recorded by
 required transaction audit evidence and the authenticated browser result. A
 future email or push channel requires a separate reviewed delivery and privacy
 design.
+
+Successful customer registration creates exactly one SGD 100.00 welcome credit
+inside the same transaction as the new customer row. The `registration_credits`
+ledger stores one credit per customer, fixed amount/status constraints, and
+HMAC-SHA256 integrity metadata under the transaction-ledger keyring; the browser
+and JSON registration paths both go through this server-side service boundary.
 
 Completed Local Transfer and PayUp rows store an HMAC-SHA256 transaction hash
 under the dedicated `TRANSACTION_LEDGER_HMAC_KEYS_JSON` key id and explicit

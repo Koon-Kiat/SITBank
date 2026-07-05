@@ -66,3 +66,20 @@ def test_security_boundary_migration_hardens_invites_payup_and_recovery_codes():
     assert "payup_daily_limit <= 10000.00" in migration
     assert "UPDATE recovery_codes SET used_at = CURRENT_TIMESTAMP" in migration
     assert "hmac_version < 2" in migration
+
+
+def test_payup_nickname_registration_credit_migration_is_chained_and_fail_closed():
+    migration = (MIGRATIONS / "20260705_0030_payup_nickname_registration_credit.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'revision = "20260705_0030"' in migration
+    assert 'down_revision = "20260705_0029"' in migration
+    assert '"payup_nickname"' in migration
+    assert "String(length=128)" in migration
+    assert '"registration_credits"' in migration
+    assert "amount = 100.00" in migration
+    assert "uq_registration_credits_user_id" in migration
+    assert "credit_integrity_algorithm = 'hmac-sha256'" in migration
+    assert "credit_integrity_version = 1" in migration
+    assert "Downgrade would discard registration credit ledger evidence" in migration

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 
 from _auth_flow_helpers import *
+from app.models import RegistrationCredit
+from app.security.transaction_integrity import registration_credit_integrity_status
 
 
 def test_registration_rejects_common_password(client):
@@ -73,6 +76,21 @@ def test_registration_uses_local_fallback_when_live_password_check_is_unavailabl
     assert response.status_code == 200
     assert db.session.query(User).count() == 1
     assert HIBP_FALLBACK_WARNING.encode("utf-8") in response.data
+
+
+def test_registration_creates_single_welcome_credit_atomically(client):
+    response = register(client)
+    user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
+    credit = db.session.execute(
+        db.select(RegistrationCredit).where(RegistrationCredit.user_id == user.id)
+    ).scalar_one()
+
+    assert response.status_code == 302
+    assert Decimal(str(user.balance)) == Decimal("100.00")
+    assert Decimal(str(credit.amount)) == Decimal("100.00")
+    assert credit.status == "completed"
+    assert registration_credit_integrity_status(credit) == "valid"
+    assert db.session.query(RegistrationCredit).filter_by(user_id=user.id).count() == 1
 
 def test_registration_rejects_live_breached_password(client, monkeypatch):
     monkeypatch.setattr("app.security.passwords._is_password_pwned_by_hibp", lambda _password: True)

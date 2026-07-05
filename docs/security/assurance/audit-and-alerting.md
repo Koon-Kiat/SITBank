@@ -181,14 +181,17 @@ Authorized admin/root users can review a browser-rendered audit log viewer at
 isolated admin runtime. The viewer is read-only: it has no export, edit, or
 delete route. `staff` users and customers cannot access it.
 
-The viewer validates filters, sort fields, sort direction, page number, and
-page size server-side before any query is built. Supported controls are exact
-event type, actor user ID, approved target-reference metadata keys, role,
-severity, outcome/status, request or correlation ID, IP address, timestamp
-range, timestamp/severity/event-type/actor sorting, and bounded pagination.
-The `q` search field is limited to approved safe event columns such as event
-type, outcome, correlation ID, IP address, session reference, and numeric actor
-ID; it does not search raw unbounded metadata.
+The viewer defaults to a single visible `q` search box and keeps exact filters
+inside an advanced filter disclosure. It validates filters, sort fields, sort
+direction, page number, and page size server-side before any query is built.
+Supported advanced controls are exact event type, actor user ID, approved
+target-reference metadata keys, role, severity, outcome/status, request or
+correlation ID, IP address, timestamp range,
+timestamp/severity/event-type/actor sorting, and bounded pagination. The `q`
+search field is limited to approved safe fields: activity/event type, outcome,
+request ID, safe source display, target reference, actor user ID, actor
+username, and privileged workplace email. It does not search raw unbounded
+metadata.
 
 List rows render only safe top-level event fields. Detail pages pass metadata
 through the same display redaction used by tests, suppressing sensitive keys
@@ -200,8 +203,8 @@ logged.
 Audit list and detail pages include a human-readable activity label, concise
 event description, investigation hint, safe actor summary, actor role, source
 kind/display, target reference, request ID, outcome, severity, and hash-chain
-status. The primary admin-facing timestamp is readable UTC such as
-`2026-07-01 22:11:49 UTC`; the machine ISO timestamp remains in HTML
+status. Visible UI timestamps display in UTC+8/SGT such as
+`02 Jul 2026, 06:11:49 SGT`; machine-readable UTC/ISO values remain in HTML
 `datetime` attributes and JSON fields for tooling. Known admin, MFA, staff
 invite, staff lifecycle, manual recovery, deployment, Cloudflare, Tailscale,
 runtime privilege, and alerting event types use explicit descriptions. Unknown

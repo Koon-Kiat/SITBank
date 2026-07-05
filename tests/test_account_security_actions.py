@@ -129,8 +129,10 @@ def test_authenticated_user_can_open_own_edit_profile_page(client):
     assert b"Edit profile" in response.data
     assert b"alice01" in response.data
     assert b"alice@example.com" in response.data
+    assert b"91234567" in response.data
     assert 'name="username"' in markup
     assert 'name="email"' in markup
+    assert 'name="phone_number"' in markup
     assert "Update profile details" in markup
     assert "Verify and save" in markup
     assert "Authenticator MFA required" not in markup
@@ -413,6 +415,7 @@ def test_profile_details_update_succeeds_for_authenticated_user(client, monkeypa
         data={
             "username": "alice02",
             "email": "alice@example.com",
+            "phone_number": "91234567",
             "totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(stepup_time),
         },
     )
@@ -424,6 +427,7 @@ def test_profile_details_update_succeeds_for_authenticated_user(client, monkeypa
     assert response.headers["Location"].endswith("/profile")
     assert user.username == "alice02"
     assert user.email == "alice@example.com"
+    assert user.phone_number == "91234567"
     assert new_username_login.status_code == 302
     assert new_username_login.headers["Location"].endswith("/mfa/verify")
     assert db.session.query(SecurityAuditEvent).filter_by(event_type="profile_update", outcome="success").count() == 1
@@ -444,6 +448,7 @@ def test_profile_email_update_requires_email_code_and_totp_stepup(client, monkey
         data={
             "username": "alice01",
             "email": "alice.mfa@example.com",
+            "phone_number": "91234567",
             "totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(request_time),
         },
     )
@@ -461,6 +466,7 @@ def test_profile_email_update_requires_email_code_and_totp_stepup(client, monkey
         data={
             "username": "alice01",
             "email": "alice.mfa@example.com",
+            "phone_number": "91234567",
             "email_verification_code": match.group(1),
             "totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(commit_time),
         },
@@ -471,6 +477,47 @@ def test_profile_email_update_requires_email_code_and_totp_stepup(client, monkey
     assert user.email == "alice.mfa@example.com"
 
 
+def test_profile_phone_update_succeeds_without_raw_phone_audit_metadata(client, monkeypatch):
+    register(client)
+    login(client)
+    user, secret = enable_mfa_for_user()
+    stepup_time = int(time.time())
+    monkeypatch.setattr("app.auth.services.time.time", lambda: stepup_time)
+
+    response = client.post(
+        "/profile",
+        data={
+            "username": "alice01",
+            "email": "alice@example.com",
+            "phone_number": "92345678",
+            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(stepup_time),
+        },
+    )
+    db.session.refresh(user)
+    event = db.session.query(SecurityAuditEvent).filter_by(event_type="profile_update", outcome="success").one()
+
+    assert response.status_code == 302
+    assert user.phone_number == "92345678"
+    assert event.event_metadata == {"updated_fields": "profile_phone"}
+    assert "92345678" not in str(event.event_metadata)
+
+
+def test_profile_update_rejects_invalid_phone(client):
+    register(client)
+    login(client)
+    user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
+    mark_recent_mfa(client, user)
+
+    response = client.post(
+        "/profile",
+        data={"username": "alice01", "email": "alice@example.com", "phone_number": "71234567"},
+    )
+    db.session.refresh(user)
+
+    assert response.status_code == 400
+    assert user.phone_number == "91234567"
+
+
 def test_profile_update_rejects_invalid_email(client):
     register(client)
     login(client)
@@ -479,7 +526,7 @@ def test_profile_update_rejects_invalid_email(client):
 
     response = client.post(
         "/profile",
-        data={"username": "alice01", "email": "not-an-email"},
+        data={"username": "alice01", "email": "not-an-email", "phone_number": "91234567"},
     )
     db.session.refresh(user)
 
@@ -498,6 +545,7 @@ def test_profile_update_rejects_admin_domain_customer_email(client):
         data={
             "username": "alice01",
             "email": "alice@sit.singaporetech.edu.sg",
+            "phone_number": "91234567",
         },
     )
     db.session.refresh(user)
@@ -519,7 +567,7 @@ def test_profile_update_rejects_invalid_username(client):
 
     response = client.post(
         "/profile",
-        data={"username": "bad user", "email": "alice@example.com"},
+        data={"username": "bad user", "email": "alice@example.com", "phone_number": "91234567"},
     )
     db.session.refresh(user)
 
@@ -534,7 +582,7 @@ def test_profile_update_rejects_duplicate_username(client):
 
     response = client.post(
         "/profile",
-        data={"username": "BOB02", "email": "alice@example.com"},
+        data={"username": "BOB02", "email": "alice@example.com", "phone_number": "91234567"},
     )
     db.session.refresh(user)
 
@@ -551,12 +599,34 @@ def test_profile_update_rejects_duplicate_email(client):
 
     response = client.post(
         "/profile",
-        data={"username": "alice01", "email": "bob@example.com"},
+        data={"username": "alice01", "email": "bob@example.com", "phone_number": "91234567"},
     )
     db.session.refresh(user)
 
     assert response.status_code == 400
     assert user.email == "alice@example.com"
+    assert db.session.query(SecurityAuditEvent).filter_by(event_type="profile_update", outcome="failure").count() == 1
+
+
+def test_profile_update_rejects_duplicate_phone(client):
+    register(client)
+    register(client, username="bob02", email="bob@example.com", full_name="Bob Test", phone_number="81234567")
+    login(client)
+    user, secret = enable_mfa_for_user()
+
+    response = client.post(
+        "/profile",
+        data={
+            "username": "alice01",
+            "email": "alice@example.com",
+            "phone_number": "81234567",
+            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).now(),
+        },
+    )
+    db.session.refresh(user)
+
+    assert response.status_code == 400
+    assert user.phone_number == "91234567"
     assert db.session.query(SecurityAuditEvent).filter_by(event_type="profile_update", outcome="failure").count() == 1
 
 def test_profile_post_requires_csrf_when_enabled(app, client):
@@ -568,7 +638,7 @@ def test_profile_post_requires_csrf_when_enabled(app, client):
     try:
         response = client.post(
             "/profile",
-            data={"username": "alice02", "email": "alice.new@example.com"},
+            data={"username": "alice02", "email": "alice.new@example.com", "phone_number": "91234567"},
         )
     finally:
         app.config["WTF_CSRF_ENABLED"] = original
@@ -613,6 +683,7 @@ def test_profile_submission_cannot_modify_privileged_fields(client):
         data={
             "username": "alice02",
             "email": "alice@example.com",
+            "phone_number": "91234567",
             "totp_code": pyotp.TOTP(secret, digits=6, interval=30).now(),
             "user_id": str(other_user.id),
             "mfa_enabled": "true",
@@ -643,6 +714,7 @@ def test_high_risk_action_accepts_totp_stepup(client):
         data={
             "username": "alice02",
             "email": "alice@example.com",
+            "phone_number": "91234567",
             "totp_code": pyotp.TOTP(secret, digits=6, interval=30).now(),
         },
     )
@@ -685,6 +757,7 @@ def test_session_risk_drift_requires_reauth_before_sensitive_action(client):
         data={
             "username": "alice01",
             "email": "alice.drift@example.com",
+            "phone_number": "91234567",
             "totp_code": pyotp.TOTP(secret, digits=6, interval=30).now(),
         },
     )

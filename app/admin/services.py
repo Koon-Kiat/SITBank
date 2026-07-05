@@ -73,6 +73,7 @@ from app.security.sessions import (
     revoke_all_sessions,
     revoke_current_session,
 )
+from app.time_display import sgt_datetime, utc_iso
 from app.security.turnstile import TurnstileError, require_turnstile
 
 
@@ -107,6 +108,15 @@ STAFF_ACTION_OPERATION_TYPES = {
 MANUAL_RECOVERY_STATUS_OPERATION_TYPES = {
     MANUAL_RECOVERY_STATUS_APPROVED: "manual_recovery_approve",
     MANUAL_RECOVERY_STATUS_DENIED: "manual_recovery_deny",
+}
+ADMIN_ACTION_OPERATION_LABELS = {
+    "staff_deactivate": "Deactivate staff account",
+    "staff_reactivate": "Reactivate staff account",
+    "staff_reset_activation": "Reset staff activation",
+    "manual_recovery_approve": "Approve manual recovery",
+    "manual_recovery_deny": "Deny manual recovery",
+    "manual_recovery_complete": "Complete manual recovery",
+    "customer_security_unlock": "Unlock customer security lock",
 }
 ADMIN_ACTION_EXECUTION_REASON = "maker_checker_approved"
 ADMIN_ACTION_APPROVAL_REQUIRED_MESSAGE = "Admin action approval required"
@@ -413,7 +423,7 @@ AUDIT_FIELD_LEGEND = {
     "Hash algorithm": "Hash-chain algorithm recorded for this row.",
     "Severity": "Security severity supplied by safe metadata, when available.",
     "Outcome": "Result of the action, authorization decision, or system check.",
-    "Timestamp": "Readable UTC time; the machine ISO timestamp remains in datetime/JSON fields.",
+    "Timestamp": "Readable UTC+8/SGT time; the machine ISO timestamp remains in datetime/JSON fields.",
 }
 DISPLAY_REDACTED_VALUE = "[redacted]"
 DISPLAY_SENSITIVE_VALUE_RE = re.compile(
@@ -515,7 +525,9 @@ def public_transaction_dispute(dispute: TransactionDispute) -> dict[str, Any]:
         "resolver_ref": audit_reference("staff_user", dispute.resolver_id) if dispute.resolver_id else None,
         "resolution_note": dispute.resolution_note,
         "created_at": dispute.created_at.isoformat() if dispute.created_at else None,
+        "created_at_display": _utc_display(dispute.created_at) if dispute.created_at else None,
         "decided_at": dispute.decided_at.isoformat() if dispute.decided_at else None,
+        "decided_at_display": _utc_display(dispute.decided_at) if dispute.decided_at else None,
     }
 
 
@@ -814,6 +826,7 @@ def locked_customers_for_admin(actor: User) -> list[dict[str, Any]]:
             "username": customer.username,
             "lock_reason": customer.security_lock_reason,
             "locked_at": _utc_iso(customer.security_locked_at),
+            "locked_at_display": _utc_display(customer.security_locked_at),
         }
         for customer in customers
     ]
@@ -1120,7 +1133,9 @@ def public_staff_account(user: User, actor: User) -> dict[str, Any]:
         "totp_enrolled": bool(user.mfa_enabled),
         "workplace_email_verified": bool(user.workplace_email_verified_at),
         "created_at": _utc_iso(user.created_at),
+        "created_at_display": _utc_display(user.created_at),
         "last_login_at": _utc_iso(user.last_login_at) if user.last_login_at else None,
+        "last_login_at_display": _utc_display(user.last_login_at) if user.last_login_at else None,
         "can_manage": bool(is_root_admin(actor) and user.account_type in ADMIN_ACCOUNT_MANAGED_TYPES and user.id != actor.id),
     }
 
@@ -1471,13 +1486,31 @@ def _apply_audit_search_filter(statement, query: str):
     if not query:
         return statement
     pattern = f"%{_like_escape(query)}%"
+    matching_event_types = tuple(
+        event_type
+        for event_type, description in AUDIT_EVENT_DESCRIPTIONS.items()
+        if query.casefold() in " ".join(description).casefold()
+    )
     search_fields = [
         SecurityAuditEvent.event_type.ilike(pattern, escape="\\"),
         SecurityAuditEvent.outcome.ilike(pattern, escape="\\"),
         SecurityAuditEvent.correlation_id.ilike(pattern, escape="\\"),
         SecurityAuditEvent.ip_address.ilike(pattern, escape="\\"),
-        SecurityAuditEvent.session_ref.ilike(pattern, escape="\\"),
+        SecurityAuditEvent.event_metadata["source_kind"].as_string().ilike(pattern, escape="\\"),
+        SecurityAuditEvent.event_metadata["source_display"].as_string().ilike(pattern, escape="\\"),
+        SecurityAuditEvent.user.has(
+            or_(
+                User.username.ilike(pattern, escape="\\"),
+                User.email.ilike(pattern, escape="\\"),
+            )
+        ),
     ]
+    search_fields.extend(
+        SecurityAuditEvent.event_metadata[key].as_string().ilike(pattern, escape="\\")
+        for key in AUDIT_TARGET_METADATA_KEYS
+    )
+    if matching_event_types:
+        search_fields.append(SecurityAuditEvent.event_type.in_(matching_event_types))
     if query.isdigit():
         search_fields.append(SecurityAuditEvent.user_id == int(query))
     return statement.where(or_(*search_fields))
@@ -2251,22 +2284,64 @@ def public_admin_action_request(request_record: AdminActionRequest) -> dict[str,
     return {
         "id": request_record.id,
         "operation_type": request_record.operation_type,
+        "operation_label": _admin_action_operation_label(request_record.operation_type),
         "target_type": request_record.target_type,
         "target_ref": _admin_action_target_ref(request_record),
+        "target_summary": _admin_action_target_summary(request_record),
         "payload": _safe_admin_action_payload(payload),
         "requester_ref": audit_reference("admin_user", request_record.requester_id),
+        "requester_summary": _admin_action_user_summary(request_record.requester, request_record.requester_id),
         "requester_role": request_record.requester_role,
         "approver_ref": audit_reference("admin_user", request_record.approver_id)
+        if request_record.approver_id
+        else None,
+        "approver_summary": _admin_action_user_summary(request_record.approver, request_record.approver_id)
         if request_record.approver_id
         else None,
         "status": request_record.status,
         "reason_present": bool(request_record.reason_present),
         "reason_length": int(request_record.reason_length or 0),
         "created_at": request_record.created_at.isoformat() if request_record.created_at else None,
+        "created_at_display": _utc_display(request_record.created_at) if request_record.created_at else None,
         "expires_at": request_record.expires_at.isoformat() if request_record.expires_at else None,
+        "expires_at_display": _utc_display(request_record.expires_at) if request_record.expires_at else None,
         "decided_at": request_record.decided_at.isoformat() if request_record.decided_at else None,
+        "decided_at_display": _utc_display(request_record.decided_at) if request_record.decided_at else None,
         "executed_at": request_record.executed_at.isoformat() if request_record.executed_at else None,
+        "executed_at_display": _utc_display(request_record.executed_at) if request_record.executed_at else None,
     }
+
+
+def _admin_action_operation_label(operation_type: str) -> str:
+    operation = str(operation_type or "").strip()
+    return ADMIN_ACTION_OPERATION_LABELS.get(operation, operation.replace("_", " ").capitalize())
+
+
+def _admin_action_user_summary(user: User | None, user_id: int | None) -> str:
+    if user is None:
+        return audit_reference("admin_user", user_id) if user_id else "Unknown admin user"
+    label = user.username or user.full_name or f"User {user.id}"
+    email = user.email if user.email else "no workplace email"
+    return f"{label} ({role_label(user.account_type)}, {email})"
+
+
+def _admin_action_target_summary(request_record: AdminActionRequest) -> str:
+    target_type = str(request_record.target_type or "")
+    target_id = str(request_record.target_id or "")
+    if target_type in {"staff_user", "customer_user"} and target_id.isdigit():
+        target = db.session.get(User, int(target_id))
+        if target is not None:
+            label = target.username or target.full_name or f"User {target.id}"
+            if target_type == "staff_user":
+                return f"{label} ({role_label(target.account_type)}, {target.email})"
+            return f"{label} (customer)"
+    if target_type == "manual_recovery_request" and target_id.isdigit():
+        request_record_target = db.session.get(ManualRecoveryRequest, int(target_id))
+        if request_record_target is not None:
+            customer = db.session.get(User, request_record_target.user_id) if request_record_target.user_id else None
+            customer_label = f" for {customer.username}" if customer else ""
+            return f"Manual recovery request #{request_record_target.id}{customer_label} ({request_record_target.status})"
+    return _admin_action_target_ref(request_record) or "Unknown target"
 
 
 def _create_admin_action_request(
@@ -3052,13 +3127,22 @@ def public_invite(invite: StaffInvite) -> dict[str, Any]:
         "role": invite.role,
         "status": invite.status,
         "created_at": _utc_iso(invite.created_at),
+        "created_at_display": _utc_display(invite.created_at),
         "expires_at": _utc_iso(invite.expires_at),
+        "expires_at_display": _utc_display(invite.expires_at),
         "used_at": _utc_iso(invite.used_at) if invite.used_at else None,
+        "used_at_display": _utc_display(invite.used_at) if invite.used_at else None,
         "revoked_at": _utc_iso(invite.revoked_at) if invite.revoked_at else None,
+        "revoked_at_display": _utc_display(invite.revoked_at) if invite.revoked_at else None,
         "acceptance_start_count": int(invite.acceptance_start_count or 0),
         "acceptance_verify_count": int(invite.acceptance_verify_count or 0),
         "acceptance_locked": _invite_acceptance_is_locked(invite),
         "acceptance_locked_at": _utc_iso(
+            invite.acceptance_locked_at or invite.acceptance_verify_locked_at
+        )
+        if _invite_acceptance_is_locked(invite)
+        else None,
+        "acceptance_locked_at_display": _utc_display(
             invite.acceptance_locked_at or invite.acceptance_verify_locked_at
         )
         if _invite_acceptance_is_locked(invite)
@@ -3073,10 +3157,14 @@ def public_manual_recovery_request(request_record: ManualRecoveryRequest) -> dic
         "active": request_record.status in MANUAL_RECOVERY_ACTIVE_STATUSES,
         "request_count": int(request_record.request_count or 0),
         "created_at": _utc_iso(request_record.created_at),
+        "created_at_display": _utc_display(request_record.created_at),
         "updated_at": _utc_iso(request_record.updated_at),
+        "updated_at_display": _utc_display(request_record.updated_at),
         "expires_at": _utc_iso(request_record.expires_at),
+        "expires_at_display": _utc_display(request_record.expires_at),
         "completed": request_record.completed_at is not None,
         "completed_at": _utc_iso(request_record.completed_at) if request_record.completed_at else None,
+        "completed_at_display": _utc_display(request_record.completed_at) if request_record.completed_at else None,
         "linked_customer": request_record.user_id is not None,
     }
 
@@ -3478,8 +3566,8 @@ def _as_utc(value: datetime) -> datetime:
 
 
 def _utc_iso(value: datetime) -> str:
-    return _as_utc(value).isoformat()
+    return utc_iso(value)
 
 
 def _utc_display(value: datetime) -> str:
-    return _as_utc(value).strftime("%Y-%m-%d %H:%M:%S UTC")
+    return sgt_datetime(value)

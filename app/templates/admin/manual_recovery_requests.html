@@ -91,10 +91,10 @@
             <td>{{ item.status }}</td>
             <td>{% if item.linked_customer %}Linked{% else %}Unlinked or unknown{% endif %}</td>
             <td>{{ item.request_count }}</td>
-            <td>{{ item.created_at }}</td>
-            <td>{{ item.updated_at }}</td>
-            <td>{{ item.expires_at }}</td>
-            <td>{{ item.completed_at or "not completed" }}</td>
+            <td><time datetime="{{ item.created_at }}">{{ item.created_at_display }}</time></td>
+            <td><time datetime="{{ item.updated_at }}">{{ item.updated_at_display }}</time></td>
+            <td><time datetime="{{ item.expires_at }}">{{ item.expires_at_display }}</time></td>
+            <td>{{ item.completed_at_display or "not completed" }}</td>
             <td><a href="{{ url_for('admin.manual_recovery_request_detail', request_id=item.id) }}">Review</a></td>
           </tr>
           {% else %}
@@ -117,10 +117,10 @@
       <div><dt>Active</dt><dd>{% if selected_request.active %}Yes{% else %}No{% endif %}</dd></div>
       <div><dt>Linked customer</dt><dd>{% if selected_request.linked_customer %}Linked{% else %}Unlinked or unknown{% endif %}</dd></div>
       <div><dt>Request count</dt><dd>{{ selected_request.request_count }}</dd></div>
-      <div><dt>Created</dt><dd>{{ selected_request.created_at }}</dd></div>
-      <div><dt>Updated</dt><dd>{{ selected_request.updated_at }}</dd></div>
-      <div><dt>Expires</dt><dd>{{ selected_request.expires_at }}</dd></div>
-      <div><dt>Completed</dt><dd>{{ selected_request.completed_at or "not completed" }}</dd></div>
+      <div><dt>Created</dt><dd><time datetime="{{ selected_request.created_at }}">{{ selected_request.created_at_display }}</time></dd></div>
+      <div><dt>Updated</dt><dd><time datetime="{{ selected_request.updated_at }}">{{ selected_request.updated_at_display }}</time></dd></div>
+      <div><dt>Expires</dt><dd><time datetime="{{ selected_request.expires_at }}">{{ selected_request.expires_at_display }}</time></dd></div>
+      <div><dt>Completed</dt><dd>{{ selected_request.completed_at_display or "not completed" }}</dd></div>
     </dl>
   </section>
 

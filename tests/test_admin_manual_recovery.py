@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from datetime import datetime, timedelta, timezone
 
 import pyotp
@@ -138,8 +139,11 @@ def _login_admin(client, secret: str, email: str = ROOT_EMAIL, password: str = R
     return verify_response
 
 
-def _totp(secret: str) -> str:
-    return pyotp.TOTP(secret, digits=6, interval=30).now()
+def _totp(secret: str, for_time: int | None = None) -> str:
+    totp = pyotp.TOTP(secret, digits=6, interval=30)
+    if for_time is None:
+        return totp.now()
+    return totp.at(for_time)
 
 
 def _assert_no_sensitive_recovery_material(payload: dict) -> None:
@@ -727,7 +731,7 @@ def test_root_admin_cannot_transition_own_customer_manual_recovery(admin_client)
     assert event.event_metadata["action_type"] == "manual_recovery_transition"
 
 
-def test_root_admin_can_transition_manual_recovery_to_review_and_approval(admin_client):
+def test_root_admin_can_transition_manual_recovery_to_review_and_approval(admin_client, monkeypatch):
     _root, root_secret = _create_staff_identity(
         username="root-admin",
         email=ROOT_EMAIL,
@@ -738,20 +742,24 @@ def test_root_admin_can_transition_manual_recovery_to_review_and_approval(admin_
     request_record = _create_manual_recovery_request(customer)
     _login_admin(admin_client, root_secret)
 
+    transition_time = int(time.time())
+    monkeypatch.setattr("app.auth.services.time.time", lambda: transition_time)
     under_review = admin_client.post(
         f"/manual-recovery/requests/{request_record.id}/transition",
         json={
             "status": "under_review",
             "reason": "identity review started",
-            "totp_code": _totp(root_secret),
+            "totp_code": _totp(root_secret, transition_time),
         },
     )
+    approval_time = transition_time + 30
+    monkeypatch.setattr("app.auth.services.time.time", lambda: approval_time)
     approved = admin_client.post(
         f"/manual-recovery/requests/{request_record.id}/transition",
         json={
             "status": "approved",
             "reason": "identity verified",
-            "totp_code": _totp(root_secret),
+            "totp_code": _totp(root_secret, approval_time),
         },
     )
 

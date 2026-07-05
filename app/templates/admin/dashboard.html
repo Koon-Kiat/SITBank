@@ -117,7 +117,7 @@
         <tbody>
           {% for event in recent_audit_events %}
           <tr>
-            <td>{{ event.created_at }}</td>
+            <td><time datetime="{{ event.created_at_utc }}">{{ event.created_at_display }}</time></td>
             <td>{{ event.event_type }}</td>
             <td>{{ event.outcome }}</td>
             <td>{{ event.actor_user_id or "system" }}</td>

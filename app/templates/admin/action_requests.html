@@ -13,6 +13,7 @@
         <tr>
           <th scope="col">Request</th>
           <th scope="col">Operation</th>
+          <th scope="col">Requester</th>
           <th scope="col">Target</th>
           <th scope="col">Status</th>
           <th scope="col">Expires</th>
@@ -23,15 +24,16 @@
         {% for item in requests %}
         <tr>
           <td>#{{ item.id }}</td>
-          <td>{{ item.operation_type }}</td>
-          <td>{{ item.target_ref or "unavailable" }}</td>
+          <td>{{ item.operation_label }}</td>
+          <td>{{ item.requester_summary }}</td>
+          <td>{{ item.target_summary }}</td>
           <td>{{ item.status }}</td>
-          <td>{{ item.expires_at or "n/a" }}</td>
+          <td>{{ item.expires_at_display or "n/a" }}</td>
           <td><a class="button secondary small" href="{{ url_for('admin.admin_action_request_detail', request_id=item.id) }}">Review</a></td>
         </tr>
         {% else %}
         <tr>
-          <td colspan="6">No admin approval requests.</td>
+          <td colspan="7">No admin approval requests.</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -46,16 +48,45 @@
   </div>
   <dl class="detail-list">
     <dt>Operation</dt>
-    <dd>{{ selected_request.operation_type }}</dd>
+    <dd>{{ selected_request.operation_label }}</dd>
     <dt>Target</dt>
-    <dd>{{ selected_request.target_ref or "unavailable" }}</dd>
+    <dd>{{ selected_request.target_summary }}</dd>
     <dt>Requester</dt>
-    <dd>{{ selected_request.requester_ref or "unavailable" }}</dd>
+    <dd>{{ selected_request.requester_summary }}</dd>
+    <dt>Approver</dt>
+    <dd>{{ selected_request.approver_summary or "not decided" }}</dd>
     <dt>Status</dt>
     <dd>{{ selected_request.status }}</dd>
+    <dt>Created</dt>
+    <dd>{{ selected_request.created_at_display or "n/a" }}</dd>
+    <dt>Expires</dt>
+    <dd>{{ selected_request.expires_at_display or "n/a" }}</dd>
     <dt>Reason metadata</dt>
     <dd>{% if selected_request.reason_present %}present, {{ selected_request.reason_length }} characters{% else %}not provided{% endif %}</dd>
   </dl>
+  <details>
+    <summary>Technical details</summary>
+    <dl class="detail-list">
+      <dt>Operation type</dt>
+      <dd>{{ selected_request.operation_type }}</dd>
+      <dt>Target reference</dt>
+      <dd>{{ selected_request.target_ref or "unavailable" }}</dd>
+      <dt>Requester reference</dt>
+      <dd>{{ selected_request.requester_ref or "unavailable" }}</dd>
+      <dt>Approver reference</dt>
+      <dd>{{ selected_request.approver_ref or "not decided" }}</dd>
+      <dt>Created UTC</dt>
+      <dd>{{ selected_request.created_at or "n/a" }}</dd>
+      <dt>Expires UTC</dt>
+      <dd>{{ selected_request.expires_at or "n/a" }}</dd>
+      <dt>Decided UTC</dt>
+      <dd>{{ selected_request.decided_at or "not decided" }}</dd>
+      <dt>Executed UTC</dt>
+      <dd>{{ selected_request.executed_at or "not executed" }}</dd>
+      <dt>Payload</dt>
+      <dd><code>{{ selected_request.payload }}</code></dd>
+    </dl>
+  </details>
   {% if selected_request.status == "pending" %}
   <div class="action-grid">
     <form method="post" action="{{ url_for('admin.admin_action_request_approve', request_id=selected_request.id) }}">

@@ -152,7 +152,7 @@ def test_dashboard_bank_card_masks_account_details_and_loads_toggle_script(clien
     assert "Alice Test" in markup
     assert f"•••-•••-{user.account_number[-3:]}" in markup
     assert f'id="card-acct-full" hidden>{formatted_account}</span>' in markup
-    assert 'id="card-balance-full" hidden>0.00</span>' in markup
+    assert 'id="card-balance-full" hidden>100.00</span>' in markup
     assert 'aria-label="Show account number"' in markup
     assert 'aria-label="Show balance"' in markup
     assert '/static/js/dashboard.js' in markup

@@ -202,12 +202,24 @@ def test_audit_viewer_filters_sorting_pagination_and_safe_search(admin_client):
         "/audit-logs?q=staff_invite_created",
         headers={"Accept": "application/json"},
     )
+    actor_search = admin_client.get(
+        "/audit-logs?q=security.admin@sit.singaporetech.edu.sg",
+        headers={"Accept": "application/json"},
+    )
+    target_search = admin_client.get(
+        "/audit-logs?q=target-ref-123",
+        headers={"Accept": "application/json"},
+    )
+    activity_search = admin_client.get(
+        "/audit-logs?q=invite",
+        headers={"Accept": "application/json"},
+    )
 
     assert filtered.status_code == 200
     filtered_payload = filtered.get_json()
     assert [event["id"] for event in filtered_payload["events"]] == [matching.id]
     displayed_event = filtered_payload["events"][0]
-    assert displayed_event["created_at_display"] == "2026-06-28 12:00:00 UTC"
+    assert displayed_event["created_at_display"] == "28 Jun 2026, 20:00:00 SGT"
     assert displayed_event["created_at_utc"].startswith("2026-06-28T12:00:00")
     assert displayed_event["activity"] == "Staff invite created"
     assert displayed_event["event_description"] == "A staff/admin invite was created."
@@ -232,6 +244,12 @@ def test_audit_viewer_filters_sorting_pagination_and_safe_search(admin_client):
     assert all(event["event_type"] != "staff_invite_created" for event in metadata_search.get_json()["events"])
     assert field_search.status_code == 200
     assert any(event["event_type"] == "staff_invite_created" for event in field_search.get_json()["events"])
+    assert actor_search.status_code == 200
+    assert any(event["event_type"] == "staff_invite_created" for event in actor_search.get_json()["events"])
+    assert target_search.status_code == 200
+    assert any(event["event_type"] == "staff_invite_created" for event in target_search.get_json()["events"])
+    assert activity_search.status_code == 200
+    assert any(event["event_type"] == "staff_invite_created" for event in activity_search.get_json()["events"])
     assert "sql" not in invalid.get_data(as_text=True).casefold()
 
 
@@ -368,9 +386,11 @@ def test_audit_viewer_renders_dropdown_timestamps_and_system_probe_source(admin_
     detail_body = detail.get_data(as_text=True)
 
     assert listing.status_code == 200
+    assert '<input id="audit-search" name="q"' in listing_body
+    assert "Advanced filters" in listing_body
     assert '<select id="audit-event-type" name="event_type">' in listing_body
     assert "privilege_probe" in listing_body
-    assert "2026-06-30 08:15:00 UTC" in listing_body
+    assert "30 Jun 2026, 16:15:00 SGT" in listing_body
     assert "system_probe: Runtime privilege probe" in listing_body
     assert "privilege-check" not in listing_body
     assert detail.status_code == 200

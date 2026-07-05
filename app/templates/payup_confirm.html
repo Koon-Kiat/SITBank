@@ -21,8 +21,14 @@
         <p class="eyebrow">Transfer summary</p>
         <h2>SGD {{ "%.2f"|format(pending.amount|float) }}</h2>
       </div>
-      <p class="muted">To: {{ pending.recipient_name }}</p>
-      <p class="muted">Phone number: {{ pending.recipient_phone }}</p>
+      <p class="muted">From: {{ pending.sender_nickname }}</p>
+      {% if pending.sender_account_ending %}
+      <p class="muted">Source account ending in {{ pending.sender_account_ending }}</p>
+      {% endif %}
+      <p class="muted">To: {{ pending.recipient_phone }}</p>
+      {% if pending.recipient_nickname %}
+      <p class="muted">Recipient nickname: {{ pending.recipient_nickname }}</p>
+      {% endif %}
       {% if pending.reference %}
       <p class="muted">Reference: {{ pending.reference }}</p>
       {% endif %}

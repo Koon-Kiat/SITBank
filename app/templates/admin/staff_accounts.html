@@ -29,7 +29,13 @@
             <td>{{ account.role_label }}</td>
             <td>{{ account.account_status }}</td>
             <td>{% if account.totp_enrolled %}Enrolled{% else %}Pending{% endif %}</td>
-            <td>{{ account.last_login_at or "Never" }}</td>
+            <td>
+              {% if account.last_login_at %}
+              <time datetime="{{ account.last_login_at }}">{{ account.last_login_at_display }}</time>
+              {% else %}
+              Never
+              {% endif %}
+            </td>
             <td>
               {% if account.can_manage %}
               <form class="admin-inline-actions" method="post" action="{{ url_for('admin.staff_account_deactivate', user_id=account.id) }}">

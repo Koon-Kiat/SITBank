@@ -35,6 +35,10 @@
           <dt>Email</dt>
           <dd>{{ user.email }}</dd>
         </div>
+        <div>
+          <dt>Phone</dt>
+          <dd>{{ user.phone_number }}</dd>
+        </div>
         <div class="profile-status-row">
           <dt>Password</dt>
           <dd class="profile-status-copy">
@@ -78,6 +82,11 @@
             <label for="{{ form.email.id }}">Email address</label>
             {{ form.email(autocomplete="email", maxlength="255") }}
             {% for error in form.email.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+          </div>
+          <div class="form-group">
+            <label for="{{ form.phone_number.id }}">Phone number</label>
+            {{ form.phone_number(autocomplete="tel", inputmode="numeric", maxlength="8") }}
+            {% for error in form.phone_number.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
           </div>
           {% if pending_email_change %}
             <div class="notice">

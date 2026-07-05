@@ -374,6 +374,7 @@ def test_suspicious_customer_context_requires_reauth_for_sensitive_action(
         data={
             "username": user.username,
             "email": "changed@example.com",
+            "phone_number": user.phone_number,
             "totp_code": pyotp.TOTP(secret, digits=6, interval=30).now(),
         },
         **_request_context(CUSTOMER_CHANGED_IP, CHROME_120),
@@ -503,6 +504,7 @@ def test_context_checks_do_not_bypass_csrf(client, app):
         data={
             "username": "alice01",
             "email": "changed@example.com",
+            "phone_number": "91234567",
             "totp_code": "000000",
         },
         **_request_context(CUSTOMER_CHANGED_IP, CHROME_120),
