@@ -655,87 +655,84 @@ def _lock_transfer_participants(sender_id: int, recipient_id: int) -> tuple[User
     return locked[sender_id], locked[recipient_id]
 
 
-def execute_local_transfer(
-    *,
+def _reject_local_transfer(
     sender: User,
-    payee: Payee,
-    confirmation_token: str,
-) -> str:
-    """Atomically debit sender and credit recipient. Returns transaction_ref.
+    message: str,
+    status_code: int,
+    *,
+    metadata: dict,
+    payee_account: str | None = None,
+) -> None:
+    audit_outbound_transfer(
+        sender,
+        "failure",
+        metadata=metadata,
+        payee_account=payee_account,
+    )
+    db.session.commit()
+    raise AuthError(message, status_code)
 
-    All amount and reference data are read from the PendingTransfer DB record
-    identified by confirmation_token, which is consumed atomically with the
-    transfer. This prevents concurrent double-submit replay.
-    """
-    from app.models import PendingTransfer
 
-    ensure_outbound_transfer_allowed(sender)
-
-    # Defence-in-depth: service enforces payee ownership independently of the
-    # route layer so direct callers and future refactors cannot bypass it.
+def _local_transfer_recipient(sender: User, payee: Payee) -> User:
     if payee.user_id != sender.id:
-        audit_outbound_transfer(
+        _reject_local_transfer(
             sender,
-            "failure",
+            "Transfer denied.",
+            403,
             metadata={
                 "reason": "payee_ownership_mismatch",
                 "payee_id_ref": audit_reference("payee_id", payee.id),
             },
         )
-        db.session.commit()
-        raise AuthError("Transfer denied.", 403)
 
     recipient_user = User.query.filter_by(account_number=payee.account_number).first()
     if not recipient_user:
-        audit_outbound_transfer(
+        _reject_local_transfer(
             sender,
-            "failure",
+            "Recipient account not found.",
+            400,
             metadata={"reason": "recipient_not_found"},
             payee_account=payee.account_number,
         )
-        db.session.commit()
-        raise AuthError("Recipient account not found.", 400)
 
     if recipient_user.id == sender.id:
-        audit_outbound_transfer(
+        _reject_local_transfer(
             sender,
-            "failure",
+            "Cannot transfer to yourself.",
+            400,
             metadata={"reason": "self_transfer"},
         )
-        db.session.commit()
-        raise AuthError("Cannot transfer to yourself.", 400)
 
-    # Block inbound transfers to revoked or unactivated accounts.
-    # Locked accounts (security hold) may still receive funds.
     if recipient_user.account_status not in ("active", "locked"):
-        audit_outbound_transfer(
+        _reject_local_transfer(
             sender,
-            "failure",
+            "Recipient account is not available to receive transfers.",
+            400,
             metadata={"reason": "recipient_account_unavailable"},
         )
-        db.session.commit()
-        raise AuthError("Recipient account is not available to receive transfers.", 400)
+    return recipient_user
 
-    # Enforce payee cooldown in the service so callers that bypass the route
-    # cannot skip the cooldown window.
-    now = datetime.now(timezone.utc)
+
+def _ensure_payee_cooldown_elapsed(sender: User, payee: Payee, now: datetime) -> None:
     cooldown_seconds = int(current_app.config.get("PAYEE_COOLDOWN_SECONDS", 60))
-    payee_created = (
-        payee.created_at
-        if payee.created_at.tzinfo
-        else payee.created_at.replace(tzinfo=timezone.utc)
-    )
+    payee_created = _as_utc(payee.created_at)
     if (now - payee_created).total_seconds() < cooldown_seconds:
-        audit_outbound_transfer(
+        _reject_local_transfer(
             sender,
-            "failure",
+            "Payee is still in cooldown.",
+            400,
             metadata={"reason": "payee_in_cooldown"},
         )
-        db.session.commit()
-        raise AuthError("Payee is still in cooldown.", 400)
 
-    # Atomically consume the pending transfer token with SELECT FOR UPDATE so
-    # concurrent confirm requests cannot both proceed past this point.
+
+def _load_pending_local_transfer(
+    sender: User,
+    payee: Payee,
+    confirmation_token: str,
+    now: datetime,
+):
+    from app.models import PendingTransfer
+
     pending_tfr = db.session.execute(
         db.select(PendingTransfer)
         .where(
@@ -748,82 +745,101 @@ def execute_local_transfer(
     ).scalar_one_or_none()
 
     if pending_tfr is None:
-        audit_outbound_transfer(
+        _reject_local_transfer(
             sender,
-            "failure",
+            _TRANSFER_CONFIRMATION_EXPIRED_MESSAGE,
+            409,
             metadata={"reason": "confirmation_token_not_found"},
         )
-        db.session.commit()
-        raise AuthError(_TRANSFER_CONFIRMATION_EXPIRED_MESSAGE, 409)
 
-    expires_at = (
-        pending_tfr.expires_at
-        if pending_tfr.expires_at.tzinfo
-        else pending_tfr.expires_at.replace(tzinfo=timezone.utc)
-    )
-    if expires_at < now:
-        audit_outbound_transfer(
+    if _as_utc(pending_tfr.expires_at) < now:
+        _reject_local_transfer(
             sender,
-            "failure",
+            _TRANSFER_CONFIRMATION_EXPIRED_MESSAGE,
+            409,
             metadata={"reason": "confirmation_token_expired"},
         )
-        db.session.commit()
-        raise AuthError(_TRANSFER_CONFIRMATION_EXPIRED_MESSAGE, 409)
+    return pending_tfr
 
-    pending_tfr.consumed_at = now
+
+def _local_transfer_amount(sender: User, pending_tfr) -> Decimal:
     # normalize() strips trailing zeros (e.g. Decimal("10.10000") -> Decimal("10.1"))
     # so that the exponent check below correctly catches sub-cent amounts regardless
     # of the DB column scale used to store PendingTransfer.amount.
     amount = Decimal(str(pending_tfr.amount)).normalize()
-    reference = (pending_tfr.reference or "")[:128]
-
-    # Enforce two-decimal currency precision in the service.
-    # Reject over-precision amounts; normalize accepted amounts to exactly 2dp.
     if not amount.is_finite() or amount.as_tuple().exponent < -2:
-        audit_outbound_transfer(
+        _reject_local_transfer(
             sender,
-            "failure",
+            "Transfer amount must have at most two decimal places.",
+            400,
             metadata={"reason": "invalid_amount_precision", "amount_band": _amount_audit_band(amount)},
         )
-        db.session.commit()
-        raise AuthError("Transfer amount must have at most two decimal places.", 400)
     amount = amount.quantize(Decimal("0.01"))
 
     if amount < MIN_TRANSACTION_AMOUNT or amount > MAX_TRANSACTION_AMOUNT:
-        audit_outbound_transfer(
+        _reject_local_transfer(
             sender,
-            "failure",
+            "Transfer amount is out of the allowed range.",
+            400,
             metadata={"reason": "amount_out_of_range", "amount_band": _amount_audit_band(amount)},
         )
-        db.session.commit()
-        raise AuthError("Transfer amount is out of the allowed range.", 400)
+    return amount
 
-    locked_sender, locked_recipient = _lock_transfer_participants(sender.id, recipient_user.id)
 
+def _ensure_local_transfer_balance(sender: User, payee: Payee, locked_sender: User, amount: Decimal) -> None:
     if locked_sender.balance < amount:
-        audit_outbound_transfer(
+        _reject_local_transfer(
             sender,
-            "failure",
+            "Insufficient funds.",
+            400,
             metadata={"reason": "insufficient_funds", "amount_band": _amount_audit_band(amount)},
             payee_account=payee.account_number,
         )
-        db.session.commit()
-        raise AuthError("Insufficient funds.", 400)
+
+
+def _ensure_local_transfer_daily_limit(sender: User, payee: Payee, locked_sender: User, amount: Decimal) -> None:
+    daily_limit = Decimal(str(locked_sender.local_transfer_daily_limit))
+    used_today = local_transfer_amount_used_today(locked_sender)
+    if used_today + amount > daily_limit:
+        _reject_local_transfer(
+            sender,
+            "This transfer would exceed your daily Local Transfer limit.",
+            409,
+            metadata={"reason": "daily_limit_exceeded", "amount_band": _amount_audit_band(amount)},
+            payee_account=payee.account_number,
+        )
+
+
+def execute_local_transfer(
+    *,
+    sender: User,
+    payee: Payee,
+    confirmation_token: str,
+) -> str:
+    """Atomically debit sender and credit recipient. Returns transaction_ref.
+
+    All amount and reference data are read from the PendingTransfer DB record
+    identified by confirmation_token, which is consumed atomically with the
+    transfer. This prevents concurrent double-submit replay.
+    """
+    ensure_outbound_transfer_allowed(sender)
+
+    recipient_user = _local_transfer_recipient(sender, payee)
+    now = datetime.now(timezone.utc)
+    _ensure_payee_cooldown_elapsed(sender, payee, now)
+
+    pending_tfr = _load_pending_local_transfer(sender, payee, confirmation_token, now)
+    pending_tfr.consumed_at = now
+    reference = (pending_tfr.reference or "")[:128]
+    amount = _local_transfer_amount(sender, pending_tfr)
+
+    locked_sender, locked_recipient = _lock_transfer_participants(sender.id, recipient_user.id)
+    _ensure_local_transfer_balance(sender, payee, locked_sender, amount)
 
     # Recompute usage under the sender's row lock (acquired above), which serializes
     # concurrent Local Transfers from the same sender and makes this check-then-insert
     # sequence atomic, matching the equivalent PayUp daily-limit recheck.
-    daily_limit = Decimal(str(locked_sender.local_transfer_daily_limit))
-    used_today = local_transfer_amount_used_today(locked_sender)
-    if used_today + amount > daily_limit:
-        audit_outbound_transfer(
-            sender,
-            "failure",
-            metadata={"reason": "daily_limit_exceeded", "amount_band": _amount_audit_band(amount)},
-            payee_account=payee.account_number,
-        )
-        db.session.commit()
-        raise AuthError("This transfer would exceed your daily Local Transfer limit.", 409)
+    _ensure_local_transfer_daily_limit(sender, payee, locked_sender, amount)
 
     txn_ref = str(uuid.uuid4())
     txn_created_at = datetime.now(timezone.utc)
