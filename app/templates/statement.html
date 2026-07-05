@@ -22,7 +22,7 @@
     <form method="get" action="{{ url_for('banking.statement') }}" class="statement-period-form">
       <div class="statement-period-field">
         <label for="statement-year">Year</label>
-        <input id="statement-year" type="number" name="year" value="{{ year }}" min="2000" max="{{ year }}" inputmode="numeric">
+        <input id="statement-year" type="number" name="year" value="{{ year }}" min="{{ min_year }}" max="{{ current_year }}" inputmode="numeric">
       </div>
       <div class="statement-period-field">
         <label for="statement-month">Month</label>
@@ -35,10 +35,12 @@
       <button class="button" type="submit">View Statement</button>
     </form>
     <nav class="statement-period-nav" aria-label="Adjacent statement periods">
+      {% if has_prev_period %}
       <a class="button-quiet button small" href="{{ url_for('banking.statement', year=prev_year, month=prev_month) }}">
         <svg class="icon" focusable="false" aria-hidden="true"><use href="#icon-chevron-left"></use></svg>
         {{ month_names[prev_month - 1][:3] }} {{ prev_year }}
       </a>
+      {% endif %}
       {% if has_next_period %}
       <a class="button-quiet button small" href="{{ url_for('banking.statement', year=next_year, month=next_month) }}">
         {{ month_names[next_month - 1][:3] }} {{ next_year }}
