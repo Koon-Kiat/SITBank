@@ -2434,7 +2434,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "--repo \"${GITHUB_REPOSITORY}\"" in workflow_text
     assert (
         "--signer-workflow "
-        "\"${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/.github/workflows/ci-deploy.yml\""
+        "\"github.com/${GITHUB_REPOSITORY}/.github/workflows/ci-deploy.yml\""
     ) in workflow_text
     assert "--source-ref \"refs/heads/main\"" in workflow_text
     assert "--source-digest \"${RELEASE_SHA}\"" in workflow_text
@@ -2443,7 +2443,12 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         for step in workflow["jobs"]["release-verify"]["steps"]
         if step["name"] == "Verify signed SLSA provenance for the exact digest"
     )
-    assert "--signer-workflow" in attestation_command
+    assert (
+        '--signer-workflow '
+        '"github.com/${GITHUB_REPOSITORY}/.github/workflows/ci-deploy.yml"'
+        in attestation_command
+    )
+    assert '--signer-workflow "https://' not in attestation_command
     assert "--repo \"${GITHUB_REPOSITORY}\"" in attestation_command
     assert "--source-ref \"refs/heads/main\"" in attestation_command
     assert "--source-digest \"${RELEASE_SHA}\"" in attestation_command
