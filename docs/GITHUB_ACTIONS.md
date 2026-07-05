@@ -357,12 +357,21 @@ Funnel denial before calling the repository bootstrap script.
 Configure each protected environment with `OBSERVABILITY_EC2_HOST`,
 `OBSERVABILITY_EC2_DEPLOY_USER`, `OBSERVABILITY_EC2_PORT`,
 `OBSERVABILITY_EC2_SSH_PRIVATE_KEY_B64`, `OBSERVABILITY_EC2_KNOWN_HOSTS`,
-`TS_OAUTH_CLIENT_ID`, and `TS_OAUTH_SECRET`. Required reviewers and branch
-restrictions are provider-side controls and need separate sanitized evidence.
-The bootstrap OAuth tag may reach only the approved observability EC2 SSH
-target; it must not administer the tailnet or reach private Grafana HTTPS.
+`OBSERVABILITY_BOOTSTRAP_TS_OAUTH_CLIENT_ID`, and
+`OBSERVABILITY_BOOTSTRAP_TS_OAUTH_SECRET`. These bootstrap-only secrets must
+identify a separate OAuth client restricted to
+`tag:github-ci-observability-bootstrap`; do not share the client with
+`tag:github-ci-observability-verify` or `tag:github-ci-admin-verify`.
+Required reviewers and branch restrictions are provider-side controls and need
+separate sanitized evidence. The reference ACL permits the bootstrap tag only
+to `tag:sitbank-observability-ec2:22`; it must not administer the tailnet or
+reach private Grafana HTTPS.
 Grafana credentials, datasource credentials, logs, cookies, and application
 secrets remain host-managed and never enter GitHub Actions.
+
+Repository files do not prove the live ACL, node tags, OAuth-client tag scope,
+GitHub Environment settings, host firewall, security-group state, or provider
+state. Verify each separately and retain only sanitized evidence.
 
 `.github/workflows/observability-private-verify.yml` is manual-only,
 `main`-only, read-only, and protected by either `observability-staging` or
@@ -546,6 +555,15 @@ pull requests to `main`, pushes to `main`, and manual dispatch. It uploads only
 the `sitbank-source-sbom` CycloneDX JSON artifact for 30 days with
 `contents: read` and checkout credentials disabled. Generated SBOM files are
 evidence artifacts and must not be committed.
+
+The job summary is a bounded preview: it reports counts by package-URL
+ecosystem and lists at most 10 `pkg:pypi/` components in a dedicated Python
+section. The artifact remains the complete inventory. Inspect all Python
+entries without printing the whole document:
+
+```bash
+jq -r '(.components // [])[] | select((.purl // "") | startswith("pkg:pypi/")) | [.name, .version, .purl] | @tsv' sitbank-source-sbom-cyclonedx.json
+```
 
 This source artifact complements the existing Docker Buildx `sbom: true`
 release-image attestation. An explicit image SBOM artifact remains deferred

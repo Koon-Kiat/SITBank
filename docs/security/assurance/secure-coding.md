@@ -33,7 +33,23 @@ Examples of server-side validation:
 | Customer and payee account numbers are exactly 12 independently random decimal digits, with matching route, form, model, and database constraints | `app/auth/services.py::_generate_account_number()`, `tests/test_auth_registration_login.py::test_account_number_generation_randomizes_all_twelve_positions`, `tests/test_deployment.py::test_account_identifier_migration_enforces_current_twelve_digit_schema` |
 | Staff invite acceptance rejects privileged forged fields such as `role`, `workplace_email`, `email`, `account_type`, `customer_user_id`, and `is_admin` | `app/admin/services.py::_reject_forged_invite_fields()` |
 | Transaction payloads reject server-controlled fields and unsafe business values | `tests/test_banking_transaction_security.py::test_future_transaction_payload_guardrails_reject_server_controlled_fields`, `tests/test_banking_transaction_security.py::test_public_transaction_payload_business_rules_reject_unsafe_values` |
+| Future public transaction payloads require an authenticated user and a durable database reservation; raw idempotency keys and payloads are never stored | `app/models.py::PublicTransactionIdempotency`, `app/banking/services.py::validate_public_transaction_payload()`, `tests/test_banking_transaction_security.py` |
 | Route inventory records method-level auth, CSRF, rate-limit, and step-up decisions | `tests/test_route_inventory_security.py` |
+
+`validate_public_transaction_payload()` is scaffold code and has no production
+route caller. It reserves a keyed idempotency verifier per authenticated user
+for `PUBLIC_TRANSACTION_IDEMPOTENCY_TTL_SECONDS` (24 hours by default).
+The key and payload verifiers use domain-separated subkeys from the existing
+transaction-ledger HMAC keyring. Rotation continues matching retained keys,
+and the helper fails closed when an unexpired reservation names a retired key;
+session-key rotation cannot reopen the replay window and no new raw secret is
+stored.
+Same-key/same-payload replay and same-key/different-payload conflict both stop
+before a caller can process money movement; an expired reservation can be
+replaced. Cleanup removes expired reservations in bounded batches. This is
+separate from the active Local Transfer and PayUp pending-token controls, which
+bind server-owned transfer data and consume a keyed token verifier atomically
+with ledger mutation.
 
 ## Output Encoding
 

@@ -735,6 +735,62 @@ class Transaction(db.Model):
         return f"<Transaction id={self.id!r} ref={self.transaction_ref!r} amount={self.amount!r}>"
 
 
+class PublicTransactionIdempotency(db.Model):
+    __tablename__ = "public_transaction_idempotency"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(
+        db.Integer,
+        db.ForeignKey(_USER_ID_FOREIGN_KEY, ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    hmac_key_id = db.Column(db.String(32), nullable=False)
+    key_fingerprint = db.Column(db.String(64), nullable=False)
+    key_verifier = db.Column(db.String(64), nullable=False)
+    payload_verifier = db.Column(db.String(64), nullable=False)
+    status = db.Column(
+        db.String(24),
+        nullable=False,
+        default="reserved",
+        server_default="reserved",
+    )
+    result_reference = db.Column(db.String(64), nullable=True)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
+
+    user = db.relationship(
+        "User",
+        backref=db.backref(
+            "public_transaction_idempotency_records",
+            cascade=_CASCADE_DELETE_ORPHAN,
+            lazy="selectin",
+        ),
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "user_id",
+            "key_fingerprint",
+            name="uq_public_transaction_idempotency_user_key",
+        ),
+        db.CheckConstraint(
+            "status IN ('reserved', 'completed', 'failed')",
+            name="ck_public_transaction_idempotency_status",
+        ),
+    )
+
+
 DISPUTE_ISSUE_TYPES = (
     "unauthorized_transaction",
     "duplicate_charge",

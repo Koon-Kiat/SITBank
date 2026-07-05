@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import runpy
 from pathlib import Path
 
 import yaml
@@ -51,6 +52,9 @@ def test_source_sbom_is_cyclonedx_json_with_predictable_retention():
         "if-no-files-found": "error",
         "retention-days": "30",
     }
+    summary = next(step for step in steps if step["name"] == "Summarize source SBOM")
+    assert "python ops/security/render_sbom_summary.py" in summary["run"]
+    assert "sitbank-source-sbom-cyclonedx.json" in summary["run"]
 
 
 def test_sbom_workflow_does_not_cross_deployment_or_secret_boundaries():
@@ -92,5 +96,71 @@ def test_sbom_documentation_distinguishes_artifact_attestation_and_scanning():
         "attestation",
         "explicit image SBOM artifact remains deferred",
         "not vulnerability scanning",
+        "bounded preview",
+        "pkg:pypi/",
     ):
         assert required in docs
+
+
+def _summary_renderer():
+    return runpy.run_path("ops/security/render_sbom_summary.py")
+
+
+def test_sbom_summary_reports_ecosystems_and_bounds_python_preview():
+    render_summary = _summary_renderer()["render_summary"]
+    components = [
+        {
+            "name": f"python-package-{index}",
+            "version": str(index),
+            "purl": f"pkg:pypi/python-package-{index}@{index}",
+        }
+        for index in range(12)
+    ]
+    components.extend(
+        [
+            {
+                "name": "checkout",
+                "version": "v6",
+                "purl": "pkg:github/actions/checkout@v6",
+            },
+            {"name": "web", "version": "1", "purl": "pkg:npm/web@1"},
+            {"name": "libc", "version": "1", "purl": "pkg:deb/libc@1"},
+            {"name": "no-purl", "version": "1"},
+            {"name": "crate", "version": "1", "purl": "pkg:cargo/crate@1"},
+        ]
+    )
+
+    summary = render_summary({"components": components})
+
+    assert "### Ecosystem breakdown" in summary
+    assert "| PyPI | 12 |" in summary
+    assert "| GitHub actions/workflows | 1 |" in summary
+    assert "| npm | 1 |" in summary
+    assert "| OS/system | 1 |" in summary
+    assert "| Unknown/no PURL | 1 |" in summary
+    assert "| Other PURL | 1 |" in summary
+    assert "Python components detected: `12`" in summary
+    assert "Preview limit: `10` components" in summary
+    assert summary.count("| python-package-") == 10
+    assert "python-package-10" not in summary
+
+
+def test_sbom_summary_explicitly_reports_no_python_and_sanitizes_markdown():
+    render_summary = _summary_renderer()["render_summary"]
+
+    summary = render_summary(
+        {
+            "components": [
+                {
+                    "name": "<unsafe>|`name`",
+                    "version": "1\ninjected",
+                    "purl": "pkg:npm/unsafe@1",
+                }
+            ]
+        }
+    )
+
+    assert "Python components detected: `0`" in summary
+    assert "No PyPI package URLs were detected" in summary
+    assert "<unsafe>" not in summary
+    assert "|`name`" not in summary

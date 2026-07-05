@@ -1072,3 +1072,16 @@ path and invokes only that wrapper. Use
 `ops/deploy/bootstrap-observability-ec2` only through the wrapper and
 `docs/runbooks/private-observability-grafana-loki.md`; do not add Grafana,
 Loki, or Alloy routes to public Nginx or the Flask admin app.
+
+The `observability-staging` and `observability-production` environments must
+store bootstrap-only
+`OBSERVABILITY_BOOTSTRAP_TS_OAUTH_CLIENT_ID` and
+`OBSERVABILITY_BOOTSTRAP_TS_OAUTH_SECRET` values. Their OAuth client may
+advertise only `tag:github-ci-observability-bootstrap` and must not be reused
+for observability verification or private-admin verification. Apply and review
+the reference grant
+`tag:github-ci-observability-bootstrap -> tag:sitbank-observability-ec2:22`
+without adding Grafana HTTPS, wildcard, Internet, or Tailscale SSH access.
+Repository configuration cannot prove the live ACL, tag ownership, environment
+secrets, host firewall, security group, or provider state; verify those
+boundaries separately with sanitized evidence.
