@@ -773,11 +773,78 @@ def test_alert_review_renders_actionable_safe_detail_without_raw_logs(admin_clie
     assert "Next action" in body
     assert "Alert Detail" in body
     assert "manual_recovery_burst" in body
+    assert '<time datetime="2026-06-30T08:15:00+00:00">30 Jun 2026, 16:15:00 SGT</time>' in body
+    assert "<td>Principal reference</td>" in body
+    assert "<dt>Technical source</dt><dd>principal_ref:safe</dd>" in body
     assert f"/audit-logs/{event.id}" in body
     assert "[redacted]" in body
     assert sensitive_header not in body
     assert "authorization:" not in body.casefold()
     assert "review page is read-only" in body
+
+
+def test_alert_review_detail_links_use_loaded_panels_with_deep_link_fallback(
+    admin_client,
+    monkeypatch,
+):
+    _admin, admin_secret = _create_staff_identity(
+        username="security-admin",
+        email="security.admin@sit.singaporetech.edu.sg",
+        account_type="admin",
+        phone_number="91234568",
+    )
+
+    def fake_report(*, deliver):
+        assert deliver is False
+        return {
+            "message": "security_alert_report",
+            "generated_at": "2026-06-30T08:15:00+00:00",
+            "alert_count": 2,
+            "alerts": [
+                {
+                    "alert_type": "login_failure_burst",
+                    "severity": "medium",
+                    "count": 4,
+                    "window_seconds": 300,
+                    "source": "principal_ref:safe",
+                    "generated_at": "2026-06-30T08:15:00+00:00",
+                },
+                {
+                    "alert_type": "database_integrity_regression",
+                    "severity": "high",
+                    "count": 1,
+                    "window_seconds": 60,
+                    "source": "table:security_audit_events",
+                    "generated_at": "2026-06-30T08:16:00+00:00",
+                },
+            ],
+            "audit_chain": {"checked": True, "valid": True},
+            "database_integrity": {"checked": True, "valid": True},
+            "dedupe": {"enabled": False, "suppressed": 0},
+            "delivery": {"enabled": True},
+        }
+
+    monkeypatch.setattr("app.admin.routes.build_security_alert_report", fake_report)
+    _login_admin(admin_client, admin_secret, email="security.admin@sit.singaporetech.edu.sg")
+
+    response = admin_client.get("/alerts?alert=alert-2")
+    body = response.get_data(as_text=True)
+    script = Path("app/static/js/admin-alerts.js").read_text(encoding="utf-8")
+
+    assert response.status_code == 200
+    assert 'href="/alerts?alert=alert-1"' in body
+    assert 'data-alert-detail-link' in body
+    assert 'aria-controls="alert-detail-alert-1"' in body
+    assert 'aria-expanded="false"' in body
+    assert 'aria-controls="alert-detail-alert-2"' in body
+    assert 'aria-expanded="true"' in body
+    assert '<section class="panel alert-detail-panel"\n           id="alert-detail-alert-1"' in body
+    assert '<section class="panel alert-detail-panel"\n           id="alert-detail-alert-2"' in body
+    assert "Security Audit Events table" in body
+    assert "<dt>Technical source</dt><dd>table:security_audit_events</dd>" in body
+    assert 'js/admin-alerts.js' in body
+    assert "event.preventDefault()" in script
+    assert "window.history.replaceState" in script
 
 
 def test_alert_review_next_actions_cover_integrity_and_generic_alerts(admin_client, monkeypatch):

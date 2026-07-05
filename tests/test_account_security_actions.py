@@ -432,6 +432,41 @@ def test_profile_details_update_succeeds_for_authenticated_user(client, monkeypa
     assert new_username_login.headers["Location"].endswith("/mfa/verify")
     assert db.session.query(SecurityAuditEvent).filter_by(event_type="profile_update", outcome="success").count() == 1
 
+
+def test_profile_phone_update_succeeds_after_clean_password_totp_login(client, monkeypatch):
+    register(client)
+    user, secret = enable_mfa_for_user()
+    password_response = login(client)
+    login_time = int(time.time())
+    monkeypatch.setattr("app.auth.services.time.time", lambda: login_time)
+    mfa_response = client.post(
+        "/auth/mfa/verify",
+        json={"totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(login_time)},
+    )
+
+    stepup_time = login_time + 31
+    monkeypatch.setattr("app.auth.services.time.time", lambda: stepup_time)
+    response = client.post(
+        "/profile",
+        data={
+            "username": "alice01",
+            "email": "alice@example.com",
+            "phone_number": "92345678",
+            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(stepup_time),
+        },
+    )
+    db.session.refresh(user)
+
+    assert password_response.status_code == 302
+    assert mfa_response.status_code == 200
+    assert response.status_code == 302
+    assert user.phone_number == "92345678"
+    assert db.session.query(SecurityAuditEvent).filter_by(
+        event_type="session_risk",
+        outcome="reauth_required",
+    ).count() == 0
+
+
 def test_profile_email_update_requires_email_code_and_totp_stepup(client, monkeypatch):
     from app.security.email import password_reset_outbox
 

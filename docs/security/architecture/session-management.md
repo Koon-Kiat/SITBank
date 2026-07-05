@@ -223,6 +223,14 @@ unsupported context, and all admin sessions with missing, malformed, or
 unsupported context require full reauthentication or revocation. A subsequent
 authenticated session receives only the current versioned context.
 
+Current clean customer password-plus-TOTP sessions are expected to use the same
+stable structured context for later profile update, Local Transfer, and PayUp
+step-up decisions. If a deployed browser session still sees false
+`sign in again` failures after the current session-risk code is live, use a
+normal redeploy or bounded customer reauthentication to clear stale pre-upgrade
+session payloads; do not relax TOTP replay checks, pending-transfer verifiers,
+CSRF, or risk-drift fail-closed behavior.
+
 Focused coverage is in `tests/test_session_risk_binding.py`. It verifies
 customer/admin context creation, low/medium/high handling, strict admin
 revocation, lifetime precedence, CSRF behavior, audit safety, and runtime/key
