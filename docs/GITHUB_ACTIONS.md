@@ -15,9 +15,12 @@ The publish job also creates a GitHub artifact attestation whose subject is the
 exact GHCR image name and Buildx digest, and pushes that attestation to the
 image registry. Release verification checks the registry-backed attestation
 against this repository, the exact `ci-deploy.yml` signer workflow, the trusted
-`main` source ref, and the resolved release commit before any staging
-deployment. Cosign signature and certificate-identity verification, Trivy,
-SBOM, and provenance checks remain independent required layers.
+`main` source ref, the resolved release commit, GitHub's OIDC issuer, and a
+non-self-hosted runner before any staging deployment. The verifier uses
+`--no-public-good` intentionally so it selects the GitHub artifact attestation
+instead of trusting or being confused by separate Sigstore public-good
+BuildKit provenance. Cosign signature and certificate-identity verification,
+Trivy, SBOM, and provenance checks remain independent required layers.
 
 ## Workflow And Check Display Names
 
@@ -558,8 +561,10 @@ evidence artifacts and must not be committed.
 
 The job summary is a bounded preview: it reports counts by package-URL
 ecosystem and lists at most 10 `pkg:pypi/` components in a dedicated Python
-section. The artifact remains the complete inventory. Inspect all Python
-entries without printing the whole document:
+section. Its renderer accepts only relative regular-file paths contained by the
+current workspace and rejects traversal and symlink escapes before reading the
+SBOM. The artifact remains the complete inventory. Inspect all Python entries
+without printing the whole document:
 
 ```bash
 jq -r '(.components // [])[] | select((.purl // "") | startswith("pkg:pypi/")) | [.name, .version, .purl] | @tsv' sitbank-source-sbom-cyclonedx.json

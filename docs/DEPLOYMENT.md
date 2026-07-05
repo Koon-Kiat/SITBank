@@ -266,12 +266,14 @@ attestation, pushed by the trusted publish job to the image registry, for the
 exact `ghcr.io/koon-kiat/sitbank@sha256:<digest>` subject. The verifier requires
 repository `Koon-Kiat/SITBank`, source ref `refs/heads/main`, the resolved
 release commit, exact signer workflow `.github/workflows/ci-deploy.yml`,
-GitHub's OIDC issuer, and the same digest passed to deployment. A missing,
-wrong-subject, wrong-ref, wrong-workflow, or unverifiable attestation fails
-closed. This is SLSA Build L1/L2-aligned release evidence, not a claim of
-formal SLSA certification. Repository files do not prove live GHCR state,
-branch protection, or GitHub Environment settings; preserve sanitized
-release/provider evidence separately.
+GitHub's OIDC issuer, a non-self-hosted runner, and the same digest passed to
+deployment. The `--no-public-good` option intentionally selects the GitHub
+artifact attestation rather than trusting or being confused by independent
+Sigstore public-good BuildKit provenance. A missing, wrong-subject, wrong-ref,
+wrong-workflow, or unverifiable attestation fails closed. This is SLSA Build
+L1/L2-aligned release evidence, not a claim of formal SLSA certification.
+Repository files do not prove live GHCR state, branch protection, or GitHub
+Environment settings; preserve sanitized release/provider evidence separately.
 
 Production deployment runs from the trusted `main` workflow only after release
 verification, staging deployment, and the post-deployment staging TLS scan all

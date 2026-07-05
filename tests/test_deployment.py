@@ -2444,6 +2444,15 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         if step["name"] == "Verify signed SLSA provenance for the exact digest"
     )
     assert "--signer-workflow" in attestation_command
+    assert "--repo \"${GITHUB_REPOSITORY}\"" in attestation_command
+    assert "--source-ref \"refs/heads/main\"" in attestation_command
+    assert "--source-digest \"${RELEASE_SHA}\"" in attestation_command
+    assert (
+        '--cert-oidc-issuer "https://token.actions.githubusercontent.com"'
+        in attestation_command
+    )
+    assert "--deny-self-hosted-runners" in attestation_command
+    assert "--no-public-good" in attestation_command
     assert "--cert-identity" not in attestation_command
     release_steps = [
         step["name"] for step in workflow["jobs"]["release-verify"]["steps"]
