@@ -1,221 +1,690 @@
 {
-  "annotations": {
-    "list": []
+  "apiVersion": "dashboard.grafana.app/v2beta1",
+  "kind": "Dashboard",
+  "metadata": {
+    "name": "sitbank-operational-overview"
   },
-  "editable": false,
-  "panels": [
-    {
-      "datasource": {
-        "type": "loki",
-        "uid": "sitbank-loki"
-      },
-      "description": "Shows whether expected operational log streams are still arriving. Worry when an environment or service drops to zero outside a planned stop; check Alloy health, container labels, and Loki ingestion next.",
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 0
-      },
-      "id": 1,
-      "options": {},
-      "targets": [
-        {
-          "expr": "sum by (service, environment, source) (count_over_time({environment=~\"$environment\", service=~\"$service\", source=~\"$source\"}[$__interval]))",
-          "refId": "A"
-        }
-      ],
-      "title": "Log ingestion by service and source",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "loki",
-        "uid": "sitbank-loki"
-      },
-      "description": "Counts Nginx 4xx and 5xx responses by environment. Worry about sustained 5xx or unexpected 4xx spikes; check recent request table, deployment events, and upstream readiness next.",
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 0
-      },
-      "id": 2,
-      "options": {},
-      "targets": [
-        {
-          "expr": "sum by (environment) (count_over_time({source=\"nginx_access\", environment=~\"$environment\"} |~ \"\\\\s[45][0-9][0-9]\\\\s\" [$__interval]))",
-          "refId": "A"
-        }
-      ],
-      "title": "Nginx 4xx and 5xx trend",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "loki",
-        "uid": "sitbank-loki"
-      },
-      "description": "Lists recent edge requests without promoting path, IP, request ID, user, account, or session values to Loki labels. Worry about failed readiness, blocked origin checks, or repeated suspicious paths; keep copied evidence sanitized.",
-      "gridPos": {
-        "h": 9,
-        "w": 24,
-        "x": 0,
-        "y": 8
-      },
-      "id": 3,
-      "options": {
-        "showLabels": false,
-        "sortOrder": "Descending"
-      },
-      "targets": [
-        {
-          "expr": "{source=\"nginx_access\", environment=~\"$environment\"}",
-          "refId": "A"
-        }
-      ],
-      "title": "Recent Nginx requests",
-      "type": "logs"
-    },
-    {
-      "datasource": {
-        "type": "loki",
-        "uid": "sitbank-loki"
-      },
-      "description": "Shows application and admin container lines that look like real failures while ignoring harmless counters such as error_count: 0. Worry about repeated exceptions, tracebacks, failed migrations, or readiness failures; check the deployment window and app health next.",
-      "gridPos": {
-        "h": 9,
-        "w": 12,
-        "x": 0,
-        "y": 17
-      },
-      "id": 4,
-      "options": {
-        "showLabels": true,
-        "sortOrder": "Descending"
-      },
-      "targets": [
-        {
-          "expr": "{source=\"container\", environment=~\"$environment\", service=~\"sitbank-app|sitbank-admin\"} |~ \"(?i)(\\\\berror\\\\b|\\\\bfailed\\\\b|traceback|exception)\" != \"error_count: 0\"",
-          "refId": "A"
-        }
-      ],
-      "title": "App and admin container failures",
-      "type": "logs"
-    },
-    {
-      "datasource": {
-        "type": "loki",
-        "uid": "sitbank-loki"
-      },
-      "description": "Shows failures from approved systemd units only: security alerts, Docker, and Certbot. Worry about failed timers, failed cert renewals, Docker restarts, or alert jobs exiting nonzero; check systemd status and sanitized host evidence next.",
-      "gridPos": {
-        "h": 9,
-        "w": 12,
-        "x": 12,
-        "y": 17
-      },
-      "id": 5,
-      "options": {
-        "showLabels": true,
-        "sortOrder": "Descending"
-      },
-      "targets": [
-        {
-          "expr": "{source=\"systemd\", service=~\"sitbank-security-alerts|docker|certbot\"} |~ \"(?i)(failed|failure|error|exited|timeout)\"",
-          "refId": "A"
-        }
-      ],
-      "title": "Systemd failures for monitored units",
-      "type": "logs"
-    },
-    {
-      "datasource": {
-        "type": "loki",
-        "uid": "sitbank-loki"
-      },
-      "description": "Highlights deployment, bootstrap, migration, and rollback lines when they are present in collected container or systemd logs. Worry about rollback, failed upgrade, privilege verification failure, or readiness failure; check the deployment runbook for the next command.",
-      "gridPos": {
-        "h": 8,
-        "w": 24,
-        "x": 0,
-        "y": 26
-      },
-      "id": 6,
-      "options": {
-        "showLabels": true,
-        "sortOrder": "Descending"
-      },
-      "targets": [
-        {
-          "expr": "{environment=~\"$environment\", source=~\"container|systemd\"} |~ \"(?i)(deploy|bootstrap|rollback|migration|db upgrade|readiness|runtime privileges)\"",
-          "refId": "A"
-        }
-      ],
-      "title": "Deployment and rollback signals",
-      "type": "logs"
-    }
-  ],
-  "schemaVersion": 39,
-  "tags": [
-    "sitbank",
-    "operations"
-  ],
-  "templating": {
-    "list": [
+  "spec": {
+    "annotations": [
       {
-        "current": {
-          "selected": true,
-          "text": "production|staging",
-          "value": "production|staging"
-        },
-        "hide": 0,
-        "label": "Environment",
-        "name": "environment",
-        "options": [],
-        "query": "production|staging",
-        "type": "textbox"
+        "kind": "AnnotationQuery",
+        "spec": {
+          "builtIn": true,
+          "enable": true,
+          "hide": true,
+          "iconColor": "rgba(0, 211, 255, 1)",
+          "name": "Annotations & Alerts",
+          "query": {
+            "datasource": {
+              "name": "-- Grafana --"
+            },
+            "group": "grafana",
+            "kind": "DataQuery",
+            "spec": {},
+            "version": "v0"
+          }
+        }
+      }
+    ],
+    "cursorSync": "Off",
+    "editable": true,
+    "elements": {
+      "panel-1": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "sitbank-loki"
+                      },
+                      "group": "loki",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "direction": "backward",
+                        "editorMode": "code",
+                        "expr": "sum by (environment, service, source) (\r\n  count_over_time(\r\n    {environment=~\"$environment\", service=~\"$service\", source=~\"$source\"}\r\n    [$__interval]\r\n  )\r\n)",
+                        "legendFormat": "{{environment}} / {{service}} / {{source}}",
+                        "queryType": "range"
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": []
+            }
+          },
+          "description": "Shows whether expected operational log streams are still arriving. Worry when an environment or service drops to zero outside a planned stop; check Alloy health, container labels, and Loki ingestion next.",
+          "id": 1,
+          "links": [],
+          "title": "Log ingestion by service and source",
+          "vizConfig": {
+            "group": "timeseries",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "custom": {
+                    "axisBorderShow": false,
+                    "axisCenteredZero": false,
+                    "axisColorMode": "text",
+                    "axisLabel": "",
+                    "axisPlacement": "auto",
+                    "barAlignment": 0,
+                    "barWidthFactor": 0.6,
+                    "drawStyle": "bars",
+                    "fillOpacity": 25,
+                    "gradientMode": "none",
+                    "hideFrom": {
+                      "legend": false,
+                      "tooltip": false,
+                      "viz": false
+                    },
+                    "insertNulls": false,
+                    "lineInterpolation": "linear",
+                    "lineWidth": 1,
+                    "pointSize": 5,
+                    "scaleDistribution": {
+                      "type": "linear"
+                    },
+                    "showPoints": "never",
+                    "showValues": false,
+                    "spanNulls": false,
+                    "stacking": {
+                      "group": "A",
+                      "mode": "normal"
+                    },
+                    "thresholdsStyle": {
+                      "mode": "off"
+                    }
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "color": "green",
+                        "value": 0
+                      },
+                      {
+                        "color": "red",
+                        "value": 80
+                      }
+                    ]
+                  }
+                },
+                "overrides": []
+              },
+              "options": {
+                "annotations": {
+                  "clustering": -1,
+                  "multiLane": false
+                },
+                "legend": {
+                  "calcs": [],
+                  "displayMode": "list",
+                  "placement": "bottom",
+                  "showLegend": true
+                },
+                "tooltip": {
+                  "hideZeros": false,
+                  "mode": "single",
+                  "sort": "none"
+                }
+              }
+            },
+            "version": "13.0.2"
+          }
+        }
+      },
+      "panel-2": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "sitbank-loki"
+                      },
+                      "group": "loki",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "direction": "backward",
+                        "editorMode": "code",
+                        "expr": "sum by (environment) (\r\n  count_over_time(\r\n    {source=\"nginx_access\", environment=~\"$environment\"}\r\n    | json\r\n    | __error__=\"\"\r\n    | status=~\"^[45][0-9][0-9]$\"\r\n    [$__interval]\r\n  )\r\n)",
+                        "legendFormat": "{{environment}} 4xx/5xx",
+                        "queryType": "range"
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": []
+            }
+          },
+          "description": "Counts Nginx 4xx and 5xx responses by environment. Worry about sustained 5xx or unexpected 4xx spikes; check recent request table, deployment events, and upstream readiness next.",
+          "id": 2,
+          "links": [],
+          "title": "Nginx 4xx and 5xx trend",
+          "vizConfig": {
+            "group": "timeseries",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "custom": {
+                    "axisBorderShow": false,
+                    "axisCenteredZero": false,
+                    "axisColorMode": "text",
+                    "axisLabel": "",
+                    "axisPlacement": "auto",
+                    "barAlignment": 0,
+                    "barWidthFactor": 0.6,
+                    "drawStyle": "bars",
+                    "fillOpacity": 0,
+                    "gradientMode": "none",
+                    "hideFrom": {
+                      "legend": false,
+                      "tooltip": false,
+                      "viz": false
+                    },
+                    "insertNulls": false,
+                    "lineInterpolation": "linear",
+                    "lineWidth": 1,
+                    "pointSize": 5,
+                    "scaleDistribution": {
+                      "type": "linear"
+                    },
+                    "showPoints": "never",
+                    "showValues": false,
+                    "spanNulls": false,
+                    "stacking": {
+                      "group": "A",
+                      "mode": "normal"
+                    },
+                    "thresholdsStyle": {
+                      "mode": "off"
+                    }
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "color": "green",
+                        "value": 0
+                      },
+                      {
+                        "color": "red",
+                        "value": 80
+                      }
+                    ]
+                  }
+                },
+                "overrides": []
+              },
+              "options": {
+                "annotations": {
+                  "clustering": -1,
+                  "multiLane": false
+                },
+                "legend": {
+                  "calcs": [],
+                  "displayMode": "list",
+                  "placement": "bottom",
+                  "showLegend": true
+                },
+                "tooltip": {
+                  "hideZeros": false,
+                  "mode": "single",
+                  "sort": "none"
+                }
+              }
+            },
+            "version": "13.0.2"
+          }
+        }
+      },
+      "panel-3": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "sitbank-loki"
+                      },
+                      "group": "loki",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "direction": "backward",
+                        "editorMode": "code",
+                        "expr": "{source=\"nginx_access\", environment=~\"$environment\"}\r\n| json\r\n| __error__=\"\"\r\n| line_format \"{{.method}} {{.route}} {{.status}} host={{.host}} result={{.result}} upstream={{.upstream_status}} bytes={{.body_bytes_sent}}\"",
+                        "queryType": "range"
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": []
+            }
+          },
+          "description": "Lists recent edge requests without promoting path, IP, request ID, user, account, or session values to Loki labels. Worry about failed readiness, blocked origin checks, or repeated suspicious paths; keep copied evidence sanitized.",
+          "id": 3,
+          "links": [],
+          "title": "Recent Nginx requests",
+          "vizConfig": {
+            "group": "logs",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {},
+                "overrides": []
+              },
+              "options": {
+                "dedupStrategy": "none",
+                "enableInfiniteScrolling": false,
+                "enableLogDetails": true,
+                "prettifyLogMessage": true,
+                "showControls": false,
+                "showFieldSelector": false,
+                "showLabels": false,
+                "showLevel": true,
+                "showTime": true,
+                "sortOrder": "Descending",
+                "syntaxHighlighting": true,
+                "timestampResolution": "ms",
+                "unwrappedColumns": false,
+                "wrapLogMessage": false
+              }
+            },
+            "version": "13.0.2"
+          }
+        }
+      },
+      "panel-4": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "sitbank-loki"
+                      },
+                      "group": "loki",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "direction": "backward",
+                        "editorMode": "code",
+                        "expr": "{source=\"container\", environment=~\"$environment\", service=~\"^(sitbank-app|sitbank-admin)$\"}\r\n|~ \"(?i)(\\\\berror\\\\b|\\\\bfailed\\\\b|traceback|exception)\"\r\n!~ \"(?i)(error_count[:=][[:space:]]*0|errors[:=][[:space:]]*0|failed_count[:=][[:space:]]*0)\"",
+                        "queryType": "range"
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": []
+            }
+          },
+          "description": "Shows application and admin container lines that look like real failures while ignoring harmless counters such as error_count: 0. Worry about repeated exceptions, tracebacks, failed migrations, or readiness failures; check the deployment window and app health next.",
+          "id": 4,
+          "links": [],
+          "title": "App and admin container failures",
+          "vizConfig": {
+            "group": "logs",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {},
+                "overrides": []
+              },
+              "options": {
+                "dedupStrategy": "none",
+                "enableInfiniteScrolling": false,
+                "enableLogDetails": true,
+                "prettifyLogMessage": true,
+                "showControls": false,
+                "showFieldSelector": false,
+                "showLabels": true,
+                "showLevel": true,
+                "showTime": false,
+                "sortOrder": "Descending",
+                "timestampResolution": "ms",
+                "unwrappedColumns": false,
+                "wrapLogMessage": false
+              }
+            },
+            "version": "13.0.2"
+          }
+        }
+      },
+      "panel-5": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "sitbank-loki"
+                      },
+                      "group": "loki",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "direction": "backward",
+                        "editorMode": "code",
+                        "expr": "{source=\"systemd\", environment=~\"$environment\", service=~\"^(sitbank-security-alerts|docker|certbot)$\"}\r\n|~ \"(?i)(failed|failure|error|exited|timeout|timed out|start request repeated too quickly|dependency failed|unit entered failed state)\"\r\n!~ \"(?i)(error=0|no error|ignored|ignore)\"",
+                        "queryType": "range"
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": []
+            }
+          },
+          "description": "Shows failures from approved systemd units only: security alerts, Docker, and Certbot. Worry about failed timers, failed cert renewals, Docker restarts, or alert jobs exiting nonzero; check systemd status and sanitized host evidence next.",
+          "id": 5,
+          "links": [],
+          "title": "Systemd failures for monitored units",
+          "vizConfig": {
+            "group": "logs",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {},
+                "overrides": []
+              },
+              "options": {
+                "dedupStrategy": "none",
+                "enableInfiniteScrolling": false,
+                "enableLogDetails": true,
+                "prettifyLogMessage": true,
+                "showControls": false,
+                "showFieldSelector": false,
+                "showLabels": true,
+                "showLevel": true,
+                "showTime": false,
+                "sortOrder": "Descending",
+                "timestampResolution": "ms",
+                "unwrappedColumns": false,
+                "wrapLogMessage": false
+              }
+            },
+            "version": "13.0.2"
+          }
+        }
+      },
+      "panel-6": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "sitbank-loki"
+                      },
+                      "group": "loki",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "direction": "backward",
+                        "editorMode": "code",
+                        "expr": "{environment=~\"$environment\", source=~\"container|systemd\"}\r\n|~ \"(?i)(sitbank-container-deploy|sitbank-container-bootstrap|sitbank-container-runtime|deploy|deployment|bootstrap|rollback|migration|db upgrade|database cutover|readiness|runtime privileges|verify-runtime-db-privileges|apply-runtime-db-privileges)\"",
+                        "queryType": "range"
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": []
+            }
+          },
+          "description": "Highlights deployment, bootstrap, migration, and rollback lines when they are present in collected container or systemd logs. Worry about rollback, failed upgrade, privilege verification failure, or readiness failure; check the deployment runbook for the next command.",
+          "id": 6,
+          "links": [],
+          "title": "Deployment and rollback signals",
+          "vizConfig": {
+            "group": "logs",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {},
+                "overrides": []
+              },
+              "options": {
+                "dedupStrategy": "none",
+                "enableInfiniteScrolling": false,
+                "enableLogDetails": true,
+                "prettifyLogMessage": true,
+                "showControls": false,
+                "showFieldSelector": false,
+                "showLabels": true,
+                "showLevel": true,
+                "showTime": false,
+                "sortOrder": "Descending",
+                "timestampResolution": "ms",
+                "unwrappedColumns": false,
+                "wrapLogMessage": false
+              }
+            },
+            "version": "13.0.2"
+          }
+        }
+      }
+    },
+    "layout": {
+      "kind": "GridLayout",
+      "spec": {
+        "items": [
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-1"
+              },
+              "height": 12,
+              "width": 24,
+              "x": 0,
+              "y": 0
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-2"
+              },
+              "height": 11,
+              "width": 24,
+              "x": 0,
+              "y": 12
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-3"
+              },
+              "height": 11,
+              "width": 24,
+              "x": 0,
+              "y": 23
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-5"
+              },
+              "height": 12,
+              "width": 24,
+              "x": 0,
+              "y": 34
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-4"
+              },
+              "height": 10,
+              "width": 24,
+              "x": 0,
+              "y": 46
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-6"
+              },
+              "height": 9,
+              "width": 24,
+              "x": 0,
+              "y": 56
+            }
+          }
+        ]
+      }
+    },
+    "links": [],
+    "liveNow": false,
+    "preload": false,
+    "tags": [
+      "sitbank",
+      "operations"
+    ],
+    "timeSettings": {
+      "autoRefresh": "",
+      "autoRefreshIntervals": [
+        "5s",
+        "10s",
+        "30s",
+        "1m",
+        "5m",
+        "15m",
+        "30m",
+        "1h",
+        "2h",
+        "1d"
+      ],
+      "fiscalYearStartMonth": 0,
+      "from": "now-6h",
+      "hideTimepicker": false,
+      "timezone": "browser",
+      "to": "now"
+    },
+    "title": "SITBank Operational Overview",
+    "variables": [
+      {
+        "kind": "TextVariable",
+        "spec": {
+          "current": {
+            "text": "production|staging",
+            "value": "production|staging"
+          },
+          "hide": "dontHide",
+          "label": "Environment",
+          "name": "environment",
+          "query": "production|staging",
+          "skipUrlSync": false
+        }
       },
       {
-        "current": {
-          "selected": true,
-          "text": "nginx|sitbank-app|sitbank-admin|sitbank-security-alerts|docker|certbot",
-          "value": "nginx|sitbank-app|sitbank-admin|sitbank-security-alerts|docker|certbot"
-        },
-        "hide": 0,
-        "label": "Service",
-        "name": "service",
-        "options": [],
-        "query": "nginx|sitbank-app|sitbank-admin|sitbank-security-alerts|docker|certbot",
-        "type": "textbox"
+        "kind": "TextVariable",
+        "spec": {
+          "current": {
+            "text": "nginx|sitbank-app|sitbank-admin|sitbank-security-alerts|docker|certbot",
+            "value": "nginx|sitbank-app|sitbank-admin|sitbank-security-alerts|docker|certbot"
+          },
+          "hide": "dontHide",
+          "label": "Service",
+          "name": "service",
+          "query": "nginx|sitbank-app|sitbank-admin|sitbank-security-alerts|docker|certbot",
+          "skipUrlSync": false
+        }
       },
       {
-        "current": {
-          "selected": true,
-          "text": "nginx_access|nginx_error|container|systemd",
-          "value": "nginx_access|nginx_error|container|systemd"
-        },
-        "hide": 0,
-        "label": "Source",
-        "name": "source",
-        "options": [],
-        "query": "nginx_access|nginx_error|container|systemd",
-        "type": "textbox"
+        "kind": "TextVariable",
+        "spec": {
+          "current": {
+            "text": "nginx_access|nginx_error|container|systemd",
+            "value": "nginx_access|nginx_error|container|systemd"
+          },
+          "hide": "dontHide",
+          "label": "Source",
+          "name": "source",
+          "query": "nginx_access|nginx_error|container|systemd",
+          "skipUrlSync": false
+        }
       }
     ]
-  },
-  "time": {
-    "from": "now-6h",
-    "to": "now"
-  },
-  "title": "SITBank Operational Overview",
-  "uid": "sitbank-operational-overview",
-  "version": 2
+  }
 }
