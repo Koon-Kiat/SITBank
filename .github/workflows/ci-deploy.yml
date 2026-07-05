@@ -744,7 +744,6 @@ jobs:
             --source-digest "${RELEASE_SHA}" \
             --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
             --deny-self-hosted-runners \
-            --no-public-good \
             >/dev/null
 
       - name: Validate production and staging Compose models for the exact digest

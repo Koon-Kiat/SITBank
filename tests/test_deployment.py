@@ -2452,7 +2452,8 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         in attestation_command
     )
     assert "--deny-self-hosted-runners" in attestation_command
-    assert "--no-public-good" in attestation_command
+    assert "--no-public-good" not in attestation_command
+    assert "--bundle-from-oci" not in attestation_command
     assert "--cert-identity" not in attestation_command
     release_steps = [
         step["name"] for step in workflow["jobs"]["release-verify"]["steps"]
