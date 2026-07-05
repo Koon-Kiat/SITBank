@@ -814,7 +814,14 @@ and recomputes at confirmation and again under the sender lock. It requires
 fresh TOTP for stale sessions, recent sensitive account changes, transfers at
 least 80% of the daily limit, or amounts outside the quick-transfer and
 quick-daily caps. Low-risk transfers within those caps do not require an
-additional code.
+additional code. These PayUp posts rely on the dedicated durable
+account/session/source/recipient limits plus the existing edge controls; they
+do not retain an older MFA-principal route limit that can undercut the
+configured PayUp policy. SITBank currently has no general successful-transfer
+notification channel to reuse, so successful PayUp execution is recorded by
+required transaction audit evidence and the authenticated browser result. A
+future email or push channel requires a separate reviewed delivery and privacy
+design.
 
 Completed Local Transfer and PayUp rows store an HMAC-SHA256 transaction hash
 under the dedicated `TRANSACTION_LEDGER_HMAC_KEYS_JSON` key id and explicit

@@ -95,13 +95,13 @@ def record_failure(
     counter.failure_count = int(counter.failure_count or 0) + 1
     counter.last_failed_at = now
     counter.updated_at = now
-    counter.window_expires_at = now + timedelta(
-        seconds=(
-            window_seconds
-            if window_seconds is not None
-            else (15 * 60 if counter.failure_count > 10 else 5 * 60)
-        )
-    )
+    if window_seconds is not None:
+        active_window_seconds = window_seconds
+    elif counter.failure_count > 10:
+        active_window_seconds = 15 * 60
+    else:
+        active_window_seconds = 5 * 60
+    counter.window_expires_at = now + timedelta(seconds=active_window_seconds)
     attempts = int(counter.failure_count)
     db.session.commit()
     if attempts in {2, 3, 5, 10} or attempts > 10:

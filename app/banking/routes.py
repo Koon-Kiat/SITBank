@@ -706,7 +706,6 @@ def payup():
 
 
 @banking_bp.post("/payup")
-@limiter.limit("15 per hour", key_func=mfa_principal)
 @web_login_required
 @web_not_frozen_required
 def payup_submit():
@@ -785,7 +784,6 @@ def payup_amount():
 
 
 @banking_bp.post("/payup/amount")
-@limiter.limit("10 per hour", key_func=mfa_principal)
 @web_login_required
 @web_not_frozen_required
 def payup_amount_submit():
@@ -935,7 +933,6 @@ def payup_confirm():
 
 
 @banking_bp.post("/payup/confirm")
-@limiter.limit("5 per 15 minutes", key_func=mfa_principal)
 @web_login_required
 @web_not_frozen_required
 def payup_confirm_submit():

@@ -645,6 +645,7 @@ jobs:
         with:
           subject-name: ${{ steps.image.outputs.repository }}
           subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
           show-summary: false
 
   release-verify:

@@ -1935,6 +1935,30 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         "attestations": "write",
         "artifact-metadata": "write",
     }
+    pull_request_job_names = (
+        "resolve-source",
+        "workflow-security",
+        "dependency-review",
+        "test",
+        "playwright-e2e",
+        "sonarqube",
+        "sonarqube-comment",
+        "image-test",
+    )
+    for job_name in pull_request_job_names:
+        job = workflow["jobs"][job_name]
+        permissions = job.get("permissions", {})
+        for permission in (
+            "id-token",
+            "packages",
+            "attestations",
+            "artifact-metadata",
+        ):
+            assert permissions.get(permission) != "write"
+        for step in job.get("steps", ()):
+            assert not str(step.get("uses", "")).startswith("actions/attest@")
+            assert step.get("with", {}).get("push") is not True
+            assert "cosign sign" not in step.get("run", "")
     assert workflow["jobs"]["release-verify"]["permissions"]["id-token"] == "write"
     assert workflow["jobs"]["release-verify"]["permissions"]["packages"] == "write"
     assert workflow["jobs"]["release-verify"]["permissions"]["attestations"] == "read"
@@ -2391,9 +2415,21 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "secrets.EC2_" not in workflow_text
     assert "provenance: mode=max" in workflow_text
     assert "sbom: true" in workflow_text
-    assert "actions/attest@a1948c3f048ba23858d222213b7c278aabede763" in workflow_text
-    assert "subject-name: ${{ steps.image.outputs.repository }}" in workflow_text
-    assert "subject-digest: ${{ steps.push.outputs.digest }}" in workflow_text
+    attestation_step = next(
+        step
+        for step in workflow["jobs"]["publish"]["steps"]
+        if step["name"] == "Attest the exact published image digest"
+    )
+    assert (
+        attestation_step["uses"]
+        == "actions/attest@a1948c3f048ba23858d222213b7c278aabede763"
+    )
+    assert attestation_step["with"] == {
+        "subject-name": "${{ steps.image.outputs.repository }}",
+        "subject-digest": "${{ steps.push.outputs.digest }}",
+        "push-to-registry": True,
+        "show-summary": False,
+    }
     assert "gh attestation verify \"oci://${IMAGE}\"" in workflow_text
     assert "--repo \"${GITHUB_REPOSITORY}\"" in workflow_text
     assert (

@@ -446,7 +446,7 @@ def register_ops_commands(app: Flask) -> None:  # NOSONAR
         """Backfill legacy transaction rows before integrity enforcement."""
         try:
             result = _backfill_transaction_integrity(confirm=confirm)
-        except (AuditWriteError, RuntimeError) as exc:
+        except RuntimeError as exc:
             raise click.ClickException(str(exc)) from exc
         click.echo(json.dumps(result, separators=(",", ":"), sort_keys=True))
 
@@ -845,106 +845,166 @@ def _backfill_transaction_integrity(*, confirm: bool) -> dict[str, object]:
         )
 
     try:
-        statement = db.select(Transaction).order_by(Transaction.id.asc())
-        if confirm and db.engine.dialect.name == "postgresql":
-            statement = statement.with_for_update()
-        rows = list(db.session.execute(statement).scalars())
-        legacy_rows: list[Transaction] = []
-        valid_existing = 0
-        for transaction in rows:
-            metadata = (
-                transaction.transaction_integrity_key_id,
-                transaction.transaction_integrity_algorithm,
-                transaction.transaction_integrity_version,
-            )
-            if all(value is None for value in metadata):
-                legacy_rows.append(transaction)
-                continue
-            if any(value is None for value in metadata):
-                raise RuntimeError(
-                    "Transaction integrity backfill refused partial metadata"
-                )
-            if transaction_integrity_status(transaction) != "valid":
-                raise RuntimeError(
-                    "Transaction integrity backfill refused an invalid signed row"
-                )
-            valid_existing += 1
-
+        rows = _load_transaction_integrity_backfill_rows(confirm=confirm)
+        legacy_rows, valid_existing = _classify_transaction_integrity_rows(rows)
         if confirm:
-            for transaction in legacy_rows:
-                (
-                    transaction.transaction_hash,
-                    transaction.transaction_integrity_key_id,
-                    transaction.transaction_integrity_algorithm,
-                    transaction.transaction_integrity_version,
-                ) = sign_transaction_integrity(
-                    transaction_ref=transaction.transaction_ref,
-                    sender_id=transaction.sender_id,
-                    recipient_id=transaction.recipient_id,
-                    payee_id=transaction.payee_id,
-                    amount=transaction.amount,
-                    reference=transaction.reference or "",
-                    status=transaction.status,
-                    transaction_type=transaction.transaction_type,
-                    created_at=transaction.created_at,
-                )
-            db.session.flush()
-            if any(
-                transaction_integrity_status(transaction) != "valid"
-                for transaction in rows
-            ):
-                raise RuntimeError(
-                    "Transaction integrity backfill verification failed"
-                )
-            completed_event = audit_system_event_in_transaction_required(
-                "transaction_integrity_backfill",
-                "completed",
-                metadata={
-                    **requested_metadata,
-                    "scanned_count": len(rows),
-                    "backfilled_count": len(legacy_rows),
-                    "valid_existing_count": valid_existing,
-                },
+            _sign_transaction_integrity_rows(legacy_rows)
+            _commit_transaction_integrity_backfill(
+                rows=rows,
+                legacy_count=len(legacy_rows),
+                valid_existing=valid_existing,
+                requested_metadata=requested_metadata,
             )
-            db.session.commit()
-            log_committed_system_audit_event(completed_event)
         else:
-            db.session.rollback()
-            audit_system_event(
-                "transaction_integrity_backfill",
-                "dry_run",
-                metadata={
-                    **requested_metadata,
-                    "scanned_count": len(rows),
-                    "backfill_required_count": len(legacy_rows),
-                    "valid_existing_count": valid_existing,
-                },
+            _report_transaction_integrity_backfill_dry_run(
+                scanned_count=len(rows),
+                legacy_count=len(legacy_rows),
+                valid_existing=valid_existing,
+                requested_metadata=requested_metadata,
             )
     except Exception as exc:
-        db.session.rollback()
-        if confirm:
-            audit_system_event(
-                "transaction_integrity_backfill",
-                "failed",
-                metadata={
-                    **requested_metadata,
-                    "error_type": type(exc).__name__,
-                },
-            )
-        if isinstance(exc, (AuditWriteError, RuntimeError)):
+        _record_transaction_integrity_backfill_failure(
+            confirm=confirm,
+            requested_metadata=requested_metadata,
+            error_type=type(exc).__name__,
+        )
+        if isinstance(exc, RuntimeError):
             raise
         raise RuntimeError(
             "Transaction integrity backfill failed without committing changes"
         ) from exc
 
+    backfilled_count = len(legacy_rows) if confirm else 0
+    backfill_required_count = 0 if confirm else len(legacy_rows)
     return {
         "message": "transaction_integrity_backfill",
         "mode": requested_metadata["mode"],
         "scanned_count": len(rows),
-        "backfilled_count": len(legacy_rows) if confirm else 0,
-        "backfill_required_count": 0 if confirm else len(legacy_rows),
+        "backfilled_count": backfilled_count,
+        "backfill_required_count": backfill_required_count,
         "valid_existing_count": valid_existing,
     }
+
+
+def _load_transaction_integrity_backfill_rows(
+    *,
+    confirm: bool,
+) -> list[Transaction]:
+    statement = db.select(Transaction).order_by(Transaction.id.asc())
+    if confirm and db.engine.dialect.name == "postgresql":
+        statement = statement.with_for_update()
+    return list(db.session.execute(statement).scalars())
+
+
+def _classify_transaction_integrity_rows(
+    rows: list[Transaction],
+) -> tuple[list[Transaction], int]:
+    legacy_rows: list[Transaction] = []
+    valid_existing = 0
+    for transaction in rows:
+        metadata = (
+            transaction.transaction_integrity_key_id,
+            transaction.transaction_integrity_algorithm,
+            transaction.transaction_integrity_version,
+        )
+        if all(value is None for value in metadata):
+            legacy_rows.append(transaction)
+        elif any(value is None for value in metadata):
+            raise RuntimeError(
+                "Transaction integrity backfill refused partial metadata"
+            )
+        elif transaction_integrity_status(transaction) != "valid":
+            raise RuntimeError(
+                "Transaction integrity backfill refused an invalid signed row"
+            )
+        else:
+            valid_existing += 1
+    return legacy_rows, valid_existing
+
+
+def _sign_transaction_integrity_rows(rows: list[Transaction]) -> None:
+    for transaction in rows:
+        (
+            transaction.transaction_hash,
+            transaction.transaction_integrity_key_id,
+            transaction.transaction_integrity_algorithm,
+            transaction.transaction_integrity_version,
+        ) = sign_transaction_integrity(
+            transaction_ref=transaction.transaction_ref,
+            sender_id=transaction.sender_id,
+            recipient_id=transaction.recipient_id,
+            payee_id=transaction.payee_id,
+            amount=transaction.amount,
+            reference=transaction.reference or "",
+            status=transaction.status,
+            transaction_type=transaction.transaction_type,
+            created_at=transaction.created_at,
+        )
+
+
+def _commit_transaction_integrity_backfill(
+    *,
+    rows: list[Transaction],
+    legacy_count: int,
+    valid_existing: int,
+    requested_metadata: dict[str, object],
+) -> None:
+    db.session.flush()
+    if any(
+        transaction_integrity_status(transaction) != "valid"
+        for transaction in rows
+    ):
+        raise RuntimeError("Transaction integrity backfill verification failed")
+    completed_event = audit_system_event_in_transaction_required(
+        "transaction_integrity_backfill",
+        "completed",
+        metadata={
+            **requested_metadata,
+            "scanned_count": len(rows),
+            "backfilled_count": legacy_count,
+            "valid_existing_count": valid_existing,
+        },
+    )
+    db.session.commit()
+    log_committed_system_audit_event(completed_event)
+
+
+def _report_transaction_integrity_backfill_dry_run(
+    *,
+    scanned_count: int,
+    legacy_count: int,
+    valid_existing: int,
+    requested_metadata: dict[str, object],
+) -> None:
+    db.session.rollback()
+    audit_system_event(
+        "transaction_integrity_backfill",
+        "dry_run",
+        metadata={
+            **requested_metadata,
+            "scanned_count": scanned_count,
+            "backfill_required_count": legacy_count,
+            "valid_existing_count": valid_existing,
+        },
+    )
+
+
+def _record_transaction_integrity_backfill_failure(
+    *,
+    confirm: bool,
+    requested_metadata: dict[str, object],
+    error_type: str,
+) -> None:
+    db.session.rollback()
+    if confirm:
+        audit_system_event(
+            "transaction_integrity_backfill",
+            "failed",
+            metadata={
+                **requested_metadata,
+                "error_type": error_type,
+            },
+        )
 
 
 def _utc_iso_or_none(value: datetime | None) -> str | None:

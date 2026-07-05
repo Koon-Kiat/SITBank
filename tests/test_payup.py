@@ -737,6 +737,37 @@ def test_complete_payup_route_flow_below_threshold_no_mfa(client, payup_context)
     assert Transaction.query.filter_by(reference="Lunch", transaction_type="payup").count() == 1
 
 
+def test_low_risk_confirmations_use_payup_limits_not_legacy_mfa_limiter(
+    app,
+    client,
+    payup_context,
+):
+    for config_name in (
+        "PAYUP_RATE_LIMIT_ACCOUNT",
+        "PAYUP_RATE_LIMIT_SESSION",
+        "PAYUP_RATE_LIMIT_IP",
+        "PAYUP_RATE_LIMIT_RECIPIENT",
+    ):
+        app.config[config_name] = 20
+
+    for index in range(6):
+        lookup = client.post(
+            "/banking/payup",
+            data=_payup_lookup_data(payup_context),
+        )
+        amount = client.post(
+            "/banking/payup/amount",
+            data={"amount": "1.00", "reference": f"Low risk {index}"},
+        )
+        confirmation = client.post("/banking/payup/confirm", data={})
+
+        assert lookup.status_code == 302
+        assert amount.status_code == 302
+        assert confirmation.status_code == 302
+
+    assert Transaction.query.filter_by(transaction_type="payup").count() == 6
+
+
 def test_complete_payup_route_flow_crossing_threshold_requires_mfa(client, payup_context, monkeypatch):
     alice_secret = payup_context["alice_secret"]
 
