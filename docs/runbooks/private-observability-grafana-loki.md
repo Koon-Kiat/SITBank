@@ -106,6 +106,20 @@ loopback-only ports, internal networks, Nginx route absence, Funnel denial,
 and the approved private Serve mapping before calling
 `bootstrap-observability-ec2`.
 
+Each protected observability environment must provide
+`OBSERVABILITY_BOOTSTRAP_TS_OAUTH_CLIENT_ID` and
+`OBSERVABILITY_BOOTSTRAP_TS_OAUTH_SECRET` from a dedicated OAuth client that
+may advertise only `tag:github-ci-observability-bootstrap`. Never reuse the
+observability-verifier or private-admin OAuth client. The live ACL must match
+the reviewed reference path
+`tag:github-ci-observability-bootstrap -> tag:sitbank-observability-ec2:22`
+and must not grant that source private Grafana HTTPS, unrelated destinations,
+wildcards, Internet access, or Tailscale SSH.
+
+The repository reference does not prove the live ACL, node tags, GitHub
+Environment settings, host firewall, security group, or provider state.
+Confirm those separately and retain only sanitized evidence.
+
 Do not run the repository script directly for routine changes, broaden the
 sudo rule, copy the checkout into a root-owned trusted path, or print secret
 file contents. Keep emergency manual recovery under an approved maintenance

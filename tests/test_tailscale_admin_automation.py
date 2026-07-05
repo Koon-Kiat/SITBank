@@ -166,6 +166,8 @@ def test_reference_policy_separates_admin_and_environment_deploy_paths():
     assert '"tag:sitbank-staging-ec2:22"' in policy
     assert '"tag:github-ci-prod-deploy"' in policy
     assert '"tag:sitbank-prod-ec2:22"' in policy
+    assert '"tag:github-ci-observability-bootstrap"' in policy
+    assert '"tag:sitbank-observability-ec2:22"' in policy
     assert '"ssh": []' in policy
     assert "autogroup:member" not in policy
     assert "autogroup:internet" not in policy
@@ -185,6 +187,10 @@ def test_reference_policy_separates_admin_and_environment_deploy_paths():
         ("tag:github-ci-admin-verify", "tag:admin-sitbank:443"),
         ("tag:github-ci-staging-deploy", "tag:sitbank-staging-ec2:22"),
         ("tag:github-ci-prod-deploy", "tag:sitbank-prod-ec2:22"),
+        (
+            "tag:github-ci-observability-bootstrap",
+            "tag:sitbank-observability-ec2:22",
+        ),
     }
 
 

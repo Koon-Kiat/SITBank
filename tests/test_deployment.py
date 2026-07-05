@@ -2438,11 +2438,13 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     ) in workflow_text
     assert "--source-ref \"refs/heads/main\"" in workflow_text
     assert "--source-digest \"${RELEASE_SHA}\"" in workflow_text
-    assert (
-        "--cert-identity "
-        "\"${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/.github/workflows/"
-        "ci-deploy.yml@refs/heads/main\""
-    ) in workflow_text
+    attestation_command = next(
+        step["run"]
+        for step in workflow["jobs"]["release-verify"]["steps"]
+        if step["name"] == "Verify signed SLSA provenance for the exact digest"
+    )
+    assert "--signer-workflow" in attestation_command
+    assert "--cert-identity" not in attestation_command
     release_steps = [
         step["name"] for step in workflow["jobs"]["release-verify"]["steps"]
     ]
@@ -3428,6 +3430,26 @@ def test_observability_bootstrap_workflow_and_wrapper_are_trusted_and_restricted
     ]
     assert remote_indexes
     assert all(tailnet_index < index for index in remote_indexes)
+    configuration_step = next(
+        step
+        for step in steps
+        if step["name"] == "Validate protected observability bootstrap settings"
+    )
+    assert configuration_step["env"]["TS_OAUTH_CLIENT_ID"] == (
+        "${{ secrets.OBSERVABILITY_BOOTSTRAP_TS_OAUTH_CLIENT_ID }}"
+    )
+    assert configuration_step["env"]["TS_OAUTH_SECRET"] == (
+        "${{ secrets.OBSERVABILITY_BOOTSTRAP_TS_OAUTH_SECRET }}"
+    )
+    tailnet_step = steps[tailnet_index]
+    assert tailnet_step["with"]["oauth-client-id"] == (
+        "${{ secrets.OBSERVABILITY_BOOTSTRAP_TS_OAUTH_CLIENT_ID }}"
+    )
+    assert tailnet_step["with"]["oauth-secret"] == (
+        "${{ secrets.OBSERVABILITY_BOOTSTRAP_TS_OAUTH_SECRET }}"
+    )
+    assert "secrets.TS_OAUTH_CLIENT_ID" not in workflow_text
+    assert "secrets.TS_OAUTH_SECRET" not in workflow_text
     assert "tag:github-ci-observability-bootstrap" in workflow_text
     assert "StrictHostKeyChecking=yes" in workflow_text
     assert "StrictHostKeyChecking=no" not in workflow_text
@@ -3444,6 +3466,26 @@ def test_observability_bootstrap_workflow_and_wrapper_are_trusted_and_restricted
         _workflow_uses(workflow_text),
         context="Observability bootstrap workflow",
     )
+
+    docs = "\n".join(
+        Path(path).read_text(encoding="utf-8")
+        for path in (
+            "docs/DEPLOYMENT.md",
+            "docs/GITHUB_ACTIONS.md",
+            "docs/runbooks/private-observability-grafana-loki.md",
+            "ops/tailscale/README.md",
+        )
+    )
+    for required in (
+        "OBSERVABILITY_BOOTSTRAP_TS_OAUTH_CLIENT_ID",
+        "OBSERVABILITY_BOOTSTRAP_TS_OAUTH_SECRET",
+        "tag:github-ci-observability-bootstrap",
+        "tag:sitbank-observability-ec2:22",
+        "tag:github-ci-observability-verify",
+        "tag:github-ci-admin-verify",
+        "sanitized evidence",
+    ):
+        assert required in docs
 
     wrapper = Path(
         "ops/deploy/sitbank-observability-bootstrap"

@@ -160,8 +160,9 @@ def test_cleanup_expired_security_state_uses_one_bounded_batch_and_commits(app, 
         "password_reset_tokens_deleted": 6,
         "security_alert_dedupe_deleted": 7,
         "security_circuit_breakers_deleted": 8,
+        "public_transaction_idempotency_deleted": 9,
     }
-    assert len(delete_calls) == 8
+    assert len(delete_calls) == 9
     assert all(limit == 12 for _, _, limit, _ in delete_calls)
     assert all(dry_run is False for _, _, _, dry_run in delete_calls)
     assert commit_calls == [True]
@@ -203,7 +204,7 @@ def test_cleanup_expired_security_state_dry_run_rolls_back(app, monkeypatch):
         )
 
     assert result["expired_sessions_marked"] == 3
-    assert result["security_circuit_breakers_deleted"] == 8
+    assert result["public_transaction_idempotency_deleted"] == 9
     assert all(dry_run is True for _, _, _, dry_run in delete_calls)
     assert commit_calls == []
     assert rollback_calls == [True]
