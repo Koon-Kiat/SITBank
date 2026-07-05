@@ -1152,7 +1152,7 @@ def _requested_statement_period() -> tuple[int, int]:
 
 
 _CSV_FORMULA_TRIGGER_CHARS = ("=", "+", "-", "@")
-_CSV_LEADING_NEUTRAL_RE = re.compile(r"^[\s\x00-\x1f\x7f]*")
+_CSV_LEADING_NEUTRAL_RE = re.compile(r"^[\x00-\x20\x7f]*")
 
 
 def _csv_safe(value: str) -> str:
