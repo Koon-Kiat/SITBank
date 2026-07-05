@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from flask import Flask, g, jsonify, render_template, request
 from flask_wtf.csrf import CSRFError
@@ -26,6 +26,7 @@ from .security.http_errors import (
     safe_error_response,
 )
 from .security.turnstile import register_turnstile_template_helpers
+from .time_display import sgt_datetime, utc_iso
 from .web.routes import web_bp
 
 
@@ -228,15 +229,14 @@ def register_error_handlers(app: Flask) -> None:
 
 
 def register_datetime_template_helpers(app: Flask) -> None:
-    singapore_tz = timezone(timedelta(hours=8))
-
     @app.template_filter("sgt")
     def to_singapore_time(value: datetime | None) -> datetime | None:
-        if value is None:
-            return None
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
-        return value.astimezone(singapore_tz)
+        from .time_display import to_singapore_time as convert
+
+        return convert(value)
+
+    app.add_template_filter(sgt_datetime, "sgt_datetime")
+    app.add_template_filter(utc_iso, "utc_iso")
 
 
 def register_invite_acceptance_response_headers(app: Flask) -> None:

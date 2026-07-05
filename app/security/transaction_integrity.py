@@ -101,6 +101,68 @@ def transaction_integrity_status(transaction: Any) -> str:
     )
 
 
+def sign_registration_credit_integrity(
+    *,
+    credit_ref: str,
+    user_id: int,
+    amount: Decimal,
+    status: str,
+    created_at: datetime,
+) -> tuple[str, str, str, int]:
+    """Return a versioned ledger signature for a fixed registration credit."""
+    key_id = str(current_app.config["TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID"])
+    keyring = _validated_keyring()
+    digest = _registration_credit_digest(
+        keyring[key_id],
+        _canonical_registration_credit_payload(
+            credit_ref=credit_ref,
+            user_id=user_id,
+            amount=amount,
+            status=status,
+            created_at=created_at,
+        ),
+    )
+    return (
+        digest,
+        key_id,
+        TRANSACTION_INTEGRITY_ALGORITHM,
+        TRANSACTION_INTEGRITY_VERSION,
+    )
+
+
+def registration_credit_integrity_status(credit: Any) -> str:
+    metadata = (
+        getattr(credit, "credit_integrity_key_id", None),
+        getattr(credit, "credit_integrity_algorithm", None),
+        getattr(credit, "credit_integrity_version", None),
+    )
+    if all(value is None for value in metadata) or any(value is None for value in metadata):
+        return "invalid"
+    key_id, algorithm, version = metadata
+    if (
+        algorithm != TRANSACTION_INTEGRITY_ALGORITHM
+        or version != TRANSACTION_INTEGRITY_VERSION
+    ):
+        return "invalid"
+    try:
+        keyring = _validated_keyring()
+    except RuntimeError:
+        return "invalid"
+    if key_id not in keyring:
+        return "invalid"
+    expected = _registration_credit_digest(
+        keyring[key_id],
+        _canonical_registration_credit_payload(
+            credit_ref=credit.credit_ref,
+            user_id=int(credit.user_id),
+            amount=Decimal(str(credit.amount)),
+            status=credit.status,
+            created_at=credit.created_at,
+        ),
+    )
+    return "valid" if hmac.compare_digest(str(credit.credit_hash or ""), expected) else "invalid"
+
+
 def validate_transaction_integrity_config() -> int:
     """Validate the dedicated ledger keyring and return its key count."""
     return len(_validated_keyring())
@@ -152,6 +214,25 @@ def _canonical_transaction_payload(
     return json.dumps(payload, separators=(",", ":"), sort_keys=True)
 
 
+def _canonical_registration_credit_payload(
+    *,
+    credit_ref: str,
+    user_id: int,
+    amount: Decimal,
+    status: str,
+    created_at: datetime,
+) -> str:
+    normalized_amount = Decimal(str(amount)).quantize(Decimal("0.01"))
+    payload = {
+        "amount": format(normalized_amount, "f"),
+        "created_at": _canonical_timestamp(created_at),
+        "credit_ref": str(credit_ref),
+        "status": str(status),
+        "user_id": int(user_id),
+    }
+    return json.dumps(payload, separators=(",", ":"), sort_keys=True)
+
+
 def _canonical_timestamp(created_at: datetime) -> str:
     if created_at.tzinfo is not None:
         created_at = created_at.astimezone(timezone.utc).replace(tzinfo=None)
@@ -161,6 +242,14 @@ def _canonical_timestamp(created_at: datetime) -> str:
 def _digest(key: bytes, canonical_payload: str) -> str:
     signing_input = (
         f"sitbank-transaction-integrity-v{TRANSACTION_INTEGRITY_VERSION}:"
+        f"{canonical_payload}"
+    ).encode("utf-8")
+    return hmac.new(key, signing_input, hashlib.sha256).hexdigest()
+
+
+def _registration_credit_digest(key: bytes, canonical_payload: str) -> str:
+    signing_input = (
+        f"sitbank-registration-credit-integrity-v{TRANSACTION_INTEGRITY_VERSION}:"
         f"{canonical_payload}"
     ).encode("utf-8")
     return hmac.new(key, signing_input, hashlib.sha256).hexdigest()

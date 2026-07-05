@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from flask_wtf import FlaskForm
 from wtforms import SelectField, StringField, TextAreaField
-from wtforms.validators import InputRequired, Length, Optional, Regexp
+from wtforms.validators import InputRequired, Length, Optional, Regexp, ValidationError
 
 from app.auth.schemas import PHONE_RE, TOTP_RE
 from app.banking.limits import PAYUP_DAILY_LIMIT_CHOICES, PAYUP_DAILY_LIMIT_PRESETS
@@ -11,6 +11,7 @@ from app.models import DISPUTE_ISSUE_TYPES
 
 ACCOUNT_NUMBER_RE = r"^[0-9]{12}$"
 NICKNAME_RE = r"^[A-Za-z0-9 '\-]{1,64}$"
+PAYUP_NICKNAME_MAX_LENGTH = 128
 AMOUNT_RE = r"^\d+(\.\d{1,2})?$"
 REFERENCE_RE = r"^[A-Za-z0-9 '\-.,/]{0,128}$"
 
@@ -86,6 +87,28 @@ class PayupPhoneForm(FlaskForm):
             Regexp(PHONE_RE, message="Enter a valid Singapore phone number (8 digits starting with 8 or 9)"),
         ],
     )
+
+
+def _payup_nickname(value: str | None) -> str:
+    nickname = str(value or "").strip()
+    if len(nickname) < 2 or len(nickname) > PAYUP_NICKNAME_MAX_LENGTH:
+        raise ValidationError("PayUp nickname must be between 2 and 128 characters")
+    if any(ord(char) < 32 or ord(char) == 127 for char in nickname):
+        raise ValidationError("PayUp nickname cannot contain control characters")
+    return nickname
+
+
+class PayupNicknameForm(FlaskForm):
+    nickname = StringField(
+        "PayUp nickname",
+        validators=[
+            InputRequired(),
+            Length(min=2, max=PAYUP_NICKNAME_MAX_LENGTH),
+        ],
+    )
+
+    def validate_nickname(self, field) -> None:
+        field.data = _payup_nickname(field.data)
 
 
 class PayupAmountForm(FlaskForm):

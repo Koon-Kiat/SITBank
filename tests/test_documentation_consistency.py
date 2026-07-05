@@ -93,7 +93,9 @@ def test_payup_security_docs_match_current_banking_contract():
     docs = " ".join(docs.split())
 
     for required in (
-        "PayUp lookup returns only a masked recipient identity",
+        "PayUp senders must set a customer-owned PayUp display nickname",
+        "confirmation page shows the source account ending, sender nickname, recipient phone number, recipient PayUp nickname",
+        "Nickname audit metadata records only presence and length",
         "Invalid phone number",
         "per-customer enable flag and daily limit",
         "midnight Singapore time",
@@ -108,6 +110,9 @@ def test_payup_security_docs_match_current_banking_contract():
         "HMAC-SHA256 transaction hash",
         "Migration `20260703_0022` adds PayUp support",
         "Migration `20260704_0027` hardens PayUp daily-limit bounds",
+        "Migration `20260705_0030` adds `users.payup_nickname`",
+        "SGD 100.00 welcome credit",
+        "`registration_credits` ledger",
         "`payup_pending_transfers`",
         "`transactions.transaction_type`",
         "Migration `20260703_0024` enforces exactly 12 decimal digits",
@@ -120,6 +125,7 @@ def test_payup_security_docs_match_current_banking_contract():
         "Phone lookup requires TOTP before recipient name disclosure",
         "PayUp lookup reveals recipient name before MFA",
         "PayUp lookup does not require MFA",
+        "PayUp lookup returns only a masked recipient identity",
         "Local Transfer daily limit is enforced",
         "greater than SGD 100",
     )
@@ -182,6 +188,29 @@ def test_feature_security_checklist_is_indexed_and_avoids_external_overclaims():
         "SonarQube gate is passing",
     ):
         assert forbidden not in checklist
+
+
+def test_audit_viewer_docs_match_simple_search_and_sgt_timestamp_contract():
+    audit_docs = Path("docs/security/assurance/audit-and-alerting.md").read_text(
+        encoding="utf-8"
+    )
+    audit_docs = " ".join(audit_docs.split())
+
+    for required in (
+        "single visible `q` search box",
+        "advanced filter disclosure",
+        "actor username",
+        "privileged workplace email",
+        "does not search raw unbounded metadata",
+        "Visible UI timestamps display in UTC+8/SGT",
+        "machine-readable UTC/ISO values remain",
+    ):
+        assert required in audit_docs
+    for stale in (
+        "readable UTC such as",
+        "session reference, and numeric actor ID",
+    ):
+        assert stale not in audit_docs
 
 
 def test_rate_limit_layering_docs_match_current_controls():

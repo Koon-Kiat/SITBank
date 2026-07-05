@@ -21,7 +21,7 @@ def test_payee_cooldown_status_uses_server_created_timestamp():
     assert status["status"] == "cooldown"
     assert status["remaining"].endswith("m")
     assert status["expires_at"] == (created_at + timedelta(hours=12)).isoformat()
-    assert status["available_at"].endswith("UTC")
+    assert status["available_at"].endswith("SGT")
 
 
 def test_payee_cooldown_status_marks_payee_active_after_cooldown():

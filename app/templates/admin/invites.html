@@ -49,8 +49,8 @@
             <td>{{ invite.workplace_email }}</td>
             <td>{{ invite.role }}</td>
             <td>{{ invite.status }}</td>
-            <td>{{ invite.created_at }}</td>
-            <td>{{ invite.expires_at }}</td>
+            <td><time datetime="{{ invite.created_at }}">{{ invite.created_at_display }}</time></td>
+            <td><time datetime="{{ invite.expires_at }}">{{ invite.expires_at_display }}</time></td>
             <td>
               {% if invite.status in ["pending", "totp_pending"] %}
               <form method="post" action="{{ url_for('admin.invite_revoke', invite_id=invite.id) }}">
