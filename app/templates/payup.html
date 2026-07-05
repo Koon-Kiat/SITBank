@@ -8,7 +8,7 @@
     <div class="page-heading">
       <p class="eyebrow">PayUp</p>
       <h1>Send money by phone number</h1>
-      <p class="muted">Enter the recipient's phone number and authenticator code before SITBank reveals the registered recipient name.</p>
+      <p class="muted">Enter the recipient's phone number. SITBank applies server-side risk checks and asks for an authenticator code when step-up verification is needed.</p>
     </div>
     <div class="button-row">
       <a class="button secondary" href="{{ url_for('web.dashboard') }}">Cancel</a>
@@ -20,7 +20,7 @@
       <div class="profile-panel-title">
         <p class="eyebrow">How it works</p>
       </div>
-      <p class="muted">Recipient lookup uses the 8-digit Singapore mobile number. SITBank checks your authenticator code before showing the registered name for confirmation.</p>
+      <p class="muted">Recipient lookup uses the 8-digit Singapore mobile number. The registered name is masked, and every transfer is rechecked before confirmation.</p>
     </article>
 
     <article class="profile-panel profile-card">
@@ -34,12 +34,6 @@
           <label for="{{ form.phone_number.id }}">Phone number</label>
           {{ form.phone_number(autocomplete="off", maxlength="8", placeholder="8-digit phone number", inputmode="numeric") }}
           {% for error in form.phone_number.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
-        </div>
-        <div class="form-group">
-          <label for="{{ form.totp_code.id }}">Authenticator code</label>
-          {{ form.totp_code(inputmode="numeric", autocomplete="one-time-code", maxlength="6", placeholder="6-digit code") }}
-          {% for error in form.totp_code.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
-          <p class="hint">Required before recipient details are looked up.</p>
         </div>
         <button class="button full" type="submit">Continue</button>
       </form>

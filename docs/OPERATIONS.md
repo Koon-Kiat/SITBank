@@ -679,8 +679,11 @@ delete or truncate accounts, payees, transactions, staff/admin records,
 manual-recovery evidence, staff invites, security audit events, investigation
 holds, or encrypted backup archives.
 
-The command writes a sanitized system audit event with mode, retention days,
-batch limit, scheduling status, and category counts only. The legacy
+The command writes sanitized system audit events with mode, retention days,
+batch limit, scheduling status, and category counts only. Confirmed cleanup
+commits the bounded mutations and the `completed` event in one transaction;
+if that audit write fails, all mutations roll back and a separate `failed`
+event is attempted. The legacy
 `cleanup-security-state` entry point now routes through the same dry-run and
 confirmation boundary. Weekly `sitbank-retention-review@staging.timer` and
 `sitbank-retention-review@production.timer` runs are dry-run reports only;
@@ -797,31 +800,33 @@ most two decimal places. Recipient account state is checked before funds move.
 The Local Transfer daily limit remains a documented placeholder until a limit is
 implemented for that channel.
 
-PayUp lookup requires an authenticator code before SITBank reveals the
-recipient name for a phone number. Unknown, unavailable, and revoked recipients
-return the same generic `Invalid phone number` response, including self-phone
-lookups, and the audit metadata uses opaque references instead of raw phone
-numbers. Repeated failed PayUp phone lookups consume the durable
-`payup_lookup_failure` counter scoped to the authenticated customer. PayUp has a
-per-customer daily limit stored on `users.payup_daily_limit` and reset at
-midnight Singapore time. The default limit is SGD 500; presets are SGD 100,
-500, 1000, 3000, 5000, and 10000. Custom limits must be between SGD 100.00 and
-SGD 10000.00 with cents precision, and changing the value requires TOTP
-step-up. Confirmation recomputes whether the transfer brings today's cumulative
-PayUp spend to at least 80% of the limit under the current database state. If
-so, a fresh authenticator code is required before funds move.
+PayUp lookup returns only a masked recipient identity. Unknown, unavailable,
+and revoked recipients return the same generic `Invalid phone number`
+response, including self-phone lookups, and audit metadata uses opaque
+references instead of raw phone numbers. Durable lookup and confirmation
+limits are independently scoped to account, authenticated session, source
+network, and recipient. PayUp has a per-customer enable flag and daily limit,
+reset at midnight Singapore time. The default limit is SGD 500; presets are
+SGD 100, 500, 1000, 3000, 5000, and 10000. Custom limits must be between SGD
+100.00 and SGD 10000.00 with cents precision, and changing the value requires
+TOTP step-up. A centralized policy blocks invalid or unavailable risk state
+and recomputes at confirmation and again under the sender lock. It requires
+fresh TOTP for stale sessions, recent sensitive account changes, transfers at
+least 80% of the daily limit, or amounts outside the quick-transfer and
+quick-daily caps. Low-risk transfers within those caps do not require an
+additional code.
 
 Completed Local Transfer and PayUp rows store an HMAC-SHA256 transaction hash
 under the dedicated `TRANSACTION_LEDGER_HMAC_KEYS_JSON` key id and explicit
 integrity version. The canonical payload covers transaction reference, sender,
 recipient, payee id, amount, customer reference, status, transfer type, and
-creation time. Rows without integrity metadata remain explicitly legacy and
-use compatibility verification; they are not represented as current keyed
-ledger assurance. Legacy session-keyed rows verify only while their historical
-session HMAC key remains configured; migration-generated SHA-256 rows retain
-their explicit lower-assurance compatibility check. Required audit writes are part of the same
-business transaction boundary; if a required success audit fails, ledger
-mutation rolls back. Customer-initiated account freezes send a security email
+creation time. Every row must have valid keyed HMAC-SHA256 version 1 metadata;
+missing, partial, unknown-key, unsupported, or mismatched metadata fails
+closed. The controlled `security backfill-transaction-integrity` command must
+be completed before migration `20260705_0028` enforces this invariant.
+Required audit writes are part of the same business transaction boundary; if
+a required success audit fails, ledger mutation rolls back.
+Customer-initiated account freezes send a security email
 and produce an immediate `account_freeze` alert. Blocked authorization
 failures, including payee ownership mismatches, are audited safely using opaque
 references so raw account numbers, phone numbers, payee details, exact transfer
@@ -967,7 +972,9 @@ After an approved intentional database reset, use
 acknowledgement/reason, an invalid audit chain, or a critical/mismatched
 anchor; it backs up the previous state, writes the protected-table snapshot
 atomically with owner-only mode, and audits only a keyed reason reference and
-bounded metadata. Never delete or hand-edit the state JSON to clear an
+bounded metadata. JSON output exposes only whether a backup was created and
+its basename, never the full host backup path. Never delete or hand-edit the
+state JSON to clear an
 unexplained regression.
 
 Admin/root users may review the same safe report in the private admin runtime

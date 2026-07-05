@@ -1,18 +1,20 @@
 from __future__ import annotations
 
-import hashlib
 import os
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
 import pyotp
+from flask import session
 
 from _auth_flow_helpers import enable_mfa_for_user, login, mark_recent_mfa, register
 from app.auth.services import AuthError
 from app.banking.services import (
+    evaluate_payup_risk,
     execute_payup_transfer,
     payup_amount_used_today,
     payup_requires_step_up,
@@ -22,6 +24,25 @@ from app.banking.services import (
 )
 from app.extensions import db
 from app.models import AuthAttemptCounter, PayupPendingTransfer, SecurityAuditEvent, Transaction, User
+from app.security.audit import audit_event
+from app.security.transaction_integrity import sign_transaction_integrity
+from app.security.sessions import establish_authenticated_session
+
+
+@contextmanager
+def _payup_service_context(app, user: User):
+    with app.test_request_context(
+        "/banking/payup/confirm",
+        method="POST",
+        headers={"User-Agent": "SITBank-PayUp-Test/1.0"},
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    ):
+        establish_authenticated_session(
+            user_id=user.id,
+            mfa_verified=True,
+            auth_context="password+totp",
+        )
+        yield
 
 
 def _make_payup_pending(
@@ -56,10 +77,8 @@ def _payup_lookup_data(
     timestamp: int | None = None,
     totp_code: str | None = None,
 ) -> dict[str, str]:
-    return {
-        "phone_number": phone_number,
-        "totp_code": totp_code or _totp_code(payup_context["alice_secret"], timestamp),
-    }
+    del payup_context, timestamp, totp_code
+    return {"phone_number": phone_number}
 
 
 def _make_payup_transaction(
@@ -71,9 +90,10 @@ def _make_payup_transaction(
     reference: str = "",
     status: str = "completed",
 ) -> Transaction:
-    txn = Transaction(
-        transaction_ref=str(uuid.uuid4()),
-        transaction_hash=hashlib.sha256(os.urandom(16)).hexdigest(),
+    created = created_at or datetime.now(timezone.utc)
+    transaction_ref = str(uuid.uuid4())
+    digest, key_id, algorithm, version = sign_transaction_integrity(
+        transaction_ref=transaction_ref,
         sender_id=sender.id,
         recipient_id=recipient.id,
         payee_id=None,
@@ -81,7 +101,22 @@ def _make_payup_transaction(
         reference=reference,
         status=status,
         transaction_type="payup",
-        created_at=created_at or datetime.now(timezone.utc),
+        created_at=created,
+    )
+    txn = Transaction(
+        transaction_ref=transaction_ref,
+        transaction_hash=digest,
+        transaction_integrity_key_id=key_id,
+        transaction_integrity_algorithm=algorithm,
+        transaction_integrity_version=version,
+        sender_id=sender.id,
+        recipient_id=recipient.id,
+        payee_id=None,
+        amount=amount,
+        reference=reference,
+        status=status,
+        transaction_type="payup",
+        created_at=created,
     )
     db.session.add(txn)
     db.session.commit()
@@ -132,10 +167,26 @@ def test_payup_amount_used_today_ignores_failed_and_other_channel_transactions(a
 
     _make_payup_transaction(alice, bob, Decimal("50.00"))
     _make_payup_transaction(alice, bob, Decimal("30.00"), status="failed")
+    created = datetime.now(timezone.utc)
+    transaction_ref = str(uuid.uuid4())
+    digest, key_id, algorithm, version = sign_transaction_integrity(
+        transaction_ref=transaction_ref,
+        sender_id=alice.id,
+        recipient_id=bob.id,
+        payee_id=None,
+        amount=Decimal("999.00"),
+        reference="",
+        status="completed",
+        transaction_type="local_transfer",
+        created_at=created,
+    )
     db.session.add(
         Transaction(
-            transaction_ref=str(uuid.uuid4()),
-            transaction_hash=hashlib.sha256(os.urandom(16)).hexdigest(),
+            transaction_ref=transaction_ref,
+            transaction_hash=digest,
+            transaction_integrity_key_id=key_id,
+            transaction_integrity_algorithm=algorithm,
+            transaction_integrity_version=version,
             sender_id=alice.id,
             recipient_id=bob.id,
             payee_id=None,
@@ -143,7 +194,7 @@ def test_payup_amount_used_today_ignores_failed_and_other_channel_transactions(a
             reference="",
             status="completed",
             transaction_type="local_transfer",
-            created_at=datetime.now(timezone.utc),
+            created_at=created,
         )
     )
     db.session.commit()
@@ -164,13 +215,94 @@ def test_daily_limit_resets_at_midnight_sgt(app, payup_context):
 def test_payup_requires_step_up_at_eighty_percent_threshold(app, payup_context):
     alice = payup_context["alice"]
 
-    assert Decimal(str(alice.payup_daily_limit)) == Decimal("500.00")
-    assert payup_requires_step_up(alice, Decimal("100.00")) is False
-    assert payup_requires_step_up(alice, Decimal("399.99")) is False
-    assert payup_requires_step_up(alice, Decimal("400.00")) is True
+    with _payup_service_context(app, alice):
+        app.config["PAYUP_QUICK_TRANSFER_CAP"] = 500.0
+        app.config["PAYUP_QUICK_DAILY_CAP"] = 1000.0
+        assert Decimal(str(alice.payup_daily_limit)) == Decimal("500.00")
+        assert payup_requires_step_up(alice, Decimal("100.00")) is False
+        assert payup_requires_step_up(alice, Decimal("399.99")) is False
+        assert payup_requires_step_up(alice, Decimal("400.00")) is True
+
+
+def test_payup_risk_policy_covers_caps_stale_sessions_sensitive_events_and_blocks(
+    app,
+    payup_context,
+):
+    alice = payup_context["alice"]
+
+    with _payup_service_context(app, alice):
+        low_risk = evaluate_payup_risk(alice, Decimal("100.00"))
+        assert low_risk.decision == "allow"
+
+        app.config["PAYUP_QUICK_TRANSFER_CAP"] = 50.0
+        transfer_cap = evaluate_payup_risk(alice, Decimal("100.00"))
+        assert transfer_cap.decision == "step_up"
+        assert "quick_transfer_cap" in transfer_cap.reasons
+
+        app.config["PAYUP_QUICK_TRANSFER_CAP"] = 200.0
+        session["auth_created_at"] -= (
+            app.config["PAYUP_QUICK_SESSION_MAX_AGE_SECONDS"] + 1
+        )
+        stale = evaluate_payup_risk(alice, Decimal("100.00"))
+        assert stale.decision == "step_up"
+        assert "stale_session" in stale.reasons
+
+        session["auth_created_at"] = int(time.time())
+        audit_event(
+            "profile_update",
+            "success",
+            user=alice,
+            metadata={"updated_fields": "profile_email"},
+        )
+        sensitive = evaluate_payup_risk(alice, Decimal("100.00"))
+        assert sensitive.decision == "step_up"
+        assert "recent_sensitive_event" in sensitive.reasons
+
+        session["risk_reauth_required"] = True
+        risky_session = evaluate_payup_risk(alice, Decimal("100.00"))
+        assert risky_session.decision == "block"
+        assert risky_session.reasons == ("session_risk",)
+
+        session.pop("risk_reauth_required")
+        alice.payup_enabled = False
+        disabled = evaluate_payup_risk(alice, Decimal("100.00"))
+        assert disabled.decision == "block"
+        assert disabled.reasons == ("payup_disabled",)
+
+        alice.payup_enabled = True
+        app.config.pop("PAYUP_QUICK_DAILY_CAP")
+        unavailable = evaluate_payup_risk(alice, Decimal("100.00"))
+        assert unavailable.decision == "block"
+        assert unavailable.reasons == ("risk_state_unavailable",)
 
 
 # ── execute_payup_transfer: correctness and fail-closed behavior ────────────────
+
+def test_payup_sensitive_event_cannot_be_hidden_by_later_benign_audit_volume(
+    app,
+    payup_context,
+):
+    alice = payup_context["alice"]
+    with _payup_service_context(app, alice):
+        audit_event(
+            "profile_update",
+            "success",
+            user=alice,
+            metadata={"updated_fields": "profile_email"},
+        )
+        for _index in range(101):
+            audit_event(
+                "profile_update",
+                "success",
+                user=alice,
+                metadata={"updated_fields": "profile_details"},
+            )
+
+        decision = evaluate_payup_risk(alice, Decimal("100.00"))
+
+    assert decision.decision == "step_up"
+    assert "recent_sensitive_event" in decision.reasons
+
 
 def test_execute_payup_transfer_debits_sender_and_credits_recipient(app, payup_context):
     alice = payup_context["alice"]
@@ -183,7 +315,7 @@ def test_execute_payup_transfer_debits_sender_and_credits_recipient(app, payup_c
     pending = PayupPendingTransfer.query.filter_by(token=payup_transfer_token_verifier(token)).one()
     assert pending.token != token
 
-    with app.test_request_context("/banking/payup/confirm", method="POST"):
+    with _payup_service_context(app, alice):
         txn_ref = execute_payup_transfer(sender=alice, confirmation_token=token, authorized=False)
 
     db.session.expire_all()
@@ -213,7 +345,7 @@ def test_execute_payup_transfer_self_transfer_blocked(app, payup_context):
     alice = payup_context["alice"]
     token = _make_payup_pending(alice, alice, Decimal("10.00"))
 
-    with app.test_request_context("/banking/payup/confirm", method="POST"):
+    with _payup_service_context(app, alice):
         with pytest.raises(AuthError) as exc_info:
             execute_payup_transfer(sender=alice, confirmation_token=token, authorized=False)
 
@@ -221,15 +353,33 @@ def test_execute_payup_transfer_self_transfer_blocked(app, payup_context):
     assert Transaction.query.count() == 0
 
 
-def test_execute_payup_transfer_recipient_unavailable_blocked(app, payup_context):
+@pytest.mark.parametrize(
+    ("account_status", "is_frozen", "has_phone"),
+    [
+        ("revoked", False, True),
+        ("locked", False, True),
+        ("active", True, True),
+        ("active", False, False),
+    ],
+)
+def test_execute_payup_transfer_recipient_unavailable_blocked(
+    app,
+    payup_context,
+    account_status,
+    is_frozen,
+    has_phone,
+):
     alice = payup_context["alice"]
     bob = payup_context["bob"]
-    bob.account_status = "revoked"
+    bob.account_status = account_status
+    bob.is_frozen = is_frozen
+    if not has_phone:
+        bob.phone_number = None
     db.session.commit()
 
     token = _make_payup_pending(alice, bob, Decimal("10.00"))
 
-    with app.test_request_context("/banking/payup/confirm", method="POST"):
+    with _payup_service_context(app, alice):
         with pytest.raises(AuthError) as exc_info:
             execute_payup_transfer(sender=alice, confirmation_token=token, authorized=False)
 
@@ -243,11 +393,11 @@ def test_execute_payup_transfer_exceeding_daily_limit_blocked(app, payup_context
 
     token = _make_payup_pending(alice, bob, Decimal("600.00"))
 
-    with app.test_request_context("/banking/payup/confirm", method="POST"):
+    with _payup_service_context(app, alice):
         with pytest.raises(AuthError) as exc_info:
             execute_payup_transfer(sender=alice, confirmation_token=token, authorized=False)
 
-    assert "daily payup limit" in exc_info.value.message.lower()
+    assert "could not authorize" in exc_info.value.message.lower()
     assert Transaction.query.count() == 0
 
 
@@ -257,7 +407,7 @@ def test_execute_payup_transfer_requires_authorization_above_threshold(app, payu
 
     token = _make_payup_pending(alice, bob, Decimal("450.00"))
 
-    with app.test_request_context("/banking/payup/confirm", method="POST"):
+    with _payup_service_context(app, alice):
         with pytest.raises(AuthError) as exc_info:
             execute_payup_transfer(sender=alice, confirmation_token=token, authorized=False)
 
@@ -271,7 +421,7 @@ def test_execute_payup_transfer_succeeds_when_authorized_above_threshold(app, pa
 
     token = _make_payup_pending(alice, bob, Decimal("450.00"))
 
-    with app.test_request_context("/banking/payup/confirm", method="POST"):
+    with _payup_service_context(app, alice):
         txn_ref = execute_payup_transfer(sender=alice, confirmation_token=token, authorized=True)
 
     assert Transaction.query.filter_by(transaction_ref=txn_ref).count() == 1
@@ -283,7 +433,7 @@ def test_execute_payup_transfer_token_replay_blocked(app, payup_context):
 
     token = _make_payup_pending(alice, bob, Decimal("50.00"))
 
-    with app.test_request_context("/banking/payup/confirm", method="POST"):
+    with _payup_service_context(app, alice):
         execute_payup_transfer(sender=alice, confirmation_token=token, authorized=False)
 
         with pytest.raises(AuthError) as exc_info:
@@ -299,7 +449,7 @@ def test_execute_payup_transfer_expired_token_blocked(app, payup_context):
 
     token = _make_payup_pending(alice, bob, Decimal("50.00"), expires_in=-1)
 
-    with app.test_request_context("/banking/payup/confirm", method="POST"):
+    with _payup_service_context(app, alice):
         with pytest.raises(AuthError) as exc_info:
             execute_payup_transfer(sender=alice, confirmation_token=token, authorized=False)
 
@@ -318,7 +468,9 @@ def test_payup_phone_lookup_success_redirects_to_amount(client, payup_context):
     with client.session_transaction() as sess:
         pending = sess.get("pending_payup_recipient")
     assert pending is not None
-    assert pending["recipient_name"] == "Bob Recipient"
+    assert pending["recipient_user_id"] == payup_context["bob"].id
+    assert "recipient_name" not in pending
+    assert "recipient_phone" not in pending
 
 
 def test_payup_phone_lookup_unknown_number_shows_error(client, payup_context):
@@ -338,25 +490,34 @@ def test_payup_phone_lookup_unknown_number_shows_error(client, payup_context):
     assert event.event_metadata["failure_count"] == 1
 
 
-def test_payup_phone_lookup_requires_totp_before_name_disclosure(client, payup_context):
+def test_payup_phone_lookup_allows_low_risk_session_without_fresh_totp(
+    client,
+    payup_context,
+):
     response = client.post("/banking/payup", data={"phone_number": "81234567"})
 
-    assert response.status_code == 400
+    assert response.status_code == 302
     assert b"Bob Recipient" not in response.data
     with client.session_transaction() as sess:
-        assert "pending_payup_recipient" not in sess
+        assert sess["pending_payup_recipient"]["recipient_user_id"] == payup_context["bob"].id
 
 
-def test_payup_phone_lookup_invalid_totp_does_not_disclose_recipient(client, payup_context):
+def test_payup_phone_lookup_does_not_store_client_totp_or_raw_recipient_identity(
+    client,
+    payup_context,
+):
     response = client.post(
         "/banking/payup",
         data=_payup_lookup_data(payup_context, totp_code="000000"),
     )
 
-    assert response.status_code == 401
+    assert response.status_code == 302
     assert b"Bob Recipient" not in response.data
     with client.session_transaction() as sess:
-        assert "pending_payup_recipient" not in sess
+        pending = sess["pending_payup_recipient"]
+        assert "totp_code" not in pending
+        assert "recipient_name" not in pending
+        assert "recipient_phone" not in pending
 
 
 @pytest.mark.parametrize(
@@ -446,6 +607,54 @@ def test_payup_phone_lookup_failures_use_durable_user_scoped_limit(client, payup
 
 # ── Amount step: daily limit enforcement ─────────────────────────────────────────
 
+@pytest.mark.parametrize(
+    ("dimension", "config_name"),
+    [
+        ("account", "PAYUP_RATE_LIMIT_ACCOUNT"),
+        ("session", "PAYUP_RATE_LIMIT_SESSION"),
+        ("ip", "PAYUP_RATE_LIMIT_IP"),
+        ("recipient", "PAYUP_RATE_LIMIT_RECIPIENT"),
+    ],
+)
+def test_payup_lookup_has_durable_limits_for_each_abuse_dimension(
+    app,
+    client,
+    payup_context,
+    dimension,
+    config_name,
+):
+    for name in (
+        "PAYUP_RATE_LIMIT_ACCOUNT",
+        "PAYUP_RATE_LIMIT_SESSION",
+        "PAYUP_RATE_LIMIT_IP",
+        "PAYUP_RATE_LIMIT_RECIPIENT",
+    ):
+        app.config[name] = 100
+    app.config[config_name] = 1
+
+    first = client.post(
+        "/banking/payup",
+        data=_payup_lookup_data(payup_context),
+    )
+    second = client.post(
+        "/banking/payup",
+        data=_payup_lookup_data(payup_context),
+    )
+
+    assert first.status_code == 302
+    assert second.status_code == 429
+    counter = db.session.query(AuthAttemptCounter).filter_by(
+        scope=f"payup_lookup_{dimension}"
+    ).one()
+    assert counter.failure_count == 1
+    blocked = (
+        db.session.query(SecurityAuditEvent)
+        .filter_by(event_type="payup_rate_limit", outcome="blocked")
+        .one()
+    )
+    assert "81234567" not in str(blocked.event_metadata)
+
+
 def test_payup_amount_rejects_amount_exceeding_daily_limit(client, payup_context):
     client.post("/banking/payup", data=_payup_lookup_data(payup_context))
 
@@ -487,6 +696,33 @@ def test_payup_amount_accepts_amount_under_limit(client, payup_context):
 
 
 # ── Full route flow: conditional MFA step-up ─────────────────────────────────────
+
+def test_payup_confirmation_revalidates_recipient_before_identity_display(
+    client,
+    payup_context,
+):
+    bob = payup_context["bob"]
+    client.post("/banking/payup", data=_payup_lookup_data(payup_context))
+    client.post("/banking/payup/amount", data={"amount": "100.00"})
+    bob.account_status = "locked"
+    db.session.commit()
+
+    response = client.get("/banking/payup/confirm")
+
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/banking/payup")
+    assert b"Bob Recipient" not in response.data
+    assert Transaction.query.count() == 0
+    event = (
+        db.session.query(SecurityAuditEvent)
+        .filter_by(
+            event_type="payup_transfer",
+            outcome="blocked",
+        )
+        .one()
+    )
+    assert event.event_metadata["reason"] == "recipient_unavailable"
+
 
 def test_complete_payup_route_flow_below_threshold_no_mfa(client, payup_context):
     client.post("/banking/payup", data=_payup_lookup_data(payup_context))

@@ -13,31 +13,19 @@ from app.models import PersonIdentityLink, SecurityAuditEvent, StaffInvite, User
 from app.security.crypto import encrypt_mfa_secret
 from app.security.email import password_reset_outbox
 from app.security.passwords import hash_password
-from conftest import TestConfig
 
 
 ROOT_EMAIL = "root1@sit.singaporetech.edu.sg"
 ROOT_PASSWORD = "correct horse battery staple"
 STAFF_PASSWORD = "another correct horse battery staple"
+_FIXED_TOTP_TIME = int(time.time())
 
 
-@pytest.fixture()
-def admin_app(monkeypatch):
-    from app import create_app
-    from app.security import passwords
-
-    monkeypatch.setattr(passwords, "_is_password_pwned_by_hibp", lambda _password: False)
-    flask_app = create_app(TestConfig, app_mode="admin")
-    with flask_app.app_context():
-        db.create_all()
-        yield flask_app
-        db.session.remove()
-        db.drop_all()
-
-
-@pytest.fixture()
-def admin_client(admin_app):
-    return admin_app.test_client()
+@pytest.fixture(autouse=True)
+def freeze_totp_verifier_time(monkeypatch):
+    global _FIXED_TOTP_TIME
+    _FIXED_TOTP_TIME = int(time.time())
+    monkeypatch.setattr("app.auth.services.time.time", lambda: _FIXED_TOTP_TIME)
 
 
 def _create_staff_identity(
@@ -86,10 +74,7 @@ def _login_admin(client, secret: str, email: str = ROOT_EMAIL, password: str = R
 
 
 def _stable_totp(secret: str) -> str:
-    seconds_into_step = time.time() % 30
-    if seconds_into_step > 20:
-        time.sleep(30 - seconds_into_step + 0.25)
-    return pyotp.TOTP(secret, digits=6, interval=30).now()
+    return pyotp.TOTP(secret, digits=6, interval=30).at(_FIXED_TOTP_TIME)
 
 
 def _create_invite(client, secret: str, **overrides):

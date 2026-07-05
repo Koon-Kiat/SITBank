@@ -64,6 +64,7 @@ from app.security.session_hmac import active_hmac_hex
 from app.security.rate_limits import (
     DurableRateLimitExceeded,
     consume_durable_rate_limit,
+    enforce_durable_failure_limit,
 )
 from app.security.sessions import (
     begin_password_authenticated_session,
@@ -1629,6 +1630,10 @@ def authenticate_admin_primary(workplace_email: str, password: str) -> dict[str,
     if password_hash_needs_rehash(user.password_hash):
         user.password_hash = hash_password(password)
     db.session.commit()
+    clear_failures(
+        "admin_mfa_login",
+        _admin_mfa_failure_principal(user.id),
+    )
     begin_password_authenticated_session(user.id)
     audit_event("admin_login_password", "success", user=user, metadata={"mfa_required": True})
     return {"message": "MFA verification required", "mfa_required": True}
@@ -1642,9 +1647,72 @@ def complete_admin_mfa_login(totp_code: str) -> dict[str, Any]:
     if not is_active_staff_user(user):
         audit_event("admin_mfa_login", "failure", user_id=int(user_id), metadata={"reason": "not_active_staff"})
         raise AuthError("No pending MFA challenge", 401)
-    if not _verify_totp_for_user(user, totp_code, "admin_mfa_login"):
-        audit_event("admin_mfa_login", "failure", user=user)
+    principal = _admin_mfa_failure_principal(user.id)
+    failure_limit = int(current_app.config["ADMIN_MFA_FAILURE_LIMIT"])
+    failure_window_seconds = int(
+        current_app.config["ADMIN_MFA_FAILURE_WINDOW_SECONDS"]
+    )
+    try:
+        enforce_durable_failure_limit(
+            "admin_mfa_login",
+            principal,
+            limit=failure_limit,
+        )
+    except DurableRateLimitExceeded as exc:
+        audit_event(
+            "admin_mfa_login",
+            "blocked",
+            user=user,
+            metadata={
+                "reason": "wrong_code_threshold_exceeded",
+                "retry_after": exc.retry_after,
+            },
+        )
+        raise AuthError(
+            GENERIC_ADMIN_LOGIN_ERROR,
+            429,
+            retry_after=exc.retry_after,
+        ) from exc
+    if not _verify_totp_for_user(
+        user,
+        totp_code,
+        "admin_mfa_login",
+        track_failures=False,
+    ):
+        attempts = record_failure(
+            "admin_mfa_login",
+            principal,
+            window_seconds=failure_window_seconds,
+        )
+        outcome = "blocked" if attempts > failure_limit else "failure"
+        audit_event(
+            "admin_mfa_login",
+            outcome,
+            user=user,
+            metadata={
+                "reason": (
+                    "wrong_code_threshold_exceeded"
+                    if attempts > failure_limit
+                    else "invalid_totp"
+                ),
+                "failure_count": attempts,
+            },
+        )
+        if attempts > failure_limit:
+            try:
+                enforce_durable_failure_limit(
+                    "admin_mfa_login",
+                    principal,
+                    limit=failure_limit,
+                )
+            except DurableRateLimitExceeded as exc:
+                raise AuthError(
+                    GENERIC_ADMIN_LOGIN_ERROR,
+                    429,
+                    retry_after=exc.retry_after,
+                ) from exc
         raise AuthError(GENERIC_ADMIN_LOGIN_ERROR, 401)
+    clear_failures("admin_mfa_login", principal)
     user.failed_login_count = 0
     user.last_login_at = _utcnow()
     db.session.commit()
@@ -3313,6 +3381,11 @@ def _invite_audit_metadata(invite: StaffInvite) -> dict[str, Any]:
 
 def _auth_principal(identifier: str) -> str:
     return f"{request.remote_addr or 'unknown'}:{_normalize_email(identifier).casefold()}"
+
+
+def _admin_mfa_failure_principal(user_id: int) -> str:
+    source = str(request.remote_addr or "unknown").strip().casefold()
+    return f"{source}:staff-user:{int(user_id)}"
 
 
 def _enforce_auth_backoff(scope: str, principal: str) -> None:

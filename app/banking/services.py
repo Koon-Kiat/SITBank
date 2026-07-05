@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import hashlib
-import hmac
 import json
 import uuid
 from collections.abc import Mapping, MutableMapping
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 
 from flask import current_app
 from marshmallow import ValidationError
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, or_
+from sqlalchemy.exc import SQLAlchemyError
 
+from app.auth.mfa_policy import has_enrolled_mfa_method
 from app.auth.services import AuthError, ensure_account_not_frozen
 from app.extensions import db
 from app.banking.limits import (
@@ -21,16 +23,19 @@ from app.banking.limits import (
     PAYUP_DAILY_LIMIT_PRESETS,
 )
 from app.banking.schemas import MAX_TRANSACTION_AMOUNT, MIN_TRANSACTION_AMOUNT, PublicTransactionSchema
-from app.models import Payee, Transaction, User
+from app.models import Payee, SecurityAuditEvent, Transaction, User
 from app.security.audit import AuditWriteError, audit_event, audit_event_required, audit_reference
-from app.security.session_hmac import active_hmac_hex, candidate_hmac_hex
+from app.security.session_hmac import active_hmac_hex
+from app.security.sessions import (
+    authenticated_session_age_seconds,
+    authenticated_session_risk_is_stable,
+)
 from app.security.transaction_integrity import (
     sign_transaction_integrity,
     transaction_integrity_status,
 )
 
 
-PAYUP_STEP_UP_THRESHOLD = Decimal("0.80")
 _SGT_OFFSET = timezone(timedelta(hours=8))
 _TRANSFER_CONFIRMATION_EXPIRED_MESSAGE = "Transfer confirmation has expired or was already used."
 
@@ -46,6 +51,36 @@ TRANSFER_RISKS = frozenset(
     }
 )
 
+PAYUP_RISK_ALLOW = "allow"
+PAYUP_RISK_STEP_UP = "step_up"
+PAYUP_RISK_BLOCK = "block"
+_PAYUP_SENSITIVE_EVENT_TYPES = frozenset(
+    {
+        "manual_recovery_completed",
+        "manual_recovery_requested",
+        "mfa_replace_start",
+        "mfa_replace_verify",
+        "password_change",
+        "password_reset_completed",
+        "recovery_codes_generated",
+        "recovery_codes_regenerate",
+    }
+)
+
+
+@dataclass(frozen=True)
+class PayupRiskDecision:
+    decision: str
+    reasons: tuple[str, ...]
+
+    @property
+    def requires_step_up(self) -> bool:
+        return self.decision == PAYUP_RISK_STEP_UP
+
+    @property
+    def blocked(self) -> bool:
+        return self.decision == PAYUP_RISK_BLOCK
+
 
 def local_transfer_token_verifier(token: str) -> str:
     """Keyed verifier for local-transfer confirmation tokens."""
@@ -58,14 +93,7 @@ def payup_transfer_token_verifier(token: str) -> str:
 
 
 def transaction_hash_matches(transaction: Transaction) -> bool:
-    integrity_status = transaction_integrity_status(transaction)
-    if integrity_status != "legacy":
-        return integrity_status == "valid"
-    expected = str(transaction.transaction_hash or "")
-    return any(
-        hmac.compare_digest(expected, candidate)
-        for candidate in _legacy_transaction_hash_candidates(transaction)
-    )
+    return transaction_integrity_status(transaction) == "valid"
 
 
 def _amount_audit_band(amount: Decimal) -> str:
@@ -680,13 +708,128 @@ def payup_amount_used_today(user: User) -> Decimal:
     return Decimal(str(total))
 
 
+def evaluate_payup_risk(
+    user: User,
+    amount: Decimal,
+    *,
+    used_today: Decimal | None = None,
+) -> PayupRiskDecision:
+    """Evaluate the complete server-side quick-transfer eligibility policy."""
+    try:
+        normalized_amount = Decimal(str(amount)).quantize(Decimal("0.01"))
+        daily_used = (
+            Decimal(str(used_today))
+            if used_today is not None
+            else payup_amount_used_today(user)
+        )
+        daily_limit = Decimal(str(user.payup_daily_limit))
+        quick_transfer_cap = Decimal(
+            str(current_app.config["PAYUP_QUICK_TRANSFER_CAP"])
+        )
+        quick_daily_cap = Decimal(str(current_app.config["PAYUP_QUICK_DAILY_CAP"]))
+        step_up_ratio = Decimal(
+            int(current_app.config["PAYUP_STEP_UP_LIMIT_PERCENT"])
+        ) / Decimal("100")
+        session_max_age = int(
+            current_app.config["PAYUP_QUICK_SESSION_MAX_AGE_SECONDS"]
+        )
+        sensitive_event_cooldown = int(
+            current_app.config["PAYUP_SENSITIVE_EVENT_COOLDOWN_SECONDS"]
+        )
+        session_age = authenticated_session_age_seconds()
+        session_stable = authenticated_session_risk_is_stable()
+        recent_sensitive_event = _has_recent_payup_sensitive_event(
+            user,
+            cooldown_seconds=sensitive_event_cooldown,
+        )
+    except (ArithmeticError, KeyError, SQLAlchemyError, TypeError, ValueError):
+        return PayupRiskDecision(PAYUP_RISK_BLOCK, ("risk_state_unavailable",))
+
+    if (
+        not normalized_amount.is_finite()
+        or normalized_amount <= 0
+        or daily_used < 0
+        or daily_limit <= 0
+        or quick_transfer_cap <= 0
+        or quick_daily_cap <= 0
+        or step_up_ratio <= 0
+        or step_up_ratio > 1
+    ):
+        return PayupRiskDecision(PAYUP_RISK_BLOCK, ("risk_state_invalid",))
+    if user.payup_enabled is not True:
+        return PayupRiskDecision(PAYUP_RISK_BLOCK, ("payup_disabled",))
+    if not has_enrolled_mfa_method(user):
+        return PayupRiskDecision(PAYUP_RISK_BLOCK, ("mfa_not_enrolled",))
+    if not session_stable:
+        return PayupRiskDecision(PAYUP_RISK_BLOCK, ("session_risk",))
+    if session_age is None:
+        return PayupRiskDecision(PAYUP_RISK_BLOCK, ("session_state_unavailable",))
+
+    projected_daily = daily_used + normalized_amount
+    if projected_daily > daily_limit:
+        return PayupRiskDecision(PAYUP_RISK_BLOCK, ("daily_limit_exceeded",))
+
+    step_up_reasons: list[str] = []
+    if normalized_amount > quick_transfer_cap:
+        step_up_reasons.append("quick_transfer_cap")
+    if projected_daily > quick_daily_cap:
+        step_up_reasons.append("quick_daily_cap")
+    if projected_daily / daily_limit >= step_up_ratio:
+        step_up_reasons.append("daily_limit_percentage")
+    if session_age > session_max_age:
+        step_up_reasons.append("stale_session")
+    if recent_sensitive_event:
+        step_up_reasons.append("recent_sensitive_event")
+    if step_up_reasons:
+        return PayupRiskDecision(
+            PAYUP_RISK_STEP_UP,
+            tuple(sorted(set(step_up_reasons))),
+        )
+    return PayupRiskDecision(PAYUP_RISK_ALLOW, ())
+
+
 def payup_requires_step_up(user: User, amount: Decimal) -> bool:
-    """True if this transfer would bring today's cumulative PayUp spend to >=80% of the limit."""
-    limit = Decimal(str(user.payup_daily_limit))
-    if limit <= 0:
-        return True
-    used_today = payup_amount_used_today(user)
-    return (used_today + amount) / limit >= PAYUP_STEP_UP_THRESHOLD
+    """Compatibility helper for templates and existing callers."""
+    return evaluate_payup_risk(user, amount).requires_step_up
+
+
+def _has_recent_payup_sensitive_event(
+    user: User,
+    *,
+    cooldown_seconds: int,
+) -> bool:
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=cooldown_seconds)
+    sensitive_outcomes = {
+        "approved",
+        "completed",
+        "requested",
+        "success",
+        "verified",
+    }
+    matching_event = db.session.execute(
+        db.select(SecurityAuditEvent.id)
+        .where(
+            SecurityAuditEvent.user_id == user.id,
+            SecurityAuditEvent.created_at >= cutoff,
+            or_(
+                and_(
+                    SecurityAuditEvent.event_type.in_(
+                        _PAYUP_SENSITIVE_EVENT_TYPES
+                    ),
+                    SecurityAuditEvent.outcome.in_(sensitive_outcomes),
+                ),
+                and_(
+                    SecurityAuditEvent.event_type == "profile_update",
+                    SecurityAuditEvent.outcome == "success",
+                    SecurityAuditEvent.event_metadata["updated_fields"]
+                    .as_string()
+                    == "profile_email",
+                ),
+            ),
+        )
+        .limit(1)
+    ).scalar_one_or_none()
+    return matching_event is not None
 
 
 def resolve_transfer_limit_choice(choice: str, custom_value: str | None) -> Decimal:
@@ -818,7 +961,11 @@ def _validate_payup_recipient(sender: User, recipient_user_id: int) -> User:
         db.session.commit()
         raise AuthError("Cannot transfer to yourself.", 400)
 
-    if recipient_user.account_status not in ("active", "locked"):
+    if (
+        recipient_user.account_status != "active"
+        or recipient_user.is_frozen
+        or not recipient_user.phone_number
+    ):
         audit_outbound_transfer(
             sender,
             "failure",
@@ -855,27 +1002,36 @@ def execute_payup_transfer(
     # Recompute the daily-limit and step-up decisions under the sender's row lock,
     # which serializes concurrent PayUp transfers from the same sender and makes
     # this check-then-insert sequence effectively atomic for that sender.
-    daily_limit = Decimal(str(locked_sender.payup_daily_limit))
     used_today = payup_amount_used_today(locked_sender)
-    if daily_limit <= 0 or used_today + amount > daily_limit:
+    risk = evaluate_payup_risk(
+        locked_sender,
+        amount,
+        used_today=used_today,
+    )
+    if risk.blocked:
         audit_outbound_transfer(
             sender,
             "failure",
             metadata={
-                "reason": "payup_daily_limit_exceeded",
+                "reason": risk.reasons[0],
+                "risk_reasons": list(risk.reasons),
                 "amount_band": _amount_audit_band(amount),
                 "transfer_channel": "payup",
             },
         )
         db.session.commit()
-        raise AuthError("This transfer would exceed your daily PayUp limit.", 400)
+        raise AuthError("PayUp could not authorize this transfer.", 403)
 
-    requires_step_up = (used_today + amount) / daily_limit >= PAYUP_STEP_UP_THRESHOLD
+    requires_step_up = risk.requires_step_up
     if requires_step_up and not authorized:
         audit_outbound_transfer(
             sender,
             "failure",
-            metadata={"reason": "payup_step_up_required", "transfer_channel": "payup"},
+            metadata={
+                "reason": "payup_step_up_required",
+                "risk_reasons": list(risk.reasons),
+                "transfer_channel": "payup",
+            },
         )
         db.session.commit()
         raise AuthError("Authenticator code is required for this transfer amount.", 403)
@@ -942,6 +1098,7 @@ def execute_payup_transfer(
                 "reference_length": len(reference),
                 "transfer_channel": "payup",
                 "step_up_used": requires_step_up,
+                "risk_reasons": list(risk.reasons),
             },
             transaction_reference=txn_ref,
         )
@@ -949,38 +1106,6 @@ def execute_payup_transfer(
         db.session.rollback()
         raise
     return txn_ref
-
-
-def _legacy_transaction_hash_candidates(transaction: Transaction):
-    """Yield pre-ledger-format digests without upgrading their assurance status."""
-    timestamps = {
-        _canonical_transaction_timestamp(transaction.created_at),
-        transaction.created_at.isoformat(),
-    }
-    for timestamp in timestamps:
-        canonical = json.dumps(
-            {
-                "amount": str(transaction.amount),
-                "created_at": timestamp,
-                "recipient_id": int(transaction.recipient_id),
-                "reference": transaction.reference or "",
-                "sender_id": int(transaction.sender_id),
-                "transaction_ref": transaction.transaction_ref,
-            },
-            separators=(",", ":"),
-            sort_keys=True,
-        )
-        yield hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-        yield from candidate_hmac_hex(
-            f"banking-transaction:{canonical}",
-            length=64,
-        )
-
-
-def _canonical_transaction_timestamp(created_at: datetime) -> str:
-    if created_at.tzinfo is not None:
-        created_at = created_at.astimezone(timezone.utc).replace(tzinfo=None)
-    return created_at.isoformat(timespec="microseconds")
 
 
 def _requires_durable_audit(action: str, outcome: str) -> bool:

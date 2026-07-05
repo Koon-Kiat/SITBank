@@ -21,31 +21,19 @@ from app.security.audit import AuditWriteError
 from app.security.crypto import encrypt_mfa_secret
 from app.security.email import password_reset_outbox
 from app.security.passwords import hash_password
-from conftest import TestConfig
 
 
 ROOT1_EMAIL = "root1@sit.singaporetech.edu.sg"
 ROOT2_EMAIL = "root2@sit.singaporetech.edu.sg"
 ROOT_PASSWORD = "correct horse battery staple"
+_FIXED_TOTP_TIME = int(time.time())
 
 
-@pytest.fixture()
-def admin_app(monkeypatch):
-    from app import create_app
-    from app.security import passwords
-
-    monkeypatch.setattr(passwords, "_is_password_pwned_by_hibp", lambda _password: False)
-    flask_app = create_app(TestConfig, app_mode="admin")
-    with flask_app.app_context():
-        db.create_all()
-        yield flask_app
-        db.session.remove()
-        db.drop_all()
-
-
-@pytest.fixture()
-def admin_client(admin_app):
-    return admin_app.test_client()
+@pytest.fixture(autouse=True)
+def freeze_totp_verifier_time(monkeypatch):
+    global _FIXED_TOTP_TIME
+    _FIXED_TOTP_TIME = int(time.time())
+    monkeypatch.setattr("app.auth.services.time.time", lambda: _FIXED_TOTP_TIME)
 
 
 def _create_staff_identity(
@@ -176,10 +164,7 @@ def _login_admin(client, secret: str, email: str):
 
 
 def _totp(secret: str) -> str:
-    seconds_into_step = int(time.time()) % 30
-    if seconds_into_step >= 25:
-        time.sleep(31 - seconds_into_step)
-    return pyotp.TOTP(secret, digits=6, interval=30).now()
+    return pyotp.TOTP(secret, digits=6, interval=30).at(_FIXED_TOTP_TIME)
 
 
 def _invalid_totp(secret: str) -> str:
@@ -663,6 +648,7 @@ def test_manual_recovery_approval_and_completion_use_different_approver(admin_cl
 
 
 def test_admin_action_request_tampering_and_expiry_fail_closed(admin_client):
+    global _FIXED_TOTP_TIME
     _root1, root1_secret = _create_staff_identity(
         username="root-one",
         email=ROOT1_EMAIL,
@@ -699,8 +685,12 @@ def test_admin_action_request_tampering_and_expiry_fail_closed(admin_client):
     )
     db.session.refresh(action_request)
     action_request.status = "pending"
-    action_request.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    action_request.expires_at = datetime.fromtimestamp(
+        _FIXED_TOTP_TIME,
+        timezone.utc,
+    ) - timedelta(seconds=1)
     db.session.commit()
+    _FIXED_TOTP_TIME += 30
     expired = admin_client.post(
         f"/admin-action-requests/{request_id}/approve",
         json={"totp_code": _totp(root2_secret)},
@@ -880,7 +870,10 @@ def test_admin_action_review_expires_stale_requests(admin_client):
     )
     request_id = created.get_json()["request"]["id"]
     action_request = db.session.get(AdminActionRequest, request_id)
-    action_request.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    action_request.expires_at = datetime.fromtimestamp(
+        _FIXED_TOTP_TIME,
+        timezone.utc,
+    ) - timedelta(seconds=1)
     db.session.commit()
 
     review = admin_client.get("/admin-action-requests", headers={"Accept": "application/json"})

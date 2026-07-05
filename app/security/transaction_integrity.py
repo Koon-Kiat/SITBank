@@ -52,14 +52,14 @@ def sign_transaction_integrity(
 
 
 def transaction_integrity_status(transaction: Any) -> str:
-    """Return valid, legacy, or invalid without exposing integrity material."""
+    """Return valid or invalid without exposing integrity material."""
     metadata = (
         getattr(transaction, "transaction_integrity_key_id", None),
         getattr(transaction, "transaction_integrity_algorithm", None),
         getattr(transaction, "transaction_integrity_version", None),
     )
     if all(value is None for value in metadata):
-        return "legacy"
+        return "invalid"
     if any(value is None for value in metadata):
         return "invalid"
 

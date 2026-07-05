@@ -292,8 +292,14 @@ operator evidence.
 ### Grafana/Loki Observability Checks
 
 Use `docs/runbooks/private-observability-grafana-loki.md` for the detailed
-private observability runbook. Run on EC2 after private observability is
-installed.
+private observability runbook. The normal app/Nginx bootstrap only installs
+the restricted observability wrapper and sudo rule; it does not mutate the
+stack. For an already prepared host, run the manual, main-only **Bootstrap
+private observability on EC2** workflow and select `observability-staging` or
+`observability-production`. The protected workflow uploads only a signed
+trusted-source archive and bundle over restricted Tailscale SSH, and safe
+output is limited to target, revision, result, and named host-check status.
+Then run these read-only checks on EC2:
 
 ```bash
 sudo docker compose --env-file /etc/sitbank-observability/observability.env -f /etc/sitbank-observability/compose.yml ps
@@ -310,7 +316,8 @@ credentials, datasource credentials, Loki credentials, broad log-reader
 credentials, raw logs, cookies, sessions, Access assertions, and provider
 exports are not safe to print.
 
-After bootstrap or private-access changes, run the manual protected
+After that mutation workflow or private-access changes, run the separate
+read-only manual protected
 `.github/workflows/observability-private-verify.yml` workflow from `main`
 against `observability-staging` or `observability-production`. The retained
 artifact is `observability-evidence/private-observability.json` and contains
@@ -348,7 +355,7 @@ incident-response runbook, protected approvals, and evidence preservation.
 | `/etc/systemd/system/sitbank*.service`, `/etc/systemd/system/sitbank*.timer` | `root:root 0644` | Host service and timer definitions | `sudo systemctl cat <unit>`, `sudo systemctl status <unit>` | Metadata only or redact before sharing |
 | `/opt/sitbank`, `/opt/sitbank-staging` | Root-managed deployment directories | Compose files and runtime deployment state | `sudo find <dir> -maxdepth 2 -type f -printf '%M %u:%g %p\n'` | Metadata only; generated credential files never print |
 | `/opt/sitbank-bootstrap` | Root-managed trusted bootstrap workspace | Bootstrap artifacts and trusted source material | `sudo find /opt/sitbank-bootstrap -maxdepth 2 -printf '%M %u:%g %p\n'` | Metadata only |
-| `/usr/local/sbin/sitbank-container-bootstrap`, `/usr/local/sbin/sitbank-container-deploy`, `/usr/local/sbin/sitbank-container-runtime`, `/usr/local/sbin/verify-tailscale-admin-access` | `root:root 0755` | Trusted deployment, runtime, and verification wrappers | `sudo stat -c '%A %U:%G %n' /usr/local/sbin/sitbank-* /usr/local/sbin/verify-tailscale-admin-access` | Safe to show metadata |
+| `/usr/local/sbin/sitbank-container-bootstrap`, `/usr/local/sbin/sitbank-container-deploy`, `/usr/local/sbin/sitbank-container-runtime`, `/usr/local/sbin/sitbank-observability-bootstrap`, `/usr/local/sbin/verify-tailscale-admin-access` | `root:root 0755` | Trusted deployment, runtime, observability-bootstrap, and verification wrappers | `sudo stat -c '%A %U:%G %n' /usr/local/sbin/sitbank-* /usr/local/sbin/verify-tailscale-admin-access` | Safe to show metadata |
 | `/etc/sudoers.d` entries for SITBank deploy users | `root:root 0440` | Least-privilege wrapper authorization | `sudo visudo -cf /etc/sudoers.d/<file>`, `sudo ls -la /etc/sudoers.d` | Metadata only; redact usernames if needed |
 | `/etc/sitbank/secrets`, `/etc/sitbank-staging/secrets`, `/run/secrets` | Root-owned secret files, typically `0600`; runtime mounts read-only | Runtime application, admin, database, SMTP, alert, session, MFA, and cryptographic secrets | `sudo find <dir> -maxdepth 1 -type f -printf '%M %U:%G %p\n'` | Never print content |
 | `/var/lib/sitbank/evidence`, `/var/lib/sitbank-staging/evidence` | `root:root 0700` for directories; evidence files restricted | Sanitized deployment, TLS, Cloudflare, Tailscale, and incident evidence | `sudo find <dir> -maxdepth 2 -type f -printf '%M %u:%g %s %TY-%Tm-%Td %p\n'` | Safe only after confirming evidence is sanitized |
