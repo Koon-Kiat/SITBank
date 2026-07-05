@@ -2137,12 +2137,6 @@ th {
   gap: var(--space-6);
 }
 
-.admin-identity-card {
-  background:
-    linear-gradient(135deg, rgba(76, 29, 149, 0.96), rgba(109, 40, 217, 0.92)),
-    var(--surface-strong);
-}
-
 .admin-summary-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2186,26 +2180,35 @@ th {
 
 .admin-table-wrap {
   overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
 }
 
 .admin-table {
   width: 100%;
-  border-collapse: collapse;
   min-width: 760px;
+  border-collapse: collapse;
+  background: var(--surface);
 }
 
 .admin-table th,
 .admin-table td {
   border-bottom: 1px solid var(--line);
-  padding: var(--space-3);
+  padding: var(--space-4);
   text-align: left;
   vertical-align: top;
 }
 
+.admin-table tr:last-child td {
+  border-bottom: 0;
+}
+
 .admin-table th {
-  color: var(--muted);
+  background: var(--surface-strong);
+  color: var(--muted-strong);
   font-size: 0.78rem;
   font-weight: 800;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
