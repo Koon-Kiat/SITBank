@@ -4,9 +4,15 @@
 
 {% block content %}
 <section class="dashboard admin-dashboard">
-  <div class="section-header">
-    <h1>Audit Event {{ event.id }}</h1>
-    <a class="button secondary" href="{{ url_for('admin.audit_logs') }}">Back</a>
+  <div class="dashboard-header">
+    <div class="page-heading">
+      <p class="eyebrow">Audit event</p>
+      <h1>Audit Event {{ event.id }}</h1>
+      <p class="muted">Full investigation detail for a single recorded security event.</p>
+    </div>
+    <div class="button-row">
+      <a class="button secondary" href="{{ url_for('admin.audit_logs') }}">Back to audit logs</a>
+    </div>
   </div>
   <section class="panel" aria-labelledby="audit-investigation-summary-heading">
     <div class="section-header">

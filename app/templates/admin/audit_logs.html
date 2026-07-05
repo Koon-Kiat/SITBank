@@ -4,8 +4,12 @@
 
 {% block content %}
 <section class="dashboard admin-dashboard">
-  <div class="section-header">
-    <h1>Audit Logs</h1>
+  <div class="dashboard-header">
+    <div class="page-heading">
+      <p class="eyebrow">Security review</p>
+      <h1>Audit Logs</h1>
+      <p class="muted">Search and filter every recorded security event across customer, staff, and admin activity.</p>
+    </div>
   </div>
   <section class="panel">
     {% set advanced_open = filters.event_type or filters.actor or filters.target or filters.severity or filters.outcome or filters.role or filters.request_id or filters.ip_address or filters.from or filters.to or sort != "timestamp" or direction != "desc" or page != 1 %}

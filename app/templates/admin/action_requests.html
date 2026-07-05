@@ -3,112 +3,153 @@
 {% block title %}Admin approvals - SITBank Admin{% endblock %}
 
 {% block content %}
-<section class="dashboard-section" aria-labelledby="admin-action-requests-heading">
-  <div class="section-heading">
-    <h1 id="admin-action-requests-heading">Admin approvals</h1>
+<section class="dashboard admin-dashboard">
+  <div class="dashboard-header">
+    <div class="page-heading">
+      <p class="eyebrow">Maker-checker</p>
+      <h1 id="admin-action-requests-heading">Admin approvals</h1>
+      <p class="muted">Approve, reject, or cancel pending high-risk admin action requests.</p>
+    </div>
   </div>
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr>
-          <th scope="col">Request</th>
-          <th scope="col">Operation</th>
-          <th scope="col">Requester</th>
-          <th scope="col">Target</th>
-          <th scope="col">Status</th>
-          <th scope="col">Expires</th>
-          <th scope="col">Action</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for item in requests %}
-        <tr>
-          <td>#{{ item.id }}</td>
-          <td>{{ item.operation_label }}</td>
-          <td>{{ item.requester_summary }}</td>
-          <td>{{ item.target_summary }}</td>
-          <td>{{ item.status }}</td>
-          <td>{{ item.expires_at_display or "n/a" }}</td>
-          <td><a class="button secondary small" href="{{ url_for('admin.admin_action_request_detail', request_id=item.id) }}">Review</a></td>
-        </tr>
-        {% else %}
-        <tr>
-          <td colspan="7">No admin approval requests.</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</section>
 
-{% if selected_request %}
-<section class="dashboard-section" aria-labelledby="admin-action-request-detail-heading">
-  <div class="section-heading">
-    <h2 id="admin-action-request-detail-heading">Request #{{ selected_request.id }}</h2>
-  </div>
-  <dl class="detail-list">
-    <dt>Operation</dt>
-    <dd>{{ selected_request.operation_label }}</dd>
-    <dt>Target</dt>
-    <dd>{{ selected_request.target_summary }}</dd>
-    <dt>Requester</dt>
-    <dd>{{ selected_request.requester_summary }}</dd>
-    <dt>Approver</dt>
-    <dd>{{ selected_request.approver_summary or "not decided" }}</dd>
-    <dt>Status</dt>
-    <dd>{{ selected_request.status }}</dd>
-    <dt>Created</dt>
-    <dd>{{ selected_request.created_at_display or "n/a" }}</dd>
-    <dt>Expires</dt>
-    <dd>{{ selected_request.expires_at_display or "n/a" }}</dd>
-    <dt>Reason metadata</dt>
-    <dd>{% if selected_request.reason_present %}present, {{ selected_request.reason_length }} characters{% else %}not provided{% endif %}</dd>
-  </dl>
-  <details>
-    <summary>Technical details</summary>
+  <section class="panel" aria-labelledby="admin-action-requests-heading">
+    <div class="admin-table-wrap">
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th scope="col">Request</th>
+            <th scope="col">Operation</th>
+            <th scope="col">Requester</th>
+            <th scope="col">Target</th>
+            <th scope="col">Status</th>
+            <th scope="col">Expires</th>
+            <th scope="col">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in requests %}
+          <tr>
+            <td>#{{ item.id }}</td>
+            <td>{{ item.operation_label }}</td>
+            <td>{{ item.requester_summary }}</td>
+            <td>{{ item.target_summary }}</td>
+            <td>{{ item.status }}</td>
+            <td>{{ item.expires_at_display or "n/a" }}</td>
+            <td><a class="button secondary small" href="{{ url_for('admin.admin_action_request_detail', request_id=item.id) }}">Review</a></td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="7">No admin approval requests.</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  {% if selected_request %}
+  <section class="panel" aria-labelledby="admin-action-request-detail-heading">
+    <div class="section-header">
+      <h2 id="admin-action-request-detail-heading">Request #{{ selected_request.id }}</h2>
+    </div>
     <dl class="detail-list">
-      <dt>Operation type</dt>
-      <dd>{{ selected_request.operation_type }}</dd>
-      <dt>Target reference</dt>
-      <dd>{{ selected_request.target_ref or "unavailable" }}</dd>
-      <dt>Requester reference</dt>
-      <dd>{{ selected_request.requester_ref or "unavailable" }}</dd>
-      <dt>Approver reference</dt>
-      <dd>{{ selected_request.approver_ref or "not decided" }}</dd>
-      <dt>Created UTC</dt>
-      <dd>{{ selected_request.created_at or "n/a" }}</dd>
-      <dt>Expires UTC</dt>
-      <dd>{{ selected_request.expires_at or "n/a" }}</dd>
-      <dt>Decided UTC</dt>
-      <dd>{{ selected_request.decided_at or "not decided" }}</dd>
-      <dt>Executed UTC</dt>
-      <dd>{{ selected_request.executed_at or "not executed" }}</dd>
-      <dt>Payload</dt>
-      <dd><code>{{ selected_request.payload }}</code></dd>
+      <div>
+        <dt>Operation</dt>
+        <dd>{{ selected_request.operation_label }}</dd>
+      </div>
+      <div>
+        <dt>Target</dt>
+        <dd>{{ selected_request.target_summary }}</dd>
+      </div>
+      <div>
+        <dt>Requester</dt>
+        <dd>{{ selected_request.requester_summary }}</dd>
+      </div>
+      <div>
+        <dt>Approver</dt>
+        <dd>{{ selected_request.approver_summary or "not decided" }}</dd>
+      </div>
+      <div>
+        <dt>Status</dt>
+        <dd>{{ selected_request.status }}</dd>
+      </div>
+      <div>
+        <dt>Created</dt>
+        <dd>{{ selected_request.created_at_display or "n/a" }}</dd>
+      </div>
+      <div>
+        <dt>Expires</dt>
+        <dd>{{ selected_request.expires_at_display or "n/a" }}</dd>
+      </div>
+      <div>
+        <dt>Reason metadata</dt>
+        <dd>{% if selected_request.reason_present %}present, {{ selected_request.reason_length }} characters{% else %}not provided{% endif %}</dd>
+      </div>
     </dl>
-  </details>
-  {% if selected_request.status == "pending" %}
-  <div class="action-grid">
-    <form method="post" action="{{ url_for('admin.admin_action_request_approve', request_id=selected_request.id) }}">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <label for="approve-totp-code">Authenticator code</label>
-      <input id="approve-totp-code" name="totp_code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
-      <button class="button" type="submit">Approve</button>
-    </form>
-    <form method="post" action="{{ url_for('admin.admin_action_request_reject', request_id=selected_request.id) }}">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <label for="reject-totp-code">Authenticator code</label>
-      <input id="reject-totp-code" name="totp_code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
-      <button class="button secondary" type="submit">Reject</button>
-    </form>
-    <form method="post" action="{{ url_for('admin.admin_action_request_cancel', request_id=selected_request.id) }}">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <label for="cancel-totp-code">Authenticator code</label>
-      <input id="cancel-totp-code" name="totp_code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
-      <button class="button secondary" type="submit">Cancel</button>
-    </form>
-  </div>
+    <details>
+      <summary>Technical details</summary>
+      <dl class="detail-list">
+        <div>
+          <dt>Operation type</dt>
+          <dd>{{ selected_request.operation_type }}</dd>
+        </div>
+        <div>
+          <dt>Target reference</dt>
+          <dd>{{ selected_request.target_ref or "unavailable" }}</dd>
+        </div>
+        <div>
+          <dt>Requester reference</dt>
+          <dd>{{ selected_request.requester_ref or "unavailable" }}</dd>
+        </div>
+        <div>
+          <dt>Approver reference</dt>
+          <dd>{{ selected_request.approver_ref or "not decided" }}</dd>
+        </div>
+        <div>
+          <dt>Created UTC</dt>
+          <dd>{{ selected_request.created_at or "n/a" }}</dd>
+        </div>
+        <div>
+          <dt>Expires UTC</dt>
+          <dd>{{ selected_request.expires_at or "n/a" }}</dd>
+        </div>
+        <div>
+          <dt>Decided UTC</dt>
+          <dd>{{ selected_request.decided_at or "not decided" }}</dd>
+        </div>
+        <div>
+          <dt>Executed UTC</dt>
+          <dd>{{ selected_request.executed_at or "not executed" }}</dd>
+        </div>
+        <div>
+          <dt>Payload</dt>
+          <dd><code>{{ selected_request.payload }}</code></dd>
+        </div>
+      </dl>
+    </details>
+    {% if selected_request.status == "pending" %}
+    <div class="action-grid">
+      <form method="post" action="{{ url_for('admin.admin_action_request_approve', request_id=selected_request.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label for="approve-totp-code">Authenticator code</label>
+        <input id="approve-totp-code" name="totp_code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
+        <button class="button" type="submit">Approve</button>
+      </form>
+      <form method="post" action="{{ url_for('admin.admin_action_request_reject', request_id=selected_request.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label for="reject-totp-code">Authenticator code</label>
+        <input id="reject-totp-code" name="totp_code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
+        <button class="button secondary" type="submit">Reject</button>
+      </form>
+      <form method="post" action="{{ url_for('admin.admin_action_request_cancel', request_id=selected_request.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label for="cancel-totp-code">Authenticator code</label>
+        <input id="cancel-totp-code" name="totp_code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
+        <button class="button secondary" type="submit">Cancel</button>
+      </form>
+    </div>
+    {% endif %}
+  </section>
   {% endif %}
 </section>
-{% endif %}
 {% endblock %}
