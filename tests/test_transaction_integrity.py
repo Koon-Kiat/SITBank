@@ -10,6 +10,8 @@ from app.ops import commands
 from app.security.transaction_integrity import (
     TRANSACTION_INTEGRITY_ALGORITHM,
     TRANSACTION_INTEGRITY_VERSION,
+    registration_credit_integrity_status,
+    sign_registration_credit_integrity,
     sign_transaction_integrity,
     transaction_integrity_status,
     validate_transaction_integrity_config,
@@ -39,6 +41,25 @@ def _signed_transaction(**overrides):
     )
 
 
+def _signed_registration_credit(**overrides):
+    fields = {
+        "credit_ref": "22222222-3333-4444-8555-666666666666",
+        "user_id": 42,
+        "amount": Decimal("100.00"),
+        "status": "completed",
+        "created_at": datetime(2026, 7, 4, 13, 30, tzinfo=timezone.utc),
+    }
+    fields.update(overrides)
+    digest, key_id, algorithm, version = sign_registration_credit_integrity(**fields)
+    return SimpleNamespace(
+        **fields,
+        credit_hash=digest,
+        credit_integrity_key_id=key_id,
+        credit_integrity_algorithm=algorithm,
+        credit_integrity_version=version,
+    )
+
+
 def test_transaction_integrity_uses_dedicated_versioned_keyring(app):
     with app.app_context():
         transaction = _signed_transaction()
@@ -58,6 +79,16 @@ def test_transaction_type_is_covered_by_integrity_digest(app):
         payup = _signed_transaction(transaction_type="payup", payee_id=None)
 
     assert local_transfer.transaction_hash != payup.transaction_hash
+
+
+def test_registration_credit_integrity_detects_amount_tampering(app):
+    with app.app_context():
+        credit = _signed_registration_credit()
+        assert registration_credit_integrity_status(credit) == "valid"
+
+        credit.amount = Decimal("100.01")
+
+        assert registration_credit_integrity_status(credit) == "invalid"
 
 
 @pytest.mark.parametrize(

@@ -31,6 +31,7 @@ from app.banking.forms import (
     LOCAL_TRANSFER_LIMIT_PRESETS,
     PayupAmountForm,
     PayupConfirmForm,
+    PayupNicknameForm,
     PayupPhoneForm,
     TRANSFER_LIMIT_PRESETS,
     TransferForm,
@@ -60,6 +61,7 @@ from app.security.audit import (
 from app.security.rate_limits import DurableRateLimitExceeded, consume_durable_rate_limit
 from app.security.rate_limits import mfa_principal
 from app.security.sessions import current_session_id
+from app.time_display import sgt_datetime
 from app.web.routes import web_login_required, web_not_frozen_required
 
 
@@ -80,9 +82,11 @@ _DUPLICATE_PAYEE_MESSAGE = "This payee is already in your list."
 _PAYUP_PENDING_RECIPIENT_TTL = 300  # seconds; time to complete amount entry after phone lookup
 _PAYUP_PENDING_TRANSFER_TTL = 300  # seconds; time to confirm after amount step
 _PAYUP_TEMPLATE = "payup.html"
+_PAYUP_NICKNAME_TEMPLATE = "payup_nickname.html"
 _PAYUP_AMOUNT_TEMPLATE = "payup_amount.html"
 _PAYUP_CONFIRM_TEMPLATE = "payup_confirm.html"
 _PAYUP_ENDPOINT = "banking.payup"
+_PAYUP_NICKNAME_ENDPOINT = "banking.payup_nickname"
 _NO_PENDING_PAYUP_RECIPIENT_MESSAGE = "No pending PayUp request. Please start again."
 _INVALID_PHONE_MESSAGE = "Invalid phone number."
 _PAYUP_LOOKUP_FAILURE_LIMIT = 5
@@ -140,7 +144,7 @@ def _cooldown_status(payee: Payee, cooldown_seconds: int) -> dict:
         "status": "cooldown",
         "remaining": _format_cooldown_remaining(remaining),
         "expires_at": expires_at.isoformat(),
-        "available_at": expires_at.strftime("%Y-%m-%d %H:%M UTC"),
+        "available_at": sgt_datetime(expires_at),
     }
 
 
@@ -180,16 +184,6 @@ def _record_failed_payup_lookup(reason: str, phone_number: str) -> None:
 
 
 # ── Payee list ─────────────────────────────────────────────────────────────────
-
-def _masked_payup_recipient_name(full_name: str) -> str:
-    parts = [part for part in str(full_name or "").split() if part]
-    if not parts:
-        return "Registered recipient"
-    return " ".join(
-        part[0] + ("*" * min(max(len(part) - 1, 1), 8))
-        for part in parts[:4]
-    )
-
 
 def _consume_payup_attempt_limits(phone_number: str, *, phase: str) -> None:
     if phase not in {"lookup", "confirm"}:
@@ -273,10 +267,51 @@ def _payup_recipient_is_available(recipient: User | None) -> bool:
     )
 
 
+def _payup_nickname_value(user: User | None) -> str:
+    nickname = str(getattr(user, "payup_nickname", "") or "").strip()
+    if len(nickname) < 2 or len(nickname) > 128:
+        return ""
+    if any(ord(char) < 32 or ord(char) == 127 for char in nickname):
+        return ""
+    return nickname
+
+
+def _payup_nickname_ready(user: User | None) -> bool:
+    return bool(_payup_nickname_value(user))
+
+
+def _payup_nickname_required_response():
+    session.pop("pending_payup_recipient", None)
+    session.pop("pending_payup_token", None)
+    flash("Set your PayUp display nickname before sending by phone number.", "warning")
+    return redirect(url_for(_PAYUP_NICKNAME_ENDPOINT))
+
+
+def _account_ending(account_number: str | None) -> str:
+    account = str(account_number or "")
+    return account[-4:] if len(account) >= 4 else account
+
+
 def _payup_recipient_display(recipient: User) -> dict[str, str]:
+    recipient_nickname = _payup_nickname_value(recipient)
+    recipient_phone = str(recipient.phone_number or "")
     return {
-        "recipient_name": _masked_payup_recipient_name(recipient.full_name),
-        "recipient_phone": str(recipient.phone_number or ""),
+        "recipient_label": recipient_nickname or recipient_phone,
+        "recipient_nickname": recipient_nickname,
+        "recipient_phone": recipient_phone,
+    }
+
+
+def _payup_confirmation_display(pending_tfr: PayupPendingTransfer, amount: Decimal, requires_step_up: bool) -> dict[str, str | bool]:
+    recipient = pending_tfr.recipient_user
+    recipient_display = _payup_recipient_display(recipient)
+    return {
+        "amount": str(amount.quantize(Decimal("0.01"))),
+        "reference": pending_tfr.reference,
+        "requires_step_up": requires_step_up,
+        "sender_account_ending": _account_ending(g.current_user.account_number),
+        "sender_nickname": _payup_nickname_value(g.current_user),
+        **recipient_display,
     }
 
 
@@ -729,10 +764,49 @@ def transfer_confirm_submit(payee_id: int):
 
 # ── PayUp: step 1 — phone lookup ────────────────────────────────────────────────
 
+@banking_bp.get("/payup/nickname")
+@web_login_required
+@web_not_frozen_required
+def payup_nickname():
+    form = PayupNicknameForm()
+    form.nickname.data = _payup_nickname_value(g.current_user)
+    return render_template(_PAYUP_NICKNAME_TEMPLATE, form=form)
+
+
+@banking_bp.post("/payup/nickname")
+@web_login_required
+@web_not_frozen_required
+def payup_nickname_submit():
+    form = PayupNicknameForm()
+    if not form.validate_on_submit():
+        return render_template(_PAYUP_NICKNAME_TEMPLATE, form=form), 400
+
+    nickname = form.nickname.data
+    g.current_user.payup_nickname = nickname
+    try:
+        audit_event_required(
+            "payup_nickname_update",
+            "success",
+            user=g.current_user,
+            metadata={
+                "nickname_present": bool(nickname),
+                "nickname_length": len(nickname),
+            },
+        )
+        db.session.commit()
+    except AuditWriteError:
+        db.session.rollback()
+        raise
+    flash("PayUp nickname saved.", "success")
+    return redirect(url_for(_PAYUP_ENDPOINT))
+
+
 @banking_bp.get("/payup")
 @web_login_required
 @web_not_frozen_required
 def payup():
+    if not _payup_nickname_ready(g.current_user):
+        return _payup_nickname_required_response()
     return render_template(_PAYUP_TEMPLATE, form=PayupPhoneForm())
 
 
@@ -740,6 +814,8 @@ def payup():
 @web_login_required
 @web_not_frozen_required
 def payup_submit():
+    if not _payup_nickname_ready(g.current_user):
+        return _payup_nickname_required_response()
     form = PayupPhoneForm()
     if not form.validate_on_submit():
         return render_template(_PAYUP_TEMPLATE, form=form), 400
@@ -796,6 +872,8 @@ def payup_submit():
 @web_login_required
 @web_not_frozen_required
 def payup_amount():
+    if not _payup_nickname_ready(g.current_user):
+        return _payup_nickname_required_response()
     pending = session.get("pending_payup_recipient")
     recipient = _pending_payup_recipient(pending)
     if recipient is None:
@@ -818,6 +896,8 @@ def payup_amount():
 @web_login_required
 @web_not_frozen_required
 def payup_amount_submit():
+    if not _payup_nickname_ready(g.current_user):
+        return _payup_nickname_required_response()
     pending = session.get("pending_payup_recipient")
     recipient = _pending_payup_recipient(pending)
     if recipient is None:
@@ -908,6 +988,8 @@ def payup_amount_submit():
 @web_login_required
 @web_not_frozen_required
 def payup_confirm():
+    if not _payup_nickname_ready(g.current_user):
+        return _payup_nickname_required_response()
     token = session.get("pending_payup_token")
     if not token:
         flash(_NO_PENDING_TRANSFER_MESSAGE, "warning")
@@ -951,15 +1033,7 @@ def payup_confirm():
         )
         flash("PayUp could not authorize this transfer. Please sign in again or contact support.", "error")
         return redirect(url_for(_PAYUP_ENDPOINT))
-    pending = {
-        "recipient_name": _masked_payup_recipient_name(
-            pending_tfr.recipient_user.full_name
-        ),
-        "recipient_phone": pending_tfr.recipient_user.phone_number,
-        "amount": str(amount.quantize(Decimal("0.01"))),
-        "reference": pending_tfr.reference,
-        "requires_step_up": risk.requires_step_up,
-    }
+    pending = _payup_confirmation_display(pending_tfr, amount, risk.requires_step_up)
     return render_template(_PAYUP_CONFIRM_TEMPLATE, form=PayupConfirmForm(), pending=pending)
 
 
@@ -967,6 +1041,8 @@ def payup_confirm():
 @web_login_required
 @web_not_frozen_required
 def payup_confirm_submit():
+    if not _payup_nickname_ready(g.current_user):
+        return _payup_nickname_required_response()
     form = PayupConfirmForm()
 
     # A04: consume session token immediately — prevents session-layer replay
@@ -1054,15 +1130,7 @@ def payup_confirm_submit():
             )
             flash(exc.message, "error")
             session["pending_payup_token"] = token
-            pending = {
-                "recipient_name": _masked_payup_recipient_name(
-                    pending_tfr.recipient_user.full_name
-                ),
-                "recipient_phone": recipient_phone,
-                "amount": str(amount.quantize(Decimal("0.01"))),
-                "reference": pending_tfr.reference,
-                "requires_step_up": True,
-            }
+            pending = _payup_confirmation_display(pending_tfr, amount, True)
             return render_template(_PAYUP_CONFIRM_TEMPLATE, form=form, pending=pending), exc.status_code
 
     try:
@@ -1081,9 +1149,7 @@ def payup_confirm_submit():
         flash(exc.message, "error")
         return redirect(url_for(_PAYUP_ENDPOINT))
 
-    recipient_name = _masked_payup_recipient_name(
-        pending_tfr.recipient_user.full_name
-    )
+    recipient_label = _payup_nickname_value(pending_tfr.recipient_user) or recipient_phone
     audit_event(
         "payup_transfer",
         "success",
@@ -1094,7 +1160,7 @@ def payup_confirm_submit():
         },
     )
     flash(
-        f"Transfer of SGD {amount.quantize(Decimal('0.01'))} to {recipient_name} is complete. "
+        f"Transfer of SGD {amount.quantize(Decimal('0.01'))} to {recipient_label} is complete. "
         f"Ref: {txn_ref[:8].upper()}",
         "success",
     )
@@ -1258,6 +1324,20 @@ def statement():
     )
 
 
+def _statement_counterparty_name(txn, user: User) -> str:
+    is_sender = txn.sender_id == user.id
+    counterparty = txn.recipient if is_sender else txn.sender
+    if txn.transaction_type == "payup":
+        if counterparty is None:
+            return "PayUp recipient" if is_sender else "PayUp sender"
+        if is_sender:
+            return _payup_nickname_value(counterparty) or str(counterparty.phone_number or "PayUp recipient")
+        return _payup_nickname_value(counterparty) or "PayUp sender"
+    if counterparty is None:
+        return ""
+    return counterparty.full_name or counterparty.username
+
+
 @banking_bp.get("/statement/download")
 @limiter.limit("10 per hour", key_func=mfa_principal)
 @web_login_required
@@ -1275,8 +1355,7 @@ def statement_download():
     writer.writerow(["Date", "Type", "Counterparty", "Reference", "Amount (SGD)", "Status"])
     for txn in data["transactions"]:
         is_sender = txn.sender_id == g.current_user.id
-        counterparty = txn.recipient if is_sender else txn.sender
-        counterparty_name = (counterparty.full_name or counterparty.username) if counterparty else ""
+        counterparty_name = _statement_counterparty_name(txn, g.current_user)
         writer.writerow(
             [
                 txn.created_at.astimezone(_SGT_STATEMENT_OFFSET).strftime("%Y-%m-%d %H:%M"),

@@ -32,6 +32,7 @@ class User(db.Model):
     account_status = db.Column(db.String(32), nullable=False, default="active", index=True)
     full_name = db.Column(db.String(128), nullable=False)
     phone_number = db.Column(db.String(8), nullable=True)
+    payup_nickname = db.Column(db.String(128), nullable=True)
     account_number = db.Column(db.String(12), nullable=True)
     staff_personal_email = db.Column(db.String(255), nullable=True)
     workplace_email_verified_at = db.Column(db.DateTime(timezone=True), nullable=True)
@@ -753,6 +754,45 @@ class Transaction(db.Model):
 
     def __repr__(self) -> str:
         return f"<Transaction id={self.id!r} ref={self.transaction_ref!r} amount={self.amount!r}>"
+
+
+class RegistrationCredit(db.Model):
+    __tablename__ = "registration_credits"
+
+    id = db.Column(db.Integer, primary_key=True)
+    credit_ref = db.Column(db.String(36), nullable=False, unique=True, index=True)
+    credit_hash = db.Column(db.String(64), nullable=False, unique=True, index=True)
+    credit_integrity_key_id = db.Column(db.String(32), nullable=False)
+    credit_integrity_algorithm = db.Column(db.String(32), nullable=False)
+    credit_integrity_version = db.Column(db.Integer, nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
+    amount = db.Column(db.Numeric(12, 2), nullable=False)
+    status = db.Column(db.String(32), nullable=False, default="completed", server_default="completed")
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+    )
+
+    user = db.relationship("User", backref=db.backref("registration_credits", lazy="selectin"))
+
+    __table_args__ = (
+        db.UniqueConstraint("user_id", name="uq_registration_credits_user_id"),
+        db.CheckConstraint("amount = 100.00", name="ck_registration_credits_amount_fixed"),
+        db.CheckConstraint("status IN ('completed')", name="ck_registration_credits_status"),
+        db.CheckConstraint(
+            (
+                "credit_integrity_key_id IS NOT NULL "
+                "AND credit_integrity_algorithm = 'hmac-sha256' "
+                "AND credit_integrity_version = 1"
+            ),
+            name="ck_registration_credits_integrity_metadata",
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return f"<RegistrationCredit id={self.id!r} user_id={self.user_id!r} amount={self.amount!r}>"
 
 
 class PublicTransactionIdempotency(db.Model):

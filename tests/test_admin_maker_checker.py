@@ -239,6 +239,9 @@ def test_staff_lifecycle_requires_maker_checker_before_execution(admin_client):
     requested_payload = requested.get_json()
     assert requested_payload["message"] == "Admin action approval required"
     assert requested_payload["request"]["operation_type"] == "staff_deactivate"
+    assert requested_payload["request"]["operation_label"] == "Deactivate staff account"
+    assert "root-one" in requested_payload["request"]["requester_summary"]
+    assert "target-admin" in requested_payload["request"]["target_summary"]
     assert requested_payload["request"]["status"] == "pending"
     assert self_approval.status_code == 403
     assert approved.status_code == 200
@@ -810,8 +813,13 @@ def test_admin_action_browser_views_and_form_redirects(admin_client):
     assert requested.status_code == 303
     assert list_page.status_code == 200
     assert b"Admin approvals" in list_page.data
+    assert b"Deactivate staff account" in list_page.data
+    assert b"root-one" in list_page.data
+    assert b"target-admin" in list_page.data
     assert detail_page.status_code == 200
     assert f"Request #{action_request.id}".encode() in detail_page.data
+    assert b"Technical details" in detail_page.data
+    assert b"Deactivate staff account" in detail_page.data
     assert approved.status_code == 303
     db.session.refresh(target)
     assert target.account_status == "revoked"

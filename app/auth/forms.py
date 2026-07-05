@@ -148,6 +148,13 @@ class ProfileForm(FlaskForm):
         ],
     )
     email = StringField("Email address", validators=[InputRequired(), Email(), Length(max=255)])
+    phone_number = StringField(
+        "Phone number",
+        validators=[
+            InputRequired(),
+            Regexp(PHONE_RE, message="Enter a valid Singapore phone number (8 digits starting with 8 or 9)"),
+        ],
+    )
     email_verification_code = StringField(
         "Email verification code",
         validators=[
@@ -162,6 +169,8 @@ class ProfileForm(FlaskForm):
             Regexp(TOTP_RE, message=_MFA_CODE_ERROR),
         ],
     )
+
+
 class TotpForm(FlaskForm):
     totp_code = StringField(
         "MFA code",
@@ -170,6 +179,8 @@ class TotpForm(FlaskForm):
             Regexp(TOTP_RE, message=_MFA_CODE_ERROR),
         ],
     )
+
+
 class AuthenticationCodeForm(FlaskForm):
     totp_code = StringField("Authentication code", validators=[InputRequired(), Length(max=80)])
 
@@ -182,6 +193,8 @@ class MfaOrStepUpForm(FlaskForm):
             Regexp(TOTP_RE, message=_MFA_CODE_ERROR),
         ],
     )
+
+
 class PasswordChangeForm(FlaskForm):
     current_password = PasswordField("Current password", validators=[InputRequired(), password_length(minimum=1)])
     new_password = PasswordField("New password", validators=[InputRequired(), password_length()])

@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+
+{% block title %}PayUp Nickname | SITBank{% endblock %}
+
+{% block content %}
+<section class="security-page profile-page">
+  <div class="dashboard-header">
+    <div class="page-heading">
+      <p class="eyebrow">PayUp</p>
+      <h1>Set display nickname</h1>
+      <p class="muted">Choose the name recipients will see on PayUp transfers.</p>
+    </div>
+    <div class="button-row">
+      <a class="button secondary" href="{{ url_for('web.dashboard') }}">Cancel</a>
+    </div>
+  </div>
+
+  <div class="profile-grid">
+    <article class="profile-panel profile-summary">
+      <div class="profile-panel-title">
+        <p class="eyebrow">Display identity</p>
+        <h2>PayUp nickname</h2>
+      </div>
+      <p class="muted">Use 2 to 128 characters. This nickname is separate from saved payee nicknames.</p>
+    </article>
+
+    <article class="profile-panel profile-card">
+      <div class="profile-panel-title">
+        <p class="eyebrow">Nickname</p>
+        <h2>Public PayUp display</h2>
+      </div>
+      <form method="post" action="{{ url_for('banking.payup_nickname_submit') }}" novalidate>
+        {{ form.hidden_tag() }}
+        <div class="form-group">
+          <label for="{{ form.nickname.id }}">PayUp nickname</label>
+          {{ form.nickname(autocomplete="off", maxlength="128") }}
+          {% for error in form.nickname.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+        </div>
+        <button class="button full" type="submit">Save nickname</button>
+      </form>
+    </article>
+  </div>
+</section>
+{% endblock %}

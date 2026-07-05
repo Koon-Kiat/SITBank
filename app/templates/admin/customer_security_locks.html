@@ -25,9 +25,14 @@
         {% for customer in customers %}
         <tr>
           <td>{{ customer.username }}</td>
-          <td>{{ customer.customer_ref }}</td>
+          <td>
+            <details>
+              <summary>Technical details</summary>
+              <code>{{ customer.customer_ref }}</code>
+            </details>
+          </td>
           <td>{{ customer.lock_reason|replace("_", " ") }}</td>
-          <td>{{ customer.locked_at }}</td>
+          <td><time datetime="{{ customer.locked_at }}">{{ customer.locked_at_display }}</time></td>
           <td>
             <form method="post" action="{{ url_for('admin.customer_security_unlock_request', user_id=customer.id) }}">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

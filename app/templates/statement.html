@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_transaction_party.html" import transaction_party %}
 
 {% set month_names = ["January", "February", "March", "April", "May", "June",
                        "July", "August", "September", "October", "November", "December"] %}
@@ -106,11 +107,7 @@
               {% endif %}
             </td>
             <td>
-              {% if txn.sender_id == user.id %}
-              {{ txn.recipient.full_name or txn.recipient.username }}
-              {% else %}
-              {{ txn.sender.full_name or txn.sender.username }}
-              {% endif %}
+              {{ transaction_party(txn, user) }}
             </td>
             <td>{{ txn.reference or "—" }}</td>
             <td>
@@ -127,7 +124,7 @@
               <span class="badge neutral" title="Not counted toward opening/closing balance">Failed</span>
               {% endif %}
             </td>
-            <td><time datetime="{{ txn.created_at.isoformat() }}">{{ (txn.created_at | sgt).strftime('%d %b %Y, %H:%M') }} SGT</time></td>
+            <td><time datetime="{{ txn.created_at|utc_iso }}">{{ txn.created_at|sgt_datetime }}</time></td>
           </tr>
           {% endfor %}
         </tbody>
