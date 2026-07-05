@@ -55,9 +55,24 @@
     <div class="section-header">
       <h2>Allowed Operations</h2>
     </div>
+    {% set nav_icons = {
+      "Dashboard": "icon-controls",
+      "Business operations": "icon-info",
+      "Disputes": "icon-reference",
+      "Audit logs": "icon-education",
+      "Alerts": "icon-alert",
+      "Staff/admin users": "icon-user",
+      "Staff invites": "icon-mail",
+      "Manual recovery": "icon-refresh",
+      "Customer locks": "icon-lock",
+      "Approvals": "icon-check-circle",
+    } %}
     <div class="bank-quick-grid admin-nav-grid">
       {% for item in navigation %}
       <a class="bank-quick-btn" href="{{ item.href }}">
+        <span class="bank-quick-icon" aria-hidden="true">
+          <svg class="icon" focusable="false"><use href="#{{ nav_icons.get(item.label, 'icon-controls') }}"></use></svg>
+        </span>
         <span>{{ item.label }}</span>
         <span class="badge neutral">{{ item.group }}</span>
       </a>
