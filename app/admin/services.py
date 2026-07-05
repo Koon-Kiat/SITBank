@@ -520,6 +520,12 @@ def public_transaction_dispute(dispute: TransactionDispute) -> dict[str, Any]:
 
 
 def disputes_for_staff(actor: User) -> list[dict[str, Any]]:
+    """List disputes for staff review.
+
+    Read access to customer dispute content is audited with the same
+    required (fail-closed) contract as dispute status changes: if the audit
+    row cannot be recorded, the read does not proceed.
+    """
     _require_plain_staff(actor, "dispute_queue_review")
     disputes = list(
         db.session.execute(
@@ -529,19 +535,34 @@ def disputes_for_staff(actor: User) -> list[dict[str, Any]]:
             )
         ).scalars()
     )
-    audit_event("dispute_queue_review", "success", user=actor)
+    try:
+        audit_event_required("dispute_queue_review", "success", user=actor)
+        db.session.commit()
+    except AuditWriteError:
+        db.session.rollback()
+        raise
     return [public_transaction_dispute(item) for item in disputes]
 
 
 def dispute_detail_for_staff(actor: User, dispute_id: int) -> dict[str, Any]:
+    """Fetch one dispute's detail for staff review.
+
+    See `disputes_for_staff` for why this read uses required (fail-closed)
+    audit rather than best-effort logging.
+    """
     _require_plain_staff(actor, "dispute_detail_view")
     dispute = _transaction_dispute_or_404(dispute_id)
-    audit_event(
-        "dispute_detail_view",
-        "success",
-        user=actor,
-        metadata={"dispute_ref": audit_reference("transaction_dispute", dispute.id)},
-    )
+    try:
+        audit_event_required(
+            "dispute_detail_view",
+            "success",
+            user=actor,
+            metadata={"dispute_ref": audit_reference("transaction_dispute", dispute.id)},
+        )
+        db.session.commit()
+    except AuditWriteError:
+        db.session.rollback()
+        raise
     return public_transaction_dispute(dispute)
 
 
