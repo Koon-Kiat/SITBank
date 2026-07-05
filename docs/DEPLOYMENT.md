@@ -197,6 +197,12 @@ non-null. Run and preserve sanitized staging evidence first. Do not downgrade
 this migration or restore legacy verification; rollback requires restoring the
 approved encrypted backup and previously trusted application release.
 
+Migration `20260705_0030` adds `users.payup_nickname` and the
+`registration_credits` ledger. After upgrade, verify customer registration
+creates exactly one SGD 100.00 welcome credit with HMAC-SHA256 integrity
+metadata, and verify PayUp senders are routed through nickname setup before
+lookup, amount entry, or confirmation.
+
 ## Deployment Prerequisites
 
 Install `/etc/sitbank/secrets/security_alert_webhook_url` or

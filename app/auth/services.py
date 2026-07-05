@@ -7,7 +7,9 @@ import io
 import re
 import secrets
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Any
 
 from cryptography.exceptions import InvalidTag
@@ -18,7 +20,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
-from app.models import AuthAttemptCounter, TotpReplayRecord, User
+from app.models import AuthAttemptCounter, RegistrationCredit, TotpReplayRecord, User
 from app.auth.registration_otp import (
     RegistrationOtpError,
     consume_verified_registration_email,
@@ -29,7 +31,7 @@ from app.auth.mfa_policy import (
     PASSWORD_BOOTSTRAP_AUTH_CONTEXT,
     has_enrolled_mfa_method,
 )
-from app.security.audit import audit_event, audit_event_required, audit_reference, principal_reference
+from app.security.audit import AuditWriteError, audit_event, audit_event_required, audit_reference, principal_reference
 from app.security.crypto import decrypt_mfa_secret, encrypt_mfa_secret
 from app.security.email import send_security_email
 from app.security.identity_policy import (
@@ -77,6 +79,7 @@ from app.security.sessions import (
     resolve_session_reference_for_user,
     rotate_authenticated_session_after_mfa,
 )
+from app.security.transaction_integrity import sign_registration_credit_integrity
 
 from .recovery_codes import (
     RECOVERY_CODE_LOW_THRESHOLD,
@@ -101,8 +104,10 @@ MFA_REPLACEMENT_CIPHERTEXT_KEY = "mfa_replacement_secret_ciphertext"
 MFA_REPLACEMENT_STARTED_AT_KEY = "mfa_replacement_started_at"
 PROFILE_EMAIL_PENDING_EMAIL_KEY = "profile_email_pending_email"
 PROFILE_EMAIL_PENDING_USERNAME_KEY = "profile_email_pending_username"
+PROFILE_EMAIL_PENDING_PHONE_HMAC_KEY = "profile_email_pending_phone_hmac"
 PROFILE_EMAIL_PENDING_CODE_HMAC_KEY = "profile_email_pending_code_hmac"
 PROFILE_EMAIL_PENDING_EXPIRES_AT_KEY = "profile_email_pending_expires_at"
+REGISTRATION_WELCOME_CREDIT_AMOUNT = Decimal("100.00")
 
 
 class AuthError(ValueError):
@@ -277,11 +282,17 @@ def register_user(data: dict[str, Any]) -> tuple[User, list[str]]:
     db.session.add(user)
     try:
         db.session.flush()
+        _apply_registration_welcome_credit(user)
         db.session.commit()
     except IntegrityError as exc:
         db.session.rollback()
         audit_event("registration", "failure", metadata={"reason": "integrity_error"})
         raise AuthError("Registration could not be completed with those details", 400) from exc
+    except (AuditWriteError, RuntimeError) as exc:
+        db.session.rollback()
+        current_app.logger.warning("registration_welcome_credit_failed error=%s", type(exc).__name__)
+        audit_event("registration", "failure", metadata={"reason": "welcome_credit_unavailable"})
+        raise AuthError("Registration could not be completed right now. Please try again later.", 503) from exc
     consume_verified_registration_email(normalized_email)
     audit_event(
         "registration",
@@ -294,6 +305,48 @@ def register_user(data: dict[str, Any]) -> tuple[User, list[str]]:
         },
     )
     return user, password_policy_warnings
+
+
+def _apply_registration_welcome_credit(user: User) -> None:
+    existing_credit = db.session.execute(
+        db.select(RegistrationCredit.id).where(RegistrationCredit.user_id == user.id).limit(1)
+    ).scalar_one_or_none()
+    if existing_credit is not None:
+        return
+
+    credit_ref = str(uuid.uuid4())
+    created_at = datetime.now(timezone.utc)
+    credit_hash, key_id, algorithm, version = sign_registration_credit_integrity(
+        credit_ref=credit_ref,
+        user_id=int(user.id),
+        amount=REGISTRATION_WELCOME_CREDIT_AMOUNT,
+        status="completed",
+        created_at=created_at,
+    )
+    user.balance = Decimal(str(user.balance or "0.00")) + REGISTRATION_WELCOME_CREDIT_AMOUNT
+    db.session.add(
+        RegistrationCredit(
+            credit_ref=credit_ref,
+            credit_hash=credit_hash,
+            credit_integrity_key_id=key_id,
+            credit_integrity_algorithm=algorithm,
+            credit_integrity_version=version,
+            user_id=user.id,
+            amount=REGISTRATION_WELCOME_CREDIT_AMOUNT,
+            status="completed",
+            created_at=created_at,
+        )
+    )
+    audit_event_required(
+        "registration_credit",
+        "success",
+        user=user,
+        metadata={
+            "credit_type": "welcome",
+            "amount": "fixed_sgd_100",
+            "credit_ref": audit_reference("registration_credit", credit_ref),
+        },
+    )
 
 
 def _customer_password_matches(user: User | None, password: str) -> bool:
@@ -754,27 +807,37 @@ def update_profile_details(
     user: User,
     username: str,
     email: str,
+    phone_number: str,
     code: str | None,
     email_verification_code: str | None = None,
 ) -> dict[str, Any]:
-    normalized_username, username_lookup, normalized_email, email_changed = _profile_update_values(
+    (
+        normalized_username,
+        username_lookup,
+        normalized_email,
+        normalized_phone,
+        email_changed,
+        phone_changed,
+    ) = _profile_update_values(
         user,
         username,
         email,
+        phone_number,
     )
 
-    if username_lookup == _normalize(user.username) and not email_changed:
+    if username_lookup == _normalize(user.username) and not email_changed and not phone_changed:
         return {"updated": False, "email_verification_pending": False}
 
     ensure_account_not_frozen(user, "profile update")
     _ensure_step_up_preference_enrolled(user, "totp")
-    _reject_duplicate_profile_identifiers(user, username_lookup, normalized_email)
+    _reject_duplicate_profile_identifiers(user, username_lookup, normalized_email, normalized_phone)
 
     if email_changed:
         pending_result = _handle_profile_email_change(
             user,
             username=normalized_username,
             normalized_email=normalized_email,
+            normalized_phone=normalized_phone,
             code=code,
             email_verification_code=email_verification_code,
         )
@@ -787,22 +850,35 @@ def update_profile_details(
             "profile_update",
         )
 
-    return _commit_profile_update(user, normalized_username, normalized_email, email_changed)
+    return _commit_profile_update(
+        user,
+        normalized_username,
+        normalized_email,
+        normalized_phone,
+        email_changed,
+        phone_changed,
+    )
 
 
-def _profile_update_values(user: User, username: str, email: str) -> tuple[str, str, str, bool]:
+def _profile_update_values(user: User, username: str, email: str, phone_number: str) -> tuple[str, str, str, str, bool, bool]:
     normalized_username = username.strip()
     username_lookup = _normalize(normalized_username)
     submitted_email = email.strip().lower()
+    normalized_phone = str(phone_number or "").strip()
+    if re.fullmatch(r"[89][0-9]{7}", normalized_phone) is None:
+        audit_event("profile_update", "blocked", user=user, metadata={"reason": "invalid_phone"})
+        raise AuthError(PROFILE_UPDATE_ERROR, 400)
+
     email_changed = submitted_email != _normalize(user.email)
+    phone_changed = normalized_phone != str(user.phone_number or "")
     if not email_changed:
-        return normalized_username, username_lookup, submitted_email, False
+        return normalized_username, username_lookup, submitted_email, normalized_phone, False, phone_changed
     try:
         normalized_email = require_customer_email(email)
     except IdentityPolicyError as exc:
         audit_event("profile_update", "blocked", user=user, metadata={"reason": exc.reason})
         raise AuthError(PROFILE_UPDATE_ERROR, 400) from exc
-    return normalized_username, username_lookup, normalized_email, True
+    return normalized_username, username_lookup, normalized_email, normalized_phone, True, phone_changed
 
 
 def _handle_profile_email_change(
@@ -810,6 +886,7 @@ def _handle_profile_email_change(
     *,
     username: str,
     normalized_email: str,
+    normalized_phone: str,
     code: str | None,
     email_verification_code: str | None,
 ) -> dict[str, Any] | None:
@@ -823,6 +900,7 @@ def _handle_profile_email_change(
             user,
             username=username,
             email=normalized_email,
+            phone_number=normalized_phone,
         )
         return {
             "updated": False,
@@ -830,7 +908,7 @@ def _handle_profile_email_change(
             "pending_email": normalized_email,
         }
 
-    _validate_profile_email_change_code(user, normalized_email, email_verification_code)
+    _validate_profile_email_change_code(user, normalized_email, normalized_phone, email_verification_code)
     verify_high_risk_authorization(
         user,
         code,
@@ -842,6 +920,7 @@ def _handle_profile_email_change(
 def _validate_profile_email_change_code(
     user: User,
     normalized_email: str,
+    normalized_phone: str,
     email_verification_code: str,
 ) -> None:
     pending_change = _pending_profile_email_change(user)
@@ -852,6 +931,12 @@ def _validate_profile_email_change_code(
             message="Email verification expired. Request a new code.",
         )
     if pending_change["email"] != normalized_email:
+        _reject_profile_email_change(
+            user,
+            reason="superseded_challenge",
+            message="Email verification expired. Request a new code.",
+        )
+    if pending_change["phone_hmac"] != _profile_phone_hmac(user, normalized_phone):
         _reject_profile_email_change(
             user,
             reason="superseded_challenge",
@@ -885,12 +970,16 @@ def _commit_profile_update(
     user: User,
     normalized_username: str,
     normalized_email: str,
+    normalized_phone: str,
     email_changed: bool,
+    phone_changed: bool,
 ) -> dict[str, Any]:
     user.username = normalized_username
     if email_changed:
         user.email = normalized_email
         user.registration_email_canonical = canonicalize_customer_email(normalized_email)
+    if phone_changed:
+        user.phone_number = normalized_phone
     try:
         db.session.commit()
     except IntegrityError as exc:
@@ -903,18 +992,34 @@ def _commit_profile_update(
         "profile_update",
         "success",
         user=user,
-        metadata={"updated_fields": "profile_email" if email_changed else "profile_details"},
+        metadata={"updated_fields": _profile_updated_fields(email_changed, phone_changed)},
     )
     return {"updated": True, "email_verification_pending": False}
 
 
-def _reject_duplicate_profile_identifiers(user: User, username_lookup: str, normalized_email: str) -> None:
+def _profile_updated_fields(email_changed: bool, phone_changed: bool) -> str:
+    if email_changed and phone_changed:
+        return "profile_email_phone"
+    if email_changed:
+        return "profile_email"
+    if phone_changed:
+        return "profile_phone"
+    return "profile_details"
+
+
+def _reject_duplicate_profile_identifiers(
+    user: User,
+    username_lookup: str,
+    normalized_email: str,
+    normalized_phone: str,
+) -> None:
     canonical_email = canonicalize_customer_email(normalized_email)
     duplicate_user = db.session.execute(
         db.select(User).where(
             or_(
                 func.lower(User.username) == username_lookup,
                 User.registration_email_canonical == canonical_email,
+                User.phone_number == normalized_phone,
             ),
             User.id != user.id,
         )
@@ -924,12 +1029,19 @@ def _reject_duplicate_profile_identifiers(user: User, username_lookup: str, norm
         raise AuthError(PROFILE_UPDATE_ERROR, 400)
 
 
-def _create_profile_email_change_challenge(user: User, *, username: str, email: str) -> None:
+def _create_profile_email_change_challenge(
+    user: User,
+    *,
+    username: str,
+    email: str,
+    phone_number: str,
+) -> None:
     verification_code = f"{secrets.randbelow(1_000_000):06d}"
     expires_at = int(time.time()) + int(current_app.config["PROFILE_EMAIL_CHANGE_TTL_SECONDS"])
     _clear_pending_profile_email_change()
     session[PROFILE_EMAIL_PENDING_USERNAME_KEY] = username
     session[PROFILE_EMAIL_PENDING_EMAIL_KEY] = email
+    session[PROFILE_EMAIL_PENDING_PHONE_HMAC_KEY] = _profile_phone_hmac(user, phone_number)
     session[PROFILE_EMAIL_PENDING_CODE_HMAC_KEY] = _profile_email_code_hmac(
         user,
         email,
@@ -967,17 +1079,18 @@ def _create_profile_email_change_challenge(user: User, *, username: str, email: 
 def _pending_profile_email_change(user: User) -> dict[str, str] | None:
     email = str(session.get(PROFILE_EMAIL_PENDING_EMAIL_KEY) or "")
     username = str(session.get(PROFILE_EMAIL_PENDING_USERNAME_KEY) or "")
+    phone_hmac = str(session.get(PROFILE_EMAIL_PENDING_PHONE_HMAC_KEY) or "")
     code_hmac = str(session.get(PROFILE_EMAIL_PENDING_CODE_HMAC_KEY) or "")
     try:
         expires_at = int(session.get(PROFILE_EMAIL_PENDING_EXPIRES_AT_KEY) or 0)
     except (TypeError, ValueError):
         expires_at = 0
-    if not email or not username or not code_hmac or expires_at <= int(time.time()):
-        if email or username or code_hmac or expires_at:
+    if not email or not username or not phone_hmac or not code_hmac or expires_at <= int(time.time()):
+        if email or username or phone_hmac or code_hmac or expires_at:
             _clear_pending_profile_email_change()
             audit_event("profile_email_change", "expired", user=user)
         return None
-    return {"email": email, "username": username, "code_hmac": code_hmac}
+    return {"email": email, "username": username, "phone_hmac": phone_hmac, "code_hmac": code_hmac}
 
 
 def pending_profile_email_change() -> dict[str, str] | None:
@@ -991,6 +1104,7 @@ def pending_profile_email_change() -> dict[str, str] | None:
 def _clear_pending_profile_email_change() -> None:
     session.pop(PROFILE_EMAIL_PENDING_EMAIL_KEY, None)
     session.pop(PROFILE_EMAIL_PENDING_USERNAME_KEY, None)
+    session.pop(PROFILE_EMAIL_PENDING_PHONE_HMAC_KEY, None)
     session.pop(PROFILE_EMAIL_PENDING_CODE_HMAC_KEY, None)
     session.pop(PROFILE_EMAIL_PENDING_EXPIRES_AT_KEY, None)
     session.modified = True
@@ -999,6 +1113,13 @@ def _clear_pending_profile_email_change() -> None:
 def _profile_email_code_hmac(user: User, email: str, code: str) -> str:
     return active_hmac_hex(
         f"profile-email-change:{user.id}:{current_session_id()}:{_normalize(email)}:{code}",
+        length=64,
+    )
+
+
+def _profile_phone_hmac(user: User, phone_number: str) -> str:
+    return active_hmac_hex(
+        f"profile-phone-change:{user.id}:{current_session_id()}:{phone_number.strip()}",
         length=64,
     )
 

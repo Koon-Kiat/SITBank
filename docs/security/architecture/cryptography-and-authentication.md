@@ -296,10 +296,12 @@ setup before normal account access. Evidence: `app/auth/mfa_policy.py`,
 `app/web/routes.py::enforce_mfa_onboarding`.
 
 Customer profile updates use authenticator-app TOTP as the server-selected
-high-risk step-up method. Username-only changes commit after valid TOTP.
-Profile email changes first send a short-lived, session-bound verification
-code to the new email and keep the old email active until the customer submits
-both that email code and a current TOTP code.
+high-risk step-up method. Username and phone changes commit after valid TOTP,
+with phone values validated as Singapore mobile numbers. Profile email changes
+first send a short-lived, session-bound verification code to the new email and
+keep the old email active until the customer submits both that email code and a
+current TOTP code; the pending challenge is also bound to the submitted phone by
+HMAC rather than storing the raw phone in the browser session.
 
 ### TOTP MFA And Recovery Codes
 

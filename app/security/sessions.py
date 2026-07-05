@@ -27,6 +27,7 @@ from app.security.session_hmac import (
     sign_session_payload,
     verify_session_payload,
 )
+from app.time_display import sgt_datetime
 
 
 SESSION_RISK_REAUTH_REQUIRED_KEY = "risk_reauth_required"
@@ -881,10 +882,7 @@ def _format_session_time(value: str) -> str:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return "Unknown"
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    local_time = parsed.astimezone()
-    return local_time.strftime("%d %b %Y %H:%M")
+    return sgt_datetime(parsed)
 
 
 def _utc_iso(value: datetime | None) -> str:

@@ -1101,7 +1101,7 @@ def _has_recent_payup_sensitive_event(
                     SecurityAuditEvent.outcome == "success",
                     SecurityAuditEvent.event_metadata["updated_fields"]
                     .as_string()
-                    == "profile_email",
+                    .in_(("profile_email", "profile_phone", "profile_email_phone")),
                 ),
             ),
         )
@@ -1255,6 +1255,14 @@ def _validate_payup_recipient(sender: User, recipient_user_id: int) -> User:
     return recipient_user
 
 
+def _payup_sender_has_nickname(sender: User) -> bool:
+    nickname = str(getattr(sender, "payup_nickname", "") or "").strip()
+    return (
+        2 <= len(nickname) <= 128
+        and not any(ord(char) < 32 or ord(char) == 127 for char in nickname)
+    )
+
+
 def execute_payup_transfer(
     *,
     sender: User,
@@ -1269,6 +1277,14 @@ def execute_payup_transfer(
     caller, so a route-level pre-check cannot be raced into skipping MFA.
     """
     ensure_outbound_transfer_allowed(sender)
+    if not _payup_sender_has_nickname(sender):
+        audit_outbound_transfer(
+            sender,
+            "failure",
+            metadata={"reason": "payup_nickname_required", "transfer_channel": "payup"},
+        )
+        db.session.commit()
+        raise AuthError("Set your PayUp display nickname before sending by phone number.", 403)
 
     pending_tfr = _load_and_lock_payup_pending_transfer(sender, confirmation_token)
     amount = _validate_payup_amount(sender, pending_tfr)

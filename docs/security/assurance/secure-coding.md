@@ -137,7 +137,7 @@ customer route inventory prevents silent addition of unclassified routes.
 | Admin routes use a generated route inventory | `tests/test_admin_route_inventory_security.py` |
 | High-risk customer actions use TOTP step-up | `app/auth/services.py::verify_high_risk_authorization()` |
 | Payee routes filter by current user id | `app/banking/routes.py` |
-| PayUp reveals only masked recipient identity, applies multidimensional durable limits, and recomputes a centralized fail-closed risk decision at confirmation and execution | `app/banking/routes.py`, `app/banking/services.py`, `tests/test_payup.py` |
+| PayUp requires a sender display nickname, reveals recipient phone plus PayUp nickname when set, applies multidimensional durable limits, avoids raw phone/nickname audit metadata, and recomputes a centralized fail-closed risk decision at confirmation and execution | `app/banking/routes.py`, `app/banking/services.py`, `tests/test_payup.py` |
 | Admin role permissions are exercised through one centralized positive and negative matrix, with mutation-side-effect assertions | `tests/test_admin_rbac_matrix.py` |
 | Session management uses public references, ownership checks, and absolute lifetime enforcement | `app/auth/services.py::terminate_session_for_user()`, `app/security/sessions.py` |
 

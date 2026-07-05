@@ -36,6 +36,7 @@ def e2e_mfa_customer(app):
         account_number="012345678901",
         full_name="E2E MFA Customer",
         mfa_enabled=True,
+        payup_nickname="E2E Sender",
     )
 
 
@@ -51,6 +52,7 @@ def e2e_payup_pair(app, e2e_mfa_customer):
         full_name="E2E PayUp Recipient",
         balance=Decimal("1000.00"),
         mfa_enabled=False,
+        payup_nickname="E2E Recipient",
     )
     return {"sender": e2e_mfa_customer, "recipient": recipient}
 
@@ -74,7 +76,7 @@ def test_mfa_login_logout_then_protected_banking_redirects_to_login(
     assert console_errors == []
 
 
-def test_payup_lookup_browser_flow_masks_identity_and_skips_low_risk_step_up(
+def test_payup_lookup_browser_flow_uses_payup_identity_and_skips_low_risk_step_up(
     live_server,
     browser_page,
     e2e_payup_pair,
@@ -90,19 +92,18 @@ def test_payup_lookup_browser_flow_masks_identity_and_skips_low_risk_step_up(
     browser_page.get_by_role("button", name="Continue").click()
     browser_page.wait_for_url("**/banking/payup/amount", wait_until="load")
 
-    masked_name = " ".join(
-        part[0] + ("*" * min(max(len(part) - 1, 1), 8))
-        for part in recipient["full_name"].split()
-    )
-    browser_page.get_by_role("heading", name=f"Pay to {masked_name}").wait_for()
+    browser_page.get_by_role("heading", name=f"Pay to {recipient['payup_nickname']}").wait_for()
     assert recipient["full_name"] not in browser_page.content()
     assert recipient["phone_number"] in browser_page.content()
+    assert f"PayUp nickname: {recipient['payup_nickname']}" in browser_page.content()
 
     browser_page.locator("input[name='amount']").fill("100.00")
     browser_page.get_by_role("button", name="Review Transfer").click()
     browser_page.wait_for_url("**/banking/payup/confirm", wait_until="load")
 
-    assert masked_name in browser_page.content()
+    assert f"From: {sender['payup_nickname']}" in browser_page.content()
+    assert f"Recipient nickname: {recipient['payup_nickname']}" in browser_page.content()
+    assert recipient["full_name"] not in browser_page.content()
     assert recipient["phone_number"] in browser_page.content()
     assert "SGD 100.00" in browser_page.content()
     assert not browser_page.get_by_label("Authenticator code").is_visible()

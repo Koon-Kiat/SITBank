@@ -33,7 +33,7 @@
           <tr>
             <td>{{ dispute.transaction.transaction_ref[:8]|upper }}</td>
             <td>{{ dispute.issue_type.replace('_', ' ')|capitalize }}</td>
-            <td><time datetime="{{ dispute.created_at.isoformat() }}">{{ (dispute.created_at | sgt).strftime('%d %b %Y, %H:%M') }} SGT</time></td>
+            <td><time datetime="{{ dispute.created_at|utc_iso }}">{{ dispute.created_at|sgt_datetime }}</time></td>
             <td><span class="badge {{ 'neutral' if dispute.status in ('open', 'under_review') else '' }}">{{ dispute.status.replace('_', ' ')|capitalize }}</span></td>
             <td><a class="button secondary small" href="{{ url_for('web.transaction_detail', transaction_id=dispute.transaction_id) }}">View</a></td>
           </tr>

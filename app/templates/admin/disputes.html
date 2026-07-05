@@ -28,7 +28,7 @@
           <td>{{ item.reporter_username or item.reporter_ref or "unavailable" }}</td>
           <td>{{ item.issue_type }}</td>
           <td>{{ item.status }}</td>
-          <td>{{ item.created_at or "n/a" }}</td>
+          <td><time datetime="{{ item.created_at or '' }}">{{ item.created_at_display or "n/a" }}</time></td>
           <td><a class="button secondary small" href="{{ url_for('admin.dispute_detail', dispute_id=item.id) }}">Review</a></td>
         </tr>
         {% else %}
@@ -57,6 +57,10 @@
     <dd>{{ selected_dispute.reason }}</dd>
     <dt>Status</dt>
     <dd>{{ selected_dispute.status }}</dd>
+    <dt>Filed</dt>
+    <dd><time datetime="{{ selected_dispute.created_at or '' }}">{{ selected_dispute.created_at_display or "n/a" }}</time></dd>
+    <dt>Decided</dt>
+    <dd>{{ selected_dispute.decided_at_display or "not decided" }}</dd>
     <dt>Resolution note</dt>
     <dd>{{ selected_dispute.resolution_note or "not provided" }}</dd>
   </dl>
