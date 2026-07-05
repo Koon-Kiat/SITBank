@@ -1461,6 +1461,18 @@ class Config:
         minimum=60,
         maximum=3600,
     )
+    CUSTOMER_MFA_FAILURE_LIMIT = _int_env(
+        "CUSTOMER_MFA_FAILURE_LIMIT",
+        default="5",
+        minimum=1,
+        maximum=20,
+    )
+    CUSTOMER_MFA_FAILURE_WINDOW_SECONDS = _int_env(
+        "CUSTOMER_MFA_FAILURE_WINDOW_SECONDS",
+        default="300",
+        minimum=60,
+        maximum=3600,
+    )
     PAYUP_QUICK_TRANSFER_CAP = _float_env(
         "PAYUP_QUICK_TRANSFER_CAP",
         default="200.00",

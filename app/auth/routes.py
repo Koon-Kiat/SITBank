@@ -362,8 +362,8 @@ def mfa_recovery_codes_regenerate():
 
 
 @auth_bp.post("/mfa/verify")
-@limiter.limit("5 per 5 minutes", key_func=get_remote_address)
-@limiter.limit("5 per 5 minutes", key_func=mfa_principal)
+@limiter.limit("30 per 5 minutes", key_func=get_remote_address)
+@limiter.limit("30 per 5 minutes", key_func=mfa_principal)
 def mfa_verify():
     data = _load_payload(AuthenticationCodeSchema(), AuthenticationCodeForm)
     return jsonify(complete_pending_mfa(data["totp_code"]))
