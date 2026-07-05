@@ -13,14 +13,17 @@ main push -> Publish container image -> Release verification -> Deploy staging
 The tested, scanned, signed, and deployed digest must be identical. Deployments never use `latest`.
 The publish job also creates a GitHub artifact attestation whose subject is the
 exact GHCR image name and Buildx digest, and pushes that attestation to the
-image registry. Release verification checks the registry-backed attestation
-against this repository, the exact `ci-deploy.yml` signer workflow, the trusted
-`main` source ref, the resolved release commit, GitHub's OIDC issuer, and a
-non-self-hosted runner before any staging deployment. The verifier uses
-`--no-public-good` intentionally so it selects the GitHub artifact attestation
-instead of trusting or being confused by separate Sigstore public-good
-BuildKit provenance. Cosign signature and certificate-identity verification,
-Trivy, SBOM, and provenance checks remain independent required layers.
+image registry. Release verification uses the GitHub attestation API's
+repository-scoped lookup for that exact image digest, rather than
+`--bundle-from-oci`, and checks the exact `ci-deploy.yml` signer workflow, the
+trusted `main` source ref, the resolved release commit, GitHub's OIDC issuer,
+and a non-self-hosted runner before any staging deployment. Public GitHub
+repositories use Sigstore's Public Good instance for GitHub artifact
+attestations, so the verifier must not use `--no-public-good`; the identity and
+source constraints remain mandatory. The API lookup also avoids selecting the
+separate BuildKit provenance stored in the OCI registry. Cosign signature and
+certificate-identity verification, Trivy, SBOM, and provenance checks remain
+independent required layers.
 
 ## Workflow And Check Display Names
 
