@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 from flask import Blueprint, current_app, flash, g, jsonify, redirect, render_template, request, session, url_for
@@ -22,6 +23,7 @@ from app.security.production_guard import (
     validate_production_security_prerequisites,
 )
 from app.security.rate_limits import request_principal
+from app.time_display import sgt_datetime
 from app.security.http_errors import (
     CSRF_ERROR_MESSAGE,
     rate_limit_response,
@@ -350,28 +352,38 @@ def _alert_display_report(report: dict[str, Any], selected_ref: str | None) -> d
         for index, alert in enumerate(report.get("alerts") or [])
         if isinstance(alert, dict)
     ]
-    display["alerts"] = alerts
-    display["highest_severity"] = _highest_alert_severity(alerts)
-    display["next_action"] = _alert_next_action(display)
-    display["selected_alert"] = next(
+    selected_alert = next(
         (alert for alert in alerts if alert["ref"] == selected_ref),
         alerts[0] if alerts else None,
     )
+    selected_alert_ref = selected_alert["ref"] if selected_alert else ""
+    for alert in alerts:
+        alert["selected"] = alert["ref"] == selected_alert_ref
+    display["alerts"] = alerts
+    display["highest_severity"] = _highest_alert_severity(alerts)
+    display["next_action"] = _alert_next_action(display)
+    display["selected_alert"] = selected_alert
+    display["generated_at_utc"] = _alert_time_utc(report.get("generated_at"))
+    display["generated_at_display"] = _alert_time_display(report.get("generated_at"))
     return display
 
 
 def _alert_display_item(alert: dict[str, Any], index: int) -> dict[str, Any]:
     ref = f"alert-{index + 1}"
     event_id = _alert_existing_event_id(alert.get("latest_event_id"))
+    source = _safe_alert_text(alert.get("source"), 160) or "unknown"
     return {
         "ref": ref,
         "detail_url": url_for(_ADMIN_ALERTS_ENDPOINT, alert=ref),
         "alert_type": _safe_alert_text(alert.get("alert_type"), 80),
         "severity": _safe_alert_text(alert.get("severity"), 24) or "low",
-        "source": _safe_alert_text(alert.get("source"), 160) or "unknown",
+        "source": source,
+        "source_summary": _alert_source_summary(source),
         "count": int(alert.get("count") or 0),
         "window_seconds": int(alert.get("window_seconds") or 0),
         "generated_at": _safe_alert_text(alert.get("generated_at"), 40),
+        "generated_at_utc": _alert_time_utc(alert.get("generated_at")),
+        "generated_at_display": _alert_time_display(alert.get("generated_at")),
         "event_id": event_id,
         "event_url": url_for("admin.audit_log_detail", event_id=event_id) if event_id else "",
         "status": _safe_alert_text(alert.get("status"), 80),
@@ -379,6 +391,57 @@ def _alert_display_item(alert: dict[str, Any], index: int) -> dict[str, Any]:
         "error_type": _safe_alert_text(alert.get("error_type"), 80),
         "recommended_action": _alert_recommended_action(alert),
     }
+
+
+def _alert_time_utc(value: Any) -> str:
+    return _safe_alert_text(value, 64)
+
+
+def _alert_time_display(value: Any) -> str:
+    parsed = _parse_alert_time(value)
+    if parsed is not None:
+        return sgt_datetime(parsed)
+    return _safe_alert_text(value, 40) or "unknown"
+
+
+def _parse_alert_time(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _alert_source_summary(source: Any) -> str:
+    raw = _safe_alert_text(source, 160)
+    if not raw:
+        return "Unknown source"
+    normalized = raw.casefold()
+    if normalized.startswith("principal_ref:"):
+        return "Principal reference"
+    if normalized.startswith("table:"):
+        table_name = raw.split(":", 1)[1].replace("_", " ").strip()
+        if table_name:
+            return f"{table_name.title()} table"
+        return "Database table"
+    source_labels = {
+        "audit_chain": "Audit chain",
+        "database_integrity": "Database integrity",
+        "manual_security_alert": "Manual security alert",
+    }
+    if normalized in source_labels:
+        return source_labels[normalized]
+    summary = " ".join(re.sub(r"[_:]+", " ", raw).split())
+    if not summary:
+        return "Unknown source"
+    return f"{summary[:77]}..." if len(summary) > 80 else summary[:1].upper() + summary[1:]
 
 
 def _alert_existing_event_id(value: Any) -> int | None:

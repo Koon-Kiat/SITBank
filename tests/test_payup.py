@@ -71,6 +71,20 @@ def _totp_code(secret: str, timestamp: int | None = None) -> str:
     return pyotp.TOTP(secret, digits=6, interval=30).at(timestamp or int(time.time()))
 
 
+def _complete_clean_mfa_login(client, secret: str, monkeypatch) -> int:
+    client.post("/logout")
+    password_response = login(client, identifier="alice01")
+    login_time = int(time.time())
+    monkeypatch.setattr("app.auth.services.time.time", lambda: login_time)
+    mfa_response = client.post(
+        "/auth/mfa/verify",
+        json={"totp_code": _totp_code(secret, login_time)},
+    )
+    assert password_response.status_code == 302
+    assert mfa_response.status_code == 200
+    return login_time
+
+
 def _payup_lookup_data(
     payup_context: dict,
     phone_number: str = "81234567",
@@ -862,6 +876,66 @@ def test_complete_payup_route_flow_crossing_threshold_requires_mfa(client, payup
     confirm_submit = client.post("/banking/payup/confirm", data={"totp_code": totp_code})
     assert confirm_submit.status_code == 302
     assert Transaction.query.filter_by(transaction_type="payup").count() == 1
+
+
+def test_payup_low_risk_succeeds_after_clean_password_totp_login(
+    client,
+    payup_context,
+    monkeypatch,
+):
+    _complete_clean_mfa_login(client, payup_context["alice_secret"], monkeypatch)
+
+    lookup = client.post("/banking/payup", data=_payup_lookup_data(payup_context))
+    amount = client.post(
+        "/banking/payup/amount",
+        data={"amount": "100.00", "reference": "Clean low risk"},
+    )
+    confirm_page = client.get("/banking/payup/confirm")
+    confirm_submit = client.post("/banking/payup/confirm", data={})
+
+    assert lookup.status_code == 302
+    assert amount.status_code == 302
+    assert confirm_page.status_code == 200
+    assert b"Authenticator code" not in confirm_page.data
+    assert confirm_submit.status_code == 302
+    assert Transaction.query.filter_by(reference="Clean low risk", transaction_type="payup").count() == 1
+    assert db.session.query(SecurityAuditEvent).filter_by(
+        event_type="session_risk",
+        outcome="reauth_required",
+    ).count() == 0
+
+
+def test_payup_stepup_succeeds_after_clean_password_totp_login(
+    client,
+    payup_context,
+    monkeypatch,
+):
+    alice_secret = payup_context["alice_secret"]
+    login_time = _complete_clean_mfa_login(client, alice_secret, monkeypatch)
+
+    lookup = client.post("/banking/payup", data=_payup_lookup_data(payup_context))
+    amount = client.post(
+        "/banking/payup/amount",
+        data={"amount": "450.00", "reference": "Clean stepup"},
+    )
+    confirm_page = client.get("/banking/payup/confirm")
+    stepup_time = login_time + 31
+    monkeypatch.setattr("app.auth.services.time.time", lambda: stepup_time)
+    confirm_submit = client.post(
+        "/banking/payup/confirm",
+        data={"totp_code": _totp_code(alice_secret, stepup_time)},
+    )
+
+    assert lookup.status_code == 302
+    assert amount.status_code == 302
+    assert confirm_page.status_code == 200
+    assert b"Authenticator code" in confirm_page.data
+    assert confirm_submit.status_code == 302
+    assert Transaction.query.filter_by(reference="Clean stepup", transaction_type="payup").count() == 1
+    assert db.session.query(SecurityAuditEvent).filter_by(
+        event_type="session_risk",
+        outcome="reauth_required",
+    ).count() == 0
 
 
 def test_payup_confirm_accepts_matching_legacy_session_context(

@@ -482,6 +482,22 @@ def test_payee_routes_cover_missing_expired_and_unauthorized_pending_state(clien
 
     add_page = client.get("/banking/payees/add")
     invalid_add = client.post("/banking/payees/add", data={})
+    nine_digit_add = client.post(
+        "/banking/payees/add",
+        data={
+            "nickname": "Short",
+            "account_number": "123456789",
+            "totp_code": "123456",
+        },
+    )
+    hyphenated_add = client.post(
+        "/banking/payees/add",
+        data={
+            "nickname": "Hyphen",
+            "account_number": "123-456-789-012",
+            "totp_code": "123456",
+        },
+    )
     missing_get = client.get("/banking/payees/confirm")
     missing_post = client.post("/banking/payees/confirm")
 
@@ -516,7 +532,15 @@ def test_payee_routes_cover_missing_expired_and_unauthorized_pending_state(clien
     self_payee = client.post("/banking/payees/confirm")
 
     assert add_page.status_code == 200
+    add_markup = add_page.get_data(as_text=True)
+    assert "9- or 12-digit" not in add_markup
+    assert 'placeholder="12-digit account number"' in add_markup
+    assert "Enter exactly 12 digits. Do not include hyphens or spaces." in add_markup
     assert invalid_add.status_code == 400
+    assert nine_digit_add.status_code == 400
+    assert hyphenated_add.status_code == 400
+    assert b"Account number must be exactly 12 digits" in nine_digit_add.data
+    assert b"Account number must be exactly 12 digits" in hyphenated_add.data
     assert missing_get.status_code == 302
     assert missing_post.status_code == 302
     assert expired.status_code == 302

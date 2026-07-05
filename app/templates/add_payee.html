@@ -39,9 +39,9 @@
         </div>
         <div class="form-group">
           <label for="{{ form.account_number.id }}">Account number</label>
-          {{ form.account_number(autocomplete="off", maxlength="12", placeholder="9- or 12-digit account number", inputmode="numeric") }}
+          {{ form.account_number(autocomplete="off", maxlength="12", placeholder="12-digit account number", inputmode="numeric") }}
           {% for error in form.account_number.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
-          <p class="hint">The 9- or 12-digit SITBank account number of the recipient.</p>
+          <p class="hint">Enter exactly 12 digits. Do not include hyphens or spaces.</p>
         </div>
         <div class="form-group">
           <label for="{{ form.totp_code.id }}">Authenticator code</label>

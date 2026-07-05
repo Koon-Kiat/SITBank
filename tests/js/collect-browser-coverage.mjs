@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const browserScripts = [
   "app/static/js/account.js",
+  "app/static/js/admin-alerts.js",
   "app/static/js/dashboard.js",
   "app/static/js/payees.js",
   "app/static/js/session-timeout.js",
@@ -135,6 +136,10 @@ class MockElement {
     this.focused = true;
   }
 
+  scrollIntoView() {
+    this.scrolledIntoView = true;
+  }
+
   select() {
     this.selected = true;
   }
@@ -207,6 +212,12 @@ function createBrowserContext(document) {
         return { timeout_seconds: 180 };
       },
     }),
+    history: {
+      replacedUrl: "",
+      replaceState(_state, _title, url) {
+        this.replacedUrl = url;
+      },
+    },
     location: {
       href: "",
       reloadCount: 0,
@@ -378,6 +389,54 @@ async function exercisePayees() {
   for (const callback of context.__intervalCallbacks) callback();
   assert.match(badge.textContent, /Available in/);
   assert.equal(context.location.reloadCount, 1);
+}
+
+async function exerciseAdminAlerts() {
+  const document = new MockDocument();
+  const linkOne = new MockElement({
+    attributes: {
+      "data-alert-ref": "alert-1",
+      href: "/alerts?alert=alert-1",
+    },
+  });
+  linkOne.href = "/alerts?alert=alert-1";
+  const linkTwo = new MockElement({
+    attributes: {
+      "data-alert-ref": "alert-2",
+      href: "/alerts?alert=alert-2",
+    },
+  });
+  linkTwo.href = "/alerts?alert=alert-2";
+  const panelOne = new MockElement({
+    id: "alert-detail-alert-1",
+    attributes: { "data-alert-ref": "alert-1" },
+  });
+  const panelTwo = new MockElement({
+    id: "alert-detail-alert-2",
+    attributes: { "data-alert-ref": "alert-2" },
+  });
+  panelTwo.hidden = true;
+  document.idMap.set(panelOne.id, panelOne);
+  document.idMap.set(panelTwo.id, panelTwo);
+  document.selectorAllMap.set("[data-alert-detail-link]", [linkOne, linkTwo]);
+  document.selectorAllMap.set("[data-alert-detail-panel]", [panelOne, panelTwo]);
+
+  const context = createBrowserContext(document);
+  runScript("app/static/js/admin-alerts.js", context);
+  const clickEvent = await linkTwo.emit("click");
+
+  assert.equal(clickEvent.defaultPrevented, true);
+  assert.equal(panelOne.hidden, true);
+  assert.equal(panelTwo.hidden, false);
+  assert.equal(linkOne.getAttribute("aria-expanded"), "false");
+  assert.equal(linkTwo.getAttribute("aria-expanded"), "true");
+  assert.equal(context.history.replacedUrl, "/alerts?alert=alert-2");
+  assert.equal(panelTwo.focused, true);
+  assert.equal(panelTwo.scrolledIntoView, true);
+
+  const emptyDocument = new MockDocument();
+  const emptyContext = createBrowserContext(emptyDocument);
+  runScript("app/static/js/admin-alerts.js", emptyContext);
 }
 
 async function exerciseSessionTimeout() {
@@ -583,6 +642,7 @@ await post(session, "Profiler.startPreciseCoverage", {
 });
 
 await exerciseAccount();
+await exerciseAdminAlerts();
 await exerciseDashboard();
 await exercisePayees();
 await exerciseSessionTimeout();
