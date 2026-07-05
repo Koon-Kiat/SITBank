@@ -107,6 +107,12 @@ fall back to a legacy owner or project. Scanner evidence is valid only when the
 same run imports both `coverage.xml` and `coverage/lcov.info` for the resolved
 source commit.
 
+The reusable workflow builds the missing-token GitHub error annotation at
+runtime, so successful logs do not display a misleading literal
+`::error::SONAR_TOKEN...` command while showing the checked-in shell script. If
+`SONAR_TOKEN` is actually absent on a trusted run, the job still fails closed
+with a clear GitHub error annotation.
+
 The reviewed main-branch cleartext-protocol finding in
 `ops/container/smoke-test.sh` is an intentional private-only exception: the
 URL and its ZAP baseline sink address only a named container on the isolated

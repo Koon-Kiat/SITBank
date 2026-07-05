@@ -531,6 +531,9 @@ Actions secret `SONAR_TOKEN`; it does not use production environments,
 deployment credentials, or `SONAR_HOST_URL`. Scheduled CI runs skip the
 SonarQube job. Coverage retrieval uses the SHA-pinned
 `actions/download-artifact` v8.0.1 Node.js 24 action.
+The token check constructs the GitHub error annotation at runtime so successful
+logs do not show a misleading literal `::error::SONAR_TOKEN...` command; a
+trusted run with no token still fails closed with an error annotation.
 
 The initial SonarQube quality gate is reporting-only and is not a release or
 deployment dependency. After a successful trusted internal pull-request scan,

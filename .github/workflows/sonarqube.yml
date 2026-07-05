@@ -40,7 +40,8 @@ jobs:
             exit 0
           fi
           if [[ -z "${SONAR_TOKEN}" ]]; then
-            echo "::error::SONAR_TOKEN is not configured. Add the SonarQube Cloud analysis token as a GitHub Actions repository or organization secret."
+            annotation_type=error
+            printf '::%s::SONAR_TOKEN is not configured. Add the SonarQube Cloud analysis token as a GitHub Actions repository or organization secret.\n' "${annotation_type}"
             exit 1
           fi
           echo "should_scan=true" >> "${GITHUB_OUTPUT}"
