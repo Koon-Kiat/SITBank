@@ -739,7 +739,7 @@ jobs:
         run: |
           gh attestation verify "oci://${IMAGE}" \
             --repo "${GITHUB_REPOSITORY}" \
-            --signer-workflow "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/.github/workflows/ci-deploy.yml" \
+            --signer-workflow "github.com/${GITHUB_REPOSITORY}/.github/workflows/ci-deploy.yml" \
             --source-ref "refs/heads/main" \
             --source-digest "${RELEASE_SHA}" \
             --cert-oidc-issuer "https://token.actions.githubusercontent.com" \

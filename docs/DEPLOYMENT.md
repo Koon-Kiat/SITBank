@@ -265,9 +265,11 @@ Before staging, release verification also verifies a GitHub artifact
 attestation, pushed by the trusted publish job to the image registry, for the
 exact `ghcr.io/koon-kiat/sitbank@sha256:<digest>` subject. The verifier requires
 repository `Koon-Kiat/SITBank`, source ref `refs/heads/main`, the resolved
-release commit, exact signer workflow `.github/workflows/ci-deploy.yml`,
-GitHub's OIDC issuer, a non-self-hosted runner, and the same digest passed to
-deployment. Because public GitHub repositories sign GitHub artifact
+release commit, exact scheme-free signer workflow identity
+`github.com/Koon-Kiat/SITBank/.github/workflows/ci-deploy.yml`, GitHub's OIDC
+issuer, a non-self-hosted runner, and the same digest passed to deployment.
+GitHub CLI accepts `[host/]owner/repository/path` for `--signer-workflow`, not
+an `https://` URL. Because public GitHub repositories sign GitHub artifact
 attestations with Sigstore's Public Good instance, verification intentionally
 does not use `--no-public-good`. It uses the repository-scoped GitHub
 attestation API lookup rather than `--bundle-from-oci`, so independent BuildKit
