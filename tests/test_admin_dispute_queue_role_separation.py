@@ -6,7 +6,11 @@ from decimal import Decimal
 
 import pytest
 
-from app.admin.services import transition_dispute_status_for_staff
+from app.admin.services import (
+    dispute_detail_for_staff,
+    disputes_for_staff,
+    transition_dispute_status_for_staff,
+)
 from app.extensions import db
 from app.models import SecurityAuditEvent, Transaction, TransactionDispute, User
 from app.security.audit import AuditWriteError
@@ -235,3 +239,57 @@ def test_dispute_transition_rolls_back_when_audit_write_fails(admin_app, monkeyp
         assert dispute.status == "open"
         assert dispute.resolver_id is None
         assert dispute.resolution_note is None
+
+
+def test_dispute_queue_read_fails_closed_when_audit_write_fails(admin_app, monkeypatch):
+    _create_dispute(admin_app)
+
+    def fail_required_audit(*_args, **_kwargs):
+        raise AuditWriteError("audit unavailable")
+
+    monkeypatch.setattr("app.admin.services.audit_event_required", fail_required_audit)
+
+    with admin_app.app_context():
+        staff = User(
+            username="read-fail-staff",
+            email="read-fail-staff@sit.singaporetech.edu.sg",
+            password_hash="not-used",
+            account_type="staff",
+            account_status="active",
+            full_name="Read Fail Staff",
+            phone_number="91112230",
+            mfa_enabled=True,
+            workplace_email_verified_at=datetime.now(timezone.utc),
+        )
+        db.session.add(staff)
+        db.session.commit()
+
+        with pytest.raises(AuditWriteError):
+            disputes_for_staff(staff)
+
+
+def test_dispute_detail_read_fails_closed_when_audit_write_fails(admin_app, monkeypatch):
+    dispute_id = _create_dispute(admin_app)
+
+    def fail_required_audit(*_args, **_kwargs):
+        raise AuditWriteError("audit unavailable")
+
+    monkeypatch.setattr("app.admin.services.audit_event_required", fail_required_audit)
+
+    with admin_app.app_context():
+        staff = User(
+            username="detail-fail-staff",
+            email="detail-fail-staff@sit.singaporetech.edu.sg",
+            password_hash="not-used",
+            account_type="staff",
+            account_status="active",
+            full_name="Detail Fail Staff",
+            phone_number="91112231",
+            mfa_enabled=True,
+            workplace_email_verified_at=datetime.now(timezone.utc),
+        )
+        db.session.add(staff)
+        db.session.commit()
+
+        with pytest.raises(AuditWriteError):
+            dispute_detail_for_staff(staff, dispute_id)
