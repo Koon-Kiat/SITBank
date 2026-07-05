@@ -296,10 +296,10 @@ def test_prometheus_config_is_rendered_fail_closed_before_container_start():
         "ops/observability/render_prometheus_config.py",
         run_name="_prometheus_config_renderer",
     )
-    template = (OBS_ROOT / "prometheus" / "prometheus.yml").read_text(
-        encoding="utf-8"
-    )
     render = renderer["render_prometheus_config"]
+    validate_template_path = renderer["validate_prometheus_template_path"]
+    template_path = validate_template_path(OBS_ROOT / "prometheus" / "prometheus.yml")
+    template = template_path.read_text(encoding="utf-8")
 
     rendered = render(template, "production")
 
@@ -327,6 +327,55 @@ def test_prometheus_config_is_rendered_fail_closed_before_container_start():
     ).read_text(encoding="utf-8")
     assert "`--config.expand-env` flag" in runbook
     assert "http://prometheus:9090/-/ready" in runbook
+
+
+def test_prometheus_renderer_rejects_unapproved_template_paths(tmp_path):
+    renderer = runpy.run_path(
+        "ops/observability/render_prometheus_config.py",
+        run_name="_prometheus_config_renderer",
+    )
+    validate_template_path = renderer["validate_prometheus_template_path"]
+    allowed_root = tmp_path / "prometheus"
+    allowed_root.mkdir()
+    approved = allowed_root / "prometheus.yml"
+    approved.write_text("global: {}\n", encoding="utf-8")
+    outside = tmp_path / "outside.yml"
+    outside.write_text("global: {}\n", encoding="utf-8")
+    directory = allowed_root / "directory"
+    directory.mkdir()
+
+    assert validate_template_path(approved, allowed_root=allowed_root) == approved.resolve()
+    for unsafe_candidate in (
+        allowed_root / ".." / "outside.yml",
+        outside.resolve(),
+        directory,
+        allowed_root / "missing.yml",
+    ):
+        with pytest.raises(ValueError, match="approved template directory"):
+            validate_template_path(unsafe_candidate, allowed_root=allowed_root)
+
+    symlink = allowed_root / "linked.yml"
+    try:
+        symlink.symlink_to(approved)
+    except OSError:
+        pytest.skip("symlink creation is unavailable in this environment")
+    with pytest.raises(ValueError, match="approved template directory"):
+        validate_template_path(symlink, allowed_root=allowed_root)
+
+    symlink_escape = allowed_root / "escape.yml"
+    symlink_escape.symlink_to(outside)
+    with pytest.raises(ValueError, match="approved template directory"):
+        validate_template_path(symlink_escape, allowed_root=allowed_root)
+
+
+def test_prometheus_renderer_cli_reads_only_validated_template_path():
+    source = Path("ops/observability/render_prometheus_config.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "validated_template = validate_prometheus_template_path(args.template)" in source
+    assert "validated_template.read_text" in source
+    assert "args.template.read_text" not in source
 
 
 def test_loki_retention_and_grafana_datasource_are_configured_without_credentials():

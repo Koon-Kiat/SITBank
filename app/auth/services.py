@@ -51,7 +51,14 @@ from app.security.passwords import (
     validate_password_policy,
     verify_password,
 )
-from app.security.rate_limits import AuthBackoffRequired, apply_exponential_backoff, clear_failures, record_failure
+from app.security.rate_limits import (
+    AuthBackoffRequired,
+    DurableRateLimitExceeded,
+    apply_exponential_backoff,
+    clear_failures,
+    enforce_durable_failure_limit,
+    record_failure,
+)
 from app.security.session_hmac import active_hmac_hex
 from app.security.sessions import (
     begin_password_authenticated_session,
@@ -348,6 +355,10 @@ def authenticate_primary(identifier: str, password: str) -> dict[str, Any]:
     db.session.commit()
 
     if user.mfa_enabled:
+        clear_failures(
+            "customer_mfa_login",
+            _customer_mfa_failure_principal(user.id),
+        )
         begin_password_authenticated_session(user.id)
         audit_event("login_password", "success", user=user, metadata={"mfa_required": True})
         return {
@@ -543,11 +554,15 @@ def complete_pending_mfa(code: str) -> dict[str, Any]:
 
     ensure_account_can_authenticate(user)
 
+    principal = _customer_mfa_failure_principal(user.id)
+    failure_limit = int(current_app.config["CUSTOMER_MFA_FAILURE_LIMIT"])
+    _enforce_customer_mfa_failure_limit(user, principal, failure_limit)
     factor = _verify_pending_login_authentication_code(user, code)
 
     user.last_login_at = datetime.now(timezone.utc)
     user.failed_login_count = 0
     db.session.commit()
+    clear_failures("customer_mfa_login", principal)
     clear_failures("login", _auth_principal(user.username))
     clear_failures("login", _auth_principal(user.email))
     _clear_user_security_failures(user, "password")
@@ -566,6 +581,81 @@ def complete_pending_mfa(code: str) -> dict[str, Any]:
         "recovery_codes_remaining": recovery_codes_remaining,
         "recovery_codes_low": recovery_codes_remaining <= RECOVERY_CODE_LOW_THRESHOLD,
     }
+
+
+def _customer_mfa_failure_principal(user_id: int) -> str:
+    return f"{_client_ip()}:{user_id}"
+
+
+def _enforce_customer_mfa_failure_limit(
+    user: User,
+    principal: str,
+    failure_limit: int,
+    *,
+    audit_block: bool = True,
+) -> None:
+    try:
+        enforce_durable_failure_limit(
+            "customer_mfa_login",
+            principal,
+            limit=failure_limit,
+        )
+    except DurableRateLimitExceeded as exc:
+        if audit_block:
+            audit_event(
+                "mfa_login_verify",
+                "blocked",
+                user=user,
+                metadata={
+                    "reason": "wrong_code_threshold_exceeded",
+                    "retry_after": exc.retry_after,
+                },
+            )
+        raise AuthError(
+            GENERIC_MFA_ERROR,
+            429,
+            retry_after=exc.retry_after,
+        ) from exc
+
+
+def _record_customer_mfa_login_failure(
+    user: User,
+    *,
+    reason: str,
+    event_type: str,
+) -> None:
+    principal = _customer_mfa_failure_principal(user.id)
+    failure_limit = int(current_app.config["CUSTOMER_MFA_FAILURE_LIMIT"])
+    failure_window_seconds = int(
+        current_app.config["CUSTOMER_MFA_FAILURE_WINDOW_SECONDS"]
+    )
+    attempts = record_failure(
+        "customer_mfa_login",
+        principal,
+        window_seconds=failure_window_seconds,
+    )
+    outcome = "blocked" if attempts > failure_limit else "failure"
+    audit_event(
+        event_type,
+        outcome,
+        user=user,
+        metadata={
+            "reason": (
+                "wrong_code_threshold_exceeded"
+                if attempts > failure_limit
+                else reason
+            ),
+            "failure_count": attempts,
+        },
+    )
+    _record_user_security_failure(user, "mfa", "mfa_failed_attempts")
+    if attempts > failure_limit:
+        _enforce_customer_mfa_failure_limit(
+            user,
+            principal,
+            failure_limit,
+            audit_block=False,
+        )
 
 
 def regenerate_totp_recovery_codes(
@@ -1075,23 +1165,28 @@ def _handle_mfa_verification_failure(user: User, action: str) -> None:
 
 def _verify_pending_login_authentication_code(user: User, code: str) -> str:
     if _is_totp_code(code):
-        if _verify_totp_for_user(user, code, "mfa_login"):
+        if _verify_totp_for_user(
+            user,
+            code,
+            "mfa_login",
+            track_failures=False,
+        ):
             return "totp"
-        _handle_mfa_verification_failure(user, "mfa_login_verify")
-
-    try:
-        _enforce_auth_backoff("mfa_recovery_code", str(user.id))
-    except AuthError:
-        _record_user_security_failure(user, "mfa", "mfa_failed_attempts")
-        raise
-
-    if not consume_recovery_code(user, code, commit=False):
-        record_failure("mfa_recovery_code", str(user.id))
-        audit_event("mfa_recovery_code_verify", "failure", user=user)
-        _record_user_security_failure(user, "mfa", "mfa_failed_attempts")
+        _record_customer_mfa_login_failure(
+            user,
+            reason="invalid_totp",
+            event_type="mfa_login_verify",
+        )
         raise AuthError(GENERIC_MFA_ERROR, 401)
 
-    clear_failures("mfa_recovery_code", str(user.id))
+    if not consume_recovery_code(user, code, commit=False):
+        _record_customer_mfa_login_failure(
+            user,
+            reason="invalid_recovery_code",
+            event_type="mfa_recovery_code_verify",
+        )
+        raise AuthError(GENERIC_MFA_ERROR, 401)
+
     _clear_user_security_failures(user, "mfa")
     remaining = unused_recovery_code_count(user)
     audit_event_required("mfa_recovery_code_verify", "success", user=user, metadata={"remaining_codes": remaining})

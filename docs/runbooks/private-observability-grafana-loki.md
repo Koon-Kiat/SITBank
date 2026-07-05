@@ -109,6 +109,10 @@ and commit, root-owned host configuration, immutable image digests,
 loopback-only ports, internal networks, Nginx route absence, Funnel denial,
 and the approved private Serve mapping before calling
 `bootstrap-observability-ec2`.
+The bootstrap renders Prometheus from the committed
+`ops/observability/prometheus/` template directory only; manual renderer
+invocation must not point at arbitrary host files, symlinks, or parent
+traversal paths.
 
 Each protected observability environment must provide
 `OBSERVABILITY_BOOTSTRAP_TS_OAUTH_CLIENT_ID` and

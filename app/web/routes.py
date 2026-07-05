@@ -599,8 +599,8 @@ def mfa_verify():
 
 
 @web_bp.post("/mfa/verify")
-@limiter.limit("5 per 5 minutes", key_func=get_remote_address)
-@limiter.limit("5 per 5 minutes", key_func=mfa_principal)
+@limiter.limit("30 per 5 minutes", key_func=get_remote_address)
+@limiter.limit("30 per 5 minutes", key_func=mfa_principal)
 def mfa_verify_submit():
     if not session.get("pending_mfa_user_id"):
         flash("Please log in first.", "warning")
