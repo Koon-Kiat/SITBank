@@ -864,6 +864,52 @@ def test_complete_payup_route_flow_crossing_threshold_requires_mfa(client, payup
     assert Transaction.query.filter_by(transaction_type="payup").count() == 1
 
 
+def test_payup_confirm_accepts_matching_legacy_session_context(
+    client,
+    payup_context,
+    monkeypatch,
+):
+    from app.security.sessions import SESSION_RISK_CONTEXT_KEY, SESSION_RISK_FINGERPRINT_KEY
+
+    alice_secret = payup_context["alice_secret"]
+    client.post("/logout")
+    password_response = login(client, identifier="alice01")
+    login_time = int(time.time())
+    monkeypatch.setattr("app.auth.services.time.time", lambda: login_time)
+    mfa_response = client.post(
+        "/auth/mfa/verify",
+        json={"totp_code": _totp_code(alice_secret, login_time)},
+    )
+
+    lookup = client.post("/banking/payup", data=_payup_lookup_data(payup_context))
+    amount = client.post("/banking/payup/amount", data={"amount": "450.00"})
+    with client.session_transaction() as sess:
+        assert sess.get(SESSION_RISK_FINGERPRINT_KEY)
+        assert sess.get("pending_payup_token")
+        sess.pop(SESSION_RISK_CONTEXT_KEY)
+
+    confirm_page = client.get("/banking/payup/confirm")
+    stepup_time = login_time + 1
+    monkeypatch.setattr("app.auth.services.time.time", lambda: stepup_time)
+    confirm_submit = client.post(
+        "/banking/payup/confirm",
+        data={"totp_code": _totp_code(alice_secret, stepup_time)},
+    )
+
+    assert password_response.status_code == 302
+    assert mfa_response.status_code == 200
+    assert lookup.status_code == 302
+    assert amount.status_code == 302
+    assert confirm_page.status_code == 200
+    assert b"Authenticator code" in confirm_page.data
+    assert confirm_submit.status_code == 302
+    assert Transaction.query.filter_by(transaction_type="payup").count() == 1
+    assert db.session.query(SecurityAuditEvent).filter_by(
+        event_type="session_risk",
+        outcome="reauth_required",
+    ).count() == 0
+
+
 def test_payup_confirm_rechecks_stepup_when_usage_changes_after_amount_entry(client, payup_context):
     alice = payup_context["alice"]
     bob = payup_context["bob"]

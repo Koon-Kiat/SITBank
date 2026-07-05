@@ -153,6 +153,7 @@ def test_auth_schema_reset_and_customer_unlock_docs_match_current_contract():
         "exactly 12 decimal digits",
         "different active\nroot admin",
         "missing, malformed, or unsupported structured context",
+        "narrow\nmigration case",
         "retired URLs are unregistered",
     ):
         assert required in docs

@@ -502,6 +502,84 @@ def test_profile_phone_update_succeeds_without_raw_phone_audit_metadata(client, 
     assert "92345678" not in str(event.event_metadata)
 
 
+def test_profile_phone_update_accepts_matching_legacy_session_context(client, monkeypatch):
+    from app.security.sessions import SESSION_RISK_CONTEXT_KEY, SESSION_RISK_FINGERPRINT_KEY
+
+    register(client)
+    user, secret = enable_mfa_for_user()
+    password_response = login(client)
+    login_time = int(time.time())
+    monkeypatch.setattr("app.auth.services.time.time", lambda: login_time)
+    mfa_response = client.post(
+        "/auth/mfa/verify",
+        json={"totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(login_time)},
+    )
+    with client.session_transaction() as sess:
+        assert sess.get(SESSION_RISK_FINGERPRINT_KEY)
+        sess.pop(SESSION_RISK_CONTEXT_KEY)
+
+    stepup_time = login_time + 1
+    monkeypatch.setattr("app.auth.services.time.time", lambda: stepup_time)
+    response = client.post(
+        "/profile",
+        data={
+            "username": "alice01",
+            "email": "alice@example.com",
+            "phone_number": "92345678",
+            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(stepup_time),
+        },
+    )
+    db.session.refresh(user)
+
+    assert password_response.status_code == 302
+    assert mfa_response.status_code == 200
+    assert response.status_code == 302
+    assert user.phone_number == "92345678"
+    assert db.session.query(SecurityAuditEvent).filter_by(
+        event_type="session_risk",
+        outcome="reauth_required",
+    ).count() == 0
+
+
+def test_profile_phone_and_username_update_accepts_matching_legacy_session_context(
+    client,
+    monkeypatch,
+):
+    from app.security.sessions import SESSION_RISK_CONTEXT_KEY, SESSION_RISK_FINGERPRINT_KEY
+
+    register(client)
+    user, secret = enable_mfa_for_user()
+    password_response = login(client)
+    login_time = int(time.time())
+    monkeypatch.setattr("app.auth.services.time.time", lambda: login_time)
+    mfa_response = client.post(
+        "/auth/mfa/verify",
+        json={"totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(login_time)},
+    )
+    with client.session_transaction() as sess:
+        assert sess.get(SESSION_RISK_FINGERPRINT_KEY)
+        sess.pop(SESSION_RISK_CONTEXT_KEY)
+
+    stepup_time = login_time + 1
+    monkeypatch.setattr("app.auth.services.time.time", lambda: stepup_time)
+    response = client.post(
+        "/profile",
+        data={
+            "username": "alice02",
+            "email": "alice@example.com",
+            "phone_number": "93456789",
+            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(stepup_time),
+        },
+    )
+    db.session.refresh(user)
+
+    assert password_response.status_code == 302
+    assert mfa_response.status_code == 200
+    assert response.status_code == 302
+    assert user.username == "alice02"
+    assert user.phone_number == "93456789"
+
+
 def test_profile_update_rejects_invalid_phone(client):
     register(client)
     login(client)

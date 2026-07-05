@@ -597,6 +597,21 @@ def _session_risk_context_changes() -> set[str]:
     return changes
 
 
+def _has_matching_legacy_session_risk_fingerprint() -> bool:
+    stored = session.get(SESSION_RISK_FINGERPRINT_KEY)
+    if not stored:
+        return False
+    return matches_hmac(str(stored), _current_session_risk_message(), length=32)
+
+
+def _can_upgrade_missing_customer_session_risk_context(stored: Any) -> bool:
+    if current_app.config.get("APP_MODE") == "admin":
+        return False
+    if stored is not None:
+        return False
+    return _has_matching_legacy_session_risk_fingerprint()
+
+
 def _session_risk_severity(changes: set[str]) -> str:
     if not changes:
         return "stable"
@@ -633,6 +648,11 @@ def _touch_session_risk_context() -> None:
 
 def enforce_authenticated_session_context() -> Any:
     if not session.get("user_id") or not current_session_id():
+        return None
+
+    stored_context = session.get(SESSION_RISK_CONTEXT_KEY)
+    if _can_upgrade_missing_customer_session_risk_context(stored_context):
+        _store_current_session_risk_context(clear_reauth=True)
         return None
 
     changes = _session_risk_context_changes()

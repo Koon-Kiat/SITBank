@@ -15,6 +15,7 @@ from app.security.passwords import hash_password
 from app.security.sessions import (
     AUTH_CREATED_AT_KEY,
     SESSION_RISK_CONTEXT_KEY,
+    SESSION_RISK_FINGERPRINT_KEY,
     SESSION_RISK_REAUTH_REQUIRED_KEY,
     session_lookup_hash,
 )
@@ -219,7 +220,34 @@ def test_same_context_customer_request_continues_and_checks_risk(client):
         assert not sess.get(SESSION_RISK_REAUTH_REQUIRED_KEY)
 
 
-def test_missing_session_risk_context_requires_reauthentication(
+def test_matching_legacy_customer_session_context_is_upgraded_without_reauth(
+    client,
+):
+    _login_customer(
+        client,
+        ip_address=CUSTOMER_IP,
+        user_agent=CHROME_120,
+    )
+    with client.session_transaction() as sess:
+        assert sess.get(SESSION_RISK_FINGERPRINT_KEY)
+        sess.pop(SESSION_RISK_CONTEXT_KEY)
+
+    response = client.get(
+        "/dashboard",
+        **_request_context(CUSTOMER_IP, CHROME_120),
+    )
+
+    assert response.status_code == 200
+    with client.session_transaction() as sess:
+        assert sess[SESSION_RISK_CONTEXT_KEY]["version"] == 1
+        assert not sess.get(SESSION_RISK_REAUTH_REQUIRED_KEY)
+    assert db.session.query(SecurityAuditEvent).filter_by(
+        event_type="session_risk",
+        outcome="reauth_required",
+    ).count() == 0
+
+
+def test_missing_session_risk_context_with_tampered_fingerprint_requires_reauth(
     client,
 ):
     _login_customer(
@@ -229,6 +257,7 @@ def test_missing_session_risk_context_requires_reauthentication(
     )
     with client.session_transaction() as sess:
         sess.pop(SESSION_RISK_CONTEXT_KEY)
+        sess[SESSION_RISK_FINGERPRINT_KEY] = "tampered"
 
     response = client.get(
         "/dashboard",
