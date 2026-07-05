@@ -847,6 +847,112 @@ def test_mfa_pending_api_response_does_not_leak_user_id(client):
     assert payload == {"message": "MFA verification required", "mfa_required": True}
     assert "user_id" not in payload
 
+
+def test_customer_api_mfa_counts_only_wrong_totp_and_clears_on_fresh_login(
+    client,
+    monkeypatch,
+):
+    from app.models import AuthAttemptCounter
+
+    register(client)
+    user, secret = enable_mfa_for_user()
+    totp = pyotp.TOTP(secret, digits=6, interval=30)
+    base_time = int(time.time())
+    valid_code = totp.at(base_time)
+    invalid_code = "000000" if valid_code != "000000" else "111111"
+
+    primary = client.post(
+        "/auth/login",
+        json={"identifier": "alice01", "password": "correct horse battery staple"},
+    )
+    monkeypatch.setattr("app.auth.services.time.time", lambda: base_time)
+    assert primary.status_code == 200
+    for _attempt in range(5):
+        response = client.post(
+            "/auth/mfa/verify",
+            json={"totp_code": invalid_code},
+        )
+        assert response.status_code == 401
+        assert response.get_json() == {
+            "error": "Incorrect code. Check your authenticator and try again."
+        }
+
+    valid_after_wrong_attempts = client.post(
+        "/auth/mfa/verify",
+        json={"totp_code": valid_code},
+    )
+    assert valid_after_wrong_attempts.status_code == 200
+    assert (
+        db.session.query(AuthAttemptCounter)
+        .filter_by(scope="customer_mfa_login")
+        .count()
+        == 0
+    )
+
+    client.post(
+        "/auth/login",
+        json={"identifier": "alice01", "password": "correct horse battery staple"},
+    )
+    base_time += 30
+    monkeypatch.setattr("app.auth.services.time.time", lambda: base_time)
+    valid_code = totp.at(base_time)
+    invalid_code = "000000" if valid_code != "000000" else "111111"
+    for _attempt in range(5):
+        assert (
+            client.post("/auth/mfa/verify", json={"totp_code": invalid_code}).status_code
+            == 401
+        )
+    blocked = client.post("/auth/mfa/verify", json={"totp_code": invalid_code})
+    assert blocked.status_code == 429
+    assert blocked.headers["Retry-After"].isdigit()
+    assert "totp_code" not in blocked.get_data(as_text=True)
+
+    client.post(
+        "/auth/login",
+        json={"identifier": "alice01", "password": "correct horse battery staple"},
+    )
+    base_time += 30
+    monkeypatch.setattr("app.auth.services.time.time", lambda: base_time)
+    recovered = client.post(
+        "/auth/mfa/verify",
+        json={"totp_code": totp.at(base_time)},
+    )
+    db.session.refresh(user)
+
+    assert recovered.status_code == 200
+    assert user.is_frozen is False
+
+
+def test_customer_browser_mfa_valid_totp_survives_wrong_attempts_below_threshold(
+    client,
+    monkeypatch,
+):
+    register(client)
+    _user, secret = enable_mfa_for_user()
+    totp = pyotp.TOTP(secret, digits=6, interval=30)
+    base_time = int(time.time())
+    valid_code = totp.at(base_time)
+    invalid_code = "000000" if valid_code != "000000" else "111111"
+
+    primary = login(client)
+    monkeypatch.setattr("app.auth.services.time.time", lambda: base_time)
+    assert primary.status_code == 302
+    for _attempt in range(5):
+        response = client.post("/mfa/verify", data={"totp_code": invalid_code})
+        assert response.status_code == 401
+        markup = response.get_data(as_text=True)
+        assert "Incorrect code. Check your authenticator and try again." in markup
+        assert "Too many requests" not in markup
+
+    valid_after_wrong_attempts = client.post(
+        "/mfa/verify",
+        data={"totp_code": valid_code},
+    )
+
+    assert valid_after_wrong_attempts.status_code == 302
+    assert valid_after_wrong_attempts.headers["Location"].endswith("/dashboard")
+
+
 def test_login_backoff_starts_after_three_failures(client):
     register(client)
 
@@ -962,18 +1068,30 @@ def test_repeated_password_failures_lock_known_customer_account(app, client):
 
 def test_repeated_mfa_failures_freeze_account(app, client):
     from flask import session
-    from app.auth.services import AuthError, complete_pending_mfa
+    from app.auth.services import AuthError, authenticate_primary, complete_pending_mfa
 
     register(client)
     user, _secret = enable_mfa_for_user()
 
-    for _attempt in range(10):
-        with app.test_request_context("/auth/mfa/verify", method="POST"):
-            session["pending_mfa_user_id"] = user.id
-            try:
-                complete_pending_mfa("000000")
-            except AuthError:
-                pass
+    for _window in range(2):
+        for _attempt in range(5):
+            with app.test_request_context(
+                "/auth/mfa/verify",
+                method="POST",
+                environ_overrides={"REMOTE_ADDR": "127.0.0.1"},
+            ):
+                session["pending_mfa_user_id"] = user.id
+                try:
+                    complete_pending_mfa("000000")
+                except AuthError:
+                    pass
+        if _window == 0:
+            with app.test_request_context(
+                "/auth/login",
+                method="POST",
+                environ_overrides={"REMOTE_ADDR": "127.0.0.1"},
+            ):
+                authenticate_primary("alice01", "correct horse battery staple")
 
     db.session.refresh(user)
 
