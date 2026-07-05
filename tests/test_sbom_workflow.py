@@ -47,6 +47,10 @@ def test_source_sbom_is_cyclonedx_json_with_predictable_retention():
     assert "--output cyclonedx-json=sitbank-source-sbom-cyclonedx.json" in (
         generate["run"]
     )
+    assert "runtime-requirements.txt" in generate["run"]
+    assert "development-requirements.txt" in generate["run"]
+    assert "--select-catalogers=-python-installed-package-cataloger" in generate["run"]
+    assert 'rm -rf -- "${python_manifest_dir}"' in generate["run"]
     assert "jq empty sitbank-source-sbom-cyclonedx.json" in generate["run"]
     assert upload["with"] == {
         "name": "sitbank-source-sbom",
@@ -56,6 +60,8 @@ def test_source_sbom_is_cyclonedx_json_with_predictable_retention():
     }
     summary = next(step for step in steps if step["name"] == "Summarize source SBOM")
     assert "python ops/security/render_sbom_summary.py" in summary["run"]
+    assert "--python-manifest requirements.lock" in summary["run"]
+    assert "--python-manifest requirements-dev.lock" in summary["run"]
     assert "sitbank-source-sbom-cyclonedx.json" in summary["run"]
 
 
@@ -96,10 +102,12 @@ def test_sbom_documentation_distinguishes_artifact_attestation_and_scanning():
         "30 days",
         "Buildx",
         "attestation",
-        "explicit image SBOM artifact remains deferred",
+        "explicit image\nSBOM artifact remains deferred",
         "not vulnerability scanning",
         "bounded preview",
         "pkg:pypi/",
+        "source-controlled",
+        "image/container SBOM",
     ):
         assert required in docs
 
@@ -132,17 +140,34 @@ def test_sbom_summary_reports_ecosystems_and_bounds_python_preview():
         ]
     )
 
-    summary = render_summary({"components": components})
+    declared = {
+        (f"python-package-{index}", str(index))
+        for index in range(12)
+    }
+    summary = render_summary(
+        {"components": components},
+        declared_python_dependencies=declared,
+        python_manifest_count=2,
+    )
 
     assert "### Ecosystem breakdown" in summary
+    assert summary.index("### Python components") < summary.index(
+        "### Ecosystem breakdown"
+    )
     assert "| PyPI | 12 |" in summary
     assert "| GitHub actions/workflows | 1 |" in summary
     assert "| npm | 1 |" in summary
     assert "| OS/system | 1 |" in summary
     assert "| Unknown/no PURL | 1 |" in summary
     assert "| Other PURL | 1 |" in summary
-    assert "Python components detected: `12`" in summary
+    assert "Python components detected from reviewed manifests: `12`" in summary
     assert "Preview limit: `10` components" in summary
+    assert (
+        "- Reviewed source-controlled Python manifests: `2`\n"
+        "- Declared pinned Python packages: `12`\n"
+        "- Python components detected from reviewed manifests: `12`\n"
+        "- Preview limit: `10` components"
+    ) in summary
     assert summary.count("| python-package-") == 10
     assert "python-package-10" not in summary
 
@@ -159,13 +184,43 @@ def test_sbom_summary_explicitly_reports_no_python_and_sanitizes_markdown():
                     "purl": "pkg:npm/unsafe@1",
                 }
             ]
-        }
+        },
+        declared_python_dependencies={("flask", "3.1.2")},
+        python_manifest_count=1,
     )
 
-    assert "Python components detected: `0`" in summary
-    assert "No PyPI package URLs were detected" in summary
+    assert "Python components detected from reviewed manifests: `0`" in summary
+    assert "No matching `pkg:pypi/` package URLs were emitted" in summary
+    assert "not evidence that the source has no Python dependencies" in summary
     assert "<unsafe>" not in summary
     assert "|`name`" not in summary
+
+
+def test_sbom_summary_excludes_runner_python_packages_not_in_manifests():
+    render_summary = _summary_renderer()["render_summary"]
+    summary = render_summary(
+        {
+            "components": [
+                {
+                    "name": "flask",
+                    "version": "3.1.2",
+                    "purl": "pkg:pypi/Flask@3.1.2",
+                },
+                {
+                    "name": "runner-only",
+                    "version": "99.0",
+                    "purl": "pkg:pypi/runner_only@99.0",
+                },
+            ]
+        },
+        declared_python_dependencies={("flask", "3.1.2")},
+        python_manifest_count=2,
+    )
+
+    assert "Python components detected from reviewed manifests: `1`" in summary
+    assert "PyPI components excluded because they were not matched" in summary
+    assert "| flask | 3.1.2 |" in summary
+    assert "| runner-only |" not in summary
 
 
 def test_sbom_summary_input_path_is_confined_to_workspace(tmp_path):
@@ -213,9 +268,18 @@ def test_sbom_summary_main_reads_validated_relative_input(
         '{"components": [{"name": "flask", "purl": "pkg:pypi/flask@3.1.2"}]}',
         encoding="utf-8",
     )
+    manifest_path = tmp_path / "requirements.lock"
+    manifest_path.write_text("flask==3.1.2 \\\n    --hash=sha256:fake\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
-        sys, "argv", ["render_sbom_summary.py", "source.json"]
+        sys,
+        "argv",
+        [
+            "render_sbom_summary.py",
+            "--python-manifest",
+            "requirements.lock",
+            "source.json",
+        ],
     )
 
     assert main() == 0

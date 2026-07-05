@@ -1121,6 +1121,11 @@ artifacts, job summaries, chat, screenshots, or issue comments. If a DAST cookie
 or full replacer config is exposed, cancel the run, remove the artifact, treat
 the synthetic session as compromised until the run cleanup completes, and review
 the workflow/script change before retrying.
+The session bootstrap itself is available only when
+`DEPLOYMENT_TARGET=smoke`; it validates the helper's exact synthetic customer
+identity and the loopback or `sitbank-smoke` session host before issuing a
+cookie. It is not available for staging, production, real customers, staff,
+admins, or root admins.
 
 Pull requests additionally run a 12-minute local-only DAST smoke against an
 ephemeral image and database. Its two-minute unauthenticated ZAP baseline

@@ -246,11 +246,14 @@ def test_private_grafana_loki_alloy_deployment_files_exist_and_are_private():
         "bind": {"create_host_path": False},
     }
     prometheus = services["prometheus"]
-    assert prometheus["environment"]["OBSERVABILITY_ENVIRONMENT"] == (
-        "${OBSERVABILITY_ENVIRONMENT:?OBSERVABILITY_ENVIRONMENT must be staging or production}"
-    )
-    assert "--config.expand-env" in prometheus["command"]
-    assert "--storage.tsdb.retention.time=168h" in prometheus["command"]
+    assert "environment" not in prometheus
+    assert prometheus["command"] == [
+        "--config.file=/etc/prometheus/prometheus.yml",
+        "--storage.tsdb.path=/prometheus",
+        "--storage.tsdb.retention.time=168h",
+        "--web.listen-address=0.0.0.0:9090",
+    ]
+    assert "--config.expand-env" not in prometheus["command"]
     assert prometheus["depends_on"] == ["node-exporter"]
     assert "password" not in json.dumps(prometheus).casefold()
     assert "token" not in json.dumps(prometheus).casefold()
@@ -262,6 +265,44 @@ def test_private_grafana_loki_alloy_deployment_files_exist_and_are_private():
     assert "--path.rootfs=/host/root" in node_exporter["command"]
     assert all(volume["read_only"] is True for volume in node_exporter["volumes"])
     assert "docker.sock" not in json.dumps(node_exporter)
+
+
+def test_prometheus_config_is_rendered_fail_closed_before_container_start():
+    renderer = runpy.run_path(
+        "ops/observability/render_prometheus_config.py",
+        run_name="_prometheus_config_renderer",
+    )
+    template = (OBS_ROOT / "prometheus" / "prometheus.yml").read_text(
+        encoding="utf-8"
+    )
+    render = renderer["render_prometheus_config"]
+
+    rendered = render(template, "production")
+
+    assert "${OBSERVABILITY_ENVIRONMENT}" not in rendered
+    assert 'environment: "production"' in rendered
+    assert rendered.count('environment: "production"') == 2
+    for invalid_environment in ("", "Production", "testing", "admin"):
+        with pytest.raises(ValueError, match="staging or production"):
+            render(template, invalid_environment)
+    with pytest.raises(ValueError, match="missing its environment placeholder"):
+        render(template.replace("${OBSERVABILITY_ENVIRONMENT}", "production"), "production")
+    with pytest.raises(ValueError, match="unresolved placeholder"):
+        render(template + "\nunsafe: ${UNREVIEWED_VALUE}\n", "production")
+
+    bootstrap = Path("ops/deploy/bootstrap-observability-ec2").read_text(
+        encoding="utf-8"
+    )
+    assert "read_observability_env_value OBSERVABILITY_ENVIRONMENT" in bootstrap
+    assert "OBSERVABILITY_ENVIRONMENT must be staging or production" in bootstrap
+    assert "render_prometheus_config.py" in bootstrap
+    assert 'python3 "${prometheus_renderer}"' in bootstrap
+    assert '"${prometheus_config_tmp}"' in bootstrap
+    runbook = Path(
+        "docs/runbooks/private-observability-grafana-loki.md"
+    ).read_text(encoding="utf-8")
+    assert "`--config.expand-env` flag" in runbook
+    assert "http://prometheus:9090/-/ready" in runbook
 
 
 def test_loki_retention_and_grafana_datasource_are_configured_without_credentials():

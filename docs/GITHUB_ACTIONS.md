@@ -494,7 +494,12 @@ recorded in `docs/security/governance/github-branch-protection-evidence.md`.
 Synthetic DAST users remain the only authenticated scan identities. The smoke
 helper writes the authenticated session cookie and ZAP replacer configuration to
 temporary `0600` files created under `umask 077`; the DAST cookie is not passed
-as a raw process argument. Release smoke enables
+as a raw process argument. Session bootstrap fails closed unless the app runtime
+reports `DEPLOYMENT_TARGET=smoke`, the user has the helper's exact synthetic
+`zap<12-lowercase-hex>` customer identity, and the session base URL is loopback
+or the allowlisted `sitbank-smoke` container. Real customers and all staff,
+admin, and root-admin identities are rejected before session issuance. Release
+smoke enables
 `DEPLOYMENT_TARGET=smoke` and `TURNSTILE_ALLOW_TEST_ACTION=true` only on the
 isolated smoke app container so Cloudflare's official dummy-token response can
 authenticate the synthetic DAST user with the official test keys; production
@@ -564,19 +569,31 @@ the `sitbank-source-sbom` CycloneDX JSON artifact for 30 days with
 `contents: read` and checkout credentials disabled. Generated SBOM files are
 evidence artifacts and must not be committed.
 
-The job summary is a bounded preview: it reports counts by package-URL
-ecosystem and lists at most 10 `pkg:pypi/` components in a dedicated Python
-section. Its renderer accepts only relative regular-file paths contained by the
-current workspace and rejects traversal and symlink escapes before reading the
-SBOM. The artifact remains the complete inventory. Inspect all Python entries
-without printing the whole document:
+The workflow copies the source-controlled `requirements.lock` and
+`requirements-dev.lock` into temporary `*requirements*.txt` paths so Syft's
+declared-package cataloger can recognize them, and explicitly disables Syft's
+installed-Python-package cataloger. Runner-global packages, runner
+`site-packages`, and a local `.venv` are therefore not source dependency
+evidence. The temporary copies are removed even if generation fails.
+
+The job summary is a bounded preview: its Python section comes first and lists
+at most 10 unique `pkg:pypi/` components that match pinned packages in those
+reviewed source-controlled manifests. The ecosystem table follows at the
+bottom. If manifests exist but no matching PyPI PURLs are emitted, the summary
+reports a generator/PURL detection limitation instead of implying that the
+repository has no Python dependencies. Its renderer accepts only relative
+regular-file paths contained by the current workspace and rejects traversal
+and symlink escapes. The full `sitbank-source-sbom` artifact remains the source
+of truth. Inspect all Python entries without printing the whole document:
 
 ```bash
 jq -r '(.components // [])[] | select((.purl // "") | startswith("pkg:pypi/")) | [.name, .version, .purl] | @tsv' sitbank-source-sbom-cyclonedx.json
 ```
 
 This source artifact complements the existing Docker Buildx `sbom: true`
-release-image attestation. An explicit image SBOM artifact remains deferred
+release-image attestation. Packages actually installed in the runtime belong
+to image/container SBOM scope, not the source SBOM summary. An explicit image
+SBOM artifact remains deferred
 until the exact digest-verified release image can be supplied to Syft without
 adding registry write privileges or untrusted-PR credentials. SBOM generation
 is inventory evidence, not vulnerability scanning; dependency audit and Trivy

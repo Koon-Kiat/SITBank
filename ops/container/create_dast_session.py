@@ -17,13 +17,18 @@ from sqlalchemy.exc import IntegrityError
 DAST_COOKIE_RE = re.compile(r"^__Host-sitbank_session=[A-Za-z0-9._~-]+$")
 DAST_FORWARDED_FOR = "127.0.0.1"
 DAST_FORWARDED_PROTO = "https"
+DAST_SMOKE_CONTAINER_HOSTS = frozenset({"sitbank-smoke"})
+DAST_SYNTHETIC_USERNAME_RE = re.compile(r"^zap([0-9a-f]{12})$")
 DAST_USER_AGENT = "sitbank-dast-session"
 
 
 class DastClient:
     def __init__(self, base_url: str, *, allowed_hosts: set[str] | None = None) -> None:
         parsed = urllib.parse.urlsplit(base_url)
-        permitted_hosts = {"127.0.0.1", "localhost"} | (allowed_hosts or set())
+        requested_hosts = allowed_hosts or set()
+        if not requested_hosts.issubset(DAST_SMOKE_CONTAINER_HOSTS):
+            raise ValueError("DAST base URL host is not allowed")
+        permitted_hosts = {"127.0.0.1", "localhost"} | requested_hosts
         if (
             parsed.scheme != "http"
             or parsed.hostname not in permitted_hosts
@@ -140,12 +145,14 @@ def issue_dast_session_cookie(*, user_id: int, session_base_url: str) -> str:
     from app.security.sessions import establish_authenticated_session
 
     app = create_app()
+    if str(app.config.get("DEPLOYMENT_TARGET") or "").strip().casefold() != "smoke":
+        raise RuntimeError("DAST session bootstrap requires the smoke runtime")
+    _validate_session_base_url(session_base_url)
     with app.app_context():
         user = db.session.get(User, int(user_id))
         if user is None:
             raise RuntimeError("Synthetic DAST user was not found")
-        user.mfa_enabled = True
-        db.session.commit()
+        _validate_synthetic_dast_user(user)
         with app.test_request_context(
             "/",
             base_url=session_base_url,
@@ -163,6 +170,41 @@ def issue_dast_session_cookie(*, user_id: int, session_base_url: str) -> str:
     if not cookie:
         raise RuntimeError("Authenticated DAST session cookie was not issued")
     return cookie
+
+
+def _validate_session_base_url(session_base_url: str) -> None:
+    parsed = urllib.parse.urlsplit(session_base_url)
+    if (
+        parsed.scheme != DAST_FORWARDED_PROTO
+        or parsed.hostname
+        not in {"127.0.0.1", "localhost", *DAST_SMOKE_CONTAINER_HOSTS}
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in {"", "/"}
+    ):
+        raise RuntimeError("DAST session base URL is not an approved smoke host")
+
+
+def _validate_synthetic_dast_user(user: object) -> None:
+    username = str(getattr(user, "username", ""))
+    match = DAST_SYNTHETIC_USERNAME_RE.fullmatch(username)
+    suffix = match.group(1) if match else ""
+    expected_email = f"{username}@sit.singaporetech.edu.sg"
+    expected_name = f"DAST User {suffix}"
+    if (
+        not match
+        or str(getattr(user, "email", "")) != expected_email
+        or str(getattr(user, "full_name", "")) != expected_name
+        or getattr(user, "account_type", None) != "customer"
+        or getattr(user, "account_status", None) != "active"
+        or getattr(user, "staff_personal_email", None) is not None
+        or getattr(user, "workplace_email_verified_at", None) is not None
+        or getattr(user, "registration_email_canonical", None) is not None
+        or getattr(user, "mfa_enabled", None) is not True
+    ):
+        raise RuntimeError("DAST session bootstrap requires a synthetic customer")
 
 
 def _cookie_value_from_headers(headers: list[str]) -> str:
@@ -200,7 +242,7 @@ def create_dast_user(
     with app.app_context():
         existing = db.session.execute(db.select(User).where(User.username == username)).scalar_one_or_none()
         if existing:
-            return int(existing.id)
+            raise RuntimeError("Synthetic DAST username collision")
         for attempt in range(20):
             candidate_phone = phone_number if attempt == 0 else _generate_synthetic_phone_number()
             if db.session.execute(db.select(User).where(User.phone_number == candidate_phone)).scalar_one_or_none():
