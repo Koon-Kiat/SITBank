@@ -13,6 +13,7 @@ from typing import Any
 
 
 PYTHON_COMPONENT_LIMIT = 10
+PYPI_PURL_PREFIX = "pkg:pypi/"
 SYSTEM_PURL_PREFIXES = (
     "pkg:alpm/",
     "pkg:apk/",
@@ -51,9 +52,13 @@ def _normalized_python_name(name: str) -> str:
 
 def _python_purl_identity(component: dict[str, Any]) -> tuple[str, str] | None:
     purl = _component_purl(component)
-    if not purl.startswith("pkg:pypi/"):
+    if not purl.startswith(PYPI_PURL_PREFIX):
         return None
-    package = purl.removeprefix("pkg:pypi/").split("?", 1)[0].split("#", 1)[0]
+    package = (
+        purl.removeprefix(PYPI_PURL_PREFIX)
+        .split("?", 1)[0]
+        .split("#", 1)[0]
+    )
     if "@" not in package:
         return None
     name, version = package.rsplit("@", 1)
@@ -86,7 +91,7 @@ def _read_pinned_python_dependencies(
 
 def _ecosystem(component: dict[str, Any]) -> str:
     purl = _component_purl(component)
-    if purl.startswith("pkg:pypi/"):
+    if purl.startswith(PYPI_PURL_PREFIX):
         return "PyPI"
     if purl.startswith("pkg:github/"):
         return "GitHub actions/workflows"
