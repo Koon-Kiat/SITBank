@@ -1144,9 +1144,14 @@ def _bounded_int(value, *, default: int, minimum: int, maximum: int) -> int:
     return min(max(parsed, minimum), maximum)
 
 
+_MIN_STATEMENT_YEAR = 2000
+
+
 def _requested_statement_period() -> tuple[int, int]:
     now_sgt = datetime.now(timezone.utc).astimezone(_SGT_STATEMENT_OFFSET)
-    year = _bounded_int(request.args.get("year"), default=now_sgt.year, minimum=2000, maximum=now_sgt.year)
+    year = _bounded_int(
+        request.args.get("year"), default=now_sgt.year, minimum=_MIN_STATEMENT_YEAR, maximum=now_sgt.year
+    )
     month = _bounded_int(request.args.get("month"), default=now_sgt.month, minimum=1, maximum=12)
     return year, month
 
@@ -1187,6 +1192,7 @@ def statement():
     now_sgt = datetime.now(timezone.utc).astimezone(_SGT_STATEMENT_OFFSET)
     prev_year, prev_month = _adjacent_period(year, month, delta=-1)
     next_year, next_month = _adjacent_period(year, month, delta=1)
+    has_prev_period = (year, month) > (_MIN_STATEMENT_YEAR, 1)
     has_next_period = (year, month) < (now_sgt.year, now_sgt.month)
     return render_template(
         _STATEMENT_TEMPLATE,
@@ -1194,10 +1200,13 @@ def statement():
         statement=data,
         year=year,
         month=month,
+        current_year=now_sgt.year,
+        min_year=_MIN_STATEMENT_YEAR,
         prev_year=prev_year,
         prev_month=prev_month,
         next_year=next_year,
         next_month=next_month,
+        has_prev_period=has_prev_period,
         has_next_period=has_next_period,
     )
 
