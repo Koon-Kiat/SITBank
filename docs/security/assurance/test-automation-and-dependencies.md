@@ -299,6 +299,8 @@ Authenticated DAST session creation is handled by
 | Control | Evidence |
 | --- | --- |
 | Target host restricted to loopback or explicit smoke host | `tests/test_deployment.py::test_dast_session_creator_requires_loopback_or_explicit_smoke_host` |
+| Session bootstrap restricted to `DEPLOYMENT_TARGET=smoke` | `tests/test_dast_helper_security.py::test_issue_dast_session_cookie_rejects_non_smoke_runtime` |
+| Session bootstrap rejects non-synthetic and privileged users | `tests/test_dast_helper_security.py::test_issue_dast_session_cookie_rejects_non_synthetic_or_privileged_users` |
 | Synthetic account registration follows the real registration contract | `tests/test_deployment.py::test_dast_session_creator_matches_registration_contract` |
 | Generated credentials are synthetic and random | `ops/container/create_dast_session.py` |
 | The script emits an authenticated session cookie for ZAP rather than real user credentials | `ops/container/create_dast_session.py` |
@@ -309,6 +311,12 @@ Authenticated DAST session creation is handled by
 `ops/container/dast-smoke.sh` provides a local smoke-oriented DAST path using
 synthetic secrets and a synthetic local test user. No real customer, admin, or
 staff credentials are required by the DAST scripts in the repository.
+The server-side session primitive fails before issuance unless the runtime
+target is exactly `smoke`, the customer matches the helper's complete
+`zap<12-lowercase-hex>` identity contract, MFA is already enabled, and the
+session host is loopback or `sitbank-smoke`. Existing-username collisions,
+stale or malformed synthetic records, real customers, and staff, admin, and
+root-admin identities fail closed.
 
 The authenticated release/scheduled DAST path stores `auth-cookie` and
 `zap-replacer.properties` only in the smoke-test temporary directory. The helper
@@ -362,13 +370,23 @@ The source SBOM workflow at `.github/workflows/sbom.yml` uses pinned Syft
 1.46.0 to create `sitbank-source-sbom-cyclonedx.json`, validates it as JSON,
 and retains the `sitbank-source-sbom` CycloneDX JSON artifact for 30 days. It
 runs without secrets on pull requests, pushes to `main`, and manual dispatch.
-Its summary is a bounded preview with package-URL ecosystem counts and at most
-10 `pkg:pypi/` rows in a dedicated Python section; zero Python components is
-reported explicitly. The renderer reads only relative regular-file paths
-contained by the current workspace and rejects traversal and symlink escapes.
-The full artifact remains authoritative. Inspect its Python inventory with
+Before scanning, the workflow copies the source-controlled
+`requirements.lock` and `requirements-dev.lock` to temporary
+`*requirements*.txt` names recognized by Syft and disables the installed
+Python package cataloger. This keeps runner-global packages, runner
+`site-packages`, and local `.venv` contents out of the source dependency
+count. Its bounded summary puts the Python section first, matches emitted
+`pkg:pypi/` PURLs to pinned packages in those reviewed source-controlled
+manifests, limits the preview to 10 rows, and places the all-component
+ecosystem table last. If manifests exist but no matching PyPI PURLs are
+emitted, zero is described as a generator/PURL detection limitation rather
+than proof of no Python dependencies. The renderer reads only relative
+regular-file paths contained by the current workspace and rejects traversal
+and symlink escapes. The full `sitbank-source-sbom` artifact remains the source
+of truth. Inspect its Python inventory with
 `jq -r '(.components // [])[] | select((.purl // "") | startswith("pkg:pypi/")) | [.name, .version, .purl] | @tsv' sitbank-source-sbom-cyclonedx.json`.
-It is separate from Buildx image attestation and is not vulnerability scanning.
+Installed runtime packages belong to image/container SBOM scope. The source
+artifact is separate from Buildx image attestation and is not vulnerability scanning.
 The existing Buildx `sbom: true` attestation remains required; an explicit
 image SBOM artifact remains deferred until the exact digest-verified release
 image is safely available to the evidence job.
