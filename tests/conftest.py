@@ -195,6 +195,18 @@ class TestConfig:
     ADMIN_RATELIMIT_STORAGE_URI = "memory://"
     ADMIN_RATELIMIT_KEY_PREFIX = "test-admin:"
     FRESH_MFA_SECONDS = 5 * 60
+    ADMIN_MFA_FAILURE_LIMIT = 5
+    ADMIN_MFA_FAILURE_WINDOW_SECONDS = 5 * 60
+    PAYUP_QUICK_TRANSFER_CAP = 200.0
+    PAYUP_QUICK_DAILY_CAP = 500.0
+    PAYUP_STEP_UP_LIMIT_PERCENT = 80
+    PAYUP_QUICK_SESSION_MAX_AGE_SECONDS = 15 * 60
+    PAYUP_SENSITIVE_EVENT_COOLDOWN_SECONDS = 24 * 60 * 60
+    PAYUP_RATE_LIMIT_ACCOUNT = 20
+    PAYUP_RATE_LIMIT_SESSION = 15
+    PAYUP_RATE_LIMIT_IP = 30
+    PAYUP_RATE_LIMIT_RECIPIENT = 10
+    PAYUP_RATE_LIMIT_WINDOW_SECONDS = 15 * 60
     TOTP_LOGIN_VALID_WINDOW = 1
     TOTP_HIGH_RISK_VALID_WINDOW = 0
     ADMIN_ALLOWED_EMAIL_DOMAINS = frozenset(
@@ -381,6 +393,43 @@ def _worker_app():
             db.session.remove()
             db.drop_all()
             db.engine.dispose()
+
+
+@pytest.fixture(scope="session")
+def _worker_admin_app():
+    from app import create_app
+    from app.extensions import db
+
+    flask_app = create_app(TestConfig, app_mode="admin")
+    with flask_app.app_context():
+        db.create_all()
+    baseline_config = copy.deepcopy(dict(flask_app.config))
+    try:
+        yield flask_app, baseline_config
+    finally:
+        with flask_app.app_context():
+            db.session.remove()
+            db.drop_all()
+            db.engine.dispose()
+
+
+@pytest.fixture()
+def admin_app(_worker_admin_app, monkeypatch):
+    from app.security import passwords
+
+    monkeypatch.setattr(passwords, "_is_password_pwned_by_hibp", lambda _password: False)
+    flask_app, baseline_config = _worker_admin_app
+    _restore_test_app_state(flask_app, baseline_config)
+    try:
+        with flask_app.app_context():
+            yield flask_app
+    finally:
+        _restore_test_app_state(flask_app, baseline_config)
+
+
+@pytest.fixture()
+def admin_client(admin_app):
+    return admin_app.test_client()
 
 
 @pytest.fixture()

@@ -160,7 +160,8 @@ After an approved reset, `rebaseline-security-alert-state
 anchor, backs up the previous baseline, and atomically snapshots the same
 protected tables. Unknown loss, chain failure, anchor mismatch, missing
 acknowledgement, or missing reason fails closed. Output and audit evidence use
-only table metrics and a keyed reason reference.
+only table metrics, a keyed reason reference, whether a backup was created,
+and its basename; the host backup path is not returned.
 
 Alert severity values are configured in `app/security/alerts.py` and filtered
 by `SECURITY_ALERT_MIN_SEVERITY`. Delivery supports HTTPS webhooks such as

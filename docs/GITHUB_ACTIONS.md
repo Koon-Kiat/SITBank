@@ -11,6 +11,13 @@ main push -> Publish container image -> Release verification -> Deploy staging
 ```
 
 The tested, scanned, signed, and deployed digest must be identical. Deployments never use `latest`.
+The publish job also creates a GitHub artifact attestation whose subject is the
+exact GHCR image name and Buildx digest, and pushes that attestation to the
+image registry. Release verification checks the registry-backed attestation
+against this repository, the exact `ci-deploy.yml` signer workflow, the trusted
+`main` source ref, and the resolved release commit before any staging
+deployment. Cosign signature and certificate-identity verification, Trivy,
+SBOM, and provenance checks remain independent required layers.
 
 ## Workflow And Check Display Names
 
@@ -334,6 +341,28 @@ the production Serve mapping only after explicit operator confirmation. It is
 never called by either verification job, pull requests, or normal CI.
 
 ## Private Observability Verification
+
+`.github/workflows/bootstrap-observability-ec2.yml` is the mutation path for
+an already prepared host. It is manual-only, `main`-only, and protected by
+`observability-staging` or `observability-production`. The workflow checks out
+the immutable workflow commit, signs a source archive, joins Tailscale with
+`tag:github-ci-observability-bootstrap`, uploads only the archive and signature
+bundle, and invokes the exact sudo-allowed
+`/usr/local/sbin/sitbank-observability-bootstrap` command. The root wrapper
+verifies repository, commit, signer workflow identity, archive structure,
+root-owned configuration and secret modes, immutable image digests, loopback
+ports, internal networks, public-route denial, Tailscale Serve scope, and
+Funnel denial before calling the repository bootstrap script.
+
+Configure each protected environment with `OBSERVABILITY_EC2_HOST`,
+`OBSERVABILITY_EC2_DEPLOY_USER`, `OBSERVABILITY_EC2_PORT`,
+`OBSERVABILITY_EC2_SSH_PRIVATE_KEY_B64`, `OBSERVABILITY_EC2_KNOWN_HOSTS`,
+`TS_OAUTH_CLIENT_ID`, and `TS_OAUTH_SECRET`. Required reviewers and branch
+restrictions are provider-side controls and need separate sanitized evidence.
+The bootstrap OAuth tag may reach only the approved observability EC2 SSH
+target; it must not administer the tailnet or reach private Grafana HTTPS.
+Grafana credentials, datasource credentials, logs, cookies, and application
+secrets remain host-managed and never enter GitHub Actions.
 
 `.github/workflows/observability-private-verify.yml` is manual-only,
 `main`-only, read-only, and protected by either `observability-staging` or

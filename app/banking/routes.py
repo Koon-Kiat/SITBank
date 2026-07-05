@@ -37,11 +37,11 @@ from app.banking.forms import (
 )
 from app.banking.schemas import MAX_TRANSACTION_AMOUNT, MIN_TRANSACTION_AMOUNT
 from app.banking.services import (
+    evaluate_payup_risk,
     execute_local_transfer,
     execute_payup_transfer,
     local_transfer_token_verifier,
     payup_amount_used_today,
-    payup_requires_step_up,
     payup_transfer_token_verifier,
     resolve_transfer_limit_choice,
     statement_for_period,
@@ -56,6 +56,7 @@ from app.security.audit import (
 )
 from app.security.rate_limits import DurableRateLimitExceeded, consume_durable_rate_limit
 from app.security.rate_limits import mfa_principal
+from app.security.sessions import current_session_id
 from app.web.routes import web_login_required, web_not_frozen_required
 
 
@@ -176,6 +177,105 @@ def _record_failed_payup_lookup(reason: str, phone_number: str) -> None:
 
 
 # ── Payee list ─────────────────────────────────────────────────────────────────
+
+def _masked_payup_recipient_name(full_name: str) -> str:
+    parts = [part for part in str(full_name or "").split() if part]
+    if not parts:
+        return "Registered recipient"
+    return " ".join(
+        part[0] + ("*" * min(max(len(part) - 1, 1), 8))
+        for part in parts[:4]
+    )
+
+
+def _consume_payup_attempt_limits(phone_number: str, *, phase: str) -> None:
+    if phase not in {"lookup", "confirm"}:
+        raise AuthError("PayUp request could not be authorized.", 403)
+    session_identifier = current_session_id()
+    if not session_identifier:
+        raise AuthError("Session verification required. Please sign in again.", 401)
+    window_seconds = int(current_app.config["PAYUP_RATE_LIMIT_WINDOW_SECONDS"])
+    dimensions = (
+        (
+            "account",
+            f"user:{g.current_user.id}",
+            int(current_app.config["PAYUP_RATE_LIMIT_ACCOUNT"]),
+        ),
+        (
+            "session",
+            session_identifier,
+            int(current_app.config["PAYUP_RATE_LIMIT_SESSION"]),
+        ),
+        (
+            "ip",
+            request.remote_addr or "unknown",
+            int(current_app.config["PAYUP_RATE_LIMIT_IP"]),
+        ),
+        (
+            "recipient",
+            phone_number,
+            int(current_app.config["PAYUP_RATE_LIMIT_RECIPIENT"]),
+        ),
+    )
+    for dimension, principal, limit in dimensions:
+        try:
+            consume_durable_rate_limit(
+                f"payup_{phase}_{dimension}",
+                principal,
+                limit=limit,
+                window_seconds=window_seconds,
+            )
+        except DurableRateLimitExceeded as exc:
+            audit_event(
+                "payup_rate_limit",
+                "blocked",
+                user=g.current_user,
+                metadata={
+                    "dimension": dimension,
+                    "phase": phase,
+                    "retry_after": exc.retry_after,
+                    "phone_ref": audit_reference("payup_phone", phone_number),
+                },
+            )
+            raise AuthError(
+                "PayUp request could not be authorized.",
+                429,
+                retry_after=exc.retry_after,
+            ) from exc
+
+
+def _pending_payup_recipient(pending: dict | None) -> User | None:
+    if not isinstance(pending, dict):
+        return None
+    try:
+        recipient_id = int(pending["recipient_user_id"])
+        expires_at = datetime.fromisoformat(str(pending["expires_at"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if datetime.now(timezone.utc) > _as_utc(expires_at):
+        return None
+    recipient = db.session.get(User, recipient_id)
+    if not _payup_recipient_is_available(recipient):
+        return None
+    return recipient
+
+
+def _payup_recipient_is_available(recipient: User | None) -> bool:
+    return bool(
+        recipient is not None
+        and recipient.id != g.current_user.id
+        and recipient.account_status == "active"
+        and not recipient.is_frozen
+        and recipient.phone_number
+    )
+
+
+def _payup_recipient_display(recipient: User) -> dict[str, str]:
+    return {
+        "recipient_name": _masked_payup_recipient_name(recipient.full_name),
+        "recipient_phone": str(recipient.phone_number or ""),
+    }
+
 
 @banking_bp.get("/payees")
 @web_login_required
@@ -606,7 +706,6 @@ def payup():
 
 
 @banking_bp.post("/payup")
-@limiter.limit("15 per hour", key_func=mfa_principal)
 @web_login_required
 @web_not_frozen_required
 def payup_submit():
@@ -617,14 +716,16 @@ def payup_submit():
     phone_number = form.phone_number.data.strip()
 
     try:
-        verify_high_risk_authorization(
-            g.current_user,
-            form.totp_code.data,
-            "payup_lookup",
-        )
+        _consume_payup_attempt_limits(phone_number, phase="lookup")
     except AuthError as exc:
         flash(exc.message, "error")
         return render_template(_PAYUP_TEMPLATE, form=form), exc.status_code
+    audit_event(
+        "payup_lookup",
+        "attempted",
+        user=g.current_user,
+        metadata={"phone_ref": audit_reference("payup_phone", phone_number)},
+    )
 
     recipient = User.query.filter_by(phone_number=phone_number).first()
     if (
@@ -641,11 +742,16 @@ def payup_submit():
         flash(_INVALID_PHONE_MESSAGE, "error")
         return render_template(_PAYUP_TEMPLATE, form=form), 400
 
-    # Store pending state server-side; client never controls the recipient name
+    audit_event(
+        "payup_lookup",
+        "success",
+        user=g.current_user,
+        metadata={"phone_ref": audit_reference("payup_phone", phone_number)},
+    )
+    # Store only a server-resolved user id and expiry in the signed server-side
+    # session. Recipient display data is reloaded for every subsequent step.
     session["pending_payup_recipient"] = {
         "recipient_user_id": recipient.id,
-        "recipient_name": recipient.full_name,
-        "recipient_phone": phone_number,
         "expires_at": (
             datetime.now(timezone.utc) + timedelta(seconds=_PAYUP_PENDING_RECIPIENT_TTL)
         ).isoformat(),
@@ -660,13 +766,10 @@ def payup_submit():
 @web_not_frozen_required
 def payup_amount():
     pending = session.get("pending_payup_recipient")
-    if not pending:
-        flash(_NO_PENDING_PAYUP_RECIPIENT_MESSAGE, "warning")
-        return redirect(url_for(_PAYUP_ENDPOINT))
-
-    if datetime.now(timezone.utc) > datetime.fromisoformat(pending["expires_at"]):
+    recipient = _pending_payup_recipient(pending)
+    if recipient is None:
         session.pop("pending_payup_recipient", None)
-        flash(_REQUEST_EXPIRED_MESSAGE, "warning")
+        flash(_NO_PENDING_PAYUP_RECIPIENT_MESSAGE, "warning")
         return redirect(url_for(_PAYUP_ENDPOINT))
 
     daily_limit = Decimal(str(g.current_user.payup_daily_limit))
@@ -674,25 +777,21 @@ def payup_amount():
     return render_template(
         _PAYUP_AMOUNT_TEMPLATE,
         form=PayupAmountForm(),
-        pending=pending,
+        pending=_payup_recipient_display(recipient),
         daily_limit=daily_limit,
         remaining=remaining,
     )
 
 
 @banking_bp.post("/payup/amount")
-@limiter.limit("10 per hour", key_func=mfa_principal)
 @web_login_required
 @web_not_frozen_required
 def payup_amount_submit():
     pending = session.get("pending_payup_recipient")
-    if not pending:
-        flash(_NO_PENDING_PAYUP_RECIPIENT_MESSAGE, "warning")
-        return redirect(url_for(_PAYUP_ENDPOINT))
-
-    if datetime.now(timezone.utc) > datetime.fromisoformat(pending["expires_at"]):
+    recipient = _pending_payup_recipient(pending)
+    if recipient is None:
         session.pop("pending_payup_recipient", None)
-        flash(_REQUEST_EXPIRED_MESSAGE, "warning")
+        flash(_NO_PENDING_PAYUP_RECIPIENT_MESSAGE, "warning")
         return redirect(url_for(_PAYUP_ENDPOINT))
 
     daily_limit = Decimal(str(g.current_user.payup_daily_limit))
@@ -701,7 +800,11 @@ def payup_amount_submit():
     form = PayupAmountForm()
     if not form.validate_on_submit():
         return render_template(
-            _PAYUP_AMOUNT_TEMPLATE, form=form, pending=pending, daily_limit=daily_limit, remaining=remaining
+            _PAYUP_AMOUNT_TEMPLATE,
+            form=form,
+            pending=_payup_recipient_display(recipient),
+            daily_limit=daily_limit,
+            remaining=remaining,
         ), 400
 
     try:
@@ -709,7 +812,11 @@ def payup_amount_submit():
     except InvalidOperation:
         flash("Invalid amount.", "error")
         return render_template(
-            _PAYUP_AMOUNT_TEMPLATE, form=form, pending=pending, daily_limit=daily_limit, remaining=remaining
+            _PAYUP_AMOUNT_TEMPLATE,
+            form=form,
+            pending=_payup_recipient_display(recipient),
+            daily_limit=daily_limit,
+            remaining=remaining,
         ), 400
 
     if amount < MIN_TRANSACTION_AMOUNT or amount > MAX_TRANSACTION_AMOUNT:
@@ -718,7 +825,11 @@ def payup_amount_submit():
             "error",
         )
         return render_template(
-            _PAYUP_AMOUNT_TEMPLATE, form=form, pending=pending, daily_limit=daily_limit, remaining=remaining
+            _PAYUP_AMOUNT_TEMPLATE,
+            form=form,
+            pending=_payup_recipient_display(recipient),
+            daily_limit=daily_limit,
+            remaining=remaining,
         ), 400
 
     if amount > remaining:
@@ -727,20 +838,28 @@ def payup_amount_submit():
             "error",
         )
         return render_template(
-            _PAYUP_AMOUNT_TEMPLATE, form=form, pending=pending, daily_limit=daily_limit, remaining=remaining
+            _PAYUP_AMOUNT_TEMPLATE,
+            form=form,
+            pending=_payup_recipient_display(recipient),
+            daily_limit=daily_limit,
+            remaining=remaining,
         ), 400
 
     if amount > Decimal(str(g.current_user.balance)):
         flash("Insufficient balance for this transfer.", "error")
         return render_template(
-            _PAYUP_AMOUNT_TEMPLATE, form=form, pending=pending, daily_limit=daily_limit, remaining=remaining
+            _PAYUP_AMOUNT_TEMPLATE,
+            form=form,
+            pending=_payup_recipient_display(recipient),
+            daily_limit=daily_limit,
+            remaining=remaining,
         ), 400
 
     token = os.urandom(32).hex()
     pending_tfr = PayupPendingTransfer(
         token=payup_transfer_token_verifier(token),
         user_id=g.current_user.id,
-        recipient_user_id=pending["recipient_user_id"],
+        recipient_user_id=recipient.id,
         amount=amount,
         reference=(form.reference.data or "").strip()[:128],
         expires_at=datetime.now(timezone.utc) + timedelta(seconds=_PAYUP_PENDING_TRANSFER_TTL),
@@ -778,18 +897,42 @@ def payup_confirm():
         flash(_REQUEST_EXPIRED_MESSAGE, "warning")
         return redirect(url_for(_PAYUP_ENDPOINT))
 
+    if not _payup_recipient_is_available(pending_tfr.recipient_user):
+        session.pop("pending_payup_token", None)
+        audit_event(
+            "payup_transfer",
+            "blocked",
+            user=g.current_user,
+            metadata={"reason": "recipient_unavailable"},
+        )
+        flash("PayUp could not authorize this transfer.", "error")
+        return redirect(url_for(_PAYUP_ENDPOINT))
+
     amount = Decimal(str(pending_tfr.amount))
+    risk = evaluate_payup_risk(g.current_user, amount)
+    if risk.blocked:
+        session.pop("pending_payup_token", None)
+        audit_event(
+            "payup_transfer",
+            "blocked",
+            user=g.current_user,
+            metadata={"risk_reasons": list(risk.reasons)},
+        )
+        flash("PayUp could not authorize this transfer. Please sign in again or contact support.", "error")
+        return redirect(url_for(_PAYUP_ENDPOINT))
     pending = {
-        "recipient_name": pending_tfr.recipient_user.full_name,
+        "recipient_name": _masked_payup_recipient_name(
+            pending_tfr.recipient_user.full_name
+        ),
+        "recipient_phone": pending_tfr.recipient_user.phone_number,
         "amount": str(amount.quantize(Decimal("0.01"))),
         "reference": pending_tfr.reference,
-        "requires_step_up": payup_requires_step_up(g.current_user, amount),
+        "requires_step_up": risk.requires_step_up,
     }
     return render_template(_PAYUP_CONFIRM_TEMPLATE, form=PayupConfirmForm(), pending=pending)
 
 
 @banking_bp.post("/payup/confirm")
-@limiter.limit("5 per 15 minutes", key_func=mfa_principal)
 @web_login_required
 @web_not_frozen_required
 def payup_confirm_submit():
@@ -814,11 +957,50 @@ def payup_confirm_submit():
         flash(_NO_PENDING_TRANSFER_MESSAGE, "warning")
         return redirect(url_for(_PAYUP_ENDPOINT))
 
+    if not _payup_recipient_is_available(pending_tfr.recipient_user):
+        audit_event(
+            "payup_transfer",
+            "blocked",
+            user=g.current_user,
+            metadata={"reason": "recipient_unavailable"},
+        )
+        flash("PayUp could not authorize this transfer.", "error")
+        return redirect(url_for(_PAYUP_ENDPOINT))
+
     amount = Decimal(str(pending_tfr.amount))
-    requires_step_up = payup_requires_step_up(g.current_user, amount)
+    recipient_phone = str(pending_tfr.recipient_user.phone_number or "")
+    try:
+        _consume_payup_attempt_limits(recipient_phone, phase="confirm")
+    except AuthError as exc:
+        audit_event(
+            "payup_transfer",
+            "blocked",
+            user=g.current_user,
+            metadata={"reason": "rate_limit"},
+        )
+        flash(exc.message, "error")
+        return redirect(url_for(_PAYUP_ENDPOINT))
+
+    risk = evaluate_payup_risk(g.current_user, amount)
+    audit_event(
+        "payup_transfer",
+        "attempted",
+        user=g.current_user,
+        metadata={
+            "risk_decision": risk.decision,
+            "risk_reasons": list(risk.reasons),
+            "phone_ref": audit_reference("payup_phone", recipient_phone),
+        },
+    )
 
     authorized = False
-    if requires_step_up:
+    if risk.requires_step_up:
+        audit_event(
+            "payup_mfa_challenge",
+            "required",
+            user=g.current_user,
+            metadata={"risk_reasons": list(risk.reasons)},
+        )
         try:
             verify_high_risk_authorization(
                 g.current_user,
@@ -826,11 +1008,26 @@ def payup_confirm_submit():
                 "payup_transfer",
             )
             authorized = True
+            audit_event(
+                "payup_mfa_challenge",
+                "completed",
+                user=g.current_user,
+                metadata={"risk_reasons": list(risk.reasons)},
+            )
         except AuthError as exc:
+            audit_event(
+                "payup_mfa_challenge",
+                "failure",
+                user=g.current_user,
+                metadata={"reason": "invalid_or_missing_step_up"},
+            )
             flash(exc.message, "error")
             session["pending_payup_token"] = token
             pending = {
-                "recipient_name": pending_tfr.recipient_user.full_name,
+                "recipient_name": _masked_payup_recipient_name(
+                    pending_tfr.recipient_user.full_name
+                ),
+                "recipient_phone": recipient_phone,
                 "amount": str(amount.quantize(Decimal("0.01"))),
                 "reference": pending_tfr.reference,
                 "requires_step_up": True,
@@ -844,10 +1041,27 @@ def payup_confirm_submit():
             authorized=authorized,
         )
     except AuthError as exc:
+        audit_event(
+            "payup_transfer",
+            "blocked" if exc.status_code in {401, 403, 409, 429} else "failure",
+            user=g.current_user,
+            metadata={"reason": "execution_policy"},
+        )
         flash(exc.message, "error")
         return redirect(url_for(_PAYUP_ENDPOINT))
 
-    recipient_name = pending_tfr.recipient_user.full_name
+    recipient_name = _masked_payup_recipient_name(
+        pending_tfr.recipient_user.full_name
+    )
+    audit_event(
+        "payup_transfer",
+        "success",
+        user=g.current_user,
+        metadata={
+            "step_up_used": authorized,
+            "transaction_ref": audit_reference("transaction_reference", txn_ref),
+        },
+    )
     flash(
         f"Transfer of SGD {amount.quantize(Decimal('0.01'))} to {recipient_name} is complete. "
         f"Ref: {txn_ref[:8].upper()}",

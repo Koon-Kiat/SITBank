@@ -7,6 +7,7 @@ from pathlib import Path
 UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 AUTH_DECORATORS = {"login_required", "web_login_required"}
 RATE_LIMIT_DECISIONS = {
+    "durable_payup_flow",
     "per_route",
     "edge_auth",
     "edge_app",
@@ -865,8 +866,8 @@ ROUTE_SECURITY_INVENTORY = {
         "access": "authenticated",
         "classification": "payup_transfer",
         "csrf": "required",
-        "rate_limit": "per_route",
-        "step_up": "required",
+        "rate_limit": "durable_payup_flow",
+        "step_up": "not_required",
         "public_justification": "",
     },
     "banking.payup_amount": {
@@ -887,7 +888,7 @@ ROUTE_SECURITY_INVENTORY = {
         "access": "authenticated",
         "classification": "payup_transfer",
         "csrf": "required",
-        "rate_limit": "per_route",
+        "rate_limit": "durable_payup_flow",
         "step_up": "not_required",
         "public_justification": "",
     },
@@ -909,7 +910,7 @@ ROUTE_SECURITY_INVENTORY = {
         "access": "authenticated",
         "classification": "payup_transfer",
         "csrf": "required",
-        "rate_limit": "per_route",
+        "rate_limit": "durable_payup_flow",
         "step_up": "conditional",
         "public_justification": "",
     },
@@ -1056,10 +1057,9 @@ def test_route_inventory_has_complete_security_decisions(app):
             assert entry["rate_limit"] in RATE_LIMIT_DECISIONS, (
                 f"{endpoint} is sensitive and needs an explicit rate-limit decision"
             )
+        source = sources[endpoint]
         if entry["rate_limit"] == "per_route":
             assert "limit" in route_decorators, f"{endpoint} is expected to have Flask-Limiter decorators"
-
-            source = sources[endpoint]
             if entry["step_up"] == "required":
                 delegated_step_up = {
                     "change_password",

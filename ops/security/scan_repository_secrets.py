@@ -90,7 +90,7 @@ def tracked_files() -> list[Path]:
     ]
 
 
-def historical_blobs() -> list[tuple[str, str]]:
+def _historical_blob_records() -> list[tuple[str, str, int]]:
     result = subprocess.run(
         [
             "git",
@@ -115,9 +115,16 @@ def historical_blobs() -> list[tuple[str, str]]:
         candidates.append((object_id, path))
     metadata = _batch_object_metadata([object_id for object_id, _path in candidates])
     return [
-        (object_id, path)
+        (object_id, path, metadata[object_id][1])
         for object_id, path in candidates
         if metadata.get(object_id, ("", 0))[0] == "blob"
+    ]
+
+
+def historical_blobs() -> list[tuple[str, str]]:
+    return [
+        (object_id, path)
+        for object_id, path, _size in _historical_blob_records()
     ]
 
 
@@ -190,10 +197,8 @@ def scan_content(label: str, content: bytes, findings: list[str]) -> None:
 
 
 def scan_history(findings: list[str]) -> None:
-    blobs = historical_blobs()
-    metadata = _batch_object_metadata([object_id for object_id, _path in blobs])
     eligible: list[tuple[str, str]] = []
-    for object_id, historical_path in blobs:
+    for object_id, historical_path, size in _historical_blob_records():
         path = Path(historical_path)
         if (
             path.name.casefold() in FORBIDDEN_NAMES
@@ -202,9 +207,6 @@ def scan_history(findings: list[str]) -> None:
             findings.append(
                 f"forbidden credential filename in history: {historical_path}"
             )
-            continue
-        object_type, size = metadata.get(object_id, ("", MAX_HISTORY_BLOB_BYTES + 1))
-        if object_type != "blob":
             continue
         if size > MAX_HISTORY_BLOB_BYTES:
             continue

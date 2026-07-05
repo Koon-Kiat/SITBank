@@ -131,6 +131,7 @@ linux_runtime_files=(
     "${repo_root}/${compose_source}"
     "${repo_root}/${systemd_source}"
     "${repo_root}/ops/deploy/sitbank-container-bootstrap"
+    "${repo_root}/ops/deploy/sitbank-observability-bootstrap"
     "${repo_root}/ops/deploy/sitbank-container-deploy"
     "${repo_root}/ops/deploy/sitbank-container-runtime"
     "${repo_root}/ops/systemd/sitbank-audit-anchor-refresh@.service"
@@ -147,6 +148,7 @@ linux_runtime_files=(
     "${repo_root}/ops/nginx/sitbank-tls-policy.conf"
     "${repo_root}/ops/security/cloudflare-origin-pull-ca-allowlist.json"
     "${repo_root}/ops/sudoers/sitbank-container-deploy"
+    "${repo_root}/ops/sudoers/sitbank-observability-bootstrap"
 )
 if [[ "${target}" == "staging" ]]; then
     linux_runtime_files+=(
@@ -272,6 +274,9 @@ install -o root -g root -m 0755 \
     "${repo_root}/ops/deploy/sitbank-container-bootstrap" \
     /usr/local/sbin/sitbank-container-bootstrap
 install -o root -g root -m 0755 \
+    "${repo_root}/ops/deploy/sitbank-observability-bootstrap" \
+    /usr/local/sbin/sitbank-observability-bootstrap
+install -o root -g root -m 0755 \
     "${repo_root}/ops/deploy/sitbank-container-deploy" \
     /usr/local/sbin/sitbank-container-deploy
 install -o root -g root -m 0755 \
@@ -348,6 +353,9 @@ fi
 install -o root -g root -m 0440 \
     "${repo_root}/ops/sudoers/sitbank-container-deploy" \
     /etc/sudoers.d/sitbank-container-deploy
+install -o root -g root -m 0440 \
+    "${repo_root}/ops/sudoers/sitbank-observability-bootstrap" \
+    /etc/sudoers.d/sitbank-observability-bootstrap
 
 cat > "${config_root}/deploy.conf" <<EOF
 GITHUB_REPOSITORY=${github_repository}
@@ -619,6 +627,7 @@ if ss -lnt | grep -Eq ':(2375|2376)([[:space:]]|$)'; then
 fi
 
 visudo -cf /etc/sudoers.d/sitbank-container-deploy
+visudo -cf /etc/sudoers.d/sitbank-observability-bootstrap
 systemctl daemon-reload
 systemctl enable "${systemd_service}"
 systemctl enable --now "sitbank-audit-anchor-refresh@${target}.timer"

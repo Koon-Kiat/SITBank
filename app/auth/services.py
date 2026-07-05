@@ -1201,8 +1201,22 @@ def _mfa_secret_for_user(user: User) -> str:
     return decrypt_mfa_secret(user.mfa_secret_nonce, user.mfa_secret_ciphertext, user.id)
 
 
-def _verify_totp_for_user(user: User, code: str, scope: str, *, valid_window: int | None = None) -> bool:
-    return _verify_totp_secret_for_user(user, _mfa_secret_for_user(user), code, scope, valid_window=valid_window)
+def _verify_totp_for_user(
+    user: User,
+    code: str,
+    scope: str,
+    *,
+    valid_window: int | None = None,
+    track_failures: bool = True,
+) -> bool:
+    return _verify_totp_secret_for_user(
+        user,
+        _mfa_secret_for_user(user),
+        code,
+        scope,
+        valid_window=valid_window,
+        track_failures=track_failures,
+    )
 
 
 def _verify_totp_secret_for_user(
@@ -1212,20 +1226,24 @@ def _verify_totp_secret_for_user(
     scope: str,
     *,
     valid_window: int | None = None,
+    track_failures: bool = True,
 ) -> bool:
     if not re.fullmatch(r"\d{6}", code or ""):
-        record_failure(scope, str(user.id))
+        if track_failures:
+            record_failure(scope, str(user.id))
         return False
 
-    try:
-        _enforce_auth_backoff(scope, str(user.id))
-    except AuthError:
-        _record_user_security_failure(user, "mfa", "mfa_failed_attempts")
-        raise
+    if track_failures:
+        try:
+            _enforce_auth_backoff(scope, str(user.id))
+        except AuthError:
+            _record_user_security_failure(user, "mfa", "mfa_failed_attempts")
+            raise
     now = int(time.time())
     accepted_step = _accepted_totp_step(secret, code, now, _totp_valid_window(scope, valid_window))
     if accepted_step is None:
-        record_failure(scope, str(user.id))
+        if track_failures:
+            record_failure(scope, str(user.id))
         return False
 
     code_digest = active_hmac_hex(
@@ -1245,10 +1263,12 @@ def _verify_totp_secret_for_user(
         db.session.commit()
     except IntegrityError:
         db.session.rollback()
-        record_failure(scope, str(user.id))
+        if track_failures:
+            record_failure(scope, str(user.id))
         return False
 
-    clear_failures(scope, str(user.id))
+    if track_failures:
+        clear_failures(scope, str(user.id))
     _clear_user_security_failures(user, "mfa")
     mark_fresh_mfa()
     return True

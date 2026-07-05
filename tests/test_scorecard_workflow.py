@@ -73,7 +73,11 @@ def test_workflow_write_permissions_are_narrow_and_reviewed():
     allowed_write_permissions = {
         ("bootstrap-ec2.yml", "bootstrap-staging", "id-token"),
         ("bootstrap-ec2.yml", "bootstrap-production", "id-token"),
+        ("bootstrap-observability-ec2.yml", "bootstrap", "id-token"),
         ("ci-deploy.yml", "sonarqube-comment", "pull-requests"),
+        ("ci-deploy.yml", "publish", "artifact-metadata"),
+        ("ci-deploy.yml", "publish", "attestations"),
+        ("ci-deploy.yml", "publish", "id-token"),
         ("ci-deploy.yml", "publish", "packages"),
         ("ci-deploy.yml", "release-verify", "id-token"),
         ("ci-deploy.yml", "release-verify", "packages"),

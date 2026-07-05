@@ -87,6 +87,7 @@ _ADMIN_LOGIN_TEMPLATE = "admin/login.html"
 _ADMIN_MFA_VERIFY_TEMPLATE = "admin/mfa_verify.html"
 _ADMIN_RATE_LIMIT_HOURLY = "10 per hour"
 _ADMIN_RATE_LIMIT_STEP_UP = "5 per 5 minutes"
+_ADMIN_MFA_COARSE_RATE_LIMIT = "30 per minute"
 _ADMIN_TOTP_CODE_FIELD = "totp_code"
 _ALERT_SEVERITY_RANK = {"low": 1, "medium": 2, "high": 3, "critical": 4}
 _ALERT_REDACTED_VALUE = "[redacted]"
@@ -844,12 +845,19 @@ def mfa_verify_form():
 
 
 @admin_bp.post("/mfa/verify")
-@limiter.limit(_ADMIN_RATE_LIMIT_STEP_UP, key_func=get_remote_address)
-@limiter.limit(_ADMIN_RATE_LIMIT_STEP_UP, key_func=request_principal)
+@limiter.limit(_ADMIN_MFA_COARSE_RATE_LIMIT, key_func=get_remote_address)
+@limiter.limit(_ADMIN_MFA_COARSE_RATE_LIMIT, key_func=request_principal)
 def mfa_verify():
     if _wants_json():
         data = _payload(AdminTotpSchema())
-        return jsonify(complete_admin_mfa_login(data[_ADMIN_TOTP_CODE_FIELD]))
+        try:
+            return jsonify(
+                complete_admin_mfa_login(data[_ADMIN_TOTP_CODE_FIELD])
+            )
+        except AuthError as exc:
+            if exc.status_code == 429:
+                return rate_limit_response(exc.retry_after)
+            raise
 
     if not session.get("pending_mfa_user_id"):
         flash("Please log in first.", "warning")
@@ -863,7 +871,7 @@ def mfa_verify():
         complete_admin_mfa_login(form.totp_code.data)
     except AuthError as exc:
         if exc.status_code == 429:
-            return rate_limit_response()
+            return rate_limit_response(exc.retry_after)
         flash(exc.message, "error")
         return _render_mfa_form(form, status_code=exc.status_code)
 

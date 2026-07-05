@@ -82,7 +82,9 @@ world-readable, or add broad host users/groups to work around collector access.
 
 ## Bootstrap
 
-From a reviewed checkout on EC2:
+Initial host preparation installs the restricted root wrapper and exact sudo
+rule through the existing protected application host-bootstrap path. Create
+the root-managed observability secret files on EC2 without printing them:
 
 ```bash
 sudo install -d -o root -g root -m 0700 /etc/sitbank-observability/secrets
@@ -91,10 +93,23 @@ sudo install -o root -g root -m 0600 /dev/null /etc/sitbank-observability/secret
 sudoedit /etc/sitbank-observability/secrets/grafana_admin_user
 sudoedit /etc/sitbank-observability/secrets/grafana_admin_password
 sudoedit /etc/sitbank-observability/observability.env
-sudo ops/deploy/bootstrap-observability-ec2 "$(pwd)"
 ```
 
-Do not print the secret file contents.
+For subsequent staging or production changes, run **Bootstrap private
+observability on EC2** from `main` and select the matching protected
+environment. The workflow uses Tailscale only for its restricted SSH path,
+uploads an immutable signed archive, and invokes only
+`/usr/local/sbin/sitbank-observability-bootstrap <target> <commit>`. The
+wrapper verifies the archive's GitHub OIDC signer identity, trusted repository
+and commit, root-owned host configuration, immutable image digests,
+loopback-only ports, internal networks, Nginx route absence, Funnel denial,
+and the approved private Serve mapping before calling
+`bootstrap-observability-ec2`.
+
+Do not run the repository script directly for routine changes, broaden the
+sudo rule, copy the checkout into a root-owned trusted path, or print secret
+file contents. Keep emergency manual recovery under an approved maintenance
+record with the same signed-source and precondition checks.
 
 ## Verification
 
@@ -227,9 +242,10 @@ admin Tailscale configuration first. Do not reset the entire Serve
 configuration as a shortcut because that can remove the admin root mapping.
 
 After updating `observability.env` to the `/grafana/` root URL and
-`GRAFANA_SERVE_FROM_SUB_PATH=true`, rerun
-`sudo ops/deploy/bootstrap-observability-ec2 "$(pwd)"`, then add the path
-mapping:
+`GRAFANA_SERVE_FROM_SUB_PATH=true`, run the protected bootstrap workflow. The
+root wrapper requires the approved path mapping and rejects unexpected Serve
+handlers. If the separately approved initial mapping must be established,
+use:
 
 ```bash
 sudo tailscale serve --bg --https=443 --set-path=/grafana http://127.0.0.1:3000/grafana

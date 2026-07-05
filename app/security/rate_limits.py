@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from flask import current_app, g, request, session
 from flask_limiter.util import get_remote_address
+from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
 from app.models import AuthAttemptCounter
@@ -77,26 +78,30 @@ def apply_exponential_backoff(scope: str, principal: str) -> None:
     raise AuthBackoffRequired(retry_after)
 
 
-def record_failure(scope: str, principal: str) -> int:
+def record_failure(
+    scope: str,
+    principal: str,
+    *,
+    window_seconds: int | None = None,
+) -> int:
     now = _utcnow()
-    counter = _load_counter(scope, principal, lock=True)
-    if counter is None:
-        counter = AuthAttemptCounter(
-            scope=scope,
-            principal_hash=_counter_hash(scope, principal),
-            ip_hash=_ip_hash_from_principal(principal),
-            failure_count=0,
-            window_started_at=now,
-            window_expires_at=now + timedelta(minutes=5),
-            created_at=now,
-            updated_at=now,
-        )
-        db.session.add(counter)
+    counter = _load_or_create_counter(
+        scope,
+        principal,
+        now=now,
+        window_seconds=window_seconds if window_seconds is not None else 5 * 60,
+    )
 
     counter.failure_count = int(counter.failure_count or 0) + 1
     counter.last_failed_at = now
     counter.updated_at = now
-    counter.window_expires_at = now + timedelta(minutes=15 if counter.failure_count > 10 else 5)
+    if window_seconds is not None:
+        active_window_seconds = window_seconds
+    elif counter.failure_count > 10:
+        active_window_seconds = 15 * 60
+    else:
+        active_window_seconds = 5 * 60
+    counter.window_expires_at = now + timedelta(seconds=active_window_seconds)
     attempts = int(counter.failure_count)
     db.session.commit()
     if attempts in {2, 3, 5, 10} or attempts > 10:
@@ -108,6 +113,25 @@ def record_failure(scope: str, principal: str) -> int:
             metadata={"scope": scope, "attempts": int(attempts)},
         )
     return int(attempts)
+
+
+def enforce_durable_failure_limit(
+    scope: str,
+    principal: str,
+    *,
+    limit: int,
+) -> None:
+    """Block only after the recorded failure count exceeds the threshold."""
+    if limit < 1:
+        raise ValueError("Durable failure limit must be positive")
+    counter = _load_counter(scope, principal)
+    if counter is None or int(counter.failure_count or 0) <= limit:
+        return
+    retry_after = max(
+        1,
+        int((_as_utc(counter.window_expires_at) - _utcnow()).total_seconds()),
+    )
+    raise DurableRateLimitExceeded(retry_after)
 
 
 def clear_failures(scope: str, principal: str) -> None:
@@ -127,19 +151,12 @@ def consume_durable_rate_limit(
     if limit < 1 or window_seconds < 1:
         raise ValueError("Durable rate-limit bounds must be positive")
     now = _utcnow()
-    counter = _load_counter(scope, principal, lock=True)
-    if counter is None:
-        counter = AuthAttemptCounter(
-            scope=scope,
-            principal_hash=_counter_hash(scope, principal),
-            ip_hash=_ip_hash_from_principal(principal),
-            failure_count=0,
-            window_started_at=now,
-            window_expires_at=now + timedelta(seconds=window_seconds),
-            created_at=now,
-            updated_at=now,
-        )
-        db.session.add(counter)
+    counter = _load_or_create_counter(
+        scope,
+        principal,
+        now=now,
+        window_seconds=window_seconds,
+    )
     if int(counter.failure_count or 0) >= limit:
         retry_after = max(1, int((_as_utc(counter.window_expires_at) - now).total_seconds()))
         db.session.rollback()
@@ -150,13 +167,55 @@ def consume_durable_rate_limit(
     return int(counter.failure_count)
 
 
+def _load_or_create_counter(
+    scope: str,
+    principal: str,
+    *,
+    now: datetime,
+    window_seconds: int,
+) -> AuthAttemptCounter:
+    counter = _load_counter(scope, principal, lock=True)
+    if counter is not None:
+        return counter
+
+    counter = AuthAttemptCounter(
+        scope=scope,
+        principal_hash=_counter_hash(scope, principal),
+        ip_hash=_ip_hash_from_principal(principal),
+        failure_count=0,
+        window_started_at=now,
+        window_expires_at=now + timedelta(seconds=window_seconds),
+        created_at=now,
+        updated_at=now,
+    )
+    if not _uses_postgresql_row_locks():
+        db.session.add(counter)
+    else:
+        try:
+            with db.session.begin_nested():
+                db.session.add(counter)
+                db.session.flush()
+        except IntegrityError:
+            # Another worker created the same durable counter after our initial
+            # lookup. Reload it under the normal row lock so the attempt is still
+            # counted instead of failing open or returning an untracked 500.
+            counter = _load_counter(scope, principal, lock=True)
+            if counter is None:
+                raise
+    return counter
+
+
+def _uses_postgresql_row_locks() -> bool:
+    return db.engine.dialect.name == "postgresql"
+
+
 def _load_counter(scope: str, principal: str, *, lock: bool = False) -> AuthAttemptCounter | None:
     now = _utcnow()
     statement = db.select(AuthAttemptCounter).where(
         AuthAttemptCounter.scope == scope,
         AuthAttemptCounter.principal_hash == _counter_hash(scope, principal),
     )
-    if lock and db.engine.dialect.name == "postgresql":
+    if lock and _uses_postgresql_row_locks():
         statement = statement.with_for_update()
     counter = db.session.execute(statement).scalar_one_or_none()
     if counter is None:

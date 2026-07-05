@@ -177,6 +177,26 @@ recovery-code HMAC rows consumed. After upgrade, verify transfer-limit settings,
 PayUp lookup throttling, invite acceptance/reset, and password-reset MFA in
 staging before production rollout.
 
+Migration `20260705_0028` removes the transaction-integrity compatibility
+boundary and adds the per-customer PayUp enable flag. Before upgrading, stop
+ledger writes, confirm a fresh encrypted backup, and run the current trusted
+application image against the existing schema:
+
+```bash
+python -m flask --app wsgi:app security backfill-transaction-integrity
+python -m flask --app wsgi:app security backfill-transaction-integrity --confirm
+python -m flask --app wsgi:app db upgrade
+```
+
+The first command is validation-only and reports aggregate counts. The
+confirmed command signs only rows with entirely absent integrity metadata,
+refuses partial or invalid signed rows, verifies every row, and commits the
+backfill with its completed audit event. The migration then fails closed if
+any row is not keyed HMAC-SHA256 version 1 and makes all integrity metadata
+non-null. Run and preserve sanitized staging evidence first. Do not downgrade
+this migration or restore legacy verification; rollback requires restoring the
+approved encrypted backup and previously trusted application release.
+
 ## Deployment Prerequisites
 
 Install `/etc/sitbank/secrets/security_alert_webhook_url` or
@@ -241,6 +261,17 @@ encrypted-archive pruning remain host/operator-owned evidence.
 Deploy the signed image through the restricted wrapper so it runs
 `production-check`, `db upgrade`, `apply-runtime-db-privileges`,
 `verify-runtime-db-privileges`, and readiness checks before declaring success.
+Before staging, release verification also verifies a GitHub artifact
+attestation, pushed by the trusted publish job to the image registry, for the
+exact `ghcr.io/koon-kiat/sitbank@sha256:<digest>` subject. The verifier requires
+repository `Koon-Kiat/SITBank`, source ref `refs/heads/main`, the resolved
+release commit, exact signer workflow `.github/workflows/ci-deploy.yml`,
+GitHub's OIDC issuer, and the same digest passed to deployment. A missing,
+wrong-subject, wrong-ref, wrong-workflow, or unverifiable attestation fails
+closed. This is SLSA Build L1/L2-aligned release evidence, not a claim of
+formal SLSA certification. Repository files do not prove live GHCR state,
+branch protection, or GitHub Environment settings; preserve sanitized
+release/provider evidence separately.
 
 Production deployment runs from the trusted `main` workflow only after release
 verification, staging deployment, and the post-deployment staging TLS scan all
@@ -1033,6 +1064,11 @@ in this deployment guide and `docs/OPERATIONS.md`; do not restore retired
 DuckDNS names as active Nginx, Certbot, workflow, or TLS-scan targets.
 
 The private Grafana/Loki deployment is separate from the banking application
-runtime. Use `ops/deploy/bootstrap-observability-ec2` and
+runtime. Initial host preparation installs the restricted
+`sitbank-observability-bootstrap` wrapper. Subsequent changes use the
+main-only, protected `Bootstrap private observability on EC2` workflow, which
+uploads a signed trusted-source archive over its narrowly tagged Tailscale SSH
+path and invokes only that wrapper. Use
+`ops/deploy/bootstrap-observability-ec2` only through the wrapper and
 `docs/runbooks/private-observability-grafana-loki.md`; do not add Grafana,
 Loki, or Alloy routes to public Nginx or the Flask admin app.

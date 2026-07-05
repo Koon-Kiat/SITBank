@@ -649,9 +649,13 @@ def test_security_alert_rebaseline_is_acknowledged_audited_and_atomic(
     assert completed.exit_code == 0, completed.output
     payload = json.loads(completed.output)
     assert payload["message"] == "security_alert_state_rebaselined"
-    assert payload["backup_path"]
-    assert Path(payload["backup_path"]).exists()
-    assert json.loads(Path(payload["backup_path"]).read_text(encoding="utf-8")) == stale_state
+    assert payload["backup_created"] is True
+    assert payload["backup_name"].startswith("security-alert-state.json.backup-")
+    backup_path = state_path.with_name(payload["backup_name"])
+    assert backup_path.exists()
+    assert json.loads(backup_path.read_text(encoding="utf-8")) == stale_state
+    assert str(tmp_path) not in completed.output
+    assert "backup_path" not in payload
     assert raw_reason not in completed.output
     assert raw_reason not in state_path.read_text(encoding="utf-8")
     outcomes = [

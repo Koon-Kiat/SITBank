@@ -58,6 +58,7 @@ applicable unless a frontend package manager is added.
 | Semgrep | `.github/workflows/semgrep.yml` | Runs `p/python`, `p/flask`, `p/security-audit`, `p/owasp-top-ten`, and `p/github-actions` locally with `--metrics=off` and blocks ERROR severity |
 | Action hygiene | `.github/workflows/ci-deploy.yml` | Runs actionlint and zizmor; tests require actions to be SHA-pinned |
 | Image and artifact signing | `.github/workflows/ci-deploy.yml`, `.github/workflows/bootstrap-ec2.yml`, `ops/deploy/sitbank-container-deploy` | Uses cosign to sign/verify images and deployment artifacts |
+| Release provenance | `.github/workflows/ci-deploy.yml` | Creates and verifies a GitHub artifact attestation for the exact release image digest, trusted repository, main ref, release commit, signer workflow, and GitHub OIDC issuer before staging; this is SLSA Build L1/L2-aligned evidence, not formal certification |
 
 Tests for this automation include:
 
@@ -101,7 +102,7 @@ deployment.
 | Database session integrity | `tests/test_db_session_integrity.py` |
 | Session management UI/API | `tests/test_session_management.py`, `tests/test_session_absolute_lifetime.py` |
 | Auth bypass and pentest regressions | `tests/test_pentest_auth_bypass.py`, `tests/test_owasp_regressions.py` |
-| Route inventory | `tests/test_route_inventory_security.py`, `tests/test_admin_route_inventory_security.py` |
+| Route inventory and admin role permissions | `tests/test_route_inventory_security.py`, `tests/test_admin_route_inventory_security.py`, `tests/test_admin_rbac_matrix.py` |
 | Admin isolation and staff invites | `tests/test_admin_isolation.py`, `tests/test_admin_staff_invites.py` |
 | Banking payload and transaction guardrails | `tests/test_banking_transaction_security.py` |
 | Audit, alerts, and redaction | `tests/test_audit_alerting.py`, `tests/test_audit_metadata_sanitization.py` |
@@ -113,10 +114,14 @@ Payee ownership, direct banking MFA gating, pre-TOTP lookup blocking,
 duplicate/self-payee protections, expiry behavior, and removal IDOR are covered
 by `tests/test_payee_management_security.py`.
 
-Admin route authorization has a separate generated route-inventory matrix in
-`tests/test_admin_route_inventory_security.py`, plus targeted admin service
-tests for staff invites, manual recovery, maker-checker approval, and the
-manual-only root-admin bootstrap boundary.
+Admin route authorization has a separate generated route inventory in
+`tests/test_admin_route_inventory_security.py`. A centralized role-permission
+matrix in `tests/test_admin_rbac_matrix.py` exercises unauthenticated,
+customer-isolated, staff, admin, and root-admin access to representative read
+and mutation routes and verifies denied mutations have no privileged side
+effects. Targeted service tests retain deeper coverage for staff invites,
+manual recovery, maker-checker approval, and the manual-only root-admin
+bootstrap boundary.
 
 Playwright E2E browser tests cover authentication, MFA, session, banking, and
 boundary regressions, including registration, password reset, manual recovery,
@@ -139,16 +144,25 @@ ignored local paths such as `.playwright-browsers`, `playwright-report`, and
 `test-results`; the workflow does not upload traces, videos, cookies, or
 browser profiles.
 
-The normal suite reuses one Flask app and database schema per xdist worker.
+The normal suite reuses one customer app and one admin app with their database
+schemas per xdist worker.
 Every test still receives isolated database rows, server-side sessions,
 rate-limit state, fake delivery state, and app configuration. Tests that
 specifically prove factory, admin/customer database, migration, hashing,
 authentication, MFA, or session-creation behavior continue to use their real
 paths. Xdist `auto` is capped at four workers so high-core hosts do not
-overcommit the in-memory SQLite test workload. The history secret scanner preserves full reachable-history coverage
-while reading metadata and content through streaming Git object batches.
+overcommit the in-memory SQLite test workload. The history secret scanner
+preserves full reachable-history coverage while reading metadata and content
+through streaming Git object batches.
 There are no marker exclusions or scoped test paths in the required full-suite
 command.
+
+Deterministic TOTP timestamps are test-only helpers: they remove wall-clock
+sleep while still exercising valid, invalid, replay, and expiry boundaries.
+Production verification remains time-window based. Helper-created
+authenticated state is appropriate only when login, password hashing, MFA,
+session creation, and password history are not the behavior under test; those
+security flows retain dedicated real-path coverage.
 
 ## Local Security Commands
 

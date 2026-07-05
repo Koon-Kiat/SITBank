@@ -86,7 +86,6 @@ class PayupPhoneForm(FlaskForm):
             Regexp(PHONE_RE, message="Enter a valid Singapore phone number (8 digits starting with 8 or 9)"),
         ],
     )
-    totp_code = _totp_code_field()
 
 
 class PayupAmountForm(FlaskForm):

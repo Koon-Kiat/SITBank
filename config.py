@@ -1443,6 +1443,78 @@ class Config:
     RATELIMIT_KEY_PREFIX = None
 
     FRESH_MFA_SECONDS = 5 * 60
+    ADMIN_MFA_FAILURE_LIMIT = _int_env(
+        "ADMIN_MFA_FAILURE_LIMIT",
+        default="5",
+        minimum=1,
+        maximum=20,
+    )
+    ADMIN_MFA_FAILURE_WINDOW_SECONDS = _int_env(
+        "ADMIN_MFA_FAILURE_WINDOW_SECONDS",
+        default="300",
+        minimum=60,
+        maximum=3600,
+    )
+    PAYUP_QUICK_TRANSFER_CAP = _float_env(
+        "PAYUP_QUICK_TRANSFER_CAP",
+        default="200.00",
+        minimum=1.0,
+        maximum=10000.0,
+    )
+    PAYUP_QUICK_DAILY_CAP = _float_env(
+        "PAYUP_QUICK_DAILY_CAP",
+        default="500.00",
+        minimum=1.0,
+        maximum=10000.0,
+    )
+    PAYUP_STEP_UP_LIMIT_PERCENT = _int_env(
+        "PAYUP_STEP_UP_LIMIT_PERCENT",
+        default="80",
+        minimum=1,
+        maximum=100,
+    )
+    PAYUP_QUICK_SESSION_MAX_AGE_SECONDS = _int_env(
+        "PAYUP_QUICK_SESSION_MAX_AGE_SECONDS",
+        default="900",
+        minimum=60,
+        maximum=3600,
+    )
+    PAYUP_SENSITIVE_EVENT_COOLDOWN_SECONDS = _int_env(
+        "PAYUP_SENSITIVE_EVENT_COOLDOWN_SECONDS",
+        default="86400",
+        minimum=300,
+        maximum=604800,
+    )
+    PAYUP_RATE_LIMIT_ACCOUNT = _int_env(
+        "PAYUP_RATE_LIMIT_ACCOUNT",
+        default="20",
+        minimum=1,
+        maximum=100,
+    )
+    PAYUP_RATE_LIMIT_SESSION = _int_env(
+        "PAYUP_RATE_LIMIT_SESSION",
+        default="15",
+        minimum=1,
+        maximum=100,
+    )
+    PAYUP_RATE_LIMIT_IP = _int_env(
+        "PAYUP_RATE_LIMIT_IP",
+        default="30",
+        minimum=1,
+        maximum=200,
+    )
+    PAYUP_RATE_LIMIT_RECIPIENT = _int_env(
+        "PAYUP_RATE_LIMIT_RECIPIENT",
+        default="10",
+        minimum=1,
+        maximum=100,
+    )
+    PAYUP_RATE_LIMIT_WINDOW_SECONDS = _int_env(
+        "PAYUP_RATE_LIMIT_WINDOW_SECONDS",
+        default="900",
+        minimum=60,
+        maximum=3600,
+    )
     TOTP_LOGIN_VALID_WINDOW = int(os.getenv("TOTP_LOGIN_VALID_WINDOW", "1"))
     if TOTP_LOGIN_VALID_WINDOW < 0 or TOTP_LOGIN_VALID_WINDOW > 1:
         raise RuntimeError("TOTP_LOGIN_VALID_WINDOW must be 0 or 1")

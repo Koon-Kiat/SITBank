@@ -91,14 +91,23 @@ the Nginx, Flask-Limiter, durable backoff, CSRF, MFA, or audit controls below.
 | Route family | Edge and Nginx layer | Flask and durable layer | Evidence |
 | --- | --- | --- | --- |
 | Customer login, registration, MFA, password reset, and manual recovery | Production uses customer auth/security Nginx rate-limit zones such as `sitbank_prod_auth`, `sitbank_prod_register`, and `sitbank_prod_security`; staging uses `sitbank_staging_login` behind Cloudflare Access and origin-pull enforcement | Route inventory requires explicit Flask-Limiter decisions; durable counters include login, registration OTP, password-reset request, manual-recovery request, and password-reset recovery-code scopes | `ops/nginx/sitbank-production-rate-limits.conf`, `ops/nginx/sitbank-staging-rate-limits.conf`, `tests/test_route_inventory_security.py`, `tests/test_rate_limit_error_ux.py` |
-| Customer banking, Payee, PayUp, and session/security actions | Production uses app/security Nginx zones such as `sitbank_prod_app` and `sitbank_prod_security`; staging uses `sitbank_staging_app` behind the staging edge boundary | Unsafe banking routes are Flask-Limiter protected where listed; durable lookup scopes include `payee_lookup_failure` and `payup_lookup_failure` after TOTP | `app/banking/routes.py`, `tests/test_payee_management_security.py`, `tests/test_payup.py`, `tests/test_deployment.py` |
-| Admin login, staff invite acceptance, audit, alerts, staff lifecycle, and manual recovery administration | Production admin is private through Tailscale Serve rather than public Nginx; staging admin is private operator access. Edge privacy is not a replacement for Flask controls | Admin route inventory requires explicit rate-limit decisions; admin login, invite probing, invite acceptance, TOTP, staff lifecycle, and manual recovery keep app-level rate limits/backoff and audit | `app/admin/routes.py`, `tests/test_admin_route_inventory_security.py`, `tests/test_admin_staff_invites.py`, `tests/test_tailscale_admin_access.py` |
+| Customer banking, Payee, PayUp, and session/security actions | Production uses app/security Nginx zones such as `sitbank_prod_app` and `sitbank_prod_security`; staging uses `sitbank_staging_app` behind the staging edge boundary | Unsafe banking routes are Flask-Limiter protected where listed; durable controls include `payee_lookup_failure`, `payup_lookup_failure`, and independent PayUp account, authenticated-session, source-network, and recipient scopes | `app/banking/routes.py`, `tests/test_payee_management_security.py`, `tests/test_payup.py`, `tests/test_deployment.py` |
+| Admin login, staff invite acceptance, audit, alerts, staff lifecycle, and manual recovery administration | Production admin is private through Tailscale Serve rather than public Nginx; staging admin is private operator access. Edge privacy is not a replacement for Flask controls | Admin route inventory requires explicit rate-limit decisions; admin MFA durable failure state increments only after an invalid TOTP, permits a correct code through the configured failure threshold, blocks the next invalid code, and resets after a new primary login or successful MFA | `app/admin/routes.py`, `app/admin/services.py`, `tests/test_admin_dashboard_operations.py`, `tests/test_admin_rbac_matrix.py`, `tests/test_tailscale_admin_access.py` |
 
 Staging and production Nginx rate-limit files intentionally differ because
 staging exercises Cloudflare Access and Authenticated Origin Pull while
 production carries the public customer edge. Do not force identical zone names
 or burst values unless the deployment design changes for both environments and
 the associated tests and runbooks are updated.
+
+The admin route's coarse Flask-Limiter budget remains process-local
+`memory://` defense in depth and is not the authoritative MFA wrong-code
+threshold across the two admin Gunicorn workers. The PostgreSQL-backed
+`AuthAttemptCounter` is the shared enforcement boundary: it is keyed by the
+pending staff user and source context, increments only after invalid TOTP
+verification, and returns safe retry metadata only after the configured
+threshold is exceeded. A valid TOTP below the threshold reaches verification.
+Do not replace this durable boundary with process-local limiter state.
 
 ## Banking And Payee Authorization
 
@@ -129,8 +138,8 @@ commit.
 | Action | Authorization control | Evidence |
 | --- | --- | --- |
 | Local Transfer confirmation | Payee must belong to the sender, be outside cooldown, and pass final recipient-account checks before ledger movement | `app/banking/services.py::execute_local_transfer()`, `tests/test_local_transfer_security.py` |
-| PayUp phone lookup | `payup_lookup` TOTP step-up runs before recipient name disclosure; unknown, unavailable, frozen, revoked, locked, setup-pending, and self recipients return the same generic response and consume the `payup_lookup_failure` durable counter | `app/banking/routes.py::payup_submit()`, `tests/test_payup.py::test_payup_phone_lookup_requires_totp_before_name_disclosure`, `tests/test_payup.py::test_payup_phone_lookup_failures_use_durable_user_scoped_limit` |
-| PayUp amount and confirmation | Daily PayUp limit resets at midnight Singapore time; confirmation recomputes the 80% step-up requirement under current usage before executing | `app/banking/services.py::payup_requires_step_up()`, `tests/test_payup.py::test_payup_confirm_rechecks_stepup_when_usage_changes_after_amount_entry` |
+| PayUp phone lookup | Lookup discloses only masked identity; unavailable and self recipients return the same generic response; durable account/session/source/recipient limits constrain enumeration | `app/banking/routes.py::payup_submit()`, `tests/test_payup.py` |
+| PayUp amount and confirmation | Central fail-closed risk policy requires TOTP for stale or sensitive sessions and amounts outside quick-transfer caps; service execution recomputes the decision under the sender lock | `app/banking/services.py::evaluate_payup_risk()`, `tests/test_payup.py` |
 
 Transfer payload validation and future transaction-risk primitives are in
 `app/banking/services.py` and `app/banking/schemas.py`, covered by
@@ -187,6 +196,7 @@ changes.
 | Control | Implementation evidence | Test evidence |
 | --- | --- | --- |
 | Generated admin route authorization inventory | `app/admin/routes.py`; explicit policy entries in `tests/test_admin_route_inventory_security.py` | `tests/test_admin_route_inventory_security.py::test_admin_route_inventory_matches_registered_flask_routes`, `tests/test_admin_route_inventory_security.py::test_admin_route_inventory_has_complete_security_decisions` |
+| Central role-permission matrix and denied-mutation side effects | Backend route/service guards; explicit key-route matrix plus focused-test allowlist | `tests/test_admin_rbac_matrix.py` |
 | Staff/admin browser and JSON login requires workplace email, password, active account, approved admin email domain, verified workplace email, and TOTP | `app/admin/routes.py`, `app/admin/services.py::authenticate_admin_primary()` and `complete_admin_mfa_login()` | `tests/test_admin_dashboard_operations.py::test_admin_browser_login_and_mfa_reaches_dashboard`, `tests/test_admin_dashboard_operations.py::test_admin_json_login_contract_remains_compatible`, `tests/test_admin_dashboard_operations.py::test_admin_browser_login_rejects_staff_outside_admin_email_domains` |
 | Root admin is configured by role, approved admin email domain, and an explicit non-placeholder email allowlist | `app/admin/services.py::is_root_admin()`, `app/security/identity_policy.py`, and `config.py` `ROOT_ADMIN_EMAILS` | `tests/test_admin_staff_invites.py::test_only_root_admin_with_totp_stepup_can_create_invites`, `tests/test_admin_bootstrap_root.py::test_bootstrap_root_admin_cli_rejects_non_admin_domain_allowlist_entry`, `tests/test_config.py::test_root_admin_allowlist_rejects_builtin_default_in_production`, `tests/test_production_guard.py::test_admin_validator_rejects_unsafe_root_admin_allowlists` |
 | Root admin can invite only `staff` or `admin`, not `root_admin` | `StaffInvite` role constraint in `app/models.py`; role validation in `app/admin/services.py` | `tests/test_admin_staff_invites.py::test_invite_creation_validates_server_side_email_and_role_policy` |
@@ -270,8 +280,8 @@ High-risk customer actions use `verify_high_risk_authorization()` in
 | Terminate one session | Authenticated user, current-user ownership, public reference | `app/auth/services.py::terminate_session_for_user()`, `tests/test_pentest_auth_bypass.py::test_cannot_terminate_other_users_session` |
 | Payee add confirmation | Authenticated user, pending payee state, recipient revalidation, TOTP step-up | `app/banking/routes.py::payees_confirm_submit()` |
 | Payee removal | Authenticated user, payee ownership check, TOTP step-up | `app/banking/routes.py::payees_remove_submit()` |
-| PayUp phone lookup | Authenticated MFA-ready customer, CSRF, rate limit, and TOTP step-up before recipient name disclosure | `app/banking/routes.py::payup_submit()`, `tests/test_payup.py` |
-| PayUp confirmation near limit | Authenticated customer, pending PayUp verifier, daily-limit recomputation, and TOTP step-up when the transfer reaches at least 80% of the daily PayUp limit | `app/banking/routes.py::payup_confirm_submit()`, `tests/test_payup.py` |
+| PayUp phone lookup | Authenticated MFA-ready customer, CSRF, masked recipient identity, and independent durable account/session/source/recipient limits | `app/banking/routes.py::payup_submit()`, `tests/test_payup.py` |
+| PayUp confirmation | Authenticated customer, keyed pending verifier, current recipient/account state, fail-closed risk recomputation, and conditional fresh TOTP before a second service-layer recomputation under lock | `app/banking/routes.py::payup_confirm_submit()`, `app/banking/services.py::execute_payup_transfer()`, `tests/test_payup.py` |
 | Staff invite create/revoke | Root admin session and TOTP code | `app/admin/services.py::create_staff_invite()`, `app/admin/services.py::revoke_staff_invite()` |
 | Staff/admin account lifecycle | Requesting root admin session, CSRF, rate limit, TOTP step-up, no self-management, durable maker-checker request, different active root-admin approver with fresh TOTP, HMAC integrity, expiry, and safe audit metadata | `app/admin/services.py::transition_staff_account_as_root_admin()`, `app/admin/services.py::approve_admin_action_request_as_root_admin()`, `tests/test_admin_maker_checker.py` |
 | Manual recovery public request | No step-up because the caller is unauthenticated; it creates only a pending request and does not unlock or mutate the account | `app/auth/password_reset.py::request_manual_recovery()`, `tests/test_password_reset.py::test_manual_recovery_request_does_not_freeze_or_unlock_account` |

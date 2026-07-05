@@ -10,10 +10,15 @@ import pyotp
 import pytest
 
 from app.extensions import db
-from app.models import AdminActionRequest, SecurityAuditEvent, StaffInvite, User
+from app.models import (
+    AdminActionRequest,
+    AuthAttemptCounter,
+    SecurityAuditEvent,
+    StaffInvite,
+    User,
+)
 from app.security.crypto import encrypt_mfa_secret
 from app.security.passwords import hash_password
-from conftest import TestConfig
 
 
 ROOT_EMAIL = "root1@sit.singaporetech.edu.sg"
@@ -26,25 +31,6 @@ def freeze_totp_verifier_time(monkeypatch):
     global _FIXED_TOTP_TIME
     _FIXED_TOTP_TIME = int(time.time())
     monkeypatch.setattr("app.auth.services.time.time", lambda: _FIXED_TOTP_TIME)
-
-
-@pytest.fixture()
-def admin_app(monkeypatch):
-    from app import create_app
-    from app.security import passwords
-
-    monkeypatch.setattr(passwords, "_is_password_pwned_by_hibp", lambda _password: False)
-    flask_app = create_app(TestConfig, app_mode="admin")
-    with flask_app.app_context():
-        db.create_all()
-        yield flask_app
-        db.session.remove()
-        db.drop_all()
-
-
-@pytest.fixture()
-def admin_client(admin_app):
-    return admin_app.test_client()
 
 
 def _create_staff_identity(
@@ -300,6 +286,77 @@ def test_admin_browser_mfa_rejects_invalid_form_and_bad_code(admin_client):
     assert "MFA code must be exactly 6 digits" in invalid_form.get_data(as_text=True)
     assert bad_mfa.status_code == 401
     assert "Invalid workplace email, password, or authentication code" in bad_mfa.get_data(as_text=True)
+
+
+def test_admin_mfa_counts_only_wrong_codes_and_clears_on_fresh_primary_login(
+    admin_client,
+):
+    global _FIXED_TOTP_TIME
+    _root, root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    valid_code = _totp(root_secret)
+    invalid_code = "000000" if valid_code != "000000" else "111111"
+
+    primary = admin_client.post(
+        "/login",
+        json={"workplace_email": ROOT_EMAIL, "password": ROOT_PASSWORD},
+    )
+    assert primary.status_code == 200
+    for _attempt in range(5):
+        response = admin_client.post(
+            "/mfa/verify",
+            json={"totp_code": invalid_code},
+        )
+        assert response.status_code == 401
+
+    valid_after_threshold = admin_client.post(
+        "/mfa/verify",
+        json={"totp_code": valid_code},
+    )
+    assert valid_after_threshold.status_code == 200
+    assert (
+        db.session.query(AuthAttemptCounter)
+        .filter_by(scope="admin_mfa_login")
+        .count()
+        == 0
+    )
+
+    admin_client.post("/logout")
+    _FIXED_TOTP_TIME += 30
+    valid_code = _totp(root_secret)
+    invalid_code = "000000" if valid_code != "000000" else "111111"
+    admin_client.post(
+        "/login",
+        json={"workplace_email": ROOT_EMAIL, "password": ROOT_PASSWORD},
+    )
+    for _attempt in range(5):
+        response = admin_client.post(
+            "/mfa/verify",
+            json={"totp_code": invalid_code},
+        )
+        assert response.status_code == 401
+    blocked = admin_client.post(
+        "/mfa/verify",
+        json={"totp_code": invalid_code},
+    )
+    assert blocked.status_code == 429
+    assert blocked.headers["Retry-After"].isdigit()
+    assert "totp_code" not in blocked.get_data(as_text=True)
+
+    fresh_primary = admin_client.post(
+        "/login",
+        json={"workplace_email": ROOT_EMAIL, "password": ROOT_PASSWORD},
+    )
+    assert fresh_primary.status_code == 200
+    recovered = admin_client.post(
+        "/mfa/verify",
+        json={"totp_code": valid_code},
+    )
+    assert recovered.status_code == 200
 
 
 def test_admin_browser_form_payload_strips_csrf_token_for_invites(admin_client):

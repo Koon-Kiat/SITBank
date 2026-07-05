@@ -21,7 +21,7 @@ def test_retention_cleanup_defaults_to_dry_run_and_preserves_categories(app, mon
         app.config["SECURITY_STATE_CLEANUP_BATCH_SIZE"] = 250
         result = retention.run_retention_cleanup(limit=7)
 
-    assert calls == [{"now": None, "limit": 7, "dry_run": True}]
+    assert calls == [{"now": None, "limit": 7, "dry_run": True, "commit": True}]
     assert result["mode"] == "dry_run"
     assert result["dry_run"] is True
     assert result["retention_days"] == 30
@@ -69,7 +69,7 @@ def test_retention_cleanup_confirmed_mode_calls_bounded_cleanup(app, monkeypatch
             confirm=True,
         )
 
-    assert calls == [{"now": now, "limit": 9, "dry_run": False}]
+    assert calls == [{"now": now, "limit": 9, "dry_run": False, "commit": True}]
     assert result["mode"] == "confirmed"
     assert result["dry_run"] is False
     assert result["category_counts"] == {"security_alert_dedupe_deleted": 4}

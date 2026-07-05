@@ -183,26 +183,15 @@ def test_blob_batch_fails_closed_for_invalid_git_output(
 def test_scan_history_skips_forbidden_and_large_blobs_and_scans_small_content(monkeypatch):
     monkeypatch.setattr(
         scanner,
-        "historical_blobs",
+        "_historical_blob_records",
         lambda: [
-            ("a" * 40, ".env"),
-            ("b" * 40, "large.py"),
-            ("c" * 40, "small.py"),
-            ("d" * 40, "tree-entry"),
+            ("a" * 40, ".env", 10),
+            ("b" * 40, "large.py", scanner.MAX_HISTORY_BLOB_BYTES + 1),
+            ("c" * 40, "small.py", 10),
         ],
     )
     scanned = []
 
-    monkeypatch.setattr(
-        scanner,
-        "_batch_object_metadata",
-        lambda _object_ids: {
-            "a" * 40: ("blob", 10),
-            "b" * 40: ("blob", scanner.MAX_HISTORY_BLOB_BYTES + 1),
-            "c" * 40: ("blob", 10),
-            "d" * 40: ("tree", 10),
-        },
-    )
     monkeypatch.setattr(
         scanner,
         "_read_blob_batch",

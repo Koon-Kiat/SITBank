@@ -1,0 +1,275 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+readonly DEPLOY_USER="sitbank-deploy"
+readonly INCOMING_DIR="/home/${DEPLOY_USER}/incoming"
+readonly LOCK_FILE="/var/lock/sitbank-observability-bootstrap.lock"
+readonly APP_BOOTSTRAP_LOCK="/var/lock/sitbank-container-bootstrap.lock"
+readonly PRODUCTION_DEPLOY_LOCK="/var/lock/sitbank-container-deploy.lock"
+readonly STAGING_DEPLOY_LOCK="/var/lock/sitbank-staging-container-deploy.lock"
+readonly OBS_ENV_FILE="/etc/sitbank-observability/observability.env"
+readonly OBS_SECRET_ROOT="/etc/sitbank-observability/secrets"
+
+fail() {
+    echo "$1" >&2
+    exit 1
+}
+
+if [[ "${EUID}" -ne 0 ]]; then
+    fail "Observability bootstrap wrapper must run as root"
+fi
+if [[ "$#" -ne 2 ]]; then
+    echo "Usage: sitbank-observability-bootstrap TARGET TRUSTED_MAIN_SHA" >&2
+    exit 2
+fi
+
+target="$1"
+trusted_sha="$2"
+case "${target}" in
+    staging) config_root="/etc/sitbank-staging" ;;
+    production) config_root="/etc/sitbank" ;;
+    *) echo "Observability bootstrap target must be staging or production" >&2; exit 2 ;;
+esac
+if [[ ! "${trusted_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "Trusted main SHA must be a full lowercase commit SHA" >&2
+    exit 2
+fi
+
+deploy_config="${config_root}/deploy.conf"
+deploy_config_mode="$(stat -c '%a' -- "${deploy_config}" 2>/dev/null || true)"
+if [[ ! -f "${deploy_config}" || -L "${deploy_config}" \
+    || "$(stat -c '%U:%G' -- "${deploy_config}")" != "root:root" \
+    || ! "${deploy_config_mode}" =~ ^[0-7]{3,4}$ \
+    || $((8#${deploy_config_mode} & 8#022)) -ne 0 ]]; then
+    fail "Missing trusted root-owned deployment configuration"
+fi
+# shellcheck disable=SC1090
+source "${deploy_config}"
+if [[ "${GITHUB_REPOSITORY:-}" != "Koon-Kiat/SITBank" ]]; then
+    fail "Trusted deployment repository configuration is invalid"
+fi
+
+readonly expected_identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/bootstrap-observability-ec2.yml@refs/heads/main"
+readonly archive_name="observability-bootstrap-${target}-${trusted_sha}.tar.gz"
+readonly archive_path="${INCOMING_DIR}/${archive_name}"
+readonly signature_path="${archive_path}.sigstore.json"
+
+exec 9>"${LOCK_FILE}"
+exec 8>"${APP_BOOTSTRAP_LOCK}"
+exec 7>"${PRODUCTION_DEPLOY_LOCK}"
+exec 6>"${STAGING_DEPLOY_LOCK}"
+if ! flock -n 9 || ! flock -n 8 || ! flock -n 7 || ! flock -n 6; then
+    fail "A deployment or bootstrap is already running"
+fi
+
+work_dir="$(mktemp -d /opt/sitbank-observability-bootstrap.XXXXXX)"
+source_root="${work_dir}/source"
+trusted_archive_path="${work_dir}/${archive_name}"
+trusted_signature_path="${trusted_archive_path}.sigstore.json"
+cleanup() {
+    rm -rf -- "${work_dir}"
+    rm -f -- "${archive_path}" "${signature_path}"
+}
+trap cleanup EXIT
+
+python3 - \
+    "${DEPLOY_USER}" \
+    "${archive_path}" "${trusted_archive_path}" "$((100 * 1024 * 1024))" \
+    "${signature_path}" "${trusted_signature_path}" "$((2 * 1024 * 1024))" <<'PY'
+import os
+import pwd
+import shutil
+import stat
+import sys
+
+deploy_user, *values = sys.argv[1:]
+expected_uid = pwd.getpwnam(deploy_user).pw_uid
+for index in range(0, len(values), 3):
+    source, destination, maximum_size_text = values[index:index + 3]
+    maximum_size = int(maximum_size_text)
+    try:
+        source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        raise SystemExit(
+            "Observability bootstrap input is unavailable or unsafe"
+        ) from None
+    try:
+        metadata = os.fstat(source_fd)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != expected_uid
+            or metadata.st_size < 1
+            or metadata.st_size > maximum_size
+        ):
+            raise SystemExit(
+                "Observability bootstrap input ownership, type, or size is invalid"
+            )
+        try:
+            destination_fd = os.open(
+                destination,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+            with os.fdopen(source_fd, "rb", closefd=False) as source_file:
+                with os.fdopen(destination_fd, "wb") as destination_file:
+                    shutil.copyfileobj(source_file, destination_file)
+                    destination_file.flush()
+                    os.fsync(destination_file.fileno())
+        except OSError:
+            raise SystemExit(
+                "Observability bootstrap input could not be copied safely"
+            ) from None
+    finally:
+        os.close(source_fd)
+PY
+rm -f -- "${archive_path}" "${signature_path}"
+
+cosign verify-blob \
+    --bundle "${trusted_signature_path}" \
+    --certificate-identity "${expected_identity}" \
+    --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+    "${trusted_archive_path}" >/dev/null
+
+install -d -o root -g root -m 0755 "${source_root}"
+python3 - "${trusted_archive_path}" "${source_root}" <<'PY'
+import pathlib
+import sys
+import tarfile
+
+archive, destination = sys.argv[1:]
+with tarfile.open(archive, "r:gz") as payload:
+    for member in payload.getmembers():
+        path = pathlib.PurePosixPath(member.name)
+        if path.is_absolute() or ".." in path.parts:
+            raise SystemExit("Unsafe observability bootstrap archive member")
+        if not (member.isfile() or member.isdir()):
+            raise SystemExit("Unsupported observability bootstrap archive member")
+    payload.extractall(destination, filter="data")
+PY
+
+marker="${source_root}/.sitbank-observability-bootstrap-commit"
+if [[ ! -f "${marker}" || -L "${marker}" \
+    || "$(<"${marker}")" != "${trusted_sha}" ]]; then
+    fail "Observability bootstrap commit marker does not match trusted main"
+fi
+rm -f -- "${marker}"
+
+obs_env_mode="$(stat -c '%a' -- "${OBS_ENV_FILE}" 2>/dev/null || true)"
+if [[ ! -f "${OBS_ENV_FILE}" || -L "${OBS_ENV_FILE}" \
+    || "$(stat -c '%U:%G' -- "${OBS_ENV_FILE}")" != "root:root" \
+    || ! "${obs_env_mode}" =~ ^[0-7]{3,4}$ \
+    || $((8#${obs_env_mode} & 8#022)) -ne 0 ]]; then
+    fail "Observability environment file must be a root-owned regular file without group/world write access"
+fi
+if grep -Eiq '(^|_)(PASSWORD|TOKEN|SECRET|CREDENTIAL|COOKIE|MFA|DATABASE_URL|SMTP|WEBHOOK)[[:space:]]*=' "${OBS_ENV_FILE}"; then
+    fail "Observability environment file must contain non-secret settings only"
+fi
+env_value() {
+    local key="$1"
+    local count
+    count="$(grep -Ec "^${key}=" "${OBS_ENV_FILE}" || true)"
+    [[ "${count}" == "1" ]] || fail "Observability environment is missing a required unique setting"
+    sed -n "s/^${key}=//p" "${OBS_ENV_FILE}"
+}
+for image_key in GRAFANA_IMAGE LOKI_IMAGE ALLOY_IMAGE PROMETHEUS_IMAGE NODE_EXPORTER_IMAGE; do
+    image_value="$(env_value "${image_key}")"
+    if [[ ! "${image_value}" =~ ^[A-Za-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then
+        fail "Observability images must use immutable digest references"
+    fi
+done
+if [[ "$(env_value OBSERVABILITY_ENVIRONMENT)" != "${target}" ]]; then
+    fail "Observability environment does not match the selected target"
+fi
+for secret_name in grafana_admin_user grafana_admin_password; do
+    secret_path="${OBS_SECRET_ROOT}/${secret_name}"
+    if [[ ! -f "${secret_path}" || -L "${secret_path}" \
+        || "$(stat -c '%U:%G:%a' -- "${secret_path}")" != "root:root:600" ]]; then
+        fail "Grafana secret files must be root-owned regular files with mode 0600"
+    fi
+done
+
+bootstrap_script="${source_root}/ops/deploy/bootstrap-observability-ec2"
+if [[ ! -f "${bootstrap_script}" || -L "${bootstrap_script}" ]]; then
+    fail "Signed archive is missing the observability bootstrap script"
+fi
+bash "${bootstrap_script}" "${source_root}" >/dev/null
+
+if [[ "$(docker port sitbank-grafana 3000/tcp)" != "127.0.0.1:3000" ]]; then
+    fail "Grafana is not bound only to 127.0.0.1:3000"
+fi
+if [[ "$(docker port sitbank-loki 3100/tcp)" != "127.0.0.1:3100" ]]; then
+    fail "Loki is not bound only to 127.0.0.1:3100"
+fi
+for container in sitbank-prometheus sitbank-node-exporter sitbank-alloy; do
+    if [[ -n "$(docker port "${container}")" ]]; then
+        fail "An internal observability service publishes a host port"
+    fi
+done
+if [[ "$(docker network inspect sitbank-observability --format '{{.Internal}}')" != "true" ]]; then
+    fail "The observability service network is not internal"
+fi
+
+nginx_snapshot="${work_dir}/nginx.conf"
+nginx -T >"${nginx_snapshot}" 2>/dev/null
+if grep -Eiq 'location[[:space:]].*(/grafana|/loki|/logs|/metrics)' "${nginx_snapshot}"; then
+    fail "Public Nginx configuration routes an observability path"
+fi
+if ss -lntH | grep -Eq '(^|[[:space:]])(0\.0\.0\.0|\[::\]|\*):(3000|3100|9090|9100)([[:space:]]|$)'; then
+    fail "An observability port has a wildcard host listener"
+fi
+
+funnel_status="${work_dir}/funnel.json"
+serve_status="${work_dir}/serve.json"
+tailscale funnel status --json >"${funnel_status}"
+tailscale serve status --json >"${serve_status}"
+python3 - "${funnel_status}" "${serve_status}" <<'PY'
+import json
+import sys
+
+funnel = json.load(open(sys.argv[1], encoding="utf-8"))
+serve = json.load(open(sys.argv[2], encoding="utf-8"))
+
+def values(value, key):
+    found = []
+    if isinstance(value, dict):
+        for item_key, item in value.items():
+            if item_key == key:
+                found.append(item)
+            found.extend(values(item, key))
+    elif isinstance(value, list):
+        for item in value:
+            found.extend(values(item, key))
+    return found
+
+if any(
+    isinstance(item, dict) and any(bool(flag) for flag in item.values())
+    for item in values(funnel, "AllowFunnel") + values(serve, "AllowFunnel")
+):
+    raise SystemExit("Tailscale Funnel must remain disabled")
+
+approved = "http://127.0.0.1:3000/grafana"
+for handlers in values(serve, "Handlers"):
+    if not isinstance(handlers, dict):
+        raise SystemExit("Tailscale Serve handlers are malformed")
+    for path, handler in handlers.items():
+        for proxy in values(handler, "Proxy"):
+            if not isinstance(proxy, str):
+                raise SystemExit("Tailscale Serve proxy is malformed")
+            if any(f":{port}" in proxy for port in ("3100", "9090", "9100")):
+                raise SystemExit("Tailscale Serve exposes an internal observability service")
+            if ":3000" in proxy and (
+                path.rstrip("/") != "/grafana" or proxy.rstrip("/") != approved
+            ):
+                raise SystemExit("Tailscale Serve Grafana mapping is not approved")
+PY
+
+logger --tag sitbank-observability-bootstrap -- \
+    "environment=${target} result=success revision=${trusted_sha}"
+printf '%s\n' \
+    "check=grafana_loopback result=pass" \
+    "check=loki_loopback result=pass" \
+    "check=internal_services_no_host_ports result=pass" \
+    "check=internal_network result=pass" \
+    "check=public_nginx_closed result=pass" \
+    "check=wildcard_listeners_closed result=pass" \
+    "check=tailscale_private_only result=pass"

@@ -574,7 +574,10 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+      id-token: write
       packages: write
+      attestations: write
+      artifact-metadata: write
     outputs:
       digest: ${{ steps.push.outputs.digest }}
       repository: ${{ steps.image.outputs.repository }}
@@ -637,6 +640,14 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Attest the exact published image digest
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763
+        with:
+          subject-name: ${{ steps.image.outputs.repository }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+          show-summary: false
+
   release-verify:
     name: Release verification
     if: >-
@@ -653,6 +664,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     permissions:
+      attestations: read
       contents: read
       id-token: write
       packages: write
@@ -718,6 +730,22 @@ jobs:
               "${IMAGE}"
           )"
           test "${revision}" = "${RELEASE_SHA}"
+
+      - name: Verify signed SLSA provenance for the exact digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE: ${{ steps.image.outputs.image }}
+          RELEASE_SHA: ${{ steps.image.outputs.revision }}
+        run: |
+          gh attestation verify "oci://${IMAGE}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --signer-workflow "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/.github/workflows/ci-deploy.yml" \
+            --source-ref "refs/heads/main" \
+            --source-digest "${RELEASE_SHA}" \
+            --cert-identity "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/.github/workflows/ci-deploy.yml@refs/heads/main" \
+            --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --deny-self-hosted-runners \
+            >/dev/null
 
       - name: Validate production and staging Compose models for the exact digest
         env:

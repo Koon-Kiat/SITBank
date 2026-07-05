@@ -227,8 +227,9 @@ def test_customer_mfa_handlers_use_standard_429(
         response, status_code = getattr(routes, handler_name)({form_key: form})
 
     assert status_code == 429
-    assert RATE_LIMIT_MESSAGE in response
-    assert "internal throttling detail" not in response
+    response_text = response.get_data(as_text=True)
+    assert RATE_LIMIT_MESSAGE in response_text
+    assert "internal throttling detail" not in response_text
 
 
 @pytest.mark.parametrize(
@@ -339,8 +340,9 @@ def test_customer_reset_handlers_use_standard_429(
         response, status_code = getattr(routes, handler_name)({"state": "fake"})
 
     assert status_code == 429
-    assert RATE_LIMIT_MESSAGE in response
-    assert "internal throttling detail" not in response
+    response_text = response.get_data(as_text=True)
+    assert RATE_LIMIT_MESSAGE in response_text
+    assert "internal throttling detail" not in response_text
 
 
 @pytest.mark.parametrize(

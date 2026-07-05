@@ -54,6 +54,12 @@ class User(db.Model):
         default=PAYUP_DAILY_LIMIT_DEFAULT,
         server_default=str(PAYUP_DAILY_LIMIT_DEFAULT),
     )
+    payup_enabled = db.Column(
+        db.Boolean,
+        nullable=False,
+        default=True,
+        server_default=db.true(),
+    )
 
     is_frozen = db.Column(db.Boolean, nullable=False, default=False)
     failed_login_count = db.Column(db.Integer, nullable=False, default=0)
@@ -669,9 +675,9 @@ class Transaction(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     transaction_ref = db.Column(db.String(36), nullable=False)
     transaction_hash = db.Column(db.String(64), nullable=False, unique=True, index=True)
-    transaction_integrity_key_id = db.Column(db.String(32), nullable=True)
-    transaction_integrity_algorithm = db.Column(db.String(32), nullable=True)
-    transaction_integrity_version = db.Column(db.Integer, nullable=True)
+    transaction_integrity_key_id = db.Column(db.String(32), nullable=False)
+    transaction_integrity_algorithm = db.Column(db.String(32), nullable=False)
+    transaction_integrity_version = db.Column(db.Integer, nullable=False)
     sender_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
     recipient_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
     payee_id = db.Column(db.Integer, db.ForeignKey("payees.id", ondelete="SET NULL"), nullable=True, index=True)
@@ -717,12 +723,9 @@ class Transaction(db.Model):
         ),
         db.CheckConstraint(
             (
-                "(transaction_integrity_key_id IS NULL "
-                "AND transaction_integrity_algorithm IS NULL "
-                "AND transaction_integrity_version IS NULL) OR "
-                "(transaction_integrity_key_id IS NOT NULL "
+                "transaction_integrity_key_id IS NOT NULL "
                 "AND transaction_integrity_algorithm = 'hmac-sha256' "
-                "AND transaction_integrity_version = 1)"
+                "AND transaction_integrity_version = 1"
             ),
             name="ck_transactions_integrity_metadata",
         ),

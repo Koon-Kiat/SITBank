@@ -1,0 +1,180 @@
+name: Bootstrap private observability on EC2
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: Private observability environment to mutate.
+        required: true
+        default: staging
+        type: choice
+        options:
+          - staging
+          - production
+
+permissions: {}
+
+concurrency:
+  group: observability-bootstrap-${{ inputs.target_environment }}
+  cancel-in-progress: false
+
+jobs:
+  bootstrap:
+    name: Bootstrap private observability on EC2
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: observability-${{ inputs.target_environment }}
+    env:
+      TARGET: ${{ inputs.target_environment }}
+      TRUSTED_SHA: ${{ github.workflow_sha }}
+      REMOTE_HOST: ${{ vars.OBSERVABILITY_EC2_HOST }}
+      REMOTE_PORT: ${{ vars.OBSERVABILITY_EC2_PORT }}
+      REMOTE_USER: ${{ vars.OBSERVABILITY_EC2_DEPLOY_USER }}
+
+    steps:
+      - name: Check out trusted main workflow commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.workflow_sha }}
+
+      - name: Validate protected observability bootstrap settings
+        env:
+          SSH_PRIVATE_KEY_B64: ${{ secrets.OBSERVABILITY_EC2_SSH_PRIVATE_KEY_B64 }}
+          SSH_KNOWN_HOSTS: ${{ secrets.OBSERVABILITY_EC2_KNOWN_HOSTS }}
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" != "refs/heads/main" \
+              || ! "${TRUSTED_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Observability bootstrap must use a full trusted main workflow commit."
+            exit 1
+          fi
+          required=(
+            REMOTE_HOST REMOTE_PORT REMOTE_USER
+            SSH_PRIVATE_KEY_B64 SSH_KNOWN_HOSTS
+            TS_OAUTH_CLIENT_ID TS_OAUTH_SECRET
+          )
+          for name in "${required[@]}"; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::A required protected observability bootstrap setting is missing."
+              exit 1
+            fi
+          done
+          if [[ ! "${REMOTE_PORT}" =~ ^[0-9]+$ ]]; then
+            echo "::error::The protected observability SSH port must be numeric."
+            exit 1
+          fi
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+
+      - name: Create and sign trusted main observability archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          archive="observability-bootstrap-${TARGET}-${TRUSTED_SHA}.tar.gz"
+          git archive \
+            --format=tar.gz \
+            --add-virtual-file=".sitbank-observability-bootstrap-commit:${TRUSTED_SHA}" \
+            --output="${archive}" \
+            HEAD
+          cosign sign-blob --yes \
+            --bundle "${archive}.sigstore.json" \
+            "${archive}"
+
+      - name: Join the restricted observability bootstrap tailnet
+        uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:github-ci-observability-bootstrap
+          ping: ${{ vars.OBSERVABILITY_EC2_HOST }}
+
+      - name: Configure pinned observability SSH
+        env:
+          SSH_PRIVATE_KEY_B64: ${{ secrets.OBSERVABILITY_EC2_SSH_PRIVATE_KEY_B64 }}
+          SSH_KNOWN_HOSTS: ${{ secrets.OBSERVABILITY_EC2_KNOWN_HOSTS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          install -d -m 0700 ~/.ssh
+          if [[ ! "${SSH_PRIVATE_KEY_B64}" =~ ^[A-Za-z0-9+/]+={0,2}$ ]] \
+              || ! printf '%s' "${SSH_PRIVATE_KEY_B64}" \
+                | base64 --decode > ~/.ssh/observability_bootstrap_key; then
+            echo "::error::The protected observability SSH key is malformed."
+            exit 1
+          fi
+          chmod 0600 ~/.ssh/observability_bootstrap_key
+          ssh-keygen -y -P "" -f ~/.ssh/observability_bootstrap_key >/dev/null
+          printf '%s\n' "${SSH_KNOWN_HOSTS}" | tr -d '\r' > ~/.ssh/known_hosts
+          chmod 0600 ~/.ssh/known_hosts
+          test -s ~/.ssh/known_hosts
+
+      - name: Verify restricted observability bootstrap authorization
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh -p "${REMOTE_PORT}" -i ~/.ssh/observability_bootstrap_key \
+            -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+            "${REMOTE_USER}@${REMOTE_HOST}" \
+            "test -x /usr/local/sbin/sitbank-observability-bootstrap && sudo -n -l /usr/local/sbin/sitbank-observability-bootstrap >/dev/null"
+
+      - name: Upload only the signed observability archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="observability-bootstrap-${TARGET}-${TRUSTED_SHA}.tar.gz"
+          scp -P "${REMOTE_PORT}" -i ~/.ssh/observability_bootstrap_key \
+            -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+            "${archive}" "${archive}.sigstore.json" \
+            "${REMOTE_USER}@${REMOTE_HOST}:incoming/"
+
+      - name: Mutate and verify the private observability stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh -p "${REMOTE_PORT}" -i ~/.ssh/observability_bootstrap_key \
+            -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+            "${REMOTE_USER}@${REMOTE_HOST}" \
+            "sudo -n /usr/local/sbin/sitbank-observability-bootstrap '${TARGET}' '${TRUSTED_SHA}'"
+
+      - name: Summarize sanitized observability bootstrap evidence
+        shell: bash
+        run: |
+          {
+            echo "## Private observability bootstrap"
+            echo
+            echo "- Result: **passed**"
+            echo "- Target environment: \`${TARGET}\`"
+            echo "- Revision: \`${TRUSTED_SHA}\`"
+            echo "- Checks: loopback Grafana/Loki, no internal host ports, internal network, public Nginx closed, wildcard listeners closed, Tailscale private-only."
+            echo "- No credentials, headers, cookies, tokens, raw logs, API bodies, or environment dumps were retained."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Remove local bootstrap credentials and archive
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          rm -f -- \
+            ~/.ssh/observability_bootstrap_key \
+            "observability-bootstrap-${TARGET}-${TRUSTED_SHA}.tar.gz" \
+            "observability-bootstrap-${TARGET}-${TRUSTED_SHA}.tar.gz.sigstore.json"
+
+      - name: Disconnect observability bootstrap tailnet
+        if: ${{ always() }}
+        shell: bash
+        run: sudo tailscale logout > /dev/null 2>&1 || true

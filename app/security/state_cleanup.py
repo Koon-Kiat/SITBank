@@ -23,6 +23,7 @@ def cleanup_expired_security_state(
     now: datetime | None = None,
     limit: int | None = None,
     dry_run: bool = False,
+    commit: bool = True,
 ) -> dict[str, int]:
     current_time = _as_utc(now or datetime.now(timezone.utc))
     batch_limit = _batch_limit(limit)
@@ -90,8 +91,10 @@ def cleanup_expired_security_state(
     }
     if dry_run:
         db.session.rollback()
-    else:
+    elif commit:
         db.session.commit()
+    else:
+        db.session.flush()
     return counts
 
 

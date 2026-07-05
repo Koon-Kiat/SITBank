@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from flask import current_app, jsonify, render_template, request
+from flask import current_app, jsonify, make_response, render_template, request
 
 
 JSON_MIME_TYPE = "application/json"
@@ -46,5 +46,8 @@ def safe_error_response(message: str, status_code: int):
     return render_template(template, message=message, status_code=status_code), status_code
 
 
-def rate_limit_response():
-    return safe_error_response(RATE_LIMIT_MESSAGE, 429)
+def rate_limit_response(retry_after: int | None = None):
+    response = make_response(safe_error_response(RATE_LIMIT_MESSAGE, 429))
+    if retry_after is not None:
+        response.headers["Retry-After"] = str(max(1, int(retry_after)))
+    return response, 429

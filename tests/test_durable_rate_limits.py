@@ -3,9 +3,11 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
 from app.models import AuthAttemptCounter
+from app.security import rate_limits
 from app.security.rate_limits import (
     DurableRateLimitExceeded,
     _as_utc,
@@ -58,3 +60,51 @@ def test_rate_limit_helpers_handle_empty_principal_and_timezone_values():
     assert _ip_hash_from_principal("") is None
     assert _as_utc(naive).tzinfo == timezone.utc
     assert _as_utc(aware).utcoffset() == timedelta(0)
+
+
+def test_durable_counter_creation_race_reloads_winning_row(app, monkeypatch):
+    existing = AuthAttemptCounter(
+        scope="race",
+        principal_hash="a" * 64,
+        failure_count=1,
+        window_started_at=datetime.now(timezone.utc),
+        window_expires_at=datetime.now(timezone.utc) + timedelta(minutes=1),
+    )
+    loaded = iter([None, existing])
+
+    class NestedTransaction:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(
+        rate_limits,
+        "_load_counter",
+        lambda *_args, **_kwargs: next(loaded),
+    )
+    monkeypatch.setattr(rate_limits, "_uses_postgresql_row_locks", lambda: True)
+    monkeypatch.setattr(
+        rate_limits.db.session,
+        "begin_nested",
+        lambda: NestedTransaction(),
+    )
+    monkeypatch.setattr(rate_limits.db.session, "add", lambda _counter: None)
+    monkeypatch.setattr(
+        rate_limits.db.session,
+        "flush",
+        lambda: (_ for _ in ()).throw(
+            IntegrityError("insert", {}, RuntimeError("duplicate"))
+        ),
+    )
+
+    with app.app_context():
+        counter = rate_limits._load_or_create_counter(
+            "race",
+            "principal",
+            now=datetime.now(timezone.utc),
+            window_seconds=60,
+        )
+
+    assert counter is existing

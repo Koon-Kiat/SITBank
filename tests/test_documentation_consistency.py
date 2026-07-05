@@ -93,14 +93,16 @@ def test_payup_security_docs_match_current_banking_contract():
     docs = " ".join(docs.split())
 
     for required in (
-        "PayUp lookup requires an authenticator code",
+        "PayUp lookup returns only a masked recipient identity",
         "Invalid phone number",
-        "daily limit stored on `users.payup_daily_limit`",
+        "per-customer enable flag and daily limit",
         "midnight Singapore time",
         "presets are SGD 100, 500, 1000, 3000, 5000, and 10000",
         "between SGD 100.00 and SGD 10000.00 with cents precision",
         "`payup_lookup_failure`",
-        "at least 80% of the limit",
+        "transfers at least 80% of the daily limit",
+        "quick-transfer and quick-daily caps",
+        "recomputes at confirmation and again under the sender lock",
         "The Local Transfer daily limit remains a documented placeholder",
         "keyed verifier",
         "HMAC-SHA256 transaction hash",
@@ -114,6 +116,8 @@ def test_payup_security_docs_match_current_banking_contract():
         assert required in docs
 
     stale_phrases = (
+        "PayUp lookup requires an authenticator code",
+        "Phone lookup requires TOTP before recipient name disclosure",
         "PayUp lookup reveals recipient name before MFA",
         "PayUp lookup does not require MFA",
         "Local Transfer daily limit is enforced",
