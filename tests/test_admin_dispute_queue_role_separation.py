@@ -5,7 +5,9 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 import pytest
+import sqlalchemy
 
+import app.admin.services as admin_services
 from app.admin.services import (
     dispute_detail_for_staff,
     disputes_for_staff,
@@ -238,6 +240,85 @@ def test_dispute_transition_rolls_back_when_audit_write_fails(admin_app, monkeyp
         dispute = db.session.get(TransactionDispute, dispute_id)
         assert dispute.status == "open"
         assert dispute.resolver_id is None
+        assert dispute.resolution_note is None
+
+
+@pytest.mark.parametrize("terminal_status", ["resolved", "rejected"])
+def test_terminal_dispute_cannot_be_transitioned_again(admin_client, admin_app, terminal_status):
+    dispute_id = _create_dispute(admin_app)
+    _staff, secret = _create_identity(
+        username="terminal-staff",
+        email="terminal-staff@sit.singaporetech.edu.sg",
+        account_type="staff",
+        phone_number="91112225",
+    )
+    _login_admin(admin_client, secret, "terminal-staff@sit.singaporetech.edu.sg")
+
+    first = admin_client.post(
+        f"/disputes/{dispute_id}/status",
+        data={"status": terminal_status, "resolution_note": "first decision"},
+    )
+    assert first.status_code == 303
+
+    second = admin_client.post(
+        f"/disputes/{dispute_id}/status",
+        data={"status": "under_review", "resolution_note": "attempted reopen"},
+    )
+    assert second.status_code == 409
+
+    with admin_app.app_context():
+        dispute = db.session.get(TransactionDispute, dispute_id)
+        assert dispute.status == terminal_status
+        assert dispute.resolution_note == "first decision"
+
+
+def test_dispute_transition_rejects_stale_concurrent_status_change(admin_client, admin_app, monkeypatch):
+    dispute_id = _create_dispute(admin_app)
+    staff_a, _secret_a = _create_identity(
+        username="racer-staff-a",
+        email="racer-staff-a@sit.singaporetech.edu.sg",
+        account_type="staff",
+        phone_number="91112226",
+    )
+    _staff_b, secret_b = _create_identity(
+        username="racer-staff-b",
+        email="racer-staff-b@sit.singaporetech.edu.sg",
+        account_type="staff",
+        phone_number="91112227",
+    )
+
+    original_lookup = admin_services._transaction_dispute_or_404
+
+    def racy_lookup(dispute_id_arg):
+        dispute = original_lookup(dispute_id_arg)
+        # Simulate staff A's transition committing, through a genuinely
+        # separate connection, in the window between staff B reading the
+        # dispute and staff B's own conditional update. A raw connection
+        # (rather than `db.session`) avoids expiring/refreshing staff B's
+        # already-loaded ORM object, matching what a truly concurrent
+        # session would look like.
+        with db.engine.begin() as conn:
+            conn.execute(
+                sqlalchemy.text(
+                    "UPDATE transaction_disputes SET status = :status, resolver_id = :resolver_id WHERE id = :id"
+                ),
+                {"status": "under_review", "resolver_id": staff_a.id, "id": dispute_id_arg},
+            )
+        return dispute
+
+    monkeypatch.setattr(admin_services, "_transaction_dispute_or_404", racy_lookup)
+
+    _login_admin(admin_client, secret_b, "racer-staff-b@sit.singaporetech.edu.sg")
+    response = admin_client.post(
+        f"/disputes/{dispute_id}/status",
+        data={"status": "resolved", "resolution_note": "stale decision"},
+    )
+    assert response.status_code == 409
+
+    with admin_app.app_context():
+        dispute = db.session.get(TransactionDispute, dispute_id)
+        assert dispute.status == "under_review"
+        assert dispute.resolver_id == staff_a.id
         assert dispute.resolution_note is None
 
 

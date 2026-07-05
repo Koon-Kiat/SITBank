@@ -574,7 +574,8 @@ def transition_dispute_status_for_staff(
 ) -> dict[str, Any]:
     _require_plain_staff(actor, "transaction_dispute_status_change")
     dispute = _transaction_dispute_or_404(dispute_id)
-    allowed_next = DISPUTE_STATUS_TRANSITIONS.get(dispute.status, frozenset())
+    from_status = dispute.status
+    allowed_next = DISPUTE_STATUS_TRANSITIONS.get(from_status, frozenset())
     if new_status not in allowed_next:
         audit_event(
             "transaction_dispute_status_change",
@@ -583,19 +584,47 @@ def transition_dispute_status_for_staff(
             metadata={
                 "reason": "illegal_transition",
                 "dispute_ref": audit_reference("transaction_dispute", dispute.id),
-                "from_status": dispute.status,
+                "from_status": from_status,
                 "to_status": new_status,
             },
         )
         raise AuthError("Invalid status transition", 409)
 
-    from_status = dispute.status
+    note_text = str(resolution_note or "").strip()
+    decided_at = _utcnow() if new_status in {"resolved", "rejected"} else dispute.decided_at
+
+    # Conditional UPDATE (status must still match what we just read) makes the
+    # check-then-set atomic: a concurrent transition that lands first changes
+    # the row's status, so this UPDATE matches zero rows instead of racing it.
+    result = db.session.execute(
+        db.update(TransactionDispute)
+        .where(TransactionDispute.id == dispute.id, TransactionDispute.status == from_status)
+        .values(
+            status=new_status,
+            resolver_id=actor.id,
+            resolution_note=note_text or None,
+            decided_at=decided_at,
+        )
+    )
+    if result.rowcount != 1:
+        db.session.rollback()
+        audit_event(
+            "transaction_dispute_status_change",
+            "blocked",
+            user=actor,
+            metadata={
+                "reason": "stale_transition",
+                "dispute_ref": audit_reference("transaction_dispute", dispute.id),
+                "from_status": from_status,
+                "to_status": new_status,
+            },
+        )
+        raise AuthError("Dispute was already updated by another reviewer", 409)
+
     dispute.status = new_status
     dispute.resolver_id = actor.id
-    note_text = str(resolution_note or "").strip()
     dispute.resolution_note = note_text or None
-    if new_status in {"resolved", "rejected"}:
-        dispute.decided_at = _utcnow()
+    dispute.decided_at = decided_at
     try:
         audit_event_required(
             "transaction_dispute_status_change",
