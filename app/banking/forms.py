@@ -5,7 +5,12 @@ from wtforms import SelectField, StringField, TextAreaField
 from wtforms.validators import InputRequired, Length, Optional, Regexp
 
 from app.auth.schemas import PHONE_RE, TOTP_RE
-from app.banking.limits import PAYUP_DAILY_LIMIT_CHOICES, PAYUP_DAILY_LIMIT_PRESETS
+from app.banking.limits import (
+    LOCAL_TRANSFER_DAILY_LIMIT_CHOICES,
+    LOCAL_TRANSFER_DAILY_LIMIT_PRESETS,
+    PAYUP_DAILY_LIMIT_CHOICES,
+    PAYUP_DAILY_LIMIT_PRESETS,
+)
 from app.models import DISPUTE_ISSUE_TYPES
 
 
@@ -16,6 +21,8 @@ REFERENCE_RE = r"^[A-Za-z0-9 '\-.,/]{0,128}$"
 
 TRANSFER_LIMIT_PRESETS = PAYUP_DAILY_LIMIT_PRESETS
 TRANSFER_LIMIT_CHOICES = PAYUP_DAILY_LIMIT_CHOICES
+LOCAL_TRANSFER_LIMIT_PRESETS = LOCAL_TRANSFER_DAILY_LIMIT_PRESETS
+LOCAL_TRANSFER_LIMIT_CHOICES = LOCAL_TRANSFER_DAILY_LIMIT_CHOICES
 
 _AUTHENTICATOR_CODE_LABEL = "Authenticator code"
 _MFA_CODE_LENGTH_MESSAGE = "MFA code must be exactly 6 digits"
@@ -100,6 +107,17 @@ class PayupConfirmForm(FlaskForm):
 class TransferLimitsForm(FlaskForm):
     payup_limit = SelectField("PayUp daily limit", choices=TRANSFER_LIMIT_CHOICES, validators=[InputRequired()])
     payup_limit_custom = StringField(
+        "Custom amount (SGD)",
+        validators=[
+            Optional(),
+            Length(max=13),
+            Regexp(AMOUNT_RE, message="Enter a valid amount (e.g. 750.00)"),
+        ],
+    )
+    local_transfer_limit = SelectField(
+        "Local Transfer daily limit", choices=LOCAL_TRANSFER_LIMIT_CHOICES, validators=[InputRequired()]
+    )
+    local_transfer_limit_custom = StringField(
         "Custom amount (SGD)",
         validators=[
             Optional(),

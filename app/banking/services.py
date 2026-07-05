@@ -18,6 +18,10 @@ from app.auth.mfa_policy import has_enrolled_mfa_method
 from app.auth.services import AuthError, ensure_account_not_frozen
 from app.extensions import db
 from app.banking.limits import (
+    LOCAL_TRANSFER_DAILY_LIMIT_MAX,
+    LOCAL_TRANSFER_DAILY_LIMIT_MIN,
+    LOCAL_TRANSFER_DAILY_LIMIT_PRECISION,
+    LOCAL_TRANSFER_DAILY_LIMIT_PRESETS,
     PAYUP_DAILY_LIMIT_MAX,
     PAYUP_DAILY_LIMIT_MIN,
     PAYUP_DAILY_LIMIT_PRECISION,
@@ -806,6 +810,21 @@ def execute_local_transfer(
         db.session.commit()
         raise AuthError("Insufficient funds.", 400)
 
+    # Recompute usage under the sender's row lock (acquired above), which serializes
+    # concurrent Local Transfers from the same sender and makes this check-then-insert
+    # sequence atomic, matching the equivalent PayUp daily-limit recheck.
+    daily_limit = Decimal(str(locked_sender.local_transfer_daily_limit))
+    used_today = local_transfer_amount_used_today(locked_sender)
+    if used_today + amount > daily_limit:
+        audit_outbound_transfer(
+            sender,
+            "failure",
+            metadata={"reason": "daily_limit_exceeded", "amount_band": _amount_audit_band(amount)},
+            payee_account=payee.account_number,
+        )
+        db.session.commit()
+        raise AuthError("This transfer would exceed your daily Local Transfer limit.", 409)
+
     txn_ref = str(uuid.uuid4())
     txn_created_at = datetime.now(timezone.utc)
     (
@@ -1110,17 +1129,32 @@ def _has_recent_payup_sensitive_event(
     return matching_event is not None
 
 
-def resolve_transfer_limit_choice(choice: str, custom_value: str | None) -> Decimal:
-    """Resolve a TransferLimitsForm selection into a validated Decimal amount."""
+def _resolve_daily_limit_choice(
+    choice: str,
+    custom_value: str | None,
+    *,
+    presets: tuple[str, ...],
+    minimum: Decimal,
+    maximum: Decimal,
+    precision: Decimal,
+) -> Decimal:
     choice_text = str(choice or "").strip()
-    if choice_text in PAYUP_DAILY_LIMIT_PRESETS:
-        return Decimal(choice_text).quantize(PAYUP_DAILY_LIMIT_PRECISION)
+    if choice_text in presets:
+        return Decimal(choice_text).quantize(precision)
     if choice_text == "custom":
-        return _resolve_custom_transfer_limit(custom_value)
+        return _resolve_custom_daily_limit(
+            custom_value, minimum=minimum, maximum=maximum, precision=precision
+        )
     raise AuthError("Invalid limit selection.", 400)
 
 
-def _resolve_custom_transfer_limit(custom_value: str | None) -> Decimal:
+def _resolve_custom_daily_limit(
+    custom_value: str | None,
+    *,
+    minimum: Decimal,
+    maximum: Decimal,
+    precision: Decimal,
+) -> Decimal:
     custom_text = str(custom_value or "").strip()
     if not custom_text:
         raise AuthError("Enter a custom amount.", 400)
@@ -1133,12 +1167,50 @@ def _resolve_custom_transfer_limit(custom_value: str | None) -> Decimal:
     if not amount.is_finite():
         raise AuthError("Enter a valid custom amount.", 400)
 
-    amount = amount.quantize(PAYUP_DAILY_LIMIT_PRECISION)
-    if amount < PAYUP_DAILY_LIMIT_MIN:
-        raise AuthError("Custom amount must be at least SGD 100.00.", 400)
-    if amount > PAYUP_DAILY_LIMIT_MAX:
-        raise AuthError("Custom amount must not exceed SGD 10000.00.", 400)
+    amount = amount.quantize(precision)
+    if amount < minimum:
+        raise AuthError(f"Custom amount must be at least SGD {minimum}.", 400)
+    if amount > maximum:
+        raise AuthError(f"Custom amount must not exceed SGD {maximum}.", 400)
     return amount
+
+
+def resolve_transfer_limit_choice(choice: str, custom_value: str | None) -> Decimal:
+    """Resolve a TransferLimitsForm PayUp-limit selection into a validated Decimal amount."""
+    return _resolve_daily_limit_choice(
+        choice,
+        custom_value,
+        presets=PAYUP_DAILY_LIMIT_PRESETS,
+        minimum=PAYUP_DAILY_LIMIT_MIN,
+        maximum=PAYUP_DAILY_LIMIT_MAX,
+        precision=PAYUP_DAILY_LIMIT_PRECISION,
+    )
+
+
+def resolve_local_transfer_limit_choice(choice: str, custom_value: str | None) -> Decimal:
+    """Resolve a TransferLimitsForm Local Transfer-limit selection into a validated Decimal amount."""
+    return _resolve_daily_limit_choice(
+        choice,
+        custom_value,
+        presets=LOCAL_TRANSFER_DAILY_LIMIT_PRESETS,
+        minimum=LOCAL_TRANSFER_DAILY_LIMIT_MIN,
+        maximum=LOCAL_TRANSFER_DAILY_LIMIT_MAX,
+        precision=LOCAL_TRANSFER_DAILY_LIMIT_PRECISION,
+    )
+
+
+def local_transfer_amount_used_today(user: User) -> Decimal:
+    """Sum of the user's completed Local Transfers since midnight SGT."""
+    day_start = sgt_day_start_utc()
+    total = db.session.execute(
+        db.select(func.coalesce(func.sum(Transaction.amount), 0)).where(
+            Transaction.sender_id == user.id,
+            Transaction.transaction_type == "local_transfer",
+            Transaction.status == "completed",
+            Transaction.created_at >= day_start,
+        )
+    ).scalar_one()
+    return Decimal(str(total))
 
 
 def _load_and_lock_payup_pending_transfer(sender: User, confirmation_token: str):
