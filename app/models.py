@@ -5,7 +5,14 @@ from decimal import Decimal
 
 from sqlalchemy import Index, func
 
-from app.banking.limits import PAYUP_DAILY_LIMIT_DEFAULT, PAYUP_DAILY_LIMIT_MAX, PAYUP_DAILY_LIMIT_MIN
+from app.banking.limits import (
+    LOCAL_TRANSFER_DAILY_LIMIT_DEFAULT,
+    LOCAL_TRANSFER_DAILY_LIMIT_MAX,
+    LOCAL_TRANSFER_DAILY_LIMIT_MIN,
+    PAYUP_DAILY_LIMIT_DEFAULT,
+    PAYUP_DAILY_LIMIT_MAX,
+    PAYUP_DAILY_LIMIT_MIN,
+)
 
 from .extensions import db
 
@@ -61,6 +68,12 @@ class User(db.Model):
         default=True,
         server_default=db.true(),
     )
+    local_transfer_daily_limit = db.Column(
+        db.Numeric(10, 2),
+        nullable=False,
+        default=LOCAL_TRANSFER_DAILY_LIMIT_DEFAULT,
+        server_default=str(LOCAL_TRANSFER_DAILY_LIMIT_DEFAULT),
+    )
 
     is_frozen = db.Column(db.Boolean, nullable=False, default=False)
     failed_login_count = db.Column(db.Integer, nullable=False, default=0)
@@ -113,6 +126,13 @@ class User(db.Model):
                 f"AND payup_daily_limit <= {PAYUP_DAILY_LIMIT_MAX}"
             ),
             name="ck_users_payup_daily_limit_bounds",
+        ),
+        db.CheckConstraint(
+            (
+                f"local_transfer_daily_limit >= {LOCAL_TRANSFER_DAILY_LIMIT_MIN} "
+                f"AND local_transfer_daily_limit <= {LOCAL_TRANSFER_DAILY_LIMIT_MAX}"
+            ),
+            name="ck_users_local_transfer_daily_limit_bounds",
         ),
         db.CheckConstraint(
             (

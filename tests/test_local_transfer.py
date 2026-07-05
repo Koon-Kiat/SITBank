@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import Mock
@@ -11,10 +12,16 @@ import pyotp
 
 from _auth_flow_helpers import enable_mfa_for_user, login, mark_recent_mfa, register
 from app.auth.services import AuthError
-from app.banking.services import execute_local_transfer, local_transfer_token_verifier
+from app.banking.services import (
+    execute_local_transfer,
+    local_transfer_amount_used_today,
+    local_transfer_token_verifier,
+    sgt_day_start_utc,
+)
 from app.extensions import db
 from app.models import Payee, PendingTransfer, SecurityAuditEvent, Transaction, User
 from app.security.passwords import hash_password
+from app.security.transaction_integrity import sign_transaction_integrity
 
 
 def _make_pending_transfer(
@@ -454,3 +461,179 @@ def test_transfer_routes_are_registered(app):
     assert "banking.transfer_submit" in rules
     assert "banking.transfer_confirm" in rules
     assert "banking.transfer_confirm_submit" in rules
+
+
+# ── Daily-limit accounting ───────────────────────────────────────────────────────
+
+def _make_local_transfer_transaction(
+    sender: User,
+    recipient: User,
+    amount: Decimal,
+    *,
+    created_at: datetime | None = None,
+    status: str = "completed",
+) -> Transaction:
+    created = created_at or datetime.now(timezone.utc)
+    transaction_ref = str(uuid.uuid4())
+    digest, key_id, algorithm, version = sign_transaction_integrity(
+        transaction_ref=transaction_ref,
+        sender_id=sender.id,
+        recipient_id=recipient.id,
+        payee_id=None,
+        amount=amount,
+        reference="",
+        status=status,
+        transaction_type="local_transfer",
+        created_at=created,
+    )
+    txn = Transaction(
+        transaction_ref=transaction_ref,
+        transaction_hash=digest,
+        transaction_integrity_key_id=key_id,
+        transaction_integrity_algorithm=algorithm,
+        transaction_integrity_version=version,
+        sender_id=sender.id,
+        recipient_id=recipient.id,
+        payee_id=None,
+        amount=amount,
+        reference="",
+        status=status,
+        transaction_type="local_transfer",
+        created_at=created,
+    )
+    db.session.add(txn)
+    db.session.commit()
+    return txn
+
+
+def test_local_transfer_amount_used_today_ignores_failed_and_other_channel_transactions(
+    app, transfer_context
+):
+    alice = transfer_context["alice"]
+    bob = transfer_context["bob"]
+
+    _make_local_transfer_transaction(alice, bob, Decimal("50.00"))
+    _make_local_transfer_transaction(alice, bob, Decimal("30.00"), status="failed")
+
+    created = datetime.now(timezone.utc)
+    transaction_ref = str(uuid.uuid4())
+    digest, key_id, algorithm, version = sign_transaction_integrity(
+        transaction_ref=transaction_ref,
+        sender_id=alice.id,
+        recipient_id=bob.id,
+        payee_id=None,
+        amount=Decimal("999.00"),
+        reference="",
+        status="completed",
+        transaction_type="payup",
+        created_at=created,
+    )
+    db.session.add(
+        Transaction(
+            transaction_ref=transaction_ref,
+            transaction_hash=digest,
+            transaction_integrity_key_id=key_id,
+            transaction_integrity_algorithm=algorithm,
+            transaction_integrity_version=version,
+            sender_id=alice.id,
+            recipient_id=bob.id,
+            payee_id=None,
+            amount=Decimal("999.00"),
+            reference="",
+            status="completed",
+            transaction_type="payup",
+            created_at=created,
+        )
+    )
+    db.session.commit()
+
+    assert local_transfer_amount_used_today(alice) == Decimal("50.00")
+
+
+def test_local_transfer_daily_limit_resets_at_midnight_sgt(app, transfer_context):
+    alice = transfer_context["alice"]
+    bob = transfer_context["bob"]
+
+    before_midnight_sgt = sgt_day_start_utc() - timedelta(hours=1)
+    _make_local_transfer_transaction(alice, bob, Decimal("400.00"), created_at=before_midnight_sgt)
+
+    assert local_transfer_amount_used_today(alice) == Decimal("0")
+
+
+def test_transfer_blocked_when_exceeding_daily_limit(app, transfer_context):
+    alice = transfer_context["alice"]
+    bob = transfer_context["bob"]
+    payee = transfer_context["payee"]
+
+    assert Decimal(str(alice.local_transfer_daily_limit)) == Decimal("500.00")
+    _make_local_transfer_transaction(alice, bob, Decimal("450.00"))
+
+    token = _make_pending_transfer(alice, payee, Decimal("100.00"))
+
+    with app.test_request_context("/banking/transfer/confirm", method="POST"):
+        with pytest.raises(AuthError) as exc_info:
+            execute_local_transfer(sender=alice, payee=payee, confirmation_token=token)
+
+    assert "daily local transfer limit" in exc_info.value.message.lower()
+    assert Transaction.query.count() == 1  # only the seeded transaction, no new one created
+
+
+def test_daily_limit_exceeded_writes_failure_audit_and_leaves_balance_unchanged(app, transfer_context):
+    alice = transfer_context["alice"]
+    bob = transfer_context["bob"]
+    payee = transfer_context["payee"]
+
+    _make_local_transfer_transaction(alice, bob, Decimal("450.00"))
+    alice_before = Decimal(str(alice.balance))
+
+    token = _make_pending_transfer(alice, payee, Decimal("100.00"))
+
+    with app.test_request_context("/banking/transfer/confirm", method="POST"):
+        with pytest.raises(AuthError):
+            execute_local_transfer(sender=alice, payee=payee, confirmation_token=token)
+
+    db.session.expire_all()
+    alice_after = db.session.get(User, alice.id)
+    assert Decimal(str(alice_after.balance)) == alice_before
+
+    event = db.session.execute(
+        db.select(SecurityAuditEvent).where(
+            SecurityAuditEvent.event_type == "banking_outbound_transfer",
+            SecurityAuditEvent.outcome == "failure",
+            SecurityAuditEvent.user_id == alice.id,
+        )
+    ).scalars().first()
+    assert event is not None
+    assert event.event_metadata.get("reason") == "daily_limit_exceeded"
+
+
+def test_transfer_within_daily_limit_after_prior_transfers_succeeds(app, transfer_context):
+    alice = transfer_context["alice"]
+    bob = transfer_context["bob"]
+    payee = transfer_context["payee"]
+
+    _make_local_transfer_transaction(alice, bob, Decimal("400.00"))
+
+    token = _make_pending_transfer(alice, payee, Decimal("100.00"))
+
+    with app.test_request_context("/banking/transfer/confirm", method="POST"):
+        txn_ref = execute_local_transfer(sender=alice, payee=payee, confirmation_token=token)
+
+    assert Transaction.query.filter_by(transaction_ref=txn_ref).count() == 1
+
+
+def test_transfer_submit_route_blocks_when_exceeding_daily_limit(client, transfer_context):
+    alice = transfer_context["alice"]
+    bob = transfer_context["bob"]
+    payee = transfer_context["payee"]
+
+    _make_local_transfer_transaction(alice, bob, Decimal("450.00"))
+
+    response = client.post(
+        f"/banking/transfer/{payee.id}",
+        data={"amount": "100.00", "totp_code": "123456"},
+    )
+
+    assert response.status_code == 400
+    assert b"daily Local Transfer limit" in response.data
+    assert PendingTransfer.query.count() == 0

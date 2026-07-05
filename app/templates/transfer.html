@@ -24,6 +24,7 @@
       <p class="muted">Account: •••-•••-{{ payee.account_number[-3:] }}</p>
       <p class="muted">Nickname: {{ payee.nickname }}</p>
       <p class="muted">Transfers are in SGD. Maximum single transfer: SGD 50,000.00.</p>
+      <p class="muted">Daily limit remaining: SGD {{ "%.2f"|format(remaining) }} of SGD {{ "%.2f"|format(daily_limit) }}.</p>
     </article>
 
     <article class="profile-panel profile-card">
