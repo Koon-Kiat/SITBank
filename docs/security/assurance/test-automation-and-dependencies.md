@@ -362,6 +362,11 @@ The source SBOM workflow at `.github/workflows/sbom.yml` uses pinned Syft
 1.46.0 to create `sitbank-source-sbom-cyclonedx.json`, validates it as JSON,
 and retains the `sitbank-source-sbom` CycloneDX JSON artifact for 30 days. It
 runs without secrets on pull requests, pushes to `main`, and manual dispatch.
+Its summary is a bounded preview with package-URL ecosystem counts and at most
+10 `pkg:pypi/` rows in a dedicated Python section; zero Python components is
+reported explicitly. The full artifact remains authoritative. Inspect its
+Python inventory with
+`jq -r '(.components // [])[] | select((.purl // "") | startswith("pkg:pypi/")) | [.name, .version, .purl] | @tsv' sitbank-source-sbom-cyclonedx.json`.
 It is separate from Buildx image attestation and is not vulnerability scanning.
 The existing Buildx `sbom: true` attestation remains required; an explicit
 image SBOM artifact remains deferred until the exact digest-verified release

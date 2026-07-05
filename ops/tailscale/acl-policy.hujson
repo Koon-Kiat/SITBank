@@ -15,9 +15,11 @@
     "tag:admin-sitbank": ["group:sitbank-tailnet-owners"],
     "tag:sitbank-staging-ec2": ["group:sitbank-tailnet-owners"],
     "tag:sitbank-prod-ec2": ["group:sitbank-tailnet-owners"],
+    "tag:sitbank-observability-ec2": ["group:sitbank-tailnet-owners"],
     "tag:github-ci-admin-verify": ["group:sitbank-tailnet-owners"],
     "tag:github-ci-staging-deploy": ["group:sitbank-tailnet-owners"],
     "tag:github-ci-prod-deploy": ["group:sitbank-tailnet-owners"],
+    "tag:github-ci-observability-bootstrap": ["group:sitbank-tailnet-owners"],
   },
 
   "acls": [
@@ -40,6 +42,11 @@
       "action": "accept",
       "src": ["tag:github-ci-prod-deploy"],
       "dst": ["tag:sitbank-prod-ec2:22"],
+    },
+    {
+      "action": "accept",
+      "src": ["tag:github-ci-observability-bootstrap"],
+      "dst": ["tag:sitbank-observability-ec2:22"],
     },
   ],
 

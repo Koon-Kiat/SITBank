@@ -71,6 +71,15 @@ def test_shellcheck_workflow_discovers_and_scans_all_tracked_shell_scripts():
     assert "--severity=style" in scan
     assert "ops/deploy/" not in scan
     assert "scripts/ci-local" not in scan
+    summary = steps[4]["run"]
+    assert 'if [[ "${finding_count}" =~ ^[1-9][0-9]*$ ]]' in summary
+    assert (
+        "Result: no ShellCheck findings at the configured threshold."
+        in summary
+    )
+    assert summary.index('if [[ "${finding_count}" =~ ^[1-9][0-9]*$ ]]') < (
+        summary.index('echo "| Level | Rule | File | Line | Message |"')
+    )
 
 
 def test_hadolint_workflow_discovers_and_scans_all_tracked_dockerfiles():

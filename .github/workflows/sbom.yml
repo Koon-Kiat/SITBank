@@ -58,9 +58,7 @@ jobs:
               echo "- Dependency entries: \`$(jq '(.dependencies // []) | length' sitbank-source-sbom-cyclonedx.json)\`"
               echo "- Services: \`$(jq '(.services // []) | length' sitbank-source-sbom-cyclonedx.json)\`"
               echo
-              echo "| Component | Version | Type |"
-              echo "| --- | --- | --- |"
-              jq -r '(.components // [])[:10][] | "| \((.name // "unknown") | gsub("[|\\r\\n]"; " ")) | \((.version // "unknown") | gsub("[|\\r\\n]"; " ")) | \((.type // "unknown") | gsub("[|\\r\\n]"; " ")) |"' \
+              python ops/security/render_sbom_summary.py \
                 sitbank-source-sbom-cyclonedx.json
             else
               echo "- Counts: unavailable because valid SBOM output was not produced."

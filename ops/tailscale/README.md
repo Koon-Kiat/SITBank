@@ -125,8 +125,14 @@ automatically applied policy. It grants production HTTPS only from
 `tag:github-ci-admin-verify` identity to `tag:admin-sitbank:443`. Separate
 `tag:github-ci-staging-deploy` and `tag:github-ci-prod-deploy` identities may
 reach only their matching EC2 destination tag on port `22`. Cross-environment
-paths are denied by omission. It grants neither broad tailnet access nor
-Tailscale SSH.
+paths are denied by omission. The separate
+`tag:github-ci-observability-bootstrap` identity may reach only
+`tag:sitbank-observability-ec2:22`; its bootstrap-only OAuth client must not be
+shared with observability or private-admin verification and has no Grafana
+HTTPS grant. The policy grants neither broad tailnet access nor Tailscale SSH.
+Repository files do not prove live ACL, tag, OAuth-client, firewall,
+security-group, GitHub Environment, or provider state; retain separate
+sanitized evidence.
 
 Onboarding requires a reviewed group change, approved managed device, Flask
 staff invite, mandatory TOTP enrollment, successful host preflight, and a

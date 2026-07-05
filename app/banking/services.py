@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import uuid
-from collections.abc import Mapping, MutableMapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 
-from flask import current_app
+from flask import current_app, has_app_context
 from marshmallow import ValidationError
 from sqlalchemy import and_, func, or_
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.auth.mfa_policy import has_enrolled_mfa_method
 from app.auth.services import AuthError, ensure_account_not_frozen
@@ -23,7 +24,13 @@ from app.banking.limits import (
     PAYUP_DAILY_LIMIT_PRESETS,
 )
 from app.banking.schemas import MAX_TRANSACTION_AMOUNT, MIN_TRANSACTION_AMOUNT, PublicTransactionSchema
-from app.models import Payee, SecurityAuditEvent, Transaction, User
+from app.models import (
+    Payee,
+    PublicTransactionIdempotency,
+    SecurityAuditEvent,
+    Transaction,
+    User,
+)
 from app.security.audit import AuditWriteError, audit_event, audit_event_required, audit_reference
 from app.security.session_hmac import active_hmac_hex
 from app.security.sessions import (
@@ -38,6 +45,8 @@ from app.security.transaction_integrity import (
 
 _SGT_OFFSET = timezone(timedelta(hours=8))
 _TRANSFER_CONFIRMATION_EXPIRED_MESSAGE = "Transfer confirmation has expired or was already used."
+_PUBLIC_TRANSACTION_UNAVAILABLE_MESSAGE = "Transaction request cannot be processed."
+_PUBLIC_TRANSACTION_REPLAY_MESSAGE = "Transaction request has already been accepted."
 
 TRANSFER_RISK_NORMAL = "normal"
 TRANSFER_RISK_NEW_PAYEE = "new_payee"
@@ -135,9 +144,22 @@ def validate_public_transaction_payload(
     payload: Mapping[str, object],
     *,
     user: User | None = None,
-    idempotency_store: MutableMapping[tuple[str, str], str] | None = None,
+    idempotency_store: object | None = None,
+    now: datetime | None = None,
 ) -> dict[str, object]:
+    """Validate and durably reserve a future public transaction request.
+
+    No production route currently calls this scaffold. A successful call is
+    deliberately first-use only: same-payload replays are rejected until the
+    reservation expires so a future caller cannot accidentally move money
+    twice by ignoring replay metadata.
+    """
     raw_payload = dict(payload)
+    if has_app_context():
+        _require_clean_public_transaction_session(
+            user=user,
+            idempotency_key=raw_payload.get("idempotency_key"),
+        )
     try:
         normalized = PublicTransactionSchema().load(raw_payload)
     except ValidationError as exc:
@@ -154,25 +176,43 @@ def validate_public_transaction_payload(
         )
         raise AuthError("Invalid transaction request", 400) from exc
 
+    if not has_app_context():
+        raise AuthError(_PUBLIC_TRANSACTION_UNAVAILABLE_MESSAGE, 503)
+    payload_message = _public_transaction_payload_message(normalized)
     payload_hash = public_transaction_payload_hash(normalized)
     if idempotency_store is not None:
-        _record_idempotency_key_use(
-            idempotency_store,
-            normalized["idempotency_key"],
-            payload_hash,
+        _audit_public_idempotency_failure(
             user=user,
+            reason="non_durable_store_rejected",
+            idempotency_key=normalized.get("idempotency_key"),
         )
-    audit_public_transaction_validation(
-        "success",
+        raise AuthError(_PUBLIC_TRANSACTION_UNAVAILABLE_MESSAGE, 503)
+    _reserve_public_transaction_idempotency(
         user=user,
-        metadata={
-            "transaction_amount": normalized.get("amount"),
-            "transaction_currency": normalized.get("currency"),
-            "payload_hash_ref": audit_reference("transaction_payload_hash", payload_hash),
-        },
-        idempotency_key=normalized.get("idempotency_key"),
-        payee_account=normalized.get("payee"),
+        idempotency_key=normalized["idempotency_key"],
+        payload_message=payload_message,
+        now=now,
     )
+    try:
+        audit_public_transaction_validation(
+            "success",
+            user=user,
+            metadata={
+                "transaction_amount": normalized.get("amount"),
+                "transaction_currency": normalized.get("currency"),
+                "payload_hash_ref": audit_reference(
+                    "transaction_payload_hash",
+                    payload_hash,
+                ),
+                "idempotency_status": "reserved",
+            },
+            idempotency_key=normalized.get("idempotency_key"),
+            payee_account=normalized.get("payee"),
+            required=True,
+        )
+    except (AuditWriteError, SQLAlchemyError) as exc:
+        db.session.rollback()
+        raise AuthError(_PUBLIC_TRANSACTION_UNAVAILABLE_MESSAGE, 503) from exc
     return normalized
 
 
@@ -204,13 +244,21 @@ def verify_transfer_step_up(
 
 
 def public_transaction_payload_hash(payload: Mapping[str, object]) -> str:
+    active_key_id, _keyring = _public_transaction_hmac_keyring()
+    return _public_transaction_hmac_hex(
+        _public_transaction_payload_message(payload),
+        key_id=active_key_id,
+    )
+
+
+def _public_transaction_payload_message(payload: Mapping[str, object]) -> str:
     canonical = {
         "amount": str(payload.get("amount")),
         "currency": str(payload.get("currency") or "").upper(),
         "payee": str(payload.get("payee") or "").upper(),
     }
     encoded = json.dumps(canonical, separators=(",", ":"), sort_keys=True).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    return f"payload:{encoded.decode('utf-8')}"
 
 
 def _normalize_transfer_risk(value: str) -> str:
@@ -265,6 +313,7 @@ def audit_public_transaction_validation(
     metadata: Mapping[str, object] | None = None,
     idempotency_key: object | None = None,
     payee_account: object | None = None,
+    required: bool = False,
 ) -> None:
     audit_banking_action(
         "public_transaction_validation",
@@ -273,6 +322,7 @@ def audit_public_transaction_validation(
         metadata=metadata,
         idempotency_key=idempotency_key,
         payee_account=payee_account,
+        required=required,
     )
 
 
@@ -303,6 +353,7 @@ def audit_banking_action(
     transaction_reference: object | None = None,
     payee_account: object | None = None,
     idempotency_key: object | None = None,
+    required: bool = False,
 ) -> None:
     event_metadata: dict[str, object] = {"action": action}
     if metadata:
@@ -313,7 +364,7 @@ def audit_banking_action(
         event_metadata["payee_account_ref"] = audit_reference("payee_account", payee_account)
     if idempotency_key is not None:
         event_metadata["idempotency_key_ref"] = audit_reference("idempotency_key", idempotency_key)
-    requires_durable_audit = _requires_durable_audit(action, outcome)
+    requires_durable_audit = required or _requires_durable_audit(action, outcome)
     writer = audit_event_required if requires_durable_audit else audit_event
     writer(f"banking_{action}", outcome, user=user, metadata=event_metadata)
     if requires_durable_audit:
@@ -339,21 +390,248 @@ def _safe_field_name(value: object) -> str:
     return str(value).strip()[:64]
 
 
-def _record_idempotency_key_use(
-    store: MutableMapping[tuple[str, str], str],
-    idempotency_key: object,
-    payload_hash: str,
+def _reserve_public_transaction_idempotency(
     *,
     user: User | None,
+    idempotency_key: object,
+    payload_message: str,
+    now: datetime | None,
+) -> PublicTransactionIdempotency:
+    if (
+        not isinstance(user, User)
+        or user.id is None
+        or db.session.get(User, user.id) is None
+    ):
+        _audit_public_idempotency_failure(
+            user=user,
+            reason="authenticated_scope_required",
+            idempotency_key=idempotency_key,
+        )
+        raise AuthError(_PUBLIC_TRANSACTION_UNAVAILABLE_MESSAGE, 503)
+
+    current_time = _as_utc(now or datetime.now(timezone.utc))
+    ttl_seconds = _public_transaction_idempotency_ttl_seconds()
+    active_key_id, _keyring = _public_transaction_hmac_keyring()
+    key_fingerprint = hashlib.sha256(
+        (
+            "public-transaction-key-fingerprint:"
+            f"user:{user.id}:key:{str(idempotency_key)}"
+        ).encode("utf-8")
+    ).hexdigest()
+    key_verifier = _public_transaction_hmac_hex(
+        f"key:{str(idempotency_key)}",
+        key_id=active_key_id,
+    )
+    payload_verifier = _public_transaction_hmac_hex(
+        payload_message,
+        key_id=active_key_id,
+    )
+    statement = (
+        db.select(PublicTransactionIdempotency)
+        .where(
+            PublicTransactionIdempotency.user_id == user.id,
+            PublicTransactionIdempotency.key_fingerprint == key_fingerprint,
+        )
+        .with_for_update()
+    )
+    record = db.session.execute(statement).scalar_one_or_none()
+    if record is not None:
+        return _reuse_or_reject_public_transaction_reservation(
+            record,
+            payload_message=payload_message,
+            active_key_id=active_key_id,
+            key_verifier=key_verifier,
+            current_time=current_time,
+            ttl_seconds=ttl_seconds,
+            user=user,
+            idempotency_key=idempotency_key,
+        )
+
+    record = PublicTransactionIdempotency(
+        user_id=user.id,
+        hmac_key_id=active_key_id,
+        key_fingerprint=key_fingerprint,
+        key_verifier=key_verifier,
+        payload_verifier=payload_verifier,
+        status="reserved",
+        created_at=current_time,
+        updated_at=current_time,
+        expires_at=current_time + timedelta(seconds=ttl_seconds),
+    )
+    db.session.add(record)
+    try:
+        db.session.flush([record])
+    except IntegrityError:
+        db.session.rollback()
+        record = db.session.execute(statement).scalar_one_or_none()
+        if record is None:
+            raise AuthError(_PUBLIC_TRANSACTION_UNAVAILABLE_MESSAGE, 503)
+        return _reuse_or_reject_public_transaction_reservation(
+            record,
+            payload_message=payload_message,
+            active_key_id=active_key_id,
+            key_verifier=key_verifier,
+            current_time=current_time,
+            ttl_seconds=ttl_seconds,
+            user=user,
+            idempotency_key=idempotency_key,
+        )
+    return record
+
+
+def _require_clean_public_transaction_session(
+    *,
+    user: User | None,
+    idempotency_key: object,
 ) -> None:
-    scope = f"user:{user.id}" if user is not None and user.id is not None else "anonymous"
-    key = (scope, str(idempotency_key))
-    existing_hash = store.get(key)
-    if existing_hash is None:
-        store[key] = payload_hash
-        return
-    if existing_hash != payload_hash:
-        raise AuthError("Idempotency key already used for a different transaction request", 409)
+    if db.session.new or db.session.dirty or db.session.deleted:
+        _audit_public_idempotency_failure(
+            user=user,
+            reason="pending_database_state_rejected",
+            idempotency_key=idempotency_key,
+        )
+        raise AuthError(_PUBLIC_TRANSACTION_UNAVAILABLE_MESSAGE, 503)
+
+
+def _reuse_or_reject_public_transaction_reservation(
+    record: PublicTransactionIdempotency,
+    *,
+    payload_message: str,
+    active_key_id: str,
+    key_verifier: str,
+    current_time: datetime,
+    ttl_seconds: int,
+    user: User,
+    idempotency_key: object,
+) -> PublicTransactionIdempotency:
+    if _as_utc(record.expires_at) <= current_time:
+        record.hmac_key_id = active_key_id
+        record.key_verifier = key_verifier
+        record.payload_verifier = _public_transaction_hmac_hex(
+            payload_message,
+            key_id=active_key_id,
+        )
+        record.status = "reserved"
+        record.result_reference = None
+        record.created_at = current_time
+        record.updated_at = current_time
+        record.expires_at = current_time + timedelta(seconds=ttl_seconds)
+        db.session.flush([record])
+        return record
+
+    _active_key_id, keyring = _public_transaction_hmac_keyring()
+    if record.hmac_key_id not in keyring:
+        _audit_public_idempotency_failure(
+            user=user,
+            reason="idempotency_hmac_key_unavailable",
+            idempotency_key=idempotency_key,
+        )
+        raise AuthError(_PUBLIC_TRANSACTION_UNAVAILABLE_MESSAGE, 503)
+    expected_key_verifier = _public_transaction_hmac_hex(
+        f"key:{str(idempotency_key)}",
+        key_id=record.hmac_key_id,
+    )
+    if not hmac.compare_digest(record.key_verifier, expected_key_verifier):
+        _audit_public_idempotency_failure(
+            user=user,
+            reason="idempotency_key_verifier_invalid",
+            idempotency_key=idempotency_key,
+        )
+        raise AuthError(_PUBLIC_TRANSACTION_UNAVAILABLE_MESSAGE, 503)
+
+    same_payload = hmac.compare_digest(
+        record.payload_verifier,
+        _public_transaction_hmac_hex(
+            payload_message,
+            key_id=record.hmac_key_id,
+        ),
+    )
+    _audit_public_idempotency_failure(
+        user=user,
+        reason=(
+            "same_payload_replay_blocked"
+            if same_payload
+            else "idempotency_payload_conflict"
+        ),
+        idempotency_key=idempotency_key,
+    )
+    raise AuthError(
+        (
+            _PUBLIC_TRANSACTION_REPLAY_MESSAGE
+            if same_payload
+            else "Idempotency key conflicts with an earlier request."
+        ),
+        409,
+    )
+
+
+def _audit_public_idempotency_failure(
+    *,
+    user: User | None,
+    reason: str,
+    idempotency_key: object,
+) -> None:
+    db.session.rollback()
+    audit_public_transaction_validation(
+        "blocked",
+        user=user,
+        metadata={"reason": reason},
+        idempotency_key=idempotency_key,
+    )
+
+
+def _public_transaction_idempotency_ttl_seconds() -> int:
+    try:
+        value = int(
+            current_app.config["PUBLIC_TRANSACTION_IDEMPOTENCY_TTL_SECONDS"]
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise AuthError(_PUBLIC_TRANSACTION_UNAVAILABLE_MESSAGE, 503) from exc
+    if value < 60 or value > 7 * 24 * 60 * 60:
+        raise AuthError(_PUBLIC_TRANSACTION_UNAVAILABLE_MESSAGE, 503)
+    return value
+
+
+def _public_transaction_hmac_keyring() -> tuple[str, dict[str, bytes]]:
+    active_key_id = str(
+        current_app.config.get("TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID") or ""
+    )
+    configured_keyring = current_app.config.get("TRANSACTION_LEDGER_HMAC_KEYS")
+    if not isinstance(configured_keyring, dict) or active_key_id not in configured_keyring:
+        raise AuthError(_PUBLIC_TRANSACTION_UNAVAILABLE_MESSAGE, 503)
+    try:
+        keyring = {
+            str(key_id): bytes(key)
+            for key_id, key in configured_keyring.items()
+            if str(key_id).strip() and len(bytes(key)) == 32
+        }
+    except (TypeError, ValueError) as exc:
+        raise AuthError(_PUBLIC_TRANSACTION_UNAVAILABLE_MESSAGE, 503) from exc
+    if active_key_id not in keyring or len(keyring) != len(configured_keyring):
+        raise AuthError(_PUBLIC_TRANSACTION_UNAVAILABLE_MESSAGE, 503)
+    return active_key_id, keyring
+
+
+def _public_transaction_hmac_hex(message: str, *, key_id: str) -> str:
+    _active_key_id, keyring = _public_transaction_hmac_keyring()
+    if key_id not in keyring:
+        raise AuthError(_PUBLIC_TRANSACTION_UNAVAILABLE_MESSAGE, 503)
+    subkey = hmac.new(
+        keyring[key_id],
+        b"sitbank-public-transaction-idempotency-v1",
+        hashlib.sha256,
+    ).digest()
+    return hmac.new(
+        subkey,
+        message.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _lock_transfer_participants(sender_id: int, recipient_id: int) -> tuple[User, User]:

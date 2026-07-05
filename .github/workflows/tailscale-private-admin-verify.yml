@@ -63,12 +63,6 @@ jobs:
             exit 1
           fi
 
-          {
-            echo "## Private admin tailnet verification"
-            echo
-            echo "- Private admin is not reachable from the public runner context."
-          } >> "${GITHUB_STEP_SUMMARY}"
-
       - name: Validate selected Tailscale credential
         shell: bash
         env:
@@ -131,6 +125,9 @@ jobs:
           fi
 
           {
+            echo "## Private admin tailnet verification"
+            echo
+            echo "- Private admin is not reachable from the public runner context."
             echo "- Protected runner joined the approved tailnet."
             echo "- Private admin HTTPS login entrypoint returned the documented unauthenticated response."
             echo "- Required private admin gate passed."

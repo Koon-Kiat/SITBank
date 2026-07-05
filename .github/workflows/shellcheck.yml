@@ -93,13 +93,14 @@ jobs:
             echo "- Status: **${SCAN_OUTCOME}**"
             echo "- Scanned shell files: \`${target_count}\`"
             echo "- Findings at style or higher: \`${finding_count}\`"
-            if [[ -s "${RUNNER_TEMP}/shellcheck-report.json" ]] \
-              && jq empty "${RUNNER_TEMP}/shellcheck-report.json" 2>/dev/null; then
+            if [[ "${finding_count}" =~ ^[1-9][0-9]*$ ]]; then
               echo
               echo "| Level | Rule | File | Line | Message |"
               echo "| --- | --- | --- | ---: | --- |"
               jq -r '.comments[:20][] | "| \(.level) | `SC\(.code)` | `\(.file)` | \(.line) | \(.message | gsub("[|\\r\\n]"; " ")) |"' \
                 "${RUNNER_TEMP}/shellcheck-report.json"
+            elif [[ "${finding_count}" == "0" ]]; then
+              echo "- Result: no ShellCheck findings at the configured threshold."
             fi
             echo
             echo "- Decision: findings at the configured style threshold block this job."
