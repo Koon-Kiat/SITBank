@@ -30,6 +30,41 @@ def test_statement_view_shows_balance_summary_and_period_nav(client):
     assert "statement-period-nav" in markup
 
 
+def test_statement_view_hides_next_period_link_for_current_month(client):
+    login_with_mfa(client)
+    now = datetime.now(timezone.utc)
+    markup = client.get(f"/banking/statement?year={now.year}&month={now.month}").data.decode("utf-8")
+    assert 'href="#icon-chevron-right"' not in markup
+    assert 'href="#icon-chevron-left"' in markup
+
+
+def test_statement_view_shows_next_period_link_for_past_month(client):
+    login_with_mfa(client)
+    markup = client.get("/banking/statement?year=2020&month=1").data.decode("utf-8")
+    assert 'href="#icon-chevron-right"' in markup
+
+
+def test_statement_view_hides_prev_period_link_at_lower_bound(client):
+    login_with_mfa(client)
+    markup = client.get("/banking/statement?year=2000&month=1").data.decode("utf-8")
+    assert 'href="#icon-chevron-left"' not in markup
+
+
+def test_statement_view_shows_prev_period_link_above_lower_bound(client):
+    login_with_mfa(client)
+    markup = client.get("/banking/statement?year=2000&month=2").data.decode("utf-8")
+    assert 'href="#icon-chevron-left"' in markup
+
+
+def test_statement_view_year_input_max_stays_current_year_for_older_statement(client):
+    login_with_mfa(client)
+    now = datetime.now(timezone.utc)
+    markup = client.get("/banking/statement?year=2020&month=1").data.decode("utf-8")
+    assert 'value="2020"' in markup
+    assert f'max="{now.year}"' in markup
+    assert 'min="2000"' in markup
+
+
 def test_statement_view_rejects_invalid_period_without_crashing(client):
     login_with_mfa(client)
     # A period well before the account's creation date always triggers the
