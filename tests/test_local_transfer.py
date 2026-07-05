@@ -348,6 +348,55 @@ def test_complete_transfer_route_flow(client, transfer_context, monkeypatch):
     assert Transaction.query.filter_by(reference="Coverage").count() == 1
 
 
+def test_transfer_stepup_accepts_matching_legacy_session_context(
+    client,
+    transfer_context,
+    monkeypatch,
+):
+    from app.security.sessions import SESSION_RISK_CONTEXT_KEY, SESSION_RISK_FINGERPRINT_KEY
+
+    payee = transfer_context["payee"]
+    secret = transfer_context["alice_secret"]
+    client.post("/logout")
+    password_response = login(client, identifier="alice01")
+    login_time = int(time.time())
+    monkeypatch.setattr("app.auth.services.time.time", lambda: login_time)
+    mfa_response = client.post(
+        "/auth/mfa/verify",
+        json={"totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(login_time)},
+    )
+    with client.session_transaction() as sess:
+        assert sess.get(SESSION_RISK_FINGERPRINT_KEY)
+        sess.pop(SESSION_RISK_CONTEXT_KEY)
+
+    stepup_time = login_time + 1
+    monkeypatch.setattr("app.auth.services.time.time", lambda: stepup_time)
+    submit_response = client.post(
+        f"/banking/transfer/{payee.id}",
+        data={
+            "amount": "25.00",
+            "reference": "Legacy context",
+            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(stepup_time),
+        },
+    )
+    with client.session_transaction() as sess:
+        assert sess.get("pending_transfer_token")
+
+    confirm_response = client.get(f"/banking/transfer/{payee.id}/confirm")
+    complete_response = client.post(f"/banking/transfer/{payee.id}/confirm")
+
+    assert password_response.status_code == 302
+    assert mfa_response.status_code == 200
+    assert submit_response.status_code == 302
+    assert confirm_response.status_code == 200
+    assert complete_response.status_code == 302
+    assert Transaction.query.filter_by(reference="Legacy context").count() == 1
+    assert db.session.query(SecurityAuditEvent).filter_by(
+        event_type="session_risk",
+        outcome="reauth_required",
+    ).count() == 0
+
+
 def test_transfer_route_handles_invalid_form_and_mfa_error(
     client,
     transfer_context,
