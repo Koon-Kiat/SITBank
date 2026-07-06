@@ -609,6 +609,8 @@ def test_profile_email_update_requires_email_code_and_totp_stepup(client, monkey
     assert match is not None
     assert request_response.status_code == 200
     assert user.email == "alice@example.com"
+    with client.session_transaction() as session_data:
+        assert "profile_email_pending_username" not in session_data
 
     monkeypatch.setattr("app.auth.services.time.time", lambda: commit_time)
     commit_response = client.post(
@@ -722,7 +724,6 @@ def test_profile_update_rejects_unicode_digit_lookalike_phone_in_service_layer(c
         with pytest.raises(AuthError):
             _profile_update_values(
                 user,
-                user.username,
                 user.email,
                 "9１２３４５６７",
             )
@@ -795,6 +796,35 @@ def test_profile_update_ignores_submitted_username(client, monkeypatch):
     assert response.status_code == 302
     assert user.username == "alice01"
     assert user.phone_number == "92345678"
+
+
+def test_profile_service_contract_cannot_mutate_customer_username(client, monkeypatch):
+    import inspect
+
+    from app.auth.services import update_profile_details
+
+    register(client)
+    user, _secret = enable_mfa_for_user()
+    original_username = user.username
+    monkeypatch.setattr(
+        "app.auth.services.verify_high_risk_authorization",
+        lambda *_args, **_kwargs: None,
+    )
+
+    assert "username" not in inspect.signature(update_profile_details).parameters
+    with client.application.test_request_context("/profile", method="POST"):
+        result = update_profile_details(
+            user,
+            user.email,
+            "92345678",
+            "000000",
+        )
+    db.session.refresh(user)
+
+    assert result == {"updated": True, "email_verification_pending": False}
+    assert user.username == original_username
+    assert user.phone_number == "92345678"
+
 
 def test_profile_update_rejects_duplicate_email(client):
     register(client)

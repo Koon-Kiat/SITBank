@@ -9,12 +9,16 @@ MIGRATIONS = Path("migrations/versions")
 ACCEPTANCE_CONTROLS_MIGRATION = (
     MIGRATIONS / "20260704_0026_staff_invite_acceptance_controls.py"
 )
+DELIVERY_STATUS_MIGRATION = (
+    MIGRATIONS / "20260707_0032_staff_invite_delivery_status.py"
+)
 
 
 def test_staff_invite_schema_has_no_personal_email_binding():
     assert "personal_email_normalized" not in StaffInvite.__table__.c
     assert "acceptance_session_hash" in StaffInvite.__table__.c
     assert "acceptance_verify_locked_at" in StaffInvite.__table__.c
+    assert "delivery_status" in StaffInvite.__table__.c
 
 
 def test_staff_invite_acceptance_control_model_columns_are_bounded():
@@ -38,6 +42,21 @@ def test_staff_invite_acceptance_controls_migration_is_portable_and_non_secret()
     assert 'server_default="0"' in text
     assert "token" not in text.casefold()
     assert "postgresql" not in text.casefold()
+
+
+def test_staff_invite_delivery_status_is_allowlisted_and_migrates_conservatively():
+    column = StaffInvite.__table__.c.delivery_status
+    text = DELIVERY_STATUS_MIGRATION.read_text(encoding="utf-8")
+
+    assert column.type.length == 32
+    assert column.nullable is False
+    assert column.server_default.arg == "unconfirmed"
+    assert 'revision = "20260707_0032"' in text
+    assert 'down_revision = "20260706_0031"' in text
+    assert "ck_staff_invites_delivery_status" in text
+    assert "delivery_status IN ('unconfirmed', 'queued', 'failed')" in text
+    assert 'server_default="unconfirmed"' in text
+    assert "raw invite" not in text.casefold()
 
 
 def test_migrations_have_no_personal_email_binding_or_portability_backfill():
