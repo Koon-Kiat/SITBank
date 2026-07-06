@@ -18,39 +18,41 @@
 
   {% if payee_rows %}
   <div class="panel">
-    <table class="data-table">
-      <thead>
-        <tr>
-          <th scope="col">Nickname</th>
-          <th scope="col">Recipient Name</th>
-          <th scope="col">Account</th>
-          <th scope="col">Status</th>
-          <th scope="col"><span class="sr-only">Actions</span></th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for row in payee_rows %}
-        <tr>
-          <td>{{ row.payee.nickname }}</td>
-          <td>{{ row.payee.recipient_name }}</td>
-          <td>•••-•••-{{ row.payee.account_number[-3:] }}</td>
-          <td>
-            {% if row.status == "active" %}
-            <span class="badge">Ready</span>
-            {% else %}
-            <span class="badge neutral" data-cooldown-expires="{{ row.expires_at }}" title="Available at {{ row.available_at }}">Available in {{ row.remaining }}</span>
-            {% endif %}
-          </td>
-          <td>
-            {% if row.status == "active" %}
-            <a class="button small" href="{{ url_for('banking.transfer', payee_id=row.payee.id) }}">Transfer</a>
-            {% endif %}
-            <a class="button secondary small" href="{{ url_for('banking.payees_remove', payee_id=row.payee.id) }}">Remove</a>
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th scope="col">Nickname</th>
+            <th scope="col">Recipient Name</th>
+            <th scope="col">Account</th>
+            <th scope="col">Status</th>
+            <th scope="col"><span class="sr-only">Actions</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in payee_rows %}
+          <tr>
+            <td data-label="Nickname">{{ row.payee.nickname }}</td>
+            <td data-label="Recipient Name">{{ row.payee.recipient_name }}</td>
+            <td data-label="Account">•••-•••-{{ row.payee.account_number[-3:] }}</td>
+            <td data-label="Status">
+              {% if row.status == "active" %}
+              <span class="badge">Ready</span>
+              {% else %}
+              <span class="badge neutral" data-cooldown-expires="{{ row.expires_at }}" title="Available at {{ row.available_at }}">Available in {{ row.remaining }}</span>
+              {% endif %}
+            </td>
+            <td data-label="Actions" class="cell-actions">
+              {% if row.status == "active" %}
+              <a class="button small" href="{{ url_for('banking.transfer', payee_id=row.payee.id) }}">Transfer</a>
+              {% endif %}
+              <a class="button secondary small" href="{{ url_for('banking.payees_remove', payee_id=row.payee.id) }}">Remove</a>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
   </div>
   {% else %}
   <div class="panel">
