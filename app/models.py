@@ -476,6 +476,12 @@ class StaffInvite(db.Model):
     workplace_email_normalized = db.Column(db.String(255), nullable=False, index=True)
     role = db.Column(db.String(32), nullable=False)
     status = db.Column(db.String(32), nullable=False, default="pending", index=True)
+    delivery_status = db.Column(
+        db.String(32),
+        nullable=False,
+        default="unconfirmed",
+        server_default="unconfirmed",
+    )
     created_by_user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
     setup_user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=True, index=True)
     used_by_user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=True, index=True)
@@ -512,6 +518,10 @@ class StaffInvite(db.Model):
         db.CheckConstraint(
             "status IN ('pending', 'totp_pending', 'accepted', 'revoked', 'expired')",
             name="ck_staff_invites_status",
+        ),
+        db.CheckConstraint(
+            "delivery_status IN ('unconfirmed', 'queued', 'failed')",
+            name="ck_staff_invites_delivery_status",
         ),
     )
 

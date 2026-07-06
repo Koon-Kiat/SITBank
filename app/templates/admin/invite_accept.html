@@ -1,0 +1,68 @@
+{% extends "admin/base.html" %}
+{% import "_turnstile.html" as turnstile with context %}
+
+{% block title %}Complete Staff Access | SITBank Admin{% endblock %}
+
+{% block content %}
+<section class="panel narrow">
+  <p class="eyebrow">Staff onboarding</p>
+  {% if phase == "start" %}
+    <h1>Set up your staff access</h1>
+    <p class="muted">This invite does not activate an account until password setup, workplace verification, and authenticator verification all succeed.</p>
+    <form class="form-stack" method="post" action="{{ url_for('admin.invite_accept_start', token=token) }}" autocomplete="off">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="form-group">
+        <label for="invite-full-name">Full name</label>
+        <input id="invite-full-name" name="full_name" type="text" maxlength="120" autocomplete="name" required>
+      </div>
+      <div class="form-group">
+        <label for="invite-phone-number">Singapore mobile number</label>
+        <input id="invite-phone-number" name="phone_number" type="tel" inputmode="numeric" pattern="[89][0-9]{7}" maxlength="8" autocomplete="tel" required>
+      </div>
+      <div class="form-group">
+        <label for="invite-password">Password</label>
+        <input id="invite-password" name="password" type="password" minlength="8" maxlength="256" autocomplete="new-password" required>
+      </div>
+      <div class="form-group">
+        <label for="invite-confirm-password">Confirm password</label>
+        <input id="invite-confirm-password" name="confirm_password" type="password" minlength="8" maxlength="256" autocomplete="new-password" required>
+      </div>
+      {{ turnstile.widget("admin_invite_accept") }}
+      <button class="button full" type="submit">Start secure setup</button>
+    </form>
+  {% elif phase == "verify" %}
+    <h1>Verify your staff access</h1>
+    {% if totp_setup %}
+      <p class="muted">Add this account to your authenticator app. The setup key is shown only in this response.</p>
+      <div class="qr-wrap">
+        <img class="qr" src="{{ totp_setup.qr_code_data_uri }}" alt="Staff authenticator setup QR code">
+      </div>
+      <div class="manual-key">
+        <label for="invite-manual-entry-secret">Manual setup key</label>
+        <input id="invite-manual-entry-secret" class="manual-key-input" type="text" value="{{ totp_setup.manual_entry_secret }}" readonly autocomplete="off" spellcheck="false">
+      </div>
+    {% else %}
+      <p class="muted">Use the authenticator account configured when setup started. The setup key is not redisplayed after that response.</p>
+    {% endif %}
+    <p class="hint">A separate verification code was sent to your approved workplace mailbox. Both current codes are required.</p>
+    <form class="form-stack" method="post" action="{{ url_for('admin.invite_accept_verify', token=token) }}" autocomplete="off">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="form-group">
+        <label for="invite-totp-code">Authenticator code</label>
+        <input id="invite-totp-code" name="totp_code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required>
+      </div>
+      <div class="form-group">
+        <label for="invite-workplace-code">Workplace email verification code</label>
+        <input id="invite-workplace-code" name="workplace_verification_code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required>
+      </div>
+      <button class="button full" type="submit">Activate staff access</button>
+    </form>
+  {% else %}
+    <h1>Staff access activated</h1>
+    <p class="muted">Your workplace email and authenticator have been verified. Use the staff login with your workplace email, password, and authenticator code.</p>
+    <div class="button-row">
+      <a class="button" href="{{ url_for('admin.login_form') }}">Continue to staff login</a>
+    </div>
+  {% endif %}
+</section>
+{% endblock %}

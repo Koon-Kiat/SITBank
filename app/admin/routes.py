@@ -89,6 +89,7 @@ _DISPUTES_ENDPOINT = "admin.disputes"
 _ADMIN_ALERTS_ENDPOINT = "admin.alerts"
 _ADMIN_LOGIN_TEMPLATE = "admin/login.html"
 _ADMIN_MFA_VERIFY_TEMPLATE = "admin/mfa_verify.html"
+_STAFF_INVITE_ACCEPT_TEMPLATE = "admin/invite_accept.html"
 _ADMIN_RATE_LIMIT_HOURLY = "10 per hour"
 _ADMIN_RATE_LIMIT_STEP_UP = "5 per 5 minutes"
 _ADMIN_MFA_COARSE_RATE_LIMIT = "30 per minute"
@@ -816,6 +817,37 @@ def _render_mfa_form(form: AdminTotpForm | None = None, *, status_code: int = 20
     return render_template(_ADMIN_MFA_VERIFY_TEMPLATE, form=form or AdminTotpForm()), status_code
 
 
+def _render_invite_acceptance(
+    token: str,
+    *,
+    phase: str,
+    status_code: int = 200,
+    totp_setup: dict[str, str] | None = None,
+):
+    return (
+        render_template(
+            _STAFF_INVITE_ACCEPT_TEMPLATE,
+            token=token,
+            phase=phase,
+            totp_setup=totp_setup,
+        ),
+        status_code,
+    )
+
+
+def _invite_acceptance_browser_error(
+    token: str,
+    *,
+    phase: str,
+    message: str,
+    status_code: int,
+):
+    if status_code == 429:
+        return rate_limit_response()
+    flash(message, "error")
+    return _render_invite_acceptance(token, phase=phase, status_code=status_code)
+
+
 @admin_bp.get("/health/live")
 def health_live():
     return jsonify({"status": "ok", "app_mode": "admin"})
@@ -1467,16 +1499,20 @@ def manual_recovery_complete(request_id: int):
 @admin_bp.get("/invites/accept/<token>")
 @limiter.limit("20 per hour", key_func=get_remote_address)
 def invite_accept_info(token: str):
-    return jsonify(invite_info(token))
+    result = invite_info(token)
+    if _wants_json():
+        return jsonify(result)
+    return _render_invite_acceptance(token, phase="start")[0]
 
 
 @admin_bp.post("/invites/accept/<token>/start")
 @limiter.limit("20 per hour", key_func=get_remote_address)
 @limiter.limit("10 per 15 minutes", key_func=request_principal)
 def invite_accept_start(token: str):
-    data = _payload(StaffInviteStartSchema())
-    return jsonify(
-        start_invite_acceptance(
+    wants_json = _wants_json()
+    try:
+        data = _payload(StaffInviteStartSchema())
+        result = start_invite_acceptance(
             token,
             full_name=data["full_name"],
             phone_number=data["phone_number"],
@@ -1485,19 +1521,66 @@ def invite_accept_start(token: str):
             turnstile_token=data.get("turnstile_token") or data.get("cf_turnstile_response"),
             request_fields=_request_fields(),
         )
-    )
+    except ValidationError:
+        if wants_json:
+            raise
+        return _invite_acceptance_browser_error(
+            token,
+            phase="start",
+            message="Invalid request",
+            status_code=400,
+        )
+    except AuthError as exc:
+        if wants_json:
+            raise
+        return _invite_acceptance_browser_error(
+            token,
+            phase="start",
+            message=exc.message,
+            status_code=exc.status_code,
+        )
+    if wants_json:
+        return jsonify(result)
+    flash("Setup started. Enroll your authenticator and enter both verification codes.", "info")
+    return _render_invite_acceptance(
+        token,
+        phase="verify",
+        totp_setup=result["totp_setup"],
+    )[0]
 
 
 @admin_bp.post("/invites/accept/<token>/verify")
 @limiter.limit("10 per 15 minutes", key_func=get_remote_address)
 @limiter.limit("10 per 15 minutes", key_func=request_principal)
 def invite_accept_verify(token: str):
-    data = _payload(StaffInviteVerifySchema())
-    return jsonify(
-        verify_invite_acceptance(
+    wants_json = _wants_json()
+    try:
+        data = _payload(StaffInviteVerifySchema())
+        result = verify_invite_acceptance(
             token,
             totp_code=data[_ADMIN_TOTP_CODE_FIELD],
             workplace_verification_code=data["workplace_verification_code"],
             request_fields=_request_fields(),
         )
-    )
+    except ValidationError:
+        if wants_json:
+            raise
+        return _invite_acceptance_browser_error(
+            token,
+            phase="verify",
+            message="Invalid request",
+            status_code=400,
+        )
+    except AuthError as exc:
+        if wants_json:
+            raise
+        return _invite_acceptance_browser_error(
+            token,
+            phase="verify",
+            message=exc.message,
+            status_code=exc.status_code,
+        )
+    if wants_json:
+        return jsonify(result)
+    flash("Staff access activated. You can now sign in.", "success")
+    return _render_invite_acceptance(token, phase="complete")[0]

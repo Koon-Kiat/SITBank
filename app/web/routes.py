@@ -882,7 +882,6 @@ def profile_submit():
     try:
         result = update_profile_details(
             g.current_user,
-            g.current_user.username,
             form.email.data,
             form.phone_number.data,
             form.totp_code.data,

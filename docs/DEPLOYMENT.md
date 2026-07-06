@@ -527,6 +527,12 @@ TOTP secrets, passwords, or workplace verification codes. After deployment,
 root admins can reset a locked active invite acceptance attempt through the
 admin invite screen with a fresh TOTP step-up; do not repair locked invites by
 editing production rows ad hoc.
+Migration `20260707_0032` adds a bounded invite delivery status with the
+conservative default `unconfirmed`; it stores no invite token, message body,
+provider response, credential, or mailbox assertion. Apply the migration in
+staging first, verify browser onboarding plus queued, failed, and unconfirmed
+root-admin status rendering, then deploy and migrate production through the
+normal signed staging-first workflow.
 
 Production admin does not use a public DNS hostname. Keep admin access on the
 private Tailscale Serve URL `https://admin-sitbank.tailca101b.ts.net/` and do
