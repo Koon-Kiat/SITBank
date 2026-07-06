@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_transaction_party.html" import transaction_party %}
+{% from "_transaction_row.html" import transaction_row %}
 
 {% block title %}Dashboard | SITBank{% endblock %}
 
@@ -151,35 +151,7 @@
         </thead>
         <tbody>
           {% for txn in transactions %}
-          <tr>
-            <td data-label="Type">
-              {% if txn.sender_id == user.id %}
-              <span class="badge neutral">Sent</span>
-              {% else %}
-              <span class="badge">Received</span>
-              {% endif %}
-            </td>
-            <td data-label="Transaction ID" title="{{ txn.transaction_ref }}">{{ txn.transaction_ref[:8]|upper }}</td>
-            <td data-label="Recipient">
-              {{ transaction_party(txn, user) }}
-            </td>
-            <td data-label="Method">
-              {% if txn.transaction_type == 'payup' %}
-              PayUp
-              {% else %}
-              Local Transfer
-              {% endif %}
-            </td>
-            <td data-label="Reference">{{ txn.reference or "—" }}</td>
-            <td data-label="Amount (SGD)" class="cell-amount">
-              {% if txn.sender_id == user.id %}
-              <span class="muted">−{{ txn.amount }}</span>
-              {% else %}
-              +{{ txn.amount }}
-              {% endif %}
-            </td>
-            <td data-label="Date"><time datetime="{{ txn.created_at|utc_iso }}">{{ txn.created_at|sgt_datetime }}</time></td>
-          </tr>
+          {{ transaction_row(txn, user) }}
           {% endfor %}
         </tbody>
       </table>
