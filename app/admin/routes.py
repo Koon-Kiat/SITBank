@@ -90,6 +90,7 @@ _ADMIN_ALERTS_ENDPOINT = "admin.alerts"
 _ADMIN_LOGIN_TEMPLATE = "admin/login.html"
 _ADMIN_MFA_VERIFY_TEMPLATE = "admin/mfa_verify.html"
 _STAFF_INVITE_ACCEPT_TEMPLATE = "admin/invite_accept.html"
+_INVALID_REQUEST_MESSAGE = "Invalid request"
 _ADMIN_RATE_LIMIT_HOURLY = "10 per hour"
 _ADMIN_RATE_LIMIT_STEP_UP = "5 per 5 minutes"
 _ADMIN_MFA_COARSE_RATE_LIMIT = "30 per minute"
@@ -314,7 +315,7 @@ def handle_auth_error(error: AuthError):
 
 @admin_bp.errorhandler(ValidationError)
 def handle_validation_error(_error: ValidationError):
-    return safe_error_response("Invalid request", 400)
+    return safe_error_response(_INVALID_REQUEST_MESSAGE, 400)
 
 
 @admin_bp.errorhandler(TurnstileError)
@@ -917,7 +918,7 @@ def login():
         require_turnstile("admin_login")
         authenticate_admin_primary(data["workplace_email"], data["password"])
     except ValidationError:
-        flash("Invalid request", "error")
+        flash(_INVALID_REQUEST_MESSAGE, "error")
         return _render_login_form(form, status_code=400)
     except AuthError as exc:
         if exc.status_code == 429:
@@ -1527,7 +1528,7 @@ def invite_accept_start(token: str):
         return _invite_acceptance_browser_error(
             token,
             phase="start",
-            message="Invalid request",
+            message=_INVALID_REQUEST_MESSAGE,
             status_code=400,
         )
     except AuthError as exc:
@@ -1568,7 +1569,7 @@ def invite_accept_verify(token: str):
         return _invite_acceptance_browser_error(
             token,
             phase="verify",
-            message="Invalid request",
+            message=_INVALID_REQUEST_MESSAGE,
             status_code=400,
         )
     except AuthError as exc:
