@@ -68,6 +68,7 @@
       <div class="form-group">
         <label for="{{ form.username.id }}">Username</label>
         {{ form.username(autocomplete="username", maxlength="64") }}
+        <p class="hint">Choose carefully — your username is permanent and cannot be changed after registration.</p>
         {% for error in form.username.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
       </div>
 
