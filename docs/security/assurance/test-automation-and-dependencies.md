@@ -46,7 +46,7 @@ applicable unless a frontend package manager is added.
 | Dependency lock validation | `ops/security/check_dependency_locks.py` | Enforces the hashed lockfile source of truth and rejects legacy dependency manifests |
 | Dependabot | `.github/dependabot.yml` | Opens controlled weekly updates for Docker, GitHub Actions, and pip dependencies |
 | GitHub dependency review | `.github/workflows/ci-deploy.yml` | Reviews dependency changes on public PRs targeting `main`; private repositories require `ENABLE_GITHUB_CODE_SECURITY=true`, while non-PR events intentionally skip it |
-| Trivy image scans | `.github/workflows/ci-deploy.yml` | Uses pinned Trivy `v0.71.2` for built-image and repository filesystem scans; `.trivyignore` exceptions are tested |
+| Trivy image scans | `.github/workflows/ci-deploy.yml` | Uses pinned Trivy `v0.72.0` for built-image and repository filesystem scans; `.trivyignore` exceptions are tested |
 | CodeQL | `.github/workflows/codeql.yml` | Runs Python security-extended static analysis when the repository is public |
 | SonarQube Cloud | `.github/workflows/ci-deploy.yml`, `.github/workflows/sonarqube.yml`, `sonar-project.properties` | Reuses the CI test job's `coverage.xml` artifact without rerunning pytest; trusted PR and release-producing runs enforce the quality gate, and publication waits for SonarQube plus Playwright E2E |
 | Playwright E2E | `.github/workflows/ci-deploy.yml`, `tests/e2e/` | Installs Chromium in a dedicated CI job and exercises browser-rendered authentication, MFA, session, banking, and boundary regressions against a loopback Flask server |

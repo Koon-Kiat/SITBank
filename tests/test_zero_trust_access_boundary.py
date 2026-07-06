@@ -116,6 +116,7 @@ def test_staging_nginx_blocks_direct_origin_bypass_but_keeps_local_health():
     assert "duckdns.org" not in staging_nginx
     assert "ssl_client_certificate /etc/nginx/cloudflare-authenticated-origin-pull-ca.pem;" in staging_nginx
     assert "ssl_verify_client on;" in staging_nginx
+    assert "include /etc/nginx/snippets/sitbank-cloudflare-real-ip.conf;" in staging_nginx
     assert "$ssl_client_verify" not in staging_nginx
     assert "auth_basic" not in staging_nginx
     staging_https_server = _nginx_server_block(
@@ -195,6 +196,7 @@ def test_admin_public_surface_is_absent_and_private_access_is_tailscale_only():
     customer_server = _nginx_server_block(production_nginx, "sitbank.pp.ua")
 
     assert "server_name sitbank.pp.ua;" in customer_server
+    assert "include /etc/nginx/snippets/sitbank-cloudflare-real-ip.conf;" in customer_server
     assert "staging-sitbank.pp.ua" not in customer_server
     assert "admin.sitbank.pp.ua" not in production_nginx
     assert "admin-sitbank.pp.ua" not in production_nginx

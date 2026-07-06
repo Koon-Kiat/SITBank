@@ -786,7 +786,19 @@ served through DNS and the deployed edge.
 
 ## Production Edge and Network Hardening
 
-The reviewed production bootstrap installs and enables the production edge from `ops/nginx/sitbank-default.conf`, `ops/nginx/sitbank-production.conf`, `ops/nginx/sitbank-production-rate-limits.conf`, `ops/nginx-proxy-headers.conf`, and `ops/nginx/sitbank-tls-policy.conf`. `PUBLIC_BIND_ADDRESS` in root-owned `deploy.conf` must be the exact public/VPC IPv4 address assigned to Nginx; loopback, Tailscale `100.64.0.0/10`, wildcard, and malformed values fail bootstrap. During the first transition from a deploy config without this key, bootstrap derives the kernel's default-route source IPv4, validates it under the same policy, and persists it for subsequent deployments. If route lookup does not return a valid source IPv4, bootstrap fails before changing Nginx; operators with multiple egress interfaces must pass the intended address explicitly. The bootstrap renders every public port `80`/`443` listener onto that address, while Tailscale Serve owns its private HTTPS listener. The shared default config owns unknown-host rejection without wildcard public listeners. Any change to these files or `PUBLIC_BIND_ADDRESS` requires a target bootstrap after merge.
+The reviewed production bootstrap installs and enables the production edge from `ops/nginx/sitbank-default.conf`, `ops/nginx/sitbank-production.conf`, `ops/nginx/sitbank-production-rate-limits.conf`, `ops/nginx/sitbank-cloudflare-real-ip.conf`, `ops/nginx-proxy-headers.conf`, and `ops/nginx/sitbank-tls-policy.conf`. `PUBLIC_BIND_ADDRESS` in root-owned `deploy.conf` must be the exact public/VPC IPv4 address assigned to Nginx; loopback, Tailscale `100.64.0.0/10`, wildcard, and malformed values fail bootstrap. During the first transition from a deploy config without this key, bootstrap derives the kernel's default-route source IPv4, validates it under the same policy, and persists it for subsequent deployments. If route lookup does not return a valid source IPv4, bootstrap fails before changing Nginx; operators with multiple egress interfaces must pass the intended address explicitly. The bootstrap renders every public port `80`/`443` listener onto that address, while Tailscale Serve owns its private HTTPS listener. The shared default config owns unknown-host rejection without wildcard public listeners. Any change to these files or `PUBLIC_BIND_ADDRESS` requires a target bootstrap after merge.
+
+The production TLS server blocks include
+`/etc/nginx/snippets/sitbank-cloudflare-real-ip.conf` before app proxying. The
+snippet is rendered from `ops/nginx/sitbank-cloudflare-real-ip.conf`; it uses
+`real_ip_header CF-Connecting-IP`, enables `real_ip_recursive on`, and trusts
+only Cloudflare's published IPv4 and IPv6 source ranges as immediate peers.
+After Nginx rewrites `$remote_addr`, `ops/nginx-proxy-headers.conf` forwards
+that canonical address as `X-Real-IP` and `X-Forwarded-For` to Flask. Do not
+add `set_real_ip_from 0.0.0.0/0`, `set_real_ip_from ::/0`, use
+`X-Forwarded-For` as the real-IP header, or append
+`$proxy_add_x_forwarded_for`; those patterns let user-supplied forwarding
+headers distort rate limits, audit IPs, and session risk context.
 
 Production bootstrap also installs
 `/usr/local/sbin/verify-production-nginx-boundary`. Bootstrap runs it after
@@ -810,6 +822,9 @@ checks do not by themselves prove live Cloudflare provider settings.
 - Nginx terminates TLS, redirects production customer HTTP to HTTPS, rejects
   unknown hosts with the shared default server, and forwards only expected
   proxy headers.
+- Cloudflare client-IP restoration is constrained to
+  `CF-Connecting-IP` from Cloudflare's published edge ranges, then forwarded to
+  Flask as a single canonical `X-Forwarded-For` value.
 - The shared TLS policy enables only TLS 1.2 and TLS 1.3, restricts TLS 1.2 to
   ECDHE+AEAD suites, pins the X25519/P-256/P-384 ECDHE curve preference, and
   limits TLS 1.3 to its standard AEAD suites.
@@ -838,6 +853,7 @@ sudo test -r /etc/letsencrypt/live/sitbank.pp.ua/fullchain.pem
 sudo /usr/local/sbin/verify-certbot-host-state production
 sudo nginx -t
 sudo nginx -T | grep -E 'ssl_protocols|ssl_ciphers|ssl_ecdh_curve|ssl_conf_command|ssl_session_tickets'
+sudo nginx -T 2>/dev/null | grep -E 'sitbank-cloudflare-real-ip|real_ip_header CF-Connecting-IP|real_ip_recursive on|set_real_ip_from|proxy_set_header X-Forwarded-For|proxy_add_x_forwarded_for|0\.0\.0\.0/0|::/0'
 sudo ss -ltnp | grep -E ':(80|443|5000|5002)([[:space:]]|$)'
 sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-app
 sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-admin
@@ -851,9 +867,12 @@ curl -I https://sitbank.pp.ua/health/ready
 
 Expected: local customer and admin readiness succeeds through loopback, external
 customer `/health/ready` does not return application readiness, and no public
-admin hostname is required. The deployment wrapper uses the loopback readiness
-checks; production public TLS verification remains a separate protected
-post-deploy gate.
+admin hostname is required. The `nginx -T` real-IP check must show the
+Cloudflare real-IP snippet, `CF-Connecting-IP`, `real_ip_recursive on`, and the
+Cloudflare ranges; it must not show trust-all ranges or
+`$proxy_add_x_forwarded_for`. The deployment wrapper uses the loopback
+readiness checks; production public TLS verification remains a separate
+protected post-deploy gate.
 
 GitHub-hosted runners do not have stable source IPs. The normal
 GitHub-hosted SSH deployment is acceptable only when the runner source is
@@ -1070,6 +1089,15 @@ restrict AWS `443/tcp` to Cloudflare edge ranges where practical. Provider and
 security-group state require sanitized operator evidence; repository files do
 not prove them. See
 `docs/security/architecture/production-cloudflare-origin-boundary.md`.
+
+Also verify that the loaded production Nginx config includes
+`/etc/nginx/snippets/sitbank-cloudflare-real-ip.conf`, uses
+`real_ip_header CF-Connecting-IP`, enables `real_ip_recursive on`, and forwards
+`proxy_set_header X-Forwarded-For $remote_addr`. If Cloudflare publishes new
+edge ranges, update `ops/nginx/sitbank-cloudflare-real-ip.conf` from the
+official Cloudflare IP list, rerun the production Nginx boundary tests, and
+deploy through the normal bootstrap path. Never widen the trusted range to all
+IPv4 or IPv6 clients.
 
 The `pp.ua` DNS-01 migration and DuckDNS retirement are complete. Ongoing
 certificate renewal, origin-boundary, and live verification instructions stay

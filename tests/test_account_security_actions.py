@@ -3,6 +3,18 @@ from __future__ import annotations
 from _auth_flow_helpers import *
 
 
+def proxy_edge_context(edge_ip: str, client_ip: str = "198.51.100.10") -> dict:
+    return {
+        "environ_overrides": {"REMOTE_ADDR": edge_ip},
+        "headers": {
+            "X-Forwarded-For": client_ip,
+            "X-Forwarded-Proto": "https",
+            "X-Forwarded-Host": "sitbank.pp.ua",
+            "User-Agent": "Mozilla/5.0 Chrome/120.0.0.0 Safari/537.36",
+        },
+    }
+
+
 def test_account_freeze_is_durable_and_blocks_group_a_sensitive_actions(client):
     from app.auth.services import FrozenAccountError
     from app.banking.services import ensure_outbound_transfer_allowed
@@ -465,6 +477,109 @@ def test_profile_phone_update_succeeds_after_clean_password_totp_login(client, m
         event_type="session_risk",
         outcome="reauth_required",
     ).count() == 0
+
+
+def test_cloudflare_edge_change_keeps_sensitive_totp_actions_stable(monkeypatch):
+    from app import create_app
+    from app.security import passwords
+    from conftest import TestConfig
+
+    class ProxyTestConfig(TestConfig):
+        TRUSTED_PROXY_COUNT = 1
+
+    monkeypatch.setattr(
+        passwords,
+        "_is_password_pwned_by_hibp",
+        lambda _password: False,
+    )
+    flask_app = create_app(ProxyTestConfig)
+    with flask_app.app_context():
+        db.create_all()
+        try:
+            proxy_client = flask_app.test_client()
+            register(proxy_client)
+            user, secret = enable_mfa_for_user()
+
+            login_time = 1_800_000_000
+            monkeypatch.setattr("app.auth.services.time.time", lambda: login_time)
+            password_response = proxy_client.post(
+                "/login",
+                data={
+                    "identifier": user.username,
+                    "password": "correct horse battery staple",
+                },
+                **proxy_edge_context("173.245.48.10"),
+            )
+            mfa_response = proxy_client.post(
+                "/auth/mfa/verify",
+                json={
+                    "totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(
+                        login_time
+                    )
+                },
+                **proxy_edge_context("173.245.48.10"),
+            )
+
+            profile_time = login_time + 31
+            monkeypatch.setattr("app.auth.services.time.time", lambda: profile_time)
+            profile_response = proxy_client.post(
+                "/profile",
+                data={
+                    "username": "alice01",
+                    "email": "alice@example.com",
+                    "phone_number": "92345678",
+                    "totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(
+                        profile_time
+                    ),
+                },
+                **proxy_edge_context("173.245.48.11"),
+            )
+
+            recovery_time = login_time + 62
+            monkeypatch.setattr("app.auth.services.time.time", lambda: recovery_time)
+            recovery_response = proxy_client.post(
+                "/auth/mfa/recovery-codes/regenerate",
+                json={
+                    "totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(
+                        recovery_time
+                    )
+                },
+                **proxy_edge_context("173.245.48.12"),
+            )
+
+            replace_time = login_time + 93
+            monkeypatch.setattr("app.auth.services.time.time", lambda: replace_time)
+            replace_response = proxy_client.post(
+                "/auth/mfa/replace/start",
+                json={
+                    "totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(
+                        replace_time
+                    )
+                },
+                **proxy_edge_context("173.245.48.13"),
+            )
+            db.session.refresh(user)
+
+            assert password_response.status_code == 302
+            assert mfa_response.status_code == 200
+            assert profile_response.status_code == 302
+            assert user.phone_number == "92345678"
+            assert recovery_response.status_code == 200
+            assert recovery_response.get_json()["recovery_codes"]
+            assert replace_response.status_code == 200
+            assert replace_response.get_json()["manual_entry_secret"]
+            assert db.session.query(SecurityAuditEvent).filter_by(
+                event_type="session_risk",
+                outcome="reauth_required",
+            ).count() == 0
+            assert db.session.query(SecurityAuditEvent).filter_by(
+                event_type="session_risk",
+                outcome="step_up_required",
+            ).count() == 0
+        finally:
+            db.session.remove()
+            db.drop_all()
+            db.engine.dispose()
 
 
 def test_profile_email_update_requires_email_code_and_totp_stepup(client, monkeypatch):
