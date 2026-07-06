@@ -439,6 +439,9 @@ def test_audit_viewer_renders_dropdown_timestamps_and_system_probe_source(admin_
     assert '<input id="audit-search" name="q"' in listing_body
     assert "Advanced filters" in listing_body
     assert '<select id="audit-event-type" name="event_type">' in listing_body
+    assert 'placeholder="29 Jun 2026, 08:00 SGT"' in listing_body
+    assert 'placeholder="2026-06-29T00:00:00Z"' not in listing_body
+    assert "existing UTC ISO query links remain accepted" in listing_body
     assert "privilege_probe" in listing_body
     assert "30 Jun 2026, 16:15:00 SGT" in listing_body
     assert "system_probe: Runtime privilege probe" in listing_body

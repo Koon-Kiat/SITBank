@@ -138,8 +138,6 @@ def test_bootstrap_root_admin_cli_rejects_non_admin_domain_allowlist_entry(admin
         "root1@example.com",
         "root2@sit.singaporetech.edu.sg",
         "root3@sit.singaporetech.edu.sg",
-        "root4@sit.singaporetech.edu.sg",
-        "root5@sit.singaporetech.edu.sg",
     }
     admin_app.config["ROOT_ADMIN_EMAILS"] = frozenset(root_emails)
     command_input = _command_input().replace(ROOT_EMAIL, "root1@example.com", 1)

@@ -227,8 +227,6 @@ class TestConfig:
             "root1@sit.singaporetech.edu.sg",
             "root2@sit.singaporetech.edu.sg",
             "root3@sit.singaporetech.edu.sg",
-            "root4@sit.singaporetech.edu.sg",
-            "root5@sit.singaporetech.edu.sg",
         }
     )
     STAFF_INVITE_TTL_SECONDS = 24 * 60 * 60

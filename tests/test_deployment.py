@@ -52,7 +52,7 @@ PYTHON_SLIM_TRIXIE_IMAGE = (
 )
 
 ROOT_ADMIN_EMAILS_VALUE = ",".join(
-    f"chief{index}@sit.singaporetech.edu.sg" for index in range(1, 6)
+    f"chief{index}@sit.singaporetech.edu.sg" for index in range(1, 4)
 )
 STAGING_ROOT_ADMIN_EMAILS_VALUE = (
     "stagechief1@sit.singaporetech.edu.sg,"

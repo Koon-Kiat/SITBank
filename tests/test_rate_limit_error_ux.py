@@ -350,6 +350,7 @@ def test_customer_reset_handlers_use_standard_429(
     [
         "/invites",
         "/invites/1/revoke",
+        "/invites/1/reissue",
         "/staff/1/deactivate",
         "/manual-recovery/requests/1/transition",
         "/manual-recovery/requests/1/complete",
