@@ -256,7 +256,7 @@ def workplace_email_domain(email):
 
 
 value = Path(sys.argv[1]).read_text(encoding="utf-8")
-required_count = 2 if sys.argv[2] == "staging" else 5
+required_count = 2 if sys.argv[2] == "staging" else 3
 emails = [item.strip().casefold() for item in value.split(",") if item.strip()]
 if len(emails) != required_count or len(set(emails)) != required_count:
     raise SystemExit(

@@ -228,7 +228,7 @@ def test_daily_limit_resets_at_midnight_sgt(app, payup_context):
     assert payup_amount_used_today(alice) == Decimal("0")
 
 
-def test_payup_requires_step_up_at_eighty_percent_threshold(app, payup_context):
+def test_payup_quick_payment_ignores_daily_limit_percentage_threshold(app, payup_context):
     alice = payup_context["alice"]
 
     with _payup_service_context(app, alice):
@@ -237,7 +237,17 @@ def test_payup_requires_step_up_at_eighty_percent_threshold(app, payup_context):
         assert Decimal(str(alice.payup_daily_limit)) == Decimal("500.00")
         assert payup_requires_step_up(alice, Decimal("100.00")) is False
         assert payup_requires_step_up(alice, Decimal("399.99")) is False
-        assert payup_requires_step_up(alice, Decimal("400.00")) is True
+        assert payup_requires_step_up(alice, Decimal("400.00")) is False
+        alice.payup_daily_limit = Decimal("100.00")
+        db.session.commit()
+        assert payup_requires_step_up(alice, Decimal("5.00")) is False
+        alice.payup_daily_limit = Decimal("500.00")
+        db.session.commit()
+
+        app.config["PAYUP_QUICK_TRANSFER_CAP"] = 200.0
+        transfer_cap = evaluate_payup_risk(alice, Decimal("250.00"))
+        assert transfer_cap.decision == "step_up"
+        assert transfer_cap.reasons == ("quick_transfer_cap",)
 
 
 def test_payup_risk_policy_covers_caps_stale_sessions_sensitive_events_and_blocks(
@@ -260,7 +270,7 @@ def test_payup_risk_policy_covers_caps_stale_sessions_sensitive_events_and_block
             app.config["PAYUP_QUICK_SESSION_MAX_AGE_SECONDS"] + 1
         )
         stale = evaluate_payup_risk(alice, Decimal("100.00"))
-        assert stale.decision == "step_up"
+        assert stale.decision == "block"
         assert "stale_session" in stale.reasons
 
         session["auth_created_at"] = int(time.time())
@@ -271,7 +281,7 @@ def test_payup_risk_policy_covers_caps_stale_sessions_sensitive_events_and_block
             metadata={"updated_fields": "profile_email"},
         )
         sensitive = evaluate_payup_risk(alice, Decimal("100.00"))
-        assert sensitive.decision == "step_up"
+        assert sensitive.decision == "block"
         assert "recent_sensitive_event" in sensitive.reasons
 
         session["risk_reauth_required"] = True
@@ -316,7 +326,7 @@ def test_payup_sensitive_event_cannot_be_hidden_by_later_benign_audit_volume(
 
         decision = evaluate_payup_risk(alice, Decimal("100.00"))
 
-    assert decision.decision == "step_up"
+    assert decision.decision == "block"
     assert "recent_sensitive_event" in decision.reasons
 
 
@@ -984,21 +994,40 @@ def test_payup_confirm_rejects_missing_context_with_matching_legacy_fingerprint(
     ).count() == 1
 
 
-def test_payup_confirm_rechecks_stepup_when_usage_changes_after_amount_entry(client, payup_context):
+def test_payup_confirm_recomputes_policy_and_ignores_forged_client_state(client, payup_context):
     alice = payup_context["alice"]
     bob = payup_context["bob"]
 
     client.post("/banking/payup", data=_payup_lookup_data(payup_context))
-    client.post("/banking/payup/amount", data={"amount": "100.00", "reference": "Late stepup"})
-    _make_payup_transaction(alice, bob, Decimal("300.00"), reference="Earlier PayUp")
+    client.post("/banking/payup/amount", data={"amount": "100.00", "reference": "Late policy block"})
+    _make_payup_transaction(alice, bob, Decimal("450.00"), reference="Earlier PayUp")
 
-    response = client.post("/banking/payup/confirm", data={})
+    response = client.post(
+        "/banking/payup/confirm",
+        data={
+            "requires_step_up": "false",
+            "risk_decision": "allow",
+            "totp_code": "",
+        },
+    )
+
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/banking/payup")
+    assert Transaction.query.filter_by(reference="Late policy block", transaction_type="payup").count() == 0
+
+
+def test_payup_over_quick_cap_ignores_forged_no_stepup_fields(client, payup_context):
+    client.post("/banking/payup", data=_payup_lookup_data(payup_context))
+    client.post("/banking/payup/amount", data={"amount": "450.00", "reference": "Forged quick"})
+
+    response = client.post(
+        "/banking/payup/confirm",
+        data={"requires_step_up": "false", "risk_decision": "allow"},
+    )
 
     assert response.status_code == 403
     assert b"Authenticator code" in response.data
-    assert Transaction.query.filter_by(reference="Late stepup", transaction_type="payup").count() == 0
-    with client.session_transaction() as sess:
-        assert sess.get("pending_payup_token")
+    assert Transaction.query.filter_by(reference="Forged quick", transaction_type="payup").count() == 0
 
 
 def test_payup_confirm_rejects_wrong_totp_code(client, payup_context):

@@ -52,7 +52,7 @@ PYTHON_SLIM_TRIXIE_IMAGE = (
 )
 
 ROOT_ADMIN_EMAILS_VALUE = ",".join(
-    f"chief{index}@sit.singaporetech.edu.sg" for index in range(1, 6)
+    f"chief{index}@sit.singaporetech.edu.sg" for index in range(1, 4)
 )
 STAGING_ROOT_ADMIN_EMAILS_VALUE = (
     "stagechief1@sit.singaporetech.edu.sg,"
@@ -1127,6 +1127,8 @@ def test_smoke_fixture_and_deployment_wrapper_match_runtime_contract():
     assert "--env DATABASE_MIGRATION_URL_FILE=/run/secrets/database_migration_url" in smoke_test
     assert "--env PAYEE_COOLDOWN_SECONDS=43200" in smoke_test
     assert 'readonly root_admin_emails="chief1@sit.singaporetech.edu.sg' in smoke_test
+    assert "chief4@sit.singaporetech.edu.sg" not in smoke_test
+    assert "chief5@sit.singaporetech.edu.sg" not in smoke_test
     assert "--env ROOT_ADMIN_EMAILS_FILE=/run/secrets/root_admin_emails" in smoke_test
     assert '--env "ROOT_ADMIN_EMAILS=${root_admin_emails}"' not in smoke_test
     assert "--env SECURITY_AUDIT_ANCHOR_PATH=/run/state/security-audit.anchor" in smoke_test
@@ -2323,6 +2325,10 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert production_deploy_env["PROD_SMTP_HOST"] == "${{ vars.PROD_SMTP_HOST }}"
     workflow_text = Path(".github/workflows/ci-deploy.yml").read_text(encoding="utf-8")
     assert "vars.ROOT_ADMIN_EMAILS" not in workflow_text
+    assert "len(emails) != 3 or len(set(emails)) != 3" in workflow_text
+    assert "len(emails) != 5 or len(set(emails)) != 5" not in workflow_text
+    assert "PROD_ROOT_ADMIN_EMAILS must contain exactly 3 unique workplace email addresses" in workflow_text
+    assert "PROD_ROOT_ADMIN_EMAILS must contain exactly 5 unique workplace email addresses" not in workflow_text
     assert "root-admin-emails-staging-${RELEASE_SHA}.secret" in workflow_text
     assert "root-admin-emails-${RELEASE_SHA}.secret" in workflow_text
     for job_name, verify_step_name, required_names in (

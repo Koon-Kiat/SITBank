@@ -97,6 +97,7 @@ FOCUSED_RBAC_ENDPOINTS = {
     "admin.audit_log_detail",
     "admin.dispute_detail",
     "admin.dispute_transition",
+    "admin.invite_reissue",
     "admin.invite_reset_acceptance",
     "admin.invite_revoke",
     "admin.manual_recovery_complete",

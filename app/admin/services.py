@@ -127,6 +127,10 @@ AUTOMATIC_CUSTOMER_LOCK_REASONS = frozenset(
 GENERIC_ADMIN_LOGIN_ERROR = "Invalid workplace email, password, or authentication code"
 ADMIN_INDEX_ENDPOINT = "admin.index"
 FRESH_MFA_REQUIRED_ERROR = "Fresh MFA verification is required"
+INVITE_FRESH_MFA_REQUIRED_ERROR = (
+    "Fresh MFA verification is required. Wait for a new authenticator code "
+    "before retrying this invite action."
+)
 INVITE_CREATE_ERROR = "Invite could not be created"
 INVITE_ACCEPTANCE_ERROR = "Invite acceptance failed"
 INVALID_WORKPLACE_EMAIL_ERROR = "Invalid workplace email"
@@ -375,6 +379,11 @@ AUDIT_EVENT_DESCRIPTIONS = {
         "Staff invite revoked",
         "A root admin revoked an active staff/admin invite.",
         "Review the actor, target invite reference, and TOTP step-up outcome.",
+    ),
+    "staff_invite_reissued": (
+        "Staff invite reissued",
+        "A root admin rotated an active staff/admin invite token and sent a new invite email.",
+        "Review delivery status without exposing invite tokens.",
     ),
     "staff_totp_setup": (
         "Staff TOTP setup",
@@ -1847,9 +1856,6 @@ def create_staff_invite(
     if not is_root_admin(actor):
         audit_event("staff_invite_create", "blocked", user=actor, metadata={"reason": "not_root_admin"})
         raise AuthError("Forbidden", 403)
-    if not totp_code:
-        audit_event("staff_invite_create", "failure", user=actor, metadata={"reason": "missing_totp_step_up"})
-        raise AuthError(FRESH_MFA_REQUIRED_ERROR, 403)
 
     try:
         normalized_workplace = normalize_workplace_email(workplace_email)
@@ -1862,11 +1868,15 @@ def create_staff_invite(
         raise AuthError("Invalid invite role", 400)
     if normalized_role == ACCOUNT_ROOT_ADMIN:
         raise AuthError("Invalid invite role", 400)
+    _require_staff_invite_step_up(
+        actor,
+        totp_code,
+        scope="staff_invite_create",
+        event_type="staff_invite_create",
+    )
+    _reject_root_admin_allowlist_invite_target(normalized_workplace, actor, "staff_invite_create")
     _reject_existing_staff_identity(normalized_workplace)
     _reject_active_invite(normalized_workplace)
-    if not _verify_totp_for_user(actor, totp_code, "staff_invite_create"):
-        audit_event("staff_invite_create", "failure", user=actor, metadata={"reason": "invalid_totp_step_up"})
-        raise AuthError(FRESH_MFA_REQUIRED_ERROR, 403)
 
     token = secrets.token_urlsafe(32)
     now = _utcnow()
@@ -1899,14 +1909,19 @@ def create_staff_invite(
         _send_invite_email(invite, invite_url)
     except Exception as exc:
         current_app.logger.warning("staff_invite_email_failed error=%s", type(exc).__name__)
+        invite.status = "revoked"
+        invite.revoked_at = _utcnow()
+        invite.revoked_by_user_id = actor.id
         audit_event(
             "staff_invite_email",
             "failure",
             user=actor,
             metadata={**_invite_audit_metadata(invite), "reason": "email_delivery_failed"},
         )
+        db.session.commit()
         raise AuthError("Invite could not be sent", 503) from exc
     audit_event("staff_invite_email", "queued", user=actor, metadata=_invite_audit_metadata(invite))
+    db.session.commit()
     return {
         "message": "Invite created",
         "invite": public_invite(invite),
@@ -1925,9 +1940,12 @@ def public_invites_for_root_admin() -> list[dict[str, Any]]:
 def revoke_staff_invite(actor: User, invite_id: int, totp_code: str | None) -> dict[str, Any]:
     if not is_root_admin(actor):
         raise AuthError("Forbidden", 403)
-    if not totp_code or not _verify_totp_for_user(actor, totp_code, "staff_invite_revoke"):
-        audit_event("staff_invite_revoked", "failure", user=actor, metadata={"reason": "invalid_totp_step_up"})
-        raise AuthError(FRESH_MFA_REQUIRED_ERROR, 403)
+    _require_staff_invite_step_up(
+        actor,
+        totp_code,
+        scope="staff_invite_revoke",
+        event_type="staff_invite_revoked",
+    )
     invite = db.session.get(StaffInvite, int(invite_id))
     if invite is None or invite.status not in ACTIVE_INVITE_STATUSES:
         raise AuthError("Invite not found", 404)
@@ -1939,39 +1957,79 @@ def revoke_staff_invite(actor: User, invite_id: int, totp_code: str | None) -> d
     return {"message": "Invite revoked", "invite": public_invite(invite)}
 
 
-def reset_staff_invite_acceptance(actor: User, invite_id: int, totp_code: str | None) -> dict[str, Any]:
+def reissue_staff_invite(actor: User, invite_id: int, totp_code: str | None) -> dict[str, Any]:
     if not is_root_admin(actor):
         raise AuthError("Forbidden", 403)
-    if not totp_code or not _verify_totp_for_user(actor, totp_code, "staff_invite_accept_reset"):
-        audit_event(
-            "staff_invite_accept_reset",
-            "failure",
-            user=actor,
-            metadata={"reason": "invalid_totp_step_up"},
-        )
-        raise AuthError(FRESH_MFA_REQUIRED_ERROR, 403)
+    _require_staff_invite_step_up(
+        actor,
+        totp_code,
+        scope="staff_invite_reissue",
+        event_type="staff_invite_reissued",
+    )
     invite = db.session.get(StaffInvite, int(invite_id))
     if invite is None or invite.status not in ACTIVE_INVITE_STATUSES:
         raise AuthError("Invite not found", 404)
 
-    setup_user = db.session.get(User, invite.setup_user_id) if invite.setup_user_id else None
-    if setup_user is not None:
-        if (
-            setup_user.account_status != "setup_pending"
-            or setup_user.email.casefold() != invite.workplace_email_normalized.casefold()
-        ):
-            audit_event(
-                "staff_invite_accept_reset",
-                "blocked",
-                user=actor,
-                metadata={**_invite_audit_metadata(invite), "reason": "setup_user_not_resettable"},
-            )
-            raise AuthError(GENERIC_INVITE_ERROR, 409)
-        invite.setup_user_id = None
-        db.session.flush()
-        db.session.delete(setup_user)
+    _reset_active_invite_acceptance_for_root_action(
+        invite,
+        actor,
+        event_type="staff_invite_reissued",
+    )
+    token = secrets.token_urlsafe(32)
+    now = _utcnow()
+    invite.token_hash = invite_token_hash(token)
+    invite.status = "pending"
+    invite.expires_at = now + timedelta(seconds=int(current_app.config["STAFF_INVITE_TTL_SECONDS"]))
+    invite.last_attempt_at = now
+    invite.revoked_at = None
+    invite.revoked_by_user_id = None
+    db.session.flush()
 
-    _clear_invite_acceptance_state(invite)
+    invite_url = url_for("admin.invite_accept_info", token=token, _external=True)
+    try:
+        _send_invite_email(invite, invite_url)
+    except Exception as exc:
+        current_app.logger.warning("staff_invite_email_failed error=%s", type(exc).__name__)
+        metadata = _invite_audit_metadata(invite)
+        db.session.rollback()
+        audit_event(
+            "staff_invite_email",
+            "failure",
+            user=actor,
+            metadata={**metadata, "reason": "email_delivery_failed"},
+        )
+        db.session.commit()
+        raise AuthError("Invite could not be sent", 503) from exc
+
+    audit_event_required(
+        "staff_invite_reissued",
+        "success",
+        user=actor,
+        metadata=_invite_audit_metadata(invite),
+    )
+    audit_event("staff_invite_email", "queued", user=actor, metadata=_invite_audit_metadata(invite))
+    db.session.commit()
+    return {"message": "Invite reissued", "invite": public_invite(invite)}
+
+
+def reset_staff_invite_acceptance(actor: User, invite_id: int, totp_code: str | None) -> dict[str, Any]:
+    if not is_root_admin(actor):
+        raise AuthError("Forbidden", 403)
+    _require_staff_invite_step_up(
+        actor,
+        totp_code,
+        scope="staff_invite_accept_reset",
+        event_type="staff_invite_accept_reset",
+    )
+    invite = db.session.get(StaffInvite, int(invite_id))
+    if invite is None or invite.status not in ACTIVE_INVITE_STATUSES:
+        raise AuthError("Invite not found", 404)
+
+    _reset_active_invite_acceptance_for_root_action(
+        invite,
+        actor,
+        event_type="staff_invite_accept_reset",
+    )
     invite.status = "pending"
     invite.last_attempt_at = _utcnow()
     audit_event_required(
@@ -3291,6 +3349,60 @@ def _ensure_invite_identity_policy(invite: StaffInvite, event_type: str) -> None
         raise AuthError(GENERIC_INVITE_ERROR, 401)
 
 
+def _require_staff_invite_step_up(
+    actor: User,
+    totp_code: str | None,
+    *,
+    scope: str,
+    event_type: str,
+) -> None:
+    if not totp_code:
+        audit_event(event_type, "failure", user=actor, metadata={"reason": "missing_totp_step_up"})
+        raise AuthError(INVITE_FRESH_MFA_REQUIRED_ERROR, 403)
+    try:
+        valid = _verify_totp_for_user(actor, totp_code, scope)
+    except AuthError as exc:
+        audit_event(
+            event_type,
+            "blocked",
+            user=actor,
+            metadata={"reason": "totp_backoff", "retry_after": exc.retry_after},
+        )
+        raise AuthError(
+            INVITE_FRESH_MFA_REQUIRED_ERROR,
+            exc.status_code,
+            retry_after=exc.retry_after,
+        ) from exc
+    if not valid:
+        audit_event(event_type, "failure", user=actor, metadata={"reason": "invalid_totp_step_up"})
+        raise AuthError(INVITE_FRESH_MFA_REQUIRED_ERROR, 403)
+
+
+def _reset_active_invite_acceptance_for_root_action(
+    invite: StaffInvite,
+    actor: User,
+    *,
+    event_type: str,
+) -> None:
+    setup_user = db.session.get(User, invite.setup_user_id) if invite.setup_user_id else None
+    if setup_user is not None:
+        if (
+            setup_user.account_status != "setup_pending"
+            or setup_user.email.casefold() != invite.workplace_email_normalized.casefold()
+        ):
+            audit_event(
+                event_type,
+                "blocked",
+                user=actor,
+                metadata={**_invite_audit_metadata(invite), "reason": "setup_user_not_resettable"},
+            )
+            raise AuthError(GENERIC_INVITE_ERROR, 409)
+        invite.setup_user_id = None
+        db.session.flush()
+        db.session.delete(setup_user)
+    _clear_invite_acceptance_state(invite)
+
+
 def _send_invite_email(invite: StaffInvite, invite_url: str) -> None:
     send_security_email(
         invite.workplace_email_normalized,
@@ -3464,6 +3576,21 @@ def _reject_existing_staff_identity(workplace_email: str) -> None:
     ).scalar_one_or_none()
     if existing is not None:
         raise AuthError(INVITE_CREATE_ERROR, 400)
+
+
+def _reject_root_admin_allowlist_invite_target(workplace_email: str, actor: User, event_type: str) -> None:
+    if workplace_email.casefold() not in _root_admin_emails():
+        return
+    audit_event(
+        event_type,
+        "blocked",
+        user=actor,
+        metadata={
+            "reason": "root_admin_allowlist_target",
+            "workplace_email_ref": audit_reference("staff_workplace_email", workplace_email),
+        },
+    )
+    raise AuthError(INVITE_CREATE_ERROR, 400)
 
 
 def _reject_duplicate_staff_signup(workplace_email: str, phone_number: str) -> None:

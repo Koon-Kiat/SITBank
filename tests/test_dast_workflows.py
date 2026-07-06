@@ -50,6 +50,8 @@ def test_pr_dast_smoke_is_local_automatic_and_time_bounded():
         assert required_runtime_setting in helper
     assert '--env "ROOT_ADMIN_EMAILS=${root_admin_emails}"' not in helper
     assert 'readonly root_admin_emails="chief1@sit.singaporetech.edu.sg' in helper
+    assert "chief4@sit.singaporetech.edu.sg" not in helper
+    assert "chief5@sit.singaporetech.edu.sg" not in helper
     assert "apply-runtime-db-privileges" in helper
     assert "verify-runtime-db-privileges" in helper
     assert "dump_container_diagnostics" in helper
@@ -65,6 +67,9 @@ def test_pr_dast_smoke_is_local_automatic_and_time_bounded():
 def test_pr_dast_does_not_replace_release_dast():
     release_workflow = Path(".github/workflows/ci-deploy.yml").read_text(encoding="utf-8")
     smoke_helper = Path("ops/container/smoke-test.sh").read_text(encoding="utf-8")
+    scheduled_helper = Path("ops/container/dast-smoke.sh").read_text(encoding="utf-8")
 
     assert "RUN_ZAP_DAST" in release_workflow
     assert 'if [[ "${RUN_ZAP_DAST:-false}" == "true" ]]' in smoke_helper
+    assert "chief4@sit.singaporetech.edu.sg" not in scheduled_helper
+    assert "chief5@sit.singaporetech.edu.sg" not in scheduled_helper

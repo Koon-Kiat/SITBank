@@ -1313,8 +1313,8 @@ jobs:
 
           value = os.environ.get("PROD_ROOT_ADMIN_EMAILS", "")
           emails = [item.strip().casefold() for item in value.split(",") if item.strip()]
-          if len(emails) != 5 or len(set(emails)) != 5:
-              print("::error::PROD_ROOT_ADMIN_EMAILS must contain exactly 5 unique workplace email addresses.", file=sys.stderr)
+          if len(emails) != 3 or len(set(emails)) != 3:
+              print("::error::PROD_ROOT_ADMIN_EMAILS must contain exactly 3 unique workplace email addresses.", file=sys.stderr)
               raise SystemExit(1)
           for email in emails:
               if not re.fullmatch(r"(?=\S{1,128}@\S{1,253}$)[^@\x00-\x1f\x7f]+@[^@\x00-\x1f\x7f]+", email):

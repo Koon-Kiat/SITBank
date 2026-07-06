@@ -60,6 +60,8 @@ def test_admin_step_up_entry_points_reject_missing_totp(app, monkeypatch):
         with pytest.raises(AuthError):
             services.revoke_staff_invite(actor, 1, None)
         with pytest.raises(AuthError):
+            services.reissue_staff_invite(actor, 1, None)
+        with pytest.raises(AuthError):
             services.complete_manual_recovery_request_as_admin(
                 actor,
                 1,

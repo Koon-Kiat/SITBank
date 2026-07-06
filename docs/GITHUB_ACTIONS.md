@@ -176,7 +176,7 @@ set these environment variables:
 Root-admin allowlists are sensitive privileged-identity configuration, not
 repository variables. Store `STAGING_ROOT_ADMIN_EMAILS` in the protected
 `staging` environment with exactly 2 workplace addresses and
-`PROD_ROOT_ADMIN_EMAILS` in `production` with exactly 5 workplace addresses.
+`PROD_ROOT_ADMIN_EMAILS` in `production` with exactly 3 workplace addresses.
 Every address must belong to `ADMIN_ALLOWED_EMAIL_DOMAINS`. The deployment
 workflow maps only the target's secret into the renderer input and validates
 only its shape, and installs it as the root-managed secret file

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import time
 import uuid
@@ -139,6 +140,82 @@ def test_transfer_submit_blocked_during_cooldown(client, transfer_context):
 
     assert response.status_code == 302
     assert Transaction.query.count() == 0
+
+
+@pytest.mark.parametrize(
+    ("field_name", "tampered_value"),
+    [
+        ("active_after", "2000-01-01T00:00:00Z"),
+        ("created_at", "2000-01-01T00:00:00Z"),
+        ("status", "active"),
+        ("cooldown", "false"),
+    ],
+)
+def test_payee_cooldown_ignores_client_tampering_fields(
+    client,
+    transfer_context,
+    field_name,
+    tampered_value,
+):
+    alice = transfer_context["alice"]
+    cooldown_payee = transfer_context["payee"]
+    cooldown_payee.created_at = datetime.now(timezone.utc)
+    db.session.commit()
+
+    with client.session_transaction() as sess:
+        sess[field_name] = tampered_value
+
+    payees_page = client.get(
+        "/banking/payees",
+        query_string={field_name: tampered_value},
+    )
+    payees_body = payees_page.get_data(as_text=True)
+    direct_get = client.get(
+        f"/banking/transfer/{cooldown_payee.id}",
+        query_string={field_name: tampered_value},
+    )
+    direct_post = client.post(
+        f"/banking/transfer/{cooldown_payee.id}",
+        data={
+            "amount": "10.00",
+            "reference": "tamper",
+            "totp_code": "123456",
+            field_name: tampered_value,
+        },
+    )
+
+    assert payees_page.status_code == 200
+    assert "Available in" in payees_body
+    assert f"/banking/transfer/{cooldown_payee.id}" not in payees_body
+    assert direct_get.status_code == 302
+    assert direct_get.headers["Location"].endswith("/banking/payees")
+    assert direct_post.status_code == 302
+    assert PendingTransfer.query.count() == 0
+    assert Transaction.query.count() == 0
+
+    token = _make_pending_transfer(alice, cooldown_payee, Decimal("10.00"))
+    with client.session_transaction() as sess:
+        sess["pending_transfer_token"] = token
+        sess[field_name] = tampered_value
+
+    forced_confirm = client.post(
+        f"/banking/transfer/{cooldown_payee.id}/confirm",
+        data={field_name: tampered_value},
+    )
+    event = (
+        db.session.query(SecurityAuditEvent)
+        .filter_by(event_type="banking_outbound_transfer", outcome="failure")
+        .order_by(SecurityAuditEvent.id.desc())
+        .first()
+    )
+    event_metadata = json.dumps(event.event_metadata, default=str)
+
+    assert forced_confirm.status_code == 302
+    assert forced_confirm.headers["Location"].endswith("/banking/payees")
+    assert Transaction.query.count() == 0
+    assert event.event_metadata["reason"] == "payee_in_cooldown"
+    assert field_name not in event.event_metadata
+    assert tampered_value not in event_metadata
 
 
 # ── A01: IDOR — cannot access another user's payee transfer page ───────────────

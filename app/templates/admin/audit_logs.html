@@ -60,9 +60,10 @@
           <label for="audit-ip-address">IP address</label>
           <input id="audit-ip-address" name="ip_address" value="{{ filters.ip_address }}">
           <label for="audit-from">From</label>
-          <input id="audit-from" name="from" value="{{ filters.from }}" placeholder="2026-06-29T00:00:00Z">
+          <input id="audit-from" name="from" value="{{ filters.from }}" placeholder="29 Jun 2026, 08:00 SGT" aria-describedby="audit-date-help">
           <label for="audit-to">To</label>
-          <input id="audit-to" name="to" value="{{ filters.to }}" placeholder="2026-06-29T23:59:59Z">
+          <input id="audit-to" name="to" value="{{ filters.to }}" placeholder="30 Jun 2026, 07:59 SGT" aria-describedby="audit-date-help">
+          <p id="audit-date-help" class="hint">Visible examples use SGT; existing UTC ISO query links remain accepted.</p>
           <label for="audit-sort">Sort</label>
           <select id="audit-sort" name="sort">
             {% for option in sort_options %}

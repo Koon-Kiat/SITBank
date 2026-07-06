@@ -151,6 +151,7 @@ def test_root_admin_can_create_hashed_staff_invite(admin_client):
     token = _latest_invite_token()
     invite = db.session.execute(db.select(StaffInvite)).scalar_one()
     events = db.session.query(SecurityAuditEvent).filter_by(event_type="staff_invite_created").all()
+    email_event = db.session.query(SecurityAuditEvent).filter_by(event_type="staff_invite_email").one()
 
     assert response.status_code == 201
     assert response.get_json()["invite"]["workplace_email"] == "staff.person@sit.singaporetech.edu.sg"
@@ -162,6 +163,9 @@ def test_root_admin_can_create_hashed_staff_invite(admin_client):
     assert "temporary password" not in password_reset_outbox()[-1]["body"].casefold()
     assert events and "token" not in json.dumps(events[0].event_metadata).casefold()
     assert "personal_email_ref" not in events[0].event_metadata
+    assert email_event.outcome == "queued"
+    assert email_event.event_metadata["status"] == "pending"
+    assert token not in json.dumps(email_event.event_metadata, default=str)
 
 
 def test_only_root_admin_with_totp_stepup_can_create_invites(admin_client):
@@ -217,6 +221,114 @@ def test_invite_creation_validates_server_side_email_and_role_policy(admin_clien
     assert db.session.query(StaffInvite).count() == 0
 
 
+def test_invite_creation_rejects_root_admin_allowlisted_target_without_user_row(admin_client):
+    _root, secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    _login_admin(admin_client, secret)
+
+    response = _create_invite(
+        admin_client,
+        secret,
+        workplace_email="root2@sit.singaporetech.edu.sg",
+        role="admin",
+    )
+    event = db.session.query(SecurityAuditEvent).filter_by(
+        event_type="staff_invite_create",
+        outcome="blocked",
+    ).one()
+
+    assert response.status_code == 400
+    assert db.session.query(StaffInvite).count() == 0
+    assert event.event_metadata["reason"] == "root_admin_allowlist_target"
+    assert "root2@sit.singaporetech.edu.sg" not in json.dumps(event.event_metadata)
+
+
+def test_invite_creation_rejects_reused_and_previous_step_totp_with_safe_guidance(
+    admin_client,
+):
+    _root, secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    _login_admin(admin_client, secret)
+    reused_code = _stable_totp(secret)
+
+    first = _create_invite(
+        admin_client,
+        secret,
+        workplace_email="staff.one@sit.singaporetech.edu.sg",
+        totp_code=reused_code,
+    )
+    replayed = _create_invite(
+        admin_client,
+        secret,
+        workplace_email="staff.two@sit.singaporetech.edu.sg",
+        totp_code=reused_code,
+    )
+
+    with admin_client.session_transaction() as session_data:
+        session_data.clear()
+    _second_root, second_secret = _create_staff_identity(
+        username="second-root-admin",
+        email="root2@sit.singaporetech.edu.sg",
+        account_type="root_admin",
+        phone_number="91234569",
+    )
+    _login_admin(admin_client, second_secret, email="root2@sit.singaporetech.edu.sg")
+    previous_step_code = pyotp.TOTP(second_secret, digits=6, interval=30).at(_FIXED_TOTP_TIME - 30)
+    previous = _create_invite(
+        admin_client,
+        second_secret,
+        workplace_email="staff.three@sit.singaporetech.edu.sg",
+        totp_code=previous_step_code,
+    )
+
+    assert first.status_code == 201
+    assert replayed.status_code == 403
+    assert previous.status_code == 403
+    assert db.session.query(StaffInvite).count() == 1
+    for response in (replayed, previous):
+        body = response.get_json()["error"]
+        assert "Fresh MFA verification is required" in body
+        assert "Wait for a new authenticator code" in body
+        assert reused_code not in body
+        assert previous_step_code not in body
+
+
+def test_invite_email_failure_revokes_pending_invite_for_recovery(
+    admin_client,
+    monkeypatch,
+):
+    _root, secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    _login_admin(admin_client, secret)
+    monkeypatch.setattr(
+        "app.admin.services.send_security_email",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("smtp down")),
+    )
+
+    response = _create_invite(admin_client, secret)
+    invite = db.session.execute(db.select(StaffInvite)).scalar_one()
+    email_event = db.session.query(SecurityAuditEvent).filter_by(event_type="staff_invite_email").one()
+
+    assert response.status_code == 503
+    assert invite.status == "revoked"
+    assert invite.revoked_at is not None
+    assert email_event.outcome == "failure"
+    assert email_event.event_metadata["reason"] == "email_delivery_failed"
+    assert invite.status not in {"pending", "totp_pending"}
+
+
 def test_invite_creation_accepts_configured_admin_email_domains(admin_client):
     _root, secret = _create_staff_identity(
         username="root-admin",
@@ -257,6 +369,107 @@ def test_staff_invite_revoke_redirects_html_clients(admin_client):
     db.session.refresh(invite)
     assert invite.status == "revoked"
     assert invite.revoked_at is not None
+
+
+def test_invites_page_renders_actions_and_delivery_guidance(admin_client):
+    _root, secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    _login_admin(admin_client, secret)
+    assert _create_invite(admin_client, secret).status_code == 201
+
+    response = admin_client.get("/invites")
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "Queued to backend" in body
+    assert "Recipient mailbox delivery is not guaranteed." in body
+    assert "Revoke invite" in body
+    assert "Reissue invite" in body
+    assert body.index("Revoke invite") < body.index('id="revoke-totp-')
+    assert body.index("Reissue invite") < body.index('id="reissue-totp-')
+
+
+def test_staff_invite_revoke_uses_rendered_csrf_and_fresh_totp(
+    admin_app,
+    admin_client,
+    monkeypatch,
+):
+    _root, secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    _login_admin(admin_client, secret)
+    assert _create_invite(admin_client, secret).status_code == 201
+    invite = db.session.execute(db.select(StaffInvite)).scalar_one()
+    original_csrf = admin_app.config["WTF_CSRF_ENABLED"]
+    admin_app.config["WTF_CSRF_ENABLED"] = True
+    try:
+        page = admin_client.get("/invites")
+        match = re.search(r'name="csrf_token"[^>]*value="([^"]+)"', page.get_data(as_text=True))
+        assert match is not None
+        fresh_time = _FIXED_TOTP_TIME + 31
+        monkeypatch.setattr("app.auth.services.time.time", lambda: fresh_time)
+        response = admin_client.post(
+            f"/invites/{invite.id}/revoke",
+            data={
+                "csrf_token": match.group(1),
+                "totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(fresh_time),
+            },
+            follow_redirects=False,
+        )
+    finally:
+        admin_app.config["WTF_CSRF_ENABLED"] = original_csrf
+
+    assert page.status_code == 200
+    assert response.status_code == 303
+    db.session.refresh(invite)
+    assert invite.status == "revoked"
+
+
+def test_root_admin_can_reissue_pending_invite_with_new_token(admin_client, monkeypatch):
+    _root, secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    _login_admin(admin_client, secret)
+    assert _create_invite(admin_client, secret).status_code == 201
+    original_token = _latest_invite_token()
+    invite = db.session.execute(db.select(StaffInvite)).scalar_one()
+    invite.acceptance_started_at = datetime.now(timezone.utc)
+    invite.acceptance_start_count = 2
+    db.session.commit()
+    fresh_time = _FIXED_TOTP_TIME + 31
+    monkeypatch.setattr("app.auth.services.time.time", lambda: fresh_time)
+
+    response = admin_client.post(
+        f"/invites/{invite.id}/reissue",
+        json={"totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(fresh_time)},
+    )
+    new_token = _latest_invite_token()
+    old_lookup = admin_client.get(f"/invites/accept/{original_token}")
+    new_lookup = admin_client.get(f"/invites/accept/{new_token}")
+    db.session.refresh(invite)
+    reissue_event = db.session.query(SecurityAuditEvent).filter_by(
+        event_type="staff_invite_reissued",
+        outcome="success",
+    ).one()
+
+    assert response.status_code == 200
+    assert new_token != original_token
+    assert old_lookup.status_code == 401
+    assert new_lookup.status_code == 200
+    assert invite.status == "pending"
+    assert invite.acceptance_start_count == 0
+    assert invite.acceptance_started_at is None
+    assert original_token not in json.dumps(reissue_event.event_metadata, default=str)
 
 
 def test_invite_acceptance_requires_turnstile_when_enabled(admin_app, admin_client, monkeypatch):
@@ -557,7 +770,8 @@ def test_invite_acceptance_reset_rejects_invalid_actors_step_up_and_missing_invi
     with pytest.raises(AuthError) as invalid_step_up:
         reset_staff_invite_acceptance(root, invite.id, "not-a-code")
     assert invalid_step_up.value.status_code == 403
-    assert invalid_step_up.value.message == "Fresh MFA verification is required"
+    assert "Fresh MFA verification is required" in invalid_step_up.value.message
+    assert "Wait for a new authenticator code" in invalid_step_up.value.message
 
     other_root, other_root_secret = _create_staff_identity(
         username="second-root-admin",
