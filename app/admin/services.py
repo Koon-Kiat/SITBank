@@ -92,6 +92,7 @@ ROLE_HIERARCHY = {
 }
 ADMIN_ACCOUNT_MANAGED_TYPES = frozenset({ACCOUNT_STAFF, ACCOUNT_ADMIN})
 ACTIVE_INVITE_STATUSES = frozenset({"pending", "totp_pending"})
+INVITE_DELIVERY_STATUSES = frozenset({"unconfirmed", "queued", "failed"})
 MANUAL_RECOVERY_ADMIN_TRANSITION_STATUSES = frozenset(
     {
         MANUAL_RECOVERY_STATUS_UNDER_REVIEW,
@@ -1885,6 +1886,7 @@ def create_staff_invite(
         workplace_email_normalized=normalized_workplace,
         role=normalized_role,
         status="pending",
+        delivery_status="unconfirmed",
         created_by_user_id=actor.id,
         created_at=now,
         expires_at=now + timedelta(seconds=int(current_app.config["STAFF_INVITE_TTL_SECONDS"])),
@@ -1910,6 +1912,7 @@ def create_staff_invite(
     except Exception as exc:
         current_app.logger.warning("staff_invite_email_failed error=%s", type(exc).__name__)
         invite.status = "revoked"
+        invite.delivery_status = "failed"
         invite.revoked_at = _utcnow()
         invite.revoked_by_user_id = actor.id
         audit_event(
@@ -1920,6 +1923,7 @@ def create_staff_invite(
         )
         db.session.commit()
         raise AuthError("Invite could not be sent", 503) from exc
+    invite.delivery_status = "queued"
     audit_event("staff_invite_email", "queued", user=actor, metadata=_invite_audit_metadata(invite))
     db.session.commit()
     return {
@@ -1979,6 +1983,7 @@ def reissue_staff_invite(actor: User, invite_id: int, totp_code: str | None) -> 
     now = _utcnow()
     invite.token_hash = invite_token_hash(token)
     invite.status = "pending"
+    invite.delivery_status = "unconfirmed"
     invite.expires_at = now + timedelta(seconds=int(current_app.config["STAFF_INVITE_TTL_SECONDS"]))
     invite.last_attempt_at = now
     invite.revoked_at = None
@@ -1992,6 +1997,9 @@ def reissue_staff_invite(actor: User, invite_id: int, totp_code: str | None) -> 
         current_app.logger.warning("staff_invite_email_failed error=%s", type(exc).__name__)
         metadata = _invite_audit_metadata(invite)
         db.session.rollback()
+        persisted_invite = db.session.get(StaffInvite, int(invite_id))
+        if persisted_invite is not None:
+            persisted_invite.delivery_status = "failed"
         audit_event(
             "staff_invite_email",
             "failure",
@@ -2001,6 +2009,7 @@ def reissue_staff_invite(actor: User, invite_id: int, totp_code: str | None) -> 
         db.session.commit()
         raise AuthError("Invite could not be sent", 503) from exc
 
+    invite.delivery_status = "queued"
     audit_event_required(
         "staff_invite_reissued",
         "success",
@@ -3216,11 +3225,15 @@ def public_admin_user(user: User) -> dict[str, Any]:
 
 
 def public_invite(invite: StaffInvite) -> dict[str, Any]:
+    delivery_status = str(invite.delivery_status or "").strip().casefold()
+    if delivery_status not in INVITE_DELIVERY_STATUSES:
+        delivery_status = "unconfirmed"
     return {
         "id": invite.id,
         "workplace_email": invite.workplace_email_normalized,
         "role": invite.role,
         "status": invite.status,
+        "delivery_status": delivery_status,
         "created_at": _utc_iso(invite.created_at),
         "created_at_display": _utc_display(invite.created_at),
         "expires_at": _utc_iso(invite.expires_at),

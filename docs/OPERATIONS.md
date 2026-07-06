@@ -464,22 +464,32 @@ email domains only. Do not configure personal-provider domains in
 `ADMIN_ALLOWED_EMAIL_DOMAINS`; staff invites are delivered to the workplace
 email and do not collect personal backup email contacts.
 Invite acceptance links expose only minimal public setup metadata before the
-staff member starts the protected setup step. The setup flow uses `no-store`
-and no-referrer response headers, binds verification to the browser session
-that started setup, and caps repeated restarts that would otherwise rotate
+staff member starts the protected setup step. Normal browser requests render
+the onboarding form; explicit JSON clients retain the minimal API response.
+Viewing the page does not consume the invite or create an account. Setup changes
+the invite from `pending` to `totp_pending` and creates only a `setup_pending`
+identity; only successful workplace-code and TOTP verification activates the
+identity and marks the invite `accepted`. The setup flow uses `no-store` and
+no-referrer response headers, CSRF-protected browser forms, same-browser
+verification binding, and capped restarts that would otherwise rotate
 passwords, TOTP setup secrets, or workplace verification codes. If an active
 invite becomes locked by the restart cap, a root admin should use the invite
 screen's reset action with a fresh TOTP code; do not unlock it by editing
 database rows directly.
 Invite creation, revoke, reset, and reissue actions use strict high-risk TOTP:
 wait for a fresh authenticator code before retrying an invite action, and do
-not reuse the same code for repeated invite operations. The invite table's
-`queued` delivery state means SITBank handed the message to the configured
-email backend, not that the recipient inbox accepted it. If the recipient
+not reuse the same code for repeated invite operations. The invite table shows
+the persisted allowlisted delivery states `unconfirmed`, `queued`, or `failed`.
+`queued` means SITBank handed the message to the configured email backend, not
+that the recipient inbox accepted it. `unconfirmed` means no reliable backend
+handoff evidence is available, including migrated rows, and `failed` means the
+backend rejected the handoff; no provider response details are displayed. If the recipient
 cannot find a pending invite, check spam/junk/quarantine and SMTP backend
 configuration, then use the root-admin reissue action to rotate the token hash
 and send a new invite link. If email backend handoff fails during create, the
 invite is moved out of active pending state so it does not block safe retry.
+Migration `20260707_0032` adds only this bounded delivery state and stores no
+invite token, email body, provider response, credential, or mailbox assertion.
 The admin `production-check` command reports
 `privileged_email_noncompliant_accounts` as a count when legacy privileged rows
 use non-approved domains. Operators must remediate those accounts to approved

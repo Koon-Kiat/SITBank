@@ -69,6 +69,36 @@ def test_authentication_boundary_docs_cover_current_contracts():
     assert "temporary-email domains are rejected" in operations
 
 
+def test_profile_username_and_staff_invite_docs_match_service_and_browser_contracts():
+    access = Path("docs/security/architecture/access-control.md").read_text(
+        encoding="utf-8"
+    )
+    auth = Path(
+        "docs/security/architecture/cryptography-and-authentication.md"
+    ).read_text(encoding="utf-8")
+    operations = Path("docs/OPERATIONS.md").read_text(encoding="utf-8")
+    normalized = " ".join(f"{access}\n{auth}\n{operations}".split())
+
+    for required in (
+        "Customer usernames are immutable after registration",
+        "are not accepted by the profile-update service contract",
+        "Phone changes require current TOTP",
+        "email changes require both current TOTP and a session-bound new-email code",
+        "Normal browser requests render the onboarding form",
+        "Viewing the page does not consume the invite or create an account",
+        "only successful workplace-code and TOTP verification activates the identity",
+        "delivery states `unconfirmed`, `queued`, or `failed`",
+    ):
+        assert required in normalized
+
+    for stale in (
+        "Username and phone changes require TOTP",
+        "atomic username/email/phone commit",
+        "Username and phone changes commit after valid TOTP",
+    ):
+        assert stale not in normalized
+
+
 def test_private_admin_docs_reject_wildcard_public_https():
     deployment = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
     architecture = Path(

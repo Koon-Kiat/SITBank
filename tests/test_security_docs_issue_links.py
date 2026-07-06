@@ -286,12 +286,16 @@ def test_staff_invite_acceptance_docs_cover_minimal_metadata_and_restart_control
         "repeated setup restarts are capped",
         "root-admin totp reset",
         "normal staff/admin invites reject addresses in `root_admin_emails`",
-        "`queued` invite email state means sitbank handed the message to the configured email backend",
+        "delivery state is stored as the allowlisted value `unconfirmed`, `queued`, or `failed`",
+        "`queued` means sitbank handed the message to the configured email backend",
+        "normal browser get renders the onboarding page while an explicit json client receives the minimal api response",
+        "viewing the page leaves the invite pending and creates no account",
         "use the root-admin reissue action to rotate the stored invite token hash",
         "invite is moved out of active pending state so it does not block safe retry",
         "do not repair locked invites by editing production rows ad hoc",
         "staff invite password fields are length-bounded at the request schema",
         "migration `20260704_0026` persists staff invite acceptance session binding",
+        "migration `20260707_0032` adds only this bounded delivery state",
         "staff_invite_accept_reset",
     ):
         assert required in normalized_docs

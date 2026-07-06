@@ -296,12 +296,14 @@ setup before normal account access. Evidence: `app/auth/mfa_policy.py`,
 `app/web/routes.py::enforce_mfa_onboarding`.
 
 Customer profile updates use authenticator-app TOTP as the server-selected
-high-risk step-up method. Username and phone changes commit after valid TOTP,
-with phone values validated as Singapore mobile numbers. Profile email changes
-first send a short-lived, session-bound verification code to the new email and
-keep the old email active until the customer submits both that email code and a
-current TOTP code; the pending challenge is also bound to the submitted phone by
-HMAC rather than storing the raw phone in the browser session.
+high-risk step-up method. Customer usernames are immutable after registration
+and are not accepted by the profile-update service contract. Phone changes
+commit after valid TOTP, with phone values validated as Singapore mobile
+numbers. Profile email changes first send a short-lived, session-bound
+verification code to the new email and keep the old email active until the
+customer submits both that email code and a current TOTP code; the pending
+challenge is also bound to the submitted phone by HMAC rather than storing the
+raw phone or a redundant username in the browser session.
 
 ### TOTP MFA And Recovery Codes
 
@@ -363,13 +365,21 @@ domains from `ADMIN_ALLOWED_EMAIL_DOMAINS`; staff invites are sent to the
 workplace email and do not collect a personal backup email. Invite acceptance
 validates the token, workplace email policy, password policy, optional
 Turnstile, workplace verification code, and TOTP setup before activating the
-account.
+account. A normal browser GET renders the onboarding page while an explicit JSON
+client receives the minimal API response. Viewing the page leaves the invite
+pending and creates no account. Starting setup creates only a `setup_pending`
+staff/admin identity and changes the invite to `totp_pending`; the invite becomes
+`accepted` only after same-browser workplace-code and TOTP verification activates
+that identity.
 Normal staff/admin invites reject addresses in `ROOT_ADMIN_EMAILS`; root-admin
 bootstrap and rotation remain separate reviewed operator paths. Invite creation,
 revocation, acceptance reset, and reissue each require a fresh root-admin
-high-risk TOTP code. `queued` invite email state means SITBank handed the
-message to the configured email backend; it does not prove recipient inbox
-delivery. If a pending invite cannot be found by the recipient, check
+high-risk TOTP code. Delivery state is stored as the allowlisted value
+`unconfirmed`, `queued`, or `failed`. `queued` means SITBank handed the message
+to the configured email backend; it does not prove recipient inbox delivery.
+`unconfirmed` is the conservative state for migrated or otherwise unknown
+handoff evidence, and `failed` records a rejected backend handoff without
+provider detail. If a pending invite cannot be found by the recipient, check
 spam/quarantine and SMTP configuration, then use the root-admin reissue action
 to rotate the stored invite token hash and send a new invite link. If backend
 handoff fails during invite creation, the invite is moved out of active pending
@@ -395,6 +405,7 @@ Tests: `tests/test_admin_staff_invites.py::test_root_admin_can_create_hashed_sta
 `tests/test_admin_staff_invites.py::test_only_root_admin_with_totp_stepup_can_create_invites`,
 `tests/test_admin_staff_invites.py::test_root_admin_can_reissue_pending_invite_with_new_token`,
 `tests/test_admin_staff_invites.py::test_invite_email_failure_revokes_pending_invite_for_recovery`,
+`tests/test_admin_staff_invites.py::test_browser_invite_onboarding_requires_csrf_and_activates_only_after_both_codes`,
 `tests/test_admin_staff_invites.py::test_invite_info_returns_minimal_metadata_and_no_store_headers`,
 `tests/test_admin_staff_invites.py::test_invite_acceptance_restart_limit_and_root_reset`,
 `tests/test_admin_staff_invites.py::test_invite_acceptance_verification_is_bound_to_start_session`,

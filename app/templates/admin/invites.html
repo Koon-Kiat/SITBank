@@ -8,7 +8,7 @@
     <div class="page-heading">
       <p class="eyebrow">Staff onboarding</p>
       <h1>Staff Invites</h1>
-      <p class="muted">Create workplace invites for new staff or admin accounts and track their acceptance status.</p>
+      <p class="muted">Create workplace invites for new staff or admin accounts and track acceptance and backend handoff status.</p>
     </div>
   </div>
 
@@ -27,7 +27,7 @@
       </select>
       <label for="invite-totp-code">Authenticator code</label>
       <input id="invite-totp-code" name="totp_code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required>
-      <p class="hint">Use a fresh authenticator code for each invite action. Queued means SITBank handed the invite email to the configured backend.</p>
+      <p class="hint">Use a fresh authenticator code for each invite action. Delivery status reports backend handoff only, never recipient mailbox delivery.</p>
       <button type="submit">Create invite</button>
     </form>
   </section>
@@ -56,11 +56,15 @@
             <td data-label="Role">{{ invite.role }}</td>
             <td data-label="Status">{{ invite.status }}</td>
             <td data-label="Delivery">
-              {% if invite.status in ["pending", "totp_pending"] %}
+              {% if invite.delivery_status == "queued" %}
               <span class="badge neutral">Queued to backend</span>
-              <p class="muted">Recipient mailbox delivery is not guaranteed.</p>
+              <p class="muted">Recipient mailbox delivery remains unconfirmed.</p>
+              {% elif invite.delivery_status == "failed" %}
+              <span class="badge danger">Backend handoff failed</span>
+              <p class="muted">No recipient mailbox delivery was confirmed.</p>
               {% else %}
-              <span class="badge neutral">Closed</span>
+              <span class="badge neutral">Delivery unconfirmed</span>
+              <p class="muted">No backend handoff evidence is available.</p>
               {% endif %}
             </td>
             <td data-label="Created"><time datetime="{{ invite.created_at }}">{{ invite.created_at_display }}</time></td>

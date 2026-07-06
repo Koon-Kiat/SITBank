@@ -13,9 +13,6 @@ _ADMIN_JSON_ONLY_ENDPOINTS = frozenset(
         "admin.health_live",
         "admin.health_ready",
         "admin.csrf_token",
-        "admin.invite_accept_info",
-        "admin.invite_accept_start",
-        "admin.invite_accept_verify",
     }
 )
 

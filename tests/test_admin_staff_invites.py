@@ -120,6 +120,22 @@ def _assert_invite_acceptance_security_headers(response):
     assert response.headers.get("Referrer-Policy") == "no-referrer"
 
 
+def _invite_info_json(client, token: str):
+    return client.get(
+        f"/invites/accept/{token}",
+        headers={"Accept": "application/json"},
+    )
+
+
+def _csrf_token_from(response) -> str:
+    match = re.search(
+        r'name="csrf_token"[^>]*value="([^"]+)"',
+        response.get_data(as_text=True),
+    )
+    assert match is not None
+    return match.group(1)
+
+
 def _insert_invite_for_token(token: str, creator: User, **overrides) -> StaffInvite:
     from app.admin.services import invite_token_hash
 
@@ -165,6 +181,8 @@ def test_root_admin_can_create_hashed_staff_invite(admin_client):
     assert "personal_email_ref" not in events[0].event_metadata
     assert email_event.outcome == "queued"
     assert email_event.event_metadata["status"] == "pending"
+    assert invite.delivery_status == "queued"
+    assert response.get_json()["invite"]["delivery_status"] == "queued"
     assert token not in json.dumps(email_event.event_metadata, default=str)
 
 
@@ -323,10 +341,13 @@ def test_invite_email_failure_revokes_pending_invite_for_recovery(
 
     assert response.status_code == 503
     assert invite.status == "revoked"
+    assert invite.delivery_status == "failed"
     assert invite.revoked_at is not None
     assert email_event.outcome == "failure"
     assert email_event.event_metadata["reason"] == "email_delivery_failed"
     assert invite.status not in {"pending", "totp_pending"}
+    page = admin_client.get("/invites")
+    assert "Backend handoff failed" in page.get_data(as_text=True)
 
 
 def test_invite_creation_accepts_configured_admin_email_domains(admin_client):
@@ -383,10 +404,16 @@ def test_invites_page_renders_actions_and_delivery_guidance(admin_client):
 
     response = admin_client.get("/invites")
     body = response.get_data(as_text=True)
+    invite = db.session.execute(db.select(StaffInvite)).scalar_one()
+    invite.delivery_status = "unconfirmed"
+    db.session.commit()
+    unconfirmed_body = admin_client.get("/invites").get_data(as_text=True)
 
     assert response.status_code == 200
     assert "Queued to backend" in body
-    assert "Recipient mailbox delivery is not guaranteed." in body
+    assert "Recipient mailbox delivery remains unconfirmed." in body
+    assert "Delivery unconfirmed" in unconfirmed_body
+    assert "No backend handoff evidence is available." in unconfirmed_body
     assert "Revoke invite" in body
     assert "Reissue invite" in body
     assert body.index("Revoke invite") < body.index('id="revoke-totp-')
@@ -454,8 +481,9 @@ def test_root_admin_can_reissue_pending_invite_with_new_token(admin_client, monk
         json={"totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(fresh_time)},
     )
     new_token = _latest_invite_token()
-    old_lookup = admin_client.get(f"/invites/accept/{original_token}")
-    new_lookup = admin_client.get(f"/invites/accept/{new_token}")
+    old_lookup = _invite_info_json(admin_client, original_token)
+    new_lookup = _invite_info_json(admin_client, new_token)
+    new_browser = admin_client.get(f"/invites/accept/{new_token}")
     db.session.refresh(invite)
     reissue_event = db.session.query(SecurityAuditEvent).filter_by(
         event_type="staff_invite_reissued",
@@ -466,10 +494,49 @@ def test_root_admin_can_reissue_pending_invite_with_new_token(admin_client, monk
     assert new_token != original_token
     assert old_lookup.status_code == 401
     assert new_lookup.status_code == 200
+    assert new_browser.mimetype == "text/html"
+    assert "Set up your staff access" in new_browser.get_data(as_text=True)
     assert invite.status == "pending"
+    assert invite.delivery_status == "queued"
     assert invite.acceptance_start_count == 0
     assert invite.acceptance_started_at is None
     assert original_token not in json.dumps(reissue_event.event_metadata, default=str)
+
+
+def test_reissue_delivery_failure_is_persisted_without_rotating_the_live_token(
+    admin_client,
+    monkeypatch,
+):
+    _root, secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    _login_admin(admin_client, secret)
+    assert _create_invite(admin_client, secret).status_code == 201
+    original_token = _latest_invite_token()
+    invite = db.session.execute(db.select(StaffInvite)).scalar_one()
+    original_token_hash = invite.token_hash
+    fresh_time = _FIXED_TOTP_TIME + 31
+    monkeypatch.setattr("app.auth.services.time.time", lambda: fresh_time)
+    monkeypatch.setattr(
+        "app.admin.services.send_security_email",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("smtp down")),
+    )
+
+    response = admin_client.post(
+        f"/invites/{invite.id}/reissue",
+        json={"totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(fresh_time)},
+    )
+    db.session.refresh(invite)
+
+    assert response.status_code == 503
+    assert invite.status == "pending"
+    assert invite.token_hash == original_token_hash
+    assert invite.delivery_status == "failed"
+    assert _invite_info_json(admin_client, original_token).status_code == 200
+    assert "Backend handoff failed" in admin_client.get("/invites").get_data(as_text=True)
 
 
 def test_invite_acceptance_requires_turnstile_when_enabled(admin_app, admin_client, monkeypatch):
@@ -540,9 +607,13 @@ def test_invite_info_returns_minimal_metadata_and_no_store_headers(admin_client)
     assert _create_invite(admin_client, secret).status_code == 201
     token = _latest_invite_token()
 
-    response = admin_client.get(f"/invites/accept/{token}")
+    browser_response = admin_client.get(f"/invites/accept/{token}")
+    response = _invite_info_json(admin_client, token)
     payload = response.get_json()
 
+    assert browser_response.status_code == 200
+    assert browser_response.mimetype == "text/html"
+    assert "Set up your staff access" in browser_response.get_data(as_text=True)
     assert response.status_code == 200
     assert payload == {"message": "Invite can be accepted"}
     forbidden_response_text = (
@@ -564,8 +635,92 @@ def test_invite_info_returns_minimal_metadata_and_no_store_headers(admin_client)
     for forbidden in forbidden_response_text:
         assert forbidden not in payload
         assert forbidden not in response.get_data(as_text=True)
+        assert forbidden not in browser_response.get_data(as_text=True)
     assert "staff.person@sit.singaporetech.edu.sg" not in response.get_data(as_text=True)
+    assert "staff.person@sit.singaporetech.edu.sg" not in browser_response.get_data(as_text=True)
     _assert_invite_acceptance_security_headers(response)
+    _assert_invite_acceptance_security_headers(browser_response)
+
+
+def test_browser_invite_onboarding_requires_csrf_and_activates_only_after_both_codes(
+    admin_app,
+    admin_client,
+):
+    _root, root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    _login_admin(admin_client, root_secret)
+    assert _create_invite(admin_client, root_secret).status_code == 201
+    token = _latest_invite_token()
+    invite = db.session.execute(db.select(StaffInvite)).scalar_one()
+    recipient = admin_app.test_client()
+    original_csrf = admin_app.config["WTF_CSRF_ENABLED"]
+    admin_app.config["WTF_CSRF_ENABLED"] = True
+
+    try:
+        landing = recipient.get(f"/invites/accept/{token}")
+        db.session.refresh(invite)
+        assert landing.status_code == 200
+        assert landing.mimetype == "text/html"
+        assert invite.status == "pending"
+        assert invite.setup_user_id is None
+        assert db.session.query(User).count() == 1
+
+        missing_csrf = recipient.post(
+            f"/invites/accept/{token}/start",
+            data=_staff_invite_start_payload(),
+        )
+        assert missing_csrf.status_code == 400
+        assert invite.status == "pending"
+
+        start_payload = _staff_invite_start_payload(
+            csrf_token=_csrf_token_from(landing),
+        )
+        start = recipient.post(
+            f"/invites/accept/{token}/start",
+            data=start_payload,
+        )
+        start_body = start.get_data(as_text=True)
+        secret_match = re.search(
+            r'id="invite-manual-entry-secret"[^>]*value="([A-Z2-7]+)"',
+            start_body,
+        )
+        assert start.status_code == 200
+        assert start.mimetype == "text/html"
+        assert secret_match is not None
+        assert "Verify your staff access" in start_body
+        _assert_invite_acceptance_security_headers(start)
+
+        workplace_code = _latest_workplace_code()
+        verify = recipient.post(
+            f"/invites/accept/{token}/verify",
+            data={
+                "csrf_token": _csrf_token_from(start),
+                "totp_code": _stable_totp(secret_match.group(1)),
+                "workplace_verification_code": workplace_code,
+            },
+        )
+    finally:
+        admin_app.config["WTF_CSRF_ENABLED"] = original_csrf
+
+    staff_user = db.session.execute(
+        db.select(User).where(User.email == "staff.person@sit.singaporetech.edu.sg")
+    ).scalar_one()
+    db.session.refresh(invite)
+    staff_page = admin_client.get("/staff")
+
+    assert verify.status_code == 200
+    assert "Staff access activated" in verify.get_data(as_text=True)
+    assert staff_user.account_status == "active"
+    assert staff_user.mfa_enabled is True
+    assert staff_user.workplace_email_verified_at is not None
+    assert invite.status == "accepted"
+    assert invite.used_by_user_id == staff_user.id
+    assert "staff.person@sit.singaporetech.edu.sg" in staff_page.get_data(as_text=True)
+    _assert_invite_acceptance_security_headers(verify)
 
 
 def test_invite_info_closed_tokens_return_generic_errors_and_no_token_audit(admin_client):
@@ -582,7 +737,7 @@ def test_invite_info_closed_tokens_return_generic_errors_and_no_token_audit(admi
     ]
 
     missing_token = "MissingInviteToken000000000000000000000000"
-    missing = admin_client.get(f"/invites/accept/{missing_token}")
+    missing = _invite_info_json(admin_client, missing_token)
     assert missing.status_code == 401
     assert missing.get_json() == {"error": "Invite link is invalid or expired"}
     _assert_invite_acceptance_security_headers(missing)
@@ -591,7 +746,7 @@ def test_invite_info_closed_tokens_return_generic_errors_and_no_token_audit(admi
         token = f"ClosedInviteToken{index:02d}0000000000000000000000"
         _insert_invite_for_token(token, root, **overrides)
 
-        response = admin_client.get(f"/invites/accept/{token}")
+        response = _invite_info_json(admin_client, token)
 
         assert response.status_code == 401, case
         assert response.get_json() == {"error": "Invite link is invalid or expired"}
@@ -619,7 +774,7 @@ def test_invite_info_does_not_reveal_started_or_locked_acceptance_state(admin_cl
         f"/invites/accept/{token}/start",
         json=_staff_invite_start_payload(),
     )
-    started_info = admin_client.get(f"/invites/accept/{token}")
+    started_info = _invite_info_json(admin_client, token)
     locked_token = "LockedInviteInfoToken000000000000000000"
     _insert_invite_for_token(
         locked_token,
@@ -627,7 +782,7 @@ def test_invite_info_does_not_reveal_started_or_locked_acceptance_state(admin_cl
         acceptance_locked_at=datetime.now(timezone.utc),
         acceptance_start_count=3,
     )
-    locked_info = admin_client.get(f"/invites/accept/{locked_token}")
+    locked_info = _invite_info_json(admin_client, locked_token)
 
     assert start.status_code == 200
     assert started_info.status_code == 200
@@ -1067,7 +1222,7 @@ def test_staff_invite_acceptance_activates_only_after_workplace_code_and_totp(ad
     assert _create_invite(admin_client, root_secret).status_code == 201
     token = _latest_invite_token()
 
-    info = admin_client.get(f"/invites/accept/{token}")
+    info = _invite_info_json(admin_client, token)
     forged_start = admin_client.post(
         f"/invites/accept/{token}/start",
         json=_staff_invite_start_payload(
@@ -1094,7 +1249,7 @@ def test_staff_invite_acceptance_activates_only_after_workplace_code_and_totp(ad
         f"/invites/accept/{token}/verify",
         json={"totp_code": totp_code, "workplace_verification_code": workplace_code},
     )
-    reuse = admin_client.get(f"/invites/accept/{token}")
+    reuse = _invite_info_json(admin_client, token)
     db.session.refresh(staff_user)
 
     assert info.status_code == 200

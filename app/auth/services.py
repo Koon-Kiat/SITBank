@@ -104,7 +104,6 @@ MFA_REPLACEMENT_NONCE_KEY = "mfa_replacement_secret_nonce"
 MFA_REPLACEMENT_CIPHERTEXT_KEY = "mfa_replacement_secret_ciphertext"
 MFA_REPLACEMENT_STARTED_AT_KEY = "mfa_replacement_started_at"
 PROFILE_EMAIL_PENDING_EMAIL_KEY = "profile_email_pending_email"
-PROFILE_EMAIL_PENDING_USERNAME_KEY = "profile_email_pending_username"
 PROFILE_EMAIL_PENDING_PHONE_HMAC_KEY = "profile_email_pending_phone_hmac"
 PROFILE_EMAIL_PENDING_CODE_HMAC_KEY = "profile_email_pending_code_hmac"
 PROFILE_EMAIL_PENDING_EXPIRES_AT_KEY = "profile_email_pending_expires_at"
@@ -807,37 +806,32 @@ def past_sessions_for_user(user: User) -> list[dict[str, Any]]:
 
 def update_profile_details(
     user: User,
-    username: str,
     email: str,
     phone_number: str,
     code: str | None,
     email_verification_code: str | None = None,
 ) -> dict[str, Any]:
     (
-        normalized_username,
-        username_lookup,
         normalized_email,
         normalized_phone,
         email_changed,
         phone_changed,
     ) = _profile_update_values(
         user,
-        username,
         email,
         phone_number,
     )
 
-    if username_lookup == _normalize(user.username) and not email_changed and not phone_changed:
+    if not email_changed and not phone_changed:
         return {"updated": False, "email_verification_pending": False}
 
     ensure_account_not_frozen(user, "profile update")
     _ensure_step_up_preference_enrolled(user, "totp")
-    _reject_duplicate_profile_identifiers(user, username_lookup, normalized_email, normalized_phone)
+    _reject_duplicate_profile_identifiers(user, normalized_email, normalized_phone)
 
     if email_changed:
         pending_result = _handle_profile_email_change(
             user,
-            username=normalized_username,
             normalized_email=normalized_email,
             normalized_phone=normalized_phone,
             code=code,
@@ -854,7 +848,6 @@ def update_profile_details(
 
     return _commit_profile_update(
         user,
-        normalized_username,
         normalized_email,
         normalized_phone,
         email_changed,
@@ -862,9 +855,7 @@ def update_profile_details(
     )
 
 
-def _profile_update_values(user: User, username: str, email: str, phone_number: str) -> tuple[str, str, str, str, bool, bool]:
-    normalized_username = username.strip()
-    username_lookup = _normalize(normalized_username)
+def _profile_update_values(user: User, email: str, phone_number: str) -> tuple[str, str, bool, bool]:
     submitted_email = email.strip().lower()
     normalized_phone = str(phone_number or "").strip()
     if re.fullmatch(PHONE_RE, normalized_phone) is None:
@@ -874,19 +865,18 @@ def _profile_update_values(user: User, username: str, email: str, phone_number: 
     email_changed = submitted_email != _normalize(user.email)
     phone_changed = normalized_phone != str(user.phone_number or "")
     if not email_changed:
-        return normalized_username, username_lookup, submitted_email, normalized_phone, False, phone_changed
+        return submitted_email, normalized_phone, False, phone_changed
     try:
         normalized_email = require_customer_email(email)
     except IdentityPolicyError as exc:
         audit_event("profile_update", "blocked", user=user, metadata={"reason": exc.reason})
         raise AuthError(PROFILE_UPDATE_ERROR, 400) from exc
-    return normalized_username, username_lookup, normalized_email, normalized_phone, True, phone_changed
+    return normalized_email, normalized_phone, True, phone_changed
 
 
 def _handle_profile_email_change(
     user: User,
     *,
-    username: str,
     normalized_email: str,
     normalized_phone: str,
     code: str | None,
@@ -900,7 +890,6 @@ def _handle_profile_email_change(
         )
         _create_profile_email_change_challenge(
             user,
-            username=username,
             email=normalized_email,
             phone_number=normalized_phone,
         )
@@ -970,13 +959,11 @@ def _reject_profile_email_change(user: User, *, reason: str, message: str) -> No
 
 def _commit_profile_update(
     user: User,
-    normalized_username: str,
     normalized_email: str,
     normalized_phone: str,
     email_changed: bool,
     phone_changed: bool,
 ) -> dict[str, Any]:
-    user.username = normalized_username
     if email_changed:
         user.email = normalized_email
         user.registration_email_canonical = canonicalize_customer_email(normalized_email)
@@ -1011,7 +998,6 @@ def _profile_updated_fields(email_changed: bool, phone_changed: bool) -> str:
 
 def _reject_duplicate_profile_identifiers(
     user: User,
-    username_lookup: str,
     normalized_email: str,
     normalized_phone: str,
 ) -> None:
@@ -1019,7 +1005,6 @@ def _reject_duplicate_profile_identifiers(
     duplicate_user = db.session.execute(
         db.select(User).where(
             or_(
-                func.lower(User.username) == username_lookup,
                 User.registration_email_canonical == canonical_email,
                 User.phone_number == normalized_phone,
             ),
@@ -1034,14 +1019,12 @@ def _reject_duplicate_profile_identifiers(
 def _create_profile_email_change_challenge(
     user: User,
     *,
-    username: str,
     email: str,
     phone_number: str,
 ) -> None:
     verification_code = f"{secrets.randbelow(1_000_000):06d}"
     expires_at = int(time.time()) + int(current_app.config["PROFILE_EMAIL_CHANGE_TTL_SECONDS"])
     _clear_pending_profile_email_change()
-    session[PROFILE_EMAIL_PENDING_USERNAME_KEY] = username
     session[PROFILE_EMAIL_PENDING_EMAIL_KEY] = email
     session[PROFILE_EMAIL_PENDING_PHONE_HMAC_KEY] = _profile_phone_hmac(user, phone_number)
     session[PROFILE_EMAIL_PENDING_CODE_HMAC_KEY] = _profile_email_code_hmac(
@@ -1080,19 +1063,18 @@ def _create_profile_email_change_challenge(
 
 def _pending_profile_email_change(user: User) -> dict[str, str] | None:
     email = str(session.get(PROFILE_EMAIL_PENDING_EMAIL_KEY) or "")
-    username = str(session.get(PROFILE_EMAIL_PENDING_USERNAME_KEY) or "")
     phone_hmac = str(session.get(PROFILE_EMAIL_PENDING_PHONE_HMAC_KEY) or "")
     code_hmac = str(session.get(PROFILE_EMAIL_PENDING_CODE_HMAC_KEY) or "")
     try:
         expires_at = int(session.get(PROFILE_EMAIL_PENDING_EXPIRES_AT_KEY) or 0)
     except (TypeError, ValueError):
         expires_at = 0
-    if not email or not username or not phone_hmac or not code_hmac or expires_at <= int(time.time()):
-        if email or username or phone_hmac or code_hmac or expires_at:
+    if not email or not phone_hmac or not code_hmac or expires_at <= int(time.time()):
+        if email or phone_hmac or code_hmac or expires_at:
             _clear_pending_profile_email_change()
             audit_event("profile_email_change", "expired", user=user)
         return None
-    return {"email": email, "username": username, "phone_hmac": phone_hmac, "code_hmac": code_hmac}
+    return {"email": email, "phone_hmac": phone_hmac, "code_hmac": code_hmac}
 
 
 def pending_profile_email_change() -> dict[str, str] | None:
@@ -1105,7 +1087,6 @@ def pending_profile_email_change() -> dict[str, str] | None:
 
 def _clear_pending_profile_email_change() -> None:
     session.pop(PROFILE_EMAIL_PENDING_EMAIL_KEY, None)
-    session.pop(PROFILE_EMAIL_PENDING_USERNAME_KEY, None)
     session.pop(PROFILE_EMAIL_PENDING_PHONE_HMAC_KEY, None)
     session.pop(PROFILE_EMAIL_PENDING_CODE_HMAC_KEY, None)
     session.pop(PROFILE_EMAIL_PENDING_EXPIRES_AT_KEY, None)
