@@ -273,9 +273,9 @@ jobs:
           python ops/security/check_dependency_locks.py
           python ops/security/scan_repository_secrets.py --history
 
-      # Pinned to actions/upload-artifact v6.0.0 (Node.js 24).
+      # Pinned to actions/upload-artifact v7.0.1 (Node.js 24).
       - name: Upload SonarQube coverage report
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: sonarqube-coverage-${{ github.run_id }}
           path: |
@@ -486,7 +486,7 @@ jobs:
           exit-code: "0"
           ignore-unfixed: false
           severity: CRITICAL
-          version: v0.71.2
+          version: v0.72.0
 
       # zizmor: ignore[unpinned-tools] Trivy action is SHA-pinned; the action installs a pinned Trivy tool version.
       - name: Block unexpected critical vulnerabilities
@@ -498,7 +498,7 @@ jobs:
           ignore-unfixed: false
           severity: CRITICAL
           trivyignores: .trivyignore
-          version: v0.71.2
+          version: v0.72.0
 
       # zizmor: ignore[unpinned-tools] Trivy action is SHA-pinned; the action installs a pinned Trivy tool version.
       - name: Block fixable high and critical vulnerabilities
@@ -511,7 +511,7 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
           severity: HIGH,CRITICAL
-          version: v0.71.2
+          version: v0.72.0
 
   deployment-preflight:
     name: Deployment preflight
@@ -774,7 +774,7 @@ jobs:
           exit-code: "0"
           ignore-unfixed: false
           severity: CRITICAL
-          version: v0.71.2
+          version: v0.72.0
 
       # zizmor: ignore[unpinned-tools] Trivy action is SHA-pinned; the action installs a pinned Trivy tool version.
       - name: Block unexpected critical vulnerabilities in the published digest
@@ -786,7 +786,7 @@ jobs:
           ignore-unfixed: false
           severity: CRITICAL
           trivyignores: .trivyignore
-          version: v0.71.2
+          version: v0.72.0
 
       # zizmor: ignore[unpinned-tools] Trivy action is SHA-pinned; the action installs a pinned Trivy tool version.
       - name: Block fixable high and critical vulnerabilities in the published digest
@@ -799,7 +799,7 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
           severity: HIGH,CRITICAL
-          version: v0.71.2
+          version: v0.72.0
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
@@ -958,7 +958,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
 
       - name: Join the staging deploy tailnet
-        uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8
+        uses: tailscale/github-action@780049a30b6ff5c378a9e7b389d15ece7a204888
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
@@ -1253,7 +1253,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
 
       - name: Join the production deploy tailnet
-        uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8
+        uses: tailscale/github-action@780049a30b6ff5c378a9e7b389d15ece7a204888
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
@@ -1467,7 +1467,7 @@ jobs:
           fi
 
       - name: Join the approved tailnet with OAuth
-        uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8
+        uses: tailscale/github-action@780049a30b6ff5c378a9e7b389d15ece7a204888
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}

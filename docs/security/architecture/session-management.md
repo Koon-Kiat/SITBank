@@ -72,6 +72,16 @@ Gunicorn listeners. Nginx overwrites proxy headers in
 `ops/nginx-proxy-headers.conf`, and `app/__init__.py` applies `ProxyFix` with
 `TRUSTED_PROXY_COUNT`.
 
+For Cloudflare-backed public customer traffic, the TLS server blocks first
+include `/etc/nginx/snippets/sitbank-cloudflare-real-ip.conf`. That snippet
+trusts `CF-Connecting-IP` only when the immediate peer is one of Cloudflare's
+published edge ranges, enables `real_ip_recursive on`, and rewrites Nginx's
+client address before the proxy header snippet forwards a single canonical
+`X-Forwarded-For` value. Direct user-supplied `X-Forwarded-For` or
+`CF-Connecting-IP` headers are not a session-risk source unless the request
+arrived from a trusted Cloudflare edge, which prevents normal Cloudflare edge
+rotation from appearing as a browser network change.
+
 Staging browser traffic must pass Cloudflare Access before the staging Nginx
 server reaches Flask, and the staging origin requires Cloudflare Authenticated
 Origin Pulls for browser/app paths. The staging customer Flask hook separately
@@ -98,7 +108,7 @@ Transport protections:
 | HTTP handling | Production Nginx redirects customer HTTP to HTTPS; public admin non-ACME HTTP returns `403` |
 | HSTS | Production Nginx sets `Strict-Transport-Security "max-age=15552000; includeSubDomains"` to match the reviewed six-month Cloudflare edge policy |
 | Flask secure cookie enforcement | `SESSION_COOKIE_SECURE`, `SESSION_COOKIE_HTTPONLY`, and `SESSION_COOKIE_SAMESITE` in `config.py` |
-| Proxy trust boundary | `ops/nginx-proxy-headers.conf` and `tests/test_deployment.py::test_proxyfix_trusts_exactly_the_configured_nginx_hop` |
+| Proxy trust boundary | `ops/nginx/sitbank-cloudflare-real-ip.conf`, `ops/nginx-proxy-headers.conf`, `tests/test_deployment.py::test_proxyfix_trusts_exactly_the_configured_nginx_hop`, and `tests/test_account_security_actions.py::test_cloudflare_edge_change_keeps_sensitive_totp_actions_stable` |
 
 All configured HTTPS edges include `ops/nginx/sitbank-tls-policy.conf`, which
 pins TLS 1.2 to ECDHE+AEAD suites, TLS 1.3 to standard AEAD suites, and the

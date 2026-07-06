@@ -2215,7 +2215,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         assert job["environment"]["name"] == environment_name
         join = steps[join_index]
         assert join["uses"] == (
-            "tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8"
+            "tailscale/github-action@780049a30b6ff5c378a9e7b389d15ece7a204888"
         )
         assert join["with"] == {
             "oauth-client-id": "${{ secrets.TS_OAUTH_CLIENT_ID }}",
@@ -2486,8 +2486,8 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert workflow_text.count('exit-code: "1"') == 4
     assert workflow_text.count("trivyignores: .trivyignore") == 2
     assert workflow_text.count("TRIVY_IGNOREFILE: /dev/null") == 4
-    assert workflow_text.count("version: v0.71.2") == 6
-    assert "version: v0.71.0" not in workflow_text
+    assert workflow_text.count("version: v0.72.0") == 6
+    assert "version: v0.71.2" not in workflow_text
     assert "pull: ${{ github.event_name == 'schedule' }}" in workflow_text
     assert "no-cache: ${{ github.event_name == 'schedule' }}" in workflow_text
     assert "cosign sign --yes" in workflow_text
@@ -3377,7 +3377,7 @@ def test_private_observability_workflow_is_manual_protected_and_sanitized():
     uses = _workflow_uses(workflow_text)
     assert uses == [
         "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-        "tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8",
+        "tailscale/github-action@780049a30b6ff5c378a9e7b389d15ece7a204888",
         "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
     ]
     _assert_pinned_actions(uses, context="Private observability workflow")
@@ -4026,6 +4026,10 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
         server_name="staging-sitbank.pp.ua",
     )
     assert "ssl_verify_client on;" in staging_https_prelocation
+    assert (
+        "include /etc/nginx/snippets/sitbank-cloudflare-real-ip.conf;"
+        in staging_https_prelocation
+    )
     assert not Path("ops/nginx/.htpasswd-sitbank-staging").exists()
     assert not re.search(
         r"^\S+:\$(?:apr1|2[aby]|5|6)\$",
@@ -4171,6 +4175,9 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
         encoding="utf-8"
     )
     proxy_headers = Path("ops/nginx-proxy-headers.conf").read_text(encoding="utf-8")
+    cloudflare_real_ip = Path("ops/nginx/sitbank-cloudflare-real-ip.conf").read_text(
+        encoding="utf-8"
+    )
     bootstrap = Path("ops/deploy/bootstrap-container-ec2").read_text(
         encoding="utf-8"
     )
@@ -4335,6 +4342,15 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
 
     assert "proxy_set_header X-Forwarded-For $remote_addr;" in proxy_headers
     assert "$proxy_add_x_forwarded_for" not in proxy_headers
+    assert (
+        "include /etc/nginx/snippets/sitbank-cloudflare-real-ip.conf;"
+        in customer_nginx
+    )
+    assert "real_ip_header CF-Connecting-IP;" in cloudflare_real_ip
+    assert "real_ip_recursive on;" in cloudflare_real_ip
+    assert cloudflare_real_ip.count("set_real_ip_from ") == 22
+    assert "set_real_ip_from 0.0.0.0/0;" not in cloudflare_real_ip
+    assert "set_real_ip_from ::/0;" not in cloudflare_real_ip
 
     assert 'PRODUCTION_PUBLIC_HOST="sitbank.pp.ua"' in bootstrap
     assert 'PRODUCTION_PUBLIC_WWW_HOST="www.sitbank.pp.ua"' in bootstrap
@@ -4344,7 +4360,9 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     assert "Issue the production Certbot certificate before rerunning bootstrap." in bootstrap
     assert "PRODUCTION_RATE_LIMITS_FILE=\"/etc/nginx/conf.d/sitbank-production-rate-limits.conf\"" in bootstrap
     assert "EDGE_DEFAULTS_FILE=\"/etc/nginx/conf.d/sitbank-default.conf\"" in bootstrap
+    assert "CLOUDFLARE_REAL_IP_FILE=\"/etc/nginx/snippets/sitbank-cloudflare-real-ip.conf\"" in bootstrap
     assert "ops/nginx/sitbank-default.conf" in bootstrap
+    assert "ops/nginx/sitbank-cloudflare-real-ip.conf" in bootstrap
     assert "ops/nginx/sitbank-production-rate-limits.conf" in bootstrap
     assert "ops/nginx/sitbank-production.conf" in bootstrap
     assert "ops/nginx/admin-verification.html" not in bootstrap
@@ -4399,10 +4417,17 @@ def test_production_edge_runbook_documents_network_waf_and_verification_steps():
         "`/health/ready` is for local deployment and load-balancer checks",
         "Cloudflare or AWS WAF should sit in front of Nginx",
         "The reviewed production bootstrap installs and enables the production edge",
+        "ops/nginx/sitbank-cloudflare-real-ip.conf",
+        "real_ip_header CF-Connecting-IP",
+        "real_ip_recursive on",
+        "Cloudflare client-IP restoration is constrained",
+        "proxy_set_header X-Forwarded-For $remote_addr",
+        "$proxy_add_x_forwarded_for",
         "requires a production bootstrap after merge",
         "sudo test -r /etc/letsencrypt/live/sitbank.pp.ua/fullchain.pem",
         "Cloudflare or AWS WAF rules and security-group allowlists are still",
         "sudo nginx -t",
+        "sudo nginx -T 2>/dev/null | grep -E 'sitbank-cloudflare-real-ip",
         "sudo ss -ltnp | grep -E ':(80|443|5000|5002)([[:space:]]|$)'",
         "sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-app",
         "sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-admin",
@@ -4433,11 +4458,17 @@ def test_production_edge_runbook_documents_network_waf_and_verification_steps():
         "Tailscale/private operator access only",
         "Do not enable Tailscale Funnel",
         "Require Cloudflare Access and Cloudflare Authenticated Origin Pulls",
+        "Install `ops/nginx/sitbank-cloudflare-real-ip.conf`",
+        "trust `CF-Connecting-IP` only from Cloudflare's published edge",
+        "real_ip_recursive on",
         "Enable WAF managed common, SQL injection, XSS, bot, and protocol anomaly",
         "rules.",
         "Add WAF rate-based rules for `/login`, `/register`, `/mfa/verify`,",
         "Block TRACE at the edge",
         "Host`, `X-Real-IP`, `X-Forwarded-For`, and `X-Forwarded-Proto`",
+        "$proxy_add_x_forwarded_for",
+        "sudo nginx -T 2>/dev/null | grep -E 'sitbank-cloudflare-real-ip",
+        "The Cloudflare real-IP snippet is loaded",
         "sudo nginx -t",
         "external readiness is denied",
     ):

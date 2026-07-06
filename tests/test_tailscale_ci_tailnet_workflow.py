@@ -86,8 +86,8 @@ def test_private_tailnet_workflow_supports_protected_oauth_and_auth_key_modes():
         if "uses" in step
     ]
     assert uses == [
-        "tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8",
-        "tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8",
+        "tailscale/github-action@780049a30b6ff5c378a9e7b389d15ece7a204888",
+        "tailscale/github-action@780049a30b6ff5c378a9e7b389d15ece7a204888",
     ]
     assert all(
         re.fullmatch(r"tailscale/github-action@[0-9a-f]{40}", action)
@@ -217,7 +217,7 @@ def test_production_workflow_requires_private_gate_after_deploy_and_public_tls()
     )
     join = gate["steps"][1]
     assert join["uses"] == (
-        "tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8"
+        "tailscale/github-action@780049a30b6ff5c378a9e7b389d15ece7a204888"
     )
     assert join["with"] == {
         "oauth-client-id": "${{ secrets.TS_OAUTH_CLIENT_ID }}",

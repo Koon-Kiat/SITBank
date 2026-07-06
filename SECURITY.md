@@ -377,6 +377,10 @@ checked manually.
   separately verified production CA path. Keep raw HTTP origin-IP behavior
   redirect-only, and reject raw or hostname-SNI direct-origin HTTPS without
   Cloudflare's client certificate.
+- Install `ops/nginx/sitbank-cloudflare-real-ip.conf` through production
+  bootstrap, trust `CF-Connecting-IP` only from Cloudflare's published edge
+  ranges, and keep `real_ip_recursive on` before forwarding the canonical
+  `$remote_addr` to Flask.
 - Keep production Cloudflare and Nginx HSTS aligned at six months
   (`max-age=15552000`) with include subdomains enabled and preload disabled.
 - Enable WAF managed common, SQL injection, XSS, bot, and protocol anomaly
@@ -386,7 +390,9 @@ checked manually.
 - Block TRACE at the edge and preserve only the expected proxy headers:
   `Host`, `X-Real-IP`, `X-Forwarded-For`, and `X-Forwarded-Proto`.
 - If a CDN or WAF forwards traffic to Nginx, configure the trusted real-client
-  IP source ranges deliberately before basing rate limits on client IPs.
+  IP source ranges deliberately before basing rate limits on client IPs. Do
+  not add `set_real_ip_from 0.0.0.0/0`, `set_real_ip_from ::/0`, or
+  `$proxy_add_x_forwarded_for`.
 
 Verification commands:
 
@@ -396,6 +402,7 @@ sudo systemctl status certbot.timer
 sudo /usr/local/sbin/verify-certbot-host-state production
 sudo certbot renew --dry-run
 sudo nginx -t
+sudo nginx -T 2>/dev/null | grep -E 'sitbank-cloudflare-real-ip|real_ip_header CF-Connecting-IP|real_ip_recursive on|set_real_ip_from|proxy_set_header X-Forwarded-For|proxy_add_x_forwarded_for|0\.0\.0\.0/0|::/0'
 sudo ss -ltnp | grep -E ':(80|443|5000|5002)([[:space:]]|$)'
 sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-app
 sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-admin
@@ -418,7 +425,9 @@ curl --fail -H 'Host: sitbank-admin.internal' \
 Expected results: only `80` and `443` are publicly reachable, Gunicorn is
 loopback-only on `5000` and `5002`, Docker publishes no app ports, external
 customer readiness is denied, no public admin hostname is required, and local
-readiness succeeds. Raw HTTP origin-IP access redirects to
+readiness succeeds. The Cloudflare real-IP snippet is loaded, uses
+`CF-Connecting-IP`, has no trust-all ranges, and does not append
+`$proxy_add_x_forwarded_for`. Raw HTTP origin-IP access redirects to
 `https://sitbank.pp.ua`, while both direct HTTPS probes fail closed without
 returning application content.
 In short, external readiness is denied.
