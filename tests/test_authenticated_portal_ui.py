@@ -182,6 +182,7 @@ def test_authentication_pages_have_password_helpers_and_mfa_back_link(client):
     assert mfa_page.status_code == 200
     assert "data-password-toggle" in register_page.data.decode("utf-8")
     assert "data-password-strength" in register_page.data.decode("utf-8")
+    assert "username is permanent and cannot be changed" in register_page.data.decode("utf-8")
     assert "data-password-toggle" in login_page.data.decode("utf-8")
     assert "Back to login" in mfa_page.data.decode("utf-8")
 
