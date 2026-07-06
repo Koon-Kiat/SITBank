@@ -74,11 +74,6 @@
         <form method="post" action="{{ url_for('web.profile_submit') }}" novalidate>
           {{ form.hidden_tag() }}
           <div class="form-group">
-            <label>Username</label>
-            <p>{{ user.username }}</p>
-            <p class="hint">Your username is fixed and cannot be changed.</p>
-          </div>
-          <div class="form-group">
             <label for="{{ form.email.id }}">Email address</label>
             {{ form.email(autocomplete="email", maxlength="255") }}
             {% for error in form.email.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
