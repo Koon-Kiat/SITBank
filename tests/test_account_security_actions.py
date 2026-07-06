@@ -142,7 +142,7 @@ def test_authenticated_user_can_open_own_edit_profile_page(client):
     assert b"alice01" in response.data
     assert b"alice@example.com" in response.data
     assert b"91234567" in response.data
-    assert 'name="username"' in markup
+    assert 'name="username"' not in markup
     assert 'name="email"' in markup
     assert 'name="phone_number"' in markup
     assert "Update profile details" in markup
@@ -427,21 +427,21 @@ def test_profile_details_update_succeeds_for_authenticated_user(client, monkeypa
         data={
             "username": "alice02",
             "email": "alice@example.com",
-            "phone_number": "91234567",
+            "phone_number": "92345678",
             "totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(stepup_time),
         },
     )
     db.session.refresh(user)
     client.post("/logout")
-    new_username_login = login(client, identifier="alice02")
+    original_username_login = login(client, identifier="alice01")
 
     assert response.status_code == 302
     assert response.headers["Location"].endswith("/profile")
-    assert user.username == "alice02"
+    assert user.username == "alice01"
     assert user.email == "alice@example.com"
-    assert user.phone_number == "91234567"
-    assert new_username_login.status_code == 302
-    assert new_username_login.headers["Location"].endswith("/mfa/verify")
+    assert user.phone_number == "92345678"
+    assert original_username_login.status_code == 302
+    assert original_username_login.headers["Location"].endswith("/mfa/verify")
     assert db.session.query(SecurityAuditEvent).filter_by(event_type="profile_update", outcome="success").count() == 1
 
 
@@ -773,35 +773,26 @@ def test_profile_update_rejects_admin_domain_customer_email(client):
     assert event.event_metadata["reason"] == "admin_email_domain"
 
 
-def test_profile_update_rejects_invalid_username(client):
-    register(client)
-    login(client)
-    user, _secret = enable_mfa_for_user()
-
-    response = client.post(
-        "/profile",
-        data={"username": "bad user", "email": "alice@example.com", "phone_number": "91234567"},
-    )
-    db.session.refresh(user)
-
-    assert response.status_code == 400
-    assert user.username == "alice01"
-
-def test_profile_update_rejects_duplicate_username(client):
+def test_profile_update_ignores_submitted_username(client):
     register(client)
     register(client, username="bob02", email="bob@example.com", full_name="Bob Test", phone_number="81234567")
     login(client)
-    user, _secret = enable_mfa_for_user()
+    user, secret = enable_mfa_for_user()
 
     response = client.post(
         "/profile",
-        data={"username": "BOB02", "email": "alice@example.com", "phone_number": "91234567"},
+        data={
+            "username": "bob02",
+            "email": "alice@example.com",
+            "phone_number": "92345678",
+            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).now(),
+        },
     )
     db.session.refresh(user)
 
-    assert response.status_code == 400
+    assert response.status_code == 302
     assert user.username == "alice01"
-    assert db.session.query(SecurityAuditEvent).filter_by(event_type="profile_update", outcome="failure").count() == 1
+    assert user.phone_number == "92345678"
 
 def test_profile_update_rejects_duplicate_email(client):
     register(client)
@@ -909,7 +900,7 @@ def test_profile_submission_cannot_modify_privileged_fields(client):
     db.session.refresh(other_user)
 
     assert response.status_code == 302
-    assert user.username == "alice02"
+    assert user.username == "alice01"
     assert user.email == "alice@example.com"
     assert user.mfa_enabled is True
     assert user.is_frozen is False
@@ -927,14 +918,15 @@ def test_high_risk_action_accepts_totp_stepup(client):
         data={
             "username": "alice02",
             "email": "alice@example.com",
-            "phone_number": "91234567",
+            "phone_number": "92345678",
             "totp_code": pyotp.TOTP(secret, digits=6, interval=30).now(),
         },
     )
     db.session.refresh(user)
 
     assert response.status_code == 302
-    assert user.username == "alice02"
+    assert user.username == "alice01"
+    assert user.phone_number == "92345678"
 
 def test_totp_user_can_navigate_and_use_high_risk_forms(client):
     register(client)

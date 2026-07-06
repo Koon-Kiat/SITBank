@@ -141,14 +141,10 @@ class ManualRecoveryForm(FlaskForm):
 
 
 class ProfileForm(FlaskForm):
-    username = StringField(
-        "Username",
-        validators=[
-            InputRequired(),
-            Length(min=3, max=64),
-            Regexp(USERNAME_RE, message=_INVALID_USERNAME_MESSAGE),
-        ],
-    )
+    # Username is intentionally not a field here: it is fixed at registration
+    # and must not be editable through the profile-update flow (see
+    # app/web/routes.py::profile_submit, which passes g.current_user.username
+    # to the service layer rather than any request-supplied value).
     email = StringField("Email address", validators=[InputRequired(), Email(), Length(max=255)])
     phone_number = StringField(
         _PHONE_NUMBER_LABEL,

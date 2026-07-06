@@ -852,9 +852,6 @@ def my_disputes():
 def profile():
     form = ProfileForm()
     pending_email_change = pending_profile_email_change()
-    form.username.data = (
-        pending_email_change["username"] if pending_email_change else g.current_user.username
-    )
     form.email.data = pending_email_change["email"] if pending_email_change else g.current_user.email
     form.phone_number.data = g.current_user.phone_number
     return render_template(
@@ -885,7 +882,7 @@ def profile_submit():
     try:
         result = update_profile_details(
             g.current_user,
-            form.username.data,
+            g.current_user.username,
             form.email.data,
             form.phone_number.data,
             form.totp_code.data,
