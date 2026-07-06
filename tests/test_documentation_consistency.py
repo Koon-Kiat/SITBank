@@ -47,7 +47,7 @@ def test_root_admin_docs_match_environment_specific_counts():
     assert "STAGING_ROOT_ADMIN_EMAILS" in docs
     assert "PROD_ROOT_ADMIN_EMAILS" in docs
     assert "exactly 2" in docs
-    assert "exactly 5" in docs
+    assert "exactly 3" in docs
 
 
 def test_authentication_boundary_docs_cover_current_contracts():
@@ -103,7 +103,9 @@ def test_payup_security_docs_match_current_banking_contract():
         "presets are SGD 100, 500, 1000, 3000, 5000, and 10000",
         "between SGD 100.00 and SGD 10000.00 with cents precision",
         "`payup_lookup_failure`",
-        "transfers at least 80% of the daily limit",
+        "without a routine per-transfer authenticator prompt",
+        "Stale sessions and recent sensitive account changes",
+        "fail closed",
         "quick-transfer and quick-daily caps",
         "recomputes at confirmation and again under the sender lock",
         "The Local Transfer daily limit remains a documented placeholder",
@@ -128,10 +130,29 @@ def test_payup_security_docs_match_current_banking_contract():
         "PayUp lookup does not require MFA",
         "PayUp lookup returns only a masked recipient identity",
         "Local Transfer daily limit is enforced",
+        "transfers at least 80% of the daily limit",
         "greater than SGD 100",
     )
     for stale in stale_phrases:
         assert stale not in docs
+
+
+def test_payee_cooldown_docs_cover_scheduled_transfer_boundary():
+    docs = "\n".join(
+        Path(path).read_text(encoding="utf-8")
+        for path in (
+            "docs/OPERATIONS.md",
+            "docs/security/architecture/access-control.md",
+        )
+    )
+    normalized_docs = " ".join(docs.split())
+    route_text = Path("app/banking/routes.py").read_text(encoding="utf-8")
+    model_text = Path("app/models.py").read_text(encoding="utf-8")
+
+    assert "No customer scheduled-transfer executor is currently exposed" in normalized_docs
+    assert "must call the same centralized payee cooldown guard before money movement" in normalized_docs
+    assert "class ScheduledTransfer" not in model_text
+    assert "/scheduled-transfer" not in route_text
 
 
 def test_auth_schema_reset_and_customer_unlock_docs_match_current_contract():

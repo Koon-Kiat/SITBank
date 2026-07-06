@@ -61,6 +61,7 @@ from .services import (
     require_root_admin_session,
     require_staff_session,
     reset_staff_invite_acceptance,
+    reissue_staff_invite,
     transition_dispute_status_for_staff,
     reject_admin_action_request_as_root_admin,
     request_customer_security_unlock,
@@ -996,6 +997,7 @@ def invite_create():
 
 @admin_bp.post("/invites/<int:invite_id>/revoke")
 @limiter.limit(_ADMIN_RATE_LIMIT_HOURLY, key_func=get_remote_address)
+@limiter.limit(_ADMIN_RATE_LIMIT_STEP_UP, key_func=request_principal)
 def invite_revoke(invite_id: int):
     actor = require_root_admin_session()
     data = _payload(StaffInviteRevokeSchema())
@@ -1003,6 +1005,19 @@ def invite_revoke(invite_id: int):
     if _wants_json():
         return jsonify(result)
     flash("Staff/admin invite revoked.", "success")
+    return redirect(url_for(_ADMIN_INVITES_ENDPOINT)), 303
+
+
+@admin_bp.post("/invites/<int:invite_id>/reissue")
+@limiter.limit(_ADMIN_RATE_LIMIT_HOURLY, key_func=get_remote_address)
+@limiter.limit(_ADMIN_RATE_LIMIT_STEP_UP, key_func=request_principal)
+def invite_reissue(invite_id: int):
+    actor = require_root_admin_session()
+    data = _payload(StaffInviteRevokeSchema())
+    result = reissue_staff_invite(actor, invite_id, data[_ADMIN_TOTP_CODE_FIELD])
+    if _wants_json():
+        return jsonify(result)
+    flash("Staff/admin invite reissued.", "success")
     return redirect(url_for(_ADMIN_INVITES_ENDPOINT)), 303
 
 

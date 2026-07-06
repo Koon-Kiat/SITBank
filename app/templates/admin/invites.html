@@ -27,6 +27,7 @@
       </select>
       <label for="invite-totp-code">Authenticator code</label>
       <input id="invite-totp-code" name="totp_code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required>
+      <p class="hint">Use a fresh authenticator code for each invite action. Queued means SITBank handed the invite email to the configured backend.</p>
       <button type="submit">Create invite</button>
     </form>
   </section>
@@ -42,34 +43,60 @@
             <th scope="col">Workplace email</th>
             <th scope="col">Role</th>
             <th scope="col">Status</th>
+            <th scope="col">Delivery</th>
             <th scope="col">Created</th>
             <th scope="col">Expires</th>
-            <th scope="col">Action</th>
+            <th scope="col">Actions</th>
           </tr>
         </thead>
         <tbody>
           {% for invite in invites %}
           <tr>
-            <td>{{ invite.workplace_email }}</td>
-            <td>{{ invite.role }}</td>
-            <td>{{ invite.status }}</td>
-            <td><time datetime="{{ invite.created_at }}">{{ invite.created_at_display }}</time></td>
-            <td><time datetime="{{ invite.expires_at }}">{{ invite.expires_at_display }}</time></td>
-            <td>
+            <td data-label="Workplace email">{{ invite.workplace_email }}</td>
+            <td data-label="Role">{{ invite.role }}</td>
+            <td data-label="Status">{{ invite.status }}</td>
+            <td data-label="Delivery">
               {% if invite.status in ["pending", "totp_pending"] %}
-              <form class="admin-inline-actions" method="post" action="{{ url_for('admin.invite_revoke', invite_id=invite.id) }}">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                <label class="sr-only" for="revoke-totp-{{ invite.id }}">Authenticator code</label>
-                <input id="revoke-totp-{{ invite.id }}" name="totp_code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required>
-                <button class="button-danger" type="submit">Revoke</button>
-              </form>
+              <span class="badge neutral">Queued to backend</span>
+              <p class="muted">Recipient mailbox delivery is not guaranteed.</p>
+              {% else %}
+              <span class="badge neutral">Closed</span>
+              {% endif %}
+            </td>
+            <td data-label="Created"><time datetime="{{ invite.created_at }}">{{ invite.created_at_display }}</time></td>
+            <td data-label="Expires"><time datetime="{{ invite.expires_at }}">{{ invite.expires_at_display }}</time></td>
+            <td data-label="Actions">
+              {% if invite.status in ["pending", "totp_pending"] %}
+              <div class="admin-action-stack">
+                <details class="admin-action-disclosure">
+                  <summary class="button secondary small">Revoke invite</summary>
+                  <form class="admin-inline-actions" method="post" action="{{ url_for('admin.invite_revoke', invite_id=invite.id) }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <label for="revoke-totp-{{ invite.id }}">Authenticator code</label>
+                    <input id="revoke-totp-{{ invite.id }}" name="totp_code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6-digit code" required>
+                    <button class="button-danger" type="submit">Confirm revoke</button>
+                  </form>
+                </details>
+                <details class="admin-action-disclosure">
+                  <summary class="button secondary small">Reissue invite</summary>
+                  <form class="admin-inline-actions" method="post" action="{{ url_for('admin.invite_reissue', invite_id=invite.id) }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <label for="reissue-totp-{{ invite.id }}">Authenticator code</label>
+                    <input id="reissue-totp-{{ invite.id }}" name="totp_code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6-digit code" required>
+                    <button type="submit">Send new invite</button>
+                  </form>
+                </details>
+              </div>
               {% if invite.acceptance_locked %}
-              <form class="admin-inline-actions" method="post" action="{{ url_for('admin.invite_reset_acceptance', invite_id=invite.id) }}">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                <label class="sr-only" for="reset-acceptance-totp-{{ invite.id }}">Authenticator code</label>
-                <input id="reset-acceptance-totp-{{ invite.id }}" name="totp_code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required>
-                <button type="submit">Reset acceptance</button>
-              </form>
+              <details class="admin-action-disclosure">
+                <summary class="button secondary small">Reset acceptance</summary>
+                <form class="admin-inline-actions" method="post" action="{{ url_for('admin.invite_reset_acceptance', invite_id=invite.id) }}">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <label for="reset-acceptance-totp-{{ invite.id }}">Authenticator code</label>
+                  <input id="reset-acceptance-totp-{{ invite.id }}" name="totp_code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6-digit code" required>
+                  <button type="submit">Confirm reset</button>
+                </form>
+              </details>
               {% endif %}
               {% else %}
               <span class="badge neutral">Closed</span>
@@ -78,7 +105,7 @@
           </tr>
           {% else %}
           <tr>
-            <td colspan="6">No staff/admin invites found.</td>
+            <td colspan="7">No staff/admin invites found.</td>
           </tr>
           {% endfor %}
         </tbody>

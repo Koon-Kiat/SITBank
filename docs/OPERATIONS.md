@@ -440,7 +440,7 @@ content. See
 ## Root Admin Bootstrap
 
 Root admins remain a fixed allowlisted group. Staging must contain exactly 2
-approved workplace addresses and production exactly 5 from
+approved workplace addresses and production exactly 3 from
 `ADMIN_ALLOWED_EMAIL_DOMAINS` before any database user can become `root_admin`;
 normal customer registration and staff invites must not create `root_admin`
 accounts. Configure `STAGING_ROOT_ADMIN_EMAILS` and
@@ -453,6 +453,11 @@ requests, chat, logs, artifacts, or job summaries. Production/admin runtime
 rejects missing, empty, malformed, duplicate, built-in default, placeholder,
 demo, example, personal-domain, and non-approved-domain root-admin allowlists
 before serving admin traffic.
+Normal staff/admin invite creation rejects addresses listed in
+`ROOT_ADMIN_EMAILS`; root-admin bootstrap and rotation stay on the documented
+bootstrap path. Before rotating or removing a root admin, confirm at least one
+active MFA-enabled workplace-verified root admin remains available before and
+after the change.
 
 Privileged root-admin, admin, and staff accounts use approved SIT workplace
 email domains only. Do not configure personal-provider domains in
@@ -466,6 +471,15 @@ passwords, TOTP setup secrets, or workplace verification codes. If an active
 invite becomes locked by the restart cap, a root admin should use the invite
 screen's reset action with a fresh TOTP code; do not unlock it by editing
 database rows directly.
+Invite creation, revoke, reset, and reissue actions use strict high-risk TOTP:
+wait for a fresh authenticator code before retrying an invite action, and do
+not reuse the same code for repeated invite operations. The invite table's
+`queued` delivery state means SITBank handed the message to the configured
+email backend, not that the recipient inbox accepted it. If the recipient
+cannot find a pending invite, check spam/junk/quarantine and SMTP backend
+configuration, then use the root-admin reissue action to rotate the token hash
+and send a new invite link. If email backend handoff fails during create, the
+invite is moved out of active pending state so it does not block safe retry.
 The admin `production-check` command reports
 `privileged_email_noncompliant_accounts` as a count when legacy privileged rows
 use non-approved domains. Operators must remediate those accounts to approved
@@ -488,10 +502,11 @@ print({"count": len(emails), "unique": len(set(emails)), "domains": domains})
 PY
 ```
 
-The output must show `count` and `unique` equal to `7` and only approved SIT
+The output must show `count` and `unique` equal to the configured environment
+count, currently 2 for staging or 3 for production, and only approved SIT
 workplace domains before you run bootstrap. It must not reveal the individual
-root-admin identities and must not be the built-in `root1` through `root7`
-development placeholder set.
+root-admin identities and must not be the built-in numeric development
+placeholder set.
 
 Root-admin bootstrap remains a manual-only private operator procedure in the
 current design and must not run from GitHub Actions, deployment automation, or
@@ -818,6 +833,11 @@ layer independently of the route layer. Transfer amounts are validated to at
 most two decimal places. Recipient account state is checked before funds move.
 The Local Transfer daily limit remains a documented placeholder until a limit is
 implemented for that channel.
+No customer scheduled-transfer executor is currently exposed. If scheduled
+transfer execution is added later, it must call the same centralized payee
+cooldown guard before money movement and must not trust client-supplied
+activation fields such as `active_after`, `created_at`, `status`, or
+`cooldown`.
 
 PayUp senders must set a customer-owned PayUp display nickname before lookup,
 amount entry, or confirmation. The nickname is 2 to 128 characters, is stored on
@@ -835,10 +855,11 @@ reset at midnight Singapore time. The default limit is SGD 500; presets are SGD
 100, 500, 1000, 3000, 5000, and 10000. Custom limits must be between SGD
 100.00 and SGD 10000.00 with cents precision, and changing the value requires
 TOTP step-up. A centralized policy blocks invalid or unavailable risk state and
-recomputes at confirmation and again under the sender lock. It requires fresh
-TOTP for stale sessions, recent sensitive account changes such as profile email
-or phone changes, transfers at least 80% of the daily limit, or amounts outside
-the quick-transfer and quick-daily caps. Low-risk transfers within those caps do
+recomputes at confirmation and again under the sender lock. In-cap quick
+payments proceed without a routine per-transfer authenticator prompt. Stale
+sessions and recent sensitive account changes such as profile email or phone
+changes fail closed, while amounts outside the quick-transfer and quick-daily
+caps require step-up. Low-risk transfers within those caps do
 not require an additional code. These PayUp posts rely on the dedicated durable
 account/session/source/recipient limits plus the existing edge controls; they
 do not retain an older MFA-principal route limit that can undercut the

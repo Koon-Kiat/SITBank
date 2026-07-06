@@ -1040,9 +1040,6 @@ def evaluate_payup_risk(
             str(current_app.config["PAYUP_QUICK_TRANSFER_CAP"])
         )
         quick_daily_cap = Decimal(str(current_app.config["PAYUP_QUICK_DAILY_CAP"]))
-        step_up_ratio = Decimal(
-            int(current_app.config["PAYUP_STEP_UP_LIMIT_PERCENT"])
-        ) / Decimal("100")
         session_max_age = int(
             current_app.config["PAYUP_QUICK_SESSION_MAX_AGE_SECONDS"]
         )
@@ -1065,8 +1062,6 @@ def evaluate_payup_risk(
         or daily_limit <= 0
         or quick_transfer_cap <= 0
         or quick_daily_cap <= 0
-        or step_up_ratio <= 0
-        or step_up_ratio > 1
     ):
         return PayupRiskDecision(PAYUP_RISK_BLOCK, ("risk_state_invalid",))
     if user.payup_enabled is not True:
@@ -1081,18 +1076,16 @@ def evaluate_payup_risk(
     projected_daily = daily_used + normalized_amount
     if projected_daily > daily_limit:
         return PayupRiskDecision(PAYUP_RISK_BLOCK, ("daily_limit_exceeded",))
+    if session_age > session_max_age:
+        return PayupRiskDecision(PAYUP_RISK_BLOCK, ("stale_session",))
+    if recent_sensitive_event:
+        return PayupRiskDecision(PAYUP_RISK_BLOCK, ("recent_sensitive_event",))
 
     step_up_reasons: list[str] = []
     if normalized_amount > quick_transfer_cap:
         step_up_reasons.append("quick_transfer_cap")
     if projected_daily > quick_daily_cap:
         step_up_reasons.append("quick_daily_cap")
-    if projected_daily / daily_limit >= step_up_ratio:
-        step_up_reasons.append("daily_limit_percentage")
-    if session_age > session_max_age:
-        step_up_reasons.append("stale_session")
-    if recent_sensitive_event:
-        step_up_reasons.append("recent_sensitive_event")
     if step_up_reasons:
         return PayupRiskDecision(
             PAYUP_RISK_STEP_UP,

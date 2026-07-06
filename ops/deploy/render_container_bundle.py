@@ -152,7 +152,7 @@ def _root_admin_emails(prefix: str) -> str:
     name = _prefixed(prefix, "ROOT_ADMIN_EMAILS")
     value = _value(name)
     emails = [item.strip().casefold() for item in value.split(",") if item.strip()]
-    required_count = 2 if prefix == "STAGING" else 5
+    required_count = 2 if prefix == "STAGING" else 3
     if len(emails) != required_count or len(set(emails)) != required_count:
         raise RuntimeError(
             f"{name} must contain exactly {required_count} unique workplace email addresses"

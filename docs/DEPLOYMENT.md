@@ -498,7 +498,7 @@ Set `STAGING_ROOT_ADMIN_EMAILS` in the protected `staging` environment and
 `PROD_ROOT_ADMIN_EMAILS` in the protected `production` environment before
 deploying admin bootstrap support. They are sensitive privileged-identity
 configuration: staging must contain exactly 2 comma-separated SIT workplace
-email addresses and production must contain exactly 5. The deployment
+email addresses and production must contain exactly 3. The deployment
 workflow validates the secret without printing it, uploads it as a restricted
 deployment input, and installs it as `/etc/sitbank*/secrets/root_admin_emails`
 so `sitbank-admin` and `sitbank-staging-admin` can enforce the fixed root-admin
@@ -507,6 +507,12 @@ built-in development root-admin set, placeholders, demo/example identities,
 duplicates after normalization, personal domains, and non-approved domains.
 Do not copy the real allowlist into issues, pull requests, screenshots, logs,
 or job summaries.
+Normal staff/admin invite creation rejects addresses listed in
+`ROOT_ADMIN_EMAILS`; root-admin bootstrap and rotation stay on the documented
+bootstrap path. When rotating or removing root admins, confirm at least one
+active MFA-enabled workplace-verified root admin remains available before and
+after the change, then update the protected environment secret or root-owned
+EC2 secret file without printing the identities.
 Root-admin bootstrap remains manual over SSH inside the admin container; it is
 not a GitHub Actions workflow, deployment automation step, or non-interactive
 bootstrap wrapper.

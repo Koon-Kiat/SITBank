@@ -22,7 +22,7 @@ from conftest import TestConfig
 
 EXPLICIT_ROOT_ADMIN_EMAILS = frozenset(
     f"chief{index}@sit.singaporetech.edu.sg"
-    for index in range(1, 6)
+    for index in range(1, 4)
 )
 
 
@@ -212,7 +212,7 @@ def test_mode_helpers_report_every_isolation_misconfiguration(monkeypatch):
         "Admin session key prefix must be isolated",
         "Admin auth security-state prefix must be isolated",
         "Admin rate-limit key prefix must be isolated",
-        "ROOT_ADMIN_EMAILS must configure exactly 5 root administrators",
+        "ROOT_ADMIN_EMAILS must configure exactly 3 root administrators",
         "Admin runtime must not register customer routes",
     } <= set(admin_result.failures)
 
@@ -245,8 +245,6 @@ def test_admin_validator_rejects_root_admin_allowlist_outside_admin_domains(monk
             "root1@example.com",
             "root2@sit.singaporetech.edu.sg",
             "root3@sit.singaporetech.edu.sg",
-            "root4@sit.singaporetech.edu.sg",
-            "root5@sit.singaporetech.edu.sg",
         }
     )
 
@@ -275,8 +273,6 @@ def test_admin_validator_rejects_root_admin_allowlist_outside_admin_domains(monk
                 "chief1@sit.singaporetech.edu.sg",
                 "chief1@sit.singaporetech.edu.sg",
                 "chief3@sit.singaporetech.edu.sg",
-                "chief4@sit.singaporetech.edu.sg",
-                "chief5@sit.singaporetech.edu.sg",
             ),
             "ROOT_ADMIN_EMAILS must not contain duplicate email addresses",
         ),
@@ -285,8 +281,6 @@ def test_admin_validator_rejects_root_admin_allowlist_outside_admin_domains(monk
                 "demo@sit.singaporetech.edu.sg",
                 "chief2@sit.singaporetech.edu.sg",
                 "chief3@sit.singaporetech.edu.sg",
-                "chief4@sit.singaporetech.edu.sg",
-                "chief5@sit.singaporetech.edu.sg",
             ),
             "ROOT_ADMIN_EMAILS must not contain placeholder, demo, or example identities",
         ),

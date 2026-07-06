@@ -128,6 +128,10 @@ calculated server-side from the saved payee timestamp and
 `PAYEE_COOLDOWN_SECONDS`; clients only receive display timing. Development and
 test environments may keep the short default for usability, while production
 configuration fails closed unless the cooldown is at least 12 hours.
+No customer scheduled-transfer executor is currently exposed. Any future
+scheduled-transfer executor must call the centralized payee cooldown guard
+before money movement rather than trusting request, session, or client display
+state.
 
 | Action | Authorization control | Evidence |
 | --- | --- | --- |
@@ -147,7 +151,7 @@ commit.
 | --- | --- | --- |
 | Local Transfer confirmation | Payee must belong to the sender, be outside cooldown, and pass final recipient-account checks before ledger movement | `app/banking/services.py::execute_local_transfer()`, `tests/test_local_transfer_security.py` |
 | PayUp phone lookup | Sender must set a PayUp display nickname before lookup; unavailable and self recipients return the same generic response; durable account/session/source/recipient limits constrain enumeration | `app/banking/routes.py::payup_submit()`, `tests/test_payup.py` |
-| PayUp amount and confirmation | Confirmation displays source account ending, sender nickname, recipient phone, and recipient PayUp nickname when set; central fail-closed risk policy requires TOTP for stale or sensitive sessions and amounts outside quick-transfer caps; service execution recomputes the decision under the sender lock | `app/banking/services.py::evaluate_payup_risk()`, `tests/test_payup.py` |
+| PayUp amount and confirmation | Confirmation displays source account ending, sender nickname, recipient phone, and recipient PayUp nickname when set; in-cap quick payments do not require a routine authenticator prompt, stale or sensitive-session states fail closed, amounts outside quick-transfer caps require step-up, and service execution recomputes the decision under the sender lock | `app/banking/services.py::evaluate_payup_risk()`, `tests/test_payup.py` |
 
 Transfer payload validation and future transaction-risk primitives are in
 `app/banking/services.py` and `app/banking/schemas.py`, covered by

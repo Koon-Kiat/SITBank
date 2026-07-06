@@ -364,6 +364,16 @@ workplace email and do not collect a personal backup email. Invite acceptance
 validates the token, workplace email policy, password policy, optional
 Turnstile, workplace verification code, and TOTP setup before activating the
 account.
+Normal staff/admin invites reject addresses in `ROOT_ADMIN_EMAILS`; root-admin
+bootstrap and rotation remain separate reviewed operator paths. Invite creation,
+revocation, acceptance reset, and reissue each require a fresh root-admin
+high-risk TOTP code. `queued` invite email state means SITBank handed the
+message to the configured email backend; it does not prove recipient inbox
+delivery. If a pending invite cannot be found by the recipient, check
+spam/quarantine and SMTP configuration, then use the root-admin reissue action
+to rotate the stored invite token hash and send a new invite link. If backend
+handoff fails during invite creation, the invite is moved out of active pending
+state so it does not block safe retry.
 The public invite lookup returns only a generic valid-link message and exposes
 no acceptance metadata, setup state, workplace email, role, status, user id,
 counter, or lock timestamp. Invite acceptance responses are marked `no-store` with `Referrer-Policy: no-referrer`,
@@ -383,6 +393,8 @@ Evidence: `app/admin/routes.py`, `app/admin/services.py`,
 
 Tests: `tests/test_admin_staff_invites.py::test_root_admin_can_create_hashed_staff_invite`,
 `tests/test_admin_staff_invites.py::test_only_root_admin_with_totp_stepup_can_create_invites`,
+`tests/test_admin_staff_invites.py::test_root_admin_can_reissue_pending_invite_with_new_token`,
+`tests/test_admin_staff_invites.py::test_invite_email_failure_revokes_pending_invite_for_recovery`,
 `tests/test_admin_staff_invites.py::test_invite_info_returns_minimal_metadata_and_no_store_headers`,
 `tests/test_admin_staff_invites.py::test_invite_acceptance_restart_limit_and_root_reset`,
 `tests/test_admin_staff_invites.py::test_invite_acceptance_verification_is_bound_to_start_session`,
