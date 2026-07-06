@@ -12,6 +12,8 @@ import pytest
 
 SCRIPT_PATH = Path("ops/deploy/verify-production-nginx-boundary")
 PRODUCTION_NGINX = Path("ops/nginx/sitbank-production.conf")
+PRODUCTION_REAL_IP = Path("ops/nginx/sitbank-cloudflare-real-ip.conf")
+PROXY_HEADERS = Path("ops/nginx-proxy-headers.conf")
 DEFAULT_NGINX = Path("ops/nginx/sitbank-default.conf")
 
 
@@ -36,6 +38,8 @@ def _valid_configuration() -> str:
         (
             DEFAULT_NGINX.read_text(encoding="utf-8"),
             PRODUCTION_NGINX.read_text(encoding="utf-8"),
+            PRODUCTION_REAL_IP.read_text(encoding="utf-8"),
+            PROXY_HEADERS.read_text(encoding="utf-8"),
         )
     )
 
@@ -46,6 +50,7 @@ def test_current_production_boundary_passes_active_config_validation():
     assert messages == [
         "OK: production raw-IP HTTP redirect is active",
         "OK: production HTTPS origin-pull verification is active",
+        "OK: production Cloudflare real-IP trust is constrained",
         "OK: production six-month HSTS policy is active",
         "OK: default HTTPS rejects unknown hosts",
         "OK: public Nginx HTTPS listeners exclude Tailscale interfaces",
@@ -158,6 +163,42 @@ def test_malformed_or_missing_active_server_blocks_fail_closed():
         (
             lambda value: value.replace("ssl_verify_client on;", "", 1),
             "ssl_verify_client on",
+        ),
+        (
+            lambda value: value.replace(
+                "include /etc/nginx/snippets/sitbank-cloudflare-real-ip.conf;",
+                "",
+                1,
+            ),
+            "Cloudflare real-IP snippet",
+        ),
+        (
+            lambda value: value.replace(
+                "real_ip_header CF-Connecting-IP;",
+                "real_ip_header X-Forwarded-For;",
+                1,
+            ),
+            "CF-Connecting-IP",
+        ),
+        (
+            lambda value: value.replace("real_ip_recursive on;", "", 1),
+            "real_ip_recursive",
+        ),
+        (
+            lambda value: value.replace(
+                "set_real_ip_from 173.245.48.0/20;",
+                "set_real_ip_from 0.0.0.0/0;",
+                1,
+            ),
+            "trust-all",
+        ),
+        (
+            lambda value: value.replace(
+                "proxy_set_header X-Forwarded-For $remote_addr;",
+                "proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;",
+                1,
+            ),
+            "overwrite X-Forwarded-For",
         ),
         (
             lambda value: value.replace(

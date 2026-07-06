@@ -388,6 +388,15 @@ Opportunistic Encryption and HSTS preload disabled. Repository files do not
 prove provider state. Retain sanitized Cloudflare and AWS security-group
 evidence and restrict `443/tcp` to Cloudflare edge ranges where practical.
 
+Production and staging public TLS blocks restore the browser address through
+`/etc/nginx/snippets/sitbank-cloudflare-real-ip.conf`. That snippet trusts
+`CF-Connecting-IP` only from Cloudflare's published edge ranges, enables
+`real_ip_recursive on`, and leaves `ops/nginx-proxy-headers.conf` to forward a
+single canonical `$remote_addr` as `X-Forwarded-For`. Do not trust
+user-supplied `X-Forwarded-For`, add all-client `set_real_ip_from` ranges, or
+switch back to `$proxy_add_x_forwarded_for`; those changes can create false
+session-risk drift or hide real source changes in audits and rate limits.
+
 Verify after production bootstrap:
 
 ```powershell
@@ -401,6 +410,7 @@ On the production host, also run:
 
 ```bash
 sudo nginx -t
+sudo nginx -T 2>/dev/null | grep -E 'sitbank-cloudflare-real-ip|real_ip_header CF-Connecting-IP|real_ip_recursive on|set_real_ip_from|proxy_set_header X-Forwarded-For|proxy_add_x_forwarded_for|0\.0\.0\.0/0|::/0'
 sudo /usr/local/sbin/verify-production-nginx-boundary \
   --public-bind-address "$(sudo awk -F= '$1 == "PUBLIC_BIND_ADDRESS" {print $2}' /etc/sitbank/deploy.conf)"
 ```
@@ -415,6 +425,12 @@ Rerun the trusted production bootstrap, verify Cloudflare Authenticated Origin
 Pull remains enabled using sanitized provider evidence, rerun the verifier,
 and only then retry deployment. The verifier prints named pass/fail controls,
 not the full `nginx -T` configuration.
+
+When Cloudflare announces IP range changes, update
+`ops/nginx/sitbank-cloudflare-real-ip.conf` from the official Cloudflare IP
+list, run the boundary tests, and deploy through reviewed `main`. Do not
+hot-patch the host with a trust-all range while waiting for a repository
+change.
 
 The proxied site succeeds, raw HTTP redirects to the canonical hostname, and
 both direct HTTPS requests fail closed without returning SITBank application

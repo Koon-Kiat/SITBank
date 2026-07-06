@@ -10,6 +10,7 @@ readonly PRODUCTION_PUBLIC_HOST="sitbank.pp.ua"
 readonly PRODUCTION_PUBLIC_WWW_HOST="www.sitbank.pp.ua"
 readonly EDGE_DEFAULTS_FILE="/etc/nginx/conf.d/sitbank-default.conf"
 readonly TLS_POLICY_FILE="/etc/nginx/snippets/sitbank-tls-policy.conf"
+readonly CLOUDFLARE_REAL_IP_FILE="/etc/nginx/snippets/sitbank-cloudflare-real-ip.conf"
 readonly STAGING_ACCESS_HEADERS_FILE="/etc/nginx/snippets/sitbank-cloudflare-access-headers.conf"
 readonly PRODUCTION_RATE_LIMITS_FILE="/etc/nginx/conf.d/sitbank-production-rate-limits.conf"
 readonly PRODUCTION_CLOUDFLARE_ORIGIN_PULL_CA_FILE="/etc/nginx/sitbank-production-cloudflare-origin-pull-ca.pem"
@@ -145,6 +146,7 @@ linux_runtime_files=(
     "${repo_root}/ops/backups/sitbank-restore-preflight"
     "${repo_root}/ops/nginx/sitbank-default.conf"
     "${repo_root}/ops/nginx/sitbank-cloudflare-access-headers.conf"
+    "${repo_root}/ops/nginx/sitbank-cloudflare-real-ip.conf"
     "${repo_root}/ops/nginx/sitbank-tls-policy.conf"
     "${repo_root}/ops/security/cloudflare-origin-pull-ca-allowlist.json"
     "${repo_root}/ops/sudoers/sitbank-container-deploy"
@@ -438,6 +440,14 @@ install_staging_access_headers() {
         "nginx-sitbank-cloudflare-access-headers"
 }
 
+install_cloudflare_real_ip() {
+    install_nginx_config \
+        "${repo_root}/ops/nginx/sitbank-cloudflare-real-ip.conf" \
+        "${CLOUDFLARE_REAL_IP_FILE}" \
+        "Cloudflare real client IP policy" \
+        "nginx-sitbank-cloudflare-real-ip"
+}
+
 refresh_enabled_sibling_site() {
     if [[ "${target}" == "production" \
         && -e /etc/nginx/sites-enabled/sitbank-staging ]]; then
@@ -504,6 +514,7 @@ if [[ "${target}" == "production" ]]; then
     install -d -o root -g root -m 0755 /var/www/certbot
     install_edge_default_site
     install_tls_policy
+    install_cloudflare_real_ip
     install_staging_access_headers
     install -o root -g root -m 0644 \
         "${repo_root}/ops/nginx-proxy-headers.conf" \
@@ -584,6 +595,7 @@ if [[ "${target}" == "staging" ]]; then
     install -d -o root -g root -m 0755 /var/www/certbot
     install_edge_default_site
     install_tls_policy
+    install_cloudflare_real_ip
     install_staging_access_headers
     install -o root -g root -m 0644 \
         "${repo_root}/ops/nginx-proxy-headers.conf" \

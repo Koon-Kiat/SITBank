@@ -101,7 +101,7 @@ def test_ci_runs_pytest_once_and_hands_coverage_to_sonarqube():
     )
     assert (
         upload["uses"]
-        == "actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f"
+        == "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
     )
     assert upload["with"] == {
         "name": "sonarqube-coverage-${{ github.run_id }}",

@@ -395,6 +395,7 @@ def test_nginx_preserves_origin_pull_and_forwards_only_assertion():
         "/etc/nginx/cloudflare-authenticated-origin-pull-ca.pem;" in nginx
     )
     assert "ssl_verify_client on;" in nginx
+    assert "include /etc/nginx/snippets/sitbank-cloudflare-real-ip.conf;" in nginx
     assert "$ssl_client_verify" not in nginx
     assert "auth_basic" not in nginx
     assert "listen 127.0.0.1:8081;" in nginx
