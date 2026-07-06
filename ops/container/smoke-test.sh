@@ -11,7 +11,7 @@ network_name="sitbank-smoke-$RANDOM-$$"
 readonly postgres_container="smoke-postgres"
 readonly app_container="sitbank-smoke"
 readonly admin_container="sitbank-admin-smoke"
-readonly root_admin_emails="chief1@sit.singaporetech.edu.sg,chief2@sit.singaporetech.edu.sg,chief3@sit.singaporetech.edu.sg,chief4@sit.singaporetech.edu.sg,chief5@sit.singaporetech.edu.sg"
+readonly root_admin_emails="chief1@sit.singaporetech.edu.sg,chief2@sit.singaporetech.edu.sg,chief3@sit.singaporetech.edu.sg"
 
 random_test_secret() {
     od -An -N24 -tx1 /dev/urandom | tr -d '[:space:]'
