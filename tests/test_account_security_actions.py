@@ -773,11 +773,13 @@ def test_profile_update_rejects_admin_domain_customer_email(client):
     assert event.event_metadata["reason"] == "admin_email_domain"
 
 
-def test_profile_update_ignores_submitted_username(client):
+def test_profile_update_ignores_submitted_username(client, monkeypatch):
     register(client)
     register(client, username="bob02", email="bob@example.com", full_name="Bob Test", phone_number="81234567")
     login(client)
     user, secret = enable_mfa_for_user()
+    stepup_time = int(time.time())
+    monkeypatch.setattr("app.auth.services.time.time", lambda: stepup_time)
 
     response = client.post(
         "/profile",
@@ -785,7 +787,7 @@ def test_profile_update_ignores_submitted_username(client):
             "username": "bob02",
             "email": "alice@example.com",
             "phone_number": "92345678",
-            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).now(),
+            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(stepup_time),
         },
     )
     db.session.refresh(user)
@@ -874,13 +876,15 @@ def test_json_auth_post_requires_global_csrf_header_when_enabled(app, client):
     assert valid_token.status_code == 401
     assert valid_token.get_json() == {"error": "Invalid username or password"}
 
-def test_profile_submission_cannot_modify_privileged_fields(client):
+def test_profile_submission_cannot_modify_privileged_fields(client, monkeypatch):
     register(client)
     register(client, username="bob02", email="bob@example.com", full_name="Bob Test", phone_number="81234567")
     login(client)
     user, secret = enable_mfa_for_user()
     other_user = db.session.execute(db.select(User).where(User.username == "bob02")).scalar_one()
     original_password_hash = user.password_hash
+    stepup_time = int(time.time())
+    monkeypatch.setattr("app.auth.services.time.time", lambda: stepup_time)
 
     response = client.post(
         "/profile",
@@ -888,7 +892,7 @@ def test_profile_submission_cannot_modify_privileged_fields(client):
             "username": "alice02",
             "email": "alice@example.com",
             "phone_number": "91234567",
-            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).now(),
+            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(stepup_time),
             "user_id": str(other_user.id),
             "mfa_enabled": "true",
             "is_frozen": "true",
@@ -908,10 +912,12 @@ def test_profile_submission_cannot_modify_privileged_fields(client):
     assert other_user.username == "bob02"
     assert other_user.email == "bob@example.com"
 
-def test_high_risk_action_accepts_totp_stepup(client):
+def test_high_risk_action_accepts_totp_stepup(client, monkeypatch):
     register(client)
     login(client)
     user, secret = enable_mfa_for_user()
+    stepup_time = int(time.time())
+    monkeypatch.setattr("app.auth.services.time.time", lambda: stepup_time)
 
     response = client.post(
         "/profile",
@@ -919,7 +925,7 @@ def test_high_risk_action_accepts_totp_stepup(client):
             "username": "alice02",
             "email": "alice@example.com",
             "phone_number": "92345678",
-            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).now(),
+            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(stepup_time),
         },
     )
     db.session.refresh(user)
