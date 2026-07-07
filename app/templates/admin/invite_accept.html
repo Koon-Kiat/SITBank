@@ -8,6 +8,7 @@
   <p class="eyebrow">Staff onboarding</p>
   {% if phase == "start" %}
     {% set invite_turnstile_required = turnstile_widget_enabled("admin_invite_accept") %}
+    <script src="{{ url_for('static', filename='js/admin-invite-accept.js') }}"></script>
     <h1>Set up your staff access</h1>
     <p class="muted">This invite does not activate an account until password setup, workplace verification, and authenticator verification all succeed.</p>
     <form
@@ -83,10 +84,4 @@
     <p class="muted">This invite link is invalid or expired. Ask a root admin to review the invite and send a new link if access is still needed.</p>
 {% endif %}
 </section>
-{% endblock %}
-
-{% block scripts %}
-  {% if phase == "start" %}
-    <script src="{{ url_for('static', filename='js/admin-invite-accept.js') }}" defer></script>
-  {% endif %}
 {% endblock %}

@@ -696,6 +696,99 @@ def test_invite_acceptance_requires_turnstile_when_enabled(admin_app, admin_clie
     assert calls == [("admin_invite_accept", "browser-token")]
 
 
+def test_invite_acceptance_rejects_stale_turnstile_and_accepts_standard_field(
+    admin_app,
+    admin_client,
+    monkeypatch,
+    caplog,
+):
+    from app.security.turnstile import TurnstileError
+
+    admin_app.config["TURNSTILE_ENABLED"] = True
+    admin_app.config["TURNSTILE_SECRET_KEY"] = "turnstile-secret"
+    _root, secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    _login_admin(admin_client, secret)
+    assert _create_invite(admin_client, secret).status_code == 201
+    token = _latest_invite_token()
+    invite = db.session.execute(db.select(StaffInvite)).scalar_one()
+    calls = []
+
+    def fake_require(action, token_value=None):
+        calls.append((action, token_value))
+        if token_value != "fresh-browser-token":
+            raise TurnstileError("fake stale provider detail")
+
+    monkeypatch.setattr("app.admin.services.require_turnstile", fake_require)
+
+    missing = admin_client.post(
+        f"/invites/accept/{token}/start",
+        json=_staff_invite_start_payload(),
+    )
+    stale = admin_client.post(
+        f"/invites/accept/{token}/start",
+        data=_staff_invite_start_payload(
+            full_name="Safe Recipient",
+            phone_number="92345678",
+            turnstile_token="stale-browser-token",
+        ),
+    )
+    db.session.refresh(invite)
+
+    assert missing.status_code == 400
+    assert missing.get_json() == {"error": "Complete the security challenge before starting setup."}
+    assert stale.status_code == 400
+    stale_body = stale.get_data(as_text=True)
+    assert "Complete the security challenge before starting setup." in stale_body
+    assert 'value="Safe Recipient"' in stale_body
+    assert 'value="92345678"' in stale_body
+    assert invite.status == "pending"
+    assert invite.setup_user_id is None
+    assert db.session.query(User).count() == 1
+
+    valid = admin_client.post(
+        f"/invites/accept/{token}/start",
+        data=_staff_invite_start_payload(**{"cf-turnstile-response": "fresh-browser-token"}),
+    )
+    db.session.refresh(invite)
+    failure_metadata = [
+        event.event_metadata
+        for event in db.session.query(SecurityAuditEvent)
+        .filter_by(event_type="staff_invite_accept", outcome="failure")
+        .order_by(SecurityAuditEvent.id)
+        .all()
+    ]
+    rendered_payloads = "\n".join(
+        (
+            missing.get_data(as_text=True),
+            stale_body,
+            valid.get_data(as_text=True),
+            json.dumps(failure_metadata, default=str),
+            caplog.text,
+        )
+    )
+
+    assert valid.status_code == 200
+    assert invite.status == "totp_pending"
+    assert calls == [
+        ("admin_invite_accept", None),
+        ("admin_invite_accept", "stale-browser-token"),
+        ("admin_invite_accept", "fresh-browser-token"),
+    ]
+    assert failure_metadata == [{"reason": "turnstile_failed"}, {"reason": "turnstile_failed"}]
+    for forbidden in (
+        "stale-browser-token",
+        "fresh-browser-token",
+        "fake stale provider detail",
+        STAFF_PASSWORD,
+    ):
+        assert forbidden not in rendered_payloads
+
+
 def test_invite_setup_form_disables_submit_until_managed_turnstile_succeeds(
     admin_app,
     admin_client,
@@ -724,12 +817,16 @@ def test_invite_setup_form_disables_submit_until_managed_turnstile_succeeds(
     assert 'data-expired-callback="sitbankInviteTurnstileExpired"' in body
     assert 'data-error-callback="sitbankInviteTurnstileError"' in body
     assert 'data-timeout-callback="sitbankInviteTurnstileTimeout"' in body
-    assert 'data-before-interactive-callback="sitbankInviteTurnstilePending"' in body
-    assert 'data-after-interactive-callback="sitbankInviteTurnstilePending"' in body
+    assert 'data-before-interactive-callback="sitbankInviteTurnstileInteractiveStart"' in body
+    assert 'data-after-interactive-callback="sitbankInviteTurnstileInteractiveEnd"' in body
     assert 'data-unsupported-callback="sitbankInviteTurnstileError"' in body
     assert '<button class="button full" type="submit" data-invite-start-submit disabled' in body
     assert "Complete the security challenge to enable setup." in body
     assert 'js/admin-invite-accept.js' in body
+    assert body.index("js/admin-invite-accept.js") < body.index(
+        "https://challenges.cloudflare.com/turnstile/v0/api.js"
+    )
+    assert 'js/admin-invite-accept.js" defer' not in body
 
 
 def test_turnstile_verifier_rejects_non_https_verify_url(admin_app):
