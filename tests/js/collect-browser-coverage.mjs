@@ -443,6 +443,7 @@ async function exerciseAdminAlerts() {
 
 async function exerciseAdminInviteAccept() {
   const document = new MockDocument();
+  document.readyState = "loading";
   const form = new MockElement({
     attributes: {
       "data-invite-accept-start": "",
@@ -452,25 +453,63 @@ async function exerciseAdminInviteAccept() {
   const responseInput = new MockElement({ attributes: { "data-turnstile-response": "" } });
   const submitButton = new MockElement({ attributes: { "data-invite-start-submit": "" } });
   const status = new MockElement({ attributes: { "data-turnstile-status": "" } });
+  const fullName = new MockElement();
+  const phoneNumber = new MockElement();
+  fullName.value = "Safe Recipient";
+  phoneNumber.value = "92345678";
   form.selectorMap.set("[data-turnstile-response]", responseInput);
   form.selectorMap.set("[data-invite-start-submit]", submitButton);
   form.selectorMap.set("[data-turnstile-status]", status);
-  document.selectorAllMap.set("[data-invite-accept-start]", [form]);
 
   const context = createBrowserContext(document);
   runScript("app/static/js/admin-invite-accept.js", context);
+  assert.equal(typeof context.sitbankInviteTurnstileSuccess, "function");
+  assert.equal(typeof context.sitbankInviteTurnstileInteractiveStart, "function");
+  assert.equal(typeof context.sitbankInviteTurnstileInteractiveEnd, "function");
+
+  context.sitbankInviteTurnstilePending();
+  document.selectorAllMap.set("[data-invite-accept-start]", [form]);
+  await document.emit("DOMContentLoaded");
 
   assert.equal(submitButton.disabled, true);
+  assert.equal(form.dataset.turnstileState, "pending");
   assert.match(status.textContent, /verifying/);
+
+  context.sitbankInviteTurnstilePending();
+  assert.equal(responseInput.value, "");
+  assert.equal(submitButton.disabled, true);
+  assert.equal(form.dataset.turnstileState, "pending");
 
   context.sitbankInviteTurnstileSuccess("fresh-token");
   assert.equal(responseInput.value, "fresh-token");
   assert.equal(submitButton.disabled, false);
+  assert.equal(form.dataset.turnstileState, "valid");
   assert.match(status.textContent, /complete/);
 
+  context.sitbankInviteTurnstileInteractiveEnd();
+  assert.equal(responseInput.value, "fresh-token");
+  assert.equal(submitButton.disabled, false);
+  assert.equal(form.dataset.turnstileState, "valid");
+
+  context.sitbankInviteTurnstilePending();
+  assert.equal(responseInput.value, "fresh-token");
+  assert.equal(submitButton.disabled, false);
+  assert.equal(form.dataset.turnstileState, "valid");
+
+  context.sitbankInviteTurnstileInteractiveStart();
+  assert.equal(responseInput.value, "");
+  assert.equal(submitButton.disabled, true);
+  assert.equal(form.dataset.turnstileState, "pending");
+  assert.match(status.textContent, /verifying/);
+
+  context.sitbankInviteTurnstileSuccess("fresh-token");
   const submitted = await form.emit("submit");
   assert.equal(submitted.defaultPrevented, undefined);
   assert.equal(form.dataset.submitting, "true");
+  assert.equal(submitButton.disabled, true);
+
+  context.sitbankInviteTurnstileInteractiveEnd();
+  assert.equal(responseInput.value, "fresh-token");
   assert.equal(submitButton.disabled, true);
 
   const duplicate = await form.emit("submit");
@@ -480,6 +519,8 @@ async function exerciseAdminInviteAccept() {
   context.sitbankInviteTurnstileExpired();
   assert.equal(responseInput.value, "");
   assert.equal(submitButton.disabled, true);
+  assert.equal(fullName.value, "Safe Recipient");
+  assert.equal(phoneNumber.value, "92345678");
   assert.match(status.textContent, /expired/);
 
   const missingToken = await form.emit("submit");

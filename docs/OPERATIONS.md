@@ -471,10 +471,16 @@ the invite from `pending` to `totp_pending` and creates only a `setup_pending`
 identity; only successful workplace-code and TOTP verification activates the
 identity and marks the invite `accepted`. The setup form accepts exactly 8
 Singapore mobile digits starting with `8` or `9`, without `+65`, spaces, or
-hyphens. When Turnstile is enabled, the setup submit control remains disabled
-until the browser holds a fresh successful Turnstile response; expiry, timeout,
-error, or re-verification clears the response and preserves only non-sensitive
-entered values such as name and mobile number. The setup flow uses `no-store`
+hyphens. When Turnstile is enabled, recipients can fill the normal setup fields
+while the challenge is pending or re-verifying, but the setup submit control
+remains disabled until the browser holds a fresh successful Turnstile response.
+The success callback stores the response only in the hidden browser form field,
+marks the form state `valid`, enables `Start secure setup`, and shows that setup
+can continue. Non-invalidating pending or after-interactive callbacks must not
+downgrade that valid state. Explicit expiry, error, timeout, unsupported-widget,
+reset, or a new before-interactive challenge lifecycle clears the response,
+disables submit again, and preserves only non-sensitive entered values such as
+name and mobile number. The setup flow uses `no-store`
 and `Referrer-Policy: origin` response headers, CSRF-protected browser forms,
 same-browser verification binding, and capped restarts that would otherwise rotate
 passwords, TOTP setup secrets, or workplace verification codes. If an active
@@ -1426,3 +1432,17 @@ to `container.env`. Production and staging use separate widgets for
 invite acceptance is enabled for a private/admin hostname, include that exact
 recipient-facing hostname in the matching Turnstile widget's hostname allowlist;
 do not broaden the widget to wildcard provider domains. The admin app remains private behind Tailscale while its public-auth entry routes retain Turnstile defense in depth.
+
+For invite-acceptance troubleshooting, use only safe browser-console checks:
+inspect the form's `turnstileState`, the hidden response field length, the
+`Start secure setup` disabled flag, and whether the expected callback names are
+functions. Never ask an operator or recipient to paste a raw challenge response,
+invite URL, session value, MFA code, password, workplace verification code,
+Cloudflare provider response, cookie, or token into chat, tickets, logs, pull
+requests, screenshots, or issue comments. The expected managed-widget lifecycle
+is: SITBank callback functions are registered before the Cloudflare API can
+invoke them; pending before success keeps submit disabled; success with a fresh
+response enables submit; after-interactive or non-invalidating pending callbacks
+preserve a still-valid response; expiry, error, timeout, unsupported-widget,
+reset, or a new before-interactive challenge lifecycle clears the stored
+response and disables submit until another fresh success arrives.
