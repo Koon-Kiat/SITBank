@@ -1500,8 +1500,14 @@ def manual_recovery_complete(request_id: int):
 @admin_bp.get("/invites/accept/<token>")
 @limiter.limit("20 per hour", key_func=get_remote_address)
 def invite_accept_info(token: str):
-    result = invite_info(token)
-    if _wants_json():
+    wants_json = _wants_json()
+    try:
+        result = invite_info(token)
+    except AuthError as exc:
+        if wants_json:
+            raise
+        return _render_invite_acceptance("", phase="unavailable", status_code=exc.status_code)
+    if wants_json:
         return jsonify(result)
     return _render_invite_acceptance(token, phase="start")[0]
 

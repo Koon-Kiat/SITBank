@@ -396,6 +396,9 @@ active invite. Staff invite password fields are length-bounded at the request
 schema before the service-level password policy runs. Repeated invalid TOTP or
 workplace-code verification attempts also lock the active invite until a root
 admin resets, revokes, or reissues it.
+Stale or malformed browser invite links render a generic invite-unavailable page
+instead of the private admin error page; explicit JSON clients receive only the
+minimal generic error.
 
 Evidence: `app/admin/routes.py`, `app/admin/services.py`,
 `app/admin/separation.py`, `admin_wsgi.py`, `config.py`, and

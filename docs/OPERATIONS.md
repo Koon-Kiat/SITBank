@@ -476,6 +476,9 @@ passwords, TOTP setup secrets, or workplace verification codes. If an active
 invite becomes locked by the restart cap, a root admin should use the invite
 screen's reset action with a fresh TOTP code; do not unlock it by editing
 database rows directly.
+Stale or malformed browser invite links render a generic invite-unavailable page
+instead of the private admin error page; explicit JSON clients receive only the
+minimal generic error.
 Invite creation, revoke, reset, and reissue actions use strict high-risk TOTP:
 wait for a fresh authenticator code before retrying an invite action, and do
 not reuse the same code for repeated invite operations. The invite table shows
