@@ -141,6 +141,27 @@ def test_global_verification_runbook_is_linked_from_main_docs():
         assert "global-verification.md" in text, path
 
 
+def test_invite_turnstile_lifecycle_docs_match_fail_closed_behavior():
+    operations = Path("docs/OPERATIONS.md").read_text(encoding="utf-8")
+    normalized = " ".join(operations.split())
+
+    for required in (
+        "recipients can fill the normal setup fields while the challenge is pending or re-verifying",
+        "remains disabled until the browser holds a fresh successful Turnstile response",
+        "marks the form state `valid`",
+        "Non-invalidating pending or after-interactive callbacks must not downgrade that valid state",
+        "Explicit expiry, error, timeout, unsupported-widget, reset, or a new before-interactive challenge lifecycle clears the response",
+        "inspect the form's `turnstileState`, the hidden response field length, the `Start secure setup` disabled flag",
+        "Never ask an operator or recipient to paste a raw challenge response",
+        "success with a fresh response enables submit",
+        "after-interactive or non-invalidating pending callbacks preserve a still-valid response",
+    ):
+        assert required in normalized
+
+    assert "paste a raw challenge response" in operations
+    assert "paste the Turnstile response" not in operations
+
+
 def test_global_verification_runbook_keeps_required_contexts_and_baselines():
     runbook = GLOBAL_RUNBOOK.read_text(encoding="utf-8")
 
