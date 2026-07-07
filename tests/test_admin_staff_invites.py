@@ -117,7 +117,7 @@ def _assert_invite_acceptance_security_headers(response):
     assert "no-store" in cache_control
     assert "private" in cache_control
     assert response.headers.get("Pragma") == "no-cache"
-    assert response.headers.get("Referrer-Policy") == "no-referrer"
+    assert response.headers.get("Referrer-Policy") == "same-origin"
 
 
 def _assert_generic_invite_unavailable_page(response, token: str):
@@ -741,6 +741,102 @@ def test_browser_invite_onboarding_requires_csrf_and_activates_only_after_both_c
     assert invite.status == "accepted"
     assert invite.used_by_user_id == staff_user.id
     assert "staff.person@sit.singaporetech.edu.sg" in staff_page.get_data(as_text=True)
+    _assert_invite_acceptance_security_headers(verify)
+
+
+def test_invite_acceptance_strict_https_csrf_allows_same_origin_referrer(
+    admin_app,
+    admin_client,
+):
+    _root, root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    _login_admin(admin_client, root_secret)
+    assert _create_invite(admin_client, root_secret).status_code == 201
+    token = _latest_invite_token()
+    invite = db.session.execute(db.select(StaffInvite)).scalar_one()
+    recipient = admin_app.test_client()
+    original_csrf = admin_app.config["WTF_CSRF_ENABLED"]
+    original_strict = admin_app.config["WTF_CSRF_SSL_STRICT"]
+    admin_app.config["WTF_CSRF_ENABLED"] = True
+    admin_app.config["WTF_CSRF_SSL_STRICT"] = True
+    base_url = "https://admin.example.test"
+    landing_url = f"{base_url}/invites/accept/{token}"
+    start_url = f"{base_url}/invites/accept/{token}/start"
+
+    try:
+        landing = recipient.get(f"/invites/accept/{token}", base_url=base_url)
+        assert landing.status_code == 200
+        _assert_invite_acceptance_security_headers(landing)
+
+        missing_csrf = recipient.post(
+            f"/invites/accept/{token}/start",
+            base_url=base_url,
+            headers={"Referer": landing_url},
+            data=_staff_invite_start_payload(),
+        )
+        db.session.refresh(invite)
+        assert missing_csrf.status_code == 400
+        assert invite.status == "pending"
+        assert invite.setup_user_id is None
+        assert db.session.query(User).count() == 1
+
+        start = recipient.post(
+            f"/invites/accept/{token}/start",
+            base_url=base_url,
+            headers={"Referer": landing_url},
+            data=_staff_invite_start_payload(csrf_token=_csrf_token_from(landing)),
+        )
+        start_body = start.get_data(as_text=True)
+        secret_match = re.search(
+            r'id="invite-manual-entry-secret"[^>]*value="([A-Z2-7]+)"',
+            start_body,
+        )
+        assert start.status_code == 200
+        assert secret_match is not None
+        assert "Verify your staff access" in start_body
+
+        missing_verify_csrf = recipient.post(
+            f"/invites/accept/{token}/verify",
+            base_url=base_url,
+            headers={"Referer": start_url},
+            data={
+                "totp_code": _stable_totp(secret_match.group(1)),
+                "workplace_verification_code": _latest_workplace_code(),
+            },
+        )
+        db.session.refresh(invite)
+        assert missing_verify_csrf.status_code == 400
+        assert invite.status == "totp_pending"
+
+        verify = recipient.post(
+            f"/invites/accept/{token}/verify",
+            base_url=base_url,
+            headers={"Referer": start_url},
+            data={
+                "csrf_token": _csrf_token_from(start),
+                "totp_code": _stable_totp(secret_match.group(1)),
+                "workplace_verification_code": _latest_workplace_code(),
+            },
+        )
+    finally:
+        admin_app.config["WTF_CSRF_ENABLED"] = original_csrf
+        admin_app.config["WTF_CSRF_SSL_STRICT"] = original_strict
+
+    staff_user = db.session.execute(
+        db.select(User).where(User.email == "staff.person@sit.singaporetech.edu.sg")
+    ).scalar_one()
+    db.session.refresh(invite)
+
+    assert verify.status_code == 200
+    assert "Staff access activated" in verify.get_data(as_text=True)
+    assert staff_user.account_status == "active"
+    assert staff_user.mfa_enabled is True
+    assert invite.status == "accepted"
+    assert invite.used_by_user_id == staff_user.id
     _assert_invite_acceptance_security_headers(verify)
 
 

@@ -255,7 +255,7 @@ def register_invite_acceptance_response_headers(app: Flask) -> None:
             response.headers["Cache-Control"] = "no-store, no-cache, max-age=0, private"
             response.headers["Pragma"] = "no-cache"
             response.headers["Expires"] = "0"
-            response.headers["Referrer-Policy"] = "no-referrer"
+            response.headers["Referrer-Policy"] = "same-origin"
         return response
 
 
