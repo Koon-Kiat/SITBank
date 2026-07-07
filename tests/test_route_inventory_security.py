@@ -320,6 +320,17 @@ ROUTE_SECURITY_INVENTORY = {
         "step_up": "not_required",
         "public_justification": "",
     },
+    "auth.session_status": {
+        "endpoint": "auth.session_status",
+        "rule": "/auth/session/status",
+        "methods": {"GET"},
+        "access": "public",
+        "classification": "session",
+        "csrf": "not_applicable",
+        "rate_limit": "edge_auth",
+        "step_up": "not_required",
+        "public_justification": "Polled by the client-side session-timeout script to detect a session replaced or ended elsewhere, so it must report status without requiring a currently-valid session.",
+    },
     "auth.terminate_session": {
         "endpoint": "auth.terminate_session",
         "rule": "/auth/sessions/<session_id>",

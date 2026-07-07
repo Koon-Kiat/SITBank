@@ -154,9 +154,15 @@ Only one active customer/admin session is allowed per runtime namespace. A new
 successful login replaces previous active sessions in that namespace and moves
 them to past-session history. Old browser tabs may still display stale HTML
 until the next request, but the revoked session cannot access protected routes.
-The session-management page is for reviewing the current active session and
-recent past sessions; normal operation does not require a manual bulk-revoke
-form.
+The replaced tab does not have to navigate to find out, though:
+`session-timeout.js` polls `GET /auth/session/status` roughly every 15 seconds
+(paused while the tab is hidden) and shows a dedicated "Signed Out" dialog as
+soon as the server reports the session was replaced. The status endpoint is
+listed in `app/security/sessions.py::ACTIVITY_EXEMPT_ENDPOINTS` so polling it
+never refreshes `last_activity_at`; otherwise a background poll would silently
+defeat the inactivity timeout below. The session-management page is for
+reviewing the current active session and recent past sessions; normal
+operation does not require a manual bulk-revoke form.
 
 | Lifecycle event | Control | Evidence |
 | --- | --- | --- |
@@ -165,6 +171,7 @@ form.
 | Successful admin MFA | Uses the admin session cookie and staff account checks | `app/admin/services.py`; `tests/test_admin_staff_invites.py::test_admin_login_creates_only_admin_session_cookie` |
 | Password change | Requires TOTP step-up, changes the password, and revokes all customer sessions so the user signs in again | `app/auth/services.py::change_password()`; `tests/test_account_security_actions.py::test_password_change_succeeds_with_recent_mfa_and_revokes_other_sessions` |
 | Any successful login, MFA-verified or not | Enforces the single active customer/admin session cap and moves replaced sessions to past-session history | `app/security/sessions.py::establish_authenticated_session()` and `enforce_active_session_cap()`; `tests/test_session_management.py::test_mfa_login_enforces_single_active_session_cap` |
+| A replaced or ended session polled from its own browser tab | Reports status without requiring the (now invalid) session, without extending the inactivity window | `app/auth/routes.py::session_status()`; `app/security/sessions.py::session_replacement_reason()`; `tests/test_session_management.py::test_session_status_reports_replaced_after_new_login_elsewhere`, `tests/test_session_management.py::test_session_status_polling_does_not_extend_inactivity_window` |
 | Logout | Revokes current server-side session | `tests/test_session_management.py::test_logout_invalidates_current_session` |
 | Protected revoke-other endpoint | Preserved as a CSRF/MFA-protected backend defense-in-depth route and not linked from the session-management page | `tests/test_session_management.py::test_revoke_other_sessions_accepts_totp_stepup_and_rotates_session`; `tests/test_session_management.py::test_sessions_page_keeps_review_controls_without_bulk_revoke_action` |
 | Terminate one listed session | Uses public session references and ownership checks | `tests/test_session_management.py::test_terminate_other_session_by_public_reference_revokes_it` |

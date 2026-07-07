@@ -521,6 +521,87 @@ def test_session_timeout_ui_uses_explicit_extension_and_csp_safe_toggling(client
         assert passive_event not in script
 
 
+def test_session_timeout_ui_polls_status_and_declares_replaced_overlay(client):
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    mark_recent_mfa(client, user)
+    response = client.get("/dashboard")
+    markup = response.data.decode("utf-8")
+    script = Path("app/static/js/session-timeout.js").read_text(encoding="utf-8")
+
+    assert response.status_code == 200
+    assert '<dialog id="session-replaced-overlay"' in markup
+    assert "/auth/session/status" in script
+    assert "document.hidden" in script
+
+
+def test_session_status_reports_active_for_valid_session(client):
+    register(client)
+    login(client)
+
+    response = client.get("/auth/session/status")
+
+    assert response.status_code == 200
+    assert response.get_json() == {"status": "active"}
+
+
+def test_session_status_reports_replaced_after_new_login_elsewhere(app, client):
+    second_client = app.test_client()
+    register(client)
+    login(client)
+    login(second_client)
+
+    response = client.get("/auth/session/status")
+
+    assert response.status_code == 401
+    assert response.get_json() == {"status": "signed_out", "code": "replaced"}
+
+
+def test_session_status_reports_ended_after_logout(client):
+    register(client)
+    login(client)
+    client.post("/logout")
+
+    response = client.get("/auth/session/status")
+
+    assert response.status_code == 401
+    assert response.get_json() == {"status": "signed_out", "code": "ended"}
+
+
+def test_session_status_reports_ended_for_anonymous_client(app):
+    anon_client = app.test_client()
+
+    response = anon_client.get("/auth/session/status")
+
+    assert response.status_code == 401
+    assert response.get_json() == {"status": "signed_out", "code": "ended"}
+
+
+def test_session_status_polling_does_not_extend_inactivity_window(client):
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    mark_recent_mfa(client, user)
+    stale_but_valid = int(time.time()) - 60
+
+    with client.session_transaction() as sess:
+        sess["last_activity_at"] = stale_but_valid
+
+    status_response = client.get("/auth/session/status")
+    with client.session_transaction() as sess:
+        after_status_poll = sess.get("last_activity_at")
+
+    other_response = client.get("/dashboard")
+    with client.session_transaction() as sess:
+        after_normal_request = sess.get("last_activity_at")
+
+    assert status_response.status_code == 200
+    assert after_status_poll == stale_but_valid
+    assert other_response.status_code == 200
+    assert after_normal_request > stale_but_valid
+
+
 def test_security_warning_alerts_do_not_auto_dismiss():
     script = Path("app/static/js/account.js").read_text(encoding="utf-8")
 

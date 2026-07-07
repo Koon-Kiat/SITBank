@@ -448,15 +448,17 @@ async function exerciseSessionTimeout() {
   const continueButton = new MockElement({ id: "session-continue-btn" });
   const timer = new MockElement({ id: "session-timer" });
   const timerValue = new MockElement({ id: "session-timer-value" });
+  const replacedOverlay = new MockElement({ id: "session-replaced-overlay" });
   document.selectorMap.set('meta[name="session-timeout"]', meta);
   document.selectorMap.set('meta[name="csrf-token"]', csrf);
-  for (const element of [overlay, countdown, continueButton, timer, timerValue]) {
+  for (const element of [overlay, countdown, continueButton, timer, timerValue, replacedOverlay]) {
     document.idMap.set(element.id, element);
   }
   const context = createBrowserContext(document);
   runScript("app/static/js/session-timeout.js", context);
   for (const callback of context.__timeoutCallbacks) callback();
   for (const callback of [...context.__intervalCallbacks]) callback();
+  await new Promise((resolve) => setTimeout(resolve, 0));
   for (let index = 0; index < 65; index += 1) {
     for (const callback of [...context.__intervalCallbacks]) callback();
   }
@@ -467,6 +469,19 @@ async function exerciseSessionTimeout() {
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(continueButton.disabled, false);
   assert.match(timerValue.textContent, /^\d+:\d{2}$/);
+  assert.equal(replacedOverlay.open, false);
+
+  document.hidden = true;
+  context.fetch = async () => ({ ok: false, async json() { return { code: "replaced" }; } });
+  for (const callback of [...context.__intervalCallbacks]) callback();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(replacedOverlay.open, false);
+
+  document.hidden = false;
+  for (const callback of [...context.__intervalCallbacks]) callback();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(replacedOverlay.open, true);
+  assert.equal(overlay.open, false);
 }
 
 async function exerciseTheme() {
