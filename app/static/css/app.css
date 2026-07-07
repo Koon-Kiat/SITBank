@@ -296,6 +296,10 @@ img {
   max-width: 46ch;
 }
 
+.footer-brand p {
+  text-wrap: pretty;
+}
+
 .footer-title {
   margin: 0;
   color: var(--text);
@@ -2664,12 +2668,20 @@ th {
   }
 
   .footer-brand {
+    max-width: none;
     margin-inline: auto;
   }
 
   .footer-column {
     padding-top: var(--space-6);
     border-top: 1px solid var(--line);
+  }
+
+  .footer-links {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: var(--space-2) var(--space-4);
   }
 
   .feature-grid,
@@ -3267,7 +3279,7 @@ th {
   display: flex;
   align-items: flex-start;
   gap: var(--space-3);
-  margin: 40px 0 var(--space-8);
+  margin: 40px 0 0;
   color: var(--muted);
   font-size: 0.84rem;
   line-height: 1.6;
