@@ -471,6 +471,21 @@ async function exerciseSessionTimeout() {
   assert.match(timerValue.textContent, /^\d+:\d{2}$/);
   assert.equal(replacedOverlay.open, false);
 
+  let fetchCalls = 0;
+  context.fetch = async () => {
+    fetchCalls += 1;
+    return { ok: true, async json() { return {}; } };
+  };
+  document.hidden = true;
+  await document.emit("visibilitychange");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(fetchCalls, 0);
+
+  document.hidden = false;
+  await document.emit("visibilitychange");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(fetchCalls, 1);
+
   document.hidden = true;
   context.fetch = async () => ({ ok: false, async json() { return { code: "replaced" }; } });
   for (const callback of [...context.__intervalCallbacks]) callback();
