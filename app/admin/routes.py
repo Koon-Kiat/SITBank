@@ -91,6 +91,8 @@ _ADMIN_LOGIN_TEMPLATE = "admin/login.html"
 _ADMIN_MFA_VERIFY_TEMPLATE = "admin/mfa_verify.html"
 _STAFF_INVITE_ACCEPT_TEMPLATE = "admin/invite_accept.html"
 _INVALID_REQUEST_MESSAGE = "Invalid request"
+_INVITE_START_VALIDATION_MESSAGE = "Check the setup details and try again."
+_INVITE_CSRF_MESSAGE = "Security token expired or invalid. Review the form and try again."
 _ADMIN_RATE_LIMIT_HOURLY = "10 per hour"
 _ADMIN_RATE_LIMIT_STEP_UP = "5 per 5 minutes"
 _ADMIN_MFA_COARSE_RATE_LIMIT = "30 per minute"
@@ -845,6 +847,7 @@ def _render_invite_acceptance(
     phase: str,
     status_code: int = 200,
     totp_setup: dict[str, str] | None = None,
+    start_form_data: dict[str, str] | None = None,
 ):
     return (
         render_template(
@@ -852,6 +855,7 @@ def _render_invite_acceptance(
             token=token,
             phase=phase,
             totp_setup=totp_setup,
+            start_form_data=start_form_data or {},
         ),
         status_code,
     )
@@ -863,11 +867,75 @@ def _invite_acceptance_browser_error(
     phase: str,
     message: str,
     status_code: int,
+    retry_after: int | None = None,
+    start_form_data: dict[str, str] | None = None,
 ):
     if status_code == 429:
-        return rate_limit_response()
+        return rate_limit_response(retry_after)
     flash(message, "error")
-    return _render_invite_acceptance(token, phase=phase, status_code=status_code)
+    return _render_invite_acceptance(
+        token,
+        phase=phase,
+        status_code=status_code,
+        start_form_data=start_form_data,
+    )
+
+
+def invite_acceptance_csrf_error_response():
+    token = str((request.view_args or {}).get("token") or "")
+    phase = "verify" if request.endpoint == "admin.invite_accept_verify" else "start"
+    flash(_INVITE_CSRF_MESSAGE, "error")
+    return _render_invite_acceptance(
+        token,
+        phase=phase,
+        status_code=400,
+        start_form_data=_safe_invite_start_form_data(),
+    )
+
+
+def _safe_invite_start_form_data() -> dict[str, str]:
+    if request.is_json:
+        return {}
+    return {
+        "full_name": str(request.form.get("full_name") or "")[:120],
+        "phone_number": str(request.form.get("phone_number") or "")[:32],
+    }
+
+
+def _invite_start_validation_reason() -> str:
+    payload: dict[str, Any]
+    if request.is_json:
+        loaded = request.get_json(silent=True)
+        payload = loaded if isinstance(loaded, dict) else {}
+    else:
+        payload = dict(request.form)
+    full_name = str(payload.get("full_name") or "").strip()
+    phone_number = str(payload.get("phone_number") or "").strip()
+    password = str(payload.get("password") or "")
+    confirm_password = str(payload.get("confirm_password") or "")
+    if {"role", "workplace_email", "email", "account_type", "customer_user_id", "is_admin"} & {
+        str(field).strip() for field in payload
+    }:
+        return "forged_fields"
+    if not full_name or len(full_name) > 120 or re.search(r"[\x00-\x1f\x7f<>]", full_name):
+        return "invalid_full_name"
+    if not re.fullmatch(PHONE_RE, phone_number):
+        return "invalid_phone"
+    if password and confirm_password and password != confirm_password:
+        return "password_mismatch"
+    if not (8 <= len(password) <= 256) or not (8 <= len(confirm_password) <= 256):
+        return "password_policy"
+    return "form_validation"
+
+
+def _invite_start_validation_message(reason: str) -> str:
+    messages = {
+        "invalid_full_name": "Enter a valid full name.",
+        "invalid_phone": "Enter an 8-digit Singapore mobile number starting with 8 or 9.",
+        "password_mismatch": "Passwords must match.",
+        "password_policy": "Use a password that meets the staff password policy.",
+    }
+    return messages.get(reason, _INVITE_START_VALIDATION_MESSAGE)
 
 
 @admin_bp.get("/health/live")
@@ -1550,13 +1618,16 @@ def invite_accept_start(token: str):
             request_fields=_request_fields(),
         )
     except ValidationError:
+        reason = _invite_start_validation_reason()
+        audit_event("staff_invite_accept", "failure", metadata={"reason": reason})
         if wants_json:
             raise
         return _invite_acceptance_browser_error(
             token,
             phase="start",
-            message=_INVALID_REQUEST_MESSAGE,
+            message=_invite_start_validation_message(reason),
             status_code=400,
+            start_form_data=_safe_invite_start_form_data(),
         )
     except AuthError as exc:
         if wants_json:
@@ -1566,6 +1637,8 @@ def invite_accept_start(token: str):
             phase="start",
             message=exc.message,
             status_code=exc.status_code,
+            retry_after=exc.retry_after,
+            start_form_data=_safe_invite_start_form_data(),
         )
     if wants_json:
         return jsonify(result)
@@ -1591,6 +1664,7 @@ def invite_accept_verify(token: str):
             request_fields=_request_fields(),
         )
     except ValidationError:
+        audit_event("staff_invite_accept", "failure", metadata={"reason": "verify_form_validation"})
         if wants_json:
             raise
         return _invite_acceptance_browser_error(
@@ -1607,6 +1681,7 @@ def invite_accept_verify(token: str):
             phase="verify",
             message=exc.message,
             status_code=exc.status_code,
+            retry_after=exc.retry_after,
         )
     if wants_json:
         return jsonify(result)

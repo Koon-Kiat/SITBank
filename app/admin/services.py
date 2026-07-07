@@ -134,6 +134,13 @@ INVITE_FRESH_MFA_REQUIRED_ERROR = (
 )
 INVITE_CREATE_ERROR = "Invite could not be created"
 INVITE_ACCEPTANCE_ERROR = "Invite acceptance failed"
+INVITE_TURNSTILE_ERROR = "Complete the security challenge before starting setup."
+INVITE_DUPLICATE_IDENTITY_ERROR = (
+    "Staff identity details could not be accepted. Ask a root admin to review the invite."
+)
+INVITE_WORKPLACE_DELIVERY_ERROR = (
+    "Setup could not send the workplace verification code. Ask a root admin to reissue the invite or retry later."
+)
 STAFF_INVITE_NOT_FOUND_ERROR = "Invite not found"
 INVALID_WORKPLACE_EMAIL_ERROR = "Invalid workplace email"
 GENERIC_INVITE_ERROR = "Invite link is invalid or expired"
@@ -3047,14 +3054,24 @@ def start_invite_acceptance(
         require_turnstile("admin_invite_accept", turnstile_token)
     except TurnstileError as exc:
         audit_event("staff_invite_accept", "failure", metadata={"reason": "turnstile_failed"})
-        raise AuthError(INVITE_ACCEPTANCE_ERROR, 400) from exc
+        raise AuthError(INVITE_TURNSTILE_ERROR, 400) from exc
 
     invite = _active_invite_by_token(token, lock=True, audit_failures=True)
     _ensure_invite_identity_policy(invite, "staff_invite_accept")
     session_hash = _invite_acceptance_session_hash(invite.id, create=True)
     _ensure_invite_acceptance_can_start(invite, session_hash)
-    name = validate_full_name(full_name)
-    phone = validate_phone_number(phone_number)
+    invite_id = int(invite.id)
+    created_setup_user_id: int | None = None
+    try:
+        name = validate_full_name(full_name)
+    except AuthError:
+        audit_event("staff_invite_accept", "failure", metadata={"reason": "invalid_full_name"})
+        raise
+    try:
+        phone = validate_phone_number(phone_number)
+    except AuthError:
+        audit_event("staff_invite_accept", "failure", metadata={"reason": "invalid_phone"})
+        raise
     if password != confirm_password:
         audit_event("staff_invite_accept", "failure", metadata={"reason": "password_mismatch"})
         raise AuthError("Passwords must match", 400)
@@ -3066,7 +3083,11 @@ def start_invite_acceptance(
 
     user = db.session.get(User, invite.setup_user_id) if invite.setup_user_id else None
     if user is None:
-        _reject_duplicate_staff_signup(invite.workplace_email_normalized, phone)
+        try:
+            _reject_duplicate_staff_signup(invite.workplace_email_normalized, phone)
+        except AuthError as exc:
+            audit_event("staff_invite_accept", "failure", metadata={"reason": "duplicate_identity"})
+            raise AuthError(INVITE_DUPLICATE_IDENTITY_ERROR, exc.status_code) from exc
         user = User(
             username=_staff_username(invite.workplace_email_normalized),
             email=invite.workplace_email_normalized,
@@ -3082,6 +3103,7 @@ def start_invite_acceptance(
         mark_password_changed(user)
         db.session.add(user)
         db.session.flush()
+        created_setup_user_id = int(user.id)
         invite.setup_user_id = user.id
     else:
         if invite.acceptance_session_hash:
@@ -3120,9 +3142,12 @@ def start_invite_acceptance(
         db.session.commit()
     except Exception as exc:
         db.session.rollback()
+        db.session.expunge_all()
+        _clear_failed_invite_acceptance_start(invite_id, created_setup_user_id)
         current_app.logger.warning("staff_workplace_verification_email_failed error=%s", type(exc).__name__)
         audit_event("staff_workplace_verification_sent", "failure", metadata={"reason": "email_delivery_failed"})
-        raise AuthError(INVITE_ACCEPTANCE_ERROR, 503) from exc
+        audit_event("staff_invite_accept", "failure", metadata={"reason": "workplace_email_delivery_failed"})
+        raise AuthError(INVITE_WORKPLACE_DELIVERY_ERROR, 503) from exc
     return {
         "message": "TOTP setup required",
         "invite": {
@@ -3290,6 +3315,22 @@ def _clear_invite_acceptance_state(invite: StaffInvite) -> None:
     invite.workplace_verification_expires_at = None
     invite.workplace_verified_at = None
     session.pop(INVITE_ACCEPTANCE_SESSION_KEY, None)
+
+
+def _clear_failed_invite_acceptance_start(invite_id: int, setup_user_id: int | None) -> None:
+    if setup_user_id is None:
+        return
+    invite = db.session.get(StaffInvite, int(invite_id))
+    if invite is None:
+        return
+    if setup_user_id is not None and invite.setup_user_id == int(setup_user_id):
+        setup_user = db.session.get(User, int(setup_user_id))
+        invite.setup_user_id = None
+        if setup_user is not None and setup_user.account_status == "setup_pending":
+            db.session.delete(setup_user)
+    invite.status = "pending"
+    _clear_invite_acceptance_state(invite)
+    db.session.flush()
 
 
 def _consume_invite_probe_limit(token: str) -> None:

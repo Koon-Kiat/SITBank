@@ -7,17 +7,29 @@
 <section class="panel narrow">
   <p class="eyebrow">Staff onboarding</p>
   {% if phase == "start" %}
+    {% set invite_turnstile_required = turnstile_widget_enabled("admin_invite_accept") %}
     <h1>Set up your staff access</h1>
     <p class="muted">This invite does not activate an account until password setup, workplace verification, and authenticator verification all succeed.</p>
-    <form class="form-stack" method="post" action="{{ url_for('admin.invite_accept_start', token=token) }}" autocomplete="off">
+    <form
+      class="form-stack"
+      method="post"
+      action="{{ url_for('admin.invite_accept_start', token=token) }}"
+      autocomplete="off"
+      data-invite-accept-start
+      data-turnstile-required="{{ 'true' if invite_turnstile_required else 'false' }}"
+    >
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      {% if invite_turnstile_required %}
+      <input type="hidden" name="turnstile_token" value="" data-turnstile-response>
+      {% endif %}
       <div class="form-group">
         <label for="invite-full-name">Full name</label>
-        <input id="invite-full-name" name="full_name" type="text" maxlength="120" autocomplete="name" required>
+        <input id="invite-full-name" name="full_name" type="text" maxlength="120" autocomplete="name" value="{{ start_form_data.get('full_name', '') }}" required>
       </div>
       <div class="form-group">
         <label for="invite-phone-number">Singapore mobile number</label>
-        <input id="invite-phone-number" name="phone_number" type="tel" inputmode="numeric" pattern="[89][0-9]{7}" maxlength="8" autocomplete="tel" required>
+        <input id="invite-phone-number" name="phone_number" type="tel" inputmode="numeric" pattern="[89][0-9]{7}" maxlength="8" autocomplete="tel" value="{{ start_form_data.get('phone_number', '') }}" aria-describedby="invite-phone-help" required>
+        <p class="hint" id="invite-phone-help">Use exactly 8 digits starting with 8 or 9, without +65, spaces, or hyphens.</p>
       </div>
       <div class="form-group">
         <label for="invite-password">Password</label>
@@ -27,8 +39,11 @@
         <label for="invite-confirm-password">Confirm password</label>
         <input id="invite-confirm-password" name="confirm_password" type="password" minlength="8" maxlength="256" autocomplete="new-password" required>
       </div>
-      {{ turnstile.widget("admin_invite_accept") }}
-      <button class="button full" type="submit">Start secure setup</button>
+      {{ turnstile.widget("admin_invite_accept", managed=true) }}
+      {% if invite_turnstile_required %}
+      <p class="hint" id="invite-turnstile-status" data-turnstile-status aria-live="polite">Complete the security challenge to enable setup.</p>
+      {% endif %}
+      <button class="button full" type="submit" data-invite-start-submit {% if invite_turnstile_required %}disabled aria-describedby="invite-turnstile-status"{% endif %}>Start secure setup</button>
     </form>
   {% elif phase == "verify" %}
     <h1>Verify your staff access</h1>
@@ -66,6 +81,12 @@
   {% else %}
     <h1>Staff invite unavailable</h1>
     <p class="muted">This invite link is invalid or expired. Ask a root admin to review the invite and send a new link if access is still needed.</p>
-  {% endif %}
+{% endif %}
 </section>
+{% endblock %}
+
+{% block scripts %}
+  {% if phase == "start" %}
+    <script src="{{ url_for('static', filename='js/admin-invite-accept.js') }}" defer></script>
+  {% endif %}
 {% endblock %}

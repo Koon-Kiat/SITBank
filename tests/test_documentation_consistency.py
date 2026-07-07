@@ -87,6 +87,10 @@ def test_profile_username_and_staff_invite_docs_match_service_and_browser_contra
         "Normal browser requests render the onboarding form",
         "Viewing the page does not consume the invite or create an account",
         "only successful workplace-code and TOTP verification activates the identity",
+        "Referrer-Policy: origin",
+        "fresh successful Turnstile response",
+        "exactly 8 Singapore mobile digits starting with `8` or `9`",
+        "recipient-facing hostname in the matching Turnstile widget's hostname allowlist",
         "delivery states `unconfirmed`, `queued`, or `failed`",
     ):
         assert required in normalized

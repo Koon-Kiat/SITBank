@@ -27,7 +27,7 @@
       </select>
       <label for="invite-totp-code">Authenticator code</label>
       <input id="invite-totp-code" name="totp_code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required>
-      <p class="hint">Use a fresh authenticator code for each invite action. Delivery status reports backend handoff only, never recipient mailbox delivery.</p>
+      <p class="hint">Use a fresh authenticator code from the currently signed-in root admin for each invite action, and avoid submitting near code expiry. Delivery status reports backend handoff only, never recipient mailbox delivery.</p>
       <button type="submit">Create invite</button>
     </form>
   </section>
@@ -87,6 +87,7 @@
                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <label for="reissue-totp-{{ invite.id }}">Authenticator code</label>
                     <input id="reissue-totp-{{ invite.id }}" name="totp_code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6-digit code" required>
+                    <p class="hint">Use the current code from your own root-admin authenticator. Wait for the next code if this one is close to expiry or was used for another invite action.</p>
                     <button type="submit">Send new invite</button>
                   </form>
                 </details>

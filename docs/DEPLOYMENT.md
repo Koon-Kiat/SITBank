@@ -231,8 +231,11 @@ Deployment maps production and staging GitHub Environment variables named
 `TURNSTILE_ENABLED`, `TURNSTILE_SITE_KEY`, `TURNSTILE_VERIFY_URL`, and
 `TURNSTILE_*_ENABLED` runtime settings. Configure separate Cloudflare widgets:
 the production widget covers `sitbank.pp.ua` and `www.sitbank.pp.ua`, while the
-staging widget covers `staging-sitbank.pp.ua`. Store server credentials only as
-the `PROD_TURNSTILE_SECRET_KEY` and `STAGING_TURNSTILE_SECRET_KEY` GitHub
+staging widget covers `staging-sitbank.pp.ua`. If admin invite acceptance uses
+a private/admin hostname in that environment, add the exact recipient-facing
+hostname to the matching widget's hostname allowlist; do not use wildcard
+provider-domain coverage as a shortcut. Store server credentials only as the
+`PROD_TURNSTILE_SECRET_KEY` and `STAGING_TURNSTILE_SECRET_KEY` GitHub
 Environment secrets. The trusted deployment installs each credential as
 `/etc/sitbank*/secrets/turnstile_secret_key`; Compose mounts that
 environment-specific credential read-only into both the customer and admin
