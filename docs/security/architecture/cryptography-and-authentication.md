@@ -363,9 +363,9 @@ Staff onboarding is invite-based. Root admins create invites for `staff` or
 Privileged staff/admin/root-admin identities use only approved workplace email
 domains from `ADMIN_ALLOWED_EMAIL_DOMAINS`; staff invites are sent to the
 workplace email and do not collect a personal backup email. Invite acceptance
-validates the token, workplace email policy, password policy, optional
-Turnstile, workplace verification code, and TOTP setup before activating the
-account. A normal browser GET renders the onboarding page while an explicit JSON
+validates the token, workplace email policy, Singapore mobile format, password
+policy, optional Turnstile, workplace verification code, and TOTP setup before
+activating the account. A normal browser GET renders the onboarding page while an explicit JSON
 client receives the minimal API response. Viewing the page leaves the invite
 pending and creates no account. Starting setup creates only a `setup_pending`
 staff/admin identity and changes the invite to `totp_pending`; the invite becomes
@@ -386,8 +386,12 @@ handoff fails during invite creation, the invite is moved out of active pending
 state so it does not block safe retry.
 The public invite lookup returns only a generic valid-link message and exposes
 no acceptance metadata, setup state, workplace email, role, status, user id,
-counter, or lock timestamp. Invite acceptance responses are marked `no-store` with `Referrer-Policy: same-origin`,
-so same-origin HTTPS form posts keep Flask-WTF SSL-strict CSRF protection while cross-origin requests do not receive the invite URL. The post-start verification step uses same-browser acceptance session
+counter, or lock timestamp. Invite acceptance responses are marked `no-store`
+with `Referrer-Policy: origin`, so HTTPS form posts keep only origin-level
+evidence for Flask-WTF SSL-strict CSRF protection while avoiding token-bearing
+path disclosure in same-origin referrers. When Turnstile is enabled, the browser
+setup submit remains disabled until a fresh successful Turnstile response exists
+and is disabled again on expiry, timeout, error, or re-verification. The post-start verification step uses same-browser acceptance session
 binding and is bound to the browser session that started setup. Repeated setup restarts are capped so an invite cannot
 indefinitely reset passwords, TOTP secrets, or workplace verification codes;
 locked active invites require a root-admin TOTP reset before another setup

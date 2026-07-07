@@ -9,6 +9,7 @@ const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url))
 const browserScripts = [
   "app/static/js/account.js",
   "app/static/js/admin-alerts.js",
+  "app/static/js/admin-invite-accept.js",
   "app/static/js/dashboard.js",
   "app/static/js/payees.js",
   "app/static/js/session-timeout.js",
@@ -440,6 +441,63 @@ async function exerciseAdminAlerts() {
   runScript("app/static/js/admin-alerts.js", emptyContext);
 }
 
+async function exerciseAdminInviteAccept() {
+  const document = new MockDocument();
+  const form = new MockElement({
+    attributes: {
+      "data-invite-accept-start": "",
+      "data-turnstile-required": "true",
+    },
+  });
+  const responseInput = new MockElement({ attributes: { "data-turnstile-response": "" } });
+  const submitButton = new MockElement({ attributes: { "data-invite-start-submit": "" } });
+  const status = new MockElement({ attributes: { "data-turnstile-status": "" } });
+  form.selectorMap.set("[data-turnstile-response]", responseInput);
+  form.selectorMap.set("[data-invite-start-submit]", submitButton);
+  form.selectorMap.set("[data-turnstile-status]", status);
+  document.selectorAllMap.set("[data-invite-accept-start]", [form]);
+
+  const context = createBrowserContext(document);
+  runScript("app/static/js/admin-invite-accept.js", context);
+
+  assert.equal(submitButton.disabled, true);
+  assert.match(status.textContent, /verifying/);
+
+  context.sitbankInviteTurnstileSuccess("fresh-token");
+  assert.equal(responseInput.value, "fresh-token");
+  assert.equal(submitButton.disabled, false);
+  assert.match(status.textContent, /complete/);
+
+  const submitted = await form.emit("submit");
+  assert.equal(submitted.defaultPrevented, undefined);
+  assert.equal(form.dataset.submitting, "true");
+  assert.equal(submitButton.disabled, true);
+
+  const duplicate = await form.emit("submit");
+  assert.equal(duplicate.defaultPrevented, true);
+  form.dataset.submitting = "";
+
+  context.sitbankInviteTurnstileExpired();
+  assert.equal(responseInput.value, "");
+  assert.equal(submitButton.disabled, true);
+  assert.match(status.textContent, /expired/);
+
+  const missingToken = await form.emit("submit");
+  assert.equal(missingToken.defaultPrevented, true);
+  assert.match(status.textContent, /Complete the security challenge/);
+
+  assert.equal(context.sitbankInviteTurnstileError(), true);
+  assert.match(status.textContent, /could not be completed/);
+  context.sitbankInviteTurnstileTimeout();
+  assert.match(status.textContent, /timed out/);
+  context.sitbankInviteTurnstilePending();
+  assert.match(status.textContent, /verifying/);
+  context.sitbankInviteTurnstileSuccess("");
+  assert.equal(responseInput.value, "");
+  assert.equal(submitButton.disabled, true);
+  assert.match(status.textContent, /verifying/);
+}
+
 async function exerciseSessionTimeout() {
   const document = new MockDocument();
   const meta = new MockElement({ attributes: { content: "120" } });
@@ -700,6 +758,7 @@ await post(session, "Profiler.startPreciseCoverage", {
 
 await exerciseAccount();
 await exerciseAdminAlerts();
+await exerciseAdminInviteAccept();
 await exerciseDashboard();
 await exercisePayees();
 await exerciseSessionTimeout();

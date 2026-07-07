@@ -117,7 +117,7 @@ def _assert_invite_acceptance_security_headers(response):
     assert "no-store" in cache_control
     assert "private" in cache_control
     assert response.headers.get("Pragma") == "no-cache"
-    assert response.headers.get("Referrer-Policy") == "same-origin"
+    assert response.headers.get("Referrer-Policy") == "origin"
 
 
 def _assert_generic_invite_unavailable_page(response, token: str):
@@ -437,6 +437,8 @@ def test_invites_page_renders_actions_and_delivery_guidance(admin_client):
     assert "No backend handoff evidence is available." in unconfirmed_body
     assert "Revoke invite" in body
     assert "Reissue invite" in body
+    assert "currently signed-in root admin" in body
+    assert "Wait for the next code if this one is close to expiry" in body
     assert body.index("Revoke invite") < body.index('id="revoke-totp-')
     assert body.index("Reissue invite") < body.index('id="reissue-totp-')
 
@@ -524,6 +526,82 @@ def test_root_admin_can_reissue_pending_invite_with_new_token(admin_client, monk
     assert original_token not in json.dumps(reissue_event.event_metadata, default=str)
 
 
+def test_root_admin_reissue_mfa_step_up_outcomes_are_safe(
+    admin_app,
+    admin_client,
+    monkeypatch,
+):
+    _root_one, root_one_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    _root_two, root_two_secret = _create_staff_identity(
+        username="second-root-admin",
+        email="root2@sit.singaporetech.edu.sg",
+        account_type="root_admin",
+        phone_number="91234569",
+    )
+    _root_three, root_three_secret = _create_staff_identity(
+        username="third-root-admin",
+        email="root3@sit.singaporetech.edu.sg",
+        account_type="root_admin",
+        phone_number="91234570",
+    )
+    root_two_client = admin_app.test_client()
+    root_three_client = admin_app.test_client()
+    _login_admin(admin_client, root_one_secret)
+    _login_admin(root_two_client, root_two_secret, email="root2@sit.singaporetech.edu.sg")
+    _login_admin(root_three_client, root_three_secret, email="root3@sit.singaporetech.edu.sg")
+    assert _create_invite(admin_client, root_one_secret).status_code == 201
+    invite = db.session.execute(db.select(StaffInvite)).scalar_one()
+    original_token = _latest_invite_token()
+    fresh_time = _FIXED_TOTP_TIME + 31
+    monkeypatch.setattr("app.auth.services.time.time", lambda: fresh_time)
+    valid_code = pyotp.TOTP(root_one_secret, digits=6, interval=30).at(fresh_time)
+
+    valid = admin_client.post(f"/invites/{invite.id}/reissue", json={"totp_code": valid_code})
+    new_token = _latest_invite_token()
+    replayed = admin_client.post(f"/invites/{invite.id}/reissue", json={"totp_code": valid_code})
+    adjacent_code = pyotp.TOTP(root_two_secret, digits=6, interval=30).at(fresh_time - 30)
+    adjacent = root_two_client.post(f"/invites/{invite.id}/reissue", json={"totp_code": adjacent_code})
+    malformed = root_two_client.post(f"/invites/{invite.id}/reissue", json={"totp_code": "not-a-code"})
+    wrong_account_code = valid_code
+    wrong_account = root_three_client.post(
+        f"/invites/{invite.id}/reissue",
+        json={"totp_code": wrong_account_code},
+    )
+    backed_off = root_three_client.post(
+        f"/invites/{invite.id}/reissue",
+        json={"totp_code": wrong_account_code},
+    )
+    db.session.refresh(invite)
+
+    assert valid.status_code == 200
+    assert new_token != original_token
+    assert replayed.status_code == 403
+    assert adjacent.status_code == 403
+    assert malformed.status_code == 400
+    assert wrong_account.status_code == 403
+    assert backed_off.status_code == 429
+    assert backed_off.headers["Retry-After"].isdigit()
+    assert backed_off.headers["X-Auth-Retry-After"].isdigit()
+    assert invite.status == "pending"
+    assert _invite_info_json(admin_client, original_token).status_code == 401
+    assert _invite_info_json(admin_client, new_token).status_code == 200
+    for response, submitted_code in (
+        (replayed, valid_code),
+        (adjacent, adjacent_code),
+        (malformed, "not-a-code"),
+        (wrong_account, wrong_account_code),
+        (backed_off, wrong_account_code),
+    ):
+        body = response.get_data(as_text=True)
+        assert submitted_code not in body
+        assert "Fresh MFA verification is required" in body or response.status_code in {400, 429}
+
+
 def test_reissue_delivery_failure_is_persisted_without_rotating_the_live_token(
     admin_client,
     monkeypatch,
@@ -572,6 +650,7 @@ def test_invite_acceptance_requires_turnstile_when_enabled(admin_app, admin_clie
     _login_admin(admin_client, secret)
     assert _create_invite(admin_client, secret).status_code == 201
     token = _latest_invite_token()
+    invite = db.session.execute(db.select(StaffInvite)).scalar_one()
 
     missing = admin_client.post(
         f"/invites/accept/{token}/start",
@@ -582,6 +661,19 @@ def test_invite_acceptance_requires_turnstile_when_enabled(admin_app, admin_clie
             "confirm_password": STAFF_PASSWORD,
         },
     )
+    db.session.refresh(invite)
+    missing_event = db.session.query(SecurityAuditEvent).filter_by(
+        event_type="staff_invite_accept",
+        outcome="failure",
+    ).one()
+
+    assert missing.status_code == 400
+    assert missing.get_json() == {"error": "Complete the security challenge before starting setup."}
+    assert invite.status == "pending"
+    assert invite.setup_user_id is None
+    assert db.session.query(User).count() == 1
+    assert missing_event.event_metadata == {"reason": "turnstile_failed"}
+    assert "browser-token" not in json.dumps(missing_event.event_metadata, default=str)
 
     calls = []
 
@@ -600,9 +692,44 @@ def test_invite_acceptance_requires_turnstile_when_enabled(admin_app, admin_clie
         },
     )
 
-    assert missing.status_code == 400
     assert valid.status_code == 200
     assert calls == [("admin_invite_accept", "browser-token")]
+
+
+def test_invite_setup_form_disables_submit_until_managed_turnstile_succeeds(
+    admin_app,
+    admin_client,
+):
+    admin_app.config["TURNSTILE_ENABLED"] = True
+    admin_app.config["TURNSTILE_SITE_KEY"] = "fake-site-key"
+    admin_app.config["TURNSTILE_SECRET_KEY"] = "turnstile-secret"
+    _root, secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    _login_admin(admin_client, secret)
+    assert _create_invite(admin_client, secret).status_code == 201
+    token = _latest_invite_token()
+
+    response = admin_client.get(f"/invites/accept/{token}")
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert 'data-invite-accept-start' in body
+    assert 'data-turnstile-required="true"' in body
+    assert 'name="turnstile_token" value="" data-turnstile-response' in body
+    assert 'data-callback="sitbankInviteTurnstileSuccess"' in body
+    assert 'data-expired-callback="sitbankInviteTurnstileExpired"' in body
+    assert 'data-error-callback="sitbankInviteTurnstileError"' in body
+    assert 'data-timeout-callback="sitbankInviteTurnstileTimeout"' in body
+    assert 'data-before-interactive-callback="sitbankInviteTurnstilePending"' in body
+    assert 'data-after-interactive-callback="sitbankInviteTurnstilePending"' in body
+    assert 'data-unsupported-callback="sitbankInviteTurnstileError"' in body
+    assert '<button class="button full" type="submit" data-invite-start-submit disabled' in body
+    assert "Complete the security challenge to enable setup." in body
+    assert 'js/admin-invite-accept.js' in body
 
 
 def test_turnstile_verifier_rejects_non_https_verify_url(admin_app):
@@ -694,8 +821,22 @@ def test_browser_invite_onboarding_requires_csrf_and_activates_only_after_both_c
             f"/invites/accept/{token}/start",
             data=_staff_invite_start_payload(),
         )
+        missing_csrf_body = missing_csrf.get_data(as_text=True)
         assert missing_csrf.status_code == 400
+        assert "Security token expired or invalid. Review the form and try again." in missing_csrf_body
+        assert "Private admin request status" not in missing_csrf_body
+        assert 'value="Staff Person"' in missing_csrf_body
+        assert 'value="91234568"' in missing_csrf_body
+        assert STAFF_PASSWORD not in missing_csrf_body
         assert invite.status == "pending"
+        csrf_event = db.session.query(SecurityAuditEvent).filter_by(
+            event_type="staff_invite_accept",
+            outcome="failure",
+        ).one()
+        assert csrf_event.event_metadata == {
+            "reason": "csrf_or_session_failed",
+            "phase": "start",
+        }
 
         start_payload = _staff_invite_start_payload(
             csrf_token=_csrf_token_from(landing),
@@ -744,7 +885,195 @@ def test_browser_invite_onboarding_requires_csrf_and_activates_only_after_both_c
     _assert_invite_acceptance_security_headers(verify)
 
 
-def test_invite_acceptance_strict_https_csrf_allows_same_origin_referrer(
+@pytest.mark.parametrize(
+    ("payload_overrides", "expected_message", "expected_reason"),
+    [
+        ({"full_name": "<Bad Name>"}, "Invalid full name", "invalid_full_name"),
+        (
+            {"phone_number": "+65 9123 4568"},
+            "Enter an 8-digit Singapore mobile number starting with 8 or 9.",
+            "invalid_phone",
+        ),
+        (
+            {"confirm_password": f"{STAFF_PASSWORD} different"},
+            "Passwords must match.",
+            "password_mismatch",
+        ),
+        (
+            {"password": "short", "confirm_password": "short"},
+            "Use a password that meets the staff password policy.",
+            "password_policy",
+        ),
+    ],
+)
+def test_browser_invite_start_validation_failures_are_safe_and_audited(
+    admin_client,
+    payload_overrides,
+    expected_message,
+    expected_reason,
+):
+    _root, root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    _login_admin(admin_client, root_secret)
+    assert _create_invite(admin_client, root_secret).status_code == 201
+    token = _latest_invite_token()
+    invite = db.session.execute(db.select(StaffInvite)).scalar_one()
+    payload = _staff_invite_start_payload(turnstile_token="browser-token", **payload_overrides)
+
+    response = admin_client.post(f"/invites/accept/{token}/start", data=payload)
+    body = response.get_data(as_text=True)
+    db.session.refresh(invite)
+    event = db.session.query(SecurityAuditEvent).filter_by(
+        event_type="staff_invite_accept",
+        outcome="failure",
+    ).one()
+
+    assert response.status_code == 400
+    assert expected_message in body
+    assert invite.status == "pending"
+    assert invite.setup_user_id is None
+    assert db.session.query(User).count() == 1
+    assert event.event_metadata["reason"] == expected_reason
+    assert STAFF_PASSWORD not in body
+    assert "browser-token" not in body
+    assert "turnstile_token" not in json.dumps(event.event_metadata, default=str)
+
+
+def test_browser_invite_turnstile_failure_preserves_only_safe_fields(
+    admin_client,
+    monkeypatch,
+):
+    from app.security.turnstile import TurnstileError
+
+    _root, root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    _login_admin(admin_client, root_secret)
+    assert _create_invite(admin_client, root_secret).status_code == 201
+    token = _latest_invite_token()
+    invite = db.session.execute(db.select(StaffInvite)).scalar_one()
+
+    def fail_turnstile(_action, _token=None):
+        raise TurnstileError("fake provider detail")
+
+    monkeypatch.setattr("app.admin.services.require_turnstile", fail_turnstile)
+
+    response = admin_client.post(
+        f"/invites/accept/{token}/start",
+        data=_staff_invite_start_payload(
+            full_name="Safe Recipient",
+            phone_number="92345678",
+            turnstile_token="fresh-browser-token",
+        ),
+    )
+    body = response.get_data(as_text=True)
+    db.session.refresh(invite)
+    event = db.session.query(SecurityAuditEvent).filter_by(
+        event_type="staff_invite_accept",
+        outcome="failure",
+    ).one()
+
+    assert response.status_code == 400
+    assert "Complete the security challenge before starting setup." in body
+    assert 'value="Safe Recipient"' in body
+    assert 'value="92345678"' in body
+    assert STAFF_PASSWORD not in body
+    assert "fresh-browser-token" not in body
+    assert "fake provider detail" not in body
+    assert invite.status == "pending"
+    assert invite.setup_user_id is None
+    assert db.session.query(User).count() == 1
+    assert event.event_metadata == {"reason": "turnstile_failed"}
+
+
+def test_invite_start_duplicate_identity_and_delivery_failures_are_safe(
+    admin_client,
+    monkeypatch,
+    caplog,
+):
+    _root, root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    existing_staff, _existing_secret = _create_staff_identity(
+        username="existing-staff",
+        email="existing.staff@sit.singaporetech.edu.sg",
+        account_type="staff",
+        phone_number="92345678",
+    )
+    _login_admin(admin_client, root_secret)
+    assert _create_invite(admin_client, root_secret).status_code == 201
+    duplicate_token = _latest_invite_token()
+    duplicate_invite = db.session.execute(db.select(StaffInvite)).scalar_one()
+
+    duplicate = admin_client.post(
+        f"/invites/accept/{duplicate_token}/start",
+        data=_staff_invite_start_payload(phone_number=existing_staff.phone_number),
+    )
+    db.session.refresh(duplicate_invite)
+    duplicate_event = db.session.query(SecurityAuditEvent).filter_by(
+        event_type="staff_invite_accept",
+        outcome="failure",
+    ).one()
+
+    assert duplicate.status_code == 400
+    assert "Staff identity details could not be accepted" in duplicate.get_data(as_text=True)
+    assert duplicate_invite.status == "pending"
+    assert duplicate_invite.setup_user_id is None
+    assert duplicate_event.event_metadata == {"reason": "duplicate_identity"}
+
+    fresh_time = _FIXED_TOTP_TIME + 31
+    monkeypatch.setattr("app.auth.services.time.time", lambda: fresh_time)
+    assert _create_invite(
+        admin_client,
+        root_secret,
+        workplace_email="delivery.fail@sit.singaporetech.edu.sg",
+        totp_code=pyotp.TOTP(root_secret, digits=6, interval=30).at(fresh_time),
+    ).status_code == 201
+    delivery_token = _latest_invite_token()
+    delivery_invite = db.session.execute(
+        db.select(StaffInvite).where(StaffInvite.workplace_email_normalized == "delivery.fail@sit.singaporetech.edu.sg")
+    ).scalar_one()
+    delivery_invite_id = delivery_invite.id
+    caplog.set_level("WARNING")
+    monkeypatch.setattr(
+        "app.admin.services.send_security_email",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("smtp down")),
+    )
+
+    delivery = admin_client.post(
+        f"/invites/accept/{delivery_token}/start",
+        data=_staff_invite_start_payload(phone_number="93456789"),
+    )
+    body = delivery.get_data(as_text=True)
+    delivery_invite = db.session.get(StaffInvite, delivery_invite_id)
+    reasons = {
+        event.event_metadata.get("reason")
+        for event in db.session.query(SecurityAuditEvent).filter_by(
+            event_type="staff_invite_accept",
+            outcome="failure",
+        )
+    }
+
+    assert delivery.status_code == 503
+    assert "Setup could not send the workplace verification code" in body
+    assert delivery_invite.status == "pending"
+    assert delivery_invite.setup_user_id is None
+    assert "workplace_email_delivery_failed" in reasons
+    assert delivery_token not in caplog.text
+    assert STAFF_PASSWORD not in caplog.text
+
+
+def test_invite_acceptance_strict_https_csrf_allows_origin_only_referrer(
     admin_app,
     admin_client,
 ):
@@ -764,8 +1093,8 @@ def test_invite_acceptance_strict_https_csrf_allows_same_origin_referrer(
     admin_app.config["WTF_CSRF_ENABLED"] = True
     admin_app.config["WTF_CSRF_SSL_STRICT"] = True
     base_url = "https://admin.example.test"
-    landing_url = f"{base_url}/invites/accept/{token}"
-    start_url = f"{base_url}/invites/accept/{token}/start"
+    origin_referrer = f"{base_url}/"
+    assert token not in origin_referrer
 
     try:
         landing = recipient.get(f"/invites/accept/{token}", base_url=base_url)
@@ -775,7 +1104,7 @@ def test_invite_acceptance_strict_https_csrf_allows_same_origin_referrer(
         missing_csrf = recipient.post(
             f"/invites/accept/{token}/start",
             base_url=base_url,
-            headers={"Referer": landing_url},
+            headers={"Referer": origin_referrer},
             data=_staff_invite_start_payload(),
         )
         db.session.refresh(invite)
@@ -787,7 +1116,7 @@ def test_invite_acceptance_strict_https_csrf_allows_same_origin_referrer(
         start = recipient.post(
             f"/invites/accept/{token}/start",
             base_url=base_url,
-            headers={"Referer": landing_url},
+            headers={"Referer": origin_referrer},
             data=_staff_invite_start_payload(csrf_token=_csrf_token_from(landing)),
         )
         start_body = start.get_data(as_text=True)
@@ -802,7 +1131,7 @@ def test_invite_acceptance_strict_https_csrf_allows_same_origin_referrer(
         missing_verify_csrf = recipient.post(
             f"/invites/accept/{token}/verify",
             base_url=base_url,
-            headers={"Referer": start_url},
+            headers={"Referer": origin_referrer},
             data={
                 "totp_code": _stable_totp(secret_match.group(1)),
                 "workplace_verification_code": _latest_workplace_code(),
@@ -815,7 +1144,7 @@ def test_invite_acceptance_strict_https_csrf_allows_same_origin_referrer(
         verify = recipient.post(
             f"/invites/accept/{token}/verify",
             base_url=base_url,
-            headers={"Referer": start_url},
+            headers={"Referer": origin_referrer},
             data={
                 "csrf_token": _csrf_token_from(start),
                 "totp_code": _stable_totp(secret_match.group(1)),
