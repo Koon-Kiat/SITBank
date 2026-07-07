@@ -106,6 +106,7 @@ class MockElement {
   closest(selector) {
     if (selector === ".alert") return this.alert ?? null;
     if (selector === "[data-account-menu]") return this.accountMenu ?? null;
+    if (selector === "[data-nav-toggle]") return this.navToggle ?? null;
     if (selector === "a" && this.tagName === "A") return this;
     return null;
   }
@@ -507,6 +508,7 @@ async function exerciseTheme() {
   const iconUse = new MockElement();
   icon.selectorMap.set("use", iconUse);
   const navToggle = new MockElement();
+  navToggle.navToggle = navToggle;
   const navMenu = new MockElement();
   const accountMenu = new MockElement();
   const accountTrigger = new MockElement();
@@ -532,8 +534,33 @@ async function exerciseTheme() {
   runScript("app/static/js/theme.js", context);
   for (const callback of context.__domReadyListeners) callback();
   await toggle.emit("click");
+
+  await navToggle.emit("click");
+  assert.equal(navMenu.classList.contains("is-open"), true);
+  assert.equal(accountPanel.hidden, false, "opening the hamburger must also open the account panel");
+  assert.equal(accountMenu.classList.contains("is-open"), true);
+
+  await document.emit("click", { target: navToggle });
+  assert.equal(
+    accountPanel.hidden,
+    false,
+    "clicking the hamburger button itself must not be treated as an outside click",
+  );
+
+  await document.emit("click", { target: new MockElement() });
+  assert.equal(navMenu.classList.contains("is-open"), false, "outside click must close the nav too");
+  assert.equal(accountPanel.hidden, true);
+
   await navToggle.emit("click");
   await navMenu.emit("click", { target: Object.assign(new MockElement(), { tagName: "A" }) });
+  assert.equal(navMenu.classList.contains("is-open"), false);
+  assert.equal(accountPanel.hidden, true);
+
+  await navToggle.emit("click");
+  await document.emit("keydown", { key: "Escape" });
+  assert.equal(navMenu.classList.contains("is-open"), false, "Escape must close the nav too");
+  assert.equal(accountPanel.hidden, true);
+
   await accountTrigger.emit("click");
   for (const key of ["Enter", " ", "ArrowDown"]) {
     await accountTrigger.emit("keydown", { key });
