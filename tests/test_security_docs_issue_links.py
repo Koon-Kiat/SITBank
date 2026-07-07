@@ -290,6 +290,7 @@ def test_staff_invite_acceptance_docs_cover_minimal_metadata_and_restart_control
         "`queued` means sitbank handed the message to the configured email backend",
         "normal browser get renders the onboarding page while an explicit json client receives the minimal api response",
         "viewing the page leaves the invite pending and creates no account",
+        "stale or malformed browser invite links render a generic invite-unavailable page",
         "use the root-admin reissue action to rotate the stored invite token hash",
         "invite is moved out of active pending state so it does not block safe retry",
         "do not repair locked invites by editing production rows ad hoc",

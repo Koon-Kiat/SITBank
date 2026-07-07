@@ -57,12 +57,15 @@
       </div>
       <button class="button full" type="submit">Activate staff access</button>
     </form>
-  {% else %}
+  {% elif phase == "complete" %}
     <h1>Staff access activated</h1>
     <p class="muted">Your workplace email and authenticator have been verified. Use the staff login with your workplace email, password, and authenticator code.</p>
     <div class="button-row">
       <a class="button" href="{{ url_for('admin.login_form') }}">Continue to staff login</a>
     </div>
+  {% else %}
+    <h1>Staff invite unavailable</h1>
+    <p class="muted">This invite link is invalid or expired. Ask a root admin to review the invite and send a new link if access is still needed.</p>
   {% endif %}
 </section>
 {% endblock %}
