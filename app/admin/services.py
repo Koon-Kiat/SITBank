@@ -134,6 +134,7 @@ INVITE_FRESH_MFA_REQUIRED_ERROR = (
 )
 INVITE_CREATE_ERROR = "Invite could not be created"
 INVITE_ACCEPTANCE_ERROR = "Invite acceptance failed"
+STAFF_INVITE_NOT_FOUND_ERROR = "Invite not found"
 INVALID_WORKPLACE_EMAIL_ERROR = "Invalid workplace email"
 GENERIC_INVITE_ERROR = "Invite link is invalid or expired"
 GENERIC_WORKPLACE_VERIFICATION_ERROR = "Workplace verification failed"
@@ -2066,7 +2067,7 @@ def revoke_staff_invite(actor: User, invite_id: int, totp_code: str | None) -> d
     )
     invite = db.session.get(StaffInvite, int(invite_id))
     if invite is None or invite.status not in ACTIVE_INVITE_STATUSES:
-        raise AuthError("Invite not found", 404)
+        raise AuthError(STAFF_INVITE_NOT_FOUND_ERROR, 404)
     invite.status = "revoked"
     invite.revoked_at = _utcnow()
     invite.revoked_by_user_id = actor.id
@@ -2086,7 +2087,7 @@ def reissue_staff_invite(actor: User, invite_id: int, totp_code: str | None) -> 
     )
     invite = db.session.get(StaffInvite, int(invite_id))
     if invite is None or invite.status not in ACTIVE_INVITE_STATUSES:
-        raise AuthError("Invite not found", 404)
+        raise AuthError(STAFF_INVITE_NOT_FOUND_ERROR, 404)
 
     _reset_active_invite_acceptance_for_root_action(
         invite,
@@ -2146,7 +2147,7 @@ def reset_staff_invite_acceptance(actor: User, invite_id: int, totp_code: str | 
     )
     invite = db.session.get(StaffInvite, int(invite_id))
     if invite is None or invite.status not in ACTIVE_INVITE_STATUSES:
-        raise AuthError("Invite not found", 404)
+        raise AuthError(STAFF_INVITE_NOT_FOUND_ERROR, 404)
 
     _reset_active_invite_acceptance_for_root_action(
         invite,
