@@ -21,7 +21,7 @@
   const timerValueEl = document.getElementById('session-timer-value');
   const csrfMeta = document.querySelector('meta[name="csrf-token"]');
   const replacedOverlayEl = document.getElementById('session-replaced-overlay');
-  const statusPollMs = 15000;
+  const statusPollMs = 5000;
   let sessionEnded = false;
 
   function formatTime(ms) {
@@ -139,6 +139,10 @@
       });
     });
   }
+
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) pollSessionStatus();
+  });
 
   setInterval(updateTimerDisplay, 1000);
   setInterval(pollSessionStatus, statusPollMs);

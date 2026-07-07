@@ -155,9 +155,10 @@ successful login replaces previous active sessions in that namespace and moves
 them to past-session history. Old browser tabs may still display stale HTML
 until the next request, but the revoked session cannot access protected routes.
 The replaced tab does not have to navigate to find out, though:
-`session-timeout.js` polls `GET /auth/session/status` roughly every 15 seconds
-(paused while the tab is hidden) and shows a dedicated "Signed Out" dialog as
-soon as the server reports the session was replaced. The status endpoint is
+`session-timeout.js` polls `GET /auth/session/status` roughly every 5 seconds
+(paused while the tab is hidden, and re-checked immediately when the tab
+regains visibility) and shows a dedicated "Signed Out" dialog as soon as the
+server reports the session was replaced. The status endpoint is
 listed in `app/security/sessions.py::ACTIVITY_EXEMPT_ENDPOINTS` so polling it
 never refreshes `last_activity_at`; otherwise a background poll would silently
 defeat the inactivity timeout below. The session-management page is for
