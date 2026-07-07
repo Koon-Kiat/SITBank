@@ -120,6 +120,7 @@ def register_forced_password_change_guard(app: Flask) -> None:
             "auth.csrf_token",
             "auth.logout",
             "auth.session_extend",
+            "auth.session_status",
             "auth.password_change",
             "auth.password_reset_request",
             "auth.password_reset_exchange",

@@ -343,6 +343,8 @@ def login():
         return redirect(url_for(_DASHBOARD_ENDPOINT))
     if request.args.get("session_expired"):
         flash("Your session expired due to inactivity. Please log in again.", "warning")
+    elif request.args.get("session_replaced"):
+        flash("You were signed out because your account signed in from another device or browser.", "warning")
     return render_template(_LOGIN_TEMPLATE, form=LoginForm())
 
 

@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from functools import wraps
 from typing import Any
 
-from flask import Flask, current_app, flash, has_request_context, jsonify, redirect, request, session, url_for
+from flask import Flask, current_app, flash, g, has_request_context, jsonify, redirect, request, session, url_for
 from flask.sessions import SessionInterface, SessionMixin, session_json_serializer
 from sqlalchemy.exc import IntegrityError
 from werkzeug.datastructures import CallbackDict
@@ -57,6 +57,10 @@ SESSION_END_REASON_LABELS = {
     "ended": "Ended",
 }
 _SESSION_STORE_LOCK = threading.RLock()
+_SESSION_REPLACED_REASON_G_KEY = "_sitbank_session_replaced_reason"
+# Polled by the client to detect a session replaced elsewhere; must not itself
+# count as activity or it would silently defeat the inactivity timeout.
+ACTIVITY_EXEMPT_ENDPOINTS = frozenset({"auth.session_status"})
 
 
 def _session_store_locked(func):
@@ -115,6 +119,7 @@ class DatabaseSessionInterface(SessionInterface):
 
         now = _utcnow()
         if record.revoked_at is not None:
+            _stash_session_replacement_reason(record.ended_reason)
             return self.session_class(sid=_new_session_id(), new=True)
         if record.expires_at is None:
             self._handle_integrity_failure(record, reason="missing_expires_at")
@@ -278,6 +283,19 @@ def current_session_id() -> str | None:
     if not has_request_context():
         return None
     return getattr(session, "sid", None)
+
+
+def _stash_session_replacement_reason(reason: str | None) -> None:
+    if has_request_context():
+        setattr(g, _SESSION_REPLACED_REASON_G_KEY, reason)
+
+
+def session_replacement_reason() -> str | None:
+    # Set only when open_session() discovers the presented cookie's session was
+    # already revoked (e.g. session_cap); unset for a request with no session at all.
+    if not has_request_context():
+        return None
+    return getattr(g, _SESSION_REPLACED_REASON_G_KEY, None)
 
 
 def session_lookup_hash(session_id: str) -> str:
@@ -1096,9 +1114,10 @@ def _enforce_session_activity():
     if context_response is not None:
         return context_response
 
-    session["last_activity_at"] = now
-    session.modified = True
-    update_session_activity()
+    if request.endpoint not in ACTIVITY_EXEMPT_ENDPOINTS:
+        session["last_activity_at"] = now
+        session.modified = True
+        update_session_activity()
     return None
 
 
