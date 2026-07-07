@@ -388,8 +388,7 @@ def establish_authenticated_session(
     rotate_session_id()
     refresh_session_risk_fingerprint()
     register_session_metadata(user_id=user_id, login_time=login_time)
-    if mfa_verified:
-        enforce_active_session_cap(user_id)
+    enforce_active_session_cap(user_id)
     return current_session_id() or ""
 
 
