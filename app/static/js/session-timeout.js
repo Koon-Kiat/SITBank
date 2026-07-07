@@ -76,7 +76,9 @@
     clearTimeout(expireTimer);
     clearTimeout(warningTimer);
     hideOverlay();
-    if (replacedOverlayEl && !replacedOverlayEl.open) replacedOverlayEl.showModal();
+    if (replacedOverlayEl?.open === false) {
+      replacedOverlayEl.showModal();
+    }
   }
 
   function pollSessionStatus() {
