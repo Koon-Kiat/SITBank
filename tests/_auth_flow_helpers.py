@@ -87,6 +87,16 @@ def login(client, identifier="alice01", password="correct horse battery staple")
     )
 
 
+def login_ignoring_session_cap(monkeypatch, client, identifier="alice01", password="correct horse battery staple"):
+    # The single active-session cap normally evicts the account's other session on
+    # every login. Tests for the terminate/revoke-other-session endpoints need two
+    # simultaneously active sessions, so this bypasses the cap for one login only.
+    from app.security import sessions as sessions_module
+
+    monkeypatch.setattr(sessions_module, "enforce_active_session_cap", lambda user_id: 0)
+    return login(client, identifier=identifier, password=password)
+
+
 def password_inputs(response):
     return re.findall(rb"<input(?=[^>]*type=\"password\")[^>]*>", response.data)
 

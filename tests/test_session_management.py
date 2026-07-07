@@ -231,11 +231,11 @@ def test_session_references_survive_hmac_key_rotation(app, client):
     assert new_resolved is not None and new_resolved.startswith("lookup:")
     assert session_id not in {old_resolved, new_resolved}
 
-def test_terminate_other_session_by_public_reference_revokes_it(app, client):
+def test_terminate_other_session_by_public_reference_revokes_it(app, client, monkeypatch):
     second_client = app.test_client()
     register(client)
     login(client)
-    login(second_client)
+    login_ignoring_session_cap(monkeypatch, second_client)
     user, _secret = enable_mfa_for_user()
     mark_recent_mfa(client, user)
 
@@ -248,11 +248,11 @@ def test_terminate_other_session_by_public_reference_revokes_it(app, client):
     assert revoked_response.status_code == 401
     assert revoked_response.get_json()["error"] in {"Session revoked", "Authentication required"}
 
-def test_terminating_other_session_moves_it_to_past_sessions(app, client):
+def test_terminating_other_session_moves_it_to_past_sessions(app, client, monkeypatch):
     second_client = app.test_client()
     register(client)
     login(client)
-    login(second_client)
+    login_ignoring_session_cap(monkeypatch, second_client)
     user, _secret = enable_mfa_for_user()
     mark_recent_mfa(client, user)
 
@@ -278,11 +278,11 @@ def test_terminating_other_session_moves_it_to_past_sessions(app, client):
     assert f"/sessions/{other_session['session_ref']}/terminate" not in markup
 
 
-def test_sessions_page_keeps_review_controls_without_bulk_revoke_action(app, client):
+def test_sessions_page_keeps_review_controls_without_bulk_revoke_action(app, client, monkeypatch):
     second_client = app.test_client()
     register(client)
     login(client)
-    login(second_client)
+    login_ignoring_session_cap(monkeypatch, second_client)
     user, _secret = enable_mfa_for_user()
     mark_recent_mfa(client, user)
 
@@ -302,11 +302,11 @@ def test_sessions_page_keeps_review_controls_without_bulk_revoke_action(app, cli
     assert "Authenticator code" not in markup
 
 
-def test_web_session_terminate_requires_csrf_when_enabled(app, client):
+def test_web_session_terminate_requires_csrf_when_enabled(app, client, monkeypatch):
     second_client = app.test_client()
     register(client)
     login(client)
-    login(second_client)
+    login_ignoring_session_cap(monkeypatch, second_client)
     user, _secret = enable_mfa_for_user()
     mark_recent_mfa(client, user)
     other_ref = next(
@@ -325,11 +325,11 @@ def test_web_session_terminate_requires_csrf_when_enabled(app, client):
     assert response.status_code == 400
 
 
-def test_web_revoke_other_sessions_requires_totp_stepup(app, client):
+def test_web_revoke_other_sessions_requires_totp_stepup(app, client, monkeypatch):
     second_client = app.test_client()
     register(client)
     login(client)
-    login(second_client)
+    login_ignoring_session_cap(monkeypatch, second_client)
     user, _secret = enable_mfa_for_user()
     mark_recent_mfa(client, user)
 
@@ -366,7 +366,7 @@ def test_revoke_other_sessions_accepts_totp_stepup_and_rotates_session(app, clie
     second_client = app.test_client()
     register(client)
     login(client)
-    login(second_client)
+    login_ignoring_session_cap(monkeypatch, second_client)
 
     client.post("/mfa/setup", data={"action": "start"})
     user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
