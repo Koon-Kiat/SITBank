@@ -185,7 +185,7 @@ def test_password_change_succeeds_with_recent_mfa_and_revokes_other_sessions(app
     second_client = app.test_client()
     register(client)
     login(client)
-    login(second_client)
+    login_ignoring_session_cap(monkeypatch, second_client)
     user, secret = enable_mfa_for_user()
     mark_recent_mfa(client, user)
     old_hash = user.password_hash
