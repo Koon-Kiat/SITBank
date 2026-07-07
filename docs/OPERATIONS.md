@@ -469,9 +469,14 @@ the onboarding form; explicit JSON clients retain the minimal API response.
 Viewing the page does not consume the invite or create an account. Setup changes
 the invite from `pending` to `totp_pending` and creates only a `setup_pending`
 identity; only successful workplace-code and TOTP verification activates the
-identity and marks the invite `accepted`. The setup flow uses `no-store` and
-same-origin referrer response headers, CSRF-protected browser forms, same-browser
-verification binding, and capped restarts that would otherwise rotate
+identity and marks the invite `accepted`. The setup form accepts exactly 8
+Singapore mobile digits starting with `8` or `9`, without `+65`, spaces, or
+hyphens. When Turnstile is enabled, the setup submit control remains disabled
+until the browser holds a fresh successful Turnstile response; expiry, timeout,
+error, or re-verification clears the response and preserves only non-sensitive
+entered values such as name and mobile number. The setup flow uses `no-store`
+and `Referrer-Policy: origin` response headers, CSRF-protected browser forms,
+same-browser verification binding, and capped restarts that would otherwise rotate
 passwords, TOTP setup secrets, or workplace verification codes. If an active
 invite becomes locked by the restart cap, a root admin should use the invite
 screen's reset action with a fresh TOTP code; do not unlock it by editing
@@ -480,8 +485,9 @@ Stale or malformed browser invite links render a generic invite-unavailable page
 instead of the private admin error page; explicit JSON clients receive only the
 minimal generic error.
 Invite creation, revoke, reset, and reissue actions use strict high-risk TOTP:
-wait for a fresh authenticator code before retrying an invite action, and do
-not reuse the same code for repeated invite operations. The invite table shows
+enter the code from the currently signed-in root admin, wait for a fresh
+authenticator code before retrying an invite action, and do not submit near code
+expiry or reuse the same code for repeated invite operations. The invite table shows
 the persisted allowlisted delivery states `unconfirmed`, `queued`, or `failed`.
 `queued` means SITBank handed the message to the configured email backend, not
 that the recipient inbox accepted it. `unconfirmed` means no reliable backend
@@ -1416,5 +1422,7 @@ secrets `PROD_TURNSTILE_SECRET_KEY` and `STAGING_TURNSTILE_SECRET_KEY`.
 Deployment installs them as separate root-managed
 `/etc/sitbank*/secrets/turnstile_secret_key` files and never writes the value
 to `container.env`. Production and staging use separate widgets for
-`sitbank.pp.ua`/`www.sitbank.pp.ua` and `staging-sitbank.pp.ua`. The admin app remains private behind Tailscale while its public-auth entry routes retain
-Turnstile defense in depth.
+`sitbank.pp.ua`/`www.sitbank.pp.ua` and `staging-sitbank.pp.ua`. If admin
+invite acceptance is enabled for a private/admin hostname, include that exact
+recipient-facing hostname in the matching Turnstile widget's hostname allowlist;
+do not broaden the widget to wildcard provider domains. The admin app remains private behind Tailscale while its public-auth entry routes retain Turnstile defense in depth.

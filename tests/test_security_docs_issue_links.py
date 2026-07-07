@@ -281,7 +281,11 @@ def test_staff_invite_acceptance_docs_cover_minimal_metadata_and_restart_control
     for required in (
         "public invite lookup returns only a generic valid-link message",
         "exposes no acceptance metadata, setup state, workplace email, role, status, user id, counter, or lock timestamp",
-        "referrer-policy: same-origin",
+        "referrer-policy: origin",
+        "origin-level evidence for flask-wtf ssl-strict csrf protection",
+        "fresh successful turnstile response",
+        "exactly 8 singapore mobile digits starting with `8` or `9`",
+        "currently signed-in root admin",
         "bound to the browser session that started setup",
         "repeated setup restarts are capped",
         "root-admin totp reset",
@@ -305,6 +309,7 @@ def test_staff_invite_acceptance_docs_cover_minimal_metadata_and_restart_control
         "invite lookup exposes workplace email",
         "invite info returns workplace email and role",
         "restarting invite acceptance is unlimited",
+        "referrer-policy: same-origin",
     ):
         assert stale_claim not in normalized_docs
 

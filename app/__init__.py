@@ -23,6 +23,7 @@ from .security.sessions import install_database_sessions, register_session_hooks
 from .security.http_errors import (
     CSRF_ERROR_MESSAGE,
     RATE_LIMIT_MESSAGE,
+    request_wants_json,
     safe_error_response,
 )
 from .security.turnstile import register_turnstile_template_helpers
@@ -173,6 +174,23 @@ def register_error_handlers(app: Flask) -> None:
 
     @app.errorhandler(CSRFError)
     def csrf_error(error):
+        if request.endpoint in {
+            "admin.invite_accept_start",
+            "admin.invite_accept_verify",
+        }:
+            from .admin.routes import invite_acceptance_csrf_error_response
+            from .security.audit import audit_event
+
+            audit_event(
+                "staff_invite_accept",
+                "failure",
+                metadata={
+                    "reason": "csrf_or_session_failed",
+                    "phase": _invite_acceptance_phase_for_endpoint(request.endpoint),
+                },
+            )
+            if not request_wants_json():
+                return invite_acceptance_csrf_error_response()
         return respond(CSRF_ERROR_MESSAGE, 400)
 
     @app.errorhandler(400)
@@ -255,8 +273,14 @@ def register_invite_acceptance_response_headers(app: Flask) -> None:
             response.headers["Cache-Control"] = "no-store, no-cache, max-age=0, private"
             response.headers["Pragma"] = "no-cache"
             response.headers["Expires"] = "0"
-            response.headers["Referrer-Policy"] = "same-origin"
+            response.headers["Referrer-Policy"] = "origin"
         return response
+
+
+def _invite_acceptance_phase_for_endpoint(endpoint: str | None) -> str:
+    if endpoint == "admin.invite_accept_verify":
+        return "verify"
+    return "start"
 
 
 def register_no_store_headers(app: Flask) -> None:
