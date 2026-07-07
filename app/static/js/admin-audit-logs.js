@@ -121,7 +121,7 @@
     root.addEventListener("click", (event) => {
       const target = event.target instanceof Element ? event.target : null;
       const link = target ? target.closest("[data-audit-page-link]") : null;
-      if (!link || !link.href || link.getAttribute("aria-disabled") === "true") return;
+      if (!link?.href || link.getAttribute("aria-disabled") === "true") return;
       event.preventDefault();
       fetchAuditPage(root, link.href, true).catch(() => {
         globalThis.location.assign(link.href);
