@@ -208,6 +208,15 @@
           </div>
         </div>
       </dialog>
+      <dialog id="session-replaced-overlay" class="session-modal-overlay" aria-labelledby="session-replaced-title">
+        <div class="session-modal">
+          <h2 class="session-modal-title" id="session-replaced-title">Signed Out</h2>
+          <p class="session-modal-message">You've been signed out because your account signed in from another device or browser.</p>
+          <div class="session-modal-actions">
+            <a href="{{ url_for('web.login', session_replaced=1) }}" class="button">Log In Again</a>
+          </div>
+        </div>
+      </dialog>
       {% endif %}
       {% block alerts %}
       {% with messages = get_flashed_messages(with_categories=true) %}

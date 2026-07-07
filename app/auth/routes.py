@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from flask import Blueprint, current_app, g, jsonify, request
+from flask import Blueprint, current_app, g, jsonify, request, session
 from flask_limiter.util import get_remote_address
 from flask_wtf.csrf import generate_csrf
 from marshmallow import Schema, ValidationError
@@ -9,6 +9,7 @@ from app.extensions import limiter
 from app.auth.mfa_policy import has_enrolled_mfa_method
 from app.admin.services import is_customer_user
 from app.security.rate_limits import mfa_principal, request_principal
+from app.security.sessions import session_replacement_reason
 from app.security.turnstile import TurnstileError, require_turnstile
 
 from .decorators import login_required, not_frozen_required
@@ -85,6 +86,7 @@ AUTH_MFA_ONBOARDING_ALLOWED_ENDPOINTS = {
     "auth.csrf_token",
     "auth.logout",
     "auth.session_extend",
+    "auth.session_status",
     "auth.mfa_setup",
     "auth.mfa_setup_verify",
     "auth.password_reset_request",
@@ -304,6 +306,15 @@ def session_extend():
             "timeout_seconds": int(current_app.config["SESSION_INACTIVITY_SECONDS"]),
         }
     )
+
+
+@auth_bp.get("/session/status")
+def session_status():
+    if session.get("user_id") and g.current_user is not None:
+        return jsonify({"status": "active"})
+    reason = session_replacement_reason()
+    code = "replaced" if reason == "session_cap" else "ended"
+    return jsonify({"status": "signed_out", "code": code}), 401
 
 
 @auth_bp.post("/mfa/setup")
