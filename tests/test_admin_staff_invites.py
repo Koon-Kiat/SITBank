@@ -120,6 +120,27 @@ def _assert_invite_acceptance_security_headers(response):
     assert response.headers.get("Referrer-Policy") == "no-referrer"
 
 
+def _assert_generic_invite_unavailable_page(response, token: str):
+    body = response.get_data(as_text=True)
+    assert response.status_code == 401
+    assert response.mimetype == "text/html"
+    assert "Staff invite unavailable" in body
+    assert "This invite link is invalid or expired" in body
+    assert "Security token expired or invalid" not in body
+    assert "Private admin request status" not in body
+    assert token not in body
+    for forbidden in (
+        "staff.person@sit.singaporetech.edu.sg",
+        "workplace_email",
+        "acceptance_",
+        "setup_user",
+        "revoked_by_user_id",
+        "used_by_user_id",
+    ):
+        assert forbidden not in body
+    _assert_invite_acceptance_security_headers(response)
+
+
 def _invite_info_json(client, token: str):
     return client.get(
         f"/invites/accept/{token}",
@@ -757,6 +778,49 @@ def test_invite_info_closed_tokens_return_generic_errors_and_no_token_audit(admi
     serialized_metadata = json.dumps([event.event_metadata for event in events], default=str)
     assert missing_token not in serialized_metadata
     assert "token" not in serialized_metadata.casefold()
+
+
+def test_browser_invite_info_closed_tokens_render_generic_recipient_page(admin_client):
+    root, _secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    closed_cases = [
+        ("MissingInviteToken000000000000000000000000", {}),
+        ("MalformedInviteToken", None),
+        (
+            "ExpiredInviteToken000000000000000000000000",
+            {"expires_at": datetime.now(timezone.utc) - timedelta(minutes=1)},
+        ),
+        (
+            "RevokedInviteToken000000000000000000000000",
+            {"status": "revoked", "revoked_at": datetime.now(timezone.utc)},
+        ),
+        (
+            "AcceptedInviteToken00000000000000000000000",
+            {"status": "accepted", "used_at": datetime.now(timezone.utc)},
+        ),
+        (
+            "LockedInviteToken000000000000000000000000",
+            {"acceptance_locked_at": datetime.now(timezone.utc), "acceptance_start_count": 3},
+        ),
+    ]
+
+    for token, overrides in closed_cases:
+        if overrides is not None and overrides:
+            _insert_invite_for_token(token, root, **overrides)
+
+        response = admin_client.get(f"/invites/accept/{token}")
+
+        _assert_generic_invite_unavailable_page(response, token)
+
+    events = db.session.query(SecurityAuditEvent).filter_by(event_type="staff_invite_invalid_attempt").all()
+    serialized_metadata = json.dumps([event.event_metadata for event in events], default=str)
+    for token, _overrides in closed_cases:
+        assert token not in serialized_metadata
+    assert db.session.query(User).count() == 1
 
 
 def test_invite_info_does_not_reveal_started_or_locked_acceptance_state(admin_client):
