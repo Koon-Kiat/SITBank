@@ -386,8 +386,8 @@ handoff fails during invite creation, the invite is moved out of active pending
 state so it does not block safe retry.
 The public invite lookup returns only a generic valid-link message and exposes
 no acceptance metadata, setup state, workplace email, role, status, user id,
-counter, or lock timestamp. Invite acceptance responses are marked `no-store` with `Referrer-Policy: no-referrer`,
-and the post-start verification step uses same-browser acceptance session
+counter, or lock timestamp. Invite acceptance responses are marked `no-store` with `Referrer-Policy: same-origin`,
+so same-origin HTTPS form posts keep Flask-WTF SSL-strict CSRF protection while cross-origin requests do not receive the invite URL. The post-start verification step uses same-browser acceptance session
 binding and is bound to the browser session that started setup. Repeated setup restarts are capped so an invite cannot
 indefinitely reset passwords, TOTP secrets, or workplace verification codes;
 locked active invites require a root-admin TOTP reset before another setup
