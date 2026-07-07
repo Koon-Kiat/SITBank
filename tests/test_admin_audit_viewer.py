@@ -213,6 +213,20 @@ def test_audit_viewer_filters_sorting_pagination_and_safe_search(admin_client):
         "sort=event_type&direction=asc&page=1&per_page=1",
         headers={"Accept": "application/json"},
     )
+    sgt_filtered = admin_client.get(
+        "/audit-logs?"
+        "event_type=staff_invite_created&from_date=2026-06-28&from_time=20:00&"
+        "to_date=2026-06-28&to_time=20:00",
+        headers={"Accept": "application/json"},
+    )
+    invalid_date = admin_client.get(
+        "/audit-logs?from_date=2026-99-99&from_time=20:00",
+        headers={"Accept": "application/json"},
+    )
+    reversed_date = admin_client.get(
+        "/audit-logs?from_date=2026-06-29&from_time=00:00&to_date=2026-06-28&to_time=23:30",
+        headers={"Accept": "application/json"},
+    )
     invalid = admin_client.get(
         "/audit-logs?sort=drop_table&direction=sideways&page=-4&per_page=500&outcome=made_up",
         headers={"Accept": "application/json"},
@@ -268,6 +282,24 @@ def test_audit_viewer_filters_sorting_pagination_and_safe_search(admin_client):
     assert "staff_invite_created" in filtered_payload["event_type_options"]
     assert filtered_payload["total"] == 1
     assert filtered_payload["total_pages"] == 1
+    assert filtered_payload["previous_page_url"] == ""
+    assert filtered_payload["next_page_url"] == ""
+    assert filtered_payload["date_controls"]["from"]["date"] == "2026-06-28"
+    assert filtered_payload["date_controls"]["from"]["time"] == "08:00"
+    assert filtered_payload["date_controls"]["to"] == {"date": "2026-06-29", "time": "08:00"}
+    sgt_payload = sgt_filtered.get_json()
+    assert [event["id"] for event in sgt_payload["events"]] == [matching.id]
+    assert sgt_payload["filters"]["from"].startswith("2026-06-28T12:00:00")
+    assert sgt_payload["date_controls"]["from"] == {"date": "2026-06-28", "time": "20:00"}
+    assert sgt_payload["date_controls"]["to"] == {"date": "2026-06-28", "time": "20:00"}
+    assert sgt_payload["filter_errors"] == []
+    invalid_date_payload = invalid_date.get_json()
+    assert invalid_date_payload["events"] == []
+    assert invalid_date_payload["filter_errors"] == ["Enter valid From and To dates with SGT time values."]
+    assert "valueerror" not in invalid_date.get_data(as_text=True).casefold()
+    reversed_date_payload = reversed_date.get_json()
+    assert reversed_date_payload["events"] == []
+    assert reversed_date_payload["filter_errors"] == ["Enter a From value that is earlier than or equal to To."]
     assert invalid.status_code == 200
     invalid_payload = invalid.get_json()
     assert invalid_payload["sort"] == "timestamp"
@@ -301,6 +333,61 @@ def test_audit_viewer_filters_sorting_pagination_and_safe_search(admin_client):
         for event in sensitive_metadata_search.get_json()["events"]
     )
     assert "sql" not in invalid.get_data(as_text=True).casefold()
+
+
+def test_audit_viewer_previous_next_controls_preserve_filters(admin_client):
+    admin, admin_secret = _create_identity(
+        username="security-admin",
+        email="security.admin@sit.singaporetech.edu.sg",
+        account_type="admin",
+        phone_number="91234567",
+    )
+    for index in range(3):
+        _audit_event(
+            event_type="pagination_probe",
+            user_id=admin.id,
+            created_at=datetime(2026, 6, 28, 8 + index, 0, tzinfo=timezone.utc),
+            correlation_id=f"pagination-request-{index}",
+        )
+    _login_admin(admin_client, admin_secret, "security.admin@sit.singaporetech.edu.sg")
+
+    first_page = admin_client.get(
+        "/audit-logs?event_type=pagination_probe&sort=timestamp&direction=asc&per_page=1&page=1"
+    )
+    second_json = admin_client.get(
+        "/audit-logs?event_type=pagination_probe&sort=timestamp&direction=asc&per_page=1&page=2",
+        headers={"Accept": "application/json"},
+    )
+    last_page = admin_client.get(
+        "/audit-logs?event_type=pagination_probe&sort=timestamp&direction=asc&per_page=1&page=3"
+    )
+    overlarge_page = admin_client.get(
+        "/audit-logs?event_type=pagination_probe&sort=timestamp&direction=asc&per_page=1&page=999",
+        headers={"Accept": "application/json"},
+    )
+
+    first_body = first_page.get_data(as_text=True)
+    last_body = last_page.get_data(as_text=True)
+    second_payload = second_json.get_json()
+    overlarge_payload = overlarge_page.get_json()
+
+    assert first_page.status_code == 200
+    assert 'data-audit-prev' in first_body
+    assert 'aria-disabled="true" tabindex="-1">Previous</a>' in first_body
+    assert 'data-audit-next' in first_body
+    assert "page=2" in first_body
+    assert "event_type=pagination_probe" in first_body
+    assert "per_page=1" in first_body
+    assert second_payload["previous_page_url"].endswith(
+        "event_type=pagination_probe&sort=timestamp&direction=asc&per_page=1&page=1"
+    )
+    assert second_payload["next_page_url"].endswith(
+        "event_type=pagination_probe&sort=timestamp&direction=asc&per_page=1&page=3"
+    )
+    assert f"/audit-logs/{second_payload['events'][0]['id']}" in second_payload["events"][0]["detail_url"]
+    assert 'aria-disabled="true" tabindex="-1">Next</a>' in last_body
+    assert overlarge_payload["page"] == 3
+    assert overlarge_payload["total_pages"] == 3
 
 
 def test_root_admin_audit_view_retains_full_ip_for_investigation(admin_client):
@@ -434,14 +521,33 @@ def test_audit_viewer_renders_dropdown_timestamps_and_system_probe_source(admin_
     detail = admin_client.get(f"/audit-logs/{event.id}")
     listing_body = listing.get_data(as_text=True)
     detail_body = detail.get_data(as_text=True)
+    script = Path("app/static/js/admin-audit-logs.js").read_text(encoding="utf-8")
 
     assert listing.status_code == 200
     assert '<input id="audit-search" name="q"' in listing_body
     assert "Advanced filters" in listing_body
     assert '<select id="audit-event-type" name="event_type">' in listing_body
-    assert 'placeholder="29 Jun 2026, 08:00 SGT"' in listing_body
+    assert 'id="audit-from-date" name="from_date" type="date"' in listing_body
+    assert 'id="audit-from-time" name="from_time"' in listing_body
+    assert 'id="audit-to-date" name="to_date" type="date"' in listing_body
+    assert 'id="audit-to-time" name="to_time"' in listing_body
+    assert '<option value="00:00" selected>00:00 SGT</option>' in listing_body
+    assert '<option value="23:30" selected>23:30 SGT</option>' in listing_body
     assert 'placeholder="2026-06-29T00:00:00Z"' not in listing_body
+    assert '<input id="audit-page" name="page"' not in listing_body
     assert "existing UTC ISO query links remain accepted" in listing_body
+    assert 'data-audit-log-browser' in listing_body
+    assert 'data-audit-table-body' in listing_body
+    assert 'data-audit-page-link' in listing_body
+    assert 'js/admin-audit-logs.js' in listing_body
+    assert "event.preventDefault()" in script
+    assert "fetch(url" in script
+    assert 'Accept: "application/json"' in script
+    assert "globalThis.history" in script
+    assert "pushState" in script
+    assert "popstate" in script
+    assert "textContent" in script
+    assert "innerHTML" not in script
     assert "privilege_probe" in listing_body
     assert "30 Jun 2026, 16:15:00 SGT" in listing_body
     assert "system_probe: Runtime privilege probe" in listing_body

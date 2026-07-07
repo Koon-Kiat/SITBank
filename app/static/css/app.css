@@ -2183,6 +2183,68 @@ th {
   font-weight: 700;
 }
 
+.audit-filter-form {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.audit-search-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto auto;
+  gap: var(--space-3);
+  align-items: end;
+}
+
+.audit-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: var(--space-4);
+  align-items: start;
+  margin-top: var(--space-4);
+}
+
+.audit-filter-field {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.audit-filter-field label {
+  color: var(--muted-strong);
+  font-weight: 700;
+}
+
+.audit-filter-field input,
+.audit-filter-field select {
+  width: 100%;
+}
+
+.audit-date-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(8.5rem, 0.65fr);
+  gap: var(--space-2);
+}
+
+.audit-date-help,
+.audit-filter-feedback {
+  grid-column: 1 / -1;
+}
+
+.audit-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.audit-page-indicator {
+  color: var(--muted-strong);
+  font-size: 0.9rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 .admin-table-wrap {
   overflow-x: auto;
   border: 1px solid var(--line);
@@ -2544,8 +2606,14 @@ th {
 
   .admin-form-grid,
   .admin-filter-grid,
+  .audit-search-grid,
+  .audit-date-controls,
   .admin-inline-actions {
     grid-template-columns: 1fr;
+  }
+
+  .audit-pagination {
+    justify-content: flex-start;
   }
 
   .admin-inline-actions input {

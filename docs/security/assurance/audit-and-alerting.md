@@ -186,8 +186,9 @@ inside an advanced filter disclosure. It validates filters, sort fields, sort
 direction, page number, and page size server-side before any query is built.
 Supported advanced controls are exact event type, actor user ID, approved
 target-reference metadata keys, role, severity, outcome/status, request or
-correlation ID, IP address, timestamp range with SGT-facing examples,
-timestamp/severity/event-type/actor sorting, and bounded pagination. The `q`
+correlation ID, IP address, timestamp range using native date controls plus
+SGT hour/half-hour time dropdowns, timestamp/severity/event-type/actor
+sorting, and bounded pagination with Previous and Next links. The `q`
 search field is limited to approved safe fields: activity/event type, outcome,
 request ID, safe source display, target reference, actor user ID, actor
 username, and privileged workplace email. It does not search raw unbounded
@@ -208,7 +209,11 @@ kind/display, target reference, request ID, outcome, severity, and hash-chain
 status. Visible UI timestamps display in UTC+8/SGT such as
 `02 Jul 2026, 06:11:49 SGT`; machine-readable UTC/ISO values remain in HTML
 `datetime` attributes, existing UTC ISO filter query links, and JSON fields for
-tooling. Known admin, MFA, staff
+tooling. JavaScript-enhanced pagination fetches the same authorized JSON
+payload, updates the table and browser history in place, and falls back to the
+normal Previous and Next links if JavaScript is unavailable or fetch fails.
+Invalid or reversed timestamp ranges return generic validation feedback without
+parser internals. Known admin, MFA, staff
 invite, staff lifecycle, manual recovery, deployment, Cloudflare, Tailscale,
 runtime privilege, and alerting event types use explicit descriptions. Unknown
 event types fall back to a safe readable label and preserve the raw technical

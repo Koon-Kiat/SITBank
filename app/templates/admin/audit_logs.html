@@ -12,82 +12,145 @@
     </div>
   </div>
   <section class="panel">
-    {% set advanced_open = filters.event_type or filters.actor or filters.target or filters.severity or filters.outcome or filters.role or filters.request_id or filters.ip_address or filters.from or filters.to or sort != "timestamp" or direction != "desc" or page != 1 %}
-    <form method="get" action="{{ url_for('admin.audit_logs') }}">
-      <div class="admin-filter-grid">
-        <label for="audit-search">Search</label>
-        <input id="audit-search" name="q" value="{{ filters.q }}">
+    {% set advanced_open = filter_errors or filters.event_type or filters.actor or filters.target or filters.severity or filters.outcome or filters.role or filters.request_id or filters.ip_address or filters.from or filters.to or sort != "timestamp" or direction != "desc" or page != 1 or per_page != 25 %}
+    <form method="get" action="{{ url_for('admin.audit_logs') }}" class="audit-filter-form">
+      <input type="hidden" name="page" value="1">
+      <div class="audit-search-grid">
+        <div class="audit-filter-field audit-search-field">
+          <label for="audit-search">Search</label>
+          <input id="audit-search" name="q" value="{{ filters.q }}" autocomplete="off">
+        </div>
         <button type="submit">Search</button>
         <a class="button secondary" href="{{ url_for('admin.audit_logs') }}">Reset</a>
       </div>
       <details{% if advanced_open %} open{% endif %}>
         <summary>Advanced filters</summary>
-        <div class="admin-filter-grid">
-          <label for="audit-event-type">Event type</label>
-          <select id="audit-event-type" name="event_type">
-            <option value="">Any</option>
-            {% for event_type in event_type_options %}
-            <option value="{{ event_type }}"{% if filters.event_type == event_type %} selected{% endif %}>{{ event_type }}</option>
-            {% endfor %}
-          </select>
-          <label for="audit-actor">Actor user ID</label>
-          <input id="audit-actor" name="actor" value="{{ filters.actor }}">
-          <label for="audit-target">Target reference</label>
-          <input id="audit-target" name="target" value="{{ filters.target }}">
-          <label for="audit-severity">Severity</label>
-          <select id="audit-severity" name="severity">
-            <option value="">Any</option>
-            {% for severity in severity_options %}
-            <option value="{{ severity }}"{% if filters.severity == severity %} selected{% endif %}>{{ severity }}</option>
-            {% endfor %}
-          </select>
-          <label for="audit-outcome">Outcome</label>
-          <select id="audit-outcome" name="outcome">
-            <option value="">Any</option>
-            {% for outcome in outcome_options %}
-            <option value="{{ outcome }}"{% if filters.outcome == outcome %} selected{% endif %}>{{ outcome }}</option>
-            {% endfor %}
-          </select>
-          <label for="audit-role">Role</label>
-          <select id="audit-role" name="role">
-            <option value="">Any</option>
-            {% for role in ["staff", "admin", "root_admin", "customer"] %}
-            <option value="{{ role }}"{% if filters.role == role %} selected{% endif %}>{{ role }}</option>
-            {% endfor %}
-          </select>
-          <label for="audit-request-id">Request ID</label>
-          <input id="audit-request-id" name="request_id" value="{{ filters.request_id }}">
-          <label for="audit-ip-address">IP address</label>
-          <input id="audit-ip-address" name="ip_address" value="{{ filters.ip_address }}">
-          <label for="audit-from">From</label>
-          <input id="audit-from" name="from" value="{{ filters.from }}" placeholder="29 Jun 2026, 08:00 SGT" aria-describedby="audit-date-help">
-          <label for="audit-to">To</label>
-          <input id="audit-to" name="to" value="{{ filters.to }}" placeholder="30 Jun 2026, 07:59 SGT" aria-describedby="audit-date-help">
-          <p id="audit-date-help" class="hint">Visible examples use SGT; existing UTC ISO query links remain accepted.</p>
-          <label for="audit-sort">Sort</label>
-          <select id="audit-sort" name="sort">
-            {% for option in sort_options %}
-            <option value="{{ option }}"{% if sort == option %} selected{% endif %}>{{ option }}</option>
-            {% endfor %}
-          </select>
-          <label for="audit-direction">Direction</label>
-          <select id="audit-direction" name="direction">
-            <option value="desc"{% if direction == "desc" %} selected{% endif %}>desc</option>
-            <option value="asc"{% if direction == "asc" %} selected{% endif %}>asc</option>
-          </select>
-          <label for="audit-page-size">Page size</label>
-          <input id="audit-page-size" name="per_page" value="{{ per_page }}" inputmode="numeric">
-          <label for="audit-page">Page</label>
-          <input id="audit-page" name="page" value="{{ page }}" inputmode="numeric">
+        {% if filter_errors %}
+        <div class="alert alert-warning audit-filter-feedback" role="alert">
+          {% for error in filter_errors %}
+          <span>{{ error }}</span>
+          {% endfor %}
+        </div>
+        {% endif %}
+        <div class="audit-filter-grid">
+          <div class="audit-filter-field">
+            <label for="audit-event-type">Event type</label>
+            <select id="audit-event-type" name="event_type">
+              <option value="">Any</option>
+              {% for event_type in event_type_options %}
+              <option value="{{ event_type }}"{% if filters.event_type == event_type %} selected{% endif %}>{{ event_type }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="audit-filter-field">
+            <label for="audit-actor">Actor user ID</label>
+            <input id="audit-actor" name="actor" value="{{ filters.actor }}" inputmode="numeric">
+          </div>
+          <div class="audit-filter-field">
+            <label for="audit-target">Target reference</label>
+            <input id="audit-target" name="target" value="{{ filters.target }}" autocomplete="off">
+          </div>
+          <div class="audit-filter-field">
+            <label for="audit-severity">Severity</label>
+            <select id="audit-severity" name="severity">
+              <option value="">Any</option>
+              {% for severity in severity_options %}
+              <option value="{{ severity }}"{% if filters.severity == severity %} selected{% endif %}>{{ severity }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="audit-filter-field">
+            <label for="audit-outcome">Outcome</label>
+            <select id="audit-outcome" name="outcome">
+              <option value="">Any</option>
+              {% for outcome in outcome_options %}
+              <option value="{{ outcome }}"{% if filters.outcome == outcome %} selected{% endif %}>{{ outcome }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="audit-filter-field">
+            <label for="audit-role">Role</label>
+            <select id="audit-role" name="role">
+              <option value="">Any</option>
+              {% for role in ["staff", "admin", "root_admin", "customer"] %}
+              <option value="{{ role }}"{% if filters.role == role %} selected{% endif %}>{{ role }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="audit-filter-field">
+            <label for="audit-request-id">Request ID</label>
+            <input id="audit-request-id" name="request_id" value="{{ filters.request_id }}" autocomplete="off">
+          </div>
+          <div class="audit-filter-field">
+            <label for="audit-ip-address">IP address</label>
+            <input id="audit-ip-address" name="ip_address" value="{{ filters.ip_address }}" autocomplete="off">
+          </div>
+          <div class="audit-filter-field">
+            <label for="audit-from-date">From</label>
+            <div class="audit-date-controls">
+              <input id="audit-from-date" name="from_date" type="date" value="{{ date_controls['from']['date'] }}" aria-describedby="audit-date-help">
+              <label class="sr-only" for="audit-from-time">From time in SGT</label>
+              <select id="audit-from-time" name="from_time" aria-describedby="audit-date-help">
+                {% for option in time_options %}
+                <option value="{{ option }}"{% if date_controls['from']['time'] == option %} selected{% endif %}>{{ option }} SGT</option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+          <div class="audit-filter-field">
+            <label for="audit-to-date">To</label>
+            <div class="audit-date-controls">
+              <input id="audit-to-date" name="to_date" type="date" value="{{ date_controls['to']['date'] }}" aria-describedby="audit-date-help">
+              <label class="sr-only" for="audit-to-time">To time in SGT</label>
+              <select id="audit-to-time" name="to_time" aria-describedby="audit-date-help">
+                {% for option in time_options %}
+                <option value="{{ option }}"{% if date_controls['to']['time'] == option %} selected{% endif %}>{{ option }} SGT</option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+          <p id="audit-date-help" class="hint audit-date-help">Visible date and time controls use SGT; existing UTC ISO query links remain accepted and machine-readable UTC values stay in JSON and HTML datetime attributes.</p>
+          <div class="audit-filter-field">
+            <label for="audit-sort">Sort</label>
+            <select id="audit-sort" name="sort">
+              {% for option in sort_options %}
+              <option value="{{ option }}"{% if sort == option %} selected{% endif %}>{{ option }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="audit-filter-field">
+            <label for="audit-direction">Direction</label>
+            <select id="audit-direction" name="direction">
+              <option value="desc"{% if direction == "desc" %} selected{% endif %}>desc</option>
+              <option value="asc"{% if direction == "asc" %} selected{% endif %}>asc</option>
+            </select>
+          </div>
+          <div class="audit-filter-field">
+            <label for="audit-page-size">Page size</label>
+            <input id="audit-page-size" name="per_page" value="{{ per_page }}" inputmode="numeric">
+          </div>
         </div>
       </details>
     </form>
   </section>
 
-  <section class="panel">
+  <section class="panel" data-audit-log-browser>
     <div class="section-header">
-      <h2>Events</h2>
-      <p class="muted">{{ total }} result(s), page {{ page }} of {{ total_pages }}</p>
+      <div>
+        <h2>Events</h2>
+        <p class="muted" data-audit-result-count>{{ total }} result(s), page {{ page }} of {{ total_pages }}</p>
+      </div>
+      <nav class="audit-pagination" aria-label="Audit log pagination" data-audit-pagination>
+        <a class="button secondary small{% if not previous_page_url %} is-disabled{% endif %}"
+           data-audit-prev
+           data-audit-page-link
+           {% if previous_page_url %}href="{{ previous_page_url }}"{% else %}aria-disabled="true" tabindex="-1"{% endif %}>Previous</a>
+        <span class="audit-page-indicator" data-audit-page-indicator>Page {{ page }} of {{ total_pages }}</span>
+        <a class="button secondary small{% if not next_page_url %} is-disabled{% endif %}"
+           data-audit-next
+           data-audit-page-link
+           {% if next_page_url %}href="{{ next_page_url }}"{% else %}aria-disabled="true" tabindex="-1"{% endif %}>Next</a>
+      </nav>
     </div>
     <div class="admin-table-wrap">
       <table class="admin-table">
@@ -104,7 +167,7 @@
             <th scope="col">Detail</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody data-audit-table-body>
           {% for event in events %}
           <tr>
             <td><time datetime="{{ event.created_at_utc }}">{{ event.created_at_display }}</time></td>
@@ -118,7 +181,7 @@
             <td>{{ event.source_kind }}: {{ event.source_display }}</td>
             <td>{{ event.request_id }}</td>
             <td>{{ event.target_ref or "none" }}</td>
-            <td><a href="{{ url_for('admin.audit_log_detail', event_id=event.id) }}">Open</a></td>
+            <td><a href="{{ event.detail_url }}">Open</a></td>
           </tr>
           {% else %}
           <tr>
@@ -130,4 +193,8 @@
     </div>
   </section>
 </section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/admin-audit-logs.js') }}" defer></script>
 {% endblock %}

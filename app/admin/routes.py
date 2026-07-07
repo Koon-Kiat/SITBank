@@ -342,6 +342,27 @@ def _wants_json() -> bool:
     return request_wants_json()
 
 
+def _audit_log_payload_with_links(payload: dict[str, Any]) -> dict[str, Any]:
+    page = int(payload.get("page") or 1)
+    total_pages = int(payload.get("total_pages") or 1)
+    events = []
+    for event in payload.get("events") or []:
+        linked_event = dict(event)
+        linked_event["detail_url"] = url_for("admin.audit_log_detail", event_id=linked_event["id"])
+        events.append(linked_event)
+    payload = dict(payload)
+    payload["events"] = events
+    payload["previous_page_url"] = _audit_log_page_url(page - 1) if page > 1 else ""
+    payload["next_page_url"] = _audit_log_page_url(page + 1) if page < total_pages else ""
+    return payload
+
+
+def _audit_log_page_url(page: int) -> str:
+    query = request.args.to_dict(flat=True)
+    query["page"] = str(page)
+    return url_for("admin.audit_logs", **query)
+
+
 def _safe_alert_text(value: Any, limit: int = 120) -> str:
     text = str(value or "").strip()
     text = re.sub(r"[\x00-\x1f\x7f]+", " ", text)
@@ -1295,7 +1316,7 @@ def dispute_transition(dispute_id: int):
 @admin_bp.get("/audit-logs")
 def audit_logs():
     actor = require_admin_session()
-    payload = query_audit_events_for_admin(actor, request.args.to_dict(flat=True))
+    payload = _audit_log_payload_with_links(query_audit_events_for_admin(actor, request.args.to_dict(flat=True)))
     if _wants_json():
         return jsonify(payload)
     return render_template(

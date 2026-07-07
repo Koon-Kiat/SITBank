@@ -470,7 +470,7 @@ Viewing the page does not consume the invite or create an account. Setup changes
 the invite from `pending` to `totp_pending` and creates only a `setup_pending`
 identity; only successful workplace-code and TOTP verification activates the
 identity and marks the invite `accepted`. The setup flow uses `no-store` and
-no-referrer response headers, CSRF-protected browser forms, same-browser
+same-origin referrer response headers, CSRF-protected browser forms, same-browser
 verification binding, and capped restarts that would otherwise rotate
 passwords, TOTP setup secrets, or workplace verification codes. If an active
 invite becomes locked by the restart cap, a root admin should use the invite

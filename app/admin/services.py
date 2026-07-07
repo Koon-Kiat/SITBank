@@ -74,7 +74,7 @@ from app.security.sessions import (
     revoke_all_sessions,
     revoke_current_session,
 )
-from app.time_display import sgt_datetime, utc_iso
+from app.time_display import SINGAPORE_TZ, sgt_datetime, utc_iso
 from app.security.turnstile import TurnstileError, require_turnstile
 
 
@@ -167,6 +167,11 @@ AUDIT_SORT_OPTIONS = frozenset(
     {"timestamp", "severity", "event_type", "actor", "request_id", "source"}
 )
 AUDIT_EVENT_TYPE_OPTION_LIMIT = 250
+AUDIT_TIME_OPTIONS = tuple(f"{hour:02d}:{minute:02d}" for hour in range(24) for minute in (0, 30))
+AUDIT_DEFAULT_FROM_TIME = "00:00"
+AUDIT_DEFAULT_TO_TIME = "23:30"
+AUDIT_DATE_ERROR_MESSAGE = "Enter valid From and To dates with SGT time values."
+AUDIT_REVERSED_RANGE_MESSAGE = "Enter a From value that is earlier than or equal to To."
 AUDIT_TARGET_METADATA_KEYS = (
     "audit_event_ref",
     "invite_ref",
@@ -1054,14 +1059,16 @@ def query_audit_events_for_admin(actor: User, args: dict[str, Any]) -> dict[str,
     if role_rank(actor.account_type) < role_rank(ACCOUNT_ADMIN):
         audit_event("audit_log_view", "blocked", user=actor, metadata={"reason": "admin_role_required"})
         raise AuthError("Forbidden", 403)
-    filters = _audit_filters(args)
+    filters, date_filters = _audit_filter_context(args)
     page = _bounded_int(args.get("page"), default=1, minimum=1, maximum=10000)
     per_page = _bounded_int(args.get("per_page"), default=25, minimum=1, maximum=100)
     sort = _validated_choice(args.get("sort"), AUDIT_SORT_OPTIONS, "timestamp")
     direction = _validated_choice(args.get("direction"), {"asc", "desc"}, "desc")
     statement = db.select(SecurityAuditEvent)
-    statement = _apply_audit_filters(statement, filters)
+    statement = _apply_audit_filters(statement, filters, date_filters)
     total = db.session.execute(db.select(func.count()).select_from(statement.subquery())).scalar_one()
+    total_pages = max(1, (int(total or 0) + per_page - 1) // per_page)
+    page = min(page, total_pages)
     order_column = {
         "timestamp": SecurityAuditEvent.created_at,
         "severity": cast(SecurityAuditEvent.event_metadata, String),
@@ -1077,7 +1084,6 @@ def query_audit_events_for_admin(actor: User, args: dict[str, Any]) -> dict[str,
     events = list(
         db.session.execute(statement.limit(per_page).offset((page - 1) * per_page)).scalars()
     )
-    total_pages = max(1, (int(total or 0) + per_page - 1) // per_page)
     audit_event(
         "audit_log_view",
         "success",
@@ -1104,6 +1110,11 @@ def query_audit_events_for_admin(actor: User, args: dict[str, Any]) -> dict[str,
         "per_page": per_page,
         "total_pages": total_pages,
         "total": int(total or 0),
+        "has_previous": page > 1,
+        "has_next": page < total_pages,
+        "filter_errors": date_filters["errors"],
+        "date_controls": date_filters["controls"],
+        "time_options": list(AUDIT_TIME_OPTIONS),
         "sort": sort,
         "direction": direction,
         "sort_options": sorted(AUDIT_SORT_OPTIONS),
@@ -1439,7 +1450,13 @@ def _audit_metadata_groups(metadata: dict[str, Any]) -> dict[str, dict[str, Any]
     return {name: values for name, values in groups.items() if values}
 
 
-def _audit_filters(args: dict[str, Any]) -> dict[str, str]:
+def _audit_filter_context(args: dict[str, Any]) -> tuple[dict[str, str], dict[str, Any]]:
+    date_filters = _audit_date_filters(args)
+    return _audit_filters(args, date_filters=date_filters), date_filters
+
+
+def _audit_filters(args: dict[str, Any], *, date_filters: dict[str, Any] | None = None) -> dict[str, str]:
+    resolved_date_filters = date_filters or _audit_date_filters(args)
     return {
         "event_type": _safe_identifier_filter(args.get("event_type"), AUDIT_EVENT_TYPE_RE),
         "actor": _safe_actor_filter(args.get("actor")),
@@ -1449,13 +1466,110 @@ def _audit_filters(args: dict[str, Any]) -> dict[str, str]:
         "outcome": _validated_choice(args.get("outcome") or args.get("status"), AUDIT_ALLOWED_OUTCOMES, ""),
         "ip_address": _safe_identifier_filter(args.get("ip_address"), AUDIT_REFERENCE_RE),
         "request_id": _safe_identifier_filter(args.get("request_id") or args.get("correlation_id"), AUDIT_REFERENCE_RE),
-        "from": _safe_filter(args.get("from"), 40),
-        "to": _safe_filter(args.get("to"), 40),
+        "from": resolved_date_filters["from_query"],
+        "to": resolved_date_filters["to_query"],
         "q": _safe_identifier_filter(args.get("q"), AUDIT_SAFE_SEARCH_RE),
     }
 
 
-def _apply_audit_filters(statement, filters: dict[str, str]):
+def _audit_date_filters(args: dict[str, Any]) -> dict[str, Any]:
+    from_bound = _audit_datetime_bound(args, "from", AUDIT_DEFAULT_FROM_TIME)
+    to_bound = _audit_datetime_bound(args, "to", AUDIT_DEFAULT_TO_TIME)
+    errors: list[str] = []
+    if from_bound["invalid"] or to_bound["invalid"]:
+        errors.append(AUDIT_DATE_ERROR_MESSAGE)
+    if not errors and from_bound["utc"] is not None and to_bound["utc"] is not None and from_bound["utc"] > to_bound["utc"]:
+        errors.append(AUDIT_REVERSED_RANGE_MESSAGE)
+    return {
+        "from_utc": from_bound["utc"],
+        "to_utc": to_bound["utc"],
+        "from_query": from_bound["query"],
+        "to_query": to_bound["query"],
+        "errors": errors,
+        "controls": {
+            "from": from_bound["control"],
+            "to": to_bound["control"],
+        },
+    }
+
+
+def _audit_datetime_bound(args: dict[str, Any], prefix: str, default_time: str) -> dict[str, Any]:
+    date_text = _safe_filter(args.get(f"{prefix}_date"), 10)
+    time_text = _safe_filter(args.get(f"{prefix}_time"), 5) or default_time
+    raw_query = _safe_filter(args.get(prefix), 40)
+    if date_text:
+        parsed = _parse_sgt_filter_datetime(date_text, time_text)
+        if parsed is None:
+            return _audit_datetime_bound_payload(None, raw_query, date_text, time_text, invalid=True)
+        return _audit_datetime_bound_payload(parsed, _utc_iso(parsed), date_text, time_text)
+    if raw_query:
+        parsed = _parse_filter_datetime(raw_query)
+        if parsed is None:
+            return _audit_datetime_bound_payload(None, raw_query, "", default_time, invalid=True)
+        control = _audit_datetime_control(parsed, default_time=default_time)
+        return _audit_datetime_bound_payload(parsed, _utc_iso(parsed), control["date"], control["time"])
+    return _audit_datetime_bound_payload(None, "", "", default_time)
+
+
+def _audit_datetime_bound_payload(
+    parsed: datetime | None,
+    query_value: str,
+    date_text: str,
+    time_text: str,
+    *,
+    invalid: bool = False,
+) -> dict[str, Any]:
+    safe_time = time_text if time_text in AUDIT_TIME_OPTIONS else ""
+    return {
+        "utc": parsed,
+        "query": query_value,
+        "invalid": invalid,
+        "control": {
+            "date": date_text,
+            "time": safe_time,
+        },
+    }
+
+
+def _parse_sgt_filter_datetime(date_text: str, time_text: str) -> datetime | None:
+    if time_text not in AUDIT_TIME_OPTIONS:
+        return None
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_text):
+        return None
+    try:
+        local_date = datetime.fromisoformat(date_text).date()
+        hour, minute = (int(part) for part in time_text.split(":", 1))
+    except ValueError:
+        return None
+    local_datetime = datetime(
+        local_date.year,
+        local_date.month,
+        local_date.day,
+        hour,
+        minute,
+        tzinfo=SINGAPORE_TZ,
+    )
+    return _as_utc(local_datetime)
+
+
+def _audit_datetime_control(value: datetime, *, default_time: str) -> dict[str, str]:
+    local = _as_utc(value).astimezone(SINGAPORE_TZ)
+    time_text = _nearest_audit_time_option(local) or default_time
+    return {"date": local.date().isoformat(), "time": time_text}
+
+
+def _nearest_audit_time_option(value: datetime) -> str:
+    total_minutes = (value.hour * 60) + value.minute
+    if value.second >= 30:
+        total_minutes += 1
+    rounded_minutes = min(((total_minutes + 15) // 30) * 30, (23 * 60) + 30)
+    hour, minute = divmod(rounded_minutes, 60)
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _apply_audit_filters(statement, filters: dict[str, str], date_filters: dict[str, Any]):
+    if date_filters["errors"]:
+        return statement.where(false())
     if filters["event_type"]:
         statement = statement.where(SecurityAuditEvent.event_type == filters["event_type"])
     if filters["outcome"]:
@@ -1469,8 +1583,8 @@ def _apply_audit_filters(statement, filters: dict[str, str]):
         statement = statement.where(SecurityAuditEvent.ip_address == filters["ip_address"])
     if filters["request_id"]:
         statement = statement.where(SecurityAuditEvent.correlation_id == filters["request_id"])
-    since = _parse_filter_datetime(filters["from"])
-    until = _parse_filter_datetime(filters["to"])
+    since = date_filters["from_utc"]
+    until = date_filters["to_utc"]
     if since is not None:
         statement = statement.where(SecurityAuditEvent.created_at >= since)
     if until is not None:
