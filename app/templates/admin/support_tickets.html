@@ -87,31 +87,24 @@
       </div>
     </dl>
     {% if selected_ticket.status in ("open", "in_review") %}
-    <div class="action-grid">
-      {% if selected_ticket.status == "open" %}
-      <form method="post" action="{{ url_for('admin.support_ticket_transition', ticket_id=selected_ticket.id) }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <input type="hidden" name="status" value="in_review">
-        <label for="in-review-note">Note (optional)</label>
-        <input id="in-review-note" name="resolution_note" maxlength="1000">
-        <button class="button secondary" type="submit">Mark In Review</button>
-      </form>
-      {% endif %}
-      <form method="post" action="{{ url_for('admin.support_ticket_transition', ticket_id=selected_ticket.id) }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <input type="hidden" name="status" value="resolved">
-        <label for="resolve-note">Resolution note</label>
-        <input id="resolve-note" name="resolution_note" maxlength="1000">
-        <button class="button" type="submit">Resolve</button>
-      </form>
-      <form method="post" action="{{ url_for('admin.support_ticket_transition', ticket_id=selected_ticket.id) }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <input type="hidden" name="status" value="closed">
-        <label for="close-note">Closing note</label>
-        <input id="close-note" name="resolution_note" maxlength="1000">
-        <button class="button secondary" type="submit">Close</button>
-      </form>
-    </div>
+    <form class="admin-form" method="post" action="{{ url_for('admin.support_ticket_transition', ticket_id=selected_ticket.id) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="form-field">
+        <label for="ticket-status-select">New status</label>
+        <select id="ticket-status-select" name="status" required>
+          {% if selected_ticket.status == "open" %}
+          <option value="in_review">In review</option>
+          {% endif %}
+          <option value="resolved">Resolved</option>
+          <option value="closed">Closed</option>
+        </select>
+      </div>
+      <div class="form-field">
+        <label for="ticket-status-note">Note (optional)</label>
+        <input id="ticket-status-note" name="resolution_note" maxlength="1000">
+      </div>
+      <button class="button" type="submit">Update status</button>
+    </form>
     {% endif %}
   </section>
   {% endif %}

@@ -21,7 +21,7 @@ from app.auth.recovery_codes import consume_recovery_code, unused_recovery_code_
 import app.auth.services as auth_services
 from app.auth.services import AuthError
 from app.extensions import db
-from app.models import ManualRecoveryRequest, PasswordResetToken, RecoveryCode, SecurityAuditEvent, User
+from app.models import ManualRecoveryRequest, PasswordResetToken, RecoveryCode, SecurityAuditEvent, SupportTicket, User
 from app.security.crypto import encrypt_mfa_secret
 from app.security.email import password_reset_outbox
 from app.security.passwords import PASSWORD_MAX_CHARS, PASSWORD_MIN_LENGTH, hash_password, verify_password
@@ -533,6 +533,65 @@ def test_manual_recovery_request_generic_response_unaffected_by_reason(app, clie
     assert known.status_code == 200
     assert unknown.status_code == 200
     assert known.get_json() == unknown.get_json()
+
+
+def test_manual_recovery_request_creates_support_ticket_for_known_customer(app, client):
+    with app.app_context():
+        user = _create_user("recoveryticket01", "recoveryticket01@example.com")
+        user_id = user.id
+
+    response = client.post(
+        "/auth/account-recovery",
+        json={
+            "identifier": "recoveryticket01@example.com",
+            "reason": "Lost my phone with my authenticator app on it.",
+        },
+    )
+
+    assert response.status_code == 200
+    with app.app_context():
+        ticket = db.session.execute(
+            db.select(SupportTicket).where(SupportTicket.user_id == user_id)
+        ).scalar_one()
+        assert ticket.category == "account_recovery"
+        assert ticket.status == "open"
+        assert ticket.description == "Lost my phone with my authenticator app on it."
+
+
+def test_manual_recovery_request_for_unknown_identifier_creates_no_support_ticket(app, client):
+    response = client.post(
+        "/auth/account-recovery",
+        json={"identifier": "no-such-customer@example.com"},
+    )
+
+    assert response.status_code == 200
+    with app.app_context():
+        tickets = db.session.execute(db.select(SupportTicket)).scalars().all()
+        assert tickets == []
+
+
+def test_manual_recovery_request_survives_support_ticket_creation_failure(app, client, monkeypatch):
+    with app.app_context():
+        user = _create_user("recoveryticket02", "recoveryticket02@example.com")
+        user_id = user.id
+
+    def broken_support_ticket(*_args, **_kwargs):
+        raise RuntimeError("simulated support ticket failure")
+
+    monkeypatch.setattr("app.auth.password_reset.SupportTicket", broken_support_ticket)
+
+    response = client.post(
+        "/auth/account-recovery",
+        json={"identifier": "recoveryticket02@example.com"},
+    )
+
+    assert response.status_code == 200
+    with app.app_context():
+        assert db.session.execute(db.select(SupportTicket)).scalars().all() == []
+        request_record = db.session.execute(
+            db.select(ManualRecoveryRequest).where(ManualRecoveryRequest.user_id == user_id)
+        ).scalar_one()
+        assert request_record.status == "pending"
 
 
 def test_manual_recovery_dedupes_active_requests_and_keeps_public_response_generic(app, client):
