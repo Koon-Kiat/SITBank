@@ -799,3 +799,54 @@ def test_transfer_submit_route_blocks_when_exceeding_daily_limit(client, transfe
     assert response.status_code == 400
     assert b"daily Local Transfer limit" in response.data
     assert PendingTransfer.query.count() == 0
+
+
+def test_unsuccessful_local_transfer_sends_withdrawal_failure_email(app, transfer_context):
+    from app.security.email import password_reset_outbox
+
+    alice = transfer_context["alice"]
+    payee = transfer_context["payee"]
+
+    alice.balance = Decimal("1.00")
+    db.session.commit()
+
+    token = _make_pending_transfer(alice, payee, Decimal("999.00"))
+
+    with app.test_request_context("/banking/transfer/confirm", method="POST"):
+        with pytest.raises(AuthError):
+            execute_local_transfer(sender=alice, payee=payee, confirmation_token=token)
+
+    delivery = password_reset_outbox()[-1]
+    assert delivery["to"] == "alice@example.com"
+    assert delivery["subject"] == "SITBank Withdrawal unsuccessful"
+    assert "withdrawal Local Transfer transaction was unsuccessful" in delivery["body"]
+
+
+def test_successful_local_transfer_sends_withdrawal_deposit_and_limit_warning(
+    app,
+    transfer_context,
+):
+    from app.security.email import password_reset_outbox
+
+    alice = transfer_context["alice"]
+    bob = transfer_context["bob"]
+    payee = transfer_context["payee"]
+
+    _make_local_transfer_transaction(alice, bob, Decimal("350.00"))
+    token = _make_pending_transfer(alice, payee, Decimal("50.00"))
+
+    with app.test_request_context("/banking/transfer/confirm", method="POST"):
+        execute_local_transfer(sender=alice, payee=payee, confirmation_token=token)
+
+    deliveries = password_reset_outbox()
+    assert [item["subject"] for item in deliveries[-3:]] == [
+        "SITBank Withdrawal successful",
+        "SITBank Deposit successful",
+        "SITBank Local Transfer daily limit 80% alert",
+    ]
+    assert deliveries[-3]["to"] == "alice@example.com"
+    assert "withdrawal Local Transfer transaction was successful" in deliveries[-3]["body"]
+    assert deliveries[-2]["to"] == "bob@example.com"
+    assert "deposit Local Transfer transaction was successful" in deliveries[-2]["body"]
+    assert deliveries[-1]["to"] == "alice@example.com"
+    assert "80.00% of your limit" in deliveries[-1]["body"]
