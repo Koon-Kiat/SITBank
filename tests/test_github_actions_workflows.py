@@ -124,6 +124,13 @@ def test_dependabot_skips_only_the_human_pr_prose_policy():
     }
 
 
+def test_commit_message_policy_validates_first_parent_pr_commits_only():
+    text = (WORKFLOW_DIR / "commit-message-policy.yml").read_text(encoding="utf-8")
+
+    assert "git log --first-parent --format='%H%x00%s%x00'" in text
+    assert 'git rev-list --first-parent --count "${BASE_SHA}..${HEAD_SHA}"' in text
+
+
 def test_label_workflows_share_bounded_trusted_policy_and_manual_safeguards():
     issue = _load_workflow(WORKFLOW_DIR / "issue-labeler.yml")
     pr = _load_workflow(WORKFLOW_DIR / "pr-labeler.yml")

@@ -137,7 +137,7 @@ jobs:
 
           while IFS= read -r -d '' sha && IFS= read -r -d '' subject; do
             validate_message "${sha}" "${subject}" || true
-          done < <(git log --format='%H%x00%s%x00' "${BASE_SHA}..${HEAD_SHA}")
+          done < <(git log --first-parent --format='%H%x00%s%x00' "${BASE_SHA}..${HEAD_SHA}")
 
           if (( failed != 0 )); then
             print_examples
@@ -155,7 +155,7 @@ jobs:
           VALIDATION_OUTCOME: ${{ steps.validate.outcome }}
         run: |
           commit_count="unknown"
-          if value="$(git rev-list --count "${BASE_SHA}..${HEAD_SHA}" 2>/dev/null)"; then
+          if value="$(git rev-list --first-parent --count "${BASE_SHA}..${HEAD_SHA}" 2>/dev/null)"; then
             commit_count="${value}"
           fi
           {
