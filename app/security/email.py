@@ -9,6 +9,15 @@ from typing import Any
 from flask import current_app
 
 
+EMAIL_GREETING = "Dear Valued Customer,"
+EMAIL_CLOSING = "Thank you for banking with us. We look forward to serving you again."
+EMAIL_SIGN_OFF = "Yours sincerely,\nDigital Banking Services\nSITBank"
+EMAIL_UNRECOGNIZED_ACTIVITY_NOTICE = (
+    "If you did not request or expect this activity, contact SITBank support "
+    "through the approved recovery path."
+)
+
+
 @dataclass(frozen=True)
 class EmailDelivery:
     to_address: str

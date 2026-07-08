@@ -14,10 +14,10 @@ from flask import current_app, request, session
 from app.extensions import db
 from app.models import KnownDevice, User
 from app.security.audit import audit_event
-from app.security.email import send_security_email
+from app.security.email import EMAIL_CLOSING, EMAIL_GREETING, EMAIL_SIGN_OFF, send_security_email
 from app.security.session_hmac import active_hmac_hex, matches_hmac
 from app.security.sessions import display_ip_address, summarize_user_agent
-from app.time_display import as_utc, sgt_datetime
+from app.time_display import as_utc, sgt_date, sgt_time
 
 
 @dataclass(frozen=True)
@@ -77,16 +77,25 @@ def send_new_device_login_email(
     user_agent: str,
     login_at: datetime,
 ) -> bool:
-    body = (
-        "A new device just signed in to your SITBank account.\n"
-        f"Browser: {summarize_user_agent(user_agent)}\n"
-        f"IP address: {display_ip_address(ip_address)}\n"
-        f"Time: {sgt_datetime(login_at)}\n"
-        "\n"
-        "If this was you, no action is needed. If this was not you, log in to SITBank "
-        "immediately, go to Active Sessions and end the session, then change your password "
-        "and/or reset your authenticator app. If you believe your account is compromised, "
-        "freeze it from your account settings."
+    body = "\n".join(
+        [
+            EMAIL_GREETING,
+            "",
+            (
+                f"We detected a new sign-in to your e-banking account on "
+                f"{summarize_user_agent(user_agent)} on {sgt_date(login_at)} at "
+                f"{sgt_time(login_at)} from IP address {display_ip_address(ip_address)}. "
+                "If this was you, you don't need to do anything. If not, log in "
+                "immediately to terminate the current session and either change your "
+                "password, reset your MFA, or freeze your account (with a valid reason)."
+            ),
+            "",
+            "For your security, please do not delay in taking action if you did not initiate this sign-in.",
+            "",
+            EMAIL_CLOSING,
+            "",
+            EMAIL_SIGN_OFF,
+        ]
     )
     try:
         send_security_email(user.email, "SITBank new device sign-in", body)

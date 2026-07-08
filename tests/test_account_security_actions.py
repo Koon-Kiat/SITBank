@@ -1096,3 +1096,127 @@ def test_session_risk_drift_requires_reauth_before_sensitive_action(client):
     assert b"Session verification required. Please sign in again." in response.data
     assert user.email == "alice@example.com"
     assert db.session.query(SecurityAuditEvent).filter_by(event_type="session_risk", outcome="step_up_required").count() == 1
+
+
+def test_password_change_success_sends_confirmation_email(client, monkeypatch):
+    from app.security.email import password_reset_outbox
+
+    register(client)
+    login(client)
+    user, secret = enable_mfa_for_user()
+    mark_recent_mfa(client, user)
+    change_time = int(time.time())
+    monkeypatch.setattr("app.auth.services.time.time", lambda: change_time)
+    before_count = len(password_reset_outbox())
+
+    response = client.post(
+        "/password/change",
+        data={
+            "current_password": "correct horse battery staple",
+            "new_password": "new correct horse battery staple",
+            "confirm_new_password": "new correct horse battery staple",
+            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(change_time),
+        },
+    )
+
+    assert response.status_code == 302
+    deliveries = password_reset_outbox()
+    assert len(deliveries) == before_count + 1
+    assert deliveries[-1]["to"] == user.email
+    assert deliveries[-1]["subject"] == "SITBank password change successful"
+    assert "successfully changed" in deliveries[-1]["body"]
+    assert (
+        db.session.query(SecurityAuditEvent)
+        .filter_by(event_type="password_change_notification", outcome="queued", user_id=user.id)
+        .count()
+        == 1
+    )
+
+
+def test_password_change_failure_sends_unsuccessful_email(client):
+    from app.security.email import password_reset_outbox
+
+    register(client)
+    login(client)
+    user, secret = enable_mfa_for_user()
+    mark_recent_mfa(client, user)
+    before_count = len(password_reset_outbox())
+
+    response = client.post(
+        "/password/change",
+        data={
+            "current_password": "wrong password entirely",
+            "new_password": "new correct horse battery staple",
+            "confirm_new_password": "new correct horse battery staple",
+            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).now(),
+        },
+    )
+
+    assert response.status_code == 401
+    deliveries = password_reset_outbox()
+    assert len(deliveries) == before_count + 1
+    assert deliveries[-1]["to"] == user.email
+    assert deliveries[-1]["subject"] == "SITBank password change unsuccessful"
+    assert "unsuccessful attempt to change your password" in deliveries[-1]["body"]
+
+
+def test_profile_update_success_sends_confirmation_email(client, monkeypatch):
+    from app.security.email import password_reset_outbox
+
+    register(client)
+    login(client)
+    user, secret = enable_mfa_for_user()
+    mark_recent_mfa(client, user)
+    stepup_time = int(time.time())
+    monkeypatch.setattr("app.auth.services.time.time", lambda: stepup_time)
+    before_count = len(password_reset_outbox())
+
+    response = client.post(
+        "/profile",
+        data={
+            "username": "alice01",
+            "email": "alice@example.com",
+            "phone_number": "92345678",
+            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(stepup_time),
+        },
+    )
+
+    assert response.status_code == 302
+    deliveries = password_reset_outbox()
+    assert len(deliveries) == before_count + 1
+    assert deliveries[-1]["to"] == user.email
+    assert deliveries[-1]["subject"] == "SITBank personal details update successful"
+    assert "successfully updated" in deliveries[-1]["body"]
+    assert (
+        db.session.query(SecurityAuditEvent)
+        .filter_by(event_type="profile_update_notification", outcome="queued", user_id=user.id)
+        .count()
+        == 1
+    )
+
+
+def test_profile_update_failure_sends_unsuccessful_email(client):
+    from app.security.email import password_reset_outbox
+
+    register(client)
+    login(client)
+    user, secret = enable_mfa_for_user()
+    mark_recent_mfa(client, user)
+    before_count = len(password_reset_outbox())
+
+    response = client.post(
+        "/profile",
+        data={
+            "username": "alice01",
+            "email": "alice@example.com",
+            "phone_number": "92345678",
+            "totp_code": "000000",
+        },
+    )
+
+    assert response.status_code == 401
+    deliveries = password_reset_outbox()
+    assert len(deliveries) == before_count + 1
+    assert deliveries[-1]["to"] == user.email
+    assert deliveries[-1]["subject"] == "SITBank personal details update unsuccessful"
+    assert "unsuccessful attempt to update your personal details" in deliveries[-1]["body"]
