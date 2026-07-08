@@ -17,6 +17,7 @@ from app.security.audit import (
     audit_event_required,
     audit_reference,
     audit_system_event,
+    audit_system_event_in_transaction_required,
     principal_reference,
 )
 from app.security.email import send_security_email
@@ -154,12 +155,6 @@ def request_password_reset(identifier: str) -> dict[str, str]:
         audit_event("password_reset_failed", "failure", user=user, metadata={"reason": "email_delivery_failed"})
         return {"message": GENERIC_FORGOT_PASSWORD_MESSAGE}
 
-    audit_event(
-        "password_reset_token_created",
-        "success",
-        user=user,
-        metadata={"token_ref": audit_reference("password_reset_selector", token.selector)},
-    )
     return {"message": GENERIC_FORGOT_PASSWORD_MESSAGE}
 
 
@@ -423,10 +418,8 @@ def request_manual_recovery(identifier: str, reason: str | None = None) -> dict[
         existing_request.requested_user_agent = _user_agent()
         existing_request.last_submitted_at = now
         existing_request.updated_at = now
-        if clean_reason:
-            existing_request.reason = clean_reason
-        db.session.commit()
-        audit_event(
+        existing_request.reason = clean_reason
+        audit_event_required(
             "manual_recovery_requested",
             "deduped",
             user=linked_user,
@@ -438,6 +431,7 @@ def request_manual_recovery(identifier: str, reason: str | None = None) -> dict[
                 "reason_length": len(clean_reason) if clean_reason else 0,
             },
         )
+        db.session.commit()
         return {"message": GENERIC_MANUAL_RECOVERY_MESSAGE}
 
     request_record = ManualRecoveryRequest(
@@ -455,8 +449,8 @@ def request_manual_recovery(identifier: str, reason: str | None = None) -> dict[
         status_changed_at=now,
     )
     db.session.add(request_record)
-    db.session.commit()
-    audit_event(
+    db.session.flush()
+    audit_event_required(
         "manual_recovery_requested",
         "pending",
         user=linked_user,
@@ -468,6 +462,7 @@ def request_manual_recovery(identifier: str, reason: str | None = None) -> dict[
             "reason_length": len(clean_reason) if clean_reason else 0,
         },
     )
+    db.session.commit()
     if linked_user is not None:
         _send_manual_recovery_requested_notification(linked_user, request_record.expires_at)
     return {"message": GENERIC_MANUAL_RECOVERY_MESSAGE}
@@ -483,13 +478,14 @@ def transition_manual_recovery_request(
     now = _utcnow()
     old_status = request_record.status
     if _expire_manual_recovery_if_stale(request_record, now):
-        db.session.commit()
         _audit_manual_recovery_transition(
             request_record,
             old_status,
             MANUAL_RECOVERY_STATUS_EXPIRED,
             reason="expired_before_transition",
+            required=True,
         )
+        db.session.commit()
         raise AuthError("Manual recovery request is expired", 409)
 
     normalized_status = _normalize_manual_recovery_status(new_status)
@@ -509,8 +505,14 @@ def transition_manual_recovery_request(
         raise AuthError("Invalid manual recovery status transition", 409)
 
     _set_manual_recovery_status(request_record, normalized_status, now)
+    _audit_manual_recovery_transition(
+        request_record,
+        old_status,
+        normalized_status,
+        reason=reason,
+        required=True,
+    )
     db.session.commit()
-    _audit_manual_recovery_transition(request_record, old_status, normalized_status, reason=reason)
     return _public_manual_recovery_request(request_record)
 
 
@@ -519,13 +521,14 @@ def complete_manual_recovery_request(request_id: int, *, reason: str | None = No
     now = _utcnow()
     old_status = request_record.status
     if _expire_manual_recovery_if_stale(request_record, now):
-        db.session.commit()
         _audit_manual_recovery_transition(
             request_record,
             old_status,
             MANUAL_RECOVERY_STATUS_EXPIRED,
             reason="expired_before_completion",
+            required=True,
         )
+        db.session.commit()
         raise AuthError("Manual recovery request is expired", 409)
     if request_record.status != MANUAL_RECOVERY_STATUS_APPROVED:
         _audit_manual_recovery_transition(
@@ -614,14 +617,15 @@ def expire_manual_recovery_requests(
         previous_statuses[int(request_record.id)] = request_record.status
         _set_manual_recovery_status(request_record, MANUAL_RECOVERY_STATUS_EXPIRED, current_time)
     if expired_records:
-        db.session.commit()
         for request_record in expired_records:
             _audit_manual_recovery_transition(
                 request_record,
                 previous_statuses[int(request_record.id)],
                 MANUAL_RECOVERY_STATUS_EXPIRED,
                 reason="ttl_expired",
+                required=True,
             )
+        db.session.commit()
     return len(expired_records)
 
 
@@ -665,6 +669,12 @@ def _create_reset_token(user: User) -> tuple[PasswordResetToken, str, datetime]:
         requested_user_agent=_user_agent(),
     )
     db.session.add(token)
+    audit_event_required(
+        "password_reset_token_created",
+        "success",
+        user=user,
+        metadata={"token_ref": audit_reference("password_reset_selector", token.selector)},
+    )
     db.session.commit()
     raw_token = f"{selector}.{verifier}"
     return token, f"{_base_url()}/reset-password?token={quote(raw_token, safe='')}", expires_at
@@ -786,6 +796,7 @@ def _audit_manual_recovery_transition(
     *,
     outcome: str = "success",
     reason: str | None = None,
+    required: bool = False,
 ) -> None:
     metadata = {
         "request_ref": _manual_recovery_request_ref(request_record),
@@ -798,7 +809,17 @@ def _audit_manual_recovery_transition(
         event_type = "manual_recovery_expired"
         outcome = "expired"
     if has_request_context():
-        audit_event(event_type, outcome, user_id=request_record.user_id, metadata=metadata)
+        if required:
+            audit_event_required(event_type, outcome, user_id=request_record.user_id, metadata=metadata)
+        else:
+            audit_event(event_type, outcome, user_id=request_record.user_id, metadata=metadata)
+    elif required:
+        audit_system_event_in_transaction_required(
+            event_type,
+            outcome,
+            user_id=request_record.user_id,
+            metadata=metadata,
+        )
     else:
         audit_system_event(event_type, outcome, user_id=request_record.user_id, metadata=metadata)
 

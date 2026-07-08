@@ -568,6 +568,41 @@ def test_manual_recovery_dedupes_active_requests_and_keeps_public_response_gener
         ).count() == 1
 
 
+def test_manual_recovery_duplicate_without_reason_clears_stale_reason(app, client):
+    with app.app_context():
+        user = _create_user("recover-reason-clear", "recover-reason-clear@example.com")
+        user_id = user.id
+
+    first = client.post(
+        "/auth/account-recovery",
+        json={
+            "identifier": "recover-reason-clear@example.com",
+            "reason": "Lost authenticator while overseas.",
+        },
+    )
+    duplicate = client.post(
+        "/auth/account-recovery",
+        json={"identifier": "recover-reason-clear@example.com"},
+    )
+
+    assert first.status_code == 200
+    assert duplicate.status_code == 200
+    with app.app_context():
+        request_record = db.session.execute(
+            db.select(ManualRecoveryRequest).where(ManualRecoveryRequest.user_id == user_id)
+        ).scalar_one()
+        assert request_record.request_count == 2
+        assert request_record.reason is None
+        deduped_event = db.session.execute(
+            db.select(SecurityAuditEvent).where(
+                SecurityAuditEvent.event_type == "manual_recovery_requested",
+                SecurityAuditEvent.outcome == "deduped",
+            )
+        ).scalar_one()
+        assert deduped_event.event_metadata["reason_present"] is False
+        assert deduped_event.event_metadata["reason_length"] == 0
+
+
 def test_manual_recovery_expiry_blocks_stale_transitions(app, client):
     with app.app_context():
         user = _create_user("recover02", "recover02@example.com")

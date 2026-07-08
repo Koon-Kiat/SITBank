@@ -2098,6 +2098,8 @@ def test_invite_acceptance_verification_is_bound_to_start_session(admin_app, adm
 
 
 def test_invite_acceptance_schema_bounds_password_before_service_policy(admin_client, monkeypatch):
+    admin_client.application.config["PASSWORD_MIN_LENGTH"] = 12
+    admin_client.application.config["PASSWORD_MAX_CHARS"] = 64
     _root, root_secret = _create_staff_identity(
         username="root-admin",
         email=ROOT_EMAIL,
@@ -2115,16 +2117,20 @@ def test_invite_acceptance_schema_bounds_password_before_service_policy(admin_cl
 
     monkeypatch.setattr("app.admin.routes.start_invite_acceptance", fail_if_service_policy_runs)
 
+    landing = admin_client.get(f"/invites/accept/{token}")
     too_short = admin_client.post(
         f"/invites/accept/{token}/start",
-        json=_staff_invite_start_payload(password="short", confirm_password="short"),
+        json=_staff_invite_start_payload(password="A" * 11, confirm_password="A" * 11),
     )
-    too_long_password = "A" * 257
+    too_long_password = "A" * 65
     too_long = admin_client.post(
         f"/invites/accept/{token}/start",
         json=_staff_invite_start_payload(password=too_long_password, confirm_password=too_long_password),
     )
 
+    assert landing.status_code == 200
+    assert 'minlength="12"' in landing.get_data(as_text=True)
+    assert 'maxlength="64"' in landing.get_data(as_text=True)
     assert too_short.status_code == 400
     assert too_long.status_code == 400
     _assert_invite_acceptance_security_headers(too_short)

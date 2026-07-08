@@ -722,6 +722,29 @@ def test_fresh_mfa_replay_outcome_is_rejected_without_invalid_failure(client, mo
     assert exc_info.value.message == "Incorrect code. Check your authenticator and try again."
 
 
+def test_high_risk_customer_totp_replay_scope_crosses_actions(client, monkeypatch):
+    from app.auth import services as auth_services
+    from app.models import TotpReplayRecord
+
+    register(client)
+    login(client)
+    user, secret = enable_mfa_for_user()
+    verification_time = int(time.time())
+    monkeypatch.setattr("app.auth.services.time.time", lambda: verification_time)
+    code = pyotp.TOTP(secret, digits=6, interval=30).at(verification_time)
+
+    with client.application.test_request_context("/totp-replay", method="POST"):
+        first = auth_services._verify_totp_for_user_outcome(user, code, "profile_update")
+        replay = auth_services._verify_totp_for_user_outcome(user, code, "account_freeze")
+
+    assert first == auth_services.TOTP_VERIFICATION_VALID
+    assert replay == auth_services.TOTP_VERIFICATION_REPLAY
+    replay_record = db.session.execute(
+        db.select(TotpReplayRecord).where(TotpReplayRecord.user_id == user.id)
+    ).scalar_one()
+    assert replay_record.scope == "customer_high_risk_action"
+
+
 def test_customer_login_totp_replay_rejects_without_locking(client, monkeypatch):
     register(client)
     login(client)

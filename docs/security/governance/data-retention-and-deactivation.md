@@ -87,6 +87,7 @@ raw audit payloads into issues, pull requests, screenshots, logs, or artifacts.
 | Customer and staff/admin account records | Preserve while an account, dispute, incident, recovery case, staff lifecycle record, audit obligation, or coursework evidence requirement remains active. Prefer deactivation/freeze/offboarding over deletion. | Approval record, account-reference range, access-disabled evidence, affected-session revocation summary where applicable |
 | Payees and transactions | Preserve for customer banking history, dispute handling, audit, integrity review, and restore validation. Disposal/anonymization requires a separate reviewed data minimization decision that proves related audit/dispute evidence remains coherent. | Date range, transaction/payee reference summary, dispute/incident hold check, backup/rollback decision |
 | Manual recovery requests | Preserve pending, under-review, approved, denied, expired, cancelled, and completed request metadata needed to reconstruct root-admin review and maker-checker decisions. | Case-reference summary, final state, reviewer/approver record, notification/audit evidence without raw recovery material |
+| Support tickets and manual recovery request context | Preserve customer-provided free-text support/recovery context while the related support, recovery, incident, dispute, or audit need remains active. Staff queue summaries must stay minimized; detailed context is for the authorized detail/review workflow. | Case-reference summary, final state, reviewer record, minimized export evidence without raw secrets or recovery material |
 | Staff invite metadata | Preserve invite lifecycle metadata needed for privileged onboarding accountability; raw invite tokens remain non-stored/non-logged. Disposal requires proof the invite is terminal and no investigation hold applies. | Invite-reference summary, terminal state, workplace-domain evidence, approver record |
 | Alert reports | Preserve incident-relevant alert reports and delivery summaries until the related investigation or review window closes. Dedupe state may expire through approved temporary security-state cleanup, but report evidence must not be silently deleted. | Alert count/severity summary, delivery outcome, investigation link or reviewer note, sanitized retained location |
 | Security audit events | Preserve according to the 7-year audit-retention policy. Application code and timers must not delete audit-chain rows; any exceptional post-retention disposal requires a separate audit-chain integrity decision. | Audit date range, hash-chain verification outcome, approval record, retained aggregate summary |
@@ -106,8 +107,9 @@ approved low-risk temporary security-state categories and defaults to dry-run.
 It reports category-level counts for expired server-side sessions, auth
 attempt counters, TOTP replay records, registration OTP challenges, password
 reset transactions, unreferenced expired password reset tokens, security alert
-dedupe rows, and closed circuit-breaker state past retention. Mutating cleanup
-requires `--confirm`.
+dedupe rows, closed circuit-breaker state past retention, expired public
+transaction idempotency rows, expired known-device rows, and terminal top-up
+approval requests past retention. Mutating cleanup requires `--confirm`.
 
 `cleanup-security-state` is a compatibility wrapper for this same workflow and
 is also dry-run unless `--confirm` is supplied. Confirmed cleanup commits a
@@ -116,10 +118,11 @@ required `started` audit event before mutation. The mutations and required
 closed, mutations roll back, and a separate `failed` event is attempted.
 
 The command does not delete or anonymize customer accounts, staff/admin
-accounts, payees, transactions, manual recovery requests, staff invites,
-security audit events, investigation or held records, alert reports, or
-encrypted backup archives. Treat those categories as preserved until a reviewed
-retention decision and the evidence-preserving procedure above are satisfied.
+accounts, payees, transactions, manual recovery requests or their reviewer
+context, support tickets, staff invites, security audit events, investigation
+or held records, alert reports, or encrypted backup archives. Treat those
+categories as preserved until a reviewed retention decision and the
+evidence-preserving procedure above are satisfied.
 
 ## Operator-Reviewed Retention Schedule
 

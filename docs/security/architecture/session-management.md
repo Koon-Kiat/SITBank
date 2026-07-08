@@ -269,8 +269,8 @@ isolation.
 | Stolen active cookie | Inactivity timeout, absolute lifetime, revocation, session inventory, and risk-based reauthentication reduce impact, but the cookie is not cryptographically device-bound | `app/security/sessions.py`, `tests/test_session_risk_binding.py`, `tests/test_session_management.py`, `tests/test_session_absolute_lifetime.py` |
 
 Remaining session risk-reduction items are tracked in
-`docs/security/governance/security-gap-register.md`: optional active-session count caps are
-`needs-triage`, while stronger cryptographic device-bound proof remains an
-accepted defense-in-depth gap. Tailscale private access is the current admin
-device/network boundary; it is not cryptographic device binding for browser
-sessions.
+`docs/security/governance/security-gap-register.md`: the single-active-session
+cap and status polling behavior are implemented, while stronger cryptographic
+device-bound proof remains an accepted defense-in-depth gap. Tailscale private
+access is the current admin device/network boundary; it is not cryptographic
+device binding for browser sessions.

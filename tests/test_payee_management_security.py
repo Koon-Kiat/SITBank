@@ -287,9 +287,11 @@ def test_payee_add_and_remove_audit_metadata_uses_safe_references(app, client, m
     confirm = client.post("/banking/payees/confirm")
     payee = db.session.execute(db.select(Payee).where(Payee.account_number == bob.account_number)).scalar_one()
     clear_failures("payee_remove", str(_alice.id))
+    remove_time = totp_time + 30
+    monkeypatch.setattr("app.auth.services.time.time", lambda: remove_time)
     removed = client.post(
         f"/banking/payees/{payee.id}/remove",
-        data={"totp_code": _current_totp(secret, totp_time)},
+        data={"totp_code": _current_totp(secret, remove_time)},
     )
 
     add_event = db.session.query(SecurityAuditEvent).filter_by(event_type="payee_add", outcome="success").one()

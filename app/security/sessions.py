@@ -61,6 +61,13 @@ _SESSION_REPLACED_REASON_G_KEY = "_sitbank_session_replaced_reason"
 # Polled by the client to detect a session replaced elsewhere; must not itself
 # count as activity or it would silently defeat the inactivity timeout.
 ACTIVITY_EXEMPT_ENDPOINTS = frozenset({"auth.session_status"})
+ACTIVITY_EXEMPT_PATHS = frozenset({"/auth/session/status"})
+
+
+def is_session_activity_exempt() -> bool:
+    if not has_request_context():
+        return False
+    return request.endpoint in ACTIVITY_EXEMPT_ENDPOINTS or request.path in ACTIVITY_EXEMPT_PATHS
 
 
 def _session_store_locked(func):
@@ -146,7 +153,8 @@ class DatabaseSessionInterface(SessionInterface):
             self._handle_integrity_failure(record, reason="malformed_payload")
             return self.session_class(sid=_new_session_id(), new=True)
 
-        record.last_activity_at = now
+        if not is_session_activity_exempt():
+            record.last_activity_at = now
         return self.session_class(session_data, sid=session_id)
 
     @_session_store_locked
@@ -197,8 +205,9 @@ class DatabaseSessionInterface(SessionInterface):
         record.payload_format = SESSION_PAYLOAD_FORMAT
         record.session_ref = _public_reference_from_lookup_hash(lookup_hash)
         record.user_id = user_id
-        record.last_activity_at = now
-        record.expires_at = expires_at
+        if not is_session_activity_exempt():
+            record.last_activity_at = now
+            record.expires_at = expires_at
         record.revoked_at = None
         record.ended_at = None
         record.ended_reason = None
@@ -1114,7 +1123,7 @@ def _enforce_session_activity():
     if context_response is not None:
         return context_response
 
-    if request.endpoint not in ACTIVITY_EXEMPT_ENDPOINTS:
+    if not is_session_activity_exempt():
         session["last_activity_at"] = now
         session.modified = True
         update_session_activity()

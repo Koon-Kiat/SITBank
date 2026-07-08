@@ -158,7 +158,8 @@ def send_transfer_notification(
     if amount is not None:
         lines.append(f"Amount: SGD {_format_money(amount)}")
     if counterparty_label:
-        lines.append(f"Recipient: {counterparty_label}")
+        counterparty_field = "Sender" if normalized_direction == "deposit" else "Recipient"
+        lines.append(f"{counterparty_field}: {counterparty_label}")
     if transaction_reference:
         lines.append(f"Reference: {transaction_reference[:8].upper()}")
     lines.append(
@@ -1121,8 +1122,7 @@ def credit_account_topup(user: User, amount: Decimal) -> TopUpCredit:
             created_at=created_at,
         )
     )
-    db.session.commit()
-    audit_event(
+    audit_event_required(
         "account_topup",
         "success",
         user=locked_user,
@@ -1131,17 +1131,21 @@ def credit_account_topup(user: User, amount: Decimal) -> TopUpCredit:
             "credit_ref": audit_reference("topup_credit", credit_ref),
         },
     )
+    return credit
+
+
+def send_topup_deposit_notification(user: User, amount: Decimal, credit_ref: str) -> None:
     safe_send_notification(
         "topup_deposit_notification",
         send_transfer_notification,
-        locked_user,
+        user,
         direction="deposit",
         outcome="success",
         amount=amount,
         channel="Top Up",
         transaction_reference=credit_ref,
+        counterparty_label="Top Up",
     )
-    return credit
 
 
 def _ensure_local_transfer_balance(sender: User, payee: Payee, locked_sender: User, amount: Decimal) -> None:
