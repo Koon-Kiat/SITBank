@@ -881,7 +881,8 @@ button.full {
   display: none;
 }
 
-.account-panel [role="menuitem"] {
+.account-panel a,
+.account-panel button {
   justify-content: flex-start;
   width: 100%;
   min-height: 38px;
@@ -2293,20 +2294,19 @@ th {
 
 .admin-op-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
   gap: var(--space-3);
 }
 
 .admin-op-card {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: var(--space-3);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   padding: var(--space-4);
   background: var(--surface);
   color: var(--text);
-  font-weight: 650;
   text-decoration: none;
   box-shadow: var(--shadow-soft);
   transition:
@@ -2346,21 +2346,69 @@ th {
   height: 20px;
 }
 
-.admin-placeholder-list {
+.admin-op-copy {
   display: grid;
-  gap: var(--space-3);
+  gap: 2px;
+  min-width: 0;
 }
 
-.admin-placeholder-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
+.admin-op-title {
+  font-weight: 700;
+}
+
+.admin-op-description {
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.admin-queue-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: var(--space-4);
+  margin-top: var(--space-5);
+}
+
+.admin-queue-card {
+  display: grid;
+  gap: var(--space-1);
   border: 1px solid var(--line);
+  border-left: 3px solid var(--primary);
   border-radius: var(--radius);
   padding: var(--space-4);
-  background: var(--surface-raised);
+  background: var(--surface);
+  color: var(--text);
+  text-decoration: none;
+  box-shadow: var(--shadow-soft);
+  transition:
+    border-color 150ms ease,
+    background-color 150ms ease,
+    transform 150ms ease;
+}
+
+.admin-queue-card:hover {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  transform: translateY(-2px);
+}
+
+.admin-queue-count {
+  color: var(--primary);
+  font-size: 2.1rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.admin-queue-label {
+  font-weight: 700;
+}
+
+.admin-queue-description {
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.4;
 }
 
 .unfreeze-list {
@@ -2788,7 +2836,6 @@ th {
     display: flex;
   }
 
-  .admin-shell .nav-links,
   .admin-shell .nav-actions {
     flex-direction: column;
     align-items: stretch;
@@ -2798,6 +2845,22 @@ th {
   .admin-shell .nav .button,
   .admin-shell .nav button {
     width: 100%;
+  }
+
+  /* The hamburger and the account trigger open together (see theme.js), so
+     the panel must render inline here rather than as a detached absolute
+     dropdown — otherwise opening the hamburger doesn't visibly reveal the
+     menu contents and a second tap on the name looks required. */
+  .admin-shell .account-menu {
+    width: 100%;
+  }
+
+  .admin-shell .account-panel {
+    position: static;
+    width: 100%;
+    min-width: 0;
+    margin-top: var(--space-3);
+    box-shadow: none;
   }
 }
 

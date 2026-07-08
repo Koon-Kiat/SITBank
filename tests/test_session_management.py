@@ -603,7 +603,7 @@ def test_session_status_polling_does_not_extend_inactivity_window(client):
 
 
 def test_security_warning_alerts_do_not_auto_dismiss():
-    script = Path("app/static/js/account.js").read_text(encoding="utf-8")
+    script = Path("app/static/js/theme.js").read_text(encoding="utf-8")
 
     # Warnings and errors carry security-relevant context (failed logins,
     # account freezes, MFA changes) and must stay until dismissed manually.
@@ -612,7 +612,9 @@ def test_security_warning_alerts_do_not_auto_dismiss():
 
 
 def test_success_and_info_alerts_auto_dismiss():
-    script = Path("app/static/js/account.js").read_text(encoding="utf-8")
+    # Shared by both the customer and admin apps (admin/base.html only loads
+    # theme.js, not account.js), so both surfaces auto-dismiss the same way.
+    script = Path("app/static/js/theme.js").read_text(encoding="utf-8")
 
     # Low-stakes confirmations are allowed to auto-dismiss.
     assert "alert-success" in script
