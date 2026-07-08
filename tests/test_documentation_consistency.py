@@ -92,6 +92,11 @@ def test_profile_username_and_staff_invite_docs_match_service_and_browser_contra
         "exactly 8 Singapore mobile digits starting with `8` or `9`",
         "recipient-facing hostname in the matching Turnstile widget's hostname allowlist",
         "delivery states `unconfirmed`, `queued`, or `failed`",
+        "Active invite reissue rotates the token hash and re-sends the setup email, but only for an invite still in `pending` or `totp_pending`",
+        "Invite acceptance reset clears a restart-capped acceptance attempt on an active invite and does not rotate the token or send an email",
+        "Account reset setup returns an already-active staff/admin account to `setup_pending` and clears its MFA, but does not create an invite or send an email",
+        "Setup-email resend sends a brand-new one-time setup link to a `setup_pending` staff/admin account whose original invite is already `accepted`, `revoked`, or `expired`",
+        "use the Resend setup invite action on the staff accounts page",
     ):
         assert required in normalized
 
@@ -99,6 +104,7 @@ def test_profile_username_and_staff_invite_docs_match_service_and_browser_contra
         "Username and phone changes require TOTP",
         "atomic username/email/phone commit",
         "Username and phone changes commit after valid TOTP",
+        "configuration, then use the root-admin reissue action to rotate the token hash",
     ):
         assert stale not in normalized
 

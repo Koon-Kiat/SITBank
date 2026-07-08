@@ -104,6 +104,7 @@ FOCUSED_RBAC_ENDPOINTS = {
     "admin.manual_recovery_request_detail",
     "admin.staff_account_reactivate",
     "admin.staff_account_reset_activation",
+    "admin.staff_account_resend_setup",
 }
 
 
