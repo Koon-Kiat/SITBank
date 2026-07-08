@@ -1,16 +1,16 @@
 """Add support tickets table and optional recovery-request reason field.
 
-Revision ID: 20260709_0036
-Revises: 20260708_0035
-Create Date: 2026-07-09 00:36:00
+Revision ID: 20260709_0037
+Revises: 20260709_0036
+Create Date: 2026-07-09 00:37:00
 """
 
 from alembic import op
 import sqlalchemy as sa
 
 
-revision = "20260709_0036"
-down_revision = "20260708_0035"
+revision = "20260709_0037"
+down_revision = "20260709_0036"
 branch_labels = None
 depends_on = None
 
