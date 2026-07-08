@@ -3,57 +3,74 @@
 {% block title %}Admin Dashboard | SITBank{% endblock %}
 
 {% block content %}
+{% set workspace_labels = {
+  "root_admin": "Root admin control center",
+  "admin": "Security & audit console",
+  "staff": "Business operations workspace",
+} %}
+{% set has_stats = summary.pending_invites is not none or summary.staff_accounts is not none %}
 <section class="dashboard admin-dashboard">
-  <div class="bank-account-card admin-identity-card">
-    <div class="bank-account-card-inner">
-      <div class="bank-account-identity">
-        <p class="bank-card-eyebrow">Staff/Admin Identity</p>
-        <h1 class="bank-card-name">{{ user.email }}</h1>
-        <p class="bank-card-number">{{ role_label }} &middot; {{ user.account_status }}</p>
-      </div>
-      <div class="bank-account-balance">
-        <p class="bank-card-eyebrow">Session Control</p>
-        <p class="balance-amount">TOTP {% if user.mfa_enabled %}enrolled{% else %}pending{% endif %}</p>
-      </div>
+
+  <div class="admin-identity-bar">
+    <div class="admin-identity-main">
+      <p class="eyebrow">{{ workspace_labels.get(user.account_type, "Staff workspace") }}</p>
+      <h1>{{ user.email }}</h1>
+      <p class="muted">{{ role_label }} &middot; {{ user.account_status }}</p>
+    </div>
+    <div class="admin-identity-badges">
+      <span class="badge{% if not user.mfa_enabled %} warning{% endif %}">TOTP {% if user.mfa_enabled %}enrolled{% else %}pending{% endif %}</span>
+      <span class="badge{% if not user.workplace_email_verified %} warning{% endif %}">Workplace email {% if user.workplace_email_verified %}verified{% else %}pending{% endif %}</span>
     </div>
   </div>
 
-  <div class="admin-summary-grid">
+  <div{% if has_stats %} class="admin-summary-row"{% endif %}>
     <section class="panel">
       <div class="section-header">
         <h2>Role Boundary</h2>
       </div>
-      <ul class="admin-list">
+      <ul class="admin-boundary-list">
         {% for item in responsibilities %}
-        <li>{{ item }}</li>
+        <li>
+          <svg class="icon" focusable="false" aria-hidden="true"><use href="#icon-check-circle"></use></svg>
+          <span>{{ item }}</span>
+        </li>
         {% endfor %}
       </ul>
     </section>
 
+    {% if has_stats %}
     <section class="panel">
       <div class="section-header">
-        <h2>Security Status</h2>
+        <h2>Access Summary</h2>
       </div>
-      <dl class="admin-metadata-grid">
-        <div>
-          <dt>Workplace email</dt>
-          <dd>{% if summary.workplace_email_verified %}Verified{% else %}Pending{% endif %}</dd>
-        </div>
-        <div>
-          <dt>Authenticator MFA</dt>
-          <dd>{% if summary.totp_enrolled %}Enabled{% else %}Required{% endif %}</dd>
-        </div>
+      <dl class="admin-stat-grid">
         <div>
           <dt>Role rank</dt>
           <dd>{{ summary.current_role_rank }}</dd>
         </div>
+        {% if summary.pending_invites is not none %}
+        <div>
+          <dt>Pending invites</dt>
+          <dd>{{ summary.pending_invites }}</dd>
+        </div>
+        {% endif %}
+        {% if summary.staff_accounts is not none %}
+        {% for group in summary.staff_accounts %}
+        <div>
+          <dt>{{ group.role }} &middot; {{ group.status }}</dt>
+          <dd>{{ group.count }}</dd>
+        </div>
+        {% endfor %}
+        {% endif %}
       </dl>
     </section>
+    {% endif %}
   </div>
 
   <section class="panel">
     <div class="section-header">
-      <h2>Allowed Operations</h2>
+      <h2>Access Map</h2>
+      <p class="muted">Tools are grouped by trust tier and scoped to your role server-side.</p>
     </div>
     {% set nav_icons = {
       "Dashboard": "icon-controls",
@@ -67,16 +84,49 @@
       "Customer locks": "icon-lock",
       "Approvals": "icon-check-circle",
     } %}
-    <div class="bank-quick-grid admin-nav-grid">
-      {% for item in navigation %}
-      <a class="bank-quick-btn" href="{{ item.href }}">
-        <span class="bank-quick-icon" aria-hidden="true">
-          <svg class="icon" focusable="false"><use href="#{{ nav_icons.get(item.label, 'icon-controls') }}"></use></svg>
-        </span>
-        <span>{{ item.label }}</span>
-        <span class="badge neutral">{{ item.group }}</span>
-      </a>
+    {% set tier_order = ["overview", "business", "security", "admin", "root"] %}
+    {% set tier_labels = {
+      "overview": "Overview",
+      "business": "Business",
+      "security": "Security & audit",
+      "admin": "Staff & admin management",
+      "root": "Root admin controls",
+    } %}
+    <div class="admin-access-map">
+      {% for tier in tier_order %}
+      {% set tier_items = navigation|selectattr("group", "equalto", tier)|list %}
+      {% if tier_items %}
+      <div class="admin-access-tier">
+        <p class="admin-access-tier-label">{{ tier_labels[tier] }}</p>
+        <div class="admin-op-grid">
+          {% for item in tier_items %}
+          <a class="admin-op-card" href="{{ item.href }}"{% if request.endpoint == item.endpoint %} aria-current="page"{% endif %}>
+            <span class="admin-op-icon" aria-hidden="true">
+              <svg class="icon" focusable="false"><use href="#{{ nav_icons.get(item.label, 'icon-controls') }}"></use></svg>
+            </span>
+            <span>{{ item.label }}</span>
+          </a>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
       {% endfor %}
+      {% set other_items = navigation|rejectattr("group", "in", tier_order)|list %}
+      {% if other_items %}
+      <div class="admin-access-tier">
+        <p class="admin-access-tier-label">Other</p>
+        <div class="admin-op-grid">
+          {% for item in other_items %}
+          <a class="admin-op-card" href="{{ item.href }}"{% if request.endpoint == item.endpoint %} aria-current="page"{% endif %}>
+            <span class="admin-op-icon" aria-hidden="true">
+              <svg class="icon" focusable="false"><use href="#{{ nav_icons.get(item.label, 'icon-controls') }}"></use></svg>
+            </span>
+            <span>{{ item.label }}</span>
+          </a>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
     </div>
   </section>
 
@@ -85,13 +135,15 @@
     <div class="section-header">
       <h2>Business Operations</h2>
     </div>
-    <div class="bank-quick-grid admin-nav-grid">
+    <div class="admin-placeholder-list">
       {% for item in business_operations %}
-      <span class="bank-quick-btn is-disabled" aria-disabled="true">
-        <span>{{ item.label }}</span>
+      <div class="admin-placeholder-card">
+        <div>
+          <p><strong>{{ item.label }}</strong></p>
+          <p class="muted">{{ item.description }}</p>
+        </div>
         <span class="badge neutral">{{ item.status }}</span>
-        <span class="muted">{{ item.description }}</span>
-      </span>
+      </div>
       {% endfor %}
     </div>
   </section>
@@ -101,14 +153,18 @@
     <div class="section-header">
       <h2>Security Notices</h2>
     </div>
-    <div class="admin-notice-list">
+    {% set notice_icons = {"danger": "icon-alert", "warning": "icon-lock", "info": "icon-info"} %}
+    <div class="admin-notice-stack">
       {% for notice in security_notices %}
-      <article class="notice {{ notice.severity }}">
+      <div class="notice {{ notice.severity }}">
+        <span class="notice-icon" aria-hidden="true">
+          <svg class="icon" focusable="false"><use href="#{{ notice_icons.get(notice.severity, 'icon-info') }}"></use></svg>
+        </span>
         <div>
           <p><strong>{{ notice.title }}</strong></p>
-          <p>{{ notice.message }}</p>
+          <p class="muted">{{ notice.message }}</p>
         </div>
-      </article>
+      </div>
       {% endfor %}
     </div>
   </section>
