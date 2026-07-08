@@ -13,6 +13,7 @@ from app.banking.limits import (
     PAYUP_DAILY_LIMIT_MAX,
     PAYUP_DAILY_LIMIT_MIN,
 )
+from app.banking.schemas import MAX_TRANSACTION_AMOUNT, MIN_TRANSACTION_AMOUNT
 
 from .extensions import db
 
@@ -803,6 +804,84 @@ class RegistrationCredit(db.Model):
 
     def __repr__(self) -> str:
         return f"<RegistrationCredit id={self.id!r} user_id={self.user_id!r} amount={self.amount!r}>"
+
+
+class TopUpApprovalRequest(db.Model):
+    __tablename__ = "topup_approval_requests"
+
+    id = db.Column(db.Integer, primary_key=True)
+    selector = db.Column(db.String(64), nullable=False, unique=True, index=True)
+    verifier_hmac = db.Column(db.String(64), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
+    amount = db.Column(db.Numeric(12, 2), nullable=False)
+    status = db.Column(db.String(32), nullable=False, default="pending", index=True)
+    failure_count = db.Column(db.Integer, nullable=False, default=0)
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
+    approved_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    credit_ref = db.Column(db.String(36), nullable=True)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+    )
+
+    user = db.relationship("User", backref=db.backref("topup_approval_requests", lazy="selectin"))
+
+    __table_args__ = (
+        db.CheckConstraint(
+            "status IN ('pending', 'completed', 'expired', 'failed')",
+            name="ck_topup_approval_requests_status",
+        ),
+        db.CheckConstraint(
+            f"amount >= {MIN_TRANSACTION_AMOUNT} AND amount <= {MAX_TRANSACTION_AMOUNT}",
+            name="ck_topup_approval_requests_amount_bounds",
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return f"<TopUpApprovalRequest id={self.id!r} user_id={self.user_id!r} status={self.status!r}>"
+
+
+class TopUpCredit(db.Model):
+    __tablename__ = "topup_credits"
+
+    id = db.Column(db.Integer, primary_key=True)
+    credit_ref = db.Column(db.String(36), nullable=False, unique=True, index=True)
+    credit_hash = db.Column(db.String(64), nullable=False, unique=True, index=True)
+    credit_integrity_key_id = db.Column(db.String(32), nullable=False)
+    credit_integrity_algorithm = db.Column(db.String(32), nullable=False)
+    credit_integrity_version = db.Column(db.Integer, nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
+    amount = db.Column(db.Numeric(12, 2), nullable=False)
+    status = db.Column(db.String(32), nullable=False, default="completed", server_default="completed")
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+    )
+
+    user = db.relationship("User", backref=db.backref("topup_credits", lazy="selectin"))
+
+    __table_args__ = (
+        db.CheckConstraint(
+            f"amount >= {MIN_TRANSACTION_AMOUNT} AND amount <= {MAX_TRANSACTION_AMOUNT}",
+            name="ck_topup_credits_amount_bounds",
+        ),
+        db.CheckConstraint("status IN ('completed')", name="ck_topup_credits_status"),
+        db.CheckConstraint(
+            (
+                "credit_integrity_key_id IS NOT NULL "
+                "AND credit_integrity_algorithm = 'hmac-sha256' "
+                "AND credit_integrity_version = 1"
+            ),
+            name="ck_topup_credits_integrity_metadata",
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return f"<TopUpCredit id={self.id!r} user_id={self.user_id!r} amount={self.amount!r}>"
 
 
 class PublicTransactionIdempotency(db.Model):

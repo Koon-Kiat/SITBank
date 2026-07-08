@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
-import io
 import re
 import secrets
 import time
@@ -14,13 +13,13 @@ from typing import Any
 
 from cryptography.exceptions import InvalidTag
 import pyotp
-import qrcode
 from flask import current_app, request, session
 from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
 from app.models import AuthAttemptCounter, RegistrationCredit, TotpReplayRecord, User
+from app.security.qr import qr_data_uri
 from app.auth.mfa_policy import (
     PASSWORD_BOOTSTRAP_AUTH_CONTEXT,
     has_enrolled_mfa_method,
@@ -1245,6 +1244,15 @@ def verify_high_risk_authorization(
         rotate_authenticated_session_after_mfa(user.id)
 
 
+def verify_totp_code_for_user(user: User, code: str, scope: str) -> bool:
+    """Verify a TOTP code for an explicit user, independent of any active
+    session. Used by cross-device flows (e.g. the top-up QR approval page)
+    where verification happens on a device with no SITBank login of its own.
+    """
+
+    return _verify_totp_for_user(user, code, scope)
+
+
 def ensure_account_can_authenticate(user: User) -> None:
     if user.is_frozen or user.security_locked_at is not None:
         audit_event(
@@ -1503,7 +1511,7 @@ def _mfa_setup_payload(user: User, secret: str) -> dict[str, str]:
         "issuer": current_app.config["MFA_ISSUER_NAME"],
         "manual_entry_secret": secret,
         "otpauth_uri": provisioning_uri,
-        "qr_code_data_uri": _qr_data_uri(provisioning_uri),
+        "qr_code_data_uri": qr_data_uri(provisioning_uri),
     }
 
 
@@ -1576,14 +1584,6 @@ def _b64encode(value: bytes) -> str:
 
 def _b64decode(value: str) -> bytes:
     return base64.b64decode(value.encode("ascii"), validate=True)
-
-
-def _qr_data_uri(provisioning_uri: str) -> str:
-    image = qrcode.make(provisioning_uri)
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
-    return f"data:image/png;base64,{encoded}"
 
 
 def _public_user(user: User) -> dict[str, Any]:

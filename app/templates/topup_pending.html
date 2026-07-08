@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block title %}Top Up | SITBank{% endblock %}
+
+{% block content %}
+<section class="security-page">
+  <div class="dashboard-header">
+    <div class="page-heading">
+      <p class="eyebrow">Add funds</p>
+      <h1>Approve on your authenticator device</h1>
+      <p class="muted">Scan this code with a device where you're set up, then enter your authenticator code there to confirm.</p>
+    </div>
+    <div class="button-row">
+      <a class="button secondary" href="{{ url_for('banking.topup') }}">Cancel</a>
+    </div>
+  </div>
+
+  <div class="profile-grid is-single-column">
+    <article
+      class="profile-panel profile-card"
+      data-topup-pending
+      data-status-url="{{ url_for('banking.topup_status', selector=selector) }}"
+      data-dashboard-url="{{ url_for('web.dashboard') }}"
+      data-restart-url="{{ url_for('banking.topup') }}"
+    >
+      <div class="profile-panel-title">
+        <p class="eyebrow">Amount</p>
+        <h2>SGD {{ "%.2f"|format(amount) }}</h2>
+      </div>
+      <div class="qr-wrap">
+        <img class="qr" src="{{ qr_data_uri }}" alt="Top-up approval QR code">
+      </div>
+      <p class="hint" data-topup-status-message aria-live="polite">Waiting for approval&hellip;</p>
+    </article>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/topup_pending.js') }}"></script>
+{% endblock %}
