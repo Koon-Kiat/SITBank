@@ -23,49 +23,33 @@
     </div>
   </div>
 
-  <div{% if has_stats %} class="admin-summary-row"{% endif %}>
-    <section class="panel">
-      <div class="section-header">
-        <h2>Role Boundary</h2>
+  {% if has_stats %}
+  <section class="panel">
+    <div class="section-header">
+      <h2>Access Summary</h2>
+    </div>
+    <dl class="admin-stat-grid">
+      <div>
+        <dt>Role rank</dt>
+        <dd>{{ summary.current_role_rank }}</dd>
       </div>
-      <ul class="admin-boundary-list">
-        {% for item in responsibilities %}
-        <li>
-          <svg class="icon" focusable="false" aria-hidden="true"><use href="#icon-check-circle"></use></svg>
-          <span>{{ item }}</span>
-        </li>
-        {% endfor %}
-      </ul>
-    </section>
-
-    {% if has_stats %}
-    <section class="panel">
-      <div class="section-header">
-        <h2>Access Summary</h2>
+      {% if summary.pending_invites is not none %}
+      <div>
+        <dt>Pending invites</dt>
+        <dd>{{ summary.pending_invites }}</dd>
       </div>
-      <dl class="admin-stat-grid">
-        <div>
-          <dt>Role rank</dt>
-          <dd>{{ summary.current_role_rank }}</dd>
-        </div>
-        {% if summary.pending_invites is not none %}
-        <div>
-          <dt>Pending invites</dt>
-          <dd>{{ summary.pending_invites }}</dd>
-        </div>
-        {% endif %}
-        {% if summary.staff_accounts is not none %}
-        {% for group in summary.staff_accounts %}
-        <div>
-          <dt>{{ group.role }} &middot; {{ group.status }}</dt>
-          <dd>{{ group.count }}</dd>
-        </div>
-        {% endfor %}
-        {% endif %}
-      </dl>
-    </section>
-    {% endif %}
-  </div>
+      {% endif %}
+      {% if summary.staff_accounts is not none %}
+      {% for group in summary.staff_accounts %}
+      <div>
+        <dt>{{ group.role }} &middot; {{ group.status }}</dt>
+        <dd>{{ group.count }}</dd>
+      </div>
+      {% endfor %}
+      {% endif %}
+    </dl>
+  </section>
+  {% endif %}
 
   <section class="panel">
     <div class="section-header">
@@ -73,7 +57,6 @@
       <p class="muted">Tools are grouped by trust tier and scoped to your role server-side.</p>
     </div>
     {% set nav_icons = {
-      "Dashboard": "icon-controls",
       "Business operations": "icon-info",
       "Disputes": "icon-reference",
       "Audit logs": "icon-education",
@@ -92,9 +75,10 @@
       "admin": "Staff & admin management",
       "root": "Root admin controls",
     } %}
+    {% set operations = navigation|rejectattr("label", "equalto", "Dashboard")|list %}
     <div class="admin-access-map">
       {% for tier in tier_order %}
-      {% set tier_items = navigation|selectattr("group", "equalto", tier)|list %}
+      {% set tier_items = operations|selectattr("group", "equalto", tier)|list %}
       {% if tier_items %}
       <div class="admin-access-tier">
         <p class="admin-access-tier-label">{{ tier_labels[tier] }}</p>
@@ -111,7 +95,7 @@
       </div>
       {% endif %}
       {% endfor %}
-      {% set other_items = navigation|rejectattr("group", "in", tier_order)|list %}
+      {% set other_items = operations|rejectattr("group", "in", tier_order)|list %}
       {% if other_items %}
       <div class="admin-access-tier">
         <p class="admin-access-tier-label">Other</p>
@@ -148,26 +132,6 @@
     </div>
   </section>
   {% endif %}
-
-  <section class="panel">
-    <div class="section-header">
-      <h2>Security Notices</h2>
-    </div>
-    {% set notice_icons = {"danger": "icon-alert", "warning": "icon-lock", "info": "icon-info"} %}
-    <div class="admin-notice-stack">
-      {% for notice in security_notices %}
-      <div class="notice {{ notice.severity }}">
-        <span class="notice-icon" aria-hidden="true">
-          <svg class="icon" focusable="false"><use href="#{{ notice_icons.get(notice.severity, 'icon-info') }}"></use></svg>
-        </span>
-        <div>
-          <p><strong>{{ notice.title }}</strong></p>
-          <p class="muted">{{ notice.message }}</p>
-        </div>
-      </div>
-      {% endfor %}
-    </div>
-  </section>
 
   {% if recent_audit_events %}
   <section class="panel">
