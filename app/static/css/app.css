@@ -1086,17 +1086,34 @@ select:focus {
   box-shadow: var(--shadow-soft);
 }
 
-.alert span {
+.alert-message {
   flex: 1 1 auto;
 }
 
-.alert::before {
-  width: 14px;
-  height: 14px;
-  flex: 0 0 14px;
-  border-radius: 50%;
-  background: currentColor;
-  content: "";
+.alert-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: currentColor;
+}
+
+.alert-icon .icon {
+  width: 20px;
+  height: 20px;
+}
+
+.alert-close {
+  flex: 0 0 auto;
+  border: none;
+  background: none;
+  padding: 0 var(--space-1);
+  color: currentColor;
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.alert-close:hover {
+  opacity: 0.7;
 }
 
 

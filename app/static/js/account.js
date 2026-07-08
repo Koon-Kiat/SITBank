@@ -121,7 +121,8 @@
   }
 
   function scheduleBannerDismissal(banner) {
-    setTimeout(fadeOutBanner.bind(null, banner), 3000);
+    const timerId = setTimeout(fadeOutBanner.bind(null, banner), 3000);
+    banner.dataset.dismissTimer = String(timerId);
   }
 
   function dismissTransientFlashBanners() {
@@ -130,8 +131,24 @@
     document.querySelectorAll(".alerts .alert-success, .alerts .alert-info").forEach(scheduleBannerDismissal);
   }
 
+  function wireManualBannerDismissal() {
+    document.querySelectorAll(".alerts [data-alert-close]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        const banner = button.closest(".alert");
+        if (!banner) {
+          return;
+        }
+        if (banner.dataset.dismissTimer) {
+          clearTimeout(Number(banner.dataset.dismissTimer));
+        }
+        fadeOutBanner(banner);
+      });
+    });
+  }
+
   globalThis.addEventListener("DOMContentLoaded", function () {
     dismissTransientFlashBanners();
+    wireManualBannerDismissal();
 
     document.querySelectorAll("[data-otp-resend-countdown]").forEach(function (button) {
       const seconds = Number.parseInt(button.dataset.otpResendCountdown, 10);
