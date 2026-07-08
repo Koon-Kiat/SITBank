@@ -33,7 +33,7 @@ from app.auth.registration_otp import (
 from app.auth.schemas import PHONE_RE
 from app.security.audit import AuditWriteError, audit_event, audit_event_required, audit_reference, principal_reference
 from app.security.crypto import decrypt_mfa_secret, encrypt_mfa_secret
-from app.security.email import send_security_email
+from app.security.email import EMAIL_CLOSING, EMAIL_GREETING, EMAIL_SIGN_OFF, send_security_email
 from app.security.identity_policy import (
     IdentityPolicyError,
     canonicalize_customer_email,
@@ -78,8 +78,10 @@ from app.security.sessions import (
     revoke_session,
     resolve_session_reference_for_user,
     rotate_authenticated_session_after_mfa,
+    summarize_user_agent,
 )
 from app.security.transaction_integrity import sign_registration_credit_integrity
+from app.time_display import sgt_date, sgt_time
 
 from .recovery_codes import (
     RECOVERY_CODE_LOW_THRESHOLD,
@@ -814,6 +816,81 @@ def _send_account_freeze_notification(user: User) -> None:
     audit_event("account_freeze_notification", "queued", user=user)
 
 
+def _current_device_summary() -> str:
+    try:
+        return summarize_user_agent(request.user_agent.string or "unknown")
+    except RuntimeError:
+        return "unknown device"
+
+
+def _send_account_change_notification(user: User, *, item: str, outcome: str) -> None:
+    """Notify the customer of a password change or personal-details update attempt.
+
+    Mandatory for both success and failure — this is a distinct account-security
+    signal from the routine transfer-activity emails, so it is not gated by
+    transfer_activity_email_enabled.
+    """
+    when = datetime.now(timezone.utc)
+    when_label = f"{sgt_date(when)} at {sgt_time(when)}"
+    device_summary = _current_device_summary()
+    normalized_outcome = "success" if outcome == "success" else "failure"
+    action_label = "change" if item == "password" else "update"
+    event_type = "password_change_notification" if item == "password" else "profile_update_notification"
+
+    if normalized_outcome == "success":
+        past_tense = "changed" if item == "password" else "updated"
+        subject = f"SITBank {item} {action_label} successful"
+        body = "\n".join(
+            [
+                EMAIL_GREETING,
+                "",
+                (
+                    f"This is to confirm that your {item} was successfully {past_tense} "
+                    f"on {when_label} via {device_summary}."
+                ),
+                (
+                    "If you made this change, no further action is required. If you did "
+                    "not authorise this change, please log in immediately to review your "
+                    "account activity and contact us without delay to secure your account."
+                ),
+                "",
+                EMAIL_CLOSING,
+                "",
+                EMAIL_SIGN_OFF,
+            ]
+        )
+    else:
+        subject = f"SITBank {item} {action_label} unsuccessful"
+        body = "\n".join(
+            [
+                EMAIL_GREETING,
+                "",
+                (
+                    f"We detected an unsuccessful attempt to {action_label} your {item} "
+                    f"on {when_label} via {device_summary}."
+                ),
+                (
+                    "If this was you, please try again. If you did not attempt this "
+                    "change, please log in immediately to review your account activity "
+                    "and consider changing your password and/or MFA settings as a "
+                    "precaution."
+                ),
+                "",
+                EMAIL_CLOSING,
+                "",
+                EMAIL_SIGN_OFF,
+            ]
+        )
+
+    try:
+        send_security_email(user.email, subject, body)
+    except Exception as exc:
+        current_app.logger.warning("%s_failed error=%s", event_type, type(exc).__name__)
+        audit_event(event_type, "failure", user=user, metadata={"reason": "email_delivery_failed"})
+        return
+    audit_event(event_type, "queued", user=user)
+
+
 def logout_current_session() -> None:
     user_id = session.get("user_id") or session.get("pending_mfa_user_id")
     session_id = current_session_id()
@@ -870,11 +947,15 @@ def update_profile_details(
         if pending_result is not None:
             return pending_result
     else:
-        verify_high_risk_authorization(
-            user,
-            code,
-            "profile_update",
-        )
+        try:
+            verify_high_risk_authorization(
+                user,
+                code,
+                "profile_update",
+            )
+        except AuthError:
+            _send_account_change_notification(user, item="personal details", outcome="failure")
+            raise
 
     return _commit_profile_update(
         user,
@@ -913,11 +994,15 @@ def _handle_profile_email_change(
     email_verification_code: str | None,
 ) -> dict[str, Any] | None:
     if not email_verification_code:
-        verify_high_risk_authorization(
-            user,
-            code,
-            "profile_email_change_request",
-        )
+        try:
+            verify_high_risk_authorization(
+                user,
+                code,
+                "profile_email_change_request",
+            )
+        except AuthError:
+            _send_account_change_notification(user, item="personal details", outcome="failure")
+            raise
         _create_profile_email_change_challenge(
             user,
             email=normalized_email,
@@ -930,11 +1015,15 @@ def _handle_profile_email_change(
         }
 
     _validate_profile_email_change_code(user, normalized_email, normalized_phone, email_verification_code)
-    verify_high_risk_authorization(
-        user,
-        code,
-        "profile_email_change_commit",
-    )
+    try:
+        verify_high_risk_authorization(
+            user,
+            code,
+            "profile_email_change_commit",
+        )
+    except AuthError:
+        _send_account_change_notification(user, item="personal details", outcome="failure")
+        raise
     return None
 
 
@@ -974,10 +1063,19 @@ def _validate_profile_email_change_code(
             user,
             reason="invalid_verification_code",
             message="Email verification code is invalid or expired",
+            notify=True,
         )
 
 
-def _reject_profile_email_change(user: User, *, reason: str, message: str) -> None:
+def _reject_profile_email_change(
+    user: User,
+    *,
+    reason: str,
+    message: str,
+    notify: bool = False,
+) -> None:
+    if notify:
+        _send_account_change_notification(user, item="personal details", outcome="failure")
     audit_event(
         "profile_email_change",
         "failure",
@@ -1010,10 +1108,12 @@ def _commit_profile_update(
     except IntegrityError as exc:
         db.session.rollback()
         audit_event("profile_update", "failure", user=user, metadata={"reason": "integrity_error"})
+        _send_account_change_notification(user, item="personal details", outcome="failure")
         raise AuthError(PROFILE_UPDATE_ERROR, 400) from exc
     except AuditWriteError:
         db.session.rollback()
         raise
+    _send_account_change_notification(user, item="personal details", outcome="success")
     if email_changed:
         _clear_pending_profile_email_change()
     return {"updated": True, "email_verification_pending": False}
@@ -1150,29 +1250,37 @@ def change_password(
     ensure_account_not_frozen(user, "password change")
     if new_password != confirm_new_password:
         audit_event("password_change", "failure", user=user, metadata={"reason": "password_mismatch"})
+        _send_account_change_notification(user, item="password", outcome="failure")
         raise AuthError("Passwords must match", 400)
     if not verify_password(current_password, user.password_hash):
         audit_event("password_change", "failure", user=user, metadata={"reason": "invalid_current_password"})
         _record_user_security_failure(user, "password_change", "password_change_failed_attempts")
+        _send_account_change_notification(user, item="password", outcome="failure")
         raise AuthError("Current password is invalid", 401)
     try:
         assert_password_not_reused(user, new_password)
     except PasswordReuseError as exc:
         audit_event("password_change", "failure", user=user, metadata={"reason": exc.reason})
+        _send_account_change_notification(user, item="password", outcome="failure")
         raise AuthError("New password must not match your current or recent passwords", 400) from exc
 
     try:
         password_policy_warnings = validate_password_policy(new_password)
     except PasswordPolicyError as exc:
         audit_event("password_change", "failure", user=user, metadata={"reason": "password_policy"})
+        _send_account_change_notification(user, item="password", outcome="failure")
         raise AuthError(str(exc), 400) from exc
 
-    verify_high_risk_authorization(
-        user,
-        code,
-        "password_change",
-        rotate_session_on_success=False,
-    )
+    try:
+        verify_high_risk_authorization(
+            user,
+            code,
+            "password_change",
+            rotate_session_on_success=False,
+        )
+    except AuthError:
+        _send_account_change_notification(user, item="password", outcome="failure")
+        raise
 
     replace_user_password(user, new_password)
     user.failed_login_count = 0
@@ -1193,6 +1301,7 @@ def change_password(
         },
     )
     db.session.commit()
+    _send_account_change_notification(user, item="password", outcome="success")
     session.clear()
     clear_failures("login", _auth_principal(user.username))
     clear_failures("login", _auth_principal(user.email))

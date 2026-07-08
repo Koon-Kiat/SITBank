@@ -20,7 +20,7 @@ from app.security.audit import (
     audit_system_event_in_transaction_required,
     principal_reference,
 )
-from app.security.email import send_security_email
+from app.security.email import EMAIL_CLOSING, EMAIL_GREETING, EMAIL_SIGN_OFF, send_security_email
 from app.security.password_history import (
     PasswordReuseError,
     assert_password_not_reused,
@@ -693,9 +693,25 @@ def _send_password_reset_email(user: User, reset_url: str, expires_at: datetime)
 
 
 def _send_password_reset_notification(user: User) -> None:
-    body = (
-        "Your SITBank password was reset. If this was not you, contact support immediately. "
-        "This message does not contain account recovery secrets."
+    body = "\n".join(
+        [
+            EMAIL_GREETING,
+            "",
+            (
+                "Your password has been reset successfully. You can now use your new "
+                "password to sign into your e-banking."
+            ),
+            (
+                "If you made this change, no further action is required. If you did not "
+                "attempt this change, please log in immediately to review your account "
+                "activity and consider changing your password and/or MFA settings as a "
+                "precaution."
+            ),
+            "",
+            EMAIL_CLOSING,
+            "",
+            EMAIL_SIGN_OFF,
+        ]
     )
     send_security_email(user.email, "SITBank password reset completed", body)
 
