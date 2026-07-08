@@ -359,6 +359,50 @@ def test_admin_mfa_counts_only_wrong_codes_and_clears_on_fresh_primary_login(
     assert recovered.status_code == 200
 
 
+def test_admin_mfa_replayed_valid_code_does_not_consume_failure_budget(admin_client):
+    global _FIXED_TOTP_TIME
+    root, root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    valid_code = _totp(root_secret)
+
+    first_primary = admin_client.post(
+        "/login",
+        json={"workplace_email": ROOT_EMAIL, "password": ROOT_PASSWORD},
+    )
+    first_verify = admin_client.post("/mfa/verify", json={"totp_code": valid_code})
+    admin_client.post("/logout", json={})
+    second_primary = admin_client.post(
+        "/login",
+        json={"workplace_email": ROOT_EMAIL, "password": ROOT_PASSWORD},
+    )
+    replay = admin_client.post("/mfa/verify", json={"totp_code": valid_code})
+    db.session.refresh(root)
+
+    assert first_primary.status_code == 200
+    assert first_verify.status_code == 200
+    assert second_primary.status_code == 200
+    assert replay.status_code == 401
+    assert (
+        db.session.query(AuthAttemptCounter)
+        .filter_by(scope="admin_mfa_login")
+        .count()
+        == 0
+    )
+    assert root.security_locked_at is None
+    assert root.is_frozen is False
+
+    _FIXED_TOTP_TIME += 30
+    fresh = admin_client.post(
+        "/mfa/verify",
+        json={"totp_code": _totp(root_secret)},
+    )
+    assert fresh.status_code == 200
+
+
 def test_admin_browser_form_payload_strips_csrf_token_for_invites(admin_client):
     _root, root_secret = _create_staff_identity(
         username="root-admin",
@@ -550,28 +594,21 @@ def test_root_manages_staff_lifecycle_with_totp_and_safe_audit(admin_client):
     assert self_action.status_code == 403
     assert deactivate.status_code == 200
     assert reset.status_code == 200
-    assert deactivate.get_json()["message"] == "Admin action approval required"
-    assert reset.get_json()["message"] == "Admin action approval required"
-    assert target.account_status == "active"
-    assert target.mfa_enabled is True
-    assert target.mfa_secret_nonce is not None
-    assert target.mfa_secret_ciphertext is not None
-    assert db.session.query(AdminActionRequest).filter_by(
-        operation_type="staff_deactivate",
-        status="pending",
-    ).count() == 1
-    assert db.session.query(AdminActionRequest).filter_by(
-        operation_type="staff_reset_activation",
-        status="pending",
-    ).count() == 1
+    assert deactivate.get_json()["message"] == "Staff account updated"
+    assert reset.get_json()["message"] == "Staff account updated"
+    assert target.account_status == "setup_pending"
+    assert target.mfa_enabled is False
+    assert target.mfa_secret_nonce is None
+    assert target.mfa_secret_ciphertext is None
+    assert db.session.query(AdminActionRequest).count() == 0
     assert db.session.query(SecurityAuditEvent).filter_by(
         event_type="staff_account_deactivated",
         outcome="success",
-    ).count() == 0
+    ).count() == 1
     assert db.session.query(SecurityAuditEvent).filter_by(
         event_type="staff_activation_reset",
         outcome="success",
-    ).count() == 0
+    ).count() == 1
 
 
 def test_non_root_admin_cannot_mutate_staff_lifecycle(admin_client):

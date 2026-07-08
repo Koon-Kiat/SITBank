@@ -678,8 +678,8 @@ def _manual_recovery_failure_message(error: AuthError) -> str:
 
 def _manual_recovery_success_message(result: dict[str, Any]) -> str:
     message = str(result.get("message") or "").strip()
-    if message == "Admin action approval required":
-        return "Manual recovery action was queued for separate root-admin approval."
+    if message == "Manual recovery request completed":
+        return "Manual recovery request completed."
     return "Manual recovery request was updated."
 
 
@@ -1199,8 +1199,8 @@ def customer_security_unlock_request(user_id: int):
         data[_ADMIN_TOTP_CODE_FIELD],
     )
     if _wants_json():
-        return jsonify(result), 202
-    flash("Customer unlock request created for separate approval.", "success")
+        return jsonify(result)
+    flash("Customer security lock cleared.", "success")
     return redirect(url_for("admin.customer_security_locks")), 303
 
 
@@ -1218,7 +1218,7 @@ def staff_account_deactivate(user_id: int):
     )
     if _wants_json():
         return jsonify(result)
-    flash("Staff/admin deactivation request created for approval.", "success")
+    flash("Staff/admin account deactivated.", "success")
     return redirect(url_for(_STAFF_ACCOUNTS_ENDPOINT)), 303
 
 
@@ -1236,7 +1236,7 @@ def staff_account_reactivate(user_id: int):
     )
     if _wants_json():
         return jsonify(result)
-    flash("Staff/admin reactivation request created for approval.", "success")
+    flash("Staff/admin account reactivated.", "success")
     return redirect(url_for(_STAFF_ACCOUNTS_ENDPOINT)), 303
 
 
@@ -1254,7 +1254,7 @@ def staff_account_reset_activation(user_id: int):
     )
     if _wants_json():
         return jsonify(result)
-    flash("Staff/admin activation reset request created for approval.", "success")
+    flash("Staff/admin activation reset.", "success")
     return redirect(url_for(_STAFF_ACCOUNTS_ENDPOINT)), 303
 
 

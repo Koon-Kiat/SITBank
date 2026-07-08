@@ -598,7 +598,7 @@ HTTP 429 response; invalid or expired CSRF tokens render a distinct
 admin-branded HTTP 400. Admin JSON-only and negotiated API requests retain
 structured errors. This response handling does not expose Tailscale identity
 details or weaken private reachability, separate admin cookies/signing keys,
-TOTP step-up, audit logging, alerts, or maker-checker authorization.
+TOTP step-up, audit logging, alerts, or root-admin authorization.
 
 Readiness remains restricted:
 
