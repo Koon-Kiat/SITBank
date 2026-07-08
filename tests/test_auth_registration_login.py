@@ -963,7 +963,7 @@ def test_customer_api_mfa_counts_only_wrong_totp_and_clears_on_fresh_login(
     monkeypatch.setattr("app.auth.services.time.time", lambda: base_time)
     valid_code = totp.at(base_time)
     invalid_code = "000000" if valid_code != "000000" else "111111"
-    for _attempt in range(5):
+    for _attempt in range(10):
         assert (
             client.post("/auth/mfa/verify", json={"totp_code": invalid_code}).status_code
             == 401
@@ -1139,8 +1139,13 @@ def test_repeated_mfa_failures_freeze_account(app, client):
     register(client)
     user, _secret = enable_mfa_for_user()
 
+    # The MFA account-freeze backstop sits above the per-window wrong-code
+    # throttle (CUSTOMER_MFA_FAILURE_LIMIT of 10 -> freeze at 12), so a single
+    # throttled burst stays recoverable. Sustained abuse across windows -- six
+    # wrong codes per window with a fresh primary login clearing the throttle
+    # counter between windows -- still accumulates to the freeze threshold.
     for _window in range(2):
-        for _attempt in range(5):
+        for _attempt in range(6):
             with app.test_request_context(
                 "/auth/mfa/verify",
                 method="POST",
