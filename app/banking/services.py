@@ -37,6 +37,7 @@ from app.models import (
     User,
 )
 from app.security.audit import AuditWriteError, audit_event, audit_event_required, audit_reference
+from app.security.email import send_security_email
 from app.security.session_hmac import active_hmac_hex
 from app.security.sessions import (
     authenticated_session_age_seconds,
@@ -81,6 +82,7 @@ _PAYUP_SENSITIVE_EVENT_TYPES = frozenset(
         "recovery_codes_regenerate",
     }
 )
+_DAILY_LIMIT_WARNING_RATIO = Decimal("0.80")
 
 
 @dataclass(frozen=True)
@@ -120,6 +122,144 @@ def _amount_audit_band(amount: Decimal) -> str:
     if normalized < Decimal("10000"):
         return "1000_to_9999"
     return "10000_or_more"
+
+
+def _format_money(amount: Decimal | object) -> str:
+    return str(Decimal(str(amount)).quantize(Decimal("0.01")))
+
+
+def send_transfer_notification(
+    user: User,
+    *,
+    direction: str,
+    outcome: str,
+    channel: str,
+    amount: Decimal | None = None,
+    transaction_reference: str | None = None,
+    counterparty_label: str | None = None,
+) -> None:
+    normalized_direction = str(direction or "").strip().casefold()
+    normalized_outcome = str(outcome or "").strip().casefold()
+    if normalized_direction not in {"withdrawal", "deposit"}:
+        raise ValueError("Unsupported transfer notification direction")
+    if normalized_outcome not in {"success", "failure"}:
+        raise ValueError("Unsupported transfer notification outcome")
+
+    direction_label = normalized_direction.title()
+    status_label = "successful" if normalized_outcome == "success" else "unsuccessful"
+    subject = f"SITBank {direction_label} {status_label}"
+    lines = [
+        f"A {direction_label.lower()} {channel} transaction was {status_label}.",
+    ]
+    if amount is not None:
+        lines.append(f"Amount: SGD {_format_money(amount)}")
+    if counterparty_label:
+        lines.append(f"Counterparty: {counterparty_label}")
+    if transaction_reference:
+        lines.append(f"Reference: {transaction_reference[:8].upper()}")
+    lines.append(
+        "If you did not request or expect this activity, contact SITBank support through the approved recovery path."
+    )
+    _send_banking_email(
+        user,
+        subject,
+        "\n".join(lines),
+        event_type="banking_transfer_notification",
+        metadata={
+            "direction": normalized_direction,
+            "outcome": normalized_outcome,
+            "channel": channel,
+        },
+    )
+
+
+def maybe_send_daily_limit_warning(
+    user: User,
+    *,
+    channel: str,
+    used_before: Decimal,
+    amount: Decimal,
+    daily_limit: Decimal,
+) -> None:
+    limit = Decimal(str(daily_limit))
+    if limit <= 0:
+        return
+    before_ratio = Decimal(str(used_before)) / limit
+    after_amount = Decimal(str(used_before)) + Decimal(str(amount))
+    after_ratio = after_amount / limit
+    if before_ratio >= _DAILY_LIMIT_WARNING_RATIO or after_ratio < _DAILY_LIMIT_WARNING_RATIO:
+        return
+
+    percent_used = (after_ratio * Decimal("100")).quantize(Decimal("0.01"))
+    body = "\n".join(
+        [
+            f"Your {channel} daily transfer usage has reached {percent_used}% of your limit.",
+            f"Used today: SGD {_format_money(after_amount)}",
+            f"Daily limit: SGD {_format_money(limit)}",
+            "If this activity was not yours, contact SITBank support through the approved recovery path.",
+        ]
+    )
+    _send_banking_email(
+        user,
+        f"SITBank {channel} daily limit 80% alert",
+        body,
+        event_type="banking_daily_limit_notification",
+        metadata={"channel": channel, "threshold": "80_percent"},
+    )
+
+
+def send_transfer_limit_change_notification(
+    user: User,
+    *,
+    outcome: str,
+    payup_limit: Decimal | None = None,
+    local_transfer_limit: Decimal | None = None,
+) -> None:
+    normalized_outcome = str(outcome or "").strip().casefold()
+    if normalized_outcome not in {"success", "failure"}:
+        raise ValueError("Unsupported transfer limit notification outcome")
+
+    status_label = "successful" if normalized_outcome == "success" else "unsuccessful"
+    lines = [f"Your daily transfer limit change was {status_label}."]
+    if normalized_outcome == "success" and payup_limit is not None and local_transfer_limit is not None:
+        lines.append(f"PayUp daily limit: SGD {_format_money(payup_limit)}")
+        lines.append(f"Local Transfer daily limit: SGD {_format_money(local_transfer_limit)}")
+    lines.append(
+        "If you did not request this change, contact SITBank support through the approved recovery path."
+    )
+    _send_banking_email(
+        user,
+        f"SITBank transfer limit change {status_label}",
+        "\n".join(lines),
+        event_type="banking_transfer_limit_notification",
+        metadata={"outcome": normalized_outcome},
+    )
+
+
+def _send_banking_email(
+    user: User,
+    subject: str,
+    body: str,
+    *,
+    event_type: str,
+    metadata: Mapping[str, object] | None = None,
+) -> None:
+    try:
+        send_security_email(user.email, subject, body)
+    except Exception as exc:
+        current_app.logger.warning(
+            "%s_failed error=%s",
+            event_type,
+            type(exc).__name__,
+        )
+        audit_event(
+            event_type,
+            "failure",
+            user=user,
+            metadata={"reason": "email_delivery_failed", **dict(metadata or {})},
+        )
+        return
+    audit_event(event_type, "queued", user=user, metadata=dict(metadata or {}))
 
 
 def ensure_outbound_transfer_allowed(user: User) -> None:
@@ -672,6 +812,12 @@ def _reject_local_transfer(
         payee_account=payee_account,
     )
     db.session.commit()
+    send_transfer_notification(
+        sender,
+        direction="withdrawal",
+        outcome="failure",
+        channel="Local Transfer",
+    )
     raise AuthError(message, status_code)
 
 
@@ -893,7 +1039,12 @@ def _ensure_local_transfer_balance(sender: User, payee: Payee, locked_sender: Us
         )
 
 
-def _ensure_local_transfer_daily_limit(sender: User, payee: Payee, locked_sender: User, amount: Decimal) -> None:
+def _ensure_local_transfer_daily_limit(
+    sender: User,
+    payee: Payee,
+    locked_sender: User,
+    amount: Decimal,
+) -> tuple[Decimal, Decimal]:
     daily_limit = Decimal(str(locked_sender.local_transfer_daily_limit))
     used_today = local_transfer_amount_used_today(locked_sender)
     if used_today + amount > daily_limit:
@@ -904,6 +1055,7 @@ def _ensure_local_transfer_daily_limit(sender: User, payee: Payee, locked_sender
             metadata={"reason": "daily_limit_exceeded", "amount_band": _amount_audit_band(amount)},
             payee_account=payee.account_number,
         )
+    return used_today, daily_limit
 
 
 def execute_local_transfer(
@@ -935,7 +1087,12 @@ def execute_local_transfer(
     # Recompute usage under the sender's row lock (acquired above), which serializes
     # concurrent Local Transfers from the same sender and makes this check-then-insert
     # sequence atomic, matching the equivalent PayUp daily-limit recheck.
-    _ensure_local_transfer_daily_limit(sender, payee, locked_sender, amount)
+    used_today, daily_limit = _ensure_local_transfer_daily_limit(
+        sender,
+        payee,
+        locked_sender,
+        amount,
+    )
 
     txn_ref = str(uuid.uuid4())
     txn_created_at = datetime.now(timezone.utc)
@@ -977,6 +1134,31 @@ def execute_local_transfer(
     pending_tfr.consumed_transaction_ref = txn_ref
 
     _audit_local_transfer_success(sender, payee, amount, reference, txn_ref)
+    send_transfer_notification(
+        sender,
+        direction="withdrawal",
+        outcome="success",
+        amount=amount,
+        channel="Local Transfer",
+        transaction_reference=txn_ref,
+        counterparty_label=payee.recipient_name,
+    )
+    send_transfer_notification(
+        locked_recipient,
+        direction="deposit",
+        outcome="success",
+        amount=amount,
+        channel="Local Transfer",
+        transaction_reference=txn_ref,
+        counterparty_label=sender.full_name or sender.username,
+    )
+    maybe_send_daily_limit_warning(
+        sender,
+        channel="Local Transfer",
+        used_before=used_today,
+        amount=amount,
+        daily_limit=daily_limit,
+    )
     return txn_ref
 
 
@@ -1474,6 +1656,7 @@ def execute_payup_transfer(
     # which serializes concurrent PayUp transfers from the same sender and makes
     # this check-then-insert sequence effectively atomic for that sender.
     used_today = payup_amount_used_today(locked_sender)
+    daily_limit = Decimal(str(locked_sender.payup_daily_limit))
     risk = evaluate_payup_risk(
         locked_sender,
         amount,
@@ -1576,7 +1759,36 @@ def execute_payup_transfer(
     except AuditWriteError:
         db.session.rollback()
         raise
+    send_transfer_notification(
+        sender,
+        direction="withdrawal",
+        outcome="success",
+        amount=amount,
+        channel="PayUp",
+        transaction_reference=txn_ref,
+        counterparty_label=_payup_notification_label(locked_recipient),
+    )
+    send_transfer_notification(
+        locked_recipient,
+        direction="deposit",
+        outcome="success",
+        amount=amount,
+        channel="PayUp",
+        transaction_reference=txn_ref,
+        counterparty_label=_payup_notification_label(locked_sender),
+    )
+    maybe_send_daily_limit_warning(
+        sender,
+        channel="PayUp",
+        used_before=used_today,
+        amount=amount,
+        daily_limit=daily_limit,
+    )
     return txn_ref
+
+
+def _payup_notification_label(user: User) -> str:
+    return str(getattr(user, "payup_nickname", "") or "").strip() or user.full_name or user.username
 
 
 def _requires_durable_audit(action: str, outcome: str) -> bool:
