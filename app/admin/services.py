@@ -148,6 +148,7 @@ STAFF_INVITE_NOT_FOUND_ERROR = "Invite not found"
 INVALID_WORKPLACE_EMAIL_ERROR = "Invalid workplace email"
 GENERIC_INVITE_ERROR = "Invite link is invalid or expired"
 GENERIC_WORKPLACE_VERIFICATION_ERROR = "Workplace verification failed"
+INVITE_INVALID_AUTHENTICATION_CODE_ERROR = "Invalid authentication code."
 ADMIN_AUTH_BACKOFF_ERROR = "Too many attempts. Please try again later."
 INVITE_ACCEPTANCE_SESSION_KEY = "staff_invite_acceptance_session"
 STAFF_INVITE_MAX_ACCEPTANCE_STARTS = 3
@@ -3313,7 +3314,7 @@ def verify_invite_acceptance(
         raise AuthError(GENERIC_INVITE_ERROR, 401)
     if not TOTP_RE.fullmatch(str(totp_code or "")):
         _record_invite_acceptance_verify_failure(invite, user, "invalid_totp_format")
-        raise AuthError("Invalid authentication code.", 401)
+        raise AuthError(INVITE_INVALID_AUTHENTICATION_CODE_ERROR, 401)
     totp_outcome = _verify_totp_for_user_outcome(user, totp_code, "staff_totp_setup")
     if totp_outcome == TOTP_VERIFICATION_REPLAY:
         # Reject a replayed setup code as stale input without counting it as a
@@ -3324,10 +3325,10 @@ def verify_invite_acceptance(
             user=user,
             metadata={"reason": "totp_replay"},
         )
-        raise AuthError("Invalid authentication code.", 401)
+        raise AuthError(INVITE_INVALID_AUTHENTICATION_CODE_ERROR, 401)
     if totp_outcome != TOTP_VERIFICATION_VALID:
         _record_invite_acceptance_verify_failure(invite, user, "invalid_totp")
-        raise AuthError("Invalid authentication code.", 401)
+        raise AuthError(INVITE_INVALID_AUTHENTICATION_CODE_ERROR, 401)
     if not _verify_workplace_code(invite, workplace_verification_code):
         _record_invite_acceptance_verify_failure(invite, user, "invalid_workplace_code")
         raise AuthError(GENERIC_WORKPLACE_VERIFICATION_ERROR, 401)
