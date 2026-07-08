@@ -58,6 +58,67 @@ def test_account_freeze_is_durable_and_blocks_group_a_sensitive_actions(client):
         user_id=user.id,
     ).count() == 1
 
+
+def test_account_freeze_writes_required_success_audit_row(client):
+    from app.security.crypto import encrypt_mfa_secret
+
+    register(client)
+    login(client)
+    user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
+    secret = pyotp.random_base32(length=32)
+    user.mfa_secret_nonce, user.mfa_secret_ciphertext = encrypt_mfa_secret(secret, user.id)
+    user.mfa_enabled = True
+    db.session.commit()
+
+    response = client.post(
+        "/account/freeze",
+        data={"totp_code": pyotp.TOTP(secret, digits=6, interval=30).now()},
+    )
+
+    assert response.status_code == 302
+    event = db.session.query(SecurityAuditEvent).filter_by(
+        event_type="account_freeze",
+        outcome="success",
+    ).one()
+    assert event.user_id == user.id
+    assert event.event_metadata["revoked_other_sessions"] == 0
+    serialized_metadata = str(event.event_metadata)
+    assert "totp" not in serialized_metadata.casefold()
+    assert "session_id" not in event.event_metadata
+
+
+def test_account_freeze_does_not_persist_when_required_audit_write_fails(client, monkeypatch):
+    from app.security.crypto import encrypt_mfa_secret
+    from app.security.audit import AuditWriteError
+
+    register(client)
+    login(client)
+    user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
+    secret = pyotp.random_base32(length=32)
+    user.mfa_secret_nonce, user.mfa_secret_ciphertext = encrypt_mfa_secret(secret, user.id)
+    user.mfa_enabled = True
+    db.session.commit()
+    user_id = user.id
+
+    def fail_required_audit(*_args, **_kwargs):
+        raise AuditWriteError("audit unavailable")
+
+    monkeypatch.setattr("app.auth.services.audit_event_required", fail_required_audit)
+
+    with pytest.raises(AuditWriteError):
+        client.post(
+            "/account/freeze",
+            data={"totp_code": pyotp.TOTP(secret, digits=6, interval=30).now()},
+        )
+
+    db.session.rollback()
+    refreshed = db.session.get(User, user_id)
+    assert refreshed.is_frozen is False
+    assert db.session.query(SecurityAuditEvent).filter_by(
+        event_type="account_freeze",
+        outcome="success",
+    ).count() == 0
+
 def test_frozen_account_cannot_create_new_login_session(client):
     register(client)
     user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()

@@ -786,13 +786,17 @@ def freeze_own_account(user: User, code: str) -> dict[str, Any]:
     user.is_frozen = True
     session_id = rotate_authenticated_session_after_mfa(user.id)
     revoked = revoke_other_sessions(user.id)
-    audit_event_required(
-        "account_freeze",
-        "success",
-        user=user,
-        session_id=session_id,
-        metadata={"revoked_other_sessions": revoked},
-    )
+    try:
+        audit_event_required(
+            "account_freeze",
+            "success",
+            user=user,
+            session_id=session_id,
+            metadata={"revoked_other_sessions": revoked},
+        )
+    except AuditWriteError:
+        db.session.rollback()
+        raise
     db.session.commit()
     _send_account_freeze_notification(user)
     return {
