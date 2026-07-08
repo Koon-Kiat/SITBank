@@ -171,6 +171,38 @@ def test_payup_security_docs_match_current_banking_contract():
         assert stale not in docs
 
 
+def test_notification_preference_docs_match_optional_activity_boundary():
+    docs = "\n".join(
+        Path(path).read_text(encoding="utf-8")
+        for path in (
+            "docs/OPERATIONS.md",
+            "docs/security/architecture/access-control.md",
+            "docs/security/assurance/secure-coding.md",
+        )
+    )
+    docs = " ".join(docs.split())
+
+    for required in (
+        "transfer activity email preference controls only routine withdrawal and deposit emails",
+        "Daily-limit, transfer-limit, account, security, MFA, recovery, password, session, staff/admin, and other high-risk notifications remain mandatory",
+        "`POST /profile/notification-preferences` intentionally does not require TOTP",
+        "authenticated, CSRF-protected, current-user-scoped, frozen-account-blocked",
+        "not a high-risk account or security change",
+    ):
+        assert required in docs
+
+    for stale in (
+        "notification preference requires TOTP",
+        "transfer activity email preference requires TOTP",
+        "mandatory notifications can be disabled",
+        "daily-limit notifications can be disabled",
+        "transfer-limit notifications can be disabled",
+        "general successful-transfer notification channel to reuse",
+        "future email or push channel requires a separate reviewed delivery",
+    ):
+        assert stale not in docs
+
+
 def test_payee_cooldown_docs_cover_scheduled_transfer_boundary():
     docs = "\n".join(
         Path(path).read_text(encoding="utf-8")

@@ -36,6 +36,7 @@ from app.security.turnstile import TurnstileError, require_turnstile
 from .services import (
     ADMIN_INDEX_ENDPOINT,
     AuthError,
+    FORBIDDEN_STAFF_INVITE_ACCEPTANCE_FIELDS,
     admin_navigation_for,
     admin_action_request_detail_for_admin,
     admin_action_requests_for_admin,
@@ -903,20 +904,25 @@ def _safe_invite_start_form_data() -> dict[str, str]:
     }
 
 
-def _invite_start_validation_reason() -> str:
-    payload: dict[str, Any]
+def _invite_start_payload() -> dict[str, Any]:
     if request.is_json:
         loaded = request.get_json(silent=True)
-        payload = loaded if isinstance(loaded, dict) else {}
-    else:
-        payload = dict(request.form)
+        return loaded if isinstance(loaded, dict) else {}
+    return dict(request.form)
+
+
+def _invite_start_has_forged_fields(payload: dict[str, Any]) -> bool:
+    submitted_fields = {str(field).strip() for field in payload}
+    return bool(FORBIDDEN_STAFF_INVITE_ACCEPTANCE_FIELDS & submitted_fields)
+
+
+def _invite_start_validation_reason() -> str:
+    payload = _invite_start_payload()
     full_name = str(payload.get("full_name") or "").strip()
     phone_number = str(payload.get("phone_number") or "").strip()
     password = str(payload.get("password") or "")
     confirm_password = str(payload.get("confirm_password") or "")
-    if {"role", "workplace_email", "email", "account_type", "customer_user_id", "is_admin"} & {
-        str(field).strip() for field in payload
-    }:
+    if _invite_start_has_forged_fields(payload):
         return "forged_fields"
     if not full_name or len(full_name) > 120 or re.search(r"[\x00-\x1f\x7f<>]", full_name):
         return "invalid_full_name"

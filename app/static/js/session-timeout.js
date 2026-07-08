@@ -91,7 +91,7 @@
       if (response.ok) return null;
       return response.json().catch(function () { return {}; });
     }).then(function (payload) {
-      if (payload && payload.code === 'replaced') {
+      if (payload?.code === 'replaced') {
         showReplacedOverlay();
       }
     }).catch(function () {});

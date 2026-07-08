@@ -1193,6 +1193,32 @@ def test_route_inventory_has_complete_security_decisions(app):
             )
 
 
+def test_notification_preference_route_inventory_keeps_low_risk_boundary():
+    endpoint = "web.profile_notification_preferences_submit"
+    entry = ROUTE_SECURITY_INVENTORY[endpoint]
+    decorators, sources = _route_source_inventory()
+
+    assert entry == {
+        "endpoint": endpoint,
+        "rule": "/profile/notification-preferences",
+        "methods": {"POST"},
+        "access": "authenticated",
+        "classification": "profile",
+        "csrf": "required",
+        "rate_limit": "edge_app",
+        "step_up": "not_required",
+        "public_justification": "",
+    }
+    assert {"post", "web_login_required", "web_not_frozen_required"}.issubset(
+        decorators[endpoint]
+    )
+    source = sources[endpoint]
+    assert "g.current_user.transfer_activity_email_enabled" in source
+    assert "audit_event(" in source
+    assert "verify_high_risk_authorization" not in source
+    assert "totp_code" not in source
+
+
 def test_login_and_registration_have_method_level_security_decisions(app):
     actual = _actual_routes(app)
 
