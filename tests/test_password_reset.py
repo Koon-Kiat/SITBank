@@ -570,6 +570,30 @@ def test_manual_recovery_request_for_unknown_identifier_creates_no_support_ticke
         assert tickets == []
 
 
+def test_manual_recovery_request_survives_support_ticket_creation_failure(app, client, monkeypatch):
+    with app.app_context():
+        user = _create_user("recoveryticket02", "recoveryticket02@example.com")
+        user_id = user.id
+
+    def broken_support_ticket(*_args, **_kwargs):
+        raise RuntimeError("simulated support ticket failure")
+
+    monkeypatch.setattr("app.auth.password_reset.SupportTicket", broken_support_ticket)
+
+    response = client.post(
+        "/auth/account-recovery",
+        json={"identifier": "recoveryticket02@example.com"},
+    )
+
+    assert response.status_code == 200
+    with app.app_context():
+        assert db.session.execute(db.select(SupportTicket)).scalars().all() == []
+        request_record = db.session.execute(
+            db.select(ManualRecoveryRequest).where(ManualRecoveryRequest.user_id == user_id)
+        ).scalar_one()
+        assert request_record.status == "pending"
+
+
 def test_manual_recovery_dedupes_active_requests_and_keeps_public_response_generic(app, client):
     with app.app_context():
         user = _create_user("recover01", "recover01@example.com")
