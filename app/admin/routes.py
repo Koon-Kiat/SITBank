@@ -62,7 +62,6 @@ from .services import (
     require_staff_session,
     reset_staff_invite_acceptance,
     reissue_staff_invite,
-    resend_staff_setup_invite,
     transition_dispute_status_for_staff,
     reject_admin_action_request_as_root_admin,
     request_customer_security_unlock,
@@ -679,8 +678,8 @@ def _manual_recovery_failure_message(error: AuthError) -> str:
 
 def _manual_recovery_success_message(result: dict[str, Any]) -> str:
     message = str(result.get("message") or "").strip()
-    if message == "Manual recovery request completed":
-        return "Manual recovery request completed."
+    if message == "Admin action approval required":
+        return "Manual recovery action was queued for separate root-admin approval."
     return "Manual recovery request was updated."
 
 
@@ -1200,8 +1199,8 @@ def customer_security_unlock_request(user_id: int):
         data[_ADMIN_TOTP_CODE_FIELD],
     )
     if _wants_json():
-        return jsonify(result)
-    flash("Customer security lock cleared.", "success")
+        return jsonify(result), 202
+    flash("Customer unlock request created for separate approval.", "success")
     return redirect(url_for("admin.customer_security_locks")), 303
 
 
@@ -1219,7 +1218,7 @@ def staff_account_deactivate(user_id: int):
     )
     if _wants_json():
         return jsonify(result)
-    flash("Staff/admin account deactivated.", "success")
+    flash("Staff/admin deactivation request created for approval.", "success")
     return redirect(url_for(_STAFF_ACCOUNTS_ENDPOINT)), 303
 
 
@@ -1237,7 +1236,7 @@ def staff_account_reactivate(user_id: int):
     )
     if _wants_json():
         return jsonify(result)
-    flash("Staff/admin account reactivated.", "success")
+    flash("Staff/admin reactivation request created for approval.", "success")
     return redirect(url_for(_STAFF_ACCOUNTS_ENDPOINT)), 303
 
 
@@ -1255,24 +1254,7 @@ def staff_account_reset_activation(user_id: int):
     )
     if _wants_json():
         return jsonify(result)
-    flash("Staff/admin activation reset.", "success")
-    return redirect(url_for(_STAFF_ACCOUNTS_ENDPOINT)), 303
-
-
-@admin_bp.post("/staff/<int:user_id>/resend-setup")
-@limiter.limit(_ADMIN_RATE_LIMIT_HOURLY, key_func=get_remote_address)
-@limiter.limit(_ADMIN_RATE_LIMIT_STEP_UP, key_func=request_principal)
-def staff_account_resend_setup(user_id: int):
-    actor = require_root_admin_session()
-    data = _payload(StaffAccountActionSchema())
-    result = resend_staff_setup_invite(
-        actor,
-        user_id,
-        data[_ADMIN_TOTP_CODE_FIELD],
-    )
-    if _wants_json():
-        return jsonify(result), 201
-    flash("Staff/admin setup invite resent.", "success")
+    flash("Staff/admin activation reset request created for approval.", "success")
     return redirect(url_for(_STAFF_ACCOUNTS_ENDPOINT)), 303
 
 

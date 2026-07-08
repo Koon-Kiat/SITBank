@@ -516,12 +516,18 @@ def test_browser_transition_auth_error_redirects_with_safe_flash(admin_client):
     assert request_record.status == "pending"
 
 
-def test_browser_completion_requires_approval_and_executes_directly(admin_client, monkeypatch):
+def test_browser_completion_requires_approval_and_queues_maker_checker(admin_client):
     _root, root_secret = _create_staff_identity(
         username="root-admin",
         email=ROOT_EMAIL,
         account_type="root_admin",
         phone_number="91234567",
+    )
+    _second_root, second_root_secret = _create_staff_identity(
+        username="root-admin-two",
+        email="root2@sit.singaporetech.edu.sg",
+        account_type="root_admin",
+        phone_number="91234568",
     )
     customer, _customer_secret = _create_customer("recover-browser-complete")
     pending_request = _create_manual_recovery_request(customer)
@@ -533,20 +539,21 @@ def test_browser_completion_requires_approval_and_executes_directly(admin_client
         data={"reason": "identity verified", "totp_code": _totp(root_secret)},
         follow_redirects=False,
     )
-    completion_time = int(time.time()) + 30
-    monkeypatch.setattr("app.auth.services.time.time", lambda: completion_time)
-    completed = admin_client.post(
+    admin_client.post("/logout", headers={"Accept": "application/json"})
+    _login_admin(admin_client, second_root_secret, email="root2@sit.singaporetech.edu.sg")
+    queued = admin_client.post(
         f"/manual-recovery/requests/{approved_request.id}/complete",
-        data={"reason": "identity verified", "totp_code": _totp(root_secret, completion_time)},
+        data={"reason": "identity verified", "totp_code": _totp(second_root_secret)},
         follow_redirects=False,
     )
 
     assert blocked.status_code == 303
-    assert completed.status_code == 303
-    assert completed.headers["Location"].endswith(f"/manual-recovery/requests/{approved_request.id}")
-    db.session.refresh(approved_request)
-    assert approved_request.status == "completed"
-    assert db.session.query(AdminActionRequest).count() == 0
+    assert queued.status_code == 303
+    assert queued.headers["Location"].endswith(f"/manual-recovery/requests/{approved_request.id}")
+    assert db.session.query(AdminActionRequest).filter_by(
+        operation_type="manual_recovery_complete",
+        status="pending",
+    ).count() == 1
 
 
 def test_browser_completion_validation_redirects_before_service_call(admin_client):
@@ -572,7 +579,7 @@ def test_browser_completion_validation_redirects_before_service_call(admin_clien
     assert request_record.status == "approved"
 
 
-def test_browser_completion_rejects_missing_csrf_before_direct_action(
+def test_browser_completion_rejects_missing_csrf_before_queueing_action(
     admin_app,
     admin_client,
 ):
@@ -608,7 +615,7 @@ def test_browser_completion_rejects_missing_csrf_before_direct_action(
     ).count() == 0
 
 
-def test_browser_completion_accepts_valid_csrf_and_executes_directly(
+def test_browser_completion_accepts_valid_csrf_and_queues_maker_checker(
     admin_app,
     admin_client,
 ):
@@ -638,9 +645,10 @@ def test_browser_completion_accepts_valid_csrf_and_executes_directly(
     )
 
     assert response.status_code == 303
-    db.session.refresh(request_record)
-    assert request_record.status == "completed"
-    assert db.session.query(AdminActionRequest).count() == 0
+    assert db.session.query(AdminActionRequest).filter_by(
+        operation_type="manual_recovery_complete",
+        status="pending",
+    ).count() == 1
 
 
 def test_admin_browser_logout_redirects_and_json_logout_remains_compatible(admin_client):
@@ -759,15 +767,19 @@ def test_root_admin_can_transition_manual_recovery_to_review_and_approval(admin_
     assert under_review.get_json()["request"]["status"] == "under_review"
     assert approved.status_code == 200
     approved_payload = approved.get_json()
-    assert approved_payload["message"] == "Manual recovery request updated"
-    assert approved_payload["request"]["status"] == "approved"
+    assert approved_payload["message"] == "Admin action approval required"
+    assert approved_payload["request"]["operation_type"] == "manual_recovery_approve"
+    assert approved_payload["request"]["status"] == "pending"
     db.session.refresh(request_record)
-    assert request_record.status == "approved"
+    assert request_record.status == "under_review"
     assert db.session.query(SecurityAuditEvent).filter_by(
         event_type="manual_recovery_admin_transition",
         outcome="success",
-    ).count() == 2
-    assert db.session.query(AdminActionRequest).count() == 0
+    ).count() == 1
+    assert db.session.query(AdminActionRequest).filter_by(
+        operation_type="manual_recovery_approve",
+        status="pending",
+    ).count() == 1
 
 
 def test_root_admin_cannot_complete_manual_recovery_before_approval(admin_client):
@@ -809,24 +821,25 @@ def test_root_admin_can_complete_approved_manual_recovery(admin_client):
 
     assert response.status_code == 200
     payload = response.get_json()
-    assert payload["message"] == "Manual recovery request completed"
-    assert payload["request"]["status"] == "completed"
+    assert payload["message"] == "Admin action approval required"
+    assert payload["request"]["operation_type"] == "manual_recovery_complete"
+    assert payload["request"]["status"] == "pending"
     _assert_no_sensitive_recovery_material(payload)
     db.session.refresh(customer)
     db.session.refresh(request_record)
-    assert customer.mfa_enabled is False
-    assert request_record.completed_at is not None
-    assert "SITBank manual recovery completed" in [
+    assert customer.mfa_enabled is True
+    assert request_record.completed_at is None
+    assert "SITBank manual recovery completed" not in [
         item["subject"] for item in password_reset_outbox()
     ]
     assert db.session.query(SecurityAuditEvent).filter_by(
         event_type="manual_recovery_completed",
         outcome="success",
-    ).count() == 1
+    ).count() == 0
     assert db.session.query(SecurityAuditEvent).filter_by(
         event_type="manual_recovery_admin_complete",
         outcome="success",
-    ).count() == 1
+    ).count() == 0
 
 
 def test_expired_manual_recovery_request_is_safely_rejected(admin_client):
