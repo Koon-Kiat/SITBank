@@ -376,7 +376,8 @@ def test_manual_recovery_docs_cover_browser_root_admin_workflow():
         "Accept: application/json",
         "browser CSRF",
         "fresh TOTP code",
-        "maker-checker",
+        "execute directly",
+        "self-action boundary",
         "Unlinked or unknown requests stay generic",
         "Browser admin logout clears the admin session and redirects to `/login`",
     ):
