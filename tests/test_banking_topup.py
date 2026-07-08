@@ -8,12 +8,23 @@ import pyotp
 from _auth_flow_helpers import enable_mfa_for_user, login, register
 from app.banking.topup_tokens import generate_topup_token
 from app.extensions import db
-from app.models import SecurityAuditEvent, Transaction, TopUpApprovalRequest, TopUpCredit, User
+from app.models import SecurityAuditEvent, TotpReplayRecord, Transaction, TopUpApprovalRequest, TopUpCredit, User
+from app.security.audit import AuditWriteError
 
 
 def _topup_approve_url(raw_token: str) -> str:
     selector, _, verifier = raw_token.partition(".")
     return f"/banking/topup/approve/{selector}.{verifier}"
+
+
+def _assert_topup_approval_security_headers(response) -> None:
+    cache_control = response.headers.get("Cache-Control", "")
+    assert "no-store" in cache_control
+    assert "no-cache" in cache_control
+    assert "private" in cache_control
+    assert response.headers.get("Pragma") == "no-cache"
+    assert response.headers.get("Expires") == "0"
+    assert response.headers.get("Referrer-Policy") == "origin"
 
 
 def test_topup_step_one_creates_pending_request_with_parsed_amount(client):
@@ -46,10 +57,12 @@ def test_topup_happy_path_credits_balance_and_records_ledger(client):
 
     get_response = client.get(approve_url)
     assert get_response.status_code == 200
+    _assert_topup_approval_security_headers(get_response)
 
     code = pyotp.TOTP(secret, digits=6, interval=30).now()
     approve_response = client.post(approve_url, data={"totp_code": code})
     assert approve_response.status_code == 200
+    _assert_topup_approval_security_headers(approve_response)
 
     db.session.refresh(user)
     assert Decimal(str(user.balance)) == starting_balance + Decimal("50.00")
@@ -97,6 +110,7 @@ def test_topup_happy_path_credits_balance_and_records_ledger(client):
     assert deliveries[-1]["subject"] == "SITBank Deposit successful"
     assert "Top Up" in deliveries[-1]["body"]
     assert "50.00" in deliveries[-1]["body"]
+    assert "Sender: Top Up" in deliveries[-1]["body"]
 
 
 def test_topup_email_suppressed_when_transfer_activity_email_disabled(client):
@@ -129,6 +143,7 @@ def test_topup_wrong_totp_rejected_without_crediting(client):
 
     response = client.post(approve_url, data={"totp_code": "000000"})
     assert response.status_code == 401
+    _assert_topup_approval_security_headers(response)
 
     selector = raw_token.partition(".")[0]
     request_row = db.session.execute(
@@ -288,10 +303,75 @@ def test_topup_approval_rechecks_frozen_status_at_completion(client):
     code = pyotp.TOTP(secret, digits=6, interval=30).now()
     response = client.post(approve_url, data={"totp_code": code})
     assert response.status_code == 403
+    _assert_topup_approval_security_headers(response)
 
     assert db.session.query(TopUpCredit).filter_by(user_id=user.id).count() == 0
+    assert db.session.query(TotpReplayRecord).filter_by(user_id=user.id).count() == 0
+    assert db.session.query(SecurityAuditEvent).filter_by(
+        event_type="account_topup_approval",
+        outcome="mfa_success",
+        user_id=user.id,
+    ).count() == 0
     selector = raw_token.partition(".")[0]
     request_row = db.session.execute(
         db.select(TopUpApprovalRequest).where(TopUpApprovalRequest.selector == selector)
     ).scalar_one()
     assert request_row.status == "failed"
+
+
+def test_topup_approval_rechecks_locked_status_before_totp(client):
+    register(client)
+    login(client)
+    user, secret = enable_mfa_for_user()
+
+    raw_token, _ = generate_topup_token(user.id, Decimal("25.00"))
+    user.security_lock_reason = "password_failed_attempts"
+    db.session.commit()
+
+    approve_url = _topup_approve_url(raw_token)
+    code = pyotp.TOTP(secret, digits=6, interval=30).now()
+    response = client.post(approve_url, data={"totp_code": code})
+
+    assert response.status_code == 403
+    assert db.session.query(TopUpCredit).filter_by(user_id=user.id).count() == 0
+    assert db.session.query(TotpReplayRecord).filter_by(user_id=user.id).count() == 0
+    selector = raw_token.partition(".")[0]
+    request_row = db.session.execute(
+        db.select(TopUpApprovalRequest).where(TopUpApprovalRequest.selector == selector)
+    ).scalar_one()
+    assert request_row.status == "failed"
+
+
+def test_topup_completion_rolls_back_credit_when_required_audit_fails(client, monkeypatch):
+    import app.banking.services as banking_services
+
+    register(client)
+    login(client)
+    user, secret = enable_mfa_for_user()
+    starting_balance = Decimal(str(user.balance))
+
+    raw_token, _ = generate_topup_token(user.id, Decimal("25.00"))
+    approve_url = _topup_approve_url(raw_token)
+    original_required_audit = banking_services.audit_event_required
+
+    def fail_topup_credit_audit(event_type, *args, **kwargs):
+        if event_type == "account_topup":
+            raise AuditWriteError("audit unavailable")
+        return original_required_audit(event_type, *args, **kwargs)
+
+    monkeypatch.setattr(banking_services, "audit_event_required", fail_topup_credit_audit)
+
+    code = pyotp.TOTP(secret, digits=6, interval=30).now()
+    response = client.post(approve_url, data={"totp_code": code})
+
+    assert response.status_code == 503
+    db.session.refresh(user)
+    assert Decimal(str(user.balance)) == starting_balance
+    assert db.session.query(TopUpCredit).filter_by(user_id=user.id).count() == 0
+    assert db.session.query(Transaction).filter_by(sender_id=user.id, transaction_type="topup").count() == 0
+    selector = raw_token.partition(".")[0]
+    request_row = db.session.execute(
+        db.select(TopUpApprovalRequest).where(TopUpApprovalRequest.selector == selector)
+    ).scalar_one()
+    assert request_row.status == "pending"
+    assert request_row.credit_ref is None

@@ -1177,6 +1177,48 @@ def test_repeated_password_failures_lock_known_customer_account(app, client):
     assert response.status_code == 401
     assert user.failed_login_count == 3
 
+
+def test_account_lock_rolls_back_when_required_audit_fails(app, client, monkeypatch):
+    from app.auth import services as auth_services
+    from app.auth.services import AuthError, authenticate_primary
+    from app.security.audit import AuditWriteError
+
+    register(client)
+    user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
+    original_required_audit = auth_services.audit_event_required
+
+    def fail_account_lock_audit(event_type, *args, **kwargs):
+        if event_type == "account_lock":
+            raise AuditWriteError("required audit unavailable")
+        return original_required_audit(event_type, *args, **kwargs)
+
+    monkeypatch.setattr(auth_services, "audit_event_required", fail_account_lock_audit)
+
+    for attempt in range(3):
+        with app.test_request_context(
+            "/auth/login",
+            method="POST",
+            environ_overrides={"REMOTE_ADDR": "127.0.0.1"},
+        ):
+            if attempt < 2:
+                with pytest.raises(AuthError):
+                    authenticate_primary("alice01", "wrong-password")
+            else:
+                with pytest.raises(AuditWriteError):
+                    authenticate_primary("alice01", "wrong-password")
+
+    db.session.rollback()
+    db.session.refresh(user)
+
+    assert user.is_frozen is False
+    assert user.security_locked_at is None
+    assert user.security_lock_reason is None
+    assert db.session.query(SecurityAuditEvent).filter_by(
+        event_type="account_lock",
+        outcome="locked",
+    ).count() == 0
+
+
 def test_repeated_mfa_failures_freeze_account(app, client):
     from flask import session
     from app.auth.services import AuthError, authenticate_primary, complete_pending_mfa

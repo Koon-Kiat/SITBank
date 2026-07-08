@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from _auth_flow_helpers import *
 
 
@@ -10,12 +12,13 @@ def test_login_sets_secure_session_cookie_and_hides_raw_session_id(client):
     user, _secret = enable_mfa_for_user()
     mark_recent_mfa(client, user)
     sessions_response = client.get("/auth/sessions")
+    set_cookie_headers = "\n".join(response.headers.getlist("Set-Cookie"))
 
     assert response.status_code == 302
-    assert "__Host-sitbank_session=" in response.headers["Set-Cookie"]
-    assert "Secure" in response.headers["Set-Cookie"]
-    assert "HttpOnly" in response.headers["Set-Cookie"]
-    assert "SameSite=Strict" in response.headers["Set-Cookie"]
+    assert "__Host-sitbank_session=" in set_cookie_headers
+    assert "Secure" in set_cookie_headers
+    assert "HttpOnly" in set_cookie_headers
+    assert "SameSite=Strict" in set_cookie_headers
     assert sessions_response.status_code == 200
     session_item = sessions_response.get_json()["sessions"][0]
     assert "session_ref" in session_item
@@ -579,27 +582,53 @@ def test_session_status_reports_ended_for_anonymous_client(app):
 
 
 def test_session_status_polling_does_not_extend_inactivity_window(client):
+    from app.models import ServerSideSession
+    from app.security.sessions import session_lookup_hash
+
+    def as_aware(value):
+        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
     register(client)
     login(client)
     user, _secret = enable_mfa_for_user()
     mark_recent_mfa(client, user)
     stale_but_valid = int(time.time()) - 60
+    stale_row_time = datetime.now(timezone.utc) - timedelta(seconds=60)
+    stale_expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
 
     with client.session_transaction() as sess:
         sess["last_activity_at"] = stale_but_valid
+        session_id = sess.sid
+
+    record = db.session.execute(
+        db.select(ServerSideSession).where(
+            ServerSideSession.session_lookup_hash == session_lookup_hash(session_id)
+        )
+    ).scalar_one()
+    record.last_activity_at = stale_row_time
+    record.expires_at = stale_expires_at
+    db.session.commit()
 
     status_response = client.get("/auth/session/status")
+    db.session.refresh(record)
+    row_activity_after_status = as_aware(record.last_activity_at)
+    row_expires_after_status = as_aware(record.expires_at)
     with client.session_transaction() as sess:
         after_status_poll = sess.get("last_activity_at")
 
     other_response = client.get("/dashboard")
     with client.session_transaction() as sess:
         after_normal_request = sess.get("last_activity_at")
+    db.session.refresh(record)
 
     assert status_response.status_code == 200
     assert after_status_poll == stale_but_valid
+    assert row_activity_after_status == stale_row_time
+    assert row_expires_after_status == stale_expires_at
     assert other_response.status_code == 200
     assert after_normal_request > stale_but_valid
+    assert as_aware(record.last_activity_at) > stale_row_time
+    assert as_aware(record.expires_at) > stale_expires_at
 
 
 def test_security_warning_alerts_do_not_auto_dismiss():

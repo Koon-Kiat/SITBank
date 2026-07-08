@@ -31,7 +31,7 @@ from app.auth.registration_otp import (
     require_verified_registration_email,
 )
 from app.auth.schemas import PHONE_RE
-from app.security.audit import audit_event, audit_event_required, audit_reference, principal_reference
+from app.security.audit import AuditWriteError, audit_event, audit_event_required, audit_reference, principal_reference
 from app.security.crypto import decrypt_mfa_secret, encrypt_mfa_secret
 from app.security.email import send_security_email
 from app.security.identity_policy import (
@@ -95,6 +95,27 @@ GENERIC_MFA_ERROR = "Incorrect code. Check your authenticator and try again."
 AUTH_BACKOFF_ERROR = "Too many failed attempts. Please wait before trying again."
 ACCOUNT_AUTH_UNAVAILABLE_ERROR = "Authentication unavailable for this account"
 PROFILE_UPDATE_ERROR = "Profile could not be updated with those details"
+REGISTRATION_DETAILS_ERROR = "Registration could not be completed with those details"
+CUSTOMER_HIGH_RISK_TOTP_REPLAY_SCOPES = frozenset(
+    {
+        "account_freeze",
+        "account_topup_approval",
+        "mfa_replace_start",
+        "password_change",
+        "payee_add",
+        "payee_remove",
+        "payup_transfer",
+        "profile_email_change_commit",
+        "profile_email_change_request",
+        "profile_update",
+        "recovery_codes_regenerate",
+        "session_revoke_others",
+        "transaction_authorization",
+        "transfer",
+        "transfer_limits_change",
+    }
+)
+CUSTOMER_HIGH_RISK_TOTP_REPLAY_SCOPE = "customer_high_risk_action"
 AUTH_LOCK_THRESHOLD = 10
 CUSTOMER_PASSWORD_LOCK_THRESHOLD = 3
 PRIVILEGED_PASSWORD_LOCK_THRESHOLD = 2
@@ -258,13 +279,13 @@ def register_user(data: dict[str, Any]) -> tuple[User, list[str]]:
 
     if _username_taken(data["username"]):
         audit_event("registration", "failure", metadata={"reason": "duplicate_username"})
-        raise AuthError("Registration could not be completed with those details", 400, field="username")
+        raise AuthError(REGISTRATION_DETAILS_ERROR, 400, field="username")
     if _phone_number_taken(data["phone_number"]):
         audit_event("registration", "failure", metadata={"reason": "duplicate_phone"})
-        raise AuthError("Registration could not be completed with those details", 400, field="phone")
+        raise AuthError(REGISTRATION_DETAILS_ERROR, 400, field="phone")
     if _email_taken(canonical_email):
         audit_event("registration", "failure", metadata={"reason": "duplicate_email"})
-        raise AuthError("Registration could not be completed with those details", 400, field="email")
+        raise AuthError(REGISTRATION_DETAILS_ERROR, 400, field="email")
 
     user = User(
         username=data["username"].strip(),
@@ -286,7 +307,7 @@ def register_user(data: dict[str, Any]) -> tuple[User, list[str]]:
     except IntegrityError as exc:
         db.session.rollback()
         audit_event("registration", "failure", metadata={"reason": "integrity_error"})
-        raise AuthError("Registration could not be completed with those details", 400) from exc
+        raise AuthError(REGISTRATION_DETAILS_ERROR, 400) from exc
     except RuntimeError as exc:
         db.session.rollback()
         current_app.logger.warning("registration_welcome_credit_failed error=%s", type(exc).__name__)
@@ -761,16 +782,16 @@ def freeze_own_account(user: User, code: str) -> dict[str, Any]:
     )
 
     user.is_frozen = True
-    db.session.commit()
     session_id = rotate_authenticated_session_after_mfa(user.id)
     revoked = revoke_other_sessions(user.id)
-    audit_event(
+    audit_event_required(
         "account_freeze",
         "success",
         user=user,
         session_id=session_id,
         metadata={"revoked_other_sessions": revoked},
     )
+    db.session.commit()
     _send_account_freeze_notification(user)
     return {
         "message": "Account frozen. Unfreeze requires manual support review.",
@@ -979,19 +1000,22 @@ def _commit_profile_update(
     if phone_changed:
         user.phone_number = normalized_phone
     try:
+        audit_event_required(
+            "profile_update",
+            "success",
+            user=user,
+            metadata={"updated_fields": _profile_updated_fields(email_changed, phone_changed)},
+        )
         db.session.commit()
     except IntegrityError as exc:
         db.session.rollback()
         audit_event("profile_update", "failure", user=user, metadata={"reason": "integrity_error"})
         raise AuthError(PROFILE_UPDATE_ERROR, 400) from exc
+    except AuditWriteError:
+        db.session.rollback()
+        raise
     if email_changed:
         _clear_pending_profile_email_change()
-    audit_event(
-        "profile_update",
-        "success",
-        user=user,
-        metadata={"updated_fields": _profile_updated_fields(email_changed, phone_changed)},
-    )
     return {"updated": True, "email_verification_pending": False}
 
 
@@ -1154,12 +1178,7 @@ def change_password(
     user.failed_login_count = 0
     revoked = revoke_all_sessions(user.id, ended_reason="password_change")
     session_id = current_session_id()
-    session.clear()
-    db.session.commit()
-    clear_failures("login", _auth_principal(user.username))
-    clear_failures("login", _auth_principal(user.email))
-    _clear_user_security_failures(user, "password_change")
-    audit_event(
+    audit_event_required(
         "password_change",
         "success",
         user=user,
@@ -1173,6 +1192,11 @@ def change_password(
             "forced_change_cleared": True,
         },
     )
+    db.session.commit()
+    session.clear()
+    clear_failures("login", _auth_principal(user.username))
+    clear_failures("login", _auth_principal(user.email))
+    _clear_user_security_failures(user, "password_change")
     return {
         "message": "Password changed. Please log in again.",
         "revoked_sessions": revoked,
@@ -1404,9 +1428,8 @@ def _lock_user_account(user: User, reason: str, scope: str, attempts: int) -> No
     user.is_frozen = True
     user.security_locked_at = datetime.now(timezone.utc)
     user.security_lock_reason = reason
-    db.session.commit()
     revoked = revoke_all_sessions(user.id)
-    audit_event(
+    audit_event_required(
         "account_lock",
         "locked",
         user=user,
@@ -1417,6 +1440,7 @@ def _lock_user_account(user: User, reason: str, scope: str, attempts: int) -> No
             "revoked_sessions": revoked,
         },
     )
+    db.session.commit()
 
 
 def _user_security_lock_threshold(user: User, scope: str) -> int:
@@ -1537,14 +1561,15 @@ def _verify_totp_secret_for_user_outcome(
             record_failure(scope, str(user.id))
         return TOTP_VERIFICATION_INVALID
 
+    replay_scope = _totp_replay_scope(scope)
     code_digest = active_hmac_hex(
-        f"totp-replay:{user.id}:{scope}:{accepted_step}:{code}",
+        f"totp-replay:{user.id}:{replay_scope}:{accepted_step}:{code}",
         length=64,
     )
     replay_ttl = max(30, (_totp_valid_window(scope, valid_window) * 2 + 2) * 30)
     replay_record = TotpReplayRecord(
         user_id=user.id,
-        scope=scope,
+        scope=replay_scope,
         time_step=accepted_step,
         code_digest=code_digest,
         expires_at=datetime.now(timezone.utc) + timedelta(seconds=replay_ttl),
@@ -1561,6 +1586,13 @@ def _verify_totp_secret_for_user_outcome(
     _clear_user_security_failures(user, "mfa")
     mark_fresh_mfa()
     return TOTP_VERIFICATION_VALID
+
+
+def _totp_replay_scope(scope: str) -> str:
+    normalized = str(scope or "").strip()
+    if normalized in CUSTOMER_HIGH_RISK_TOTP_REPLAY_SCOPES:
+        return CUSTOMER_HIGH_RISK_TOTP_REPLAY_SCOPE
+    return normalized
 
 
 def _totp_valid_window(scope: str, valid_window: int | None) -> int:

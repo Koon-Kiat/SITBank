@@ -775,6 +775,61 @@ def test_admin_action_request_reject_and_cancel_are_terminal(admin_client):
     assert target.account_status == "active"
 
 
+def test_admin_action_reject_rolls_back_when_required_audit_fails(admin_client, monkeypatch):
+    from app.admin import services as admin_services
+
+    _root1, root1_secret = _create_staff_identity(
+        username="root-one",
+        email=ROOT1_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    root2, root2_secret = _create_staff_identity(
+        username="root-two",
+        email=ROOT2_EMAIL,
+        account_type="root_admin",
+        phone_number="91234568",
+    )
+    target, _target_secret = _create_staff_identity(
+        username="target-admin",
+        email="target.admin@sit.singaporetech.edu.sg",
+        account_type="admin",
+        phone_number="91234569",
+    )
+    _login_admin(admin_client, root1_secret, ROOT1_EMAIL)
+    requested = admin_client.post(
+        f"/staff/{target.id}/deactivate",
+        json={"totp_code": _totp(root1_secret)},
+    )
+    request_id = requested.get_json()["request"]["id"]
+    original_required_audit = admin_services.audit_event_required
+
+    def fail_rejection_audit(event_type, outcome, **kwargs):
+        if event_type == "admin_action_request_rejected":
+            raise AuditWriteError("required audit failed")
+        return original_required_audit(event_type, outcome, **kwargs)
+
+    monkeypatch.setattr(admin_services, "audit_event_required", fail_rejection_audit)
+
+    with admin_client.application.test_request_context(
+        f"/admin-action-requests/{request_id}/reject",
+        method="POST",
+    ):
+        with pytest.raises(AuditWriteError):
+            admin_services.reject_admin_action_request_as_root_admin(
+                root2,
+                request_id,
+                _totp(root2_secret),
+            )
+
+    db.session.rollback()
+    action_request = db.session.get(AdminActionRequest, request_id)
+
+    assert action_request.status == "pending"
+    assert action_request.approver_id is None
+    assert action_request.decided_at is None
+
+
 def test_admin_action_browser_views_and_form_redirects(admin_client):
     _root1, root1_secret = _create_staff_identity(
         username="root-one",
