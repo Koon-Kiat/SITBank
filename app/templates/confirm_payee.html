@@ -11,7 +11,10 @@
       <p class="muted">Check the recipient details below. Enter your MFA code to save this payee.</p>
     </div>
     <div class="button-row">
-      <a class="button secondary" href="{{ url_for('banking.payees_add') }}">Back</a>
+      <form method="post" action="{{ url_for('banking.payees_cancel') }}" novalidate>
+        {{ form.hidden_tag() }}
+        <button class="button secondary" type="submit">Cancel request</button>
+      </form>
     </div>
   </div>
 

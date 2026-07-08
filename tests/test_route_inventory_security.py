@@ -826,6 +826,17 @@ ROUTE_SECURITY_INVENTORY = {
         "step_up": "already_authorized_continuation",
         "public_justification": "",
     },
+    "banking.payees_cancel": {
+        "endpoint": "banking.payees_cancel",
+        "rule": "/banking/payees/cancel",
+        "methods": {"POST"},
+        "access": "authenticated",
+        "classification": "payee_management",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
     "banking.payees_remove": {
         "endpoint": "banking.payees_remove",
         "rule": "/banking/payees/<int:payee_id>/remove",
