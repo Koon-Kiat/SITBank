@@ -74,6 +74,8 @@ def test_transfer_limits_get_preselects_custom_for_nonpreset_local_transfer_valu
 
 
 def test_transfer_limits_post_updates_with_valid_preset_and_totp(client, limits_context, monkeypatch):
+    from app.security.email import password_reset_outbox
+
     alice_secret = limits_context["alice_secret"]
     code = _fresh_totp(alice_secret, monkeypatch)
 
@@ -86,6 +88,10 @@ def test_transfer_limits_post_updates_with_valid_preset_and_totp(client, limits_
     db.session.expire_all()
     alice = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
     assert Decimal(str(alice.payup_daily_limit)) == Decimal("1000")
+    delivery = password_reset_outbox()[-1]
+    assert delivery["to"] == "alice@example.com"
+    assert delivery["subject"] == "SITBank transfer limit change successful"
+    assert "PayUp daily limit: SGD 1000.00" in delivery["body"]
 
 
 def test_transfer_limits_post_custom_amount_above_100_succeeds(client, limits_context, monkeypatch):
@@ -246,6 +252,8 @@ def test_transfer_limits_post_missing_totp_fails_closed(client, limits_context):
 
 
 def test_transfer_limits_post_wrong_totp_fails_closed(client, limits_context):
+    from app.security.email import password_reset_outbox
+
     response = client.post(
         "/banking/settings/transfer-limits",
         data={"payup_limit": "1000", "local_transfer_limit": "1000", "totp_code": "000000"},
@@ -256,6 +264,9 @@ def test_transfer_limits_post_wrong_totp_fails_closed(client, limits_context):
     alice = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
     assert Decimal(str(alice.payup_daily_limit)) == Decimal("500.00")
     assert Decimal(str(alice.local_transfer_daily_limit)) == Decimal("500.00")
+    delivery = password_reset_outbox()[-1]
+    assert delivery["to"] == "alice@example.com"
+    assert delivery["subject"] == "SITBank transfer limit change unsuccessful"
 
 
 def test_transfer_limits_post_updates_local_transfer_limit_with_valid_preset_and_totp(
