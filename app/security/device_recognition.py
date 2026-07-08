@@ -132,7 +132,7 @@ def handle_new_device_login(user: User, *, ip_address: str, user_agent: str) -> 
     except Exception as exc:
         current_app.logger.warning("device_recognition_check_failed error=%s", type(exc).__name__)
         db.session.rollback()
-        return raw_cookie_token or secrets.token_urlsafe(32)
+        return secrets.token_urlsafe(32)
 
     if result.is_new_device:
         send_new_device_login_email(
