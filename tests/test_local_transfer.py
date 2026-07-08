@@ -379,6 +379,60 @@ def test_successful_transfer_writes_durable_audit_and_redacts_pii(app, transfer_
     assert txn_ref not in serialized
 
 
+def test_successful_transfer_stays_committed_when_notification_delivery_fails(
+    app, transfer_context, monkeypatch,
+):
+    """Issue #552: the ledger commit boundary must be independent of the
+    best-effort customer notification step. A notification bug must never
+    roll back or otherwise affect an already-completed transfer."""
+    alice = transfer_context["alice"]
+    bob = transfer_context["bob"]
+    payee = transfer_context["payee"]
+
+    alice_before = Decimal(str(alice.balance))
+    bob_before = Decimal(str(bob.balance))
+    amount = Decimal("250.00")
+    token = _make_pending_transfer(alice, payee, amount, reference="Rent")
+
+    monkeypatch.setattr(
+        "app.banking.services.send_transfer_notification",
+        Mock(side_effect=RuntimeError("simulated notification failure")),
+    )
+
+    with app.test_request_context("/banking/transfer/confirm", method="POST"):
+        txn_ref = execute_local_transfer(sender=alice, payee=payee, confirmation_token=token)
+
+    # A notification bug that only manifests after the function returns (e.g.
+    # a background worker) must not be able to undo the transfer either —
+    # prove the state truly persisted by rolling back any uncommitted session
+    # state and re-reading from the database.
+    db.session.rollback()
+    alice_after = db.session.get(User, alice.id)
+    bob_after = db.session.get(User, bob.id)
+
+    assert Decimal(str(alice_after.balance)) == alice_before - amount
+    assert Decimal(str(bob_after.balance)) == bob_before + amount
+
+    txn = db.session.execute(
+        db.select(Transaction).where(Transaction.transaction_ref == txn_ref)
+    ).scalar_one()
+    assert txn.status == "completed"
+
+    pending = db.session.execute(
+        db.select(PendingTransfer).where(PendingTransfer.consumed_transaction_ref == txn_ref)
+    ).scalar_one()
+    assert pending.consumed_at is not None
+
+    event = db.session.execute(
+        db.select(SecurityAuditEvent).where(
+            SecurityAuditEvent.event_type == "banking_outbound_transfer",
+            SecurityAuditEvent.outcome == "success",
+            SecurityAuditEvent.user_id == alice.id,
+        )
+    ).scalars().first()
+    assert event is not None
+
+
 # ── A04: anti-replay — pending transfer consumed on confirm ────────────────────
 
 def test_confirm_post_without_pending_session_redirects_to_payees(client, transfer_context):

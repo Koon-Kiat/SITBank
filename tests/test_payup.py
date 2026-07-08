@@ -392,6 +392,50 @@ def test_successful_payup_sends_withdrawal_deposit_and_limit_warning(app, payup_
     assert "80.00% of your limit" in deliveries[-1]["body"]
 
 
+def test_successful_payup_stays_committed_when_notification_delivery_fails(
+    app, payup_context, monkeypatch,
+):
+    """Issue #552: the ledger commit boundary must be independent of the
+    best-effort customer notification step. A notification bug must never
+    roll back or otherwise affect an already-completed transfer."""
+    alice = payup_context["alice"]
+    bob = payup_context["bob"]
+
+    alice_before = Decimal(str(alice.balance))
+    bob_before = Decimal(str(bob.balance))
+    amount = Decimal("100.00")
+    token = _make_payup_pending(alice, bob, amount, reference="Lunch")
+
+    monkeypatch.setattr(
+        "app.banking.services.send_transfer_notification",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("simulated notification failure")),
+    )
+
+    with _payup_service_context(app, alice):
+        txn_ref = execute_payup_transfer(sender=alice, confirmation_token=token, authorized=False)
+
+    db.session.rollback()
+    alice_after = db.session.get(User, alice.id)
+    bob_after = db.session.get(User, bob.id)
+
+    assert Decimal(str(alice_after.balance)) == alice_before - amount
+    assert Decimal(str(bob_after.balance)) == bob_before + amount
+
+    txn = db.session.execute(
+        db.select(Transaction).where(Transaction.transaction_ref == txn_ref)
+    ).scalar_one()
+    assert txn.status == "completed"
+
+    event = db.session.execute(
+        db.select(SecurityAuditEvent).where(
+            SecurityAuditEvent.event_type == "banking_outbound_transfer",
+            SecurityAuditEvent.outcome == "success",
+            SecurityAuditEvent.user_id == alice.id,
+        )
+    ).scalars().first()
+    assert event is not None
+
+
 def test_disabled_transfer_activity_email_preference_keeps_payup_daily_limit_alert(
     app,
     payup_context,
