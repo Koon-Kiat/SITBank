@@ -69,6 +69,12 @@ class User(db.Model):
         default=True,
         server_default=db.true(),
     )
+    transfer_activity_email_enabled = db.Column(
+        db.Boolean,
+        nullable=False,
+        default=True,
+        server_default=db.true(),
+    )
     local_transfer_daily_limit = db.Column(
         db.Numeric(10, 2),
         nullable=False,

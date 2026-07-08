@@ -144,6 +144,8 @@ def send_transfer_notification(
         raise ValueError("Unsupported transfer notification direction")
     if normalized_outcome not in {"success", "failure"}:
         raise ValueError("Unsupported transfer notification outcome")
+    if not _transfer_activity_email_enabled(user):
+        return
 
     direction_label = normalized_direction.title()
     status_label = "successful" if normalized_outcome == "success" else "unsuccessful"
@@ -154,7 +156,7 @@ def send_transfer_notification(
     if amount is not None:
         lines.append(f"Amount: SGD {_format_money(amount)}")
     if counterparty_label:
-        lines.append(f"Counterparty: {counterparty_label}")
+        lines.append(f"Recipient: {counterparty_label}")
     if transaction_reference:
         lines.append(f"Reference: {transaction_reference[:8].upper()}")
     lines.append(
@@ -260,6 +262,10 @@ def _send_banking_email(
         )
         return
     audit_event(event_type, "queued", user=user, metadata=dict(metadata or {}))
+
+
+def _transfer_activity_email_enabled(user: User) -> bool:
+    return getattr(user, "transfer_activity_email_enabled", True) is not False
 
 
 def ensure_outbound_transfer_allowed(user: User) -> None:

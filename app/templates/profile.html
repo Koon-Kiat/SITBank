@@ -64,59 +64,80 @@
       </dl>
     </article>
 
-    <article class="profile-panel profile-card">
-      <div class="profile-panel-title">
-        <p class="eyebrow">Editable field</p>
-        <h2>Update profile details</h2>
-      </div>
-      <p class="muted">Changes to your sign-in details are securely recorded and require MFA verification.</p>
-      {% if g.mfa_ready %}
-        <form method="post" action="{{ url_for('web.profile_submit') }}" novalidate>
-          {{ form.hidden_tag() }}
-          <div class="form-group">
-            <label for="{{ form.email.id }}">Email address</label>
-            {{ form.email(autocomplete="email", maxlength="255") }}
-            {% for error in form.email.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+    <div class="profile-stack">
+      <article class="profile-panel profile-card">
+        <div class="profile-panel-title">
+          <p class="eyebrow">Notification preference</p>
+          <h2>Email notifications for withdrawal and deposit</h2>
+        </div>
+        <p class="muted">All other account, security, transfer-limit, and daily-limit notifications are mandatory.</p>
+        <form method="post" action="{{ url_for('web.profile_notification_preferences_submit') }}" novalidate>
+          {{ notification_form.hidden_tag() }}
+          <div class="form-group checkbox-group">
+            <label for="{{ notification_form.transfer_activity_email_enabled.id }}">
+              {{ notification_form.transfer_activity_email_enabled(role="switch") }}
+              <span>Send emails for withdrawal and deposit activity</span>
+            </label>
+            {% for error in notification_form.transfer_activity_email_enabled.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
           </div>
-          <div class="form-group">
-            <label for="{{ form.phone_number.id }}">Phone number</label>
-            {{ form.phone_number(autocomplete="tel", inputmode="numeric", maxlength="8") }}
-            {% for error in form.phone_number.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
-          </div>
-          {% if pending_email_change %}
-            <div class="notice">
-              <span class="notice-icon" aria-hidden="true">
-                <svg class="icon" focusable="false"><use href="#icon-info"></use></svg>
-              </span>
-              <p class="muted">Enter the verification code sent to {{ pending_email_change.email }}.</p>
+          <button class="button full" type="submit">Save notification preference</button>
+        </form>
+      </article>
+
+      <article class="profile-panel profile-card">
+        <div class="profile-panel-title">
+          <p class="eyebrow">Editable field</p>
+          <h2>Update profile details</h2>
+        </div>
+        <p class="muted">Changes to your sign-in details are securely recorded and require MFA verification.</p>
+        {% if g.mfa_ready %}
+          <form method="post" action="{{ url_for('web.profile_submit') }}" novalidate>
+            {{ form.hidden_tag() }}
+            <div class="form-group">
+              <label for="{{ form.email.id }}">Email address</label>
+              {{ form.email(autocomplete="email", maxlength="255") }}
+              {% for error in form.email.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
             </div>
             <div class="form-group">
-              <label for="{{ form.email_verification_code.id }}">Email verification code</label>
-              {{ form.email_verification_code(inputmode="numeric", autocomplete="one-time-code", maxlength="6", placeholder="6-digit code") }}
-              {% for error in form.email_verification_code.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+              <label for="{{ form.phone_number.id }}">Phone number</label>
+              {{ form.phone_number(autocomplete="tel", inputmode="numeric", maxlength="8") }}
+              {% for error in form.phone_number.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
             </div>
-          {% endif %}
-          <div class="form-group">
-            <label for="{{ form.totp_code.id }}">Authenticator code</label>
-            {{ form.totp_code(inputmode="numeric", autocomplete="one-time-code", maxlength="6", placeholder="6-digit code") }}
-            {% for error in form.totp_code.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
-            <p class="hint">Enter the current 6-digit code from your authenticator app.</p>
+            {% if pending_email_change %}
+              <div class="notice">
+                <span class="notice-icon" aria-hidden="true">
+                  <svg class="icon" focusable="false"><use href="#icon-info"></use></svg>
+                </span>
+                <p class="muted">Enter the verification code sent to {{ pending_email_change.email }}.</p>
+              </div>
+              <div class="form-group">
+                <label for="{{ form.email_verification_code.id }}">Email verification code</label>
+                {{ form.email_verification_code(inputmode="numeric", autocomplete="one-time-code", maxlength="6", placeholder="6-digit code") }}
+                {% for error in form.email_verification_code.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+              </div>
+            {% endif %}
+            <div class="form-group">
+              <label for="{{ form.totp_code.id }}">Authenticator code</label>
+              {{ form.totp_code(inputmode="numeric", autocomplete="one-time-code", maxlength="6", placeholder="6-digit code") }}
+              {% for error in form.totp_code.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+              <p class="hint">Enter the current 6-digit code from your authenticator app.</p>
+            </div>
+            <button class="button full" type="submit">Verify and save</button>
+          </form>
+        {% else %}
+          <div class="notice warning">
+            <span class="notice-icon" aria-hidden="true">
+              <svg class="icon" focusable="false"><use href="#icon-shield-check"></use></svg>
+            </span>
+            <div>
+              <h3>MFA required</h3>
+              <p class="muted">Profile updates stay locked until an authenticator app is enrolled.</p>
+            </div>
           </div>
-          <button class="button full" type="submit">Verify and save</button>
-        </form>
-      {% else %}
-        <div class="notice warning">
-          <span class="notice-icon" aria-hidden="true">
-            <svg class="icon" focusable="false"><use href="#icon-shield-check"></use></svg>
-          </span>
-          <div>
-            <h3>MFA required</h3>
-            <p class="muted">Profile updates stay locked until an authenticator app is enrolled.</p>
-          </div>
-        </div>
-        <a class="button secondary" href="{{ url_for('web.mfa_setup') }}">Manage MFA</a>
-      {% endif %}
-    </article>
+          <a class="button secondary" href="{{ url_for('web.mfa_setup') }}">Manage MFA</a>
+        {% endif %}
+      </article>
+    </div>
   </div>
 </section>
 {% endblock %}

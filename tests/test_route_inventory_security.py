@@ -628,6 +628,17 @@ ROUTE_SECURITY_INVENTORY = {
         "step_up": "required",
         "public_justification": "",
     },
+    "web.profile_notification_preferences_submit": {
+        "endpoint": "web.profile_notification_preferences_submit",
+        "rule": "/profile/notification-preferences",
+        "methods": {"POST"},
+        "access": "authenticated",
+        "classification": "profile",
+        "csrf": "required",
+        "rate_limit": "edge_app",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
     "web.mfa_setup": {
         "endpoint": "web.mfa_setup",
         "rule": "/mfa/setup",

@@ -25,6 +25,7 @@ from app.auth.forms import (
     PasswordChangeForm,
     PasswordResetForm,
     ProfileForm,
+    ProfileNotificationPreferencesForm,
     RegisterDetailsForm,
     RegistrationOtpCodeForm,
     RegistrationOtpRequestForm,
@@ -850,6 +851,32 @@ def my_disputes():
     return render_template("my_disputes.html", disputes=disputes)
 
 
+def _profile_notification_preferences_form(user) -> ProfileNotificationPreferencesForm:
+    form = ProfileNotificationPreferencesForm()
+    form.transfer_activity_email_enabled.data = (
+        getattr(user, "transfer_activity_email_enabled", True) is not False
+    )
+    return form
+
+
+def _render_profile_page(
+    *,
+    form: ProfileForm,
+    notification_form: ProfileNotificationPreferencesForm | None = None,
+    status_code: int = 200,
+):
+    pending_email_change = pending_profile_email_change()
+    return render_template(
+        _PROFILE_TEMPLATE,
+        user=g.current_user,
+        form=form,
+        notification_form=notification_form
+        or _profile_notification_preferences_form(g.current_user),
+        recent_mfa=has_recent_fresh_mfa(),
+        pending_email_change=pending_email_change,
+    ), status_code
+
+
 @web_bp.get("/profile")
 @web_login_required
 @web_not_frozen_required
@@ -858,13 +885,7 @@ def profile():
     pending_email_change = pending_profile_email_change()
     form.email.data = pending_email_change["email"] if pending_email_change else g.current_user.email
     form.phone_number.data = g.current_user.phone_number
-    return render_template(
-        _PROFILE_TEMPLATE,
-        user=g.current_user,
-        form=form,
-        recent_mfa=has_recent_fresh_mfa(),
-        pending_email_change=pending_email_change,
-    )
+    return _render_profile_page(form=form)[0]
 
 
 @web_bp.post("/profile")
@@ -872,16 +893,8 @@ def profile():
 @web_not_frozen_required
 def profile_submit():
     form = ProfileForm()
-    recent_mfa = has_recent_fresh_mfa()
-    pending_email_change = pending_profile_email_change()
     if not form.validate_on_submit():
-        return render_template(
-            _PROFILE_TEMPLATE,
-            user=g.current_user,
-            form=form,
-            recent_mfa=recent_mfa,
-            pending_email_change=pending_email_change,
-        ), 400
+        return _render_profile_page(form=form, status_code=400)
 
     try:
         result = update_profile_details(
@@ -895,24 +908,45 @@ def profile_submit():
         if exc.status_code == 429:
             return rate_limit_response()
         flash(exc.message, "error")
-        return render_template(
-            _PROFILE_TEMPLATE,
-            user=g.current_user,
-            form=form,
-            recent_mfa=recent_mfa,
-            pending_email_change=pending_profile_email_change(),
-        ), exc.status_code
+        return _render_profile_page(form=form, status_code=exc.status_code)
 
     if result.get("email_verification_pending"):
         flash("Verification code sent to the new email address.", "info")
-        return render_template(
-            _PROFILE_TEMPLATE,
-            user=g.current_user,
-            form=form,
-            recent_mfa=has_recent_fresh_mfa(),
-            pending_email_change=pending_profile_email_change(),
-        )
+        return _render_profile_page(form=form)[0]
     flash("Profile updated." if result.get("updated") else "No profile changes were needed.", "success")
+    return redirect(url_for("web.profile"))
+
+
+@web_bp.post("/profile/notification-preferences")
+@web_login_required
+@web_not_frozen_required
+def profile_notification_preferences_submit():
+    notification_form = ProfileNotificationPreferencesForm()
+    profile_form = ProfileForm()
+    pending_email_change = pending_profile_email_change()
+    profile_form.email.data = pending_email_change["email"] if pending_email_change else g.current_user.email
+    profile_form.phone_number.data = g.current_user.phone_number
+
+    if not notification_form.validate_on_submit():
+        return _render_profile_page(
+            form=profile_form,
+            notification_form=notification_form,
+            status_code=400,
+        )
+
+    enabled = bool(notification_form.transfer_activity_email_enabled.data)
+    if g.current_user.transfer_activity_email_enabled != enabled:
+        g.current_user.transfer_activity_email_enabled = enabled
+        db.session.commit()
+        audit_event(
+            "notification_preferences_update",
+            "success",
+            user=g.current_user,
+            metadata={"transfer_activity_email_enabled": enabled},
+        )
+        flash("Notification preference updated.", "success")
+    else:
+        flash("Notification preference already up to date.", "info")
     return redirect(url_for("web.profile"))
 
 
