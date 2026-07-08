@@ -317,6 +317,120 @@ def test_customer_security_unlock_executes_directly_and_clears_only_lock_state(
     _assert_no_sensitive_action_material(unlocked.get_json())
 
 
+def test_customer_security_unlock_audit_failure_rolls_back_direct_target(
+    admin_client,
+    monkeypatch,
+):
+    from app.admin import services as admin_services
+
+    _root, root_secret = _create_staff_identity(
+        username="root-one",
+        email=ROOT1_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    customer = _create_customer("audit-fail-locked-customer")
+    _lock_customer_for_security_failures(customer)
+    customer_session_id = db.session.execute(
+        db.select(ServerSideSession.id).where(ServerSideSession.user_id == customer.id)
+    ).scalar_one()
+    _login_admin(admin_client, root_secret, ROOT1_EMAIL)
+    original_required_audit = admin_services.audit_event_required
+
+    def fail_customer_unlock_audit(event_type, outcome, **kwargs):
+        if event_type == "customer_security_unlock_completed":
+            raise AuditWriteError("required audit failed")
+        return original_required_audit(event_type, outcome, **kwargs)
+
+    monkeypatch.setattr(
+        admin_services,
+        "audit_event_required",
+        fail_customer_unlock_audit,
+    )
+
+    failed = admin_client.post(
+        f"/customers/{customer.id}/security-unlock-requests",
+        json={
+            "reason": "Customer completed the support identity review.",
+            "totp_code": _totp(root_secret),
+        },
+    )
+
+    db.session.expire_all()
+    persisted_customer = db.session.get(User, customer.id)
+    persisted_session = db.session.get(ServerSideSession, customer_session_id)
+
+    assert failed.status_code == 409
+    assert failed.get_json()["error"] == "Customer security unlock failed"
+    assert persisted_customer.is_frozen is True
+    assert persisted_customer.security_locked_at is not None
+    assert persisted_customer.security_lock_reason == "password_failed_attempts"
+    assert persisted_session.revoked_at is None
+    assert db.session.query(AdminActionRequest).count() == 0
+    assert db.session.query(SecurityAuditEvent).filter_by(
+        event_type="customer_security_unlock_completed",
+        outcome="success",
+    ).count() == 0
+
+
+def test_root_admin_browser_actions_execute_directly_and_redirect(admin_client):
+    _root, root_secret = _create_staff_identity(
+        username="root-one",
+        email=ROOT1_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    target, _target_secret = _create_staff_identity(
+        username="browser-target-admin",
+        email="browser.target.admin@sit.singaporetech.edu.sg",
+        account_type="admin",
+        phone_number="91234569",
+    )
+    customer = _create_customer("browser-locked-customer")
+    _lock_customer_for_security_failures(customer)
+    _login_admin(admin_client, root_secret, ROOT1_EMAIL)
+
+    unlock = admin_client.post(
+        f"/customers/{customer.id}/security-unlock-requests",
+        data={
+            "reason": "Customer completed the support identity review.",
+            "totp_code": _totp(root_secret),
+        },
+        follow_redirects=False,
+    )
+    deactivate = admin_client.post(
+        f"/staff/{target.id}/deactivate",
+        data={"totp_code": _totp(root_secret)},
+        follow_redirects=False,
+    )
+    reactivate = admin_client.post(
+        f"/staff/{target.id}/reactivate",
+        data={"totp_code": _totp(root_secret)},
+        follow_redirects=False,
+    )
+    reset = admin_client.post(
+        f"/staff/{target.id}/reset-activation",
+        data={"totp_code": _totp(root_secret)},
+        follow_redirects=False,
+    )
+
+    db.session.refresh(customer)
+    db.session.refresh(target)
+
+    assert unlock.status_code == 303
+    assert deactivate.status_code == 303
+    assert reactivate.status_code == 303
+    assert reset.status_code == 303
+    assert unlock.headers["Location"].endswith("/customer-security-locks")
+    assert deactivate.headers["Location"].endswith("/staff")
+    assert reactivate.headers["Location"].endswith("/staff")
+    assert reset.headers["Location"].endswith("/staff")
+    assert customer.security_locked_at is None
+    assert customer.security_lock_reason is None
+    assert target.account_status == "setup_pending"
+    assert db.session.query(AdminActionRequest).count() == 0
+
+
 @pytest.mark.parametrize(
     "lock_reason",
     ["manual_admin_freeze", "account_compromise", None],

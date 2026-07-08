@@ -1857,6 +1857,51 @@ def test_staff_invite_acceptance_activates_only_after_workplace_code_and_totp(ad
     assert db.session.query(User).filter_by(account_type="customer").count() == 0
 
 
+def test_staff_invite_acceptance_totp_replay_does_not_increment_verify_failures(
+    admin_client,
+    monkeypatch,
+):
+    _root, root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    _login_admin(admin_client, root_secret)
+    assert _create_invite(admin_client, root_secret).status_code == 201
+    token = _latest_invite_token()
+
+    start = admin_client.post(
+        f"/invites/accept/{token}/start",
+        json=_staff_invite_start_payload(),
+    )
+    setup = start.get_json()["totp_setup"]
+    invite = db.session.execute(db.select(StaffInvite)).scalar_one()
+    workplace_code = _latest_workplace_code()
+    monkeypatch.setattr(
+        "app.admin.services._verify_totp_for_user_outcome",
+        lambda *_args, **_kwargs: "replay",
+    )
+
+    replay = admin_client.post(
+        f"/invites/accept/{token}/verify",
+        json={
+            "totp_code": _stable_totp(setup["manual_entry_secret"]),
+            "workplace_verification_code": workplace_code,
+        },
+    )
+    db.session.refresh(invite)
+
+    assert replay.status_code == 401
+    assert replay.get_json()["error"] == "Invalid authentication code."
+    assert invite.acceptance_verify_count == 0
+    assert invite.acceptance_verify_locked_at is None
+    assert db.session.query(SecurityAuditEvent).filter_by(
+        event_type="staff_totp_setup",
+        outcome="failure",
+    ).one().event_metadata["reason"] == "totp_replay"
+
+
 def test_customer_registration_cannot_create_staff_or_admin_roles(client):
     from _auth_flow_helpers import register
 

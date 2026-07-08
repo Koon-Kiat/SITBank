@@ -64,6 +64,32 @@ def test_mfa_setup_stores_encrypted_secret_and_rejects_replay(client, monkeypatc
     assert verify_response.status_code == 200
     assert replay_response.status_code == 401
 
+
+def test_mfa_setup_replay_outcome_returns_generic_failure(client, monkeypatch):
+    from app.auth import services as auth_services
+
+    register(client)
+    login(client)
+    client.post("/mfa/setup", data={"action": "start"})
+
+    monkeypatch.setattr(
+        auth_services,
+        "_verify_totp_for_user_outcome",
+        lambda *_args, **_kwargs: auth_services.TOTP_VERIFICATION_REPLAY,
+    )
+
+    response = client.post(
+        "/mfa/setup",
+        data={"action": "verify", "totp_code": "123456"},
+    )
+
+    assert response.status_code == 401
+    assert db.session.query(SecurityAuditEvent).filter_by(
+        event_type="mfa_setup_verify",
+        outcome="failure",
+    ).one().event_metadata["reason"] == "totp_replay"
+
+
 def test_mfa_setup_generates_ten_hashed_recovery_codes_and_shows_once(client, monkeypatch):
     register(client)
     login(client)
@@ -632,6 +658,93 @@ def test_mfa_replacement_keeps_old_secret_until_new_code_is_verified(client, mon
 
     assert login_response.status_code == 302
     assert login_response.headers["Location"].endswith("/mfa/verify")
+
+
+def test_mfa_replacement_replay_outcome_keeps_existing_secret(client, monkeypatch):
+    from app.auth import services as auth_services
+
+    register(client)
+    login(client)
+    user, old_secret = enable_mfa_for_user()
+    mark_recent_mfa(client, user)
+
+    start_time = int(time.time())
+    monkeypatch.setattr("app.auth.services.time.time", lambda: start_time)
+    start_response = client.post(
+        "/mfa/setup",
+        data={
+            "action": "replace_start",
+            "totp_code": pyotp.TOTP(old_secret, digits=6, interval=30).at(start_time),
+        },
+    )
+    monkeypatch.setattr(
+        auth_services,
+        "_verify_totp_secret_for_user_outcome",
+        lambda *_args, **_kwargs: auth_services.TOTP_VERIFICATION_REPLAY,
+    )
+
+    response = client.post(
+        "/mfa/setup",
+        data={"action": "replace_verify", "totp_code": "123456"},
+    )
+    db.session.refresh(user)
+
+    assert start_response.status_code == 200
+    assert response.status_code == 401
+    assert decrypt_test_mfa_secret(user) == old_secret
+    assert db.session.query(SecurityAuditEvent).filter_by(
+        event_type="mfa_replace_verify",
+        outcome="failure",
+    ).one().event_metadata["reason"] == "totp_replay"
+
+
+def test_fresh_mfa_replay_outcome_is_rejected_without_invalid_failure(client, monkeypatch):
+    from app.auth import services as auth_services
+
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    monkeypatch.setattr(
+        auth_services,
+        "_verify_totp_for_user_outcome",
+        lambda *_args, **_kwargs: auth_services.TOTP_VERIFICATION_REPLAY,
+    )
+
+    with pytest.raises(auth_services.AuthError) as exc_info:
+        auth_services.verify_fresh_mfa_for_action(user, "123456", "profile_update")
+
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.message == "Incorrect code. Check your authenticator and try again."
+
+
+def test_customer_login_totp_replay_rejects_without_locking(client, monkeypatch):
+    register(client)
+    login(client)
+    user, secret = enable_mfa_for_user()
+    client.post("/logout")
+
+    verification_time = int(time.time())
+    monkeypatch.setattr("app.auth.services.time.time", lambda: verification_time)
+    code = pyotp.TOTP(secret, digits=6, interval=30).at(verification_time)
+
+    first_login = login(client)
+    first_verify = client.post("/auth/mfa/verify", json={"totp_code": code})
+    client.post("/logout")
+    second_login = login(client)
+    replay = client.post("/auth/mfa/verify", json={"totp_code": code})
+    db.session.refresh(user)
+
+    assert first_login.status_code == 302
+    assert first_verify.status_code == 200
+    assert second_login.status_code == 302
+    assert replay.status_code == 401
+    assert user.account_status == "active"
+    assert user.failed_login_count == 0
+    assert db.session.query(SecurityAuditEvent).filter_by(
+        event_type="mfa_login_verify",
+        outcome="failure",
+    ).one().event_metadata["reason"] == "totp_replay"
+
 
 def test_unauthenticated_users_cannot_access_mfa_setup_material(client):
     page_response = client.get("/mfa/setup")

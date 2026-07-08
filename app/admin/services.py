@@ -114,6 +114,8 @@ MANUAL_RECOVERY_STATUS_OPERATION_TYPES = {
     MANUAL_RECOVERY_STATUS_APPROVED: "manual_recovery_approve",
     MANUAL_RECOVERY_STATUS_DENIED: "manual_recovery_deny",
 }
+MANUAL_RECOVERY_REQUEST_UPDATED_MESSAGE = "Manual recovery request updated"
+INVITE_INVALID_AUTHENTICATION_CODE_ERROR = "Invalid authentication code."
 ADMIN_ACTION_OPERATION_LABELS = {
     "staff_deactivate": "Deactivate staff account",
     "staff_reactivate": "Reactivate staff account",
@@ -580,9 +582,6 @@ def disputes_for_staff(actor: User) -> list[dict[str, Any]]:
     except AuditWriteError:
         db.session.rollback()
         raise
-    except SQLAlchemyError:
-        db.session.rollback()
-        raise
     return [public_transaction_dispute(item) for item in disputes]
 
 
@@ -603,9 +602,6 @@ def dispute_detail_for_staff(actor: User, dispute_id: int) -> dict[str, Any]:
         )
         db.session.commit()
     except AuditWriteError:
-        db.session.rollback()
-        raise
-    except SQLAlchemyError:
         db.session.rollback()
         raise
     return public_transaction_dispute(dispute)
@@ -683,12 +679,6 @@ def transition_dispute_status_for_staff(
         )
         db.session.commit()
     except AuditWriteError:
-        db.session.rollback()
-        raise
-    except RuntimeError as exc:
-        db.session.rollback()
-        raise AuthError("Dispute update failed", 409) from exc
-    except SQLAlchemyError:
         db.session.rollback()
         raise
     return public_transaction_dispute(dispute)
@@ -2251,7 +2241,7 @@ def transition_manual_recovery_request_as_admin(
                 "execution_mode": ROOT_ADMIN_DIRECT_EXECUTION_REASON,
             },
         )
-        return {"message": "Manual recovery request updated", "request": result}
+        return {"message": MANUAL_RECOVERY_REQUEST_UPDATED_MESSAGE, "request": result}
 
     result = transition_manual_recovery_request(request_id, normalized_status, reason=clean_reason)
     audit_event(
@@ -2264,7 +2254,7 @@ def transition_manual_recovery_request_as_admin(
             "reason_recorded": True,
         },
     )
-    return {"message": "Manual recovery request updated", "request": result}
+    return {"message": MANUAL_RECOVERY_REQUEST_UPDATED_MESSAGE, "request": result}
 
 
 def complete_manual_recovery_request_as_admin(
@@ -2638,7 +2628,7 @@ def _execute_manual_recovery_transition_admin_action_request(
             "maker_checker_request_ref": audit_reference("admin_action_request", request_record.id),
         },
     )
-    return {"message": "Manual recovery request updated", "request": result}
+    return {"message": MANUAL_RECOVERY_REQUEST_UPDATED_MESSAGE, "request": result}
 
 
 def _execute_manual_recovery_complete_admin_action_request(
@@ -3188,7 +3178,7 @@ def verify_invite_acceptance(
         raise AuthError(GENERIC_INVITE_ERROR, 401)
     if not TOTP_RE.fullmatch(str(totp_code or "")):
         _record_invite_acceptance_verify_failure(invite, user, "invalid_totp_format")
-        raise AuthError("Invalid authentication code.", 401)
+        raise AuthError(INVITE_INVALID_AUTHENTICATION_CODE_ERROR, 401)
     totp_outcome = _verify_totp_for_user_outcome(user, totp_code, "staff_totp_setup")
     if totp_outcome == TOTP_VERIFICATION_REPLAY:
         audit_event(
@@ -3197,10 +3187,10 @@ def verify_invite_acceptance(
             user=user,
             metadata={"reason": "totp_replay"},
         )
-        raise AuthError("Invalid authentication code.", 401)
+        raise AuthError(INVITE_INVALID_AUTHENTICATION_CODE_ERROR, 401)
     if totp_outcome != TOTP_VERIFICATION_VALID:
         _record_invite_acceptance_verify_failure(invite, user, "invalid_totp")
-        raise AuthError("Invalid authentication code.", 401)
+        raise AuthError(INVITE_INVALID_AUTHENTICATION_CODE_ERROR, 401)
     if not _verify_workplace_code(invite, workplace_verification_code):
         _record_invite_acceptance_verify_failure(invite, user, "invalid_workplace_code")
         raise AuthError(GENERIC_WORKPLACE_VERIFICATION_ERROR, 401)
