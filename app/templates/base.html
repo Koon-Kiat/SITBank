@@ -158,6 +158,7 @@
                   </span>
                 </button>
                 <div class="account-panel" id="account-menu-panel" role="menu" aria-labelledby="account-menu-button" data-account-panel hidden>
+                  <a role="menuitem" href="{{ url_for('web.support_contact') }}">Contact Support</a>
                   {% if g.mfa_ready %}
                     <a role="menuitem" href="{{ url_for('web.dashboard') }}">Dashboard</a>
                     <a role="menuitem" href="{{ url_for('web.profile') }}">Edit Profile</a>

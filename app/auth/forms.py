@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from flask_wtf import FlaskForm
-from wtforms import BooleanField, PasswordField, StringField
+from wtforms import BooleanField, PasswordField, SelectField, StringField, TextAreaField
 from wtforms.validators import Email, EqualTo, InputRequired, Length, Optional, Regexp, ValidationError
 
 from app.security.passwords import password_max_chars, password_min_length
@@ -138,6 +138,10 @@ class ForgotPasswordForm(FlaskForm):
 
 class ManualRecoveryForm(FlaskForm):
     identifier = StringField("Username or email", validators=[InputRequired(), Length(max=255)])
+    reason = TextAreaField(
+        "Describe what happened (optional)",
+        validators=[Optional(), Length(max=1000)],
+    )
 
 
 class ProfileForm(FlaskForm):
@@ -172,6 +176,29 @@ class ProfileForm(FlaskForm):
 class ProfileNotificationPreferencesForm(FlaskForm):
     transfer_activity_email_enabled = BooleanField(
         "Email notifications for withdrawal and deposit"
+    )
+
+
+SUPPORT_TICKET_CATEGORY_LABELS = {
+    "enquiry": "General enquiry",
+    "security_concern": "Report a security concern",
+    "other": "Something else",
+}
+SUPPORT_TICKET_CATEGORY_CHOICES = [
+    (value, label) for value, label in SUPPORT_TICKET_CATEGORY_LABELS.items()
+]
+
+
+class SupportTicketForm(FlaskForm):
+    category = SelectField(
+        "What do you need help with?",
+        choices=SUPPORT_TICKET_CATEGORY_CHOICES,
+        validators=[InputRequired()],
+    )
+    subject = StringField("Subject", validators=[InputRequired(), Length(min=1, max=200)])
+    description = TextAreaField(
+        "Describe the problem",
+        validators=[InputRequired(), Length(min=1, max=2000)],
     )
 
 

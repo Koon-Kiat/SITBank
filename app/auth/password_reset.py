@@ -396,7 +396,7 @@ def complete_password_reset(new_password: str, confirm_new_password: str) -> dic
     }
 
 
-def request_manual_recovery(identifier: str) -> dict[str, str]:
+def request_manual_recovery(identifier: str, reason: str | None = None) -> dict[str, str]:
     _consume_public_recovery_limit(
         "manual_recovery_request",
         _normalize(identifier),
@@ -405,6 +405,11 @@ def request_manual_recovery(identifier: str) -> dict[str, str]:
     )
     now = _utcnow()
     user = _find_customer_user(identifier)
+    # Reason is optional reviewer context only — never used to help decide
+    # whether the identifier matches a real account, and never logged into
+    # the audit trail (only its presence/length), matching this flow's
+    # existing anti-enumeration and minimal-audit-metadata posture.
+    clean_reason = str(reason or "").strip()[:1000] or None
     identifier_ref = principal_reference(identifier) or active_hmac_hex(
         f"manual-recovery:{_normalize(identifier)}",
         length=32,
@@ -418,6 +423,8 @@ def request_manual_recovery(identifier: str) -> dict[str, str]:
         existing_request.requested_user_agent = _user_agent()
         existing_request.last_submitted_at = now
         existing_request.updated_at = now
+        if clean_reason:
+            existing_request.reason = clean_reason
         db.session.commit()
         audit_event(
             "manual_recovery_requested",
@@ -427,6 +434,8 @@ def request_manual_recovery(identifier: str) -> dict[str, str]:
                 "principal_ref": identifier_ref,
                 "request_ref": _manual_recovery_request_ref(existing_request),
                 "status": existing_request.status,
+                "reason_present": bool(clean_reason),
+                "reason_length": len(clean_reason) if clean_reason else 0,
             },
         )
         return {"message": GENERIC_MANUAL_RECOVERY_MESSAGE}
@@ -434,6 +443,7 @@ def request_manual_recovery(identifier: str) -> dict[str, str]:
     request_record = ManualRecoveryRequest(
         identifier_ref=identifier_ref,
         user_id=linked_user.id if linked_user is not None else None,
+        reason=clean_reason,
         status=MANUAL_RECOVERY_STATUS_PENDING,
         requested_ip=_client_ip(),
         requested_user_agent=_user_agent(),
@@ -454,6 +464,8 @@ def request_manual_recovery(identifier: str) -> dict[str, str]:
             "principal_ref": identifier_ref,
             "request_ref": _manual_recovery_request_ref(request_record),
             "expires_at": _utc_iso(request_record.expires_at),
+            "reason_present": bool(clean_reason),
+            "reason_length": len(clean_reason) if clean_reason else 0,
         },
     )
     if linked_user is not None:

@@ -231,6 +231,7 @@ class ManualRecoveryRequest(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     identifier_ref = db.Column(db.String(64), nullable=False, index=True)
     user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=True, index=True)
+    reason = db.Column(db.Text, nullable=True)
     status = db.Column(db.String(32), nullable=False, default="pending", index=True)
     requested_ip = db.Column(db.String(64), nullable=False, default="")
     requested_user_agent = db.Column(db.String(256), nullable=False, default="")
@@ -1002,6 +1003,61 @@ class TransactionDispute(db.Model):
 
     def __repr__(self) -> str:
         return f"<TransactionDispute id={self.id!r} transaction_id={self.transaction_id!r} status={self.status!r}>"
+
+
+SUPPORT_TICKET_CATEGORIES = ("enquiry", "security_concern", "other")
+SUPPORT_TICKET_STATUSES = ("open", "in_review", "resolved", "closed")
+
+
+class SupportTicket(db.Model):
+    __tablename__ = "support_tickets"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
+    category = db.Column(db.String(32), nullable=False)
+    subject = db.Column(db.String(200), nullable=False)
+    description = db.Column(db.Text, nullable=False)
+    status = db.Column(db.String(32), nullable=False, default="open", index=True)
+    resolved_by_user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=True, index=True)
+    resolution_note = db.Column(db.Text, nullable=True)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+    )
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+    resolved_at = db.Column(db.DateTime(timezone=True), nullable=True)
+
+    user = db.relationship(
+        "User",
+        foreign_keys=[user_id],
+        backref="support_tickets",
+    )
+    resolved_by = db.relationship(
+        "User",
+        foreign_keys=[resolved_by_user_id],
+        backref="resolved_support_tickets",
+    )
+
+    __table_args__ = (
+        db.CheckConstraint(
+            "category IN ('enquiry', 'security_concern', 'other')",
+            name="ck_support_tickets_category",
+        ),
+        db.CheckConstraint(
+            "status IN ('open', 'in_review', 'resolved', 'closed')",
+            name="ck_support_tickets_status",
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return f"<SupportTicket id={self.id!r} user_id={self.user_id!r} status={self.status!r}>"
 
 
 class _PendingTransferColumnsMixin:

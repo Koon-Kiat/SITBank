@@ -20,6 +20,10 @@ READ_PERMISSION_MATRIX = {
         "rule": "/disputes",
         "expected": (401, 401, 200, 403, 403),
     },
+    "admin.support_tickets": {
+        "rule": "/support-tickets",
+        "expected": (401, 401, 200, 403, 403),
+    },
     "admin.audit_logs": {
         "rule": "/audit-logs",
         "expected": (401, 401, 403, 200, 200),
@@ -109,6 +113,8 @@ FOCUSED_RBAC_ENDPOINTS = {
     "admin.mfa_change_start",
     "admin.password_change_form",
     "admin.password_change_submit",
+    "admin.support_ticket_detail",
+    "admin.support_ticket_transition",
     "admin.staff_account_reactivate",
     "admin.staff_account_resend_setup",
     "admin.staff_account_reset_activation",

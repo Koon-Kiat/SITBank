@@ -23,6 +23,12 @@
         {{ form.identifier(autocomplete="username", maxlength="255") }}
       {% for error in form.identifier.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
       </div>
+      <div class="form-group">
+        <label for="{{ form.reason.id }}">{{ form.reason.label.text }}</label>
+        {{ form.reason(maxlength="1000", rows="4") }}
+        <p class="hint">Optional context for the reviewer, e.g. lost your phone with your authenticator, or forgot your password and lost your recovery codes.</p>
+        {% for error in form.reason.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+      </div>
       {{ turnstile.widget("customer_manual_recovery") }}
       <button class="button full" type="submit">Request recovery review</button>
     </form>

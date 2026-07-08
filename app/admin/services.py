@@ -42,6 +42,7 @@ from app.models import (
     ManualRecoveryRequest,
     SecurityAuditEvent,
     StaffInvite,
+    SupportTicket,
     TransactionDispute,
     User,
 )
@@ -700,6 +701,158 @@ def transition_dispute_status_for_staff(
     return public_transaction_dispute(dispute)
 
 
+SUPPORT_TICKET_STATUS_TRANSITIONS = {
+    "open": frozenset({"in_review", "resolved", "closed"}),
+    "in_review": frozenset({"resolved", "closed"}),
+    "resolved": frozenset(),
+    "closed": frozenset(),
+}
+
+
+def _support_ticket_or_404(ticket_id: int) -> SupportTicket:
+    ticket = db.session.get(SupportTicket, ticket_id)
+    if ticket is None:
+        raise AuthError("Not found", 404)
+    return ticket
+
+
+def public_support_ticket(ticket: SupportTicket) -> dict[str, Any]:
+    reporter = ticket.user
+    return {
+        "id": ticket.id,
+        "reporter_ref": audit_reference("customer_user", ticket.user_id),
+        "reporter_username": reporter.username if reporter else None,
+        "category": ticket.category,
+        "subject": ticket.subject,
+        "description": ticket.description,
+        "status": ticket.status,
+        "resolved_by_ref": audit_reference("staff_user", ticket.resolved_by_user_id) if ticket.resolved_by_user_id else None,
+        "resolution_note": ticket.resolution_note,
+        "created_at": ticket.created_at.isoformat() if ticket.created_at else None,
+        "created_at_display": _utc_display(ticket.created_at) if ticket.created_at else None,
+        "resolved_at": ticket.resolved_at.isoformat() if ticket.resolved_at else None,
+        "resolved_at_display": _utc_display(ticket.resolved_at) if ticket.resolved_at else None,
+    }
+
+
+def support_tickets_for_staff(actor: User) -> list[dict[str, Any]]:
+    """List support tickets for staff review.
+
+    Read access to customer-submitted ticket content is audited with the same
+    required (fail-closed) contract as status changes, mirroring the dispute
+    queue's read-audit contract.
+    """
+    _require_plain_staff(actor, "support_ticket_queue_review")
+    tickets = list(
+        db.session.execute(
+            db.select(SupportTicket).order_by(
+                SupportTicket.created_at.desc(),
+                SupportTicket.id.desc(),
+            )
+        ).scalars()
+    )
+    try:
+        audit_event_required("support_ticket_queue_review", "success", user=actor)
+        db.session.commit()
+    except AuditWriteError:
+        db.session.rollback()
+        raise
+    return [public_support_ticket(item) for item in tickets]
+
+
+def support_ticket_detail_for_staff(actor: User, ticket_id: int) -> dict[str, Any]:
+    _require_plain_staff(actor, "support_ticket_detail_view")
+    ticket = _support_ticket_or_404(ticket_id)
+    try:
+        audit_event_required(
+            "support_ticket_detail_view",
+            "success",
+            user=actor,
+            metadata={"ticket_ref": audit_reference("support_ticket", ticket.id)},
+        )
+        db.session.commit()
+    except AuditWriteError:
+        db.session.rollback()
+        raise
+    return public_support_ticket(ticket)
+
+
+def transition_support_ticket_status_for_staff(
+    actor: User,
+    ticket_id: int,
+    new_status: str,
+    resolution_note: str | None,
+) -> dict[str, Any]:
+    _require_plain_staff(actor, "support_ticket_status_change")
+    ticket = _support_ticket_or_404(ticket_id)
+    from_status = ticket.status
+    allowed_next = SUPPORT_TICKET_STATUS_TRANSITIONS.get(from_status, frozenset())
+    if new_status not in allowed_next:
+        audit_event(
+            "support_ticket_status_change",
+            "blocked",
+            user=actor,
+            metadata={
+                "reason": "illegal_transition",
+                "ticket_ref": audit_reference("support_ticket", ticket.id),
+                "from_status": from_status,
+                "to_status": new_status,
+            },
+        )
+        raise AuthError("Invalid status transition", 409)
+
+    note_text = str(resolution_note or "").strip()
+    resolved_at = _utcnow() if new_status in {"resolved", "closed"} else ticket.resolved_at
+
+    # Conditional UPDATE (status must still match what we just read) makes the
+    # check-then-set atomic, matching the dispute status-change pattern.
+    result = db.session.execute(
+        db.update(SupportTicket)
+        .where(SupportTicket.id == ticket.id, SupportTicket.status == from_status)
+        .values(
+            status=new_status,
+            resolved_by_user_id=actor.id,
+            resolution_note=note_text or None,
+            resolved_at=resolved_at,
+        )
+    )
+    if result.rowcount != 1:
+        db.session.rollback()
+        audit_event(
+            "support_ticket_status_change",
+            "blocked",
+            user=actor,
+            metadata={
+                "reason": "stale_transition",
+                "ticket_ref": audit_reference("support_ticket", ticket.id),
+                "from_status": from_status,
+                "to_status": new_status,
+            },
+        )
+        raise AuthError("Support ticket was already updated by another reviewer", 409)
+
+    ticket.status = new_status
+    ticket.resolved_by_user_id = actor.id
+    ticket.resolution_note = note_text or None
+    ticket.resolved_at = resolved_at
+    try:
+        audit_event_required(
+            "support_ticket_status_change",
+            "success",
+            user=actor,
+            metadata={
+                "ticket_ref": audit_reference("support_ticket", ticket.id),
+                "from_status": from_status,
+                "to_status": new_status,
+            },
+        )
+        db.session.commit()
+    except AuditWriteError:
+        db.session.rollback()
+        raise
+    return public_support_ticket(ticket)
+
+
 def require_root_admin_session() -> User:
     user = require_staff_session()
     if not is_root_admin(user):
@@ -880,6 +1033,14 @@ def admin_navigation_for(user: User) -> list[dict[str, str]]:
                 "label": "Customer support",
                 "href": url_for(CUSTOMER_UNFREEZE_REQUESTS_ENDPOINT),
                 "endpoint": CUSTOMER_UNFREEZE_REQUESTS_ENDPOINT,
+                "group": "business",
+            }
+        )
+        items.append(
+            {
+                "label": "Support tickets",
+                "href": url_for("admin.support_tickets"),
+                "endpoint": "admin.support_tickets",
                 "group": "business",
             }
         )
@@ -1520,7 +1681,13 @@ def _staff_business_operations(actor: User) -> list[dict[str, str]]:
             "status": "Available",
             "description": "Review customers who froze their own account and unfreeze them with a documented reason.",
             "href": url_for(CUSTOMER_UNFREEZE_REQUESTS_ENDPOINT),
-        }
+        },
+        {
+            "label": "Support tickets",
+            "status": "Available",
+            "description": "Review customer support requests (enquiries, security concerns, other) and triage them to resolution.",
+            "href": url_for("admin.support_tickets"),
+        },
     ]
 
 
