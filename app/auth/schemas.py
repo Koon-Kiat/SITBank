@@ -103,6 +103,7 @@ class ForgotPasswordSchema(TurnstileTokenMixin, Schema):
 
 class ManualRecoverySchema(TurnstileTokenMixin, Schema):
     identifier = fields.Str(required=True, validate=validate.Length(min=1, max=255))
+    reason = fields.Str(required=False, load_default="", validate=validate.Length(max=1000))
 
 
 class ResetTokenExchangeSchema(Schema):

@@ -14,6 +14,7 @@ class _StubForm:
         self._valid = valid
         self.totp_code = SimpleNamespace(data="123456")
         self.identifier = SimpleNamespace(data="alice01")
+        self.reason = SimpleNamespace(data="")
         self.password = SimpleNamespace(data="old-password")
         self.email = SimpleNamespace(data="alice@example.com")
         self.current_password = SimpleNamespace(data="old-password")
@@ -289,7 +290,7 @@ def test_account_recovery_and_mfa_verify_response_paths(app, monkeypatch):
         monkeypatch.setattr(
             routes,
             "request_manual_recovery",
-            lambda _identifier: {"message": "Request accepted."},
+            lambda _identifier, _reason: {"message": "Request accepted."},
         )
         response = unwrap(routes.account_recovery_submit)()
         assert response.status_code == 302

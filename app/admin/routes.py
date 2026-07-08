@@ -68,7 +68,10 @@ from .services import (
     resend_staff_setup_invite,
     self_frozen_customers_for_staff,
     start_own_mfa_change,
+    support_ticket_detail_for_staff,
+    support_tickets_for_staff,
     transition_dispute_status_for_staff,
+    transition_support_ticket_status_for_staff,
     reject_admin_action_request_as_root_admin,
     request_customer_security_unlock,
     revoke_staff_invite,
@@ -260,6 +263,14 @@ class DisputeStatusChangeSchema(Schema):
     status = fields.Str(
         required=True,
         validate=validate.OneOf(["under_review", "resolved", "rejected"]),
+    )
+    resolution_note = fields.Str(required=False, load_default="", validate=validate.Length(max=1000))
+
+
+class SupportTicketStatusChangeSchema(Schema):
+    status = fields.Str(
+        required=True,
+        validate=validate.OneOf(["in_review", "resolved", "closed"]),
     )
     resolution_note = fields.Str(required=False, load_default="", validate=validate.Length(max=1000))
 
@@ -1529,6 +1540,57 @@ def dispute_transition(dispute_id: int):
         return jsonify(result)
     flash("Dispute status updated.", "success")
     return redirect(url_for("admin.dispute_detail", dispute_id=dispute_id)), 303
+
+
+@admin_bp.get("/support-tickets")
+def support_tickets():
+    actor = require_plain_staff_session()
+    ticket_list = support_tickets_for_staff(actor)
+    if _wants_json():
+        return jsonify({"support_tickets": ticket_list})
+    return render_template(
+        "admin/support_tickets.html",
+        support_tickets=ticket_list,
+        selected_ticket=None,
+        actor=actor,
+        user=public_admin_user(actor),
+        navigation=admin_navigation_for(actor),
+    )
+
+
+@admin_bp.get("/support-tickets/<int:ticket_id>")
+def support_ticket_detail(ticket_id: int):
+    actor = require_plain_staff_session()
+    ticket_record = support_ticket_detail_for_staff(actor, ticket_id)
+    if _wants_json():
+        return jsonify({"support_ticket": ticket_record})
+    ticket_list = support_tickets_for_staff(actor)
+    return render_template(
+        "admin/support_tickets.html",
+        support_tickets=ticket_list,
+        selected_ticket=ticket_record,
+        actor=actor,
+        user=public_admin_user(actor),
+        navigation=admin_navigation_for(actor),
+    )
+
+
+@admin_bp.post("/support-tickets/<int:ticket_id>/status")
+@limiter.limit(_ADMIN_RATE_LIMIT_HOURLY, key_func=get_remote_address)
+@limiter.limit(_ADMIN_RATE_LIMIT_STEP_UP, key_func=request_principal)
+def support_ticket_transition(ticket_id: int):
+    actor = require_plain_staff_session()
+    data = _payload(SupportTicketStatusChangeSchema())
+    result = transition_support_ticket_status_for_staff(
+        actor,
+        ticket_id,
+        data["status"],
+        data.get("resolution_note"),
+    )
+    if _wants_json():
+        return jsonify(result)
+    flash("Support ticket status updated.", "success")
+    return redirect(url_for("admin.support_ticket_detail", ticket_id=ticket_id)), 303
 
 
 @admin_bp.get("/audit-logs")
