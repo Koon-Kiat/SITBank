@@ -267,7 +267,85 @@ def _send_banking_email(
     audit_event(event_type, "queued", user=user, metadata=dict(metadata or {}))
 
 
-def _safe_send_notification(description: str, func, *args, **kwargs) -> None:
+def _masked_account_number(account_number: str) -> str:
+    return f"•••-•••-{account_number[-3:]}"
+
+
+def send_payee_add_processing_notification(
+    user: User,
+    *,
+    nickname: str,
+    account_number: str,
+) -> None:
+    body = "\n".join(
+        [
+            f"Your request to add {nickname} as a payee is being processed.",
+            f"Account: {_masked_account_number(account_number)}",
+            "You will receive another email once this request is complete.",
+        ]
+    )
+    _send_banking_email(
+        user,
+        "SITBank payee request received",
+        body,
+        event_type="payee_add_processing_notification",
+        metadata={"account_ref": audit_reference("payee_account", account_number)},
+    )
+
+
+def send_payee_add_result_notification(
+    user: User,
+    *,
+    nickname: str,
+    account_number: str,
+    outcome: str,
+) -> None:
+    normalized_outcome = str(outcome or "").strip().casefold()
+    if normalized_outcome not in {"success", "cancelled", "expired"}:
+        raise ValueError("Unsupported payee add result outcome")
+
+    account_ref = _masked_account_number(account_number)
+    if normalized_outcome == "success":
+        subject = "SITBank payee added successfully"
+        body = "\n".join(
+            [
+                f"{nickname} has been added as a payee.",
+                f"Account: {account_ref}",
+                "A cooldown period applies before transfers to this payee become available.",
+            ]
+        )
+    elif normalized_outcome == "cancelled":
+        subject = "SITBank payee request canceled"
+        body = "\n".join(
+            [
+                f"You have canceled the request to add {nickname} as a payee.",
+                f"Account: {account_ref}",
+                "No payee was added. If you did not do this, contact SITBank support through the approved recovery path.",
+            ]
+        )
+    else:
+        subject = "SITBank payee request not completed"
+        body = "\n".join(
+            [
+                f"Your request to add {nickname} as a payee expired before it was confirmed.",
+                f"Account: {account_ref}",
+                "No payee was added. You can start a new request at any time.",
+            ]
+        )
+
+    _send_banking_email(
+        user,
+        subject,
+        body,
+        event_type="payee_add_result_notification",
+        metadata={
+            "outcome": normalized_outcome,
+            "account_ref": audit_reference("payee_account", account_number),
+        },
+    )
+
+
+def safe_send_notification(description: str, func, *args, **kwargs) -> None:
     """Run a best-effort post-transfer notification without letting it affect
     an already-committed transfer's reported outcome.
 
@@ -1057,7 +1135,7 @@ def credit_account_topup(user: User, amount: Decimal) -> TopUpCredit:
 
 
 def send_topup_deposit_notification(user: User, amount: Decimal, credit_ref: str) -> None:
-    _safe_send_notification(
+    safe_send_notification(
         "topup_deposit_notification",
         send_transfer_notification,
         user,
@@ -1182,7 +1260,7 @@ def execute_local_transfer(
     # best-effort customer notification runs. A notification failure below
     # can never roll back or otherwise affect this already-completed transfer.
     db.session.commit()
-    _safe_send_notification(
+    safe_send_notification(
         "local_transfer_sender_notification",
         send_transfer_notification,
         sender,
@@ -1193,7 +1271,7 @@ def execute_local_transfer(
         transaction_reference=txn_ref,
         counterparty_label=payee.recipient_name,
     )
-    _safe_send_notification(
+    safe_send_notification(
         "local_transfer_recipient_notification",
         send_transfer_notification,
         locked_recipient,
@@ -1204,7 +1282,7 @@ def execute_local_transfer(
         transaction_reference=txn_ref,
         counterparty_label=sender.full_name or sender.username,
     )
-    _safe_send_notification(
+    safe_send_notification(
         "local_transfer_daily_limit_notification",
         maybe_send_daily_limit_warning,
         sender,
@@ -1819,7 +1897,7 @@ def execute_payup_transfer(
     # best-effort customer notification runs. A notification failure below
     # can never roll back or otherwise affect this already-completed transfer.
     db.session.commit()
-    _safe_send_notification(
+    safe_send_notification(
         "payup_sender_notification",
         send_transfer_notification,
         sender,
@@ -1830,7 +1908,7 @@ def execute_payup_transfer(
         transaction_reference=txn_ref,
         counterparty_label=_payup_notification_label(locked_recipient),
     )
-    _safe_send_notification(
+    safe_send_notification(
         "payup_recipient_notification",
         send_transfer_notification,
         locked_recipient,
@@ -1841,7 +1919,7 @@ def execute_payup_transfer(
         transaction_reference=txn_ref,
         counterparty_label=_payup_notification_label(locked_sender),
     )
-    _safe_send_notification(
+    safe_send_notification(
         "payup_daily_limit_notification",
         maybe_send_daily_limit_warning,
         sender,

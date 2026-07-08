@@ -508,7 +508,7 @@ def test_dashboard_renders_role_navigation_and_audits_access(admin_client):
 
     assert staff_dashboard.status_code == 200
     staff_body = staff_dashboard.get_data(as_text=True)
-    assert "Business operations" in staff_body
+    assert "Disputes" in staff_body
     assert "Staff invites" not in staff_body
     assert "Manual recovery" not in staff_body
     assert [staff_audit.status_code, staff_accounts.status_code, staff_alerts.status_code, staff_invites.status_code] == [

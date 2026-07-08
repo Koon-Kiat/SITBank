@@ -54,6 +54,9 @@ from app.banking.services import (
     payup_transfer_token_verifier,
     resolve_local_transfer_limit_choice,
     resolve_transfer_limit_choice,
+    safe_send_notification,
+    send_payee_add_processing_notification,
+    send_payee_add_result_notification,
     send_transfer_limit_change_notification,
     send_topup_deposit_notification,
     send_transfer_notification,
@@ -445,6 +448,13 @@ def payees_add_submit():
             datetime.now(timezone.utc) + timedelta(seconds=_PENDING_PAYEE_TTL)
         ).isoformat(),
     }
+    safe_send_notification(
+        "payee_add_processing_notification",
+        send_payee_add_processing_notification,
+        g.current_user,
+        nickname=nickname,
+        account_number=account_number,
+    )
     return redirect(url_for("banking.payees_confirm"))
 
 
@@ -461,6 +471,14 @@ def payees_confirm():
 
     if datetime.now(timezone.utc) > datetime.fromisoformat(pending["expires_at"]):
         session.pop("pending_payee", None)
+        safe_send_notification(
+            "payee_add_result_notification",
+            send_payee_add_result_notification,
+            g.current_user,
+            nickname=pending["nickname"],
+            account_number=pending["account_number"],
+            outcome="expired",
+        )
         flash(_REQUEST_EXPIRED_MESSAGE, "warning")
         return redirect(url_for(_PAYEES_ADD_ENDPOINT))
 
@@ -481,6 +499,14 @@ def payees_confirm_submit():
         return redirect(url_for(_PAYEES_ADD_ENDPOINT))
 
     if datetime.now(timezone.utc) > datetime.fromisoformat(pending["expires_at"]):
+        safe_send_notification(
+            "payee_add_result_notification",
+            send_payee_add_result_notification,
+            g.current_user,
+            nickname=pending["nickname"],
+            account_number=pending["account_number"],
+            outcome="expired",
+        )
         flash(_REQUEST_EXPIRED_MESSAGE, "warning")
         return redirect(url_for(_PAYEES_ADD_ENDPOINT))
 
@@ -542,10 +568,46 @@ def payees_confirm_submit():
         db.session.rollback()
         raise
 
+    safe_send_notification(
+        "payee_add_result_notification",
+        send_payee_add_result_notification,
+        g.current_user,
+        nickname=pending["nickname"],
+        account_number=account_number,
+        outcome="success",
+    )
     cooldown_seconds = current_app.config.get("PAYEE_COOLDOWN_SECONDS", 60)
     cooldown_label = _format_cooldown_remaining(cooldown_seconds)
     flash(f"Payee added. Transfers available in {cooldown_label}.", "success")
     return redirect(url_for(_PAYEES_ENDPOINT))
+
+
+@banking_bp.post("/payees/cancel")
+@limiter.limit("10 per hour", key_func=mfa_principal)
+@web_login_required
+@web_not_frozen_required
+def payees_cancel():
+    form = CsrfOnlyForm()
+    pending = session.get("pending_payee")
+    if not pending:
+        flash(_NO_PENDING_PAYEE_MESSAGE, "warning")
+        return redirect(url_for(_PAYEES_ADD_ENDPOINT))
+
+    if not form.validate_on_submit():
+        flash("Could not process that request. Please try again.", "error")
+        return redirect(url_for("banking.payees_confirm"))
+
+    session.pop("pending_payee", None)
+    safe_send_notification(
+        "payee_add_result_notification",
+        send_payee_add_result_notification,
+        g.current_user,
+        nickname=pending["nickname"],
+        account_number=pending["account_number"],
+        outcome="cancelled",
+    )
+    flash("Payee request canceled.", "info")
+    return redirect(url_for(_PAYEES_ADD_ENDPOINT))
 
 
 # ── Remove payee ────────────────────────────────────────────────────────────────
