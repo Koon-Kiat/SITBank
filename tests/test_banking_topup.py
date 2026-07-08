@@ -120,9 +120,10 @@ def test_topup_success_flash_shown_on_dashboard(client):
 
     response = client.get("/dashboard?topup=success", follow_redirects=True)
     assert response.status_code == 200
-    assert "Your top-up was added to your account." in response.data.decode("utf-8")
-    assert "alert-success" in response.data.decode("utf-8")
-    assert "data-alert-close" in response.data.decode("utf-8")
+    html = response.data.decode("utf-8")
+    assert "Your top-up was added to your account." in html
+    assert 'id="topup-success-overlay"' in html
+    assert "alert-success" not in html
 
 
 def test_topup_approval_locks_after_max_failures(client):

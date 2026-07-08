@@ -2612,6 +2612,26 @@ th {
   text-align: center;
 }
 
+.modal-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  margin: 0 auto var(--space-4);
+  border-radius: 50%;
+}
+
+.modal-icon .icon {
+  width: 30px;
+  height: 30px;
+}
+
+.modal-icon-success {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
 .session-modal-title {
   font-size: 1.2rem;
   font-weight: 700;
