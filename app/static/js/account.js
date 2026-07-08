@@ -121,8 +121,7 @@
   }
 
   function scheduleBannerDismissal(banner) {
-    const timerId = setTimeout(fadeOutBanner.bind(null, banner), 3000);
-    banner.dataset.dismissTimer = String(timerId);
+    setTimeout(fadeOutBanner.bind(null, banner), 3000);
   }
 
   function dismissTransientFlashBanners() {
