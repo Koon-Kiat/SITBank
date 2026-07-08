@@ -75,8 +75,8 @@
           {{ notification_form.hidden_tag() }}
           <div class="form-group checkbox-group">
             <label for="{{ notification_form.transfer_activity_email_enabled.id }}">
-              {{ notification_form.transfer_activity_email_enabled(role="switch") }}
               <span>Send emails for withdrawal and deposit activity</span>
+              {{ notification_form.transfer_activity_email_enabled(role="switch") }}
             </label>
             {% for error in notification_form.transfer_activity_email_enabled.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
           </div>
