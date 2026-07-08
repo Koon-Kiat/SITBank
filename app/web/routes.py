@@ -84,6 +84,11 @@ from app.extensions import db, limiter
 from app.models import DISPUTE_OPEN_STATUSES, SupportTicket, Transaction, TransactionDispute
 from app.auth.recovery_codes import RECOVERY_CODE_LOW_THRESHOLD, unused_recovery_code_count
 from app.security.audit import AuditWriteError, audit_event, audit_event_required, audit_reference
+from app.security.device_recognition import (
+    apply_device_cookie,
+    handle_new_device_login,
+    resolve_freshly_authenticated_user,
+)
 from app.security.rate_limits import (
     DurableRateLimitExceeded,
     consume_durable_rate_limit,
@@ -383,7 +388,16 @@ def login_submit():
         return redirect(url_for(_MFA_SETUP_ENDPOINT))
 
     flash("Login successful.", "success")
-    return redirect(url_for(_DASHBOARD_ENDPOINT))
+    response = redirect(url_for(_DASHBOARD_ENDPOINT))
+    user = resolve_freshly_authenticated_user()
+    if user is not None:
+        token = handle_new_device_login(
+            user,
+            ip_address=request.remote_addr or "",
+            user_agent=request.user_agent.string or "",
+        )
+        response = apply_device_cookie(response, token)
+    return response
 
 
 @web_bp.get("/forgot-password")
@@ -623,7 +637,16 @@ def mfa_verify_submit():
         return render_template(_MFA_VERIFY_TEMPLATE, form=form), exc.status_code
 
     flash("Login successful.", "success")
-    return redirect(url_for(_DASHBOARD_ENDPOINT))
+    response = redirect(url_for(_DASHBOARD_ENDPOINT))
+    user = resolve_freshly_authenticated_user()
+    if user is not None:
+        token = handle_new_device_login(
+            user,
+            ip_address=request.remote_addr or "",
+            user_agent=request.user_agent.string or "",
+        )
+        response = apply_device_cookie(response, token)
+    return response
 
 
 @web_bp.get("/dashboard")
