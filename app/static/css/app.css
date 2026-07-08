@@ -2215,35 +2215,6 @@ th {
   flex-wrap: wrap;
 }
 
-.admin-summary-row {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-5);
-}
-
-.admin-boundary-list {
-  display: grid;
-  gap: var(--space-3);
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.admin-boundary-list li {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-3);
-  color: var(--muted-strong);
-}
-
-.admin-boundary-list .icon {
-  width: 18px;
-  height: 18px;
-  flex: 0 0 auto;
-  margin-top: 2px;
-  color: var(--success);
-}
-
 .admin-stat-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
@@ -2358,11 +2329,6 @@ th {
   border-radius: var(--radius);
   padding: var(--space-4);
   background: var(--surface-raised);
-}
-
-.admin-notice-stack {
-  display: grid;
-  gap: var(--space-3);
 }
 
 .admin-form-grid,
@@ -2525,10 +2491,6 @@ th {
   color: var(--text);
   font-weight: 650;
   overflow-wrap: anywhere;
-}
-
-.admin-logout-form {
-  margin: 0;
 }
 
 .action-grid {
@@ -2703,7 +2665,6 @@ th {
     min-height: 0;
   }
 
-  .admin-summary-row,
   .admin-metadata-grid {
     grid-template-columns: 1fr;
   }
