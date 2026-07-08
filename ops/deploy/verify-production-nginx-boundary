@@ -1,0 +1,404 @@
+#!/usr/bin/env python3
+"""Verify the loaded production Nginx origin and admin boundaries."""
+
+from __future__ import annotations
+
+import argparse
+import ipaddress
+import re
+import shutil
+# Commands are invoked without a shell and with fixed arguments.
+import subprocess  # nosec B404
+import sys
+from dataclasses import dataclass
+from typing import Sequence
+
+
+MAX_NGINX_OUTPUT_BYTES = 4 * 1024 * 1024
+PRODUCTION_HOST = "sitbank.pp.ua"
+PRODUCTION_WWW_HOST = "www.sitbank.pp.ua"
+PRODUCTION_ORIGIN_IP = "18.188.152.24"
+PRODUCTION_ORIGIN_PULL_CA = (
+    "/etc/nginx/sitbank-production-cloudflare-origin-pull-ca.pem"
+)
+PRODUCTION_CLOUDFLARE_REAL_IP = (
+    "/etc/nginx/snippets/sitbank-cloudflare-real-ip.conf"
+)
+PRODUCTION_HSTS = (
+    'add_header Strict-Transport-Security '
+    '"max-age=15552000; includeSubDomains" always;'
+)
+MIN_CLOUDFLARE_REAL_IP_RANGES = 22
+
+
+class VerificationError(RuntimeError):
+    """Raised when active Nginx state cannot prove the production boundary."""
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    returncode: int
+    stdout: str = ""
+    stderr: str = ""
+
+
+def run_nginx_dump() -> CommandResult:
+    executable = shutil.which("nginx")
+    if executable is None:
+        raise VerificationError("required command is not installed: nginx")
+    try:
+        completed = subprocess.run(  # nosec B603
+            [executable, "-T"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise VerificationError(
+            "active Nginx configuration could not be inspected"
+        ) from exc
+    for value in (completed.stdout, completed.stderr):
+        if len(value.encode("utf-8", errors="replace")) > MAX_NGINX_OUTPUT_BYTES:
+            raise VerificationError(
+                "active Nginx configuration output was unexpectedly large"
+            )
+    return CommandResult(
+        completed.returncode,
+        completed.stdout,
+        completed.stderr,
+    )
+
+
+def _without_comments(configuration: str) -> str:
+    return "\n".join(line.split("#", 1)[0] for line in configuration.splitlines())
+
+
+def _server_blocks(configuration: str) -> list[str]:
+    text = _without_comments(configuration)
+    blocks: list[str] = []
+    for match in re.finditer(r"\bserver\s*\{", text):
+        depth = 0
+        for index in range(match.end() - 1, len(text)):
+            if text[index] == "{":
+                depth += 1
+            elif text[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    blocks.append(text[match.start() : index + 1])
+                    break
+        else:
+            raise VerificationError(
+                "active Nginx configuration contains an incomplete server block"
+            )
+    return blocks
+
+
+def _server_names(block: str) -> set[str]:
+    names: set[str] = set()
+    for value in re.findall(r"(?m)^\s*server_name\s+([^;]+);", block):
+        names.update(value.split())
+    return names
+
+
+def _listens_on(block: str, port: int, *, ssl: bool = False) -> bool:
+    for value in re.findall(r"(?m)^\s*listen\s+([^;]+);", block):
+        fields = value.split()
+        address = fields[0]
+        if not (
+            address == str(port)
+            or address.endswith(f":{port}")
+        ):
+            continue
+        if not ssl or "ssl" in fields:
+            return True
+    return False
+
+
+def _listen_values(block: str) -> list[str]:
+    return re.findall(r"(?m)^\s*listen\s+([^;]+);", block)
+
+
+def _listener_address(value: str) -> str:
+    fields = value.split()
+    return fields[0] if fields else ""
+
+
+def _is_wildcard_listener(address: str, port: int) -> bool:
+    return address in {
+        str(port),
+        f"*:{port}",
+        f"0.0.0.0:{port}",
+        f"[::]:{port}",
+        f":::{port}",
+    }
+
+
+def _require_public_bind(block: str, port: int, public_bind_address: str) -> None:
+    expected = f"{public_bind_address}:{port}"
+    if expected not in {_listener_address(value) for value in _listen_values(block)}:
+        raise VerificationError(
+            f"public Nginx server is not bound to {expected}"
+        )
+
+
+def _require_single_block(
+    blocks: list[str],
+    host: str,
+    port: int,
+    *,
+    ssl: bool = False,
+) -> str:
+    matches = [
+        block
+        for block in blocks
+        if host in _server_names(block) and _listens_on(block, port, ssl=ssl)
+    ]
+    if len(matches) != 1:
+        raise VerificationError(
+            f"expected exactly one active {host} server on port {port}"
+        )
+    return matches[0]
+
+
+def _require_https_origin_controls(block: str, host: str) -> None:
+    required_ca = f"ssl_client_certificate {PRODUCTION_ORIGIN_PULL_CA};"
+    if required_ca not in block:
+        raise VerificationError(
+            f"{host} HTTPS is missing the production origin-pull CA"
+        )
+    if not re.search(r"(?m)^\s*ssl_verify_client\s+on\s*;", block):
+        raise VerificationError(
+            f"{host} HTTPS is missing ssl_verify_client on"
+        )
+    if PRODUCTION_HSTS not in " ".join(block.split()):
+        raise VerificationError(
+            f"{host} HTTPS is missing the six-month production HSTS policy"
+        )
+    if re.search(r"max-age\s*=\s*31536000|\bpreload\b", block, re.IGNORECASE):
+        raise VerificationError(
+            f"{host} HTTPS contains a forbidden one-year or preload HSTS policy"
+        )
+    expected_include = f"include {PRODUCTION_CLOUDFLARE_REAL_IP};"
+    if expected_include not in block:
+        raise VerificationError(
+            f"{host} HTTPS is missing the Cloudflare real-IP snippet"
+        )
+
+
+def _require_cloudflare_real_ip_controls(configuration: str) -> None:
+    text = _without_comments(configuration)
+    if re.search(
+        r"(?m)^\s*set_real_ip_from\s+(?:0\.0\.0\.0/0|::/0)\s*;",
+        text,
+    ):
+        raise VerificationError(
+            "Cloudflare real-IP trust must not allow trust-all ranges"
+        )
+    if not re.search(r"(?m)^\s*real_ip_header\s+CF-Connecting-IP\s*;", text):
+        raise VerificationError(
+            "Cloudflare real-IP trust must use CF-Connecting-IP"
+        )
+    if not re.search(r"(?m)^\s*real_ip_recursive\s+on\s*;", text):
+        raise VerificationError(
+            "Cloudflare real-IP trust must enable real_ip_recursive"
+        )
+
+    ranges = re.findall(r"(?m)^\s*set_real_ip_from\s+([^;\s]+)\s*;", text)
+    if len(ranges) < MIN_CLOUDFLARE_REAL_IP_RANGES:
+        raise VerificationError(
+            "Cloudflare real-IP trust has too few source ranges"
+        )
+    try:
+        parsed_ranges = {ipaddress.ip_network(value, strict=False) for value in ranges}
+    except ValueError as exc:
+        raise VerificationError(
+            "Cloudflare real-IP trust contains an invalid source range"
+        ) from exc
+    if any(network.prefixlen == 0 for network in parsed_ranges):
+        raise VerificationError(
+            "Cloudflare real-IP trust must not include a default route"
+        )
+    for required in ("173.245.48.0/20", "198.41.128.0/17", "2606:4700::/32"):
+        if ipaddress.ip_network(required) not in parsed_ranges:
+            raise VerificationError(
+                "Cloudflare real-IP trust is missing a published source range"
+            )
+    if "$proxy_add_x_forwarded_for" in text:
+        raise VerificationError(
+            "production proxy headers must overwrite X-Forwarded-For"
+        )
+    if not re.search(
+        r"(?m)^\s*proxy_set_header\s+X-Forwarded-For\s+\$remote_addr\s*;",
+        text,
+    ):
+        raise VerificationError(
+            "production proxy headers must forward the canonical remote address"
+        )
+
+
+def verify_configuration(
+    configuration: str,
+    *,
+    public_bind_address: str | None = None,
+) -> list[str]:
+    blocks = _server_blocks(configuration)
+    if not blocks:
+        raise VerificationError("active Nginx configuration has no server blocks")
+    for block in blocks:
+        for value in _listen_values(block):
+            if _is_wildcard_listener(_listener_address(value), 443):
+                raise VerificationError(
+                    "Nginx must not use a wildcard HTTPS listener while "
+                    "Tailscale Serve owns private admin HTTPS"
+                )
+
+    http_block = _require_single_block(blocks, PRODUCTION_HOST, 80)
+    required_http_names = {
+        PRODUCTION_HOST,
+        PRODUCTION_WWW_HOST,
+        PRODUCTION_ORIGIN_IP,
+    }
+    if not required_http_names.issubset(_server_names(http_block)):
+        raise VerificationError(
+            "production HTTP server is missing the canonical, www, or raw-IP name"
+        )
+    if public_bind_address:
+        _require_public_bind(http_block, 80, public_bind_address)
+    expected_redirect = f"return 301 https://{PRODUCTION_HOST}$request_uri;"
+    if expected_redirect not in " ".join(http_block.split()):
+        raise VerificationError(
+            "production HTTP server is missing the canonical raw-origin redirect"
+        )
+
+    customer_https = _require_single_block(
+        blocks,
+        PRODUCTION_HOST,
+        443,
+        ssl=True,
+    )
+    www_https = _require_single_block(
+        blocks,
+        PRODUCTION_WWW_HOST,
+        443,
+        ssl=True,
+    )
+    _require_https_origin_controls(customer_https, PRODUCTION_HOST)
+    _require_https_origin_controls(www_https, PRODUCTION_WWW_HOST)
+    _require_cloudflare_real_ip_controls(configuration)
+    if public_bind_address:
+        _require_public_bind(customer_https, 443, public_bind_address)
+        _require_public_bind(www_https, 443, public_bind_address)
+
+    default_https = [
+        block
+        for block in blocks
+        if "_" in _server_names(block)
+        and _listens_on(block, 443, ssl=True)
+        and re.search(r"(?m)^\s*listen\s+[^;]*\bdefault_server\b[^;]*;", block)
+    ]
+    if len(default_https) != 1 or not re.search(
+        r"(?m)^\s*ssl_reject_handshake\s+on\s*;",
+        default_https[0] if default_https else "",
+    ):
+        raise VerificationError(
+            "default HTTPS server is missing ssl_reject_handshake on"
+        )
+    if public_bind_address:
+        _require_public_bind(default_https[0], 443, public_bind_address)
+
+    admin_location = re.search(
+        r"location\s+\^~\s+/admin\s*\{[^{}]*\breturn\s+404\s*;",
+        customer_https,
+        re.DOTALL,
+    )
+    if admin_location is None:
+        raise VerificationError(
+            "public production /admin is not explicitly denied"
+        )
+
+    public_blocks = (http_block, customer_https, www_https)
+    if any(
+        re.search(r"proxy_pass\s+[^;]*(?:5002|sitbank-admin|\.ts\.net)", block)
+        for block in public_blocks
+    ):
+        raise VerificationError(
+            "public production Nginx proxies to the private admin service"
+        )
+
+    return [
+        "OK: production raw-IP HTTP redirect is active",
+        "OK: production HTTPS origin-pull verification is active",
+        "OK: production Cloudflare real-IP trust is constrained",
+        "OK: production six-month HSTS policy is active",
+        "OK: default HTTPS rejects unknown hosts",
+        "OK: public Nginx HTTPS listeners exclude Tailscale interfaces",
+        "OK: public production admin access is denied",
+    ]
+
+
+def verify_active_configuration(
+    *,
+    public_bind_address: str | None = None,
+) -> list[str]:
+    result = run_nginx_dump()
+    if result.returncode != 0:
+        raise VerificationError("nginx -T failed")
+    return verify_configuration(
+        f"{result.stdout}\n{result.stderr}",
+        public_bind_address=public_bind_address,
+    )
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--public-bind-address")
+    args = parser.parse_args(list(argv))
+    if args.public_bind_address is None:
+        try:
+            messages = verify_active_configuration()
+        except VerificationError as exc:
+            for line in str(exc).splitlines():
+                print(f"ERROR: {line}", file=sys.stderr)
+            print(
+                "ERROR: rerun the trusted production bootstrap, verify Cloudflare "
+                "Authenticated Origin Pull, then retry deployment.",
+                file=sys.stderr,
+            )
+            return 1
+        for message in messages:
+            print(message)
+        return 0
+    try:
+        address = ipaddress.ip_address(args.public_bind_address)
+    except ValueError:
+        print("ERROR: public bind address is invalid", file=sys.stderr)
+        return 2
+    if address.version != 4 or address.is_unspecified or address.is_loopback:
+        print("ERROR: public bind address must be a non-loopback IPv4 address", file=sys.stderr)
+        return 2
+    if address in ipaddress.ip_network("100.64.0.0/10"):
+        print("ERROR: public bind address must not be a Tailscale address", file=sys.stderr)
+        return 2
+    try:
+        messages = verify_active_configuration(
+            public_bind_address=str(address),
+        )
+    except VerificationError as exc:
+        for line in str(exc).splitlines():
+            print(f"ERROR: {line}", file=sys.stderr)
+        print(
+            "ERROR: rerun the trusted production bootstrap, verify Cloudflare "
+            "Authenticated Origin Pull, then retry deployment.",
+            file=sys.stderr,
+        )
+        return 1
+    for message in messages:
+        print(message)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

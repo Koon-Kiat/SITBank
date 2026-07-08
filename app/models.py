@@ -5,6 +5,16 @@ from decimal import Decimal
 
 from sqlalchemy import Index, func
 
+from app.banking.limits import (
+    LOCAL_TRANSFER_DAILY_LIMIT_DEFAULT,
+    LOCAL_TRANSFER_DAILY_LIMIT_MAX,
+    LOCAL_TRANSFER_DAILY_LIMIT_MIN,
+    PAYUP_DAILY_LIMIT_DEFAULT,
+    PAYUP_DAILY_LIMIT_MAX,
+    PAYUP_DAILY_LIMIT_MIN,
+)
+from app.banking.schemas import MAX_TRANSACTION_AMOUNT, MIN_TRANSACTION_AMOUNT
+
 from .extensions import db
 
 _USER_ID_FOREIGN_KEY = "users.id"
@@ -17,15 +27,21 @@ class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(64), nullable=False)
     email = db.Column(db.String(255), nullable=False)
+    registration_email_canonical = db.Column(db.String(255), nullable=True)
     password_hash = db.Column(db.String(255), nullable=False)
     account_type = db.Column(db.String(32), nullable=False, default="customer", index=True)
     account_status = db.Column(db.String(32), nullable=False, default="active", index=True)
     full_name = db.Column(db.String(128), nullable=False)
     phone_number = db.Column(db.String(8), nullable=True)
-    account_number = db.Column(db.String(9), nullable=True)
+    payup_nickname = db.Column(db.String(128), nullable=True)
+    account_number = db.Column(db.String(12), nullable=True)
     staff_personal_email = db.Column(db.String(255), nullable=True)
     workplace_email_verified_at = db.Column(db.DateTime(timezone=True), nullable=True)
-    password_changed_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    password_changed_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
     force_password_change = db.Column(db.Boolean, nullable=False, default=False)
     force_password_change_reason = db.Column(db.String(80), nullable=True)
     force_password_change_at = db.Column(db.DateTime(timezone=True), nullable=True)
@@ -33,13 +49,37 @@ class User(db.Model):
     mfa_secret_ciphertext = db.Column(db.LargeBinary, nullable=True)
     mfa_secret_nonce = db.Column(db.LargeBinary(12), nullable=True)
     mfa_enabled = db.Column(db.Boolean, nullable=False, default=False)
-    mfa_step_up_preference = db.Column(db.String(32), nullable=False, default="totp")
-
+    mfa_pending_started_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    mfa_pending_session_hash = db.Column(db.String(64), nullable=True)
     balance = db.Column(
         db.Numeric(12, 2),
         nullable=False,
         default=Decimal("0.00"),
         server_default="0.00",
+    )
+    payup_daily_limit = db.Column(
+        db.Numeric(10, 2),
+        nullable=False,
+        default=PAYUP_DAILY_LIMIT_DEFAULT,
+        server_default=str(PAYUP_DAILY_LIMIT_DEFAULT),
+    )
+    payup_enabled = db.Column(
+        db.Boolean,
+        nullable=False,
+        default=True,
+        server_default=db.true(),
+    )
+    transfer_activity_email_enabled = db.Column(
+        db.Boolean,
+        nullable=False,
+        default=True,
+        server_default=db.true(),
+    )
+    local_transfer_daily_limit = db.Column(
+        db.Numeric(10, 2),
+        nullable=False,
+        default=LOCAL_TRANSFER_DAILY_LIMIT_DEFAULT,
+        server_default=str(LOCAL_TRANSFER_DAILY_LIMIT_DEFAULT),
     )
 
     is_frozen = db.Column(db.Boolean, nullable=False, default=False)
@@ -64,6 +104,13 @@ class User(db.Model):
         Index("ix_users_username_lower", func.lower(username), unique=True),
         Index("ix_users_email_lower", func.lower(email), unique=True),
         Index(
+            "ix_users_registration_email_canonical",
+            "registration_email_canonical",
+            unique=True,
+            postgresql_where=registration_email_canonical.isnot(None),
+            sqlite_where=registration_email_canonical.isnot(None),
+        ),
+        Index(
             "ix_users_phone_number",
             "phone_number",
             unique=True,
@@ -80,49 +127,35 @@ class User(db.Model):
             name="ck_users_account_status",
         ),
         db.CheckConstraint("balance >= 0", name="ck_users_balance_non_negative"),
+        db.CheckConstraint(
+            (
+                f"payup_daily_limit >= {PAYUP_DAILY_LIMIT_MIN} "
+                f"AND payup_daily_limit <= {PAYUP_DAILY_LIMIT_MAX}"
+            ),
+            name="ck_users_payup_daily_limit_bounds",
+        ),
+        db.CheckConstraint(
+            (
+                f"local_transfer_daily_limit >= {LOCAL_TRANSFER_DAILY_LIMIT_MIN} "
+                f"AND local_transfer_daily_limit <= {LOCAL_TRANSFER_DAILY_LIMIT_MAX}"
+            ),
+            name="ck_users_local_transfer_daily_limit_bounds",
+        ),
+        db.CheckConstraint(
+            (
+                "account_number IS NULL OR (length(account_number) = 12 AND "
+                + " AND ".join(
+                    f"substr(account_number, {position}, 1) BETWEEN '0' AND '9'"
+                    for position in range(1, 13)
+                )
+                + ")"
+            ),
+            name="ck_users_account_number_format",
+        ),
     )
 
     def __repr__(self) -> str:
         return f"<User id={self.id!r} username={self.username!r}>"
-
-
-class WebAuthnCredential(db.Model):
-    __tablename__ = "webauthn_credentials"
-
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
-    credential_id = db.Column(db.LargeBinary, nullable=False, unique=True)
-    credential_public_key = db.Column(db.LargeBinary, nullable=False)
-    sign_count = db.Column(db.Integer, nullable=False, default=0)
-    label = db.Column(db.String(80), nullable=False)
-    aaguid = db.Column(db.String(36), nullable=False, index=True)
-    attestation_format = db.Column(db.String(32), nullable=False)
-    transports = db.Column(db.JSON, nullable=False, default=list)
-    credential_device_type = db.Column(db.String(32), nullable=False)
-    credential_backed_up = db.Column(db.Boolean, nullable=False, default=False)
-    credential_kind = db.Column(db.String(32), nullable=False, default="passkey")
-    created_at = db.Column(
-        db.DateTime(timezone=True),
-        nullable=False,
-        default=lambda: datetime.now(timezone.utc),
-    )
-    last_used_at = db.Column(db.DateTime(timezone=True), nullable=True)
-
-    user = db.relationship(
-        "User",
-        backref=db.backref(
-            "webauthn_credentials",
-            cascade=_CASCADE_DELETE_ORPHAN,
-            lazy="selectin",
-        ),
-    )
-
-    __table_args__ = (
-        Index("ix_webauthn_credentials_user_label_lower", user_id, func.lower(label), unique=True),
-    )
-
-    def __repr__(self) -> str:
-        return f"<WebAuthnCredential id={self.id!r} user_id={self.user_id!r} label={self.label!r}>"
 
 
 class PasswordResetToken(db.Model):
@@ -153,6 +186,7 @@ class RecoveryCode(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
     code_hmac = db.Column(db.String(64), nullable=False, unique=True, index=True)
+    hmac_version = db.Column(db.Integer, nullable=False, default=2, server_default="2")
     purpose = db.Column(db.String(40), nullable=False, default="totp_recovery")
     created_at = db.Column(
         db.DateTime(timezone=True),
@@ -276,13 +310,14 @@ class AdminActionRequest(db.Model):
             (
                 "operation_type IN ("
                 "'staff_deactivate', 'staff_reactivate', 'staff_reset_activation', "
-                "'manual_recovery_approve', 'manual_recovery_deny', 'manual_recovery_complete'"
+                "'manual_recovery_approve', 'manual_recovery_deny', 'manual_recovery_complete', "
+                "'customer_security_unlock'"
                 ")"
             ),
             name="ck_admin_action_requests_operation_type",
         ),
         db.CheckConstraint(
-            "target_type IN ('staff_user', 'manual_recovery_request')",
+            "target_type IN ('staff_user', 'manual_recovery_request', 'customer_user')",
             name="ck_admin_action_requests_target_type",
         ),
         db.CheckConstraint(
@@ -445,10 +480,15 @@ class StaffInvite(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     token_hash = db.Column(db.String(64), nullable=False, unique=True, index=True)
-    personal_email_normalized = db.Column(db.String(255), nullable=True, index=True)
     workplace_email_normalized = db.Column(db.String(255), nullable=False, index=True)
     role = db.Column(db.String(32), nullable=False)
     status = db.Column(db.String(32), nullable=False, default="pending", index=True)
+    delivery_status = db.Column(
+        db.String(32),
+        nullable=False,
+        default="unconfirmed",
+        server_default="unconfirmed",
+    )
     created_by_user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
     setup_user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=True, index=True)
     used_by_user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=True, index=True)
@@ -463,10 +503,16 @@ class StaffInvite(db.Model):
     used_at = db.Column(db.DateTime(timezone=True), nullable=True)
     revoked_at = db.Column(db.DateTime(timezone=True), nullable=True)
     last_attempt_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    acceptance_session_hash = db.Column(db.String(64), nullable=True)
+    acceptance_started_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    acceptance_start_count = db.Column(db.Integer, nullable=False, default=0, server_default="0")
+    acceptance_locked_at = db.Column(db.DateTime(timezone=True), nullable=True)
     workplace_verification_code_hmac = db.Column(db.String(64), nullable=True)
     workplace_verification_sent_at = db.Column(db.DateTime(timezone=True), nullable=True)
     workplace_verification_expires_at = db.Column(db.DateTime(timezone=True), nullable=True)
     workplace_verified_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    acceptance_verify_count = db.Column(db.Integer, nullable=False, default=0, server_default="0")
+    acceptance_verify_locked_at = db.Column(db.DateTime(timezone=True), nullable=True)
 
     created_by = db.relationship("User", foreign_keys=[created_by_user_id], backref="created_staff_invites")
     setup_user = db.relationship("User", foreign_keys=[setup_user_id], backref="pending_staff_invites")
@@ -479,6 +525,10 @@ class StaffInvite(db.Model):
         db.CheckConstraint(
             "status IN ('pending', 'totp_pending', 'accepted', 'revoked', 'expired')",
             name="ck_staff_invites_status",
+        ),
+        db.CheckConstraint(
+            "delivery_status IN ('unconfirmed', 'queued', 'failed')",
+            name="ck_staff_invites_delivery_status",
         ),
     )
 
@@ -626,7 +676,7 @@ class Payee(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
     nickname = db.Column(db.String(64), nullable=False)
-    account_number = db.Column(db.String(9), nullable=False)
+    account_number = db.Column(db.String(12), nullable=False)
     recipient_name = db.Column(db.String(128), nullable=False)
     created_at = db.Column(
         db.DateTime(timezone=True),
@@ -641,6 +691,16 @@ class Payee(db.Model):
 
     __table_args__ = (
         db.UniqueConstraint("user_id", "account_number", name="uq_payees_user_account"),
+        db.CheckConstraint(
+            (
+                "length(account_number) = 12 AND "
+                + " AND ".join(
+                    f"substr(account_number, {position}, 1) BETWEEN '0' AND '9'"
+                    for position in range(1, 13)
+                )
+            ),
+            name="ck_payees_account_number_format",
+        ),
     )
 
     def __repr__(self) -> str:
@@ -653,12 +713,21 @@ class Transaction(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     transaction_ref = db.Column(db.String(36), nullable=False)
     transaction_hash = db.Column(db.String(64), nullable=False, unique=True, index=True)
+    transaction_integrity_key_id = db.Column(db.String(32), nullable=False)
+    transaction_integrity_algorithm = db.Column(db.String(32), nullable=False)
+    transaction_integrity_version = db.Column(db.Integer, nullable=False)
     sender_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
     recipient_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
     payee_id = db.Column(db.Integer, db.ForeignKey("payees.id", ondelete="SET NULL"), nullable=True, index=True)
     amount = db.Column(db.Numeric(12, 2), nullable=False)
     reference = db.Column(db.String(128), nullable=False, default="")
     status = db.Column(db.String(32), nullable=False, default="completed")
+    transaction_type = db.Column(
+        db.String(32),
+        nullable=False,
+        default="local_transfer",
+        server_default="local_transfer",
+    )
     created_at = db.Column(
         db.DateTime(timezone=True),
         nullable=False,
@@ -686,19 +755,260 @@ class Transaction(db.Model):
             name="ck_transactions_status",
         ),
         db.CheckConstraint("amount > 0", name="ck_transactions_amount_positive"),
+        db.CheckConstraint(
+            "transaction_type IN ('local_transfer', 'payup', 'topup')",
+            name="ck_transactions_transaction_type",
+        ),
+        db.CheckConstraint(
+            (
+                "transaction_integrity_key_id IS NOT NULL "
+                "AND transaction_integrity_algorithm = 'hmac-sha256' "
+                "AND transaction_integrity_version = 1"
+            ),
+            name="ck_transactions_integrity_metadata",
+        ),
     )
 
     def __repr__(self) -> str:
         return f"<Transaction id={self.id!r} ref={self.transaction_ref!r} amount={self.amount!r}>"
 
 
-class PendingTransfer(db.Model):
-    __tablename__ = "pending_transfers"
+class _CreditLedgerColumnsMixin:
+    """Columns shared by RegistrationCredit and TopUpCredit."""
+
+    id = db.Column(db.Integer, primary_key=True)
+    credit_ref = db.Column(db.String(36), nullable=False, unique=True, index=True)
+    credit_hash = db.Column(db.String(64), nullable=False, unique=True, index=True)
+    credit_integrity_key_id = db.Column(db.String(32), nullable=False)
+    credit_integrity_algorithm = db.Column(db.String(32), nullable=False)
+    credit_integrity_version = db.Column(db.Integer, nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
+    amount = db.Column(db.Numeric(12, 2), nullable=False)
+    status = db.Column(db.String(32), nullable=False, default="completed", server_default="completed")
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+    )
+
+
+class RegistrationCredit(_CreditLedgerColumnsMixin, db.Model):
+    __tablename__ = "registration_credits"
+
+    user = db.relationship("User", backref=db.backref("registration_credits", lazy="selectin"))
+
+    __table_args__ = (
+        db.UniqueConstraint("user_id", name="uq_registration_credits_user_id"),
+        db.CheckConstraint("amount = 100.00", name="ck_registration_credits_amount_fixed"),
+        db.CheckConstraint("status IN ('completed')", name="ck_registration_credits_status"),
+        db.CheckConstraint(
+            (
+                "credit_integrity_key_id IS NOT NULL "
+                "AND credit_integrity_algorithm = 'hmac-sha256' "
+                "AND credit_integrity_version = 1"
+            ),
+            name="ck_registration_credits_integrity_metadata",
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return f"<RegistrationCredit id={self.id!r} user_id={self.user_id!r} amount={self.amount!r}>"
+
+
+class TopUpApprovalRequest(db.Model):
+    __tablename__ = "topup_approval_requests"
+
+    id = db.Column(db.Integer, primary_key=True)
+    selector = db.Column(db.String(64), nullable=False, unique=True, index=True)
+    verifier_hmac = db.Column(db.String(64), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
+    amount = db.Column(db.Numeric(12, 2), nullable=False)
+    status = db.Column(db.String(32), nullable=False, default="pending", index=True)
+    failure_count = db.Column(db.Integer, nullable=False, default=0)
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
+    approved_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    credit_ref = db.Column(db.String(36), nullable=True)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+    )
+
+    user = db.relationship("User", backref=db.backref("topup_approval_requests", lazy="selectin"))
+
+    __table_args__ = (
+        db.CheckConstraint(
+            "status IN ('pending', 'completed', 'expired', 'failed')",
+            name="ck_topup_approval_requests_status",
+        ),
+        db.CheckConstraint(
+            f"amount >= {MIN_TRANSACTION_AMOUNT} AND amount <= {MAX_TRANSACTION_AMOUNT}",
+            name="ck_topup_approval_requests_amount_bounds",
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return f"<TopUpApprovalRequest id={self.id!r} user_id={self.user_id!r} status={self.status!r}>"
+
+
+class TopUpCredit(_CreditLedgerColumnsMixin, db.Model):
+    __tablename__ = "topup_credits"
+
+    user = db.relationship("User", backref=db.backref("topup_credits", lazy="selectin"))
+
+    __table_args__ = (
+        db.CheckConstraint(
+            f"amount >= {MIN_TRANSACTION_AMOUNT} AND amount <= {MAX_TRANSACTION_AMOUNT}",
+            name="ck_topup_credits_amount_bounds",
+        ),
+        db.CheckConstraint("status IN ('completed')", name="ck_topup_credits_status"),
+        db.CheckConstraint(
+            (
+                "credit_integrity_key_id IS NOT NULL "
+                "AND credit_integrity_algorithm = 'hmac-sha256' "
+                "AND credit_integrity_version = 1"
+            ),
+            name="ck_topup_credits_integrity_metadata",
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return f"<TopUpCredit id={self.id!r} user_id={self.user_id!r} amount={self.amount!r}>"
+
+
+class PublicTransactionIdempotency(db.Model):
+    __tablename__ = "public_transaction_idempotency"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(
+        db.Integer,
+        db.ForeignKey(_USER_ID_FOREIGN_KEY, ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    hmac_key_id = db.Column(db.String(32), nullable=False)
+    key_fingerprint = db.Column(db.String(64), nullable=False)
+    key_verifier = db.Column(db.String(64), nullable=False)
+    payload_verifier = db.Column(db.String(64), nullable=False)
+    status = db.Column(
+        db.String(24),
+        nullable=False,
+        default="reserved",
+        server_default="reserved",
+    )
+    result_reference = db.Column(db.String(64), nullable=True)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
+
+    user = db.relationship(
+        "User",
+        backref=db.backref(
+            "public_transaction_idempotency_records",
+            cascade=_CASCADE_DELETE_ORPHAN,
+            lazy="selectin",
+        ),
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "user_id",
+            "key_fingerprint",
+            name="uq_public_transaction_idempotency_user_key",
+        ),
+        db.CheckConstraint(
+            "status IN ('reserved', 'completed', 'failed')",
+            name="ck_public_transaction_idempotency_status",
+        ),
+    )
+
+
+DISPUTE_ISSUE_TYPES = (
+    "unauthorized_transaction",
+    "duplicate_charge",
+    "incorrect_amount",
+    "recipient_service_issue",
+    "other",
+)
+DISPUTE_OPEN_STATUSES = ("open", "under_review")
+
+
+class TransactionDispute(db.Model):
+    __tablename__ = "transaction_disputes"
+
+    id = db.Column(db.Integer, primary_key=True)
+    transaction_id = db.Column(db.Integer, db.ForeignKey("transactions.id"), nullable=False, index=True)
+    reporter_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
+    issue_type = db.Column(db.String(32), nullable=False)
+    reason = db.Column(db.Text, nullable=False)
+    status = db.Column(db.String(32), nullable=False, default="open", index=True)
+    resolver_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=True, index=True)
+    resolution_note = db.Column(db.Text, nullable=True)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+    )
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+    decided_at = db.Column(db.DateTime(timezone=True), nullable=True)
+
+    transaction = db.relationship("Transaction", backref=db.backref("disputes", lazy="selectin"))
+    reporter = db.relationship(
+        "User",
+        foreign_keys=[reporter_id],
+        backref="filed_transaction_disputes",
+    )
+    resolver = db.relationship(
+        "User",
+        foreign_keys=[resolver_id],
+        backref="resolved_transaction_disputes",
+    )
+
+    __table_args__ = (
+        db.CheckConstraint(
+            "issue_type IN ('unauthorized_transaction', 'duplicate_charge', 'incorrect_amount', "
+            "'recipient_service_issue', 'other')",
+            name="ck_transaction_disputes_issue_type",
+        ),
+        db.CheckConstraint(
+            "status IN ('open', 'under_review', 'resolved', 'rejected')",
+            name="ck_transaction_disputes_status",
+        ),
+        Index(
+            "ux_transaction_disputes_one_open_per_txn",
+            "transaction_id",
+            unique=True,
+            postgresql_where=status.in_(DISPUTE_OPEN_STATUSES),
+            sqlite_where=status.in_(DISPUTE_OPEN_STATUSES),
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return f"<TransactionDispute id={self.id!r} transaction_id={self.transaction_id!r} status={self.status!r}>"
+
+
+class _PendingTransferColumnsMixin:
+    """Columns shared by PendingTransfer and PayupPendingTransfer."""
 
     id = db.Column(db.Integer, primary_key=True)
     token = db.Column(db.String(64), nullable=False, unique=True, index=True)
-    user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
-    payee_id = db.Column(db.Integer, db.ForeignKey("payees.id"), nullable=False, index=True)
     amount = db.Column(db.Numeric(12, 5), nullable=False)
     reference = db.Column(db.String(128), nullable=False, default="", server_default="")
     expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
@@ -709,6 +1019,13 @@ class PendingTransfer(db.Model):
         nullable=False,
         default=lambda: datetime.now(timezone.utc),
     )
+
+
+class PendingTransfer(_PendingTransferColumnsMixin, db.Model):
+    __tablename__ = "pending_transfers"
+
+    user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
+    payee_id = db.Column(db.Integer, db.ForeignKey("payees.id"), nullable=False, index=True)
 
     user = db.relationship(
         "User",
@@ -722,3 +1039,48 @@ class PendingTransfer(db.Model):
 
     def __repr__(self) -> str:
         return f"<PendingTransfer id={self.id!r} user_id={self.user_id!r} consumed={self.consumed_at is not None!r}>"
+
+
+class PayupPendingTransfer(_PendingTransferColumnsMixin, db.Model):
+    __tablename__ = "payup_pending_transfers"
+
+    user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
+    recipient_user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
+
+    user = db.relationship(
+        "User",
+        foreign_keys=[user_id],
+        backref=db.backref("payup_pending_transfers", lazy="selectin"),
+    )
+    recipient_user = db.relationship("User", foreign_keys=[recipient_user_id])
+
+    __table_args__ = (
+        db.UniqueConstraint("token", name="uq_payup_pending_transfers_token"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<PayupPendingTransfer id={self.id!r} user_id={self.user_id!r} consumed={self.consumed_at is not None!r}>"
+
+
+class KnownDevice(db.Model):
+    __tablename__ = "known_devices"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
+    device_token_hash = db.Column(db.String(64), nullable=False)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    last_seen_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
+
+    user = db.relationship("User", backref=db.backref("known_devices", lazy="selectin"))
+
+    def __repr__(self) -> str:
+        return f"<KnownDevice id={self.id!r} user_id={self.user_id!r}>"

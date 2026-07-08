@@ -15,6 +15,8 @@ two checks would otherwise collide.
   - `CI, publish, and deploy / Workflow security`
   - `CI, publish, and deploy / Test and security checks`
   - `CI, publish, and deploy / Dependency review`
+  - `CI, publish, and deploy / Playwright E2E browser tests`
+  - `CI, publish, and deploy / SonarQube analysis`
   - `ShellCheck / Repository shell scripts`
   - `Hadolint / Repository Dockerfiles`
   - `Semgrep / High-severity SAST`
@@ -22,10 +24,14 @@ two checks would otherwise collide.
   - `CodeQL / Python analysis`
   - `Commit message policy / Commit message`
   - `PR title policy / Pull request title`
-- Keep SonarQube Cloud, SBOM/provenance publishing, OpenSSF Scorecard, PR DAST
-  smoke, browser/e2e checks, label/comment automation, scheduled scans, manual
-  workflows, and post-merge deployment jobs reporting-only until separately
-  reviewed and approved as stable blocking checks.
+- Keep SBOM/provenance publishing, OpenSSF Scorecard, PR DAST smoke,
+  label/comment automation, scheduled scans, manual workflows, and post-merge
+  deployment jobs reporting-only until separately reviewed and approved as
+  stable blocking checks.
+- Keep `Non-deploy security summary / Consolidated non-deploy security`
+  reporting-only unless a separate ruleset review promotes it. The rollup is
+  read-only convenience evidence; individual required security checks remain
+  the authoritative branch-protection contexts.
 - Do not require staging deployment, production deployment, live TLS evidence,
   or the private-admin tailnet gate before a pull request can merge. Those
   controls run after merge to `main`.
@@ -43,6 +49,10 @@ least quarterly.
 Roll out a renamed required check by first allowing the new workflow to complete
 successfully, updating the GitHub ruleset to the exact new check name, and only
 then removing the old name. This avoids an unmergeable branch-protection gap.
+Apply the same staged provider-side review to the newly blocking Playwright and
+SonarQube checks: observe at least one successful updated run, then require the
+exact display names above. The workflow independently blocks image publication
+and downstream deployment if either job fails.
 This repository change does not update GitHub settings automatically. Review
 the active ruleset after merge for any former raw contexts such as
 `deploy-staging`, `verify-staging-tls`, `sonarqube`, or `sonarqube-comment`.

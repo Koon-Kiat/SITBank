@@ -13,7 +13,8 @@ Category: [Security governance](../README.md#governance).
 | --- | --- | --- |
 | Customer name | Account display, support, audit context | Required at registration; do not copy into alert payloads unless needed for a reviewed support workflow |
 | Customer email | Customer email verification, login identifier, reset/recovery email | Staff/admin workplace domains are blocked for customer registration; audit metadata uses references where possible |
-| Customer phone | Registration contact metadata | Singapore phone format only; optional for preserved legacy rows; do not use as an authenticator |
+| Customer phone | Registration contact metadata, customer profile correction, and PayUp lookup | Exactly eight ASCII digits starting with `8` or `9`; Unicode digit lookalikes, separators, whitespace, and country-code variants are rejected; optional for preserved legacy rows; profile changes require TOTP; do not use as an authenticator or log raw phone values |
+| PayUp display nickname | Customer-owned PayUp party display | Optional until first PayUp send, then required; 2 to 128 characters; separate from `Payee.nickname`; audit metadata stores nickname presence and length, not raw nicknames |
 | Account identifiers | Customer account routing, payee setup, display | Generated server-side; UI masks account numbers where possible; audit events use references |
 | Payee records | Customer-managed payment recipients | Scoped to owner; recipient lookup occurs only after TOTP step-up; audit events use account references and nickname presence/length metadata instead of raw account numbers or customer-entered nicknames |
 | Transaction records | Banking-like workflow evidence and validation | Keep business records only for implemented flows; avoid storing client-controlled server fields |

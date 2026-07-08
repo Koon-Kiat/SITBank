@@ -86,8 +86,8 @@ def test_private_tailnet_workflow_supports_protected_oauth_and_auth_key_modes():
         if "uses" in step
     ]
     assert uses == [
-        "tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8",
-        "tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8",
+        "tailscale/github-action@780049a30b6ff5c378a9e7b389d15ece7a204888",
+        "tailscale/github-action@780049a30b6ff5c378a9e7b389d15ece7a204888",
     ]
     assert all(
         re.fullmatch(r"tailscale/github-action@[0-9a-f]{40}", action)
@@ -117,11 +117,44 @@ def test_private_tailnet_workflow_checks_private_reachability_and_tls():
     assert '"https://${TAILSCALE_PRIVATE_ADMIN_HOST}/login"' in text
     assert "The admin verification target must be a hostname" in text
     assert "getent ahostsv4" in text
+    assert "--request GET" in text
+    assert "--head" not in text
     assert "--write-out '%{http_code}'" in text
     assert '"${private_status}" != "200"' in text
     assert "--insecure" not in text
     assert "before joining the tailnet" in text
     assert "Required private admin gate passed." in text
+    summary = next(
+        step["run"]
+        for step in verify["steps"]
+        if step["name"] == "Verify private admin entrypoint"
+    )
+    expected_bullets = (
+        'echo "- Private admin is not reachable from the public runner context."\n'
+        '  echo "- Protected runner joined the approved tailnet."'
+    )
+    assert expected_bullets in summary
+    assert (
+        'echo "- Private admin is not reachable from the public runner context."\n'
+        "  echo\n"
+    ) not in summary
+
+
+def test_reference_acl_limits_observability_bootstrap_to_ssh():
+    policy = Path("ops/tailscale/acl-policy.hujson").read_text(encoding="utf-8")
+
+    assert (
+        '"tag:github-ci-observability-bootstrap": '
+        '["group:sitbank-tailnet-owners"]'
+    ) in policy
+    assert (
+        '"src": ["tag:github-ci-observability-bootstrap"],\n'
+        '      "dst": ["tag:sitbank-observability-ec2:22"]'
+    ) in policy
+    assert "tag:sitbank-observability-ec2:443" not in policy
+    assert "tag:github-ci-observability-bootstrap:443" not in policy
+    assert "*:22" not in policy
+    assert '"ssh": []' in policy
 
 
 def test_private_tailnet_workflow_has_no_mutating_or_secret_artifact_operations():
@@ -184,7 +217,7 @@ def test_production_workflow_requires_private_gate_after_deploy_and_public_tls()
     )
     join = gate["steps"][1]
     assert join["uses"] == (
-        "tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8"
+        "tailscale/github-action@780049a30b6ff5c378a9e7b389d15ece7a204888"
     )
     assert join["with"] == {
         "oauth-client-id": "${{ secrets.TS_OAUTH_CLIENT_ID }}",

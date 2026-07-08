@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import time
 from datetime import timedelta
 
 from app.extensions import db
@@ -96,7 +97,6 @@ def test_admin_runtime_config_is_separate_and_stricter(monkeypatch):
     assert customer_app.config["SQLALCHEMY_DATABASE_URI"] != admin_app.config["SQLALCHEMY_DATABASE_URI"]
     assert admin_app.config["SQLALCHEMY_MIGRATION_DATABASE_URI"] is None
     assert admin_app.config["ADMIN_AUTH_ENABLED"] is True
-    assert admin_app.config["ADMIN_WEBAUTHN_PHASE"] == "disabled"
     assert admin_app.config["PERMANENT_SESSION_LIFETIME"] == timedelta(minutes=5)
     assert admin_app.config["PERMANENT_SESSION_LIFETIME"] < customer_app.config["PERMANENT_SESSION_LIFETIME"]
 
@@ -168,3 +168,115 @@ def test_admin_login_failures_are_audited_and_redacted(monkeypatch):
 
         db.session.remove()
         db.drop_all()
+
+
+def test_privileged_password_failures_lock_more_strictly(monkeypatch):
+    from app import create_app
+
+    admin_app = create_app(TestConfig, app_mode="admin")
+    with admin_app.app_context():
+        db.create_all()
+        user = User(
+            username="security-admin",
+            email="security.admin@sit.singaporetech.edu.sg",
+            password_hash=hash_password("correct horse battery staple"),
+            account_type="admin",
+            account_status="active",
+            full_name="Security Admin",
+            phone_number="91234567",
+            account_number=None,
+            mfa_enabled=True,
+        )
+        db.session.add(user)
+        db.session.commit()
+        client = admin_app.test_client()
+
+        responses = [
+            client.post(
+                "/login",
+                json={
+                    "workplace_email": user.email,
+                    "password": f"wrong-password-{index}",
+                },
+            )
+            for index in range(2)
+        ]
+        db.session.refresh(user)
+
+        assert [response.status_code for response in responses] == [401, 401]
+        assert all(
+            response.get_json()
+            == {"error": "Invalid workplace email, password, or authentication code"}
+            for response in responses
+        )
+        assert user.security_locked_at is not None
+        assert user.security_lock_reason == "password_failed_attempts"
+
+        db.session.remove()
+        db.drop_all()
+
+
+def test_admin_logout_requires_valid_csrf_token(monkeypatch):
+    from app import create_app
+
+    admin_app = create_app(TestConfig, app_mode="admin")
+    admin_app.config["WTF_CSRF_ENABLED"] = True
+    with admin_app.app_context():
+        db.create_all()
+        client = admin_app.test_client()
+        token = client.get("/csrf-token").get_json()["csrf_token"]
+
+        missing = client.post("/logout", json={})
+        invalid = client.post(
+            "/logout",
+            json={},
+            headers={"X-CSRFToken": "invalid"},
+        )
+        valid = client.post(
+            "/logout",
+            json={},
+            headers={"X-CSRFToken": token},
+        )
+
+        assert missing.status_code == 400
+        assert invalid.status_code == 400
+        assert valid.status_code == 200
+        assert valid.get_json() == {"message": "Logged out"}
+
+        db.session.remove()
+        db.drop_all()
+
+
+def test_admin_login_and_pending_mfa_expiry_never_resolve_customer_routes(monkeypatch):
+    from app import create_app
+
+    admin_app = create_app(TestConfig, app_mode="admin")
+    with admin_app.app_context():
+        db.create_all()
+        client = admin_app.test_client()
+
+        login_page = client.get("/login")
+        with client.session_transaction() as session_state:
+            session_state["pending_mfa_user_id"] = 999
+            session_state["password_authenticated_at"] = int(time.time()) - 120
+            session_state["last_activity_at"] = int(time.time())
+        expired = client.get("/mfa/verify", headers={"Accept": "text/html"})
+
+        assert login_page.status_code == 200
+        assert b"SITBank Admin" in login_page.data
+        assert expired.status_code == 302
+        assert expired.headers["Location"].endswith("/login")
+        assert "web.login" not in expired.headers["Location"]
+
+        db.session.remove()
+        db.drop_all()
+
+
+def test_admin_templates_do_not_reference_customer_blueprint_endpoints():
+    from pathlib import Path
+
+    admin_templates = Path("app/templates/admin")
+    for template_path in admin_templates.glob("*.html"):
+        source = template_path.read_text(encoding="utf-8")
+        assert "url_for('web." not in source
+        assert 'url_for("web.' not in source

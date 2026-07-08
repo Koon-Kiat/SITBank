@@ -35,7 +35,7 @@ def _nginx_server_block(config: str, server_name: str) -> str:
         blocks.append(config[start:] if end == -1 else config[start:end])
     assert blocks, f"Missing Nginx server block for {server_name}"
     for block in blocks:
-        if "listen 443 ssl http2;" in block:
+        if "listen __SITBANK_PUBLIC_BIND_ADDRESS__:443 ssl http2;" in block:
             return block
     return blocks[0]
 
@@ -104,8 +104,11 @@ def test_staging_nginx_blocks_direct_origin_bypass_but_keeps_local_health():
     ).read_text(encoding="utf-8")
     bootstrap = Path("ops/deploy/bootstrap-container-ec2").read_text(encoding="utf-8")
 
-    assert "listen 80 default_server;" in default_nginx
-    assert "listen 443 ssl http2 default_server;" in default_nginx
+    assert "listen __SITBANK_PUBLIC_BIND_ADDRESS__:80 default_server;" in default_nginx
+    assert (
+        "listen __SITBANK_PUBLIC_BIND_ADDRESS__:443 ssl http2 default_server;"
+        in default_nginx
+    )
     assert "ssl_reject_handshake on;" in default_nginx
     assert "return 444;" in default_nginx
 
@@ -113,6 +116,7 @@ def test_staging_nginx_blocks_direct_origin_bypass_but_keeps_local_health():
     assert "duckdns.org" not in staging_nginx
     assert "ssl_client_certificate /etc/nginx/cloudflare-authenticated-origin-pull-ca.pem;" in staging_nginx
     assert "ssl_verify_client on;" in staging_nginx
+    assert "include /etc/nginx/snippets/sitbank-cloudflare-real-ip.conf;" in staging_nginx
     assert "$ssl_client_verify" not in staging_nginx
     assert "auth_basic" not in staging_nginx
     staging_https_server = _nginx_server_block(
@@ -192,6 +196,7 @@ def test_admin_public_surface_is_absent_and_private_access_is_tailscale_only():
     customer_server = _nginx_server_block(production_nginx, "sitbank.pp.ua")
 
     assert "server_name sitbank.pp.ua;" in customer_server
+    assert "include /etc/nginx/snippets/sitbank-cloudflare-real-ip.conf;" in customer_server
     assert "staging-sitbank.pp.ua" not in customer_server
     assert "admin.sitbank.pp.ua" not in production_nginx
     assert "admin-sitbank.pp.ua" not in production_nginx

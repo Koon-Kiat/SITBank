@@ -30,6 +30,7 @@ jobs:
           persist-credentials: false
 
       - name: Validate PR title
+        id: title
         shell: bash
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
@@ -132,6 +133,7 @@ jobs:
           echo "PR title policy passed."
 
       - name: Validate PR description
+        id: description
         shell: bash
         env:
           EVENT_PATH: ${{ github.event_path }}
@@ -140,3 +142,19 @@ jobs:
           python ops/security/validate_pr_body.py \
             --input-root "$(dirname "${EVENT_PATH}")" \
             --event-path "${EVENT_PATH}"
+
+      - name: Summarize pull request metadata policy
+        if: ${{ always() }}
+        shell: bash
+        env:
+          TITLE_OUTCOME: ${{ steps.title.outcome }}
+          DESCRIPTION_OUTCOME: ${{ steps.description.outcome }}
+        run: |
+          {
+            echo "## Pull request title and description policy"
+            echo
+            echo "- Title decision: **${TITLE_OUTCOME}**"
+            echo "- Description decision: **${DESCRIPTION_OUTCOME}**"
+            echo "- Scope: contribution-message title rules and required PR template sections."
+            echo "- Decision: both metadata checks must pass."
+          } >> "${GITHUB_STEP_SUMMARY}"

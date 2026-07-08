@@ -54,8 +54,24 @@ $env:SITBANK_RUN_E2E = "1"
 .\.venv\Scripts\python.exe -m pytest -q tests/e2e
 ```
 
-The browser tests start a loopback Flask server. They do not target staging,
+The browser tests cover authentication, MFA, session, banking, and boundary
+regressions, including registration, password reset, manual recovery, payee,
+transfer, session management, password change, account freeze, and
+customer/admin isolation, against a loopback Flask server. They do not prove
+live staging or production provider state and do not target staging,
 production, or the private admin hostname.
+
+For runtime profiling, keep the command unscoped and do not add marker
+exclusions:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q -n auto --durations=50 --durations-min=0.1
+.\.venv\Scripts\python.exe -m pytest -q -n auto --cov=. --cov-config=.coveragerc --cov-report=xml:coverage.xml --cov-report=term --durations=50 --durations-min=0.1
+```
+
+The suite optimization uses a per-worker app and database schema plus
+per-test cleanup. Full-history secret scanning uses streaming Git object
+batches. Neither optimization removes security, deployment, or browser tests.
 
 ### Normal CI-Equivalent Checks
 
@@ -266,15 +282,24 @@ sudo /usr/local/sbin/sitbank-restore-preflight --environment staging --backup-fi
 
 Expected safe success indicators: encrypted `.pgdump.age` archives are
 root-owned mode `0600`, restore preflight validates the selected encrypted
-archive and target database, and plaintext temporary files are removed by the
-helper. Raw database dumps, decrypted backups, age identity files, and backup
-private material are never safe to print or upload.
+archive owner/mode, parent directory, repository/CI-workspace exclusion, target
+database, and host-only age identity, and plaintext temporary files are removed
+by the helper. Raw database dumps, decrypted backups, age identity files, and
+backup private material are never safe to print or upload. Recurring backup
+schedules, restore drills, and encrypted-archive pruning remain external
+operator evidence.
 
 ### Grafana/Loki Observability Checks
 
 Use `docs/runbooks/private-observability-grafana-loki.md` for the detailed
-private observability runbook. Run on EC2 after private observability is
-installed.
+private observability runbook. The normal app/Nginx bootstrap only installs
+the restricted observability wrapper and sudo rule; it does not mutate the
+stack. For an already prepared host, run the manual, main-only **Bootstrap
+private observability on EC2** workflow and select `observability-staging` or
+`observability-production`. The protected workflow uploads only a signed
+trusted-source archive and bundle over restricted Tailscale SSH, and safe
+output is limited to target, revision, result, and named host-check status.
+Then run these read-only checks on EC2:
 
 ```bash
 sudo docker compose --env-file /etc/sitbank-observability/observability.env -f /etc/sitbank-observability/compose.yml ps
@@ -288,7 +313,17 @@ Expected safe success indicators: Grafana listens only on `127.0.0.1:3000`,
 Loki listens only on `127.0.0.1:3100`, Alloy publishes no host listener, and
 public SITBank Nginx routes do not proxy observability services. Grafana
 credentials, datasource credentials, Loki credentials, broad log-reader
-credentials, and raw log exports are never safe to print.
+credentials, raw logs, cookies, sessions, Access assertions, and provider
+exports are not safe to print.
+
+After that mutation workflow or private-access changes, run the separate
+read-only manual protected
+`.github/workflows/observability-private-verify.yml` workflow from `main`
+against `observability-staging` or `observability-production`. The retained
+artifact is `observability-evidence/private-observability.json` and contains
+only sanitized pass/fail evidence for private Grafana health, anonymous API
+denial, non-admin verifier role, Loki datasource health, and public
+Grafana/Loki route denial.
 
 ### Emergency And Break-Glass Checks
 
@@ -320,7 +355,7 @@ incident-response runbook, protected approvals, and evidence preservation.
 | `/etc/systemd/system/sitbank*.service`, `/etc/systemd/system/sitbank*.timer` | `root:root 0644` | Host service and timer definitions | `sudo systemctl cat <unit>`, `sudo systemctl status <unit>` | Metadata only or redact before sharing |
 | `/opt/sitbank`, `/opt/sitbank-staging` | Root-managed deployment directories | Compose files and runtime deployment state | `sudo find <dir> -maxdepth 2 -type f -printf '%M %u:%g %p\n'` | Metadata only; generated credential files never print |
 | `/opt/sitbank-bootstrap` | Root-managed trusted bootstrap workspace | Bootstrap artifacts and trusted source material | `sudo find /opt/sitbank-bootstrap -maxdepth 2 -printf '%M %u:%g %p\n'` | Metadata only |
-| `/usr/local/sbin/sitbank-container-bootstrap`, `/usr/local/sbin/sitbank-container-deploy`, `/usr/local/sbin/sitbank-container-runtime`, `/usr/local/sbin/verify-tailscale-admin-access` | `root:root 0755` | Trusted deployment, runtime, and verification wrappers | `sudo stat -c '%A %U:%G %n' /usr/local/sbin/sitbank-* /usr/local/sbin/verify-tailscale-admin-access` | Safe to show metadata |
+| `/usr/local/sbin/sitbank-container-bootstrap`, `/usr/local/sbin/sitbank-container-deploy`, `/usr/local/sbin/sitbank-container-runtime`, `/usr/local/sbin/sitbank-observability-bootstrap`, `/usr/local/sbin/verify-tailscale-admin-access` | `root:root 0755` | Trusted deployment, runtime, observability-bootstrap, and verification wrappers | `sudo stat -c '%A %U:%G %n' /usr/local/sbin/sitbank-* /usr/local/sbin/verify-tailscale-admin-access` | Safe to show metadata |
 | `/etc/sudoers.d` entries for SITBank deploy users | `root:root 0440` | Least-privilege wrapper authorization | `sudo visudo -cf /etc/sudoers.d/<file>`, `sudo ls -la /etc/sudoers.d` | Metadata only; redact usernames if needed |
 | `/etc/sitbank/secrets`, `/etc/sitbank-staging/secrets`, `/run/secrets` | Root-owned secret files, typically `0600`; runtime mounts read-only | Runtime application, admin, database, SMTP, alert, session, MFA, and cryptographic secrets | `sudo find <dir> -maxdepth 1 -type f -printf '%M %U:%G %p\n'` | Never print content |
 | `/var/lib/sitbank/evidence`, `/var/lib/sitbank-staging/evidence` | `root:root 0700` for directories; evidence files restricted | Sanitized deployment, TLS, Cloudflare, Tailscale, and incident evidence | `sudo find <dir> -maxdepth 2 -type f -printf '%M %u:%g %s %TY-%Tm-%Td %p\n'` | Safe only after confirming evidence is sanitized |

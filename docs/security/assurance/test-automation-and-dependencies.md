@@ -25,7 +25,7 @@ Category: [Security assurance](../README.md#assurance).
 | `.github/workflows/shellcheck.yml` | Repository shell static analysis | Checksum-verified ShellCheck 0.11.0 scans all tracked `.sh` files and supported shell shebangs discovered by the shared helper |
 | `.github/workflows/hadolint.yml` | Dockerfile linting | Checksum-verified Hadolint 2.14.0 scans every tracked `Dockerfile` and `Dockerfile.*` discovered by the shared helper |
 | `.github/workflows/semgrep.yml` | Automatic SAST | Digest-pinned Semgrep 1.168.0 runs local/OSS ERROR-severity scanning with metrics disabled on PRs, `main`, manual reruns, and a weekly schedule without a token, source upload, or SARIF |
-| `.github/workflows/sonarqube.yml` | SonarQube Cloud code-quality analysis | Full pytest coverage plus reporting-only maintainability, duplication, reliability, and security dashboard analysis |
+| `.github/workflows/sonarqube.yml` | SonarQube Cloud code-quality analysis | Full pytest coverage plus a blocking trusted-run quality gate for maintainability, duplication, reliability, and security analysis |
 | `.github/workflows/tailscale-private-admin-verify.yml` | Protected private-tailnet verification | A manual job joins with an ephemeral tagged identity; the direct environment-bound production gate performs the same reachability check after production deploy plus public TLS |
 | `ops/tailscale/*` | Confirmation-gated Tailscale production-admin provisioning | Dry-run/confirm scripts install the authenticated package, support OAuth/auth-key/interactive enrollment, configure only private HTTPS to `127.0.0.1:5002`, delegate verification, and provide a non-secret ACL reference |
 | `ops/deploy/verify-tailscale-admin-access` | EC2-local private-admin posture verification | A non-mutating production-host check validates Tailscale/Funnel state, loopback binding, readiness, Nginx absence, narrow Serve mapping, and private HTTPS without accepting credentials |
@@ -46,10 +46,10 @@ applicable unless a frontend package manager is added.
 | Dependency lock validation | `ops/security/check_dependency_locks.py` | Enforces the hashed lockfile source of truth and rejects legacy dependency manifests |
 | Dependabot | `.github/dependabot.yml` | Opens controlled weekly updates for Docker, GitHub Actions, and pip dependencies |
 | GitHub dependency review | `.github/workflows/ci-deploy.yml` | Reviews dependency changes on public PRs targeting `main`; private repositories require `ENABLE_GITHUB_CODE_SECURITY=true`, while non-PR events intentionally skip it |
-| Trivy image scans | `.github/workflows/ci-deploy.yml` | Uses pinned Trivy `v0.71.2` for built-image and repository filesystem scans; `.trivyignore` exceptions are tested |
+| Trivy image scans | `.github/workflows/ci-deploy.yml` | Uses pinned Trivy `v0.72.0` for built-image and repository filesystem scans; `.trivyignore` exceptions are tested |
 | CodeQL | `.github/workflows/codeql.yml` | Runs Python security-extended static analysis when the repository is public |
-| SonarQube Cloud | `.github/workflows/ci-deploy.yml`, `.github/workflows/sonarqube.yml`, `sonar-project.properties` | Reuses the CI test job's `coverage.xml` artifact to report private-repository code quality, duplication, maintainability, and security findings without rerunning pytest; initial quality gate is non-blocking |
-| Playwright E2E | `.github/workflows/ci-deploy.yml`, `tests/e2e/` | Installs Chromium in a dedicated CI job and exercises browser-rendered customer login, protected redirects, security headers, and MFA-onboarding navigation against a loopback Flask server |
+| SonarQube Cloud | `.github/workflows/ci-deploy.yml`, `.github/workflows/sonarqube.yml`, `sonar-project.properties` | Reuses the CI test job's `coverage.xml` artifact without rerunning pytest; trusted PR and release-producing runs enforce the quality gate, and publication waits for SonarQube plus Playwright E2E |
+| Playwright E2E | `.github/workflows/ci-deploy.yml`, `tests/e2e/` | Installs Chromium in a dedicated CI job and exercises browser-rendered authentication, MFA, session, banking, and boundary regressions against a loopback Flask server |
 | Bandit | `scripts/ci-local`, `.github/workflows/ci-deploy.yml` | Runs a high-confidence Python security scan |
 | Custom repository secret scanner | `ops/security/scan_repository_secrets.py` | Scans tracked files and, in CI/local CI, git history for private keys and common token formats |
 | Gitleaks | `.github/workflows/gitleaks.yml`, `.gitleaks.toml` | Independently scans all refs with the built-in Gitleaks rules, redacted output, no production secrets, and no SARIF or raw report upload |
@@ -58,6 +58,7 @@ applicable unless a frontend package manager is added.
 | Semgrep | `.github/workflows/semgrep.yml` | Runs `p/python`, `p/flask`, `p/security-audit`, `p/owasp-top-ten`, and `p/github-actions` locally with `--metrics=off` and blocks ERROR severity |
 | Action hygiene | `.github/workflows/ci-deploy.yml` | Runs actionlint and zizmor; tests require actions to be SHA-pinned |
 | Image and artifact signing | `.github/workflows/ci-deploy.yml`, `.github/workflows/bootstrap-ec2.yml`, `ops/deploy/sitbank-container-deploy` | Uses cosign to sign/verify images and deployment artifacts |
+| Release provenance | `.github/workflows/ci-deploy.yml` | Creates and verifies a GitHub artifact attestation for the exact release image digest, trusted repository, main ref, release commit, scheme-free `github.com/owner/repository/workflow` signer identity, GitHub OIDC issuer, and non-self-hosted runner before staging; public repositories allow Sigstore Public Good because GitHub artifact attestations use it, while the default GitHub API lookup avoids independent OCI BuildKit provenance; this is SLSA Build L1/L2-aligned evidence, not formal certification |
 
 Tests for this automation include:
 
@@ -101,25 +102,33 @@ deployment.
 | Database session integrity | `tests/test_db_session_integrity.py` |
 | Session management UI/API | `tests/test_session_management.py`, `tests/test_session_absolute_lifetime.py` |
 | Auth bypass and pentest regressions | `tests/test_pentest_auth_bypass.py`, `tests/test_owasp_regressions.py` |
-| Route inventory | `tests/test_route_inventory_security.py`, `tests/test_admin_route_inventory_security.py` |
+| Route inventory and admin role permissions | `tests/test_route_inventory_security.py`, `tests/test_admin_route_inventory_security.py`, `tests/test_admin_rbac_matrix.py` |
 | Admin isolation and staff invites | `tests/test_admin_isolation.py`, `tests/test_admin_staff_invites.py` |
 | Banking payload and transaction guardrails | `tests/test_banking_transaction_security.py` |
 | Audit, alerts, and redaction | `tests/test_audit_alerting.py`, `tests/test_audit_metadata_sanitization.py` |
 | Deployment, Nginx, Docker, workflows, and runtime contracts | `tests/test_deployment.py` |
 | UI security regressions | `tests/test_authenticated_portal_ui.py`, `tests/test_dashboard.py` |
-| Browser E2E smoke paths | `tests/e2e/test_customer_auth_browser.py` |
+| Browser E2E regressions | `tests/e2e/test_customer_auth_browser.py`, `tests/e2e/test_customer_mfa_browser.py`, `tests/e2e/test_customer_registration_recovery_browser.py`, `tests/e2e/test_customer_banking_browser.py`, `tests/e2e/test_session_security_browser.py`, `tests/e2e/test_customer_admin_boundary_browser.py`, `tests/e2e/test_sensitive_browser_artifacts.py` |
 
 Payee ownership, direct banking MFA gating, pre-TOTP lookup blocking,
 duplicate/self-payee protections, expiry behavior, and removal IDOR are covered
 by `tests/test_payee_management_security.py`.
 
-Admin route authorization has a separate generated route-inventory matrix in
-`tests/test_admin_route_inventory_security.py`, plus targeted admin service
-tests for staff invites, manual recovery, maker-checker approval, and the
-manual-only root-admin bootstrap boundary.
+Admin route authorization has a separate generated route inventory in
+`tests/test_admin_route_inventory_security.py`. A centralized role-permission
+matrix in `tests/test_admin_rbac_matrix.py` exercises unauthenticated,
+customer-isolated, staff, admin, and root-admin access to representative read
+and mutation routes and verifies denied mutations have no privileged side
+effects. Targeted service tests retain deeper coverage for staff invites,
+manual recovery, maker-checker approval, and the manual-only root-admin
+bootstrap boundary.
 
-Playwright E2E browser tests are opt-in for local unscoped pytest because they
-require browser binaries. To run them locally:
+Playwright E2E browser tests cover authentication, MFA, session, banking, and
+boundary regressions, including registration, password reset, manual recovery,
+payee, transfer, session management, password change, account freeze, and
+customer/admin isolation, against a loopback Flask server. They are opt-in for local
+unscoped pytest because they require browser binaries, and they do not prove
+live staging or production provider state. To run them locally:
 
 ```powershell
 $env:PLAYWRIGHT_BROWSERS_PATH = ".playwright-browsers"
@@ -134,6 +143,26 @@ playwright install --with-deps chromium`, sets `SITBANK_RUN_E2E=1`, and runs
 ignored local paths such as `.playwright-browsers`, `playwright-report`, and
 `test-results`; the workflow does not upload traces, videos, cookies, or
 browser profiles.
+
+The normal suite reuses one customer app and one admin app with their database
+schemas per xdist worker.
+Every test still receives isolated database rows, server-side sessions,
+rate-limit state, fake delivery state, and app configuration. Tests that
+specifically prove factory, admin/customer database, migration, hashing,
+authentication, MFA, or session-creation behavior continue to use their real
+paths. Xdist `auto` is capped at four workers so high-core hosts do not
+overcommit the in-memory SQLite test workload. The history secret scanner
+preserves full reachable-history coverage while reading metadata and content
+through streaming Git object batches.
+There are no marker exclusions or scoped test paths in the required full-suite
+command.
+
+Deterministic TOTP timestamps are test-only helpers: they remove wall-clock
+sleep while still exercising valid, invalid, replay, and expiry boundaries.
+Production verification remains time-window based. Helper-created
+authenticated state is appropriate only when login, password hashing, MFA,
+session creation, and password history are not the behavior under test; those
+security flows retain dedicated real-path coverage.
 
 ## Local Security Commands
 
@@ -247,10 +276,10 @@ is covered by deployment tests.
 
 The CI test job runs full-suite coverage once and uploads `coverage.xml`; its
 downstream job calls reusable `.github/workflows/sonarqube.yml` to perform
-reporting-only SonarQube Cloud analysis for the private repository. The
-reusable job requires only `SONAR_TOKEN`, does not use deployment secrets or
-rerun pytest, and does not change the existing CodeQL policy. Plan eligibility,
-cloud source processing, scope,
+blocking SonarQube Cloud quality-gate analysis for trusted events. The reusable
+job requires only `SONAR_TOKEN`, does not use deployment secrets or rerun
+pytest, and does not change the existing CodeQL policy. Fork and Dependabot PRs
+skip the secret-backed scan explicitly. Plan eligibility, cloud source processing, scope,
 exclusions, token rotation, triage, and limitations are documented in
 `docs/security/assurance/sonarqube.md`.
 
@@ -270,28 +299,43 @@ Authenticated DAST session creation is handled by
 | Control | Evidence |
 | --- | --- |
 | Target host restricted to loopback or explicit smoke host | `tests/test_deployment.py::test_dast_session_creator_requires_loopback_or_explicit_smoke_host` |
+| Session bootstrap restricted to `DEPLOYMENT_TARGET=smoke` | `tests/test_dast_helper_security.py::test_issue_dast_session_cookie_rejects_non_smoke_runtime` |
+| Session bootstrap rejects non-synthetic and privileged users | `tests/test_dast_helper_security.py::test_issue_dast_session_cookie_rejects_non_synthetic_or_privileged_users` |
 | Synthetic account registration follows the real registration contract | `tests/test_deployment.py::test_dast_session_creator_matches_registration_contract` |
 | Generated credentials are synthetic and random | `ops/container/create_dast_session.py` |
 | The script emits an authenticated session cookie for ZAP rather than real user credentials | `ops/container/create_dast_session.py` |
 | DAST cookie is not passed as a raw process argument | `tests/test_dast_helper_security.py::test_smoke_test_keeps_dast_cookie_out_of_host_command_arguments` |
 | Temporary cookie and ZAP config files are created with restrictive permissions and cleanup | `tests/test_dast_helper_security.py::test_dast_secret_files_are_restricted_and_cleaned_up_by_contract` |
+| Turnstile dummy-token action is accepted only in release smoke | `tests/test_turnstile_public_auth.py::test_turnstile_verifier_accepts_test_action_only_for_explicit_test_keys` |
 
 `ops/container/dast-smoke.sh` provides a local smoke-oriented DAST path using
 synthetic secrets and a synthetic local test user. No real customer, admin, or
 staff credentials are required by the DAST scripts in the repository.
+The server-side session primitive fails before issuance unless the runtime
+target is exactly `smoke`, the customer matches the helper's complete
+`zap<12-lowercase-hex>` identity contract, MFA is already enabled, and the
+session host is loopback or `sitbank-smoke`. Existing-username collisions,
+stale or malformed synthetic records, real customers, and staff, admin, and
+root-admin identities fail closed.
 
 The authenticated release/scheduled DAST path stores `auth-cookie` and
 `zap-replacer.properties` only in the smoke-test temporary directory. The helper
 sets `umask 077`, writes each secret file as `0600`, validates the cookie shape
-inside the container, mounts the DAST directory read-only into ZAP, and passes
-the non-secret scanner home option `-dir /zap/wrk/.ZAP` plus
+inside the container, mounts the DAST directory read-only into ZAP, and submits
+Cloudflare's official dummy token only to the isolated smoke app with official
+test keys, `DEPLOYMENT_TARGET=smoke`, and `TURNSTILE_ALLOW_TEST_ACTION=true`.
+Production readiness rejects that flag outside the smoke target. The ZAP
+command passes the non-secret scanner
+home option `-dir /zap/wrk/.ZAP` plus
 `-configfile /run/dast/zap-replacer.properties` on the host-visible ZAP command
-line. ZAP loads the authenticated-cookie replacer from a restricted file, so the
-DAST cookie is not passed as a raw process argument. The temporary directory is
-removed by the smoke-test cleanup trap on success and failure. ZAP's own cache,
-browser profile, and report workspace run on container tmpfs so scanner-owned
-files are discarded with the container instead of becoming host cleanup
-artifacts.
+line. ZAP loads the authenticated-cookie replacer plus the non-secret
+`User-Agent`, `X-Forwarded-For`, and `X-Forwarded-Proto` smoke identity headers
+from a restricted file, so the DAST cookie is not passed as a raw process
+argument and the crawl matches the server-side session risk context. The
+temporary directory is removed by the smoke-test cleanup trap on success and
+failure. ZAP's own cache, browser profile, and report workspace run on container
+tmpfs so scanner-owned files are discarded with the container instead of
+becoming host cleanup artifacts.
 
 The DAST bind-mount directory is relaxed for container UID compatibility, but
 the secret files inside remain owner-only and are not uploaded as GitHub
@@ -326,7 +370,23 @@ The source SBOM workflow at `.github/workflows/sbom.yml` uses pinned Syft
 1.46.0 to create `sitbank-source-sbom-cyclonedx.json`, validates it as JSON,
 and retains the `sitbank-source-sbom` CycloneDX JSON artifact for 30 days. It
 runs without secrets on pull requests, pushes to `main`, and manual dispatch.
-It is separate from Buildx image attestation and is not vulnerability scanning.
+Before scanning, the workflow copies the source-controlled
+`requirements.lock` and `requirements-dev.lock` to temporary
+`*requirements*.txt` names recognized by Syft and disables the installed
+Python package cataloger. This keeps runner-global packages, runner
+`site-packages`, and local `.venv` contents out of the source dependency
+count. Its bounded summary puts the Python section first, matches emitted
+`pkg:pypi/` PURLs to pinned packages in those reviewed source-controlled
+manifests, limits the preview to 10 rows, and places the all-component
+ecosystem table last. If manifests exist but no matching PyPI PURLs are
+emitted, zero is described as a generator/PURL detection limitation rather
+than proof of no Python dependencies. The renderer reads only relative
+regular-file paths contained by the current workspace and rejects traversal
+and symlink escapes. The full `sitbank-source-sbom` artifact remains the source
+of truth. Inspect its Python inventory with
+`jq -r '(.components // [])[] | select((.purl // "") | startswith("pkg:pypi/")) | [.name, .version, .purl] | @tsv' sitbank-source-sbom-cyclonedx.json`.
+Installed runtime packages belong to image/container SBOM scope. The source
+artifact is separate from Buildx image attestation and is not vulnerability scanning.
 The existing Buildx `sbom: true` attestation remains required; an explicit
 image SBOM artifact remains deferred until the exact digest-verified release
 image is safely available to the evidence job.

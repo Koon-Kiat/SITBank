@@ -1,16 +1,67 @@
 from __future__ import annotations
 
 from flask_wtf import FlaskForm
-from wtforms import HiddenField, StringField
-from wtforms.validators import InputRequired, Length, Optional, Regexp
+from wtforms import SelectField, StringField, TextAreaField
+from wtforms.validators import InputRequired, Length, Optional, Regexp, ValidationError
 
-from app.auth.schemas import STEP_UP_TOKEN_RE, TOTP_RE
+from app.auth.schemas import PHONE_RE, TOTP_RE
+from app.banking.limits import (
+    LOCAL_TRANSFER_DAILY_LIMIT_CHOICES,
+    LOCAL_TRANSFER_DAILY_LIMIT_PRESETS,
+    PAYUP_DAILY_LIMIT_CHOICES,
+    PAYUP_DAILY_LIMIT_PRESETS,
+)
+from app.models import DISPUTE_ISSUE_TYPES
 
 
-ACCOUNT_NUMBER_RE = r"^[0-9]{9}$"
+ACCOUNT_NUMBER_RE = r"^[0-9]{12}$"
 NICKNAME_RE = r"^[A-Za-z0-9 '\-]{1,64}$"
+PAYUP_NICKNAME_MAX_LENGTH = 128
 AMOUNT_RE = r"^\d+(\.\d{1,2})?$"
 REFERENCE_RE = r"^[A-Za-z0-9 '\-.,/]{0,128}$"
+
+TRANSFER_LIMIT_PRESETS = PAYUP_DAILY_LIMIT_PRESETS
+TRANSFER_LIMIT_CHOICES = PAYUP_DAILY_LIMIT_CHOICES
+LOCAL_TRANSFER_LIMIT_PRESETS = LOCAL_TRANSFER_DAILY_LIMIT_PRESETS
+LOCAL_TRANSFER_LIMIT_CHOICES = LOCAL_TRANSFER_DAILY_LIMIT_CHOICES
+
+_AUTHENTICATOR_CODE_LABEL = "Authenticator code"
+_MFA_CODE_LENGTH_MESSAGE = "MFA code must be exactly 6 digits"
+
+
+def _totp_code_field(*, required: bool = True) -> StringField:
+    return StringField(
+        _AUTHENTICATOR_CODE_LABEL,
+        validators=[
+            InputRequired() if required else Optional(),
+            Regexp(TOTP_RE, message=_MFA_CODE_LENGTH_MESSAGE),
+        ],
+    )
+
+
+def _amount_field() -> StringField:
+    return StringField(
+        "Amount (SGD)",
+        validators=[
+            InputRequired(),
+            Length(max=13),
+            Regexp(AMOUNT_RE, message="Enter a valid amount (e.g. 10.00)"),
+        ],
+    )
+
+
+def _reference_field() -> StringField:
+    return StringField(
+        "Reference (optional)",
+        validators=[
+            Optional(),
+            Length(max=128),
+            Regexp(
+                REFERENCE_RE,
+                message="Reference may only contain letters, numbers, spaces, and basic punctuation",
+            ),
+        ],
+    )
 
 
 class AddPayeeForm(FlaskForm):
@@ -29,54 +80,108 @@ class AddPayeeForm(FlaskForm):
         "Account number",
         validators=[
             InputRequired(),
-            Regexp(ACCOUNT_NUMBER_RE, message="Account number must be exactly 9 digits"),
+            Regexp(ACCOUNT_NUMBER_RE, message="Account number must be exactly 12 digits"),
         ],
     )
-    totp_code = StringField(
-        "Authenticator code",
+    totp_code = _totp_code_field()
+
+
+class PayupPhoneForm(FlaskForm):
+    phone_number = StringField(
+        "Recipient phone number",
         validators=[
             InputRequired(),
-            Regexp(TOTP_RE, message="MFA code must be exactly 6 digits"),
+            Regexp(PHONE_RE, message="Enter a valid Singapore phone number (8 digits starting with 8 or 9)"),
         ],
     )
-    stepup_token = HiddenField(
+
+
+def _payup_nickname(value: str | None) -> str:
+    nickname = str(value or "").strip()
+    if len(nickname) < 2 or len(nickname) > PAYUP_NICKNAME_MAX_LENGTH:
+        raise ValidationError("PayUp nickname must be between 2 and 128 characters")
+    if any(ord(char) < 32 or ord(char) == 127 for char in nickname):
+        raise ValidationError("PayUp nickname cannot contain control characters")
+    return nickname
+
+
+class PayupNicknameForm(FlaskForm):
+    nickname = StringField(
+        "PayUp nickname",
+        validators=[
+            InputRequired(),
+            Length(min=2, max=PAYUP_NICKNAME_MAX_LENGTH),
+        ],
+    )
+
+    def validate_nickname(self, field) -> None:
+        field.data = _payup_nickname(field.data)
+
+
+class PayupAmountForm(FlaskForm):
+    amount = _amount_field()
+    reference = _reference_field()
+
+
+class PayupConfirmForm(FlaskForm):
+    totp_code = _totp_code_field(required=False)
+
+
+class TopUpForm(FlaskForm):
+    amount = _amount_field()
+
+
+class TopUpApprovalForm(FlaskForm):
+    totp_code = _totp_code_field()
+
+
+class TransferLimitsForm(FlaskForm):
+    payup_limit = SelectField("PayUp daily limit", choices=TRANSFER_LIMIT_CHOICES, validators=[InputRequired()])
+    payup_limit_custom = StringField(
+        "Custom amount (SGD)",
         validators=[
             Optional(),
-            Regexp(STEP_UP_TOKEN_RE, message="Invalid step-up token"),
+            Length(max=13),
+            Regexp(AMOUNT_RE, message="Enter a valid amount (e.g. 750.00)"),
         ],
     )
+    local_transfer_limit = SelectField(
+        "Local Transfer daily limit", choices=LOCAL_TRANSFER_LIMIT_CHOICES, validators=[InputRequired()]
+    )
+    local_transfer_limit_custom = StringField(
+        "Custom amount (SGD)",
+        validators=[
+            Optional(),
+            Length(max=13),
+            Regexp(AMOUNT_RE, message="Enter a valid amount (e.g. 750.00)"),
+        ],
+    )
+    totp_code = _totp_code_field()
 
 
 class TransferForm(FlaskForm):
-    amount = StringField(
-        "Amount (SGD)",
-        validators=[
-            InputRequired(),
-            Length(max=13),
-            Regexp(AMOUNT_RE, message="Enter a valid amount (e.g. 10.00)"),
-        ],
+    amount = _amount_field()
+    reference = _reference_field()
+    totp_code = _totp_code_field()
+
+
+DISPUTE_ISSUE_TYPE_LABELS = {
+    "unauthorized_transaction": "Unauthorized transaction",
+    "duplicate_charge": "Duplicate charge",
+    "incorrect_amount": "Incorrect amount",
+    "recipient_service_issue": "Recipient/service issue",
+    "other": "Other",
+}
+DISPUTE_ISSUE_TYPE_CHOICES = [(value, DISPUTE_ISSUE_TYPE_LABELS[value]) for value in DISPUTE_ISSUE_TYPES]
+
+
+class TransactionDisputeForm(FlaskForm):
+    issue_type = SelectField(
+        "Issue type",
+        choices=DISPUTE_ISSUE_TYPE_CHOICES,
+        validators=[InputRequired()],
     )
-    reference = StringField(
-        "Reference (optional)",
-        validators=[
-            Optional(),
-            Length(max=128),
-            Regexp(
-                REFERENCE_RE,
-                message="Reference may only contain letters, numbers, spaces, and basic punctuation",
-            ),
-        ],
-    )
-    totp_code = StringField(
-        "Authenticator code",
-        validators=[
-            InputRequired(),
-            Regexp(TOTP_RE, message="MFA code must be exactly 6 digits"),
-        ],
-    )
-    stepup_token = HiddenField(
-        validators=[
-            Optional(),
-            Regexp(STEP_UP_TOKEN_RE, message="Invalid step-up token"),
-        ],
+    reason = TextAreaField(
+        "Reason",
+        validators=[InputRequired(), Length(min=1, max=1000)],
     )

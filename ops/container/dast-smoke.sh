@@ -5,7 +5,7 @@ readonly IMAGE="${1:-sitbank:smoke}"
 readonly POSTGRES_IMAGE="postgres:16.9-alpine@sha256:7c688148e5e156d0e86df7ba8ae5a05a2386aaec1e2ad8e6d11bdf10504b1fb7"
 readonly ZAP_IMAGE="zaproxy/zap-stable:2.17.0@sha256:2ec1d5d5b44d55cfd02ba9b89cd26852f06d92b7fc0ce9f064b9463babc73074"
 readonly PUBLIC_HOST="sitbank.pp.ua"
-readonly root_admin_emails="chief1@sit.singaporetech.edu.sg,chief2@sit.singaporetech.edu.sg,chief3@sit.singaporetech.edu.sg,chief4@sit.singaporetech.edu.sg,chief5@sit.singaporetech.edu.sg,chief6@sit.singaporetech.edu.sg,chief7@sit.singaporetech.edu.sg"
+readonly root_admin_emails="chief1@sit.singaporetech.edu.sg,chief2@sit.singaporetech.edu.sg,chief3@sit.singaporetech.edu.sg"
 
 random_test_secret() {
     od -An -N24 -tx1 /dev/urandom | tr -d '[:space:]'
@@ -55,6 +55,8 @@ printf 'postgresql+psycopg2://ci:%s@127.0.0.1:55433/ci' "${postgres_password}" \
     > "${work_dir}/secrets/database_url"
 printf '%s' '{"ci-mfa":"NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ="}' \
     > "${work_dir}/secrets/mfa_kek_keys_json"
+printf '%s' '{"ci-ledger":"YmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmI="}' \
+    > "${work_dir}/secrets/transaction_ledger_hmac_keys_json"
 printf '%s' 'MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE=' \
     > "${work_dir}/secrets/password_pepper_b64"
 printf '%s' 'ci-audit-hmac-key-that-is-long-enough-for-dast-tests' \
@@ -65,6 +67,8 @@ printf '%s' 'smtp-user' \
     > "${work_dir}/secrets/smtp_username"
 printf '%s' 'smtp-password' \
     > "${work_dir}/secrets/smtp_password"
+printf '%s' "${root_admin_emails}" \
+    > "${work_dir}/secrets/root_admin_emails"
 chmod 0444 "${work_dir}"/secrets/*
 
 seq -f 'blocked-password-%06g' 1 100000 \
@@ -89,6 +93,8 @@ docker_args=(
     --env DATABASE_URL_FILE=/run/secrets/database_url
     --env MFA_KEK_ACTIVE_ID=ci-mfa
     --env MFA_KEK_KEYS_JSON_FILE=/run/secrets/mfa_kek_keys_json
+    --env TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID=ci-ledger
+    --env TRANSACTION_LEDGER_HMAC_KEYS_JSON_FILE=/run/secrets/transaction_ledger_hmac_keys_json
     --env PASSWORD_PEPPER_B64_FILE=/run/secrets/password_pepper_b64
     --env SECURITY_AUDIT_HMAC_KEY_FILE=/run/secrets/security_audit_hmac_key
     --env SECURITY_AUDIT_ANCHOR_PATH=/run/state/security-audit.anchor
@@ -101,7 +107,7 @@ docker_args=(
     --env PASSWORD_RESET_EMAIL_BACKEND=smtp
     --env PASSWORD_RESET_EMAIL_FROM=security@sitbank.example
     --env "PASSWORD_RESET_BASE_URL=https://${PUBLIC_HOST}"
-    --env "ROOT_ADMIN_EMAILS=${root_admin_emails}"
+    --env ROOT_ADMIN_EMAILS_FILE=/run/secrets/root_admin_emails
     --env SMTP_HOST=smtp.example.test
     --env SMTP_PORT=587
     --env SMTP_USE_TLS=true

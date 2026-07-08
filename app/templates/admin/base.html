@@ -5,26 +5,66 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}SITBank Admin{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
-    <script src="{{ url_for('static', filename='js/theme.js') }}" defer></script>
+    <script src="{{ url_for('static', filename='js/theme.js') }}"></script>
     {% if g.current_user %}
     <meta name="csrf-token" content="{{ csrf_token() }}">
     {% endif %}
   </head>
   <body class="admin-shell">
     <svg class="icon-sprite" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
-      <symbol id="icon-theme-sun" viewBox="0 0 24 24">
-        <circle cx="12" cy="12" r="4"></circle>
-        <path d="M12 2v2"></path>
-        <path d="M12 20v2"></path>
-        <path d="m4.93 4.93 1.41 1.41"></path>
-        <path d="m17.66 17.66 1.41 1.41"></path>
-        <path d="M2 12h2"></path>
-        <path d="M20 12h2"></path>
-        <path d="m6.34 17.66-1.41 1.41"></path>
-        <path d="m19.07 4.93-1.41 1.41"></path>
+      <symbol id="icon-controls" viewBox="0 0 24 24">
+        <path d="M4 6h9"></path>
+        <path d="M17 6h3"></path>
+        <circle cx="15" cy="6" r="2"></circle>
+        <path d="M4 12h3"></path>
+        <path d="M11 12h9"></path>
+        <circle cx="9" cy="12" r="2"></circle>
+        <path d="M4 18h11"></path>
+        <path d="M19 18h1"></path>
+        <circle cx="17" cy="18" r="2"></circle>
       </symbol>
-      <symbol id="icon-theme-moon" viewBox="0 0 24 24">
-        <path d="M21 12.8A8.5 8.5 0 1 1 11.2 3a6.8 6.8 0 0 0 9.8 9.8Z"></path>
+      <symbol id="icon-alert" viewBox="0 0 24 24">
+        <path d="m12 3 10 18H2L12 3Z"></path>
+        <path d="M12 9v5"></path>
+        <path d="M12 17h.01"></path>
+      </symbol>
+      <symbol id="icon-reference" viewBox="0 0 24 24">
+        <path d="M10 13a5 5 0 0 0 7.1 0l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1"></path>
+        <path d="M14 11a5 5 0 0 0-7.1 0l-2 2a5 5 0 0 0 7.1 7.1l1.1-1.1"></path>
+      </symbol>
+      <symbol id="icon-user" viewBox="0 0 24 24">
+        <circle cx="12" cy="8" r="4"></circle>
+        <path d="M4.5 21a7.5 7.5 0 0 1 15 0"></path>
+      </symbol>
+      <symbol id="icon-education" viewBox="0 0 24 24">
+        <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v17H6.5A2.5 2.5 0 0 1 4 17.5Z"></path>
+        <path d="M4 17.5A2.5 2.5 0 0 0 6.5 20"></path>
+        <path d="M8 7h8"></path>
+        <path d="M8 11h6"></path>
+      </symbol>
+      <symbol id="icon-refresh" viewBox="0 0 24 24">
+        <path d="M4 12a8 8 0 0 1 13.7-5.7"></path>
+        <path d="M18 3v5h-5"></path>
+        <path d="M20 12a8 8 0 0 1-13.7 5.7"></path>
+        <path d="M6 21v-5h5"></path>
+      </symbol>
+      <symbol id="icon-lock" viewBox="0 0 24 24">
+        <rect x="5" y="11" width="14" height="10" rx="2"></rect>
+        <path d="M8 11V8a4 4 0 0 1 8 0v3"></path>
+        <path d="M12 15v2"></path>
+      </symbol>
+      <symbol id="icon-check-circle" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="9"></circle>
+        <path d="m8.5 12.5 2.5 2.5 5.5-6"></path>
+      </symbol>
+      <symbol id="icon-info" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="9"></circle>
+        <path d="M12 11v5"></path>
+        <path d="M12 8h.01"></path>
+      </symbol>
+      <symbol id="icon-mail" viewBox="0 0 24 24">
+        <rect x="3" y="5" width="18" height="14" rx="2"></rect>
+        <path d="m4 7 8 6 8-6"></path>
       </symbol>
     </svg>
     <a class="skip-link" href="#main-content">Skip to main content</a>
@@ -37,24 +77,38 @@
             <span class="brand-subtitle">Staff and admin operations</span>
           </span>
         </a>
-        <nav class="nav" aria-label="Admin navigation">
+        <button class="nav-toggle" type="button" data-nav-toggle aria-expanded="false" aria-controls="admin-primary-nav">
+          <span class="nav-toggle-bars" aria-hidden="true"></span>
+          <span class="sr-only">Menu</span>
+        </button>
+        <nav class="nav" id="admin-primary-nav" aria-label="Admin navigation" data-nav-menu>
           <div class="nav-links">
-            {% for item in navigation|default([]) %}
+            {% for item in navigation|default([])|rejectattr("label", "equalto", "Dashboard")|list %}
             <a href="{{ item.href }}"{% if request.endpoint == item.endpoint %} aria-current="page"{% endif %}>{{ item.label }}</a>
             {% endfor %}
           </div>
           <div class="nav-actions">
-            <button class="theme-toggle icon-button" type="button" data-theme-toggle aria-pressed="false" aria-label="Switch to dark mode" title="Switch to dark mode">
-              <span class="theme-icon" aria-hidden="true" data-theme-toggle-icon>
-                <svg class="icon" focusable="false"><use href="#icon-theme-moon"></use></svg>
-              </span>
-              <span class="sr-only" data-theme-toggle-label>Switch to dark mode</span>
-            </button>
             {% if g.current_user %}
-            <form class="admin-logout-form" method="post" action="{{ url_for('admin.logout') }}">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-              <button class="button secondary small" type="submit">Log out</button>
-            </form>
+            <div class="account-menu" data-account-menu>
+              <button class="account-trigger" type="button" id="admin-account-menu-button" aria-haspopup="true" aria-expanded="false" aria-controls="admin-account-menu-panel" data-account-trigger>
+                <span class="account-avatar" aria-hidden="true">
+                  <svg class="icon" focusable="false"><use href="#icon-user"></use></svg>
+                </span>
+                <span class="account-trigger-copy">
+                  <span class="account-trigger-name">{{ g.current_user.full_name or g.current_user.username }}</span>
+                </span>
+              </button>
+              <div class="account-panel" id="admin-account-menu-panel" aria-labelledby="admin-account-menu-button" data-account-panel hidden>
+                <a href="{{ url_for('admin.index') }}">Dashboard</a>
+                <div class="account-menu-section-label">Profile Settings</div>
+                <a href="{{ url_for('admin.password_change_form') }}">Change Password</a>
+                <a href="{{ url_for('admin.mfa_change_form') }}">Change MFA</a>
+                <form class="account-menu-form" method="post" action="{{ url_for('admin.logout') }}">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button type="submit">Log out</button>
+                </form>
+              </div>
+            </div>
             {% endif %}
           </div>
         </nav>
@@ -88,5 +142,6 @@
         </section>
       </div>
     </footer>
+    {% block scripts %}{% endblock %}
   </body>
 </html>

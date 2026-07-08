@@ -120,6 +120,12 @@ def test_database_privilege_command_failure_delivers_alert(app, monkeypatch):
 
 def test_audit_alert_expiry_and_cleanup_commands(app, monkeypatch, tmp_path):
     runner = app.test_cli_runner()
+    audit_events = []
+    monkeypatch.setattr(
+        commands,
+        "audit_system_event",
+        lambda *args, **kwargs: audit_events.append((args, kwargs)),
+    )
     anchor = {"event_id": 1, "event_hash": "0" * 64}
     monkeypatch.setattr(commands, "audit_log_anchor", lambda: anchor)
     exported = runner.invoke(args=["export-audit-log-anchor"])
@@ -155,21 +161,142 @@ def test_audit_alert_expiry_and_cleanup_commands(app, monkeypatch, tmp_path):
     assert "Security alerts active" in blocking.output
 
     from app.auth import password_reset
-    from app.security import state_cleanup
+    from app.security import retention
 
     monkeypatch.setattr(password_reset, "expire_manual_recovery_requests", lambda *, limit: limit)
     expired = runner.invoke(args=["expire-manual-recovery-requests", "--limit", "7"])
     assert expired.exit_code == 0
     assert json.loads(expired.output) == {"expired_count": 7}
 
-    monkeypatch.setattr(
-        state_cleanup,
-        "cleanup_expired_security_state",
-        lambda *, limit: {"limit": limit},
+    retention_calls = []
+
+    def fake_retention_cleanup(*, limit, dry_run, confirm, commit):
+        retention_calls.append(
+            {
+                "limit": limit,
+                "dry_run": dry_run,
+                "confirm": confirm,
+                "commit": commit,
+            }
+        )
+        return {
+            "mode": "dry_run" if dry_run else "confirmed",
+            "dry_run": dry_run,
+            "retention_days": 30,
+            "batch_limit": limit,
+            "category_counts": {"expired_sessions_marked": 2},
+            "scheduling": "weekly_operator_reviewed_dry_run",
+        }
+
+    monkeypatch.setattr(retention, "run_retention_cleanup", fake_retention_cleanup)
+    legacy_dry_run = runner.invoke(args=["cleanup-security-state", "--limit", "8"])
+    legacy_confirmed = runner.invoke(
+        args=["cleanup-security-state", "--limit", "8", "--confirm"]
     )
-    cleaned = runner.invoke(args=["cleanup-security-state", "--limit", "8"])
-    assert cleaned.exit_code == 0
-    assert json.loads(cleaned.output) == {"limit": 8}
+    assert legacy_dry_run.exit_code == 0
+    assert json.loads(legacy_dry_run.output)["mode"] == "dry_run"
+    assert legacy_confirmed.exit_code == 0
+    assert json.loads(legacy_confirmed.output)["mode"] == "confirmed"
+
+    dry_run = runner.invoke(args=["security", "run-retention-cleanup", "--limit", "9"])
+    assert dry_run.exit_code == 0
+    dry_run_payload = json.loads(dry_run.output)
+    assert dry_run_payload["mode"] == "dry_run"
+    assert dry_run_payload["category_counts"] == {"expired_sessions_marked": 2}
+
+    confirmed = runner.invoke(
+        args=["security", "run-retention-cleanup", "--limit", "9", "--confirm"]
+    )
+    assert confirmed.exit_code == 0
+    assert json.loads(confirmed.output)["mode"] == "confirmed"
+    assert retention_calls == [
+        {"limit": 8, "dry_run": True, "confirm": False, "commit": True},
+        {"limit": 8, "dry_run": False, "confirm": True, "commit": False},
+        {"limit": 9, "dry_run": True, "confirm": False, "commit": True},
+        {"limit": 9, "dry_run": False, "confirm": True, "commit": False},
+    ]
+    assert any(
+        args[:2] == ("retention_cleanup", "dry_run")
+        for args, _kwargs in audit_events
+    )
+
+
+def test_confirmed_retention_cleanup_refuses_mutation_without_started_audit(
+    app,
+    monkeypatch,
+):
+    from app.security import retention
+    from app.security.audit import AuditWriteError
+
+    cleanup_calls = []
+    monkeypatch.setattr(
+        commands,
+        "audit_system_event_required",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AuditWriteError("fake audit failure")
+        ),
+    )
+    monkeypatch.setattr(
+        retention,
+        "run_retention_cleanup",
+        lambda **kwargs: cleanup_calls.append(kwargs),
+    )
+
+    result = app.test_cli_runner().invoke(
+        args=["security", "run-retention-cleanup", "--confirm"]
+    )
+
+    assert result.exit_code != 0
+    assert "audit evidence is unavailable" in result.output
+    assert cleanup_calls == []
+
+
+def test_confirmed_retention_cleanup_rolls_back_when_completion_audit_fails(
+    app,
+    monkeypatch,
+):
+    from app.security import retention
+
+    commits = []
+    rollbacks = []
+    failed_events = []
+    monkeypatch.setattr(commands, "audit_system_event_required", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        commands,
+        "audit_system_event_in_transaction_required",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("fake completion failure")
+        ),
+    )
+    monkeypatch.setattr(
+        commands,
+        "audit_system_event",
+        lambda *args, **kwargs: failed_events.append((args, kwargs)),
+    )
+    monkeypatch.setattr(commands.db.session, "commit", lambda: commits.append(True))
+    monkeypatch.setattr(commands.db.session, "rollback", lambda: rollbacks.append(True))
+    monkeypatch.setattr(
+        retention,
+        "run_retention_cleanup",
+        lambda **_kwargs: {
+            "mode": "confirmed",
+            "dry_run": False,
+            "retention_days": 30,
+            "batch_limit": 100,
+            "category_counts": {"expired_sessions_marked": 1},
+            "scheduling": "weekly_operator_reviewed_dry_run",
+        },
+    )
+
+    result = app.test_cli_runner().invoke(
+        args=["security", "run-retention-cleanup", "--confirm"]
+    )
+
+    assert result.exit_code != 0
+    assert "rolled back because completion audit evidence" in result.output
+    assert commits == []
+    assert rollbacks == [True]
+    assert failed_events[0][0][:2] == ("retention_cleanup", "failed")
 
 
 def test_ops_helpers_normalize_time_anchor_env_and_alert_metadata(tmp_path, monkeypatch):

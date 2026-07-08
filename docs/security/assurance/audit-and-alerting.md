@@ -38,7 +38,7 @@ Representative event families include:
 | Password reset and manual recovery | `password_reset_requested`, `password_reset_token_exchanged`, `password_reset_mfa_failed`, `password_reset_completed`, `manual_recovery_requested`, `manual_recovery_admin_transition`, `manual_recovery_completed` | `app/auth/password_reset.py`, `app/admin/services.py` |
 | Session management | `session_terminate`, protected backend `session_revoke_others`, `session_integrity`, `session_expired`, `session_risk` | `app/auth/services.py`, `app/security/sessions.py` |
 | Account security | `password_change`, account detail updates, `account_freeze` | `app/auth/services.py` |
-| Admin and staff operations | `admin_dashboard_access`, `staff_invite_create`, `staff_invite_revoked`, `staff_invite_accept`, `staff_account_activated`, `staff_account_deactivated`, `staff_account_reactivated`, `staff_activation_reset`, `audit_log_view`, `security_alert_review`, `security_alert_delivery`, `admin_access_denied` | `app/admin/services.py`, `app/admin/routes.py` |
+| Admin and staff operations | `admin_dashboard_access`, `staff_invite_create`, `staff_invite_revoked`, `staff_invite_accept`, `staff_invite_accept_reset`, `staff_account_activated`, `staff_account_deactivated`, `staff_account_reactivated`, `staff_activation_reset`, `audit_log_view`, `security_alert_review`, `security_alert_delivery`, `admin_access_denied` | `app/admin/services.py`, `app/admin/routes.py` |
 | Banking and payees | `payee_lookup`, `payee_add`, `payee_remove`, transaction validation events | `app/banking/routes.py`, `app/banking/services.py` |
 | Operations | `mfa_dek_rewrap`, audit chain verification/export, alert checks | `app/ops/commands.py`, `app/security/audit.py`, `app/security/alerts.py` |
 
@@ -99,6 +99,7 @@ Operators verify and anchor the chain with:
 python -m flask --app wsgi:app verify-audit-log-chain
 python -m flask --app wsgi:app verify-audit-log-chain --anchor /var/lib/sitbank/security-audit.anchor
 python -m flask --app wsgi:app export-audit-log-anchor --output /var/lib/sitbank/security-audit.anchor
+python -m flask --app wsgi:app refresh-audit-log-anchor
 ```
 
 `SECURITY_AUDIT_ANCHOR_PATH` points production checks and alerting at the
@@ -122,6 +123,12 @@ hash-chain integrity:
 Chain rewind, tail deletion, malformed rows, missing append-only controls, and
 runtime database privilege failures are treated as high-priority operational
 signals.
+
+The daily `sitbank-audit-anchor-refresh@{staging,production}.timer` uses the
+target-aware container wrapper. Refresh accepts only an exactly validated or
+append-only stale anchor and atomically preserves owner-only permissions. It
+refuses malformed, missing, mismatched, or invalid-chain states; alert checking
+does not rotate anchors.
 
 ## Alerting
 
@@ -148,6 +155,14 @@ Alert rules cover at least:
 - alert table regression signals from `SECURITY_ALERT_STATE_PATH`
 - alert delivery failures
 
+After an approved reset, `rebaseline-security-alert-state
+--intentional-reset --reason ...` verifies the audit chain and configured
+anchor, backs up the previous baseline, and atomically snapshots the same
+protected tables. Unknown loss, chain failure, anchor mismatch, missing
+acknowledgement, or missing reason fails closed. Output and audit evidence use
+only table metrics, a keyed reason reference, whether a backup was created,
+and its basename; the host backup path is not returned.
+
 Alert severity values are configured in `app/security/alerts.py` and filtered
 by `SECURITY_ALERT_MIN_SEVERITY`. Delivery supports HTTPS webhooks such as
 Discord incoming webhooks. Before delivery, the report passes through a final
@@ -166,14 +181,20 @@ Authorized admin/root users can review a browser-rendered audit log viewer at
 isolated admin runtime. The viewer is read-only: it has no export, edit, or
 delete route. `staff` users and customers cannot access it.
 
-The viewer validates filters, sort fields, sort direction, page number, and
-page size server-side before any query is built. Supported controls are exact
-event type, actor user ID, approved target-reference metadata keys, role,
-severity, outcome/status, request or correlation ID, IP address, timestamp
-range, timestamp/severity/event-type/actor sorting, and bounded pagination.
-The `q` search field is limited to approved safe event columns such as event
-type, outcome, correlation ID, IP address, session reference, and numeric actor
-ID; it does not search raw unbounded metadata.
+The viewer defaults to a single visible `q` search box and keeps exact filters
+inside an advanced filter disclosure. It validates filters, sort fields, sort
+direction, page number, and page size server-side before any query is built.
+Supported advanced controls are exact event type, actor user ID, approved
+target-reference metadata keys, role, severity, outcome/status, request or
+correlation ID, IP address, timestamp range using native date controls plus
+SGT hour/half-hour time dropdowns, timestamp/severity/event-type/actor
+sorting, and bounded pagination with Previous and Next links. The `q`
+search field is limited to approved safe fields: activity/event type, outcome,
+request ID, safe source display, target reference, actor user ID, actor
+username, and privileged workplace email. It does not search raw unbounded
+metadata. Customer personal email is never part of `q` search, including for
+root admins; email matching is limited to privileged account roles whose
+address also matches the configured workplace-domain allowlist.
 
 List rows render only safe top-level event fields. Detail pages pass metadata
 through the same display redaction used by tests, suppressing sensitive keys
@@ -182,13 +203,37 @@ the response. Viewer list and detail access are themselves audited with filter
 names, sort direction, and page bounds only; sensitive query values are not
 logged.
 
+Audit list and detail pages include a human-readable activity label, concise
+event description, investigation hint, safe actor summary, actor role, source
+kind/display, target reference, request ID, outcome, severity, and hash-chain
+status. Visible UI timestamps display in UTC+8/SGT such as
+`02 Jul 2026, 06:11:49 SGT`; machine-readable UTC/ISO values remain in HTML
+`datetime` attributes, existing UTC ISO filter query links, and JSON fields for
+tooling. JavaScript-enhanced pagination fetches the same authorized JSON
+payload, updates the table and browser history in place, and falls back to the
+normal Previous and Next links if JavaScript is unavailable or fetch fails.
+Invalid or reversed timestamp ranges return generic validation feedback without
+parser internals. Known admin, MFA, staff
+invite, staff lifecycle, manual recovery, deployment, Cloudflare, Tailscale,
+runtime privilege, and alerting event types use explicit descriptions. Unknown
+event types fall back to a safe readable label and preserve the raw technical
+event name without rendering secrets. A field legend explains Actor, Actor
+role, Source kind, Source, Target reference, Request ID, Timestamp, Hash chain,
+Hash algorithm, Severity, and Outcome so admins can build an investigation case
+without copying secrets into issues, pull requests, screenshots, or chat.
+
 Authorized admin/root users can review current security alert report output at
 `GET /alerts`. This dashboard route calls `build_security_alert_report()` with
 delivery disabled; it does not send, resend, or acknowledge alerts. The browser
-view shows labeled report cards, actionable safe alert details, audit-chain and
-database-integrity status, delivery status, dedupe status, next action text,
-and links to existing authorized audit-event detail pages only when a related
-event row exists.
+view shows labeled report cards, readable SGT timestamps with UTC `datetime`
+values, friendly alert source summaries for first-pass triage, actionable safe
+alert details, audit-chain and database-integrity status, delivery status,
+dedupe status, next action text, and links to existing authorized audit-event
+detail pages only when a related event row exists. The JSON, CLI, webhook,
+dedupe, and audit-evidence report contract keeps machine-readable UTC values;
+the browser detail panel preserves sanitized technical source, status, window,
+reason, error type, related audit event, and recommended-action fields behind
+the summary view.
 
 Manual browser delivery is explicit and state-changing through
 `POST /alerts/deliver` only. The route requires the existing admin/root session

@@ -92,6 +92,151 @@ def test_production_enabled_route_requires_site_key(app):
             turnstile.require_turnstile("customer_login", "browser-token")
 
 
+def test_production_route_flag_disabled_fails_closed(app):
+    app.config.update(
+        APP_ENV="production",
+        DEPLOYMENT_TARGET="production",
+        TURNSTILE_ENABLED=True,
+        TURNSTILE_SECRET_KEY="fake-turnstile-secret",
+        TURNSTILE_SITE_KEY="fake-site-key",
+        TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED=False,
+        TURNSTILE_FAIL_CLOSED_IN_PRODUCTION=True,
+        TURNSTILE_VERIFY_URL=turnstile.OFFICIAL_TURNSTILE_VERIFY_URL,
+    )
+
+    with app.test_request_context("/auth/account-recovery", method="POST"):
+        with pytest.raises(turnstile.TurnstileError):
+            turnstile.require_turnstile(
+                "customer_manual_recovery",
+                "browser-token",
+            )
+
+
+@pytest.mark.parametrize(
+    "provider_action",
+    [None, "", "customer_register", ["customer_login"]],
+)
+def test_turnstile_verifier_requires_exact_provider_action(app, monkeypatch, provider_action):
+    app.config.update(
+        TURNSTILE_ENABLED=True,
+        TURNSTILE_SECRET_KEY="fake-turnstile-secret",
+        TURNSTILE_VERIFY_URL=turnstile.OFFICIAL_TURNSTILE_VERIFY_URL,
+    )
+    _install_turnstile_response(monkeypatch, {"success": True, "action": provider_action})
+
+    with app.test_request_context("/auth/login", method="POST"):
+        with pytest.raises(turnstile.TurnstileError):
+            turnstile.verify_turnstile_token(
+                "browser-token",
+                expected_action="customer_login",
+            )
+
+
+def test_turnstile_verifier_accepts_exact_provider_action(app, monkeypatch):
+    app.config.update(
+        TURNSTILE_ENABLED=True,
+        TURNSTILE_SECRET_KEY="fake-turnstile-secret",
+        TURNSTILE_VERIFY_URL=turnstile.OFFICIAL_TURNSTILE_VERIFY_URL,
+    )
+    _install_turnstile_response(monkeypatch, {"success": True, "action": "customer_login"})
+
+    with app.test_request_context("/auth/login", method="POST"):
+        turnstile.verify_turnstile_token(
+            "browser-token",
+            expected_action="customer_login",
+        )
+
+
+def test_turnstile_verifier_accepts_test_action_only_for_explicit_test_keys(app, monkeypatch):
+    app.config.update(
+        TURNSTILE_ENABLED=True,
+        DEPLOYMENT_TARGET="smoke",
+        TURNSTILE_SITE_KEY=turnstile.TURNSTILE_TEST_SITE_KEY,
+        TURNSTILE_SECRET_KEY=turnstile.TURNSTILE_TEST_SECRET_KEY,
+        TURNSTILE_ALLOW_TEST_ACTION=True,
+        TURNSTILE_VERIFY_URL=turnstile.OFFICIAL_TURNSTILE_VERIFY_URL,
+    )
+    _install_turnstile_response(
+        monkeypatch,
+        {"success": True, "action": turnstile.TURNSTILE_TEST_ACTION},
+        secret=turnstile.TURNSTILE_TEST_SECRET_KEY,
+        token=turnstile.TURNSTILE_TEST_TOKEN,
+    )
+
+    with app.test_request_context("/auth/login", method="POST"):
+        turnstile.verify_turnstile_token(
+            turnstile.TURNSTILE_TEST_TOKEN,
+            expected_action="customer_login",
+        )
+
+
+@pytest.mark.parametrize(
+    ("config_updates", "token"),
+    (
+        ({"TURNSTILE_ALLOW_TEST_ACTION": False}, turnstile.TURNSTILE_TEST_TOKEN),
+        ({"DEPLOYMENT_TARGET": "production"}, turnstile.TURNSTILE_TEST_TOKEN),
+        ({"TURNSTILE_SITE_KEY": "fake-site-key"}, turnstile.TURNSTILE_TEST_TOKEN),
+        (
+            {"TURNSTILE_SECRET_KEY": "fake-turnstile-secret"},
+            turnstile.TURNSTILE_TEST_TOKEN,
+        ),
+        ({}, "browser-token"),
+    ),
+)
+def test_turnstile_verifier_rejects_test_action_without_full_test_contract(
+    app,
+    monkeypatch,
+    config_updates,
+    token,
+):
+    app.config.update(
+        TURNSTILE_ENABLED=True,
+        DEPLOYMENT_TARGET="smoke",
+        TURNSTILE_SITE_KEY=turnstile.TURNSTILE_TEST_SITE_KEY,
+        TURNSTILE_SECRET_KEY=turnstile.TURNSTILE_TEST_SECRET_KEY,
+        TURNSTILE_ALLOW_TEST_ACTION=True,
+        TURNSTILE_VERIFY_URL=turnstile.OFFICIAL_TURNSTILE_VERIFY_URL,
+    )
+    app.config.update(config_updates)
+    _install_turnstile_response(
+        monkeypatch,
+        {"success": True, "action": turnstile.TURNSTILE_TEST_ACTION},
+        secret=str(app.config["TURNSTILE_SECRET_KEY"]),
+        token=token,
+    )
+
+    with app.test_request_context("/auth/login", method="POST"):
+        with pytest.raises(turnstile.TurnstileError):
+            turnstile.verify_turnstile_token(token, expected_action="customer_login")
+
+
+def test_manual_recovery_uses_dedicated_turnstile_action(app, client, monkeypatch):
+    app.config.update(
+        TURNSTILE_ENABLED=True,
+        TURNSTILE_SECRET_KEY="fake-turnstile-secret",
+        TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED=True,
+    )
+    calls = []
+    monkeypatch.setattr(
+        turnstile,
+        "verify_turnstile_token",
+        lambda token, *, expected_action=None: calls.append((token, expected_action)),
+    )
+
+    response = client.post(
+        "/auth/account-recovery",
+        json={
+            "identifier": "missing@example.com",
+            "cf-turnstile-response": "manual-recovery-token",
+        },
+    )
+
+    assert response.status_code == 200
+    assert calls == [
+        ("manual-recovery-token", "customer_manual_recovery")
+    ]
+
+
 def test_unknown_turnstile_action_fails_closed_even_when_disabled(app):
     app.config.update(TURNSTILE_ENABLED=False)
 
@@ -128,3 +273,34 @@ def _csp_directives(csp: str) -> dict[str, list[str]]:
         if parts:
             directives[parts[0]] = parts[1:]
     return directives
+
+
+def _install_turnstile_response(
+    monkeypatch,
+    payload,
+    *,
+    secret="fake-turnstile-secret",
+    token="browser-token",
+):
+    class Connection:
+        def __init__(self, _host, *, port=None, timeout=5):
+            self.port = port
+            self.timeout = timeout
+
+        def request(self, _method, _target, body=None, headers=None):
+            assert f"secret={secret}".encode() in body
+            assert f"response={token}".encode() in body
+
+        def getresponse(self):
+            import json
+
+            return type(
+                "Response",
+                (),
+                {"read": staticmethod(lambda _limit: json.dumps(payload).encode("utf-8"))},
+            )()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(turnstile.http.client, "HTTPSConnection", Connection)

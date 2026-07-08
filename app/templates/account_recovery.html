@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_turnstile.html" as turnstile with context %}
 
 {% block title %}Account Recovery | SITBank{% endblock %}
 
@@ -20,8 +21,9 @@
       <div class="form-group">
         <label for="{{ form.identifier.id }}">Username or email</label>
         {{ form.identifier(autocomplete="username", maxlength="255") }}
-        {% for error in form.identifier.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+      {% for error in form.identifier.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
       </div>
+      {{ turnstile.widget("customer_manual_recovery") }}
       <button class="button full" type="submit">Request recovery review</button>
     </form>
     <p class="switch-link"><a href="{{ url_for('web.login') }}">Back to login</a></p>

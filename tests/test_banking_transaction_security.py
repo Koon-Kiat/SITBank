@@ -1,41 +1,75 @@
 from __future__ import annotations
 
+from decimal import Decimal
+
 from _auth_flow_helpers import *
 
 
-def test_future_transaction_payload_guardrails_reject_server_controlled_fields():
+def _public_transaction_user(suffix: str) -> User:
+    user = User(
+        username=f"public-transaction-{suffix}",
+        email=f"public-transaction-{suffix}@example.test",
+        password_hash="clearly-fake-test-password-hash",
+        account_type="customer",
+        account_status="active",
+        full_name=f"Public Transaction {suffix}",
+    )
+    db.session.add(user)
+    db.session.commit()
+    return user
+
+
+def _public_transaction_payload(
+    key: str = "55555555-5555-4555-8555-555555555555",
+    *,
+    amount: str = "25.00",
+) -> dict[str, str]:
+    return {
+        "idempotency_key": key,
+        "amount": amount,
+        "currency": "SGD",
+        "payee": "PAYEE-002",
+    }
+
+
+def test_future_transaction_payload_guardrails_reject_server_controlled_fields(app):
     from app.auth.services import AuthError
     from app.banking.services import validate_public_transaction_payload
 
-    with pytest.raises(AuthError):
-        validate_public_transaction_payload(
-            {
-                "idempotency_key": "11111111-1111-4111-8111-111111111111",
-                "amount": "10.00",
-                "account_id": "acct-1",
-            }
-        )
-    with pytest.raises(AuthError):
-        validate_public_transaction_payload({"amount": "10.00", "currency": "SGD"})
-    with pytest.raises(AuthError):
-        validate_public_transaction_payload(
-            {
-                "idempotency_key": "22222222-2222-4222-8222-222222222222",
-                "amount": "10.00",
-                "currency": "SGD",
-                "payee": "PAYEE-001",
-                "memo": "unexpected public field",
-            }
-        )
+    user = _public_transaction_user("guardrails")
+    with app.test_request_context("/banking/transactions", method="POST"):
+        with pytest.raises(AuthError):
+            validate_public_transaction_payload(
+                {
+                    "idempotency_key": "11111111-1111-4111-8111-111111111111",
+                    "amount": "10.00",
+                    "account_id": "acct-1",
+                }
+            )
+        with pytest.raises(AuthError):
+            validate_public_transaction_payload(
+                {"amount": "10.00", "currency": "SGD"}
+            )
+        with pytest.raises(AuthError):
+            validate_public_transaction_payload(
+                {
+                    "idempotency_key": "22222222-2222-4222-8222-222222222222",
+                    "amount": "10.00",
+                    "currency": "SGD",
+                    "payee": "PAYEE-001",
+                    "memo": "unexpected public field",
+                }
+            )
 
-    normalized = validate_public_transaction_payload(
-        {
-            "idempotency_key": " 33333333-3333-4333-8333-333333333333 ",
-            "amount": "10.00",
-            "currency": "sgd",
-            "payee": " payee-001 ",
-        }
-    )
+        normalized = validate_public_transaction_payload(
+            {
+                "idempotency_key": " 33333333-3333-4333-8333-333333333333 ",
+                "amount": "10.00",
+                "currency": "sgd",
+                "payee": " payee-001 ",
+            },
+            user=user,
+        )
 
     assert normalized["idempotency_key"] == "33333333-3333-4333-8333-333333333333"
     assert normalized["currency"] == "SGD"
@@ -86,28 +120,184 @@ def test_transfer_step_up_policy_distinguishes_normal_and_stronger_flows():
     with pytest.raises(AuthError):
         transfer_step_up_requirement("unexpected")
 
-def test_public_transaction_idempotency_binds_key_to_exact_payload():
+def test_public_transaction_idempotency_blocks_same_payload_replay(app):
+    from app.auth.services import AuthError
+    from app.banking.services import validate_public_transaction_payload
+    from app.models import PublicTransactionIdempotency
+
+    user = _public_transaction_user("same-replay")
+    payload = _public_transaction_payload()
+
+    with app.test_request_context("/banking/transactions", method="POST"):
+        first = validate_public_transaction_payload(payload, user=user)
+        with pytest.raises(AuthError) as replay:
+            validate_public_transaction_payload(dict(payload), user=user)
+
+    assert first == {**payload, "amount": Decimal("25.00")}
+    assert replay.value.status_code == 409
+    assert replay.value.message == "Transaction request has already been accepted."
+    record = db.session.query(PublicTransactionIdempotency).one()
+    assert record.user_id == user.id
+    assert record.status == "reserved"
+    assert record.key_fingerprint != payload["idempotency_key"]
+    assert record.key_verifier != payload["idempotency_key"]
+    assert record.payload_verifier not in json.dumps(payload, sort_keys=True)
+
+
+def test_public_transaction_idempotency_rejects_conflicts_and_isolates_users(app):
+    from app.auth.services import AuthError
+    from app.banking.services import validate_public_transaction_payload
+    from app.models import PublicTransactionIdempotency
+
+    alice = _public_transaction_user("alice")
+    bob = _public_transaction_user("bob")
+    payload = _public_transaction_payload()
+
+    with app.test_request_context("/banking/transactions", method="POST"):
+        validate_public_transaction_payload(payload, user=alice)
+        with pytest.raises(AuthError) as conflict:
+            validate_public_transaction_payload(
+                {**payload, "amount": "30.00"},
+                user=alice,
+            )
+        bob_result = validate_public_transaction_payload(payload, user=bob)
+
+    assert conflict.value.status_code == 409
+    assert bob_result == {**payload, "amount": Decimal("25.00")}
+    assert db.session.query(PublicTransactionIdempotency).count() == 2
+
+
+def test_public_transaction_idempotency_survives_session_hmac_rotation(app):
     from app.auth.services import AuthError
     from app.banking.services import validate_public_transaction_payload
 
-    store = {}
-    payload = {
-        "idempotency_key": "55555555-5555-4555-8555-555555555555",
-        "amount": "25.00",
-        "currency": "SGD",
-        "payee": "PAYEE-002",
-    }
+    user = _public_transaction_user("key-rotation")
+    payload = _public_transaction_payload()
 
-    first = validate_public_transaction_payload(payload, idempotency_store=store)
-    replay = validate_public_transaction_payload(dict(payload), idempotency_store=store)
+    with app.test_request_context("/banking/transactions", method="POST"):
+        validate_public_transaction_payload(payload, user=user)
+        app.config["SESSION_HMAC_ACTIVE_KEY_ID"] = "test-previous"
+        with pytest.raises(AuthError) as replay:
+            validate_public_transaction_payload(payload, user=user)
 
-    with pytest.raises(AuthError):
-        validate_public_transaction_payload(
+    assert replay.value.status_code == 409
+
+
+def test_public_transaction_idempotency_fails_closed_if_record_key_is_retired(app):
+    from app.auth.services import AuthError
+    from app.banking.services import validate_public_transaction_payload
+
+    user = _public_transaction_user("retired-key")
+    payload = _public_transaction_payload()
+
+    with app.test_request_context("/banking/transactions", method="POST"):
+        validate_public_transaction_payload(payload, user=user)
+        app.config["TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID"] = (
+            "test-ledger-previous"
+        )
+        app.config["TRANSACTION_LEDGER_HMAC_KEYS"] = {
+            "test-ledger-previous": app.config[
+                "TRANSACTION_LEDGER_HMAC_KEYS"
+            ]["test-ledger-previous"]
+        }
+        with pytest.raises(AuthError) as unavailable:
+            validate_public_transaction_payload(payload, user=user)
+
+    assert unavailable.value.status_code == 503
+
+
+def test_public_transaction_idempotency_rejects_corrupted_key_verifier(app):
+    from app.auth.services import AuthError
+    from app.banking.services import validate_public_transaction_payload
+    from app.models import PublicTransactionIdempotency
+
+    user = _public_transaction_user("corrupt-verifier")
+    payload = _public_transaction_payload()
+
+    with app.test_request_context("/banking/transactions", method="POST"):
+        validate_public_transaction_payload(payload, user=user)
+        record = db.session.query(PublicTransactionIdempotency).one()
+        record.key_verifier = "0" * 64
+        db.session.commit()
+        with pytest.raises(AuthError) as unavailable:
+            validate_public_transaction_payload(payload, user=user)
+
+    assert unavailable.value.status_code == 503
+
+
+def test_public_transaction_idempotency_expiry_allows_a_new_reservation(app):
+    from app.banking.services import validate_public_transaction_payload
+    from app.models import PublicTransactionIdempotency
+
+    user = _public_transaction_user("expiry")
+    payload = _public_transaction_payload()
+    first_seen = datetime(2026, 7, 5, 1, 0, tzinfo=timezone.utc)
+
+    with app.test_request_context("/banking/transactions", method="POST"):
+        validate_public_transaction_payload(payload, user=user, now=first_seen)
+        retried = validate_public_transaction_payload(
             {**payload, "amount": "30.00"},
-            idempotency_store=store,
+            user=user,
+            now=first_seen
+            + timedelta(
+                seconds=app.config[
+                    "PUBLIC_TRANSACTION_IDEMPOTENCY_TTL_SECONDS"
+                ]
+                + 1
+            ),
         )
 
-    assert first == replay
+    assert retried["amount"] == Decimal("30.00")
+    record = db.session.query(PublicTransactionIdempotency).one()
+    assert record.created_at.replace(tzinfo=timezone.utc) > first_seen
+
+
+def test_public_transaction_idempotency_fails_closed_without_durable_scope(app):
+    from app.auth.services import AuthError
+    from app.banking.services import validate_public_transaction_payload
+
+    user = _public_transaction_user("fail-closed")
+    payload = _public_transaction_payload()
+
+    with app.test_request_context("/banking/transactions", method="POST"):
+        with pytest.raises(AuthError) as missing_user:
+            validate_public_transaction_payload(payload)
+        with pytest.raises(AuthError) as process_local_store:
+            validate_public_transaction_payload(
+                payload,
+                user=user,
+                idempotency_store={},
+            )
+        app.config.pop("PUBLIC_TRANSACTION_IDEMPOTENCY_TTL_SECONDS")
+        with pytest.raises(AuthError) as missing_config:
+            validate_public_transaction_payload(payload, user=user)
+
+    assert missing_user.value.status_code == 503
+    assert process_local_store.value.status_code == 503
+    assert missing_config.value.status_code == 503
+
+
+def test_public_transaction_idempotency_refuses_pending_database_mutations(app):
+    from app.auth.services import AuthError
+    from app.banking.services import validate_public_transaction_payload
+    from app.models import PublicTransactionIdempotency
+
+    user = _public_transaction_user("pending-state")
+    user_id = user.id
+    original_name = user.full_name
+    user.full_name = "Uncommitted change"
+
+    with app.test_request_context("/banking/transactions", method="POST"):
+        with pytest.raises(AuthError) as unavailable:
+            validate_public_transaction_payload(
+                _public_transaction_payload(),
+                user=user,
+            )
+
+    assert unavailable.value.status_code == 503
+    assert db.session.get(User, user_id).full_name == original_name
+    assert db.session.query(PublicTransactionIdempotency).count() == 0
+
 
 def test_banking_transaction_approval_uses_required_audit_writer(app, monkeypatch):
     from app.banking import services as banking_services
@@ -140,6 +330,7 @@ def test_public_transaction_validation_audits_sanitized_success_and_failure(app)
     from app.auth.services import AuthError
     from app.banking.services import validate_public_transaction_payload
 
+    user = _public_transaction_user("audit")
     with app.test_request_context("/banking/transactions", method="POST"):
         with pytest.raises(AuthError):
             validate_public_transaction_payload(
@@ -157,7 +348,8 @@ def test_public_transaction_validation_audits_sanitized_success_and_failure(app)
                 "amount": "25.00",
                 "currency": "SGD",
                 "payee": "PAYEE-002",
-            }
+            },
+            user=user,
         )
 
     failure = (
@@ -179,7 +371,31 @@ def test_public_transaction_validation_audits_sanitized_success_and_failure(app)
     assert len(success.event_metadata["payload_hash_ref"]) == 32
     assert len(success.event_metadata["idempotency_key_ref"]) == 32
     assert len(success.event_metadata["payee_account_ref"]) == 32
+    assert success.event_metadata["idempotency_status"] == "reserved"
     assert "66666666-6666-4666-8666-666666666666" not in serialized
     assert "77777777-7777-4777-8777-777777777777" not in serialized
     assert "PAYEE-001" not in serialized
     assert "PAYEE-002" not in serialized
+
+
+def test_public_transaction_idempotency_documentation_matches_fail_closed_code():
+    docs = "\n".join(
+        Path(path).read_text(encoding="utf-8")
+        for path in (
+            "docs/security/assurance/secure-coding.md",
+            "docs/security/architecture/threat-model.md",
+            "docs/security/governance/framework-control-matrix.md",
+            "docs/security/governance/security-gap-register.md",
+        )
+    )
+
+    for required in (
+        "no production route caller",
+        "PUBLIC_TRANSACTION_IDEMPOTENCY_TTL_SECONDS",
+        "same-key/same-payload replay",
+        "same-key/different-payload conflict",
+        "authenticated user",
+        "Local Transfer and PayUp",
+        "tests/test_public_transaction_idempotency_migrations.py",
+    ):
+        assert required.casefold() in docs.casefold()

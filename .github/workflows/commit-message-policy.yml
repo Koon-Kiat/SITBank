@@ -30,6 +30,7 @@ jobs:
           persist-credentials: false
 
       - name: Validate commit subjects
+        id: validate
         shell: bash
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -144,3 +145,23 @@ jobs:
           fi
 
           echo "Commit message policy passed."
+
+      - name: Summarize commit message policy
+        if: ${{ always() }}
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          VALIDATION_OUTCOME: ${{ steps.validate.outcome }}
+        run: |
+          commit_count="unknown"
+          if value="$(git rev-list --count "${BASE_SHA}..${HEAD_SHA}" 2>/dev/null)"; then
+            commit_count="${value}"
+          fi
+          {
+            echo "## Commit message policy"
+            echo
+            echo "- Status: **${VALIDATION_OUTCOME}**"
+            echo "- Scope: \`${commit_count}\` pull request commit subject(s)."
+            echo "- Decision: subjects must satisfy the repository contribution message policy."
+          } >> "${GITHUB_STEP_SUMMARY}"

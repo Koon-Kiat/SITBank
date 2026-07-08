@@ -40,7 +40,11 @@ def test_scorecard_workflow_is_informational_automatic_and_pinned():
 
 def test_scorecard_evidence_has_bounded_non_mutating_artifact_upload():
     text, workflow = _load(WORKFLOW_PATH)
-    upload = workflow["jobs"]["scorecard"]["steps"][1]
+    upload = next(
+        step
+        for step in workflow["jobs"]["scorecard"]["steps"]
+        if step["name"] == "Upload informational Scorecard evidence"
+    )
 
     assert upload["with"] == {
         "name": "openssf-scorecard-results",
@@ -48,6 +52,7 @@ def test_scorecard_evidence_has_bounded_non_mutating_artifact_upload():
         "if-no-files-found": "error",
         "retention-days": "30",
     }
+    assert upload["if"] == "${{ always() }}"
     lowered = text.casefold()
     for forbidden in (
         "tailscale",
@@ -68,7 +73,11 @@ def test_workflow_write_permissions_are_narrow_and_reviewed():
     allowed_write_permissions = {
         ("bootstrap-ec2.yml", "bootstrap-staging", "id-token"),
         ("bootstrap-ec2.yml", "bootstrap-production", "id-token"),
+        ("bootstrap-observability-ec2.yml", "bootstrap", "id-token"),
         ("ci-deploy.yml", "sonarqube-comment", "pull-requests"),
+        ("ci-deploy.yml", "publish", "artifact-metadata"),
+        ("ci-deploy.yml", "publish", "attestations"),
+        ("ci-deploy.yml", "publish", "id-token"),
         ("ci-deploy.yml", "publish", "packages"),
         ("ci-deploy.yml", "release-verify", "id-token"),
         ("ci-deploy.yml", "release-verify", "packages"),

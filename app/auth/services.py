@@ -3,37 +3,42 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
-import io
 import re
 import secrets
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from decimal import Decimal
+from typing import Any, Literal
 
 from cryptography.exceptions import InvalidTag
 import pyotp
-import qrcode
 from flask import current_app, request, session
 from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
-from app.models import AuthAttemptCounter, TotpReplayRecord, User
+from app.models import AuthAttemptCounter, RegistrationCredit, TotpReplayRecord, User
+from app.security.qr import qr_data_uri
+from app.auth.mfa_policy import (
+    PASSWORD_BOOTSTRAP_AUTH_CONTEXT,
+    has_enrolled_mfa_method,
+)
 from app.auth.registration_otp import (
     RegistrationOtpError,
     consume_verified_registration_email,
     require_current_verified_registration_email,
     require_verified_registration_email,
 )
-from app.auth.mfa_policy import (
-    PASSWORD_BOOTSTRAP_AUTH_CONTEXT,
-    enrolled_webauthn_credential_count,
-    has_enrolled_mfa_method,
-)
+from app.auth.schemas import PHONE_RE
 from app.security.audit import audit_event, audit_event_required, audit_reference, principal_reference
 from app.security.crypto import decrypt_mfa_secret, encrypt_mfa_secret
 from app.security.email import send_security_email
-from app.security.identity_policy import IdentityPolicyError, require_customer_email
+from app.security.identity_policy import (
+    IdentityPolicyError,
+    canonicalize_customer_email,
+    require_customer_email,
+)
 from app.security.password_history import (
     PasswordReuseError,
     assert_password_not_reused,
@@ -48,7 +53,14 @@ from app.security.passwords import (
     validate_password_policy,
     verify_password,
 )
-from app.security.rate_limits import AuthBackoffRequired, apply_exponential_backoff, clear_failures, record_failure
+from app.security.rate_limits import (
+    AuthBackoffRequired,
+    DurableRateLimitExceeded,
+    apply_exponential_backoff,
+    clear_failures,
+    enforce_durable_failure_limit,
+    record_failure,
+)
 from app.security.session_hmac import active_hmac_hex
 from app.security.sessions import (
     begin_password_authenticated_session,
@@ -67,6 +79,7 @@ from app.security.sessions import (
     resolve_session_reference_for_user,
     rotate_authenticated_session_after_mfa,
 )
+from app.security.transaction_integrity import sign_registration_credit_integrity
 
 from .recovery_codes import (
     RECOVERY_CODE_LOW_THRESHOLD,
@@ -78,19 +91,23 @@ from .recovery_codes import (
 
 
 GENERIC_LOGIN_ERROR = "Invalid username or password"
-GENERIC_MFA_ERROR = "Invalid authentication code."
-AUTH_BACKOFF_ERROR = "Too many attempts. Please try again later."
+GENERIC_MFA_ERROR = "Incorrect code. Check your authenticator and try again."
+AUTH_BACKOFF_ERROR = "Too many failed attempts. Please wait before trying again."
 ACCOUNT_AUTH_UNAVAILABLE_ERROR = "Authentication unavailable for this account"
 PROFILE_UPDATE_ERROR = "Profile could not be updated with those details"
 AUTH_LOCK_THRESHOLD = 10
+CUSTOMER_PASSWORD_LOCK_THRESHOLD = 3
+PRIVILEGED_PASSWORD_LOCK_THRESHOLD = 2
 AUTH_LOCK_WINDOW_SECONDS = 15 * 60
 MFA_REPLACEMENT_NONCE_KEY = "mfa_replacement_secret_nonce"
 MFA_REPLACEMENT_CIPHERTEXT_KEY = "mfa_replacement_secret_ciphertext"
 MFA_REPLACEMENT_STARTED_AT_KEY = "mfa_replacement_started_at"
 PROFILE_EMAIL_PENDING_EMAIL_KEY = "profile_email_pending_email"
-PROFILE_EMAIL_PENDING_USERNAME_KEY = "profile_email_pending_username"
+PROFILE_EMAIL_PENDING_PHONE_HMAC_KEY = "profile_email_pending_phone_hmac"
 PROFILE_EMAIL_PENDING_CODE_HMAC_KEY = "profile_email_pending_code_hmac"
 PROFILE_EMAIL_PENDING_EXPIRES_AT_KEY = "profile_email_pending_expires_at"
+PROFILE_EMAIL_CHANGE_EXPIRED_MESSAGE = "Email verification expired. Request a new code."
+REGISTRATION_WELCOME_CREDIT_AMOUNT = Decimal("100.00")
 
 
 class AuthError(ValueError):
@@ -107,19 +124,14 @@ class FrozenAccountError(AuthError):
 
 
 MFA_NOT_ENABLED_ERROR = "MFA is not enabled"
+TOTP_VERIFICATION_VALID = "valid"
+TOTP_VERIFICATION_INVALID = "invalid"
+TOTP_VERIFICATION_REPLAY = "replay"
+TotpVerificationOutcome = Literal["valid", "invalid", "replay"]
 
 
 def _normalize(value: str) -> str:
     return value.strip().casefold()
-
-
-def _normalize_step_up_preference(value: str | None) -> str:
-    normalized = str(value or "totp").strip().casefold()
-    if normalized == "passkey":
-        raise AuthError("Passkey verification preference is no longer available", 400)
-    if normalized != "totp":
-        raise AuthError("Invalid verification preference", 400)
-    return normalized
 
 
 def _ensure_step_up_preference_enrolled(user: User, preference: str) -> None:
@@ -209,15 +221,15 @@ def _phone_number_taken(phone_number: str) -> bool:
     ).scalar_one_or_none() is not None
 
 
-def _email_taken(email: str) -> bool:
+def _email_taken(canonical_email: str) -> bool:
     return db.session.execute(
-        db.select(User).where(func.lower(User.email) == _normalize(email))
+        db.select(User).where(User.registration_email_canonical == canonical_email)
     ).scalar_one_or_none() is not None
 
 
 def _generate_account_number() -> str:
     for _ in range(10):
-        candidate = "012" + "".join(str(secrets.randbelow(10)) for _ in range(6))
+        candidate = "".join(str(secrets.randbelow(10)) for _ in range(12))
         if not db.session.execute(db.select(User).where(User.account_number == candidate)).scalar_one_or_none():
             return candidate
     raise AuthError("Could not generate a unique account number", 500)
@@ -232,6 +244,7 @@ def register_user(data: dict[str, Any]) -> tuple[User, list[str]]:
         )
     except RegistrationOtpError as exc:
         raise AuthError(str(exc), exc.status_code) from exc
+    canonical_email = canonicalize_customer_email(normalized_email)
 
     if data.get("password") != data.get("confirm_password"):
         audit_event("registration", "failure", metadata={"reason": "password_mismatch"})
@@ -249,13 +262,14 @@ def register_user(data: dict[str, Any]) -> tuple[User, list[str]]:
     if _phone_number_taken(data["phone_number"]):
         audit_event("registration", "failure", metadata={"reason": "duplicate_phone"})
         raise AuthError("Registration could not be completed with those details", 400, field="phone")
-    if _email_taken(normalized_email):
+    if _email_taken(canonical_email):
         audit_event("registration", "failure", metadata={"reason": "duplicate_email"})
         raise AuthError("Registration could not be completed with those details", 400, field="email")
 
     user = User(
         username=data["username"].strip(),
         email=normalized_email,
+        registration_email_canonical=canonical_email,
         password_hash=hash_password(data["password"]),
         account_type="customer",
         account_status="active",
@@ -267,11 +281,17 @@ def register_user(data: dict[str, Any]) -> tuple[User, list[str]]:
     db.session.add(user)
     try:
         db.session.flush()
+        _apply_registration_welcome_credit(user)
         db.session.commit()
     except IntegrityError as exc:
         db.session.rollback()
         audit_event("registration", "failure", metadata={"reason": "integrity_error"})
         raise AuthError("Registration could not be completed with those details", 400) from exc
+    except RuntimeError as exc:
+        db.session.rollback()
+        current_app.logger.warning("registration_welcome_credit_failed error=%s", type(exc).__name__)
+        audit_event("registration", "failure", metadata={"reason": "welcome_credit_unavailable"})
+        raise AuthError("Registration could not be completed right now. Please try again later.", 503) from exc
     consume_verified_registration_email(normalized_email)
     audit_event(
         "registration",
@@ -286,46 +306,111 @@ def register_user(data: dict[str, Any]) -> tuple[User, list[str]]:
     return user, password_policy_warnings
 
 
+def _apply_registration_welcome_credit(user: User) -> None:
+    existing_credit = db.session.execute(
+        db.select(RegistrationCredit.id).where(RegistrationCredit.user_id == user.id).limit(1)
+    ).scalar_one_or_none()
+    if existing_credit is not None:
+        return
+
+    credit_ref = str(uuid.uuid4())
+    created_at = datetime.now(timezone.utc)
+    credit_hash, key_id, algorithm, version = sign_registration_credit_integrity(
+        credit_ref=credit_ref,
+        user_id=int(user.id),
+        amount=REGISTRATION_WELCOME_CREDIT_AMOUNT,
+        status="completed",
+        created_at=created_at,
+    )
+    user.balance = Decimal(str(user.balance or "0.00")) + REGISTRATION_WELCOME_CREDIT_AMOUNT
+    db.session.add(
+        RegistrationCredit(
+            credit_ref=credit_ref,
+            credit_hash=credit_hash,
+            credit_integrity_key_id=key_id,
+            credit_integrity_algorithm=algorithm,
+            credit_integrity_version=version,
+            user_id=user.id,
+            amount=REGISTRATION_WELCOME_CREDIT_AMOUNT,
+            status="completed",
+            created_at=created_at,
+        )
+    )
+    audit_event_required(
+        "registration_credit",
+        "success",
+        user=user,
+        metadata={
+            "credit_type": "welcome",
+            "amount": "fixed_sgd_100",
+            "credit_ref": audit_reference("registration_credit", credit_ref),
+        },
+    )
+
+
+def _customer_password_matches(user: User | None, password: str) -> bool:
+    if not is_password_raw_length_safe(password):
+        return False
+    candidate_hash = user.password_hash if user else _dummy_password_hash()
+    return verify_password(password, candidate_hash)
+
+
+def _validate_customer_primary_credentials(
+    user: User | None,
+    identifier: str,
+    password: str,
+    principal: str,
+) -> User:
+    failure_reason = "invalid_credentials"
+    password_ok = _customer_password_matches(user, password)
+    if user is not None and getattr(user, "account_type", "customer") != "customer":
+        password_ok = False
+        failure_reason = "not_customer_identity"
+    if user is not None and password_ok:
+        return user
+    audit_event(
+        "login",
+        "failure",
+        user=user,
+        metadata={
+            "known_user": user is not None,
+            "reason": failure_reason,
+            "principal_ref": principal_reference(identifier),
+        },
+    )
+    record_failure("login", principal)
+    if user is not None and user.account_type == "customer":
+        user.failed_login_count = int(user.failed_login_count or 0) + 1
+        _record_user_security_failure(
+            user,
+            "password",
+            "password_failed_attempts",
+        )
+    raise AuthError(GENERIC_LOGIN_ERROR, 401)
+
+
 def authenticate_primary(identifier: str, password: str) -> dict[str, Any]:
     principal = _auth_principal(identifier)
     user = _find_user_by_identifier(identifier)
     _enforce_auth_backoff("login", principal)
-    failure_reason = "invalid_credentials"
+    user = _validate_customer_primary_credentials(
+        user,
+        identifier,
+        password,
+        principal,
+    )
 
-    password_ok = False
-    if is_password_raw_length_safe(password):
-        candidate_hash = user.password_hash if user else _dummy_password_hash()
-        password_ok = verify_password(password, candidate_hash)
+    _enforce_customer_login_account_state(user)
 
-    if user is not None and getattr(user, "account_type", "customer") != "customer":
-        password_ok = False
-        failure_reason = "not_customer_identity"
-
-    if user is None or not password_ok:
-        audit_event(
-            "login",
-            "failure",
-            user=user,
-            metadata={
-                "known_user": user is not None,
-                "reason": failure_reason,
-                "principal_ref": principal_reference(identifier),
-            },
-        )
-        record_failure("login", principal)
-        raise AuthError(GENERIC_LOGIN_ERROR, 401)
-
-    ensure_account_can_authenticate(user)
-
-    user.failed_login_count = 0
-    user.last_login_at = datetime.now(timezone.utc)
     if password_hash_needs_rehash(user.password_hash):
         user.password_hash = hash_password(password)
     db.session.commit()
-    clear_failures("login", principal)
-    _clear_user_security_failures(user, "password")
 
     if user.mfa_enabled:
+        clear_failures(
+            "customer_mfa_login",
+            _customer_mfa_failure_principal(user.id),
+        )
         begin_password_authenticated_session(user.id)
         audit_event("login_password", "success", user=user, metadata={"mfa_required": True})
         return {
@@ -338,26 +423,48 @@ def authenticate_primary(identifier: str, password: str) -> dict[str, Any]:
         mfa_verified=False,
         auth_context=PASSWORD_BOOTSTRAP_AUTH_CONTEXT,
     )
-    legacy_passkey_count = enrolled_webauthn_credential_count(user)
-    metadata = {"mfa_required": False}
-    if legacy_passkey_count > 0:
-        metadata["legacy_passkey_credentials"] = legacy_passkey_count
-        audit_event(
-            "legacy_passkey_mfa_migration_required",
-            "required",
-            user=user,
-            session_id=session_id,
-            metadata={"legacy_passkey_credentials": legacy_passkey_count},
-        )
-    audit_event("login", "success", user=user, session_id=session_id, metadata=metadata)
+    user.failed_login_count = 0
+    user.last_login_at = datetime.now(timezone.utc)
+    db.session.commit()
+    clear_failures("login", principal)
+    _clear_user_security_failures(user, "password")
+    audit_event(
+        "login",
+        "success",
+        user=user,
+        session_id=session_id,
+        metadata={"mfa_required": False},
+    )
     return {
         "message": "MFA setup required",
         "mfa_required": False,
         "mfa_setup_required": True,
-        "legacy_passkey_migration_required": legacy_passkey_count > 0,
         "session_ref": public_session_reference(session_id),
         "user": _public_user(user),
     }
+
+
+def _enforce_customer_login_account_state(user: User) -> None:
+    automatic_lock_reasons = {"password_failed_attempts", "mfa_failed_attempts"}
+    if (
+        user.security_locked_at is not None
+        and user.security_lock_reason in automatic_lock_reasons
+    ):
+        message = GENERIC_LOGIN_ERROR
+        status_code = 401
+        reason = user.security_lock_reason
+    elif user.is_frozen:
+        message = ACCOUNT_AUTH_UNAVAILABLE_ERROR
+        status_code = 403
+        reason = user.security_lock_reason or "account_frozen"
+    elif user.security_locked_at is not None:
+        message = GENERIC_LOGIN_ERROR
+        status_code = 401
+        reason = user.security_lock_reason or "account_unavailable"
+    else:
+        return
+    audit_event("login", "blocked", user=user, metadata={"reason": reason})
+    raise AuthError(message, status_code)
 
 
 def generate_mfa_setup(user: User) -> dict[str, str]:
@@ -374,6 +481,8 @@ def generate_mfa_setup(user: User) -> dict[str, str]:
     user.mfa_secret_nonce = nonce
     user.mfa_secret_ciphertext = ciphertext
     user.mfa_enabled = False
+    user.mfa_pending_started_at = datetime.now(timezone.utc)
+    user.mfa_pending_session_hash = _mfa_setup_session_hash()
     db.session.commit()
     audit_event("mfa_setup_generate", "success", user=user)
 
@@ -383,16 +492,23 @@ def generate_mfa_setup(user: User) -> dict[str, str]:
 def pending_mfa_setup(user: User) -> dict[str, str] | None:
     if user.mfa_enabled or not user.mfa_secret_nonce or not user.mfa_secret_ciphertext:
         return None
-
-    secret = _mfa_secret_for_user(user)
-    return _mfa_setup_payload(user, secret)
+    _require_active_pending_mfa_setup(user, raise_error=False)
+    # Setup material is returned only by generate_mfa_setup. A page refresh
+    # intentionally requires a safe restart instead of redisplaying the secret.
+    return None
 
 
 def verify_mfa_setup(user: User, code: str) -> dict[str, Any]:
-    if not _verify_totp_for_user(user, code, "mfa_setup"):
+    _require_active_pending_mfa_setup(user)
+    outcome = _verify_totp_for_user_outcome(user, code, "mfa_setup")
+    if outcome == TOTP_VERIFICATION_REPLAY:
+        _handle_mfa_verification_replay(user, "mfa_setup_verify")
+    if outcome != TOTP_VERIFICATION_VALID:
         _handle_mfa_verification_failure(user, "mfa_setup_verify")
 
     user.mfa_enabled = True
+    user.mfa_pending_started_at = None
+    user.mfa_pending_session_hash = None
     recovery_codes = generate_recovery_codes_for_user(user, commit=False, audit=False)
     session_id = rotate_authenticated_session_after_mfa(user.id)
     audit_event_required(
@@ -412,7 +528,7 @@ def verify_mfa_setup(user: User, code: str) -> dict[str, Any]:
     }
 
 
-def generate_mfa_replacement(user: User, code: str | None, stepup_token: str | None = None) -> dict[str, str]:
+def generate_mfa_replacement(user: User, code: str | None) -> dict[str, str]:
     ensure_account_not_frozen(user, "MFA replacement")
     if not user.mfa_enabled:
         audit_event("mfa_replace_start", "failure", user=user, metadata={"reason": "mfa_not_enabled"})
@@ -421,7 +537,6 @@ def generate_mfa_replacement(user: User, code: str | None, stepup_token: str | N
     verify_high_risk_authorization(
         user,
         code,
-        stepup_token,
         "mfa_replace_start",
     )
 
@@ -438,10 +553,9 @@ def generate_mfa_replacement(user: User, code: str | None, stepup_token: str | N
 def pending_mfa_replacement(user: User) -> dict[str, str] | None:
     if not user.mfa_enabled:
         return None
-    secret = _pending_mfa_replacement_secret(user)
-    if secret is None:
-        return None
-    return _mfa_setup_payload(user, secret)
+    _pending_mfa_replacement_secret(user)
+    # Replacement material is shown only in the response that creates it.
+    return None
 
 
 def verify_mfa_replacement(user: User, code: str) -> dict[str, Any]:
@@ -455,7 +569,15 @@ def verify_mfa_replacement(user: User, code: str) -> dict[str, Any]:
         audit_event("mfa_replace_verify", "failure", user=user, metadata={"reason": "missing_pending_secret"})
         raise AuthError("No pending MFA replacement", 401)
 
-    if not _verify_totp_secret_for_user(user, secret, code, "mfa_replace_verify"):
+    outcome = _verify_totp_secret_for_user_outcome(
+        user,
+        secret,
+        code,
+        "mfa_replace_verify",
+    )
+    if outcome == TOTP_VERIFICATION_REPLAY:
+        _handle_mfa_verification_replay(user, "mfa_replace_verify")
+    if outcome != TOTP_VERIFICATION_VALID:
         _handle_mfa_verification_failure(user, "mfa_replace_verify")
 
     user.mfa_secret_nonce = _b64decode(str(session[MFA_REPLACEMENT_NONCE_KEY]))
@@ -495,11 +617,18 @@ def complete_pending_mfa(code: str) -> dict[str, Any]:
 
     ensure_account_can_authenticate(user)
 
+    principal = _customer_mfa_failure_principal(user.id)
+    failure_limit = int(current_app.config["CUSTOMER_MFA_FAILURE_LIMIT"])
+    _enforce_customer_mfa_failure_limit(user, principal, failure_limit)
     factor = _verify_pending_login_authentication_code(user, code)
 
     user.last_login_at = datetime.now(timezone.utc)
     user.failed_login_count = 0
     db.session.commit()
+    clear_failures("customer_mfa_login", principal)
+    clear_failures("login", _auth_principal(user.username))
+    clear_failures("login", _auth_principal(user.email))
+    _clear_user_security_failures(user, "password")
     _clear_user_security_failures(user, "mfa")
     recovery_codes_remaining = unused_recovery_code_count(user)
     session_id = establish_authenticated_session(
@@ -517,10 +646,84 @@ def complete_pending_mfa(code: str) -> dict[str, Any]:
     }
 
 
+def _customer_mfa_failure_principal(user_id: int) -> str:
+    return f"{_client_ip()}:{user_id}"
+
+
+def _enforce_customer_mfa_failure_limit(
+    user: User,
+    principal: str,
+    failure_limit: int,
+    *,
+    audit_block: bool = True,
+) -> None:
+    try:
+        enforce_durable_failure_limit(
+            "customer_mfa_login",
+            principal,
+            limit=failure_limit,
+        )
+    except DurableRateLimitExceeded as exc:
+        if audit_block:
+            audit_event(
+                "mfa_login_verify",
+                "blocked",
+                user=user,
+                metadata={
+                    "reason": "wrong_code_threshold_exceeded",
+                    "retry_after": exc.retry_after,
+                },
+            )
+        raise AuthError(
+            GENERIC_MFA_ERROR,
+            429,
+            retry_after=exc.retry_after,
+        ) from exc
+
+
+def _record_customer_mfa_login_failure(
+    user: User,
+    *,
+    reason: str,
+    event_type: str,
+) -> None:
+    principal = _customer_mfa_failure_principal(user.id)
+    failure_limit = int(current_app.config["CUSTOMER_MFA_FAILURE_LIMIT"])
+    failure_window_seconds = int(
+        current_app.config["CUSTOMER_MFA_FAILURE_WINDOW_SECONDS"]
+    )
+    attempts = record_failure(
+        "customer_mfa_login",
+        principal,
+        window_seconds=failure_window_seconds,
+    )
+    outcome = "blocked" if attempts > failure_limit else "failure"
+    audit_event(
+        event_type,
+        outcome,
+        user=user,
+        metadata={
+            "reason": (
+                "wrong_code_threshold_exceeded"
+                if attempts > failure_limit
+                else reason
+            ),
+            "failure_count": attempts,
+        },
+    )
+    _record_user_security_failure(user, "mfa", "mfa_failed_attempts")
+    if attempts > failure_limit:
+        _enforce_customer_mfa_failure_limit(
+            user,
+            principal,
+            failure_limit,
+            audit_block=False,
+        )
+
+
 def regenerate_totp_recovery_codes(
     user: User,
     code: str | None,
-    stepup_token: str | None = None,
 ) -> dict[str, Any]:
     ensure_account_not_frozen(user, "recovery code regeneration")
     if not user.mfa_enabled:
@@ -529,7 +732,6 @@ def regenerate_totp_recovery_codes(
     verify_high_risk_authorization(
         user,
         code,
-        stepup_token,
         "recovery_codes_regenerate",
     )
 
@@ -549,12 +751,11 @@ def regenerate_totp_recovery_codes(
     }
 
 
-def freeze_own_account(user: User, code: str, stepup_token: str | None = None) -> dict[str, Any]:
+def freeze_own_account(user: User, code: str) -> dict[str, Any]:
     ensure_account_not_frozen(user, "account freeze")
     verify_high_risk_authorization(
         user,
         code,
-        stepup_token,
         "account_freeze",
         rotate_session_on_success=False,
     )
@@ -570,11 +771,26 @@ def freeze_own_account(user: User, code: str, stepup_token: str | None = None) -
         session_id=session_id,
         metadata={"revoked_other_sessions": revoked},
     )
+    _send_account_freeze_notification(user)
     return {
         "message": "Account frozen. Unfreeze requires manual support review.",
         "session_ref": public_session_reference(session_id),
         "revoked_other_sessions": revoked,
     }
+
+
+def _send_account_freeze_notification(user: User) -> None:
+    body = (
+        "Your SITBank account was frozen from an authenticated session. "
+        "If you did not request this, contact SITBank support through the approved recovery path."
+    )
+    try:
+        send_security_email(user.email, "SITBank account frozen", body)
+    except Exception as exc:
+        current_app.logger.warning("account_freeze_notification_failed error=%s", type(exc).__name__)
+        audit_event("account_freeze_notification", "failure", user=user, metadata={"reason": "email_delivery_failed"})
+        return
+    audit_event("account_freeze_notification", "queued", user=user)
 
 
 def logout_current_session() -> None:
@@ -599,32 +815,35 @@ def past_sessions_for_user(user: User) -> list[dict[str, Any]]:
 
 def update_profile_details(
     user: User,
-    username: str,
     email: str,
+    phone_number: str,
     code: str | None,
-    stepup_token: str | None = None,
     email_verification_code: str | None = None,
 ) -> dict[str, Any]:
-    normalized_username, username_lookup, normalized_email, email_changed = _profile_update_values(
+    (
+        normalized_email,
+        normalized_phone,
+        email_changed,
+        phone_changed,
+    ) = _profile_update_values(
         user,
-        username,
         email,
+        phone_number,
     )
 
-    if username_lookup == _normalize(user.username) and not email_changed:
+    if not email_changed and not phone_changed:
         return {"updated": False, "email_verification_pending": False}
 
     ensure_account_not_frozen(user, "profile update")
     _ensure_step_up_preference_enrolled(user, "totp")
-    _reject_duplicate_profile_identifiers(user, username_lookup, normalized_email)
+    _reject_duplicate_profile_identifiers(user, normalized_email, normalized_phone)
 
     if email_changed:
         pending_result = _handle_profile_email_change(
             user,
-            username=normalized_username,
             normalized_email=normalized_email,
+            normalized_phone=normalized_phone,
             code=code,
-            stepup_token=stepup_token,
             email_verification_code=email_verification_code,
         )
         if pending_result is not None:
@@ -633,48 +852,55 @@ def update_profile_details(
         verify_high_risk_authorization(
             user,
             code,
-            stepup_token,
             "profile_update",
         )
 
-    return _commit_profile_update(user, normalized_username, normalized_email, email_changed)
+    return _commit_profile_update(
+        user,
+        normalized_email,
+        normalized_phone,
+        email_changed,
+        phone_changed,
+    )
 
 
-def _profile_update_values(user: User, username: str, email: str) -> tuple[str, str, str, bool]:
-    normalized_username = username.strip()
-    username_lookup = _normalize(normalized_username)
+def _profile_update_values(user: User, email: str, phone_number: str) -> tuple[str, str, bool, bool]:
     submitted_email = email.strip().lower()
+    normalized_phone = str(phone_number or "").strip()
+    if re.fullmatch(PHONE_RE, normalized_phone) is None:
+        audit_event("profile_update", "blocked", user=user, metadata={"reason": "invalid_phone"})
+        raise AuthError(PROFILE_UPDATE_ERROR, 400)
+
     email_changed = submitted_email != _normalize(user.email)
+    phone_changed = normalized_phone != str(user.phone_number or "")
     if not email_changed:
-        return normalized_username, username_lookup, submitted_email, False
+        return submitted_email, normalized_phone, False, phone_changed
     try:
         normalized_email = require_customer_email(email)
     except IdentityPolicyError as exc:
         audit_event("profile_update", "blocked", user=user, metadata={"reason": exc.reason})
         raise AuthError(PROFILE_UPDATE_ERROR, 400) from exc
-    return normalized_username, username_lookup, normalized_email, True
+    return normalized_email, normalized_phone, True, phone_changed
 
 
 def _handle_profile_email_change(
     user: User,
     *,
-    username: str,
     normalized_email: str,
+    normalized_phone: str,
     code: str | None,
-    stepup_token: str | None,
     email_verification_code: str | None,
 ) -> dict[str, Any] | None:
     if not email_verification_code:
         verify_high_risk_authorization(
             user,
             code,
-            stepup_token,
             "profile_email_change_request",
         )
         _create_profile_email_change_challenge(
             user,
-            username=username,
             email=normalized_email,
+            phone_number=normalized_phone,
         )
         return {
             "updated": False,
@@ -682,11 +908,10 @@ def _handle_profile_email_change(
             "pending_email": normalized_email,
         }
 
-    _validate_profile_email_change_code(user, normalized_email, email_verification_code)
+    _validate_profile_email_change_code(user, normalized_email, normalized_phone, email_verification_code)
     verify_high_risk_authorization(
         user,
         code,
-        stepup_token,
         "profile_email_change_commit",
     )
     return None
@@ -695,6 +920,7 @@ def _handle_profile_email_change(
 def _validate_profile_email_change_code(
     user: User,
     normalized_email: str,
+    normalized_phone: str,
     email_verification_code: str,
 ) -> None:
     pending_change = _pending_profile_email_change(user)
@@ -702,13 +928,19 @@ def _validate_profile_email_change_code(
         _reject_profile_email_change(
             user,
             reason="missing_or_expired_challenge",
-            message="Email verification expired. Request a new code.",
+            message=PROFILE_EMAIL_CHANGE_EXPIRED_MESSAGE,
         )
     if pending_change["email"] != normalized_email:
         _reject_profile_email_change(
             user,
             reason="superseded_challenge",
-            message="Email verification expired. Request a new code.",
+            message=PROFILE_EMAIL_CHANGE_EXPIRED_MESSAGE,
+        )
+    if pending_change["phone_hmac"] != _profile_phone_hmac(user, normalized_phone):
+        _reject_profile_email_change(
+            user,
+            reason="superseded_challenge",
+            message=PROFILE_EMAIL_CHANGE_EXPIRED_MESSAGE,
         )
     expected_hmac = str(pending_change["code_hmac"])
     submitted_hmac = _profile_email_code_hmac(
@@ -736,13 +968,16 @@ def _reject_profile_email_change(user: User, *, reason: str, message: str) -> No
 
 def _commit_profile_update(
     user: User,
-    normalized_username: str,
     normalized_email: str,
+    normalized_phone: str,
     email_changed: bool,
+    phone_changed: bool,
 ) -> dict[str, Any]:
-    user.username = normalized_username
     if email_changed:
         user.email = normalized_email
+        user.registration_email_canonical = canonicalize_customer_email(normalized_email)
+    if phone_changed:
+        user.phone_number = normalized_phone
     try:
         db.session.commit()
     except IntegrityError as exc:
@@ -755,17 +990,32 @@ def _commit_profile_update(
         "profile_update",
         "success",
         user=user,
-        metadata={"updated_fields": "profile_email" if email_changed else "profile_details"},
+        metadata={"updated_fields": _profile_updated_fields(email_changed, phone_changed)},
     )
     return {"updated": True, "email_verification_pending": False}
 
 
-def _reject_duplicate_profile_identifiers(user: User, username_lookup: str, normalized_email: str) -> None:
+def _profile_updated_fields(email_changed: bool, phone_changed: bool) -> str:
+    if email_changed and phone_changed:
+        return "profile_email_phone"
+    if email_changed:
+        return "profile_email"
+    if phone_changed:
+        return "profile_phone"
+    return "profile_details"
+
+
+def _reject_duplicate_profile_identifiers(
+    user: User,
+    normalized_email: str,
+    normalized_phone: str,
+) -> None:
+    canonical_email = canonicalize_customer_email(normalized_email)
     duplicate_user = db.session.execute(
         db.select(User).where(
             or_(
-                func.lower(User.username) == username_lookup,
-                func.lower(User.email) == normalized_email,
+                User.registration_email_canonical == canonical_email,
+                User.phone_number == normalized_phone,
             ),
             User.id != user.id,
         )
@@ -775,12 +1025,17 @@ def _reject_duplicate_profile_identifiers(user: User, username_lookup: str, norm
         raise AuthError(PROFILE_UPDATE_ERROR, 400)
 
 
-def _create_profile_email_change_challenge(user: User, *, username: str, email: str) -> None:
+def _create_profile_email_change_challenge(
+    user: User,
+    *,
+    email: str,
+    phone_number: str,
+) -> None:
     verification_code = f"{secrets.randbelow(1_000_000):06d}"
     expires_at = int(time.time()) + int(current_app.config["PROFILE_EMAIL_CHANGE_TTL_SECONDS"])
     _clear_pending_profile_email_change()
-    session[PROFILE_EMAIL_PENDING_USERNAME_KEY] = username
     session[PROFILE_EMAIL_PENDING_EMAIL_KEY] = email
+    session[PROFILE_EMAIL_PENDING_PHONE_HMAC_KEY] = _profile_phone_hmac(user, phone_number)
     session[PROFILE_EMAIL_PENDING_CODE_HMAC_KEY] = _profile_email_code_hmac(
         user,
         email,
@@ -817,18 +1072,18 @@ def _create_profile_email_change_challenge(user: User, *, username: str, email: 
 
 def _pending_profile_email_change(user: User) -> dict[str, str] | None:
     email = str(session.get(PROFILE_EMAIL_PENDING_EMAIL_KEY) or "")
-    username = str(session.get(PROFILE_EMAIL_PENDING_USERNAME_KEY) or "")
+    phone_hmac = str(session.get(PROFILE_EMAIL_PENDING_PHONE_HMAC_KEY) or "")
     code_hmac = str(session.get(PROFILE_EMAIL_PENDING_CODE_HMAC_KEY) or "")
     try:
         expires_at = int(session.get(PROFILE_EMAIL_PENDING_EXPIRES_AT_KEY) or 0)
     except (TypeError, ValueError):
         expires_at = 0
-    if not email or not username or not code_hmac or expires_at <= int(time.time()):
-        if email or username or code_hmac or expires_at:
+    if not email or not phone_hmac or not code_hmac or expires_at <= int(time.time()):
+        if email or phone_hmac or code_hmac or expires_at:
             _clear_pending_profile_email_change()
             audit_event("profile_email_change", "expired", user=user)
         return None
-    return {"email": email, "username": username, "code_hmac": code_hmac}
+    return {"email": email, "phone_hmac": phone_hmac, "code_hmac": code_hmac}
 
 
 def pending_profile_email_change() -> dict[str, str] | None:
@@ -841,7 +1096,7 @@ def pending_profile_email_change() -> dict[str, str] | None:
 
 def _clear_pending_profile_email_change() -> None:
     session.pop(PROFILE_EMAIL_PENDING_EMAIL_KEY, None)
-    session.pop(PROFILE_EMAIL_PENDING_USERNAME_KEY, None)
+    session.pop(PROFILE_EMAIL_PENDING_PHONE_HMAC_KEY, None)
     session.pop(PROFILE_EMAIL_PENDING_CODE_HMAC_KEY, None)
     session.pop(PROFILE_EMAIL_PENDING_EXPIRES_AT_KEY, None)
     session.modified = True
@@ -854,13 +1109,19 @@ def _profile_email_code_hmac(user: User, email: str, code: str) -> str:
     )
 
 
+def _profile_phone_hmac(user: User, phone_number: str) -> str:
+    return active_hmac_hex(
+        f"profile-phone-change:{user.id}:{current_session_id()}:{phone_number.strip()}",
+        length=64,
+    )
+
+
 def change_password(
     user: User,
     current_password: str,
     new_password: str,
     confirm_new_password: str,
     code: str | None,
-    stepup_token: str | None = None,
 ) -> dict[str, Any]:
     ensure_account_not_frozen(user, "password change")
     if new_password != confirm_new_password:
@@ -885,7 +1146,6 @@ def change_password(
     verify_high_risk_authorization(
         user,
         code,
-        stepup_token,
         "password_change",
         rotate_session_on_success=False,
     )
@@ -963,7 +1223,10 @@ def verify_fresh_mfa_for_action(
         audit_event(action, "failure", user=user, metadata={"reason": "missing_mfa_code"})
         raise AuthError(GENERIC_MFA_ERROR, 401)
 
-    if not _verify_totp_for_user(user, code, action):
+    outcome = _verify_totp_for_user_outcome(user, code, action)
+    if outcome == TOTP_VERIFICATION_REPLAY:
+        _handle_mfa_verification_replay(user, action)
+    if outcome != TOTP_VERIFICATION_VALID:
         _handle_mfa_verification_failure(user, action)
     if rotate_session_on_success and session.get("user_id") == user.id:
         rotate_authenticated_session_after_mfa(user.id)
@@ -973,7 +1236,6 @@ def verify_fresh_mfa_for_action(
 def verify_high_risk_authorization(
     user: User,
     code: str | None,
-    stepup_token: str | None,
     action: str,
     *,
     rotate_session_on_success: bool = True,
@@ -982,20 +1244,29 @@ def verify_high_risk_authorization(
     if not has_enrolled_mfa_method(user):
         audit_event(action, "failure", user=user, metadata={"reason": "mfa_not_enabled"})
         raise AuthError("MFA is required for this action", 403)
-    if stepup_token:
-        audit_event(action, "failure", user=user, metadata={"reason": "passkey_step_up_disabled"})
-        raise AuthError("Enter an authenticator code to verify this action", 403)
     if not code:
         audit_event(action, "failure", user=user, metadata={"reason": "missing_mfa_step_up"})
         raise AuthError("MFA verification is required for this action", 403)
     if not user.mfa_enabled:
         audit_event(action, "failure", user=user, metadata={"reason": "totp_not_enabled"})
         raise AuthError("Authenticator MFA is required for this action", 403)
-    if not _verify_totp_for_user(user, code, action):
+    outcome = _verify_totp_for_user_outcome(user, code, action)
+    if outcome == TOTP_VERIFICATION_REPLAY:
+        _handle_mfa_verification_replay(user, action)
+    if outcome != TOTP_VERIFICATION_VALID:
         _handle_mfa_verification_failure(user, action)
     audit_event(action, "mfa_success", user=user)
     if rotate_session_on_success and session.get("user_id") == user.id:
         rotate_authenticated_session_after_mfa(user.id)
+
+
+def verify_totp_code_for_user(user: User, code: str, scope: str) -> bool:
+    """Verify a TOTP code for an explicit user, independent of any active
+    session. Used by cross-device flows (e.g. the top-up QR approval page)
+    where verification happens on a device with no SITBank login of its own.
+    """
+
+    return _verify_totp_for_user(user, code, scope)
 
 
 def ensure_account_can_authenticate(user: User) -> None:
@@ -1020,25 +1291,44 @@ def _handle_mfa_verification_failure(user: User, action: str) -> None:
     raise AuthError(GENERIC_MFA_ERROR, 401)
 
 
+def _handle_mfa_verification_replay(user: User, action: str) -> None:
+    audit_event(action, "failure", user=user, metadata={"reason": "totp_replay"})
+    raise AuthError(GENERIC_MFA_ERROR, 401)
+
+
 def _verify_pending_login_authentication_code(user: User, code: str) -> str:
     if _is_totp_code(code):
-        if _verify_totp_for_user(user, code, "mfa_login"):
+        outcome = _verify_totp_for_user_outcome(
+            user,
+            code,
+            "mfa_login",
+            track_failures=False,
+        )
+        if outcome == TOTP_VERIFICATION_VALID:
             return "totp"
-        _handle_mfa_verification_failure(user, "mfa_login_verify")
-
-    try:
-        _enforce_auth_backoff("mfa_recovery_code", str(user.id))
-    except AuthError:
-        _record_user_security_failure(user, "mfa", "mfa_failed_attempts")
-        raise
-
-    if not consume_recovery_code(user, code, commit=False):
-        record_failure("mfa_recovery_code", str(user.id))
-        audit_event("mfa_recovery_code_verify", "failure", user=user)
-        _record_user_security_failure(user, "mfa", "mfa_failed_attempts")
+        if outcome == TOTP_VERIFICATION_REPLAY:
+            audit_event(
+                "mfa_login_verify",
+                "failure",
+                user=user,
+                metadata={"reason": "totp_replay"},
+            )
+            raise AuthError(GENERIC_MFA_ERROR, 401)
+        _record_customer_mfa_login_failure(
+            user,
+            reason="invalid_totp",
+            event_type="mfa_login_verify",
+        )
         raise AuthError(GENERIC_MFA_ERROR, 401)
 
-    clear_failures("mfa_recovery_code", str(user.id))
+    if not consume_recovery_code(user, code, commit=False):
+        _record_customer_mfa_login_failure(
+            user,
+            reason="invalid_recovery_code",
+            event_type="mfa_recovery_code_verify",
+        )
+        raise AuthError(GENERIC_MFA_ERROR, 401)
+
     _clear_user_security_failures(user, "mfa")
     remaining = unused_recovery_code_count(user)
     audit_event_required("mfa_recovery_code_verify", "success", user=user, metadata={"remaining_codes": remaining})
@@ -1092,7 +1382,7 @@ def _record_user_security_failure(user: User, scope: str, lock_reason: str) -> N
     counter.window_expires_at = now + timedelta(seconds=AUTH_LOCK_WINDOW_SECONDS)
     attempts = int(counter.failure_count)
     db.session.commit()
-    if attempts >= AUTH_LOCK_THRESHOLD:
+    if attempts >= _user_security_lock_threshold(user, scope):
         _lock_user_account(user, lock_reason, scope, attempts)
 
 
@@ -1129,6 +1419,26 @@ def _lock_user_account(user: User, reason: str, scope: str, attempts: int) -> No
     )
 
 
+def _user_security_lock_threshold(user: User, scope: str) -> int:
+    if scope == "password" and user.account_type in {"staff", "admin", "root_admin"}:
+        return PRIVILEGED_PASSWORD_LOCK_THRESHOLD
+    if scope == "password":
+        return CUSTOMER_PASSWORD_LOCK_THRESHOLD
+    if scope == "mfa":
+        # Keep the account freeze strictly above the per-window wrong-code
+        # throttle so the durable 429 stays the first-fired MFA-login control
+        # and the freeze remains a sustained-abuse backstop rather than a
+        # single-burst trip. A throttled window records at most
+        # CUSTOMER_MFA_FAILURE_LIMIT + 1 failures before it blocks without
+        # recording further, so two attempts of headroom keeps a single
+        # throttled burst recoverable while repeated bursts across windows
+        # still lock the account. At the default limit of 5 this preserves the
+        # historical threshold of 10.
+        wrong_code_limit = int(current_app.config.get("CUSTOMER_MFA_FAILURE_LIMIT", 5))
+        return max(AUTH_LOCK_THRESHOLD, wrong_code_limit + 2)
+    return AUTH_LOCK_THRESHOLD
+
+
 def _totp(secret: str) -> pyotp.TOTP:
     # RFC-compatible TOTP uses HMAC-SHA1; this is not password hashing.
     return pyotp.TOTP(secret, digits=6, interval=30, digest=hashlib.sha1)  # NOSONAR
@@ -1140,8 +1450,42 @@ def _mfa_secret_for_user(user: User) -> str:
     return decrypt_mfa_secret(user.mfa_secret_nonce, user.mfa_secret_ciphertext, user.id)
 
 
-def _verify_totp_for_user(user: User, code: str, scope: str, *, valid_window: int | None = None) -> bool:
-    return _verify_totp_secret_for_user(user, _mfa_secret_for_user(user), code, scope, valid_window=valid_window)
+def _verify_totp_for_user(
+    user: User,
+    code: str,
+    scope: str,
+    *,
+    valid_window: int | None = None,
+    track_failures: bool = True,
+) -> bool:
+    return (
+        _verify_totp_for_user_outcome(
+            user,
+            code,
+            scope,
+            valid_window=valid_window,
+            track_failures=track_failures,
+        )
+        == TOTP_VERIFICATION_VALID
+    )
+
+
+def _verify_totp_for_user_outcome(
+    user: User,
+    code: str,
+    scope: str,
+    *,
+    valid_window: int | None = None,
+    track_failures: bool = True,
+) -> TotpVerificationOutcome:
+    return _verify_totp_secret_for_user_outcome(
+        user,
+        _mfa_secret_for_user(user),
+        code,
+        scope,
+        valid_window=valid_window,
+        track_failures=track_failures,
+    )
 
 
 def _verify_totp_secret_for_user(
@@ -1151,21 +1495,47 @@ def _verify_totp_secret_for_user(
     scope: str,
     *,
     valid_window: int | None = None,
+    track_failures: bool = True,
 ) -> bool:
-    if not re.fullmatch(r"\d{6}", code or ""):
-        record_failure(scope, str(user.id))
-        return False
+    return (
+        _verify_totp_secret_for_user_outcome(
+            user,
+            secret,
+            code,
+            scope,
+            valid_window=valid_window,
+            track_failures=track_failures,
+        )
+        == TOTP_VERIFICATION_VALID
+    )
 
-    try:
-        _enforce_auth_backoff(scope, str(user.id))
-    except AuthError:
-        _record_user_security_failure(user, "mfa", "mfa_failed_attempts")
-        raise
+
+def _verify_totp_secret_for_user_outcome(
+    user: User,
+    secret: str,
+    code: str,
+    scope: str,
+    *,
+    valid_window: int | None = None,
+    track_failures: bool = True,
+) -> TotpVerificationOutcome:
+    if not re.fullmatch(r"\d{6}", code or ""):
+        if track_failures:
+            record_failure(scope, str(user.id))
+        return TOTP_VERIFICATION_INVALID
+
+    if track_failures:
+        try:
+            _enforce_auth_backoff(scope, str(user.id))
+        except AuthError:
+            _record_user_security_failure(user, "mfa", "mfa_failed_attempts")
+            raise
     now = int(time.time())
     accepted_step = _accepted_totp_step(secret, code, now, _totp_valid_window(scope, valid_window))
     if accepted_step is None:
-        record_failure(scope, str(user.id))
-        return False
+        if track_failures:
+            record_failure(scope, str(user.id))
+        return TOTP_VERIFICATION_INVALID
 
     code_digest = active_hmac_hex(
         f"totp-replay:{user.id}:{scope}:{accepted_step}:{code}",
@@ -1184,13 +1554,13 @@ def _verify_totp_secret_for_user(
         db.session.commit()
     except IntegrityError:
         db.session.rollback()
-        record_failure(scope, str(user.id))
-        return False
+        return TOTP_VERIFICATION_REPLAY
 
-    clear_failures(scope, str(user.id))
+    if track_failures:
+        clear_failures(scope, str(user.id))
     _clear_user_security_failures(user, "mfa")
     mark_fresh_mfa()
-    return True
+    return TOTP_VERIFICATION_VALID
 
 
 def _totp_valid_window(scope: str, valid_window: int | None) -> int:
@@ -1223,7 +1593,7 @@ def _mfa_setup_payload(user: User, secret: str) -> dict[str, str]:
         "issuer": current_app.config["MFA_ISSUER_NAME"],
         "manual_entry_secret": secret,
         "otpauth_uri": provisioning_uri,
-        "qr_code_data_uri": _qr_data_uri(provisioning_uri),
+        "qr_code_data_uri": qr_data_uri(provisioning_uri),
     }
 
 
@@ -1238,7 +1608,7 @@ def _pending_mfa_replacement_secret(user: User) -> str | None:
     except (TypeError, ValueError):
         _clear_pending_mfa_replacement()
         return None
-    if age > current_app.config["PENDING_MFA_MAX_AGE_SECONDS"]:
+    if age < 0 or age > current_app.config["PENDING_MFA_MAX_AGE_SECONDS"]:
         _clear_pending_mfa_replacement()
         return None
     try:
@@ -1255,20 +1625,47 @@ def _clear_pending_mfa_replacement() -> None:
     session.modified = True
 
 
+def _require_active_pending_mfa_setup(
+    user: User,
+    *,
+    raise_error: bool = True,
+) -> bool:
+    started_at = user.mfa_pending_started_at
+    binding = str(user.mfa_pending_session_hash or "")
+    active = bool(started_at and binding)
+    if active:
+        age = (datetime.now(timezone.utc) - _as_utc(started_at)).total_seconds()
+        active = (
+            0 <= age <= int(current_app.config["PENDING_MFA_MAX_AGE_SECONDS"])
+            and hmac.compare_digest(binding, _mfa_setup_session_hash())
+        )
+    if active:
+        return True
+    if started_at or binding or user.mfa_secret_nonce or user.mfa_secret_ciphertext:
+        user.mfa_secret_nonce = None
+        user.mfa_secret_ciphertext = None
+        user.mfa_pending_started_at = None
+        user.mfa_pending_session_hash = None
+        db.session.commit()
+        audit_event("mfa_setup_pending", "expired", user=user)
+    if raise_error:
+        raise AuthError("MFA setup expired. Start again.", 401)
+    return False
+
+
+def _mfa_setup_session_hash() -> str:
+    return active_hmac_hex(
+        f"mfa-setup-session:{current_session_id()}",
+        length=64,
+    )
+
+
 def _b64encode(value: bytes) -> str:
     return base64.b64encode(value).decode("ascii")
 
 
 def _b64decode(value: str) -> bytes:
     return base64.b64decode(value.encode("ascii"), validate=True)
-
-
-def _qr_data_uri(provisioning_uri: str) -> str:
-    image = qrcode.make(provisioning_uri)
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
-    return f"data:image/png;base64,{encoded}"
 
 
 def _public_user(user: User) -> dict[str, Any]:
@@ -1278,7 +1675,6 @@ def _public_user(user: User) -> dict[str, Any]:
         "email": user.email,
         "account_type": user.account_type,
         "mfa_enabled": user.mfa_enabled,
-        "mfa_step_up_preference": user.mfa_step_up_preference,
         "is_frozen": user.is_frozen,
     }
 

@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% from "_topup_shared.html" import topup_hero, topup_amount_panel %}
+
+{% block title %}Top Up | SITBank{% endblock %}
+
+{% block content %}
+<section class="security-page">
+  {{ topup_hero("Approve on your authenticator device", "Scan the following QR code and enter your authenticator code to confirm", url_for('banking.topup'), "Cancel") }}
+
+  <div class="profile-grid is-single-column">
+    <article
+      class="profile-panel profile-card"
+      data-topup-pending
+      data-status-url="{{ url_for('banking.topup_status', selector=selector) }}"
+      data-dashboard-url="{{ url_for('web.dashboard') }}"
+      data-restart-url="{{ url_for('banking.topup') }}"
+    >
+      {{ topup_amount_panel(amount) }}
+      <div class="qr-wrap">
+        <img class="qr" src="{{ qr_data_uri }}" alt="Top-up approval QR code">
+      </div>
+      <p class="hint" data-topup-status-message aria-live="polite">Waiting for approval&hellip;</p>
+    </article>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/topup_pending.js') }}"></script>
+{% endblock %}

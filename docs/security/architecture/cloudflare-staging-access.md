@@ -20,7 +20,8 @@ does not require or read the API token. `--apply` reconciles the Access
 application, approved-operator policy, and proxied DNS record only after the
 exact confirmation phrase. `--verify` makes read-only API calls, checks that an
 unauthenticated edge request receives the Access challenge, and proves that a
-direct request to the EC2 origin is blocked by Nginx or the network.
+direct request to the EC2 origin is blocked by Nginx, TLS client-certificate
+verification, or the network.
 
 Category: [Security architecture](../README.md#architecture).
 
@@ -78,13 +79,15 @@ overrides; empty values use the defaults `SITBank staging` and `SITBank
 staging app - approved operators only`.
 
 The shared staging environment also carries the existing application and
-deployment variables `ROOT_ADMIN_EMAILS`,
-`STAGING_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID`, `STAGING_MFA_ISSUER_NAME`,
+deployment variables `STAGING_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID`, `STAGING_MFA_ISSUER_NAME`,
 `STAGING_MFA_KEK_ACTIVE_ID`, `STAGING_PASSWORD_PBKDF2_ITERATIONS`,
 `STAGING_PASSWORD_RESET_EMAIL_FROM`,
 `STAGING_SESSION_HMAC_ACTIVE_KEY_ID`, and `STAGING_SMTP_HOST`. Those values are
 not consumed by provider verification and must retain their existing
 deployment meanings.
+`ROOT_ADMIN_EMAILS` is different: keep it as a protected `staging`
+environment secret because it identifies privileged root-admin accounts. Do
+not print or copy the real allowlist into provider verification evidence.
 
 The hostname remains fixed to `staging-sitbank.pp.ua`; attempts to target
 production or admin fail closed. Session durations from `15m` through `24h`

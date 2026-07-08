@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+
+{% block title %}Daily Transfer Limit | SITBank{% endblock %}
+
+{% block content %}
+<section class="security-page profile-page">
+  <div class="dashboard-header">
+    <div class="page-heading">
+      <p class="eyebrow">Account settings</p>
+      <h1>Daily Transfer Limit</h1>
+      <p class="muted">Set how much you can send per day for each transfer method. Changes require your authenticator code.</p>
+    </div>
+    <div class="button-row">
+      <a class="button secondary" href="{{ url_for('web.dashboard') }}">Back to dashboard</a>
+    </div>
+  </div>
+
+  <div class="profile-grid">
+    <article class="profile-panel profile-summary">
+      <div class="profile-panel-title">
+        <p class="eyebrow">How it works</p>
+        <h2>Limits reset daily</h2>
+      </div>
+      <p class="muted">This is the most you can send with PayUp or Local Transfer each day. Each method has its own limit, and both reset every day at midnight. If you're close to reaching your PayUp limit, we'll ask for your authenticator code before completing the transfer. You'll also need your authenticator code whenever you change either limit.</p>
+    </article>
+
+    <article class="profile-panel profile-card">
+      <div class="profile-panel-title">
+        <p class="eyebrow">PayUp</p>
+        <h2>Daily limit</h2>
+      </div>
+      <form method="post" action="{{ url_for('banking.transfer_limits_submit') }}" novalidate>
+        {{ form.hidden_tag() }}
+        <div class="form-group">
+          <label for="{{ form.payup_limit.id }}">Daily limit</label>
+          {{ form.payup_limit(data_limit_select="payup") }}
+          {% for error in form.payup_limit.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+        </div>
+        <div class="form-group" data-limit-custom-group="payup" {% if form.payup_limit.data != 'custom' %}hidden{% endif %}>
+          <label for="{{ form.payup_limit_custom.id }}">Custom amount (SGD)</label>
+          {{ form.payup_limit_custom(type="number", step="0.01", min="100.00", max="10000.00", autocomplete="off", placeholder="e.g. 750.00", inputmode="decimal", data_limit_custom="payup") }}
+          {% for error in form.payup_limit_custom.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+          <p class="hint">Must be between SGD 100.00 and SGD 10000.00.</p>
+        </div>
+
+        <hr class="form-divider">
+
+        <div class="profile-panel-title">
+          <p class="eyebrow">Local Transfer</p>
+          <h2>Daily limit</h2>
+        </div>
+        <div class="form-group">
+          <label for="{{ form.local_transfer_limit.id }}">Daily limit</label>
+          {{ form.local_transfer_limit(data_limit_select="local_transfer") }}
+          {% for error in form.local_transfer_limit.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+        </div>
+        <div class="form-group" data-limit-custom-group="local_transfer" {% if form.local_transfer_limit.data != 'custom' %}hidden{% endif %}>
+          <label for="{{ form.local_transfer_limit_custom.id }}">Custom amount (SGD)</label>
+          {{ form.local_transfer_limit_custom(type="number", step="0.01", min="100.00", max="10000.00", autocomplete="off", placeholder="e.g. 750.00", inputmode="decimal", data_limit_custom="local_transfer") }}
+          {% for error in form.local_transfer_limit_custom.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+          <p class="hint">Must be between SGD 100.00 and SGD 10000.00.</p>
+        </div>
+
+        <hr class="form-divider">
+
+        <div class="form-group">
+          <label for="{{ form.totp_code.id }}">Authenticator code</label>
+          {{ form.totp_code(inputmode="numeric", autocomplete="one-time-code", maxlength="6", placeholder="6-digit code") }}
+          {% for error in form.totp_code.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+          <p class="hint">Required to save changes.</p>
+        </div>
+        <button class="button full" type="submit">Save changes</button>
+      </form>
+    </article>
+  </div>
+</section>
+{% endblock %}

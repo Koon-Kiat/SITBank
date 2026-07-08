@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% from "_transaction_party.html" import transaction_party %}
+
+{% set month_names = ["January", "February", "March", "April", "May", "June",
+                       "July", "August", "September", "October", "November", "December"] %}
+
+{% block title %}Monthly Statement | SITBank{% endblock %}
+
+{% block content %}
+<section class="security-page profile-page">
+  <div class="dashboard-header">
+    <div class="page-heading">
+      <p class="eyebrow">Account</p>
+      <h1>Monthly Statement</h1>
+      <p class="muted">Opening balance is what you had at the start of the period; closing balance is what's left after that period's transactions.</p>
+    </div>
+    <div class="button-row">
+      <a class="button secondary" href="{{ url_for('web.dashboard') }}">Back to Dashboard</a>
+    </div>
+  </div>
+
+  <div class="panel statement-toolbar">
+    <form method="get" action="{{ url_for('banking.statement') }}" class="statement-period-form">
+      <div class="statement-period-field">
+        <label for="statement-year">Year</label>
+        <input id="statement-year" type="number" name="year" value="{{ year }}" min="{{ min_year }}" max="{{ current_year }}" inputmode="numeric">
+      </div>
+      <div class="statement-period-field">
+        <label for="statement-month">Month</label>
+        <select id="statement-month" name="month">
+          {% for m in range(1, 13) %}
+          <option value="{{ m }}" {% if m == month %}selected{% endif %}>{{ month_names[m - 1] }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <button class="button" type="submit">View Statement</button>
+    </form>
+    <nav class="statement-period-nav" aria-label="Adjacent statement periods">
+      {% if has_prev_period %}
+      <a class="button-quiet button small" href="{{ url_for('banking.statement', year=prev_year, month=prev_month) }}">
+        <svg class="icon" focusable="false" aria-hidden="true"><use href="#icon-chevron-left"></use></svg>
+        {{ month_names[prev_month - 1][:3] }} {{ prev_year }}
+      </a>
+      {% endif %}
+      {% if has_next_period %}
+      <a class="button-quiet button small" href="{{ url_for('banking.statement', year=next_year, month=next_month) }}">
+        {{ month_names[next_month - 1][:3] }} {{ next_year }}
+        <svg class="icon" focusable="false" aria-hidden="true"><use href="#icon-chevron-right"></use></svg>
+      </a>
+      {% endif %}
+    </nav>
+  </div>
+
+  {% if statement %}
+  {% set net_change = statement.closing_balance - statement.opening_balance %}
+  <div class="statement-summary">
+    <div class="statement-summary-header">
+      <div>
+        <p class="statement-summary-eyebrow">Statement period</p>
+        <h2 class="statement-summary-period">{{ month_names[month - 1] }} {{ year }}</h2>
+      </div>
+      <a class="button secondary small" href="{{ url_for('banking.statement_download', year=year, month=month) }}">Download CSV</a>
+    </div>
+    <div class="statement-flow">
+      <div class="statement-balance-block">
+        <p class="statement-summary-eyebrow">Opening balance</p>
+        <p class="statement-balance-amount">SGD {{ "%.2f"|format(statement.opening_balance) }}</p>
+      </div>
+      <span class="statement-flow-arrow" aria-hidden="true">
+        <svg class="icon" focusable="false"><use href="#icon-arrow-right"></use></svg>
+      </span>
+      <div class="statement-balance-block is-closing">
+        <p class="statement-summary-eyebrow">Closing balance</p>
+        <p class="statement-balance-amount">SGD {{ "%.2f"|format(statement.closing_balance) }}</p>
+        <span class="statement-delta {{ 'is-negative' if net_change < 0 else '' }}">
+          {{ "+" if net_change >= 0 else "−" }}{{ "%.2f"|format(net_change|abs) }} this period
+        </span>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="section-header">
+      <h2>Transactions</h2>
+    </div>
+    {% if statement.transactions %}
+    <div class="table-wrap">
+      <table aria-label="Statement transactions">
+        <thead>
+          <tr>
+            <th>Type</th>
+            <th>Counterparty</th>
+            <th>Reference</th>
+            <th>Amount (SGD)</th>
+            <th>Status</th>
+            <th>Date</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for txn in statement.transactions %}
+          <tr class="{{ 'statement-txn-not-counted' if txn.status != 'completed' else '' }}">
+            <td data-label="Type">
+              {% if txn.sender_id == user.id %}
+              <span class="badge neutral">Sent</span>
+              {% else %}
+              <span class="badge">Received</span>
+              {% endif %}
+            </td>
+            <td data-label="Counterparty">
+              {{ transaction_party(txn, user) }}
+            </td>
+            <td data-label="Reference">{{ txn.reference or "—" }}</td>
+            <td data-label="Amount (SGD)" class="cell-amount">
+              {% if txn.sender_id == user.id %}
+              <span class="muted">−{{ txn.amount }}</span>
+              {% else %}
+              +{{ txn.amount }}
+              {% endif %}
+            </td>
+            <td data-label="Status">
+              {% if txn.status == "completed" %}
+              <span class="badge">Completed</span>
+              {% else %}
+              <span class="badge neutral" title="Not counted toward opening/closing balance">Failed</span>
+              {% endif %}
+            </td>
+            <td data-label="Date"><time datetime="{{ txn.created_at|utc_iso }}">{{ txn.created_at|sgt_datetime }}</time></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="empty-state">
+      <p class="muted">No transactions for this period.</p>
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

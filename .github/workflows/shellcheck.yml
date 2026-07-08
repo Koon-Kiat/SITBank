@@ -52,10 +52,56 @@ jobs:
           "${RUNNER_TEMP}/shellcheck-v${version}/shellcheck" --version
 
       - name: Scan every discovered shell script
+        id: scan
         shell: bash
         run: |
           set -euo pipefail
+          set +e
           xargs --null --no-run-if-empty \
             "${RUNNER_TEMP}/shellcheck-v0.11.0/shellcheck" \
             --severity=style \
+            --format=json1 \
+            > "${RUNNER_TEMP}/shellcheck-report.json" \
             < "${RUNNER_TEMP}/shellcheck-targets"
+          scan_status=$?
+          set -e
+          exit "${scan_status}"
+
+      - name: Summarize shell lint
+        if: ${{ always() }}
+        shell: bash
+        env:
+          SCAN_OUTCOME: ${{ steps.scan.outcome }}
+        run: |
+          target_count="unknown"
+          if [[ -f "${RUNNER_TEMP}/shellcheck-targets" ]]; then
+            target_count="$(
+              python3 -c 'import pathlib,sys; print(len([v for v in pathlib.Path(sys.argv[1]).read_bytes().split(b"\0") if v]))' \
+                "${RUNNER_TEMP}/shellcheck-targets"
+            )"
+          fi
+          finding_count="unknown"
+          if [[ -s "${RUNNER_TEMP}/shellcheck-report.json" ]] \
+            && jq empty "${RUNNER_TEMP}/shellcheck-report.json" 2>/dev/null; then
+            finding_count="$(jq '.comments | length' "${RUNNER_TEMP}/shellcheck-report.json")"
+          elif [[ "${SCAN_OUTCOME}" == "success" ]]; then
+            finding_count="0"
+          fi
+          {
+            echo "## ShellCheck"
+            echo
+            echo "- Status: **${SCAN_OUTCOME}**"
+            echo "- Scanned shell files: \`${target_count}\`"
+            echo "- Findings at style or higher: \`${finding_count}\`"
+            if [[ "${finding_count}" =~ ^[1-9][0-9]*$ ]]; then
+              echo
+              echo "| Level | Rule | File | Line | Message |"
+              echo "| --- | --- | --- | ---: | --- |"
+              jq -r '.comments[:20][] | "| \(.level) | `SC\(.code)` | `\(.file)` | \(.line) | \(.message | gsub("[|\\r\\n]"; " ")) |"' \
+                "${RUNNER_TEMP}/shellcheck-report.json"
+            elif [[ "${finding_count}" == "0" ]]; then
+              echo "- Result: no ShellCheck findings at the configured threshold."
+            fi
+            echo
+            echo "- Decision: findings at the configured style threshold block this job."
+          } >> "${GITHUB_STEP_SUMMARY}"

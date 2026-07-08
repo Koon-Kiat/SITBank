@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% from "_transaction_row.html" import transaction_row %}
+
+{% block title %}Past Transactions | SITBank{% endblock %}
+
+{% block content %}
+<section class="security-page profile-page">
+  <div class="dashboard-header">
+    <div class="page-heading">
+      <p class="eyebrow">Account</p>
+      <h1>Past Transactions</h1>
+      <p class="muted">All transfers you've sent or received.</p>
+    </div>
+    <div class="button-row">
+      <a class="button secondary" href="{{ url_for('web.dashboard') }}">Back to Dashboard</a>
+    </div>
+  </div>
+
+  {% if transactions %}
+  <div class="panel">
+    <div class="table-wrap">
+      <table aria-label="Past transactions">
+        <thead>
+          <tr>
+            <th>Type</th>
+            <th>Transaction ID</th>
+            <th>Recipient</th>
+            <th>Method</th>
+            <th>Reference</th>
+            <th>Amount (SGD)</th>
+            <th>Date</th>
+            <th><span class="sr-only">Actions</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for txn in transactions %}
+          {{ transaction_row(txn, user, show_actions=True) }}
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if total_pages > 1 %}
+    <nav class="button-row" aria-label="Pagination">
+      {% if page > 1 %}
+      <a class="button secondary small" href="{{ url_for('web.transactions', page=page - 1) }}">Previous</a>
+      {% endif %}
+      <span class="muted">Page {{ page }} of {{ total_pages }}</span>
+      {% if page < total_pages %}
+      <a class="button secondary small" href="{{ url_for('web.transactions', page=page + 1) }}">Next</a>
+      {% endif %}
+    </nav>
+    {% endif %}
+  </div>
+  {% else %}
+  <div class="panel">
+    <div class="empty-state dashboard-txn-empty">
+      <p class="muted">No transactions to display.</p>
+    </div>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

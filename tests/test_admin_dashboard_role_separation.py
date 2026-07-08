@@ -60,7 +60,7 @@ def _create_identity(
         account_status="active" if active else "setup_pending",
         full_name=username.replace("-", " ").title(),
         phone_number=phone_number,
-        account_number="100000001" if account_type == "customer" else None,
+        account_number="100000001000" if account_type == "customer" else None,
         workplace_email_verified_at=datetime.now(timezone.utc) if active and account_type != "customer" else None,
         mfa_enabled=False,
     )
@@ -100,18 +100,18 @@ def test_admin_dashboard_denies_unauthenticated_and_customer_sessions(admin_clie
 
     customer_response = admin_client.get("/")
     denied_event = db.session.query(SecurityAuditEvent).filter_by(
-        event_type="admin_access_denied",
-        outcome="blocked",
+        event_type="session_risk",
+        outcome="revoked",
     ).one()
 
     assert unauthenticated.status_code == 401
-    assert customer_response.status_code == 403
-    assert denied_event.event_metadata["reason"] == "not_active_staff"
+    assert customer_response.status_code == 401
+    assert denied_event.event_metadata["signals"] == ["session_context"]
     assert "password" not in str(denied_event.event_metadata).casefold()
     assert "csrf" not in str(denied_event.event_metadata).casefold()
 
 
-def test_staff_dashboard_gets_business_placeholder_and_no_technical_links(admin_client):
+def test_staff_dashboard_gets_business_operations_and_no_technical_links(admin_client):
     _staff, secret = _create_identity(
         username="bank-staff",
         email="bank.staff@sit.singaporetech.edu.sg",
@@ -128,8 +128,9 @@ def test_staff_dashboard_gets_business_placeholder_and_no_technical_links(admin_
 
     assert dashboard.status_code == 200
     assert "Business Operations" in body
-    assert "Customer support queues" in body
-    assert "Not implemented" in body
+    assert "Unfreeze customer accounts" in body
+    assert "Available" in body
+    assert "Customer support" in body
     assert "Audit logs" not in body
     assert "Staff/admin users" not in body
     assert "Staff invites" not in body

@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from functools import wraps
 from typing import Any
 
-from flask import Flask, current_app, flash, has_request_context, jsonify, redirect, request, session, url_for
+from flask import Flask, current_app, flash, g, has_request_context, jsonify, redirect, request, session, url_for
 from flask.sessions import SessionInterface, SessionMixin, session_json_serializer
 from sqlalchemy.exc import IntegrityError
 from werkzeug.datastructures import CallbackDict
@@ -27,11 +27,13 @@ from app.security.session_hmac import (
     sign_session_payload,
     verify_session_payload,
 )
+from app.time_display import sgt_datetime
 
 
 SESSION_RISK_REAUTH_REQUIRED_KEY = "risk_reauth_required"
 JSON_MIME_TYPE = "application/json"
 WEB_LOGIN_ENDPOINT = "web.login"
+ADMIN_LOGIN_ENDPOINT = "admin.login_form"
 SESSION_RISK_FINGERPRINT_KEY = "risk_fingerprint"
 SESSION_RISK_CONTEXT_KEY = "risk_context"
 SESSION_RISK_CONTEXT_VERSION = 1
@@ -48,9 +50,17 @@ SESSION_END_REASON_LABELS = {
     "rotated": "Session refreshed",
     "integrity_failure": "Session integrity failure",
     "session_cap": "Replaced by a new sign-in",
+    "password_change": "Password changed",
+    "password_reset": "Password reset",
+    "manual_recovery": "Manual recovery completed",
+    "security_unlock": "Security lock cleared",
     "ended": "Ended",
 }
 _SESSION_STORE_LOCK = threading.RLock()
+_SESSION_REPLACED_REASON_G_KEY = "_sitbank_session_replaced_reason"
+# Polled by the client to detect a session replaced elsewhere; must not itself
+# count as activity or it would silently defeat the inactivity timeout.
+ACTIVITY_EXEMPT_ENDPOINTS = frozenset({"auth.session_status"})
 
 
 def _session_store_locked(func):
@@ -109,6 +119,7 @@ class DatabaseSessionInterface(SessionInterface):
 
         now = _utcnow()
         if record.revoked_at is not None:
+            _stash_session_replacement_reason(record.ended_reason)
             return self.session_class(sid=_new_session_id(), new=True)
         if record.expires_at is None:
             self._handle_integrity_failure(record, reason="missing_expires_at")
@@ -274,6 +285,19 @@ def current_session_id() -> str | None:
     return getattr(session, "sid", None)
 
 
+def _stash_session_replacement_reason(reason: str | None) -> None:
+    if has_request_context():
+        setattr(g, _SESSION_REPLACED_REASON_G_KEY, reason)
+
+
+def session_replacement_reason() -> str | None:
+    # Set only when open_session() discovers the presented cookie's session was
+    # already revoked (e.g. session_cap); unset for a request with no session at all.
+    if not has_request_context():
+        return None
+    return getattr(g, _SESSION_REPLACED_REASON_G_KEY, None)
+
+
 def session_lookup_hash(session_id: str) -> str:
     # This is a keyed lookup verifier, not password hashing.
     # lgtm[py/weak-sensitive-data-hashing]
@@ -382,8 +406,7 @@ def establish_authenticated_session(
     rotate_session_id()
     refresh_session_risk_fingerprint()
     register_session_metadata(user_id=user_id, login_time=login_time)
-    if mfa_verified:
-        enforce_active_session_cap(user_id)
+    enforce_active_session_cap(user_id)
     return current_session_id() or ""
 
 
@@ -400,6 +423,31 @@ def has_recent_fresh_mfa() -> bool:
     if not verified_at:
         return False
     return _now() - verified_at <= current_app.config["FRESH_MFA_SECONDS"]
+
+
+def authenticated_session_age_seconds() -> int | None:
+    """Return a bounded authenticated-session age, or None for invalid state."""
+    if not session.get("user_id") or not current_session_id():
+        return None
+    created_at = session.get(AUTH_CREATED_AT_KEY)
+    if isinstance(created_at, bool):
+        return None
+    try:
+        age = _now() - int(created_at)
+    except (TypeError, ValueError):
+        return None
+    if age < 0 or age > int(current_app.config["SESSION_ABSOLUTE_LIFETIME_SECONDS"]):
+        return None
+    return age
+
+
+def authenticated_session_risk_is_stable() -> bool:
+    """Fail closed unless the current authenticated session risk is stable."""
+    if not session.get("user_id") or not current_session_id():
+        return False
+    if session.get(SESSION_RISK_REAUTH_REQUIRED_KEY):
+        return False
+    return _session_risk_severity(_session_risk_context_changes()) == "stable"
 
 
 def rotate_authenticated_session_after_mfa(user_id: int) -> str:
@@ -481,13 +529,13 @@ def _mark_session_risk_reauthentication_required() -> None:
 def _current_session_risk_context() -> dict[str, Any]:
     ip_network = _normalized_ip_context(request.remote_addr or "")
     user_agent = _normalized_user_agent(request.user_agent.string or "unknown")
-    user_agent_family = _user_agent_family(user_agent)
+    family = user_agent_family(user_agent)
     return {
         "version": SESSION_RISK_CONTEXT_VERSION,
         "ip_network_hash": _risk_context_hash("ip_network", ip_network),
         "user_agent_family_hash": _risk_context_hash(
             "user_agent_family",
-            user_agent_family,
+            family,
         ),
         "user_agent_hash": _risk_context_hash("user_agent", user_agent),
         "last_checked_at": _now(),
@@ -515,7 +563,7 @@ def _normalized_user_agent(value: str) -> str:
     return " ".join((value or "unknown").split()).casefold()[:256]
 
 
-def _user_agent_family(value: str) -> str:
+def user_agent_family(value: str) -> str:
     normalized = _normalized_user_agent(value)
     known_families = (
         ("edge", r"\bedg(?:e|a|ios)?/"),
@@ -534,28 +582,16 @@ def _user_agent_family(value: str) -> str:
     return token.group(1) if token else "unknown"
 
 
-def _legacy_session_risk_fingerprint_matches() -> bool:
-    stored = session.get(SESSION_RISK_FINGERPRINT_KEY)
-    if not stored:
-        return True
-    current = current_session_risk_fingerprint()
-    if hmac.compare_digest(str(stored), current):
-        return True
-    return matches_hmac(
-        str(stored),
-        _current_session_risk_message(),
-        length=32,
-    )
-
-
 def _session_risk_context_changes() -> set[str]:
     stored = session.get(SESSION_RISK_CONTEXT_KEY)
-    if not isinstance(stored, dict) or stored.get("version") != SESSION_RISK_CONTEXT_VERSION:
-        return set() if _legacy_session_risk_fingerprint_matches() else {"legacy_context"}
+    if not isinstance(stored, dict):
+        return {"session_context"}
+    if stored.get("version") != SESSION_RISK_CONTEXT_VERSION:
+        return {"session_context"}
 
     ip_network = _normalized_ip_context(request.remote_addr or "")
     user_agent = _normalized_user_agent(request.user_agent.string or "unknown")
-    user_agent_family = _user_agent_family(user_agent)
+    family = user_agent_family(user_agent)
     changes: set[str] = set()
     if not _risk_context_hash_matches(
         stored.get("ip_network_hash"),
@@ -566,7 +602,7 @@ def _session_risk_context_changes() -> set[str]:
     if not _risk_context_hash_matches(
         stored.get("user_agent_family_hash"),
         "user_agent_family",
-        user_agent_family,
+        family,
     ):
         changes.add("user_agent_family")
     if not _risk_context_hash_matches(
@@ -600,7 +636,10 @@ def _store_current_session_risk_context(*, clear_reauth: bool) -> None:
 
 def _touch_session_risk_context() -> None:
     stored = session.get(SESSION_RISK_CONTEXT_KEY)
-    if not isinstance(stored, dict):
+    if (
+        not isinstance(stored, dict)
+        or stored.get("version") != SESSION_RISK_CONTEXT_VERSION
+    ):
         _store_current_session_risk_context(clear_reauth=False)
         return
     updated = dict(stored)
@@ -726,13 +765,18 @@ def _current_session_record() -> ServerSideSession | None:
     return _session_record_for_sid(session_id)
 
 
-def _active_session_records(user_id: int) -> list[ServerSideSession]:
+def _active_session_records(
+    user_id: int,
+    *,
+    component: str | None = None,
+) -> list[ServerSideSession]:
     now = _utcnow()
+    session_component = str(component or _session_component())
     records = list(
         db.session.execute(
             db.select(ServerSideSession)
             .where(
-                ServerSideSession.component == _session_component(),
+                ServerSideSession.component == session_component,
                 ServerSideSession.user_id == user_id,
                 ServerSideSession.revoked_at.is_(None),
                 ServerSideSession.ended_at.is_(None),
@@ -754,8 +798,8 @@ def list_active_sessions(user_id: int) -> list[dict[str, Any]]:
         public_metadata = {
             "session_ref": session_ref,
             "current": record.session_lookup_hash == current_lookup_hash,
-            "ip_address": _display_ip_address(record.ip_address),
-            "user_agent": _summarize_user_agent(record.user_agent),
+            "ip_address": display_ip_address(record.ip_address),
+            "user_agent": summarize_user_agent(record.user_agent),
             "login_time": _utc_iso(record.created_at),
             "last_activity": _utc_iso(record.last_activity_at),
             "login_time_display": _format_session_time(_utc_iso(record.created_at)),
@@ -789,8 +833,8 @@ def list_past_sessions(user_id: int, limit: int | None = None) -> list[dict[str,
         ended_at = _utc_iso(record.ended_at)
         public_metadata = {
             "session_ref": record.session_ref or _public_reference_from_lookup_hash(record.session_lookup_hash),
-            "ip_address": _display_ip_address(record.ip_address),
-            "user_agent": _summarize_user_agent(record.user_agent),
+            "ip_address": display_ip_address(record.ip_address),
+            "user_agent": summarize_user_agent(record.user_agent),
             "login_time": login_time,
             "last_activity": last_activity,
             "ended_at": ended_at,
@@ -831,7 +875,7 @@ def _normalize_session_end_reason(value: str) -> str:
     return value if value in SESSION_END_REASON_LABELS else "ended"
 
 
-def _display_ip_address(value: str) -> str:
+def display_ip_address(value: str) -> str:
     if not value:
         return "unknown"
     try:
@@ -841,7 +885,7 @@ def _display_ip_address(value: str) -> str:
     return address.compressed
 
 
-def _summarize_user_agent(value: str) -> str:
+def summarize_user_agent(value: str) -> str:
     normalized = " ".join((value or "unknown").split())
     if len(normalized) <= 120:
         return normalized
@@ -855,10 +899,7 @@ def _format_session_time(value: str) -> str:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return "Unknown"
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    local_time = parsed.astimezone()
-    return local_time.strftime("%d %b %Y %H:%M")
+    return sgt_datetime(parsed)
 
 
 def _utc_iso(value: datetime | None) -> str:
@@ -913,9 +954,14 @@ def revoke_other_sessions(user_id: int, *, ended_reason: str = "revoked") -> int
     return revoked
 
 
-def revoke_all_sessions(user_id: int, *, ended_reason: str = "revoked") -> int:
+def revoke_all_sessions(
+    user_id: int,
+    *,
+    ended_reason: str = "revoked",
+    component: str | None = None,
+) -> int:
     revoked = 0
-    for record in _active_session_records(user_id):
+    for record in _active_session_records(user_id, component=component):
         _end_session_record(record, ended_reason=ended_reason, now=_utcnow())
         revoked += 1
     return revoked
@@ -1021,13 +1067,20 @@ def _wants_session_json_response() -> bool:
 def _session_expired_response(message: str = "Session expired"):
     if _wants_session_json_response():
         return jsonify({"error": message}), 401
-    return redirect(url_for(WEB_LOGIN_ENDPOINT, session_expired=1))
+    return redirect(url_for(_login_endpoint(), session_expired=1))
 
 
 def _session_revoked_response():
     if _wants_session_json_response():
         return jsonify({"error": "Session revoked"}), 401
-    return redirect(url_for(WEB_LOGIN_ENDPOINT, session_expired=1))
+    return redirect(url_for(_login_endpoint(), session_expired=1))
+
+
+def _login_endpoint() -> str:
+    """Return the login endpoint registered by the isolated runtime."""
+    if current_app.config.get("APP_MODE") == "admin":
+        return ADMIN_LOGIN_ENDPOINT
+    return WEB_LOGIN_ENDPOINT
 
 
 def register_session_hooks(app: Flask) -> None:
@@ -1061,9 +1114,10 @@ def _enforce_session_activity():
     if context_response is not None:
         return context_response
 
-    session["last_activity_at"] = now
-    session.modified = True
-    update_session_activity()
+    if request.endpoint not in ACTIVITY_EXEMPT_ENDPOINTS:
+        session["last_activity_at"] = now
+        session.modified = True
+        update_session_activity()
     return None
 
 
@@ -1075,13 +1129,16 @@ def _revoked_session_response_if_required():
     if record is None or record.revoked_at is None:
         return None
     session.clear()
-    if request.endpoint in {
+    public_endpoints = {
+        _login_endpoint(),
+        "admin.login",
         "main.index",
         WEB_LOGIN_ENDPOINT,
         "web.login_submit",
         "web.register_form",
         "web.register_submit",
-    }:
+    }
+    if request.endpoint in public_endpoints:
         return None
     return _session_revoked_response()
 
@@ -1114,7 +1171,7 @@ def _pending_mfa_expiry_response(now: int):
         ), 401
     flash("MFA challenge expired. Please log in again.", "warning")
     rotate_session_id()
-    return redirect(url_for(WEB_LOGIN_ENDPOINT))
+    return redirect(url_for(_login_endpoint()))
 
 
 def _absolute_lifetime_expiry_response(now: int):

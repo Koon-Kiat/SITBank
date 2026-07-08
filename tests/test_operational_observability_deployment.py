@@ -2,12 +2,43 @@ from __future__ import annotations
 
 import json
 import re
+import runpy
+import subprocess
+import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 
 OBS_ROOT = Path("ops/observability")
+VERIFIER_PATH = OBS_ROOT / "verify-private-observability"
+PRIVATE_GRAFANA_URL = "https://admin-sitbank.tailca101b.ts.net/grafana"
+FAKE_GRAFANA_TOKEN = "fake-grafana-health-token"
+DASHBOARD_API_VERSION = "dashboard.grafana.app/v2beta1"
+
+
+def _dashboard_spec(resource: dict, expected_name: str) -> dict:
+    assert resource["apiVersion"] == DASHBOARD_API_VERSION
+    assert resource["kind"] == "Dashboard"
+    assert resource["metadata"]["name"] == expected_name
+
+    spec = resource["spec"]
+    elements = spec["elements"]
+    layout_items = spec["layout"]["spec"]["items"]
+    layout_names = [
+        item["spec"]["element"]["name"]
+        for item in layout_items
+        if item["spec"]["element"]["kind"] == "ElementReference"
+    ]
+    assert len(layout_names) == len(set(layout_names))
+    assert set(layout_names) == set(elements)
+    assert all(element["kind"] == "Panel" for element in elements.values())
+    return spec
+
+
+def _dashboard_panels(spec: dict) -> list[dict]:
+    return [element["spec"] for element in spec["elements"].values()]
 
 
 def _read_observability_files() -> str:
@@ -26,24 +57,167 @@ def _read_observability_files() -> str:
     )
 
 
+def _load_verifier_module():
+    return runpy.run_path(str(VERIFIER_PATH))
+
+
+def _decode_hcl_string(value: str) -> str:
+    return json.loads(f'"{value}"')
+
+
+def _hcl_assignment_value(line: str) -> str:
+    _key, raw_value = line.split("=", 1)
+    value = raw_value.strip()
+    assert value.startswith('"') and value.endswith('"')
+    return _decode_hcl_string(value[1:-1])
+
+
+def _alloy_stage_blocks(alloy: str, block_name: str) -> list[dict[str, str]]:
+    lines = alloy.splitlines()
+    blocks: list[dict[str, str]] = []
+    index = 0
+    while index < len(lines):
+        if lines[index].strip() != f"{block_name} {{":
+            index += 1
+            continue
+        index += 1
+        block: dict[str, str] = {}
+        while index < len(lines) and lines[index].strip() != "}":
+            line = lines[index].strip()
+            if "=" in line:
+                key = line.split("=", 1)[0].strip()
+                if key in {"expression", "replace"}:
+                    block[key] = _hcl_assignment_value(line)
+            index += 1
+        blocks.append(block)
+        index += 1
+    return blocks
+
+
+def _alloy_redaction_blocks(alloy: str):
+    return [
+        (block["expression"], block["replace"])
+        for block in _alloy_stage_blocks(alloy, "stage.replace")
+        if "expression" in block and "replace" in block
+    ]
+
+
+def _apply_alloy_replacements(alloy: str, line: str) -> str:
+    redacted = line
+    for expression, replacement in _alloy_redaction_blocks(alloy):
+        pattern = re.compile(expression)
+
+        def replace_match(match):
+            value = replacement
+            for index, group in enumerate(match.groups(), start=1):
+                value = value.replace(f"${index}", group or "")
+            return value
+
+        redacted = pattern.sub(replace_match, redacted)
+    return redacted
+
+
+def _status_headers(module, status: str, *headers: str):
+    header_text = "\r\n".join([f"HTTP/2 {status}", *headers])
+    return module["CommandResult"](
+        0,
+        f"{header_text}\r\n\r\nSITBANK_HTTP_CODE:{status}\n",
+    )
+
+
+def _api_response(module, body: str = "{}", status: str = "200"):
+    return module["CommandResult"](0, f"{body}\nSITBANK_HTTP_CODE:{status}\n")
+
+
+def _make_grafana_runner(
+    module,
+    *,
+    token: str = FAKE_GRAFANA_TOKEN,
+    anonymous_status: str = "401",
+    user=None,
+    datasources=None,
+    health_status: str = "200",
+    user_status: str = "200",
+    datasources_status: str = "200",
+    datasource_health_status: str = "200",
+    health_body: str = '{"database":"ok"}',
+    datasource_health_body: str = '{"status":"OK"}',
+    datasource_health_returncode: int = 0,
+):
+    user_payload = (
+        {"login": "sitbank-verifier", "orgRole": "Viewer"}
+        if user is None
+        else user
+    )
+    datasource_payload = (
+        [{"uid": "sitbank-loki", "type": "loki"}]
+        if datasources is None
+        else datasources
+    )
+
+    def fake_runner(arguments):
+        command = tuple(arguments)
+        url = command[-1]
+        if url.endswith("/api/health"):
+            return _api_response(module, health_body, health_status)
+        if url.endswith("/api/user") and f"Authorization: Bearer {token}" in command:
+            return _api_response(module, json.dumps(user_payload), user_status)
+        if url.endswith("/api/user"):
+            return _status_headers(module, anonymous_status)
+        if url.endswith("/api/datasources"):
+            return _api_response(module, json.dumps(datasource_payload), datasources_status)
+        if re.search(r"/api/datasources/uid/.+/health$", url):
+            return module["CommandResult"](
+                datasource_health_returncode,
+                f"{datasource_health_body}\nSITBANK_HTTP_CODE:{datasource_health_status}\n",
+            )
+        raise AssertionError(command)
+
+    return fake_runner
+
+
 def test_private_grafana_loki_alloy_deployment_files_exist_and_are_private():
     compose_path = OBS_ROOT / "compose.observability.yml"
     compose = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
     services = compose["services"]
 
-    assert set(services) == {"grafana", "loki", "alloy"}
+    assert set(services) == {"grafana", "loki", "alloy", "prometheus", "node-exporter"}
+    alloy = services["alloy"]
     assert services["grafana"]["ports"] == ["127.0.0.1:3000:3000"]
     assert services["loki"]["ports"] == ["127.0.0.1:3100:3100"]
-    assert "ports" not in services["alloy"]
-    assert services["alloy"]["command"] == [
+    assert "ports" not in alloy
+    assert "ports" not in services["prometheus"]
+    assert "ports" not in services["node-exporter"]
+    assert alloy["command"] == [
         "run",
         "--server.http.listen-addr=127.0.0.1:12345",
+        "--storage.path=/var/lib/alloy",
         "/etc/alloy/config.alloy",
     ]
-    assert compose["networks"]["observability"]["internal"] is True
+    assert alloy["group_add"] == [
+        "${ALLOY_NGINX_LOG_GROUP_ID:?ALLOY_NGINX_LOG_GROUP_ID must be rendered by bootstrap from the host adm group}",
+        "${ALLOY_JOURNAL_GROUP_ID:?ALLOY_JOURNAL_GROUP_ID must be rendered by bootstrap from the host systemd-journal group}",
+    ]
+    assert services["grafana"]["networks"] == ["host-loopback", "observability"]
+    assert services["loki"]["networks"] == ["host-loopback", "observability"]
+    assert alloy["networks"] == ["observability"]
+    assert services["prometheus"]["networks"] == ["observability"]
+    assert services["node-exporter"]["networks"] == ["observability"]
+    assert compose["networks"]["host-loopback"] == {
+        "name": "sitbank-observability-loopback",
+        "driver": "bridge",
+        "internal": False,
+    }
+    assert compose["networks"]["observability"] == {
+        "name": "sitbank-observability",
+        "driver": "bridge",
+        "internal": True,
+    }
 
     for service_name, service in services.items():
         assert "0.0.0.0:" not in str(service.get("ports", []))
+        assert "[::]:" not in str(service.get("ports", []))
+        assert "*:" not in str(service.get("ports", []))
         assert service["restart"] == "unless-stopped"
         assert service["security_opt"] == ["no-new-privileges:true"]
         assert service["cap_drop"] == ["ALL"]
@@ -54,18 +228,154 @@ def test_private_grafana_loki_alloy_deployment_files_exist_and_are_private():
     grafana = services["grafana"]
     assert grafana["environment"]["GF_AUTH_ANONYMOUS_ENABLED"] == "false"
     assert grafana["environment"]["GF_USERS_ALLOW_SIGN_UP"] == "false"
+    assert grafana["environment"]["GF_SERVER_SERVE_FROM_SUB_PATH"] == (
+        "${GRAFANA_SERVE_FROM_SUB_PATH:-false}"
+    )
     assert grafana["environment"]["GF_SECURITY_ADMIN_USER__FILE"] == (
         "/run/secrets/grafana_admin_user"
     )
     assert grafana["environment"]["GF_SECURITY_ADMIN_PASSWORD__FILE"] == (
         "/run/secrets/grafana_admin_password"
     )
+    assert "prometheus" in grafana["depends_on"]
     assert compose["secrets"]["grafana_admin_user"]["file"] == (
         "/etc/sitbank-observability/secrets/grafana_admin_user"
     )
     assert compose["secrets"]["grafana_admin_password"]["file"] == (
         "/etc/sitbank-observability/secrets/grafana_admin_password"
     )
+
+    alloy_storage_mount = next(
+        volume
+        for volume in alloy["volumes"]
+        if volume["target"] == "/var/lib/alloy"
+    )
+    assert alloy_storage_mount == {
+        "type": "bind",
+        "source": "/var/lib/sitbank-observability/alloy",
+        "target": "/var/lib/alloy",
+        "read_only": False,
+        "bind": {"create_host_path": False},
+    }
+    docker_socket_mount = next(
+        volume
+        for volume in alloy["volumes"]
+        if volume["target"] == "/var/run/docker.sock"
+    )
+    assert docker_socket_mount == {
+        "type": "bind",
+        "source": "/var/run/docker.sock",
+        "target": "/var/run/docker.sock",
+        "read_only": True,
+        "bind": {"create_host_path": False},
+    }
+    prometheus = services["prometheus"]
+    assert "environment" not in prometheus
+    assert prometheus["command"] == [
+        "--config.file=/etc/prometheus/prometheus.yml",
+        "--storage.tsdb.path=/prometheus",
+        "--storage.tsdb.retention.time=168h",
+        "--web.listen-address=0.0.0.0:9090",
+    ]
+    assert "--config.expand-env" not in prometheus["command"]
+    assert prometheus["depends_on"] == ["node-exporter"]
+    assert "password" not in json.dumps(prometheus).casefold()
+    assert "token" not in json.dumps(prometheus).casefold()
+
+    node_exporter = services["node-exporter"]
+    assert node_exporter["pid"] == "host"
+    assert "--path.procfs=/host/proc" in node_exporter["command"]
+    assert "--path.sysfs=/host/sys" in node_exporter["command"]
+    assert "--path.rootfs=/host/root" in node_exporter["command"]
+    assert all(volume["read_only"] is True for volume in node_exporter["volumes"])
+    assert "docker.sock" not in json.dumps(node_exporter)
+
+
+def test_prometheus_config_is_rendered_fail_closed_before_container_start():
+    renderer = runpy.run_path(
+        "ops/observability/render_prometheus_config.py",
+        run_name="_prometheus_config_renderer",
+    )
+    render = renderer["render_prometheus_config"]
+    validate_template_path = renderer["validate_prometheus_template_path"]
+    template_path = validate_template_path(OBS_ROOT / "prometheus" / "prometheus.yml")
+    template = template_path.read_text(encoding="utf-8")
+
+    rendered = render(template, "production")
+
+    assert "${OBSERVABILITY_ENVIRONMENT}" not in rendered
+    assert 'environment: "production"' in rendered
+    assert rendered.count('environment: "production"') == 2
+    for invalid_environment in ("", "Production", "testing", "admin"):
+        with pytest.raises(ValueError, match="staging or production"):
+            render(template, invalid_environment)
+    with pytest.raises(ValueError, match="missing its environment placeholder"):
+        render(template.replace("${OBSERVABILITY_ENVIRONMENT}", "production"), "production")
+    with pytest.raises(ValueError, match="unresolved placeholder"):
+        render(template + "\nunsafe: ${UNREVIEWED_VALUE}\n", "production")
+
+    bootstrap = Path("ops/deploy/bootstrap-observability-ec2").read_text(
+        encoding="utf-8"
+    )
+    assert "read_observability_env_value OBSERVABILITY_ENVIRONMENT" in bootstrap
+    assert "OBSERVABILITY_ENVIRONMENT must be staging or production" in bootstrap
+    assert "render_prometheus_config.py" in bootstrap
+    assert 'python3 "${prometheus_renderer}"' in bootstrap
+    assert '"${prometheus_config_tmp}"' in bootstrap
+    runbook = Path(
+        "docs/runbooks/private-observability-grafana-loki.md"
+    ).read_text(encoding="utf-8")
+    assert "`--config.expand-env` flag" in runbook
+    assert "http://prometheus:9090/-/ready" in runbook
+
+
+def test_prometheus_renderer_rejects_unapproved_template_paths(tmp_path):
+    renderer = runpy.run_path(
+        "ops/observability/render_prometheus_config.py",
+        run_name="_prometheus_config_renderer",
+    )
+    validate_template_path = renderer["validate_prometheus_template_path"]
+    allowed_root = tmp_path / "prometheus"
+    allowed_root.mkdir()
+    approved = allowed_root / "prometheus.yml"
+    approved.write_text("global: {}\n", encoding="utf-8")
+    outside = tmp_path / "outside.yml"
+    outside.write_text("global: {}\n", encoding="utf-8")
+    directory = allowed_root / "directory"
+    directory.mkdir()
+
+    assert validate_template_path(approved, allowed_root=allowed_root) == approved.resolve()
+    for unsafe_candidate in (
+        allowed_root / ".." / "outside.yml",
+        outside.resolve(),
+        directory,
+        allowed_root / "missing.yml",
+    ):
+        with pytest.raises(ValueError, match="approved template directory"):
+            validate_template_path(unsafe_candidate, allowed_root=allowed_root)
+
+    symlink = allowed_root / "linked.yml"
+    try:
+        symlink.symlink_to(approved)
+    except OSError:
+        pytest.skip("symlink creation is unavailable in this environment")
+    with pytest.raises(ValueError, match="approved template directory"):
+        validate_template_path(symlink, allowed_root=allowed_root)
+
+    symlink_escape = allowed_root / "escape.yml"
+    symlink_escape.symlink_to(outside)
+    with pytest.raises(ValueError, match="approved template directory"):
+        validate_template_path(symlink_escape, allowed_root=allowed_root)
+
+
+def test_prometheus_renderer_cli_reads_only_validated_template_path():
+    source = Path("ops/observability/render_prometheus_config.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "validated_template = validate_prometheus_template_path(args.template)" in source
+    assert "validated_template.read_text" in source
+    assert "args.template.read_text" not in source
 
 
 def test_loki_retention_and_grafana_datasource_are_configured_without_credentials():
@@ -79,14 +389,24 @@ def test_loki_retention_and_grafana_datasource_are_configured_without_credential
             / "loki.yml"
         ).read_text(encoding="utf-8")
     )
-    dashboard = json.loads(
-        (
-            OBS_ROOT
-            / "grafana"
-            / "dashboards"
-            / "sitbank-operational-overview.json"
-        ).read_text(encoding="utf-8")
-    )
+    dashboard_dir = OBS_ROOT / "grafana" / "dashboards"
+    dashboard_resources = {
+        path.name: json.loads(path.read_text(encoding="utf-8"))
+        for path in dashboard_dir.glob("*.json")
+    }
+    expected_names = {
+        "sitbank-operational-overview.json": "sitbank-operational-overview",
+        "sitbank-security-operations.json": "sitbank-security-operations",
+        "sitbank-http-health.json": "sitbank-http-health",
+        "sitbank-infrastructure-deployment-health.json": (
+            "sitbank-infrastructure-deployment-health"
+        ),
+    }
+    dashboards = {
+        filename: _dashboard_spec(dashboard_resources[filename], name)
+        for filename, name in expected_names.items()
+    }
+    dashboard = dashboards["sitbank-operational-overview.json"]
 
     assert loki["compactor"]["retention_enabled"] is True
     assert loki["limits_config"]["retention_period"] == "168h"
@@ -97,14 +417,195 @@ def test_loki_retention_and_grafana_datasource_are_configured_without_credential
     assert loki_datasource["type"] == "loki"
     assert loki_datasource["url"] == "http://loki:3100"
     assert loki_datasource["access"] == "proxy"
-    assert "password" not in str(loki_datasource).casefold()
-    assert "token" not in str(loki_datasource).casefold()
-    assert dashboard["uid"] == "sitbank-operational-overview"
+    prometheus_datasource = datasource["datasources"][1]
+    assert prometheus_datasource["type"] == "prometheus"
+    assert prometheus_datasource["uid"] == "sitbank-prometheus"
+    assert prometheus_datasource["url"] == "http://prometheus:9090"
+    assert "password" not in str(datasource).casefold()
+    assert "token" not in str(datasource).casefold()
+    assert set(dashboard_resources) == set(expected_names)
+    assert "Recent operational errors" not in json.dumps(dashboard)
     assert "SecurityAuditEvent" not in json.dumps(dashboard)
+    panels = _dashboard_panels(dashboard)
+    panel_titles = {panel["title"] for panel in panels}
+    assert panel_titles >= {
+        "Log ingestion by service and source",
+        "Nginx 4xx and 5xx trend",
+        "Recent Nginx requests",
+        "App and admin container failures",
+        "Systemd failures for monitored units",
+        "Deployment and rollback signals",
+    }
+    for panel in panels:
+        assert panel.get("description")
+        assert "Worry" in panel["description"]
+        assert "check" in panel["description"].casefold()
+    variables = {entry["spec"]["name"] for entry in dashboard["variables"]}
+    assert variables == {"environment", "service", "source"}
+    dashboard_text = json.dumps(dashboard).casefold()
+    assert "error_count: 0" in dashboard_text
+    assert "account_id" not in dashboard_text
+    assert "user_id" not in dashboard_text
+    assert "session_id" not in dashboard_text
+    assert "request_id" not in dashboard_text
+    assert "ip_address" not in dashboard_text
+
+
+def test_observability_dashboards_cover_security_http_and_infrastructure_health():
+    dashboard_dir = OBS_ROOT / "grafana" / "dashboards"
+    dashboard_resources = {
+        path.name: json.loads(path.read_text(encoding="utf-8"))
+        for path in dashboard_dir.glob("*.json")
+    }
+    dashboards = {
+        filename: _dashboard_spec(resource, filename.removesuffix(".json"))
+        for filename, resource in dashboard_resources.items()
+    }
+    security = _dashboard_panels(
+        dashboards["sitbank-security-operations.json"]
+    )
+    http = _dashboard_panels(dashboards["sitbank-http-health.json"])
+    infrastructure_dashboard = dashboards[
+        "sitbank-infrastructure-deployment-health.json"
+    ]
+    infrastructure = _dashboard_panels(infrastructure_dashboard)
+
+    assert {panel["title"] for panel in security} >= {
+        "Security alert count",
+        "Deliverable alert count",
+        "Last successful security_alert_report",
+        "Audit chain validity",
+        "Audit anchor status",
+        "Audit anchor refresh required",
+        "Audit chain error count",
+        "Database integrity validity",
+        "Tracked security_audit_events count and max ID",
+        "Tracked users count and max ID",
+    }
+    tracked_audit_events = next(
+        panel
+        for panel in security
+        if panel["title"] == "Tracked security_audit_events count and max ID"
+    )
+    tracked_queries = {
+        query["spec"]["refId"]: query["spec"]["query"]["spec"]
+        for query in tracked_audit_events["data"]["spec"]["queries"]
+    }
+    assert tracked_queries["A"]["legendFormat"] == "count"
+    assert "database_integrity_security_audit_events_count" in (
+        tracked_queries["A"]["expr"]
+    )
+    assert tracked_queries["B"]["legendFormat"] == "max_id"
+    assert "database_integrity_security_audit_events_max_id" in (
+        tracked_queries["B"]["expr"]
+    )
+    assert {panel["title"] for panel in http} >= {
+        "Requests by status class",
+        "429 rate-limit responses",
+        "403 and 404 responses",
+        "500 502 503 504 responses",
+        "Top requested paths or route groups",
+        "Nginx upstream and backend errors",
+        "Login register and MFA route volume",
+    }
+    assert {panel["title"] for panel in infrastructure} >= {
+        "EC2 CPU usage",
+        "EC2 memory usage",
+        "EC2 disk usage and pressure",
+        "Container restart count and recent restart events",
+        "PostgreSQL connectivity storage and connection health",
+        "Nginx app and admin readiness check status",
+        "Last deployment time and target environment",
+        "Production staging deployment guard failures",
+    }
+    infrastructure_queries = {
+        panel["title"]: panel["data"]["spec"]["queries"][0]["spec"]["query"]["spec"][
+            "expr"
+        ]
+        for panel in infrastructure
+    }
+    restart_query = infrastructure_queries[
+        "Container restart count and recent restart events"
+    ].casefold()
+    for signal in ("restart", "oom", "out of memory", "killed", "unhealthy"):
+        assert signal in restart_query
+    for title in (
+        "Container restart count and recent restart events",
+        "PostgreSQL connectivity storage and connection health",
+        "Last deployment time and target environment",
+        "Production staging deployment guard failures",
+    ):
+        assert "| logfmt" not in infrastructure_queries[title]
+    annotation_names = {
+        annotation["spec"]["name"]
+        for annotation in infrastructure_dashboard["annotations"]
+    }
+    assert "Deployment start completion and rollback signals" in annotation_names
+    for dashboard in dashboards.values():
+        for panel in _dashboard_panels(dashboard):
+            assert panel.get("description")
+            assert "Worry" in panel["description"]
+            assert "check" in panel["description"].casefold()
+        dashboard_text = json.dumps(dashboard).casefold()
+        for forbidden in (
+            "authorization",
+            "cookie",
+            "csrf",
+            "session_id",
+            "totp",
+            "recovery_code",
+            "password=",
+            "token=",
+            "request_body",
+            "response_body",
+        ):
+            assert forbidden not in dashboard_text
+
+
+def test_nginx_structured_access_logs_omit_sensitive_request_data():
+    default_nginx = Path("ops/nginx/sitbank-default.conf").read_text(encoding="utf-8")
+    production_nginx = Path("ops/nginx/sitbank-production.conf").read_text(encoding="utf-8")
+    staging_nginx = Path("ops/nginx/sitbank-staging.conf").read_text(encoding="utf-8")
+    log_format = default_nginx.split("server {", 1)[0]
+
+    assert "log_format sitbank_access_json escape=json" in log_format
+    for required in (
+        '"message":"nginx_access"',
+        '"event":"http_request"',
+        '"service":"nginx"',
+        '"status":$status',
+        '"method":"$request_method"',
+        '"route":"$uri"',
+        '"upstream_status":"$upstream_status"',
+    ):
+        assert required in log_format
+    for forbidden in (
+        "$request_uri",
+        "$args",
+        "$query_string",
+        "$http_authorization",
+        "$http_cookie",
+        "$remote_addr",
+        "$request_body",
+    ):
+        assert forbidden not in log_format
+    assert "access_log /var/log/nginx/sitbank.access.log sitbank_access_json;" in production_nginx
+    assert "access_log /var/log/nginx/sitbank-staging.access.log sitbank_access_json;" in staging_nginx
 
 
 def test_alloy_collects_only_approved_sources_and_redacts_sensitive_patterns():
     alloy = (OBS_ROOT / "alloy" / "config.alloy").read_text(encoding="utf-8")
+    journal_matches = re.findall(r'matches = "([^"]+)"', alloy)
+
+    assert set(journal_matches) == {
+        "_SYSTEMD_UNIT=sitbank-security-alerts.service",
+        "_SYSTEMD_UNIT=certbot.service",
+        "_SYSTEMD_UNIT=docker.service",
+    }
+    for journal_match in journal_matches:
+        assert " OR " not in journal_match
+        assert "+" not in journal_match
+        assert re.fullmatch(r"_SYSTEMD_UNIT=[A-Za-z0-9_.@-]+", journal_match)
 
     for required in (
         '/var/log/nginx/sitbank.access.log',
@@ -118,11 +619,25 @@ def test_alloy_collects_only_approved_sources_and_redacts_sensitive_patterns():
         'target_label = "environment"',
         'target_label = "host_role"',
         'replacement = "container"',
+        'loki.source.journal "sitbank_security_alerts"',
+        'loki.source.journal "certbot"',
+        'loki.source.journal "docker"',
+        'path = "/var/log/journal"',
         "_SYSTEMD_UNIT=sitbank-security-alerts.service",
         "_SYSTEMD_UNIT=certbot.service",
         "_SYSTEMD_UNIT=docker.service",
         "loki.process \"redact_sensitive\"",
         "[REDACTED]",
+        "authorization|cookie|cf-access-jwt-assertion",
+        "cf[_-]?access[_-]?jwt[_-]?assertion",
+        "smtp[_-]?(?:username|password)",
+        "api[_-]?key",
+        "webhook[_-]?url",
+        "cloudflare[_-]?(?:api[_-]?)?token",
+        "tailscale[_-]?(?:auth[_-]?)?key",
+        "ssh[_-]?(?:private[_-]?)?key",
+        "request[_ -]?body",
+        "BEGIN (RSA |EC |OPENSSH |)PRIVATE KEY",
         "loki.write \"local\"",
         "http://loki:3100/loki/api/v1/push",
     ):
@@ -144,6 +659,60 @@ def test_alloy_collects_only_approved_sources_and_redacts_sensitive_patterns():
     )
     for forbidden in forbidden_sources:
         assert forbidden not in alloy
+    for forbidden_endpoint in (
+        "containers/create",
+        "containers/.*/start",
+        "containers/.*/exec",
+        "images/create",
+        "build",
+        "volumes/create",
+        "networks/create",
+    ):
+        assert forbidden_endpoint not in alloy.casefold()
+
+
+def test_alloy_redaction_handles_structured_and_header_style_samples():
+    alloy = (OBS_ROOT / "alloy" / "config.alloy").read_text(encoding="utf-8")
+    samples = (
+        (
+            '{"token":"fake-token","password": "fake-password","safe":"ok"}',
+            ("fake-token", "fake-password"),
+        ),
+        (
+            'authorization="Bearer fake" cookie="grafana_session=fake" service=sitbank-app',
+            ("Bearer fake", "grafana_session=fake"),
+        ),
+        (
+            "Authorization: Bearer fake Cf-Access-Jwt-Assertion: fake-assertion",
+            ("Bearer fake", "fake-assertion"),
+        ),
+        (
+            "database_url=postgres://fake-user:fake-pass@db/sitbank smtp_password=fake",
+            ("postgres://fake-user:fake-pass@db/sitbank", "smtp_password=fake"),
+        ),
+        (
+            "tailscale_auth_key=fake-tskey cloudflare_api_token=fake-cloudflare",
+            ("fake-tskey", "fake-cloudflare"),
+        ),
+    )
+    for line, forbidden_values in samples:
+        redacted = _apply_alloy_replacements(alloy, line)
+        assert "[REDACTED]" in redacted
+        for value in forbidden_values:
+            assert value not in redacted
+        assert "safe" in redacted or "service=sitbank-app" in redacted or "[REDACTED]" in redacted
+
+    drop_expressions = [
+        block["expression"]
+        for block in _alloy_stage_blocks(alloy, "stage.drop")
+        if "expression" in block
+    ]
+    for forbidden_line in (
+        "request_body={\"password\":\"fake\"}",
+        "environment dump: PASSWORD=fake",
+        "-----BEGIN OPENSSH " + "PRIVATE KEY-----",
+    ):
+        assert any(re.search(expression, forbidden_line) for expression in drop_expressions)
 
 
 def test_sitbank_containers_opt_in_to_observability_without_exposing_ports():
@@ -191,10 +760,51 @@ def test_observability_bootstrap_and_docs_keep_credentials_out_of_repo():
         "/etc/sitbank-observability/observability.env",
         "/etc/sitbank-observability/secrets/grafana_admin_user",
         "/etc/sitbank-observability/secrets/grafana_admin_password",
+        "/var/lib/sitbank-observability/alloy",
+        "ALLOY_NGINX_LOG_GROUP_ID",
+        "ALLOY_JOURNAL_GROUP_ID",
+        "getent group",
+        "host_group_gid adm \"Nginx log files\"",
+        "host_group_gid systemd-journal \"systemd journal files\"",
         "root:root mode 0600",
         "docker compose --env-file",
         "Grafana listens only on `127.0.0.1:3000`",
         "Loki listens only on `127.0.0.1:3100`",
+        "Prometheus and node exporter do not publish host ports",
+        "PROMETHEUS_IMAGE=example.invalid/prometheus@sha256:<reviewed-digest>",
+        "NODE_EXPORTER_IMAGE=example.invalid/node-exporter@sha256:<reviewed-digest>",
+        "OBSERVABILITY_ENVIRONMENT=production",
+        "GRAFANA_PRIVATE_ROOT_URL=https://admin-sitbank.tailca101b.ts.net/grafana/",
+        "GRAFANA_SERVE_FROM_SUB_PATH=true",
+        "Private Tailscale Serve Browser Access Plan",
+        "sudo tailscale serve --bg --https=443 --set-path=/grafana http://127.0.0.1:3000/grafana",
+        "sudo tailscale serve --https=443 --set-path=/grafana off",
+        "verify-tailscale-admin-access --mode serve",
+        "https://admin-sitbank.tailca101b.ts.net/grafana/",
+        "https://admin-sitbank.tailca101b.ts.net/loki",
+        "GF_SERVER_SERVE_FROM_SUB_PATH",
+        "explicit HTTP `200` status validation",
+        "https://sitbank.pp.ua/grafana",
+        "http://prometheus:9090",
+        "node-exporter:9100",
+        "sitbank_access_json",
+        "`route`, upstream status, and timing fields",
+        "Nginx log files remain `0640` and group-readable by `adm`",
+        "Journal files remain group-readable by `systemd-journal`",
+        "`sitbank-observability-loopback` is a bridge network used only for "
+        "Docker's host-loopback port publishing",
+        "This loopback bridge is not an ingress security boundary by itself",
+        "Container log discovery currently uses the read-only host Docker socket",
+        "accepted residual risk",
+        "header-style, JSON-field, quoted logfmt, and unquoted key/value",
+        "`SITBank Operational Overview`",
+        "`SITBank Security Operations`",
+        "`SITBank HTTP Health`",
+        "`SITBank Infrastructure And Deployment Health`",
+        "Application audit and error logs expose stable dashboard fields",
+        "Container CPU/memory and PostgreSQL connection-count exporter metrics are not",
+        "Grafana-native alerts remain an operational follow-up",
+        "Alloy keeps only its runtime state under `/var/lib/alloy`",
         "The admin audit viewer remains backed by `SecurityAuditEvent`, not Loki",
     ):
         assert required in normalized_combined
@@ -202,6 +812,20 @@ def test_observability_bootstrap_and_docs_keep_credentials_out_of_repo():
     assert "cat \"${secret_file}\"" not in bootstrap
     assert "printenv" not in bootstrap
     assert "env |" not in bootstrap
+    assert "chmod 644" not in bootstrap
+    assert "chmod 0644 /var/log" not in bootstrap
+    assert "chmod -R" not in bootstrap
+    assert "chown -R" not in bootstrap
+    assert "usermod" not in bootstrap
+    assert "tailscale serve reset" not in docs
+    assert "grafana.sitbank.pp.ua" not in docs
+    assert "grafana-staging.pp.ua" not in docs
+    assert "0.0.0.0:3000" not in docs
+    assert "0.0.0.0:3100" not in docs
+    assert "ufw allow 3000" not in docs.casefold()
+    assert "ufw allow 3100" not in docs.casefold()
+    assert "tailscale funnel" in docs.casefold()
+    assert "funnel must remain disabled" in docs.casefold()
     assert "GF_SECURITY_ADMIN_PASSWORD=" not in combined
     assert "loki_" + "token=" not in combined.casefold()
     assert "datasource_" + "password=" not in combined.casefold()
@@ -217,3 +841,846 @@ def test_observability_bootstrap_and_docs_keep_credentials_out_of_repo():
 
     assert "SSH local port forwarding is allowed only for bootstrap" in docs
     assert "No public Nginx production, staging, customer, or admin route" in docs
+
+
+def test_private_observability_verifier_accepts_safe_mocked_live_state(tmp_path):
+    module = runpy.run_path(str(VERIFIER_PATH))
+    token = "fake-grafana-health-token"
+    calls = []
+
+    def fake_runner(arguments):
+        command = tuple(arguments)
+        calls.append(command)
+        url = command[-1]
+        if url.endswith("/api/health"):
+            return _api_response(module, '{"database":"ok"}')
+        if url.endswith("/api/user") and "Authorization: Bearer " + token in command:
+            return _api_response(
+                module,
+                json.dumps({"login": "sitbank-verifier", "orgRole": "Viewer"}),
+            )
+        if url.endswith("/api/user"):
+            return module["CommandResult"](
+                0,
+                "HTTP/2 401\r\n\nSITBANK_HTTP_CODE:401\n",
+            )
+        if url.endswith("/api/datasources"):
+            return _api_response(
+                module,
+                json.dumps([{"uid": "sitbank-loki", "type": "loki"}]),
+            )
+        if url.endswith("/api/datasources/uid/sitbank-loki/health"):
+            return _api_response(module, '{"status":"OK"}')
+        if "/grafana" in url or "/loki" in url or "/metrics" in url:
+            return module["CommandResult"](
+                0,
+                "HTTP/2 404\r\n\nSITBANK_HTTP_CODE:404\n",
+            )
+        raise AssertionError(command)
+
+    grafana_url = "https://admin-sitbank.tailca101b.ts.net/grafana"
+    checks = [
+        *module["verify_private_grafana"](fake_runner, grafana_url, token),
+        *module["verify_private_direct_denials"](fake_runner, grafana_url),
+        *module["verify_public_denials"](
+            fake_runner,
+            ("https://sitbank.pp.ua/grafana", "https://staging-sitbank.pp.ua/loki"),
+        ),
+    ]
+    evidence = tmp_path / "private-observability.json"
+    module["_write_evidence"](
+        evidence,
+        target_environment="staging",
+        grafana_url=grafana_url,
+        checks=checks,
+        token=token,
+    )
+
+    evidence_text = evidence.read_text(encoding="utf-8")
+    evidence_json = json.loads(evidence_text)
+    assert evidence_json["result"] == "pass"
+    assert evidence_json["workflow_trigger"] == "manual_protected"
+    assert evidence_json["private_grafana_host"] == "admin-sitbank.tailca101b.ts.net"
+    assert {check["name"] for check in evidence_json["checks"]} >= {
+        "grafana_api_health",
+        "grafana_anonymous_disabled",
+        "grafana_verifier_role_least_privilege",
+        "loki_datasource_health",
+        "private_direct_observability_denial",
+        "public_observability_denial",
+    }
+    assert token not in evidence_text
+    assert "Authorization" not in evidence_text
+    assert "grafana_session" not in evidence_text
+    assert any(
+        "Authorization: Bearer " + token in command
+        for command in calls
+    )
+    assert any(
+        "https://admin-sitbank.tailca101b.ts.net/grafana/api/health" in command
+        for command in calls
+    )
+
+
+def test_private_observability_verifier_fails_closed_on_public_exposure_and_admin_token():
+    module = runpy.run_path(str(VERIFIER_PATH))
+
+    with pytest.raises(module["VerificationError"], match="public SITBank"):
+        module["_validate_private_grafana_url"]("https://sitbank.pp.ua")
+    with pytest.raises(module["VerificationError"], match="Tailscale"):
+        module["_validate_private_grafana_url"]("https://grafana.example.com")
+    with pytest.raises(module["VerificationError"], match="without credentials"):
+        module["_validate_private_grafana_url"](
+            "https://user:pass@grafana-sitbank.tailca101b.ts.net"
+        )
+    with pytest.raises(module["VerificationError"], match="approved private"):
+        module["_validate_private_grafana_url"](
+            "https://grafana-sitbank.tailca101b.ts.net/grafana/"
+        )
+    with pytest.raises(module["VerificationError"], match="private Tailscale"):
+        module["_validate_public_probe_url"](
+            "https://grafana-sitbank.tailca101b.ts.net/grafana"
+        )
+
+    def admin_runner(arguments):
+        url = tuple(arguments)[-1]
+        if url.endswith("/api/health"):
+            return _api_response(module, "{}")
+        if url.endswith("/api/user") and "Authorization: Bearer token" in tuple(arguments):
+            return _api_response(module, json.dumps({"orgRole": "Admin"}))
+        if url.endswith("/api/user"):
+            return module["CommandResult"](
+                0,
+                "HTTP/2 401\r\n\nSITBANK_HTTP_CODE:401\n",
+            )
+        raise AssertionError(arguments)
+
+    with pytest.raises(module["VerificationError"], match="administrative privileges"):
+        module["verify_private_grafana"](
+            admin_runner,
+            PRIVATE_GRAFANA_URL,
+            "token",
+        )
+
+    def public_runner(arguments):
+        return module["CommandResult"](
+            0,
+            "HTTP/2 200\r\nserver: grafana\r\n\nSITBANK_HTTP_CODE:200\n",
+        )
+
+    with pytest.raises(module["VerificationError"], match="public observability"):
+        module["verify_public_denials"](
+            public_runner,
+            ("https://sitbank.pp.ua/grafana",),
+        )
+
+
+def test_private_grafana_url_validation_accepts_only_private_tailscale_https():
+    module = _load_verifier_module()
+
+    assert (
+        module["_validate_private_grafana_url"](
+            "https://admin-sitbank.tailca101b.ts.net/grafana/"
+        )
+        == "https://admin-sitbank.tailca101b.ts.net/grafana"
+    )
+    assert (
+        module["_grafana_url"](
+            "https://admin-sitbank.tailca101b.ts.net/grafana",
+            "/api/health",
+        )
+        == "https://admin-sitbank.tailca101b.ts.net/grafana/api/health"
+    )
+
+    invalid_urls = (
+        ("http://grafana-sitbank.tailca101b.ts.net", "https URL"),
+        ("https:///grafana", "https URL"),
+        (
+            "https://user:pass@grafana-sitbank.tailca101b.ts.net",
+            "without credentials",
+        ),
+        ("https://admin-sitbank.tailca101b.ts.net/grafana/?token=fake", "query"),
+        ("https://admin-sitbank.tailca101b.ts.net:443/grafana/", "custom ports"),
+        ("https://www.sitbank.pp.ua", "public SITBank"),
+        ("https://staging-sitbank.pp.ua", "public SITBank"),
+        ("https://grafana.example.com", "Tailscale"),
+        (
+            "https://grafana-sitbank.tailca101b.ts.net/grafana/",
+            "approved private Grafana",
+        ),
+        ("https://admin-sitbank.tailca101b.ts.net/", "/grafana"),
+        ("https://admin-sitbank.tailca101b.ts.net/prometheus/", "/grafana"),
+    )
+    for url, message in invalid_urls:
+        with pytest.raises(module["VerificationError"], match=message):
+            module["_validate_private_grafana_url"](url)
+
+
+def test_public_probe_url_validation_allows_only_public_observability_denials():
+    module = _load_verifier_module()
+
+    for path in ("/grafana", "/grafana/login", "/loki", "/logs", "/metrics"):
+        url = f"https://sitbank.pp.ua{path}"
+        assert module["_validate_public_probe_url"](url) == url
+
+    invalid_urls = (
+        ("http://sitbank.pp.ua/grafana", "https URLs"),
+        ("https://user:pass@sitbank.pp.ua/grafana", "without credentials"),
+        (
+            "https://grafana-sitbank.tailca101b.ts.net/grafana",
+            "private Tailscale",
+        ),
+        ("https://sitbank.pp.ua/health/ready", "observability-denial paths"),
+        ("https://sitbank.pp.ua/grafana-public", "observability-denial paths"),
+    )
+    for url, message in invalid_urls:
+        with pytest.raises(module["VerificationError"], match=message):
+            module["_validate_public_probe_url"](url)
+
+
+def test_public_probe_urls_use_defaults_and_validate_custom_input():
+    module = _load_verifier_module()
+
+    assert module["_public_probe_urls"](None) == list(module["DEFAULT_PUBLIC_PROBES"])
+    assert module["_public_probe_urls"]("") == list(module["DEFAULT_PUBLIC_PROBES"])
+    assert module["_public_probe_urls"](
+        "https://sitbank.pp.ua/grafana\n\nhttps://staging-sitbank.pp.ua/loki\n"
+    ) == ["https://sitbank.pp.ua/grafana", "https://staging-sitbank.pp.ua/loki"]
+
+    with pytest.raises(module["VerificationError"], match="At least one"):
+        module["_public_probe_urls"](" \n\t\n")
+    with pytest.raises(module["VerificationError"], match="observability-denial"):
+        module["_public_probe_urls"]("https://sitbank.pp.ua/health/ready")
+
+
+def test_safe_json_load_and_url_label_handle_bad_inputs_safely():
+    module = _load_verifier_module()
+
+    assert module["_safe_json_load"]('{"ok": true}', "Grafana") == {"ok": True}
+    with pytest.raises(module["VerificationError"], match="valid JSON"):
+        module["_safe_json_load"]("{bad json", "Grafana")
+
+    assert (
+        module["_safe_url_label"]("https://sitbank.pp.ua/grafana?token=fake")
+        == "sitbank.pp.ua/grafana"
+    )
+    assert module["_safe_url_label"]("not a url") == "<invalid>not a url"
+    assert module["_safe_url_label"]("https:///grafana") == "<invalid>/grafana"
+
+    with pytest.raises(module["VerificationError"], match="did not report an HTTP status"):
+        module["_split_curl_body_status"]('{"ok": true}', "Grafana health API")
+    with pytest.raises(module["VerificationError"], match="invalid HTTP status"):
+        module["_split_curl_body_status"](
+            '{"ok": true}\nSITBANK_HTTP_CODE:not-a-status\n',
+            "Grafana health API",
+        )
+
+
+def test_run_command_fails_closed_and_returns_nonzero_results(monkeypatch):
+    module = _load_verifier_module()
+
+    monkeypatch.setattr(module["shutil"], "which", lambda _command: None)
+    with pytest.raises(module["VerificationError"], match="not installed"):
+        module["run_command"](("curl", "--version"))
+
+    monkeypatch.setattr(module["shutil"], "which", lambda _command: "C:/fake/curl.exe")
+
+    def fake_run(arguments, **kwargs):
+        assert arguments == ["C:/fake/curl.exe", "--fail"]
+        assert kwargs["check"] is False
+        assert kwargs["capture_output"] is True
+        assert kwargs["text"] is True
+        assert kwargs["timeout"] == 20
+        return subprocess.CompletedProcess(arguments, 7, "stdout", "stderr")
+
+    monkeypatch.setattr(module["subprocess"], "run", fake_run)
+    result = module["run_command"](("curl", "--fail"))
+    assert result == module["CommandResult"](7, "stdout", "stderr")
+
+    for exception in (
+        OSError("synthetic failure"),
+        subprocess.TimeoutExpired("curl", 20),
+    ):
+
+        def failing_run(_arguments, **_kwargs):
+            raise exception
+
+        monkeypatch.setattr(module["subprocess"], "run", failing_run)
+        with pytest.raises(module["VerificationError"], match="could not run"):
+            module["run_command"](("curl", "--fail"))
+
+
+def test_curl_builds_safe_headers_and_raises_on_request_failure():
+    module = _load_verifier_module()
+    calls = []
+
+    def ok_runner(arguments):
+        calls.append(tuple(arguments))
+        return _api_response(module, '{"ok":true}')
+
+    assert module["_curl"](ok_runner, f"{PRIVATE_GRAFANA_URL}/api/health") == (
+        "200",
+        '{"ok":true}',
+    )
+    assert "Accept: application/json" in calls[-1]
+    assert not any("Authorization:" in argument for argument in calls[-1])
+
+    module["_curl"](
+        ok_runner,
+        f"{PRIVATE_GRAFANA_URL}/api/user",
+        token=FAKE_GRAFANA_TOKEN,
+    )
+    assert "Accept: application/json" in calls[-1]
+    assert f"Authorization: Bearer {FAKE_GRAFANA_TOKEN}" in calls[-1]
+
+    def failing_runner(_arguments):
+        return module["CommandResult"](28, "", "timeout")
+
+    with pytest.raises(module["VerificationError"], match="request failed"):
+        module["_curl"](failing_runner, f"{PRIVATE_GRAFANA_URL}/api/health")
+
+
+def test_curl_status_headers_parses_statuses_and_handles_curl_failures():
+    module = _load_verifier_module()
+
+    for returncode in (0, 22, 47):
+
+        def runner(_arguments, code=returncode):
+            return module["CommandResult"](
+                code,
+                "HTTP/2 403\r\nx-safe: true\r\n\r\nSITBANK_HTTP_CODE:403\n",
+            )
+
+        status, headers = module["_curl_status_headers"](
+            runner,
+            "https://sitbank.pp.ua/grafana",
+        )
+        assert status == "403"
+        assert "x-safe: true" in headers
+
+    def unexpected_failure(_arguments):
+        return module["CommandResult"](
+            6,
+            "HTTP/2 000\r\n\r\nSITBANK_HTTP_CODE:000\n",
+        )
+
+    assert module["_curl_status_headers"](
+        unexpected_failure,
+        "https://sitbank.pp.ua/grafana",
+    ) == ("000", "")
+
+    def redirect_denial(_arguments):
+        return module["CommandResult"](
+            47,
+            (
+                "HTTP/2 302\r\n"
+                "location: https://sitbank.pp.ua/login\r\n\r\n"
+                "SITBANK_HTTP_CODE:302\n"
+            ),
+        )
+
+    status, headers = module["_curl_status_headers"](
+        redirect_denial,
+        "https://sitbank.pp.ua/grafana",
+    )
+    assert status == "302"
+    assert "location: https://sitbank.pp.ua/login" in headers
+
+
+def test_verify_private_grafana_fails_closed_for_unsafe_grafana_states():
+    module = _load_verifier_module()
+
+    with pytest.raises(module["VerificationError"], match="TOKEN is required"):
+        module["verify_private_grafana"](
+            _make_grafana_runner(module),
+            PRIVATE_GRAFANA_URL,
+            "",
+        )
+
+    unsafe_cases = (
+        (
+            _make_grafana_runner(module, health_status="500"),
+            "Grafana health API returned HTTP 500",
+        ),
+        (
+            _make_grafana_runner(module, health_body="{bad json"),
+            "Grafana health API did not return valid JSON",
+        ),
+        (
+            _make_grafana_runner(module, health_body="[]"),
+            "Grafana health API returned an unexpected schema",
+        ),
+        (
+            _make_grafana_runner(module, anonymous_status="200"),
+            "anonymous API access",
+        ),
+        (
+            _make_grafana_runner(module, user_status="403"),
+            "Grafana authenticated user API returned HTTP 403",
+        ),
+        (
+            _make_grafana_runner(module, user=[]),
+            "authenticated user API returned an unexpected schema",
+        ),
+        (
+            _make_grafana_runner(module, user={"isGrafanaAdmin": True}),
+            "administrative privileges",
+        ),
+        (
+            _make_grafana_runner(module, user={"orgRole": "Admin"}),
+            "administrative privileges",
+        ),
+        (
+            _make_grafana_runner(module, datasources={"unexpected": "schema"}),
+            "unexpected schema",
+        ),
+        (
+            _make_grafana_runner(module, datasources_status="401"),
+            "Grafana datasource API returned HTTP 401",
+        ),
+        (
+            _make_grafana_runner(
+                module,
+                datasources=[{"uid": "prometheus", "type": "prometheus"}],
+            ),
+            "no Loki datasource",
+        ),
+        (
+            _make_grafana_runner(
+                module,
+                datasources=[{"uid": "../unsafe", "type": "loki"}],
+            ),
+            "UID is missing or unsafe",
+        ),
+        (
+            _make_grafana_runner(module, datasource_health_returncode=28),
+            "request failed",
+        ),
+        (
+            _make_grafana_runner(module, datasource_health_status="500"),
+            "Grafana Loki datasource health API returned HTTP 500",
+        ),
+        (
+            _make_grafana_runner(module, datasource_health_body='{"status":"FAIL"}'),
+            "datasource health API returned an unexpected schema",
+        ),
+    )
+    for runner, message in unsafe_cases:
+        with pytest.raises(module["VerificationError"], match=message):
+            module["verify_private_grafana"](
+                runner,
+                PRIVATE_GRAFANA_URL,
+                FAKE_GRAFANA_TOKEN,
+            )
+
+
+def test_verify_host_loopback_readiness_requires_local_grafana_and_loki():
+    module = _load_verifier_module()
+
+    def ready_runner(arguments):
+        url = tuple(arguments)[-1]
+        if url == "http://127.0.0.1:3000/login":
+            return _status_headers(module, "200")
+        if url == "http://127.0.0.1:3100/ready":
+            return _status_headers(module, "200")
+        raise AssertionError(arguments)
+
+    assert module["verify_host_loopback_readiness"](ready_runner) == [
+        {
+            "name": "grafana_host_loopback_login",
+            "result": "pass",
+            "target": "127.0.0.1/login",
+            "http_status": "200",
+        },
+        {
+            "name": "loki_host_loopback_ready",
+            "result": "pass",
+            "target": "127.0.0.1/ready",
+            "http_status": "200",
+        },
+    ]
+
+    def failing_runner(arguments):
+        url = tuple(arguments)[-1]
+        if url == "http://127.0.0.1:3000/login":
+            return _status_headers(module, "200")
+        if url == "http://127.0.0.1:3100/ready":
+            return module["CommandResult"](7, "", "connection refused")
+        raise AssertionError(arguments)
+
+    with pytest.raises(module["VerificationError"], match="127.0.0.1/ready"):
+        module["verify_host_loopback_readiness"](failing_runner)
+
+
+def test_verify_public_denials_accepts_closed_statuses_and_sanitizes_records():
+    module = _load_verifier_module()
+    statuses = {
+        "https://sitbank.pp.ua/grafana": "404",
+        "https://staging-sitbank.pp.ua/loki": "403",
+    }
+
+    def closed_runner(arguments):
+        return _status_headers(module, statuses[tuple(arguments)[-1]])
+
+    checks = module["verify_public_denials"](closed_runner, tuple(statuses))
+    assert checks == [
+        {
+            "name": "public_observability_denial",
+            "result": "pass",
+            "target": "sitbank.pp.ua/grafana",
+            "http_status": "404",
+            "denial_category": "not_found_denial",
+        },
+        {
+            "name": "public_observability_denial",
+            "result": "pass",
+            "target": "staging-sitbank.pp.ua/loki",
+            "http_status": "403",
+            "denial_category": "http_auth_denial",
+        },
+    ]
+    assert "HTTP/2" not in json.dumps(checks)
+    assert "location:" not in json.dumps(checks).casefold()
+
+
+def test_verify_public_denials_accepts_cloudflare_access_denials_without_raw_metadata():
+    module = _load_verifier_module()
+    urls = (
+        "https://staging-sitbank.pp.ua/grafana",
+        "https://staging-sitbank.pp.ua/loki",
+        "https://staging-sitbank.pp.ua/logs",
+        "https://staging-sitbank.pp.ua/metrics",
+    )
+
+    def cloudflare_access_runner(arguments):
+        url = tuple(arguments)[-1]
+        status = "302" if url.endswith("/grafana") else "403"
+        return _status_headers(
+            module,
+            status,
+            "server: cloudflare",
+            "cf-ray: fake-ray-id",
+            "cf-access-jwt-assertion: fake-access-assertion",
+            "set-cookie: CF_Authorization=fake-access-cookie; HttpOnly; Secure",
+            "location: /cdn-cgi/access/login",
+            "x-frame-options: DENY",
+        )
+
+    checks = module["verify_public_denials"](cloudflare_access_runner, urls)
+
+    assert {check["target"] for check in checks} == {
+        "staging-sitbank.pp.ua/grafana",
+        "staging-sitbank.pp.ua/loki",
+        "staging-sitbank.pp.ua/logs",
+        "staging-sitbank.pp.ua/metrics",
+    }
+    assert all(check["result"] == "pass" for check in checks)
+    assert all(check["denial_category"] == "cloudflare_access_denial" for check in checks)
+    serialized = json.dumps(checks)
+    assert "cf-access-jwt-assertion" not in serialized
+    assert "CF_Authorization" not in serialized
+    assert "/cdn-cgi/access/login" not in serialized
+
+
+def test_verify_public_denials_accepts_app_and_nginx_denials():
+    module = _load_verifier_module()
+    statuses = {
+        "https://sitbank.pp.ua/grafana": "404",
+        "https://sitbank.pp.ua/loki": "401",
+        "https://sitbank.pp.ua/logs": "403",
+        "https://sitbank.pp.ua/metrics": "404",
+    }
+
+    def denial_runner(arguments):
+        return _status_headers(
+            module,
+            statuses[tuple(arguments)[-1]],
+            "server: nginx",
+            "x-content-type-options: nosniff",
+            "content-security-policy: default-src 'self'",
+        )
+
+    checks = module["verify_public_denials"](denial_runner, tuple(statuses))
+
+    assert [check["result"] for check in checks] == ["pass", "pass", "pass", "pass"]
+    assert [check["denial_category"] for check in checks] == [
+        "not_found_denial",
+        "http_auth_denial",
+        "http_auth_denial",
+        "not_found_denial",
+    ]
+
+
+def test_verify_private_direct_denials_keep_loki_and_metrics_unserved():
+    module = _load_verifier_module()
+    statuses = {
+        "https://admin-sitbank.tailca101b.ts.net/loki": "404",
+        "https://admin-sitbank.tailca101b.ts.net/metrics": "403",
+    }
+
+    def closed_runner(arguments):
+        return _status_headers(module, statuses[tuple(arguments)[-1]])
+
+    checks = module["verify_private_direct_denials"](closed_runner, PRIVATE_GRAFANA_URL)
+
+    assert checks == [
+        {
+            "name": "private_direct_observability_denial",
+            "result": "pass",
+            "target": "admin-sitbank.tailca101b.ts.net/loki",
+            "http_status": "404",
+            "denial_category": "not_found_denial",
+        },
+        {
+            "name": "private_direct_observability_denial",
+            "result": "pass",
+            "target": "admin-sitbank.tailca101b.ts.net/metrics",
+            "http_status": "403",
+            "denial_category": "http_auth_denial",
+        },
+    ]
+
+    def exposed_runner(arguments):
+        url = tuple(arguments)[-1]
+        if url.endswith("/loki"):
+            return _status_headers(module, "404", "server: loki")
+        return _status_headers(module, "404")
+
+    with pytest.raises(module["VerificationError"], match="private direct observability"):
+        module["verify_private_direct_denials"](exposed_runner, PRIVATE_GRAFANA_URL)
+
+
+@pytest.mark.parametrize(
+    ("status", "header", "message"),
+    (
+        ("200", "server: nginx", "public observability"),
+        ("404", "server: grafana", "public observability"),
+        ("403", "x-grafana-user: disabled", "public observability"),
+        ("500", "server: loki", "public observability"),
+        ("404", "x-loki-warning: fake", "public observability"),
+        ("302", "location: https://sitbank.pp.ua/grafana/login", "public observability"),
+        ("302", "location: https://sitbank.pp.ua/loki/", "public observability"),
+        ("404", "cookie: grafana_session=fake", "public observability"),
+        ("404", "set-cookie: grafana_session=fake", "public observability"),
+        ("404", "x-grafana-org-id: 1", "public observability"),
+    ),
+)
+def test_verify_public_denials_fails_closed_on_observability_exposure(
+    status,
+    header,
+    message,
+):
+    module = _load_verifier_module()
+
+    def public_runner(_arguments):
+        return _status_headers(module, status, header)
+
+    with pytest.raises(module["VerificationError"], match=message):
+        module["verify_public_denials"](
+            public_runner,
+            ("https://sitbank.pp.ua/grafana",),
+        )
+
+
+def test_write_evidence_creates_parent_and_retains_only_sanitized_fields(tmp_path):
+    module = _load_verifier_module()
+    evidence_path = tmp_path / "nested" / "private-observability.json"
+    checks = [
+        {
+            "name": "public_observability_denial",
+            "result": "pass",
+            "target": "sitbank.pp.ua/grafana",
+            "http_status": "404",
+            "denial_category": "not_found_denial",
+        }
+    ]
+
+    module["_write_evidence"](
+        evidence_path,
+        target_environment="production",
+        grafana_url=PRIVATE_GRAFANA_URL,
+        checks=checks,
+        token=FAKE_GRAFANA_TOKEN,
+    )
+
+    evidence_text = evidence_path.read_text(encoding="utf-8")
+    evidence = json.loads(evidence_text)
+    assert evidence["target_environment"] == "production"
+    assert evidence["private_grafana_host"] == "admin-sitbank.tailca101b.ts.net"
+    assert evidence["checks"] == checks
+    assert evidence["sanitization"] == {
+        "access_assertions_retained": False,
+        "cookies_retained": False,
+        "credentials_retained": False,
+        "raw_http_bodies_retained": False,
+    }
+    for forbidden in (
+        FAKE_GRAFANA_TOKEN,
+        "Authorization: Bearer",
+        "grafana_session=fake",
+        "cf-access-jwt-assertion: fake",
+        "location:",
+        "cloudflareaccess.",
+        "redirect_url=",
+        "raw response body",
+    ):
+        assert forbidden not in evidence_text
+
+
+def test_write_evidence_refuses_to_write_if_token_would_be_retained(tmp_path):
+    module = _load_verifier_module()
+    evidence_path = tmp_path / "nested" / "private-observability.json"
+
+    with pytest.raises(module["VerificationError"], match="contains the Grafana token"):
+        module["_write_evidence"](
+            evidence_path,
+            target_environment="staging",
+            grafana_url=PRIVATE_GRAFANA_URL,
+            checks=[{"name": "unsafe", "result": FAKE_GRAFANA_TOKEN}],
+            token=FAKE_GRAFANA_TOKEN,
+        )
+
+    assert not evidence_path.exists()
+
+
+def test_write_evidence_refuses_raw_headers_cookies_and_redirects(tmp_path):
+    module = _load_verifier_module()
+    evidence_path = tmp_path / "private-observability.json"
+
+    unsafe_checks = [
+        {"name": "unsafe", "result": "pass", "raw_header": "authorization: Bearer fake"},
+        {"name": "unsafe", "result": "pass", "raw_header": "set-cookie: grafana_session=fake"},
+        {
+            "name": "unsafe",
+            "result": "pass",
+            "raw_location": "https://example.cloudflareaccess.test/cdn-cgi/access/login?redirect_url=fake",
+        },
+    ]
+    for check in unsafe_checks:
+        with pytest.raises(module["VerificationError"], match="raw observability metadata"):
+            module["_write_evidence"](
+                evidence_path,
+                target_environment="staging",
+                grafana_url=PRIVATE_GRAFANA_URL,
+                checks=[check],
+                token=FAKE_GRAFANA_TOKEN,
+            )
+        assert not evidence_path.exists()
+
+
+def test_parse_args_restricts_target_environment_and_accepts_overrides(tmp_path):
+    module = _load_verifier_module()
+    evidence_path = tmp_path / "private-observability.json"
+
+    args = module["parse_args"](
+        [
+            "--target-environment",
+            "production",
+            "--grafana-url",
+            PRIVATE_GRAFANA_URL,
+            "--public-probe-url",
+            "https://sitbank.pp.ua/grafana",
+            "--evidence-file",
+            str(evidence_path),
+            "--verify-host-loopback",
+        ]
+    )
+    assert args.target_environment == "production"
+    assert args.grafana_url == PRIVATE_GRAFANA_URL
+    assert args.public_probe_url == ["https://sitbank.pp.ua/grafana"]
+    assert args.evidence_file == str(evidence_path)
+    assert args.verify_host_loopback is True
+
+    with pytest.raises(SystemExit):
+        module["parse_args"](["--target-environment", "development"])
+
+
+def test_main_success_uses_env_and_writes_evidence_override(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    module = _load_verifier_module()
+    grafana_runner = _make_grafana_runner(module)
+    calls = []
+
+    def fake_run_command(arguments):
+        command = tuple(arguments)
+        calls.append(command)
+        url = command[-1]
+        if url in {
+            "http://127.0.0.1:3000/login",
+            "http://127.0.0.1:3100/ready",
+        }:
+            return _status_headers(module, "200")
+        if url.startswith(PRIVATE_GRAFANA_URL):
+            return grafana_runner(command)
+        return _status_headers(module, "404")
+
+    monkeypatch.setitem(module["main"].__globals__, "run_command", fake_run_command)
+    monkeypatch.setenv("GRAFANA_PRIVATE_URL", f"{PRIVATE_GRAFANA_URL}/")
+    monkeypatch.setenv("GRAFANA_HEALTH_TOKEN", FAKE_GRAFANA_TOKEN)
+    monkeypatch.setenv(
+        "OBSERVABILITY_PUBLIC_PROBE_URLS",
+        "https://sitbank.pp.ua/grafana\nhttps://www.sitbank.pp.ua/loki\n",
+    )
+    evidence_path = tmp_path / "custom" / "private-observability.json"
+
+    assert module["main"](
+        [
+            "--target-environment",
+            "production",
+            "--verify-host-loopback",
+            "--evidence-file",
+            str(evidence_path),
+        ]
+    ) == 0
+
+    captured = capsys.readouterr()
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    assert f"written to {evidence_path}" in captured.out
+    assert captured.err == ""
+    assert evidence["target_environment"] == "production"
+    assert evidence["private_grafana_host"] == "admin-sitbank.tailca101b.ts.net"
+    assert {
+        "grafana_host_loopback_login",
+        "loki_host_loopback_ready",
+    } <= {check["name"] for check in evidence["checks"]}
+    assert FAKE_GRAFANA_TOKEN not in evidence_path.read_text(encoding="utf-8")
+    assert any(f"Authorization: Bearer {FAKE_GRAFANA_TOKEN}" in call for call in calls)
+
+
+def test_main_failure_returns_one_and_prints_sanitized_error(monkeypatch, capsys):
+    module = _load_verifier_module()
+    monkeypatch.setenv("GRAFANA_HEALTH_TOKEN", FAKE_GRAFANA_TOKEN)
+
+    result = module["main"](
+        [
+            "--grafana-url",
+            "https://sitbank.pp.ua",
+            "--public-probe-url",
+            "https://sitbank.pp.ua/grafana",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "ERROR: GRAFANA_PRIVATE_URL must not be a public SITBank hostname" in captured.err
+    assert FAKE_GRAFANA_TOKEN not in captured.err
+
+
+def test_script_entrypoint_exits_with_sanitized_failure(monkeypatch, capsys):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(VERIFIER_PATH), "--grafana-url", "https://sitbank.pp.ua"],
+    )
+    monkeypatch.setenv("GRAFANA_HEALTH_TOKEN", FAKE_GRAFANA_TOKEN)
+
+    with pytest.raises(SystemExit) as exc_info:
+        runpy.run_path(str(VERIFIER_PATH), run_name="__main__")
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "ERROR: GRAFANA_PRIVATE_URL must not be a public SITBank hostname" in captured.err
+    assert FAKE_GRAFANA_TOKEN not in captured.err

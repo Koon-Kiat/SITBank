@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import json
 import os
 from datetime import timedelta
@@ -25,6 +26,11 @@ TEST_MFA_KEK_ACTIVE_ID = "test-mfa-current"
 TEST_MFA_KEK_KEYS = {
     "test-mfa-current": b"4" * 32,
     "test-mfa-previous": b"5" * 32,
+}
+TEST_TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID = "test-ledger-current"
+TEST_TRANSACTION_LEDGER_HMAC_KEYS = {
+    "test-ledger-current": b"b" * 32,
+    "test-ledger-previous": b"c" * 32,
 }
 
 
@@ -53,6 +59,12 @@ os.environ.setdefault(
 )
 os.environ["MFA_KEK_ACTIVE_ID"] = TEST_MFA_KEK_ACTIVE_ID
 os.environ["MFA_KEK_KEYS_JSON"] = _encoded_keyring(TEST_MFA_KEK_KEYS)
+os.environ["TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID"] = (
+    TEST_TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID
+)
+os.environ["TRANSACTION_LEDGER_HMAC_KEYS_JSON"] = _encoded_keyring(
+    TEST_TRANSACTION_LEDGER_HMAC_KEYS
+)
 os.environ.setdefault(
     "PASSWORD_PEPPER_B64",
     base64.b64encode(b"1" * 32).decode("ascii"),
@@ -97,6 +109,10 @@ class TestConfig:
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     MFA_KEK_ACTIVE_ID = TEST_MFA_KEK_ACTIVE_ID
     MFA_KEK_KEYS = TEST_MFA_KEK_KEYS
+    TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID = (
+        TEST_TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID
+    )
+    TRANSACTION_LEDGER_HMAC_KEYS = TEST_TRANSACTION_LEDGER_HMAC_KEYS
     PASSWORD_PEPPER_B64 = os.environ["PASSWORD_PEPPER_B64"]
     ADMIN_PASSWORD_PEPPER_B64 = os.environ["ADMIN_PASSWORD_PEPPER_B64"]
     PASSWORD_PBKDF2_ITERATIONS = int(os.environ["PASSWORD_PBKDF2_ITERATIONS"])
@@ -159,6 +175,7 @@ class TestConfig:
     ADMIN_AUTH_FAILURE_KEY_PREFIX = "ospbank:admin:authfail:"
     SECURITY_STATE_CLEANUP_BATCH_SIZE = 500
     SECURITY_STATE_RETENTION_DAYS = 30
+    PUBLIC_TRANSACTION_IDEMPOTENCY_TTL_SECONDS = 24 * 60 * 60
     SESSION_HISTORY_LIMIT = 20
     CUSTOMER_MAX_ACTIVE_SESSIONS = 1
     ADMIN_MAX_ACTIVE_SESSIONS = 1
@@ -179,6 +196,20 @@ class TestConfig:
     ADMIN_RATELIMIT_STORAGE_URI = "memory://"
     ADMIN_RATELIMIT_KEY_PREFIX = "test-admin:"
     FRESH_MFA_SECONDS = 5 * 60
+    ADMIN_MFA_FAILURE_LIMIT = 10
+    ADMIN_MFA_FAILURE_WINDOW_SECONDS = 5 * 60
+    CUSTOMER_MFA_FAILURE_LIMIT = 10
+    CUSTOMER_MFA_FAILURE_WINDOW_SECONDS = 5 * 60
+    PAYUP_QUICK_TRANSFER_CAP = 200.0
+    PAYUP_QUICK_DAILY_CAP = 500.0
+    PAYUP_STEP_UP_LIMIT_PERCENT = 80
+    PAYUP_QUICK_SESSION_MAX_AGE_SECONDS = 15 * 60
+    PAYUP_SENSITIVE_EVENT_COOLDOWN_SECONDS = 24 * 60 * 60
+    PAYUP_RATE_LIMIT_ACCOUNT = 20
+    PAYUP_RATE_LIMIT_SESSION = 15
+    PAYUP_RATE_LIMIT_IP = 30
+    PAYUP_RATE_LIMIT_RECIPIENT = 10
+    PAYUP_RATE_LIMIT_WINDOW_SECONDS = 15 * 60
     TOTP_LOGIN_VALID_WINDOW = 1
     TOTP_HIGH_RISK_VALID_WINDOW = 0
     ADMIN_ALLOWED_EMAIL_DOMAINS = frozenset(
@@ -186,15 +217,16 @@ class TestConfig:
     )
     SIT_WORKPLACE_EMAIL_DOMAINS = ADMIN_ALLOWED_EMAIL_DOMAINS
     STAFF_INVITE_ALIAS_SEPARATORS = ("+",)
+    CUSTOMER_EMAIL_PLUS_ALIAS_DOMAINS = frozenset({"gmail.com", "googlemail.com"})
+    CUSTOMER_EMAIL_DOT_INSENSITIVE_DOMAINS = frozenset({"gmail.com", "googlemail.com"})
+    CUSTOMER_TEMP_EMAIL_DOMAINS = frozenset(
+        {"10minutemail.com", "guerrillamail.com", "mailinator.com", "temp-mail.org", "yopmail.com"}
+    )
     ROOT_ADMIN_EMAILS = frozenset(
         {
             "root1@sit.singaporetech.edu.sg",
             "root2@sit.singaporetech.edu.sg",
             "root3@sit.singaporetech.edu.sg",
-            "root4@sit.singaporetech.edu.sg",
-            "root5@sit.singaporetech.edu.sg",
-            "root6@sit.singaporetech.edu.sg",
-            "root7@sit.singaporetech.edu.sg",
         }
     )
     STAFF_INVITE_TTL_SECONDS = 24 * 60 * 60
@@ -207,10 +239,14 @@ class TestConfig:
     TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED = False
     TURNSTILE_CUSTOMER_REGISTER_ENABLED = False
     TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED = False
+    TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED = False
     TURNSTILE_ADMIN_LOGIN_ENABLED = False
     TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED = True
     TURNSTILE_FAIL_CLOSED_IN_PRODUCTION = True
     PROFILE_EMAIL_CHANGE_TTL_SECONDS = 5 * 60
+    TOPUP_APPROVAL_TTL_SECONDS = 5 * 60
+    DEVICE_COOKIE_NAME = "__Host-sitbank_device"
+    DEVICE_COOKIE_MAX_AGE_SECONDS = 180 * 24 * 60 * 60
     TALISMAN_FORCE_HTTPS = False
     TALISMAN_CONTENT_SECURITY_POLICY = {
         "default-src": "'self'",
@@ -258,7 +294,6 @@ SECURITY_TEST_FILES = frozenset(
         "tests/test_session_management.py",
         "tests/test_session_risk_binding.py",
         "tests/test_local_transfer_security.py",
-        "tests/test_webauthn_lifecycle.py",
     }
 )
 DEPLOYMENT_TEST_FILES = frozenset(
@@ -284,7 +319,6 @@ SLOW_TEST_FILES = frozenset(
         "tests/test_session_absolute_lifetime.py",
         "tests/test_session_management.py",
         "tests/test_session_risk_binding.py",
-        "tests/test_webauthn_lifecycle.py",
     }
 )
 SERIAL_TEST_FILES = frozenset()
@@ -312,20 +346,126 @@ def pytest_collection_modifyitems(config, items):
                 item.add_marker(getattr(pytest.mark, marker_name))
 
 
+def pytest_xdist_auto_num_workers(config) -> int:
+    del config
+    return min(os.cpu_count() or 1, 4)
+
+
+def _clear_database_rows(flask_app) -> None:
+    from app.extensions import db
+
+    with flask_app.app_context():
+        db.session.remove()
+        with db.engine.begin() as connection:
+            for table in reversed(db.metadata.sorted_tables):
+                connection.execute(table.delete())
+            if db.engine.dialect.name == "sqlite":
+                has_sequence = connection.exec_driver_sql(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type = 'table' AND name = 'sqlite_sequence'"
+                ).scalar()
+                if has_sequence:
+                    connection.exec_driver_sql("DELETE FROM sqlite_sequence")
+        db.session.remove()
+
+
+def _restore_test_app_state(flask_app, baseline_config: dict) -> None:
+    from app.extensions import limiter
+
+    flask_app.config.clear()
+    flask_app.config.update(copy.deepcopy(baseline_config))
+    flask_app.extensions["password_reset_outbox"] = []
+    flask_app.extensions.pop("e2e_fake_password_hashes", None)
+    with flask_app.app_context():
+        limiter.reset()
+    _clear_database_rows(flask_app)
+
+
+@pytest.fixture(scope="session")
+def _worker_app():
+    from app import create_app
+    from app.extensions import db
+
+    flask_app = create_app(TestConfig)
+    with flask_app.app_context():
+        db.create_all()
+    baseline_config = copy.deepcopy(dict(flask_app.config))
+    try:
+        yield flask_app, baseline_config
+    finally:
+        with flask_app.app_context():
+            db.session.remove()
+            db.drop_all()
+            db.engine.dispose()
+
+
+@pytest.fixture(scope="session")
+def _worker_admin_app():
+    from app import create_app
+    from app.extensions import db
+
+    flask_app = create_app(TestConfig, app_mode="admin")
+    with flask_app.app_context():
+        db.create_all()
+    baseline_config = copy.deepcopy(dict(flask_app.config))
+    try:
+        yield flask_app, baseline_config
+    finally:
+        with flask_app.app_context():
+            db.session.remove()
+            db.drop_all()
+            db.engine.dispose()
+
+
 @pytest.fixture()
-def app(monkeypatch):
+def admin_app(_worker_admin_app, monkeypatch):
+    from app.security import passwords
+
+    monkeypatch.setattr(passwords, "_is_password_pwned_by_hibp", lambda _password: False)
+    flask_app, baseline_config = _worker_admin_app
+    _restore_test_app_state(flask_app, baseline_config)
+    try:
+        with flask_app.app_context():
+            yield flask_app
+    finally:
+        _restore_test_app_state(flask_app, baseline_config)
+
+
+@pytest.fixture()
+def admin_client(admin_app):
+    return admin_app.test_client()
+
+
+@pytest.fixture()
+def app(_worker_app, monkeypatch):
+    from app.security import passwords
+
+    monkeypatch.setattr(passwords, "_is_password_pwned_by_hibp", lambda _password: False)
+    flask_app, baseline_config = _worker_app
+    _restore_test_app_state(flask_app, baseline_config)
+    try:
+        with flask_app.app_context():
+            yield flask_app
+    finally:
+        _restore_test_app_state(flask_app, baseline_config)
+
+
+@pytest.fixture()
+def mutable_app(monkeypatch):
     from app import create_app
     from app.extensions import db
     from app.security import passwords
 
     monkeypatch.setattr(passwords, "_is_password_pwned_by_hibp", lambda _password: False)
-
     flask_app = create_app(TestConfig)
     with flask_app.app_context():
         db.create_all()
-        yield flask_app
-        db.session.remove()
-        db.drop_all()
+        try:
+            yield flask_app
+        finally:
+            db.session.remove()
+            db.drop_all()
+            db.engine.dispose()
 
 
 @pytest.fixture()

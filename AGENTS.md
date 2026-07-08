@@ -93,6 +93,16 @@ For high-risk security, deployment, authentication, authorization, cryptography,
 
 ## Required workflow
 
+### Implementation hardening requirement
+
+Every implementation must include proportionate hardening of the boundary it
+changes. Do not stop at the observed happy-path defect: identify the adjacent
+bypass, failure, replay, misconfiguration, stale-state, and cross-runtime
+paths that could recreate the gap, centralize the invariant where practical,
+and add negative regression tests. Keep this hardening focused on the touched
+trust boundary; it does not authorize unrelated rewrites or weaker
+compatibility behavior.
+
 Before changing code:
 
 - Read the issue completely.
@@ -114,12 +124,18 @@ Before finishing:
 
 ```powershell
 git diff --check
-.\.venv\Scripts\python.exe -m pytest -q -n auto
+.\.venv\Scripts\python.exe -m pytest -q -n 4
 ```
 
 If coverage-relevant source code, workflow tests, documentation checks, or test structure changed, also run the project coverage command that generates `coverage.xml` for SonarQube/SonarCloud import.
 
 Ensure total coverage remains at least 90% and do not weaken the SonarQube/SonarCloud quality gate.
+
+Follow `docs/codex/sonarqube-rules.md` for every SonarQube or SonarCloud
+analysis. Resolve every issue reported for the current branch or pull request
+by fixing it or, when evidence shows the rule does not apply, documenting the
+reason and marking it false positive. Do this even when the quality gate
+passes.
 
 ## Security engineering rules
 

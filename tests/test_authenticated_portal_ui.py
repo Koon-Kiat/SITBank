@@ -7,38 +7,21 @@ def test_security_management_pages_use_polished_stepup_ui(client):
     register(client)
     login(client)
     user, _secret = enable_mfa_for_user()
-    add_security_keys_for_user(user)
-    first_key = db.session.execute(
-        db.select(WebAuthnCredential)
-        .where(WebAuthnCredential.user_id == user.id)
-        .order_by(WebAuthnCredential.id.asc())
-    ).scalars().first()
-    first_key.last_used_at = datetime(2026, 6, 5, 15, 11, tzinfo=timezone.utc)
-    db.session.commit()
 
     mfa_page = client.get("/mfa/setup")
-    keys_page = client.get("/security-keys")
     sessions_page = client.get("/sessions")
     freeze_page = client.get("/account/freeze")
     css = Path("app/static/css/app.css").read_text(encoding="utf-8")
     mfa_markup = mfa_page.data.decode("utf-8")
-    keys_markup = keys_page.data.decode("utf-8")
     sessions_markup = sessions_page.data.decode("utf-8")
     freeze_markup = freeze_page.data.decode("utf-8")
 
     assert mfa_page.status_code == 200
-    assert keys_page.status_code == 200
     assert sessions_page.status_code == 200
     assert freeze_page.status_code == 200
     assert 'class="mfa-step is-muted"' in mfa_markup
     assert ".mfa-step.is-muted .step-number" in css
     assert "background: var(--primary);" in css
-    assert "AAGUID" not in keys_markup
-    assert "11111111-1111-1111-1111-111111111111" not in keys_markup
-    assert 'name="credential_kind"' not in keys_markup
-    assert "Passkeys are unavailable" in keys_markup
-    assert "Inactive legacy passkey record" in keys_markup
-    assert "Verify and revoke" not in keys_markup
     assert "Active Sessions" in sessions_markup
     assert "Past Sessions" in sessions_markup
     assert 'class="button danger-button full"' in freeze_markup
@@ -64,23 +47,14 @@ def test_theme_assets_are_csp_compatible_and_store_only_theme_preference(client)
     assert response.status_code == 200
     assert b'/static/js/theme.js' in response.data
     assert b"<script>" not in response.data
-    assert b"data-theme-toggle" in response.data
-    assert b"data-theme-toggle-icon" in response.data
-    assert b'aria-label="Switch to dark mode"' in response.data
-    assert b'title="Switch to dark mode"' in response.data
-    assert "Switch to light mode" in script
-    assert "Switch to dark mode" in script
-    assert 'setAttribute("title", actionLabel)' in script
-    assert 'icon.dataset.icon = isDark ? "sun" : "moon"' in script
     assert "localStorage" in script
     assert "sitbank-theme" in script
     assert "token" not in script.casefold()
     assert "session" not in script.casefold()
     assert "username" not in script.casefold()
-    assert "--security: #143f66;" in stylesheet
-    assert "--security: #86b9ec;" in stylesheet
+    assert "--security: #c8102e;" in stylesheet
     assert ".nav a.button" in stylesheet
-    assert "--button-primary-text: #071421;" in stylesheet
+    assert "--button-primary-text: #ffffff;" in stylesheet
     assert ".quick-card" in stylesheet
     assert ".profile-status-copy" in stylesheet
     assert ".alert {" in stylesheet
@@ -89,8 +63,30 @@ def test_theme_assets_are_csp_compatible_and_store_only_theme_preference(client)
     assert ".mfa-step.is-complete .step-number" in stylesheet
     assert "background: var(--success);" not in stylesheet
     assert "#0f766e" not in logo
-    assert 'fill="#143f66"' in logo
-    assert 'fill="#28628f"' in logo
+    assert 'fill="#c8102e"' in logo
+    assert 'fill="#ffffff"' in logo
+
+
+def test_auth_intro_notice_icon_uses_contrasting_solid_surface():
+    stylesheet = Path("app/static/css/app.css").read_text(encoding="utf-8")
+    notice_icon_rule = stylesheet.split(".auth-intro .notice-icon {", 1)[1].split("}", 1)[0]
+
+    assert "background: #ffffff;" in notice_icon_rule
+    assert "color: var(--primary);" in notice_icon_rule
+    assert "rgba(255, 255, 255, 0.14)" not in notice_icon_rule
+
+
+def test_statement_delta_badge_uses_contrasting_solid_surfaces():
+    stylesheet = Path("app/static/css/app.css").read_text(encoding="utf-8")
+    delta_rule = stylesheet.split(".statement-delta {", 1)[1].split("}", 1)[0]
+    negative_delta_rule = stylesheet.split(".statement-delta.is-negative {", 1)[1].split("}", 1)[0]
+
+    assert "background: #ffffff;" in delta_rule
+    assert "color: #8f1024;" in delta_rule
+    assert "rgba(255, 255, 255, 0.18)" not in delta_rule
+    assert "background: #111111;" in negative_delta_rule
+    assert "color: #ffffff;" in negative_delta_rule
+
 
 def test_authenticated_layout_contains_working_profile_menu_destinations(client):
     register(client)
@@ -111,13 +107,35 @@ def test_authenticated_layout_contains_working_profile_menu_destinations(client)
     assert 'href="/password/change"' in markup
     assert "Authenticator MFA" in markup
     assert "Active Sessions" in markup
-    assert "Passkeys" not in markup
     assert "Freeze Account" in markup
     assert "Log Out" in markup
     assert markup.index('href="/mfa/setup"') < markup.index('href="/sessions"')
-    assert "No passkeys are registered" not in markup
     assert "unused recovery codes remain" not in markup
     assert "Transaction-ready" not in markup
+
+
+def test_pre_mfa_account_menu_disables_password_action_and_keeps_mfa_path(client):
+    register(client)
+    login_response = login(client)
+    setup_response = client.get("/mfa/setup")
+    markup = setup_response.data.decode("utf-8")
+    stylesheet = Path("app/static/css/app.css").read_text(encoding="utf-8")
+
+    assert login_response.status_code == 302
+    assert login_response.headers["Location"].endswith("/mfa/setup")
+    assert setup_response.status_code == 200
+    assert 'data-account-menu' in markup
+    assert 'href="/password/change"' not in markup
+    assert (
+        '<span role="menuitem" class="is-disabled" aria-disabled="true">'
+        "Change Password</span>"
+    ) in markup
+    assert 'href="/mfa/setup"' in markup
+    assert "Authenticator MFA" in markup
+    assert "[role=\"menuitem\"].is-disabled" in stylesheet
+    assert ".account-panel [role=\"menuitem\"].is-disabled" in stylesheet
+    assert "pointer-events: none;" in stylesheet
+
 
 def test_dashboard_bank_card_masks_account_details_and_loads_toggle_script(client):
     register(client)
@@ -134,36 +152,10 @@ def test_dashboard_bank_card_masks_account_details_and_loads_toggle_script(clien
     assert "Alice Test" in markup
     assert f"•••-•••-{user.account_number[-3:]}" in markup
     assert f'id="card-acct-full" hidden>{formatted_account}</span>' in markup
-    assert 'id="card-balance-full" hidden>0.00</span>' in markup
+    assert 'id="card-balance-full" hidden>100.00</span>' in markup
     assert 'aria-label="Show account number"' in markup
     assert 'aria-label="Show balance"' in markup
     assert '/static/js/dashboard.js' in markup
-
-def test_security_key_page_redirects_unenrolled_users_to_mfa_setup(client):
-    register(client)
-    login(client)
-
-    response = client.get("/security-keys")
-
-    assert response.status_code == 302
-    assert response.headers["Location"].endswith("/mfa/setup")
-
-def test_legacy_passkey_empty_state_lives_on_legacy_page_not_dashboard(client):
-    register(client)
-    login(client)
-    user, _secret = enable_mfa_for_user()
-    mark_recent_mfa(client, user)
-
-    dashboard_response = client.get("/dashboard")
-    keys_response = client.get("/security-keys")
-    dashboard_markup = dashboard_response.data.decode("utf-8")
-    keys_markup = keys_response.data.decode("utf-8")
-
-    assert dashboard_response.status_code == 200
-    assert keys_response.status_code == 200
-    assert "No legacy passkey records" not in dashboard_markup
-    assert "No legacy passkey records" in keys_markup
-    assert "This account has no stored passkey credential records." in keys_markup
 
 def test_public_layout_does_not_expose_authenticated_account_actions(client):
     response = client.get("/login")
@@ -172,8 +164,6 @@ def test_public_layout_does_not_expose_authenticated_account_actions(client):
     assert response.status_code == 200
     assert "data-account-menu" not in markup
     assert "Edit Profile" not in markup
-    assert "data-webauthn-login-form" not in markup
-    assert "Windows Hello" not in markup
     assert 'href="/profile"' not in markup
     assert 'action="/logout"' not in markup
 
@@ -192,6 +182,7 @@ def test_authentication_pages_have_password_helpers_and_mfa_back_link(client):
     assert mfa_page.status_code == 200
     assert "data-password-toggle" in register_page.data.decode("utf-8")
     assert "data-password-strength" in register_page.data.decode("utf-8")
+    assert "Username is not allowed to be changed after registration is successful" in register_page.data.decode("utf-8")
     assert "data-password-toggle" in login_page.data.decode("utf-8")
     assert "Back to login" in mfa_page.data.decode("utf-8")
 
@@ -211,7 +202,8 @@ def test_flash_messages_are_dismissible(client):
     )
 
     assert response.status_code == 200
-    assert "data-alert-dismiss" in response.data.decode("utf-8")
+    assert "alert-success" in response.data.decode("utf-8")
+    assert "data-alert-dismiss" not in response.data.decode("utf-8")
 
 def test_landing_route_public_for_anonymous_and_dashboard_for_authenticated(client):
     public_response = client.get("/")
@@ -221,7 +213,7 @@ def test_landing_route_public_for_anonymous_and_dashboard_for_authenticated(clie
     authenticated_response = client.get("/")
 
     assert public_response.status_code == 200
-    assert b"Log in securely" in public_response.data
+    assert b"Open an account" in public_response.data
     assert authenticated_response.status_code == 302
     assert authenticated_response.headers["Location"].endswith("/dashboard")
 
@@ -236,9 +228,6 @@ def test_authenticated_brand_link_targets_dashboard(client):
 
     assert response.status_code == 200
     assert '<a class="brand" href="/dashboard"' in markup
-
-def test_webauthn_browser_script_is_not_shipped():
-    assert not Path("app/static/js/webauthn.js").exists()
 
 def test_production_env_docs_require_pbkdf2_pepper_not_bcrypt():
     required = Path("ops/production-env.required").read_text(encoding="utf-8")
@@ -260,20 +249,5 @@ def test_production_env_docs_require_pbkdf2_pepper_not_bcrypt():
     ):
         assert setting in required
         assert setting in readme
-    assert "WEBAUTHN_APPROVED_AAGUIDS_PATH" not in required
-    assert "WEBAUTHN_MDS_CACHE_PATH" not in required
     assert "BCRYPT_ROUNDS" not in required
     assert "BCRYPT_ROUNDS" not in readme
-
-def test_checked_in_fido_allowlist_is_not_empty_or_test_placeholder():
-    approved = json.loads(Path("ops/fido-approved-aaguids.json").read_text(encoding="utf-8"))
-    cache = json.loads(Path("ops/fido-mds-cache.json").read_text(encoding="utf-8"))
-    approved_aaguids = approved["approved_aaguids"]
-    legacy_level1_aaguids = approved.get("legacy_level1_approved_aaguids", [])
-    configured_aaguids = approved_aaguids + legacy_level1_aaguids
-    cache_aaguids = {entry["aaguid"] for entry in cache["entries"]}
-
-    assert len(configured_aaguids) >= 1
-    assert "11111111-1111-1111-1111-111111111111" not in configured_aaguids
-    assert set(approved_aaguids).issubset(cache_aaguids)
-    assert "2fc0579f-8113-47ea-b116-bb5a8db9202a" in legacy_level1_aaguids

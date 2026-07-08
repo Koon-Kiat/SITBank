@@ -97,15 +97,28 @@ codes, QR codes, or decrypted MFA material.
    been rewrapped, post-rotation checks pass, rollback evidence is preserved,
    and the approved rollback window has closed.
 
-## Disposable Registration Data Reset
+## Disposable Database Reset
 
-If a development, staging, or demo database contains only seeded/test users from
-before the registration-field migration, prefer an explicit reset/recreate over
-preserving fake contact data. Confirm the target environment, confirm there are
-no real users, take any required backup, then run the normal bootstrap or
-deployment migration path for that environment. Production-like databases must
-not be reset by scripts or deployment automation without a separate approved
-maintenance record.
+Use the guarded `reset-demo-database` command documented in
+`docs/DEPLOYMENT.md` only for an environment confirmed to contain disposable
+project data. Stop customer and admin traffic, run staging first, retain
+sanitized verification evidence, and never add the command to routine deploy
+automation. Production additionally requires a protected approval and a fresh
+encrypted host-managed backup. After reset, rerun migration-baseline, runtime
+privilege, production-readiness, and customer/admin isolation checks before
+returning the services to traffic.
+
+## Customer Security Unlock
+
+Only root admins in the private admin runtime can request an unlock, and only
+for customer locks created automatically by password or MFA failure thresholds.
+The requester supplies a support reason and current TOTP. A different active
+root admin must approve the HMAC-protected request with a separate current TOTP;
+self-approval, identity-linked customer accounts, manual freezes, stale lock
+state, and lower roles fail closed. Approval clears the matching password/MFA
+failure counters and lock fields, revokes customer sessions, writes required
+audit evidence, and queues a customer security notice. It does not disable MFA,
+change credentials, clear unrelated throttles, or expose a customer-app route.
 
 ## Admin And Staging Access Operations
 
@@ -179,9 +192,9 @@ entry before deployment.
 
 Expected: the loopback Flask root returns `403` without an Access assertion,
 local Flask and Nginx staging readiness return exact non-redirect `200`
-responses, direct Nginx origin access fails TLS client-certificate verification
-or returns the approved Nginx `400`/`403` denial without Cloudflare's
-origin-pull client certificate, and the
+responses, direct Nginx origin access fails TLS client-certificate verification,
+rejects the connection, or returns the approved Nginx `400`/`403` denial
+without Cloudflare's origin-pull client certificate, and the
 private admin URL is reachable only from an approved tailnet path. Tailscale
 Funnel must stay disabled for SITBank admin.
 Tailscale is the private network/device boundary for admin access; it does not
@@ -232,11 +245,13 @@ sudo /usr/local/sbin/verify-tailscale-admin-access --mode serve
 ```
 
 Expected output is one `OK:` line for each of these assertions: Tailscale is
-running; Funnel is disabled; port `5002` listens only on `127.0.0.1`; local
+running; Tailscale SSH and Funnel are disabled; port `5002` listens only on
+`127.0.0.1`; local
 admin readiness returns `200`; Nginx has no admin upstream or private
 Tailscale hostname; Serve exposes only
 `admin-sitbank.tailca101b.ts.net:443` to
-`http://127.0.0.1:5002`; and the private `/login` URL returns `200`. Any
+`http://127.0.0.1:5002`; and an unauthenticated `GET` to the private `/login`
+URL returns `200`. Any
 `ERROR:` line and nonzero exit is a failed preflight. Investigate the named
 control; do not enable Funnel, broaden the listener, or add an Nginx admin
 route to make the check pass.
@@ -340,6 +355,23 @@ operator verification steps are in
 Provider automation and origin assertion details are in
 `docs/security/architecture/cloudflare-staging-access.md`.
 
+Run the manual **Verify private Grafana Loki observability** workflow from
+`main` after private observability bootstrap, Grafana datasource changes,
+Tailscale ACL/DNS changes, or token rotation. The workflow uses the protected
+`observability-staging` or `observability-production` environment, joins
+Tailscale with `tag:github-ci-observability-verify`, verifies private Grafana
+health with explicit HTTP `200` status, anonymous denial, non-admin verifier
+role, Loki datasource health with explicit HTTP `200` status and schema
+validation, direct private `/loki` and `/metrics` denial, and public denial
+probes, then uploads only sanitized evidence. Cloudflare Access challenges,
+generic Cloudflare headers, and app/Nginx `401`, `403`, or `404` responses are
+valid public-denial evidence; Grafana/Loki headers, `grafana_session` cookies,
+or redirects to Grafana/Loki login paths fail closed. The private Grafana URL
+must be the approved `https://admin-sitbank.tailca101b.ts.net/grafana/`
+Tailscale subpath. It must not run on pull requests or public TLS jobs and
+must not receive operator passwords, browser sessions, cookies, MFA values, raw
+logs, datasource credentials, or Grafana admin credentials.
+
 ## Production Cloudflare Origin Operations
 
 Production requires Cloudflare Authenticated Origin Pull in addition to
@@ -356,6 +388,15 @@ Opportunistic Encryption and HSTS preload disabled. Repository files do not
 prove provider state. Retain sanitized Cloudflare and AWS security-group
 evidence and restrict `443/tcp` to Cloudflare edge ranges where practical.
 
+Production and staging public TLS blocks restore the browser address through
+`/etc/nginx/snippets/sitbank-cloudflare-real-ip.conf`. That snippet trusts
+`CF-Connecting-IP` only from Cloudflare's published edge ranges, enables
+`real_ip_recursive on`, and leaves `ops/nginx-proxy-headers.conf` to forward a
+single canonical `$remote_addr` as `X-Forwarded-For`. Do not trust
+user-supplied `X-Forwarded-For`, add all-client `set_real_ip_from` ranges, or
+switch back to `$proxy_add_x_forwarded_for`; those changes can create false
+session-risk drift or hide real source changes in audits and rate limits.
+
 Verify after production bootstrap:
 
 ```powershell
@@ -365,6 +406,32 @@ curl.exe -k -I https://18.188.152.24/
 curl.exe -k --resolve sitbank.pp.ua:443:18.188.152.24 -I https://sitbank.pp.ua/
 ```
 
+On the production host, also run:
+
+```bash
+sudo nginx -t
+sudo nginx -T 2>/dev/null | grep -E 'sitbank-cloudflare-real-ip|real_ip_header CF-Connecting-IP|real_ip_recursive on|set_real_ip_from|proxy_set_header X-Forwarded-For|proxy_add_x_forwarded_for|0\.0\.0\.0/0|::/0'
+sudo /usr/local/sbin/verify-production-nginx-boundary \
+  --public-bind-address "$(sudo awk -F= '$1 == "PUBLIC_BIND_ADDRESS" {print $2}' /etc/sitbank/deploy.conf)"
+```
+
+Normal production deployment invokes the active-config verifier before
+changing the runtime. A failure means loaded Nginx state is stale or
+ambiguous. Confirm `PUBLIC_BIND_ADDRESS` is the host's exact public/VPC IPv4
+address and that `ss -H -ltnp` has no wildcard port `443` listener; public
+Nginx must not intercept the private Tailscale Serve HTTPS listener. Do not
+bypass the gate or copy templates from an untrusted release.
+Rerun the trusted production bootstrap, verify Cloudflare Authenticated Origin
+Pull remains enabled using sanitized provider evidence, rerun the verifier,
+and only then retry deployment. The verifier prints named pass/fail controls,
+not the full `nginx -T` configuration.
+
+When Cloudflare announces IP range changes, update
+`ops/nginx/sitbank-cloudflare-real-ip.conf` from the official Cloudflare IP
+list, run the boundary tests, and deploy through reviewed `main`. Do not
+hot-patch the host with a trust-all range while waiting for a repository
+change.
+
 The proxied site succeeds, raw HTTP redirects to the canonical hostname, and
 both direct HTTPS requests fail closed without returning SITBank application
 content. See
@@ -372,35 +439,104 @@ content. See
 
 ## Root Admin Bootstrap
 
-Root admins remain a fixed allowlisted group. `ROOT_ADMIN_EMAILS` must contain
-exactly 7 approved admin workplace email addresses from
+Root admins remain a fixed allowlisted group. Staging must contain exactly 2
+approved workplace addresses and production exactly 3 from
 `ADMIN_ALLOWED_EMAIL_DOMAINS` before any database user can become `root_admin`;
 normal customer registration and staff invites must not create `root_admin`
-accounts. Configure `ROOT_ADMIN_EMAILS` as a protected GitHub environment
-variable in both `staging` and `production` before deploying this command. Do
-not commit the allowlist to the repository. Production/admin runtime rejects
-missing, empty, malformed, duplicate, built-in default, placeholder, demo,
-example, personal-domain, and non-approved-domain root-admin allowlists before
-serving admin traffic.
+accounts. Configure `STAGING_ROOT_ADMIN_EMAILS` and
+`PROD_ROOT_ADMIN_EMAILS` as their respective protected GitHub environment
+secrets before deploying this command. The
+deployment workflow installs it as `/etc/sitbank*/secrets/root_admin_emails`
+and the containers read it through `ROOT_ADMIN_EMAILS_FILE`. Do not commit,
+print, screenshot, or paste the real allowlist into GitHub issues, pull
+requests, chat, logs, artifacts, or job summaries. Production/admin runtime
+rejects missing, empty, malformed, duplicate, built-in default, placeholder,
+demo, example, personal-domain, and non-approved-domain root-admin allowlists
+before serving admin traffic.
+Normal staff/admin invite creation rejects addresses listed in
+`ROOT_ADMIN_EMAILS`; root-admin bootstrap and rotation stay on the documented
+bootstrap path. Before rotating or removing a root admin, confirm at least one
+active MFA-enabled workplace-verified root admin remains available before and
+after the change.
 
 Privileged root-admin, admin, and staff accounts use approved SIT workplace
 email domains only. Do not configure personal-provider domains in
 `ADMIN_ALLOWED_EMAIL_DOMAINS`; staff invites are delivered to the workplace
 email and do not collect personal backup email contacts.
+Invite acceptance links expose only minimal public setup metadata before the
+staff member starts the protected setup step. Normal browser requests render
+the onboarding form; explicit JSON clients retain the minimal API response.
+Viewing the page does not consume the invite or create an account. Setup changes
+the invite from `pending` to `totp_pending` and creates only a `setup_pending`
+identity; only successful workplace-code and TOTP verification activates the
+identity and marks the invite `accepted`. The setup form accepts exactly 8
+Singapore mobile digits starting with `8` or `9`, without `+65`, spaces, or
+hyphens. When Turnstile is enabled, recipients can fill the normal setup fields
+while the challenge is pending or re-verifying, but the setup submit control
+remains disabled until the browser holds a fresh successful Turnstile response.
+The success callback stores the response only in the hidden browser form field,
+marks the form state `valid`, enables `Start secure setup`, and shows that setup
+can continue. Non-invalidating pending or after-interactive callbacks must not
+downgrade that valid state. Explicit expiry, error, timeout, unsupported-widget,
+reset, or a new before-interactive challenge lifecycle clears the response,
+disables submit again, and preserves only non-sensitive entered values such as
+name and mobile number. The setup flow uses `no-store`
+and `Referrer-Policy: origin` response headers, CSRF-protected browser forms,
+same-browser verification binding, and capped restarts that would otherwise rotate
+passwords, TOTP setup secrets, or workplace verification codes. If an active
+invite becomes locked by the restart cap, a root admin should use the invite
+screen's reset action with a fresh TOTP code; do not unlock it by editing
+database rows directly.
+Stale or malformed browser invite links render a generic invite-unavailable page
+instead of the private admin error page; explicit JSON clients receive only the
+minimal generic error.
+Invite creation, revoke, reset, reissue, and setup-resend actions use strict
+high-risk TOTP: enter the code from the currently signed-in root admin, wait for
+a fresh authenticator code before retrying an invite action, and do not submit
+near code expiry or reuse the same code for repeated invite operations. The invite table shows
+the persisted allowlisted delivery states `unconfirmed`, `queued`, or `failed`.
+`queued` means SITBank handed the message to the configured email backend, not
+that the recipient inbox accepted it. `unconfirmed` means no reliable backend
+handoff evidence is available, including migrated rows, and `failed` means the
+backend rejected the handoff; no provider response details are displayed. If the recipient
+cannot find a pending invite, check spam/junk/quarantine and SMTP backend
+configuration, then use the root-admin reissue action to rotate the token hash
+and send a new invite link. If a staff/admin account is already stuck in
+`setup_pending` because its original invite was accepted, revoked, or expired,
+use the root-admin Resend setup invite action on the staff accounts page: it
+mints and delivers a brand-new one-time setup link bound to the existing account
+without creating a second privileged identity for the same workplace email, and
+fails closed by revoking the fresh invite if email handoff fails. If email
+backend handoff fails during create, the invite is moved out of active pending
+state so it does not block safe retry.
+Migration `20260707_0032` adds only this bounded delivery state and stores no
+invite token, email body, provider response, credential, or mailbox assertion.
 The admin `production-check` command reports
 `privileged_email_noncompliant_accounts` as a count when legacy privileged rows
 use non-approved domains. Operators must remediate those accounts to approved
 SIT workplace emails through a reviewed administrative data fix; the check does
 not silently rewrite or delete accounts and does not print the email addresses.
 
-After deployment, verify the admin container received the allowlist:
+After deployment, verify the admin container received an allowlist with the
+expected shape without printing the identities:
 
 ```bash
-sudo docker exec sitbank-admin printenv ROOT_ADMIN_EMAILS
+sudo docker exec -i sitbank-admin python - <<'PY'
+import os
+value = os.environ.get("ROOT_ADMIN_EMAILS", "")
+if not value:
+    path = os.environ.get("ROOT_ADMIN_EMAILS_FILE", "")
+    value = open(path, encoding="utf-8").read() if path else ""
+emails = [item.strip().casefold() for item in value.split(",") if item.strip()]
+domains = sorted({email.rsplit("@", 1)[1] for email in emails if "@" in email})
+print({"count": len(emails), "unique": len(set(emails)), "domains": domains})
+PY
 ```
 
-The output must be the configured comma-separated 7-email allowlist before you
-run bootstrap. It must not be the built-in `root1` through `root7` development
+The output must show `count` and `unique` equal to the configured environment
+count, currently 2 for staging or 3 for production, and only approved SIT
+workplace domains before you run bootstrap. It must not reveal the individual
+root-admin identities and must not be the built-in numeric development
 placeholder set.
 
 Root-admin bootstrap remains a manual-only private operator procedure in the
@@ -542,6 +678,12 @@ identity files stay host-only, for example under
 `/root/.config/sitbank-backups/`, and must not be copied into the repo,
 application container, tickets, chat, or audit metadata.
 
+Recurring backup schedules are host/operator-owned. This repository installs
+and tests the helper and preflight scripts, but it does not currently install a
+systemd backup timer or prune encrypted backup archives. Retain external
+schedule, restore-drill, and archive-disposal evidence with the host change
+record.
+
 Run restore preflight before any restore operation:
 
 ```bash
@@ -560,10 +702,61 @@ sudo /usr/local/sbin/sitbank-restore-preflight \
 
 The preflight is non-destructive. It checks the approved OS user, explicit
 environment, explicit target database, encrypted backup path, backup
-permissions, host-only age identity, and production confirmation. Do not run a
-production restore during normal verification. Do not commit `.dump`, `.sql`,
-`.backup`, `.pgdump`, decrypted dumps, age identity files, GPG private keys, or
-database credentials.
+owner/mode, parent directory safety, repository/CI-workspace exclusion,
+host-only age identity ownership and mode, and production confirmation. Success
+output intentionally reports only that the backup file was validated by host
+policy; do not paste raw backup or identity paths into tickets unless the
+approved host change record requires metadata. Do not run a production restore
+during normal verification. Do not commit `.dump`, `.sql`, `.backup`,
+`.pgdump`, decrypted dumps, age identity files, GPG private keys, or database
+credentials.
+
+For non-production restore drills, record only safe evidence:
+
+- change record, approver, environment, and target database name;
+- backup archive basename plus owner/mode evidence, not decrypted contents;
+- restore preflight success output;
+- post-restore application smoke-test result and audit-chain verification;
+- confirmation that plaintext dumps and identity material were not copied out
+  of the host-controlled paths.
+
+## Retention Cleanup Operations
+
+The PDPA-aligned operator command for approved temporary security-state cleanup
+defaults to dry-run and reports category-level counts:
+
+```bash
+python -m flask --app wsgi:app security run-retention-cleanup
+python -m flask --app wsgi:app security run-retention-cleanup --limit 500
+python -m flask --app wsgi:app security run-retention-cleanup --confirm
+```
+
+Without `--confirm`, the command does not mutate rows. With `--confirm`, it
+applies only the bounded cleanup implemented in `app/security/state_cleanup.py`
+for expired server-side sessions, auth counters, TOTP replay records,
+registration OTP challenges, password reset transactions, security alert
+dedupe rows, expired password reset tokens that are no longer referenced by
+transactions, and closed circuit-breaker state past retention. It must not
+delete or truncate accounts, payees, transactions, staff/admin records,
+manual-recovery evidence, staff invites, security audit events, investigation
+holds, or encrypted backup archives.
+
+The command writes sanitized system audit events with mode, retention days,
+batch limit, scheduling status, and category counts only. Confirmed cleanup
+commits the bounded mutations and the `completed` event in one transaction;
+if that audit write fails, all mutations roll back and a separate `failed`
+event is attempted. The legacy
+`cleanup-security-state` entry point now routes through the same dry-run and
+confirmation boundary. Weekly `sitbank-retention-review@staging.timer` and
+`sitbank-retention-review@production.timer` runs are dry-run reports only;
+operators review the aggregate report and separately authorize any confirmed
+cleanup. Record the reviewer, approval, report timestamp, target, and bounded
+categories in the external change record before running `--confirm`; command
+output remains aggregate-only. Full personal-data disposal and encrypted-backup
+archive pruning must follow
+`docs/security/governance/data-retention-and-deactivation.md` approved
+preserved-category procedures; they remain governance/operator work, not hidden
+application behavior.
 
 ## Audit Operations
 
@@ -598,11 +791,13 @@ python -m flask --app wsgi:app verify-audit-log-chain
 python -m flask --app wsgi:app verify-audit-log-chain --anchor /var/lib/sitbank/security-audit.anchor
 ```
 
-Export a sanitized anchor at least daily and after security-sensitive releases:
+Refresh the sanitized anchor manually, or through the daily target-aware
+systemd timer, after security-sensitive releases:
 
 ```bash
-python -m flask --app wsgi:app export-audit-log-anchor
-python -m flask --app wsgi:app export-audit-log-anchor --output /var/lib/sitbank/security-audit.anchor
+python -m flask --app wsgi:app refresh-audit-log-anchor
+sudo sitbank-container-runtime staging refresh-audit-log-anchor
+sudo sitbank-container-runtime production refresh-audit-log-anchor
 ```
 
 Operators are responsible for moving anchor JSON to immutable storage, WORM
@@ -625,8 +820,14 @@ anchored event hash changes, missing anchored rows, current chain behind the
 anchor, chain rewind, row tampering, tail deletion, missing hashes after the
 chain starts, and unsupported hash algorithms remain critical.
 
-Do not blindly refresh anchors. When `anchor_status=stale` and the chain is
-valid, refresh only after preserving evidence:
+Do not blindly refresh anchors. `refresh-audit-log-anchor` and
+`sitbank-audit-anchor-refresh@{staging,production}.timer` refuse malformed,
+mismatched, missing, permission-unsafe, or invalid-chain state. They accept
+only an exactly validated anchor or an append-only stale anchor whose anchored
+event still verifies. `check-security-alerts` never rotates an anchor. When
+`anchor_status=stale` and the chain is valid, preserve evidence as follows.
+This is the required evidence-preserving workflow:
+When preserving evidence, record only the sanitized fields listed below.
 
 1. Preserve the current verification output and anchor metadata in root-only
    evidence storage. Record the command, timestamp, environment, `anchor_event_id`,
@@ -635,8 +836,7 @@ valid, refresh only after preserving evidence:
 2. Run
    `python -m flask --app wsgi:app verify-audit-log-chain --anchor /var/lib/sitbank/security-audit.anchor`
    and confirm `valid=true`, `anchor_stale=true`, and `anchor_refresh_required=true`.
-3. Export the refreshed sanitized anchor with
-   `python -m flask --app wsgi:app export-audit-log-anchor --output /var/lib/sitbank/security-audit.anchor`.
+3. Run `python -m flask --app wsgi:app refresh-audit-log-anchor`.
 4. Rerun
    `python -m flask --app wsgi:app check-security-alerts --report-only --no-delivery`
    and restart or resume the alert timer only after `alert_count=0` or after all
@@ -648,19 +848,165 @@ investigate row tampering, chain rewind, anchor corruption, or tail deletion
 before resuming routine deployments.
 
 The current banking implementation audits public transaction validation,
-TOTP-backed transaction authorization checks, and local transfer execution.
+TOTP-backed transaction authorization checks, Local Transfer execution, and
+PayUp execution. Customer and payee account numbers are exactly 12 decimal
+digits across form, route, service, model, and database validation.
+
 Local transfer performs final ledger movement: the sender balance is debited,
 the recipient balance is credited, and a `Transaction` record is created in a
 single atomic commit. The two-step transfer flow requires MFA step-up before a
-DB-backed `PendingTransfer` record is created; the single-use confirmation token
-is consumed atomically with `SELECT FOR UPDATE` to prevent concurrent
-double-submit replay. Row locks are acquired in ascending `id` order to prevent
-deadlocks. Payee ownership and cooldown are enforced at the service layer
-independently of the route layer. Transfer amounts are validated to at most two
-decimal places. Recipient account state is checked before funds move.
-Blocked authorization failures, including payee ownership mismatches, are
-audited safely using opaque references so raw account numbers, payee details,
-and pending transfer tokens do not appear in the audit log.
+DB-backed `PendingTransfer` record is created. The browser session keeps only
+the raw single-use confirmation token; the database stores a keyed verifier.
+Confirmation consumes the record atomically with `SELECT FOR UPDATE` to prevent
+concurrent double-submit replay. Row locks are acquired in ascending `id` order
+to prevent deadlocks. Payee ownership and cooldown are enforced at the service
+layer independently of the route layer. Transfer amounts are validated to at
+most two decimal places. Recipient account state is checked before funds move.
+The Local Transfer daily limit remains a documented placeholder until a limit is
+implemented for that channel.
+No customer scheduled-transfer executor is currently exposed. If scheduled
+transfer execution is added later, it must call the same centralized payee
+cooldown guard before money movement and must not trust client-supplied
+activation fields such as `active_after`, `created_at`, `status`, or
+`cooldown`.
+
+PayUp senders must set a customer-owned PayUp display nickname before lookup,
+amount entry, or confirmation. The nickname is 2 to 128 characters, is stored on
+the account, and does not reuse saved `Payee.nickname` records. Unknown,
+unavailable, and revoked recipients return the same generic `Invalid phone
+number` response, including self-phone lookups, and audit metadata uses opaque
+references instead of raw phone numbers. Nickname audit metadata records only
+presence and length. The confirmation page shows the source account ending,
+sender nickname, recipient phone number, recipient PayUp nickname when set,
+amount, and reference; pending PayUp session state stores only server-resolved
+IDs, expiry, and keyed confirmation tokens. Durable lookup and confirmation
+limits are independently scoped to account, authenticated session, source
+network, and recipient. PayUp has a per-customer enable flag and daily limit,
+reset at midnight Singapore time. The default limit is SGD 500; presets are SGD
+100, 500, 1000, 3000, 5000, and 10000. Custom limits must be between SGD
+100.00 and SGD 10000.00 with cents precision, and changing the value requires
+TOTP step-up. A centralized policy blocks invalid or unavailable risk state and
+recomputes at confirmation and again under the sender lock. In-cap quick
+payments proceed without a routine per-transfer authenticator prompt. Stale
+sessions and recent sensitive account changes such as profile email or phone
+changes fail closed, while amounts outside the quick-transfer and quick-daily
+caps require step-up. Low-risk transfers within those caps do
+not require an additional code. These PayUp posts rely on the dedicated durable
+account/session/source/recipient limits plus the existing edge controls; they
+do not retain an older MFA-principal route limit that can undercut the
+configured PayUp policy.
+
+The customer transfer activity email preference controls only routine
+withdrawal and deposit emails for Local Transfer and PayUp. Daily-limit,
+transfer-limit, account, security, MFA, recovery, password, session,
+staff/admin, and other high-risk notifications remain mandatory and cannot be
+disabled through this setting. `POST /profile/notification-preferences`
+intentionally does not require TOTP because this preference is not a high-risk
+account or security change; the route remains authenticated, CSRF-protected,
+current-user-scoped, frozen-account-blocked, edge/app rate-limited, and audits
+only the sanitized boolean preference state.
+
+Successful customer registration creates exactly one SGD 100.00 welcome credit
+inside the same transaction as the new customer row. The `registration_credits`
+ledger stores one credit per customer, fixed amount/status constraints, and
+HMAC-SHA256 integrity metadata under the transaction-ledger keyring; the browser
+and JSON registration paths both go through this server-side service boundary.
+Duplicate helper calls and retried requests do not add another ledger row or
+balance credit; the database uniqueness constraint remains the concurrency
+backstop, and any integrity or required-audit failure rolls back the transaction.
+
+Completed Local Transfer and PayUp rows store an HMAC-SHA256 transaction hash
+under the dedicated `TRANSACTION_LEDGER_HMAC_KEYS_JSON` key id and explicit
+integrity version. The canonical payload covers transaction reference, sender,
+recipient, payee id, amount, customer reference, status, transfer type, and
+creation time. Every row must have valid keyed HMAC-SHA256 version 1 metadata;
+missing, partial, unknown-key, unsupported, or mismatched metadata fails
+closed. The controlled `security backfill-transaction-integrity` command must
+be completed before migration `20260705_0028` enforces this invariant.
+Required audit writes are part of the same business transaction boundary; if
+a required success audit fails, ledger mutation rolls back.
+Customer-initiated account freezes send a security email
+and produce an immediate `account_freeze` alert. Blocked authorization
+failures, including payee ownership mismatches, are audited safely using opaque
+references so raw account numbers, phone numbers, payee details, exact transfer
+amounts, and pending transfer tokens do not appear in the audit log.
+
+### Transaction Ledger HMAC Key Provisioning
+
+The transaction-ledger HMAC keyring is an EC2 root-managed secret file, not a
+GitHub Actions variable, secret, workflow input, issue attachment, or CI
+artifact. GitHub stores only the active key id:
+`STAGING_TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID` for staging and
+`PROD_TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID` for production. The active id must
+match a key in the host file. The container reads the keyring through
+`/run/secrets/transaction_ledger_hmac_keys_json`; do not put the keyring in the
+signed runtime bundle or in GitHub environment secrets.
+
+- Staging keyring path, provisioned and verified first:
+  `/etc/sitbank-staging/secrets/transaction_ledger_hmac_keys_json`
+- Production keyring path:
+  `/etc/sitbank/secrets/transaction_ledger_hmac_keys_json`
+
+Generate the keyring directly on the target EC2 host, starting with staging.
+Use distinct key ids and key bytes per environment, and do not reuse session,
+audit, MFA, or admin HMAC material. The example below is safe to adapt by
+changing `KEYRING_PATH` and `KEY_ID`; it writes only to a root-owned file with
+restrictive permissions:
+
+```bash
+KEYRING_PATH=/etc/sitbank-staging/secrets/transaction_ledger_hmac_keys_json
+KEY_ID=2026-07-ledger-01
+sudo install -d -o root -g sitbank-container -m 0750 "$(dirname "${KEYRING_PATH}")"
+sudo KEY_ID="${KEY_ID}" python3 - <<'PY' | sudo tee "${KEYRING_PATH}" >/dev/null
+import base64
+import json
+import os
+import secrets
+
+key_id = os.environ["KEY_ID"]
+print(json.dumps({key_id: base64.b64encode(secrets.token_bytes(32)).decode("ascii")}))
+PY
+sudo chown root:sitbank-container "${KEYRING_PATH}"
+sudo chmod 0640 "${KEYRING_PATH}"
+```
+
+For production, repeat the process with
+`KEYRING_PATH=/etc/sitbank/secrets/transaction_ledger_hmac_keys_json` only after
+staging has passed deployment and transaction-integrity verification. Safe
+verification prints only key ids and decoded byte lengths, never key material:
+
+```bash
+KEYRING_PATH=/etc/sitbank-staging/secrets/transaction_ledger_hmac_keys_json
+sudo KEYRING_PATH="${KEYRING_PATH}" python3 - <<'PY'
+import base64
+import json
+import os
+from pathlib import Path
+
+path = Path(os.environ["KEYRING_PATH"])
+data = json.loads(path.read_text(encoding="utf-8"))
+for key_id, encoded_key in sorted(data.items()):
+    decoded_key = base64.b64decode(encoded_key, validate=True)
+    print(f"{key_id}: {len(decoded_key)} bytes")
+PY
+```
+
+Safe output looks like `2026-07-ledger-01: 32 bytes`; it must not include
+base64 values, decoded bytes, session ids, database URLs, or other secrets. Do
+not paste, screenshot, commit, upload, or log key material, and do not include
+key material in issues, pull requests, job summaries, provider exports, or
+chat transcripts.
+
+Before deployment, set only the matching GitHub environment active-id variable
+to the chosen key id. Do not configure `STAGING_TRANSACTION_LEDGER_HMAC_KEYS_JSON`
+or `PROD_TRANSACTION_LEDGER_HMAC_KEYS_JSON`. The deployment wrapper adopts the
+existing EC2 secret file and validates that the active id is present and all key
+values decode to exactly 32 bytes; it does not generate, upload, replace, print,
+or bundle the keyring. For rotation, add the new 32-byte key under a new id,
+update only the matching GitHub environment's active key id, deploy staging
+first, then production, and retain old key ids while rows signed by them remain
+in the database. Rollback must keep both the previous and new key ids available
+until no retained row references them.
 
 The admin boundary audits root-admin-controlled staff invite onboarding,
 admin login success/failure, TOTP verification, admin step-up, admin data
@@ -718,6 +1064,17 @@ anchor. Valid append-only drift after the last exported anchor is reported as
 `anchor_stale`/`anchor_refresh_required` and should be refreshed with the
 evidence-preserving workflow above rather than delivered as a critical webhook
 alert.
+
+After an approved intentional database reset, use
+`sitbank-container-runtime <target> rebaseline-security-alert-state
+--intentional-reset --reason "<change record>"`. The command refuses missing
+acknowledgement/reason, an invalid audit chain, or a critical/mismatched
+anchor; it backs up the previous state, writes the protected-table snapshot
+atomically with owner-only mode, and audits only a keyed reason reference and
+bounded metadata. JSON output exposes only whether a backup was created and
+its basename, never the full host backup path. Never delete or hand-edit the
+state JSON to clear an
+unexplained regression.
 
 Admin/root users may review the same safe report in the private admin runtime
 with `GET /alerts`. That browser review is read-only and must not send alerts.
@@ -818,7 +1175,9 @@ The `pp.ua` DNS-01 migration and DuckDNS retirement are complete. Keep retired
 names out of active Nginx, Certbot, workflow, and TLS-scan configuration. Use
 `docs/runbooks/private-observability-grafana-loki.md` for the private
 Grafana/Loki/Alloy stack; Grafana remains private and is not exposed through
-the SITBank admin app.
+the SITBank admin app. Live Grafana/Loki evidence is collected only by the
+protected private observability workflow, never by public GitHub-hosted TLS
+scan jobs.
 
 The normal public TLS scan deliberately excludes the private Tailscale admin hostname
 `admin-sitbank.tailca101b.ts.net`; a GitHub-hosted public runner cannot reach
@@ -854,6 +1213,11 @@ artifacts, job summaries, chat, screenshots, or issue comments. If a DAST cookie
 or full replacer config is exposed, cancel the run, remove the artifact, treat
 the synthetic session as compromised until the run cleanup completes, and review
 the workflow/script change before retrying.
+The session bootstrap itself is available only when
+`DEPLOYMENT_TARGET=smoke`; it validates the helper's exact synthetic customer
+identity and the loopback or `sitbank-smoke` session host before issuing a
+cookie. It is not available for staging, production, real customers, staff,
+admins, or root admins.
 
 Pull requests additionally run a 12-minute local-only DAST smoke against an
 ephemeral image and database. Its two-minute unauthenticated ZAP baseline
@@ -880,10 +1244,11 @@ production release depend on its API.
 For the Cloudflare Access-protected staging target, an unauthenticated
 `302 Found` response is the expected Access challenge and is accepted by the
 TLS evidence workflow. The staging gate still requires TLS 1.0 and TLS 1.1 to
-be not offered, TLS 1.2 and TLS 1.3 to be offered, certificate
-hostname/trust and chain checks to be OK, the certificate to be unexpired,
-HSTS to meet the scanner minimum, no insecure redirect finding, and a final
-`overall_grade` of `A` or `A+`. Generic LUCKY13 wording and
+be not offered and TLS 1.3 to be offered. TLS 1.2 is permitted for
+compatibility but is not required. Certificate hostname/trust and chain checks
+must be OK, the certificate must be unexpired, HSTS must meet the scanner
+minimum, insecure redirects must be absent, and the final `overall_grade` must
+be `A` or `A+`. Generic LUCKY13 wording and
 `cipherlist_OBSOLETED: offered` on Cloudflare Universal SSL are retained as
 review evidence for protected staging, not automatic failures.
 
@@ -970,18 +1335,28 @@ manual recovery workflow.
 
 Manual recovery operator workflow:
 
-- Root admins review requests in the admin app with
-  `GET /manual-recovery/requests`.
+- Root admins review requests in the isolated admin browser UI at
+  `GET /manual-recovery/requests`; explicit JSON clients can still request the
+  same safe public request contract with `Accept: application/json`.
+- The browser queue and detail view show only safe metadata: request reference,
+  status, linked/unlinked indicator, request count, created/updated/expiry
+  time, completion time, and allowed actions. Unlinked or unknown requests stay
+  generic and do not prove whether a submitted identifier belongs to an
+  account.
 - Root admins move a request through `under_review`, `approved`, or `denied`
-  using `POST /manual-recovery/requests/<id>/transition` with an operator
-  reason and fresh TOTP code.
+  using `POST /manual-recovery/requests/<id>/transition` with browser CSRF,
+  an operator reason, and a fresh TOTP code. Approval and denial create durable
+  maker-checker admin action requests when required by the service layer.
 - Completion uses `POST /manual-recovery/requests/<id>/complete` after
-  approval, again with an operator reason and fresh TOTP code.
+  approval, again with browser CSRF, an operator reason, and a fresh TOTP code;
+  the service queues the durable maker-checker completion request.
 - Completion forces customer MFA re-enrollment, revokes active customer
   sessions, sends the existing manual recovery completion notification, and
   records `manual_recovery_completed` plus admin actor audit events.
 - Public account-recovery submission never unlocks, mutates, or completes an
   account by itself.
+- Browser admin logout clears the admin session and redirects to `/login`;
+  explicit JSON clients still receive the JSON logout response.
 
 ## Customer Email OTP Registration Operations
 
@@ -998,8 +1373,16 @@ request a six-digit registration verification code from `/register`, receive it
 by email, verify it in the same browser session, and then complete account
 creation with the same normalized email address. Codes expire after 5 minutes,
 are one-time use, and requesting a new code invalidates the previous code. The
-application stores only an HMAC of the code in PostgreSQL; raw codes must never
+application stores only an HMAC under the active session-HMAC key in
+PostgreSQL; raw codes must never
 be recorded in runbooks, tickets, logs, Discord, Telegram, or screenshots.
+
+Customer identity is canonicalized before OTP issuance and final creation.
+Configured plus-alias and dot-insensitive domains collapse to one canonical
+identity, and configured temporary-email domains are rejected. Duplicate and
+ineligible requests return the same minimal public response; precise reason
+codes remain only in redacted audit metadata. Treat canonicalization policy
+changes as a data migration and collision-review event.
 
 Registration OTP delivery uses the same security email backend and SMTP
 settings as password reset email:
@@ -1037,16 +1420,18 @@ Enable only the routes intended for the environment:
 - `TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED`
 - `TURNSTILE_CUSTOMER_REGISTER_ENABLED`
 - `TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED`
+- `TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED`
 - `TURNSTILE_ADMIN_LOGIN_ENABLED`
 - `TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED`
 
-Production and staging require `TURNSTILE_ENABLED=true`,
+Production and staging require every listed flag,
+`TURNSTILE_FAIL_CLOSED_IN_PRODUCTION=true`, `TURNSTILE_ENABLED=true`,
 `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` or `TURNSTILE_SECRET_KEY_FILE`, and
 the official verifier URL
 `https://challenges.cloudflare.com/turnstile/v0/siteverify`. Local/test
-verifier overrides are for isolated mocks only. Roll back by disabling the
-affected route flag or `TURNSTILE_ENABLED`; do not point production at a custom
-verifier host.
+verifier overrides are for isolated mocks only. Disabling a required flag is a
+readiness failure, not a production rollback mechanism; do not point a
+production-like environment at a custom verifier host.
 
 GitHub Environment variables use the `PROD_TURNSTILE_*` and
 `STAGING_TURNSTILE_*` prefixes; the renderer emits unprefixed runtime keys and
@@ -1055,5 +1440,21 @@ secrets `PROD_TURNSTILE_SECRET_KEY` and `STAGING_TURNSTILE_SECRET_KEY`.
 Deployment installs them as separate root-managed
 `/etc/sitbank*/secrets/turnstile_secret_key` files and never writes the value
 to `container.env`. Production and staging use separate widgets for
-`sitbank.pp.ua`/`www.sitbank.pp.ua` and `staging-sitbank.pp.ua`. Keep both
-admin route flags false; the admin app remains private behind Tailscale.
+`sitbank.pp.ua`/`www.sitbank.pp.ua` and `staging-sitbank.pp.ua`. If admin
+invite acceptance is enabled for a private/admin hostname, include that exact
+recipient-facing hostname in the matching Turnstile widget's hostname allowlist;
+do not broaden the widget to wildcard provider domains. The admin app remains private behind Tailscale while its public-auth entry routes retain Turnstile defense in depth.
+
+For invite-acceptance troubleshooting, use only safe browser-console checks:
+inspect the form's `turnstileState`, the hidden response field length, the
+`Start secure setup` disabled flag, and whether the expected callback names are
+functions. Never ask an operator or recipient to paste a raw challenge response,
+invite URL, session value, MFA code, password, workplace verification code,
+Cloudflare provider response, cookie, or token into chat, tickets, logs, pull
+requests, screenshots, or issue comments. The expected managed-widget lifecycle
+is: SITBank callback functions are registered before the Cloudflare API can
+invoke them; pending before success keeps submit disabled; success with a fresh
+response enables submit; after-interactive or non-invalidating pending callbacks
+preserve a still-valid response; expiry, error, timeout, unsupported-widget,
+reset, or a new before-interactive challenge lifecycle clears the stored
+response and disables submit until another fresh success arrives.

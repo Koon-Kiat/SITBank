@@ -1,0 +1,18 @@
+{% extends "admin/base.html" %}
+
+{% block title %}{{ status_code }} | SITBank Admin{% endblock %}
+
+{% block content %}
+<section class="panel narrow empty-state">
+  <p class="eyebrow">Private admin request status</p>
+  <h1>{{ status_code }}</h1>
+  <p class="muted">{{ message }}</p>
+  <div class="button-row">
+    {% if g.current_user %}
+      <a class="button" href="{{ url_for('admin.index') }}">Return to admin dashboard</a>
+    {% else %}
+      <a class="button" href="{{ url_for('admin.login_form') }}">Return to admin login</a>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

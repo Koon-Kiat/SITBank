@@ -19,6 +19,10 @@ def test_privacy_pdpa_docs_exist_and_cover_data_categories():
         "Customer name",
         "Customer email",
         "Customer phone",
+        "customer profile correction",
+        "do not use as an authenticator or log raw phone values",
+        "PayUp display nickname",
+        "audit metadata stores nickname presence and length, not raw nicknames",
         "Account identifiers",
         "Payee records",
         "Transaction records",
@@ -65,10 +69,26 @@ def test_retention_doc_distinguishes_deactivation_deletion_and_anonymization():
         "Not exposed as a normal customer/admin self-service feature",
         "No automated workflow exists",
         "Security audit rows must not be silently auto-deleted",
-        "complete retention/disposal scheduler",
-        "docs/security/governance/security-gap-register.md",
+        "Approved Preserved-Category Procedures",
+        "operator-approved maintenance record",
+        "Customer and staff/admin account records",
+        "Manual recovery requests",
+        "Staff invite metadata",
+        "Alert reports",
+        "Encrypted backup archives",
+        "No weekly timer or application route performs destructive disposal",
+        "category allowlist",
+        "No complete retention/disposal scheduler across those preserved categories exists by design",
     ):
         assert required in text
+    for scheduled_control in (
+        "sitbank-retention-review@staging.timer",
+        "sitbank-retention-review@production.timer",
+        "aggregate-only dry-run report",
+        "timer never passes that flag",
+        "future scheduler must be reviewed as a new change",
+    ):
+        assert scheduled_control in text
 
 
 def test_incident_response_doc_covers_required_workflows_and_evidence_rules():
@@ -108,9 +128,13 @@ def test_security_docs_link_privacy_retention_and_incident_response():
 def test_gap_register_updated_for_privacy_docs_and_retention_automation_gap():
     register = GAP_REGISTER.read_text(encoding="utf-8")
     current_open = register.split("## Current Open Gaps", 1)[1].split("## Partially Implemented Controls", 1)[0]
+    implemented = register.split("## Implemented Controls", 1)[1].split("## Not Applicable Or Out Of Scope", 1)[0]
+    recently_closed = register.split("## Recently Closed Gaps", 1)[1]
 
     assert "PDPA data inventory and retention schedule" not in current_open
     assert "Dedicated incident response runbook" not in current_open
-    assert "Automated retention and disposal jobs" in current_open
+    assert "Automated retention and disposal jobs" not in current_open
+    assert "Approved preserved-category retention/disposal procedures" in implemented
+    assert "Automated retention and disposal jobs" in recently_closed
     assert "Privacy and PDPA documentation" in register
     assert "Incident response runbook" in register

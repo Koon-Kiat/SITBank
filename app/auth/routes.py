@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from flask import Blueprint, current_app, g, jsonify, request
+from flask import Blueprint, current_app, g, jsonify, request, session
 from flask_limiter.util import get_remote_address
 from flask_wtf.csrf import generate_csrf
 from marshmallow import Schema, ValidationError
@@ -8,7 +8,13 @@ from marshmallow import Schema, ValidationError
 from app.extensions import limiter
 from app.auth.mfa_policy import has_enrolled_mfa_method
 from app.admin.services import is_customer_user
+from app.security.device_recognition import (
+    apply_device_cookie,
+    handle_new_device_login,
+    resolve_freshly_authenticated_user,
+)
 from app.security.rate_limits import mfa_principal, request_principal
+from app.security.sessions import session_replacement_reason
 from app.security.turnstile import TurnstileError, require_turnstile
 
 from .decorators import login_required, not_frozen_required
@@ -33,6 +39,7 @@ from .password_reset import (
     request_password_reset,
     select_reset_mfa_method,
     verify_reset_totp,
+    verify_reset_recovery_code,
     exchange_reset_token,
 )
 from .schemas import (
@@ -47,6 +54,7 @@ from .schemas import (
     RegisterSchema,
     RegistrationOtpRequestSchema,
     RegistrationOtpVerifySchema,
+    RecoveryCodeSchema,
     ResetTokenExchangeSchema,
     TerminateSessionSchema,
     TotpSchema,
@@ -78,15 +86,12 @@ from .registration_otp import (
 
 
 auth_bp = Blueprint("auth", __name__, url_prefix="/auth")
-PASSKEY_DISABLED_MESSAGE = (
-    "Passkey authentication is no longer available. "
-    "Use authenticator MFA or manual account recovery."
-)
 
 AUTH_MFA_ONBOARDING_ALLOWED_ENDPOINTS = {
     "auth.csrf_token",
     "auth.logout",
     "auth.session_extend",
+    "auth.session_status",
     "auth.mfa_setup",
     "auth.mfa_setup_verify",
     "auth.password_reset_request",
@@ -128,6 +133,19 @@ def _load_payload(schema: Schema, form_cls) -> dict:
         for name, field in form._fields.items()
         if name != "csrf_token"
     }
+
+
+def _first_validation_message(error: ValidationError) -> str:
+    stack = [error.messages]
+    while stack:
+        value = stack.pop(0)
+        if isinstance(value, str):
+            return value
+        if isinstance(value, dict):
+            stack.extend(value.values())
+        elif isinstance(value, list):
+            stack.extend(value)
+    return "Invalid request"
 
 
 @auth_bp.errorhandler(AuthError)
@@ -186,19 +204,12 @@ def register_otp_verify():
 def register():
     data = _load_payload(RegisterSchema(), RegisterForm)
     require_turnstile("customer_register")
-    user, warnings = register_user(data)
+    _, warnings = register_user(data)
     return (
         jsonify(
             {
                 "message": "Registration successful",
                 "warnings": warnings,
-                "user": {
-                    "id": user.id,
-                    "username": user.username,
-                    "email": user.email,
-                    "mfa_enabled": user.mfa_enabled,
-                    "is_frozen": user.is_frozen,
-                },
             }
         ),
         201,
@@ -213,7 +224,18 @@ def register():
 def login():
     data = _load_payload(LoginSchema(), LoginForm)
     require_turnstile("customer_login")
-    return jsonify(authenticate_primary(data["identifier"], data["password"]))
+    result = authenticate_primary(data["identifier"], data["password"])
+    response = jsonify(result)
+    if not result.get("mfa_required") and not result.get("mfa_setup_required"):
+        user = resolve_freshly_authenticated_user()
+        if user is not None:
+            token = handle_new_device_login(
+                user,
+                ip_address=request.remote_addr or "",
+                user_agent=request.user_agent.string or "",
+            )
+            response = apply_device_cookie(response, token)
+    return response
 
 
 @auth_bp.post("/password-reset/request")
@@ -253,25 +275,25 @@ def password_reset_totp():
     return jsonify(verify_reset_totp(data["totp_code"]))
 
 
-@auth_bp.post("/password-reset/mfa/webauthn/options")
+@auth_bp.post("/password-reset/mfa/recovery-code")
 @limiter.limit("5 per 5 minutes", key_func=get_remote_address)
 @limiter.limit("5 per 5 minutes", key_func=mfa_principal)
-def password_reset_webauthn_options():
-    raise AuthError(PASSKEY_DISABLED_MESSAGE, 410)
-
-
-@auth_bp.post("/password-reset/mfa/webauthn/verify")
-@limiter.limit("5 per 5 minutes", key_func=get_remote_address)
-@limiter.limit("5 per 5 minutes", key_func=mfa_principal)
-def password_reset_webauthn_verify():
-    raise AuthError(PASSKEY_DISABLED_MESSAGE, 410)
+def password_reset_recovery_code():
+    data = RecoveryCodeSchema().load(request.get_json(silent=False) or {})
+    return jsonify(verify_reset_recovery_code(data["recovery_code"]))
 
 
 @auth_bp.post("/password-reset/complete")
 @limiter.limit("5 per 15 minutes", key_func=get_remote_address)
 @limiter.limit("5 per 15 minutes", key_func=mfa_principal)
 def password_reset_complete():
-    data = _load_payload(PasswordResetSchema(), PasswordResetForm)
+    try:
+        data = _load_payload(PasswordResetSchema(), PasswordResetForm)
+    except ValidationError as exc:
+        message = _first_validation_message(exc)
+        if message.startswith("Password must be "):
+            raise AuthError(message, 400) from exc
+        raise
     return jsonify(complete_password_reset(data["new_password"], data["confirm_new_password"]))
 
 
@@ -280,70 +302,8 @@ def password_reset_complete():
 @limiter.limit("3 per hour", key_func=request_principal)
 def manual_recovery_request():
     data = _load_payload(ManualRecoverySchema(), ManualRecoveryForm)
+    require_turnstile("customer_manual_recovery")
     return jsonify(request_manual_recovery(data["identifier"]))
-
-
-@auth_bp.post("/webauthn/register/options")
-@login_required
-@not_frozen_required
-@limiter.limit("5 per 5 minutes", key_func=get_remote_address)
-@limiter.limit("5 per 5 minutes", key_func=mfa_principal)
-def webauthn_register_options():
-    raise AuthError(PASSKEY_DISABLED_MESSAGE, 410)
-
-
-@auth_bp.post("/webauthn/register/verify")
-@login_required
-@not_frozen_required
-@limiter.limit("5 per 5 minutes", key_func=get_remote_address)
-@limiter.limit("5 per 5 minutes", key_func=mfa_principal)
-def webauthn_register_verify():
-    raise AuthError(PASSKEY_DISABLED_MESSAGE, 410)
-
-
-@auth_bp.post("/webauthn/authenticate/options")
-@limiter.limit("5 per 5 minutes", key_func=get_remote_address)
-@limiter.limit("5 per 5 minutes", key_func=request_principal)
-def webauthn_authenticate_options():
-    raise AuthError(PASSKEY_DISABLED_MESSAGE, 410)
-
-
-@auth_bp.post("/webauthn/authenticate/verify")
-@limiter.limit("5 per 5 minutes", key_func=get_remote_address)
-@limiter.limit("5 per 5 minutes", key_func=request_principal)
-def webauthn_authenticate_verify():
-    raise AuthError(PASSKEY_DISABLED_MESSAGE, 410)
-
-
-@auth_bp.post("/webauthn/step-up/options")
-@login_required
-@not_frozen_required
-@limiter.limit("5 per 5 minutes", key_func=get_remote_address)
-@limiter.limit("5 per 5 minutes", key_func=mfa_principal)
-def webauthn_step_up_options():
-    raise AuthError(PASSKEY_DISABLED_MESSAGE, 410)
-
-
-@auth_bp.post("/webauthn/step-up/verify")
-@login_required
-@not_frozen_required
-@limiter.limit("5 per 5 minutes", key_func=get_remote_address)
-@limiter.limit("5 per 5 minutes", key_func=mfa_principal)
-def webauthn_step_up_verify():
-    raise AuthError(PASSKEY_DISABLED_MESSAGE, 410)
-
-
-@auth_bp.get("/webauthn/credentials")
-@login_required
-def webauthn_credentials():
-    raise AuthError(PASSKEY_DISABLED_MESSAGE, 410)
-
-
-@auth_bp.delete("/webauthn/credentials/<credential_id>")
-@login_required
-@not_frozen_required
-def webauthn_revoke_credential(credential_id: str):
-    raise AuthError(PASSKEY_DISABLED_MESSAGE, 410)
 
 
 @auth_bp.post("/logout")
@@ -362,6 +322,15 @@ def session_extend():
             "timeout_seconds": int(current_app.config["SESSION_INACTIVITY_SECONDS"]),
         }
     )
+
+
+@auth_bp.get("/session/status")
+def session_status():
+    if session.get("user_id") and g.current_user is not None:
+        return jsonify({"status": "active"})
+    reason = session_replacement_reason()
+    code = "replaced" if reason == "session_cap" else "ended"
+    return jsonify({"status": "signed_out", "code": code}), 401
 
 
 @auth_bp.post("/mfa/setup")
@@ -391,7 +360,7 @@ def mfa_setup_verify():
 @limiter.limit("5 per 5 minutes", key_func=mfa_principal)
 def mfa_replace_start():
     data = HighRiskTotpSchema().load(request.get_json(silent=False) or {})
-    return jsonify(generate_mfa_replacement(g.current_user, data.get("totp_code"), data.get("stepup_token")))
+    return jsonify(generate_mfa_replacement(g.current_user, data.get("totp_code")))
 
 
 @auth_bp.post("/mfa/replace/verify")
@@ -415,17 +384,26 @@ def mfa_recovery_codes_regenerate():
         regenerate_totp_recovery_codes(
             g.current_user,
             data.get("totp_code"),
-            data.get("stepup_token"),
         )
     )
 
 
 @auth_bp.post("/mfa/verify")
-@limiter.limit("5 per 5 minutes", key_func=get_remote_address)
-@limiter.limit("5 per 5 minutes", key_func=mfa_principal)
+@limiter.limit("30 per 5 minutes", key_func=get_remote_address)
+@limiter.limit("30 per 5 minutes", key_func=mfa_principal)
 def mfa_verify():
     data = _load_payload(AuthenticationCodeSchema(), AuthenticationCodeForm)
-    return jsonify(complete_pending_mfa(data["totp_code"]))
+    result = complete_pending_mfa(data["totp_code"])
+    response = jsonify(result)
+    user = resolve_freshly_authenticated_user()
+    if user is not None:
+        token = handle_new_device_login(
+            user,
+            ip_address=request.remote_addr or "",
+            user_agent=request.user_agent.string or "",
+        )
+        response = apply_device_cookie(response, token)
+    return response
 
 
 @auth_bp.get("/sessions")
@@ -456,7 +434,6 @@ def revoke_other_sessions():
     verify_high_risk_authorization(
         g.current_user,
         data.get("totp_code"),
-        data.get("stepup_token"),
         "session_revoke_others",
     )
     revoked = terminate_other_sessions_for_user(g.current_user)
@@ -470,7 +447,7 @@ def revoke_other_sessions():
 @limiter.limit("5 per 5 minutes", key_func=mfa_principal)
 def freeze_account():
     data = _load_payload(HighRiskTotpSchema(), MfaOrStepUpForm)
-    return jsonify(freeze_own_account(g.current_user, data.get("totp_code"), data.get("stepup_token")))
+    return jsonify(freeze_own_account(g.current_user, data.get("totp_code")))
 
 
 @auth_bp.post("/password/change")
@@ -487,6 +464,5 @@ def password_change():
             data["new_password"],
             data["confirm_new_password"],
             data.get("totp_code"),
-            data.get("stepup_token"),
         )
     )

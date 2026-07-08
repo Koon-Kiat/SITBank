@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import os
 import re
+import shutil
 import subprocess
 import sys
 import importlib.util
@@ -51,7 +52,11 @@ PYTHON_SLIM_TRIXIE_IMAGE = (
 )
 
 ROOT_ADMIN_EMAILS_VALUE = ",".join(
-    f"chief{index}@sit.singaporetech.edu.sg" for index in range(1, 8)
+    f"chief{index}@sit.singaporetech.edu.sg" for index in range(1, 4)
+)
+STAGING_ROOT_ADMIN_EMAILS_VALUE = (
+    "stagechief1@sit.singaporetech.edu.sg,"
+    "stagechief2@sit.singaporetech.edu.sg"
 )
 
 DEPLOYMENT_VALUES = {
@@ -66,6 +71,8 @@ DEPLOYMENT_VALUES = {
     "PROD_DATABASE_URL": "postgresql+psycopg2://bank:secret@127.0.0.1/bank",
     "PROD_MFA_KEK_ACTIVE_ID": "2026-06-mfa",
     "PROD_MFA_KEK_KEYS_JSON": '{"2026-06-mfa":"NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ="}',
+    "PROD_TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID": "2026-07-ledger",
+    "PROD_TRANSACTION_LEDGER_HMAC_KEYS_JSON": '{"2026-07-ledger":"YmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmI="}',
     "PROD_PASSWORD_PEPPER_B64": "MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE=",
     "PROD_PUBLIC_HOST": "sitbank.pp.ua",
     "PROD_SECRET_KEY": "secret-key-with-$-and-enough-length-for-production",
@@ -86,8 +93,10 @@ DEPLOYMENT_VALUES = {
     "PROD_TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED": "true",
     "PROD_TURNSTILE_CUSTOMER_REGISTER_ENABLED": "true",
     "PROD_TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED": "true",
-    "PROD_TURNSTILE_ADMIN_LOGIN_ENABLED": "false",
-    "PROD_TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED": "false",
+    "PROD_TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED": "true",
+    "PROD_TURNSTILE_ADMIN_LOGIN_ENABLED": "true",
+    "PROD_TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED": "true",
+    "PROD_TURNSTILE_FAIL_CLOSED_IN_PRODUCTION": "true",
     "PROD_WTF_CSRF_SECRET_KEY": "csrf-secret-with-enough-length-for-production",
 }
 
@@ -104,6 +113,10 @@ def _set_prefixed_deployment_values(monkeypatch, prefix: str, public_host: str):
             value = public_host
         monkeypatch.setenv(target_name, value)
     if prefix == "STAGING":
+        monkeypatch.setenv(
+            "STAGING_ROOT_ADMIN_EMAILS",
+            STAGING_ROOT_ADMIN_EMAILS_VALUE,
+        )
         monkeypatch.setenv(
             "STAGING_CLOUDFLARE_ACCESS_AUD",
             "0123456789abcdef0123456789abcdef",
@@ -250,7 +263,7 @@ def _nginx_server_block(config: str, server_name: str) -> str:
         blocks.append(block)
     assert blocks, f"Missing Nginx server block for {server_name}"
     for block in blocks:
-        if "listen 443 ssl http2;" in block:
+        if re.search(r"listen\s+\S+:443\s+ssl\s+http2;", block):
             return block
     return blocks[0]
 
@@ -273,14 +286,16 @@ def _nginx_http_server_block(config: str, server_name: str) -> str:
         blocks.append(block)
     assert blocks, f"Missing Nginx server block for {server_name}"
     for block in blocks:
-        if "listen 80;" in block and "listen 443" not in block:
+        if re.search(r"listen\s+\S+:80;", block) and ":443" not in block:
             return block
     raise AssertionError(f"Missing Nginx HTTP server block for {server_name}")
 
 
 def _nginx_https_server_prelocation(config: str, *, server_name: str | None = None) -> str:
     server = _nginx_server_block(config, server_name) if server_name else config
-    https_start = server.index("listen 443 ssl http2;")
+    https_match = re.search(r"listen\s+\S+:443\s+ssl\s+http2;", server)
+    assert https_match
+    https_start = https_match.start()
     first_location = server.index("\n    location ", https_start)
     return server[https_start:first_location]
 
@@ -351,9 +366,11 @@ def _config_secret_inputs() -> set[str]:
         "_required_keyring",
         "_required_secret",
         "_configured_secret",
+        "_csv_env_or_file_values",
         "_required_session_hmac_keys",
         "_required_url",
         "_optional_turnstile_secret",
+        "_root_admin_email_set",
     }
     names = set()
     for node in ast.walk(tree):
@@ -552,7 +569,7 @@ def test_dast_session_creator_requires_loopback_or_explicit_smoke_host():
     with pytest.raises(ValueError, match="host is not allowed"):
         create_dast_session.DastClient(
             "http://unexpected-smoke:5000",
-            allowed_hosts={"sitbank-smoke"},
+            allowed_hosts={"unexpected-smoke"},
         )
 
 
@@ -560,6 +577,14 @@ def test_dast_session_creator_matches_registration_contract():
     source = Path("ops/container/create_dast_session.py").read_text(encoding="utf-8")
 
     assert "create_dast_user(" in source
+    assert "issue_dast_session_cookie(" in source
+    assert "establish_authenticated_session(" in source
+    assert 'client.request("GET", "/auth/sessions", expected_status=200)' in source
+    assert '"User-Agent": DAST_USER_AGENT' in source
+    assert '"X-Forwarded-For": DAST_FORWARDED_FOR' in source
+    assert "replacer.full_list(3).matchstr=User-Agent" in source
+    assert '"/auth/login"' not in source
+    assert '"cf-turnstile-response"' not in source
     assert "hash_password(password)" in source
     assert "@sit.singaporetech.edu.sg" in source
     assert "create_registration_invite" not in source
@@ -573,51 +598,57 @@ def test_dast_session_creator_matches_registration_contract():
     assert "0o644" not in source
 
 
-def test_registration_field_migration_preserves_unknown_phones_and_randomizes_accounts():
+def test_registration_field_migration_targets_current_reset_schema_without_backfills():
     migration = Path(
         "migrations/versions/20260622_0008_add_user_registration_fields.py"
     ).read_text(encoding="utf-8")
 
-    assert "SET phone_number = '9'" not in migration
-    assert "SET phone_number = NULL" in migration
-    assert "row_number() OVER (ORDER BY id)" not in migration
-    assert "secrets.randbelow" in migration
+    assert "UPDATE users" not in migration
+    assert "secrets.randbelow" not in migration
+    assert "String(12)" in migration
     assert "postgresql_where=sa.text(\"phone_number IS NOT NULL\")" in migration
     assert "sqlite_where=sa.text(\"phone_number IS NOT NULL\")" in migration
-    assert "SET full_name = username" in migration
+    assert "full_name" in migration
 
 
-def test_privileged_user_contact_field_migration_repairs_production_schema_drift():
+def test_account_identifier_migration_enforces_current_twelve_digit_schema():
     migration = Path(
-        "migrations/versions/20260629_0017_relax_privileged_user_contact_fields.py"
+        "migrations/versions/20260703_0024_harden_banking_identifiers.py"
+    ).read_text(encoding="utf-8")
+    deployment_docs = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
+
+    assert 'revision = "20260703_0024"' in migration
+    assert 'down_revision = "20260703_0023"' in migration
+    assert "account_number" in migration
+    assert "length(account_number) = 12" in migration
+    assert "ck_users_account_number_format" in migration
+    assert "ck_payees_account_number_format" in migration
+    assert "String(length=9)" not in migration
+    assert "Migration `20260703_0024`" in deployment_docs
+    assert "enforces exactly 12 decimal digits" in deployment_docs
+
+
+def test_password_history_migration_uses_current_nonnullable_schema_without_backfill():
+    from app.models import User
+
+    migration = Path(
+        "migrations/versions/20260701_0019_current_password_history.py"
     ).read_text(encoding="utf-8")
 
-    assert 'revision = "20260629_0017"' in migration
+    assert User.__table__.c.password_changed_at.nullable is False
     assert 'down_revision = "20260628_0016"' in migration
-    assert "ALTER TABLE users ALTER COLUMN phone_number DROP NOT NULL" in migration
-    assert "ALTER TABLE users ALTER COLUMN account_number DROP NOT NULL" in migration
-    assert "SET phone_number" not in migration
-    assert "SET account_number" not in migration
-
-
-def test_staff_invite_personal_email_migration_allows_workplace_only_invites():
-    migration = Path(
-        "migrations/versions/20260630_0018_staff_invites_workplace_email_only.py"
-    ).read_text(encoding="utf-8")
-
-    assert 'revision = "20260630_0018"' in migration
-    assert 'down_revision = "20260629_0017"' in migration
-    assert '"staff_invites"' in migration
-    assert '"personal_email_normalized"' in migration
-    assert "nullable=True" in migration
-    assert "UPDATE staff_invites" not in migration
-    assert "nullable=False" not in migration
+    assert '"password_changed_at"' in migration
+    assert "nullable=False" in migration
+    assert "server_default=sa.func.now()" in migration
+    assert "UPDATE users" not in migration
+    assert "personal_email_normalized" not in migration
 
 
 def test_migration_baseline_drift_metadata_matches_reviewed_migrations():
     from app.models import (
         ManualRecoveryRequest,
         PendingTransfer,
+        Payee,
         RecoveryCode,
         StaffInvite,
         Transaction,
@@ -634,6 +665,8 @@ def test_migration_baseline_drift_metadata_matches_reviewed_migrations():
 
     assert User.__table__.c.phone_number.unique is None
     assert User.__table__.c.account_number.unique is None
+    assert User.__table__.c.account_number.type.length == 12
+    assert Payee.__table__.c.account_number.type.length == 12
     assert any(index.name == "ix_users_phone_number" and index.unique for index in user_indexes)
     assert any(index.name == "ix_users_account_number" and index.unique for index in user_indexes)
     assert any(index.name == "ix_recovery_codes_code_hmac" and index.unique for index in recovery_indexes)
@@ -692,6 +725,25 @@ def test_transaction_hash_not_null_migration_is_data_preserving():
     assert "not manual schema-edit commands" in normalized_docs
 
 
+def test_transaction_integrity_enforcement_migration_fails_closed_after_backfill():
+    migration = Path(
+        "migrations/versions/20260705_0028_enforce_transaction_integrity.py"
+    ).read_text(encoding="utf-8")
+    deployment_docs = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
+
+    assert 'revision = "20260705_0028"' in migration
+    assert 'down_revision = "20260705_0027"' in migration
+    assert "SELECT COUNT(*) FROM transactions" in migration
+    assert "requires the controlled" in migration
+    assert migration.count("nullable=False") >= 4
+    assert "transaction_integrity_algorithm = 'hmac-sha256'" in migration
+    assert "transaction_integrity_version = 1" in migration
+    assert "Downgrade would re-enable legacy transaction integrity" in migration
+    assert "security backfill-transaction-integrity --confirm" in deployment_docs
+    assert "fresh encrypted backup" in deployment_docs
+    assert "fails closed" in deployment_docs
+
+
 def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypatch):
     _set_deployment_values(monkeypatch)
 
@@ -700,19 +752,18 @@ def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypa
     assert set(environment) == set(PRODUCTION_NON_SECRET_RUNTIME_ENVIRONMENT)
     assert environment["APP_ENV"] == "production"
     assert environment["DEPLOYMENT_TARGET"] == "production"
-    assert "WEBAUTHN_RP_ID" not in environment
-    assert "WEBAUTHN_RP_ORIGIN" not in environment
     assert environment["PASSWORD_RESET_BASE_URL"] == "https://sitbank.pp.ua"
     assert environment["PASSWORD_RESET_EMAIL_BACKEND"] == "smtp"
     assert environment["PASSWORD_RESET_EMAIL_FROM"] == DEPLOYMENT_VALUES["PROD_PASSWORD_RESET_EMAIL_FROM"]
     assert environment["PAYEE_COOLDOWN_SECONDS"] == "43200"
-    assert environment["ROOT_ADMIN_EMAILS"] == ROOT_ADMIN_EMAILS_VALUE
+    assert "ROOT_ADMIN_EMAILS" not in environment
     assert environment["SMTP_HOST"] == DEPLOYMENT_VALUES["PROD_SMTP_HOST"]
     assert environment["SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06"
     assert environment["ADMIN_SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06-admin"
     assert environment["ADMIN_SESSION_KEY_PREFIX"] == "admin-session:"
     assert environment["ADMIN_RATELIMIT_KEY_PREFIX"] == "ospbank:admin:ratelimit:"
     assert environment["MFA_KEK_ACTIVE_ID"] == "2026-06-mfa"
+    assert environment["TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID"] == "2026-07-ledger"
     assert environment["COMMON_PASSWORDS_PATH"] == "/run/config/common-passwords.txt"
     assert environment["SECURITY_ALERT_STATE_PATH"] == "/run/state/security-alert-state.json"
     assert environment["SECURITY_AUDIT_ANCHOR_PATH"] == "/var/lib/sitbank/security-audit.anchor"
@@ -727,6 +778,9 @@ def test_container_bundle_separates_secrets_from_non_secret_environment(monkeypa
     assert secrets["admin_secret_key"] == DEPLOYMENT_VALUES["PROD_ADMIN_SECRET_KEY"]
     assert secrets["database_migration_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_MIGRATION_URL"]
     assert secrets["mfa_kek_keys_json"] == DEPLOYMENT_VALUES["PROD_MFA_KEK_KEYS_JSON"]
+    assert "TRANSACTION_LEDGER_HMAC_KEYS_JSON" not in SECRET_INPUTS
+    assert "transaction_ledger_hmac_keys_json" not in secrets
+    assert secrets["root_admin_emails"] == ROOT_ADMIN_EMAILS_VALUE
     assert secrets["security_audit_hmac_key"] == DEPLOYMENT_VALUES["PROD_SECURITY_AUDIT_HMAC_KEY"]
     assert secrets["smtp_username"] == DEPLOYMENT_VALUES["PROD_SMTP_USERNAME"]
     assert secrets["smtp_password"] == DEPLOYMENT_VALUES["PROD_SMTP_PASSWORD"]
@@ -755,19 +809,19 @@ def test_container_bundle_accepts_staging_prefix(monkeypatch):
         == "sitbank.cloudflareaccess.com"
     )
     assert environment["STAGING_CLOUDFLARE_ACCESS_JWKS_CACHE_TTL_SECONDS"] == "300"
-    assert "WEBAUTHN_RP_ID" not in environment
-    assert "WEBAUTHN_RP_ORIGIN" not in environment
     assert environment["PASSWORD_RESET_BASE_URL"] == "https://staging.sitbank.example"
     assert environment["PAYEE_COOLDOWN_SECONDS"] == "43200"
-    assert environment["ROOT_ADMIN_EMAILS"] == ROOT_ADMIN_EMAILS_VALUE
+    assert "ROOT_ADMIN_EMAILS" not in environment
     assert environment["SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06"
     assert environment["ADMIN_SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06-admin"
     assert environment["MFA_KEK_ACTIVE_ID"] == "2026-06-mfa"
+    assert environment["TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID"] == "2026-07-ledger"
     assert environment["SECURITY_AUDIT_ANCHOR_PATH"] == "/run/state/security-audit.anchor"
     assert secrets["secret_key"] == DEPLOYMENT_VALUES["PROD_SECRET_KEY"]
     assert secrets["database_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_URL"]
     assert secrets["session_lookup_hmac_key"] == DEPLOYMENT_VALUES["PROD_SESSION_LOOKUP_HMAC_KEY"]
     assert secrets["database_migration_url"] == DEPLOYMENT_VALUES["PROD_DATABASE_MIGRATION_URL"]
+    assert secrets["root_admin_emails"] == STAGING_ROOT_ADMIN_EMAILS_VALUE
     assert secrets["security_audit_hmac_key"] == DEPLOYMENT_VALUES["PROD_SECURITY_AUDIT_HMAC_KEY"]
 
 
@@ -809,21 +863,16 @@ def test_staging_bundle_rejects_invalid_cloudflare_access_config(
     [
         ("", "STAGING_ROOT_ADMIN_EMAILS"),
         (
-            "root1@sit.singaporetech.edu.sg,root2@sit.singaporetech.edu.sg",
-            "exactly 7 unique",
+            "root1@sit.singaporetech.edu.sg",
+            "exactly 2 unique",
         ),
         (
-            ",".join(["root1@sit.singaporetech.edu.sg"] * 7),
-            "exactly 7 unique",
+            ",".join(["root1@sit.singaporetech.edu.sg"] * 2),
+            "exactly 2 unique",
         ),
         (
             "root1@example.com,"
-            "root2@sit.singaporetech.edu.sg,"
-            "root3@sit.singaporetech.edu.sg,"
-            "root4@sit.singaporetech.edu.sg,"
-            "root5@sit.singaporetech.edu.sg,"
-            "root6@sit.singaporetech.edu.sg,"
-            "root7@sit.singaporetech.edu.sg",
+            "root2@sit.singaporetech.edu.sg",
             "SIT workplace",
         ),
     ],
@@ -844,7 +893,7 @@ def test_staging_bundle_requires_valid_root_admin_allowlist(
         monkeypatch.delenv("STAGING_ROOT_ADMIN_EMAILS")
 
     with pytest.raises(RuntimeError, match=message):
-        build_container_environment("STAGING")
+        build_container_bundle("STAGING")
 
 
 def test_deployment_profiles_keep_production_and_staging_isolated(monkeypatch):
@@ -958,6 +1007,9 @@ def test_container_bundle_builds_two_key_rotation_ring(monkeypatch):
 def test_runtime_secret_inventory_matches_config_and_renderer():
     assert SECRET_INPUTS == PRODUCTION_SECRET_INPUTS
     assert NON_SECRET_DEFAULTS == CONTRACT_NON_SECRET_DEFAULTS
+    assert "TRANSACTION_LEDGER_HMAC_KEYS_JSON" in CONFIG_SECRET_INPUTS
+    assert "TRANSACTION_LEDGER_HMAC_KEYS_JSON" not in DEPLOYMENT_SECRET_INPUTS
+    assert "TRANSACTION_LEDGER_HMAC_KEYS_JSON" not in PRODUCTION_SECRET_INPUTS
     _assert_sets_equal(
         _config_secret_inputs(),
         set(CONFIG_SECRET_INPUTS),
@@ -989,6 +1041,7 @@ def test_compose_secret_mounts_match_runtime_contract():
         "SECURITY_ALERT_WEBHOOK_URL_FILE": "/run/secrets/security_alert_webhook_url",
         "SMTP_USERNAME_FILE": "/run/secrets/smtp_username",
         "SMTP_PASSWORD_FILE": "/run/secrets/smtp_password",
+        "TURNSTILE_SECRET_KEY_FILE": "/run/secrets/turnstile_secret_key",
     }
     expected_admin_secrets = {
         **{name: name for name in ADMIN_SECRET_FILES},
@@ -996,6 +1049,7 @@ def test_compose_secret_mounts_match_runtime_contract():
         "security_alert_webhook_url": "security_alert_webhook_url",
         "smtp_username": "smtp_username",
         "smtp_password": "smtp_password",
+        "turnstile_secret_key": "turnstile_secret_key",
     }
     for path, secret_root, base_extra_secrets in (
         (
@@ -1073,7 +1127,10 @@ def test_smoke_fixture_and_deployment_wrapper_match_runtime_contract():
     assert "--env DATABASE_MIGRATION_URL_FILE=/run/secrets/database_migration_url" in smoke_test
     assert "--env PAYEE_COOLDOWN_SECONDS=43200" in smoke_test
     assert 'readonly root_admin_emails="chief1@sit.singaporetech.edu.sg' in smoke_test
-    assert '--env "ROOT_ADMIN_EMAILS=${root_admin_emails}"' in smoke_test
+    assert "chief4@sit.singaporetech.edu.sg" not in smoke_test
+    assert "chief5@sit.singaporetech.edu.sg" not in smoke_test
+    assert "--env ROOT_ADMIN_EMAILS_FILE=/run/secrets/root_admin_emails" in smoke_test
+    assert '--env "ROOT_ADMIN_EMAILS=${root_admin_emails}"' not in smoke_test
     assert "--env SECURITY_AUDIT_ANCHOR_PATH=/run/state/security-audit.anchor" in smoke_test
     assert '--tmpfs "/run/state:rw,noexec,nosuid,nodev,size=16m,uid=10001,gid=10001,mode=0750"' in smoke_test
     assert ':/run/secrets/database_migration_url:ro' not in smoke_test
@@ -1114,6 +1171,8 @@ def test_smoke_fixture_and_deployment_wrapper_match_runtime_contract():
     )
     for staging_env in STAGING_CLOUDFLARE_ACCESS_RUNTIME_ENVIRONMENT:
         assert staging_env in deploy_script
+    assert "ROOT_ADMIN_EMAILS" not in _extract_bash_array(deploy_script, "allowed_environment")
+    assert "root_admin_emails" in _extract_bash_array(deploy_script, "required_secrets")
 
 
 def test_local_ci_command_documents_required_local_checks():
@@ -1190,6 +1249,7 @@ def test_environment_only_bundle_does_not_export_long_lived_secrets(
 
     assert environment["SESSION_HMAC_ACTIVE_KEY_ID"] == "2026-06"
     assert environment["MFA_KEK_ACTIVE_ID"] == "2026-06-mfa"
+    assert "ROOT_ADMIN_EMAILS" not in environment
     assert (output / "container.env").is_file()
     assert (output / "deployment.env").is_file()
     assert not (output / "secrets").exists()
@@ -1227,9 +1287,7 @@ def test_environment_only_bundle_accepts_staging_prefix(monkeypatch, tmp_path):
     deployment = (output / "deployment.env").read_text(encoding="utf-8")
     assert "ADMIN_SESSION_HMAC_ACTIVE_KEY_ID='2026-06-admin'" in environment
     assert "MFA_KEK_ACTIVE_ID='2026-06-mfa'" in environment
-    assert f"ROOT_ADMIN_EMAILS='{ROOT_ADMIN_EMAILS_VALUE}'" in environment
-    assert "WEBAUTHN_RP_ID" not in environment
-    assert "WEBAUTHN_RP_ORIGIN" not in environment
+    assert "ROOT_ADMIN_EMAILS=" not in environment
     assert "APP_BIND_PORT='5001'" in deployment
     assert "COMPOSE_PROJECT_NAME='sitbank-staging'" in deployment
     assert "CONFIG_ROOT='/etc/sitbank-staging'" in deployment
@@ -1247,7 +1305,7 @@ def test_container_bundle_writer_quotes_dollar_values_and_separates_files(
 
     environment = (output / "container.env").read_text(encoding="utf-8")
     assert "MFA_ISSUER_NAME='SITBank'" in environment
-    assert f"ROOT_ADMIN_EMAILS='{ROOT_ADMIN_EMAILS_VALUE}'" in environment
+    assert "ROOT_ADMIN_EMAILS=" not in environment
     assert "PROD_SECRET_KEY" not in environment
     assert (output / "secrets" / "secret_key").read_text(encoding="utf-8") == (
         DEPLOYMENT_VALUES["PROD_SECRET_KEY"]
@@ -1256,9 +1314,12 @@ def test_container_bundle_writer_quotes_dollar_values_and_separates_files(
     assert (
         output / "secrets" / "turnstile_secret_key"
     ).read_text(encoding="utf-8") == DEPLOYMENT_VALUES["PROD_TURNSTILE_SECRET_KEY"]
+    assert (output / "secrets" / "root_admin_emails").read_text(encoding="utf-8") == (
+        ROOT_ADMIN_EMAILS_VALUE
+    )
 
 
-def test_turnstile_renderer_maps_public_flags_and_rejects_unsafe_admin_rollout(
+def test_turnstile_renderer_maps_all_required_public_auth_flags(
     monkeypatch,
 ):
     _set_deployment_values(monkeypatch)
@@ -1267,30 +1328,26 @@ def test_turnstile_renderer_maps_public_flags_and_rejects_unsafe_admin_rollout(
 
     assert environment["TURNSTILE_ENABLED"] == "true"
     assert environment["TURNSTILE_CUSTOMER_LOGIN_ENABLED"] == "true"
-    assert environment["TURNSTILE_ADMIN_LOGIN_ENABLED"] == "false"
-    assert environment["TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED"] == "false"
+    assert environment["TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED"] == "true"
+    assert environment["TURNSTILE_ADMIN_LOGIN_ENABLED"] == "true"
+    assert environment["TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED"] == "true"
+    assert environment["TURNSTILE_FAIL_CLOSED_IN_PRODUCTION"] == "true"
     assert environment["TURNSTILE_VERIFY_URL"] == (
         "https://challenges.cloudflare.com/turnstile/v0/siteverify"
     )
 
-    monkeypatch.setenv("PROD_TURNSTILE_ADMIN_LOGIN_ENABLED", "true")
-    with pytest.raises(RuntimeError, match="must remain false"):
+    monkeypatch.setenv("PROD_TURNSTILE_ADMIN_LOGIN_ENABLED", "false")
+    with pytest.raises(RuntimeError, match="must be true for production-like"):
         build_container_environment()
 
 
-def test_turnstile_renderer_fails_when_enabled_without_customer_route(
+def test_turnstile_renderer_fails_when_any_required_route_is_disabled(
     monkeypatch,
 ):
     _set_deployment_values(monkeypatch)
-    for name in (
-        "PROD_TURNSTILE_CUSTOMER_LOGIN_ENABLED",
-        "PROD_TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED",
-        "PROD_TURNSTILE_CUSTOMER_REGISTER_ENABLED",
-        "PROD_TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED",
-    ):
-        monkeypatch.setenv(name, "false")
+    monkeypatch.setenv("PROD_TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED", "false")
 
-    with pytest.raises(RuntimeError, match="requires at least one customer route flag"):
+    with pytest.raises(RuntimeError, match="must be true for production-like"):
         build_container_environment()
 
 
@@ -1303,7 +1360,7 @@ def test_turnstile_renderer_rejects_invalid_booleans_and_disabled_route_flags(
         build_container_environment()
 
     monkeypatch.setenv("PROD_TURNSTILE_ENABLED", "false")
-    with pytest.raises(RuntimeError, match="route flags require"):
+    with pytest.raises(RuntimeError, match="must be true for production-like"):
         build_container_environment()
 
 
@@ -1562,6 +1619,19 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "apply-runtime-db-privileges" in smoke_test
     assert "verify-runtime-db-privileges" in smoke_test
     assert "python -m flask --app admin_wsgi:app production-check" in smoke_test
+    for turnstile_setting in (
+        "TURNSTILE_ENABLED=true",
+        "TURNSTILE_SITE_KEY=1x00000000000000000000AA",
+        "TURNSTILE_CUSTOMER_LOGIN_ENABLED=true",
+        "TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED=true",
+        "TURNSTILE_CUSTOMER_REGISTER_ENABLED=true",
+        "TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED=true",
+        "TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED=true",
+        "TURNSTILE_ADMIN_LOGIN_ENABLED=true",
+        "TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED=true",
+        "TURNSTILE_FAIL_CLOSED_IN_PRODUCTION=true",
+    ):
+        assert turnstile_setting in smoke_test
     assert "admin_wsgi:app" in smoke_test
     assert "SITBank admin application did not become ready" in smoke_test
     assert smoke_test.index("db upgrade") < smoke_test.index("apply-runtime-db-privileges")
@@ -1733,6 +1803,18 @@ def test_dockerfile_and_compose_enforce_hardened_runtime():
     assert "apply_admin_runtime_db_privileges" in deploy_script
     assert "verify-runtime-db-privileges" in deploy_script
     assert "validate_production_admin_isolation" in deploy_script
+    assert "validate_transaction_ledger_hmac_secret" in deploy_script
+    ledger_validator = re.search(
+        r"validate_transaction_ledger_hmac_secret\(\) \{(.*?)\n\}",
+        deploy_script,
+        flags=re.DOTALL,
+    )
+    assert ledger_validator is not None
+    assert "TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID" in ledger_validator.group(1)
+    assert "base64.b64decode" in ledger_validator.group(1)
+    assert "len(decoded_key) != 32" in ledger_validator.group(1)
+    assert "active key id is not present in the host keyring" in ledger_validator.group(1)
+    assert "print(" not in ledger_validator.group(1)
     assert "ADMIN_APP_BIND_PORT='5002'" in deploy_script
     assert "ADMIN_PUBLIC_HOST" not in deploy_script
     assert "Admin runtime database URL is required for production" in deploy_script
@@ -1848,11 +1930,48 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     }
     assert workflow["permissions"] == {}
     assert workflow["jobs"]["workflow-security"]["permissions"]["contents"] == "read"
-    assert workflow["jobs"]["publish"]["permissions"]["packages"] == "write"
-    assert "id-token" not in workflow["jobs"]["publish"]["permissions"]
-    assert "attestations" not in workflow["jobs"]["publish"]["permissions"]
+    assert workflow["jobs"]["publish"]["permissions"] == {
+        "contents": "read",
+        "id-token": "write",
+        "packages": "write",
+        "attestations": "write",
+        "artifact-metadata": "write",
+    }
+    assert set(workflow["jobs"]["publish"]["needs"]) == {
+        "test",
+        "playwright-e2e",
+        "sonarqube",
+        "workflow-security",
+        "deployment-preflight",
+        "resolve-source",
+    }
+    pull_request_job_names = (
+        "resolve-source",
+        "workflow-security",
+        "dependency-review",
+        "test",
+        "playwright-e2e",
+        "sonarqube",
+        "sonarqube-comment",
+        "image-test",
+    )
+    for job_name in pull_request_job_names:
+        job = workflow["jobs"][job_name]
+        permissions = job.get("permissions", {})
+        for permission in (
+            "id-token",
+            "packages",
+            "attestations",
+            "artifact-metadata",
+        ):
+            assert permissions.get(permission) != "write"
+        for step in job.get("steps", ()):
+            assert not str(step.get("uses", "")).startswith("actions/attest@")
+            assert step.get("with", {}).get("push") is not True
+            assert "cosign sign" not in step.get("run", "")
     assert workflow["jobs"]["release-verify"]["permissions"]["id-token"] == "write"
     assert workflow["jobs"]["release-verify"]["permissions"]["packages"] == "write"
+    assert workflow["jobs"]["release-verify"]["permissions"]["attestations"] == "read"
     publish_condition = workflow["jobs"]["publish"]["if"]
     release_verify_condition = workflow["jobs"]["release-verify"]["if"]
     for condition in (publish_condition, release_verify_condition):
@@ -2098,7 +2217,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         assert job["environment"]["name"] == environment_name
         join = steps[join_index]
         assert join["uses"] == (
-            "tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8"
+            "tailscale/github-action@780049a30b6ff5c378a9e7b389d15ece7a204888"
         )
         assert join["with"] == {
             "oauth-client-id": "${{ secrets.TS_OAUTH_CLIENT_ID }}",
@@ -2172,7 +2291,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     )
     assert (
         staging_deploy_env["STAGING_ROOT_ADMIN_EMAILS"]
-        == "${{ vars.ROOT_ADMIN_EMAILS }}"
+        == "${{ secrets.STAGING_ROOT_ADMIN_EMAILS }}"
     )
     assert staging_deploy_env["STAGING_SMTP_HOST"] == "${{ vars.STAGING_SMTP_HOST }}"
     assert (
@@ -2201,9 +2320,17 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     )
     assert (
         production_deploy_env["PROD_ROOT_ADMIN_EMAILS"]
-        == "${{ vars.ROOT_ADMIN_EMAILS }}"
+        == "${{ secrets.PROD_ROOT_ADMIN_EMAILS }}"
     )
     assert production_deploy_env["PROD_SMTP_HOST"] == "${{ vars.PROD_SMTP_HOST }}"
+    workflow_text = Path(".github/workflows/ci-deploy.yml").read_text(encoding="utf-8")
+    assert "vars.ROOT_ADMIN_EMAILS" not in workflow_text
+    assert "len(emails) != 3 or len(set(emails)) != 3" in workflow_text
+    assert "len(emails) != 5 or len(set(emails)) != 5" not in workflow_text
+    assert "PROD_ROOT_ADMIN_EMAILS must contain exactly 3 unique workplace email addresses" in workflow_text
+    assert "PROD_ROOT_ADMIN_EMAILS must contain exactly 5 unique workplace email addresses" not in workflow_text
+    assert "root-admin-emails-staging-${RELEASE_SHA}.secret" in workflow_text
+    assert "root-admin-emails-${RELEASE_SHA}.secret" in workflow_text
     for job_name, verify_step_name, required_names in (
         (
             "deploy-staging",
@@ -2236,6 +2363,8 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
         assert required_names <= set(_extract_bash_array(verify_step["run"], "required"))
     assert workflow["jobs"]["publish"]["needs"] == [
         "test",
+        "playwright-e2e",
+        "sonarqube",
         "workflow-security",
         "deployment-preflight",
         "resolve-source",
@@ -2302,6 +2431,59 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "secrets.EC2_" not in workflow_text
     assert "provenance: mode=max" in workflow_text
     assert "sbom: true" in workflow_text
+    attestation_step = next(
+        step
+        for step in workflow["jobs"]["publish"]["steps"]
+        if step["name"] == "Attest the exact published image digest"
+    )
+    assert (
+        attestation_step["uses"]
+        == "actions/attest@a1948c3f048ba23858d222213b7c278aabede763"
+    )
+    assert attestation_step["with"] == {
+        "subject-name": "${{ steps.image.outputs.repository }}",
+        "subject-digest": "${{ steps.push.outputs.digest }}",
+        "push-to-registry": True,
+        "show-summary": False,
+    }
+    assert "gh attestation verify \"oci://${IMAGE}\"" in workflow_text
+    assert "--repo \"${GITHUB_REPOSITORY}\"" in workflow_text
+    assert (
+        "--signer-workflow "
+        "\"github.com/${GITHUB_REPOSITORY}/.github/workflows/ci-deploy.yml\""
+    ) in workflow_text
+    assert "--source-ref \"refs/heads/main\"" in workflow_text
+    assert "--source-digest \"${RELEASE_SHA}\"" in workflow_text
+    attestation_command = next(
+        step["run"]
+        for step in workflow["jobs"]["release-verify"]["steps"]
+        if step["name"] == "Verify signed SLSA provenance for the exact digest"
+    )
+    assert (
+        '--signer-workflow '
+        '"github.com/${GITHUB_REPOSITORY}/.github/workflows/ci-deploy.yml"'
+        in attestation_command
+    )
+    assert '--signer-workflow "https://' not in attestation_command
+    assert "--repo \"${GITHUB_REPOSITORY}\"" in attestation_command
+    assert "--source-ref \"refs/heads/main\"" in attestation_command
+    assert "--source-digest \"${RELEASE_SHA}\"" in attestation_command
+    assert (
+        '--cert-oidc-issuer "https://token.actions.githubusercontent.com"'
+        in attestation_command
+    )
+    assert "--deny-self-hosted-runners" in attestation_command
+    assert "--no-public-good" not in attestation_command
+    assert "--bundle-from-oci" not in attestation_command
+    assert "--cert-identity" not in attestation_command
+    release_steps = [
+        step["name"] for step in workflow["jobs"]["release-verify"]["steps"]
+    ]
+    assert release_steps.index(
+        "Verify signed SLSA provenance for the exact digest"
+    ) < release_steps.index(
+        "Validate production and staging Compose models for the exact digest"
+    )
     assert "ignore-unfixed: false" in workflow_text
     assert "ignore-unfixed: true" in workflow_text
     assert workflow_text.count("Report all critical vulnerabilities") == 2
@@ -2310,8 +2492,8 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert workflow_text.count('exit-code: "1"') == 4
     assert workflow_text.count("trivyignores: .trivyignore") == 2
     assert workflow_text.count("TRIVY_IGNOREFILE: /dev/null") == 4
-    assert workflow_text.count("version: v0.71.2") == 6
-    assert "version: v0.71.0" not in workflow_text
+    assert workflow_text.count("version: v0.72.0") == 6
+    assert "version: v0.71.2" not in workflow_text
     assert "pull: ${{ github.event_name == 'schedule' }}" in workflow_text
     assert "no-cache: ${{ github.event_name == 'schedule' }}" in workflow_text
     assert "cosign sign --yes" in workflow_text
@@ -2475,7 +2657,7 @@ def test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest():
     assert "PROD_DEPLOY_ENABLED = true" in docs
     assert "Production never skips disabled, skipped, or failed staging." in docs
     assert "PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID" in docs
-    assert "environment-specific settings, including SMTP sender/host values" in docs
+    assert "environment-specific non-secret settings, including SMTP sender/host values" in docs
     assert "Feature-branch workflow and deployment scripts" in docs
     assert "adopt-existing" in docs
 
@@ -3029,7 +3211,6 @@ def test_live_tls_scan_has_cloudflare_access_staging_acceptance_policy():
         "missing or lower than A for Cloudflare Access staging",
         "TLS1: missing TLS 1.0 evidence",
         "TLS1_1: missing TLS 1.1 evidence",
-        "TLS1_2: missing or not offered",
         "TLS1_3: missing or not offered",
         "cert_trust: missing certificate hostname/trust evidence",
         "cert_chain_of_trust: missing certificate chain evidence",
@@ -3049,6 +3230,16 @@ def test_live_tls_scan_has_cloudflare_access_staging_acceptance_policy():
     assert 'id == "TLS1" or id == "TLS1_1"' in staging_policy
     assert 'id == "cert_trust"' in staging_policy
     assert 'id == "cert_chain_of_trust"' in staging_policy
+    staging_findings = workflow_text[
+        workflow_text.index('. as $items'):
+        workflow_text.index('else\n                  $items[]')
+    ]
+    assert 'protocol_offered_ok($items; "TLS1_2")' not in staging_findings
+    assert 'protocol_offered_ok($items; "TLS1_3")' in staging_findings
+    assert (
+        "TLS 1.3 is required; TLS 1.2 is optional; TLS 1.0 and TLS 1.1 "
+        "are prohibited."
+    ) in workflow_text
 
     production_policy = workflow_text[
         workflow_text.index("def production_public_violation:"):
@@ -3064,6 +3255,7 @@ def test_only_sitbank_container_deployment_units_are_active():
     assert Path("ops/backups/sitbank-backup-encrypted").exists()
     assert Path("ops/backups/sitbank-restore-preflight").exists()
     assert Path("ops/deploy/sitbank-container-bootstrap").exists()
+    assert Path("ops/deploy/sitbank-observability-bootstrap").exists()
     assert Path("ops/deploy/sitbank-container-deploy").exists()
     assert Path("ops/deploy/sitbank-container-runtime").exists()
     assert Path("ops/deploy/sitbank-database-cutover").exists()
@@ -3072,6 +3264,7 @@ def test_only_sitbank_container_deployment_units_are_active():
     assert Path("ops/systemd/sitbank-security-alerts.service").exists()
     assert Path("ops/systemd/sitbank-security-alerts.timer").exists()
     assert Path("ops/sudoers/sitbank-container-deploy").exists()
+    assert Path("ops/sudoers/sitbank-observability-bootstrap").exists()
 
 
 def test_linux_deployment_artifacts_are_forced_to_lf_and_reject_crlf():
@@ -3085,12 +3278,14 @@ def test_linux_deployment_artifacts_are_forced_to_lf_and_reject_crlf():
         Path("compose.staging.yml"),
         Path("ops/deploy/bootstrap-container-ec2"),
         Path("ops/deploy/sitbank-container-bootstrap"),
+        Path("ops/deploy/sitbank-observability-bootstrap"),
         Path("ops/deploy/sitbank-container-deploy"),
         Path("ops/deploy/sitbank-container-runtime"),
         Path("ops/deploy/sitbank-database-cutover"),
         Path("ops/deploy/verify-certbot-host-state"),
         Path("ops/deploy/verify-staging-edge-boundary"),
         Path("ops/deploy/verify-tailscale-admin-access"),
+        Path("ops/observability/verify-private-observability"),
         Path("ops/tailscale/install-tailscale"),
         Path("ops/tailscale/configure-admin-access"),
         Path("ops/tailscale/verify-admin-access"),
@@ -3103,6 +3298,7 @@ def test_linux_deployment_artifacts_are_forced_to_lf_and_reject_crlf():
         Path("ops/nginx/sitbank-staging.conf"),
         Path("ops/nginx/sitbank-staging-rate-limits.conf"),
         Path("ops/sudoers/sitbank-container-deploy"),
+        Path("ops/sudoers/sitbank-observability-bootstrap"),
         Path("ops/systemd/sitbank-container.service"),
         Path("ops/systemd/sitbank-staging-container.service"),
         Path("ops/systemd/sitbank-security-alerts.service"),
@@ -3119,6 +3315,7 @@ def test_linux_deployment_artifacts_are_forced_to_lf_and_reject_crlf():
     assert "ops/deploy/verify-certbot-host-state text eol=lf" in attributes
     assert "ops/deploy/verify-staging-edge-boundary text eol=lf" in attributes
     assert "ops/deploy/verify-tailscale-admin-access text eol=lf" in attributes
+    assert "ops/observability/* text eol=lf" in attributes
     assert "ops/tailscale/* text eol=lf" in attributes
     assert "ops/backups/* text eol=lf" in attributes
     assert "ops/sudoers/* text eol=lf" in attributes
@@ -3127,6 +3324,338 @@ def test_linux_deployment_artifacts_are_forced_to_lf_and_reject_crlf():
 
     assert "Refusing to install CRLF-formatted Linux file" in bootstrap
     assert "grep -q $'\\r$'" in bootstrap
+
+
+def test_private_observability_workflow_is_manual_protected_and_sanitized():
+    workflow_path = Path(".github/workflows/observability-private-verify.yml")
+    workflow_text = workflow_path.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(workflow_text)
+    triggers = workflow[True]
+    verify = workflow["jobs"]["verify"]
+
+    assert workflow["name"] == "Verify private Grafana Loki observability"
+    assert set(triggers) == {"workflow_dispatch"}
+    assert "pull_request" not in workflow_text
+    assert "pull_request_target" not in workflow_text
+    assert workflow["permissions"] == {}
+    assert workflow["concurrency"] == {
+        "group": "private-observability-verification-${{ inputs.target_environment }}",
+        "cancel-in-progress": False,
+    }
+    assert triggers["workflow_dispatch"]["inputs"]["target_environment"]["options"] == [
+        "staging",
+        "production",
+    ]
+    assert verify["if"] == "github.ref == 'refs/heads/main'"
+    assert verify["runs-on"] == "ubuntu-24.04"
+    assert verify["permissions"] == {"contents": "read"}
+    assert verify["environment"]["name"] == (
+        "observability-${{ inputs.target_environment }}"
+    )
+    assert verify["env"] == {
+        "OBSERVABILITY_TARGET_ENV": "${{ inputs.target_environment }}",
+        "GRAFANA_PRIVATE_URL": "${{ vars.GRAFANA_PRIVATE_URL }}",
+        "OBSERVABILITY_PUBLIC_PROBE_URLS": (
+            "${{ vars.OBSERVABILITY_PUBLIC_PROBE_URLS }}"
+        ),
+        "GRAFANA_HEALTH_TOKEN": "${{ secrets.GRAFANA_HEALTH_TOKEN }}",
+    }
+    assert (
+        "GRAFANA_PRIVATE_URL must be the approved private https Tailscale "
+        "Grafana subpath URL"
+    ) in workflow_text
+    assert "https://admin-sitbank.tailca101b.ts.net/grafana/" in workflow_text
+    assert r"^https://admin-sitbank\.tailca101b\.ts\.net/grafana/?$" in workflow_text
+    assert "responded before the protected runner joined the tailnet" in workflow_text
+    assert "tag:github-ci-observability-verify" in workflow_text
+    assert "ops/observability/verify-private-observability" in workflow_text
+    assert "observability-evidence/private-observability.json" in workflow_text
+    assert "operator password" in workflow_text
+    assert "raw log" in workflow_text
+    assert "sudo tailscale logout" in workflow_text
+    assert "set -x" not in workflow_text
+    assert "printenv" not in workflow_text
+    assert "env |" not in workflow_text
+    assert "docker compose" not in workflow_text
+    assert "tailscale funnel" not in workflow_text
+    assert "tailscale serve" not in workflow_text
+
+    uses = _workflow_uses(workflow_text)
+    assert uses == [
+        "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+        "tailscale/github-action@780049a30b6ff5c378a9e7b389d15ece7a204888",
+        "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+    ]
+    _assert_pinned_actions(uses, context="Private observability workflow")
+
+    docs = "\n".join(
+        Path(path).read_text(encoding="utf-8")
+        for path in (
+            "docs/GITHUB_ACTIONS.md",
+            "docs/OPERATIONS.md",
+            "docs/runbooks/private-observability-grafana-loki.md",
+            "docs/security/assurance/operational-observability.md",
+        )
+    )
+    for required in (
+        "observability-staging",
+        "observability-production",
+        "GRAFANA_PRIVATE_URL",
+        "https://admin-sitbank.tailca101b.ts.net/grafana/",
+        "GRAFANA_HEALTH_TOKEN",
+        "tag:github-ci-observability-verify",
+        "least-privilege",
+        "explicit HTTP `200` status",
+        "anonymous API denial",
+        "direct private `/loki` and `/metrics` denial",
+        "public denial probes",
+        "not a pull-request",
+    ):
+        assert required in docs
+    assert "operator passwords" in docs
+    assert "browser sessions" in docs
+    assert "raw logs" in docs
+
+
+def test_observability_bootstrap_workflow_and_wrapper_are_trusted_and_restricted():
+    workflow_path = Path(
+        ".github/workflows/bootstrap-observability-ec2.yml"
+    )
+    workflow_text = workflow_path.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(workflow_text)
+    triggers = workflow[True]
+    job = workflow["jobs"]["bootstrap"]
+    steps = job["steps"]
+
+    assert workflow["name"] == "Bootstrap private observability on EC2"
+    assert set(triggers) == {"workflow_dispatch"}
+    assert triggers["workflow_dispatch"]["inputs"]["target_environment"][
+        "options"
+    ] == ["staging", "production"]
+    assert workflow["permissions"] == {}
+    assert job["if"] == "github.ref == 'refs/heads/main'"
+    assert job["permissions"] == {
+        "contents": "read",
+        "id-token": "write",
+    }
+    assert job["environment"]["name"] == (
+        "observability-${{ inputs.target_environment }}"
+    )
+    checkout = next(
+        step
+        for step in steps
+        if step["name"] == "Check out trusted main workflow commit"
+    )
+    assert checkout["with"]["ref"] == "${{ github.workflow_sha }}"
+    assert checkout["with"]["persist-credentials"] is False
+    tailnet_index = next(
+        index
+        for index, step in enumerate(steps)
+        if step["name"]
+        == "Join the restricted observability bootstrap tailnet"
+    )
+    remote_indexes = [
+        index
+        for index, step in enumerate(steps)
+        if re.search(r"\b(?:ssh|scp)\b", str(step.get("run", "")))
+    ]
+    assert remote_indexes
+    assert all(tailnet_index < index for index in remote_indexes)
+    configuration_step = next(
+        step
+        for step in steps
+        if step["name"] == "Validate protected observability bootstrap settings"
+    )
+    assert configuration_step["env"]["TS_OAUTH_CLIENT_ID"] == (
+        "${{ secrets.OBSERVABILITY_BOOTSTRAP_TS_OAUTH_CLIENT_ID }}"
+    )
+    assert configuration_step["env"]["TS_OAUTH_SECRET"] == (
+        "${{ secrets.OBSERVABILITY_BOOTSTRAP_TS_OAUTH_SECRET }}"
+    )
+    tailnet_step = steps[tailnet_index]
+    assert tailnet_step["with"]["oauth-client-id"] == (
+        "${{ secrets.OBSERVABILITY_BOOTSTRAP_TS_OAUTH_CLIENT_ID }}"
+    )
+    assert tailnet_step["with"]["oauth-secret"] == (
+        "${{ secrets.OBSERVABILITY_BOOTSTRAP_TS_OAUTH_SECRET }}"
+    )
+    assert "secrets.TS_OAUTH_CLIENT_ID" not in workflow_text
+    assert "secrets.TS_OAUTH_SECRET" not in workflow_text
+    assert "tag:github-ci-observability-bootstrap" in workflow_text
+    assert "StrictHostKeyChecking=yes" in workflow_text
+    assert "StrictHostKeyChecking=no" not in workflow_text
+    assert ".sitbank-observability-bootstrap-commit" in workflow_text
+    assert "cosign sign-blob --yes" in workflow_text
+    assert (
+        "sudo -n /usr/local/sbin/sitbank-observability-bootstrap "
+        "'${TARGET}' '${TRUSTED_SHA}'"
+    ) in workflow_text
+    assert "actions/upload-artifact" not in workflow_text
+    assert "pull_request_target" not in workflow_text
+    assert "\npush:" not in workflow_text
+    _assert_pinned_actions(
+        _workflow_uses(workflow_text),
+        context="Observability bootstrap workflow",
+    )
+
+    docs = "\n".join(
+        Path(path).read_text(encoding="utf-8")
+        for path in (
+            "docs/DEPLOYMENT.md",
+            "docs/GITHUB_ACTIONS.md",
+            "docs/runbooks/private-observability-grafana-loki.md",
+            "ops/tailscale/README.md",
+        )
+    )
+    for required in (
+        "OBSERVABILITY_BOOTSTRAP_TS_OAUTH_CLIENT_ID",
+        "OBSERVABILITY_BOOTSTRAP_TS_OAUTH_SECRET",
+        "tag:github-ci-observability-bootstrap",
+        "tag:sitbank-observability-ec2:22",
+        "tag:github-ci-observability-verify",
+        "tag:github-ci-admin-verify",
+        "sanitized evidence",
+    ):
+        assert required in docs
+
+    wrapper = Path(
+        "ops/deploy/sitbank-observability-bootstrap"
+    ).read_text(encoding="utf-8")
+    sudoers = Path(
+        "ops/sudoers/sitbank-observability-bootstrap"
+    ).read_text(encoding="utf-8")
+    installer = Path("ops/deploy/bootstrap-container-ec2").read_text(
+        encoding="utf-8"
+    )
+    for required in (
+        "TARGET TRUSTED_MAIN_SHA",
+        "bootstrap-observability-ec2.yml@refs/heads/main",
+        'GITHUB_REPOSITORY:-}" != "Koon-Kiat/SITBank"',
+        "cosign verify-blob",
+        ".sitbank-observability-bootstrap-commit",
+        "100 * 1024 * 1024",
+        "os.O_RDONLY | os.O_NOFOLLOW",
+        "shutil.copyfileobj",
+        "trusted_archive_path",
+        "tarfile.open",
+        "member.isfile() or member.isdir()",
+        "/var/lock/sitbank-container-bootstrap.lock",
+        "/var/lock/sitbank-container-deploy.lock",
+        "/var/lock/sitbank-staging-container-deploy.lock",
+        "PROMETHEUS_IMAGE",
+        "NODE_EXPORTER_IMAGE",
+        "OBSERVABILITY_ENVIRONMENT",
+        "root:root:600",
+        "docker port sitbank-grafana 3000/tcp",
+        "docker port sitbank-loki 3100/tcp",
+        "sitbank-prometheus sitbank-node-exporter sitbank-alloy",
+        "docker network inspect sitbank-observability",
+        "Tailscale Funnel must remain disabled",
+        "environment=${target} result=success revision=${trusted_sha}",
+    ):
+        assert required in wrapper
+    assert "set -x" not in wrapper
+    assert "cat \"${OBS_ENV_FILE}\"" not in wrapper
+    assert sudoers.splitlines() == [
+        "sitbank-deploy ALL=(root) NOPASSWD: "
+        "/usr/local/sbin/sitbank-observability-bootstrap"
+    ]
+    assert "NOPASSWD: ALL" not in sudoers
+    assert "/bin/bash" not in sudoers
+    assert "sitbank-observability-bootstrap" in installer
+    assert "/etc/sudoers.d/sitbank-observability-bootstrap" in installer
+    assert (
+        "visudo -cf /etc/sudoers.d/sitbank-observability-bootstrap"
+        in installer
+    )
+    assert "bash \"${bootstrap_script}\"" not in installer
+
+
+def test_private_observability_static_policy_keeps_public_routes_closed():
+    nginx_combined = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in Path("ops/nginx").glob("*.conf")
+    )
+    public_runtime = "\n".join(
+        path.read_text(encoding="utf-8")
+        for root in (Path("app"),)
+        for path in [*root.rglob("*.py"), *root.rglob("*.html"), *root.rglob("*.js")]
+        if path.is_file()
+    )
+    ignored = Path(".gitignore").read_text(encoding="utf-8")
+
+    for forbidden in ("/grafana", "/loki", "/logs", "/metrics"):
+        assert f"location {forbidden}" not in nginx_combined.casefold()
+    assert not re.search(r"proxy_pass\s+http://127\.0\.0\.1:(3000|3100)", nginx_combined)
+    assert not re.search(r"proxy_pass\s+http://(?:grafana|loki)", nginx_combined.casefold())
+    assert "grafana" not in public_runtime.casefold()
+    assert "loki" not in public_runtime.casefold()
+    assert "<iframe" not in public_runtime.casefold()
+    for required in (
+        "observability-evidence/",
+        "private-observability*.json",
+        "grafana-*.json",
+        "loki-*.json",
+        "storage-state*.json",
+        "*.har",
+    ):
+        assert required in ignored
+
+
+def test_staging_edge_verifier_accepts_connection_rejection_as_fail_closed(
+    tmp_path,
+    monkeypatch,
+):
+    if shutil.which("bash") is None:
+        pytest.skip("bash is not installed")
+    bash_probe = subprocess.run(
+        ["bash", "-lc", "printf ok"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if bash_probe.returncode != 0 or bash_probe.stdout != "ok":
+        pytest.skip("bash is not usable")
+
+    fake_curl = tmp_path / "curl"
+    fake_curl.write_text(
+        """#!/usr/bin/env bash
+set -Eeuo pipefail
+direct=0
+for arg in "$@"; do
+    if [[ "${arg}" == "--resolve" ]]; then
+        direct=1
+    fi
+done
+if [[ "${direct}" -eq 1 ]]; then
+    exit 7
+fi
+printf '%s\n' \
+    'HTTP/2 302' \
+    'location: https://small-boat-a77f.cloudflareaccess.com/cdn-cgi/access/login' \
+    'server: cloudflare' \
+    'cf-ray: fake-ray' \
+    ''
+""",
+        encoding="utf-8",
+        newline="\n",
+    )
+    fake_curl.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+
+    result = subprocess.run(
+        [
+            "bash",
+            "ops/deploy/verify-staging-edge-boundary",
+            "staging-sitbank.pp.ua",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "failed closed by rejecting the connection" in result.stdout
 
 
 def test_certbot_host_state_verifier_enforces_host_managed_tls():
@@ -3293,18 +3822,69 @@ def test_security_alert_scheduler_units_are_committed_and_safe():
         assert required in docs
 
 
+def test_anchor_refresh_and_retention_review_schedulers_are_fail_closed():
+    runtime = Path("ops/deploy/sitbank-container-runtime").read_text(
+        encoding="utf-8"
+    )
+    bootstrap = Path("ops/deploy/bootstrap-container-ec2").read_text(
+        encoding="utf-8"
+    )
+    anchor_service = Path(
+        "ops/systemd/sitbank-audit-anchor-refresh@.service"
+    ).read_text(encoding="utf-8")
+    anchor_timer = Path(
+        "ops/systemd/sitbank-audit-anchor-refresh@.timer"
+    ).read_text(encoding="utf-8")
+    retention_service = Path(
+        "ops/systemd/sitbank-retention-review@.service"
+    ).read_text(encoding="utf-8")
+    retention_timer = Path(
+        "ops/systemd/sitbank-retention-review@.timer"
+    ).read_text(encoding="utf-8")
+
+    assert (
+        "ExecStart=/usr/local/sbin/sitbank-container-runtime %i "
+        "refresh-audit-log-anchor"
+    ) in anchor_service
+    assert "OnCalendar=*-*-* 02:15:00" in anchor_timer
+    assert "Persistent=true" in anchor_timer
+    assert (
+        "ExecStart=/usr/local/sbin/sitbank-container-runtime %i "
+        "retention-cleanup-report"
+    ) in retention_service
+    assert "OnCalendar=Mon *-*-* 03:15:00" in retention_timer
+    assert "--confirm" not in retention_service
+    assert "security run-retention-cleanup" in runtime
+    assert "rebaseline-security-alert-state" in runtime
+    assert '"$@"' in runtime
+    assert (
+        'systemctl enable --now "sitbank-audit-anchor-refresh@${target}.timer"'
+        in bootstrap
+    )
+    assert (
+        'systemctl enable --now "sitbank-retention-review@${target}.timer"'
+        in bootstrap
+    )
+    for service in (anchor_service, retention_service):
+        assert "NoNewPrivileges=true" in service
+        assert "ProtectSystem=strict" in service
+        assert "ReadWritePaths=/run/docker.sock" in service
+
+
 def test_nginx_default_server_is_shared_for_same_host_production_and_staging():
     default_nginx = Path("ops/nginx/sitbank-default.conf").read_text(encoding="utf-8")
     production_nginx = Path("ops/nginx/sitbank-production.conf").read_text(encoding="utf-8")
     staging_nginx = Path("ops/nginx/sitbank-staging.conf").read_text(encoding="utf-8")
     combined = "\n".join([default_nginx, production_nginx, staging_nginx])
 
-    assert combined.count("listen 80 default_server;") == 1
-    assert combined.count("listen [::]:80 default_server;") == 1
-    assert combined.count("listen 443 ssl http2 default_server;") == 1
-    assert combined.count("listen [::]:443 ssl http2 default_server;") == 1
+    bind = "__SITBANK_PUBLIC_BIND_ADDRESS__"
+    assert combined.count(f"listen {bind}:80 default_server;") == 1
+    assert combined.count(f"listen {bind}:443 ssl http2 default_server;") == 1
     assert "listen 80 default_server;" not in production_nginx
     assert "listen 80 default_server;" not in staging_nginx
+    assert "listen 443 ssl http2;" not in combined
+    assert "listen [::]:443" not in combined
+    assert "listen 0.0.0.0:443" not in combined
     assert (
         "server_name sitbank.pp.ua www.sitbank.pp.ua 18.188.152.24;"
         in combined
@@ -3312,6 +3892,31 @@ def test_nginx_default_server_is_shared_for_same_host_production_and_staging():
     assert "server_name www.sitbank.pp.ua;" in combined
     assert "server_name sitbank.pp.ua;" in combined
     assert "server_name staging-sitbank.pp.ua;" in combined
+
+
+def test_bootstrap_default_route_source_parser_is_valid_awk():
+    bootstrap = Path("ops/deploy/bootstrap-container-ec2").read_text(
+        encoding="utf-8"
+    )
+    parser = re.search(
+        r"ip -4 route get 1\.1\.1\.1 \\\n\s+\| awk '([^']+)'",
+        bootstrap,
+    )
+    assert parser
+
+    try:
+        result = subprocess.run(
+            ["awk", parser.group(1)],
+            input="1.1.1.1 via 10.0.1.1 dev eth0 src 10.0.1.25 uid 0\n",
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        pytest.skip("awk is not installed")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "10.0.1.25\n"
 
 
 def test_nginx_tls_policy_pins_strong_suites_curves_and_session_hardening():
@@ -3398,18 +4003,16 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
 
     assert Path("ops/nginx/sitbank-default.conf").exists()
     assert Path("ops/nginx/sitbank-staging-rate-limits.conf").exists()
-    assert "listen 80 default_server;" in default_nginx
-    assert "listen [::]:80 default_server;" in default_nginx
-    assert "listen 443 ssl http2 default_server;" in default_nginx
-    assert "listen [::]:443 ssl http2 default_server;" in default_nginx
+    assert "listen __SITBANK_PUBLIC_BIND_ADDRESS__:80 default_server;" in default_nginx
+    assert "listen __SITBANK_PUBLIC_BIND_ADDRESS__:443 ssl http2 default_server;" in default_nginx
     assert "server_name _;" in default_nginx
     assert "ssl_reject_handshake on;" in default_nginx
     assert "return 444;" in default_nginx
-    assert "listen 80;" in nginx
+    assert "listen __SITBANK_PUBLIC_BIND_ADDRESS__:80;" in nginx
     assert "listen 80 default_server;" not in nginx
     assert "listen 443 ssl http2 default_server;" not in nginx
     assert "server_name _;" not in nginx
-    assert "listen 443 ssl http2;" in nginx
+    assert "listen __SITBANK_PUBLIC_BIND_ADDRESS__:443 ssl http2;" in nginx
     assert "server_name staging-sitbank.pp.ua;" in nginx
     assert "duckdns.org" not in nginx
     assert "ssl_certificate /etc/letsencrypt/live/staging-sitbank.pp.ua/fullchain.pem;" in nginx
@@ -3429,6 +4032,10 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
         server_name="staging-sitbank.pp.ua",
     )
     assert "ssl_verify_client on;" in staging_https_prelocation
+    assert (
+        "include /etc/nginx/snippets/sitbank-cloudflare-real-ip.conf;"
+        in staging_https_prelocation
+    )
     assert not Path("ops/nginx/.htpasswd-sitbank-staging").exists()
     assert not re.search(
         r"^\S+:\$(?:apr1|2[aby]|5|6)\$",
@@ -3492,6 +4099,20 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     assert "limit_req_zone $binary_remote_addr zone=sitbank_staging_app:10m rate=10r/s;" in rate_limits
     assert "limit_req_status 429;" in nginx
     assert "limit_req_log_level warn;" in nginx
+    assert "error_page 429 = @sitbank_rate_limited;" in nginx
+    assert "location @sitbank_rate_limited {" in nginx
+    assert "Too many attempts. Please try again later." in nginx
+    assert 'href="/static/css/app.css"' in nginx
+    assert 'class="brand-name">SITBank' in nginx
+    assert 'class="panel narrow empty-state"' in nginx
+    assert "proxy_pass" not in _nginx_location_bodies(
+        nginx,
+        "@sitbank_rate_limited",
+    )[0]
+    auth_error_bodies = _nginx_location_bodies(nginx, "@sitbank_rate_limited_json")
+    assert len(auth_error_bodies) == 1
+    assert "default_type application/json;" in auth_error_bodies[0]
+    assert "proxy_pass" not in auth_error_bodies[0]
     assert "limit_req_status" not in rate_limits
     assert "limit_req_log_level" not in rate_limits
     for selector in ("= /login", "= /register", "= /mfa/verify", "^~ /auth/"):
@@ -3530,15 +4151,17 @@ def test_staging_nginx_enforces_https_auth_health_and_rate_limits():
     assert "EDGE_DEFAULTS_FILE=\"/etc/nginx/conf.d/sitbank-default.conf\"" in bootstrap
     assert "ops/nginx/sitbank-default.conf" in bootstrap
     assert "ops/nginx/sitbank-staging-rate-limits.conf" in bootstrap
+    assert "ip -4 route get 1.1.1.1" in bootstrap
     assert "sitbank-staging-rate-limits.$(date -u +%Y%m%dT%H%M%SZ).conf" in bootstrap
     assert '"nginx-sitbank-default"' in bootstrap
     assert '${backup_prefix}.$(date -u +%Y%m%dT%H%M%SZ).conf' in bootstrap
-    assert "nginx-sitbank-staging.$(date -u +%Y%m%dT%H%M%SZ).conf" in bootstrap
+    assert '"staging Nginx config"' in bootstrap
+    assert '"nginx-sitbank-staging"' in bootstrap
     assert "&& ! cmp -s \\" in bootstrap
     assert '"${repo_root}/ops/nginx/sitbank-staging.conf" \\' in bootstrap
     assert "refresh_enabled_sibling_site" in bootstrap
     assert "&& -e /etc/nginx/sites-enabled/sitbank" in bootstrap
-    assert '"${staging_site}"; then' in bootstrap
+    assert '"${staging_site}" \\' in bootstrap
     assert "if [[ ! -e /etc/nginx/sites-available/sitbank-staging" not in bootstrap
     staging_site_install = bootstrap.index('"${repo_root}/ops/nginx/sitbank-staging.conf"')
     assert staging_site_install < bootstrap.index("nginx -t", staging_site_install)
@@ -3558,6 +4181,9 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
         encoding="utf-8"
     )
     proxy_headers = Path("ops/nginx-proxy-headers.conf").read_text(encoding="utf-8")
+    cloudflare_real_ip = Path("ops/nginx/sitbank-cloudflare-real-ip.conf").read_text(
+        encoding="utf-8"
+    )
     bootstrap = Path("ops/deploy/bootstrap-container-ec2").read_text(
         encoding="utf-8"
     )
@@ -3572,21 +4198,19 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     assert Path("ops/nginx/sitbank-production.conf").exists()
     assert not Path("ops/nginx/admin-verification.html").exists()
     assert Path("ops/nginx/sitbank-production-rate-limits.conf").exists()
-    assert "listen 80 default_server;" in default_nginx
-    assert "listen [::]:80 default_server;" in default_nginx
-    assert "listen 443 ssl http2 default_server;" in default_nginx
-    assert "listen [::]:443 ssl http2 default_server;" in default_nginx
+    assert "listen __SITBANK_PUBLIC_BIND_ADDRESS__:80 default_server;" in default_nginx
+    assert "listen __SITBANK_PUBLIC_BIND_ADDRESS__:443 ssl http2 default_server;" in default_nginx
     assert "server_name _;" in default_nginx
     assert "ssl_reject_handshake on;" in default_nginx
     assert "return 444;" in default_nginx
-    assert "listen 80;" in nginx
+    assert "listen __SITBANK_PUBLIC_BIND_ADDRESS__:80;" in nginx
     assert "return 301 https://sitbank.pp.ua$request_uri;" in nginx
     assert "server_name sitbank.pp.ua www.sitbank.pp.ua 18.188.152.24;" in nginx
     assert "server_name www.sitbank.pp.ua;" in nginx
     assert "listen 80 default_server;" not in nginx
     assert "listen 443 ssl http2 default_server;" not in nginx
     assert "server_name _;" not in nginx
-    assert "listen 443 ssl http2;" in nginx
+    assert "listen __SITBANK_PUBLIC_BIND_ADDRESS__:443 ssl http2;" in nginx
     assert "server_name sitbank.pp.ua;" in nginx
     assert "www.sitbank.pp.ua" in nginx
     assert "ssl_certificate /etc/letsencrypt/live/sitbank.pp.ua/fullchain.pem;" in nginx
@@ -3673,7 +4297,6 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
         "limit_req_zone $binary_remote_addr zone=sitbank_prod_app:10m rate=20r/s;",
         "limit_req_zone $binary_remote_addr zone=sitbank_prod_auth:10m rate=5r/m;",
         "limit_req_zone $binary_remote_addr zone=sitbank_prod_register:10m rate=2r/m;",
-        "limit_req_zone $binary_remote_addr zone=sitbank_prod_challenge:10m rate=3r/m;",
         "limit_req_zone $binary_remote_addr zone=sitbank_prod_security:10m rate=10r/m;",
         "limit_req_zone $binary_remote_addr zone=sitbank_prod_admin:10m rate=2r/s;",
         "limit_req_zone $binary_remote_addr zone=sitbank_prod_admin_auth:10m rate=3r/m;",
@@ -3681,6 +4304,24 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
         assert zone in rate_limits
     assert "limit_req_status 429;" in nginx
     assert "limit_req_log_level warn;" in nginx
+    assert "error_page 429 = @sitbank_rate_limited;" in nginx
+    browser_error_bodies = _nginx_location_bodies(
+        customer_nginx,
+        "@sitbank_rate_limited",
+    )
+    assert len(browser_error_bodies) == 1
+    assert "Too many attempts. Please try again later." in browser_error_bodies[0]
+    assert 'href="/static/css/app.css"' in browser_error_bodies[0]
+    assert 'class="brand-name">SITBank' in browser_error_bodies[0]
+    assert 'class="panel narrow empty-state"' in browser_error_bodies[0]
+    assert "proxy_pass" not in browser_error_bodies[0]
+    api_error_bodies = _nginx_location_bodies(
+        customer_nginx,
+        "@sitbank_rate_limited_json",
+    )
+    assert len(api_error_bodies) == 1
+    assert "default_type application/json;" in api_error_bodies[0]
+    assert "proxy_pass" not in api_error_bodies[0]
     assert "limit_req_status" not in rate_limits
     assert "limit_req_log_level" not in rate_limits
 
@@ -3691,9 +4332,8 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
         "= /auth/mfa/verify": "sitbank_prod_auth",
         "= /register": "sitbank_prod_register",
         "= /auth/register": "sitbank_prod_register",
-        "~ ^/auth/webauthn/(?:register|authenticate|step-up)/(?:options|verify)$": "sitbank_prod_challenge",
-        "~ ^/(?:account|password|profile|security-keys|sessions)(?:/|$)": "sitbank_prod_security",
-        "~ ^/auth/(?:account|mfa|password|sessions|webauthn/credentials)(?:/|$)": "sitbank_prod_security",
+            "~ ^/(?:account|password|profile|sessions)(?:/|$)": "sitbank_prod_security",
+            "~ ^/auth/(?:account|mfa|password|sessions)(?:/|$)": "sitbank_prod_security",
         "/auth/": "sitbank_prod_auth",
     }
     for selector, zone in expected_location_limits.items():
@@ -3708,6 +4348,15 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
 
     assert "proxy_set_header X-Forwarded-For $remote_addr;" in proxy_headers
     assert "$proxy_add_x_forwarded_for" not in proxy_headers
+    assert (
+        "include /etc/nginx/snippets/sitbank-cloudflare-real-ip.conf;"
+        in customer_nginx
+    )
+    assert "real_ip_header CF-Connecting-IP;" in cloudflare_real_ip
+    assert "real_ip_recursive on;" in cloudflare_real_ip
+    assert cloudflare_real_ip.count("set_real_ip_from ") == 22
+    assert "set_real_ip_from 0.0.0.0/0;" not in cloudflare_real_ip
+    assert "set_real_ip_from ::/0;" not in cloudflare_real_ip
 
     assert 'PRODUCTION_PUBLIC_HOST="sitbank.pp.ua"' in bootstrap
     assert 'PRODUCTION_PUBLIC_WWW_HOST="www.sitbank.pp.ua"' in bootstrap
@@ -3717,7 +4366,9 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     assert "Issue the production Certbot certificate before rerunning bootstrap." in bootstrap
     assert "PRODUCTION_RATE_LIMITS_FILE=\"/etc/nginx/conf.d/sitbank-production-rate-limits.conf\"" in bootstrap
     assert "EDGE_DEFAULTS_FILE=\"/etc/nginx/conf.d/sitbank-default.conf\"" in bootstrap
+    assert "CLOUDFLARE_REAL_IP_FILE=\"/etc/nginx/snippets/sitbank-cloudflare-real-ip.conf\"" in bootstrap
     assert "ops/nginx/sitbank-default.conf" in bootstrap
+    assert "ops/nginx/sitbank-cloudflare-real-ip.conf" in bootstrap
     assert "ops/nginx/sitbank-production-rate-limits.conf" in bootstrap
     assert "ops/nginx/sitbank-production.conf" in bootstrap
     assert "ops/nginx/admin-verification.html" not in bootstrap
@@ -3726,7 +4377,8 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     assert "/var/lib/sitbank" in bootstrap
     assert "install -d -o sitbank-container -g 10001 -m 0750 /var/lib/sitbank" in deploy_script
     assert "Refusing to replace unsafe production Nginx rate-limit file" in bootstrap
-    assert "Refusing to replace unsafe production Nginx config" in bootstrap
+    assert "Refusing to replace unsafe ${label}" in bootstrap
+    assert '"production Nginx config"' in bootstrap
     assert "Conflicting Nginx production site for ${production_hostname}" in bootstrap
     assert '"${PRODUCTION_PUBLIC_HOST}"' in bootstrap
     assert '"${PRODUCTION_PUBLIC_WWW_HOST}"' in bootstrap
@@ -3734,7 +4386,7 @@ def test_production_nginx_edge_config_enforces_network_boundary_and_limits():
     assert "nginx-sitbank-production-rate-limits.$(date -u +%Y%m%dT%H%M%SZ).conf" in bootstrap
     assert '"nginx-sitbank-default"' in bootstrap
     assert '${backup_prefix}.$(date -u +%Y%m%dT%H%M%SZ).conf' in bootstrap
-    assert "nginx-sitbank-production.$(date -u +%Y%m%dT%H%M%SZ).conf" in bootstrap
+    assert '"nginx-sitbank-production"' in bootstrap
     assert "/etc/nginx/sites-enabled/sitbank" in bootstrap
     assert "&& -e /etc/nginx/sites-enabled/sitbank-staging" in bootstrap
 
@@ -3771,10 +4423,17 @@ def test_production_edge_runbook_documents_network_waf_and_verification_steps():
         "`/health/ready` is for local deployment and load-balancer checks",
         "Cloudflare or AWS WAF should sit in front of Nginx",
         "The reviewed production bootstrap installs and enables the production edge",
+        "ops/nginx/sitbank-cloudflare-real-ip.conf",
+        "real_ip_header CF-Connecting-IP",
+        "real_ip_recursive on",
+        "Cloudflare client-IP restoration is constrained",
+        "proxy_set_header X-Forwarded-For $remote_addr",
+        "$proxy_add_x_forwarded_for",
         "requires a production bootstrap after merge",
         "sudo test -r /etc/letsencrypt/live/sitbank.pp.ua/fullchain.pem",
         "Cloudflare or AWS WAF rules and security-group allowlists are still",
         "sudo nginx -t",
+        "sudo nginx -T 2>/dev/null | grep -E 'sitbank-cloudflare-real-ip",
         "sudo ss -ltnp | grep -E ':(80|443|5000|5002)([[:space:]]|$)'",
         "sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-app",
         "sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-admin",
@@ -3805,11 +4464,17 @@ def test_production_edge_runbook_documents_network_waf_and_verification_steps():
         "Tailscale/private operator access only",
         "Do not enable Tailscale Funnel",
         "Require Cloudflare Access and Cloudflare Authenticated Origin Pulls",
+        "Install `ops/nginx/sitbank-cloudflare-real-ip.conf`",
+        "trust `CF-Connecting-IP` only from Cloudflare's published edge",
+        "real_ip_recursive on",
         "Enable WAF managed common, SQL injection, XSS, bot, and protocol anomaly",
         "rules.",
         "Add WAF rate-based rules for `/login`, `/register`, `/mfa/verify`,",
         "Block TRACE at the edge",
         "Host`, `X-Real-IP`, `X-Forwarded-For`, and `X-Forwarded-Proto`",
+        "$proxy_add_x_forwarded_for",
+        "sudo nginx -T 2>/dev/null | grep -E 'sitbank-cloudflare-real-ip",
+        "The Cloudflare real-IP snippet is loaded",
         "sudo nginx -t",
         "external readiness is denied",
     ):
@@ -4034,7 +4699,6 @@ def test_migration_baseline_and_existing_database_runbook_are_present():
 
     assert 'revision = "20260610_0001"' in migration
     assert '"users"' in migration
-    assert '"webauthn_credentials"' in migration
     assert '"security_audit_events"' in migration
     assert 'revision = "20260618_0002"' in audit_hash_migration
     assert 'down_revision = "20260610_0001"' in audit_hash_migration
@@ -4163,7 +4827,6 @@ def test_migration_baseline_renders_offline_sql(app):
 
     assert result.exit_code == 0, result.output
     assert "CREATE TABLE users" in result.output
-    assert "CREATE TABLE webauthn_credentials" in result.output
     assert "CREATE TABLE registration_invites" in result.output
     assert "DROP TABLE registration_invites" in result.output
     assert "CREATE TABLE security_audit_events" in result.output

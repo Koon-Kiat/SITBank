@@ -30,9 +30,26 @@ Examples of server-side validation:
 | Control | Evidence |
 | --- | --- |
 | Client-supplied account numbers are rejected during registration | `tests/test_auth_registration_login.py::test_api_registration_rejects_client_supplied_account_number` |
+| Customer and payee account numbers are exactly 12 independently random decimal digits, with matching route, form, model, and database constraints | `app/auth/services.py::_generate_account_number()`, `tests/test_auth_registration_login.py::test_account_number_generation_randomizes_all_twelve_positions`, `tests/test_deployment.py::test_account_identifier_migration_enforces_current_twelve_digit_schema` |
 | Staff invite acceptance rejects privileged forged fields such as `role`, `workplace_email`, `email`, `account_type`, `customer_user_id`, and `is_admin` | `app/admin/services.py::_reject_forged_invite_fields()` |
 | Transaction payloads reject server-controlled fields and unsafe business values | `tests/test_banking_transaction_security.py::test_future_transaction_payload_guardrails_reject_server_controlled_fields`, `tests/test_banking_transaction_security.py::test_public_transaction_payload_business_rules_reject_unsafe_values` |
+| Future public transaction payloads require an authenticated user and a durable database reservation; raw idempotency keys and payloads are never stored | `app/models.py::PublicTransactionIdempotency`, `app/banking/services.py::validate_public_transaction_payload()`, `tests/test_banking_transaction_security.py` |
 | Route inventory records method-level auth, CSRF, rate-limit, and step-up decisions | `tests/test_route_inventory_security.py` |
+
+`validate_public_transaction_payload()` is scaffold code and has no production
+route caller. It reserves a keyed idempotency verifier per authenticated user
+for `PUBLIC_TRANSACTION_IDEMPOTENCY_TTL_SECONDS` (24 hours by default).
+The key and payload verifiers use domain-separated subkeys from the existing
+transaction-ledger HMAC keyring. Rotation continues matching retained keys,
+and the helper fails closed when an unexpired reservation names a retired key;
+session-key rotation cannot reopen the replay window and no new raw secret is
+stored.
+Same-key/same-payload replay and same-key/different-payload conflict both stop
+before a caller can process money movement; an expired reservation can be
+replaced. Cleanup removes expired reservations in bounded batches. This is
+separate from the active Local Transfer and PayUp pending-token controls, which
+bind server-owned transfer data and consume a keyed token verifier atomically
+with ledger mutation.
 
 ## Output Encoding
 
@@ -45,6 +62,7 @@ user-controlled values safe.
 | Template autoescaping by framework convention | `app/templates/` |
 | No user-controlled `|safe` usage in templates | `tests/test_authenticated_portal_ui.py::test_templates_do_not_mark_user_controlled_data_safe` |
 | Account details are masked in authenticated UI | `tests/test_authenticated_portal_ui.py::test_dashboard_bank_card_masks_account_details_and_loads_toggle_script` |
+| Human-facing timestamps use UTC+8/SGT display text while UTC/ISO is limited to machine-readable attributes, APIs, exports, filters, and integrity fields | `app/time_display.py`, `tests/test_documentation_consistency.py::test_human_facing_templates_do_not_render_raw_machine_timestamps` |
 | Server errors do not disclose stack traces | `tests/test_owasp_regressions.py::test_server_errors_do_not_disclose_tracebacks` |
 
 Audit and application logs sanitize sensitive metadata before storage or output.
@@ -84,7 +102,23 @@ tests.
 | Secure, HttpOnly, SameSite Strict cookies | `config.py`, `tests/test_session_management.py::test_login_sets_secure_session_cookie_and_hides_raw_session_id` |
 | Absolute authenticated session lifetime | `app/security/sessions.py`, `config.py`, `tests/test_session_absolute_lifetime.py` |
 | CSRF on unsafe customer routes | `app/extensions.py`, `app/__init__.py`, `tests/test_route_inventory_security.py::test_route_inventory_has_complete_security_decisions` |
-| Explicit CSRF regression tests | `tests/test_account_security_actions.py`, `tests/test_route_inventory_security.py` |
+| Explicit CSRF regression tests | `tests/test_account_security_actions.py`, `tests/test_admin_manual_recovery.py`, `tests/test_payup.py::test_payup_and_transfer_limit_posts_require_csrf_when_enabled`, `tests/test_route_inventory_security.py` |
+
+Customer and private-admin browser rate-limit responses use one safe branded
+429 message whether Flask-Limiter, durable authentication backoff, or Nginx
+blocks first. Nginx serves its 429 page or `/auth/*` JSON directly from an
+internal named location and never proxies a rejected request back into Flask.
+Missing, stale, or invalid CSRF tokens remain a distinct branded HTTP 400.
+JSON auth/admin callers continue to receive structured errors. These response
+normalizations do not change CSRF, MFA/TOTP step-up, Flask-Limiter, durable
+backoff, Nginx `limit_req`, audit, alert, Tailscale, Cloudflare, or
+customer/admin isolation controls.
+
+Shared session and error helpers select login and error endpoints from
+`APP_MODE`. Admin browser templates and redirects must use only `admin.*`
+endpoints and `admin/error.html`; registering customer blueprints in the admin
+runtime is never an error-handling workaround. Static and runtime isolation
+tests reject customer endpoint references in admin templates and expiry paths.
 
 Fully authenticated customer sessions default to a 12-hour absolute lifetime,
 and admin sessions default to a 4-hour absolute lifetime. The `auth_created_at`
@@ -103,7 +137,10 @@ customer route inventory prevents silent addition of unclassified routes.
 | Admin/staff login requires active staff role, workplace email verification, and TOTP | `app/admin/services.py` |
 | Admin routes use a generated route inventory | `tests/test_admin_route_inventory_security.py` |
 | High-risk customer actions use TOTP step-up | `app/auth/services.py::verify_high_risk_authorization()` |
+| Optional transfer activity emails cannot suppress mandatory notifications; Daily-limit, transfer-limit, account, security, MFA, recovery, password, session, staff/admin, and other high-risk notifications remain mandatory | `app/banking/services.py`, `tests/test_local_transfer.py::test_disabled_transfer_activity_email_preference_keeps_daily_limit_alert`, `tests/test_payup.py::test_disabled_transfer_activity_email_preference_keeps_payup_daily_limit_alert`, `tests/test_transfer_limits.py` |
 | Payee routes filter by current user id | `app/banking/routes.py` |
+| PayUp requires a sender display nickname, reveals recipient phone plus PayUp nickname when set, applies multidimensional durable limits, avoids raw phone/nickname audit metadata, and recomputes a centralized fail-closed risk decision at confirmation and execution | `app/banking/routes.py`, `app/banking/services.py`, `tests/test_payup.py` |
+| Admin role permissions are exercised through one centralized positive and negative matrix, with mutation-side-effect assertions | `tests/test_admin_rbac_matrix.py` |
 | Session management uses public references, ownership checks, and absolute lifetime enforcement | `app/auth/services.py::terminate_session_for_user()`, `app/security/sessions.py` |
 
 Customer and admin route-inventory matrices are intentionally separate so each
@@ -142,6 +179,7 @@ Audit integrity uses an HMAC-SHA256 hash chain.
 | Audit metadata redaction | `app/security/audit.py`, `tests/test_audit_metadata_sanitization.py` |
 | Structured logs are sanitized | `tests/test_audit_alerting.py::test_structured_audit_log_output_is_sanitized` |
 | Required audit writes can fail closed for critical actions | `app/security/audit.py::audit_event_required()`, `tests/test_audit_alerting.py` |
+| Banking pending-token database rows store keyed verifiers, and transaction rows store HMAC-SHA256 integrity hashes over canonical fields | `app/banking/services.py`, `tests/test_local_transfer_security.py`, `tests/test_payup.py` |
 | Audit chain records, verifies, and exports anchors | `tests/test_audit_alerting.py::test_audit_hash_chain_records_verifies_and_exports_anchor` |
 | Runtime database privilege verifier checks append-only audit behavior | `app/ops/db_privileges.py`, `tests/test_deployment.py::test_audit_operations_runbook_and_append_only_privileges_are_present` |
 | 500 handler logs sanitized context | `tests/test_audit_alerting.py::test_500_handler_logs_sanitized_context` |
@@ -157,7 +195,7 @@ Actions.
 | Lockfile policy check | `ops/security/check_dependency_locks.py`, `tests/test_deployment.py::test_dependency_manifests_have_one_hashed_lockfile_source_of_truth` |
 | Vulnerability scans | `pip-audit` in `scripts/ci-local` and `.github/workflows/ci-deploy.yml`; Trivy image scans in CI |
 | Static analysis | Bandit and CodeQL cover Python/security patterns; checksum-verified ShellCheck 0.11.0 and Hadolint 2.14.0 scan discovered scripts/Dockerfiles; digest-pinned Semgrep 1.168.0 runs local/OSS ERROR-severity SAST with no token or source upload. Evidence: `.github/workflows/shellcheck.yml`, `.github/workflows/hadolint.yml`, `.github/workflows/semgrep.yml`, `ops/security/discover_lint_targets.py`, and `tests/test_static_analysis_workflows.py` |
-| Code-quality analysis | Reporting-only SonarQube Cloud analysis with full-suite `coverage.xml`, maintainability, duplication, reliability, and security dashboard evidence; see `docs/security/assurance/sonarqube.md` |
+| Code-quality analysis | Blocking SonarQube Cloud quality gate for trusted pull requests and release-producing runs, using full-suite `coverage.xml` plus maintainability, duplication, reliability, and security dashboard evidence; see `docs/security/assurance/sonarqube.md` |
 | Secret scanning | The custom repository secret scanner remains in main/local CI; the independent Gitleaks 8.30.1 workflow performs redacted full Git history scans with no production secrets or uploaded SARIF. Evidence: `ops/security/scan_repository_secrets.py`, `.github/workflows/gitleaks.yml`, `.gitleaks.toml`, `tests/test_secret_scanner.py`, `tests/test_gitleaks_workflow.py`, and `docs/security/assurance/secret-scanning.md` |
 | Pinned GitHub Actions and images | `.github/workflows/ci-deploy.yml`, `Dockerfile`, tests in `tests/test_deployment.py` |
 | Image signing and digest deployment | `.github/workflows/ci-deploy.yml`, `tests/test_deployment.py::test_workflow_builds_scans_signs_and_deploys_only_an_immutable_digest` |

@@ -87,11 +87,15 @@ class FakeRunner:
                     }
                 ),
             )
+        if command == ("tailscale", "debug", "prefs"):
+            return verifier.CommandResult(0, json.dumps({"RunSSH": False}))
         if command == ("tailscale", "funnel", "status", "--json"):
             return verifier.CommandResult(0, self.funnel_status)
         if command == ("tailscale", "serve", "status", "--json"):
             return verifier.CommandResult(0, self.serve_status)
         if command == ("ss", "-H", "-ltn"):
+            return verifier.CommandResult(0, self.listener_output)
+        if command == ("ss", "-H", "-ltnp"):
             return verifier.CommandResult(0, self.listener_output)
         if command == ("nginx", "-T"):
             return verifier.CommandResult(0, self.nginx_output)
@@ -112,9 +116,9 @@ def test_script_exists_has_safe_contract_and_is_installed_by_production_bootstra
     assert '("tailscale", "serve", "status", "--json")' in script
     assert '("tailscale", "funnel", "status", "--json")' in script
     assert '("ss", "-H", "-ltn")' in script
+    assert '("ss", "-H", "-ltnp")' in script
     assert "127.0.0.1" in script
-    assert "0.0.0.0" not in script
-    assert "[::]" not in script
+    assert "wildcard HTTPS listener" in script
     assert "TAILSCALE_AUTH_KEY" not in script
     assert "TS_AUTHKEY" not in script
     assert "TS_OAUTH_SECRET" not in script
@@ -224,16 +228,29 @@ def test_serve_mode_verifies_all_private_host_controls():
         runner,
     )
 
-    assert len(messages) == 7
+    assert len(messages) == 9
     assert ("tailscale", "status", "--json") in runner.calls
+    assert ("tailscale", "debug", "prefs") in runner.calls
     assert ("tailscale", "funnel", "status", "--json") in runner.calls
     assert ("tailscale", "serve", "status", "--json") in runner.calls
     assert ("ss", "-H", "-ltn") in runner.calls
+    assert ("ss", "-H", "-ltnp") in runner.calls
     assert ("nginx", "-T") in runner.calls
     assert any(
         command[-1] == f"https://{PRIVATE_HOST}/login"
         for command in runner.calls
         if command[0] == "curl"
+    )
+    login_call = next(
+        command
+        for command in runner.calls
+        if command[0] == "curl"
+        and command[-1] == f"https://{PRIVATE_HOST}/login"
+    )
+    assert "--head" not in login_call
+    assert ("--request", "GET") == (
+        login_call[login_call.index("--request")],
+        login_call[login_call.index("--request") + 1],
     )
 
 
@@ -248,7 +265,7 @@ def test_ssh_mode_verifies_safe_fallback_prerequisites_without_requiring_serve()
         runner,
     )
 
-    assert len(messages) == 5
+    assert len(messages) == 6
     assert ("tailscale", "serve", "status", "--json") not in runner.calls
     assert not any(
         command[-1] == f"https://{PRIVATE_HOST}/login"
@@ -282,6 +299,31 @@ def test_listener_check_fails_closed_on_non_loopback_binding(
         verifier.verify_admin_listener(runner, "127.0.0.1", 5002)
 
 
+@pytest.mark.parametrize(
+    "wildcard_listener",
+    ("0.0.0.0:443", "[::]:443", "*:443"),
+)
+def test_serve_mode_rejects_wildcard_https_listener(wildcard_listener: str):
+    runner = FakeRunner(
+        listener_output=(
+            "LISTEN 0 4096 127.0.0.1:5002 0.0.0.0:*\n"
+            f"LISTEN 0 511 {wildcard_listener} 0.0.0.0:*\n"
+        )
+    )
+
+    with pytest.raises(
+        verifier.VerificationError,
+        match="wildcard HTTPS listener",
+    ):
+        verifier.verify_host(
+            "serve",
+            "127.0.0.1",
+            5002,
+            PRIVATE_HOST,
+            runner,
+        )
+
+
 def test_funnel_check_fails_closed_when_any_endpoint_is_enabled():
     runner = FakeRunner(funnel_status=(
         TAILSCALE_FIXTURE_DIR / "funnel-status-enabled-1.98.json"
@@ -289,6 +331,29 @@ def test_funnel_check_fails_closed_when_any_endpoint_is_enabled():
 
     with pytest.raises(verifier.VerificationError, match="Funnel is enabled"):
         verifier.verify_funnel_disabled(runner)
+
+
+@pytest.mark.parametrize(
+    "preferences",
+    (
+        {"RunSSH": True},
+        {},
+        {"RunSSH": "unknown"},
+    ),
+)
+def test_tailscale_ssh_check_fails_closed_unless_explicitly_disabled(
+    preferences,
+):
+    with pytest.raises(
+        verifier.VerificationError,
+        match="Tailscale SSH is enabled or its disabled state cannot be proved",
+    ):
+        verifier.verify_tailscale_ssh_disabled(
+            lambda arguments: verifier.CommandResult(
+                0,
+                json.dumps(preferences),
+            )
+        )
 
 
 def test_tailscale_1_98_serve_and_disabled_funnel_status_are_accepted():
@@ -430,6 +495,10 @@ def test_individual_checks_fail_closed_when_evidence_is_missing():
                 0,
                 json.dumps({"BackendState": "Stopped"}),
             )
+        )
+    with pytest.raises(verifier.VerificationError, match="Tailscale SSH"):
+        verifier.verify_tailscale_ssh_disabled(
+            lambda arguments: verifier.CommandResult(0, "{}")
         )
     with pytest.raises(verifier.VerificationError, match="no active admin mapping"):
         verifier.verify_serve_mapping(

@@ -20,11 +20,19 @@ from .ops.commands import register_ops_commands
 from .security.audit import register_correlation_id
 from .security.cloudflare_access import register_cloudflare_access_guard
 from .security.sessions import install_database_sessions, register_session_hooks
+from .security.http_errors import (
+    CSRF_ERROR_MESSAGE,
+    RATE_LIMIT_MESSAGE,
+    request_wants_json,
+    safe_error_response,
+)
 from .security.turnstile import register_turnstile_template_helpers
+from .time_display import sgt_datetime, utc_iso
 from .web.routes import web_bp
 
 
-JSON_MIME_TYPE = "application/json"
+INVITE_ACCEPT_START_ENDPOINT = "admin.invite_accept_start"
+INVITE_ACCEPT_VERIFY_ENDPOINT = "admin.invite_accept_verify"
 
 
 def create_app(config_object: type[Config] = Config, *, app_mode: str = "customer") -> Flask:
@@ -46,6 +54,7 @@ def create_app(config_object: type[Config] = Config, *, app_mode: str = "custome
     migrate.init_app(app, db)
     csrf.init_app(app)
     limiter.init_app(app)
+    register_invite_acceptance_response_headers(app)
     talisman.init_app(
         app,
         force_https=app.config["TALISMAN_FORCE_HTTPS"],
@@ -63,6 +72,7 @@ def create_app(config_object: type[Config] = Config, *, app_mode: str = "custome
     register_forced_password_change_guard(app)
     register_error_handlers(app)
     register_no_store_headers(app)
+    register_datetime_template_helpers(app)
     register_turnstile_template_helpers(app)
     register_ops_commands(app)
 
@@ -94,10 +104,6 @@ def register_current_user_loader(app: Flask) -> None:
         from flask import g, session
 
         g.current_user = None
-        g.webauthn_credential_count = 0
-        g.legacy_passkey_credential_count = 0
-        g.webauthn_required_count = 0
-        g.passkey_ready = False
         g.mfa_ready = False
         g.high_risk_ready = False
         user_id = session.get("user_id")
@@ -105,10 +111,6 @@ def register_current_user_loader(app: Flask) -> None:
             g.current_user = db.session.get(User, user_id)
             if g.current_user is not None:
                 from app.auth.mfa_policy import has_enrolled_mfa_method
-                from app.auth.webauthn_services import webauthn_credential_count
-
-                g.webauthn_credential_count = webauthn_credential_count(g.current_user)
-                g.legacy_passkey_credential_count = g.webauthn_credential_count
                 g.mfa_ready = has_enrolled_mfa_method(g.current_user)
                 g.high_risk_ready = g.mfa_ready
 
@@ -123,12 +125,14 @@ def register_forced_password_change_guard(app: Flask) -> None:
             "auth.csrf_token",
             "auth.logout",
             "auth.session_extend",
+            "auth.session_status",
             "auth.password_change",
             "auth.password_reset_request",
             "auth.password_reset_exchange",
             "auth.password_reset_transaction",
             "auth.password_reset_mfa_method",
             "auth.password_reset_totp",
+            "auth.password_reset_recovery_code",
             "auth.password_reset_complete",
             "auth.manual_recovery_request",
             "web.logout",
@@ -165,26 +169,33 @@ def register_forced_password_change_guard(app: Flask) -> None:
                     "code": "password_change_required",
                 }
             ), 403
-        return render_template("error.html", message="Password change required", status_code=403), 403
+        return safe_error_response("Password change required", 403)
 
 
 def register_error_handlers(app: Flask) -> None:
-    def wants_json() -> bool:
-        if request.path.startswith("/auth/"):
-            return True
-        best = request.accept_mimetypes.best_match([JSON_MIME_TYPE, "text/html"])
-        return best == JSON_MIME_TYPE and (
-            request.accept_mimetypes[JSON_MIME_TYPE] >= request.accept_mimetypes["text/html"]
-        )
-
     def respond(message: str, status_code: int):
-        if app.config.get("APP_MODE") == "admin" or wants_json():
-            return jsonify({"error": message}), status_code
-        return render_template("error.html", message=message, status_code=status_code), status_code
+        return safe_error_response(message, status_code)
 
     @app.errorhandler(CSRFError)
     def csrf_error(error):
-        return respond("Security token expired or invalid. Please try again.", 400)
+        if request.endpoint in {
+            INVITE_ACCEPT_START_ENDPOINT,
+            INVITE_ACCEPT_VERIFY_ENDPOINT,
+        }:
+            from .admin.routes import invite_acceptance_csrf_error_response
+            from .security.audit import audit_event
+
+            audit_event(
+                "staff_invite_accept",
+                "failure",
+                metadata={
+                    "reason": "csrf_or_session_failed",
+                    "phase": _invite_acceptance_phase_for_endpoint(request.endpoint),
+                },
+            )
+            if not request_wants_json():
+                return invite_acceptance_csrf_error_response()
+        return respond(CSRF_ERROR_MESSAGE, 400)
 
     @app.errorhandler(400)
     def bad_request(error):
@@ -207,7 +218,7 @@ def register_error_handlers(app: Flask) -> None:
         from .security.audit import audit_event
 
         audit_event("rate_limit", "blocked", metadata={"path": request.path})
-        return respond("Too many attempts. Please try again later.", 429)
+        return respond(RATE_LIMIT_MESSAGE, 429)
 
     @app.errorhandler(500)
     def internal_error(error):
@@ -216,6 +227,17 @@ def register_error_handlers(app: Flask) -> None:
             json.dumps(
                 {
                     "message": "system_error",
+                    "event": "system_error",
+                    "environment": app.config.get("APP_ENV") or "unknown",
+                    "service": (
+                        "sitbank-admin"
+                        if app.config.get("APP_MODE") == "admin"
+                        else "sitbank-app"
+                    ),
+                    "result": "failure",
+                    "reason": type(original_error).__name__,
+                    "route": request.path,
+                    "status": 500,
                     "correlation_id": getattr(g, "correlation_id", ""),
                     "path": request.path,
                     "method": request.method,
@@ -227,6 +249,42 @@ def register_error_handlers(app: Flask) -> None:
             )
         )
         return respond("Server error. Please try again later.", 500)
+
+
+def register_datetime_template_helpers(app: Flask) -> None:
+    @app.template_filter("sgt")
+    def to_singapore_time(value: datetime | None) -> datetime | None:
+        from .time_display import to_singapore_time as convert
+
+        return convert(value)
+
+    app.add_template_filter(sgt_datetime, "sgt_datetime")
+    app.add_template_filter(utc_iso, "utc_iso")
+
+
+def register_invite_acceptance_response_headers(app: Flask) -> None:
+    invite_acceptance_endpoints = frozenset(
+        {
+            "admin.invite_accept_info",
+            INVITE_ACCEPT_START_ENDPOINT,
+            INVITE_ACCEPT_VERIFY_ENDPOINT,
+        }
+    )
+
+    @app.after_request
+    def invite_acceptance_headers(response):
+        if request.endpoint in invite_acceptance_endpoints:
+            response.headers["Cache-Control"] = "no-store, no-cache, max-age=0, private"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+            response.headers["Referrer-Policy"] = "origin"
+        return response
+
+
+def _invite_acceptance_phase_for_endpoint(endpoint: str | None) -> str:
+    if endpoint == INVITE_ACCEPT_VERIFY_ENDPOINT:
+        return "verify"
+    return "start"
 
 
 def register_no_store_headers(app: Flask) -> None:

@@ -69,7 +69,7 @@ def test_mode_and_route_isolation_collects_admin_and_customer_failures(app, monk
         "Admin session key prefix must be isolated",
         "Admin auth security-state prefix must be isolated",
         "Admin rate-limit key prefix must be isolated",
-        "exactly 7 root administrators",
+        "exactly 3 root administrators",
         "approved admin workplace domains",
         "must not register customer routes",
     ):

@@ -2,12 +2,29 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
+
+from tests.e2e.support import _assert_local_base_url
 
 
 CI_WORKFLOW_PATH = Path(".github/workflows/ci-deploy.yml")
 E2E_SUPPORT_PATH = Path("tests/e2e/support.py")
-E2E_TEST_PATH = Path("tests/e2e/test_customer_auth_browser.py")
+E2E_TEST_PATHS = tuple(sorted(Path("tests/e2e").glob("test_*.py")))
+EXPECTED_E2E_FILES = {
+    "test_customer_admin_boundary_browser.py",
+    "test_customer_auth_browser.py",
+    "test_customer_banking_browser.py",
+    "test_customer_mfa_browser.py",
+    "test_customer_registration_recovery_browser.py",
+    "test_customer_security_browser.py",
+    "test_sensitive_browser_artifacts.py",
+    "test_session_security_browser.py",
+}
+
+
+def _combined_e2e_tests() -> str:
+    return "\n".join(path.read_text(encoding="utf-8") for path in E2E_TEST_PATHS)
 
 
 def test_playwright_dependency_is_locked_for_browser_e2e():
@@ -21,12 +38,14 @@ def test_playwright_dependency_is_locked_for_browser_e2e():
 
 def test_playwright_e2e_defaults_to_opt_in_local_loopback():
     support = E2E_SUPPORT_PATH.read_text(encoding="utf-8")
-    tests = E2E_TEST_PATH.read_text(encoding="utf-8")
+    tests = _combined_e2e_tests()
     combined = f"{support}\n{tests}"
 
     assert not Path("tests/e2e/conftest.py").exists()
     assert "SITBANK_RUN_E2E" in combined
-    assert "from tests.e2e.support import RUN_E2E_ENV, browser_page, live_server" in tests
+    assert "from tests.e2e.support import" in tests
+    assert "record_console_errors" in tests
+    assert "login_customer_with_mfa" in tests
     assert "from support import" not in tests
     assert "pytest.mark.skip" in tests
     assert 'make_server("127.0.0.1", 0, app, threaded=False)' in support
@@ -34,6 +53,35 @@ def test_playwright_e2e_defaults_to_opt_in_local_loopback():
     assert "pytest.mark.e2e" in tests
     assert "https://sitbank.pp.ua" not in combined
     assert "https://staging-sitbank.pp.ua" not in combined
+    assert {path.name for path in E2E_TEST_PATHS} == EXPECTED_E2E_FILES
+    for required_flow in (
+        "test_mfa_setup_completes",
+        "test_registration_email_otp",
+        "test_forgot_password",
+        "test_manual_recovery",
+        "test_add_payee",
+        "test_transfer_review",
+        "test_session_page",
+        "test_password_change",
+        "test_account_freeze",
+        "test_customer_and_admin_browser_sessions_remain_isolated",
+        "test_sensitive_values_do_not_appear",
+    ):
+        assert required_flow in tests
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "https://sitbank.pp.ua",
+        "https://staging-sitbank.pp.ua",
+        "https://admin-sitbank.tailca101b.ts.net",
+        "http://203.0.113.10:5000",
+    ],
+)
+def test_playwright_e2e_rejects_non_loopback_targets(base_url):
+    with pytest.raises(RuntimeError, match="loopback live server"):
+        _assert_local_base_url(base_url)
 
 
 def test_ci_has_dedicated_playwright_browser_e2e_job():
@@ -67,6 +115,26 @@ def test_ci_has_dedicated_playwright_browser_e2e_job():
     assert steps["Run Playwright E2E tests"]["run"] == (
         "python -m pytest -q tests/e2e"
     )
+    assert not any("upload-artifact" in str(step) for step in job["steps"])
+
+
+def test_playwright_browser_artifacts_are_ignored_and_not_committed():
+    gitignore = Path(".gitignore").read_text(encoding="utf-8")
+
+    for required in (
+        ".playwright-browsers/",
+        "playwright-report/",
+        "test-results/",
+        "tests/e2e/artifacts/",
+    ):
+        assert required in gitignore
+    assert not any(Path("tests/e2e").glob("**/*.webm"))
+    assert not any(Path("tests/e2e").glob("**/*.zip"))
+    assert not any(Path("tests/e2e").glob("**/trace*"))
+    support = E2E_SUPPORT_PATH.read_text(encoding="utf-8")
+    assert "record_video_dir" not in support
+    assert "tracing.start" not in support
+    assert "page.screenshot" not in support
 
 
 def test_playwright_e2e_docs_are_current():
@@ -87,5 +155,10 @@ def test_playwright_e2e_docs_are_current():
         "python -m playwright install chromium",
         "python -m pytest -q tests/e2e",
         "loopback Flask server",
+        "authentication, MFA, session, banking, and boundary regressions",
+        "registration, password reset, manual recovery, payee, transfer, session management, password change, account freeze, and customer/admin isolation",
+        "per-worker app and database schema",
+        "streaming Git object batches",
+        "do not prove live staging or production provider state",
     ):
         assert required in docs

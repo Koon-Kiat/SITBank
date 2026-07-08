@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 
 from _auth_flow_helpers import *
+from app.models import RegistrationCredit
+from app.security.transaction_integrity import registration_credit_integrity_status
 
 
 def test_registration_rejects_common_password(client):
@@ -10,6 +13,43 @@ def test_registration_rejects_common_password(client):
 
     assert response.status_code == 400
     assert db.session.query(User).count() == 0
+
+
+def test_account_number_generation_randomizes_all_twelve_positions(app, monkeypatch):
+    from app.auth import services as auth_services
+
+    digits = iter([9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 9, 8])
+    monkeypatch.setattr(auth_services.secrets, "randbelow", lambda _limit: next(digits))
+
+    assert auth_services._generate_account_number() == "987654321098"
+
+
+@pytest.mark.parametrize(
+    "invalid_account_number",
+    ["123456789", "1234567890123", "12345678901x"],
+)
+def test_user_account_number_database_constraint_rejects_noncurrent_formats(
+    app,
+    invalid_account_number,
+):
+    from sqlalchemy.exc import IntegrityError
+
+    user = User(
+        username=f"invalid-{len(invalid_account_number)}-{invalid_account_number[-1]}",
+        email=f"invalid-{len(invalid_account_number)}-{invalid_account_number[-1]}@example.test",
+        password_hash="clearly-fake-password-hash",
+        account_type="customer",
+        account_status="active",
+        full_name="Invalid Account Fixture",
+        phone_number=None,
+        account_number=invalid_account_number,
+    )
+    db.session.add(user)
+
+    with pytest.raises(IntegrityError):
+        db.session.commit()
+    db.session.rollback()
+
 
 def test_registration_uses_local_fallback_when_live_password_check_is_unavailable(client, monkeypatch):
     from app.security.passwords import HIBP_FALLBACK_WARNING, LivePasswordCheckUnavailable
@@ -37,6 +77,49 @@ def test_registration_uses_local_fallback_when_live_password_check_is_unavailabl
     assert db.session.query(User).count() == 1
     assert HIBP_FALLBACK_WARNING.encode("utf-8") in response.data
 
+
+def test_registration_creates_single_welcome_credit_atomically(client):
+    response = register(client)
+    user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
+    credit = db.session.execute(
+        db.select(RegistrationCredit).where(RegistrationCredit.user_id == user.id)
+    ).scalar_one()
+
+    assert response.status_code == 302
+    assert Decimal(str(user.balance)) == Decimal("100.00")
+    assert Decimal(str(credit.amount)) == Decimal("100.00")
+    assert credit.status == "completed"
+    assert registration_credit_integrity_status(credit) == "valid"
+    assert db.session.query(RegistrationCredit).filter_by(user_id=user.id).count() == 1
+
+
+def test_registration_welcome_credit_retry_is_idempotent(client):
+    from app.auth.services import _apply_registration_welcome_credit
+
+    response = register(client)
+    user = db.session.execute(
+        db.select(User).where(User.username == "alice01")
+    ).scalar_one()
+
+    with client.application.test_request_context("/register", method="POST"):
+        _apply_registration_welcome_credit(user)
+        _apply_registration_welcome_credit(user)
+        db.session.commit()
+
+    db.session.refresh(user)
+    credits = list(
+        db.session.execute(
+            db.select(RegistrationCredit).where(RegistrationCredit.user_id == user.id)
+        ).scalars()
+    )
+
+    assert response.status_code == 302
+    assert Decimal(str(user.balance)) == Decimal("100.00")
+    assert len(credits) == 1
+    assert Decimal(str(credits[0].amount)) == Decimal("100.00")
+    assert registration_credit_integrity_status(credits[0]) == "valid"
+
+
 def test_registration_rejects_live_breached_password(client, monkeypatch):
     monkeypatch.setattr("app.security.passwords._is_password_pwned_by_hibp", lambda _password: True)
 
@@ -50,7 +133,7 @@ def test_register_requires_verified_customer_email(client):
     response = register(client, verify_email=False)
 
     assert response.status_code == 400
-    assert b"Verify your customer email before creating an account" in response.data
+    assert b"Please verify your email address before continuing" in response.data
     assert db.session.query(User).count() == 0
 
 
@@ -59,9 +142,9 @@ def test_registration_step_one_has_single_email_input(client):
     html = response.data.decode("utf-8")
 
     assert response.status_code == 200
-    assert "Step 1 of 2" in html
+    assert "data-otp-request-form" in html
     assert html.count('name="email"') == 1
-    assert "Step 2 of 2" not in html
+    assert "Complete your account" not in html
     assert "data-password-strength" not in html
 
 
@@ -72,8 +155,8 @@ def test_registration_step_two_uses_verified_email_text_not_input(client):
     html = response.data.decode("utf-8")
 
     assert response.status_code == 200
-    assert "Step 2 of 2" in html
-    assert "Verified email" in html
+    assert "Complete your account" in html
+    assert "Your email is verified" in html
     assert "verified@example.com" in html
     assert 'name="email"' not in html
     assert "data-password-strength" in html
@@ -126,7 +209,7 @@ def test_registration_consumes_verified_email_after_success(client):
 
     assert created.status_code == 302
     assert reused.status_code == 400
-    assert b"Verify your customer email before creating an account" in reused.data
+    assert b"Please verify your email address before continuing" in reused.data
     assert db.session.query(User).count() == 1
 
 
@@ -134,7 +217,7 @@ def test_registration_otp_allows_personal_customer_email(client):
     response = client.post("/auth/register/otp/request", json={"email": "alice@example.com"})
 
     assert response.status_code == 200
-    assert response.get_json() == {"message": "If the email is eligible, a verification code has been sent."}
+    assert response.get_json() == {"message": "Check your inbox. If this address is valid, a verification code has been sent."}
     assert db.session.query(User).count() == 0
 
 
@@ -167,7 +250,7 @@ def test_registration_otp_uses_exact_admin_domain_matching(client):
     )
 
     assert response.status_code == 200
-    assert response.get_json() == {"message": "If the email is eligible, a verification code has been sent."}
+    assert response.get_json() == {"message": "Check your inbox. If this address is valid, a verification code has been sent."}
 
 
 def test_registration_service_rechecks_customer_email_policy(client):
@@ -189,7 +272,7 @@ def test_registration_service_rechecks_customer_email_policy(client):
     events = db.session.query(SecurityAuditEvent).filter_by(event_type="registration").all()
 
     assert response.status_code == 400
-    assert response.get_json() == {"error": "Verify your customer email before creating an account."}
+    assert response.get_json() == {"error": "Please verify your email address before continuing."}
     assert db.session.query(User).count() == 0
     assert events[-1].outcome == "blocked"
     assert events[-1].event_metadata["reason"] == "root_admin_allowlisted_email"
@@ -265,7 +348,7 @@ def test_registration_otp_existing_account_response_is_generic(client):
 
     assert created.status_code == 302
     assert response.status_code == 200
-    assert response.get_json() == {"message": "If the email is eligible, a verification code has been sent."}
+    assert response.get_json() == {"message": "Check your inbox. If this address is valid, a verification code has been sent."}
     assert len(password_reset_outbox()) == before_count
 
 
@@ -283,7 +366,7 @@ def test_registration_otp_email_failure_fails_closed_without_code(client, monkey
     )
 
     assert response.status_code == 503
-    assert response.get_json() == {"error": "Could not send verification code. Please try again later."}
+    assert response.get_json() == {"error": "Could not send a code right now. Please try again in a moment."}
     assert db.session.query(RegistrationOtpChallenge).count() == 0
 
 
@@ -327,6 +410,11 @@ def test_registration_hashes_password_with_pbkdf2(client):
 
     assert response.status_code == 302
     user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
+    assert user.account_number is not None
+    assert len(user.account_number) == 12
+    assert user.account_number.isascii()
+    assert user.account_number.isdigit()
+    assert user.account_number.isdigit()
     assert not user.password_hash.endswith("correct horse battery staple")
     assert user.password_hash.startswith(f"{PBKDF2_PREFIX}$v1$i=600000$")
 
@@ -351,7 +439,6 @@ def test_long_unicode_password_can_register_login_and_change(client, monkeypatch
     response = register(client, password=long_password)
     login_response = login(client, password=long_password)
     user, secret = enable_mfa_for_user()
-    add_security_keys_for_user(user)
     old_hash = user.password_hash
     change_time = int(time.time())
     monkeypatch.setattr("app.auth.services.time.time", lambda: change_time)
@@ -380,7 +467,6 @@ def test_password_templates_do_not_truncate_and_show_max_length_guidance(client)
     register(client)
     login(client)
     user, _secret = enable_mfa_for_user()
-    add_security_keys_for_user(user)
     change_response = client.get("/password/change")
 
     assert register_response.status_code == 200
@@ -397,7 +483,7 @@ def test_password_templates_do_not_truncate_and_show_max_length_guidance(client)
         f"{PASSWORD_RECOMMENDED_MIN_LENGTH} or more is recommended."
     ).encode("utf-8")
     assert expected_guidance in register_response.data
-    assert b"Maximum password length is 256 characters." in login_response.data
+    assert b"Maximum password length is 256 characters." not in login_response.data
     assert expected_guidance in change_response.data
     assert b"Maximum password length is 256 characters." in change_response.data
 
@@ -627,6 +713,26 @@ def test_registration_requires_full_name_and_valid_phone_number(client):
     assert db.session.query(User).count() == 0
 
 
+def test_registration_rejects_unicode_digit_lookalike_phone(client):
+    verify_registration_email(client)
+
+    response = client.post(
+        "/register",
+        data={
+            "username": "alice01",
+            "email": "alice@example.com",
+            "full_name": "Alice Test",
+            "phone_number": "9１２３４５６７",
+            "password": "correct horse battery staple",
+            "confirm_password": "correct horse battery staple",
+        },
+    )
+
+    assert response.status_code == 400
+    assert b"Enter a valid Singapore phone number" in response.data
+    assert db.session.query(User).count() == 0
+
+
 def test_registration_rejects_unsafe_full_name(client):
     verify_registration_email(client)
 
@@ -642,7 +748,7 @@ def test_registration_rejects_unsafe_full_name(client):
     )
 
     assert response.status_code == 400
-    assert b"Full name contains invalid characters" in response.data
+    assert b"Full name must contain only English letters" in response.data
     assert db.session.query(User).count() == 0
 
 
@@ -660,6 +766,66 @@ def test_registration_rejects_duplicate_phone_with_specific_error(client):
     assert duplicate_phone.status_code == 400
     assert b"That phone number is already registered." in duplicate_phone.data
     assert db.session.query(User).count() == 1
+
+
+def test_registration_prevents_canonical_email_alias_duplicates(client):
+    created = register(
+        client,
+        email="first.last+signup@gmail.com",
+    )
+    with client.session_transaction() as sess:
+        sess[REGISTRATION_OTP_VERIFIED_EMAIL_KEY] = "firstlast@gmail.com"
+        sess[REGISTRATION_OTP_VERIFIED_AT_KEY] = int(time.time())
+    duplicate = client.post(
+        "/register",
+        data={
+            "username": "alias02",
+            "email": "firstlast@gmail.com",
+            "full_name": "Alias User",
+            "phone_number": "91234568",
+            "password": "correct horse battery staple",
+            "confirm_password": "correct horse battery staple",
+        },
+    )
+    user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
+
+    assert created.status_code == 302
+    assert duplicate.status_code == 400
+    assert b"Registration could not be completed with those details" in duplicate.data
+    assert user.email == "first.last+signup@gmail.com"
+    assert user.registration_email_canonical == "firstlast@gmail.com"
+
+
+def test_registration_rejects_configured_temporary_email_domain(client):
+    response = client.post(
+        "/register/otp/request",
+        data={"email": "customer@mailinator.com"},
+    )
+
+    assert response.status_code == 400
+    assert b"Registration could not be started for that email" in response.data
+
+
+def test_json_registration_returns_minimum_success_payload(client):
+    verify_registration_email(client, "minimal@example.com")
+
+    response = client.post(
+        "/auth/register",
+        json={
+            "username": "minimal01",
+            "email": "minimal@example.com",
+            "full_name": "Minimal User",
+            "phone_number": "91234567",
+            "password": "correct horse battery staple",
+            "confirm_password": "correct horse battery staple",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.get_json() == {
+        "message": "Registration successful",
+        "warnings": [],
+    }
 
 def test_api_registration_rejects_client_supplied_account_number(client):
     response = client.post(
@@ -747,6 +913,157 @@ def test_mfa_pending_api_response_does_not_leak_user_id(client):
     assert payload == {"message": "MFA verification required", "mfa_required": True}
     assert "user_id" not in payload
 
+
+def test_customer_api_mfa_counts_only_wrong_totp_and_clears_on_fresh_login(
+    client,
+    monkeypatch,
+):
+    from app.models import AuthAttemptCounter
+
+    register(client)
+    user, secret = enable_mfa_for_user()
+    totp = pyotp.TOTP(secret, digits=6, interval=30)
+    base_time = int(time.time())
+    valid_code = totp.at(base_time)
+    invalid_code = "000000" if valid_code != "000000" else "111111"
+
+    primary = client.post(
+        "/auth/login",
+        json={"identifier": "alice01", "password": "correct horse battery staple"},
+    )
+    monkeypatch.setattr("app.auth.services.time.time", lambda: base_time)
+    assert primary.status_code == 200
+    for _attempt in range(5):
+        response = client.post(
+            "/auth/mfa/verify",
+            json={"totp_code": invalid_code},
+        )
+        assert response.status_code == 401
+        assert response.get_json() == {
+            "error": "Incorrect code. Check your authenticator and try again."
+        }
+
+    valid_after_wrong_attempts = client.post(
+        "/auth/mfa/verify",
+        json={"totp_code": valid_code},
+    )
+    assert valid_after_wrong_attempts.status_code == 200
+    assert (
+        db.session.query(AuthAttemptCounter)
+        .filter_by(scope="customer_mfa_login")
+        .count()
+        == 0
+    )
+
+    client.post(
+        "/auth/login",
+        json={"identifier": "alice01", "password": "correct horse battery staple"},
+    )
+    base_time += 30
+    monkeypatch.setattr("app.auth.services.time.time", lambda: base_time)
+    valid_code = totp.at(base_time)
+    invalid_code = "000000" if valid_code != "000000" else "111111"
+    for _attempt in range(10):
+        assert (
+            client.post("/auth/mfa/verify", json={"totp_code": invalid_code}).status_code
+            == 401
+        )
+    blocked = client.post("/auth/mfa/verify", json={"totp_code": invalid_code})
+    assert blocked.status_code == 429
+    assert blocked.headers["Retry-After"].isdigit()
+    assert "totp_code" not in blocked.get_data(as_text=True)
+
+    client.post(
+        "/auth/login",
+        json={"identifier": "alice01", "password": "correct horse battery staple"},
+    )
+    base_time += 30
+    monkeypatch.setattr("app.auth.services.time.time", lambda: base_time)
+    recovered = client.post(
+        "/auth/mfa/verify",
+        json={"totp_code": totp.at(base_time)},
+    )
+    db.session.refresh(user)
+
+    assert recovered.status_code == 200
+    assert user.is_frozen is False
+
+
+def test_customer_browser_mfa_valid_totp_survives_wrong_attempts_below_threshold(
+    client,
+    monkeypatch,
+):
+    register(client)
+    _user, secret = enable_mfa_for_user()
+    totp = pyotp.TOTP(secret, digits=6, interval=30)
+    base_time = int(time.time())
+    valid_code = totp.at(base_time)
+    invalid_code = "000000" if valid_code != "000000" else "111111"
+
+    primary = login(client)
+    monkeypatch.setattr("app.auth.services.time.time", lambda: base_time)
+    assert primary.status_code == 302
+    for _attempt in range(5):
+        response = client.post("/mfa/verify", data={"totp_code": invalid_code})
+        assert response.status_code == 401
+        markup = response.get_data(as_text=True)
+        assert "Incorrect code. Check your authenticator and try again." in markup
+        assert "Too many requests" not in markup
+
+    valid_after_wrong_attempts = client.post(
+        "/mfa/verify",
+        data={"totp_code": valid_code},
+    )
+
+    assert valid_after_wrong_attempts.status_code == 302
+    assert valid_after_wrong_attempts.headers["Location"].endswith("/dashboard")
+
+
+def test_one_customer_mfa_lockout_does_not_block_other_customers(app, client, monkeypatch):
+    # The durable MFA wrong-code counter is keyed per user (source IP + user id),
+    # so one customer exhausting their budget must not lock out a different
+    # customer -- even when both share the same source IP.
+    register(client, username="alice01", email="alice@example.com", phone_number="91234567")
+    register(client, username="bob02", email="bob@example.com", phone_number="91234568")
+    enable_mfa_for_user("alice01")
+    _bob, bob_secret = enable_mfa_for_user("bob02")
+
+    base_time = int(time.time())
+    monkeypatch.setattr("app.auth.services.time.time", lambda: base_time)
+
+    alice_client = app.test_client()
+    bob_client = app.test_client()
+
+    # Alice fails MFA up to the threshold from the shared source IP and is blocked.
+    alice_client.post(
+        "/auth/login",
+        json={"identifier": "alice01", "password": "correct horse battery staple"},
+    )
+    invalid_code = "000000"
+    for _attempt in range(10):
+        assert (
+            alice_client.post("/auth/mfa/verify", json={"totp_code": invalid_code}).status_code
+            == 401
+        )
+    assert (
+        alice_client.post("/auth/mfa/verify", json={"totp_code": invalid_code}).status_code == 429
+    )
+
+    # Bob, on the same source IP, still verifies his own valid code and logs in.
+    bob_client.post(
+        "/auth/login",
+        json={"identifier": "bob02", "password": "correct horse battery staple"},
+    )
+    bob_valid = pyotp.TOTP(bob_secret, digits=6, interval=30).at(base_time)
+    accepted = bob_client.post("/auth/mfa/verify", json={"totp_code": bob_valid})
+    assert accepted.status_code == 200
+
+    # The lockout stays scoped to Alice.
+    assert (
+        alice_client.post("/auth/mfa/verify", json={"totp_code": invalid_code}).status_code == 429
+    )
+
+
 def test_login_backoff_starts_after_three_failures(client):
     register(client)
 
@@ -761,7 +1078,7 @@ def test_login_backoff_starts_after_three_failures(client):
 
     assert [response.status_code for response in failures] == [401, 401, 401]
     assert blocked.status_code == 429
-    assert blocked.get_json()["error"] == "Too many attempts. Please try again later."
+    assert blocked.get_json()["error"] == "Too many failed attempts. Please wait before trying again."
     assert blocked.headers["X-Auth-Retry-After"] == "1"
 
 def test_login_rate_limits_include_per_minute_and_daily_limits(client):
@@ -788,7 +1105,7 @@ def test_login_rate_limits_include_per_minute_and_daily_limits(client):
 
     assert limited.status_code == 429
 
-def test_login_identifier_limit_is_scoped_by_source_ip(client):
+def test_account_lockout_cannot_be_bypassed_from_a_different_source_ip(client):
     register(client)
 
     attacker_ip = "198.51.100.10"
@@ -799,8 +1116,8 @@ def test_login_identifier_limit_is_scoped_by_source_ip(client):
     response = api_login_from_ip(client, victim_ip)
     payload = response.get_json()
 
-    assert response.status_code == 200
-    assert payload["mfa_setup_required"] is True
+    assert response.status_code == 401
+    assert payload == {"error": "Invalid username or password"}
 
 def test_request_principal_is_hashed_and_ip_scoped(app):
     from app.security.rate_limits import request_principal
@@ -828,14 +1145,14 @@ def test_request_principal_is_hashed_and_ip_scoped(app):
     assert "example" not in first_key.casefold()
     assert "198.51.100.10" not in first_key
 
-def test_repeated_password_failures_do_not_freeze_account(app, client):
+def test_repeated_password_failures_lock_known_customer_account(app, client):
     from app.auth.services import AuthError, authenticate_primary
     from app.security.rate_limits import clear_failures
 
     register(client)
     user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
 
-    for _attempt in range(10):
+    for _attempt in range(3):
         with app.test_request_context(
             "/auth/login",
             method="POST",
@@ -848,33 +1165,49 @@ def test_repeated_password_failures_do_not_freeze_account(app, client):
 
     db.session.refresh(user)
 
-    assert user.is_frozen is False
-    assert user.security_locked_at is None
-    assert user.security_lock_reason is None
-    assert db.session.query(SecurityAuditEvent).filter_by(event_type="account_lock", outcome="locked").count() == 0
+    assert user.is_frozen is True
+    assert user.security_locked_at is not None
+    assert user.security_lock_reason == "password_failed_attempts"
+    assert db.session.query(SecurityAuditEvent).filter_by(event_type="account_lock", outcome="locked").count() == 1
 
     clear_failures("login", "127.0.0.1:alice01")
     response = login(client)
     db.session.refresh(user)
 
-    assert response.status_code == 302
-    assert response.headers["Location"].endswith("/mfa/setup")
-    assert user.failed_login_count == 0
+    assert response.status_code == 401
+    assert user.failed_login_count == 3
 
 def test_repeated_mfa_failures_freeze_account(app, client):
     from flask import session
-    from app.auth.services import AuthError, complete_pending_mfa
+    from app.auth.services import AuthError, authenticate_primary, complete_pending_mfa
 
     register(client)
     user, _secret = enable_mfa_for_user()
 
-    for _attempt in range(10):
-        with app.test_request_context("/auth/mfa/verify", method="POST"):
-            session["pending_mfa_user_id"] = user.id
-            try:
-                complete_pending_mfa("000000")
-            except AuthError:
-                pass
+    # The MFA account-freeze backstop sits above the per-window wrong-code
+    # throttle (CUSTOMER_MFA_FAILURE_LIMIT of 10 -> freeze at 12), so a single
+    # throttled burst stays recoverable. Sustained abuse across windows -- six
+    # wrong codes per window with a fresh primary login clearing the throttle
+    # counter between windows -- still accumulates to the freeze threshold.
+    for _window in range(2):
+        for _attempt in range(6):
+            with app.test_request_context(
+                "/auth/mfa/verify",
+                method="POST",
+                environ_overrides={"REMOTE_ADDR": "127.0.0.1"},
+            ):
+                session["pending_mfa_user_id"] = user.id
+                try:
+                    complete_pending_mfa("000000")
+                except AuthError:
+                    pass
+        if _window == 0:
+            with app.test_request_context(
+                "/auth/login",
+                method="POST",
+                environ_overrides={"REMOTE_ADDR": "127.0.0.1"},
+            ):
+                authenticate_primary("alice01", "correct horse battery staple")
 
     db.session.refresh(user)
 
@@ -923,7 +1256,7 @@ def test_unknown_and_known_login_failures_use_same_backoff_path(client):
     assert known_response.status_code == 401
     assert unknown_response.status_code == 401
     assert known_response.get_json() == unknown_response.get_json()
-    assert user.failed_login_count == 0
+    assert user.failed_login_count == 1
 
 def test_hash_password_uses_configured_pbkdf2_iterations(app):
     with app.app_context():

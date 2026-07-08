@@ -4,6 +4,7 @@ import argparse
 import base64
 import re
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
 
 
@@ -89,7 +90,7 @@ def tracked_files() -> list[Path]:
     ]
 
 
-def historical_blobs() -> list[tuple[str, str]]:
+def _historical_blob_records() -> list[tuple[str, str, int]]:
     result = subprocess.run(
         [
             "git",
@@ -104,23 +105,87 @@ def historical_blobs() -> list[tuple[str, str]]:
         capture_output=True,
         text=True,
     )
-    blobs: list[tuple[str, str]] = []
+    candidates: list[tuple[str, str]] = []
     seen: set[str] = set()
     for line in result.stdout.splitlines():
         object_id, _, path = line.partition(" ")
         if not path or object_id in seen:
             continue
-        object_type = subprocess.run(
-            ["git", "cat-file", "-t", object_id],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-        if object_type != "blob":
-            continue
         seen.add(object_id)
-        blobs.append((object_id, path))
-    return blobs
+        candidates.append((object_id, path))
+    metadata = _batch_object_metadata([object_id for object_id, _path in candidates])
+    return [
+        (object_id, path, metadata[object_id][1])
+        for object_id, path in candidates
+        if metadata.get(object_id, ("", 0))[0] == "blob"
+    ]
+
+
+def historical_blobs() -> list[tuple[str, str]]:
+    return [
+        (object_id, path)
+        for object_id, path, _size in _historical_blob_records()
+    ]
+
+
+def _batch_object_metadata(object_ids: list[str]) -> dict[str, tuple[str, int]]:
+    if not object_ids:
+        return {}
+    result = subprocess.run(
+        [
+            "git",
+            "cat-file",
+            "--batch-check=%(objectname) %(objecttype) %(objectsize)",
+        ],
+        input="\n".join(object_ids) + "\n",
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    metadata: dict[str, tuple[str, int]] = {}
+    for line in result.stdout.splitlines():
+        object_id, object_type, raw_size = line.split(" ", 2)
+        metadata[object_id] = (object_type, int(raw_size))
+    return metadata
+
+
+def _read_blob_batch(object_ids: list[str]) -> Iterator[tuple[str, bytes]]:
+    if not object_ids:
+        return
+    process = subprocess.Popen(
+        ["git", "cat-file", "--batch"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if process.stdin is None or process.stdout is None or process.stderr is None:
+        process.kill()
+        process.wait()
+        raise RuntimeError("Git history object scan could not open safe pipes")
+    try:
+        for expected_object_id in object_ids:
+            process.stdin.write(f"{expected_object_id}\n".encode("ascii"))
+            process.stdin.flush()
+            header = process.stdout.readline().decode("ascii").strip()
+            object_id, object_type, raw_size = header.split(" ", 2)
+            if object_id != expected_object_id or object_type != "blob":
+                raise RuntimeError("Git returned unexpected history object metadata")
+            content = process.stdout.read(int(raw_size))
+            if process.stdout.read(1) != b"\n":
+                raise RuntimeError("Git returned malformed history object content")
+            yield object_id, content
+        process.stdin.close()
+        return_code = process.wait()
+        if return_code:
+            raise RuntimeError("Git history object scan failed")
+    finally:
+        if not process.stdin.closed:
+            process.stdin.close()
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        process.stderr.close()
+        process.stdout.close()
 
 
 def scan_content(label: str, content: bytes, findings: list[str]) -> None:
@@ -132,7 +197,8 @@ def scan_content(label: str, content: bytes, findings: list[str]) -> None:
 
 
 def scan_history(findings: list[str]) -> None:
-    for object_id, historical_path in historical_blobs():
+    eligible: list[tuple[str, str]] = []
+    for object_id, historical_path, size in _historical_blob_records():
         path = Path(historical_path)
         if (
             path.name.casefold() in FORBIDDEN_NAMES
@@ -142,21 +208,14 @@ def scan_history(findings: list[str]) -> None:
                 f"forbidden credential filename in history: {historical_path}"
             )
             continue
-        size = int(
-            subprocess.run(
-                ["git", "cat-file", "-s", object_id],
-                check=True,
-                capture_output=True,
-                text=True,
-            ).stdout.strip()
-        )
         if size > MAX_HISTORY_BLOB_BYTES:
             continue
-        content = subprocess.run(
-            ["git", "cat-file", "blob", object_id],
-            check=True,
-            capture_output=True,
-        ).stdout
+        eligible.append((object_id, historical_path))
+    paths_by_object_id = dict(eligible)
+    for object_id, content in _read_blob_batch(
+        [object_id for object_id, _path in eligible]
+    ):
+        historical_path = paths_by_object_id[object_id]
         scan_content(f"{historical_path}@{object_id[:12]}", content, findings)
 
 

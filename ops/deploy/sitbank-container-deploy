@@ -101,6 +101,10 @@ if [[ ! "${PUBLIC_HOST}" =~ ^[A-Za-z0-9.-]+$ ]]; then
     echo "Invalid configured public host" >&2
     exit 1
 fi
+if [[ ! "${PUBLIC_BIND_ADDRESS:-}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+    echo "Invalid configured public bind address" >&2
+    exit 1
+fi
 
 expected_identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/ci-deploy.yml@refs/heads/main"
 if [[ "${COSIGN_CERTIFICATE_IDENTITY:-}" != "${expected_identity}" ]]; then
@@ -115,6 +119,12 @@ readonly bundle_path="${INCOMING_DIR}/runtime-${input_stem}.tar"
 readonly checksum_path="${INCOMING_DIR}/runtime-${input_stem}.sha256"
 readonly signature_path="${INCOMING_DIR}/runtime-${input_stem}.sigstore.json"
 readonly turnstile_credential_path="${INCOMING_DIR}/turnstile-${input_stem}.secret"
+readonly root_admin_emails_path="${INCOMING_DIR}/root-admin-emails-${input_stem}.secret"
+
+if [[ "${target}" == "production" ]]; then
+    /usr/local/sbin/verify-production-nginx-boundary \
+        --public-bind-address "${PUBLIC_BIND_ADDRESS}"
+fi
 
 exec 9>"${LOCK_FILE}"
 if ! flock -n 9; then
@@ -127,6 +137,7 @@ staging_dir="$(mktemp -d "${STATE_DIR}/runtime-staging.XXXXXX")"
 runtime_backup="$(mktemp -d "${STATE_DIR}/runtime-backup.XXXXXX")"
 runtime_replaced=0
 turnstile_secret_replaced=0
+root_admin_emails_replaced=0
 service_switched=0
 dependencies_prepared=0
 previous_image=""
@@ -141,7 +152,8 @@ cleanup() {
         "${bundle_path}" \
         "${checksum_path}" \
         "${signature_path}" \
-        "${turnstile_credential_path}"
+        "${turnstile_credential_path}" \
+        "${root_admin_emails_path}"
 }
 
 audit_log() {
@@ -169,6 +181,11 @@ backup_runtime() {
             "${SECRET_DIR}/turnstile_secret_key" \
             "${runtime_backup}/turnstile_secret_key"
     fi
+    if [[ -f "${SECRET_DIR}/root_admin_emails" ]]; then
+        install -m 0600 \
+            "${SECRET_DIR}/root_admin_emails" \
+            "${runtime_backup}/root_admin_emails"
+    fi
 }
 
 restore_runtime() {
@@ -183,6 +200,14 @@ restore_runtime() {
             install -o root -g 10001 -m 0440 \
                 "${runtime_backup}/turnstile_secret_key" \
                 "${SECRET_DIR}/turnstile_secret_key"
+        fi
+    fi
+    if [[ "${root_admin_emails_replaced}" -eq 1 ]]; then
+        rm -f -- "${SECRET_DIR}/root_admin_emails"
+        if [[ -f "${runtime_backup}/root_admin_emails" ]]; then
+            install -o root -g 10001 -m 0440 \
+                "${runtime_backup}/root_admin_emails" \
+                "${SECRET_DIR}/root_admin_emails"
         fi
     fi
 }
@@ -204,6 +229,51 @@ install_turnstile_credential() {
         "${SECRET_DIR}/turnstile_secret_key"
     turnstile_secret_replaced=1
     unset value
+}
+
+install_root_admin_allowlist() {
+    if [[ "${runtime_replaced}" -ne 1 ]]; then
+        echo "Root-admin allowlist requires a verified runtime bundle" >&2
+        exit 2
+    fi
+    validate_input_file "${root_admin_emails_path}"
+    python3 - "${root_admin_emails_path}" "${target}" <<'PY'
+from pathlib import Path
+import sys
+
+APPROVED_DOMAINS = frozenset({"sit.singaporetech.edu.sg", "singaporetech.edu.sg"})
+
+
+def workplace_email_domain(email):
+    if email.count("@") != 1:
+        return None
+    local, domain = email.rsplit("@", 1)
+    if not (1 <= len(local) <= 128 and 1 <= len(domain) <= 253):
+        return None
+    if any(ord(character) <= 32 or ord(character) == 127 for character in email):
+        return None
+    return domain
+
+
+value = Path(sys.argv[1]).read_text(encoding="utf-8")
+required_count = 2 if sys.argv[2] == "staging" else 3
+emails = [item.strip().casefold() for item in value.split(",") if item.strip()]
+if len(emails) != required_count or len(set(emails)) != required_count:
+    raise SystemExit(
+        f"Root-admin allowlist must contain exactly {required_count} unique workplace email addresses"
+    )
+for email in emails:
+    domain = workplace_email_domain(email)
+    if domain is None:
+        raise SystemExit("Root-admin allowlist contains an invalid email address")
+    if domain not in APPROVED_DOMAINS:
+        raise SystemExit("Root-admin allowlist must contain only SIT workplace email addresses")
+Path(sys.argv[1]).write_text(",".join(emails), encoding="utf-8", newline="")
+PY
+    install -o root -g 10001 -m 0440 \
+        "${root_admin_emails_path}" \
+        "${SECRET_DIR}/root_admin_emails"
+    root_admin_emails_replaced=1
 }
 
 validate_deployment_profile() {
@@ -313,6 +383,9 @@ install_runtime_bundle() {
         APP_ENV
         COMMON_PASSWORDS_MIN_ENTRIES
         COMMON_PASSWORDS_PATH
+        CUSTOMER_EMAIL_DOT_INSENSITIVE_DOMAINS
+        CUSTOMER_EMAIL_PLUS_ALIAS_DOMAINS
+        CUSTOMER_TEMP_EMAIL_DOMAINS
         DEPLOYMENT_TARGET
         HIBP_CIRCUIT_FAILURE_THRESHOLD
         HIBP_CIRCUIT_OPEN_SECONDS
@@ -327,7 +400,6 @@ install_runtime_bundle() {
         PASSWORD_RESET_TOKEN_TTL_SECONDS
         PASSWORD_RESET_TRANSACTION_TTL_SECONDS
         PASSWORD_PBKDF2_ITERATIONS
-        ROOT_ADMIN_EMAILS
         SECURITY_ALERT_DEDUPE_TTL_SECONDS
         SECURITY_ALERT_ENABLED
         SECURITY_ALERT_MIN_SEVERITY
@@ -335,6 +407,7 @@ install_runtime_bundle() {
         SECURITY_ALERT_TIMEOUT_SECONDS
         SECURITY_AUDIT_ANCHOR_PATH
         SESSION_HMAC_ACTIVE_KEY_ID
+        TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID
         SMTP_HOST
         SMTP_PORT
         SMTP_USE_TLS
@@ -342,10 +415,12 @@ install_runtime_bundle() {
         TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED
         TURNSTILE_ADMIN_LOGIN_ENABLED
         TURNSTILE_CUSTOMER_LOGIN_ENABLED
+        TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED
         TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED
         TURNSTILE_CUSTOMER_REGISTER_ENABLED
         TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED
         TURNSTILE_ENABLED
+        TURNSTILE_FAIL_CLOSED_IN_PRODUCTION
         TURNSTILE_SITE_KEY
         TURNSTILE_VERIFY_URL
     )
@@ -425,6 +500,7 @@ validate_staging_isolation() {
         database_url \
         database_migration_url \
         mfa_kek_keys_json \
+        transaction_ledger_hmac_keys_json \
         password_pepper_b64 \
         security_audit_hmac_key \
         admin_secret_key \
@@ -433,6 +509,7 @@ validate_staging_isolation() {
         admin_session_lookup_hmac_key \
         admin_database_url \
         admin_password_pepper_b64 \
+        root_admin_emails \
         smtp_username \
         smtp_password \
         turnstile_secret_key; do
@@ -549,6 +626,46 @@ if admin.hostname != customer.hostname or admin.path != customer.path:
     raise SystemExit("Admin runtime database URL must target the same production database with a distinct role")
 if session_lookup_key == admin_session_lookup_key:
     raise SystemExit("Admin session lookup HMAC key must be distinct from customer session lookup HMAC key")
+PY
+}
+
+validate_transaction_ledger_hmac_secret() {
+    python3 - \
+        "${SECRET_DIR}/transaction_ledger_hmac_keys_json" \
+        "${CONTAINER_ENV}" <<'PY'
+from pathlib import Path
+import base64
+import binascii
+import json
+import re
+import sys
+
+keyring_path = Path(sys.argv[1])
+environment_path = Path(sys.argv[2])
+active_id = ""
+for line in environment_path.read_text(encoding="utf-8").splitlines():
+    if line.startswith("TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID="):
+        active_id = line.split("=", 1)[1].strip().strip("'")
+        break
+if not re.fullmatch(r"[A-Za-z0-9._-]{1,32}", active_id or ""):
+    raise SystemExit("Transaction ledger HMAC active key id is missing or invalid")
+try:
+    keyring = json.loads(keyring_path.read_text(encoding="utf-8"))
+except json.JSONDecodeError as exc:
+    raise SystemExit("Transaction ledger HMAC keyring must be valid JSON") from exc
+if not isinstance(keyring, dict) or not keyring:
+    raise SystemExit("Transaction ledger HMAC keyring must contain at least one key")
+if active_id not in keyring:
+    raise SystemExit("Transaction ledger HMAC active key id is not present in the host keyring")
+for key_id, encoded_key in keyring.items():
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,32}", str(key_id or "")):
+        raise SystemExit("Transaction ledger HMAC keyring contains an invalid key id")
+    try:
+        decoded_key = base64.b64decode(str(encoded_key), validate=True)
+    except binascii.Error as exc:
+        raise SystemExit("Transaction ledger HMAC keyring contains invalid base64") from exc
+    if len(decoded_key) != 32:
+        raise SystemExit("Transaction ledger HMAC keys must decode to exactly 32 bytes")
 PY
 }
 
@@ -688,6 +805,7 @@ fi
 
 install_runtime_bundle
 install_turnstile_credential
+install_root_admin_allowlist
 
 export DOCKER_CONFIG="${docker_config}"
 printf '%s' "${registry_token}" | docker login ghcr.io \
@@ -726,7 +844,9 @@ required_secrets=(
     database_url
     database_migration_url
     mfa_kek_keys_json
+    transaction_ledger_hmac_keys_json
     password_pepper_b64
+    root_admin_emails
     security_audit_hmac_key
     security_alert_webhook_url
     smtp_username
@@ -780,6 +900,7 @@ for secret_file in "${required_secrets[@]}"; do
 done
 validate_staging_isolation
 validate_production_admin_isolation
+validate_transaction_ledger_hmac_secret
 if [[ "${target}" == "staging" ]]; then
     /usr/local/sbin/verify-staging-edge-boundary "${PUBLIC_HOST}"
 fi
@@ -836,6 +957,7 @@ fi
 service_switched=0
 runtime_replaced=0
 turnstile_secret_replaced=0
+root_admin_emails_replaced=0
 trap - ERR
 if [[ -n "${DATABASE_CUTOVER}" && -r "${DATABASE_CUTOVER}" ]]; then
     if ! /usr/local/sbin/sitbank-database-cutover finalize; then

@@ -231,11 +231,11 @@ def test_session_references_survive_hmac_key_rotation(app, client):
     assert new_resolved is not None and new_resolved.startswith("lookup:")
     assert session_id not in {old_resolved, new_resolved}
 
-def test_terminate_other_session_by_public_reference_revokes_it(app, client):
+def test_terminate_other_session_by_public_reference_revokes_it(app, client, monkeypatch):
     second_client = app.test_client()
     register(client)
     login(client)
-    login(second_client)
+    login_ignoring_session_cap(monkeypatch, second_client)
     user, _secret = enable_mfa_for_user()
     mark_recent_mfa(client, user)
 
@@ -248,11 +248,11 @@ def test_terminate_other_session_by_public_reference_revokes_it(app, client):
     assert revoked_response.status_code == 401
     assert revoked_response.get_json()["error"] in {"Session revoked", "Authentication required"}
 
-def test_terminating_other_session_moves_it_to_past_sessions(app, client):
+def test_terminating_other_session_moves_it_to_past_sessions(app, client, monkeypatch):
     second_client = app.test_client()
     register(client)
     login(client)
-    login(second_client)
+    login_ignoring_session_cap(monkeypatch, second_client)
     user, _secret = enable_mfa_for_user()
     mark_recent_mfa(client, user)
 
@@ -278,11 +278,11 @@ def test_terminating_other_session_moves_it_to_past_sessions(app, client):
     assert f"/sessions/{other_session['session_ref']}/terminate" not in markup
 
 
-def test_sessions_page_keeps_review_controls_without_bulk_revoke_action(app, client):
+def test_sessions_page_keeps_review_controls_without_bulk_revoke_action(app, client, monkeypatch):
     second_client = app.test_client()
     register(client)
     login(client)
-    login(second_client)
+    login_ignoring_session_cap(monkeypatch, second_client)
     user, _secret = enable_mfa_for_user()
     mark_recent_mfa(client, user)
 
@@ -300,15 +300,13 @@ def test_sessions_page_keeps_review_controls_without_bulk_revoke_action(app, cli
     assert "Revoke all other sessions" not in markup
     assert 'name="totp_code"' not in markup
     assert "Authenticator code" not in markup
-    assert "webauthn" not in markup.casefold()
-    assert "passkey step-up" not in markup.casefold()
 
 
-def test_web_session_terminate_requires_csrf_when_enabled(app, client):
+def test_web_session_terminate_requires_csrf_when_enabled(app, client, monkeypatch):
     second_client = app.test_client()
     register(client)
     login(client)
-    login(second_client)
+    login_ignoring_session_cap(monkeypatch, second_client)
     user, _secret = enable_mfa_for_user()
     mark_recent_mfa(client, user)
     other_ref = next(
@@ -327,11 +325,11 @@ def test_web_session_terminate_requires_csrf_when_enabled(app, client):
     assert response.status_code == 400
 
 
-def test_web_revoke_other_sessions_requires_totp_stepup(app, client):
+def test_web_revoke_other_sessions_requires_totp_stepup(app, client, monkeypatch):
     second_client = app.test_client()
     register(client)
     login(client)
-    login(second_client)
+    login_ignoring_session_cap(monkeypatch, second_client)
     user, _secret = enable_mfa_for_user()
     mark_recent_mfa(client, user)
 
@@ -368,7 +366,7 @@ def test_revoke_other_sessions_accepts_totp_stepup_and_rotates_session(app, clie
     second_client = app.test_client()
     register(client)
     login(client)
-    login(second_client)
+    login_ignoring_session_cap(monkeypatch, second_client)
 
     client.post("/mfa/setup", data={"action": "start"})
     user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
@@ -523,10 +521,100 @@ def test_session_timeout_ui_uses_explicit_extension_and_csp_safe_toggling(client
         assert passive_event not in script
 
 
+def test_session_timeout_ui_polls_status_and_declares_replaced_overlay(client):
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    mark_recent_mfa(client, user)
+    response = client.get("/dashboard")
+    markup = response.data.decode("utf-8")
+    script = Path("app/static/js/session-timeout.js").read_text(encoding="utf-8")
+
+    assert response.status_code == 200
+    assert '<dialog id="session-replaced-overlay"' in markup
+    assert "/auth/session/status" in script
+    assert "document.hidden" in script
+
+
+def test_session_status_reports_active_for_valid_session(client):
+    register(client)
+    login(client)
+
+    response = client.get("/auth/session/status")
+
+    assert response.status_code == 200
+    assert response.get_json() == {"status": "active"}
+
+
+def test_session_status_reports_replaced_after_new_login_elsewhere(app, client):
+    second_client = app.test_client()
+    register(client)
+    login(client)
+    login(second_client)
+
+    response = client.get("/auth/session/status")
+
+    assert response.status_code == 401
+    assert response.get_json() == {"status": "signed_out", "code": "replaced"}
+
+
+def test_session_status_reports_ended_after_logout(client):
+    register(client)
+    login(client)
+    client.post("/logout")
+
+    response = client.get("/auth/session/status")
+
+    assert response.status_code == 401
+    assert response.get_json() == {"status": "signed_out", "code": "ended"}
+
+
+def test_session_status_reports_ended_for_anonymous_client(app):
+    anon_client = app.test_client()
+
+    response = anon_client.get("/auth/session/status")
+
+    assert response.status_code == 401
+    assert response.get_json() == {"status": "signed_out", "code": "ended"}
+
+
+def test_session_status_polling_does_not_extend_inactivity_window(client):
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    mark_recent_mfa(client, user)
+    stale_but_valid = int(time.time()) - 60
+
+    with client.session_transaction() as sess:
+        sess["last_activity_at"] = stale_but_valid
+
+    status_response = client.get("/auth/session/status")
+    with client.session_transaction() as sess:
+        after_status_poll = sess.get("last_activity_at")
+
+    other_response = client.get("/dashboard")
+    with client.session_transaction() as sess:
+        after_normal_request = sess.get("last_activity_at")
+
+    assert status_response.status_code == 200
+    assert after_status_poll == stale_but_valid
+    assert other_response.status_code == 200
+    assert after_normal_request > stale_but_valid
+
+
 def test_security_warning_alerts_do_not_auto_dismiss():
     script = Path("app/static/js/account.js").read_text(encoding="utf-8")
 
-    assert "alert-success" in script
-    assert "alert-info" in script
+    # Warnings and errors carry security-relevant context (failed logins,
+    # account freezes, MFA changes) and must stay until dismissed manually.
     assert "alert-warning" not in script
     assert "alert-error" not in script
+
+
+def test_success_and_info_alerts_auto_dismiss():
+    script = Path("app/static/js/account.js").read_text(encoding="utf-8")
+
+    # Low-stakes confirmations are allowed to auto-dismiss.
+    assert "alert-success" in script
+    assert "alert-info" in script
+    assert "3000" in script

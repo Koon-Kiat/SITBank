@@ -1,0 +1,177 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Manual Recovery | SITBank Admin{% endblock %}
+
+{% block content %}
+<section class="dashboard admin-dashboard">
+  <div class="dashboard-header">
+    <div class="page-heading">
+      <p class="eyebrow">Account recovery</p>
+      <h1>Manual Recovery</h1>
+      <p class="muted">Review and progress manual recovery requests that could not be resolved automatically.</p>
+    </div>
+  </div>
+
+  <section class="panel" aria-labelledby="manual-recovery-summary-heading">
+    <div class="section-header">
+      <h2 id="manual-recovery-summary-heading">Queue Summary</h2>
+    </div>
+    <dl class="admin-metadata-grid">
+      <div><dt>Total</dt><dd>{{ summary.total }}</dd></div>
+      <div><dt>Active</dt><dd>{{ summary.active }}</dd></div>
+      <div><dt>Pending</dt><dd>{{ summary.pending }}</dd></div>
+      <div><dt>Under review</dt><dd>{{ summary.under_review }}</dd></div>
+      <div><dt>Approved-ready</dt><dd>{{ summary.approved_ready }}</dd></div>
+      <div><dt>Closed</dt><dd>{{ summary.closed }}</dd></div>
+      <div><dt>Linked customer</dt><dd>{{ summary.linked }}</dd></div>
+      <div><dt>Unlinked or unknown</dt><dd>{{ summary.unlinked }}</dd></div>
+    </dl>
+    <p class="muted">Unlinked requests are intentionally generic and do not confirm whether a submitted identifier belongs to an account.</p>
+  </section>
+
+  <section class="panel" aria-labelledby="manual-recovery-filters-heading">
+    <div class="section-header">
+      <h2 id="manual-recovery-filters-heading">Filters</h2>
+    </div>
+    <form class="admin-filter-grid" method="get" action="{{ url_for('admin.manual_recovery_requests') }}">
+      <label for="manual-recovery-status">Status</label>
+      <select id="manual-recovery-status" name="status">
+        <option value="">Any</option>
+        {% for status in status_options %}
+        <option value="{{ status }}"{% if filters.status == status %} selected{% endif %}>{{ status }}</option>
+        {% endfor %}
+      </select>
+      <label for="manual-recovery-linked">Linked customer</label>
+      <select id="manual-recovery-linked" name="linked">
+        <option value="">Any</option>
+        <option value="linked"{% if filters.linked == "linked" %} selected{% endif %}>Linked</option>
+        <option value="unlinked"{% if filters.linked == "unlinked" %} selected{% endif %}>Unlinked or unknown</option>
+      </select>
+      <label for="manual-recovery-active">State</label>
+      <select id="manual-recovery-active" name="active">
+        <option value="">Any</option>
+        <option value="active"{% if filters.active == "active" %} selected{% endif %}>Active</option>
+        <option value="closed"{% if filters.active == "closed" %} selected{% endif %}>Closed</option>
+      </select>
+      <label for="manual-recovery-sort">Sort</label>
+      <select id="manual-recovery-sort" name="sort">
+        {% for option in sort_options %}
+        <option value="{{ option }}"{% if filters.sort == option %} selected{% endif %}>{{ option }}</option>
+        {% endfor %}
+      </select>
+      <label for="manual-recovery-direction">Direction</label>
+      <select id="manual-recovery-direction" name="direction">
+        <option value="desc"{% if filters.direction == "desc" %} selected{% endif %}>desc</option>
+        <option value="asc"{% if filters.direction == "asc" %} selected{% endif %}>asc</option>
+      </select>
+      <button type="submit">Filter</button>
+      <a class="button secondary" href="{{ url_for('admin.manual_recovery_requests') }}">Reset</a>
+    </form>
+  </section>
+
+  <section class="panel" aria-labelledby="manual-recovery-queue-heading">
+    <div class="section-header">
+      <h2 id="manual-recovery-queue-heading">Requests</h2>
+    </div>
+    <div class="admin-table-wrap">
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th scope="col">Request</th>
+            <th scope="col">Status</th>
+            <th scope="col">Linked customer</th>
+            <th scope="col">Count</th>
+            <th scope="col">Created</th>
+            <th scope="col">Updated</th>
+            <th scope="col">Expires</th>
+            <th scope="col">Completed</th>
+            <th scope="col">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in requests %}
+          <tr>
+            <td>#{{ item.id }}</td>
+            <td>{{ item.status }}</td>
+            <td>{% if item.linked_customer %}Linked{% else %}Unlinked or unknown{% endif %}</td>
+            <td>{{ item.request_count }}</td>
+            <td><time datetime="{{ item.created_at }}">{{ item.created_at_display }}</time></td>
+            <td><time datetime="{{ item.updated_at }}">{{ item.updated_at_display }}</time></td>
+            <td><time datetime="{{ item.expires_at }}">{{ item.expires_at_display }}</time></td>
+            <td>{{ item.completed_at_display or "not completed" }}</td>
+            <td><a href="{{ url_for('admin.manual_recovery_request_detail', request_id=item.id) }}">Review</a></td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="9">No manual recovery requests match the current filters.</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  {% if selected_request %}
+  <section class="panel" aria-labelledby="manual-recovery-detail-heading">
+    <div class="section-header">
+      <h2 id="manual-recovery-detail-heading">Request #{{ selected_request.id }}</h2>
+    </div>
+    <dl class="admin-metadata-grid">
+      <div><dt>Status</dt><dd>{{ selected_request.status }}</dd></div>
+      <div><dt>Active</dt><dd>{% if selected_request.active %}Yes{% else %}No{% endif %}</dd></div>
+      <div><dt>Linked customer</dt><dd>{% if selected_request.linked_customer %}Linked{% else %}Unlinked or unknown{% endif %}</dd></div>
+      <div><dt>Request count</dt><dd>{{ selected_request.request_count }}</dd></div>
+      <div><dt>Created</dt><dd><time datetime="{{ selected_request.created_at }}">{{ selected_request.created_at_display }}</time></dd></div>
+      <div><dt>Updated</dt><dd><time datetime="{{ selected_request.updated_at }}">{{ selected_request.updated_at_display }}</time></dd></div>
+      <div><dt>Expires</dt><dd><time datetime="{{ selected_request.expires_at }}">{{ selected_request.expires_at_display }}</time></dd></div>
+      <div><dt>Completed</dt><dd>{{ selected_request.completed_at_display or "not completed" }}</dd></div>
+    </dl>
+  </section>
+
+  <section class="panel" aria-labelledby="manual-recovery-actions-heading">
+    <div class="section-header">
+      <h2 id="manual-recovery-actions-heading">Actions</h2>
+    </div>
+    {% if selected_request.transition_options %}
+    <form class="admin-form" method="post" action="{{ url_for('admin.manual_recovery_transition', request_id=selected_request.id) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="form-field">
+        <label for="manual-recovery-transition-status">Status</label>
+        <select id="manual-recovery-transition-status" name="status" required>
+          {% for status in selected_request.transition_options %}
+          <option value="{{ status }}">{{ status }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-field">
+        <label for="manual-recovery-transition-reason">Reason</label>
+        <textarea id="manual-recovery-transition-reason" name="reason" maxlength="512" required></textarea>
+      </div>
+      <div class="form-field">
+        <label for="manual-recovery-transition-totp">Authenticator code</label>
+        <input id="manual-recovery-transition-totp" name="totp_code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
+      </div>
+      <button type="submit">Submit transition</button>
+    </form>
+    {% else %}
+    <p class="muted">No direct transition is available for the current request state.</p>
+    {% endif %}
+
+    {% if selected_request.can_complete %}
+    <form class="admin-form" method="post" action="{{ url_for('admin.manual_recovery_complete', request_id=selected_request.id) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="form-field">
+        <label for="manual-recovery-complete-reason">Completion reason</label>
+        <textarea id="manual-recovery-complete-reason" name="reason" maxlength="512" required></textarea>
+      </div>
+      <div class="form-field">
+        <label for="manual-recovery-complete-totp">Authenticator code</label>
+        <input id="manual-recovery-complete-totp" name="totp_code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
+      </div>
+      <button type="submit">Request completion</button>
+    </form>
+    {% endif %}
+  </section>
+  {% endif %}
+</section>
+{% endblock %}

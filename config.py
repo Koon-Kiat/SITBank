@@ -33,6 +33,22 @@ CONFIG_DOMAIN_RE = re.compile(
     r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])$"
 )
 CONFIG_EMAIL_RE = re.compile(r"^(?=.{1,255}$)(?=.{1,128}@)[^@\x00-\x1f\x7f]+@[^@\x00-\x1f\x7f]+$")
+ROOT_ADMIN_NUMERIC_PLACEHOLDER_RE = re.compile(
+    r"^([a-z][a-z_-]*)(\d+)$"
+)
+ROOT_ADMIN_NUMERIC_PLACEHOLDER_PREFIXES = frozenset(
+    {
+        "admin",
+        "changeme",
+        "demo",
+        "example",
+        "placeholder",
+        "replaceme",
+        "root",
+        "rootadmin",
+        "test",
+    }
+)
 PERSONAL_EMAIL_DOMAINS = frozenset(
     {
         "gmail.com",
@@ -44,7 +60,9 @@ PERSONAL_EMAIL_DOMAINS = frozenset(
         "protonmail.com",
     }
 )
-ROOT_ADMIN_EMAIL_COUNT = 7
+STAGING_ROOT_ADMIN_EMAIL_COUNT = 2
+PRODUCTION_ROOT_ADMIN_EMAIL_COUNT = 3
+ROOT_ADMIN_EMAIL_COUNT = PRODUCTION_ROOT_ADMIN_EMAIL_COUNT
 DEFAULT_ROOT_ADMIN_EMAILS = frozenset(
     f"root{index}@sit.singaporetech.edu.sg"
     for index in range(1, ROOT_ADMIN_EMAIL_COUNT + 1)
@@ -86,6 +104,7 @@ CUSTOMER_RUNTIME_SECRET_ENV_NAMES = {
     "SESSION_LOOKUP_HMAC_KEY": "SESSION_LOOKUP_HMAC_KEY",
     "SQLALCHEMY_DATABASE_URI": "DATABASE_URL",
     "MFA_KEK_KEYS": "MFA_KEK_KEYS_JSON",
+    "TRANSACTION_LEDGER_HMAC_KEYS": "TRANSACTION_LEDGER_HMAC_KEYS_JSON",
     "PASSWORD_PEPPER_B64": "PASSWORD_PEPPER_B64",
     "SECURITY_AUDIT_HMAC_KEY": "SECURITY_AUDIT_HMAC_KEY",
 }
@@ -97,6 +116,7 @@ ADMIN_RUNTIME_SECRET_ENV_NAMES = {
     "SESSION_LOOKUP_HMAC_KEY": "ADMIN_SESSION_LOOKUP_HMAC_KEY",
     "SQLALCHEMY_DATABASE_URI": "ADMIN_DATABASE_URL",
     "MFA_KEK_KEYS": "MFA_KEK_KEYS_JSON",
+    "TRANSACTION_LEDGER_HMAC_KEYS": "TRANSACTION_LEDGER_HMAC_KEYS_JSON",
     "PASSWORD_PEPPER_B64": "ADMIN_PASSWORD_PEPPER_B64",
     "SECURITY_AUDIT_HMAC_KEY": "SECURITY_AUDIT_HMAC_KEY",
 }
@@ -148,11 +168,15 @@ def _read_secret_file(name: str, path_value: str) -> str:
     return value
 
 
+def _env_or_file_conflict_message(name: str) -> str:
+    return f"Configure either {name} or {name}_FILE, not both"
+
+
 def _required_env_or_file(name: str) -> str:
     direct_value = os.getenv(name)
     file_value = os.getenv(f"{name}_FILE")
     if direct_value and file_value:
-        raise RuntimeError(f"Configure either {name} or {name}_FILE, not both")
+        raise RuntimeError(_env_or_file_conflict_message(name))
     if file_value:
         value = _read_secret_file(name, file_value)
     else:
@@ -168,7 +192,7 @@ def _optional_env_or_file(name: str) -> str | None:
     direct_value = os.getenv(name)
     file_value = os.getenv(f"{name}_FILE")
     if direct_value and file_value:
-        raise RuntimeError(f"Configure either {name} or {name}_FILE, not both")
+        raise RuntimeError(_env_or_file_conflict_message(name))
     if file_value:
         value = _read_secret_file(name, file_value)
     else:
@@ -328,7 +352,7 @@ def _optional_url(name: str, *, schemes: set[str], require_password: bool) -> st
     direct_value = os.getenv(name)
     file_value = os.getenv(f"{name}_FILE")
     if direct_value and file_value:
-        raise RuntimeError(f"Configure either {name} or {name}_FILE, not both")
+        raise RuntimeError(_env_or_file_conflict_message(name))
     if file_value:
         value = _read_secret_file(name, file_value)
     else:
@@ -374,6 +398,24 @@ def _csv_env_set(name: str, *, default: str) -> frozenset[str]:
 
 def _csv_env_values(name: str, *, default: str) -> tuple[str, ...]:
     raw_value = os.getenv(name, default)
+    return _csv_values(name, raw_value)
+
+
+def _csv_env_or_file_values(name: str, *, default: str) -> tuple[str, ...]:
+    direct_value = os.getenv(name)
+    file_value = os.getenv(f"{name}_FILE")
+    if direct_value is not None and file_value:
+        raise RuntimeError(_env_or_file_conflict_message(name))
+    if file_value:
+        raw_value = _read_secret_file(name, file_value)
+    elif direct_value is not None:
+        raw_value = direct_value
+    else:
+        raw_value = default
+    return _csv_values(name, raw_value)
+
+
+def _csv_values(name: str, raw_value: str) -> tuple[str, ...]:
     values: list[str] = []
     for item in raw_value.split(","):
         normalized = item.strip().casefold()
@@ -389,6 +431,13 @@ def _csv_domain_set(name: str, *, default: str, reject_personal: bool = True) ->
     domains = _csv_env_set(name, default=default)
     if any(not _valid_config_domain(domain, reject_personal=reject_personal) for domain in domains):
         raise RuntimeError(f"{name} must contain only approved workplace email domains")
+    return domains
+
+
+def _csv_public_domain_set(name: str, *, default: str) -> frozenset[str]:
+    domains = _csv_env_set(name, default=default)
+    if any(not _valid_config_domain(domain, reject_personal=False) for domain in domains):
+        raise RuntimeError(f"{name} must contain only valid email domains")
     return domains
 
 
@@ -426,6 +475,11 @@ def _root_admin_email_has_placeholder_identity(value: str) -> bool:
         return True
     if local in ROOT_ADMIN_PLACEHOLDER_LOCAL_PARTS:
         return True
+    numeric_placeholder = ROOT_ADMIN_NUMERIC_PLACEHOLDER_RE.fullmatch(local)
+    if numeric_placeholder:
+        normalized_prefix = numeric_placeholder.group(1).replace("-", "").replace("_", "")
+        if normalized_prefix in ROOT_ADMIN_NUMERIC_PLACEHOLDER_PREFIXES:
+            return True
     if any(token in local for token in ("placeholder", "example", "demo", "changeme", "replace")):
         return True
     return domain in {"example.com", "example.test"}
@@ -436,31 +490,54 @@ def root_admin_email_allowlist_failures(
     *,
     allowed_domains: object,
     reject_default: bool,
+    required_count: int = ROOT_ADMIN_EMAIL_COUNT,
 ) -> list[str]:
-    emails, failures = _normalized_root_admin_email_values(values)
+    emails, failures = _normalized_root_admin_email_values(
+        values,
+        required_count=required_count,
+    )
     if emails is None:
         return failures
 
-    failures.extend(_root_admin_email_shape_failures(emails, allowed_domains))
+    failures.extend(
+        _root_admin_email_shape_failures(
+            emails,
+            allowed_domains,
+            required_count=required_count,
+            allow_builtin_default=not reject_default and frozenset(emails) == DEFAULT_ROOT_ADMIN_EMAILS,
+        )
+    )
     if reject_default and frozenset(emails) == DEFAULT_ROOT_ADMIN_EMAILS:
         failures.append("ROOT_ADMIN_EMAILS must be explicitly configured for production/admin runtime")
     return failures
 
 
-def _normalized_root_admin_email_values(values: object) -> tuple[tuple[str, ...] | None, list[str]]:
+def _normalized_root_admin_email_values(
+    values: object,
+    *,
+    required_count: int,
+) -> tuple[tuple[str, ...] | None, list[str]]:
     if not isinstance(values, (set, frozenset, list, tuple)):
-        return None, ["ROOT_ADMIN_EMAILS must configure exactly 7 root administrators"]
+        return None, [
+            f"ROOT_ADMIN_EMAILS must configure exactly {required_count} root administrators"
+        ]
     emails = tuple(str(item or "").strip().casefold() for item in values)
     return emails, []
 
 
-def _root_admin_email_shape_failures(emails: tuple[str, ...], allowed_domains: object) -> list[str]:
+def _root_admin_email_shape_failures(
+    emails: tuple[str, ...],
+    allowed_domains: object,
+    *,
+    required_count: int,
+    allow_builtin_default: bool = False,
+) -> list[str]:
     failures: list[str] = []
     if any(not item for item in emails):
         failures.append("ROOT_ADMIN_EMAILS must not contain empty entries")
-    if len(emails) != ROOT_ADMIN_EMAIL_COUNT:
+    if len(emails) != required_count:
         failures.append(
-            f"ROOT_ADMIN_EMAILS must configure exactly {ROOT_ADMIN_EMAIL_COUNT} root administrators"
+            f"ROOT_ADMIN_EMAILS must configure exactly {required_count} root administrators"
         )
     if len(set(emails)) != len(emails):
         failures.append("ROOT_ADMIN_EMAILS must not contain duplicate email addresses")
@@ -469,7 +546,7 @@ def _root_admin_email_shape_failures(emails: tuple[str, ...], allowed_domains: o
     email_set = frozenset(emails)
     if any(not _valid_config_email(item) for item in emails) or not _all_email_domains_allowed(email_set, allowed):
         failures.append("ROOT_ADMIN_EMAILS must use approved admin workplace domains")
-    if any(_root_admin_email_has_placeholder_identity(item) for item in emails):
+    if not allow_builtin_default and any(_root_admin_email_has_placeholder_identity(item) for item in emails):
         failures.append("ROOT_ADMIN_EMAILS must not contain placeholder, demo, or example identities")
     return failures
 
@@ -482,15 +559,25 @@ def _root_admin_email_set(
     app_env: str,
     deployment_target: str,
 ) -> frozenset[str]:
-    emails = _csv_env_values(name, default=default)
+    emails = _csv_env_or_file_values(name, default=default)
+    required_count = _required_root_admin_email_count(
+        deployment_target=deployment_target,
+    )
     failures = root_admin_email_allowlist_failures(
         emails,
         allowed_domains=allowed_domains,
         reject_default=_production_like(app_env, deployment_target),
+        required_count=required_count,
     )
     if failures:
         raise RuntimeError(failures[0])
     return frozenset(emails)
+
+
+def _required_root_admin_email_count(*, deployment_target: str) -> int:
+    if str(deployment_target or "").strip().casefold() == "staging":
+        return STAGING_ROOT_ADMIN_EMAIL_COUNT
+    return PRODUCTION_ROOT_ADMIN_EMAIL_COUNT
 
 
 def _email_domain(value: str) -> str:
@@ -844,6 +931,13 @@ def _customer_runtime_overrides(config: dict) -> dict[str, object]:
             lambda: _required_env("MFA_KEK_ACTIVE_ID"),
         )
     )
+    transaction_ledger_active_key_id = str(
+        _configured_value(
+            config,
+            "TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID",
+            lambda: _required_env("TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID"),
+        )
+    )
     return {
         "APP_MODE": "customer",
         "SECRET_ENV_NAMES": CUSTOMER_RUNTIME_SECRET_ENV_NAMES,
@@ -899,6 +993,16 @@ def _customer_runtime_overrides(config: dict) -> dict[str, object]:
                 active_label="MFA_KEK_ACTIVE_ID",
             ),
         ),
+        "TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID": transaction_ledger_active_key_id,
+        "TRANSACTION_LEDGER_HMAC_KEYS": _configured_value(
+            config,
+            "TRANSACTION_LEDGER_HMAC_KEYS",
+            lambda: _required_keyring(
+                "TRANSACTION_LEDGER_HMAC_KEYS_JSON",
+                active_key_id=transaction_ledger_active_key_id,
+                active_label="TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID",
+            ),
+        ),
         "PASSWORD_PEPPER_B64": _configured_value(
             config,
             "PASSWORD_PEPPER_B64",
@@ -942,6 +1046,13 @@ def _admin_runtime_overrides(config: dict) -> dict[str, object]:
             config,
             "MFA_KEK_ACTIVE_ID",
             lambda: _required_env("MFA_KEK_ACTIVE_ID"),
+        )
+    )
+    transaction_ledger_active_key_id = str(
+        _configured_value(
+            config,
+            "TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID",
+            lambda: _required_env("TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID"),
         )
     )
     return {
@@ -991,6 +1102,16 @@ def _admin_runtime_overrides(config: dict) -> dict[str, object]:
                 active_label="MFA_KEK_ACTIVE_ID",
             ),
         ),
+        "TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID": transaction_ledger_active_key_id,
+        "TRANSACTION_LEDGER_HMAC_KEYS": _configured_value(
+            config,
+            "TRANSACTION_LEDGER_HMAC_KEYS",
+            lambda: _required_keyring(
+                "TRANSACTION_LEDGER_HMAC_KEYS_JSON",
+                active_key_id=transaction_ledger_active_key_id,
+                active_label="TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID",
+            ),
+        ),
         "PASSWORD_PEPPER_B64": _configured_value(
             config,
             "ADMIN_PASSWORD_PEPPER_B64",
@@ -1010,7 +1131,6 @@ def _admin_runtime_overrides(config: dict) -> dict[str, object]:
         "RATELIMIT_KEY_PREFIX": config.get("ADMIN_RATELIMIT_KEY_PREFIX")
         or os.getenv("ADMIN_RATELIMIT_KEY_PREFIX", "ospbank:admin:ratelimit:"),
         "ADMIN_AUTH_ENABLED": True,
-        "ADMIN_WEBAUTHN_PHASE": "disabled",
         "ADMIN_STEP_UP_PHASE": "totp",
     }
 
@@ -1089,6 +1209,8 @@ class Config:
 
     MFA_KEK_ACTIVE_ID = None
     MFA_KEK_KEYS = None
+    TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID = None
+    TRANSACTION_LEDGER_HMAC_KEYS = None
     PASSWORD_PEPPER_B64 = None
     PASSWORD_PBKDF2_ITERATIONS = int(os.getenv("PASSWORD_PBKDF2_ITERATIONS", "600000"))
     if PASSWORD_PBKDF2_ITERATIONS < 600000:
@@ -1314,6 +1436,12 @@ class Config:
     SECURITY_STATE_RETENTION_DAYS = int(os.getenv("SECURITY_STATE_RETENTION_DAYS", "30"))
     if SECURITY_STATE_RETENTION_DAYS < 1 or SECURITY_STATE_RETENTION_DAYS > 365:
         raise RuntimeError("SECURITY_STATE_RETENTION_DAYS must be between 1 and 365")
+    PUBLIC_TRANSACTION_IDEMPOTENCY_TTL_SECONDS = _int_env(
+        "PUBLIC_TRANSACTION_IDEMPOTENCY_TTL_SECONDS",
+        default="86400",
+        minimum=60,
+        maximum=7 * 24 * 60 * 60,
+    )
 
     RATELIMIT_STORAGE_URI = MEMORY_RATE_LIMIT_STORAGE
     RATELIMIT_HEADERS_ENABLED = True
@@ -1321,6 +1449,90 @@ class Config:
     RATELIMIT_KEY_PREFIX = None
 
     FRESH_MFA_SECONDS = 5 * 60
+    ADMIN_MFA_FAILURE_LIMIT = _int_env(
+        "ADMIN_MFA_FAILURE_LIMIT",
+        default="10",
+        minimum=1,
+        maximum=20,
+    )
+    ADMIN_MFA_FAILURE_WINDOW_SECONDS = _int_env(
+        "ADMIN_MFA_FAILURE_WINDOW_SECONDS",
+        default="300",
+        minimum=60,
+        maximum=3600,
+    )
+    CUSTOMER_MFA_FAILURE_LIMIT = _int_env(
+        "CUSTOMER_MFA_FAILURE_LIMIT",
+        default="10",
+        minimum=1,
+        maximum=20,
+    )
+    CUSTOMER_MFA_FAILURE_WINDOW_SECONDS = _int_env(
+        "CUSTOMER_MFA_FAILURE_WINDOW_SECONDS",
+        default="300",
+        minimum=60,
+        maximum=3600,
+    )
+    PAYUP_QUICK_TRANSFER_CAP = _float_env(
+        "PAYUP_QUICK_TRANSFER_CAP",
+        default="200.00",
+        minimum=1.0,
+        maximum=10000.0,
+    )
+    PAYUP_QUICK_DAILY_CAP = _float_env(
+        "PAYUP_QUICK_DAILY_CAP",
+        default="500.00",
+        minimum=1.0,
+        maximum=10000.0,
+    )
+    PAYUP_STEP_UP_LIMIT_PERCENT = _int_env(
+        "PAYUP_STEP_UP_LIMIT_PERCENT",
+        default="80",
+        minimum=1,
+        maximum=100,
+    )
+    PAYUP_QUICK_SESSION_MAX_AGE_SECONDS = _int_env(
+        "PAYUP_QUICK_SESSION_MAX_AGE_SECONDS",
+        default="900",
+        minimum=60,
+        maximum=3600,
+    )
+    PAYUP_SENSITIVE_EVENT_COOLDOWN_SECONDS = _int_env(
+        "PAYUP_SENSITIVE_EVENT_COOLDOWN_SECONDS",
+        default="86400",
+        minimum=300,
+        maximum=604800,
+    )
+    PAYUP_RATE_LIMIT_ACCOUNT = _int_env(
+        "PAYUP_RATE_LIMIT_ACCOUNT",
+        default="20",
+        minimum=1,
+        maximum=100,
+    )
+    PAYUP_RATE_LIMIT_SESSION = _int_env(
+        "PAYUP_RATE_LIMIT_SESSION",
+        default="15",
+        minimum=1,
+        maximum=100,
+    )
+    PAYUP_RATE_LIMIT_IP = _int_env(
+        "PAYUP_RATE_LIMIT_IP",
+        default="30",
+        minimum=1,
+        maximum=200,
+    )
+    PAYUP_RATE_LIMIT_RECIPIENT = _int_env(
+        "PAYUP_RATE_LIMIT_RECIPIENT",
+        default="10",
+        minimum=1,
+        maximum=100,
+    )
+    PAYUP_RATE_LIMIT_WINDOW_SECONDS = _int_env(
+        "PAYUP_RATE_LIMIT_WINDOW_SECONDS",
+        default="900",
+        minimum=60,
+        maximum=3600,
+    )
     TOTP_LOGIN_VALID_WINDOW = int(os.getenv("TOTP_LOGIN_VALID_WINDOW", "1"))
     if TOTP_LOGIN_VALID_WINDOW < 0 or TOTP_LOGIN_VALID_WINDOW > 1:
         raise RuntimeError("TOTP_LOGIN_VALID_WINDOW must be 0 or 1")
@@ -1377,6 +1589,18 @@ class Config:
         for item in os.getenv("STAFF_INVITE_ALIAS_SEPARATORS", "+").split(",")
         if item
     )
+    CUSTOMER_EMAIL_PLUS_ALIAS_DOMAINS = _csv_public_domain_set(
+        "CUSTOMER_EMAIL_PLUS_ALIAS_DOMAINS",
+        default="gmail.com,googlemail.com",
+    )
+    CUSTOMER_EMAIL_DOT_INSENSITIVE_DOMAINS = _csv_public_domain_set(
+        "CUSTOMER_EMAIL_DOT_INSENSITIVE_DOMAINS",
+        default="gmail.com,googlemail.com",
+    )
+    CUSTOMER_TEMP_EMAIL_DOMAINS = _csv_public_domain_set(
+        "CUSTOMER_TEMP_EMAIL_DOMAINS",
+        default="10minutemail.com,guerrillamail.com,mailinator.com,temp-mail.org,yopmail.com",
+    )
     ROOT_ADMIN_EMAILS = _root_admin_email_set(
         "ROOT_ADMIN_EMAILS",
         default=DEFAULT_ROOT_ADMIN_EMAILS_CSV,
@@ -1414,6 +1638,10 @@ class Config:
         "TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED",
         default=False,
     )
+    TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED = _optional_bool(
+        "TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED",
+        default=False,
+    )
     TURNSTILE_ADMIN_LOGIN_ENABLED = _optional_bool("TURNSTILE_ADMIN_LOGIN_ENABLED", default=False)
     TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED = _optional_bool(
         "TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED",
@@ -1423,11 +1651,28 @@ class Config:
         "TURNSTILE_FAIL_CLOSED_IN_PRODUCTION",
         default=True,
     )
+    TURNSTILE_ALLOW_TEST_ACTION = _optional_bool(
+        "TURNSTILE_ALLOW_TEST_ACTION",
+        default=False,
+    )
     PROFILE_EMAIL_CHANGE_TTL_SECONDS = _int_env(
         "PROFILE_EMAIL_CHANGE_TTL_SECONDS",
         default="300",
         minimum=60,
         maximum=900,
+    )
+    TOPUP_APPROVAL_TTL_SECONDS = _int_env(
+        "TOPUP_APPROVAL_TTL_SECONDS",
+        default="300",
+        minimum=60,
+        maximum=900,
+    )
+    DEVICE_COOKIE_NAME = "__Host-sitbank_device"
+    DEVICE_COOKIE_MAX_AGE_SECONDS = _int_env(
+        "DEVICE_COOKIE_MAX_AGE_SECONDS",
+        default=str(180 * 24 * 60 * 60),
+        minimum=24 * 60 * 60,
+        maximum=365 * 24 * 60 * 60,
     )
 
 

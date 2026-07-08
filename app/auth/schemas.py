@@ -6,11 +6,10 @@ from app.security.passwords import password_max_chars, password_min_length
 
 
 USERNAME_RE = r"^[A-Za-z0-9_.-]{3,64}$"
-FULL_NAME_RE = r"^[^\x00-\x1f\x7f<>]+$"
+FULL_NAME_RE = r"^[A-Za-z][A-Za-z '\-]*[A-Za-z]$|^[A-Za-z]$"
 PHONE_RE = r"^[89][0-9]{7}$"
 TOTP_RE = r"^[0-9]{6}$"
 SESSION_REFERENCE_RE = r"^[A-Fa-f0-9]{32}$"
-STEP_UP_TOKEN_RE = r"^[A-Za-z0-9_-]{32,256}$"
 RESET_TOKEN_RE = r"^[A-Za-z0-9_-]{16,96}\.[A-Za-z0-9_-]{32,128}$"
 REGISTRATION_OTP_RE = r"^[0-9]{6}$"
 INVALID_USERNAME_MESSAGE = "Username contains invalid characters"
@@ -55,7 +54,7 @@ class RegisterSchema(TurnstileTokenMixin, Schema):
         required=True,
         validate=[
             validate.Length(min=1, max=120),
-            validate.Regexp(FULL_NAME_RE, error="Full name contains invalid characters"),
+            validate.Regexp(FULL_NAME_RE, error="Full name must contain only English letters, spaces, hyphens, and apostrophes"),
         ],
     )
     phone_number = fields.Str(
@@ -102,7 +101,7 @@ class ForgotPasswordSchema(TurnstileTokenMixin, Schema):
     email = fields.Email(required=True, validate=validate.Length(max=255))
 
 
-class ManualRecoverySchema(Schema):
+class ManualRecoverySchema(TurnstileTokenMixin, Schema):
     identifier = fields.Str(required=True, validate=validate.Length(min=1, max=255))
 
 
@@ -126,10 +125,14 @@ class AuthenticationCodeSchema(Schema):
     totp_code = fields.Str(required=True, load_only=True, validate=validate.Length(min=1, max=80))
 
 
+class RecoveryCodeSchema(Schema):
+    recovery_code = fields.Str(required=True, load_only=True, validate=validate.Length(min=1, max=80))
+
+
 class PasswordResetMfaMethodSchema(Schema):
     method = fields.Str(
         required=True,
-        validate=validate.OneOf(["totp", "authenticator"]),
+        validate=validate.OneOf(["totp", "authenticator", "recovery", "recovery_code"]),
     )
 
 
@@ -160,11 +163,6 @@ class PasswordChangeSchema(Schema):
         load_only=True,
         validate=validate.Regexp(TOTP_RE, error=MFA_CODE_ERROR),
     )
-    stepup_token = fields.Str(
-        required=False,
-        load_only=True,
-        validate=validate.Regexp(STEP_UP_TOKEN_RE, error="Invalid step-up token"),
-    )
     @validates_schema
     def validate_password_match(self, data, **_kwargs):
         if data.get("new_password") != data.get("confirm_new_password"):
@@ -175,10 +173,12 @@ class PasswordResetSchema(Schema):
     new_password = fields.Str(
         required=True,
         load_only=True,
+        validate=password_length(),
     )
     confirm_new_password = fields.Str(
         required=True,
         load_only=True,
+        validate=password_length(),
     )
 
     @validates_schema
@@ -195,9 +195,4 @@ class HighRiskTotpSchema(Schema):
         required=False,
         load_only=True,
         validate=validate.Regexp(TOTP_RE, error=MFA_CODE_ERROR),
-    )
-    stepup_token = fields.Str(
-        required=False,
-        load_only=True,
-        validate=validate.Regexp(STEP_UP_TOKEN_RE, error="Invalid step-up token"),
     )

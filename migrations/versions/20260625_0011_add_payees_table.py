@@ -21,7 +21,7 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer(), nullable=False),
         sa.Column("user_id", sa.Integer(), nullable=False),
         sa.Column("nickname", sa.String(64), nullable=False),
-        sa.Column("account_number", sa.String(9), nullable=False),
+        sa.Column("account_number", sa.String(12), nullable=False),
         sa.Column("recipient_name", sa.String(128), nullable=False),
         sa.Column(
             "created_at",

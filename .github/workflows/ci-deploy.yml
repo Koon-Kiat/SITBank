@@ -234,6 +234,8 @@ jobs:
       DATABASE_URL: postgresql+psycopg2://ci:ci@127.0.0.1:5432/ci
       MFA_KEK_ACTIVE_ID: ci-mfa
       MFA_KEK_KEYS_JSON: '{"ci-mfa":"NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ="}'
+      TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID: ci-ledger
+      TRANSACTION_LEDGER_HMAC_KEYS_JSON: '{"ci-ledger":"YmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmI="}'
       PASSWORD_PEPPER_B64: MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE=
       PASSWORD_PBKDF2_ITERATIONS: "600000"
       COMMON_PASSWORDS_PATH: tests/fixtures/common_passwords.txt
@@ -271,9 +273,9 @@ jobs:
           python ops/security/check_dependency_locks.py
           python ops/security/scan_repository_secrets.py --history
 
-      # Pinned to actions/upload-artifact v6.0.0 (Node.js 24).
+      # Pinned to actions/upload-artifact v7.0.1 (Node.js 24).
       - name: Upload SonarQube coverage report
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: sonarqube-coverage-${{ github.run_id }}
           path: |
@@ -397,10 +399,10 @@ jobs:
 
             - Workflow run: [view this run](${workflowUrl})
             - ${findings}
-            - Quality gate: reporting-only
-            - Blocking status: the quality gate is not currently blocking
+            - Quality gate: enforced
+            - Blocking status: this analysis must pass for trusted pull requests and release-producing runs
 
-            SonarQube Cloud is reporting-only for now. Full findings are available in SonarQube Cloud.
+            SonarQube Cloud is a blocking quality gate for trusted runs. Full findings are available in SonarQube Cloud.
 
             SonarQube Cloud is an additional code-quality and security analysis layer. It does not replace pytest, CodeQL, Semgrep, Bandit, Gitleaks, the custom repository secret scanner, dependency auditing, Trivy, ShellCheck, Hadolint, Syft, deployment tests, or production guard tests.
             `;
@@ -484,7 +486,7 @@ jobs:
           exit-code: "0"
           ignore-unfixed: false
           severity: CRITICAL
-          version: v0.71.2
+          version: v0.72.0
 
       # zizmor: ignore[unpinned-tools] Trivy action is SHA-pinned; the action installs a pinned Trivy tool version.
       - name: Block unexpected critical vulnerabilities
@@ -496,7 +498,7 @@ jobs:
           ignore-unfixed: false
           severity: CRITICAL
           trivyignores: .trivyignore
-          version: v0.71.2
+          version: v0.72.0
 
       # zizmor: ignore[unpinned-tools] Trivy action is SHA-pinned; the action installs a pinned Trivy tool version.
       - name: Block fixable high and critical vulnerabilities
@@ -509,7 +511,7 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
           severity: HIGH,CRITICAL
-          version: v0.71.2
+          version: v0.72.0
 
   deployment-preflight:
     name: Deployment preflight
@@ -567,12 +569,21 @@ jobs:
           inputs.target_environment == 'staging'
         )
       )
-    needs: [test, workflow-security, deployment-preflight, resolve-source]
+    needs:
+      - test
+      - playwright-e2e
+      - sonarqube
+      - workflow-security
+      - deployment-preflight
+      - resolve-source
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
+      id-token: write
       packages: write
+      attestations: write
+      artifact-metadata: write
     outputs:
       digest: ${{ steps.push.outputs.digest }}
       repository: ${{ steps.image.outputs.repository }}
@@ -635,6 +646,14 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Attest the exact published image digest
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763
+        with:
+          subject-name: ${{ steps.image.outputs.repository }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+          show-summary: false
+
   release-verify:
     name: Release verification
     if: >-
@@ -651,6 +670,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     permissions:
+      attestations: read
       contents: read
       id-token: write
       packages: write
@@ -717,6 +737,21 @@ jobs:
           )"
           test "${revision}" = "${RELEASE_SHA}"
 
+      - name: Verify signed SLSA provenance for the exact digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE: ${{ steps.image.outputs.image }}
+          RELEASE_SHA: ${{ steps.image.outputs.revision }}
+        run: |
+          gh attestation verify "oci://${IMAGE}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --signer-workflow "github.com/${GITHUB_REPOSITORY}/.github/workflows/ci-deploy.yml" \
+            --source-ref "refs/heads/main" \
+            --source-digest "${RELEASE_SHA}" \
+            --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --deny-self-hosted-runners \
+            >/dev/null
+
       - name: Validate production and staging Compose models for the exact digest
         env:
           SITBANK_IMAGE: ${{ steps.image.outputs.image }}
@@ -739,7 +774,7 @@ jobs:
           exit-code: "0"
           ignore-unfixed: false
           severity: CRITICAL
-          version: v0.71.2
+          version: v0.72.0
 
       # zizmor: ignore[unpinned-tools] Trivy action is SHA-pinned; the action installs a pinned Trivy tool version.
       - name: Block unexpected critical vulnerabilities in the published digest
@@ -751,7 +786,7 @@ jobs:
           ignore-unfixed: false
           severity: CRITICAL
           trivyignores: .trivyignore
-          version: v0.71.2
+          version: v0.72.0
 
       # zizmor: ignore[unpinned-tools] Trivy action is SHA-pinned; the action installs a pinned Trivy tool version.
       - name: Block fixable high and critical vulnerabilities in the published digest
@@ -764,7 +799,7 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
           severity: HIGH,CRITICAL
-          version: v0.71.2
+          version: v0.72.0
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
@@ -816,12 +851,13 @@ jobs:
       REMOTE_USER: ${{ vars.STAGING_EC2_DEPLOY_USER }}
       STAGING_PUBLIC_HOST: ${{ vars['STAGING_PUBLIC_HOST'] || 'staging-sitbank.pp.ua' }}
       STAGING_MFA_KEK_ACTIVE_ID: ${{ vars.STAGING_MFA_KEK_ACTIVE_ID }}
+      STAGING_TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID: ${{ vars.STAGING_TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID }}
       STAGING_SESSION_HMAC_ACTIVE_KEY_ID: ${{ vars.STAGING_SESSION_HMAC_ACTIVE_KEY_ID }}
       STAGING_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID: ${{ vars.STAGING_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID }}
       STAGING_PASSWORD_PBKDF2_ITERATIONS: ${{ vars.STAGING_PASSWORD_PBKDF2_ITERATIONS }}
       STAGING_MFA_ISSUER_NAME: ${{ vars.STAGING_MFA_ISSUER_NAME }}
       STAGING_PASSWORD_RESET_EMAIL_FROM: ${{ vars.STAGING_PASSWORD_RESET_EMAIL_FROM }}
-      STAGING_ROOT_ADMIN_EMAILS: ${{ vars.ROOT_ADMIN_EMAILS }}
+      STAGING_ROOT_ADMIN_EMAILS: ${{ secrets.STAGING_ROOT_ADMIN_EMAILS }}
       STAGING_SMTP_HOST: ${{ vars.STAGING_SMTP_HOST }}
       STAGING_CLOUDFLARE_ACCESS_AUD: ${{ vars.STAGING_CLOUDFLARE_ACCESS_AUD }}
       STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN: ${{ vars.STAGING_CLOUDFLARE_ACCESS_TEAM_DOMAIN }}
@@ -831,8 +867,10 @@ jobs:
       STAGING_TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED: ${{ vars.STAGING_TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED }}
       STAGING_TURNSTILE_CUSTOMER_REGISTER_ENABLED: ${{ vars.STAGING_TURNSTILE_CUSTOMER_REGISTER_ENABLED }}
       STAGING_TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED: ${{ vars.STAGING_TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED }}
+      STAGING_TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED: ${{ vars.STAGING_TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED }}
       STAGING_TURNSTILE_ADMIN_LOGIN_ENABLED: ${{ vars.STAGING_TURNSTILE_ADMIN_LOGIN_ENABLED }}
       STAGING_TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED: ${{ vars.STAGING_TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED }}
+      STAGING_TURNSTILE_FAIL_CLOSED_IN_PRODUCTION: ${{ vars.STAGING_TURNSTILE_FAIL_CLOSED_IN_PRODUCTION }}
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
@@ -854,6 +892,7 @@ jobs:
             REMOTE_USER
             STAGING_PUBLIC_HOST
             STAGING_MFA_KEK_ACTIVE_ID
+            STAGING_TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID
             STAGING_SESSION_HMAC_ACTIVE_KEY_ID
             STAGING_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID
             STAGING_PASSWORD_PBKDF2_ITERATIONS
@@ -869,8 +908,10 @@ jobs:
             STAGING_TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED
             STAGING_TURNSTILE_CUSTOMER_REGISTER_ENABLED
             STAGING_TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED
+            STAGING_TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED
             STAGING_TURNSTILE_ADMIN_LOGIN_ENABLED
             STAGING_TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED
+            STAGING_TURNSTILE_FAIL_CLOSED_IN_PRODUCTION
             STAGING_EC2_KNOWN_HOSTS
             STAGING_EC2_SSH_PRIVATE_KEY_B64
             TS_OAUTH_CLIENT_ID
@@ -896,7 +937,7 @@ jobs:
       - name: Install Cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
 
-      - name: Render and sign non-secret staging runtime configuration
+      - name: Render and sign staging runtime configuration
         run: |
           umask 077
           python ops/deploy/render_container_bundle.py \
@@ -917,7 +958,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
 
       - name: Join the staging deploy tailnet
-        uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8
+        uses: tailscale/github-action@780049a30b6ff5c378a9e7b389d15ece7a204888
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
@@ -967,6 +1008,31 @@ jobs:
           printf '%s' "${TURNSTILE_SECRET_KEY}" \
             > "turnstile-staging-${RELEASE_SHA}.secret"
 
+      - name: Stage restricted staging root-admin allowlist
+        run: |
+          umask 077
+          python - <<'PY'
+          import os
+          import re
+          import sys
+
+          value = os.environ.get("STAGING_ROOT_ADMIN_EMAILS", "")
+          emails = [item.strip().casefold() for item in value.split(",") if item.strip()]
+          if len(emails) != 2 or len(set(emails)) != 2:
+              print("::error::STAGING_ROOT_ADMIN_EMAILS must contain exactly 2 unique workplace email addresses.", file=sys.stderr)
+              raise SystemExit(1)
+          for email in emails:
+              if not re.fullmatch(r"(?=\S{1,128}@\S{1,253}$)[^@\x00-\x1f\x7f]+@[^@\x00-\x1f\x7f]+", email):
+                  print("::error::STAGING_ROOT_ADMIN_EMAILS contains an invalid email address.", file=sys.stderr)
+                  raise SystemExit(1)
+              domain = email.rsplit("@", 1)[1]
+              if domain not in {"sit.singaporetech.edu.sg", "singaporetech.edu.sg"}:
+                  print("::error::STAGING_ROOT_ADMIN_EMAILS must contain only SIT workplace email addresses.", file=sys.stderr)
+                  raise SystemExit(1)
+          PY
+          printf '%s' "${STAGING_ROOT_ADMIN_EMAILS}" \
+            > "root-admin-emails-staging-${RELEASE_SHA}.secret"
+
       - name: Verify trusted staging deployment files
         run: |
           expected_wrapper_hash="$(
@@ -1014,6 +1080,7 @@ jobs:
             "runtime-staging-${RELEASE_SHA}.sigstore.json" \
             "registry-staging-${RELEASE_SHA}.credentials" \
             "turnstile-staging-${RELEASE_SHA}.secret" \
+            "root-admin-emails-staging-${RELEASE_SHA}.secret" \
             "${REMOTE_USER}@${REMOTE_HOST}:incoming/"
 
       - name: Deploy verified image digest
@@ -1033,7 +1100,8 @@ jobs:
             "runtime-staging-${RELEASE_SHA}.sha256" \
             "runtime-staging-${RELEASE_SHA}.sigstore.json" \
             "registry-staging-${RELEASE_SHA}.credentials" \
-            "turnstile-staging-${RELEASE_SHA}.secret"
+            "turnstile-staging-${RELEASE_SHA}.secret" \
+            "root-admin-emails-staging-${RELEASE_SHA}.secret"
 
       - name: Disconnect staging deploy tailnet
         if: ${{ always() }}
@@ -1082,12 +1150,13 @@ jobs:
       REMOTE_USER: ${{ vars.PROD_EC2_DEPLOY_USER }}
       PROD_PUBLIC_HOST: ${{ vars['PROD_PUBLIC_HOST'] || 'sitbank.pp.ua' }}
       PROD_MFA_KEK_ACTIVE_ID: ${{ vars.PROD_MFA_KEK_ACTIVE_ID }}
+      PROD_TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID: ${{ vars.PROD_TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID }}
       PROD_SESSION_HMAC_ACTIVE_KEY_ID: ${{ vars.PROD_SESSION_HMAC_ACTIVE_KEY_ID }}
       PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID: ${{ vars.PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID }}
       PROD_PASSWORD_PBKDF2_ITERATIONS: ${{ vars.PROD_PASSWORD_PBKDF2_ITERATIONS }}
       PROD_MFA_ISSUER_NAME: ${{ vars.PROD_MFA_ISSUER_NAME }}
       PROD_PASSWORD_RESET_EMAIL_FROM: ${{ vars.PROD_PASSWORD_RESET_EMAIL_FROM }}
-      PROD_ROOT_ADMIN_EMAILS: ${{ vars.ROOT_ADMIN_EMAILS }}
+      PROD_ROOT_ADMIN_EMAILS: ${{ secrets.PROD_ROOT_ADMIN_EMAILS }}
       PROD_SMTP_HOST: ${{ vars.PROD_SMTP_HOST }}
       PROD_TURNSTILE_ENABLED: ${{ vars.PROD_TURNSTILE_ENABLED }}
       PROD_TURNSTILE_SITE_KEY: ${{ vars.PROD_TURNSTILE_SITE_KEY }}
@@ -1095,8 +1164,10 @@ jobs:
       PROD_TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED: ${{ vars.PROD_TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED }}
       PROD_TURNSTILE_CUSTOMER_REGISTER_ENABLED: ${{ vars.PROD_TURNSTILE_CUSTOMER_REGISTER_ENABLED }}
       PROD_TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED: ${{ vars.PROD_TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED }}
+      PROD_TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED: ${{ vars.PROD_TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED }}
       PROD_TURNSTILE_ADMIN_LOGIN_ENABLED: ${{ vars.PROD_TURNSTILE_ADMIN_LOGIN_ENABLED }}
       PROD_TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED: ${{ vars.PROD_TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED }}
+      PROD_TURNSTILE_FAIL_CLOSED_IN_PRODUCTION: ${{ vars.PROD_TURNSTILE_FAIL_CLOSED_IN_PRODUCTION }}
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
@@ -1118,6 +1189,7 @@ jobs:
             REMOTE_USER
             PROD_PUBLIC_HOST
             PROD_MFA_KEK_ACTIVE_ID
+            PROD_TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID
             PROD_SESSION_HMAC_ACTIVE_KEY_ID
             PROD_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID
             PROD_PASSWORD_PBKDF2_ITERATIONS
@@ -1131,8 +1203,10 @@ jobs:
             PROD_TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED
             PROD_TURNSTILE_CUSTOMER_REGISTER_ENABLED
             PROD_TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED
+            PROD_TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED
             PROD_TURNSTILE_ADMIN_LOGIN_ENABLED
             PROD_TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED
+            PROD_TURNSTILE_FAIL_CLOSED_IN_PRODUCTION
             PROD_EC2_KNOWN_HOSTS
             PROD_EC2_SSH_PRIVATE_KEY_B64
             TS_OAUTH_CLIENT_ID
@@ -1158,7 +1232,7 @@ jobs:
       - name: Install Cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
 
-      - name: Render and sign non-secret production runtime configuration
+      - name: Render and sign production runtime configuration
         run: |
           umask 077
           python ops/deploy/render_container_bundle.py \
@@ -1179,7 +1253,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
 
       - name: Join the production deploy tailnet
-        uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8
+        uses: tailscale/github-action@780049a30b6ff5c378a9e7b389d15ece7a204888
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
@@ -1229,6 +1303,31 @@ jobs:
           printf '%s' "${TURNSTILE_SECRET_KEY}" \
             > "turnstile-${RELEASE_SHA}.secret"
 
+      - name: Stage restricted production root-admin allowlist
+        run: |
+          umask 077
+          python - <<'PY'
+          import os
+          import re
+          import sys
+
+          value = os.environ.get("PROD_ROOT_ADMIN_EMAILS", "")
+          emails = [item.strip().casefold() for item in value.split(",") if item.strip()]
+          if len(emails) != 3 or len(set(emails)) != 3:
+              print("::error::PROD_ROOT_ADMIN_EMAILS must contain exactly 3 unique workplace email addresses.", file=sys.stderr)
+              raise SystemExit(1)
+          for email in emails:
+              if not re.fullmatch(r"(?=\S{1,128}@\S{1,253}$)[^@\x00-\x1f\x7f]+@[^@\x00-\x1f\x7f]+", email):
+                  print("::error::PROD_ROOT_ADMIN_EMAILS contains an invalid email address.", file=sys.stderr)
+                  raise SystemExit(1)
+              domain = email.rsplit("@", 1)[1]
+              if domain not in {"sit.singaporetech.edu.sg", "singaporetech.edu.sg"}:
+                  print("::error::PROD_ROOT_ADMIN_EMAILS must contain only SIT workplace email addresses.", file=sys.stderr)
+                  raise SystemExit(1)
+          PY
+          printf '%s' "${PROD_ROOT_ADMIN_EMAILS}" \
+            > "root-admin-emails-${RELEASE_SHA}.secret"
+
       - name: Verify trusted production deployment files
         run: |
           expected_wrapper_hash="$(
@@ -1276,6 +1375,7 @@ jobs:
             "runtime-${RELEASE_SHA}.sigstore.json" \
             "registry-${RELEASE_SHA}.credentials" \
             "turnstile-${RELEASE_SHA}.secret" \
+            "root-admin-emails-${RELEASE_SHA}.secret" \
             "${REMOTE_USER}@${REMOTE_HOST}:incoming/"
 
       - name: Deploy verified image digest
@@ -1295,7 +1395,8 @@ jobs:
             "runtime-${RELEASE_SHA}.sha256" \
             "runtime-${RELEASE_SHA}.sigstore.json" \
             "registry-${RELEASE_SHA}.credentials" \
-            "turnstile-${RELEASE_SHA}.secret"
+            "turnstile-${RELEASE_SHA}.secret" \
+            "root-admin-emails-${RELEASE_SHA}.secret"
 
       - name: Disconnect production deploy tailnet
         if: ${{ always() }}
@@ -1359,14 +1460,14 @@ jobs:
           fi
 
           readonly private_admin_url="https://${TAILSCALE_PRIVATE_ADMIN_HOST}"
-          if curl --silent --head --max-time 8 \
+          if curl --silent --request GET --max-time 8 \
             --output /dev/null "${private_admin_url}/login"; then
             echo "::error::Private admin responded before the protected runner joined the tailnet."
             exit 1
           fi
 
       - name: Join the approved tailnet with OAuth
-        uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8
+        uses: tailscale/github-action@780049a30b6ff5c378a9e7b389d15ece7a204888
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
@@ -1388,7 +1489,7 @@ jobs:
           fi
 
           private_status="$(
-            curl --silent --show-error --head --max-time 15 \
+            curl --silent --show-error --request GET --max-time 15 \
               --output /dev/null --write-out '%{http_code}' \
               "https://${TAILSCALE_PRIVATE_ADMIN_HOST}/login"
           )"

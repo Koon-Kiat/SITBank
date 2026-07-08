@@ -40,7 +40,11 @@ def _nginx_server_block(config: str, server_name: str, *, tls: bool = False) -> 
         blocks.append(config[start:] if end == -1 else config[start:end])
     assert blocks, f"Missing Nginx server block for {server_name}"
     if tls:
-        return next(block for block in blocks if "listen 443 ssl http2;" in block)
+        return next(
+            block
+            for block in blocks
+            if "listen __SITBANK_PUBLIC_BIND_ADDRESS__:443 ssl http2;" in block
+        )
     return blocks[0]
 
 
@@ -391,6 +395,7 @@ def test_nginx_preserves_origin_pull_and_forwards_only_assertion():
         "/etc/nginx/cloudflare-authenticated-origin-pull-ca.pem;" in nginx
     )
     assert "ssl_verify_client on;" in nginx
+    assert "include /etc/nginx/snippets/sitbank-cloudflare-real-ip.conf;" in nginx
     assert "$ssl_client_verify" not in nginx
     assert "auth_basic" not in nginx
     assert "listen 127.0.0.1:8081;" in nginx

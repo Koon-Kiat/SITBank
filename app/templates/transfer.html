@@ -24,6 +24,7 @@
       <p class="muted">Account: •••-•••-{{ payee.account_number[-3:] }}</p>
       <p class="muted">Nickname: {{ payee.nickname }}</p>
       <p class="muted">Transfers are in SGD. Maximum single transfer: SGD 50,000.00.</p>
+      <p class="muted">Daily limit remaining: SGD {{ "%.2f"|format(remaining) }} of SGD {{ "%.2f"|format(daily_limit) }}.</p>
     </article>
 
     <article class="profile-panel profile-card">
@@ -49,7 +50,6 @@
           <label for="{{ form.totp_code.id }}">Authenticator code</label>
           {{ form.totp_code(inputmode="numeric", autocomplete="one-time-code", maxlength="6", placeholder="6-digit code") }}
           {% for error in form.totp_code.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
-          {{ form.stepup_token() }}
           <p class="hint">Required to authorise this transfer.</p>
         </div>
         <button class="button full" type="submit">Review Transfer</button>

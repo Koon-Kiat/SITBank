@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import hashlib
 import hmac
 import json
@@ -240,6 +239,67 @@ def audit_system_event(
     user_id: int | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> None:
+    _write_system_audit_event(
+        event_type,
+        outcome,
+        user_id=user_id,
+        metadata=metadata,
+        required=False,
+    )
+
+
+def audit_system_event_required(
+    event_type: str,
+    outcome: str,
+    *,
+    user_id: int | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    """Commit a standalone system audit event or fail the operation closed."""
+    _write_system_audit_event(
+        event_type,
+        outcome,
+        user_id=user_id,
+        metadata=metadata,
+        required=True,
+    )
+
+
+def audit_system_event_in_transaction_required(
+    event_type: str,
+    outcome: str,
+    *,
+    user_id: int | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> SecurityAuditEvent:
+    """Flush a required system event into the caller-owned transaction."""
+    event = _write_system_audit_event(
+        event_type,
+        outcome,
+        user_id=user_id,
+        metadata=metadata,
+        required=True,
+        commit=False,
+    )
+    if event is None:  # pragma: no cover - required writes raise on failure.
+        raise AuditWriteError("Required system audit event could not be recorded")
+    return event
+
+
+def log_committed_system_audit_event(event: SecurityAuditEvent) -> None:
+    """Emit the structured log only after the caller commits the audit row."""
+    _log_audit_record(event, path=None, method=None)
+
+
+def _write_system_audit_event(
+    event_type: str,
+    outcome: str,
+    *,
+    user_id: int | None,
+    metadata: dict[str, Any] | None,
+    required: bool,
+    commit: bool = True,
+) -> SecurityAuditEvent | None:
     clean_event_type = _clean_audit_text(event_type, 80)
     clean_outcome = _clean_audit_text(outcome, 24)
     clean_metadata = {**_sanitize_metadata(metadata or {}), "actor": "system"}
@@ -264,9 +324,11 @@ def audit_system_event(
         event.event_hash = _compute_audit_event_hash(event)
         db.session.add(event)
         db.session.flush()
-        db.session.commit()
+        if commit:
+            db.session.commit()
     except Exception as exc:
-        db.session.rollback()
+        if commit:
+            db.session.rollback()
         _log_audit_write_failed(
             event_type=clean_event_type,
             outcome=clean_outcome,
@@ -280,52 +342,15 @@ def audit_system_event(
             metadata=clean_metadata,
             error_type=type(exc).__name__,
         )
-        return
+        if required:
+            raise AuditWriteError(
+                "Required system audit event could not be recorded"
+            ) from exc
+        return None
 
-    _log_audit_record(event, path=None, method=None)
-
-
-def audit_webauthn_event(
-    action: str,
-    outcome: str,
-    *,
-    user: User | None = None,
-    user_id: int | None = None,
-    credential_id: bytes | str | None = None,
-    label: str | None = None,
-    aaguid: str | None = None,
-    metadata: dict[str, Any] | None = None,
-    session_id: str | None = None,
-    required: bool = False,
-) -> None:
-    credential_ref = None
-    if isinstance(credential_id, bytes):
-        credential_value = _bytes_to_base64url(credential_id)
-        credential_ref = audit_reference("webauthn_credential", credential_value) or "[unavailable]"
-    elif credential_id:
-        credential_ref = audit_reference("webauthn_credential", credential_id) or "[unavailable]"
-
-    event_metadata = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "action": action,
-        "credential_ref": credential_ref,
-        "label": label,
-        "aaguid": aaguid,
-    }
-    event_metadata.update(metadata or {})
-    writer = audit_event_required if required else audit_event
-    writer(
-        f"webauthn_{action}",
-        outcome,
-        user=user,
-        user_id=user_id,
-        metadata=event_metadata,
-        session_id=session_id,
-    )
-
-
-def _bytes_to_base64url(value: bytes) -> str:
-    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+    if commit:
+        _log_audit_record(event, path=None, method=None)
+    return event
 
 
 def verify_audit_hash_chain(*, anchor: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -453,6 +478,57 @@ def write_audit_log_anchor(path: Path) -> dict[str, Any]:
         if temporary_path.exists():
             temporary_path.unlink()
     return anchor
+
+
+def refresh_audit_log_anchor(path: Path) -> dict[str, Any]:
+    """Refresh only a validated or append-only stale configured anchor."""
+    validate_existing_audit_anchor_path(path)
+    try:
+        existing_anchor = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Configured audit anchor is unreadable or malformed") from exc
+    if not isinstance(existing_anchor, dict):
+        raise RuntimeError("Configured audit anchor must contain a JSON object")
+
+    try:
+        _lock_audit_chain_for_insert()
+        verification = verify_audit_hash_chain(anchor=existing_anchor)
+        if (
+            verification.get("valid") is not True
+            or verification.get("anchor_status") not in {"validated", "stale"}
+        ):
+            raise RuntimeError(
+                "Audit anchor refresh refused because chain or anchor validation failed"
+            )
+        previous_status = str(verification["anchor_status"])
+        refreshed_anchor = write_audit_log_anchor(path)
+        if refreshed_anchor.get("valid") is not True:
+            raise RuntimeError("Audit anchor refresh refused because the chain is invalid")
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        raise
+
+    return {
+        "message": "security_audit_anchor_refreshed",
+        "previous_anchor_status": previous_status,
+        "anchor_status": "validated",
+        "anchor_refresh_required": False,
+        "event_count": int(refreshed_anchor.get("event_count") or 0),
+        "latest_event_id": refreshed_anchor.get("latest_event_id"),
+    }
+
+
+def validate_existing_audit_anchor_path(path: Path) -> None:
+    if not path.is_absolute():
+        raise RuntimeError("Configured audit anchor path must be absolute")
+    if path.is_symlink() or not path.is_file():
+        raise RuntimeError("Configured audit anchor must be a regular non-symlink file")
+    parent = path.parent
+    if not parent.is_dir() or any(item.is_symlink() for item in path.parents):
+        raise RuntimeError("Configured audit anchor parent directory is unsafe")
+    if os.name != "nt" and path.stat().st_mode & 0o077:
+        raise RuntimeError("Configured audit anchor permissions must be owner-only")
 
 
 def _sanitize_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
@@ -885,8 +961,16 @@ def _set_critical_anchor_errors(
 
 
 def _log_audit_record(event: SecurityAuditEvent, *, path: str | None, method: str | None) -> None:
+    reason = _metadata_reason(event.event_metadata or {})
     payload = {
         "message": "security_audit_event",
+        "event": event.event_type,
+        "environment": _current_environment(),
+        "service": _current_service(),
+        "result": event.outcome,
+        "reason": reason,
+        "route": path,
+        "status": "recorded",
         "event_id": event.id,
         "event_type": event.event_type,
         "outcome": event.outcome,
@@ -923,6 +1007,14 @@ def _log_audit_write_failed(
 ) -> None:
     payload = {
         "message": "security_audit_write_failed",
+        "event": "security_audit_write_failed",
+        "environment": _current_environment(),
+        "service": _current_service(),
+        "result": "failure",
+        "reason": _clean_audit_text(error_type, 80),
+        "route": path,
+        "status": "audit_write_failed",
+        "target_event": event_type,
         "event_type": event_type,
         "outcome": outcome,
         "user_id": user_id,
@@ -937,6 +1029,26 @@ def _log_audit_write_failed(
         "metadata": _sanitize_metadata(metadata),
     }
     current_app.logger.warning(json.dumps(payload, separators=(",", ":"), sort_keys=True))
+
+
+def _current_environment() -> str:
+    return _clean_audit_text(current_app.config.get("APP_ENV") or "unknown", 40)
+
+
+def _current_service() -> str:
+    app_mode = str(current_app.config.get("APP_MODE") or "").casefold()
+    if app_mode == "admin":
+        return "sitbank-admin"
+    if app_mode == "customer":
+        return "sitbank-app"
+    return "sitbank"
+
+
+def _metadata_reason(metadata: Mapping[str, Any]) -> str | None:
+    reason = metadata.get("reason")
+    if isinstance(reason, bool | int | float | str):
+        return _clean_audit_text(reason, 80) or None
+    return None
 
 
 def _utc_iso(value: datetime) -> str:

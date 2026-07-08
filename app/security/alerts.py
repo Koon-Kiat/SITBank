@@ -22,28 +22,23 @@ from app.security.session_hmac import active_hmac_hex
 IMMEDIATE_ALERT_EVENT_TYPES = {
     "security_audit_write_failed": "security_audit_write_failed",
     "account_lock": "account_lock",
-    "webauthn_clone_detected": "webauthn_clone_detected",
     "audit_chain_verification_failed": "audit_chain_verification_failed",
     "audit_anchor_mismatch": "audit_anchor_mismatch",
     "audit_append_only_protection_failed": "audit_append_only_protection_failed",
     "runtime_db_privilege_verification_failed": "runtime_db_privilege_verification_failed",
     "password_reset_token_reused": "password_reset_token_reused",
-    "password_reset_webauthn_failed": "password_reset_webauthn_failed",
     "manual_recovery_requested": "manual_recovery_requested",
+    "account_freeze": "account_freeze",
 }
 TRANSACTION_EVENT_TYPES = {
     "banking_outbound_transfer",
     "banking_scheduled_transfer_execution",
     "banking_transaction_authorization",
-    "webauthn_transaction_stage",
-    "webauthn_transaction_options",
-    "webauthn_transaction_verify",
 }
 PASSWORD_RESET_EVENT_TYPES = {
     "password_reset_requested",
     "password_reset_failed",
     "password_reset_mfa_failed",
-    "password_reset_webauthn_failed",
     "password_reset_token_reused",
     "manual_recovery_requested",
 }
@@ -226,7 +221,7 @@ def build_security_alert_report(
                     "delivered": True,
                     "deduped": True,
                 }
-    return {
+    report = {
         "message": "security_alert_report",
         "generated_at": _utc_iso(current_time),
         "alert_count": len(alerts),
@@ -237,6 +232,14 @@ def build_security_alert_report(
         "dedupe": dedupe,
         "delivery": delivery,
     }
+    report.update(
+        _security_report_observability_fields(
+            alerts=alerts,
+            audit_chain_status=audit_chain_status,
+            database_integrity_status=database_integrity_status,
+        )
+    )
+    return report
 
 
 def deliver_security_alerts(
@@ -650,6 +653,63 @@ def _database_integrity_alerts(
     }
 
 
+def _security_report_observability_fields(
+    *,
+    alerts: list[dict[str, Any]],
+    audit_chain_status: Mapping[str, Any],
+    database_integrity_status: Mapping[str, Any],
+) -> dict[str, Any]:
+    tables = database_integrity_status.get("tables")
+    if not isinstance(tables, Mapping):
+        tables = {}
+    audit_table = _database_table_metrics(tables, "security_audit_events")
+    users_table = _database_table_metrics(tables, "users")
+    alerting = bool(alerts)
+    return {
+        "event": "security_alert_report",
+        "environment": _current_observability_environment(),
+        "service": "sitbank-security-alerts",
+        "result": "active_alerts" if alerting else "success",
+        "status": "alerting" if alerting else "healthy",
+        "audit_chain_valid": audit_chain_status.get("valid"),
+        "audit_chain_anchor_status": _safe_text(
+            audit_chain_status.get("anchor_status"),
+            80,
+        ),
+        "audit_chain_anchor_refresh_required": bool(
+            audit_chain_status.get("anchor_refresh_required")
+        ),
+        "audit_chain_anchor_stale": bool(audit_chain_status.get("anchor_stale")),
+        "audit_chain_error_count": int(audit_chain_status.get("error_count") or 0),
+        "database_integrity_valid": database_integrity_status.get("valid"),
+        "database_integrity_security_audit_events_count": audit_table["count"],
+        "database_integrity_security_audit_events_max_id": audit_table["max_id"],
+        "database_integrity_users_count": users_table["count"],
+        "database_integrity_users_max_id": users_table["max_id"],
+    }
+
+
+def _database_table_metrics(
+    tables: Mapping[str, Any],
+    table_name: str,
+) -> dict[str, int | None]:
+    metrics = tables.get(table_name)
+    if not isinstance(metrics, Mapping):
+        return {"count": None, "max_id": None}
+    return {
+        "count": _state_optional_int(metrics.get("count")),
+        "max_id": _state_optional_int(metrics.get("max_id")),
+    }
+
+
+def _current_observability_environment() -> str:
+    if has_app_context():
+        value = current_app.config.get("APP_ENV")
+    else:
+        value = os.environ.get("APP_ENV")
+    return _safe_text(value or "unknown", 40)
+
+
 def _database_integrity_snapshot(current_time: datetime) -> dict[str, Any]:
     tables: dict[str, dict[str, int | None]] = {}
     for table_name, model in DATABASE_INTEGRITY_TABLES.items():
@@ -690,21 +750,158 @@ def _load_database_integrity_state(state_path: Path) -> dict[str, Any] | None:
 
 
 def _write_database_integrity_state(state_path: Path, state: Mapping[str, Any]) -> None:
+    _validate_security_state_path(state_path)
     parent = state_path.parent
     if not parent:
         raise AlertConfigurationError("SECURITY_ALERT_STATE_PATH must include a parent directory")
     try:
         parent.mkdir(mode=0o750, parents=True, exist_ok=True)
-        temporary_path = state_path.with_name(f".{state_path.name}.tmp")
+        temporary_path = state_path.with_name(
+            f".{state_path.name}.tmp-{os.getpid()}"
+        )
         temporary_path.write_text(
             json.dumps(state, separators=(",", ":"), sort_keys=True) + "\n",
             encoding="utf-8",
         )
+        temporary_path.chmod(0o600)
         temporary_path.replace(state_path)
+        state_path.chmod(0o600)
     except OSError as exc:
         raise AlertConfigurationError(
             f"SECURITY_ALERT_STATE_PATH is not writable: {type(exc).__name__}"
         ) from exc
+
+
+def rebaseline_database_integrity_state(
+    *,
+    intentional_reset: bool,
+    reason: str,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Replace a regressed baseline only after audit/anchor preflight."""
+    if not intentional_reset:
+        raise AlertConfigurationError(
+            "Rebaseline requires explicit --intentional-reset acknowledgement"
+        )
+    normalized_reason = _safe_text(reason, 240)
+    if not normalized_reason:
+        raise AlertConfigurationError("Rebaseline requires a non-empty --reason")
+
+    state_path = _configured_alert_state_path()
+    anchor_path = _configured_audit_anchor_path()
+    if state_path is None:
+        raise AlertConfigurationError("SECURITY_ALERT_STATE_PATH is required")
+    if anchor_path is None:
+        raise AlertConfigurationError("SECURITY_AUDIT_ANCHOR_PATH is required")
+    _validate_security_state_path(state_path)
+
+    from app.security.audit import (
+        audit_reference,
+        audit_system_event,
+        audit_system_event_required,
+        validate_existing_audit_anchor_path,
+        verify_audit_hash_chain,
+    )
+
+    validate_existing_audit_anchor_path(anchor_path)
+    anchor = _load_audit_anchor(anchor_path)
+    verification = verify_audit_hash_chain(anchor=anchor)
+    if (
+        verification.get("valid") is not True
+        or verification.get("anchor_status") not in {"validated", "stale"}
+    ):
+        raise AlertConfigurationError(
+            "Rebaseline refused because audit chain or anchor validation failed"
+        )
+
+    reason_ref = audit_reference(
+        "security_alert_state_rebaseline_reason",
+        normalized_reason,
+    )
+    audit_metadata = {
+        "intentional_reset": True,
+        "reason_ref": reason_ref,
+        "reason_length": len(normalized_reason),
+        "audit_anchor_status": verification["anchor_status"],
+    }
+    audit_system_event_required(
+        "security_alert_state_rebaseline",
+        "started",
+        metadata=audit_metadata,
+    )
+
+    current_time = _as_utc(now or datetime.now(timezone.utc))
+    current_state = _database_integrity_snapshot(current_time)
+    backup_path: Path | None = None
+    if state_path.exists():
+        timestamp = current_time.strftime("%Y%m%dT%H%M%S%fZ")
+        backup_path = state_path.with_name(
+            f"{state_path.name}.backup-{timestamp}"
+        )
+        try:
+            state_path.replace(backup_path)
+            backup_path.chmod(0o600)
+        except OSError as exc:
+            raise AlertConfigurationError(
+                f"SECURITY_ALERT_STATE_PATH backup failed: {type(exc).__name__}"
+            ) from exc
+    try:
+        _write_database_integrity_state(state_path, current_state)
+    except Exception as exc:
+        if backup_path is not None and backup_path.exists() and not state_path.exists():
+            backup_path.replace(state_path)
+        audit_system_event(
+            "security_alert_state_rebaseline",
+            "failed",
+            metadata={
+                **audit_metadata,
+                "error_type": type(exc).__name__,
+            },
+        )
+        raise
+    audit_system_event_required(
+        "security_alert_state_rebaseline",
+        "completed",
+        metadata={
+            **audit_metadata,
+            "backup_created": backup_path is not None,
+            "table_count": len(current_state["tables"]),
+        },
+    )
+
+    return {
+        "message": "security_alert_state_rebaselined",
+        "generated_at": current_state["generated_at"],
+        "tables": current_state["tables"],
+        "backup_created": backup_path is not None,
+        "backup_name": backup_path.name if backup_path is not None else None,
+        "reason_ref": reason_ref,
+        "reason_length": len(normalized_reason),
+        "audit_anchor_status": verification["anchor_status"],
+    }
+
+
+def _validate_security_state_path(state_path: Path) -> None:
+    if not state_path.is_absolute():
+        raise AlertConfigurationError(
+            "SECURITY_ALERT_STATE_PATH must be an absolute path"
+        )
+    if state_path.is_symlink():
+        raise AlertConfigurationError(
+            "SECURITY_ALERT_STATE_PATH must not be a symlink"
+        )
+    if state_path.exists() and not state_path.is_file():
+        raise AlertConfigurationError(
+            "SECURITY_ALERT_STATE_PATH must identify a regular file"
+        )
+    parent = state_path.parent
+    if parent.exists() and (
+        not parent.is_dir()
+        or any(item.is_symlink() for item in state_path.parents)
+    ):
+        raise AlertConfigurationError(
+            "SECURITY_ALERT_STATE_PATH parent directory is unsafe"
+        )
 
 
 def _database_integrity_regression_alerts(

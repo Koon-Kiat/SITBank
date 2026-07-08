@@ -203,7 +203,7 @@ Always include:
 
 ```powershell
 git diff --check
-.\.venv\Scripts\python.exe -m pytest -q -n auto
+.\.venv\Scripts\python.exe -m pytest -q -n 4
 ```
 
 If coverage-relevant code or test structure changes, generate coverage for SonarQube/SonarCloud import and ensure coverage remains at least 90% without weakening the quality gate.

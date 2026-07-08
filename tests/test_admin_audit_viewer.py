@@ -60,7 +60,7 @@ def _create_identity(
         account_status="active",
         full_name=username.replace("-", " ").title(),
         phone_number=phone_number,
-        account_number="100000001" if account_type == "customer" else None,
+        account_number="100000001000" if account_type == "customer" else None,
         workplace_email_verified_at=datetime.now(timezone.utc) if account_type != "customer" else None,
         mfa_enabled=False,
     )
@@ -136,7 +136,7 @@ def test_audit_viewer_authorization_denies_unauthenticated_customer_and_staff(ad
     staff_response = admin_client.get("/audit-logs")
 
     assert unauthenticated.status_code == 401
-    assert customer_response.status_code == 403
+    assert customer_response.status_code == 401
     assert staff_response.status_code == 403
     assert db.session.query(SecurityAuditEvent).filter_by(
         event_type="admin_role_authorization",
@@ -157,6 +157,18 @@ def test_audit_viewer_filters_sorting_pagination_and_safe_search(admin_client):
         account_type="staff",
         phone_number="91234568",
     )
+    customer, _customer_secret = _create_identity(
+        username="audit-customer",
+        email="audit.customer@example.com",
+        account_type="customer",
+        phone_number="91234569",
+    )
+    noncompliant_admin, _noncompliant_secret = _create_identity(
+        username="noncompliant-admin",
+        email="admin.personal@example.com",
+        account_type="admin",
+        phone_number="91234570",
+    )
     matching = _audit_event(
         event_type="staff_invite_created",
         user_id=admin.id,
@@ -164,6 +176,9 @@ def test_audit_viewer_filters_sorting_pagination_and_safe_search(admin_client):
             "severity": "high",
             "target_staff_ref": "target-ref-123",
             "note": "visible staff invite review",
+            "session_id": "fake-session-marker",
+            "source_kind": "network",
+            "source_display": "203.0.113.10",
         },
         created_at=datetime(2026, 6, 28, 12, 0, tzinfo=timezone.utc),
         correlation_id="audit-request-1",
@@ -177,6 +192,16 @@ def test_audit_viewer_filters_sorting_pagination_and_safe_search(admin_client):
         ip_address="203.0.113.99",
         correlation_id="audit-request-2",
     )
+    customer_event = _audit_event(
+        event_type="profile_update",
+        user_id=customer.id,
+        correlation_id="audit-request-customer",
+    )
+    noncompliant_admin_event = _audit_event(
+        event_type="admin_login",
+        user_id=noncompliant_admin.id,
+        correlation_id="audit-request-noncompliant-admin",
+    )
     _login_admin(admin_client, admin_secret, "security.admin@sit.singaporetech.edu.sg")
 
     filtered = admin_client.get(
@@ -186,6 +211,20 @@ def test_audit_viewer_filters_sorting_pagination_and_safe_search(admin_client):
         "request_id=audit-request-1&ip_address=203.0.113.10&"
         "from=2026-06-28T00:00:00Z&to=2026-06-28T23:59:59Z&"
         "sort=event_type&direction=asc&page=1&per_page=1",
+        headers={"Accept": "application/json"},
+    )
+    sgt_filtered = admin_client.get(
+        "/audit-logs?"
+        "event_type=staff_invite_created&from_date=2026-06-28&from_time=20:00&"
+        "to_date=2026-06-28&to_time=20:00",
+        headers={"Accept": "application/json"},
+    )
+    invalid_date = admin_client.get(
+        "/audit-logs?from_date=2026-99-99&from_time=20:00",
+        headers={"Accept": "application/json"},
+    )
+    reversed_date = admin_client.get(
+        "/audit-logs?from_date=2026-06-29&from_time=00:00&to_date=2026-06-28&to_time=23:30",
         headers={"Accept": "application/json"},
     )
     invalid = admin_client.get(
@@ -200,21 +239,67 @@ def test_audit_viewer_filters_sorting_pagination_and_safe_search(admin_client):
         "/audit-logs?q=staff_invite_created",
         headers={"Accept": "application/json"},
     )
+    actor_search = admin_client.get(
+        "/audit-logs?q=security.admin@sit.singaporetech.edu.sg",
+        headers={"Accept": "application/json"},
+    )
+    target_search = admin_client.get(
+        "/audit-logs?q=target-ref-123",
+        headers={"Accept": "application/json"},
+    )
+    activity_search = admin_client.get(
+        "/audit-logs?q=invite",
+        headers={"Accept": "application/json"},
+    )
+    customer_email_search = admin_client.get(
+        "/audit-logs?q=audit.customer@example.com",
+        headers={"Accept": "application/json"},
+    )
+    noncompliant_admin_email_search = admin_client.get(
+        "/audit-logs?q=admin.personal@example.com",
+        headers={"Accept": "application/json"},
+    )
+    sensitive_metadata_search = admin_client.get(
+        "/audit-logs?q=fake-session-marker",
+        headers={"Accept": "application/json"},
+    )
 
     assert filtered.status_code == 200
     filtered_payload = filtered.get_json()
     assert [event["id"] for event in filtered_payload["events"]] == [matching.id]
     displayed_event = filtered_payload["events"][0]
-    assert displayed_event["created_at_display"] == "2026-06-28 12:00:00 UTC"
+    assert displayed_event["created_at_display"] == "28 Jun 2026, 20:00:00 SGT"
     assert displayed_event["created_at_utc"].startswith("2026-06-28T12:00:00")
+    assert displayed_event["activity"] == "Staff invite created"
+    assert displayed_event["event_description"] == "A staff/admin invite was created."
     assert displayed_event["actor_role"] == "admin"
+    assert displayed_event["actor_summary"] == f"user:{admin.id} (admin, security.admin@sit.singaporetech.edu.sg)"
     assert displayed_event["source_kind"] == "network"
-    assert displayed_event["source_display"] == "203.0.113.10"
+    assert displayed_event["source_display"] == "203.0.113.0/24"
+    assert displayed_event["ip_address"] == "203.0.113.0/24"
     assert displayed_event["request_id"] == "audit-request-1"
     assert displayed_event["target_ref"] == "target-ref-123"
     assert "staff_invite_created" in filtered_payload["event_type_options"]
     assert filtered_payload["total"] == 1
     assert filtered_payload["total_pages"] == 1
+    assert filtered_payload["previous_page_url"] == ""
+    assert filtered_payload["next_page_url"] == ""
+    assert filtered_payload["date_controls"]["from"]["date"] == "2026-06-28"
+    assert filtered_payload["date_controls"]["from"]["time"] == "08:00"
+    assert filtered_payload["date_controls"]["to"] == {"date": "2026-06-29", "time": "08:00"}
+    sgt_payload = sgt_filtered.get_json()
+    assert [event["id"] for event in sgt_payload["events"]] == [matching.id]
+    assert sgt_payload["filters"]["from"].startswith("2026-06-28T12:00:00")
+    assert sgt_payload["date_controls"]["from"] == {"date": "2026-06-28", "time": "20:00"}
+    assert sgt_payload["date_controls"]["to"] == {"date": "2026-06-28", "time": "20:00"}
+    assert sgt_payload["filter_errors"] == []
+    invalid_date_payload = invalid_date.get_json()
+    assert invalid_date_payload["events"] == []
+    assert invalid_date_payload["filter_errors"] == ["Enter valid From and To dates with SGT time values."]
+    assert "valueerror" not in invalid_date.get_data(as_text=True).casefold()
+    reversed_date_payload = reversed_date.get_json()
+    assert reversed_date_payload["events"] == []
+    assert reversed_date_payload["filter_errors"] == ["Enter a From value that is earlier than or equal to To."]
     assert invalid.status_code == 200
     invalid_payload = invalid.get_json()
     assert invalid_payload["sort"] == "timestamp"
@@ -226,7 +311,112 @@ def test_audit_viewer_filters_sorting_pagination_and_safe_search(admin_client):
     assert all(event["event_type"] != "staff_invite_created" for event in metadata_search.get_json()["events"])
     assert field_search.status_code == 200
     assert any(event["event_type"] == "staff_invite_created" for event in field_search.get_json()["events"])
+    assert actor_search.status_code == 200
+    assert any(event["event_type"] == "staff_invite_created" for event in actor_search.get_json()["events"])
+    assert target_search.status_code == 200
+    assert any(event["event_type"] == "staff_invite_created" for event in target_search.get_json()["events"])
+    assert activity_search.status_code == 200
+    assert any(event["event_type"] == "staff_invite_created" for event in activity_search.get_json()["events"])
+    assert customer_email_search.status_code == 200
+    assert all(
+        event["id"] != customer_event.id
+        for event in customer_email_search.get_json()["events"]
+    )
+    assert noncompliant_admin_email_search.status_code == 200
+    assert all(
+        event["id"] != noncompliant_admin_event.id
+        for event in noncompliant_admin_email_search.get_json()["events"]
+    )
+    assert sensitive_metadata_search.status_code == 200
+    assert all(
+        event["id"] != matching.id
+        for event in sensitive_metadata_search.get_json()["events"]
+    )
     assert "sql" not in invalid.get_data(as_text=True).casefold()
+
+
+def test_audit_viewer_previous_next_controls_preserve_filters(admin_client):
+    admin, admin_secret = _create_identity(
+        username="security-admin",
+        email="security.admin@sit.singaporetech.edu.sg",
+        account_type="admin",
+        phone_number="91234567",
+    )
+    for index in range(3):
+        _audit_event(
+            event_type="pagination_probe",
+            user_id=admin.id,
+            created_at=datetime(2026, 6, 28, 8 + index, 0, tzinfo=timezone.utc),
+            correlation_id=f"pagination-request-{index}",
+        )
+    _login_admin(admin_client, admin_secret, "security.admin@sit.singaporetech.edu.sg")
+
+    first_page = admin_client.get(
+        "/audit-logs?event_type=pagination_probe&sort=timestamp&direction=asc&per_page=1&page=1"
+    )
+    second_json = admin_client.get(
+        "/audit-logs?event_type=pagination_probe&sort=timestamp&direction=asc&per_page=1&page=2",
+        headers={"Accept": "application/json"},
+    )
+    last_page = admin_client.get(
+        "/audit-logs?event_type=pagination_probe&sort=timestamp&direction=asc&per_page=1&page=3"
+    )
+    overlarge_page = admin_client.get(
+        "/audit-logs?event_type=pagination_probe&sort=timestamp&direction=asc&per_page=1&page=999",
+        headers={"Accept": "application/json"},
+    )
+
+    first_body = first_page.get_data(as_text=True)
+    last_body = last_page.get_data(as_text=True)
+    second_payload = second_json.get_json()
+    overlarge_payload = overlarge_page.get_json()
+
+    assert first_page.status_code == 200
+    assert 'data-audit-prev' in first_body
+    assert 'aria-disabled="true" tabindex="-1">Previous</a>' in first_body
+    assert 'data-audit-next' in first_body
+    assert "page=2" in first_body
+    assert "event_type=pagination_probe" in first_body
+    assert "per_page=1" in first_body
+    assert second_payload["previous_page_url"].endswith(
+        "event_type=pagination_probe&sort=timestamp&direction=asc&per_page=1&page=1"
+    )
+    assert second_payload["next_page_url"].endswith(
+        "event_type=pagination_probe&sort=timestamp&direction=asc&per_page=1&page=3"
+    )
+    assert f"/audit-logs/{second_payload['events'][0]['id']}" in second_payload["events"][0]["detail_url"]
+    assert 'aria-disabled="true" tabindex="-1">Next</a>' in last_body
+    assert overlarge_payload["page"] == 3
+    assert overlarge_payload["total_pages"] == 3
+
+
+def test_root_admin_audit_view_retains_full_ip_for_investigation(admin_client):
+    root_email = sorted(TestConfig.ROOT_ADMIN_EMAILS)[0]
+    root, root_secret = _create_identity(
+        username="root-auditor",
+        email=root_email,
+        account_type="root_admin",
+        phone_number="91234569",
+    )
+    event = _audit_event(
+        event_type="admin_login",
+        user_id=root.id,
+        metadata={
+            "source_kind": "network",
+            "source_display": "203.0.113.10",
+        },
+    )
+    _login_admin(admin_client, root_secret, root_email)
+
+    response = admin_client.get(
+        f"/audit-logs/{event.id}",
+        headers={"Accept": "application/json"},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()["event"]
+    assert payload["ip_address"] == "203.0.113.10"
+    assert payload["source_display"] == "203.0.113.10"
 
 
 def test_audit_event_detail_redacts_existing_unsafe_metadata_and_escapes_html(admin_client):
@@ -264,6 +454,50 @@ def test_audit_event_detail_redacts_existing_unsafe_metadata_and_escapes_html(ad
     assert payload["event"]["metadata"]["nested"]["target_staff_ref"] == "safe-ref"
     assert "Other safe metadata" in body
     assert "Hash chain" in body
+    assert "Investigation Summary" in body
+    assert "Field Legend" in body
+    assert payload["event"]["activity"] == "Unsafe legacy metadata"
+    assert payload["event"]["event_description"] == "Recorded audit event `unsafe_legacy_metadata`."
+    assert payload["event"]["field_legend"]["Actor"].startswith("Safe actor identity")
+
+
+def test_audit_actor_summary_handles_unavailable_and_customer_actors(admin_client):
+    admin, admin_secret = _create_identity(
+        username="security-admin",
+        email="security.admin@sit.singaporetech.edu.sg",
+        account_type="admin",
+        phone_number="91234567",
+    )
+    customer, _customer_secret = _create_identity(
+        username="audit-customer",
+        email="audit.customer@example.com",
+        account_type="customer",
+        phone_number="91234568",
+    )
+    unavailable = _audit_event(
+        event_type="manual_recovery_requested",
+        user_id=999999,
+        metadata={"severity": "low"},
+    )
+    customer_event = _audit_event(
+        event_type="manual_recovery_requested",
+        user_id=customer.id,
+        metadata={"severity": "low"},
+    )
+    _login_admin(admin_client, admin_secret, "security.admin@sit.singaporetech.edu.sg")
+
+    unavailable_payload = admin_client.get(
+        f"/audit-logs/{unavailable.id}",
+        headers={"Accept": "application/json"},
+    ).get_json()
+    customer_payload = admin_client.get(
+        f"/audit-logs/{customer_event.id}",
+        headers={"Accept": "application/json"},
+    ).get_json()
+
+    assert unavailable_payload["event"]["actor_summary"] == "user:999999 (unavailable)"
+    assert customer_payload["event"]["actor_summary"] == f"user:{customer.id} (customer)"
+    assert "audit.customer@example.com" not in str(customer_payload)
 
 
 def test_audit_viewer_renders_dropdown_timestamps_and_system_probe_source(admin_client):
@@ -287,14 +521,40 @@ def test_audit_viewer_renders_dropdown_timestamps_and_system_probe_source(admin_
     detail = admin_client.get(f"/audit-logs/{event.id}")
     listing_body = listing.get_data(as_text=True)
     detail_body = detail.get_data(as_text=True)
+    script = Path("app/static/js/admin-audit-logs.js").read_text(encoding="utf-8")
 
     assert listing.status_code == 200
+    assert '<input id="audit-search" name="q"' in listing_body
+    assert "Advanced filters" in listing_body
     assert '<select id="audit-event-type" name="event_type">' in listing_body
+    assert 'id="audit-from-date" name="from_date" type="date"' in listing_body
+    assert 'id="audit-from-time" name="from_time"' in listing_body
+    assert 'id="audit-to-date" name="to_date" type="date"' in listing_body
+    assert 'id="audit-to-time" name="to_time"' in listing_body
+    assert '<option value="00:00" selected>00:00 SGT</option>' in listing_body
+    assert '<option value="23:30" selected>23:30 SGT</option>' in listing_body
+    assert 'placeholder="2026-06-29T00:00:00Z"' not in listing_body
+    assert '<input id="audit-page" name="page"' not in listing_body
+    assert "existing UTC ISO query links remain accepted" in listing_body
+    assert 'data-audit-log-browser' in listing_body
+    assert 'data-audit-table-body' in listing_body
+    assert 'data-audit-page-link' in listing_body
+    assert 'js/admin-audit-logs.js' in listing_body
+    assert "event.preventDefault()" in script
+    assert "fetch(url" in script
+    assert 'Accept: "application/json"' in script
+    assert "globalThis.history" in script
+    assert "pushState" in script
+    assert "popstate" in script
+    assert "textContent" in script
+    assert "innerHTML" not in script
     assert "privilege_probe" in listing_body
-    assert "2026-06-30 08:15:00 UTC" in listing_body
+    assert "30 Jun 2026, 16:15:00 SGT" in listing_body
     assert "system_probe: Runtime privilege probe" in listing_body
     assert "privilege-check" not in listing_body
     assert detail.status_code == 200
+    assert "Runtime privilege probe" in detail_body
+    assert "Blocked or failed outcomes should stop deployment" in detail_body
     assert "Runtime privilege probe" in detail_body
     assert "Security decision" in detail_body
 
@@ -357,6 +617,8 @@ def test_audit_detail_uses_metadata_role_source_and_grouped_safe_fields(admin_cl
     body = html_response.get_data(as_text=True)
 
     assert payload["actor_role"] == "root_admin"
+    assert payload["activity"] == "Deployment wrapper check"
+    assert payload["investigation_hint"] == "Correlate with GitHub run evidence and host-side deployment logs."
     assert payload["source_kind"] == "deployment"
     assert payload["source_display"] == "Deployment wrapper"
     assert payload["target_ref"] == "safe-target-ref"

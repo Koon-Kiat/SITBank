@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const browserScripts = [
   "app/static/js/account.js",
+  "app/static/js/admin-alerts.js",
+  "app/static/js/admin-invite-accept.js",
   "app/static/js/dashboard.js",
   "app/static/js/payees.js",
   "app/static/js/session-timeout.js",
@@ -105,6 +107,7 @@ class MockElement {
   closest(selector) {
     if (selector === ".alert") return this.alert ?? null;
     if (selector === "[data-account-menu]") return this.accountMenu ?? null;
+    if (selector === "[data-nav-toggle]") return this.navToggle ?? null;
     if (selector === "a" && this.tagName === "A") return this;
     return null;
   }
@@ -133,6 +136,10 @@ class MockElement {
 
   focus() {
     this.focused = true;
+  }
+
+  scrollIntoView() {
+    this.scrolledIntoView = true;
   }
 
   select() {
@@ -207,6 +214,12 @@ function createBrowserContext(document) {
         return { timeout_seconds: 180 };
       },
     }),
+    history: {
+      replacedUrl: "",
+      replaceState(_state, _title, url) {
+        this.replacedUrl = url;
+      },
+    },
     location: {
       href: "",
       reloadCount: 0,
@@ -380,6 +393,152 @@ async function exercisePayees() {
   assert.equal(context.location.reloadCount, 1);
 }
 
+async function exerciseAdminAlerts() {
+  const document = new MockDocument();
+  const linkOne = new MockElement({
+    attributes: {
+      "data-alert-ref": "alert-1",
+      href: "/alerts?alert=alert-1",
+    },
+  });
+  linkOne.href = "/alerts?alert=alert-1";
+  const linkTwo = new MockElement({
+    attributes: {
+      "data-alert-ref": "alert-2",
+      href: "/alerts?alert=alert-2",
+    },
+  });
+  linkTwo.href = "/alerts?alert=alert-2";
+  const panelOne = new MockElement({
+    id: "alert-detail-alert-1",
+    attributes: { "data-alert-ref": "alert-1" },
+  });
+  const panelTwo = new MockElement({
+    id: "alert-detail-alert-2",
+    attributes: { "data-alert-ref": "alert-2" },
+  });
+  panelTwo.hidden = true;
+  document.idMap.set(panelOne.id, panelOne);
+  document.idMap.set(panelTwo.id, panelTwo);
+  document.selectorAllMap.set("[data-alert-detail-link]", [linkOne, linkTwo]);
+  document.selectorAllMap.set("[data-alert-detail-panel]", [panelOne, panelTwo]);
+
+  const context = createBrowserContext(document);
+  runScript("app/static/js/admin-alerts.js", context);
+  const clickEvent = await linkTwo.emit("click");
+
+  assert.equal(clickEvent.defaultPrevented, true);
+  assert.equal(panelOne.hidden, true);
+  assert.equal(panelTwo.hidden, false);
+  assert.equal(linkOne.getAttribute("aria-expanded"), "false");
+  assert.equal(linkTwo.getAttribute("aria-expanded"), "true");
+  assert.equal(context.history.replacedUrl, "/alerts?alert=alert-2");
+  assert.equal(panelTwo.focused, true);
+  assert.equal(panelTwo.scrolledIntoView, true);
+
+  const emptyDocument = new MockDocument();
+  const emptyContext = createBrowserContext(emptyDocument);
+  runScript("app/static/js/admin-alerts.js", emptyContext);
+}
+
+async function exerciseAdminInviteAccept() {
+  const document = new MockDocument();
+  document.readyState = "loading";
+  const form = new MockElement({
+    attributes: {
+      "data-invite-accept-start": "",
+      "data-turnstile-required": "true",
+    },
+  });
+  const responseInput = new MockElement({ attributes: { "data-turnstile-response": "" } });
+  const submitButton = new MockElement({ attributes: { "data-invite-start-submit": "" } });
+  const status = new MockElement({ attributes: { "data-turnstile-status": "" } });
+  const fullName = new MockElement();
+  const phoneNumber = new MockElement();
+  fullName.value = "Safe Recipient";
+  phoneNumber.value = "92345678";
+  form.selectorMap.set("[data-turnstile-response]", responseInput);
+  form.selectorMap.set("[data-invite-start-submit]", submitButton);
+  form.selectorMap.set("[data-turnstile-status]", status);
+
+  const context = createBrowserContext(document);
+  runScript("app/static/js/admin-invite-accept.js", context);
+  assert.equal(typeof context.sitbankInviteTurnstileSuccess, "function");
+  assert.equal(typeof context.sitbankInviteTurnstileInteractiveStart, "function");
+  assert.equal(typeof context.sitbankInviteTurnstileInteractiveEnd, "function");
+
+  context.sitbankInviteTurnstilePending();
+  document.selectorAllMap.set("[data-invite-accept-start]", [form]);
+  await document.emit("DOMContentLoaded");
+
+  assert.equal(submitButton.disabled, true);
+  assert.equal(form.dataset.turnstileState, "pending");
+  assert.match(status.textContent, /verifying/);
+
+  context.sitbankInviteTurnstilePending();
+  assert.equal(responseInput.value, "");
+  assert.equal(submitButton.disabled, true);
+  assert.equal(form.dataset.turnstileState, "pending");
+
+  context.sitbankInviteTurnstileSuccess("fresh-token");
+  assert.equal(responseInput.value, "fresh-token");
+  assert.equal(submitButton.disabled, false);
+  assert.equal(form.dataset.turnstileState, "valid");
+  assert.match(status.textContent, /complete/);
+
+  context.sitbankInviteTurnstileInteractiveEnd();
+  assert.equal(responseInput.value, "fresh-token");
+  assert.equal(submitButton.disabled, false);
+  assert.equal(form.dataset.turnstileState, "valid");
+
+  context.sitbankInviteTurnstilePending();
+  assert.equal(responseInput.value, "fresh-token");
+  assert.equal(submitButton.disabled, false);
+  assert.equal(form.dataset.turnstileState, "valid");
+
+  context.sitbankInviteTurnstileInteractiveStart();
+  assert.equal(responseInput.value, "");
+  assert.equal(submitButton.disabled, true);
+  assert.equal(form.dataset.turnstileState, "pending");
+  assert.match(status.textContent, /verifying/);
+
+  context.sitbankInviteTurnstileSuccess("fresh-token");
+  const submitted = await form.emit("submit");
+  assert.equal(submitted.defaultPrevented, undefined);
+  assert.equal(form.dataset.submitting, "true");
+  assert.equal(submitButton.disabled, true);
+
+  context.sitbankInviteTurnstileInteractiveEnd();
+  assert.equal(responseInput.value, "fresh-token");
+  assert.equal(submitButton.disabled, true);
+
+  const duplicate = await form.emit("submit");
+  assert.equal(duplicate.defaultPrevented, true);
+  form.dataset.submitting = "";
+
+  context.sitbankInviteTurnstileExpired();
+  assert.equal(responseInput.value, "");
+  assert.equal(submitButton.disabled, true);
+  assert.equal(fullName.value, "Safe Recipient");
+  assert.equal(phoneNumber.value, "92345678");
+  assert.match(status.textContent, /expired/);
+
+  const missingToken = await form.emit("submit");
+  assert.equal(missingToken.defaultPrevented, true);
+  assert.match(status.textContent, /Complete the security challenge/);
+
+  assert.equal(context.sitbankInviteTurnstileError(), true);
+  assert.match(status.textContent, /could not be completed/);
+  context.sitbankInviteTurnstileTimeout();
+  assert.match(status.textContent, /timed out/);
+  context.sitbankInviteTurnstilePending();
+  assert.match(status.textContent, /verifying/);
+  context.sitbankInviteTurnstileSuccess("");
+  assert.equal(responseInput.value, "");
+  assert.equal(submitButton.disabled, true);
+  assert.match(status.textContent, /verifying/);
+}
+
 async function exerciseSessionTimeout() {
   const document = new MockDocument();
   const meta = new MockElement({ attributes: { content: "120" } });
@@ -389,15 +548,17 @@ async function exerciseSessionTimeout() {
   const continueButton = new MockElement({ id: "session-continue-btn" });
   const timer = new MockElement({ id: "session-timer" });
   const timerValue = new MockElement({ id: "session-timer-value" });
+  const replacedOverlay = new MockElement({ id: "session-replaced-overlay" });
   document.selectorMap.set('meta[name="session-timeout"]', meta);
   document.selectorMap.set('meta[name="csrf-token"]', csrf);
-  for (const element of [overlay, countdown, continueButton, timer, timerValue]) {
+  for (const element of [overlay, countdown, continueButton, timer, timerValue, replacedOverlay]) {
     document.idMap.set(element.id, element);
   }
   const context = createBrowserContext(document);
   runScript("app/static/js/session-timeout.js", context);
   for (const callback of context.__timeoutCallbacks) callback();
   for (const callback of [...context.__intervalCallbacks]) callback();
+  await new Promise((resolve) => setTimeout(resolve, 0));
   for (let index = 0; index < 65; index += 1) {
     for (const callback of [...context.__intervalCallbacks]) callback();
   }
@@ -408,6 +569,34 @@ async function exerciseSessionTimeout() {
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(continueButton.disabled, false);
   assert.match(timerValue.textContent, /^\d+:\d{2}$/);
+  assert.equal(replacedOverlay.open, false);
+
+  let fetchCalls = 0;
+  context.fetch = async () => {
+    fetchCalls += 1;
+    return { ok: true, async json() { return {}; } };
+  };
+  document.hidden = true;
+  await document.emit("visibilitychange");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(fetchCalls, 0);
+
+  document.hidden = false;
+  await document.emit("visibilitychange");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(fetchCalls, 1);
+
+  document.hidden = true;
+  context.fetch = async () => ({ ok: false, async json() { return { code: "replaced" }; } });
+  for (const callback of [...context.__intervalCallbacks]) callback();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(replacedOverlay.open, false);
+
+  document.hidden = false;
+  for (const callback of [...context.__intervalCallbacks]) callback();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(replacedOverlay.open, true);
+  assert.equal(overlay.open, false);
 }
 
 async function exerciseTheme() {
@@ -418,6 +607,7 @@ async function exerciseTheme() {
   const iconUse = new MockElement();
   icon.selectorMap.set("use", iconUse);
   const navToggle = new MockElement();
+  navToggle.navToggle = navToggle;
   const navMenu = new MockElement();
   const accountMenu = new MockElement();
   const accountTrigger = new MockElement();
@@ -443,8 +633,33 @@ async function exerciseTheme() {
   runScript("app/static/js/theme.js", context);
   for (const callback of context.__domReadyListeners) callback();
   await toggle.emit("click");
+
+  await navToggle.emit("click");
+  assert.equal(navMenu.classList.contains("is-open"), true);
+  assert.equal(accountPanel.hidden, false, "opening the hamburger must also open the account panel");
+  assert.equal(accountMenu.classList.contains("is-open"), true);
+
+  await document.emit("click", { target: navToggle });
+  assert.equal(
+    accountPanel.hidden,
+    false,
+    "clicking the hamburger button itself must not be treated as an outside click",
+  );
+
+  await document.emit("click", { target: new MockElement() });
+  assert.equal(navMenu.classList.contains("is-open"), false, "outside click must close the nav too");
+  assert.equal(accountPanel.hidden, true);
+
   await navToggle.emit("click");
   await navMenu.emit("click", { target: Object.assign(new MockElement(), { tagName: "A" }) });
+  assert.equal(navMenu.classList.contains("is-open"), false);
+  assert.equal(accountPanel.hidden, true);
+
+  await navToggle.emit("click");
+  await document.emit("keydown", { key: "Escape" });
+  assert.equal(navMenu.classList.contains("is-open"), false, "Escape must close the nav too");
+  assert.equal(accountPanel.hidden, true);
+
   await accountTrigger.emit("click");
   for (const key of ["Enter", " ", "ArrowDown"]) {
     await accountTrigger.emit("keydown", { key });
@@ -583,6 +798,8 @@ await post(session, "Profiler.startPreciseCoverage", {
 });
 
 await exerciseAccount();
+await exerciseAdminAlerts();
+await exerciseAdminInviteAccept();
 await exerciseDashboard();
 await exercisePayees();
 await exerciseSessionTimeout();

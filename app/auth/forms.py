@@ -1,20 +1,21 @@
 from __future__ import annotations
 
 from flask_wtf import FlaskForm
-from wtforms import HiddenField, PasswordField, StringField
+from wtforms import BooleanField, PasswordField, StringField
 from wtforms.validators import Email, EqualTo, InputRequired, Length, Optional, Regexp, ValidationError
 
 from app.security.passwords import password_max_chars, password_min_length
 
-from .schemas import FULL_NAME_RE, PHONE_RE, REGISTRATION_OTP_RE, STEP_UP_TOKEN_RE, TOTP_RE, USERNAME_RE
+from .schemas import FULL_NAME_RE, PHONE_RE, REGISTRATION_OTP_RE, TOTP_RE, USERNAME_RE
 
 
-_INVALID_USERNAME_MESSAGE = "Username contains invalid characters"
-_PASSWORDS_MUST_MATCH_MESSAGE = "Passwords must match"
-_INVALID_STEP_UP_TOKEN_MESSAGE = "Invalid step-up token"
+_INVALID_USERNAME_MESSAGE = "Username can only contain letters, numbers, underscores ( _ ), dots ( . ), and hyphens ( - )"
+_PASSWORDS_MUST_MATCH_MESSAGE = "Passwords do not match. Please re-enter your password."
 _AUTHENTICATOR_CODE_LABEL = "Authenticator code"
 _MFA_CODE_ERROR = "MFA code must be exactly 6 digits"
 _VERIFICATION_CODE_ERROR = "Verification code must be exactly 6 digits"
+_PHONE_NUMBER_LABEL = "Phone number"
+_PHONE_NUMBER_ERROR = "Enter a valid Singapore phone number (8 digits starting with 8 or 9)"
 
 
 def password_length(*, minimum: int | None = None):
@@ -44,14 +45,14 @@ class RegisterForm(FlaskForm):
         validators=[
             InputRequired(),
             Length(min=1, max=120),
-            Regexp(FULL_NAME_RE, message="Full name contains invalid characters"),
+            Regexp(FULL_NAME_RE, message="Full name must contain only English letters, spaces, hyphens, and apostrophes"),
         ],
     )
     phone_number = StringField(
-        "Phone number",
+        _PHONE_NUMBER_LABEL,
         validators=[
             InputRequired(),
-            Regexp(PHONE_RE, message="Enter a valid Singapore phone number (8 digits starting with 8 or 9)"),
+            Regexp(PHONE_RE, message=_PHONE_NUMBER_ERROR),
         ],
     )
     email = StringField("Email", validators=[InputRequired(), Email(), Length(max=255)])
@@ -80,14 +81,14 @@ class RegisterDetailsForm(FlaskForm):
         validators=[
             InputRequired(),
             Length(min=1, max=120),
-            Regexp(FULL_NAME_RE, message="Full name contains invalid characters"),
+            Regexp(FULL_NAME_RE, message="Full name must contain only English letters, spaces, hyphens, and apostrophes"),
         ],
     )
     phone_number = StringField(
-        "Phone number",
+        _PHONE_NUMBER_LABEL,
         validators=[
             InputRequired(),
-            Regexp(PHONE_RE, message="Enter a valid Singapore phone number (8 digits starting with 8 or 9)"),
+            Regexp(PHONE_RE, message=_PHONE_NUMBER_ERROR),
         ],
     )
     password = PasswordField("Password", validators=[InputRequired(), password_length()])
@@ -140,15 +141,18 @@ class ManualRecoveryForm(FlaskForm):
 
 
 class ProfileForm(FlaskForm):
-    username = StringField(
-        "Username",
+    # Username is intentionally not a field here: it is fixed at registration
+    # and must not be editable through the profile-update flow (see
+    # app/web/routes.py::profile_submit, which passes g.current_user.username
+    # to the service layer rather than any request-supplied value).
+    email = StringField("Email address", validators=[InputRequired(), Email(), Length(max=255)])
+    phone_number = StringField(
+        _PHONE_NUMBER_LABEL,
         validators=[
             InputRequired(),
-            Length(min=3, max=64),
-            Regexp(USERNAME_RE, message=_INVALID_USERNAME_MESSAGE),
+            Regexp(PHONE_RE, message=_PHONE_NUMBER_ERROR),
         ],
     )
-    email = StringField("Email address", validators=[InputRequired(), Email(), Length(max=255)])
     email_verification_code = StringField(
         "Email verification code",
         validators=[
@@ -163,11 +167,11 @@ class ProfileForm(FlaskForm):
             Regexp(TOTP_RE, message=_MFA_CODE_ERROR),
         ],
     )
-    stepup_token = HiddenField(
-        validators=[
-            Optional(),
-            Regexp(STEP_UP_TOKEN_RE, message=_INVALID_STEP_UP_TOKEN_MESSAGE),
-        ],
+
+
+class ProfileNotificationPreferencesForm(FlaskForm):
+    transfer_activity_email_enabled = BooleanField(
+        "Email notifications for withdrawal and deposit"
     )
 
 
@@ -179,25 +183,10 @@ class TotpForm(FlaskForm):
             Regexp(TOTP_RE, message=_MFA_CODE_ERROR),
         ],
     )
-    stepup_token = HiddenField(
-        validators=[
-            Optional(),
-            Regexp(STEP_UP_TOKEN_RE, message=_INVALID_STEP_UP_TOKEN_MESSAGE),
-        ],
-    )
 
 
 class AuthenticationCodeForm(FlaskForm):
     totp_code = StringField("Authentication code", validators=[InputRequired(), Length(max=80)])
-
-
-class StepUpTokenForm(FlaskForm):
-    stepup_token = HiddenField(
-        validators=[
-            Optional(),
-            Regexp(STEP_UP_TOKEN_RE, message=_INVALID_STEP_UP_TOKEN_MESSAGE),
-        ],
-    )
 
 
 class MfaOrStepUpForm(FlaskForm):
@@ -206,12 +195,6 @@ class MfaOrStepUpForm(FlaskForm):
         validators=[
             Optional(),
             Regexp(TOTP_RE, message=_MFA_CODE_ERROR),
-        ],
-    )
-    stepup_token = HiddenField(
-        validators=[
-            Optional(),
-            Regexp(STEP_UP_TOKEN_RE, message=_INVALID_STEP_UP_TOKEN_MESSAGE),
         ],
     )
 
@@ -234,14 +217,6 @@ class PasswordChangeForm(FlaskForm):
             Regexp(TOTP_RE, message=_MFA_CODE_ERROR),
         ],
     )
-    stepup_token = HiddenField(
-        validators=[
-            Optional(),
-            Regexp(STEP_UP_TOKEN_RE, message=_INVALID_STEP_UP_TOKEN_MESSAGE),
-        ],
-    )
-
-
 class PasswordResetForm(FlaskForm):
     new_password = PasswordField("New password", validators=[InputRequired()])
     confirm_new_password = PasswordField(

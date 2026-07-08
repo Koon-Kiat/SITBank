@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import Mock
@@ -11,10 +13,16 @@ import pyotp
 
 from _auth_flow_helpers import enable_mfa_for_user, login, mark_recent_mfa, register
 from app.auth.services import AuthError
-from app.banking.services import execute_local_transfer
+from app.banking.services import (
+    execute_local_transfer,
+    local_transfer_amount_used_today,
+    local_transfer_token_verifier,
+    sgt_day_start_utc,
+)
 from app.extensions import db
 from app.models import Payee, PendingTransfer, SecurityAuditEvent, Transaction, User
 from app.security.passwords import hash_password
+from app.security.transaction_integrity import sign_transaction_integrity
 
 
 def _make_pending_transfer(
@@ -27,7 +35,7 @@ def _make_pending_transfer(
 ) -> str:
     token = os.urandom(32).hex()
     pending = PendingTransfer(
-        token=token,
+        token=local_transfer_token_verifier(token),
         user_id=user.id,
         payee_id=payee.id,
         amount=amount,
@@ -86,8 +94,8 @@ def transfer_context(app, client):
 
     alice = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
     bob = db.session.execute(db.select(User).where(User.username == "bob02")).scalar_one()
-    alice.account_number = "111111111"
-    bob.account_number = "222222222"
+    alice.account_number = "111111111000"
+    bob.account_number = "222222222000"
     alice.balance = Decimal("5000.00")
     bob.balance = Decimal("1000.00")
     alice.account_type = bob.account_type = "customer"
@@ -112,7 +120,7 @@ def transfer_context(app, client):
 
 def test_transfer_blocked_during_cooldown(client, transfer_context):
     alice = transfer_context["alice"]
-    cooldown_payee = _make_cooldown_payee(alice, "333333333", "Carol")
+    cooldown_payee = _make_cooldown_payee(alice, "333333333000", "Carol")
 
     response = client.get(f"/banking/transfer/{cooldown_payee.id}")
 
@@ -123,7 +131,7 @@ def test_transfer_blocked_during_cooldown(client, transfer_context):
 
 def test_transfer_submit_blocked_during_cooldown(client, transfer_context):
     alice = transfer_context["alice"]
-    cooldown_payee = _make_cooldown_payee(alice, "444444444", "Dave")
+    cooldown_payee = _make_cooldown_payee(alice, "444444444000", "Dave")
 
     response = client.post(
         f"/banking/transfer/{cooldown_payee.id}",
@@ -134,6 +142,82 @@ def test_transfer_submit_blocked_during_cooldown(client, transfer_context):
     assert Transaction.query.count() == 0
 
 
+@pytest.mark.parametrize(
+    ("field_name", "tampered_value"),
+    [
+        ("active_after", "2000-01-01T00:00:00Z"),
+        ("created_at", "2000-01-01T00:00:00Z"),
+        ("status", "active"),
+        ("cooldown", "false"),
+    ],
+)
+def test_payee_cooldown_ignores_client_tampering_fields(
+    client,
+    transfer_context,
+    field_name,
+    tampered_value,
+):
+    alice = transfer_context["alice"]
+    cooldown_payee = transfer_context["payee"]
+    cooldown_payee.created_at = datetime.now(timezone.utc)
+    db.session.commit()
+
+    with client.session_transaction() as sess:
+        sess[field_name] = tampered_value
+
+    payees_page = client.get(
+        "/banking/payees",
+        query_string={field_name: tampered_value},
+    )
+    payees_body = payees_page.get_data(as_text=True)
+    direct_get = client.get(
+        f"/banking/transfer/{cooldown_payee.id}",
+        query_string={field_name: tampered_value},
+    )
+    direct_post = client.post(
+        f"/banking/transfer/{cooldown_payee.id}",
+        data={
+            "amount": "10.00",
+            "reference": "tamper",
+            "totp_code": "123456",
+            field_name: tampered_value,
+        },
+    )
+
+    assert payees_page.status_code == 200
+    assert "Available in" in payees_body
+    assert f"/banking/transfer/{cooldown_payee.id}" not in payees_body
+    assert direct_get.status_code == 302
+    assert direct_get.headers["Location"].endswith("/banking/payees")
+    assert direct_post.status_code == 302
+    assert PendingTransfer.query.count() == 0
+    assert Transaction.query.count() == 0
+
+    token = _make_pending_transfer(alice, cooldown_payee, Decimal("10.00"))
+    with client.session_transaction() as sess:
+        sess["pending_transfer_token"] = token
+        sess[field_name] = tampered_value
+
+    forced_confirm = client.post(
+        f"/banking/transfer/{cooldown_payee.id}/confirm",
+        data={field_name: tampered_value},
+    )
+    event = (
+        db.session.query(SecurityAuditEvent)
+        .filter_by(event_type="banking_outbound_transfer", outcome="failure")
+        .order_by(SecurityAuditEvent.id.desc())
+        .first()
+    )
+    event_metadata = json.dumps(event.event_metadata, default=str)
+
+    assert forced_confirm.status_code == 302
+    assert forced_confirm.headers["Location"].endswith("/banking/payees")
+    assert Transaction.query.count() == 0
+    assert event.event_metadata["reason"] == "payee_in_cooldown"
+    assert field_name not in event.event_metadata
+    assert tampered_value not in event_metadata
+
+
 # ── A01: IDOR — cannot access another user's payee transfer page ───────────────
 
 def test_transfer_page_returns_404_for_other_users_payee(app, client, transfer_context):
@@ -142,7 +226,7 @@ def test_transfer_page_returns_404_for_other_users_payee(app, client, transfer_c
         email="carol@example.com",
         full_name="Carol Other",
         phone_number="71234567",
-        account_number="555555555",
+        account_number="555555555000",
         account_status="active",
         account_type="customer",
         password_hash=hash_password("correct horse battery staple"),
@@ -151,7 +235,7 @@ def test_transfer_page_returns_404_for_other_users_payee(app, client, transfer_c
     db.session.add(carol)
     db.session.commit()
 
-    carol_payee = _make_active_payee(carol, "666666666", "Eve")
+    carol_payee = _make_active_payee(carol, "666666666000", "Eve")
 
     # Alice (logged in via `client`) tries to access Carol's payee
     response = client.get(f"/banking/transfer/{carol_payee.id}")
@@ -168,7 +252,7 @@ def test_transfer_submit_idor_check_runs_before_mfa(app, client, transfer_contex
         email="carol04@example.com",
         full_name="Carol Other",
         phone_number="61234567",
-        account_number="777777777",
+        account_number="777777777000",
         account_status="active",
         account_type="customer",
         password_hash=hash_password("correct horse battery staple"),
@@ -177,7 +261,7 @@ def test_transfer_submit_idor_check_runs_before_mfa(app, client, transfer_contex
     db.session.add(carol)
     db.session.commit()
 
-    carol_payee = _make_active_payee(carol, "888888888", "Frank")
+    carol_payee = _make_active_payee(carol, "888888888000", "Frank")
 
     mfa_mock = Mock(side_effect=AssertionError("MFA reached before IDOR check"))
     monkeypatch.setattr(banking_routes, "verify_high_risk_authorization", mfa_mock)
@@ -295,6 +379,60 @@ def test_successful_transfer_writes_durable_audit_and_redacts_pii(app, transfer_
     assert txn_ref not in serialized
 
 
+def test_successful_transfer_stays_committed_when_notification_delivery_fails(
+    app, transfer_context, monkeypatch,
+):
+    """Issue #552: the ledger commit boundary must be independent of the
+    best-effort customer notification step. A notification bug must never
+    roll back or otherwise affect an already-completed transfer."""
+    alice = transfer_context["alice"]
+    bob = transfer_context["bob"]
+    payee = transfer_context["payee"]
+
+    alice_before = Decimal(str(alice.balance))
+    bob_before = Decimal(str(bob.balance))
+    amount = Decimal("250.00")
+    token = _make_pending_transfer(alice, payee, amount, reference="Rent")
+
+    monkeypatch.setattr(
+        "app.banking.services.send_transfer_notification",
+        Mock(side_effect=RuntimeError("simulated notification failure")),
+    )
+
+    with app.test_request_context("/banking/transfer/confirm", method="POST"):
+        txn_ref = execute_local_transfer(sender=alice, payee=payee, confirmation_token=token)
+
+    # A notification bug that only manifests after the function returns (e.g.
+    # a background worker) must not be able to undo the transfer either —
+    # prove the state truly persisted by rolling back any uncommitted session
+    # state and re-reading from the database.
+    db.session.rollback()
+    alice_after = db.session.get(User, alice.id)
+    bob_after = db.session.get(User, bob.id)
+
+    assert Decimal(str(alice_after.balance)) == alice_before - amount
+    assert Decimal(str(bob_after.balance)) == bob_before + amount
+
+    txn = db.session.execute(
+        db.select(Transaction).where(Transaction.transaction_ref == txn_ref)
+    ).scalar_one()
+    assert txn.status == "completed"
+
+    pending = db.session.execute(
+        db.select(PendingTransfer).where(PendingTransfer.consumed_transaction_ref == txn_ref)
+    ).scalar_one()
+    assert pending.consumed_at is not None
+
+    event = db.session.execute(
+        db.select(SecurityAuditEvent).where(
+            SecurityAuditEvent.event_type == "banking_outbound_transfer",
+            SecurityAuditEvent.outcome == "success",
+            SecurityAuditEvent.user_id == alice.id,
+        )
+    ).scalars().first()
+    assert event is not None
+
+
 # ── A04: anti-replay — pending transfer consumed on confirm ────────────────────
 
 def test_confirm_post_without_pending_session_redirects_to_payees(client, transfer_context):
@@ -339,6 +477,91 @@ def test_complete_transfer_route_flow(client, transfer_context, monkeypatch):
     assert confirm_response.status_code == 200
     assert complete_response.status_code == 302
     assert Transaction.query.filter_by(reference="Coverage").count() == 1
+
+
+def test_transfer_stepup_succeeds_after_clean_password_totp_login(
+    client,
+    transfer_context,
+    monkeypatch,
+):
+    payee = transfer_context["payee"]
+    secret = transfer_context["alice_secret"]
+    client.post("/logout")
+    password_response = login(client, identifier="alice01")
+    login_time = int(time.time())
+    monkeypatch.setattr("app.auth.services.time.time", lambda: login_time)
+    mfa_response = client.post(
+        "/auth/mfa/verify",
+        json={"totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(login_time)},
+    )
+
+    stepup_time = login_time + 31
+    monkeypatch.setattr("app.auth.services.time.time", lambda: stepup_time)
+    submit_response = client.post(
+        f"/banking/transfer/{payee.id}",
+        data={
+            "amount": "25.00",
+            "reference": "Clean session",
+            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(stepup_time),
+        },
+    )
+    confirm_response = client.get(f"/banking/transfer/{payee.id}/confirm")
+    complete_response = client.post(f"/banking/transfer/{payee.id}/confirm")
+
+    assert password_response.status_code == 302
+    assert mfa_response.status_code == 200
+    assert submit_response.status_code == 302
+    assert confirm_response.status_code == 200
+    assert complete_response.status_code == 302
+    assert Transaction.query.filter_by(reference="Clean session").count() == 1
+    assert db.session.query(SecurityAuditEvent).filter_by(
+        event_type="session_risk",
+        outcome="reauth_required",
+    ).count() == 0
+
+
+def test_transfer_stepup_rejects_missing_context_with_matching_legacy_fingerprint(
+    client,
+    transfer_context,
+    monkeypatch,
+):
+    from app.security.sessions import SESSION_RISK_CONTEXT_KEY, SESSION_RISK_FINGERPRINT_KEY
+
+    payee = transfer_context["payee"]
+    secret = transfer_context["alice_secret"]
+    client.post("/logout")
+    password_response = login(client, identifier="alice01")
+    login_time = int(time.time())
+    monkeypatch.setattr("app.auth.services.time.time", lambda: login_time)
+    mfa_response = client.post(
+        "/auth/mfa/verify",
+        json={"totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(login_time)},
+    )
+    with client.session_transaction() as sess:
+        assert sess.get(SESSION_RISK_FINGERPRINT_KEY)
+        sess.pop(SESSION_RISK_CONTEXT_KEY)
+
+    stepup_time = login_time + 1
+    monkeypatch.setattr("app.auth.services.time.time", lambda: stepup_time)
+    submit_response = client.post(
+        f"/banking/transfer/{payee.id}",
+        data={
+            "amount": "25.00",
+            "reference": "Retired legacy context",
+            "totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(stepup_time),
+        },
+    )
+    with client.session_transaction() as sess:
+        assert not sess.get("pending_transfer_token")
+
+    assert password_response.status_code == 302
+    assert mfa_response.status_code == 200
+    assert submit_response.status_code == 401
+    assert Transaction.query.filter_by(reference="Retired legacy context").count() == 0
+    assert db.session.query(SecurityAuditEvent).filter_by(
+        event_type="session_risk",
+        outcome="reauth_required",
+    ).count() == 1
 
 
 def test_transfer_route_handles_invalid_form_and_mfa_error(
@@ -454,3 +677,259 @@ def test_transfer_routes_are_registered(app):
     assert "banking.transfer_submit" in rules
     assert "banking.transfer_confirm" in rules
     assert "banking.transfer_confirm_submit" in rules
+
+
+# ── Daily-limit accounting ───────────────────────────────────────────────────────
+
+def _make_local_transfer_transaction(
+    sender: User,
+    recipient: User,
+    amount: Decimal,
+    *,
+    created_at: datetime | None = None,
+    status: str = "completed",
+) -> Transaction:
+    created = created_at or datetime.now(timezone.utc)
+    transaction_ref = str(uuid.uuid4())
+    digest, key_id, algorithm, version = sign_transaction_integrity(
+        transaction_ref=transaction_ref,
+        sender_id=sender.id,
+        recipient_id=recipient.id,
+        payee_id=None,
+        amount=amount,
+        reference="",
+        status=status,
+        transaction_type="local_transfer",
+        created_at=created,
+    )
+    txn = Transaction(
+        transaction_ref=transaction_ref,
+        transaction_hash=digest,
+        transaction_integrity_key_id=key_id,
+        transaction_integrity_algorithm=algorithm,
+        transaction_integrity_version=version,
+        sender_id=sender.id,
+        recipient_id=recipient.id,
+        payee_id=None,
+        amount=amount,
+        reference="",
+        status=status,
+        transaction_type="local_transfer",
+        created_at=created,
+    )
+    db.session.add(txn)
+    db.session.commit()
+    return txn
+
+
+def test_local_transfer_amount_used_today_ignores_failed_and_other_channel_transactions(
+    app, transfer_context
+):
+    alice = transfer_context["alice"]
+    bob = transfer_context["bob"]
+
+    _make_local_transfer_transaction(alice, bob, Decimal("50.00"))
+    _make_local_transfer_transaction(alice, bob, Decimal("30.00"), status="failed")
+
+    created = datetime.now(timezone.utc)
+    transaction_ref = str(uuid.uuid4())
+    digest, key_id, algorithm, version = sign_transaction_integrity(
+        transaction_ref=transaction_ref,
+        sender_id=alice.id,
+        recipient_id=bob.id,
+        payee_id=None,
+        amount=Decimal("999.00"),
+        reference="",
+        status="completed",
+        transaction_type="payup",
+        created_at=created,
+    )
+    db.session.add(
+        Transaction(
+            transaction_ref=transaction_ref,
+            transaction_hash=digest,
+            transaction_integrity_key_id=key_id,
+            transaction_integrity_algorithm=algorithm,
+            transaction_integrity_version=version,
+            sender_id=alice.id,
+            recipient_id=bob.id,
+            payee_id=None,
+            amount=Decimal("999.00"),
+            reference="",
+            status="completed",
+            transaction_type="payup",
+            created_at=created,
+        )
+    )
+    db.session.commit()
+
+    assert local_transfer_amount_used_today(alice) == Decimal("50.00")
+
+
+def test_local_transfer_daily_limit_resets_at_midnight_sgt(app, transfer_context):
+    alice = transfer_context["alice"]
+    bob = transfer_context["bob"]
+
+    before_midnight_sgt = sgt_day_start_utc() - timedelta(hours=1)
+    _make_local_transfer_transaction(alice, bob, Decimal("400.00"), created_at=before_midnight_sgt)
+
+    assert local_transfer_amount_used_today(alice) == Decimal("0")
+
+
+def test_transfer_blocked_when_exceeding_daily_limit(app, transfer_context):
+    alice = transfer_context["alice"]
+    bob = transfer_context["bob"]
+    payee = transfer_context["payee"]
+
+    assert Decimal(str(alice.local_transfer_daily_limit)) == Decimal("500.00")
+    _make_local_transfer_transaction(alice, bob, Decimal("450.00"))
+
+    token = _make_pending_transfer(alice, payee, Decimal("100.00"))
+
+    with app.test_request_context("/banking/transfer/confirm", method="POST"):
+        with pytest.raises(AuthError) as exc_info:
+            execute_local_transfer(sender=alice, payee=payee, confirmation_token=token)
+
+    assert "daily local transfer limit" in exc_info.value.message.lower()
+    assert Transaction.query.count() == 1  # only the seeded transaction, no new one created
+
+
+def test_daily_limit_exceeded_writes_failure_audit_and_leaves_balance_unchanged(app, transfer_context):
+    alice = transfer_context["alice"]
+    bob = transfer_context["bob"]
+    payee = transfer_context["payee"]
+
+    _make_local_transfer_transaction(alice, bob, Decimal("450.00"))
+    alice_before = Decimal(str(alice.balance))
+
+    token = _make_pending_transfer(alice, payee, Decimal("100.00"))
+
+    with app.test_request_context("/banking/transfer/confirm", method="POST"):
+        with pytest.raises(AuthError):
+            execute_local_transfer(sender=alice, payee=payee, confirmation_token=token)
+
+    db.session.expire_all()
+    alice_after = db.session.get(User, alice.id)
+    assert Decimal(str(alice_after.balance)) == alice_before
+
+    event = db.session.execute(
+        db.select(SecurityAuditEvent).where(
+            SecurityAuditEvent.event_type == "banking_outbound_transfer",
+            SecurityAuditEvent.outcome == "failure",
+            SecurityAuditEvent.user_id == alice.id,
+        )
+    ).scalars().first()
+    assert event is not None
+    assert event.event_metadata.get("reason") == "daily_limit_exceeded"
+
+
+def test_transfer_within_daily_limit_after_prior_transfers_succeeds(app, transfer_context):
+    alice = transfer_context["alice"]
+    bob = transfer_context["bob"]
+    payee = transfer_context["payee"]
+
+    _make_local_transfer_transaction(alice, bob, Decimal("400.00"))
+
+    token = _make_pending_transfer(alice, payee, Decimal("100.00"))
+
+    with app.test_request_context("/banking/transfer/confirm", method="POST"):
+        txn_ref = execute_local_transfer(sender=alice, payee=payee, confirmation_token=token)
+
+    assert Transaction.query.filter_by(transaction_ref=txn_ref).count() == 1
+
+
+def test_transfer_submit_route_blocks_when_exceeding_daily_limit(client, transfer_context):
+    alice = transfer_context["alice"]
+    bob = transfer_context["bob"]
+    payee = transfer_context["payee"]
+
+    _make_local_transfer_transaction(alice, bob, Decimal("450.00"))
+
+    response = client.post(
+        f"/banking/transfer/{payee.id}",
+        data={"amount": "100.00", "totp_code": "123456"},
+    )
+
+    assert response.status_code == 400
+    assert b"daily Local Transfer limit" in response.data
+    assert PendingTransfer.query.count() == 0
+
+
+def test_unsuccessful_local_transfer_sends_withdrawal_failure_email(app, transfer_context):
+    from app.security.email import password_reset_outbox
+
+    alice = transfer_context["alice"]
+    payee = transfer_context["payee"]
+
+    alice.balance = Decimal("1.00")
+    db.session.commit()
+
+    token = _make_pending_transfer(alice, payee, Decimal("999.00"))
+
+    with app.test_request_context("/banking/transfer/confirm", method="POST"):
+        with pytest.raises(AuthError):
+            execute_local_transfer(sender=alice, payee=payee, confirmation_token=token)
+
+    delivery = password_reset_outbox()[-1]
+    assert delivery["to"] == "alice@example.com"
+    assert delivery["subject"] == "SITBank Withdrawal unsuccessful"
+    assert "withdrawal Local Transfer transaction was unsuccessful" in delivery["body"]
+
+
+def test_successful_local_transfer_sends_withdrawal_deposit_and_limit_warning(
+    app,
+    transfer_context,
+):
+    from app.security.email import password_reset_outbox
+
+    alice = transfer_context["alice"]
+    bob = transfer_context["bob"]
+    payee = transfer_context["payee"]
+
+    _make_local_transfer_transaction(alice, bob, Decimal("350.00"))
+    token = _make_pending_transfer(alice, payee, Decimal("50.00"))
+
+    with app.test_request_context("/banking/transfer/confirm", method="POST"):
+        execute_local_transfer(sender=alice, payee=payee, confirmation_token=token)
+
+    deliveries = password_reset_outbox()
+    assert [item["subject"] for item in deliveries[-3:]] == [
+        "SITBank Withdrawal successful",
+        "SITBank Deposit successful",
+        "SITBank Local Transfer daily limit 80% alert",
+    ]
+    assert deliveries[-3]["to"] == "alice@example.com"
+    assert "withdrawal Local Transfer transaction was successful" in deliveries[-3]["body"]
+    assert deliveries[-2]["to"] == "bob@example.com"
+    assert "deposit Local Transfer transaction was successful" in deliveries[-2]["body"]
+    assert deliveries[-1]["to"] == "alice@example.com"
+    assert "80.00% of your limit" in deliveries[-1]["body"]
+
+
+def test_disabled_transfer_activity_email_preference_keeps_daily_limit_alert(
+    app,
+    transfer_context,
+):
+    from app.security.email import password_reset_outbox
+
+    alice = transfer_context["alice"]
+    bob = transfer_context["bob"]
+    payee = transfer_context["payee"]
+    alice.transfer_activity_email_enabled = False
+    bob.transfer_activity_email_enabled = False
+    db.session.commit()
+    before_count = len(password_reset_outbox())
+
+    _make_local_transfer_transaction(alice, bob, Decimal("350.00"))
+    token = _make_pending_transfer(alice, payee, Decimal("50.00"))
+
+    with app.test_request_context("/banking/transfer/confirm", method="POST"):
+        txn_ref = execute_local_transfer(sender=alice, payee=payee, confirmation_token=token)
+
+    assert Transaction.query.filter_by(transaction_ref=txn_ref).count() == 1
+    deliveries = password_reset_outbox()[before_count:]
+    assert [item["subject"] for item in deliveries] == [
+        "SITBank Local Transfer daily limit 80% alert",
+    ]
+    assert deliveries[0]["to"] == "alice@example.com"
+    assert "80.00% of your limit" in deliveries[0]["body"]

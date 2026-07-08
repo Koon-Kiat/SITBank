@@ -40,7 +40,9 @@ services:
       SESSION_LOOKUP_HMAC_KEY_FILE: /run/secrets/session_lookup_hmac_key
       DATABASE_URL_FILE: /run/secrets/database_url
       MFA_KEK_KEYS_JSON_FILE: /run/secrets/mfa_kek_keys_json
+      TRANSACTION_LEDGER_HMAC_KEYS_JSON_FILE: /run/secrets/transaction_ledger_hmac_keys_json
       PASSWORD_PEPPER_B64_FILE: /run/secrets/password_pepper_b64
+      ROOT_ADMIN_EMAILS_FILE: /run/secrets/root_admin_emails
       SECURITY_AUDIT_HMAC_KEY_FILE: /run/secrets/security_audit_hmac_key
       SECURITY_ALERT_WEBHOOK_URL_FILE: /run/secrets/security_alert_webhook_url
       SMTP_USERNAME_FILE: /run/secrets/smtp_username
@@ -59,8 +61,12 @@ services:
         target: database_url
       - source: mfa_kek_keys_json
         target: mfa_kek_keys_json
+      - source: transaction_ledger_hmac_keys_json
+        target: transaction_ledger_hmac_keys_json
       - source: password_pepper_b64
         target: password_pepper_b64
+      - source: root_admin_emails
+        target: root_admin_emails
       - source: security_audit_hmac_key
         target: security_audit_hmac_key
       - source: security_alert_webhook_url
@@ -163,11 +169,14 @@ services:
       ADMIN_SESSION_LOOKUP_HMAC_KEY_FILE: /run/secrets/admin_session_lookup_hmac_key
       ADMIN_DATABASE_URL_FILE: /run/secrets/admin_database_url
       MFA_KEK_KEYS_JSON_FILE: /run/secrets/mfa_kek_keys_json
+      TRANSACTION_LEDGER_HMAC_KEYS_JSON_FILE: /run/secrets/transaction_ledger_hmac_keys_json
       ADMIN_PASSWORD_PEPPER_B64_FILE: /run/secrets/admin_password_pepper_b64
+      ROOT_ADMIN_EMAILS_FILE: /run/secrets/root_admin_emails
       SECURITY_AUDIT_HMAC_KEY_FILE: /run/secrets/security_audit_hmac_key
       SECURITY_ALERT_WEBHOOK_URL_FILE: /run/secrets/security_alert_webhook_url
       SMTP_USERNAME_FILE: /run/secrets/smtp_username
       SMTP_PASSWORD_FILE: /run/secrets/smtp_password
+      TURNSTILE_SECRET_KEY_FILE: /run/secrets/turnstile_secret_key
     secrets:
       - source: admin_secret_key
         target: admin_secret_key
@@ -181,8 +190,12 @@ services:
         target: admin_database_url
       - source: mfa_kek_keys_json
         target: mfa_kek_keys_json
+      - source: transaction_ledger_hmac_keys_json
+        target: transaction_ledger_hmac_keys_json
       - source: admin_password_pepper_b64
         target: admin_password_pepper_b64
+      - source: root_admin_emails
+        target: root_admin_emails
       - source: security_audit_hmac_key
         target: security_audit_hmac_key
       - source: security_alert_webhook_url
@@ -191,6 +204,8 @@ services:
         target: smtp_username
       - source: smtp_password
         target: smtp_password
+      - source: turnstile_secret_key
+        target: turnstile_secret_key
     volumes:
       - type: bind
         source: /etc/sitbank/common-passwords.txt
@@ -249,8 +264,12 @@ secrets:
     file: /etc/sitbank/secrets/mfa_kek_keys_json
   password_pepper_b64:
     file: /etc/sitbank/secrets/password_pepper_b64
+  root_admin_emails:
+    file: /etc/sitbank/secrets/root_admin_emails
   security_audit_hmac_key:
     file: /etc/sitbank/secrets/security_audit_hmac_key
+  transaction_ledger_hmac_keys_json:
+    file: /etc/sitbank/secrets/transaction_ledger_hmac_keys_json
   security_alert_webhook_url:
     file: /etc/sitbank/secrets/security_alert_webhook_url
   admin_secret_key:

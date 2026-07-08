@@ -23,6 +23,13 @@ Apply these principles by default:
 
 Do not weaken an existing security control to make implementation easier. If a control must change, the replacement must be documented, tested, and at least as secure.
 
+Every implementation must also harden the changed trust boundary against
+recurrence. Cover adjacent bypasses, malformed and stale state, unsafe
+configuration, partial failure, replay, and cross-runtime behavior where
+relevant. Prefer one centralized invariant plus positive, negative, and
+fail-closed tests over isolated call-site patches. Keep the added hardening
+proportionate and reviewable.
+
 ## Identity and access rules
 
 Preserve customer, staff, admin, and root-admin identity separation.
@@ -60,13 +67,12 @@ Preserve:
 - Rate limiting, backoff controls, and replay protections.
 - Safe password reset and recovery flows.
 - Safe remember-me or token-based flows where implemented.
-- Separation between TOTP, passkeys/WebAuthn, recovery codes, reset flows, and session tokens.
+- Separation between TOTP, recovery codes, reset flows, and session tokens.
 
 Rules:
 
 - Recovery codes must be one-time use where implemented.
 - Recovery and reset flows must invalidate relevant sessions and tokens.
-- WebAuthn/passkey challenge and assertion values must not be logged.
 - MFA enrollment, reset, disablement, and recovery must be audited safely.
 - High-risk privileged MFA/reset operations must preserve maker-checker or admin/root-admin controls where implemented.
 - Do not weaken MFA requirements to simplify login, tests, or admin access.
@@ -171,8 +177,6 @@ Never log, print, commit, upload, or expose:
 - Password reset tokens.
 - TOTP seeds or codes.
 - Recovery codes.
-- Passkey secrets.
-- Raw WebAuthn challenges/assertions.
 - Session IDs.
 - CSRF tokens.
 - Cookies.

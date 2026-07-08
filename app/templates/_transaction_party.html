@@ -1,0 +1,24 @@
+{% macro transaction_party(txn, user) -%}
+{% if txn.transaction_type == "topup" %}
+  Self top-up
+{% elif txn.transaction_type == "payup" %}
+  {% if txn.sender_id == user.id %}
+    {% set recipient_label = (txn.recipient.payup_nickname if txn.recipient else "") or (txn.recipient.phone_number if txn.recipient else "") or "PayUp recipient" %}
+    To: {{ recipient_label }}
+    {% if txn.recipient and txn.recipient.payup_nickname and txn.recipient.phone_number %}
+      <span class="muted compact">Phone: {{ txn.recipient.phone_number }}</span>
+    {% endif %}
+  {% else %}
+    From: {{ (txn.sender.payup_nickname if txn.sender else "") or "PayUp sender" }}
+    {% if user.account_number %}
+      <span class="muted compact">To: your account ending in {{ user.account_number[-4:] }}</span>
+    {% endif %}
+  {% endif %}
+{% else %}
+  {% if txn.sender_id == user.id %}
+    {{ txn.recipient.full_name or txn.recipient.username }}
+  {% else %}
+    {{ txn.sender.full_name or txn.sender.username }}
+  {% endif %}
+{% endif %}
+{%- endmacro %}

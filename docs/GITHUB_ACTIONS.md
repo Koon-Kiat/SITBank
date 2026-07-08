@@ -11,6 +11,21 @@ main push -> Publish container image -> Release verification -> Deploy staging
 ```
 
 The tested, scanned, signed, and deployed digest must be identical. Deployments never use `latest`.
+The publish job also creates a GitHub artifact attestation whose subject is the
+exact GHCR image name and Buildx digest, and pushes that attestation to the
+image registry. Release verification uses the GitHub attestation API's
+repository-scoped lookup for that exact image digest, rather than
+`--bundle-from-oci`, and checks the exact scheme-free signer identity
+`github.com/Koon-Kiat/SITBank/.github/workflows/ci-deploy.yml`, the trusted
+`main` source ref, the resolved release commit, GitHub's OIDC issuer, and a
+non-self-hosted runner before any staging deployment. GitHub CLI requires
+`--signer-workflow` in `[host/]owner/repository/path` form; an `https://`
+prefix is not valid. Public GitHub repositories use Sigstore's Public Good
+instance for GitHub artifact attestations, so the verifier must not use
+`--no-public-good`; the identity and source constraints remain mandatory. The
+API lookup also avoids selecting the separate BuildKit provenance stored in the
+OCI registry. Cosign signature and certificate-identity verification, Trivy,
+SBOM, and provenance checks remain independent required layers.
 
 ## Workflow And Check Display Names
 
@@ -39,17 +54,47 @@ and status checks use the display names:
 | `verify-private-admin-tailnet` | `Verify private admin tailnet` |
 
 Bootstrap, Cloudflare verification, label automation, reusable SonarQube, and
-manual private-tailnet jobs follow the same explicit naming policy.
+manual private-tailnet jobs follow the same explicit naming policy. The
+manual **Verify private Grafana Loki observability** workflow is a protected
+post-deployment evidence workflow for the private observability stack, not a
+pull-request or public TLS check.
 `tests/test_workflow_display_names.py` enforces the policy across every
 `.github/workflows/*.yml` file while allowing the intentional TLS matrix name
 `Scan ${{ matrix.target.label }}`.
+
+## Non-Deploy Security Summaries
+
+Each independent security job outside `.github/workflows/ci-deploy.yml` writes
+a bounded, human-readable `GITHUB_STEP_SUMMARY`. Scanner summaries identify
+the checked scope, decision, safe finding counts, and artifact or code-scanning
+location where applicable. Detailed logs, individual job summaries, SARIF
+views, and retained artifacts remain the source of truth; summaries never copy
+secret matches or full raw scanner payloads.
+
+`.github/workflows/security-summary.yml` adds a shorter read-only rollup for
+pull requests and for merged commits pushed to `main`. It waits for the
+event-appropriate independent jobs, distinguishes passed, failed, skipped,
+expected-skipped, pending, and unknown states, and fails closed for any
+unresolved or unexpected state. Its one `CI, publish, and deploy` row is only a
+scope pointer and does not duplicate findings from `ci-deploy.yml`. The rollup
+does not replace individual checks, change branch-protection contexts, post a
+PR comment, publish, or deploy.
 
 The `Playwright E2E browser tests` job (internal ID `playwright-e2e`) installs
 the hashed development dependencies, installs Chromium with `python -m
 playwright install --with-deps chromium`, and runs `python -m pytest -q
 tests/e2e` with `SITBANK_RUN_E2E=1` and `PLAYWRIGHT_BROWSERS_PATH` set to
 `.playwright-browsers`. The tests use a loopback Flask server from the pytest
-app fixture and do not target staging, production, or private-admin hosts.
+app fixture for authentication, MFA, session, banking, and boundary
+regressions. Coverage includes registration, password reset, manual recovery, payee, transfer, session management, password change, account freeze, and customer/admin isolation.
+They do not prove live staging or production provider state and do
+not target staging, production, or private-admin hosts. Browser cache, reports,
+traces, screenshots, and videos are ignored and are not uploaded by the job.
+
+The Python suite uses a per-worker app and database schema with per-test state
+cleanup, and the custom full-history secret scan reads streaming Git object
+batches. These runtime optimizations do not add marker exclusions, scoped test
+paths, or weaker security checks.
 
 Changing a job display name can change its required status-check context even
 when the internal ID is unchanged. Repository files do not update GitHub
@@ -112,27 +157,31 @@ environment-specific deploy key, pinned known-hosts entry, and
 
 GitHub environment variables provide only non-secret deployment settings. Keep
 `STAGING_DEPLOY_ENABLED` and `PROD_DEPLOY_ENABLED` as repository variables. Put
-environment-specific settings, including SMTP sender/host values, under their
-matching GitHub environment. For both `staging` and `production`, set:
+environment-specific non-secret settings, including SMTP sender/host values,
+under their matching GitHub environment. For both `staging` and `production`,
+set these environment variables:
 
 - `<PREFIX>_EC2_HOST`
 - `<PREFIX>_EC2_PORT`
 - `<PREFIX>_EC2_DEPLOY_USER`
 - `<PREFIX>_PUBLIC_HOST`
 - `<PREFIX>_MFA_KEK_ACTIVE_ID`
+- `<PREFIX>_TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID`
 - `<PREFIX>_SESSION_HMAC_ACTIVE_KEY_ID`
 - `<PREFIX>_PASSWORD_PBKDF2_ITERATIONS`
 - `<PREFIX>_MFA_ISSUER_NAME`
 - `<PREFIX>_PASSWORD_RESET_EMAIL_FROM`
 - `<PREFIX>_SMTP_HOST`
-- `ROOT_ADMIN_EMAILS`
 
-`ROOT_ADMIN_EMAILS` is scoped by GitHub environment rather than prefix: set it
-separately in both the `staging` and `production` environments. It must be a
-comma-separated list of exactly 7 workplace email addresses from
-`ADMIN_ALLOWED_EMAIL_DOMAINS`. The deployment workflow maps it into the
-prefixed renderer input for the target environment and writes
-`ROOT_ADMIN_EMAILS` into the signed runtime `container.env`.
+Root-admin allowlists are sensitive privileged-identity configuration, not
+repository variables. Store `STAGING_ROOT_ADMIN_EMAILS` in the protected
+`staging` environment with exactly 2 workplace addresses and
+`PROD_ROOT_ADMIN_EMAILS` in `production` with exactly 3 workplace addresses.
+Every address must belong to `ADMIN_ALLOWED_EMAIL_DOMAINS`. The deployment
+workflow maps only the target's secret into the renderer input and validates
+only its shape, and installs it as the root-managed secret file
+`/etc/sitbank*/secrets/root_admin_emails`. Do not copy the real allowlist into
+issues, pull requests, screenshots, logs, or job summaries.
 
 `STAGING_PUBLIC_HOST` and `PROD_PUBLIC_HOST` are public HTTPS verification
 names. `STAGING_EC2_HOST` and `PROD_EC2_HOST` are private Tailscale MagicDNS
@@ -210,6 +259,16 @@ tokens, JWTs, service tokens, cookies, session identifiers, CSRF values, and
 private-key blocks before printing handled errors.
 
 `<PREFIX>_MFA_KEK_ACTIVE_ID` must match a key identifier in the root-managed `/etc/sitbank*/secrets/mfa_kek_keys_json` file on EC2. Do not put `MFA_KEK_KEYS_JSON` in GitHub Actions; the KEK keyring is a long-lived secret and remains host-managed.
+`<PREFIX>_TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID` must match a key identifier
+in `/etc/sitbank-staging/secrets/transaction_ledger_hmac_keys_json` for staging
+or `/etc/sitbank/secrets/transaction_ledger_hmac_keys_json` for production.
+Keep the transaction-ledger keyring host-managed and separate from session and
+audit HMAC material. Do not configure
+`STAGING_TRANSACTION_LEDGER_HMAC_KEYS_JSON` or
+`PROD_TRANSACTION_LEDGER_HMAC_KEYS_JSON` in GitHub Actions; deployment adopts
+the existing EC2 secret file and validates that the active key id is present
+and every key value decodes to exactly 32 bytes. The deployment wrapper does
+not generate, replace, print, upload, or bundle the keyring.
 `<PREFIX>_ADMIN_SESSION_HMAC_ACTIVE_KEY_ID` must match a key identifier in
 `/etc/sitbank*/secrets/admin_session_hmac_keys_json`. Do not put admin Flask,
 CSRF, session-HMAC, session-lookup HMAC, password-pepper, or database secret values in GitHub
@@ -256,9 +315,10 @@ fallback. The current provider value is `admin-sitbank.tailca101b.ts.net`.
 `STAGING_EC2_HOST` and `PROD_EC2_HOST` remain separate private SSH deployment
 targets, not admin browser targets.
 
-The workflow fails if the private URL responds before enrollment, then joins
-the tailnet, requires `https://${TAILSCALE_PRIVATE_ADMIN_HOST}/login` to return
-the documented unauthenticated `200`, and logs out. It checks no admin
+The workflow fails if a `GET` to the private URL responds before enrollment,
+then joins the tailnet, requires an unauthenticated `GET` to
+`https://${TAILSCALE_PRIVATE_ADMIN_HOST}/login` to return the documented
+`200`, and logs out. It checks no admin
 credentials, changes no deployment or tailnet state, and enables neither
 Tailscale Serve nor Funnel.
 Failure marks the post-deploy workflow failed; production may already be
@@ -287,6 +347,70 @@ used by workflows.
 The separate `ops/tailscale/` host automation installs Tailscale and configures
 the production Serve mapping only after explicit operator confirmation. It is
 never called by either verification job, pull requests, or normal CI.
+
+## Private Observability Verification
+
+`.github/workflows/bootstrap-observability-ec2.yml` is the mutation path for
+an already prepared host. It is manual-only, `main`-only, and protected by
+`observability-staging` or `observability-production`. The workflow checks out
+the immutable workflow commit, signs a source archive, joins Tailscale with
+`tag:github-ci-observability-bootstrap`, uploads only the archive and signature
+bundle, and invokes the exact sudo-allowed
+`/usr/local/sbin/sitbank-observability-bootstrap` command. The root wrapper
+verifies repository, commit, signer workflow identity, archive structure,
+root-owned configuration and secret modes, immutable image digests, loopback
+ports, internal networks, public-route denial, Tailscale Serve scope, and
+Funnel denial before calling the repository bootstrap script.
+
+Configure each protected environment with `OBSERVABILITY_EC2_HOST`,
+`OBSERVABILITY_EC2_DEPLOY_USER`, `OBSERVABILITY_EC2_PORT`,
+`OBSERVABILITY_EC2_SSH_PRIVATE_KEY_B64`, `OBSERVABILITY_EC2_KNOWN_HOSTS`,
+`OBSERVABILITY_BOOTSTRAP_TS_OAUTH_CLIENT_ID`, and
+`OBSERVABILITY_BOOTSTRAP_TS_OAUTH_SECRET`. These bootstrap-only secrets must
+identify a separate OAuth client restricted to
+`tag:github-ci-observability-bootstrap`; do not share the client with
+`tag:github-ci-observability-verify` or `tag:github-ci-admin-verify`.
+Required reviewers and branch restrictions are provider-side controls and need
+separate sanitized evidence. The reference ACL permits the bootstrap tag only
+to `tag:sitbank-observability-ec2:22`; it must not administer the tailnet or
+reach private Grafana HTTPS.
+Grafana credentials, datasource credentials, logs, cookies, and application
+secrets remain host-managed and never enter GitHub Actions.
+
+Repository files do not prove the live ACL, node tags, OAuth-client tag scope,
+GitHub Environment settings, host firewall, security-group state, or provider
+state. Verify each separately and retain only sanitized evidence.
+
+`.github/workflows/observability-private-verify.yml` is manual-only,
+`main`-only, read-only, and protected by either `observability-staging` or
+`observability-production`. It verifies the private Grafana/Loki deployment
+after observability bootstrap, Grafana provisioning, Tailscale ACL/DNS changes,
+or operator credential rotation. It is intentionally separate from PR-safe
+static tests and from public TLS evidence because Grafana is a private operator
+tool and Loki is not Internet-facing.
+
+Configure each protected environment with `GRAFANA_PRIVATE_URL` set to the
+approved private subpath URL,
+`https://admin-sitbank.tailca101b.ts.net/grafana/`,
+optional `OBSERVABILITY_PUBLIC_PROBE_URLS`, `GRAFANA_HEALTH_TOKEN`,
+`TS_OAUTH_CLIENT_ID`, and `TS_OAUTH_SECRET`. The Tailscale OAuth client should
+be restricted to `tag:github-ci-observability-verify`, and the Grafana token
+must be a least-privilege non-admin health token. Do not store operator
+passwords, browser sessions, cookies, MFA values, raw Loki logs, datasource
+credentials, or Grafana admin credentials in GitHub.
+
+The workflow checks that private Grafana is unreachable before joining the
+tailnet, joins Tailscale, verifies Grafana API health with explicit HTTP `200`
+status, verifies anonymous API denial, verifies the non-admin verifier role,
+checks Loki datasource health through Grafana with explicit HTTP `200` status
+and schema validation, verifies direct private `/loki` and `/metrics` denial
+on the Tailscale host, and runs public denial probes for `/grafana`, `/loki`,
+`/logs`, and `/metrics`. Cloudflare Access challenges, generic Cloudflare
+headers, and app/Nginx `401`, `403`, or `404` responses count as public-denial
+evidence. The verifier fails closed when private or public responses include
+Grafana/Loki-identifying headers, `grafana_session` cookies, or redirects to
+Grafana/Loki login paths, uploads only sanitized JSON evidence for 30 days,
+and logs out of Tailscale at completion.
 
 ## Gitleaks
 
@@ -370,12 +494,25 @@ recorded in `docs/security/governance/github-branch-protection-evidence.md`.
 Synthetic DAST users remain the only authenticated scan identities. The smoke
 helper writes the authenticated session cookie and ZAP replacer configuration to
 temporary `0600` files created under `umask 077`; the DAST cookie is not passed
-as a raw process argument. ZAP loads the authenticated-cookie replacer from a
-restricted `-configfile` path, and the cookie/config directory is removed by the
-smoke-test cleanup trap on success or failure. Do not upload `auth-cookie` or
-`zap-replacer.properties`, do not print environment dumps or shell-expanded
-secret values, and investigate immediately if either file or a session value
-appears in logs, summaries, or artifacts.
+as a raw process argument. Session bootstrap fails closed unless the app runtime
+reports `DEPLOYMENT_TARGET=smoke`, the user has the helper's exact synthetic
+`zap<12-lowercase-hex>` customer identity, and the session base URL is loopback
+or the allowlisted `sitbank-smoke` container. Real customers and all staff,
+admin, and root-admin identities are rejected before session issuance. Release
+smoke enables
+`DEPLOYMENT_TARGET=smoke` and `TURNSTILE_ALLOW_TEST_ACTION=true` only on the
+isolated smoke app container so Cloudflare's official dummy-token response can
+authenticate the synthetic DAST user with the official test keys; production
+readiness rejects that flag outside the smoke target. ZAP loads the
+authenticated-cookie replacer from a restricted `-configfile` path. That same
+restricted config pins the smoke request identity headers (`User-Agent`,
+`X-Forwarded-For`, and `X-Forwarded-Proto`) so the authenticated crawl matches
+the server-side session risk context without weakening reauthentication checks.
+The cookie/config directory is removed by the smoke-test cleanup trap on
+success or failure. Do not upload `auth-cookie` or `zap-replacer.properties`,
+do not print environment dumps or shell-expanded secret values, and investigate
+immediately if either file or a session value appears in logs, summaries, or
+artifacts.
 
 ## SonarQube Cloud
 
@@ -395,12 +532,15 @@ deployment credentials, or `SONAR_HOST_URL`. Scheduled CI runs skip the
 SonarQube job. Coverage retrieval uses the SHA-pinned
 `actions/download-artifact` v8.0.1 Node.js 24 action.
 
-The initial SonarQube quality gate is reporting-only and is not a release or
-deployment dependency. After a successful trusted internal pull-request scan,
+Trusted pull requests and release-producing runs wait for the SonarQube quality
+gate and fail when it fails. The `Publish container image` job depends directly
+on both `SonarQube analysis` and `Playwright E2E browser tests`, so a failed or
+missing gate prevents image publication and every downstream staging or
+production deployment. After a successful trusted internal pull-request scan,
 the separate `SonarQube PR comment` job (internal ID `sonarqube-comment`) uses
 SHA-pinned, Node.js 24
-`actions/github-script` to create or update one informational summary with
-workflow and dashboard links. The comment job has only `contents: read` and
+`actions/github-script` to create or update one summary describing the enforced
+gate, with workflow and dashboard links. The comment job has only `contents: read` and
 `pull-requests: write`; the scanner never receives that write capability. A
 hidden marker keeps reruns from creating duplicates.
 Fork and Dependabot pull requests receive neither the secret-backed cloud scan
@@ -432,8 +572,31 @@ the `sitbank-source-sbom` CycloneDX JSON artifact for 30 days with
 `contents: read` and checkout credentials disabled. Generated SBOM files are
 evidence artifacts and must not be committed.
 
+The workflow copies the source-controlled `requirements.lock` and
+`requirements-dev.lock` into temporary `*requirements*.txt` paths so Syft's
+declared-package cataloger can recognize them, and explicitly disables Syft's
+installed-Python-package cataloger. Runner-global packages, runner
+`site-packages`, and a local `.venv` are therefore not source dependency
+evidence. The temporary copies are removed even if generation fails.
+
+The job summary is a bounded preview: its Python section comes first and lists
+at most 10 unique `pkg:pypi/` components that match pinned packages in those
+reviewed source-controlled manifests. The ecosystem table follows at the
+bottom. If manifests exist but no matching PyPI PURLs are emitted, the summary
+reports a generator/PURL detection limitation instead of implying that the
+repository has no Python dependencies. Its renderer accepts only relative
+regular-file paths contained by the current workspace and rejects traversal
+and symlink escapes. The full `sitbank-source-sbom` artifact remains the source
+of truth. Inspect all Python entries without printing the whole document:
+
+```bash
+jq -r '(.components // [])[] | select((.purl // "") | startswith("pkg:pypi/")) | [.name, .version, .purl] | @tsv' sitbank-source-sbom-cyclonedx.json
+```
+
 This source artifact complements the existing Docker Buildx `sbom: true`
-release-image attestation. An explicit image SBOM artifact remains deferred
+release-image attestation. Packages actually installed in the runtime belong
+to image/container SBOM scope, not the source SBOM summary. An explicit image
+SBOM artifact remains deferred
 until the exact digest-verified release image can be supplied to Syft without
 adding registry write privileges or untrusted-PR credentials. SBOM generation
 is inventory evidence, not vulnerability scanning; dependency audit and Trivy

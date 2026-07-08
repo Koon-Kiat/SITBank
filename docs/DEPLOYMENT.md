@@ -114,20 +114,94 @@ production backup before production `db upgrade`. After the migration, run
 reported drift with ad hoc production `ALTER TABLE`, `DROP INDEX`, or
 `DROP CONSTRAINT` commands.
 
-## Registration Schema Reset For Disposable Environments
+## Disposable Database Reset
 
-The registration schema requires verified email, full name, phone number, and a
-server-generated account number for new customers. Existing disposable
-development, staging, or demo databases with no real users may be reset or
-recreated before applying the registration migration so fake phone numbers and
-predictable account numbers are not preserved as long-lived data.
+The current schema intentionally has no compatibility backfill for obsolete
+user, invite, browser-credential, session-risk, or 9-digit account-number
+state. Reset only an environment confirmed to contain disposable project data.
+Stop both customer and admin services first, preserve the maintenance record,
+and run the command in the normal application image with that environment's
+runtime configuration and schema-owner migration URL.
 
-Do not drop or recreate a production-like database automatically. Any reset must
-be an explicit operator action after confirming the environment has no real
-users and after taking any required backup. If an existing database must be
-preserved, the migration leaves unknown legacy phone numbers as `NULL`, keeps
-uniqueness only for real non-null phone numbers, and assigns non-enumerable
-server-generated account numbers to preserved rows.
+Run staging preflight and execution first:
+
+```bash
+python -m flask --app wsgi:app reset-demo-database --target staging --disposable-data-confirmed
+python -m flask --app wsgi:app reset-demo-database --target staging --execute --disposable-data-confirmed --confirm "RESET STAGING DEMO DATABASE"
+```
+
+Do not place this command in deployment automation. Production requires the
+successful staging evidence, protected manual approval, and a fresh encrypted
+root-managed mode-`0600` backup outside the repository/CI workspace:
+
+```bash
+sudo /usr/local/sbin/sitbank-backup-encrypted --environment production
+python -m flask --app wsgi:app reset-demo-database --target production --disposable-data-confirmed
+python -m flask --app wsgi:app reset-demo-database --target production --execute --disposable-data-confirmed --staging-verified --approved --backup-file /var/backups/sitbank/sitbank-production-sitbank_db-<timestamp>.pgdump.age --confirm "RESET PRODUCTION DEMO DATABASE"
+```
+
+The executing operator must substitute the exact backup created for this
+maintenance window. The reset drops the selected database's reflected schema,
+applies the complete Alembic chain, and then verifies that user/payee account
+numbers satisfy the current format. It never runs during normal deployment.
+
+Migration `20260703_0023` adds canonical customer registration email identity,
+MFA setup-session binding timestamps, and versioned recovery-code HMACs.
+Current registration writes the canonical identity directly; the authorized
+reset replaces old customer rows instead of inferring canonical identity.
+
+Migration `20260703_0022` adds PayUp support with `users.payup_daily_limit`,
+the `transactions.transaction_type` constraint, and the
+`payup_pending_transfers` table. After upgrade, verify PayUp lookup, amount,
+confirmation, daily-limit, and transfer-limit settings through staging before
+production rollout.
+
+Migration `20260703_0024` enforces exactly 12 decimal digits for non-null
+`users.account_number` and all `payees.account_number` values. Registration
+randomizes all 12 positions independently; route and form validation match the
+database constraints. The migration does not convert obsolete identifiers.
+
+Migration `20260704_0025` adds nullable transaction-integrity key id,
+algorithm, and version metadata. Existing rows remain explicitly legacy;
+new Local Transfer and PayUp rows use the dedicated
+`TRANSACTION_LEDGER_HMAC_KEYS_JSON` keyring and cover transaction type plus all
+stored ledger fields. Provision the environment-specific root-managed keyring
+and matching `TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID` before `db upgrade` and
+application restart. Do not reuse session or audit HMAC keys.
+
+Migration `20260704_0027` hardens PayUp daily-limit bounds, staff invite
+acceptance verification lockouts, and recovery-code compatibility. It adds the
+`ck_users_payup_daily_limit_bounds` database check, stores invite verification
+failure lockout counters on `staff_invites`, and marks unused legacy
+recovery-code HMAC rows consumed. After upgrade, verify transfer-limit settings,
+PayUp lookup throttling, invite acceptance/reset, and password-reset MFA in
+staging before production rollout.
+
+Migration `20260705_0028` removes the transaction-integrity compatibility
+boundary and adds the per-customer PayUp enable flag. Before upgrading, stop
+ledger writes, confirm a fresh encrypted backup, and run the current trusted
+application image against the existing schema:
+
+```bash
+python -m flask --app wsgi:app security backfill-transaction-integrity
+python -m flask --app wsgi:app security backfill-transaction-integrity --confirm
+python -m flask --app wsgi:app db upgrade
+```
+
+The first command is validation-only and reports aggregate counts. The
+confirmed command signs only rows with entirely absent integrity metadata,
+refuses partial or invalid signed rows, verifies every row, and commits the
+backfill with its completed audit event. The migration then fails closed if
+any row is not keyed HMAC-SHA256 version 1 and makes all integrity metadata
+non-null. Run and preserve sanitized staging evidence first. Do not downgrade
+this migration or restore legacy verification; rollback requires restoring the
+approved encrypted backup and previously trusted application release.
+
+Migration `20260705_0030` adds `users.payup_nickname` and the
+`registration_credits` ledger. After upgrade, verify customer registration
+creates exactly one SGD 100.00 welcome credit with HMAC-SHA256 integrity
+metadata, and verify PayUp senders are routed through nickname setup before
+lookup, amount entry, or confirmation.
 
 ## Deployment Prerequisites
 
@@ -143,8 +217,8 @@ Python's default certificate validation and hostname checking; do not configure
 production or staging with unverifiable SMTP TLS.
 
 Turnstile is disabled until `TURNSTILE_ENABLED=true` and route-specific flags
-are set. Customer login, registration OTP, registration submit, password reset,
-optional admin login, and admin invite acceptance each have separate
+are set. Customer login, registration OTP, registration submit, password
+reset, manual recovery, admin login, and admin invite acceptance each have separate
 `TURNSTILE_*_ENABLED` flags. Production and staging must use the official
 Cloudflare Siteverify endpoint
 `https://challenges.cloudflare.com/turnstile/v0/siteverify`; local/test mocks
@@ -157,18 +231,24 @@ Deployment maps production and staging GitHub Environment variables named
 `TURNSTILE_ENABLED`, `TURNSTILE_SITE_KEY`, `TURNSTILE_VERIFY_URL`, and
 `TURNSTILE_*_ENABLED` runtime settings. Configure separate Cloudflare widgets:
 the production widget covers `sitbank.pp.ua` and `www.sitbank.pp.ua`, while the
-staging widget covers `staging-sitbank.pp.ua`. Store server credentials only as
-the `PROD_TURNSTILE_SECRET_KEY` and `STAGING_TURNSTILE_SECRET_KEY` GitHub
+staging widget covers `staging-sitbank.pp.ua`. If admin invite acceptance uses
+a private/admin hostname in that environment, add the exact recipient-facing
+hostname to the matching widget's hostname allowlist; do not use wildcard
+provider-domain coverage as a shortcut. Store server credentials only as the
+`PROD_TURNSTILE_SECRET_KEY` and `STAGING_TURNSTILE_SECRET_KEY` GitHub
 Environment secrets. The trusted deployment installs each credential as
-`/etc/sitbank*/secrets/turnstile_secret_key`; Compose exposes only
+`/etc/sitbank*/secrets/turnstile_secret_key`; Compose mounts that
+environment-specific credential read-only into both the customer and admin
+runtimes and exposes only
 `TURNSTILE_SECRET_KEY_FILE=/run/secrets/turnstile_secret_key`.
 
-For this customer rollout, set the four
-`*_TURNSTILE_CUSTOMER_*_ENABLED` variables to `true` and both
-`*_TURNSTILE_ADMIN_*_ENABLED` variables to `false`. This wiring adds no public
-admin hostname and does not replace rate limits, CSRF, MFA, Cloudflare Access,
-or Tailscale. The production hostname transition itself is tracked separately
-and is not implemented by this Turnstile wiring.
+Production-like readiness fails closed unless Turnstile, the site and secret
+keys, `TURNSTILE_FAIL_CLOSED_IN_PRODUCTION`, and every runtime-relevant
+customer and admin route flag are enabled. This includes
+`TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED`. Private admin networking remains
+a separate boundary; it does not justify disabling bot protection. This wiring
+adds no public admin hostname and does not replace rate limits, CSRF, MFA,
+Cloudflare Access, or Tailscale.
 
 Install the host-managed backup encryption recipients file before running
 database cutover or scheduled backups:
@@ -181,12 +261,33 @@ remain outside the repository and outside application containers. Bootstrap
 installs `age`, `/usr/local/sbin/sitbank-backup-encrypted`, and
 `/usr/local/sbin/sitbank-restore-preflight`; encrypted backups are stored under
 `/var/backups/sitbank` or `/var/backups/sitbank-staging` as root-owned mode
-`0600` `.pgdump.age` files. Restore checks are explicit operator preflights,
-not Flask routes or deployment defaults.
+`0600` `.pgdump.age` files. Restore checks are explicit operator preflights
+that validate owner, mode, parent directory safety, repository/CI-workspace
+exclusion, target database, and host-only identity material; they are not Flask
+routes or deployment defaults. Recurring backup timers, restore drills, and
+encrypted-archive pruning remain host/operator-owned evidence.
 
 Deploy the signed image through the restricted wrapper so it runs
 `production-check`, `db upgrade`, `apply-runtime-db-privileges`,
 `verify-runtime-db-privileges`, and readiness checks before declaring success.
+Before staging, release verification also verifies a GitHub artifact
+attestation, pushed by the trusted publish job to the image registry, for the
+exact `ghcr.io/koon-kiat/sitbank@sha256:<digest>` subject. The verifier requires
+repository `Koon-Kiat/SITBank`, source ref `refs/heads/main`, the resolved
+release commit, exact scheme-free signer workflow identity
+`github.com/Koon-Kiat/SITBank/.github/workflows/ci-deploy.yml`, GitHub's OIDC
+issuer, a non-self-hosted runner, and the same digest passed to deployment.
+GitHub CLI accepts `[host/]owner/repository/path` for `--signer-workflow`, not
+an `https://` URL. Because public GitHub repositories sign GitHub artifact
+attestations with Sigstore's Public Good instance, verification intentionally
+does not use `--no-public-good`. It uses the repository-scoped GitHub
+attestation API lookup rather than `--bundle-from-oci`, so independent BuildKit
+provenance stored in the OCI registry is not selected. A missing, wrong-subject,
+wrong-ref, wrong-workflow, or unverifiable attestation fails closed. This is
+SLSA Build L1/L2-aligned release evidence, not a claim of formal SLSA
+certification. Repository files do not prove live GHCR state, branch
+protection, or GitHub Environment settings; preserve sanitized release/provider
+evidence separately.
 
 Production deployment runs from the trusted `main` workflow only after release
 verification, staging deployment, and the post-deployment staging TLS scan all
@@ -369,17 +470,19 @@ sudo /usr/local/sbin/verify-tailscale-admin-access --mode serve
 ```
 
 Serve mode succeeds only when the local Tailscale node reports `Running`,
-Funnel is disabled, the admin service has only the
+Tailscale SSH and Funnel are disabled, the admin service has only the
 `127.0.0.1:5002` listener, loopback readiness returns `200`, Nginx contains
 neither an admin-port upstream nor the private Tailscale hostname, Serve
 exposes only `admin-sitbank.tailca101b.ts.net:443` to
-`http://127.0.0.1:5002`, and the private `/login` entrypoint returns `200`.
+`http://127.0.0.1:5002`, and an unauthenticated `GET` to the private `/login`
+entrypoint returns `200`.
 The script reads local status and configuration only. It does not run
 `tailscale up`, change Serve or Funnel, modify policy, call a Tailscale API, or
 use OAuth/auth-key material.
 
-`--mode ssh` verifies the same local Tailscale, Funnel, listener, readiness,
-and Nginx prerequisites for a reviewed private port-forward diagnostic path,
+`--mode ssh` verifies the same local Tailscale, Tailscale-SSH-disabled,
+Funnel, listener, readiness, and Nginx prerequisites for a reviewed private
+port-forward diagnostic path,
 but does not claim that a remote tunnel or browser session was tested.
 `--mode documentation-only` validates arguments and emits a warning without
 performing live checks; it is for pre-rollout documentation review and is not
@@ -394,24 +497,45 @@ ephemeral tailnet node. Neither control proves live ACL membership, device
 approval, or operator offboarding state, which remains operator-owned
 evidence.
 
-Set `ROOT_ADMIN_EMAILS` in both protected GitHub environments before deploying
-admin bootstrap support. It is a non-secret allowlist, but it is
-security-critical: the value must be exactly 7 comma-separated SIT workplace
-email addresses. The deployment workflow renders it into
-`/etc/sitbank*/container.env` so `sitbank-admin` and `sitbank-staging-admin`
-can enforce the fixed root-admin group. The production/admin runtime rejects the
+Set `STAGING_ROOT_ADMIN_EMAILS` in the protected `staging` environment and
+`PROD_ROOT_ADMIN_EMAILS` in the protected `production` environment before
+deploying admin bootstrap support. They are sensitive privileged-identity
+configuration: staging must contain exactly 2 comma-separated SIT workplace
+email addresses and production must contain exactly 3. The deployment
+workflow validates the secret without printing it, uploads it as a restricted
+deployment input, and installs it as `/etc/sitbank*/secrets/root_admin_emails`
+so `sitbank-admin` and `sitbank-staging-admin` can enforce the fixed root-admin
+group through `ROOT_ADMIN_EMAILS_FILE`. The production/admin runtime rejects the
 built-in development root-admin set, placeholders, demo/example identities,
 duplicates after normalization, personal domains, and non-approved domains.
+Do not copy the real allowlist into issues, pull requests, screenshots, logs,
+or job summaries.
+Normal staff/admin invite creation rejects addresses listed in
+`ROOT_ADMIN_EMAILS`; root-admin bootstrap and rotation stay on the documented
+bootstrap path. When rotating or removing root admins, confirm at least one
+active MFA-enabled workplace-verified root admin remains available before and
+after the change, then update the protected environment secret or root-owned
+EC2 secret file without printing the identities.
 Root-admin bootstrap remains manual over SSH inside the admin container; it is
 not a GitHub Actions workflow, deployment automation step, or non-interactive
 bootstrap wrapper.
 `ADMIN_ALLOWED_EMAIL_DOMAINS` defines the approved privileged workplace-domain
 allowlist for root-admin, admin, and staff identities. Do not set it to
 personal-provider domains; staff invites use the workplace email and do not
-collect personal backup email contacts. The migration chain keeps
-`staff_invites.personal_email_normalized` nullable for portable SQLite and
-PostgreSQL upgrades; do not synthesize personal email data for privileged
-invites.
+collect personal backup email contacts. The current invite schema stores only
+the approved workplace email and has no personal-email compatibility field.
+Migration `20260704_0026` persists staff invite acceptance session binding,
+restart counters, and lock timestamps. It does not store raw invite tokens,
+TOTP secrets, passwords, or workplace verification codes. After deployment,
+root admins can reset a locked active invite acceptance attempt through the
+admin invite screen with a fresh TOTP step-up; do not repair locked invites by
+editing production rows ad hoc.
+Migration `20260707_0032` adds a bounded invite delivery status with the
+conservative default `unconfirmed`; it stores no invite token, message body,
+provider response, credential, or mailbox assertion. Apply the migration in
+staging first, verify browser onboarding plus queued, failed, and unconfirmed
+root-admin status rendering, then deploy and migrate production through the
+normal signed staging-first workflow.
 
 Production admin does not use a public DNS hostname. Keep admin access on the
 private Tailscale Serve URL `https://admin-sitbank.tailca101b.ts.net/` and do
@@ -518,7 +642,14 @@ Release verification runs `ops/container/smoke-test.sh` against the exact image
 digest that will be deployed. When authenticated DAST is enabled, the helper
 creates only synthetic customer identities, restricts the target to loopback or
 the explicit smoke container host, and keeps real customer, staff, and admin
-credentials out of the scan path.
+credentials out of the scan path. Its synthetic login submits Cloudflare's
+documented public dummy token only with the official always-pass Turnstile test
+keys configured by the isolated smoke harness. The smoke app alone receives
+`DEPLOYMENT_TARGET=smoke` and `TURNSTILE_ALLOW_TEST_ACTION=true` because the
+official dummy-token response uses the provider action `test`; production
+readiness rejects that flag outside the smoke target. Real deployments continue
+to use protected real Turnstile credentials and route-specific action
+validation.
 
 DAST cookie handling is intentionally file-based. `auth-cookie` and
 `zap-replacer.properties` are created under `umask 077`, written as `0600`
@@ -544,10 +675,11 @@ explicit prohibited classes above.
 The Cloudflare Access-protected staging target `staging-sitbank.pp.ua` uses a
 staging-specific acceptance gate because unauthenticated HTTP requests should
 receive a `302 Found` Access challenge before the app. The staging scan still
-fails unless TLS 1.0 and TLS 1.1 are not offered, TLS 1.2 and TLS 1.3 are
-offered, certificate hostname/trust and chain checks are OK, the certificate
-is not expired, HSTS meets the scanner minimum, insecure redirects are absent,
-and the final `overall_grade` is `A` or `A+`. Generic LUCKY13 wording and
+fails unless TLS 1.0 and TLS 1.1 are not offered and TLS 1.3 is offered.
+TLS 1.2 may remain available for compatibility but is optional for staging.
+Certificate hostname/trust and chain checks must be OK, the certificate must
+not be expired, HSTS must meet the scanner minimum, insecure redirects must be
+absent, and the final `overall_grade` must be `A` or `A+`. Generic LUCKY13 wording and
 `cipherlist_OBSOLETED: offered` on Cloudflare Universal SSL are retained as
 review evidence for protected staging, not automatic failures.
 
@@ -669,7 +801,32 @@ served through DNS and the deployed edge.
 
 ## Production Edge and Network Hardening
 
-The reviewed production bootstrap installs and enables the production edge from `ops/nginx/sitbank-default.conf`, `ops/nginx/sitbank-production.conf`, `ops/nginx/sitbank-production-rate-limits.conf`, `ops/nginx-proxy-headers.conf`, and `ops/nginx/sitbank-tls-policy.conf`. The shared default config owns unknown-host rejection so production and staging can run on the same EC2 without duplicate Nginx `default_server` listeners. Any change to those files requires a production bootstrap after merge.
+The reviewed production bootstrap installs and enables the production edge from `ops/nginx/sitbank-default.conf`, `ops/nginx/sitbank-production.conf`, `ops/nginx/sitbank-production-rate-limits.conf`, `ops/nginx/sitbank-cloudflare-real-ip.conf`, `ops/nginx-proxy-headers.conf`, and `ops/nginx/sitbank-tls-policy.conf`. `PUBLIC_BIND_ADDRESS` in root-owned `deploy.conf` must be the exact public/VPC IPv4 address assigned to Nginx; loopback, Tailscale `100.64.0.0/10`, wildcard, and malformed values fail bootstrap. During the first transition from a deploy config without this key, bootstrap derives the kernel's default-route source IPv4, validates it under the same policy, and persists it for subsequent deployments. If route lookup does not return a valid source IPv4, bootstrap fails before changing Nginx; operators with multiple egress interfaces must pass the intended address explicitly. The bootstrap renders every public port `80`/`443` listener onto that address, while Tailscale Serve owns its private HTTPS listener. The shared default config owns unknown-host rejection without wildcard public listeners. Any change to these files or `PUBLIC_BIND_ADDRESS` requires a target bootstrap after merge.
+
+The production TLS server blocks include
+`/etc/nginx/snippets/sitbank-cloudflare-real-ip.conf` before app proxying. The
+snippet is rendered from `ops/nginx/sitbank-cloudflare-real-ip.conf`; it uses
+`real_ip_header CF-Connecting-IP`, enables `real_ip_recursive on`, and trusts
+only Cloudflare's published IPv4 and IPv6 source ranges as immediate peers.
+After Nginx rewrites `$remote_addr`, `ops/nginx-proxy-headers.conf` forwards
+that canonical address as `X-Real-IP` and `X-Forwarded-For` to Flask. Do not
+add `set_real_ip_from 0.0.0.0/0`, `set_real_ip_from ::/0`, use
+`X-Forwarded-For` as the real-IP header, or append
+`$proxy_add_x_forwarded_for`; those patterns let user-supplied forwarding
+headers distort rate limits, audit IPs, and session risk context.
+
+Production bootstrap also installs
+`/usr/local/sbin/verify-production-nginx-boundary`. Bootstrap runs it after
+Nginx reload, and every normal production deploy runs it before deployment
+starts. The verifier inspects the loaded `nginx -T` state and fails closed if
+the raw-IP HTTP redirect, production Authenticated Origin Pull CA/client
+verification, six-month HSTS, default HTTPS rejection, or public-admin denial
+is stale, if a wildcard HTTPS listener exists, or if the configured exact bind
+address does not own the public listeners. Normal deploy does not repair Nginx.
+This configuration requires a production bootstrap after merge. Rerun the
+trusted production bootstrap, confirm Cloudflare Authenticated Origin Pull remains enabled with
+sanitized provider evidence, and then retry deployment. Repository and host
+checks do not by themselves prove live Cloudflare provider settings.
 
 - Public ingress is TCP `80` and `443` only.
 - GitHub deployment SSH reaches private Tailscale targets through separate
@@ -680,6 +837,9 @@ The reviewed production bootstrap installs and enables the production edge from 
 - Nginx terminates TLS, redirects production customer HTTP to HTTPS, rejects
   unknown hosts with the shared default server, and forwards only expected
   proxy headers.
+- Cloudflare client-IP restoration is constrained to
+  `CF-Connecting-IP` from Cloudflare's published edge ranges, then forwarded to
+  Flask as a single canonical `X-Forwarded-For` value.
 - The shared TLS policy enables only TLS 1.2 and TLS 1.3, restricts TLS 1.2 to
   ECDHE+AEAD suites, pins the X25519/P-256/P-384 ECDHE curve preference, and
   limits TLS 1.3 to its standard AEAD suites.
@@ -708,6 +868,7 @@ sudo test -r /etc/letsencrypt/live/sitbank.pp.ua/fullchain.pem
 sudo /usr/local/sbin/verify-certbot-host-state production
 sudo nginx -t
 sudo nginx -T | grep -E 'ssl_protocols|ssl_ciphers|ssl_ecdh_curve|ssl_conf_command|ssl_session_tickets'
+sudo nginx -T 2>/dev/null | grep -E 'sitbank-cloudflare-real-ip|real_ip_header CF-Connecting-IP|real_ip_recursive on|set_real_ip_from|proxy_set_header X-Forwarded-For|proxy_add_x_forwarded_for|0\.0\.0\.0/0|::/0'
 sudo ss -ltnp | grep -E ':(80|443|5000|5002)([[:space:]]|$)'
 sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-app
 sudo docker inspect --format '{{json .NetworkSettings.Ports}}' sitbank-admin
@@ -721,9 +882,12 @@ curl -I https://sitbank.pp.ua/health/ready
 
 Expected: local customer and admin readiness succeeds through loopback, external
 customer `/health/ready` does not return application readiness, and no public
-admin hostname is required. The deployment wrapper uses the loopback readiness
-checks; production public TLS verification remains a separate protected
-post-deploy gate.
+admin hostname is required. The `nginx -T` real-IP check must show the
+Cloudflare real-IP snippet, `CF-Connecting-IP`, `real_ip_recursive on`, and the
+Cloudflare ranges; it must not show trust-all ranges or
+`$proxy_add_x_forwarded_for`. The deployment wrapper uses the loopback
+readiness checks; production public TLS verification remains a separate
+protected post-deploy gate.
 
 GitHub-hosted runners do not have stable source IPs. The normal
 GitHub-hosted SSH deployment is acceptable only when the runner source is
@@ -740,7 +904,10 @@ production admin URL `https://admin-sitbank.tailca101b.ts.net/`; staging admin
 must use the same private-network pattern through an approved tailnet path. Do
 not enable Tailscale Funnel and do not add a public staging admin Nginx server
 block. Staging admin secrets must be root-managed under
-`/etc/sitbank-staging/secrets` and must not reuse customer runtime secrets.
+`/etc/sitbank-staging/secrets`. Admin Flask, session, password-pepper, and
+database secrets must not reuse customer runtime secrets; only the
+environment-specific Turnstile server credential is shared because both
+runtimes enforce their configured public-auth challenges.
 
 ## Staging Edge Setup
 
@@ -876,8 +1043,9 @@ testssl.sh --warnings batch --color 0 https://staging-sitbank.pp.ua
 Expected: unauthenticated browser traffic receives the Cloudflare Access
 challenge at `staging-sitbank.pp.ua` before reaching staging, approved operators can pass Cloudflare
 Access and then reach the normal staging controls, direct EC2-origin access to
-`/` is rejected during TLS client-certificate verification or returns the
-approved Nginx `400`/`403` denial without Cloudflare's origin-pull certificate,
+`/` is rejected during TLS client-certificate verification, rejected at the
+connection layer, or returns the approved Nginx `400`/`403` denial without
+Cloudflare's origin-pull certificate,
 direct loopback Flask access to `/` returns `403` without an Access assertion,
 external `/health/ready` is unavailable, local app and Nginx readiness
 succeed, and the
@@ -937,12 +1105,39 @@ security-group state require sanitized operator evidence; repository files do
 not prove them. See
 `docs/security/architecture/production-cloudflare-origin-boundary.md`.
 
+Also verify that the loaded production Nginx config includes
+`/etc/nginx/snippets/sitbank-cloudflare-real-ip.conf`, uses
+`real_ip_header CF-Connecting-IP`, enables `real_ip_recursive on`, and forwards
+`proxy_set_header X-Forwarded-For $remote_addr`. If Cloudflare publishes new
+edge ranges, update `ops/nginx/sitbank-cloudflare-real-ip.conf` from the
+official Cloudflare IP list, rerun the production Nginx boundary tests, and
+deploy through the normal bootstrap path. Never widen the trusted range to all
+IPv4 or IPv6 clients.
+
 The `pp.ua` DNS-01 migration and DuckDNS retirement are complete. Ongoing
 certificate renewal, origin-boundary, and live verification instructions stay
 in this deployment guide and `docs/OPERATIONS.md`; do not restore retired
 DuckDNS names as active Nginx, Certbot, workflow, or TLS-scan targets.
 
 The private Grafana/Loki deployment is separate from the banking application
-runtime. Use `ops/deploy/bootstrap-observability-ec2` and
+runtime. Initial host preparation installs the restricted
+`sitbank-observability-bootstrap` wrapper. Subsequent changes use the
+main-only, protected `Bootstrap private observability on EC2` workflow, which
+uploads a signed trusted-source archive over its narrowly tagged Tailscale SSH
+path and invokes only that wrapper. Use
+`ops/deploy/bootstrap-observability-ec2` only through the wrapper and
 `docs/runbooks/private-observability-grafana-loki.md`; do not add Grafana,
 Loki, or Alloy routes to public Nginx or the Flask admin app.
+
+The `observability-staging` and `observability-production` environments must
+store bootstrap-only
+`OBSERVABILITY_BOOTSTRAP_TS_OAUTH_CLIENT_ID` and
+`OBSERVABILITY_BOOTSTRAP_TS_OAUTH_SECRET` values. Their OAuth client may
+advertise only `tag:github-ci-observability-bootstrap` and must not be reused
+for observability verification or private-admin verification. Apply and review
+the reference grant
+`tag:github-ci-observability-bootstrap -> tag:sitbank-observability-ec2:22`
+without adding Grafana HTTPS, wildcard, Internet, or Tailscale SSH access.
+Repository configuration cannot prove the live ACL, tag ownership, environment
+secrets, host firewall, security group, or provider state; verify those
+boundaries separately with sanitized evidence.

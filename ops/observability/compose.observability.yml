@@ -14,6 +14,7 @@ services:
       GF_PATHS_PROVISIONING: /etc/grafana/provisioning
       GF_PATHS_DATA: /var/lib/grafana
       GF_SERVER_ROOT_URL: ${GRAFANA_PRIVATE_ROOT_URL:?GRAFANA_PRIVATE_ROOT_URL must be the private Tailscale URL}
+      GF_SERVER_SERVE_FROM_SUB_PATH: ${GRAFANA_SERVE_FROM_SUB_PATH:-false}
       GF_SECURITY_ADMIN_USER__FILE: /run/secrets/grafana_admin_user
       GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
       GF_AUTH_ANONYMOUS_ENABLED: "false"
@@ -52,9 +53,94 @@ services:
     pids_limit: 256
     mem_limit: 512m
     networks:
+      - host-loopback
       - observability
     depends_on:
       - loki
+      - prometheus
+
+  prometheus:
+    image: ${PROMETHEUS_IMAGE:?PROMETHEUS_IMAGE must be an immutable digest reference}
+    container_name: sitbank-prometheus
+    user: "65534:65534"
+    read_only: true
+    init: true
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=168h
+      - --web.listen-address=0.0.0.0:9090
+    volumes:
+      - type: bind
+        source: /etc/sitbank-observability/prometheus/prometheus.yml
+        target: /etc/prometheus/prometheus.yml
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /var/lib/sitbank-observability/prometheus
+        target: /prometheus
+        read_only: false
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,uid=65534,gid=65534,mode=1770
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 512m
+    networks:
+      - observability
+    depends_on:
+      - node-exporter
+
+  node-exporter:
+    image: ${NODE_EXPORTER_IMAGE:?NODE_EXPORTER_IMAGE must be an immutable digest reference}
+    container_name: sitbank-node-exporter
+    user: "65534:65534"
+    pid: host
+    read_only: true
+    init: true
+    restart: unless-stopped
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/host/root
+      - --web.listen-address=:9100
+      - --collector.filesystem.mount-points-exclude=^/(dev|proc|run/credentials/.+|sys|var/lib/docker/.+)($|/)
+      - --collector.netdev.device-exclude=^(veth.*|docker.*|br-.*|lo)$
+    volumes:
+      - type: bind
+        source: /proc
+        target: /host/proc
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /sys
+        target: /host/sys
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /
+        target: /host/root
+        read_only: true
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,uid=65534,gid=65534,mode=1770
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 128m
+    networks:
+      - observability
 
   loki:
     image: ${LOKI_IMAGE:?LOKI_IMAGE must be an immutable digest reference}
@@ -89,18 +175,23 @@ services:
     pids_limit: 256
     mem_limit: 768m
     networks:
+      - host-loopback
       - observability
 
   alloy:
     image: ${ALLOY_IMAGE:?ALLOY_IMAGE must be an immutable digest reference}
     container_name: sitbank-alloy
     user: "0:0"
+    group_add:
+      - "${ALLOY_NGINX_LOG_GROUP_ID:?ALLOY_NGINX_LOG_GROUP_ID must be rendered by bootstrap from the host adm group}"
+      - "${ALLOY_JOURNAL_GROUP_ID:?ALLOY_JOURNAL_GROUP_ID must be rendered by bootstrap from the host systemd-journal group}"
     read_only: true
     init: true
     restart: unless-stopped
     command:
       - run
       - --server.http.listen-addr=127.0.0.1:12345
+      - --storage.path=/var/lib/alloy
       - /etc/alloy/config.alloy
     volumes:
       - type: bind
@@ -127,6 +218,12 @@ services:
         read_only: true
         bind:
           create_host_path: false
+      - type: bind
+        source: /var/lib/sitbank-observability/alloy
+        target: /var/lib/alloy
+        read_only: false
+        bind:
+          create_host_path: false
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1770
     cap_drop:
@@ -147,6 +244,11 @@ secrets:
     file: /etc/sitbank-observability/secrets/grafana_admin_password
 
 networks:
+  host-loopback:
+    name: sitbank-observability-loopback
+    driver: bridge
+    internal: false
   observability:
     name: sitbank-observability
+    driver: bridge
     internal: true

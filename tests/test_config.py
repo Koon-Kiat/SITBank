@@ -17,10 +17,12 @@ from config import (
     _configured_secret,
     _all_email_domains_allowed,
     _csv_domain_set,
+    _csv_env_values,
     _password_reset_base_url,
     _required_b64_32_bytes,
     _required_b64_32_bytes_decoded,
     _required_env_or_file,
+    _root_admin_email_set,
     _required_session_hmac_keys,
     root_admin_email_allowlist_failures,
     _validate_audit_anchor_path,
@@ -29,15 +31,6 @@ from config import (
     _validate_password_length_config,
     _validate_session_absolute_lifetime_config,
 )
-
-
-def test_webauthn_runtime_environment_is_not_required():
-    customer_runtime_keys = set(config.CUSTOMER_RUNTIME_SECRET_ENV_NAMES)
-
-    assert "WEBAUTHN_RP_ID" not in customer_runtime_keys
-    assert "WEBAUTHN_RP_ORIGIN" not in customer_runtime_keys
-    assert not hasattr(config, "_required_webauthn_rp_id")
-    assert not hasattr(config, "_required_webauthn_origin")
 
 
 def test_admin_allowed_email_domains_accept_configured_workplace_domains(monkeypatch):
@@ -104,10 +97,6 @@ def test_root_admin_allowlist_rejects_builtin_default_in_production(emails):
                 "chief1@sit.singaporetech.edu.sg",
                 "chief1@sit.singaporetech.edu.sg",
                 "chief3@sit.singaporetech.edu.sg",
-                "chief4@sit.singaporetech.edu.sg",
-                "chief5@sit.singaporetech.edu.sg",
-                "chief6@sit.singaporetech.edu.sg",
-                "chief7@sit.singaporetech.edu.sg",
             ],
             "duplicate",
         ),
@@ -116,10 +105,6 @@ def test_root_admin_allowlist_rejects_builtin_default_in_production(emails):
                 "placeholder@sit.singaporetech.edu.sg",
                 "chief2@sit.singaporetech.edu.sg",
                 "chief3@sit.singaporetech.edu.sg",
-                "chief4@sit.singaporetech.edu.sg",
-                "chief5@sit.singaporetech.edu.sg",
-                "chief6@sit.singaporetech.edu.sg",
-                "chief7@sit.singaporetech.edu.sg",
             ],
             "placeholder",
         ),
@@ -128,10 +113,6 @@ def test_root_admin_allowlist_rejects_builtin_default_in_production(emails):
                 "chief1@gmail.com",
                 "chief2@sit.singaporetech.edu.sg",
                 "chief3@sit.singaporetech.edu.sg",
-                "chief4@sit.singaporetech.edu.sg",
-                "chief5@sit.singaporetech.edu.sg",
-                "chief6@sit.singaporetech.edu.sg",
-                "chief7@sit.singaporetech.edu.sg",
             ],
             "approved admin workplace domains",
         ),
@@ -158,10 +139,6 @@ def test_root_admin_allowlist_rejects_malformed_collection_and_placeholder_shape
             "chief1@sit.singaporetech.edu.sg",
             "",
             "chief3@sit.singaporetech.edu.sg",
-            "chief4@sit.singaporetech.edu.sg",
-            "chief5@sit.singaporetech.edu.sg",
-            "chief6@sit.singaporetech.edu.sg",
-            "chief7@sit.singaporetech.edu.sg",
         ),
         allowed_domains=frozenset({"sit.singaporetech.edu.sg"}),
         reject_default=True,
@@ -171,10 +148,6 @@ def test_root_admin_allowlist_rejects_malformed_collection_and_placeholder_shape
             "chief1",
             "chief2@sit.singaporetech.edu.sg",
             "chief3@sit.singaporetech.edu.sg",
-            "chief4@sit.singaporetech.edu.sg",
-            "chief5@sit.singaporetech.edu.sg",
-            "chief6@sit.singaporetech.edu.sg",
-            "chief7@sit.singaporetech.edu.sg",
         ),
         allowed_domains=frozenset({"sit.singaporetech.edu.sg"}),
         reject_default=True,
@@ -184,17 +157,13 @@ def test_root_admin_allowlist_rejects_malformed_collection_and_placeholder_shape
             "chief1@sit.singaporetech.edu.sg",
             "replace-me@sit.singaporetech.edu.sg",
             "chief3@sit.singaporetech.edu.sg",
-            "chief4@sit.singaporetech.edu.sg",
-            "chief5@sit.singaporetech.edu.sg",
-            "chief6@sit.singaporetech.edu.sg",
-            "chief7@sit.singaporetech.edu.sg",
         ),
         allowed_domains=frozenset({"sit.singaporetech.edu.sg"}),
         reject_default=True,
     )
 
     assert non_collection_failures == [
-        "ROOT_ADMIN_EMAILS must configure exactly 7 root administrators"
+        "ROOT_ADMIN_EMAILS must configure exactly 3 root administrators"
     ]
     assert "ROOT_ADMIN_EMAILS must not contain empty entries" in empty_entry_failures
     assert "ROOT_ADMIN_EMAILS must use approved admin workplace domains" in missing_at_failures
@@ -208,10 +177,43 @@ def test_root_admin_allowlist_rejects_malformed_collection_and_placeholder_shape
     )
 
 
+@pytest.mark.parametrize(
+    "placeholder_email",
+    [
+        "root8@sit.singaporetech.edu.sg",
+        "root-admin8@sit.singaporetech.edu.sg",
+        "root_admin8@sit.singaporetech.edu.sg",
+        "admin1@sit.singaporetech.edu.sg",
+        "demo1@sit.singaporetech.edu.sg",
+        "test1@sit.singaporetech.edu.sg",
+        "example1@sit.singaporetech.edu.sg",
+        "placeholder1@sit.singaporetech.edu.sg",
+        "changeme1@sit.singaporetech.edu.sg",
+        "replace1@sit.singaporetech.edu.sg",
+    ],
+)
+def test_root_admin_allowlist_rejects_numeric_placeholder_identities(placeholder_email):
+    emails = [
+        *(f"chief{index}@sit.singaporetech.edu.sg" for index in range(1, 7)),
+        placeholder_email,
+    ]
+
+    failures = root_admin_email_allowlist_failures(
+        emails,
+        allowed_domains=frozenset({"sit.singaporetech.edu.sg"}),
+        reject_default=True,
+        required_count=7,
+    )
+
+    assert "ROOT_ADMIN_EMAILS must not contain placeholder, demo, or example identities" in failures
+    assert "ROOT_ADMIN_EMAILS must configure exactly" not in " ".join(failures)
+    assert "ROOT_ADMIN_EMAILS must use approved admin workplace domains" not in failures
+
+
 def test_root_admin_allowlist_accepts_explicit_non_placeholder_workplace_set():
     emails = frozenset(
         f"chief{index}@sit.singaporetech.edu.sg"
-        for index in range(1, 8)
+        for index in range(1, 4)
     )
 
     assert root_admin_email_allowlist_failures(
@@ -219,6 +221,93 @@ def test_root_admin_allowlist_accepts_explicit_non_placeholder_workplace_set():
         allowed_domains=frozenset({"sit.singaporetech.edu.sg"}),
         reject_default=True,
     ) == []
+
+
+def test_root_admin_allowlist_can_load_from_secret_file(monkeypatch, tmp_path):
+    value = ",".join(
+        f"chief{index}@sit.singaporetech.edu.sg"
+        for index in range(1, 4)
+    )
+    secret_file = tmp_path / "root_admin_emails"
+    secret_file.write_text(value, encoding="utf-8")
+    monkeypatch.delenv("ROOT_ADMIN_EMAILS", raising=False)
+    monkeypatch.setenv("ROOT_ADMIN_EMAILS_FILE", str(secret_file))
+
+    assert _root_admin_email_set(
+        "ROOT_ADMIN_EMAILS",
+        default="placeholder@example.test",
+        allowed_domains=frozenset({"sit.singaporetech.edu.sg"}),
+        app_env="production",
+        deployment_target="production",
+    ) == frozenset(value.split(","))
+
+
+def test_root_admin_allowlist_can_load_from_direct_environment(monkeypatch):
+    value = ",".join(
+        f"chief{index}@sit.singaporetech.edu.sg"
+        for index in range(1, 4)
+    )
+    monkeypatch.setenv("ROOT_ADMIN_EMAILS", value)
+    monkeypatch.delenv("ROOT_ADMIN_EMAILS_FILE", raising=False)
+
+    assert _root_admin_email_set(
+        "ROOT_ADMIN_EMAILS",
+        default="placeholder@example.test",
+        allowed_domains=frozenset({"sit.singaporetech.edu.sg"}),
+        app_env="production",
+        deployment_target="production",
+    ) == frozenset(value.split(","))
+
+
+def test_staging_root_admin_allowlist_requires_exactly_two(monkeypatch):
+    value = (
+        "stagechief1@sit.singaporetech.edu.sg,"
+        "stagechief2@singaporetech.edu.sg"
+    )
+    monkeypatch.setenv("ROOT_ADMIN_EMAILS", value)
+    monkeypatch.delenv("ROOT_ADMIN_EMAILS_FILE", raising=False)
+
+    assert _root_admin_email_set(
+        "ROOT_ADMIN_EMAILS",
+        default="placeholder@example.test",
+        allowed_domains=frozenset(
+            {"sit.singaporetech.edu.sg", "singaporetech.edu.sg"}
+        ),
+        app_env="production",
+        deployment_target="staging",
+    ) == frozenset(value.split(","))
+
+
+def test_csv_env_values_normalizes_direct_csv_environment(monkeypatch):
+    monkeypatch.setenv("CSV_UNIT_TEST_VALUES", " Alpha , beta,ALPHA ")
+
+    assert _csv_env_values("CSV_UNIT_TEST_VALUES", default="ignored") == (
+        "alpha",
+        "beta",
+        "alpha",
+    )
+
+
+def test_root_admin_allowlist_rejects_direct_and_file(monkeypatch, tmp_path):
+    secret_file = tmp_path / "root_admin_emails"
+    secret_file.write_text(
+        ",".join(
+            f"chief{index}@sit.singaporetech.edu.sg"
+            for index in range(1, 4)
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ROOT_ADMIN_EMAILS", "chief1@sit.singaporetech.edu.sg")
+    monkeypatch.setenv("ROOT_ADMIN_EMAILS_FILE", str(secret_file))
+
+    with pytest.raises(RuntimeError, match="Configure either ROOT_ADMIN_EMAILS or ROOT_ADMIN_EMAILS_FILE"):
+        _root_admin_email_set(
+            "ROOT_ADMIN_EMAILS",
+            default="placeholder@example.test",
+            allowed_domains=frozenset({"sit.singaporetech.edu.sg"}),
+            app_env="production",
+            deployment_target="production",
+        )
 
 
 def test_password_reset_base_url_must_be_https_in_production(monkeypatch):

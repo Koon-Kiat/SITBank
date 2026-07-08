@@ -26,7 +26,7 @@ from app.security.sessions import session_lookup_hash
 
 
 def _create_user(username: str = "alice01", full_name: str = "Alice Test", phone_number: str = "91234567") -> int:
-    account_number = "012" + "".join(str(secrets.randbelow(10)) for _ in range(6))
+    account_number = "".join(str(secrets.randbelow(10)) for _ in range(12))
     user = User(
         username=username,
         email=f"{username}@example.com",

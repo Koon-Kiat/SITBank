@@ -7,7 +7,9 @@ CUSTOMER_APP_SECRET_INPUTS = {
     "SESSION_LOOKUP_HMAC_KEY": "session_lookup_hmac_key",
     "DATABASE_URL": "database_url",
     "MFA_KEK_KEYS_JSON": "mfa_kek_keys_json",
+    "TRANSACTION_LEDGER_HMAC_KEYS_JSON": "transaction_ledger_hmac_keys_json",
     "PASSWORD_PEPPER_B64": "password_pepper_b64",
+    "ROOT_ADMIN_EMAILS": "root_admin_emails",
     "SECURITY_AUDIT_HMAC_KEY": "security_audit_hmac_key",
     "SECURITY_ALERT_WEBHOOK_URL": "security_alert_webhook_url",
     "SMTP_USERNAME": "smtp_username",
@@ -22,7 +24,9 @@ ADMIN_APP_SECRET_INPUTS = {
     "ADMIN_SESSION_LOOKUP_HMAC_KEY": "admin_session_lookup_hmac_key",
     "ADMIN_DATABASE_URL": "admin_database_url",
     "MFA_KEK_KEYS_JSON": "mfa_kek_keys_json",
+    "TRANSACTION_LEDGER_HMAC_KEYS_JSON": "transaction_ledger_hmac_keys_json",
     "ADMIN_PASSWORD_PEPPER_B64": "admin_password_pepper_b64",
+    "ROOT_ADMIN_EMAILS": "root_admin_emails",
 }
 
 APP_SECRET_INPUTS = CUSTOMER_APP_SECRET_INPUTS
@@ -37,16 +41,20 @@ CONFIG_SECRET_INPUTS = {
     **ADMIN_APP_SECRET_INPUTS,
 }
 
+HOST_MANAGED_SECRET_INPUTS = {
+    "TRANSACTION_LEDGER_HMAC_KEYS_JSON",
+}
+
 DEPLOYMENT_SECRET_INPUTS = {
     name: secret_file
     for name, secret_file in {**MIGRATION_SECRET_INPUTS, **CUSTOMER_APP_SECRET_INPUTS}.items()
-    if name != "SESSION_HMAC_KEYS_JSON"
+    if name not in {"SESSION_HMAC_KEYS_JSON", *HOST_MANAGED_SECRET_INPUTS}
 }
 
 PRODUCTION_SECRET_INPUTS = {
     name: secret_file
     for name, secret_file in CONFIG_SECRET_INPUTS.items()
-    if name not in {"SESSION_HMAC_KEYS_JSON", "ADMIN_SESSION_HMAC_KEYS_JSON"}
+    if name not in {"SESSION_HMAC_KEYS_JSON", "ADMIN_SESSION_HMAC_KEYS_JSON", *HOST_MANAGED_SECRET_INPUTS}
 }
 
 APP_SECRET_FILE_ENVIRONMENT = {
@@ -73,6 +81,11 @@ STAGING_DATA_SERVICE_SECRET_FILES = tuple(STAGING_DATA_SERVICE_SECRETS.values())
 
 NON_SECRET_DEFAULTS = {
     "COMMON_PASSWORDS_MIN_ENTRIES": "100000",  # NOSONAR - policy count
+    "CUSTOMER_EMAIL_DOT_INSENSITIVE_DOMAINS": "gmail.com,googlemail.com",
+    "CUSTOMER_EMAIL_PLUS_ALIAS_DOMAINS": "gmail.com,googlemail.com",
+    "CUSTOMER_TEMP_EMAIL_DOMAINS": (
+        "10minutemail.com,guerrillamail.com,mailinator.com,temp-mail.org,yopmail.com"
+    ),
     "HIBP_CIRCUIT_FAILURE_THRESHOLD": "3",
     "HIBP_CIRCUIT_OPEN_SECONDS": "300",
     "HIBP_PASSWORD_CHECK_TIMEOUT_SECONDS": "2.0",  # NOSONAR - timeout
@@ -101,8 +114,10 @@ TURNSTILE_RUNTIME_ENVIRONMENT = (
     "TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED",
     "TURNSTILE_CUSTOMER_REGISTER_ENABLED",
     "TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED",
+    "TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED",
     "TURNSTILE_ADMIN_LOGIN_ENABLED",
     "TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED",
+    "TURNSTILE_FAIL_CLOSED_IN_PRODUCTION",
 )
 
 POLICY_CONFIG_PATHS = {
@@ -118,8 +133,8 @@ NON_SECRET_RUNTIME_ENVIRONMENT = tuple(
             "PASSWORD_RESET_EMAIL_FROM",
             "MFA_KEK_ACTIVE_ID",
             "MFA_ISSUER_NAME",
-            "ROOT_ADMIN_EMAILS",
             "SESSION_HMAC_ACTIVE_KEY_ID",
+            "TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID",
             "SMTP_HOST",
             *NON_SECRET_DEFAULTS,
             *POLICY_CONFIG_PATHS,

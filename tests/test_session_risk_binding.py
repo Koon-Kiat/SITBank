@@ -15,6 +15,7 @@ from app.security.passwords import hash_password
 from app.security.sessions import (
     AUTH_CREATED_AT_KEY,
     SESSION_RISK_CONTEXT_KEY,
+    SESSION_RISK_FINGERPRINT_KEY,
     SESSION_RISK_REAUTH_REQUIRED_KEY,
     session_lookup_hash,
 )
@@ -219,7 +220,7 @@ def test_same_context_customer_request_continues_and_checks_risk(client):
         assert not sess.get(SESSION_RISK_REAUTH_REQUIRED_KEY)
 
 
-def test_matching_legacy_session_context_migrates_without_reauthentication(
+def test_matching_legacy_fingerprint_without_context_requires_reauthentication(
     client,
 ):
     _login_customer(
@@ -228,6 +229,7 @@ def test_matching_legacy_session_context_migrates_without_reauthentication(
         user_agent=CHROME_120,
     )
     with client.session_transaction() as sess:
+        assert sess.get(SESSION_RISK_FINGERPRINT_KEY)
         sess.pop(SESSION_RISK_CONTEXT_KEY)
 
     response = client.get(
@@ -238,10 +240,127 @@ def test_matching_legacy_session_context_migrates_without_reauthentication(
     assert response.status_code == 200
     with client.session_transaction() as sess:
         assert sess[SESSION_RISK_CONTEXT_KEY]["version"] == 1
-        assert not sess.get(SESSION_RISK_REAUTH_REQUIRED_KEY)
-    assert db.session.query(SecurityAuditEvent).filter_by(
-        event_type="session_risk"
-    ).count() == 0
+        assert sess.get(SESSION_RISK_REAUTH_REQUIRED_KEY) is True
+    event = db.session.query(SecurityAuditEvent).filter_by(
+        event_type="session_risk",
+        outcome="reauth_required",
+    ).one()
+    assert event.event_metadata["signals"] == ["session_context"]
+
+
+def test_missing_session_risk_context_with_tampered_fingerprint_requires_reauth(
+    client,
+):
+    _login_customer(
+        client,
+        ip_address=CUSTOMER_IP,
+        user_agent=CHROME_120,
+    )
+    with client.session_transaction() as sess:
+        sess.pop(SESSION_RISK_CONTEXT_KEY)
+        sess[SESSION_RISK_FINGERPRINT_KEY] = "tampered"
+
+    response = client.get(
+        "/dashboard",
+        **_request_context(CUSTOMER_IP, CHROME_120),
+    )
+
+    assert response.status_code == 200
+    with client.session_transaction() as sess:
+        assert sess[SESSION_RISK_CONTEXT_KEY]["version"] == 1
+        assert sess.get(SESSION_RISK_REAUTH_REQUIRED_KEY) is True
+    event = db.session.query(SecurityAuditEvent).filter_by(
+        event_type="session_risk",
+        outcome="reauth_required",
+    ).one()
+    assert event.event_metadata["signals"] == ["session_context"]
+
+
+@pytest.mark.parametrize(
+    "stored_context",
+    [
+        "malformed",
+        {"version": 999},
+    ],
+)
+def test_unsupported_customer_session_context_requires_reauthentication(
+    client,
+    stored_context,
+):
+    _login_customer(
+        client,
+        ip_address=CUSTOMER_IP,
+        user_agent=CHROME_120,
+    )
+    with client.session_transaction() as sess:
+        sess[SESSION_RISK_CONTEXT_KEY] = stored_context
+
+    response = client.get(
+        "/dashboard",
+        **_request_context(CUSTOMER_IP, CHROME_120),
+    )
+
+    assert response.status_code == 200
+    with client.session_transaction() as sess:
+        assert sess[SESSION_RISK_CONTEXT_KEY]["version"] == 1
+        assert sess.get(SESSION_RISK_REAUTH_REQUIRED_KEY) is True
+
+
+def test_malformed_current_customer_session_context_revokes_session(client):
+    _login_customer(
+        client,
+        ip_address=CUSTOMER_IP,
+        user_agent=CHROME_120,
+    )
+    session_id = _current_session_id(client)
+    with client.session_transaction() as sess:
+        sess[SESSION_RISK_CONTEXT_KEY] = {"version": 1}
+
+    response = client.get(
+        "/dashboard",
+        **_request_context(CUSTOMER_IP, CHROME_120),
+    )
+
+    assert response.status_code == 302
+    assert _session_record(session_id).ended_reason == "risk_change"
+
+
+@pytest.mark.parametrize(
+    "stored_context",
+    [
+        None,
+        "malformed",
+        {"version": 999},
+        {"version": 1},
+    ],
+)
+def test_invalid_admin_session_context_always_revokes(
+    admin_client,
+    monkeypatch,
+    stored_context,
+):
+    _root, secret = _create_root_admin()
+    _login_admin(
+        admin_client,
+        secret,
+        ip_address=CUSTOMER_IP,
+        user_agent=CHROME_120,
+        monkeypatch=monkeypatch,
+    )
+    session_id = _current_session_id(admin_client)
+    with admin_client.session_transaction() as sess:
+        if stored_context is None:
+            sess.pop(SESSION_RISK_CONTEXT_KEY)
+        else:
+            sess[SESSION_RISK_CONTEXT_KEY] = stored_context
+
+    response = admin_client.get(
+        "/",
+        **_request_context(CUSTOMER_IP, CHROME_120),
+    )
+
+    assert response.status_code == 401
+    assert _session_record(session_id).ended_reason == "risk_change"
 
 
 def test_customer_browser_version_change_is_logged_without_lockout(client):
@@ -285,7 +404,7 @@ def test_suspicious_customer_context_requires_reauth_for_sensitive_action(
         data={
             "username": user.username,
             "email": "changed@example.com",
-            "mfa_step_up_preference": "totp",
+            "phone_number": user.phone_number,
             "totp_code": pyotp.TOTP(secret, digits=6, interval=30).now(),
         },
         **_request_context(CUSTOMER_CHANGED_IP, CHROME_120),
@@ -415,7 +534,7 @@ def test_context_checks_do_not_bypass_csrf(client, app):
         data={
             "username": "alice01",
             "email": "changed@example.com",
-            "mfa_step_up_preference": "totp",
+            "phone_number": "91234567",
             "totp_code": "000000",
         },
         **_request_context(CUSTOMER_CHANGED_IP, CHROME_120),

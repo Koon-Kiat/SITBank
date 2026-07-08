@@ -61,7 +61,10 @@ Common local test commands:
 .\.venv\Scripts\python.exe -m pytest -q -n 4
 
 # Show the slowest tests for optimization work
-.\.venv\Scripts\python.exe -m pytest -q --durations=30 --durations-min=0.5
+.\.venv\Scripts\python.exe -m pytest -q -n auto --durations=50 --durations-min=0.1
+
+# Profile the coverage-enabled full suite
+.\.venv\Scripts\python.exe -m pytest -q -n auto --cov=. --cov-config=.coveragerc --cov-report=xml:coverage.xml --cov-report=term --durations=50 --durations-min=0.1
 
 # Re-run only the last failures
 .\.venv\Scripts\python.exe -m pytest -q --lf
@@ -71,14 +74,32 @@ Common local test commands:
 .\.venv\Scripts\python.exe -m pytest -q -m deployment
 .\.venv\Scripts\python.exe -m pytest -q -m "not slow"
 
-# Playwright browser E2E smoke tests
+# Playwright browser E2E regression tests
 $env:PLAYWRIGHT_BROWSERS_PATH = ".playwright-browsers"
 .\.venv\Scripts\python.exe -m playwright install chromium
 $env:SITBANK_RUN_E2E = "1"
 .\.venv\Scripts\python.exe -m pytest -q tests/e2e
 ```
 
-The `not slow` and focused marker commands are for local iteration only. Pull requests and protected CI still run the full pytest suite, including security, deployment, database session integrity, CSRF, MFA, compatibility-route regression checks, route inventory, production guard, dependency lock, and secret-scanning checks. Playwright E2E browser tests run in CI through a dedicated Chromium job; local unscoped pytest runs collect them but skip unless `SITBANK_RUN_E2E=1` is set, and the tests start a loopback Flask server rather than using staging or production hosts.
+The full suite is optimized through a per-worker app and database schema with
+per-test database-row, server-session, rate-limit, delivery-state, and config
+cleanup. Xdist `auto` is bounded to four workers so high-core, memory-limited
+hosts do not overcommit SQLite test resources. The full-history secret scanner reads streaming Git object batches
+instead of launching a process per object. Neither optimization excludes,
+marks, skips, or scopes out required tests.
+
+The `not slow` and focused marker commands are for local iteration only.
+Pull requests and protected CI still run the full pytest suite, including security,
+deployment, database session integrity, CSRF, MFA, compatibility-route
+regression checks, route inventory, production guard, dependency lock, and
+secret-scanning checks. Playwright E2E browser tests run in CI through a
+dedicated Chromium job; local unscoped pytest runs collect them but skip unless
+`SITBANK_RUN_E2E=1` is set. The browser suite covers authentication, MFA,
+session, banking, and boundary regressions, including registration, password
+reset, manual recovery, payee, transfer, session management, password change,
+account freeze, and customer/admin isolation, against a loopback Flask server.
+These tests do not prove live staging or production provider state and never
+target staging, production, or the private admin hostname.
 
 On non-Windows shells, use `python -m playwright install chromium` before
 `python -m pytest -q tests/e2e`.
@@ -124,7 +145,7 @@ Current required settings include:
 - `PASSWORD_HISTORY_ENABLED`
 - `PASSWORD_HISTORY_RETENTION_COUNT`
 - `PAYEE_COOLDOWN_SECONDS`
-- `ROOT_ADMIN_EMAILS`
+- `ROOT_ADMIN_EMAILS` or `ROOT_ADMIN_EMAILS_FILE`
 - `SECURITY_AUDIT_HMAC_KEY` or `SECURITY_AUDIT_HMAC_KEY_FILE`
 - `SECURITY_AUDIT_ANCHOR_PATH`
 - `PASSWORD_RESET_ENABLED`

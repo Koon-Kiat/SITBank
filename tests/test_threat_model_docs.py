@@ -52,7 +52,7 @@ def test_design_risk_register_covers_required_decisions():
     for required in (
         "Separate admin/customer deployment boundary",
         "TOTP baseline MFA",
-        "No WebAuthn/passkeys in approved staff/admin flow",
+        "TOTP-only active MFA surface",
         "PostgreSQL-backed server-side session architecture",
         "Production startup fail-closed guard",
         "Admin route inventory testing",
@@ -61,7 +61,7 @@ def test_design_risk_register_covers_required_decisions():
         "Read-only EC2 Tailscale admin preflight",
         "Confirmation-gated Tailscale Serve provisioning",
         "GitHub-hosted runner SSH conflict",
-        "Reporting-only SonarQube initial rollout",
+        "Blocking SonarQube quality gate",
         "Design decision",
         "Security impact",
         "Accepted risk",
@@ -92,5 +92,6 @@ def test_gap_register_closes_threat_model_gap_but_keeps_other_open_items():
     implemented = register.split("## Implemented Controls", 1)[1].split("## Not Applicable Or Out Of Scope", 1)[0]
 
     assert "Threat model and design risk record" not in current_open
-    assert "Automated retention and disposal jobs" in current_open
+    assert "Automated retention and disposal jobs" not in current_open
+    assert "Approved preserved-category retention/disposal procedures" in implemented
     assert "Threat model and design risk register" in implemented

@@ -1,8 +1,21 @@
 {% set _turnstile_ns = namespace(script_loaded=False) %}
-{% macro widget(action) -%}
+{% macro widget(action, managed=false) -%}
   {% if turnstile_widget_enabled(action) %}
     <div class="turnstile-widget">
-      <div class="cf-turnstile" data-sitekey="{{ turnstile_site_key }}" data-action="{{ action }}"></div>
+      <div
+        class="cf-turnstile"
+        data-sitekey="{{ turnstile_site_key }}"
+        data-action="{{ action }}"
+        {% if managed %}
+        data-callback="sitbankInviteTurnstileSuccess"
+        data-expired-callback="sitbankInviteTurnstileExpired"
+        data-error-callback="sitbankInviteTurnstileError"
+        data-timeout-callback="sitbankInviteTurnstileTimeout"
+        data-before-interactive-callback="sitbankInviteTurnstileInteractiveStart"
+        data-after-interactive-callback="sitbankInviteTurnstileInteractiveEnd"
+        data-unsupported-callback="sitbankInviteTurnstileError"
+        {% endif %}
+      ></div>
     </div>
     {% if not _turnstile_ns.script_loaded %}
       {% set _turnstile_ns.script_loaded = True %}

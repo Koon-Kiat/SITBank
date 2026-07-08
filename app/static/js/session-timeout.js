@@ -20,6 +20,9 @@
   const timerEl = document.getElementById('session-timer');
   const timerValueEl = document.getElementById('session-timer-value');
   const csrfMeta = document.querySelector('meta[name="csrf-token"]');
+  const replacedOverlayEl = document.getElementById('session-replaced-overlay');
+  const statusPollMs = 5000;
+  let sessionEnded = false;
 
   function formatTime(ms) {
     const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
@@ -29,6 +32,7 @@
   }
 
   function updateTimerDisplay() {
+    if (sessionEnded) return;
     const remaining = timeoutMs - (Date.now() - lastResetTime);
     if (timerValueEl) timerValueEl.textContent = formatTime(remaining);
     if (timerEl) {
@@ -64,6 +68,33 @@
 
   function expire() {
     globalThis.location.href = '/login?session_expired=1';
+  }
+
+  function showReplacedOverlay() {
+    if (sessionEnded) return;
+    sessionEnded = true;
+    clearTimeout(expireTimer);
+    clearTimeout(warningTimer);
+    hideOverlay();
+    if (replacedOverlayEl?.open === false) {
+      replacedOverlayEl.showModal();
+    }
+  }
+
+  function pollSessionStatus() {
+    if (sessionEnded || document.hidden) return;
+    fetch('/auth/session/status', {
+      method: 'GET',
+      credentials: 'same-origin',
+      headers: { 'Accept': 'application/json' }
+    }).then(function (response) {
+      if (response.ok) return null;
+      return response.json().catch(function () { return {}; });
+    }).then(function (payload) {
+      if (payload?.code === 'replaced') {
+        showReplacedOverlay();
+      }
+    }).catch(function () {});
   }
 
   function resetTimers() {
@@ -111,6 +142,11 @@
     });
   }
 
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) pollSessionStatus();
+  });
+
   setInterval(updateTimerDisplay, 1000);
+  setInterval(pollSessionStatus, statusPollMs);
   resetTimers();
 })();

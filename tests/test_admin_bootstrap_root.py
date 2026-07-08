@@ -138,10 +138,6 @@ def test_bootstrap_root_admin_cli_rejects_non_admin_domain_allowlist_entry(admin
         "root1@example.com",
         "root2@sit.singaporetech.edu.sg",
         "root3@sit.singaporetech.edu.sg",
-        "root4@sit.singaporetech.edu.sg",
-        "root5@sit.singaporetech.edu.sg",
-        "root6@sit.singaporetech.edu.sg",
-        "root7@sit.singaporetech.edu.sg",
     }
     admin_app.config["ROOT_ADMIN_EMAILS"] = frozenset(root_emails)
     command_input = _command_input().replace(ROOT_EMAIL, "root1@example.com", 1)
@@ -163,7 +159,7 @@ def test_bootstrap_root_admin_cli_refuses_customer_account_conversion(admin_app)
         account_status="active",
         full_name="Root Customer",
         phone_number="91234567",
-        account_number="123456789",
+        account_number="123456789000",
     )
     db.session.add(customer)
     db.session.commit()
@@ -177,7 +173,7 @@ def test_bootstrap_root_admin_cli_refuses_customer_account_conversion(admin_app)
     assert result.exit_code != 0
     assert "customer account" in result.output
     assert customer.account_type == "customer"
-    assert customer.account_number == "123456789"
+    assert customer.account_number == "123456789000"
     assert db.session.query(User).filter_by(account_type="root_admin").count() == 0
 
 

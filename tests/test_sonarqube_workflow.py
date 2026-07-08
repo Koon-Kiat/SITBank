@@ -10,6 +10,7 @@ WORKFLOW_PATH = Path(".github/workflows/sonarqube.yml")
 CI_WORKFLOW_PATH = Path(".github/workflows/ci-deploy.yml")
 PROPERTIES_PATH = Path("sonar-project.properties")
 SONAR_DOC_PATH = Path("docs/security/assurance/sonarqube.md")
+SONAR_AGENT_RULES_PATH = Path("docs/codex/sonarqube-rules.md")
 
 
 def _workflow() -> tuple[str, dict]:
@@ -100,7 +101,7 @@ def test_ci_runs_pytest_once_and_hands_coverage_to_sonarqube():
     )
     assert (
         upload["uses"]
-        == "actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f"
+        == "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
     )
     assert upload["with"] == {
         "name": "sonarqube-coverage-${{ github.run_id }}",
@@ -167,7 +168,7 @@ def test_sonarqube_workflow_handles_token_without_deployment_secrets():
         assert forbidden not in lowered
 
 
-def test_sonarqube_properties_define_scope_coverage_and_reporting_policy():
+def test_sonarqube_properties_define_scope_coverage_and_blocking_policy():
     properties = _properties()
     gitignore = Path(".gitignore").read_text(encoding="utf-8").splitlines()
 
@@ -181,9 +182,10 @@ def test_sonarqube_properties_define_scope_coverage_and_reporting_policy():
         "admin_wsgi.py",
     ]
     assert properties["sonar.tests"] == "tests"
+    assert properties["sonar.python.version"] == "3.12"
     assert properties["sonar.python.coverage.reportPaths"] == "coverage.xml"
     assert properties["sonar.javascript.lcov.reportPaths"] == "coverage/lcov.info"
-    assert properties["sonar.qualitygate.wait"] == "false"
+    assert properties["sonar.qualitygate.wait"] == "true"
     assert "**/.env" in properties["sonar.exclusions"]
     assert "**/*.dump" in properties["sonar.exclusions"]
     assert properties["sonar.test.exclusions"] == "tests/fixtures/**"
@@ -195,7 +197,19 @@ def test_sonarqube_properties_define_scope_coverage_and_reporting_policy():
     assert "tests/*" in coverage_config
 
 
-def test_sonarqube_docs_record_cloud_public_repo_and_nonblocking_policy():
+def test_agent_policy_requires_every_sonar_finding_to_be_dispositioned():
+    agents = Path("AGENTS.md").read_text(encoding="utf-8")
+    rules = SONAR_AGENT_RULES_PATH.read_text(encoding="utf-8")
+    normalized_agents = " ".join(agents.split())
+
+    assert "docs/codex/sonarqube-rules.md" in agents
+    assert "even when the quality gate passes" in normalized_agents
+    assert "Fix every actionable issue" in rules
+    assert "Mark an issue false positive only when" in rules
+    assert "Do not mark an issue false positive merely to clear a dashboard" in rules
+
+
+def test_sonarqube_docs_record_cloud_public_repo_and_blocking_policy():
     text = SONAR_DOC_PATH.read_text(encoding="utf-8")
     normalized = " ".join(text.split())
 
@@ -205,7 +219,8 @@ def test_sonarqube_docs_record_cloud_public_repo_and_nonblocking_policy():
         "repository files cannot prove",
         "SONAR_TOKEN",
         "source code is sent",
-        "reporting-only",
+        "Blocking Quality-Gate",
+        "image publication",
         "does not replace",
         "CodeQL",
         "Semgrep",
@@ -216,10 +231,37 @@ def test_sonarqube_docs_record_cloud_public_repo_and_nonblocking_policy():
     ):
         assert required in normalized
     assert "SONAR_HOST_URL" in normalized
-    assert "sonar.qualitygate.wait=false" in normalized
+    assert "sonar.qualitygate.wait=true" in normalized
     assert "specific version tag" in normalized
     assert "immutable digest" in normalized
     assert "visible to Dependabot" in normalized
+
+
+def test_sonarqube_policy_docs_do_not_restore_reporting_only_wording():
+    policy_paths = (
+        Path("docs/CONTRIBUTING.md"),
+        Path("docs/GITHUB_ACTIONS.md"),
+        Path("docs/security/assurance/sonarqube.md"),
+        Path("docs/security/assurance/secure-coding.md"),
+        Path("docs/security/assurance/test-automation-and-dependencies.md"),
+        Path("docs/security/governance/design-risk-register.md"),
+        Path("docs/security/governance/framework-control-matrix.md"),
+        Path("docs/security/governance/security-gap-register.md"),
+    )
+    combined = " ".join(
+        " ".join(path.read_text(encoding="utf-8").casefold().split())
+        for path in policy_paths
+    )
+
+    for stale in (
+        "reporting-only sonarqube",
+        "sonarqube remains non-blocking",
+        "quality gate is reporting-only",
+        "quality-gate result is non-blocking",
+        "deliberately non-blocking quality gate",
+        "sonar.qualitygate.wait=false",
+    ):
+        assert stale not in combined
 
 
 def test_active_docs_do_not_claim_sonarqube_is_missing():

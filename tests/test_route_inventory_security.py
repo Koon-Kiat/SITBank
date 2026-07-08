@@ -7,6 +7,7 @@ from pathlib import Path
 UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 AUTH_DECORATORS = {"login_required", "web_login_required"}
 RATE_LIMIT_DECISIONS = {
+    "durable_payup_flow",
     "per_route",
     "edge_auth",
     "edge_app",
@@ -32,7 +33,6 @@ SENSITIVE_CLASSIFICATIONS = {
     "profile",
     "registration",
     "session",
-    "webauthn",
 }
 
 
@@ -188,27 +188,16 @@ ROUTE_SECURITY_INVENTORY = {
         "step_up": "reset_mfa",
         "public_justification": "TOTP verification completes a password-reset transaction before login.",
     },
-    "auth.password_reset_webauthn_options": {
-        "endpoint": "auth.password_reset_webauthn_options",
-        "rule": "/auth/password-reset/mfa/webauthn/options",
+    "auth.password_reset_recovery_code": {
+        "endpoint": "auth.password_reset_recovery_code",
+        "rule": "/auth/password-reset/mfa/recovery-code",
         "methods": {"POST"},
         "access": "public",
-        "classification": "webauthn",
+        "classification": "mfa",
         "csrf": "required",
         "rate_limit": "per_route",
-        "step_up": "not_required",
-        "public_justification": "Legacy password-reset WebAuthn compatibility endpoint fails closed before authentication.",
-    },
-    "auth.password_reset_webauthn_verify": {
-        "endpoint": "auth.password_reset_webauthn_verify",
-        "rule": "/auth/password-reset/mfa/webauthn/verify",
-        "methods": {"POST"},
-        "access": "public",
-        "classification": "webauthn",
-        "csrf": "required",
-        "rate_limit": "per_route",
-        "step_up": "not_required",
-        "public_justification": "Legacy password-reset WebAuthn compatibility endpoint fails closed before authentication.",
+        "step_up": "reset_mfa",
+        "public_justification": "A recovery code can complete a password-reset transaction before login.",
     },
     "auth.password_reset_complete": {
         "endpoint": "auth.password_reset_complete",
@@ -231,94 +220,6 @@ ROUTE_SECURITY_INVENTORY = {
         "rate_limit": "per_route",
         "step_up": "not_required",
         "public_justification": "Manual customer recovery requests must be possible before authentication but cannot change account state.",
-    },
-    "auth.webauthn_register_options": {
-        "endpoint": "auth.webauthn_register_options",
-        "rule": "/auth/webauthn/register/options",
-        "methods": {"POST"},
-        "access": "authenticated",
-        "classification": "webauthn",
-        "csrf": "required",
-        "rate_limit": "per_route",
-        "step_up": "not_required",
-        "public_justification": "",
-    },
-    "auth.webauthn_register_verify": {
-        "endpoint": "auth.webauthn_register_verify",
-        "rule": "/auth/webauthn/register/verify",
-        "methods": {"POST"},
-        "access": "authenticated",
-        "classification": "webauthn",
-        "csrf": "required",
-        "rate_limit": "per_route",
-        "step_up": "not_required",
-        "public_justification": "",
-    },
-    "auth.webauthn_authenticate_options": {
-        "endpoint": "auth.webauthn_authenticate_options",
-        "rule": "/auth/webauthn/authenticate/options",
-        "methods": {"POST"},
-        "access": "public",
-        "classification": "webauthn",
-        "csrf": "required",
-        "rate_limit": "per_route",
-        "step_up": "not_required",
-        "public_justification": "WebAuthn login challenge endpoint is part of authentication before a user session exists.",
-    },
-    "auth.webauthn_authenticate_verify": {
-        "endpoint": "auth.webauthn_authenticate_verify",
-        "rule": "/auth/webauthn/authenticate/verify",
-        "methods": {"POST"},
-        "access": "public",
-        "classification": "webauthn",
-        "csrf": "required",
-        "rate_limit": "per_route",
-        "step_up": "not_required",
-        "public_justification": "WebAuthn login assertion endpoint completes authentication before a user session exists.",
-    },
-    "auth.webauthn_step_up_options": {
-        "endpoint": "auth.webauthn_step_up_options",
-        "rule": "/auth/webauthn/step-up/options",
-        "methods": {"POST"},
-        "access": "authenticated",
-        "classification": "webauthn",
-        "csrf": "required",
-        "rate_limit": "per_route",
-        "step_up": "not_required",
-        "public_justification": "",
-    },
-    "auth.webauthn_step_up_verify": {
-        "endpoint": "auth.webauthn_step_up_verify",
-        "rule": "/auth/webauthn/step-up/verify",
-        "methods": {"POST"},
-        "access": "authenticated",
-        "classification": "webauthn",
-        "csrf": "required",
-        "rate_limit": "per_route",
-        "step_up": "not_required",
-        "public_justification": "",
-    },
-    "auth.webauthn_credentials": {
-        "endpoint": "auth.webauthn_credentials",
-        "rule": "/auth/webauthn/credentials",
-        "methods": {"GET"},
-        "access": "authenticated",
-        "classification": "webauthn",
-        "csrf": "not_applicable",
-        "rate_limit": "edge_auth",
-        "step_up": "not_required",
-        "public_justification": "",
-    },
-    "auth.webauthn_revoke_credential": {
-        "endpoint": "auth.webauthn_revoke_credential",
-        "rule": "/auth/webauthn/credentials/<credential_id>",
-        "methods": {"DELETE"},
-        "access": "authenticated",
-        "classification": "webauthn",
-        "csrf": "required",
-        "rate_limit": "edge_auth",
-        "step_up": "not_required",
-        "public_justification": "",
     },
     "auth.logout": {
         "endpoint": "auth.logout",
@@ -395,7 +296,7 @@ ROUTE_SECURITY_INVENTORY = {
         "csrf": "required",
         "rate_limit": "per_route",
         "step_up": "not_required",
-        "public_justification": "TOTP verification completes a pending login before a full user session exists.",
+        "public_justification": "MFA verification completes a pending login before a full user session exists; route limits are coarse defense in depth and the durable customer_mfa_login counter is authoritative for invalid factors.",
     },
     "auth.sessions_dashboard": {
         "endpoint": "auth.sessions_dashboard",
@@ -418,6 +319,17 @@ ROUTE_SECURITY_INVENTORY = {
         "rate_limit": "edge_auth",
         "step_up": "not_required",
         "public_justification": "",
+    },
+    "auth.session_status": {
+        "endpoint": "auth.session_status",
+        "rule": "/auth/session/status",
+        "methods": {"GET"},
+        "access": "public",
+        "classification": "session",
+        "csrf": "not_applicable",
+        "rate_limit": "edge_auth",
+        "step_up": "not_required",
+        "public_justification": "Polled by the client-side session-timeout script to detect a session replaced or ended elsewhere, so it must report status without requiring a currently-valid session.",
     },
     "auth.terminate_session": {
         "endpoint": "auth.terminate_session",
@@ -554,13 +466,13 @@ ROUTE_SECURITY_INVENTORY = {
     "web.reset_password_exchange": {
         "endpoint": "web.reset_password_exchange",
         "rule": "/reset-password",
-        "methods": {"GET"},
+        "methods": {"GET", "POST"},
         "access": "public",
         "classification": "password",
-        "csrf": "not_applicable",
+        "csrf": "required",
         "rate_limit": "per_route",
         "step_up": "reset_mfa",
-        "public_justification": "The one-time reset URL is exchanged before the user has an authenticated app session.",
+        "public_justification": "GET renders a scanner-safe landing; CSRF-protected POST exchanges the one-time reset URL.",
     },
     "web.reset_password_continue": {
         "endpoint": "web.reset_password_continue",
@@ -626,7 +538,7 @@ ROUTE_SECURITY_INVENTORY = {
         "csrf": "required",
         "rate_limit": "per_route",
         "step_up": "not_required",
-        "public_justification": "TOTP verification completes a pending login before a full user session exists.",
+        "public_justification": "MFA verification completes a pending login before a full user session exists; route limits are coarse defense in depth and the durable customer_mfa_login counter is authoritative for invalid factors.",
     },
     "web.dashboard": {
         "endpoint": "web.dashboard",
@@ -639,35 +551,57 @@ ROUTE_SECURITY_INVENTORY = {
         "step_up": "not_required",
         "public_justification": "",
     },
-    "web.security_keys": {
-        "endpoint": "web.security_keys",
-        "rule": "/security-keys",
+    "web.transactions": {
+        "endpoint": "web.transactions",
+        "rule": "/transactions",
         "methods": {"GET"},
         "access": "authenticated",
-        "classification": "webauthn",
+        "classification": "transaction_history",
         "csrf": "not_applicable",
         "rate_limit": "edge_app",
         "step_up": "not_required",
         "public_justification": "",
     },
-    "web.security_keys_mfa_refresh": {
-        "endpoint": "web.security_keys_mfa_refresh",
-        "rule": "/security-keys/mfa/refresh",
+    "web.transaction_detail": {
+        "endpoint": "web.transaction_detail",
+        "rule": "/transactions/<int:transaction_id>",
+        "methods": {"GET"},
+        "access": "authenticated",
+        "classification": "transaction_history",
+        "csrf": "not_applicable",
+        "rate_limit": "edge_app",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
+    "web.transaction_dispute_new": {
+        "endpoint": "web.transaction_dispute_new",
+        "rule": "/transactions/<int:transaction_id>/dispute",
+        "methods": {"GET"},
+        "access": "authenticated",
+        "classification": "transaction_dispute",
+        "csrf": "not_applicable",
+        "rate_limit": "edge_app",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
+    "web.transaction_dispute_create": {
+        "endpoint": "web.transaction_dispute_create",
+        "rule": "/transactions/<int:transaction_id>/dispute",
         "methods": {"POST"},
         "access": "authenticated",
-        "classification": "mfa",
+        "classification": "transaction_dispute",
         "csrf": "required",
         "rate_limit": "per_route",
         "step_up": "not_required",
         "public_justification": "",
     },
-    "web.security_key_revoke": {
-        "endpoint": "web.security_key_revoke",
-        "rule": "/security-keys/<credential_id>/revoke",
-        "methods": {"POST"},
+    "web.my_disputes": {
+        "endpoint": "web.my_disputes",
+        "rule": "/disputes",
+        "methods": {"GET"},
         "access": "authenticated",
-        "classification": "webauthn",
-        "csrf": "required",
+        "classification": "transaction_dispute",
+        "csrf": "not_applicable",
         "rate_limit": "edge_app",
         "step_up": "not_required",
         "public_justification": "",
@@ -692,6 +626,17 @@ ROUTE_SECURITY_INVENTORY = {
         "csrf": "required",
         "rate_limit": "edge_app",
         "step_up": "required",
+        "public_justification": "",
+    },
+    "web.profile_notification_preferences_submit": {
+        "endpoint": "web.profile_notification_preferences_submit",
+        "rule": "/profile/notification-preferences",
+        "methods": {"POST"},
+        "access": "authenticated",
+        "classification": "profile",
+        "csrf": "required",
+        "rate_limit": "edge_app",
+        "step_up": "not_required",
         "public_justification": "",
     },
     "web.mfa_setup": {
@@ -925,6 +870,200 @@ ROUTE_SECURITY_INVENTORY = {
         "step_up": "already_authorized_continuation",
         "public_justification": "",
     },
+    "banking.payup": {
+        "endpoint": "banking.payup",
+        "rule": "/banking/payup",
+        "methods": {"GET"},
+        "access": "authenticated",
+        "classification": "payup_transfer",
+        "csrf": "not_applicable",
+        "rate_limit": "edge_app",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
+    "banking.payup_nickname": {
+        "endpoint": "banking.payup_nickname",
+        "rule": "/banking/payup/nickname",
+        "methods": {"GET"},
+        "access": "authenticated",
+        "classification": "payup_transfer",
+        "csrf": "not_applicable",
+        "rate_limit": "edge_app",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
+    "banking.payup_nickname_submit": {
+        "endpoint": "banking.payup_nickname_submit",
+        "rule": "/banking/payup/nickname",
+        "methods": {"POST"},
+        "access": "authenticated",
+        "classification": "payup_transfer",
+        "csrf": "required",
+        "rate_limit": "edge_app",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
+    "banking.payup_submit": {
+        "endpoint": "banking.payup_submit",
+        "rule": "/banking/payup",
+        "methods": {"POST"},
+        "access": "authenticated",
+        "classification": "payup_transfer",
+        "csrf": "required",
+        "rate_limit": "durable_payup_flow",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
+    "banking.payup_amount": {
+        "endpoint": "banking.payup_amount",
+        "rule": "/banking/payup/amount",
+        "methods": {"GET"},
+        "access": "authenticated",
+        "classification": "payup_transfer",
+        "csrf": "not_applicable",
+        "rate_limit": "edge_app",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
+    "banking.payup_amount_submit": {
+        "endpoint": "banking.payup_amount_submit",
+        "rule": "/banking/payup/amount",
+        "methods": {"POST"},
+        "access": "authenticated",
+        "classification": "payup_transfer",
+        "csrf": "required",
+        "rate_limit": "durable_payup_flow",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
+    "banking.payup_confirm": {
+        "endpoint": "banking.payup_confirm",
+        "rule": "/banking/payup/confirm",
+        "methods": {"GET"},
+        "access": "authenticated",
+        "classification": "payup_transfer",
+        "csrf": "not_applicable",
+        "rate_limit": "edge_app",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
+    "banking.payup_confirm_submit": {
+        "endpoint": "banking.payup_confirm_submit",
+        "rule": "/banking/payup/confirm",
+        "methods": {"POST"},
+        "access": "authenticated",
+        "classification": "payup_transfer",
+        "csrf": "required",
+        "rate_limit": "durable_payup_flow",
+        "step_up": "conditional",
+        "public_justification": "",
+    },
+    "banking.transfer_limits": {
+        "endpoint": "banking.transfer_limits",
+        "rule": "/banking/settings/transfer-limits",
+        "methods": {"GET"},
+        "access": "authenticated",
+        "classification": "transfer_limits",
+        "csrf": "not_applicable",
+        "rate_limit": "edge_app",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
+    "banking.transfer_limits_submit": {
+        "endpoint": "banking.transfer_limits_submit",
+        "rule": "/banking/settings/transfer-limits",
+        "methods": {"POST"},
+        "access": "authenticated",
+        "classification": "transfer_limits",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "required",
+        "public_justification": "",
+    },
+    "banking.topup": {
+        "endpoint": "banking.topup",
+        "rule": "/banking/topup",
+        "methods": {"GET"},
+        "access": "authenticated",
+        "classification": "topup",
+        "csrf": "not_applicable",
+        "rate_limit": "edge_app",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
+    "banking.topup_submit": {
+        "endpoint": "banking.topup_submit",
+        "rule": "/banking/topup",
+        "methods": {"POST"},
+        "access": "authenticated",
+        "classification": "topup",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
+    "banking.topup_status": {
+        "endpoint": "banking.topup_status",
+        "rule": "/banking/topup/status/<selector>",
+        "methods": {"GET"},
+        "access": "authenticated",
+        "classification": "topup",
+        "csrf": "not_applicable",
+        "rate_limit": "per_route",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
+    "banking.topup_approve": {
+        "endpoint": "banking.topup_approve",
+        "rule": "/banking/topup/approve/<token>",
+        "methods": {"GET"},
+        "access": "public",
+        "classification": "topup_approval",
+        "csrf": "not_applicable",
+        "rate_limit": "edge_app",
+        "step_up": "not_required",
+        "public_justification": (
+            "Reached only via an unguessable single-use QR token generated for an "
+            "already-authenticated session; grants no access by itself, since TOTP "
+            "verification still happens on submission."
+        ),
+    },
+    "banking.topup_approve_submit": {
+        "endpoint": "banking.topup_approve_submit",
+        "rule": "/banking/topup/approve/<token>",
+        "methods": {"POST"},
+        "access": "public",
+        "classification": "topup_approval",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "required",
+        "public_justification": (
+            "Scanning device has no SITBank login session; the selector/verifier token "
+            "plus a fresh TOTP code together stand in for login + step-up."
+        ),
+    },
+    "banking.statement": {
+        "endpoint": "banking.statement",
+        "rule": "/banking/statement",
+        "methods": {"GET"},
+        "access": "authenticated",
+        "classification": "statement",
+        "csrf": "not_applicable",
+        "rate_limit": "edge_app",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
+    "banking.statement_download": {
+        "endpoint": "banking.statement_download",
+        "rule": "/banking/statement/download",
+        "methods": {"GET"},
+        "access": "authenticated",
+        "classification": "statement",
+        "csrf": "not_applicable",
+        "rate_limit": "per_route",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
 }
 
 
@@ -1024,16 +1163,60 @@ def test_route_inventory_has_complete_security_decisions(app):
             assert entry["rate_limit"] in RATE_LIMIT_DECISIONS, (
                 f"{endpoint} is sensitive and needs an explicit rate-limit decision"
             )
+        source = sources[endpoint]
         if entry["rate_limit"] == "per_route":
             assert "limit" in route_decorators, f"{endpoint} is expected to have Flask-Limiter decorators"
-
-        source = sources[endpoint]
-        if entry["step_up"] == "required":
-            assert "stepup_token" in source or "verify_high_risk_authorization" in source, (
-                f"{endpoint} is expected to require fresh MFA step-up"
-            )
+            if entry["step_up"] == "required":
+                delegated_step_up = {
+                    "change_password",
+                    "freeze_own_account",
+                    "generate_mfa_replacement",
+                    "regenerate_totp_recovery_codes",
+                    "update_profile_details",
+                    "verify_totp_code_for_user",
+                }
+                assert (
+                    "verify_high_risk_authorization" in source
+                    or any(name in source for name in delegated_step_up)
+                ), (
+                    f"{endpoint} is expected to require fresh MFA step-up"
+                )
         if entry["step_up"] == "conditional":
-            assert "stepup_token" in source, f"{endpoint} must document its conditional step-up branch"
+            conditional_step_up_markers = {
+                "verify_high_risk_authorization",
+                "totp_code",
+                "_handle_mfa_replace_start",
+                "_handle_recovery_code_regeneration",
+            }
+            assert any(marker in source for marker in conditional_step_up_markers), (
+                f"{endpoint} must document its conditional TOTP step-up branch"
+            )
+
+
+def test_notification_preference_route_inventory_keeps_low_risk_boundary():
+    endpoint = "web.profile_notification_preferences_submit"
+    entry = ROUTE_SECURITY_INVENTORY[endpoint]
+    decorators, sources = _route_source_inventory()
+
+    assert entry == {
+        "endpoint": endpoint,
+        "rule": "/profile/notification-preferences",
+        "methods": {"POST"},
+        "access": "authenticated",
+        "classification": "profile",
+        "csrf": "required",
+        "rate_limit": "edge_app",
+        "step_up": "not_required",
+        "public_justification": "",
+    }
+    assert {"post", "web_login_required", "web_not_frozen_required"}.issubset(
+        decorators[endpoint]
+    )
+    source = sources[endpoint]
+    assert "g.current_user.transfer_activity_email_enabled" in source
+    assert "audit_event(" in source
+    assert "verify_high_risk_authorization" not in source
+    assert "totp_code" not in source
 
 
 def test_login_and_registration_have_method_level_security_decisions(app):
@@ -1051,3 +1234,28 @@ def test_login_and_registration_have_method_level_security_decisions(app):
     assert ROUTE_SECURITY_INVENTORY["web.register_submit"]["csrf"] == "required"
     assert ROUTE_SECURITY_INVENTORY["web.register_submit"]["rate_limit"] == "per_route"
     assert "verified customer email OTP" in ROUTE_SECURITY_INVENTORY["web.register_submit"]["public_justification"]
+
+
+def test_customer_login_mfa_uses_coarse_route_limit_and_durable_factor_counter():
+    auth_routes = ROUTE_MODULES["auth"].read_text(encoding="utf-8")
+    web_routes = ROUTE_MODULES["web"].read_text(encoding="utf-8")
+    services = Path("app/auth/services.py").read_text(encoding="utf-8")
+
+    auth_mfa_decorators = auth_routes.split('@auth_bp.post("/mfa/verify")', 1)[
+        1
+    ].split("def mfa_verify", 1)[0]
+    web_mfa_decorators = web_routes.split('@web_bp.post("/mfa/verify")', 1)[
+        1
+    ].split("def mfa_verify_submit", 1)[0]
+
+    for decorators in (auth_mfa_decorators, web_mfa_decorators):
+        assert '"30 per 5 minutes"' in decorators
+        assert '"5 per 5 minutes"' not in decorators
+
+    assert '"customer_mfa_login"' in services
+    assert "track_failures=False" in services
+    assert "CUSTOMER_MFA_FAILURE_LIMIT" in services
+    for endpoint in ("auth.mfa_verify", "web.mfa_verify_submit"):
+        justification = ROUTE_SECURITY_INVENTORY[endpoint]["public_justification"]
+        assert "coarse defense in depth" in justification
+        assert "authoritative for invalid factors" in justification

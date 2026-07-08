@@ -76,11 +76,38 @@ loki.source.docker "sitbank_containers" {
   forward_to = [loki.process.redact_sensitive.receiver]
 }
 
-loki.source.journal "sitbank_systemd" {
+loki.source.journal "sitbank_security_alerts" {
+  path = "/var/log/journal"
   max_age = "12h"
-  matches = "_SYSTEMD_UNIT=sitbank-security-alerts.service OR _SYSTEMD_UNIT=certbot.service OR _SYSTEMD_UNIT=docker.service"
+  matches = "_SYSTEMD_UNIT=sitbank-security-alerts.service"
   labels = {
-    service = "sitbank-systemd",
+    service = "sitbank-security-alerts",
+    environment = "production",
+    host_role = "edge",
+    source = "systemd",
+  }
+  forward_to = [loki.process.redact_sensitive.receiver]
+}
+
+loki.source.journal "certbot" {
+  path = "/var/log/journal"
+  max_age = "12h"
+  matches = "_SYSTEMD_UNIT=certbot.service"
+  labels = {
+    service = "certbot",
+    environment = "production",
+    host_role = "edge",
+    source = "systemd",
+  }
+  forward_to = [loki.process.redact_sensitive.receiver]
+}
+
+loki.source.journal "docker" {
+  path = "/var/log/journal"
+  max_age = "12h"
+  matches = "_SYSTEMD_UNIT=docker.service"
+  labels = {
+    service = "docker",
     environment = "production",
     host_role = "edge",
     source = "systemd",
@@ -90,12 +117,27 @@ loki.source.journal "sitbank_systemd" {
 
 loki.process "redact_sensitive" {
   stage.replace {
-    expression = "(?i)(authorization|cookie|csrf|session|password|token|secret|totp|recovery|database_url|smtp_password)(=|: )[^\\s&]+"
-    replace = "$1$2[REDACTED]"
+    expression = "(?i)((?:authorization|cookie|cf-access-jwt-assertion)\\s*[:=]\\s*)[^\\r\\n,;]+"
+    replace = "$1[REDACTED]"
+  }
+
+  stage.replace {
+    expression = "(?i)(\"(?:authorization|cookie|cf[_-]?access[_-]?jwt[_-]?assertion|csrf|csrf[_-]?token|session|session[_-]?id|password|token|secret|totp|recovery|recovery[_-]?code|database[_-]?url|smtp[_-]?(?:username|password)|api[_-]?key|webhook[_-]?url|cloudflare[_-]?(?:api[_-]?)?token|tailscale[_-]?(?:auth[_-]?)?key|ssh[_-]?(?:private[_-]?)?key)\"\\s*:\\s*\")[^\"]+(\")"
+    replace = "$1[REDACTED]$2"
+  }
+
+  stage.replace {
+    expression = "(?i)((?:authorization|cookie|cf[_-]?access[_-]?jwt[_-]?assertion|csrf|csrf[_-]?token|session|session[_-]?id|password|token|secret|totp|recovery|recovery[_-]?code|database[_-]?url|smtp[_-]?(?:username|password)|api[_-]?key|webhook[_-]?url|cloudflare[_-]?(?:api[_-]?)?token|tailscale[_-]?(?:auth[_-]?)?key|ssh[_-]?(?:private[_-]?)?key)\\s*=\\s*\")[^\"]+(\")"
+    replace = "$1[REDACTED]$2"
+  }
+
+  stage.replace {
+    expression = "(?i)((?:csrf|csrf[_-]?token|session|session[_-]?id|password|token|secret|totp|recovery|recovery[_-]?code|database[_-]?url|smtp[_-]?(?:username|password)|api[_-]?key|webhook[_-]?url|cloudflare[_-]?(?:api[_-]?)?token|tailscale[_-]?(?:auth[_-]?)?key|ssh[_-]?(?:private[_-]?)?key)\\s*[:=]\\s*)[^\\s,;]+"
+    replace = "$1[REDACTED]"
   }
 
   stage.drop {
-    expression = "(?i)(request_body|raw_body|environment dump|BEGIN (RSA |EC |OPENSSH |)PRIVATE KEY)"
+    expression = "(?i)(request[_ -]?body|raw[_ -]?body|environment dump|env dump|BEGIN (RSA |EC |OPENSSH |)PRIVATE KEY|-----BEGIN [A-Z ]*PRIVATE KEY-----)"
   }
 
   forward_to = [loki.write.local.receiver]

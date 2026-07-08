@@ -11,7 +11,7 @@ from flask import current_app, has_request_context, request, session
 from sqlalchemy import func, or_
 
 from app.extensions import db
-from app.models import ManualRecoveryRequest, PasswordResetToken, PasswordResetTransaction, User, WebAuthnCredential
+from app.models import ManualRecoveryRequest, PasswordResetToken, PasswordResetTransaction, User
 from app.security.audit import (
     audit_event,
     audit_event_required,
@@ -26,7 +26,14 @@ from app.security.password_history import (
     replace_user_password,
 )
 from app.security.passwords import PasswordPolicyError, validate_password_policy
-from app.security.rate_limits import AuthBackoffRequired, apply_exponential_backoff, clear_failures, record_failure
+from app.security.rate_limits import (
+    AuthBackoffRequired,
+    DurableRateLimitExceeded,
+    apply_exponential_backoff,
+    clear_failures,
+    consume_durable_rate_limit,
+    record_failure,
+)
 from app.security.session_hmac import active_hmac_hex
 from app.security.sessions import revoke_all_sessions, rotate_session_id
 
@@ -34,25 +41,33 @@ from .recovery_codes import (
     consume_recovery_code,
     generate_recovery_codes_for_user,
     send_recovery_code_used_notification,
+    unused_recovery_code_count,
 )
-from .services import AuthError, _verify_totp_for_user
+from .services import (
+    AuthError,
+    TOTP_VERIFICATION_REPLAY,
+    TOTP_VERIFICATION_VALID,
+    _verify_totp_for_user_outcome,
+)
 
 
-GENERIC_FORGOT_PASSWORD_MESSAGE = "If an account exists for that email, a reset link has been sent."  # NOSONAR - user-facing status, not a credential
-GENERIC_MANUAL_RECOVERY_MESSAGE = "If the account can be reviewed, a recovery request has been recorded."
-GENERIC_RESET_ERROR = "Password reset link is invalid or expired"
+GENERIC_FORGOT_PASSWORD_MESSAGE = "If an account is linked to that email, a reset link has been sent. Check your inbox."  # NOSONAR - user-facing status, not a credential
+GENERIC_MANUAL_RECOVERY_MESSAGE = "If we can locate that account, your recovery request has been submitted."
+GENERIC_RESET_ERROR = "That reset link is no longer valid. Please request a new one from the login page."
 RESET_TRANSACTION_EXPIRED_ERROR = "Password reset transaction expired"
 RESET_TRANSACTION_SESSION_KEY = "password_reset_transaction_id"
 GENERIC_AUTHENTICATION_CODE_ERROR = "Invalid authentication code."
 GENERIC_VERIFICATION_METHOD_ERROR = "Invalid verification method."
 RESET_MFA_TOTP = "totp"
-RESET_MFA_MANUAL_RECOVERY = "manual_recovery"
+RESET_MFA_RECOVERY_CODE = "recovery_code"
 RESET_MFA_NONE = "none"
-RESET_MFA_METHODS = frozenset({RESET_MFA_TOTP})
-RESET_MFA_PUBLIC_METHODS = frozenset({RESET_MFA_TOTP, RESET_MFA_MANUAL_RECOVERY})
+RESET_MFA_METHODS = frozenset({RESET_MFA_TOTP, RESET_MFA_RECOVERY_CODE})
+RESET_MFA_PUBLIC_METHODS = RESET_MFA_METHODS
 RESET_MFA_METHOD_ALIASES = {
     "authenticator": RESET_MFA_TOTP,
     RESET_MFA_TOTP: RESET_MFA_TOTP,
+    "recovery": RESET_MFA_RECOVERY_CODE,
+    RESET_MFA_RECOVERY_CODE: RESET_MFA_RECOVERY_CODE,
 }
 MANUAL_RECOVERY_STATUS_PENDING = "pending"
 MANUAL_RECOVERY_STATUS_UNDER_REVIEW = "under_review"
@@ -108,6 +123,12 @@ MANUAL_RECOVERY_ALLOWED_TRANSITIONS = {
 
 def request_password_reset(identifier: str) -> dict[str, str]:
     normalized = _normalize(identifier)
+    _consume_public_recovery_limit(
+        "password_reset_request",
+        normalized,
+        limit=5,
+        window_seconds=15 * 60,
+    )
     user = _find_customer_user(normalized)
     audit_event(
         "password_reset_requested",
@@ -210,7 +231,17 @@ def current_reset_transaction() -> dict[str, Any]:
 
 
 def verify_reset_totp(code: str) -> dict[str, Any]:
-    return _verify_reset_authentication_code(code, submitted_factor="authentication_code")
+    return _verify_reset_authentication_code(
+        code,
+        required_method=RESET_MFA_TOTP,
+    )
+
+
+def verify_reset_recovery_code(code: str) -> dict[str, Any]:
+    return _verify_reset_authentication_code(
+        code,
+        required_method=RESET_MFA_RECOVERY_CODE,
+    )
 
 
 def select_reset_mfa_method(method: str) -> dict[str, Any]:
@@ -249,19 +280,36 @@ def select_reset_mfa_method(method: str) -> dict[str, Any]:
     return _public_transaction(transaction)
 
 
-def _verify_reset_authentication_code(code: str, *, submitted_factor: str) -> dict[str, Any]:
+def _verify_reset_authentication_code(
+    code: str,
+    *,
+    required_method: str,
+) -> dict[str, Any]:
     transaction = _load_current_transaction()
     user = _transaction_user(transaction)
     _require_selected_reset_mfa_method(
         transaction,
         user,
-        RESET_MFA_TOTP,
-        submitted_factor=submitted_factor,
+        required_method,
+        submitted_factor=required_method,
         error_message=GENERIC_AUTHENTICATION_CODE_ERROR,
     )
 
-    if _is_totp_code(code):
-        if not _verify_totp_for_user(user, code, "password_reset_mfa"):
+    if required_method == RESET_MFA_TOTP:
+        if not _is_totp_code(code):
+            _record_transaction_failure(transaction, "totp_failed")
+            audit_event("password_reset_mfa_failed", "failure", user=user, metadata={"factor": "totp"})
+            raise AuthError(GENERIC_AUTHENTICATION_CODE_ERROR, 401)
+        outcome = _verify_totp_for_user_outcome(user, code, "password_reset_mfa")
+        if outcome == TOTP_VERIFICATION_REPLAY:
+            audit_event(
+                "password_reset_mfa_failed",
+                "failure",
+                user=user,
+                metadata={"factor": "totp", "reason": "totp_replay"},
+            )
+            raise AuthError(GENERIC_AUTHENTICATION_CODE_ERROR, 401)
+        if outcome != TOTP_VERIFICATION_VALID:
             _record_transaction_failure(transaction, "totp_failed")
             audit_event("password_reset_mfa_failed", "failure", user=user, metadata={"factor": "totp"})
             raise AuthError(GENERIC_AUTHENTICATION_CODE_ERROR, 401)
@@ -292,8 +340,6 @@ def complete_password_reset(new_password: str, confirm_new_password: str) -> dic
     user = _transaction_user(transaction)
     if transaction["mfa_required"] != "none" and not transaction.get("mfa_verified"):
         audit_event("password_reset_failed", "failure", user=user, metadata={"reason": "missing_mfa"})
-        if transaction["mfa_required"] == RESET_MFA_MANUAL_RECOVERY:
-            raise AuthError("Manual account recovery is required before resetting the password", 403)
         raise AuthError("MFA verification is required before resetting the password", 403)
     if new_password != confirm_new_password:
         audit_event("password_reset_failed", "failure", user=user, metadata={"reason": "password_mismatch"})
@@ -344,13 +390,19 @@ def complete_password_reset(new_password: str, confirm_new_password: str) -> dic
         current_app.logger.warning("password_reset_notification_failed error=%s", type(exc).__name__)
         audit_event("password_reset_notification", "failure", user=user, metadata={"reason": "email_delivery_failed"})
     return {
-        "message": "Password reset completed. Please log in.",
+        "message": "Your password has been reset. You can now log in.",
         "revoked_sessions": revoked,
         "warnings": password_policy_warnings,
     }
 
 
 def request_manual_recovery(identifier: str) -> dict[str, str]:
+    _consume_public_recovery_limit(
+        "manual_recovery_request",
+        _normalize(identifier),
+        limit=3,
+        window_seconds=60 * 60,
+    )
     now = _utcnow()
     user = _find_customer_user(identifier)
     identifier_ref = principal_reference(identifier) or active_hmac_hex(
@@ -484,17 +536,16 @@ def complete_manual_recovery_request(request_id: int, *, reason: str | None = No
         )
         raise AuthError("Manual recovery request cannot be completed", 409)
 
-    removed_credentials = list(
-        db.session.execute(
-            db.select(WebAuthnCredential).where(WebAuthnCredential.user_id == user.id)
-        ).scalars()
-    )
-    for credential in removed_credentials:
-        db.session.delete(credential)
     user.mfa_enabled = False
     user.mfa_secret_nonce = None
     user.mfa_secret_ciphertext = None
-    revoked_sessions = revoke_all_sessions(user.id, ended_reason="manual_recovery")
+    user.mfa_pending_started_at = None
+    user.mfa_pending_session_hash = None
+    revoked_sessions = revoke_all_sessions(
+        user.id,
+        ended_reason="manual_recovery",
+        component="customer",
+    )
     old_status = request_record.status
     _set_manual_recovery_status(request_record, MANUAL_RECOVERY_STATUS_COMPLETED, now)
     request_record.completed_at = now
@@ -505,7 +556,6 @@ def complete_manual_recovery_request(request_id: int, *, reason: str | None = No
         "new_status": MANUAL_RECOVERY_STATUS_COMPLETED,
         "reason": reason,
         "revoked_sessions": revoked_sessions,
-        "removed_legacy_passkey_credentials": len(removed_credentials),
         "mfa_reenrollment_required": True,
     }
     if has_request_context():
@@ -520,7 +570,6 @@ def complete_manual_recovery_request(request_id: int, *, reason: str | None = No
     result.update(
         {
             "revoked_sessions": revoked_sessions,
-            "removed_legacy_passkey_credentials": len(removed_credentials),
             "mfa_reenrollment_required": True,
         }
     )
@@ -573,7 +622,7 @@ def reset_transaction_user_and_id(*, required_method: str | None = None) -> tupl
             user,
             required_method,
             submitted_factor=required_method,
-            error_message="Security key verification failed",
+            error_message=GENERIC_AUTHENTICATION_CODE_ERROR,
         )
     return user, transaction["transaction_id"]
 
@@ -878,10 +927,8 @@ def _mfa_requirement(user: User) -> str:
 
 def _reset_mfa_policy(user: User) -> dict[str, Any]:
     available_methods = _available_reset_mfa_methods_for_user(user)
-    preferred_method = _profile_preference_to_reset_method(user.mfa_step_up_preference)
-    if preferred_method not in available_methods:
-        preferred_method = None
-    default_method = preferred_method or _fallback_reset_mfa_method(available_methods)
+    preferred_method = RESET_MFA_TOTP if RESET_MFA_TOTP in available_methods else None
+    default_method = _fallback_reset_mfa_method(available_methods)
     return {
         "available_methods": available_methods,
         "preferred_method": preferred_method,
@@ -893,19 +940,9 @@ def _available_reset_mfa_methods_for_user(user: User) -> list[str]:
     methods: list[str] = []
     if user.mfa_enabled:
         methods.append(RESET_MFA_TOTP)
-    elif _legacy_passkey_credential_count(user) > 0:
-        methods.append(RESET_MFA_MANUAL_RECOVERY)
+        if unused_recovery_code_count(user) > 0:
+            methods.append(RESET_MFA_RECOVERY_CODE)
     return methods
-
-
-def _legacy_passkey_credential_count(user: User) -> int:
-    if user.id is None:
-        return 0
-    return int(
-        db.session.execute(
-            db.select(func.count(WebAuthnCredential.id)).where(WebAuthnCredential.user_id == user.id)
-        ).scalar_one()
-    )
 
 
 def _available_reset_mfa_methods_from_transaction(transaction: dict[str, Any]) -> list[str]:
@@ -924,12 +961,10 @@ def _available_reset_mfa_methods_from_transaction(transaction: dict[str, Any]) -
 def _fallback_reset_mfa_method(available_methods: list[str]) -> str:
     if RESET_MFA_TOTP in available_methods:
         return RESET_MFA_TOTP
-    if RESET_MFA_MANUAL_RECOVERY in available_methods:
-        return RESET_MFA_MANUAL_RECOVERY
     return RESET_MFA_NONE
 
 
-def _profile_preference_to_reset_method(value: str | None) -> str | None:
+def _reset_method_alias(value: str | None) -> str | None:
     normalized = str(value or "").strip().casefold()
     return RESET_MFA_METHOD_ALIASES.get(normalized)
 
@@ -943,9 +978,7 @@ def _normalize_reset_mfa_method(value: str | None) -> str:
 
 
 def _public_reset_mfa_method(value: Any) -> str | None:
-    if str(value or "").strip().casefold() == RESET_MFA_MANUAL_RECOVERY:
-        return RESET_MFA_MANUAL_RECOVERY
-    method = _profile_preference_to_reset_method(str(value or ""))
+    method = _reset_method_alias(str(value or ""))
     return method if method in RESET_MFA_METHODS else None
 
 
@@ -1044,6 +1077,29 @@ def _enforce_reset_backoff(scope: str, principal: str) -> None:
     except AuthBackoffRequired as exc:
         audit_event("auth_backoff", "blocked", metadata={"scope": scope, "retry_after": exc.retry_after})
         raise AuthError("Too many attempts. Please try again later.", 429, retry_after=exc.retry_after) from exc
+
+
+def _consume_public_recovery_limit(
+    scope: str,
+    principal: str,
+    *,
+    limit: int,
+    window_seconds: int,
+) -> None:
+    try:
+        consume_durable_rate_limit(
+            scope,
+            f"{_client_ip()}:{principal}",
+            limit=limit,
+            window_seconds=window_seconds,
+        )
+    except DurableRateLimitExceeded as exc:
+        audit_event(scope, "blocked", metadata={"reason": "durable_rate_limit"})
+        raise AuthError(
+            "Too many attempts. Please try again later.",
+            429,
+            retry_after=exc.retry_after,
+        ) from exc
 
 
 def _is_totp_code(code: str) -> bool:

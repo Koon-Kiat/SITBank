@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 from pathlib import Path
+
+import pytest
 
 from app import create_app
 from conftest import TestConfig
@@ -18,10 +22,87 @@ def _text(path: Path) -> str:
 
 
 def _tracked_files() -> list[str]:
-    return subprocess.check_output(
+    paths = subprocess.check_output(
         ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
         text=True,
     ).splitlines()
+    return [path for path in paths if Path(path).exists()]
+
+
+def _bash_user_or_skip() -> tuple[str, str]:
+    if os.name == "nt":
+        pytest.skip("restore preflight ownership and mode checks require POSIX")
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is required for restore preflight execution tests")
+    try:
+        current_user = subprocess.check_output(
+            [bash, "-lc", "id -un"],
+            text=True,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        pytest.skip(f"could not determine POSIX user: {exc}")
+    return bash, current_user
+
+
+def _restore_fixture(tmp_path: Path) -> tuple[Path, Path]:
+    backup_dir = tmp_path / "backups"
+    identity_dir = tmp_path / "identity"
+    backup_dir.mkdir(mode=0o700)
+    identity_dir.mkdir(mode=0o700)
+    backup_file = backup_dir / "sitbank-staging-fake.pgdump.age"
+    identity_file = identity_dir / "age-identity.txt"
+    private_age_marker = "AGE-SECRET" + "-KEY-"
+    backup_file.write_text("fake encrypted backup\n", encoding="utf-8")
+    identity_file.write_text(
+        f"{private_age_marker}1FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE\n",
+        encoding="utf-8",
+    )
+    backup_file.chmod(0o600)
+    identity_file.chmod(0o600)
+    backup_dir.chmod(0o700)
+    identity_dir.chmod(0o700)
+    return backup_file, identity_file
+
+
+def _run_restore_preflight(
+    tmp_path: Path,
+    *,
+    backup_file: Path | None = None,
+    identity_file: Path | None = None,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    bash, current_user = _bash_user_or_skip()
+    if backup_file is None or identity_file is None:
+        default_backup, default_identity = _restore_fixture(tmp_path)
+        backup_file = backup_file or default_backup
+        identity_file = identity_file or default_identity
+    env = os.environ.copy()
+    env.update(
+        {
+            "SITBANK_RESTORE_ALLOWED_USERS": current_user,
+            "SITBANK_RESTORE_ALLOWED_FILE_OWNERS": current_user,
+        }
+    )
+    env.update(extra_env or {})
+    return subprocess.run(
+        [
+            bash,
+            str(RESTORE_PREFLIGHT),
+            "--environment",
+            "staging",
+            "--backup-file",
+            str(backup_file),
+            "--target-database",
+            "sitbank_staging",
+            "--identity-file",
+            str(identity_file),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
 
 
 def test_encrypted_backup_script_exists_and_uses_recipient_encryption():
@@ -77,6 +158,81 @@ def test_restore_preflight_requires_explicit_guarded_restore_inputs():
     assert "Encrypted backup file must not be world-readable" in restore
     assert "Decryption identity must not be group-readable or world-readable" in restore
     assert "restore_preflight_passed" in restore
+
+
+def test_restore_preflight_executes_with_safe_host_files_and_sanitized_output(tmp_path):
+    backup_file, identity_file = _restore_fixture(tmp_path)
+
+    result = _run_restore_preflight(
+        tmp_path,
+        backup_file=backup_file,
+        identity_file=identity_file,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "restore_preflight_passed" in result.stdout
+    assert "backup_file=validated-host-managed" in result.stdout
+    assert str(backup_file) not in result.stdout
+    assert str(identity_file) not in result.stdout
+
+
+def test_restore_preflight_rejects_workspace_backup_paths(tmp_path):
+    backup_file, identity_file = _restore_fixture(tmp_path)
+
+    result = _run_restore_preflight(
+        tmp_path,
+        backup_file=backup_file,
+        identity_file=identity_file,
+        extra_env={"GITHUB_WORKSPACE": str(tmp_path)},
+    )
+
+    assert result.returncode != 0
+    assert "must not be stored inside CI workspace paths" in result.stderr
+    assert str(backup_file) not in result.stderr
+
+
+def test_restore_preflight_rejects_group_or_world_accessible_backup(tmp_path):
+    backup_file, identity_file = _restore_fixture(tmp_path)
+    backup_file.chmod(0o640)
+
+    result = _run_restore_preflight(
+        tmp_path,
+        backup_file=backup_file,
+        identity_file=identity_file,
+    )
+
+    assert result.returncode != 0
+    assert "Encrypted backup file must not be world-readable" in result.stderr
+
+
+def test_restore_preflight_rejects_unsafe_parent_directory(tmp_path):
+    backup_file, identity_file = _restore_fixture(tmp_path)
+    backup_file.parent.chmod(0o777)
+
+    result = _run_restore_preflight(
+        tmp_path,
+        backup_file=backup_file,
+        identity_file=identity_file,
+    )
+
+    assert result.returncode != 0
+    assert "parent directory must not be group-writable" in result.stderr
+
+
+def test_restore_preflight_rejects_unapproved_file_owner(tmp_path):
+    backup_file, identity_file = _restore_fixture(tmp_path)
+    _, current_user = _bash_user_or_skip()
+    disallowed_owner = "root" if current_user != "root" else "nobody"
+
+    result = _run_restore_preflight(
+        tmp_path,
+        backup_file=backup_file,
+        identity_file=identity_file,
+        extra_env={"SITBANK_RESTORE_ALLOWED_FILE_OWNERS": disallowed_owner},
+    )
+
+    assert result.returncode != 0
+    assert "owner must be an approved OS user" in result.stderr
 
 
 def test_bootstrap_installs_backup_tools_and_keeps_lf_artifacts():

@@ -96,21 +96,74 @@
     });
   }
 
+  function startResendCountdown(button, seconds) {
+    const originalLabel = button.textContent;
+    button.disabled = true;
+    (function tick() {
+      if (seconds <= 0) {
+        button.disabled = false;
+        button.textContent = originalLabel;
+        return;
+      }
+      button.textContent = "Try again in " + seconds + "s";
+      seconds--;
+      setTimeout(tick, 1000);
+    }());
+  }
+
+  function removeDismissedBanner(event) {
+    event.currentTarget.remove();
+  }
+
+  function fadeOutBanner(banner) {
+    banner.classList.add("is-dismissing");
+    banner.addEventListener("transitionend", removeDismissedBanner, { once: true });
+  }
+
+  function scheduleBannerDismissal(banner) {
+    setTimeout(fadeOutBanner.bind(null, banner), 3000);
+  }
+
+  function dismissTransientFlashBanners() {
+    // Only success/info banners auto-dismiss. Warnings and errors carry
+    // security-relevant context and must stay until dismissed manually.
+    document.querySelectorAll(".alerts .alert-success, .alerts .alert-info").forEach(scheduleBannerDismissal);
+  }
+
+  function wireTopupSuccessDialog() {
+    const dialog = document.getElementById("topup-success-overlay");
+    if (!dialog) {
+      return;
+    }
+    dialog.showModal();
+    const timerId = setTimeout(function () {
+      dialog.close();
+    }, 3000);
+    document.getElementById("topup-success-close-btn")?.addEventListener("click", function () {
+      clearTimeout(timerId);
+      dialog.close();
+    });
+  }
+
   globalThis.addEventListener("DOMContentLoaded", function () {
-    document.querySelectorAll("[data-alert-dismiss]").forEach(function (button) {
-      button.addEventListener("click", function () {
-        const alert = button.closest(".alert");
-        if (alert) {
-          alert.remove();
+    dismissTransientFlashBanners();
+    wireTopupSuccessDialog();
+
+    document.querySelectorAll("[data-otp-resend-countdown]").forEach(function (button) {
+      const seconds = Number.parseInt(button.dataset.otpResendCountdown, 10);
+      if (!seconds || seconds <= 0) { return; }
+      startResendCountdown(button, seconds);
+    });
+
+    const otpRequestForm = document.querySelector("[data-otp-request-form]");
+    if (otpRequestForm) {
+      otpRequestForm.addEventListener("submit", function () {
+        const button = otpRequestForm.querySelector("[type=submit]");
+        if (button && !button.disabled) {
+          startResendCountdown(button, 60);
         }
       });
-      const alert = button.closest(".alert");
-      if (alert) {
-        if (alert.classList.contains("alert-success") || alert.classList.contains("alert-info")) {
-          setTimeout(function () { alert.remove(); }, 3000);
-        }
-      }
-    });
+    }
 
     document.querySelectorAll("[data-password-toggle]").forEach(function (button) {
       button.addEventListener("click", function () {
@@ -137,5 +190,26 @@
     });
 
     document.querySelectorAll("[data-recovery-code-list]").forEach(setupRecoveryCodeList);
+
+    document.querySelectorAll("[data-limit-select]").forEach(function (select) {
+      const key = select.dataset.limitSelect;
+      const group = document.querySelector('[data-limit-custom-group="' + key + '"]');
+      if (!group) {
+        return;
+      }
+      function syncVisibility() {
+        group.hidden = select.value !== "custom";
+      }
+      select.addEventListener("change", syncVisibility);
+      syncVisibility();
+    });
+
+    document.querySelectorAll("[data-limit-custom]").forEach(function (input) {
+      input.addEventListener("wheel", function (event) {
+        if (document.activeElement === input) {
+          event.preventDefault();
+        }
+      }, { passive: false });
+    });
   });
 })();

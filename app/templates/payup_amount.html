@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+
+{% block title %}PayUp | SITBank{% endblock %}
+
+{% block content %}
+<section class="security-page profile-page">
+  <div class="dashboard-header">
+    <div class="page-heading">
+      <p class="eyebrow">PayUp</p>
+      <h1>Pay to {{ pending.recipient_label }}</h1>
+      <p class="muted">Sending to {{ pending.recipient_phone }}</p>
+    </div>
+    <div class="button-row">
+      <a class="button secondary" href="{{ url_for('banking.payup') }}">Cancel</a>
+    </div>
+  </div>
+
+  <div class="profile-grid">
+    <article class="profile-panel profile-summary">
+      <div class="profile-panel-title">
+        <p class="eyebrow">Pay to</p>
+        <h2>{{ pending.recipient_label }}</h2>
+      </div>
+      <p class="muted">Phone number: {{ pending.recipient_phone }}</p>
+      {% if pending.recipient_nickname %}
+      <p class="muted">PayUp nickname: {{ pending.recipient_nickname }}</p>
+      {% endif %}
+      <p class="muted">Daily limit remaining: SGD {{ "%.2f"|format(remaining) }} of SGD {{ "%.2f"|format(daily_limit) }}.</p>
+
+      <hr class="form-divider form-divider-tight">
+
+      <div class="profile-panel-title">
+        <p class="eyebrow">From</p>
+        <h2>Savings Account</h2>
+      </div>
+      {% if g.current_user.account_number %}
+      <p class="muted">
+        Account No: <span id="payup-acct-masked">•••-•••-{{ g.current_user.account_number[-3:] }}</span><span id="payup-acct-full" hidden>{{ g.current_user.account_number[:3] }}-{{ g.current_user.account_number[3:6] }}-{{ g.current_user.account_number[6:] }}</span>
+        <button id="payup-acct-eye-btn" class="text-eye-btn" type="button" aria-label="Show account number" aria-pressed="false">
+          <svg class="icon" focusable="false" aria-hidden="true"><use id="payup-acct-eye-icon" href="#icon-eye-off"></use></svg>
+        </button>
+      </p>
+      {% endif %}
+      <p class="muted">
+        Available Balance: SGD <span id="payup-balance-masked">••••••</span><span id="payup-balance-full" hidden>{{ g.current_user.balance }}</span>
+        <button id="payup-bal-eye-btn" class="text-eye-btn" type="button" aria-label="Show balance" aria-pressed="false">
+          <svg class="icon" focusable="false" aria-hidden="true"><use id="payup-bal-eye-icon" href="#icon-eye-off"></use></svg>
+        </button>
+      </p>
+    </article>
+
+    <article class="profile-panel profile-card">
+      <div class="profile-panel-title">
+        <p class="eyebrow">Transfer details</p>
+        <h2>Enter amount</h2>
+      </div>
+      <form method="post" action="{{ url_for('banking.payup_amount_submit') }}" novalidate>
+        {{ form.hidden_tag() }}
+        <div class="form-group">
+          <label for="{{ form.amount.id }}">Amount (SGD)</label>
+          {{ form.amount(autocomplete="off", maxlength="13", placeholder="0.00", inputmode="decimal") }}
+          {% for error in form.amount.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+          <p class="hint">Daily limit remaining: SGD {{ "%.2f"|format(remaining) }} of SGD {{ "%.2f"|format(daily_limit) }}.</p>
+        </div>
+        <div class="form-group">
+          <label for="{{ form.reference.id }}">Reference (optional)</label>
+          {{ form.reference(autocomplete="off", maxlength="128", placeholder="e.g. Lunch money") }}
+          {% for error in form.reference.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+          <p class="hint">A short note for your records (max 128 characters).</p>
+        </div>
+        <button class="button full" type="submit">Review Transfer</button>
+      </form>
+    </article>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/payup.js') }}"></script>
+{% endblock %}

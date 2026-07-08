@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 import json
-import secrets
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -19,7 +18,7 @@ from app.auth.registration_otp import (
     REGISTRATION_OTP_VERIFIED_AT_KEY,
     normalize_registration_email,
 )
-from app.models import RecoveryCode, SecurityAuditEvent, User, WebAuthnCredential
+from app.models import RecoveryCode, SecurityAuditEvent, User
 from app.security.passwords import (
     PASSWORD_MAX_CHARS,
     PASSWORD_MIN_LENGTH,
@@ -88,6 +87,16 @@ def login(client, identifier="alice01", password="correct horse battery staple")
     )
 
 
+def login_ignoring_session_cap(monkeypatch, client, identifier="alice01", password="correct horse battery staple"):
+    # The single active-session cap normally evicts the account's other session on
+    # every login. Tests for the terminate/revoke-other-session endpoints need two
+    # simultaneously active sessions, so this bypasses the cap for one login only.
+    from app.security import sessions as sessions_module
+
+    monkeypatch.setattr(sessions_module, "enforce_active_session_cap", lambda user_id: 0)
+    return login(client, identifier=identifier, password=password)
+
+
 def password_inputs(response):
     return re.findall(rb"<input(?=[^>]*type=\"password\")[^>]*>", response.data)
 
@@ -138,32 +147,6 @@ def enable_mfa_for_user(username="alice01"):
     user.mfa_enabled = True
     db.session.commit()
     return user, secret
-
-
-def add_security_keys_for_user(user, count=2):
-    for index in range(count):
-        credential_id = f"credential-{user.id}-{index}".encode("utf-8")
-        db.session.add(
-            WebAuthnCredential(
-                user_id=user.id,
-                credential_id=credential_id,
-                credential_public_key=b"public-key",
-                sign_count=10 + index,
-                label=f"Security Key {index + 1}",
-                aaguid="11111111-1111-1111-1111-111111111111",
-                attestation_format="packed",
-                transports=["usb"],
-                credential_device_type="single_device",
-                credential_backed_up=False,
-            )
-        )
-    db.session.commit()
-
-
-def mint_stepup_token(client, user, action):
-    del client, user, action
-    token = secrets.token_urlsafe(32)
-    return token
 
 
 def complete_mfa_login(client, secret):

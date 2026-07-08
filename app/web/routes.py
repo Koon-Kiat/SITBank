@@ -25,6 +25,7 @@ from app.auth.forms import (
     PasswordChangeForm,
     PasswordResetForm,
     ProfileForm,
+    ProfileNotificationPreferencesForm,
     RegisterDetailsForm,
     RegistrationOtpCodeForm,
     RegistrationOtpRequestForm,
@@ -39,6 +40,7 @@ from app.auth.password_reset import (
     request_password_reset,
     select_reset_mfa_method,
     verify_reset_totp,
+    verify_reset_recovery_code,
 )
 from app.auth.mfa_policy import has_enrolled_mfa_method
 from app.auth.registration_otp import (
@@ -73,16 +75,26 @@ from app.auth.services import (
     verify_mfa_replacement,
     verify_mfa_setup,
 )
-from app.auth.webauthn_services import (
-    list_credentials_for_user,
-    webauthn_credential_count,
-)
-from sqlalchemy import or_
+from sqlalchemy import func, or_
+from sqlalchemy.exc import IntegrityError
 
+from app.banking.forms import TransactionDisputeForm
 from app.extensions import db, limiter
-from app.models import Transaction
+from app.models import DISPUTE_OPEN_STATUSES, Transaction, TransactionDispute
 from app.auth.recovery_codes import RECOVERY_CODE_LOW_THRESHOLD, unused_recovery_code_count
-from app.security.rate_limits import mfa_principal, request_principal
+from app.security.audit import AuditWriteError, audit_event, audit_event_required, audit_reference
+from app.security.device_recognition import (
+    apply_device_cookie,
+    handle_new_device_login,
+    resolve_freshly_authenticated_user,
+)
+from app.security.rate_limits import (
+    DurableRateLimitExceeded,
+    consume_durable_rate_limit,
+    mfa_principal,
+    request_principal,
+)
+from app.security.http_errors import rate_limit_response
 from app.security.sessions import (
     has_recent_fresh_mfa,
 )
@@ -104,6 +116,7 @@ _FORGOT_PASSWORD_TEMPLATE = "forgot_password.html"
 _PROFILE_TEMPLATE = "profile.html"
 _PASSWORD_CHANGE_TEMPLATE = "password_change.html"
 _FREEZE_TEMPLATE = "freeze.html"
+_ACCOUNT_RECOVERY_TEMPLATE = "account_recovery.html"
 _SECURITY_TOKEN_EXPIRED_MESSAGE = "Security token expired. Please try again."
 _CHALLENGE_VERIFICATION_FAILED_MESSAGE = "Challenge verification failed"
 
@@ -215,10 +228,12 @@ def register_otp_request():
         flash(_CHALLENGE_VERIFICATION_FAILED_MESSAGE, "error")
         return _render_register_email_form(otp_request_form=form), 400
     except RegistrationOtpError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
-        return _render_register_email_form(otp_request_form=form), exc.status_code
+        return _render_register_email_form(otp_request_form=form, resend_cooldown=exc.retry_after if exc.status_code == 429 else None), exc.status_code
     flash(result["message"], "info")
-    return _render_register_email_form(otp_request_form=form)
+    return _render_register_email_form(otp_request_form=form, resend_cooldown=60)
 
 
 @web_bp.post("/register/otp/verify")
@@ -240,6 +255,8 @@ def register_otp_verify():
     try:
         result = verify_registration_otp(pending_email, form.otp_code.data)
     except RegistrationOtpError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return _render_register_email_form(otp_request_form=request_form, otp_verify_form=form), exc.status_code
     flash(result["message"], "success")
@@ -277,6 +294,8 @@ def register_submit():
         flash(_CHALLENGE_VERIFICATION_FAILED_MESSAGE, "error")
         return _render_register_details_form(form, verified_email=verified_email), 400
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         _duplicate_field_messages = {
             "username": "That username is already taken. Please choose a different one.",
             "phone": "That phone number is already registered.",
@@ -297,6 +316,7 @@ def _render_register_email_form(
     *,
     otp_request_form: RegistrationOtpRequestForm | None = None,
     otp_verify_form: RegistrationOtpCodeForm | None = None,
+    resend_cooldown: int | None = None,
 ):
     request_form = otp_request_form or RegistrationOtpRequestForm()
     if not request_form.email.data:
@@ -308,6 +328,7 @@ def _render_register_email_form(
         verified_email=None,
         otp_request_form=request_form,
         otp_verify_form=otp_verify_form or RegistrationOtpCodeForm(),
+        resend_cooldown=resend_cooldown or 0,
     )
 
 
@@ -332,6 +353,8 @@ def login():
         return redirect(url_for(_DASHBOARD_ENDPOINT))
     if request.args.get("session_expired"):
         flash("Your session expired due to inactivity. Please log in again.", "warning")
+    elif request.args.get("session_replaced"):
+        flash("You were signed out because your account signed in from another device or browser.", "warning")
     return render_template(_LOGIN_TEMPLATE, form=LoginForm())
 
 
@@ -355,6 +378,8 @@ def login_submit():
         flash(_CHALLENGE_VERIFICATION_FAILED_MESSAGE, "error")
         return render_template(_LOGIN_TEMPLATE, form=form), 400
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return render_template(_LOGIN_TEMPLATE, form=form), exc.status_code
 
@@ -362,14 +387,20 @@ def login_submit():
         flash("Enter your authenticator code to finish signing in.", "info")
         return redirect(url_for("web.mfa_verify"))
     if result.get("mfa_setup_required"):
-        if result.get("legacy_passkey_migration_required"):
-            flash("Passkey sign-in is unavailable. Set up authenticator MFA or request account recovery.", "warning")
-        else:
-            flash("Set up authenticator MFA before continuing.", "warning")
+        flash("Set up authenticator MFA before continuing.", "warning")
         return redirect(url_for(_MFA_SETUP_ENDPOINT))
 
     flash("Login successful.", "success")
-    return redirect(url_for(_DASHBOARD_ENDPOINT))
+    response = redirect(url_for(_DASHBOARD_ENDPOINT))
+    user = resolve_freshly_authenticated_user()
+    if user is not None:
+        token = handle_new_device_login(
+            user,
+            ip_address=request.remote_addr or "",
+            user_agent=request.user_agent.string or "",
+        )
+        response = apply_device_cookie(response, token)
+    return response
 
 
 @web_bp.get("/forgot-password")
@@ -392,17 +423,38 @@ def forgot_password_submit():
     except TurnstileError:
         flash(_CHALLENGE_VERIFICATION_FAILED_MESSAGE, "error")
         return render_template(_FORGOT_PASSWORD_TEMPLATE, form=form), 400
+    except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
+        flash(exc.message, "error")
+        return render_template(_FORGOT_PASSWORD_TEMPLATE, form=form), exc.status_code
     flash(result["message"], "success")
     return redirect(url_for(_LOGIN_ENDPOINT))
 
 
-@web_bp.get("/reset-password")
+@web_bp.route("/reset-password", methods=["GET", "POST"])
 @limiter.limit("10 per 15 minutes", key_func=get_remote_address)
 def reset_password_exchange():
-    token = request.args.get("token", "")
+    if request.method == "GET":
+        return render_template(
+            "reset_password_landing.html",
+            form=CsrfOnlyForm(),
+            token=request.args.get("token", ""),
+        )
+    form = CsrfOnlyForm()
+    if not form.validate_on_submit():
+        flash(_SECURITY_TOKEN_EXPIRED_MESSAGE, "error")
+        return render_template(
+            "reset_password_landing.html",
+            form=form,
+            token=request.form.get("token", ""),
+        ), 400
+    token = request.form.get("token", "")
     try:
         exchange_reset_token(token)
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return redirect(url_for(_FORGOT_PASSWORD_ENDPOINT))
     return redirect(url_for(_RESET_PASSWORD_CONTINUE_ENDPOINT))
@@ -413,6 +465,8 @@ def reset_password_continue():
     try:
         transaction = current_reset_transaction()
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return redirect(url_for(_FORGOT_PASSWORD_ENDPOINT))
     return render_template(
@@ -431,11 +485,14 @@ def reset_password_continue_submit():
     try:
         transaction = current_reset_transaction()
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return redirect(url_for(_FORGOT_PASSWORD_ENDPOINT))
 
     handlers = {
         "verify_totp": _handle_reset_totp,
+        "verify_recovery_code": _handle_reset_recovery_code,
         "select_mfa_method": _handle_reset_mfa_selection,
         "complete": _handle_reset_completion,
     }
@@ -453,9 +510,26 @@ def _handle_reset_totp(transaction: dict):
     try:
         transaction = verify_reset_totp(form.totp_code.data)
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return _render_reset_continue(transaction, status_code=exc.status_code)
     flash("Authentication code verified.", "success")
+    return _render_reset_continue(transaction)
+
+
+def _handle_reset_recovery_code(transaction: dict):
+    form = AuthenticationCodeForm()
+    if not form.validate_on_submit():
+        return _render_reset_continue(transaction, status_code=400)
+    try:
+        transaction = verify_reset_recovery_code(form.totp_code.data)
+    except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
+        flash(exc.message, "error")
+        return _render_reset_continue(transaction, status_code=exc.status_code)
+    flash("Recovery code verified.", "success")
     return _render_reset_continue(transaction)
 
 
@@ -466,6 +540,8 @@ def _handle_reset_mfa_selection(transaction: dict):
     try:
         transaction = select_reset_mfa_method(request.form.get("mfa_method", ""))
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return _render_reset_continue(transaction, status_code=exc.status_code)
     flash("Verification method selected.", "success")
@@ -482,6 +558,8 @@ def _handle_reset_completion(transaction: dict):
             form.confirm_new_password.data,
         )
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return _render_reset_continue(transaction, status_code=exc.status_code)
     for warning in result.get("warnings", []):
@@ -503,7 +581,7 @@ def _render_reset_continue(transaction: dict, *, status_code: int = 200):
 def account_recovery():
     if getattr(g, "current_user", None) is not None:
         return redirect(url_for(_DASHBOARD_ENDPOINT))
-    return render_template("account_recovery.html", form=ManualRecoveryForm())
+    return render_template(_ACCOUNT_RECOVERY_TEMPLATE, form=ManualRecoveryForm())
 
 
 @web_bp.post("/account-recovery")
@@ -512,8 +590,18 @@ def account_recovery():
 def account_recovery_submit():
     form = ManualRecoveryForm()
     if not form.validate_on_submit():
-        return render_template("account_recovery.html", form=form), 400
-    result = request_manual_recovery(form.identifier.data)
+        return render_template(_ACCOUNT_RECOVERY_TEMPLATE, form=form), 400
+    try:
+        require_turnstile("customer_manual_recovery")
+        result = request_manual_recovery(form.identifier.data)
+    except TurnstileError:
+        flash(_CHALLENGE_VERIFICATION_FAILED_MESSAGE, "error")
+        return render_template(_ACCOUNT_RECOVERY_TEMPLATE, form=form), 400
+    except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
+        flash(exc.message, "error")
+        return render_template(_ACCOUNT_RECOVERY_TEMPLATE, form=form), exc.status_code
     flash(result["message"], "success")
     return redirect(url_for(_LOGIN_ENDPOINT))
 
@@ -532,8 +620,8 @@ def mfa_verify():
 
 
 @web_bp.post("/mfa/verify")
-@limiter.limit("5 per 5 minutes", key_func=get_remote_address)
-@limiter.limit("5 per 5 minutes", key_func=mfa_principal)
+@limiter.limit("30 per 5 minutes", key_func=get_remote_address)
+@limiter.limit("30 per 5 minutes", key_func=mfa_principal)
 def mfa_verify_submit():
     if not session.get("pending_mfa_user_id"):
         flash("Please log in first.", "warning")
@@ -546,16 +634,29 @@ def mfa_verify_submit():
     try:
         complete_pending_mfa(form.totp_code.data)
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return render_template(_MFA_VERIFY_TEMPLATE, form=form), exc.status_code
 
     flash("Login successful.", "success")
-    return redirect(url_for(_DASHBOARD_ENDPOINT))
+    response = redirect(url_for(_DASHBOARD_ENDPOINT))
+    user = resolve_freshly_authenticated_user()
+    if user is not None:
+        token = handle_new_device_login(
+            user,
+            ip_address=request.remote_addr or "",
+            user_agent=request.user_agent.string or "",
+        )
+        response = apply_device_cookie(response, token)
+    return response
 
 
 @web_bp.get("/dashboard")
 @web_login_required
 def dashboard():
+    if request.args.get("topup") == "success":
+        flash("Your top-up was added to your account.", "topup_success")
     recent_txns = (
         db.session.execute(
             db.select(Transaction)
@@ -574,42 +675,233 @@ def dashboard():
     return render_template(
         "dashboard.html",
         user=g.current_user,
-        credential_count=g.webauthn_credential_count,
-        required_count=g.webauthn_required_count,
         logout_form=CsrfOnlyForm(),
         transactions=recent_txns,
     )
 
 
-@web_bp.get("/security-keys")
-@web_login_required
-@web_not_frozen_required
-def security_keys():
-    credentials = list_credentials_for_user(g.current_user)
-    return render_template(
-        "security_keys.html",
-        user=g.current_user,
-        credentials=credentials,
-        credential_count=webauthn_credential_count(g.current_user),
+_TRANSACTIONS_PER_PAGE = 20
+
+
+def _bounded_page(value) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = 1
+    return min(max(parsed, 1), 100000)
+
+
+def _owned_transactions_statement():
+    return db.select(Transaction).where(
+        or_(
+            Transaction.sender_id == g.current_user.id,
+            Transaction.recipient_id == g.current_user.id,
+        )
     )
 
 
-@web_bp.post("/security-keys/mfa/refresh")
+@web_bp.get("/transactions")
 @web_login_required
-@web_not_frozen_required
-@limiter.limit("5 per 5 minutes", key_func=get_remote_address)
-@limiter.limit("5 per 5 minutes", key_func=mfa_principal)
-def security_keys_mfa_refresh():
-    flash("Passkey registration is unavailable. Use authenticator MFA.", "warning")
-    return redirect(url_for("web.security_keys"))
+def transactions():
+    page = _bounded_page(request.args.get("page"))
+    statement = _owned_transactions_statement().order_by(
+        Transaction.created_at.desc(), Transaction.id.desc()
+    )
+    total = db.session.execute(db.select(func.count()).select_from(statement.subquery())).scalar_one()
+    txns = (
+        db.session.execute(
+            statement.limit(_TRANSACTIONS_PER_PAGE).offset((page - 1) * _TRANSACTIONS_PER_PAGE)
+        )
+        .scalars()
+        .all()
+    )
+    total_pages = max(1, (int(total or 0) + _TRANSACTIONS_PER_PAGE - 1) // _TRANSACTIONS_PER_PAGE)
+    return render_template(
+        "transactions.html",
+        user=g.current_user,
+        transactions=txns,
+        page=page,
+        total_pages=total_pages,
+    )
 
 
-@web_bp.post("/security-keys/<credential_id>/revoke")
+@web_bp.get("/transactions/<int:transaction_id>")
+@web_login_required
+def transaction_detail(transaction_id: int):
+    # Ownership check — prevents IDOR
+    txn = Transaction.query.filter(
+        Transaction.id == transaction_id,
+        or_(
+            Transaction.sender_id == g.current_user.id,
+            Transaction.recipient_id == g.current_user.id,
+        ),
+    ).first_or_404()
+    my_disputes = (
+        db.session.execute(
+            db.select(TransactionDispute)
+            .where(
+                TransactionDispute.transaction_id == txn.id,
+                TransactionDispute.reporter_id == g.current_user.id,
+            )
+            .order_by(TransactionDispute.created_at.desc())
+        )
+        .scalars()
+        .all()
+    )
+    # Checked transaction-wide (not just this viewer's own reports) so the "Report an
+    # Issue" link is hidden whenever a submission would be blocked server-side,
+    # regardless of which party on the transaction filed the open dispute.
+    has_open_dispute = _open_dispute_for_transaction(txn.id) is not None
+    return render_template(
+        "transaction_detail.html",
+        user=g.current_user,
+        transaction=txn,
+        disputes=my_disputes,
+        has_open_dispute=has_open_dispute,
+    )
+
+
+_DISPUTE_ALREADY_OPEN_MESSAGE = "An open issue report already exists for this transaction."
+_DISPUTE_FORM_TEMPLATE = "transaction_dispute_form.html"
+_TRANSACTION_DETAIL_ENDPOINT = "web.transaction_detail"
+
+
+def _owned_transaction_or_404(transaction_id: int) -> Transaction:
+    return Transaction.query.filter(
+        Transaction.id == transaction_id,
+        or_(
+            Transaction.sender_id == g.current_user.id,
+            Transaction.recipient_id == g.current_user.id,
+        ),
+    ).first_or_404()
+
+
+def _open_dispute_for_transaction(transaction_id: int) -> TransactionDispute | None:
+    return db.session.execute(
+        db.select(TransactionDispute).where(
+            TransactionDispute.transaction_id == transaction_id,
+            TransactionDispute.status.in_(DISPUTE_OPEN_STATUSES),
+        )
+    ).scalar_one_or_none()
+
+
+@web_bp.get("/transactions/<int:transaction_id>/dispute")
 @web_login_required
 @web_not_frozen_required
-def security_key_revoke(credential_id: str):
-    flash("Legacy passkey records are removed through manual account recovery.", "warning")
-    return redirect(url_for("web.security_keys"))
+def transaction_dispute_new(transaction_id: int):
+    # Ownership check — prevents IDOR
+    txn = _owned_transaction_or_404(transaction_id)
+    if _open_dispute_for_transaction(txn.id) is not None:
+        flash(_DISPUTE_ALREADY_OPEN_MESSAGE, "warning")
+        return redirect(url_for(_TRANSACTION_DETAIL_ENDPOINT, transaction_id=txn.id))
+    form = TransactionDisputeForm()
+    return render_template(_DISPUTE_FORM_TEMPLATE, form=form, transaction=txn)
+
+
+@web_bp.post("/transactions/<int:transaction_id>/dispute")
+@limiter.limit("10 per hour", key_func=mfa_principal)
+@web_login_required
+@web_not_frozen_required
+def transaction_dispute_create(transaction_id: int):
+    # A01: ownership re-checked independently of the GET step
+    txn = _owned_transaction_or_404(transaction_id)
+    form = TransactionDisputeForm()
+    if not form.validate_on_submit():
+        return render_template(_DISPUTE_FORM_TEMPLATE, form=form, transaction=txn), 400
+
+    if _open_dispute_for_transaction(txn.id) is not None:
+        flash(_DISPUTE_ALREADY_OPEN_MESSAGE, "warning")
+        return redirect(url_for(_TRANSACTION_DETAIL_ENDPOINT, transaction_id=txn.id))
+
+    try:
+        consume_durable_rate_limit(
+            "transaction_dispute_create",
+            f"user:{g.current_user.id}",
+            limit=5,
+            window_seconds=24 * 60 * 60,
+        )
+    except DurableRateLimitExceeded as exc:
+        audit_event(
+            "transaction_dispute_create",
+            "blocked",
+            user=g.current_user,
+            metadata={"reason": "durable_rate_limit", "retry_after": exc.retry_after},
+        )
+        flash("Too many issue reports submitted today. Please try again tomorrow.", "error")
+        return redirect(url_for(_TRANSACTION_DETAIL_ENDPOINT, transaction_id=txn.id))
+
+    dispute = TransactionDispute(
+        transaction_id=txn.id,
+        reporter_id=g.current_user.id,
+        issue_type=form.issue_type.data,
+        reason=form.reason.data.strip(),
+        status="open",
+    )
+    try:
+        db.session.add(dispute)
+        db.session.flush([dispute])
+        audit_event_required(
+            "transaction_dispute_create",
+            "success",
+            user=g.current_user,
+            metadata={
+                "transaction_ref": audit_reference("transaction", txn.transaction_ref),
+                "issue_type": dispute.issue_type,
+                "reason_length": len(dispute.reason),
+            },
+        )
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        flash(_DISPUTE_ALREADY_OPEN_MESSAGE, "warning")
+        return redirect(url_for(_TRANSACTION_DETAIL_ENDPOINT, transaction_id=txn.id))
+    except AuditWriteError:
+        db.session.rollback()
+        raise
+
+    flash("Issue reported. Our staff will review it shortly.", "success")
+    return redirect(url_for(_TRANSACTION_DETAIL_ENDPOINT, transaction_id=txn.id))
+
+
+@web_bp.get("/disputes")
+@web_login_required
+def my_disputes():
+    disputes = (
+        db.session.execute(
+            db.select(TransactionDispute)
+            .where(TransactionDispute.reporter_id == g.current_user.id)
+            .order_by(TransactionDispute.created_at.desc())
+        )
+        .scalars()
+        .all()
+    )
+    return render_template("my_disputes.html", disputes=disputes)
+
+
+def _profile_notification_preferences_form(user) -> ProfileNotificationPreferencesForm:
+    form = ProfileNotificationPreferencesForm()
+    form.transfer_activity_email_enabled.data = (
+        getattr(user, "transfer_activity_email_enabled", True) is not False
+    )
+    return form
+
+
+def _render_profile_page(
+    *,
+    form: ProfileForm,
+    notification_form: ProfileNotificationPreferencesForm | None = None,
+    status_code: int = 200,
+):
+    pending_email_change = pending_profile_email_change()
+    return render_template(
+        _PROFILE_TEMPLATE,
+        user=g.current_user,
+        form=form,
+        notification_form=notification_form
+        or _profile_notification_preferences_form(g.current_user),
+        recent_mfa=has_recent_fresh_mfa(),
+        pending_email_change=pending_email_change,
+    ), status_code
 
 
 @web_bp.get("/profile")
@@ -618,17 +910,9 @@ def security_key_revoke(credential_id: str):
 def profile():
     form = ProfileForm()
     pending_email_change = pending_profile_email_change()
-    form.username.data = (
-        pending_email_change["username"] if pending_email_change else g.current_user.username
-    )
     form.email.data = pending_email_change["email"] if pending_email_change else g.current_user.email
-    return render_template(
-        _PROFILE_TEMPLATE,
-        user=g.current_user,
-        form=form,
-        recent_mfa=has_recent_fresh_mfa(),
-        pending_email_change=pending_email_change,
-    )
+    form.phone_number.data = g.current_user.phone_number
+    return _render_profile_page(form=form)[0]
 
 
 @web_bp.post("/profile")
@@ -636,46 +920,60 @@ def profile():
 @web_not_frozen_required
 def profile_submit():
     form = ProfileForm()
-    recent_mfa = has_recent_fresh_mfa()
-    pending_email_change = pending_profile_email_change()
     if not form.validate_on_submit():
-        return render_template(
-            _PROFILE_TEMPLATE,
-            user=g.current_user,
-            form=form,
-            recent_mfa=recent_mfa,
-            pending_email_change=pending_email_change,
-        ), 400
+        return _render_profile_page(form=form, status_code=400)
 
     try:
         result = update_profile_details(
             g.current_user,
-            form.username.data,
             form.email.data,
+            form.phone_number.data,
             form.totp_code.data,
-            form.stepup_token.data,
             form.email_verification_code.data,
         )
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
-        return render_template(
-            _PROFILE_TEMPLATE,
-            user=g.current_user,
-            form=form,
-            recent_mfa=recent_mfa,
-            pending_email_change=pending_profile_email_change(),
-        ), exc.status_code
+        return _render_profile_page(form=form, status_code=exc.status_code)
 
     if result.get("email_verification_pending"):
         flash("Verification code sent to the new email address.", "info")
-        return render_template(
-            _PROFILE_TEMPLATE,
-            user=g.current_user,
-            form=form,
-            recent_mfa=has_recent_fresh_mfa(),
-            pending_email_change=pending_profile_email_change(),
-        )
+        return _render_profile_page(form=form)[0]
     flash("Profile updated." if result.get("updated") else "No profile changes were needed.", "success")
+    return redirect(url_for("web.profile"))
+
+
+@web_bp.post("/profile/notification-preferences")
+@web_login_required
+@web_not_frozen_required
+def profile_notification_preferences_submit():
+    notification_form = ProfileNotificationPreferencesForm()
+    profile_form = ProfileForm()
+    pending_email_change = pending_profile_email_change()
+    profile_form.email.data = pending_email_change["email"] if pending_email_change else g.current_user.email
+    profile_form.phone_number.data = g.current_user.phone_number
+
+    if not notification_form.validate_on_submit():
+        return _render_profile_page(
+            form=profile_form,
+            notification_form=notification_form,
+            status_code=400,
+        )
+
+    enabled = bool(notification_form.transfer_activity_email_enabled.data)
+    if g.current_user.transfer_activity_email_enabled != enabled:
+        g.current_user.transfer_activity_email_enabled = enabled
+        db.session.commit()
+        audit_event(
+            "notification_preferences_update",
+            "success",
+            user=g.current_user,
+            metadata={"transfer_activity_email_enabled": enabled},
+        )
+        flash("Notification preference updated.", "success")
+    else:
+        flash("Notification preference already up to date.", "info")
     return redirect(url_for("web.profile"))
 
 
@@ -710,7 +1008,7 @@ def mfa_setup():
 @limiter.limit("5 per 5 minutes", key_func=get_remote_address)
 @limiter.limit("5 per 5 minutes", key_func=mfa_principal)
 def mfa_setup_submit():
-    """Dispatch MFA actions; replacement handlers validate conditional stepup_token."""
+    """Dispatch authenticator MFA management actions."""
     action = request.form.get("action")
     forms = _mfa_management_forms()
     handlers = {
@@ -784,6 +1082,8 @@ def _handle_mfa_setup_start(forms: dict[str, FlaskForm]):
     try:
         setup = generate_mfa_setup(g.current_user)
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return redirect(url_for(_DASHBOARD_ENDPOINT))
     flash("Scan the QR code, then enter the current code to enable MFA.", "info")
@@ -801,6 +1101,8 @@ def _handle_mfa_setup_verify(forms: dict[str, FlaskForm]):
     try:
         result = verify_mfa_setup(g.current_user, verify_form.totp_code.data)
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return _render_mfa_management(forms, status_code=exc.status_code)
     flash("MFA is now enabled.", "success")
@@ -815,9 +1117,10 @@ def _handle_mfa_replace_start(forms: dict[str, FlaskForm]):
         replacement = generate_mfa_replacement(
             g.current_user,
             replace_form.totp_code.data,
-            replace_form.stepup_token.data,
         )
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return _render_mfa_management(forms, status_code=exc.status_code)
     flash("Scan the replacement QR code, then verify the new authenticator code.", "info")
@@ -834,6 +1137,8 @@ def _handle_mfa_replace_verify(forms: dict[str, FlaskForm]):
     try:
         result = verify_mfa_replacement(g.current_user, verify_form.totp_code.data)
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return _render_mfa_management(forms, status_code=exc.status_code)
     flash("Authenticator MFA replaced. Other sessions were revoked.", "success")
@@ -848,9 +1153,10 @@ def _handle_recovery_code_regeneration(forms: dict[str, FlaskForm]):
         result = regenerate_totp_recovery_codes(
             g.current_user,
             regenerate_form.totp_code.data,
-            regenerate_form.stepup_token.data,
         )
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return _render_mfa_management(forms, status_code=exc.status_code)
     flash("Recovery codes regenerated.", "success")
@@ -906,9 +1212,10 @@ def password_change_submit():
             form.new_password.data,
             form.confirm_new_password.data,
             form.totp_code.data,
-            form.stepup_token.data,
         )
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return render_template(_PASSWORD_CHANGE_TEMPLATE, form=form, recent_mfa=recent_mfa), exc.status_code
 
@@ -945,6 +1252,8 @@ def sessions_terminate_submit(session_ref: str):
     try:
         terminate_session_for_user(g.current_user, session_ref)
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return redirect(url_for(_SESSIONS_ENDPOINT)), exc.status_code
     flash("Session terminated.", "success")
@@ -963,11 +1272,12 @@ def sessions_revoke_others_submit():
         verify_high_risk_authorization(
             g.current_user,
             form.totp_code.data,
-            form.stepup_token.data,
             "session_revoke_others",
         )
         revoked = terminate_other_sessions_for_user(g.current_user)
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return redirect(url_for(_SESSIONS_ENDPOINT)), exc.status_code
     flash(f"Terminated {revoked} other session(s).", "success")
@@ -992,8 +1302,10 @@ def freeze_account_submit():
         return render_template(_FREEZE_TEMPLATE, user=g.current_user, form=form), 400
 
     try:
-        freeze_own_account(g.current_user, form.totp_code.data, form.stepup_token.data)
+        freeze_own_account(g.current_user, form.totp_code.data)
     except AuthError as exc:
+        if exc.status_code == 429:
+            return rate_limit_response()
         flash(exc.message, "error")
         return render_template(_FREEZE_TEMPLATE, user=g.current_user, form=form), exc.status_code
 

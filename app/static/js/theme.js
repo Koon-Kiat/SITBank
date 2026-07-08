@@ -80,25 +80,33 @@
       items[(index + items.length) % items.length].focus();
     }
 
-    if (!toggle) {
-      return;
+    if (toggle) {
+      toggle.addEventListener("click", function () {
+        const nextTheme = root.dataset.theme === "dark" ? "light" : "dark";
+        globalThis.localStorage.setItem(storageKey, nextTheme);
+        applyTheme(nextTheme);
+      });
     }
-    toggle.addEventListener("click", function () {
-      const nextTheme = root.dataset.theme === "dark" ? "light" : "dark";
-      globalThis.localStorage.setItem(storageKey, nextTheme);
-      applyTheme(nextTheme);
-    });
+
+    function setNavOpen(isOpen) {
+      if (!navToggle || !navMenu) {
+        return;
+      }
+      navMenu.classList.toggle("is-open", isOpen);
+      navToggle.setAttribute("aria-expanded", isOpen ? "true" : "false");
+    }
 
     if (navToggle && navMenu) {
       navToggle.addEventListener("click", function () {
-        const isOpen = navMenu.classList.toggle("is-open");
-        navToggle.setAttribute("aria-expanded", isOpen ? "true" : "false");
+        const isOpen = !navMenu.classList.contains("is-open");
+        setNavOpen(isOpen);
+        setAccountOpen(isOpen);
       });
 
       navMenu.addEventListener("click", function (event) {
         if (event.target.tagName === "A") {
-          navMenu.classList.remove("is-open");
-          navToggle.setAttribute("aria-expanded", "false");
+          setNavOpen(false);
+          setAccountOpen(false);
         }
       });
     }
@@ -141,18 +149,24 @@
       accountPanel.addEventListener("click", function (event) {
         if (closestElement(event.target, "a")) {
           setAccountOpen(false);
+          setNavOpen(false);
         }
       });
 
       document.addEventListener("click", function (event) {
-        if (!closestElement(event.target, "[data-account-menu]")) {
+        if (
+          !closestElement(event.target, "[data-account-menu]") &&
+          !closestElement(event.target, "[data-nav-toggle]")
+        ) {
           setAccountOpen(false);
+          setNavOpen(false);
         }
       });
 
       document.addEventListener("keydown", function (event) {
         if (event.key === "Escape") {
           setAccountOpen(false);
+          setNavOpen(false);
         }
       });
     }

@@ -10,6 +10,7 @@ readonly PRODUCTION_PUBLIC_HOST="sitbank.pp.ua"
 readonly PRODUCTION_PUBLIC_WWW_HOST="www.sitbank.pp.ua"
 readonly EDGE_DEFAULTS_FILE="/etc/nginx/conf.d/sitbank-default.conf"
 readonly TLS_POLICY_FILE="/etc/nginx/snippets/sitbank-tls-policy.conf"
+readonly CLOUDFLARE_REAL_IP_FILE="/etc/nginx/snippets/sitbank-cloudflare-real-ip.conf"
 readonly STAGING_ACCESS_HEADERS_FILE="/etc/nginx/snippets/sitbank-cloudflare-access-headers.conf"
 readonly PRODUCTION_RATE_LIMITS_FILE="/etc/nginx/conf.d/sitbank-production-rate-limits.conf"
 readonly PRODUCTION_CLOUDFLARE_ORIGIN_PULL_CA_FILE="/etc/nginx/sitbank-production-cloudflare-origin-pull-ca.pem"
@@ -30,14 +31,15 @@ if [[ "${1:-}" == "production" || "${1:-}" == "staging" ]]; then
     shift
 fi
 
-if [[ "$#" -lt 1 || "$#" -gt 2 ]]; then
-    echo "Usage: bootstrap-container-ec2 [production|staging] OWNER/REPOSITORY [PUBLIC_HOST]" >&2
+if [[ "$#" -lt 1 || "$#" -gt 3 ]]; then
+    echo "Usage: bootstrap-container-ec2 [production|staging] OWNER/REPOSITORY [PUBLIC_HOST] [PUBLIC_BIND_ADDRESS]" >&2
     exit 2
 fi
 github_repository="${1:-}"
 public_host="${2:-}"
+public_bind_address="${3:-}"
 if [[ ! "${github_repository}" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
-    echo "Usage: bootstrap-container-ec2 [production|staging] OWNER/REPOSITORY [PUBLIC_HOST]" >&2
+    echo "Usage: bootstrap-container-ec2 [production|staging] OWNER/REPOSITORY [PUBLIC_HOST] [PUBLIC_BIND_ADDRESS]" >&2
     exit 2
 fi
 if [[ -z "${public_host}" ]]; then
@@ -85,6 +87,44 @@ case "${target}" in
         ;;
 esac
 
+existing_deploy_config="${config_root}/deploy.conf"
+if [[ -z "${public_bind_address}" && -f "${existing_deploy_config}" \
+    && ! -L "${existing_deploy_config}" ]]; then
+    public_bind_address="$(
+        awk -F= '$1 == "PUBLIC_BIND_ADDRESS" { print $2; exit }' \
+            "${existing_deploy_config}"
+    )"
+fi
+if [[ -z "${public_bind_address}" ]]; then
+    public_bind_address="$(
+        ip -4 route get 1.1.1.1 \
+            | awk '{ for (field_index = 1; field_index <= NF; field_index++) if ($field_index == "src") { print $(field_index + 1); exit } }'
+    )"
+fi
+if ! python3 - "${public_bind_address}" <<'PY'
+import ipaddress
+import sys
+
+try:
+    address = ipaddress.ip_address(sys.argv[1])
+except ValueError:
+    raise SystemExit(1)
+tailscale = ipaddress.ip_network("100.64.0.0/10")
+if (
+    address.version != 4
+    or address.is_unspecified
+    or address.is_loopback
+    or address.is_link_local
+    or address.is_multicast
+    or address in tailscale
+):
+    raise SystemExit(1)
+PY
+then
+    echo "PUBLIC_BIND_ADDRESS must be the non-Tailscale public-facing EC2/VPC IPv4 address" >&2
+    exit 2
+fi
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 repository_lower="${github_repository,,}"
 
@@ -92,8 +132,13 @@ linux_runtime_files=(
     "${repo_root}/${compose_source}"
     "${repo_root}/${systemd_source}"
     "${repo_root}/ops/deploy/sitbank-container-bootstrap"
+    "${repo_root}/ops/deploy/sitbank-observability-bootstrap"
     "${repo_root}/ops/deploy/sitbank-container-deploy"
     "${repo_root}/ops/deploy/sitbank-container-runtime"
+    "${repo_root}/ops/systemd/sitbank-audit-anchor-refresh@.service"
+    "${repo_root}/ops/systemd/sitbank-audit-anchor-refresh@.timer"
+    "${repo_root}/ops/systemd/sitbank-retention-review@.service"
+    "${repo_root}/ops/systemd/sitbank-retention-review@.timer"
     "${repo_root}/ops/deploy/sitbank-database-cutover"
     "${repo_root}/ops/deploy/verify-certbot-host-state"
     "${repo_root}/ops/deploy/verify-cloudflare-origin-pull-ca"
@@ -101,9 +146,11 @@ linux_runtime_files=(
     "${repo_root}/ops/backups/sitbank-restore-preflight"
     "${repo_root}/ops/nginx/sitbank-default.conf"
     "${repo_root}/ops/nginx/sitbank-cloudflare-access-headers.conf"
+    "${repo_root}/ops/nginx/sitbank-cloudflare-real-ip.conf"
     "${repo_root}/ops/nginx/sitbank-tls-policy.conf"
     "${repo_root}/ops/security/cloudflare-origin-pull-ca-allowlist.json"
     "${repo_root}/ops/sudoers/sitbank-container-deploy"
+    "${repo_root}/ops/sudoers/sitbank-observability-bootstrap"
 )
 if [[ "${target}" == "staging" ]]; then
     linux_runtime_files+=(
@@ -115,6 +162,7 @@ if [[ "${target}" == "staging" ]]; then
     )
 else
     linux_runtime_files+=(
+        "${repo_root}/ops/deploy/verify-production-nginx-boundary"
         "${repo_root}/ops/deploy/verify-tailscale-admin-access"
         "${repo_root}/ops/tailscale/install-tailscale"
         "${repo_root}/ops/tailscale/configure-admin-access"
@@ -228,6 +276,9 @@ install -o root -g root -m 0755 \
     "${repo_root}/ops/deploy/sitbank-container-bootstrap" \
     /usr/local/sbin/sitbank-container-bootstrap
 install -o root -g root -m 0755 \
+    "${repo_root}/ops/deploy/sitbank-observability-bootstrap" \
+    /usr/local/sbin/sitbank-observability-bootstrap
+install -o root -g root -m 0755 \
     "${repo_root}/ops/deploy/sitbank-container-deploy" \
     /usr/local/sbin/sitbank-container-deploy
 install -o root -g root -m 0755 \
@@ -243,6 +294,9 @@ install -o root -g root -m 0755 \
     "${repo_root}/ops/deploy/verify-cloudflare-origin-pull-ca" \
     /usr/local/sbin/verify-cloudflare-origin-pull-ca
 if [[ "${target}" == "production" ]]; then
+    install -o root -g root -m 0755 \
+        "${repo_root}/ops/deploy/verify-production-nginx-boundary" \
+        /usr/local/sbin/verify-production-nginx-boundary
     install -o root -g root -m 0755 \
         "${repo_root}/ops/deploy/verify-tailscale-admin-access" \
         /usr/local/sbin/verify-tailscale-admin-access
@@ -281,6 +335,15 @@ fi
 install -o root -g root -m 0644 \
     "${repo_root}/${systemd_source}" \
     "/etc/systemd/system/${systemd_service}"
+for scheduled_unit in \
+    sitbank-audit-anchor-refresh@.service \
+    sitbank-audit-anchor-refresh@.timer \
+    sitbank-retention-review@.service \
+    sitbank-retention-review@.timer; do
+    install -o root -g root -m 0644 \
+        "${repo_root}/ops/systemd/${scheduled_unit}" \
+        "/etc/systemd/system/${scheduled_unit}"
+done
 if [[ "${target}" == "production" ]]; then
     install -o root -g root -m 0644 \
         "${repo_root}/ops/systemd/${alert_systemd_service}" \
@@ -292,12 +355,16 @@ fi
 install -o root -g root -m 0440 \
     "${repo_root}/ops/sudoers/sitbank-container-deploy" \
     /etc/sudoers.d/sitbank-container-deploy
+install -o root -g root -m 0440 \
+    "${repo_root}/ops/sudoers/sitbank-observability-bootstrap" \
+    /etc/sudoers.d/sitbank-observability-bootstrap
 
 cat > "${config_root}/deploy.conf" <<EOF
 GITHUB_REPOSITORY=${github_repository}
 GHCR_REPOSITORY=ghcr.io/${repository_lower}
 COSIGN_CERTIFICATE_IDENTITY=https://github.com/${github_repository}/.github/workflows/ci-deploy.yml@refs/heads/main
 PUBLIC_HOST=${public_host}
+PUBLIC_BIND_ADDRESS=${public_bind_address}
 EOF
 chown root:root "${config_root}/deploy.conf"
 chmod 0644 "${config_root}/deploy.conf"
@@ -314,18 +381,39 @@ install_nginx_config() {
     local label="$3"
     local backup_prefix="$4"
 
+    local rendered_source="${source_file}"
+    local rendered_temp=""
+    if grep -q "__SITBANK_PUBLIC_BIND_ADDRESS__" "${source_file}"; then
+        rendered_temp="$(mktemp)"
+        sed \
+            "s/__SITBANK_PUBLIC_BIND_ADDRESS__/${public_bind_address}/g" \
+            "${source_file}" > "${rendered_temp}"
+        if grep -q "__SITBANK_PUBLIC_BIND_ADDRESS__" "${rendered_temp}"; then
+            rm -f -- "${rendered_temp}"
+            echo "Failed to render ${label}" >&2
+            exit 1
+        fi
+        rendered_source="${rendered_temp}"
+    fi
+
     if [[ -e "${target_file}" \
         && ( -L "${target_file}" || ! -f "${target_file}" ) ]]; then
+        if [[ -n "${rendered_temp}" ]]; then
+            rm -f -- "${rendered_temp}"
+        fi
         echo "Refusing to replace unsafe ${label}: ${target_file}" >&2
         exit 1
     fi
     if [[ -f "${target_file}" ]] \
-        && ! cmp -s "${source_file}" "${target_file}"; then
+        && ! cmp -s "${rendered_source}" "${target_file}"; then
         install -o root -g root -m 0644 \
             "${target_file}" \
             "${backup_dir}/${backup_prefix}.$(date -u +%Y%m%dT%H%M%SZ).conf"
     fi
-    install -o root -g root -m 0644 "${source_file}" "${target_file}"
+    install -o root -g root -m 0644 "${rendered_source}" "${target_file}"
+    if [[ -n "${rendered_temp}" ]]; then
+        rm -f -- "${rendered_temp}"
+    fi
 }
 
 install_edge_default_site() {
@@ -350,6 +438,14 @@ install_staging_access_headers() {
         "${STAGING_ACCESS_HEADERS_FILE}" \
         "staging Cloudflare Access header policy" \
         "nginx-sitbank-cloudflare-access-headers"
+}
+
+install_cloudflare_real_ip() {
+    install_nginx_config \
+        "${repo_root}/ops/nginx/sitbank-cloudflare-real-ip.conf" \
+        "${CLOUDFLARE_REAL_IP_FILE}" \
+        "Cloudflare real client IP policy" \
+        "nginx-sitbank-cloudflare-real-ip"
 }
 
 refresh_enabled_sibling_site() {
@@ -418,6 +514,7 @@ if [[ "${target}" == "production" ]]; then
     install -d -o root -g root -m 0755 /var/www/certbot
     install_edge_default_site
     install_tls_policy
+    install_cloudflare_real_ip
     install_staging_access_headers
     install -o root -g root -m 0644 \
         "${repo_root}/ops/nginx-proxy-headers.conf" \
@@ -440,27 +537,18 @@ if [[ "${target}" == "production" ]]; then
         "${PRODUCTION_RATE_LIMITS_FILE}"
 
     production_site="/etc/nginx/sites-available/sitbank"
-    if [[ -e "${production_site}" \
-        && ( -L "${production_site}" || ! -f "${production_site}" ) ]]; then
-        echo "Refusing to replace unsafe production Nginx config: ${production_site}" >&2
-        exit 1
-    fi
-    if [[ -f "${production_site}" ]] \
-        && ! cmp -s \
-            "${repo_root}/ops/nginx/sitbank-production.conf" \
-            "${production_site}"; then
-        install -o root -g root -m 0644 \
-            "${production_site}" \
-            "${backup_dir}/nginx-sitbank-production.$(date -u +%Y%m%dT%H%M%SZ).conf"
-    fi
-    install -o root -g root -m 0644 \
+    install_nginx_config \
         "${repo_root}/ops/nginx/sitbank-production.conf" \
-        "${production_site}"
+        "${production_site}" \
+        "production Nginx config" \
+        "nginx-sitbank-production"
     refresh_enabled_sibling_site
     ln -sfn "${production_site}" \
         /etc/nginx/sites-enabled/sitbank
     nginx -t
     systemctl reload nginx
+    /usr/local/sbin/verify-production-nginx-boundary \
+        --public-bind-address "${public_bind_address}"
 fi
 
 if [[ "${target}" == "staging" ]]; then
@@ -507,6 +595,7 @@ if [[ "${target}" == "staging" ]]; then
     install -d -o root -g root -m 0755 /var/www/certbot
     install_edge_default_site
     install_tls_policy
+    install_cloudflare_real_ip
     install_staging_access_headers
     install -o root -g root -m 0644 \
         "${repo_root}/ops/nginx-proxy-headers.conf" \
@@ -529,22 +618,11 @@ if [[ "${target}" == "staging" ]]; then
         "${STAGING_RATE_LIMITS_FILE}"
 
     staging_site="/etc/nginx/sites-available/sitbank-staging"
-    if [[ -e "${staging_site}" \
-        && ( -L "${staging_site}" || ! -f "${staging_site}" ) ]]; then
-        echo "Refusing to replace unsafe staging Nginx config: ${staging_site}" >&2
-        exit 1
-    fi
-    if [[ -f "${staging_site}" ]] \
-        && ! cmp -s \
-            "${repo_root}/ops/nginx/sitbank-staging.conf" \
-            "${staging_site}"; then
-        install -o root -g root -m 0644 \
-            "${staging_site}" \
-            "${backup_dir}/nginx-sitbank-staging.$(date -u +%Y%m%dT%H%M%SZ).conf"
-    fi
-    install -o root -g root -m 0644 \
+    install_nginx_config \
         "${repo_root}/ops/nginx/sitbank-staging.conf" \
-        "${staging_site}"
+        "${staging_site}" \
+        "staging Nginx config" \
+        "nginx-sitbank-staging"
     refresh_enabled_sibling_site
     ln -sfn "${staging_site}" \
         /etc/nginx/sites-enabled/sitbank-staging
@@ -561,8 +639,11 @@ if ss -lnt | grep -Eq ':(2375|2376)([[:space:]]|$)'; then
 fi
 
 visudo -cf /etc/sudoers.d/sitbank-container-deploy
+visudo -cf /etc/sudoers.d/sitbank-observability-bootstrap
 systemctl daemon-reload
 systemctl enable "${systemd_service}"
+systemctl enable --now "sitbank-audit-anchor-refresh@${target}.timer"
+systemctl enable --now "sitbank-retention-review@${target}.timer"
 if [[ "${target}" == "production" ]]; then
     systemctl enable --now "${alert_systemd_timer}"
 fi

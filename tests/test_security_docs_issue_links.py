@@ -52,7 +52,6 @@ def test_open_gaps_use_current_status_without_tracker_numbers():
     current_open = _section(register, "Current Open Gaps")
 
     for title, status in (
-        ("Automated retention and disposal jobs", "Open gap"),
         ("Authenticated DAST on ordinary pull requests", "Accepted risk / policy tradeoff"),
         ("EC2 SSH/UFW/security-group hardening deferred", "Deferred external prerequisite"),
         ("Device-bound session proof", "Accepted defense-in-depth gap"),
@@ -63,11 +62,14 @@ def test_open_gaps_use_current_status_without_tracker_numbers():
     implemented_controls = _section(register, "Implemented Controls")
     assert "Password history and forced password change" in implemented_controls
     assert "Single active customer/admin session cap" in implemented_controls
+    assert "Approved preserved-category retention/disposal procedures" in implemented_controls
 
     recently_closed = _section(register, "Recently Closed Gaps")
     for title in ("Admin dashboard role separation", "Admin audit-log viewer hardening"):
         row = next(line for line in recently_closed.splitlines() if title in line)
         assert "Solved" in row
+    row = next(line for line in recently_closed.splitlines() if "Automated retention and disposal jobs" in line)
+    assert "Solved" in row
 
     assert "Separate issue: No" not in register
     assert "Local Docker/Compose proof when Docker is unavailable" not in current_open
@@ -78,12 +80,16 @@ def test_open_gaps_use_current_status_without_tracker_numbers():
 def test_design_risk_register_uses_current_follow_up_status():
     design = DESIGN_REGISTER.read_text(encoding="utf-8")
 
-    assert "Baseline review remains" in next(
-        line for line in design.splitlines() if "Reporting-only SonarQube" in line
+    sonar_line = next(
+        line for line in design.splitlines() if "Blocking SonarQube quality gate" in line
     )
-    assert "Runtime verification hardening remains" in next(
+    assert "Implemented as a blocking trusted-run gate" in sonar_line
+    assert "Provider plan, token, and ruleset evidence remain external" in sonar_line
+    backup_line = next(
         line for line in design.splitlines() if "Encrypted backup helper" in line
     )
+    assert "Backup schedule and restore-drill evidence remain external" in backup_line
+    assert "Archive pruning remains operator-approved" in backup_line
     zero_trust_row = next(
         line for line in design.splitlines() if "Zero-trust/private admin-staging" in line
     )
@@ -133,6 +139,27 @@ def test_global_verification_runbook_is_linked_from_main_docs():
     ):
         text = path.read_text(encoding="utf-8")
         assert "global-verification.md" in text, path
+
+
+def test_invite_turnstile_lifecycle_docs_match_fail_closed_behavior():
+    operations = Path("docs/OPERATIONS.md").read_text(encoding="utf-8")
+    normalized = " ".join(operations.split())
+
+    for required in (
+        "recipients can fill the normal setup fields while the challenge is pending or re-verifying",
+        "remains disabled until the browser holds a fresh successful Turnstile response",
+        "marks the form state `valid`",
+        "Non-invalidating pending or after-interactive callbacks must not downgrade that valid state",
+        "Explicit expiry, error, timeout, unsupported-widget, reset, or a new before-interactive challenge lifecycle clears the response",
+        "inspect the form's `turnstileState`, the hidden response field length, the `Start secure setup` disabled flag",
+        "Never ask an operator or recipient to paste a raw challenge response",
+        "success with a fresh response enables submit",
+        "after-interactive or non-invalidating pending callbacks preserve a still-valid response",
+    ):
+        assert required in normalized
+
+    assert "paste a raw challenge response" in operations
+    assert "paste the Turnstile response" not in operations
 
 
 def test_global_verification_runbook_keeps_required_contexts_and_baselines():
@@ -268,6 +295,46 @@ def test_privileged_email_domain_docs_are_workplace_only():
     assert "staff_invite_personal_email_domains" not in normalized_docs
 
 
+def test_staff_invite_acceptance_docs_cover_minimal_metadata_and_restart_controls():
+    docs = _docs_text()
+    normalized_docs = " ".join(docs.split()).casefold()
+
+    for required in (
+        "public invite lookup returns only a generic valid-link message",
+        "exposes no acceptance metadata, setup state, workplace email, role, status, user id, counter, or lock timestamp",
+        "referrer-policy: origin",
+        "origin-level evidence for flask-wtf ssl-strict csrf protection",
+        "fresh successful turnstile response",
+        "exactly 8 singapore mobile digits starting with `8` or `9`",
+        "currently signed-in root admin",
+        "bound to the browser session that started setup",
+        "repeated setup restarts are capped",
+        "root-admin totp reset",
+        "normal staff/admin invites reject addresses in `root_admin_emails`",
+        "delivery state is stored as the allowlisted value `unconfirmed`, `queued`, or `failed`",
+        "`queued` means sitbank handed the message to the configured email backend",
+        "normal browser get renders the onboarding page while an explicit json client receives the minimal api response",
+        "viewing the page leaves the invite pending and creates no account",
+        "stale or malformed browser invite links render a generic invite-unavailable page",
+        "use the root-admin reissue action to rotate the stored invite token hash",
+        "invite is moved out of active pending state so it does not block safe retry",
+        "do not repair locked invites by editing production rows ad hoc",
+        "staff invite password fields are length-bounded at the request schema",
+        "migration `20260704_0026` persists staff invite acceptance session binding",
+        "migration `20260707_0032` adds only this bounded delivery state",
+        "staff_invite_accept_reset",
+    ):
+        assert required in normalized_docs
+
+    for stale_claim in (
+        "invite lookup exposes workplace email",
+        "invite info returns workplace email and role",
+        "restarting invite acceptance is unlimited",
+        "referrer-policy: same-origin",
+    ):
+        assert stale_claim not in normalized_docs
+
+
 def test_operational_observability_keeps_loki_out_of_admin_app():
     observability = (
         SECURITY_DOCS / "assurance" / "operational-observability.md"
@@ -297,6 +364,64 @@ def test_operational_observability_keeps_loki_out_of_admin_app():
         "datasource_" + "password=",
     ):
         assert forbidden.casefold() not in combined.casefold()
+
+
+def test_manual_recovery_docs_cover_browser_root_admin_workflow():
+    operations = Path("docs/OPERATIONS.md").read_text(encoding="utf-8")
+    combined = " ".join(operations.split())
+
+    for required in (
+        "isolated admin browser UI",
+        "`GET /manual-recovery/requests`",
+        "Accept: application/json",
+        "browser CSRF",
+        "fresh TOTP code",
+        "maker-checker",
+        "Unlinked or unknown requests stay generic",
+        "Browser admin logout clears the admin session and redirects to `/login`",
+    ):
+        assert required in combined
+    for forbidden in (
+        "manual recovery review is JSON-only",
+        "complete without approval",
+        "complete without TOTP",
+    ):
+        assert forbidden.casefold() not in combined.casefold()
+
+
+def test_root_admin_allowlist_docs_treat_identities_as_sensitive_secrets():
+    combined = " ".join(
+        path.read_text(encoding="utf-8")
+        for path in (
+            Path("docs/GITHUB_ACTIONS.md"),
+            Path("docs/DEPLOYMENT.md"),
+            Path("docs/OPERATIONS.md"),
+            Path("docs/security/architecture/cloudflare-staging-access.md"),
+        )
+    )
+    normalized = " ".join(combined.split())
+
+    for required in (
+        "`STAGING_ROOT_ADMIN_EMAILS`",
+        "`PROD_ROOT_ADMIN_EMAILS`",
+        "staging must contain exactly 2",
+        "production must contain exactly 3",
+        "sensitive privileged-identity configuration",
+        "/etc/sitbank*/secrets/root_admin_emails",
+        "ROOT_ADMIN_EMAILS_FILE",
+        "Normal staff/admin invite creation rejects addresses listed in `ROOT_ADMIN_EMAILS`",
+        "at least one active MFA-enabled workplace-verified root admin remains available",
+        "Do not copy the real allowlist into issues, pull requests, screenshots, logs, or job summaries",
+        "without printing the identities",
+    ):
+        assert required in normalized
+    for forbidden in (
+        "vars.ROOT_ADMIN_EMAILS",
+        "non-secret allowlist",
+        "printenv ROOT_ADMIN_EMAILS",
+        "protected GitHub environment variable in both `staging` and `production`",
+    ):
+        assert forbidden.casefold() not in normalized.casefold()
 
 
 def test_security_alert_delivery_docs_match_admin_controls():
@@ -363,6 +488,13 @@ def test_audit_anchor_docs_distinguish_stale_drift_from_tampering():
         "alert_count=0",
     ):
         assert required in combined
+    for scheduled_control in (
+        "sitbank-audit-anchor-refresh@{staging,production}.timer",
+        "refresh-audit-log-anchor",
+        "rebaseline-security-alert-state",
+        "--intentional-reset",
+    ):
+        assert scheduled_control in combined
 
     for forbidden in (
         "refresh anchors until alerts stop",
@@ -463,6 +595,7 @@ def test_security_docs_are_grouped_and_indexed_by_purpose():
         },
         "assurance": {
             "audit-and-alerting.md",
+            "feature-security-checklist.md",
             "operational-observability.md",
             "secret-scanning.md",
             "secure-coding.md",

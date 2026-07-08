@@ -1,0 +1,119 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Transaction disputes - SITBank Admin{% endblock %}
+
+{% block content %}
+<section class="dashboard admin-dashboard">
+  <div class="dashboard-header">
+    <div class="page-heading">
+      <p class="eyebrow">Dispute review</p>
+      <h1 id="disputes-heading">Transaction disputes</h1>
+      <p class="muted">Review customer-reported transaction disputes and update their status.</p>
+    </div>
+  </div>
+
+  <section class="panel" aria-labelledby="disputes-heading">
+    <div class="admin-table-wrap">
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th scope="col">Dispute</th>
+            <th scope="col">Transaction</th>
+            <th scope="col">Reporter</th>
+            <th scope="col">Issue type</th>
+            <th scope="col">Status</th>
+            <th scope="col">Filed</th>
+            <th scope="col">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in disputes %}
+          <tr>
+            <td>#{{ item.id }}</td>
+            <td>{{ item.transaction_ref or "unavailable" }}</td>
+            <td>{{ item.reporter_username or item.reporter_ref or "unavailable" }}</td>
+            <td>{{ item.issue_type }}</td>
+            <td>{{ item.status }}</td>
+            <td><time datetime="{{ item.created_at or '' }}">{{ item.created_at_display or "n/a" }}</time></td>
+            <td><a class="button secondary small" href="{{ url_for('admin.dispute_detail', dispute_id=item.id) }}">Review</a></td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="7">No transaction disputes.</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  {% if selected_dispute %}
+  <section class="panel" aria-labelledby="dispute-detail-heading">
+    <div class="section-header">
+      <h2 id="dispute-detail-heading">Dispute #{{ selected_dispute.id }}</h2>
+    </div>
+    <dl class="detail-list">
+      <div>
+        <dt>Transaction</dt>
+        <dd>{{ selected_dispute.transaction_ref or "unavailable" }}</dd>
+      </div>
+      <div>
+        <dt>Reporter</dt>
+        <dd>{{ selected_dispute.reporter_username or selected_dispute.reporter_ref or "unavailable" }}</dd>
+      </div>
+      <div>
+        <dt>Issue type</dt>
+        <dd>{{ selected_dispute.issue_type }}</dd>
+      </div>
+      <div>
+        <dt>Reason</dt>
+        <dd>{{ selected_dispute.reason }}</dd>
+      </div>
+      <div>
+        <dt>Status</dt>
+        <dd>{{ selected_dispute.status }}</dd>
+      </div>
+      <div>
+        <dt>Filed</dt>
+        <dd><time datetime="{{ selected_dispute.created_at or '' }}">{{ selected_dispute.created_at_display or "n/a" }}</time></dd>
+      </div>
+      <div>
+        <dt>Decided</dt>
+        <dd>{{ selected_dispute.decided_at_display or "not decided" }}</dd>
+      </div>
+      <div>
+        <dt>Resolution note</dt>
+        <dd>{{ selected_dispute.resolution_note or "not provided" }}</dd>
+      </div>
+    </dl>
+    {% if selected_dispute.status in ("open", "under_review") %}
+    <div class="action-grid">
+      {% if selected_dispute.status == "open" %}
+      <form method="post" action="{{ url_for('admin.dispute_transition', dispute_id=selected_dispute.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="status" value="under_review">
+        <label for="under-review-note">Note (optional)</label>
+        <input id="under-review-note" name="resolution_note" maxlength="1000">
+        <button class="button secondary" type="submit">Mark Under Review</button>
+      </form>
+      {% endif %}
+      <form method="post" action="{{ url_for('admin.dispute_transition', dispute_id=selected_dispute.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="status" value="resolved">
+        <label for="resolve-note">Resolution note</label>
+        <input id="resolve-note" name="resolution_note" maxlength="1000">
+        <button class="button" type="submit">Resolve</button>
+      </form>
+      <form method="post" action="{{ url_for('admin.dispute_transition', dispute_id=selected_dispute.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="status" value="rejected">
+        <label for="reject-note">Rejection note</label>
+        <input id="reject-note" name="resolution_note" maxlength="1000">
+        <button class="button secondary" type="submit">Reject</button>
+      </form>
+    </div>
+    {% endif %}
+  </section>
+  {% endif %}
+</section>
+{% endblock %}

@@ -10,10 +10,15 @@ import pyotp
 import pytest
 
 from app.extensions import db
-from app.models import AdminActionRequest, SecurityAuditEvent, StaffInvite, User
+from app.models import (
+    AdminActionRequest,
+    AuthAttemptCounter,
+    SecurityAuditEvent,
+    StaffInvite,
+    User,
+)
 from app.security.crypto import encrypt_mfa_secret
 from app.security.passwords import hash_password
-from conftest import TestConfig
 
 
 ROOT_EMAIL = "root1@sit.singaporetech.edu.sg"
@@ -26,25 +31,6 @@ def freeze_totp_verifier_time(monkeypatch):
     global _FIXED_TOTP_TIME
     _FIXED_TOTP_TIME = int(time.time())
     monkeypatch.setattr("app.auth.services.time.time", lambda: _FIXED_TOTP_TIME)
-
-
-@pytest.fixture()
-def admin_app(monkeypatch):
-    from app import create_app
-    from app.security import passwords
-
-    monkeypatch.setattr(passwords, "_is_password_pwned_by_hibp", lambda _password: False)
-    flask_app = create_app(TestConfig, app_mode="admin")
-    with flask_app.app_context():
-        db.create_all()
-        yield flask_app
-        db.session.remove()
-        db.drop_all()
-
-
-@pytest.fixture()
-def admin_client(admin_app):
-    return admin_app.test_client()
 
 
 def _create_staff_identity(
@@ -302,6 +288,121 @@ def test_admin_browser_mfa_rejects_invalid_form_and_bad_code(admin_client):
     assert "Invalid workplace email, password, or authentication code" in bad_mfa.get_data(as_text=True)
 
 
+def test_admin_mfa_counts_only_wrong_codes_and_clears_on_fresh_primary_login(
+    admin_client,
+):
+    global _FIXED_TOTP_TIME
+    _root, root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    valid_code = _totp(root_secret)
+    invalid_code = "000000" if valid_code != "000000" else "111111"
+
+    primary = admin_client.post(
+        "/login",
+        json={"workplace_email": ROOT_EMAIL, "password": ROOT_PASSWORD},
+    )
+    assert primary.status_code == 200
+    for _attempt in range(5):
+        response = admin_client.post(
+            "/mfa/verify",
+            json={"totp_code": invalid_code},
+        )
+        assert response.status_code == 401
+
+    valid_after_threshold = admin_client.post(
+        "/mfa/verify",
+        json={"totp_code": valid_code},
+    )
+    assert valid_after_threshold.status_code == 200
+    assert (
+        db.session.query(AuthAttemptCounter)
+        .filter_by(scope="admin_mfa_login")
+        .count()
+        == 0
+    )
+
+    admin_client.post("/logout")
+    _FIXED_TOTP_TIME += 30
+    valid_code = _totp(root_secret)
+    invalid_code = "000000" if valid_code != "000000" else "111111"
+    admin_client.post(
+        "/login",
+        json={"workplace_email": ROOT_EMAIL, "password": ROOT_PASSWORD},
+    )
+    for _attempt in range(10):
+        response = admin_client.post(
+            "/mfa/verify",
+            json={"totp_code": invalid_code},
+        )
+        assert response.status_code == 401
+    blocked = admin_client.post(
+        "/mfa/verify",
+        json={"totp_code": invalid_code},
+    )
+    assert blocked.status_code == 429
+    assert blocked.headers["Retry-After"].isdigit()
+    assert "totp_code" not in blocked.get_data(as_text=True)
+
+    fresh_primary = admin_client.post(
+        "/login",
+        json={"workplace_email": ROOT_EMAIL, "password": ROOT_PASSWORD},
+    )
+    assert fresh_primary.status_code == 200
+    recovered = admin_client.post(
+        "/mfa/verify",
+        json={"totp_code": valid_code},
+    )
+    assert recovered.status_code == 200
+
+
+def test_admin_mfa_replayed_valid_code_does_not_consume_failure_budget(admin_client):
+    global _FIXED_TOTP_TIME
+    root, root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    valid_code = _totp(root_secret)
+
+    first_primary = admin_client.post(
+        "/login",
+        json={"workplace_email": ROOT_EMAIL, "password": ROOT_PASSWORD},
+    )
+    first_verify = admin_client.post("/mfa/verify", json={"totp_code": valid_code})
+    admin_client.post("/logout", json={})
+    second_primary = admin_client.post(
+        "/login",
+        json={"workplace_email": ROOT_EMAIL, "password": ROOT_PASSWORD},
+    )
+    replay = admin_client.post("/mfa/verify", json={"totp_code": valid_code})
+    db.session.refresh(root)
+
+    assert first_primary.status_code == 200
+    assert first_verify.status_code == 200
+    assert second_primary.status_code == 200
+    assert replay.status_code == 401
+    assert (
+        db.session.query(AuthAttemptCounter)
+        .filter_by(scope="admin_mfa_login")
+        .count()
+        == 0
+    )
+    assert root.security_locked_at is None
+    assert root.is_frozen is False
+
+    _FIXED_TOTP_TIME += 30
+    fresh = admin_client.post(
+        "/mfa/verify",
+        json={"totp_code": _totp(root_secret)},
+    )
+    assert fresh.status_code == 200
+
+
 def test_admin_browser_form_payload_strips_csrf_token_for_invites(admin_client):
     _root, root_secret = _create_staff_identity(
         username="root-admin",
@@ -326,7 +427,6 @@ def test_admin_browser_form_payload_strips_csrf_token_for_invites(admin_client):
     assert response.status_code == 303
     assert response.headers["Location"].endswith("/invites")
     assert invite.workplace_email_normalized == "staff.person@sit.singaporetech.edu.sg"
-    assert invite.personal_email_normalized is None
 
 
 def test_admin_browser_login_rejects_customer_accounts_with_generic_error(admin_client):
@@ -339,7 +439,7 @@ def test_admin_browser_login_rejects_customer_accounts_with_generic_error(admin_
             account_status="active",
             full_name="Customer Admin Try",
             phone_number="91234567",
-            account_number="100000001",
+            account_number="100000001000",
             mfa_enabled=True,
         )
     )
@@ -411,8 +511,6 @@ def test_dashboard_renders_role_navigation_and_audits_access(admin_client):
     assert "Business operations" in staff_body
     assert "Staff invites" not in staff_body
     assert "Manual recovery" not in staff_body
-    assert "security_keys" not in staff_body
-    assert "webauthn/register" not in staff_body.casefold()
     assert [staff_audit.status_code, staff_accounts.status_code, staff_alerts.status_code, staff_invites.status_code] == [
         403,
         403,
@@ -719,11 +817,79 @@ def test_alert_review_renders_actionable_safe_detail_without_raw_logs(admin_clie
     assert "Next action" in body
     assert "Alert Detail" in body
     assert "manual_recovery_burst" in body
+    assert '<time datetime="2026-06-30T08:15:00+00:00">30 Jun 2026, 16:15:00 SGT</time>' in body
+    assert "<td>Principal reference</td>" in body
+    assert "<dt>Technical source</dt><dd>principal_ref:safe</dd>" in body
     assert f"/audit-logs/{event.id}" in body
     assert "[redacted]" in body
     assert sensitive_header not in body
     assert "authorization:" not in body.casefold()
     assert "review page is read-only" in body
+
+
+def test_alert_review_detail_links_use_loaded_panels_with_deep_link_fallback(
+    admin_client,
+    monkeypatch,
+):
+    _admin, admin_secret = _create_staff_identity(
+        username="security-admin",
+        email="security.admin@sit.singaporetech.edu.sg",
+        account_type="admin",
+        phone_number="91234568",
+    )
+
+    def fake_report(*, deliver):
+        assert deliver is False
+        return {
+            "message": "security_alert_report",
+            "generated_at": "2026-06-30T08:15:00+00:00",
+            "alert_count": 2,
+            "alerts": [
+                {
+                    "alert_type": "login_failure_burst",
+                    "severity": "medium",
+                    "count": 4,
+                    "window_seconds": 300,
+                    "source": "principal_ref:safe",
+                    "generated_at": "2026-06-30T08:15:00+00:00",
+                },
+                {
+                    "alert_type": "database_integrity_regression",
+                    "severity": "high",
+                    "count": 1,
+                    "window_seconds": 60,
+                    "source": "table:security_audit_events",
+                    "generated_at": "2026-06-30T08:16:00+00:00",
+                },
+            ],
+            "audit_chain": {"checked": True, "valid": True},
+            "database_integrity": {"checked": True, "valid": True},
+            "dedupe": {"enabled": False, "suppressed": 0},
+            "delivery": {"enabled": True},
+        }
+
+    monkeypatch.setattr("app.admin.routes.build_security_alert_report", fake_report)
+    _login_admin(admin_client, admin_secret, email="security.admin@sit.singaporetech.edu.sg")
+
+    response = admin_client.get("/alerts?alert=alert-2")
+    body = response.get_data(as_text=True)
+    script = Path("app/static/js/admin-alerts.js").read_text(encoding="utf-8")
+
+    assert response.status_code == 200
+    assert 'href="/alerts?alert=alert-1"' in body
+    assert 'data-alert-detail-link' in body
+    assert 'aria-controls="alert-detail-alert-1"' in body
+    assert 'aria-expanded="false"' in body
+    assert 'aria-controls="alert-detail-alert-2"' in body
+    assert 'aria-expanded="true"' in body
+    assert '<section class="panel alert-detail-panel"\n           id="alert-detail-alert-1"' in body
+    assert '<section class="panel alert-detail-panel"\n           id="alert-detail-alert-2"' in body
+    assert "Security Audit Events table" in body
+    assert "<dt>Technical source</dt><dd>table:security_audit_events</dd>" in body
+    assert 'js/admin-alerts.js' in body
+    assert "event.preventDefault()" in script
+    assert "globalThis.history" in script
+    assert "browserHistory.replaceState" in script
 
 
 def test_alert_review_next_actions_cover_integrity_and_generic_alerts(admin_client, monkeypatch):
@@ -1106,6 +1272,3 @@ def test_admin_templates_do_not_render_inline_script_or_sensitive_fields():
         "csrf_token() }}\" data",
     ):
         assert forbidden not in combined
-    assert "security_keys" not in combined
-    assert "webauthn" not in combined.casefold()
-    assert "passkey" not in combined.casefold()

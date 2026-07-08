@@ -11,7 +11,7 @@ network_name="sitbank-smoke-$RANDOM-$$"
 readonly postgres_container="smoke-postgres"
 readonly app_container="sitbank-smoke"
 readonly admin_container="sitbank-admin-smoke"
-readonly root_admin_emails="chief1@sit.singaporetech.edu.sg,chief2@sit.singaporetech.edu.sg,chief3@sit.singaporetech.edu.sg,chief4@sit.singaporetech.edu.sg,chief5@sit.singaporetech.edu.sg,chief6@sit.singaporetech.edu.sg,chief7@sit.singaporetech.edu.sg"
+readonly root_admin_emails="chief1@sit.singaporetech.edu.sg,chief2@sit.singaporetech.edu.sg,chief3@sit.singaporetech.edu.sg"
 
 random_test_secret() {
     od -An -N24 -tx1 /dev/urandom | tr -d '[:space:]'
@@ -299,6 +299,8 @@ printf 'postgresql+psycopg2://ci_owner:%s@%s:5432/ci' \
     > "${work_dir}/secrets/database_migration_url"
 printf '%s' '{"ci-mfa":"NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ="}' \
     > "${work_dir}/secrets/mfa_kek_keys_json"
+printf '%s' '{"ci-ledger":"YmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmI="}' \
+    > "${work_dir}/secrets/transaction_ledger_hmac_keys_json"
 printf '%s' 'MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE=' \
     > "${work_dir}/secrets/password_pepper_b64"
 printf '%s' 'ci-audit-hmac-key-that-is-long-enough-for-container-tests' \
@@ -324,6 +326,8 @@ printf '%s' 'smtp-password' \
     > "${work_dir}/secrets/smtp_password"
 printf '%s' '1x0000000000000000000000000000000AA' \
     > "${work_dir}/secrets/turnstile_secret_key"
+printf '%s' "${root_admin_emails}" \
+    > "${work_dir}/secrets/root_admin_emails"
 chmod_host_path 0444 "${work_dir}"/secrets/*
 
 seq -f 'blocked-password-%06g' 1 100000 \
@@ -351,6 +355,8 @@ docker_args=(
     --env DATABASE_URL_FILE=/run/secrets/database_url
     --env MFA_KEK_ACTIVE_ID=ci-mfa
     --env MFA_KEK_KEYS_JSON_FILE=/run/secrets/mfa_kek_keys_json
+    --env TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID=ci-ledger
+    --env TRANSACTION_LEDGER_HMAC_KEYS_JSON_FILE=/run/secrets/transaction_ledger_hmac_keys_json
     --env PAYEE_COOLDOWN_SECONDS=43200
     --env PASSWORD_PEPPER_B64_FILE=/run/secrets/password_pepper_b64
     --env SECURITY_AUDIT_HMAC_KEY_FILE=/run/secrets/security_audit_hmac_key
@@ -368,6 +374,16 @@ docker_args=(
     --env SMTP_USERNAME_FILE=/run/secrets/smtp_username
     --env SMTP_PASSWORD_FILE=/run/secrets/smtp_password
     --env TURNSTILE_SECRET_KEY_FILE=/run/secrets/turnstile_secret_key
+    --env TURNSTILE_ENABLED=true
+    --env TURNSTILE_SITE_KEY=1x00000000000000000000AA
+    --env TURNSTILE_CUSTOMER_LOGIN_ENABLED=true
+    --env TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED=true
+    --env TURNSTILE_CUSTOMER_REGISTER_ENABLED=true
+    --env TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED=true
+    --env TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED=true
+    --env TURNSTILE_ADMIN_LOGIN_ENABLED=true
+    --env TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED=true
+    --env TURNSTILE_FAIL_CLOSED_IN_PRODUCTION=true
     --env PASSWORD_PBKDF2_ITERATIONS=600000
     --env PASSWORD_RESET_ENABLED=true
     --env PASSWORD_RESET_TOKEN_TTL_SECONDS=1800
@@ -375,7 +391,7 @@ docker_args=(
     --env PASSWORD_RESET_EMAIL_BACKEND=smtp
     --env PASSWORD_RESET_EMAIL_FROM=security@sitbank.example
     --env PASSWORD_RESET_BASE_URL=https://sitbank.pp.ua
-    --env "ROOT_ADMIN_EMAILS=${root_admin_emails}"
+    --env ROOT_ADMIN_EMAILS_FILE=/run/secrets/root_admin_emails
     --env SMTP_HOST=smtp.example.test
     --env SMTP_PORT=587
     --env SMTP_USE_TLS=true
@@ -384,6 +400,11 @@ docker_args=(
     --env TRUSTED_PROXY_COUNT=1
     --volume "${secrets_mount_source}:/run/secrets:ro"
     --volume "${config_mount_source}:/run/config:ro"
+)
+smoke_app_docker_args=(
+    "${docker_args[@]}"
+    --env DEPLOYMENT_TARGET=smoke
+    --env TURNSTILE_ALLOW_TEST_ACTION=true
 )
 app_command=(
     python -m gunicorn
@@ -445,7 +466,7 @@ docker run --rm "${migration_docker_args[@]}" "${IMAGE}" \
     python -m flask --app wsgi:app verify-runtime-db-privileges
 
 docker run --detach --name "${app_container}" \
-    "${docker_args[@]}" "${IMAGE}" "${app_command[@]}" >/dev/null
+    "${smoke_app_docker_args[@]}" "${IMAGE}" "${app_command[@]}" >/dev/null
 docker run --detach --name "${admin_container}" \
     "${docker_args[@]}" "${IMAGE}" "${admin_command[@]}" >/dev/null
 ready=0
@@ -515,6 +536,7 @@ if [[ "${RUN_ZAP_DAST:-false}" == "true" ]]; then
     chmod_host_path 0777 "${work_dir}/dast"
     dast_mount_source="$(docker_bind_source "${work_dir}/dast")"
     docker run --rm "${docker_args[@]}" \
+        --env DEPLOYMENT_TARGET=smoke \
         --volume "${create_dast_session_source}:/app/create_dast_session.py:ro" \
         --volume "${dast_mount_source}:/run/dast:rw" \
         "${IMAGE}" \

@@ -39,13 +39,14 @@ def upgrade() -> None:
             (
                 "operation_type IN ("
                 "'staff_deactivate', 'staff_reactivate', 'staff_reset_activation', "
-                "'manual_recovery_approve', 'manual_recovery_deny', 'manual_recovery_complete'"
+                "'manual_recovery_approve', 'manual_recovery_deny', 'manual_recovery_complete', "
+                "'customer_security_unlock'"
                 ")"
             ),
             name="ck_admin_action_requests_operation_type",
         ),
         sa.CheckConstraint(
-            "target_type IN ('staff_user', 'manual_recovery_request')",
+            "target_type IN ('staff_user', 'manual_recovery_request', 'customer_user')",
             name="ck_admin_action_requests_target_type",
         ),
         sa.CheckConstraint(

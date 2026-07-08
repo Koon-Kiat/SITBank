@@ -4,8 +4,12 @@
 
 {% block content %}
 <section class="dashboard admin-dashboard">
-  <div class="section-header">
-    <h1>Staff Invites</h1>
+  <div class="dashboard-header">
+    <div class="page-heading">
+      <p class="eyebrow">Staff onboarding</p>
+      <h1>Staff Invites</h1>
+      <p class="muted">Create workplace invites for new staff or admin accounts and track acceptance and backend handoff status.</p>
+    </div>
   </div>
 
   <section class="panel">
@@ -23,6 +27,7 @@
       </select>
       <label for="invite-totp-code">Authenticator code</label>
       <input id="invite-totp-code" name="totp_code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required>
+      <p class="hint">Use a fresh authenticator code from the currently signed-in root admin for each invite action, and avoid submitting near code expiry. Delivery status reports backend handoff only, never recipient mailbox delivery.</p>
       <button type="submit">Create invite</button>
     </form>
   </section>
@@ -38,27 +43,66 @@
             <th scope="col">Workplace email</th>
             <th scope="col">Role</th>
             <th scope="col">Status</th>
+            <th scope="col">Delivery</th>
             <th scope="col">Created</th>
             <th scope="col">Expires</th>
-            <th scope="col">Action</th>
+            <th scope="col">Actions</th>
           </tr>
         </thead>
         <tbody>
           {% for invite in invites %}
           <tr>
-            <td>{{ invite.workplace_email }}</td>
-            <td>{{ invite.role }}</td>
-            <td>{{ invite.status }}</td>
-            <td>{{ invite.created_at }}</td>
-            <td>{{ invite.expires_at }}</td>
-            <td>
+            <td data-label="Workplace email">{{ invite.workplace_email }}</td>
+            <td data-label="Role">{{ invite.role }}</td>
+            <td data-label="Status">{{ invite.status }}</td>
+            <td data-label="Delivery">
+              {% if invite.delivery_status == "queued" %}
+              <span class="badge neutral">Queued to backend</span>
+              <p class="muted">Recipient mailbox delivery remains unconfirmed.</p>
+              {% elif invite.delivery_status == "failed" %}
+              <span class="badge danger">Backend handoff failed</span>
+              <p class="muted">No recipient mailbox delivery was confirmed.</p>
+              {% else %}
+              <span class="badge neutral">Delivery unconfirmed</span>
+              <p class="muted">No backend handoff evidence is available.</p>
+              {% endif %}
+            </td>
+            <td data-label="Created"><time datetime="{{ invite.created_at }}">{{ invite.created_at_display }}</time></td>
+            <td data-label="Expires"><time datetime="{{ invite.expires_at }}">{{ invite.expires_at_display }}</time></td>
+            <td data-label="Actions">
               {% if invite.status in ["pending", "totp_pending"] %}
-              <form method="post" action="{{ url_for('admin.invite_revoke', invite_id=invite.id) }}">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                <label class="sr-only" for="revoke-totp-{{ invite.id }}">Authenticator code</label>
-                <input id="revoke-totp-{{ invite.id }}" name="totp_code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required>
-                <button class="button-danger" type="submit">Revoke</button>
-              </form>
+              <div class="admin-action-stack">
+                <details class="admin-action-disclosure">
+                  <summary class="button secondary small">Revoke invite</summary>
+                  <form class="admin-inline-actions" method="post" action="{{ url_for('admin.invite_revoke', invite_id=invite.id) }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <label for="revoke-totp-{{ invite.id }}">Authenticator code</label>
+                    <input id="revoke-totp-{{ invite.id }}" name="totp_code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6-digit code" required>
+                    <button class="button-danger" type="submit">Confirm revoke</button>
+                  </form>
+                </details>
+                <details class="admin-action-disclosure">
+                  <summary class="button secondary small">Reissue invite</summary>
+                  <form class="admin-inline-actions" method="post" action="{{ url_for('admin.invite_reissue', invite_id=invite.id) }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <label for="reissue-totp-{{ invite.id }}">Authenticator code</label>
+                    <input id="reissue-totp-{{ invite.id }}" name="totp_code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6-digit code" required>
+                    <p class="hint">Use the current code from your own root-admin authenticator. Wait for the next code if this one is close to expiry or was used for another invite action.</p>
+                    <button type="submit">Send new invite</button>
+                  </form>
+                </details>
+              </div>
+              {% if invite.acceptance_locked %}
+              <details class="admin-action-disclosure">
+                <summary class="button secondary small">Reset acceptance</summary>
+                <form class="admin-inline-actions" method="post" action="{{ url_for('admin.invite_reset_acceptance', invite_id=invite.id) }}">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <label for="reset-acceptance-totp-{{ invite.id }}">Authenticator code</label>
+                  <input id="reset-acceptance-totp-{{ invite.id }}" name="totp_code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6-digit code" required>
+                  <button type="submit">Confirm reset</button>
+                </form>
+              </details>
+              {% endif %}
               {% else %}
               <span class="badge neutral">Closed</span>
               {% endif %}
@@ -66,7 +110,7 @@
           </tr>
           {% else %}
           <tr>
-            <td colspan="6">No staff/admin invites found.</td>
+            <td colspan="7">No staff/admin invites found.</td>
           </tr>
           {% endfor %}
         </tbody>

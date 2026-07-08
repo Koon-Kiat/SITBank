@@ -23,6 +23,7 @@ from app.models import (
 )
 from app.security.alerts import validate_security_alert_config
 from app.security.audit import validate_audit_integrity_config
+from app.security.transaction_integrity import validate_transaction_integrity_config
 from app.security.cloudflare_access import validate_cloudflare_access_config
 from app.security.passwords import (
     validate_common_password_dictionary,
@@ -37,6 +38,7 @@ from config import (
     MIN_PRODUCTION_PAYEE_COOLDOWN_SECONDS,
     MIN_PRODUCTION_PASSWORD_LENGTH,
     root_admin_email_allowlist_failures,
+    _required_root_admin_email_count,
     _validate_payee_cooldown_config,
     _validate_password_length_config,
     _validate_password_history_config,
@@ -48,6 +50,19 @@ from config import (
 
 
 PRIVILEGED_ACCOUNT_TYPES = frozenset({"staff", "admin", "root_admin"})
+TURNSTILE_ACTION_FLAGS_BY_APP_MODE = {
+    "customer": (
+        "TURNSTILE_CUSTOMER_LOGIN_ENABLED",
+        "TURNSTILE_CUSTOMER_REGISTER_OTP_ENABLED",
+        "TURNSTILE_CUSTOMER_REGISTER_ENABLED",
+        "TURNSTILE_CUSTOMER_PASSWORD_RESET_ENABLED",
+        "TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED",
+    ),
+    "admin": (
+        "TURNSTILE_ADMIN_LOGIN_ENABLED",
+        "TURNSTILE_ADMIN_INVITE_ACCEPT_ENABLED",
+    ),
+}
 
 
 @dataclass
@@ -175,6 +190,9 @@ def _validate_admin_mode_and_routes(
         app.config.get("ROOT_ADMIN_EMAILS") or (),
         allowed_domains=app.config.get("ADMIN_ALLOWED_EMAIL_DOMAINS") or (),
         reject_default=True,
+        required_count=_required_root_admin_email_count(
+            deployment_target=str(app.config.get("DEPLOYMENT_TARGET") or ""),
+        ),
     )
     result.failures.extend(root_admin_failures)
     if any(
@@ -391,6 +409,13 @@ def _validate_alert_and_audit_policy(result: ProductionReadinessResult) -> None:
     else:
         result.details["audit_hmac_key_length"] = audit_key_length
 
+    try:
+        ledger_key_count = validate_transaction_integrity_config()
+    except Exception as exc:
+        _failure(result, "Transaction ledger HMAC configuration check", exc)
+    else:
+        result.details["transaction_ledger_hmac_key_count"] = ledger_key_count
+
 
 def _validate_edge_policy(app: Flask, result: ProductionReadinessResult) -> None:
     _validate_password_hash_strength(app, result)
@@ -399,6 +424,7 @@ def _validate_edge_policy(app: Flask, result: ProductionReadinessResult) -> None
     _validate_rate_limit_storage_policy(app, result)
     _validate_cloudflare_access_policy(app, result)
     _validate_turnstile_policy(app, result)
+    _validate_registration_identity_policy(app, result)
 
 
 def _validate_password_hash_strength(app: Flask, result: ProductionReadinessResult) -> None:
@@ -454,6 +480,64 @@ def _validate_turnstile_policy(app: Flask, result: ProductionReadinessResult) ->
         )
     except Exception as exc:
         result.failures.append(f"Turnstile verifier configuration check failed: {exc}")
+    if app.config.get("TURNSTILE_ENABLED") is not True:
+        result.failures.append("TURNSTILE_ENABLED must be true for production-like runtimes")
+    if app.config.get("TURNSTILE_FAIL_CLOSED_IN_PRODUCTION") is not True:
+        result.failures.append("TURNSTILE_FAIL_CLOSED_IN_PRODUCTION must be true")
+    if app.config.get("TURNSTILE_ALLOW_TEST_ACTION") is True and (
+        str(app.config.get("DEPLOYMENT_TARGET") or "").strip().casefold() != "smoke"
+    ):
+        result.failures.append("TURNSTILE_ALLOW_TEST_ACTION must be false outside smoke")
+    if not str(app.config.get("TURNSTILE_SITE_KEY") or "").strip():
+        result.failures.append("TURNSTILE_SITE_KEY must be configured")
+    if not str(app.config.get("TURNSTILE_SECRET_KEY") or "").strip():
+        result.failures.append("TURNSTILE_SECRET_KEY must be configured")
+    _validate_turnstile_action_flags(app, result)
+
+
+def _validate_turnstile_action_flags(
+    app: Flask,
+    result: ProductionReadinessResult,
+) -> None:
+    app_mode = str(app.config.get("APP_MODE") or "").strip().casefold()
+    for flag in TURNSTILE_ACTION_FLAGS_BY_APP_MODE.get(app_mode, ()):
+        if app.config.get(flag) is not True:
+            result.failures.append(f"{flag} must be true")
+
+
+def _validate_registration_identity_policy(
+    app: Flask,
+    result: ProductionReadinessResult,
+) -> None:
+    plus_domains = frozenset(
+        str(value or "").strip().casefold()
+        for value in (app.config.get("CUSTOMER_EMAIL_PLUS_ALIAS_DOMAINS") or ())
+        if str(value or "").strip()
+    )
+    dot_domains = frozenset(
+        str(value or "").strip().casefold()
+        for value in (app.config.get("CUSTOMER_EMAIL_DOT_INSENSITIVE_DOMAINS") or ())
+        if str(value or "").strip()
+    )
+    temp_domains = frozenset(
+        str(value or "").strip().casefold()
+        for value in (app.config.get("CUSTOMER_TEMP_EMAIL_DOMAINS") or ())
+        if str(value or "").strip()
+    )
+    if not plus_domains:
+        result.failures.append("CUSTOMER_EMAIL_PLUS_ALIAS_DOMAINS must be configured")
+    if not dot_domains or not dot_domains.issubset(plus_domains):
+        result.failures.append(
+            "CUSTOMER_EMAIL_DOT_INSENSITIVE_DOMAINS must be a non-empty subset "
+            "of CUSTOMER_EMAIL_PLUS_ALIAS_DOMAINS"
+        )
+    if not temp_domains:
+        result.failures.append("CUSTOMER_TEMP_EMAIL_DOMAINS must be configured")
+    workplace_domains = frozenset(app.config.get("ADMIN_ALLOWED_EMAIL_DOMAINS") or ())
+    if temp_domains & workplace_domains:
+        result.failures.append(
+            "CUSTOMER_TEMP_EMAIL_DOMAINS must not include workplace domains"
+        )
 
 
 def _validate_lifetime_policy(app: Flask, result: ProductionReadinessResult) -> None:

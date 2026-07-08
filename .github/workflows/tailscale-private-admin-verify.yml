@@ -57,17 +57,11 @@ jobs:
 
           readonly private_admin_url="https://${TAILSCALE_PRIVATE_ADMIN_HOST}"
 
-          if curl --silent --head --max-time 8 \
+          if curl --silent --request GET --max-time 8 \
             --output /dev/null "${private_admin_url}/login"; then
             echo "::error::Private admin responded before the protected runner joined the tailnet."
             exit 1
           fi
-
-          {
-            echo "## Private admin tailnet verification"
-            echo
-            echo "- Private admin is not reachable from the public runner context."
-          } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Validate selected Tailscale credential
         shell: bash
@@ -91,7 +85,7 @@ jobs:
 
       - name: Join the approved tailnet with OAuth
         if: inputs.auth_mode == 'oauth'
-        uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8
+        uses: tailscale/github-action@780049a30b6ff5c378a9e7b389d15ece7a204888
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
@@ -100,7 +94,7 @@ jobs:
 
       - name: Join the approved tailnet with an auth key
         if: inputs.auth_mode == 'authkey'
-        uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8
+        uses: tailscale/github-action@780049a30b6ff5c378a9e7b389d15ece7a204888
         with:
           authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
           ping: ${{ env.TAILSCALE_PRIVATE_ADMIN_HOST }}
@@ -121,7 +115,7 @@ jobs:
           fi
 
           private_status="$(
-            curl --silent --show-error --head --max-time 15 \
+            curl --silent --show-error --request GET --max-time 15 \
               --output /dev/null --write-out '%{http_code}' \
               "https://${TAILSCALE_PRIVATE_ADMIN_HOST}/login"
           )"
@@ -131,6 +125,9 @@ jobs:
           fi
 
           {
+            echo "## Private admin tailnet verification"
+            echo
+            echo "- Private admin is not reachable from the public runner context."
             echo "- Protected runner joined the approved tailnet."
             echo "- Private admin HTTPS login entrypoint returned the documented unauthenticated response."
             echo "- Required private admin gate passed."
