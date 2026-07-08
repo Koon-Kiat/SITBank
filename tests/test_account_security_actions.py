@@ -146,6 +146,9 @@ def test_authenticated_user_can_open_own_edit_profile_page(client):
     assert 'name="email"' in markup
     assert 'name="phone_number"' in markup
     assert "Update profile details" in markup
+    assert "Email notifications for withdrawal and deposit" in markup
+    assert "All other account, security, transfer-limit, and daily-limit notifications are mandatory." in markup
+    assert 'action="/profile/notification-preferences"' in markup
     assert "Verify and save" in markup
     assert "Authenticator MFA required" not in markup
     assert "Manage MFA" in markup
@@ -156,6 +159,30 @@ def test_authenticated_user_can_open_own_edit_profile_page(client):
     assert "Use an authenticator app for login MFA." in markup
     assert 'class="badge warning"' not in markup
     assert "Preferred verification" not in markup
+
+
+def test_profile_notification_preference_updates_without_totp(client):
+    register(client)
+    login(client)
+    user, _secret = enable_mfa_for_user()
+    mark_recent_mfa(client, user)
+    assert user.transfer_activity_email_enabled is True
+
+    response = client.post(
+        "/profile/notification-preferences",
+        data={},
+    )
+
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/profile")
+    db.session.refresh(user)
+    assert user.transfer_activity_email_enabled is False
+    assert db.session.query(SecurityAuditEvent).filter_by(
+        event_type="notification_preferences_update",
+        outcome="success",
+        user_id=user.id,
+    ).count() == 1
+
 
 def test_profile_enables_change_password_action_after_mfa_setup(client):
     register(client)
