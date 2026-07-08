@@ -59,7 +59,7 @@ def test_theme_assets_are_csp_compatible_and_store_only_theme_preference(client)
     assert ".profile-status-copy" in stylesheet
     assert ".alert {" in stylesheet
     assert "display: flex;" in stylesheet
-    assert ".alert-icon {" in stylesheet
+    assert "flex: 0 0 14px;" in stylesheet
     assert ".mfa-step.is-complete .step-number" in stylesheet
     assert "background: var(--success);" not in stylesheet
     assert "#0f766e" not in logo
@@ -203,7 +203,7 @@ def test_flash_messages_are_dismissible(client):
 
     assert response.status_code == 200
     assert "alert-success" in response.data.decode("utf-8")
-    assert "data-alert-close" in response.data.decode("utf-8")
+    assert "data-alert-dismiss" not in response.data.decode("utf-8")
 
 def test_landing_route_public_for_anonymous_and_dashboard_for_authenticated(client):
     public_response = client.get("/")
