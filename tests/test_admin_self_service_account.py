@@ -206,6 +206,45 @@ def test_password_change_requires_authentication(admin_client):
 # ── Change MFA ───────────────────────────────────────────────────────────────
 
 
+def test_password_change_uses_configured_password_length(admin_client):
+    admin_client.application.config["PASSWORD_MIN_LENGTH"] = 12
+    admin_client.application.config["PASSWORD_MAX_CHARS"] = 64
+    staff, secret = _create_staff_identity(
+        username="bank-staff",
+        email="bank.staff@sit.singaporetech.edu.sg",
+        phone_number="91234567",
+    )
+    _login_admin(admin_client, secret, "bank.staff@sit.singaporetech.edu.sg")
+
+    page = admin_client.get("/account/password")
+    too_short = admin_client.post(
+        "/account/password",
+        json={
+            "current_password": STAFF_PASSWORD,
+            "new_password": "A" * 11,
+            "confirm_new_password": "A" * 11,
+            "totp_code": _totp(secret),
+        },
+    )
+    too_long = admin_client.post(
+        "/account/password",
+        json={
+            "current_password": STAFF_PASSWORD,
+            "new_password": "B" * 65,
+            "confirm_new_password": "B" * 65,
+            "totp_code": _totp(secret),
+        },
+    )
+
+    assert page.status_code == 200
+    assert 'minlength="12"' in page.get_data(as_text=True)
+    assert 'maxlength="64"' in page.get_data(as_text=True)
+    assert too_short.status_code == 400
+    assert too_long.status_code == 400
+    db.session.refresh(staff)
+    assert verify_password(STAFF_PASSWORD, staff.password_hash)
+
+
 def test_mfa_change_start_stages_new_secret_without_disabling_old(admin_client, monkeypatch):
     staff, secret = _create_staff_identity(
         username="bank-staff",
@@ -338,6 +377,13 @@ def test_customer_unfreeze_list_excludes_automatic_lockouts(admin_client):
         is_frozen=True,
         security_lock_reason="password_failed_attempts",
     )
+    _create_customer(
+        username="manual-locked-customer",
+        email="manual.locked@example.test",
+        phone_number="81234569",
+        is_frozen=True,
+        security_lock_reason="manual_fraud_review",
+    )
 
     response = admin_client.get("/customer-unfreeze", headers={"Accept": "application/json"})
     assert response.status_code == 200
@@ -418,7 +464,8 @@ def test_customer_unfreeze_rejects_missing_reason(admin_client):
     assert customer.is_frozen is True
 
 
-def test_customer_unfreeze_rejects_automatic_lock_target(admin_client):
+@pytest.mark.parametrize("lock_reason", ["password_failed_attempts", "manual_fraud_review"])
+def test_customer_unfreeze_rejects_non_self_freeze_lock_target(admin_client, lock_reason):
     _staff, secret = _create_staff_identity(
         username="bank-staff",
         email="bank.staff@sit.singaporetech.edu.sg",
@@ -430,7 +477,7 @@ def test_customer_unfreeze_rejects_automatic_lock_target(admin_client):
         email="auto.locked@example.test",
         phone_number="81234568",
         is_frozen=True,
-        security_lock_reason="password_failed_attempts",
+        security_lock_reason=lock_reason,
     )
 
     response = admin_client.post(

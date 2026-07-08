@@ -736,10 +736,12 @@ applies only the bounded cleanup implemented in `app/security/state_cleanup.py`
 for expired server-side sessions, auth counters, TOTP replay records,
 registration OTP challenges, password reset transactions, security alert
 dedupe rows, expired password reset tokens that are no longer referenced by
-transactions, and closed circuit-breaker state past retention. It must not
-delete or truncate accounts, payees, transactions, staff/admin records,
-manual-recovery evidence, staff invites, security audit events, investigation
-holds, or encrypted backup archives.
+transactions, closed circuit-breaker state past retention, expired public
+transaction idempotency rows, expired known-device rows, and terminal top-up
+approval requests past retention. It must not delete or truncate accounts,
+payees, transactions, staff/admin records, manual-recovery evidence, support
+tickets, staff invites, security audit events, investigation holds, or
+encrypted backup archives.
 
 The command writes sanitized system audit events with mode, retention days,
 batch limit, scheduling status, and category counts only. Confirmed cleanup
@@ -897,7 +899,7 @@ do not retain an older MFA-principal route limit that can undercut the
 configured PayUp policy.
 
 The customer transfer activity email preference controls only routine
-withdrawal and deposit emails for Local Transfer and PayUp. Daily-limit,
+withdrawal and deposit emails for Local Transfer, PayUp, and top-up deposits. Daily-limit,
 transfer-limit, account, security, MFA, recovery, password, session,
 staff/admin, and other high-risk notifications remain mandatory and cannot be
 disabled through this setting. `POST /profile/notification-preferences`

@@ -81,7 +81,7 @@ Authentication code avoids common implementation failures:
 | Password hashing with PBKDF2-HMAC-SHA256, salt, pepper, and cost metadata | `app/security/passwords.py`; `tests/test_auth_registration_login.py::test_registration_hashes_password_with_pbkdf2` |
 | Production password minimum fails closed below 15 characters | `config.py::_validate_password_length_config()`, `app/security/production_guard.py`, `tests/test_production_guard.py::test_production_check_rejects_weak_password_minimum` |
 | Oversized passwords rejected before expensive hashing | `tests/test_auth_registration_login.py::test_oversized_login_password_uses_generic_failure_without_hashing` |
-| TOTP replay prevention | `app/auth/services.py`, `app/models.py::TotpReplayRecord`; `tests/test_mfa_lifecycle.py::test_mfa_setup_stores_encrypted_secret_and_rejects_replay` |
+| TOTP replay prevention | `app/auth/services.py`, `app/models.py::TotpReplayRecord`; `tests/test_mfa_lifecycle.py::test_mfa_setup_stores_encrypted_secret_and_rejects_replay`, `test_high_risk_customer_totp_replay_scope_crosses_actions` |
 | Recovery codes are one-time HMAC verifiers | `app/auth/recovery_codes.py`; `tests/test_password_reset.py::test_recovery_codes_are_hashed_single_use_reset_factors` |
 | Previous-password history and forced-change blocking | `app/security/password_history.py`; `tests/test_account_security_actions.py::test_password_change_rejects_recent_password_history`, `tests/test_password_reset.py::test_password_reset_rejects_recent_password_history` |
 
@@ -137,7 +137,7 @@ customer route inventory prevents silent addition of unclassified routes.
 | Admin/staff login requires active staff role, workplace email verification, and TOTP | `app/admin/services.py` |
 | Admin routes use a generated route inventory | `tests/test_admin_route_inventory_security.py` |
 | High-risk customer actions use TOTP step-up | `app/auth/services.py::verify_high_risk_authorization()` |
-| Optional transfer activity emails cannot suppress mandatory notifications; Daily-limit, transfer-limit, account, security, MFA, recovery, password, session, staff/admin, and other high-risk notifications remain mandatory | `app/banking/services.py`, `tests/test_local_transfer.py::test_disabled_transfer_activity_email_preference_keeps_daily_limit_alert`, `tests/test_payup.py::test_disabled_transfer_activity_email_preference_keeps_payup_daily_limit_alert`, `tests/test_transfer_limits.py` |
+| Optional transfer activity emails control only routine Local Transfer and PayUp withdrawal/deposit emails plus top-up deposit emails; Daily-limit, transfer-limit, account, security, MFA, recovery, password, session, staff/admin, and other high-risk notifications remain mandatory | `app/banking/services.py`, `tests/test_local_transfer.py::test_disabled_transfer_activity_email_preference_keeps_daily_limit_alert`, `tests/test_payup.py::test_disabled_transfer_activity_email_preference_keeps_payup_daily_limit_alert`, `tests/test_banking_topup.py::test_topup_email_suppressed_when_transfer_activity_email_disabled`, `tests/test_transfer_limits.py` |
 | Payee routes filter by current user id | `app/banking/routes.py` |
 | PayUp requires a sender display nickname, reveals recipient phone plus PayUp nickname when set, applies multidimensional durable limits, avoids raw phone/nickname audit metadata, and recomputes a centralized fail-closed risk decision at confirmation and execution | `app/banking/routes.py`, `app/banking/services.py`, `tests/test_payup.py` |
 | Admin role permissions are exercised through one centralized positive and negative matrix, with mutation-side-effect assertions | `tests/test_admin_rbac_matrix.py` |
@@ -178,7 +178,7 @@ Audit integrity uses an HMAC-SHA256 hash chain.
 | --- | --- |
 | Audit metadata redaction | `app/security/audit.py`, `tests/test_audit_metadata_sanitization.py` |
 | Structured logs are sanitized | `tests/test_audit_alerting.py::test_structured_audit_log_output_is_sanitized` |
-| Required audit writes can fail closed for critical actions | `app/security/audit.py::audit_event_required()`, `tests/test_audit_alerting.py` |
+| Required audit writes can fail closed for critical actions | `app/security/audit.py::audit_event_required()`, `tests/test_audit_alerting.py`, `tests/test_auth_registration_login.py::test_account_lock_rolls_back_when_required_audit_fails`, `tests/test_banking_topup.py::test_topup_completion_rolls_back_credit_when_required_audit_fails`, `tests/test_admin_maker_checker.py::test_admin_action_reject_rolls_back_when_required_audit_fails` |
 | Banking pending-token database rows store keyed verifiers, and transaction rows store HMAC-SHA256 integrity hashes over canonical fields | `app/banking/services.py`, `tests/test_local_transfer_security.py`, `tests/test_payup.py` |
 | Audit chain records, verifies, and exports anchors | `tests/test_audit_alerting.py::test_audit_hash_chain_records_verifies_and_exports_anchor` |
 | Runtime database privilege verifier checks append-only audit behavior | `app/ops/db_privileges.py`, `tests/test_deployment.py::test_audit_operations_runbook_and_append_only_privileges_are_present` |

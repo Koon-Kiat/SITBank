@@ -8,6 +8,7 @@ from flask import current_app
 from app.extensions import db
 from app.models import (
     AuthAttemptCounter,
+    KnownDevice,
     PasswordResetToken,
     PasswordResetTransaction,
     PublicTransactionIdempotency,
@@ -15,6 +16,7 @@ from app.models import (
     SecurityAlertDedupe,
     SecurityCircuitBreaker,
     ServerSideSession,
+    TopUpApprovalRequest,
     TotpReplayRecord,
 )
 
@@ -92,6 +94,19 @@ def cleanup_expired_security_state(
         "public_transaction_idempotency_deleted": _delete_rows(
             PublicTransactionIdempotency,
             PublicTransactionIdempotency.expires_at <= current_time,
+            limit=batch_limit,
+            dry_run=dry_run,
+        ),
+        "expired_known_devices_deleted": _delete_rows(
+            KnownDevice,
+            KnownDevice.expires_at <= current_time,
+            limit=batch_limit,
+            dry_run=dry_run,
+        ),
+        "terminal_topup_approval_requests_deleted": _delete_rows(
+            TopUpApprovalRequest,
+            TopUpApprovalRequest.status.in_(("completed", "expired", "failed")),
+            TopUpApprovalRequest.expires_at < retention_cutoff,
             limit=batch_limit,
             dry_run=dry_run,
         ),

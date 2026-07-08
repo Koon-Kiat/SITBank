@@ -84,7 +84,7 @@ def test_plain_staff_can_resolve_ticket_without_leaking_note_to_audit_log(admin_
 
 def test_plain_staff_can_access_support_ticket_queue(admin_client, admin_app):
     ticket_id = _create_ticket(admin_app)
-    _staff, secret = _create_identity(
+    staff, secret = _create_identity(
         username="bank-staff",
         email="bank.staff@sit.singaporetech.edu.sg",
         account_type="staff",
@@ -99,6 +99,15 @@ def test_plain_staff_can_access_support_ticket_queue(admin_client, admin_app):
     assert "Support tickets" in list_response.get_data(as_text=True)
     assert detail_response.status_code == 200
     assert "Role separation test description" in detail_response.get_data(as_text=True)
+
+    with admin_app.test_request_context("/support-tickets"):
+        queue_payload = support_tickets_for_staff(staff)
+        detail_payload = support_ticket_detail_for_staff(staff, ticket_id)
+
+    assert "description" not in queue_payload[0]
+    assert "resolution_note" not in queue_payload[0]
+    assert detail_payload["description"] == "Role separation test description"
+    assert "resolution_note" in detail_payload
 
 
 def test_admin_and_root_admin_are_excluded_from_support_ticket_queue(admin_client, admin_app):

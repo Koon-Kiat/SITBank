@@ -386,8 +386,10 @@ def test_successful_payup_sends_withdrawal_deposit_and_limit_warning(app, payup_
     ]
     assert deliveries[-3]["to"] == "alice@example.com"
     assert "withdrawal PayUp transaction was successful" in deliveries[-3]["body"]
+    assert "Recipient: Bob PayUp" in deliveries[-3]["body"]
     assert deliveries[-2]["to"] == "bob@example.com"
     assert "deposit PayUp transaction was successful" in deliveries[-2]["body"]
+    assert "Sender: Alice PayUp" in deliveries[-2]["body"]
     assert deliveries[-1]["to"] == "alice@example.com"
     assert "80.00% of your limit" in deliveries[-1]["body"]
 

@@ -76,7 +76,7 @@ def send_new_device_login_email(
     ip_address: str,
     user_agent: str,
     login_at: datetime,
-) -> None:
+) -> bool:
     body = (
         "A new device just signed in to your SITBank account.\n"
         f"Browser: {summarize_user_agent(user_agent)}\n"
@@ -98,8 +98,20 @@ def send_new_device_login_email(
             user=user,
             metadata={"reason": "email_delivery_failed"},
         )
-        return
+        return False
     audit_event("new_device_login_notification", "queued", user=user)
+    return True
+
+
+def forget_known_device_token(user: User, raw_token: str) -> None:
+    token_hash = device_token_hash(raw_token)
+    db.session.execute(
+        db.delete(KnownDevice).where(
+            KnownDevice.user_id == user.id,
+            KnownDevice.device_token_hash == token_hash,
+        )
+    )
+    db.session.commit()
 
 
 def resolve_freshly_authenticated_user() -> User | None:
@@ -135,12 +147,18 @@ def handle_new_device_login(user: User, *, ip_address: str, user_agent: str) -> 
         return secrets.token_urlsafe(32)
 
     if result.is_new_device:
-        send_new_device_login_email(
+        delivered = send_new_device_login_email(
             user,
             ip_address=ip_address,
             user_agent=user_agent,
             login_at=datetime.now(timezone.utc),
         )
+        if not delivered:
+            try:
+                forget_known_device_token(user, result.device_token)
+            except Exception as exc:
+                current_app.logger.warning("known_device_retry_state_cleanup_failed error=%s", type(exc).__name__)
+                db.session.rollback()
     return result.device_token
 
 

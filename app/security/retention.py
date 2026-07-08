@@ -17,6 +17,9 @@ APPROVED_SECURITY_STATE_CATEGORIES = (
     "expired_password_reset_tokens_without_transactions",
     "expired_security_alert_dedupe_state",
     "closed_security_circuit_breakers_past_retention",
+    "expired_public_transaction_idempotency",
+    "expired_known_devices",
+    "terminal_topup_approval_requests_past_retention",
 )
 
 PRESERVED_RETENTION_CATEGORIES = (
@@ -26,6 +29,8 @@ PRESERVED_RETENTION_CATEGORIES = (
     "transactions",
     "security_audit_events",
     "manual_recovery_requests",
+    "support_tickets",
+    "manual_recovery_context",
     "staff_invites",
     "alert_reports",
     "investigation_or_held_records",

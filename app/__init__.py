@@ -33,6 +33,8 @@ from .web.routes import web_bp
 
 INVITE_ACCEPT_START_ENDPOINT = "admin.invite_accept_start"
 INVITE_ACCEPT_VERIFY_ENDPOINT = "admin.invite_accept_verify"
+TOPUP_APPROVE_ENDPOINT = "banking.topup_approve"
+TOPUP_APPROVE_SUBMIT_ENDPOINT = "banking.topup_approve_submit"
 
 
 def create_app(config_object: type[Config] = Config, *, app_mode: str = "customer") -> Flask:
@@ -263,17 +265,19 @@ def register_datetime_template_helpers(app: Flask) -> None:
 
 
 def register_invite_acceptance_response_headers(app: Flask) -> None:
-    invite_acceptance_endpoints = frozenset(
+    sensitive_token_endpoints = frozenset(
         {
             "admin.invite_accept_info",
             INVITE_ACCEPT_START_ENDPOINT,
             INVITE_ACCEPT_VERIFY_ENDPOINT,
+            TOPUP_APPROVE_ENDPOINT,
+            TOPUP_APPROVE_SUBMIT_ENDPOINT,
         }
     )
 
     @app.after_request
     def invite_acceptance_headers(response):
-        if request.endpoint in invite_acceptance_endpoints:
+        if request.endpoint in sensitive_token_endpoints:
             response.headers["Cache-Control"] = "no-store, no-cache, max-age=0, private"
             response.headers["Pragma"] = "no-cache"
             response.headers["Expires"] = "0"

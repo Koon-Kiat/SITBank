@@ -226,7 +226,7 @@ def login():
     require_turnstile("customer_login")
     result = authenticate_primary(data["identifier"], data["password"])
     response = jsonify(result)
-    if not result.get("mfa_required") and not result.get("mfa_setup_required"):
+    if not result.get("mfa_required"):
         user = resolve_freshly_authenticated_user()
         if user is not None:
             token = handle_new_device_login(
@@ -350,7 +350,16 @@ def mfa_setup():
 @limiter.limit("5 per 5 minutes", key_func=mfa_principal)
 def mfa_setup_verify():
     data = _load_payload(TotpSchema(), TotpForm)
-    return jsonify(verify_mfa_setup(g.current_user, data["totp_code"]))
+    response = jsonify(verify_mfa_setup(g.current_user, data["totp_code"]))
+    user = resolve_freshly_authenticated_user()
+    if user is not None:
+        token = handle_new_device_login(
+            user,
+            ip_address=request.remote_addr or "",
+            user_agent=request.user_agent.string or "",
+        )
+        response = apply_device_cookie(response, token)
+    return response
 
 
 @auth_bp.post("/mfa/replace/start")

@@ -114,6 +114,8 @@ MANUAL_RECOVERY_ADMIN_TRANSITION_STATUSES = frozenset(
 ADMIN_ACTION_REQUEST_TTL_SECONDS = 24 * 60 * 60
 ADMIN_ACTION_PENDING_STATUS = "pending"
 CUSTOMER_UNFREEZE_REQUESTS_ENDPOINT = "admin.customer_unfreeze_requests"
+DISPUTES_ENDPOINT = "admin.disputes"
+SUPPORT_TICKETS_ENDPOINT = "admin.support_tickets"
 STAFF_ACTION_OPERATION_TYPES = {
     "deactivate": "staff_deactivate",
     "reactivate": "staff_reactivate",
@@ -717,23 +719,25 @@ def _support_ticket_or_404(ticket_id: int) -> SupportTicket:
     return ticket
 
 
-def public_support_ticket(ticket: SupportTicket) -> dict[str, Any]:
+def public_support_ticket(ticket: SupportTicket, *, include_detail: bool = True) -> dict[str, Any]:
     reporter = ticket.user
-    return {
+    payload = {
         "id": ticket.id,
         "reporter_ref": audit_reference("customer_user", ticket.user_id),
         "reporter_username": reporter.username if reporter else None,
         "category": ticket.category,
         "subject": ticket.subject,
-        "description": ticket.description,
         "status": ticket.status,
         "resolved_by_ref": audit_reference("staff_user", ticket.resolved_by_user_id) if ticket.resolved_by_user_id else None,
-        "resolution_note": ticket.resolution_note,
         "created_at": ticket.created_at.isoformat() if ticket.created_at else None,
         "created_at_display": _utc_display(ticket.created_at) if ticket.created_at else None,
         "resolved_at": ticket.resolved_at.isoformat() if ticket.resolved_at else None,
         "resolved_at_display": _utc_display(ticket.resolved_at) if ticket.resolved_at else None,
     }
+    if include_detail:
+        payload["description"] = ticket.description
+        payload["resolution_note"] = ticket.resolution_note
+    return payload
 
 
 def support_tickets_for_staff(actor: User) -> list[dict[str, Any]]:
@@ -758,7 +762,7 @@ def support_tickets_for_staff(actor: User) -> list[dict[str, Any]]:
     except AuditWriteError:
         db.session.rollback()
         raise
-    return [public_support_ticket(item) for item in tickets]
+    return [public_support_ticket(item, include_detail=False) for item in tickets]
 
 
 def support_ticket_detail_for_staff(actor: User, ticket_id: int) -> dict[str, Any]:
@@ -775,7 +779,7 @@ def support_ticket_detail_for_staff(actor: User, ticket_id: int) -> dict[str, An
     except AuditWriteError:
         db.session.rollback()
         raise
-    return public_support_ticket(ticket)
+    return public_support_ticket(ticket, include_detail=True)
 
 
 def transition_support_ticket_status_for_staff(
@@ -851,7 +855,7 @@ def transition_support_ticket_status_for_staff(
     except AuditWriteError:
         db.session.rollback()
         raise
-    return public_support_ticket(ticket)
+    return public_support_ticket(ticket, include_detail=True)
 
 
 def require_root_admin_session() -> User:
@@ -1016,8 +1020,8 @@ def admin_navigation_for(user: User) -> list[dict[str, str]]:
         items.append(
             {
                 "label": "Disputes",
-                "href": url_for("admin.disputes"),
-                "endpoint": "admin.disputes",
+                "href": url_for(DISPUTES_ENDPOINT),
+                "endpoint": DISPUTES_ENDPOINT,
                 "group": "business",
             }
         )
@@ -1032,8 +1036,8 @@ def admin_navigation_for(user: User) -> list[dict[str, str]]:
         items.append(
             {
                 "label": "Support tickets",
-                "href": url_for("admin.support_tickets"),
-                "endpoint": "admin.support_tickets",
+                "href": url_for(SUPPORT_TICKETS_ENDPOINT),
+                "endpoint": SUPPORT_TICKETS_ENDPOINT,
                 "group": "business",
             }
         )
@@ -1236,8 +1240,9 @@ def request_customer_security_unlock(
 def self_frozen_customers_for_staff(actor: User) -> list[dict[str, Any]]:
     """Customers who froze their own account (business-operations queue).
 
-    Excludes automatic password/authenticator lockouts, which remain a
-    root-admin-only, maker-checker action via ``locked_customers_for_admin``.
+    The current positive self-freeze invariant is a customer account that is
+    frozen without a security lock reason. Automatic and manual/operational
+    lock reasons remain outside this single-approver staff workflow.
     """
     _require_plain_staff(actor, "customer_self_freeze_review")
     customers = list(
@@ -1246,10 +1251,7 @@ def self_frozen_customers_for_staff(actor: User) -> list[dict[str, Any]]:
             .where(
                 User.account_type == ACCOUNT_CUSTOMER,
                 User.is_frozen.is_(True),
-                or_(
-                    User.security_lock_reason.is_(None),
-                    User.security_lock_reason.not_in(tuple(AUTOMATIC_CUSTOMER_LOCK_REASONS)),
-                ),
+                User.security_lock_reason.is_(None),
             )
             .order_by(User.id.asc())
         ).scalars()
@@ -1276,16 +1278,7 @@ def _self_frozen_customer_for_update(
         .where(User.id == int(target_user_id))
         .with_for_update()
     ).scalar_one_or_none()
-    valid = bool(
-        target is not None
-        and target.account_type == ACCOUNT_CUSTOMER
-        and target.is_frozen
-        and (
-            target.security_lock_reason is None
-            or target.security_lock_reason not in AUTOMATIC_CUSTOMER_LOCK_REASONS
-        )
-    )
-    if valid:
+    if _is_voluntary_customer_self_freeze(target):
         return target
     audit_event(
         event_type,
@@ -1297,6 +1290,15 @@ def _self_frozen_customer_for_update(
         },
     )
     raise AuthError("Customer account is not eligible for this unfreeze action", 409)
+
+
+def _is_voluntary_customer_self_freeze(user: User | None) -> bool:
+    return bool(
+        user is not None
+        and user.account_type == ACCOUNT_CUSTOMER
+        and user.is_frozen
+        and user.security_lock_reason is None
+    )
 
 
 def unfreeze_customer_as_staff(
@@ -1848,7 +1850,7 @@ def staff_work_queue_summary(actor: User) -> list[dict[str, Any]]:
             "label": "Open disputes",
             "count": int(open_disputes or 0),
             "description": "Transaction disputes awaiting review or a decision.",
-            "href": url_for("admin.disputes"),
+            "href": url_for(DISPUTES_ENDPOINT),
         },
         {
             "label": "Customers awaiting unfreeze",
@@ -1860,7 +1862,7 @@ def staff_work_queue_summary(actor: User) -> list[dict[str, Any]]:
             "label": "Open support tickets",
             "count": int(open_tickets or 0),
             "description": "Customer enquiries and concerns waiting on staff triage.",
-            "href": url_for("admin.support_tickets"),
+            "href": url_for(SUPPORT_TICKETS_ENDPOINT),
         },
     ]
 
@@ -2899,7 +2901,11 @@ def reset_staff_invite_acceptance(actor: User, invite_id: int, totp_code: str | 
     return {"message": "Invite acceptance reset", "invite": public_invite(invite)}
 
 
-def manual_recovery_requests_for_admin(actor: User) -> list[dict[str, Any]]:
+def manual_recovery_requests_for_admin(
+    actor: User,
+    *,
+    include_reason_for: int | None = None,
+) -> list[dict[str, Any]]:
     if not is_root_admin(actor):
         audit_event("manual_recovery_admin_review", "blocked", user=actor, metadata={"reason": "not_root_admin"})
         raise AuthError("Forbidden", 403)
@@ -2911,7 +2917,13 @@ def manual_recovery_requests_for_admin(actor: User) -> list[dict[str, Any]]:
             )
         ).scalars()
     )
-    return [public_manual_recovery_request(item) for item in requests]
+    return [
+        public_manual_recovery_request(
+            item,
+            include_reason=include_reason_for is not None and item.id == int(include_reason_for),
+        )
+        for item in requests
+    ]
 
 
 def transition_manual_recovery_request_as_admin(
@@ -3142,7 +3154,7 @@ def reject_admin_action_request_as_root_admin(
     request_record.approver_id = actor.id
     request_record.status = "rejected"
     request_record.decided_at = _utcnow()
-    audit_event(
+    audit_event_required(
         "admin_action_request_rejected",
         "success",
         user=actor,
@@ -3198,7 +3210,7 @@ def cancel_admin_action_request_as_root_admin(
         raise AuthError(FRESH_MFA_REQUIRED_ERROR, 403)
     request_record.status = "cancelled"
     request_record.decided_at = _utcnow()
-    audit_event(
+    audit_event_required(
         "admin_action_request_cancelled",
         "success",
         user=actor,
@@ -3551,7 +3563,7 @@ def _expire_stale_admin_action_requests(actor: User) -> None:
     for request_record in stale:
         request_record.status = "expired"
         request_record.decided_at = now
-        audit_event(
+        audit_event_required(
             "admin_action_request_expired",
             "success",
             user=actor,
@@ -3571,7 +3583,7 @@ def _expire_admin_action_request_if_stale(request_record: AdminActionRequest, ac
         return
     request_record.status = "expired"
     request_record.decided_at = _utcnow()
-    audit_event(
+    audit_event_required(
         "admin_action_request_expired",
         "success",
         user=actor,
@@ -4183,8 +4195,12 @@ def public_invite(invite: StaffInvite) -> dict[str, Any]:
     }
 
 
-def public_manual_recovery_request(request_record: ManualRecoveryRequest) -> dict[str, Any]:
-    return {
+def public_manual_recovery_request(
+    request_record: ManualRecoveryRequest,
+    *,
+    include_reason: bool = False,
+) -> dict[str, Any]:
+    payload = {
         "id": request_record.id,
         "status": request_record.status,
         "active": request_record.status in MANUAL_RECOVERY_ACTIVE_STATUSES,
@@ -4200,6 +4216,11 @@ def public_manual_recovery_request(request_record: ManualRecoveryRequest) -> dic
         "completed_at_display": _utc_display(request_record.completed_at) if request_record.completed_at else None,
         "linked_customer": request_record.user_id is not None,
     }
+    if include_reason:
+        payload["reason"] = request_record.reason or ""
+        payload["reason_present"] = bool(request_record.reason)
+        payload["reason_length"] = len(request_record.reason or "")
+    return payload
 
 
 def normalize_workplace_email(email: str) -> str:

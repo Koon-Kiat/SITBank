@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from types import SimpleNamespace
 
+from app.extensions import db
+from app.models import KnownDevice, TopUpApprovalRequest, User
 from app.security import state_cleanup
+from app.security.passwords import hash_password
 
 
 def test_batch_limit_uses_config_fallback_and_safe_bounds(app):
@@ -161,8 +165,10 @@ def test_cleanup_expired_security_state_uses_one_bounded_batch_and_commits(app, 
         "security_alert_dedupe_deleted": 7,
         "security_circuit_breakers_deleted": 8,
         "public_transaction_idempotency_deleted": 9,
+        "expired_known_devices_deleted": 10,
+        "terminal_topup_approval_requests_deleted": 11,
     }
-    assert len(delete_calls) == 9
+    assert len(delete_calls) == 11
     assert all(limit == 12 for _, _, limit, _ in delete_calls)
     assert all(dry_run is False for _, _, _, dry_run in delete_calls)
     assert commit_calls == [True]
@@ -205,6 +211,80 @@ def test_cleanup_expired_security_state_dry_run_rolls_back(app, monkeypatch):
 
     assert result["expired_sessions_marked"] == 3
     assert result["public_transaction_idempotency_deleted"] == 9
+    assert result["expired_known_devices_deleted"] == 10
+    assert result["terminal_topup_approval_requests_deleted"] == 11
     assert all(dry_run is True for _, _, _, dry_run in delete_calls)
     assert commit_calls == []
     assert rollback_calls == [True]
+
+
+def test_cleanup_deletes_expired_known_devices_and_terminal_topup_requests(app):
+    now = datetime(2026, 1, 31, 12, 0, tzinfo=timezone.utc)
+    retention_cutoff = now - timedelta(days=30)
+
+    with app.app_context():
+        app.config["SECURITY_STATE_RETENTION_DAYS"] = 30
+        user = User(
+            username="cleanup-customer",
+            email="cleanup-customer@example.com",
+            password_hash=hash_password("correct horse battery staple"),
+            account_type="customer",
+            account_status="active",
+            full_name="Cleanup Customer",
+            phone_number="81234567",
+            account_number="123456789012",
+        )
+        db.session.add(user)
+        db.session.flush()
+        db.session.add_all(
+            [
+                KnownDevice(
+                    user_id=user.id,
+                    device_token_hash="expired-device",
+                    expires_at=now - timedelta(seconds=1),
+                ),
+                KnownDevice(
+                    user_id=user.id,
+                    device_token_hash="active-device",
+                    expires_at=now + timedelta(days=1),
+                ),
+                TopUpApprovalRequest(
+                    selector="completed-old",
+                    verifier_hmac="hmac-completed-old",
+                    user_id=user.id,
+                    amount=Decimal("10.00"),
+                    status="completed",
+                    expires_at=retention_cutoff - timedelta(seconds=1),
+                ),
+                TopUpApprovalRequest(
+                    selector="failed-recent",
+                    verifier_hmac="hmac-failed-recent",
+                    user_id=user.id,
+                    amount=Decimal("10.00"),
+                    status="failed",
+                    expires_at=retention_cutoff + timedelta(seconds=1),
+                ),
+                TopUpApprovalRequest(
+                    selector="pending-old",
+                    verifier_hmac="hmac-pending-old",
+                    user_id=user.id,
+                    amount=Decimal("10.00"),
+                    status="pending",
+                    expires_at=retention_cutoff - timedelta(seconds=1),
+                ),
+            ]
+        )
+        db.session.commit()
+
+        result = state_cleanup.cleanup_expired_security_state(now=now, limit=20)
+
+        assert result["expired_known_devices_deleted"] == 1
+        assert result["terminal_topup_approval_requests_deleted"] == 1
+        remaining_device_hashes = {
+            row.device_token_hash for row in db.session.execute(db.select(KnownDevice)).scalars()
+        }
+        remaining_topup_selectors = {
+            row.selector for row in db.session.execute(db.select(TopUpApprovalRequest)).scalars()
+        }
+        assert remaining_device_hashes == {"active-device"}
+        assert remaining_topup_selectors == {"failed-recent", "pending-old"}

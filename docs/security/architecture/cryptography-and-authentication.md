@@ -313,6 +313,11 @@ The repository implements authenticator-app TOTP. TOTP secrets are generated
 with `pyotp.random_base32(length=32)` and stored through AES-GCM envelope
 encryption. Verification records a replay digest in `totp_replay_records`, so
 the same accepted TOTP step and code cannot be replayed for the same scope.
+Customer high-risk account, profile, transfer, payee, recovery-code, session,
+password, MFA replacement, and top-up approval actions share the grouped
+`customer_high_risk_action` replay scope, so a code accepted for one of those
+workflows is stale for the others in the same TOTP step. Login, onboarding,
+staff invite, admin, and reset-specific factors keep separate replay scopes.
 Such a replay is rejected as stale input without consuming the durable
 wrong-code or account-lock budgets; only malformed or non-matching TOTP
 submissions advance those failure controls.
