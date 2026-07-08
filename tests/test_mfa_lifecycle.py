@@ -215,7 +215,12 @@ def test_recovery_code_satisfies_pending_totp_login_once_and_notifies(app, clien
     assert reused.get_json()["error"] == "Incorrect code. Check your authenticator and try again."
     assert db.session.query(RecoveryCode).filter_by(user_id=user.id).filter(RecoveryCode.used_at.is_not(None)).count() == 1
     assert db.session.query(SecurityAuditEvent).filter_by(event_type="mfa_recovery_code_verify", outcome="success").count() == 1
-    assert password_reset_outbox()[-1]["subject"] == "SITBank recovery code used"
+    # This login also triggers the new-device-login notification (first
+    # successful MFA verify in this test, no device cookie yet), so don't
+    # assume the recovery-code notification is necessarily the last item.
+    assert any(
+        item["subject"] == "SITBank recovery code used" for item in password_reset_outbox()
+    )
 
 
 def test_recovery_code_satisfies_pending_login_after_wrong_factors_below_threshold(
