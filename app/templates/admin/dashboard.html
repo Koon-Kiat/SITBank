@@ -6,7 +6,7 @@
 {% set workspace_labels = {
   "root_admin": "Root admin control center",
   "admin": "Security & audit console",
-  "staff": "Business operations workspace",
+  "staff": "Staff console",
 } %}
 {% set has_stats = summary.pending_invites is not none or summary.staff_accounts is not none %}
 <section class="dashboard admin-dashboard">
@@ -51,14 +51,34 @@
   </section>
   {% endif %}
 
+  {% if work_queue %}
   <section class="panel">
     <div class="section-header">
-      <h2>Access Map</h2>
-      <p class="muted">Tools are grouped by trust tier and scoped to your role server-side.</p>
+      <h2>Today's work queue</h2>
+      <p class="muted">What's waiting across every tool you own.</p>
+    </div>
+    <div class="admin-queue-grid">
+      {% for item in work_queue %}
+      <a class="admin-queue-card" href="{{ item.href }}">
+        <span class="admin-queue-count">{{ item.count }}</span>
+        <span class="admin-queue-label">{{ item.label }}</span>
+        <span class="admin-queue-description">{{ item.description }}</span>
+      </a>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  <section class="panel">
+    <div class="section-header">
+      <h2>Your tools</h2>
+      <p class="muted">Scoped to your role server-side &mdash; you'll only ever see what you're allowed to open.</p>
     </div>
     {% set nav_icons = {
-      "Business operations": "icon-info",
       "Disputes": "icon-reference",
+      "Customer support": "icon-lock",
+      "Support tickets": "icon-mail",
+      "Freeze customer account": "icon-lock",
       "Audit logs": "icon-education",
       "Alerts": "icon-alert",
       "Staff/admin users": "icon-user",
@@ -67,9 +87,21 @@
       "Customer locks": "icon-lock",
       "Approvals": "icon-check-circle",
     } %}
-    {% set tier_order = ["overview", "business", "security", "admin", "root"] %}
+    {% set nav_descriptions = {
+      "Disputes": "Review and resolve customer transaction disputes.",
+      "Customer support": "Unfreeze customers who froze their own account.",
+      "Support tickets": "Triage customer enquiries and security concerns.",
+      "Freeze customer account": "Freeze a customer's account for suspected fraud or a compromised account.",
+      "Audit logs": "Search and export the security audit trail.",
+      "Alerts": "Review triggered security alerts.",
+      "Staff/admin users": "Manage staff and admin account status.",
+      "Staff invites": "Invite and onboard new staff or admin accounts.",
+      "Manual recovery": "Review customer manual account-recovery requests.",
+      "Customer locks": "Review and unlock automatically locked customer accounts.",
+      "Approvals": "Approve or reject pending maker-checker requests.",
+    } %}
+    {% set tier_order = ["business", "security", "admin", "root"] %}
     {% set tier_labels = {
-      "overview": "Overview",
       "business": "Business",
       "security": "Security & audit",
       "admin": "Staff & admin management",
@@ -88,53 +120,20 @@
             <span class="admin-op-icon" aria-hidden="true">
               <svg class="icon" focusable="false"><use href="#{{ nav_icons.get(item.label, 'icon-controls') }}"></use></svg>
             </span>
-            <span>{{ item.label }}</span>
-          </a>
-          {% endfor %}
-        </div>
-      </div>
-      {% endif %}
-      {% endfor %}
-      {% set other_items = operations|rejectattr("group", "in", tier_order)|list %}
-      {% if other_items %}
-      <div class="admin-access-tier">
-        <p class="admin-access-tier-label">Other</p>
-        <div class="admin-op-grid">
-          {% for item in other_items %}
-          <a class="admin-op-card" href="{{ item.href }}"{% if request.endpoint == item.endpoint %} aria-current="page"{% endif %}>
-            <span class="admin-op-icon" aria-hidden="true">
-              <svg class="icon" focusable="false"><use href="#{{ nav_icons.get(item.label, 'icon-controls') }}"></use></svg>
+            <span class="admin-op-copy">
+              <span class="admin-op-title">{{ item.label }}</span>
+              {% if nav_descriptions.get(item.label) %}
+              <span class="admin-op-description">{{ nav_descriptions[item.label] }}</span>
+              {% endif %}
             </span>
-            <span>{{ item.label }}</span>
           </a>
           {% endfor %}
         </div>
       </div>
       {% endif %}
-    </div>
-  </section>
-
-  {% if business_operations %}
-  <section class="panel">
-    <div class="section-header">
-      <h2>Business Operations</h2>
-    </div>
-    <div class="admin-placeholder-list">
-      {% for item in business_operations %}
-      <div class="admin-placeholder-card">
-        <div>
-          <p><strong>{{ item.label }}</strong></p>
-          <p class="muted">{{ item.description }}</p>
-        </div>
-        <span class="badge neutral">{{ item.status }}</span>
-        {% if item.href %}
-        <a class="button secondary small" href="{{ item.href }}">Open</a>
-        {% endif %}
-      </div>
       {% endfor %}
     </div>
   </section>
-  {% endif %}
 
   {% if recent_audit_events %}
   <section class="panel">

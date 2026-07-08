@@ -77,18 +77,21 @@
             <span class="brand-subtitle">Staff and admin operations</span>
           </span>
         </a>
+        {% if g.current_user %}
+        {% set admin_tier_order = ["business", "security", "admin", "root"] %}
+        {% set admin_tier_labels = {
+          "business": "Business",
+          "security": "Security & audit",
+          "admin": "Staff & admin management",
+          "root": "Root admin controls",
+        } %}
+        {% set workspace_items = navigation|default([])|rejectattr("label", "equalto", "Dashboard")|list %}
         <button class="nav-toggle" type="button" data-nav-toggle aria-expanded="false" aria-controls="admin-primary-nav">
           <span class="nav-toggle-bars" aria-hidden="true"></span>
           <span class="sr-only">Menu</span>
         </button>
         <nav class="nav" id="admin-primary-nav" aria-label="Admin navigation" data-nav-menu>
-          <div class="nav-links">
-            {% for item in navigation|default([])|rejectattr("label", "equalto", "Dashboard")|list %}
-            <a href="{{ item.href }}"{% if request.endpoint == item.endpoint %} aria-current="page"{% endif %}>{{ item.label }}</a>
-            {% endfor %}
-          </div>
           <div class="nav-actions">
-            {% if g.current_user %}
             <div class="account-menu" data-account-menu>
               <button class="account-trigger" type="button" id="admin-account-menu-button" aria-haspopup="true" aria-expanded="false" aria-controls="admin-account-menu-panel" data-account-trigger>
                 <span class="account-avatar" aria-hidden="true">
@@ -99,7 +102,16 @@
                 </span>
               </button>
               <div class="account-panel" id="admin-account-menu-panel" aria-labelledby="admin-account-menu-button" data-account-panel hidden>
-                <a href="{{ url_for('admin.index') }}">Dashboard</a>
+                <a href="{{ url_for('admin.index') }}"{% if request.endpoint == 'admin.index' %} aria-current="page"{% endif %}>Dashboard</a>
+                {% for tier in admin_tier_order %}
+                {% set tier_items = workspace_items|selectattr("group", "equalto", tier)|list %}
+                {% if tier_items %}
+                <div class="account-menu-section-label">{{ admin_tier_labels[tier] }}</div>
+                {% for item in tier_items %}
+                <a href="{{ item.href }}"{% if request.endpoint == item.endpoint %} aria-current="page"{% endif %}>{{ item.label }}</a>
+                {% endfor %}
+                {% endif %}
+                {% endfor %}
                 <div class="account-menu-section-label">Profile Settings</div>
                 <a href="{{ url_for('admin.password_change_form') }}">Change Password</a>
                 <a href="{{ url_for('admin.mfa_change_form') }}">Change MFA</a>
@@ -109,9 +121,9 @@
                 </form>
               </div>
             </div>
-            {% endif %}
           </div>
         </nav>
+        {% endif %}
       </div>
     </header>
 
