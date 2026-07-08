@@ -222,19 +222,30 @@
           </div>
         </div>
       </dialog>
+      {% with topup_messages = get_flashed_messages(with_categories=true, category_filter=["topup_success"]) %}
+        {% if topup_messages %}
+          <dialog id="topup-success-overlay" class="session-modal-overlay" aria-labelledby="topup-success-title">
+            <div class="session-modal">
+              <span class="modal-icon modal-icon-success" aria-hidden="true">
+                <svg class="icon" focusable="false"><use href="#icon-check-circle"></use></svg>
+              </span>
+              <h2 class="session-modal-title" id="topup-success-title">Top-up successful</h2>
+              <p class="session-modal-message">{{ topup_messages[0][1] }}</p>
+              <div class="session-modal-actions">
+                <button type="button" id="topup-success-close-btn" class="button">Close</button>
+              </div>
+            </div>
+          </dialog>
+        {% endif %}
+      {% endwith %}
       {% endif %}
       {% block alerts %}
-      {% with messages = get_flashed_messages(with_categories=true) %}
+      {% with messages = get_flashed_messages(with_categories=true, category_filter=["success", "info", "warning", "error"]) %}
         {% if messages %}
           <section class="alerts" aria-label="Status messages">
             {% for category, message in messages %}
-              {% set icon_name = "check-circle" if category == "success" else ("alert" if category in ("warning", "error") else "info") %}
               <div class="alert alert-{{ category }}">
-                <span class="alert-icon" aria-hidden="true">
-                  <svg class="icon" focusable="false"><use href="#icon-{{ icon_name }}"></use></svg>
-                </span>
-                <span class="alert-message">{{ message }}</span>
-                <button type="button" class="alert-close" data-alert-close aria-label="Dismiss message">&times;</button>
+                <span>{{ message }}</span>
               </div>
             {% endfor %}
           </section>

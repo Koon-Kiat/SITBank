@@ -628,7 +628,7 @@ def mfa_verify_submit():
 @web_login_required
 def dashboard():
     if request.args.get("topup") == "success":
-        flash("Your top-up was added to your account.", "success")
+        flash("Your top-up was added to your account.", "topup_success")
     recent_txns = (
         db.session.execute(
             db.select(Transaction)
