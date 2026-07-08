@@ -491,19 +491,40 @@ database rows directly.
 Stale or malformed browser invite links render a generic invite-unavailable page
 instead of the private admin error page; explicit JSON clients receive only the
 minimal generic error.
-Invite creation, revoke, reset, and reissue actions use strict high-risk TOTP:
-enter the code from the currently signed-in root admin, wait for a fresh
-authenticator code before retrying an invite action, and do not submit near code
-expiry or reuse the same code for repeated invite operations. The invite table shows
+Invite creation, revoke, reset, reissue, and setup-resend actions use strict
+high-risk TOTP: enter the code from the currently signed-in root admin, wait for
+a fresh authenticator code before retrying an invite action, and do not submit
+near code expiry or reuse the same code for repeated invite operations. The invite table shows
 the persisted allowlisted delivery states `unconfirmed`, `queued`, or `failed`.
 `queued` means SITBank handed the message to the configured email backend, not
 that the recipient inbox accepted it. `unconfirmed` means no reliable backend
 handoff evidence is available, including migrated rows, and `failed` means the
-backend rejected the handoff; no provider response details are displayed. If the recipient
-cannot find a pending invite, check spam/junk/quarantine and SMTP backend
-configuration, then use the root-admin reissue action to rotate the token hash
-and send a new invite link. If email backend handoff fails during create, the
-invite is moved out of active pending state so it does not block safe retry.
+backend rejected the handoff; no provider response details are displayed.
+
+Four root-admin lifecycle actions are distinct and are not interchangeable:
+
+- Active invite reissue rotates the token hash and re-sends the setup email, but
+  only for an invite still in `pending` or `totp_pending`; it 404s on any
+  `accepted`, `revoked`, or `expired` invite.
+- Invite acceptance reset clears a restart-capped acceptance attempt on an active
+  invite and does not rotate the token or send an email.
+- Account reset setup returns an already-active staff/admin account to
+  `setup_pending` and clears its MFA, but does not create an invite or send an
+  email.
+- Setup-email resend sends a brand-new one-time setup link to a `setup_pending`
+  staff/admin account whose original invite is already `accepted`, `revoked`, or
+  `expired`; it is the recovery path when reissue no longer applies and duplicate
+  privileged-identity protection blocks creating a fresh invite for that email.
+
+If the recipient cannot find a pending invite, check spam/junk/quarantine and
+SMTP backend configuration. If the invite is still active, use the root-admin
+reissue action to rotate the token hash and send a new invite link. If the
+account is already stuck in `setup_pending` because the original invite expired
+or was revoked, use the Resend setup invite action on the staff accounts page to
+send a fresh setup link without creating a second privileged identity for the
+same workplace email; a plain new invite is rejected in that state. If email
+backend handoff fails during create or resend, the invite is moved out of active
+pending state so it does not block safe retry.
 Migration `20260707_0032` adds only this bounded delivery state and stores no
 invite token, email body, provider response, credential, or mailbox assertion.
 The admin `production-check` command reports
