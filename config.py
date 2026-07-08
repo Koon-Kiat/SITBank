@@ -1661,6 +1661,12 @@ class Config:
         minimum=60,
         maximum=900,
     )
+    TOPUP_APPROVAL_TTL_SECONDS = _int_env(
+        "TOPUP_APPROVAL_TTL_SECONDS",
+        default="300",
+        minimum=60,
+        maximum=900,
+    )
 
 
 class TestingConfig(Config):

@@ -1,0 +1,33 @@
+{% macro topup_hero(heading, description, back_url, back_label) -%}
+<div class="dashboard-header">
+  <div class="page-heading">
+    <p class="eyebrow">Add funds</p>
+    <h1>{{ heading }}</h1>
+    <p class="muted">{{ description }}</p>
+  </div>
+  <div class="button-row">
+    <a class="button secondary" href="{{ back_url }}">{{ back_label }}</a>
+  </div>
+</div>
+{%- endmacro %}
+
+{% macro topup_amount_panel(amount) -%}
+<div class="profile-panel-title">
+  <p class="eyebrow">Amount</p>
+  <h2>SGD {{ "%.2f"|format(amount) }}</h2>
+</div>
+{%- endmacro %}
+
+{% macro topup_notice(icon, heading, message) -%}
+<article class="profile-panel profile-card">
+  <div class="notice">
+    <span class="notice-icon" aria-hidden="true">
+      <svg class="icon" focusable="false"><use href="#icon-{{ icon }}"></use></svg>
+    </span>
+    <div>
+      <h2>{{ heading }}</h2>
+      <p class="muted">{{ message }}</p>
+    </div>
+  </div>
+</article>
+{%- endmacro %}

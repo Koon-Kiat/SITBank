@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% from "_topup_shared.html" import topup_amount_panel, topup_notice %}
+
+{% block title %}Approve Top Up | SITBank{% endblock %}
+
+{% block content %}
+<section class="security-page">
+  <div class="dashboard-header">
+    <div class="page-heading">
+      <p class="eyebrow">Top-up approval</p>
+      <h1>Confirm this top-up</h1>
+    </div>
+  </div>
+
+  <div class="profile-grid is-single-column">
+    {% if not valid %}
+    {{ topup_notice("alert", "Link no longer valid", "This approval link has expired, was already used, or is incorrect. Start a new top-up from your account to get a fresh link.") }}
+    {% elif approved %}
+    {{ topup_notice("check-circle", "Top-up approved", ("SGD %.2f"|format(amount)) ~ " has been added to the account. You can close this page.") }}
+    {% else %}
+    <article class="profile-panel profile-card">
+      {{ topup_amount_panel(amount) }}
+      <p class="muted">Enter the current 6-digit code from your authenticator app to approve this top-up.</p>
+      <form method="post" novalidate>
+        {{ form.hidden_tag() }}
+        <div class="form-group">
+          <label for="{{ form.totp_code.id }}">Authenticator code</label>
+          {{ form.totp_code(inputmode="numeric", autocomplete="one-time-code", maxlength="6", placeholder="6-digit code") }}
+          {% for error in form.totp_code.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+        </div>
+        <button class="button full" type="submit">Approve top-up</button>
+      </form>
+    </article>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

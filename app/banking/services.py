@@ -33,6 +33,7 @@ from app.models import (
     PublicTransactionIdempotency,
     SecurityAuditEvent,
     Transaction,
+    TopUpCredit,
     User,
 )
 from app.security.audit import AuditWriteError, audit_event, audit_event_required, audit_reference
@@ -42,6 +43,7 @@ from app.security.sessions import (
     authenticated_session_risk_is_stable,
 )
 from app.security.transaction_integrity import (
+    sign_topup_credit_integrity,
     sign_transaction_integrity,
     transaction_integrity_status,
 )
@@ -784,6 +786,67 @@ def _local_transfer_amount(sender: User, pending_tfr) -> Decimal:
             metadata={"reason": "amount_out_of_range", "amount_band": _amount_audit_band(amount)},
         )
     return amount
+
+
+def parse_topup_amount(raw: str) -> Decimal:
+    try:
+        amount = Decimal(str(raw)).quantize(Decimal("0.01"))
+    except InvalidOperation as exc:
+        raise AuthError("Enter a valid amount.", 400) from exc
+
+    if amount < MIN_TRANSACTION_AMOUNT or amount > MAX_TRANSACTION_AMOUNT:
+        raise AuthError("Top-up amount is out of the allowed range.", 400)
+    return amount
+
+
+def credit_account_topup(user: User, amount: Decimal) -> TopUpCredit:
+    """Credit a self-service top-up. Called only after the scanning device's
+    TOTP code has been verified against the pending approval request.
+    """
+
+    locked_user = db.session.execute(
+        db.select(User).where(User.id == user.id).with_for_update()
+    ).scalar_one()
+    ensure_account_not_frozen(locked_user, "account top-up")
+
+    credit_ref = str(uuid.uuid4())
+    created_at = datetime.now(timezone.utc)
+    (
+        credit_hash,
+        integrity_key_id,
+        integrity_algorithm,
+        integrity_version,
+    ) = sign_topup_credit_integrity(
+        credit_ref=credit_ref,
+        user_id=locked_user.id,
+        amount=amount,
+        status="completed",
+        created_at=created_at,
+    )
+    locked_user.balance = Decimal(str(locked_user.balance)) + amount
+    credit = TopUpCredit(
+        credit_ref=credit_ref,
+        credit_hash=credit_hash,
+        credit_integrity_key_id=integrity_key_id,
+        credit_integrity_algorithm=integrity_algorithm,
+        credit_integrity_version=integrity_version,
+        user_id=locked_user.id,
+        amount=amount,
+        status="completed",
+        created_at=created_at,
+    )
+    db.session.add(credit)
+    db.session.commit()
+    audit_event(
+        "account_topup",
+        "success",
+        user=locked_user,
+        metadata={
+            "amount_band": _amount_audit_band(amount),
+            "credit_ref": audit_reference("topup_credit", credit_ref),
+        },
+    )
+    return credit
 
 
 def _ensure_local_transfer_balance(sender: User, payee: Payee, locked_sender: User, amount: Decimal) -> None:

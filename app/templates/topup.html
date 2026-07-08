@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% from "_topup_shared.html" import topup_hero %}
+
+{% block title %}Top Up | SITBank{% endblock %}
+
+{% block content %}
+<section class="security-page">
+  {{ topup_hero("Top Up", "Choose an amount, then confirm from your authenticator device by scanning a QR code.", url_for('web.dashboard'), "Back to dashboard") }}
+
+  <div class="profile-grid is-single-column">
+    <article class="profile-panel profile-card">
+      <div class="profile-panel-title">
+        <p class="eyebrow">Top-up amount</p>
+        <h2>How much would you like to add?</h2>
+      </div>
+      <div class="topup-preset-grid" data-topup-presets>
+        <button class="button secondary" type="button" data-topup-preset="10.00">SGD 10</button>
+        <button class="button secondary" type="button" data-topup-preset="20.00">SGD 20</button>
+        <button class="button secondary" type="button" data-topup-preset="50.00">SGD 50</button>
+        <button class="button secondary" type="button" data-topup-preset="100.00">SGD 100</button>
+        <button class="button secondary" type="button" data-topup-custom-toggle>Custom amount</button>
+      </div>
+      <form method="post" action="{{ url_for('banking.topup_submit') }}" novalidate>
+        {{ form.hidden_tag() }}
+        <div class="form-group" data-topup-custom-group{% if not form.amount.data %} hidden{% endif %}>
+          <label for="{{ form.amount.id }}">Amount (SGD)</label>
+          {{ form.amount(id="topup-amount-input", autocomplete="off", maxlength="13", placeholder="0.00", inputmode="decimal") }}
+          {% for error in form.amount.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+        </div>
+        <button class="button full" type="submit" data-topup-submit{% if not form.amount.data %} hidden{% endif %}>Continue</button>
+      </form>
+    </article>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/topup.js') }}"></script>
+{% endblock %}
