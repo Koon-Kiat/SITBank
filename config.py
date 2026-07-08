@@ -1667,6 +1667,13 @@ class Config:
         minimum=60,
         maximum=900,
     )
+    DEVICE_COOKIE_NAME = "__Host-sitbank_device"
+    DEVICE_COOKIE_MAX_AGE_SECONDS = _int_env(
+        "DEVICE_COOKIE_MAX_AGE_SECONDS",
+        default=str(180 * 24 * 60 * 60),
+        minimum=24 * 60 * 60,
+        maximum=365 * 24 * 60 * 60,
+    )
 
 
 class TestingConfig(Config):

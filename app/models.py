@@ -1060,3 +1060,27 @@ class PayupPendingTransfer(_PendingTransferColumnsMixin, db.Model):
 
     def __repr__(self) -> str:
         return f"<PayupPendingTransfer id={self.id!r} user_id={self.user_id!r} consumed={self.consumed_at is not None!r}>"
+
+
+class KnownDevice(db.Model):
+    __tablename__ = "known_devices"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
+    device_token_hash = db.Column(db.String(64), nullable=False)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    last_seen_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
+
+    user = db.relationship("User", backref=db.backref("known_devices", lazy="selectin"))
+
+    def __repr__(self) -> str:
+        return f"<KnownDevice id={self.id!r} user_id={self.user_id!r}>"

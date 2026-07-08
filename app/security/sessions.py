@@ -529,13 +529,13 @@ def _mark_session_risk_reauthentication_required() -> None:
 def _current_session_risk_context() -> dict[str, Any]:
     ip_network = _normalized_ip_context(request.remote_addr or "")
     user_agent = _normalized_user_agent(request.user_agent.string or "unknown")
-    user_agent_family = _user_agent_family(user_agent)
+    family = user_agent_family(user_agent)
     return {
         "version": SESSION_RISK_CONTEXT_VERSION,
         "ip_network_hash": _risk_context_hash("ip_network", ip_network),
         "user_agent_family_hash": _risk_context_hash(
             "user_agent_family",
-            user_agent_family,
+            family,
         ),
         "user_agent_hash": _risk_context_hash("user_agent", user_agent),
         "last_checked_at": _now(),
@@ -563,7 +563,7 @@ def _normalized_user_agent(value: str) -> str:
     return " ".join((value or "unknown").split()).casefold()[:256]
 
 
-def _user_agent_family(value: str) -> str:
+def user_agent_family(value: str) -> str:
     normalized = _normalized_user_agent(value)
     known_families = (
         ("edge", r"\bedg(?:e|a|ios)?/"),
@@ -591,7 +591,7 @@ def _session_risk_context_changes() -> set[str]:
 
     ip_network = _normalized_ip_context(request.remote_addr or "")
     user_agent = _normalized_user_agent(request.user_agent.string or "unknown")
-    user_agent_family = _user_agent_family(user_agent)
+    family = user_agent_family(user_agent)
     changes: set[str] = set()
     if not _risk_context_hash_matches(
         stored.get("ip_network_hash"),
@@ -602,7 +602,7 @@ def _session_risk_context_changes() -> set[str]:
     if not _risk_context_hash_matches(
         stored.get("user_agent_family_hash"),
         "user_agent_family",
-        user_agent_family,
+        family,
     ):
         changes.add("user_agent_family")
     if not _risk_context_hash_matches(
@@ -798,8 +798,8 @@ def list_active_sessions(user_id: int) -> list[dict[str, Any]]:
         public_metadata = {
             "session_ref": session_ref,
             "current": record.session_lookup_hash == current_lookup_hash,
-            "ip_address": _display_ip_address(record.ip_address),
-            "user_agent": _summarize_user_agent(record.user_agent),
+            "ip_address": display_ip_address(record.ip_address),
+            "user_agent": summarize_user_agent(record.user_agent),
             "login_time": _utc_iso(record.created_at),
             "last_activity": _utc_iso(record.last_activity_at),
             "login_time_display": _format_session_time(_utc_iso(record.created_at)),
@@ -833,8 +833,8 @@ def list_past_sessions(user_id: int, limit: int | None = None) -> list[dict[str,
         ended_at = _utc_iso(record.ended_at)
         public_metadata = {
             "session_ref": record.session_ref or _public_reference_from_lookup_hash(record.session_lookup_hash),
-            "ip_address": _display_ip_address(record.ip_address),
-            "user_agent": _summarize_user_agent(record.user_agent),
+            "ip_address": display_ip_address(record.ip_address),
+            "user_agent": summarize_user_agent(record.user_agent),
             "login_time": login_time,
             "last_activity": last_activity,
             "ended_at": ended_at,
@@ -875,7 +875,7 @@ def _normalize_session_end_reason(value: str) -> str:
     return value if value in SESSION_END_REASON_LABELS else "ended"
 
 
-def _display_ip_address(value: str) -> str:
+def display_ip_address(value: str) -> str:
     if not value:
         return "unknown"
     try:
@@ -885,7 +885,7 @@ def _display_ip_address(value: str) -> str:
     return address.compressed
 
 
-def _summarize_user_agent(value: str) -> str:
+def summarize_user_agent(value: str) -> str:
     normalized = " ".join((value or "unknown").split())
     if len(normalized) <= 120:
         return normalized

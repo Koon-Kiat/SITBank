@@ -8,6 +8,11 @@ from marshmallow import Schema, ValidationError
 from app.extensions import limiter
 from app.auth.mfa_policy import has_enrolled_mfa_method
 from app.admin.services import is_customer_user
+from app.security.device_recognition import (
+    apply_device_cookie,
+    handle_new_device_login,
+    resolve_freshly_authenticated_user,
+)
 from app.security.rate_limits import mfa_principal, request_principal
 from app.security.sessions import session_replacement_reason
 from app.security.turnstile import TurnstileError, require_turnstile
@@ -219,7 +224,18 @@ def register():
 def login():
     data = _load_payload(LoginSchema(), LoginForm)
     require_turnstile("customer_login")
-    return jsonify(authenticate_primary(data["identifier"], data["password"]))
+    result = authenticate_primary(data["identifier"], data["password"])
+    response = jsonify(result)
+    if not result.get("mfa_required") and not result.get("mfa_setup_required"):
+        user = resolve_freshly_authenticated_user()
+        if user is not None:
+            token = handle_new_device_login(
+                user,
+                ip_address=request.remote_addr or "",
+                user_agent=request.user_agent.string or "",
+            )
+            response = apply_device_cookie(response, token)
+    return response
 
 
 @auth_bp.post("/password-reset/request")
@@ -377,7 +393,17 @@ def mfa_recovery_codes_regenerate():
 @limiter.limit("30 per 5 minutes", key_func=mfa_principal)
 def mfa_verify():
     data = _load_payload(AuthenticationCodeSchema(), AuthenticationCodeForm)
-    return jsonify(complete_pending_mfa(data["totp_code"]))
+    result = complete_pending_mfa(data["totp_code"])
+    response = jsonify(result)
+    user = resolve_freshly_authenticated_user()
+    if user is not None:
+        token = handle_new_device_login(
+            user,
+            ip_address=request.remote_addr or "",
+            user_agent=request.user_agent.string or "",
+        )
+        response = apply_device_cookie(response, token)
+    return response
 
 
 @auth_bp.get("/sessions")
