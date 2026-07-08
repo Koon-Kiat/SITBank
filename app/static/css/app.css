@@ -1174,6 +1174,14 @@ select:focus {
   gap: var(--space-4);
 }
 
+.profile-page .profile-grid {
+  align-items: start;
+}
+
+.profile-page .profile-stack {
+  gap: var(--space-3);
+}
+
 .profile-grid.is-single-column {
   grid-template-columns: minmax(0, 1fr);
   width: min(760px, 100%);
@@ -1287,6 +1295,10 @@ select:focus {
   min-height: 100%;
 }
 
+.profile-page .profile-panel {
+  min-height: auto;
+}
+
 .profile-summary {
   grid-template-rows: auto auto auto;
   align-content: start;
@@ -1294,6 +1306,11 @@ select:focus {
 
 .profile-card {
   gap: var(--space-4);
+}
+
+.profile-page .profile-card {
+  gap: var(--space-3);
+  padding: var(--space-4);
 }
 
 .profile-panel-header {
@@ -1397,6 +1414,10 @@ select:focus {
 .profile-card form {
   gap: var(--space-4);
   margin-top: 0;
+}
+
+.profile-page .profile-card form {
+  gap: var(--space-3);
 }
 
 .detail-list {
