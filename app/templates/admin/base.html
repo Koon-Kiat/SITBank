@@ -77,9 +77,13 @@
             <span class="brand-subtitle">Staff and admin operations</span>
           </span>
         </a>
-        <nav class="nav" aria-label="Admin navigation">
+        <button class="nav-toggle" type="button" data-nav-toggle aria-expanded="false" aria-controls="admin-primary-nav">
+          <span class="nav-toggle-bars" aria-hidden="true"></span>
+          <span class="sr-only">Menu</span>
+        </button>
+        <nav class="nav" id="admin-primary-nav" aria-label="Admin navigation" data-nav-menu>
           <div class="nav-links">
-            {% for item in navigation|default([]) %}
+            {% for item in navigation|default([])|rejectattr("label", "equalto", "Dashboard")|list %}
             <a href="{{ item.href }}"{% if request.endpoint == item.endpoint %} aria-current="page"{% endif %}>{{ item.label }}</a>
             {% endfor %}
           </div>
@@ -91,14 +95,14 @@
                   <svg class="icon" focusable="false"><use href="#icon-user"></use></svg>
                 </span>
                 <span class="account-trigger-copy">
-                  <span class="account-trigger-name">Account</span>
+                  <span class="account-trigger-name">{{ g.current_user.full_name or g.current_user.username }}</span>
                 </span>
               </button>
               <div class="account-panel" id="admin-account-menu-panel" aria-labelledby="admin-account-menu-button" data-account-panel hidden>
                 <a href="{{ url_for('admin.index') }}">Dashboard</a>
                 <div class="account-menu-section-label">Profile Settings</div>
-                <span class="is-disabled" aria-disabled="true" title="Not available yet">Change Password</span>
-                <span class="is-disabled" aria-disabled="true" title="Not available yet">Change MFA</span>
+                <a href="{{ url_for('admin.password_change_form') }}">Change Password</a>
+                <a href="{{ url_for('admin.mfa_change_form') }}">Change MFA</a>
                 <form class="account-menu-form" method="post" action="{{ url_for('admin.logout') }}">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <button type="submit">Log out</button>
