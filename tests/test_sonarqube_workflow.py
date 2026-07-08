@@ -239,6 +239,7 @@ def test_sonarqube_docs_record_cloud_public_repo_and_blocking_policy():
 
 def test_sonarqube_policy_docs_do_not_restore_reporting_only_wording():
     policy_paths = (
+        Path("SECURITY.md"),
         Path("docs/CONTRIBUTING.md"),
         Path("docs/GITHUB_ACTIONS.md"),
         Path("docs/security/assurance/sonarqube.md"),

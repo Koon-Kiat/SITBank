@@ -139,6 +139,8 @@ ADMIN_ACTION_APPROVAL_REQUIRED_MESSAGE = "Admin action approval required"
 AUTOMATIC_CUSTOMER_LOCK_REASONS = frozenset(
     {"password_failed_attempts", "mfa_failed_attempts"}
 )
+STAFF_FRAUD_FREEZE_REASON = "staff_fraud_freeze"
+ROOT_ADMIN_REVIEWABLE_LOCK_REASONS = AUTOMATIC_CUSTOMER_LOCK_REASONS | {STAFF_FRAUD_FREEZE_REASON}
 GENERIC_ADMIN_LOGIN_ERROR = "Invalid workplace email, password, or authentication code"
 ADMIN_INDEX_ENDPOINT = "admin.index"
 FRESH_MFA_REQUIRED_ERROR = "Fresh MFA verification is required"
@@ -1153,7 +1155,7 @@ def locked_customers_for_admin(actor: User) -> list[dict[str, Any]]:
                 User.account_type == ACCOUNT_CUSTOMER,
                 User.is_frozen.is_(True),
                 User.security_locked_at.is_not(None),
-                User.security_lock_reason.in_(tuple(AUTOMATIC_CUSTOMER_LOCK_REASONS)),
+                User.security_lock_reason.in_(tuple(ROOT_ADMIN_REVIEWABLE_LOCK_REASONS)),
             )
             .order_by(User.security_locked_at.asc(), User.id.asc())
         ).scalars()
@@ -1445,8 +1447,16 @@ def freeze_customer_as_staff(
 
     Single-approver by design (matches the sibling unfreeze feature) — every
     write is still TOTP step-up gated, self-action-blocked, and fully
-    audited with the reason text retained for accountability. The customer
-    is notified by email so they know to contact support.
+    audited with the reason text retained for accountability. The freeze is
+    persisted with a distinct ``staff_fraud_freeze`` lock reason so it is
+    never mistaken for (or resolvable through) the voluntary customer
+    self-freeze unfreeze queue; a staff-frozen account is instead reviewed
+    and resolved through the existing root-admin customer security-unlock
+    maker-checker path. The frozen state, session revocation, and required
+    success audit row commit together as one transaction; the customer
+    notification email is sent only after that commit succeeds, so a failed
+    audit write never sends a stale "account frozen" email for a freeze that
+    did not durably happen.
     """
     _require_plain_staff(actor, "customer_freeze_as_staff")
     clean_reason = _require_manual_recovery_reason(reason, "customer_freeze_as_staff", actor)
@@ -1469,20 +1479,26 @@ def freeze_customer_as_staff(
         raise AuthError(FRESH_MFA_REQUIRED_ERROR, 403)
 
     target.is_frozen = True
+    target.security_lock_reason = STAFF_FRAUD_FREEZE_REASON
+    target.security_locked_at = datetime.now(timezone.utc)
     revoked_sessions = revoke_all_sessions(target.id, ended_reason="customer_freeze_as_staff", component="customer")
-    _send_staff_freeze_notification(target)
-    audit_event_required(
-        "customer_freeze_as_staff",
-        "success",
-        user=actor,
-        metadata={
-            "target_customer_ref": audit_reference("customer_user", target.id),
-            "actor_role": actor.account_type,
-            "revoked_sessions": revoked_sessions,
-            "reason": clean_reason,
-        },
-    )
+    try:
+        audit_event_required(
+            "customer_freeze_as_staff",
+            "success",
+            user=actor,
+            metadata={
+                "target_customer_ref": audit_reference("customer_user", target.id),
+                "actor_role": actor.account_type,
+                "revoked_sessions": revoked_sessions,
+                "reason": clean_reason,
+            },
+        )
+    except AuditWriteError:
+        db.session.rollback()
+        raise
     db.session.commit()
+    _send_staff_freeze_notification(target)
     return {
         "message": "Customer account frozen",
         "customer_ref": audit_reference("customer_user", target.id),
@@ -1834,10 +1850,7 @@ def staff_work_queue_summary(actor: User) -> list[dict[str, Any]]:
         .where(
             User.account_type == ACCOUNT_CUSTOMER,
             User.is_frozen.is_(True),
-            or_(
-                User.security_lock_reason.is_(None),
-                User.security_lock_reason.not_in(tuple(AUTOMATIC_CUSTOMER_LOCK_REASONS)),
-            ),
+            User.security_lock_reason.is_(None),
         )
     ).scalar_one()
     open_tickets = db.session.execute(
@@ -2906,6 +2919,13 @@ def manual_recovery_requests_for_admin(
     *,
     include_reason_for: int | None = None,
 ) -> list[dict[str, Any]]:
+    """List manual recovery requests, optionally exposing one request's reason.
+
+    Exposing the optional requester-provided ``reason`` for a specific request
+    requires a durable, fail-closed audit event first — mirroring the same
+    contract used for support-ticket free-text detail reads — so requester
+    context is never returned to a root admin without accountability.
+    """
     if not is_root_admin(actor):
         audit_event("manual_recovery_admin_review", "blocked", user=actor, metadata={"reason": "not_root_admin"})
         raise AuthError("Forbidden", 403)
@@ -2917,10 +2937,23 @@ def manual_recovery_requests_for_admin(
             )
         ).scalars()
     )
+    target_id = int(include_reason_for) if include_reason_for is not None else None
+    if target_id is not None and any(item.id == target_id for item in requests):
+        try:
+            audit_event_required(
+                "manual_recovery_admin_context_read",
+                "success",
+                user=actor,
+                metadata={"request_ref": audit_reference("manual_recovery_request", target_id)},
+            )
+            db.session.commit()
+        except AuditWriteError:
+            db.session.rollback()
+            raise
     return [
         public_manual_recovery_request(
             item,
-            include_reason=include_reason_for is not None and item.id == int(include_reason_for),
+            include_reason=target_id is not None and item.id == target_id,
         )
         for item in requests
     ]
@@ -3690,7 +3723,7 @@ def _locked_customer_for_update(
         and target.account_type == ACCOUNT_CUSTOMER
         and target.is_frozen
         and target.security_locked_at is not None
-        and target.security_lock_reason in AUTOMATIC_CUSTOMER_LOCK_REASONS
+        and target.security_lock_reason in ROOT_ADMIN_REVIEWABLE_LOCK_REASONS
     )
     if valid:
         return target

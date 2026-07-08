@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pyotp
 import pytest
 
+from app.admin import services as admin_services
 from app.extensions import db
-from app.models import PersonIdentityLink, SecurityAuditEvent, User
+from app.models import PersonIdentityLink, SecurityAuditEvent, ServerSideSession, User
+from app.security.audit import AuditWriteError
 from app.security.crypto import encrypt_mfa_secret
 from app.security.email import password_reset_outbox
 from app.security.passwords import hash_password
@@ -260,6 +262,137 @@ def test_freeze_requires_valid_totp_step_up(admin_client, freeze_totp_verifier_t
     assert response.status_code == 403
     db.session.refresh(customer)
     assert customer.is_frozen is False
+
+
+def test_freeze_happy_path_revokes_target_customer_sessions(admin_client, freeze_totp_verifier_time):
+    _staff, secret = _create_staff_identity(
+        username="bank-staff",
+        email="bank.staff@sit.singaporetech.edu.sg",
+        phone_number="91234567",
+    )
+    _login_admin(admin_client, secret, "bank.staff@sit.singaporetech.edu.sg", at=freeze_totp_verifier_time)
+    customer = _create_customer(
+        username="active-customer",
+        email="active.customer@example.test",
+        phone_number="81234567",
+    )
+    active_session = ServerSideSession(
+        component="customer",
+        session_lookup_hash=f"lookup-{customer.id}",
+        payload=b"fake-payload",
+        user_id=customer.id,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    db.session.add(active_session)
+    db.session.commit()
+
+    response = admin_client.post(
+        f"/customers/{customer.id}/freeze",
+        json={
+            "reason": "suspected fraudulent transaction, freezing pending review",
+            "totp_code": _totp(secret, at=freeze_totp_verifier_time),
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["revoked_sessions"] == 1
+    db.session.refresh(active_session)
+    assert active_session.ended_at is not None
+    assert active_session.revoked_at is not None
+
+
+def test_freeze_persists_distinct_reason_excluded_from_voluntary_queue(admin_client, freeze_totp_verifier_time):
+    staff, secret = _create_staff_identity(
+        username="bank-staff",
+        email="bank.staff@sit.singaporetech.edu.sg",
+        phone_number="91234567",
+    )
+    _login_admin(admin_client, secret, "bank.staff@sit.singaporetech.edu.sg", at=freeze_totp_verifier_time)
+    customer = _create_customer(
+        username="active-customer",
+        email="active.customer@example.test",
+        phone_number="81234567",
+    )
+
+    response = admin_client.post(
+        f"/customers/{customer.id}/freeze",
+        json={
+            "reason": "suspected fraudulent transaction, freezing pending review",
+            "totp_code": _totp(secret, at=freeze_totp_verifier_time),
+        },
+    )
+
+    assert response.status_code == 200
+    db.session.refresh(customer)
+    assert customer.security_lock_reason == admin_services.STAFF_FRAUD_FREEZE_REASON
+    assert customer.security_locked_at is not None
+
+    voluntary_queue = admin_services.self_frozen_customers_for_staff(staff)
+    assert all(item["id"] != customer.id for item in voluntary_queue)
+
+
+def test_unfreeze_customer_as_staff_rejects_staff_fraud_frozen_target(admin_client, freeze_totp_verifier_time):
+    _staff, secret = _create_staff_identity(
+        username="bank-staff",
+        email="bank.staff@sit.singaporetech.edu.sg",
+        phone_number="91234567",
+    )
+    _login_admin(admin_client, secret, "bank.staff@sit.singaporetech.edu.sg", at=freeze_totp_verifier_time)
+    customer = _create_customer(
+        username="active-customer",
+        email="active.customer@example.test",
+        phone_number="81234567",
+    )
+    freeze_response = admin_client.post(
+        f"/customers/{customer.id}/freeze",
+        json={
+            "reason": "suspected fraudulent transaction, freezing pending review",
+            "totp_code": _totp(secret, at=freeze_totp_verifier_time),
+        },
+    )
+    assert freeze_response.status_code == 200
+
+    unfreeze_response = admin_client.post(
+        f"/customers/{customer.id}/unfreeze",
+        json={"reason": "trying anyway", "totp_code": _totp(secret, at=freeze_totp_verifier_time)},
+    )
+
+    assert unfreeze_response.status_code == 409
+
+
+def test_freeze_survives_required_audit_failure(admin_client, freeze_totp_verifier_time, monkeypatch):
+    _staff, secret = _create_staff_identity(
+        username="bank-staff",
+        email="bank.staff@sit.singaporetech.edu.sg",
+        phone_number="91234567",
+    )
+    _login_admin(admin_client, secret, "bank.staff@sit.singaporetech.edu.sg", at=freeze_totp_verifier_time)
+    customer = _create_customer(
+        username="active-customer",
+        email="active.customer@example.test",
+        phone_number="81234567",
+    )
+    before_count = len(password_reset_outbox())
+
+    def _broken_audit_event_required(*_args, **_kwargs):
+        raise AuditWriteError("simulated required audit failure")
+
+    monkeypatch.setattr(admin_services, "audit_event_required", _broken_audit_event_required)
+
+    with pytest.raises(AuditWriteError):
+        admin_client.post(
+            f"/customers/{customer.id}/freeze",
+            json={
+                "reason": "suspected fraudulent transaction, freezing pending review",
+                "totp_code": _totp(secret, at=freeze_totp_verifier_time),
+            },
+        )
+
+    db.session.rollback()
+    refreshed = db.session.get(User, customer.id)
+    assert refreshed.is_frozen is False
+    assert refreshed.security_lock_reason is None
+    assert password_reset_outbox()[before_count:] == []
 
 
 def test_freeze_blocks_staff_own_linked_customer(admin_client, freeze_totp_verifier_time):
