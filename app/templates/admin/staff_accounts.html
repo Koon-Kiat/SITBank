@@ -60,6 +60,15 @@
                 <input id="staff-reset-totp-{{ account.id }}" name="totp_code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required>
                 <button class="secondary" type="submit">Reset setup</button>
               </form>
+              {% if account.can_resend_setup %}
+              <form class="admin-inline-actions" method="post" action="{{ url_for('admin.staff_account_resend_setup', user_id=account.id) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <label class="sr-only" for="staff-resend-setup-totp-{{ account.id }}">Authenticator code</label>
+                <input id="staff-resend-setup-totp-{{ account.id }}" name="totp_code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required>
+                <p class="hint">Sends a new one-time setup link to the workplace email above. Use this when the original invite already expired or was revoked.</p>
+                <button class="secondary" type="submit">Resend setup invite</button>
+              </form>
+              {% endif %}
               {% else %}
               <span class="badge neutral">Read only</span>
               {% endif %}

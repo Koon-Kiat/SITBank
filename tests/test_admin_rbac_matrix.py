@@ -103,6 +103,7 @@ FOCUSED_RBAC_ENDPOINTS = {
     "admin.manual_recovery_complete",
     "admin.manual_recovery_request_detail",
     "admin.staff_account_reactivate",
+    "admin.staff_account_resend_setup",
     "admin.staff_account_reset_activation",
 }
 
@@ -155,6 +156,19 @@ def _client_for_role(admin_app, users, role):
     return client
 
 
+def _trust_test_totp(monkeypatch) -> None:
+    # Admin login and step-up verify through both the boolean helper and the
+    # replay-aware outcome helper, so trust both in RBAC matrix scaffolding.
+    monkeypatch.setattr(
+        "app.admin.services._verify_totp_for_user",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        "app.admin.services._verify_totp_for_user_outcome",
+        lambda *_args, **_kwargs: "valid",
+    )
+
+
 def test_admin_read_permission_matrix(
     admin_app,
     rbac_users,
@@ -164,10 +178,7 @@ def test_admin_read_permission_matrix(
         "app.admin.services._admin_password_matches",
         lambda *_args, **_kwargs: True,
     )
-    monkeypatch.setattr(
-        "app.admin.services._verify_totp_for_user",
-        lambda *_args, **_kwargs: True,
-    )
+    _trust_test_totp(monkeypatch)
     for role_index, role in enumerate(ROLE_ORDER):
         role_client = _client_for_role(admin_app, rbac_users, role)
         for endpoint, entry in READ_PERMISSION_MATRIX.items():
@@ -194,10 +205,7 @@ def test_forbidden_admin_mutations_have_no_privileged_side_effect(
         "app.admin.services._admin_password_matches",
         lambda *_args, **_kwargs: True,
     )
-    monkeypatch.setattr(
-        "app.admin.services._verify_totp_for_user",
-        lambda *_args, **_kwargs: True,
-    )
+    _trust_test_totp(monkeypatch)
     monkeypatch.setattr(
         "app.admin.routes.deliver_security_alerts",
         lambda *_args, **_kwargs: delivery_calls.append(True),

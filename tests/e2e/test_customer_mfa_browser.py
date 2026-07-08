@@ -108,7 +108,10 @@ def test_mfa_failure_is_generic_and_repeated_attempts_use_branded_429(
         exact=True,
     ).wait_for()
 
-    for _attempt in range(4):
+    # The wrong-code threshold is 10 per window (CUSTOMER_MFA_FAILURE_LIMIT), so
+    # the first 10 wrong codes stay generic 401s and the 11th returns the
+    # branded 429. One attempt above plus nine here reaches 10.
+    for _attempt in range(9):
         browser_page.locator("input[name='totp_code']").fill("000000")
         browser_page.get_by_role("button", name="Verify code").click()
         browser_page.wait_for_load_state("load")

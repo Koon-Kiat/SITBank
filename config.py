@@ -1451,7 +1451,7 @@ class Config:
     FRESH_MFA_SECONDS = 5 * 60
     ADMIN_MFA_FAILURE_LIMIT = _int_env(
         "ADMIN_MFA_FAILURE_LIMIT",
-        default="5",
+        default="10",
         minimum=1,
         maximum=20,
     )
@@ -1463,7 +1463,7 @@ class Config:
     )
     CUSTOMER_MFA_FAILURE_LIMIT = _int_env(
         "CUSTOMER_MFA_FAILURE_LIMIT",
-        default="5",
+        default="10",
         minimum=1,
         maximum=20,
     )

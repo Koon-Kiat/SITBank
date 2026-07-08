@@ -320,6 +320,50 @@ def test_rate_limit_layering_docs_match_current_controls():
         assert required in access_control
 
 
+def test_mfa_wrong_code_threshold_docs_match_config_defaults():
+    # The documented MFA wrong-code policy must track the real config defaults
+    # so the doc cannot silently keep claiming the old 5-attempt threshold. Read
+    # the source defaults so the check does not depend on ambient env overrides.
+    config_source = " ".join(Path("config.py").read_text(encoding="utf-8").split())
+    for required in (
+        'ADMIN_MFA_FAILURE_LIMIT = _int_env( "ADMIN_MFA_FAILURE_LIMIT", default="10"',
+        'CUSTOMER_MFA_FAILURE_LIMIT = _int_env( "CUSTOMER_MFA_FAILURE_LIMIT", default="10"',
+        'ADMIN_MFA_FAILURE_WINDOW_SECONDS = _int_env( "ADMIN_MFA_FAILURE_WINDOW_SECONDS", default="300"',
+        'CUSTOMER_MFA_FAILURE_WINDOW_SECONDS = _int_env( "CUSTOMER_MFA_FAILURE_WINDOW_SECONDS", default="300"',
+    ):
+        assert required in config_source
+
+    access_control = Path("docs/security/architecture/access-control.md").read_text(
+        encoding="utf-8"
+    )
+    access_control = " ".join(access_control.split())
+    for required in (
+        "10 wrong codes per 5-minute window",
+        "`ADMIN_MFA_FAILURE_LIMIT` and `CUSTOMER_MFA_FAILURE_LIMIT`",
+        "the 11th returns `429`",
+        "account-freeze backstop stays strictly above the wrong-code throttle",
+    ):
+        assert required in access_control
+
+
+def test_setup_invite_resend_recovery_docs_match_restored_feature():
+    # The stuck-setup_pending resend recovery path is a real admin route, so the
+    # docs must describe it and cannot regress to claiming it was removed.
+    access_control = " ".join(
+        Path("docs/security/architecture/access-control.md")
+        .read_text(encoding="utf-8")
+        .split()
+    )
+    operations = " ".join(
+        Path("docs/OPERATIONS.md").read_text(encoding="utf-8").split()
+    )
+
+    assert "`resend_staff_setup_invite()`" in access_control
+    assert "`admin.staff_account_resend_setup`" in access_control
+    assert "Resend setup invite action on the staff accounts page" in operations
+    assert "without creating a second privileged identity" in access_control
+
+
 def test_transaction_ledger_hmac_key_docs_keep_keyring_on_ec2():
     docs = "\n".join(
         Path(path).read_text(encoding="utf-8")

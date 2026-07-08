@@ -210,3 +210,21 @@ def test_agent_pr_and_commit_guidance_matches_repository_policy():
         "validation, deployment, migration, or provider impact",
     ):
         assert required in f"{agents}\n{rules}"
+
+
+def test_ai_authorship_rule_lives_in_canonical_contribution_policy():
+    policy_doc = Path("docs/CONTRIBUTION_MESSAGE_POLICY.md").read_text(encoding="utf-8")
+    claude = Path("CLAUDE.md").read_text(encoding="utf-8")
+
+    # The canonical policy must own the no-AI-attribution rule so it survives
+    # edits to CLAUDE.md, and CLAUDE.md must keep pointing at that canonical doc.
+    assert "## Authorship Attribution" in policy_doc
+    for required in (
+        "Co-Authored-By: Claude",
+        "any AI tool as a commit author, co-author",
+        "Generated with Claude Code",
+    ):
+        assert required in policy_doc
+
+    assert "docs/CONTRIBUTION_MESSAGE_POLICY.md" in claude
+    assert "Co-Authored-By: Claude" in claude

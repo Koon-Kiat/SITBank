@@ -117,6 +117,17 @@ fresh primary-password login, and cleared after successful MFA. Wrong factors
 below the threshold return the generic MFA error rather than route-level `429`;
 the first invalid factor beyond the threshold returns safe retry metadata.
 
+Both admin and customer login MFA default to 10 wrong codes per 5-minute window
+(`ADMIN_MFA_FAILURE_LIMIT` and `CUSTOMER_MFA_FAILURE_LIMIT`, each defaulting to
+`10` with a `300`-second window): 10 wrong codes return `401`, and the 11th
+returns `429` with retry metadata. The coarse `POST /mfa/verify` route limiters
+stay above this threshold so a valid code below it is never rejected before the
+durable counter decides. A replayed but otherwise valid TOTP is rejected as
+stale input without consuming that wrong-code budget. The customer MFA
+account-freeze backstop stays strictly above the wrong-code throttle, so a
+single throttled burst remains recoverable while sustained wrong codes across
+windows still lock the account.
+
 ## Banking And Payee Authorization
 
 Payee management lives in `app/banking/routes.py` and is registered only in the
@@ -220,6 +231,7 @@ changes.
 | Admin/root alert review uses the existing report path without sending alerts on GET | `app/admin/routes.py::alerts()`, `app/security/alerts.py::build_security_alert_report()` | `tests/test_admin_dashboard_operations.py::test_alert_review_is_admin_only_and_does_not_send_alerts` |
 | Admin/root manual alert delivery is POST-only, CSRF-protected, current-TOTP-gated, dedupe-aware, and audited | `app/admin/routes.py::alert_delivery()`, `app/security/alerts.py::build_security_alert_report()` | `tests/test_admin_dashboard_operations.py::test_alert_manual_delivery_browser_requires_csrf_when_enabled`, `tests/test_admin_dashboard_operations.py::test_alert_manual_delivery_reuses_builder_and_audits_delivered`, `tests/test_admin_dashboard_operations.py::test_alert_manual_delivery_respects_dedupe_and_returns_safe_json`, `tests/test_admin_dashboard_operations.py::test_alert_manual_delivery_blocks_invalid_totp`, `tests/test_admin_dashboard_operations.py::test_alert_manual_delivery_audits_configuration_failure` |
 | Root-admin staff/admin lifecycle actions require maker-checker approval before final state change | `AdminActionRequest` in `app/models.py`; `app/admin/services.py::transition_staff_account_as_root_admin()` and `approve_admin_action_request_as_root_admin()` | `tests/test_admin_maker_checker.py::test_staff_lifecycle_requires_maker_checker_before_execution`, `tests/test_admin_dashboard_operations.py::test_root_manages_staff_lifecycle_with_totp_and_safe_audit` |
+| Root admin can resend a fresh setup email to a `setup_pending` staff/admin account whose original invite is already accepted, revoked, or expired, without creating a second privileged identity for the same workplace email | `resend_staff_setup_invite()` in `app/admin/services.py`; `admin.staff_account_resend_setup` in `app/admin/routes.py` | `tests/test_admin_staff_invites.py::test_root_admin_can_resend_setup_invite_for_stuck_setup_pending_account`, `tests/test_admin_staff_invites.py::test_reset_setup_alone_does_not_resend_email_and_resend_requires_explicit_action`, `tests/test_admin_staff_invites.py::test_resend_setup_invite_rejects_non_root_admin_self_and_ineligible_targets`, `tests/test_admin_staff_invites.py::test_resend_setup_invite_step_up_outcomes_are_safe` |
 | Customer security unlock is root-only, limited to automatic password/MFA lock reasons, TOTP-gated, identity-separated, and executed only by a different root admin; execution clears only relevant counters, revokes customer sessions, audits, and notifies | `app/admin/services.py::request_customer_security_unlock()` and `_execute_customer_security_unlock_admin_action_request()` | `tests/test_admin_maker_checker.py::test_customer_security_unlock_requires_separate_root_and_clears_only_lock_state`, `tests/test_admin_maker_checker.py::test_customer_security_unlock_fails_closed_for_identity_overlap_and_stale_lock` |
 | Staff/customer self-action guard | `app/admin/separation.py::assert_not_self_customer_action()` | `tests/test_admin_staff_invites.py::test_separation_guard_blocks_linked_staff_acting_on_own_customer`, `tests/test_admin_manual_recovery.py::test_root_admin_cannot_transition_own_customer_manual_recovery` |
 | Admin session context drift | Any detected coarse-network, browser-family, or detailed User-Agent drift revokes the admin session and requires full login | `app/security/sessions.py`, `tests/test_session_risk_binding.py::test_admin_context_change_revokes_session_under_stricter_policy` |

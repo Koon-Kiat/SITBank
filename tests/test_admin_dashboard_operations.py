@@ -333,7 +333,7 @@ def test_admin_mfa_counts_only_wrong_codes_and_clears_on_fresh_primary_login(
         "/login",
         json={"workplace_email": ROOT_EMAIL, "password": ROOT_PASSWORD},
     )
-    for _attempt in range(5):
+    for _attempt in range(10):
         response = admin_client.post(
             "/mfa/verify",
             json={"totp_code": invalid_code},
@@ -357,6 +357,50 @@ def test_admin_mfa_counts_only_wrong_codes_and_clears_on_fresh_primary_login(
         json={"totp_code": valid_code},
     )
     assert recovered.status_code == 200
+
+
+def test_admin_mfa_replayed_valid_code_does_not_consume_failure_budget(admin_client):
+    global _FIXED_TOTP_TIME
+    root, root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    valid_code = _totp(root_secret)
+
+    first_primary = admin_client.post(
+        "/login",
+        json={"workplace_email": ROOT_EMAIL, "password": ROOT_PASSWORD},
+    )
+    first_verify = admin_client.post("/mfa/verify", json={"totp_code": valid_code})
+    admin_client.post("/logout", json={})
+    second_primary = admin_client.post(
+        "/login",
+        json={"workplace_email": ROOT_EMAIL, "password": ROOT_PASSWORD},
+    )
+    replay = admin_client.post("/mfa/verify", json={"totp_code": valid_code})
+    db.session.refresh(root)
+
+    assert first_primary.status_code == 200
+    assert first_verify.status_code == 200
+    assert second_primary.status_code == 200
+    assert replay.status_code == 401
+    assert (
+        db.session.query(AuthAttemptCounter)
+        .filter_by(scope="admin_mfa_login")
+        .count()
+        == 0
+    )
+    assert root.security_locked_at is None
+    assert root.is_frozen is False
+
+    _FIXED_TOTP_TIME += 30
+    fresh = admin_client.post(
+        "/mfa/verify",
+        json={"totp_code": _totp(root_secret)},
+    )
+    assert fresh.status_code == 200
 
 
 def test_admin_browser_form_payload_strips_csrf_token_for_invites(admin_client):

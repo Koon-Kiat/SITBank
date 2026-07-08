@@ -963,7 +963,7 @@ def test_customer_api_mfa_counts_only_wrong_totp_and_clears_on_fresh_login(
     monkeypatch.setattr("app.auth.services.time.time", lambda: base_time)
     valid_code = totp.at(base_time)
     invalid_code = "000000" if valid_code != "000000" else "111111"
-    for _attempt in range(5):
+    for _attempt in range(10):
         assert (
             client.post("/auth/mfa/verify", json={"totp_code": invalid_code}).status_code
             == 401
@@ -1017,6 +1017,51 @@ def test_customer_browser_mfa_valid_totp_survives_wrong_attempts_below_threshold
 
     assert valid_after_wrong_attempts.status_code == 302
     assert valid_after_wrong_attempts.headers["Location"].endswith("/dashboard")
+
+
+def test_one_customer_mfa_lockout_does_not_block_other_customers(app, client, monkeypatch):
+    # The durable MFA wrong-code counter is keyed per user (source IP + user id),
+    # so one customer exhausting their budget must not lock out a different
+    # customer -- even when both share the same source IP.
+    register(client, username="alice01", email="alice@example.com", phone_number="91234567")
+    register(client, username="bob02", email="bob@example.com", phone_number="91234568")
+    enable_mfa_for_user("alice01")
+    _bob, bob_secret = enable_mfa_for_user("bob02")
+
+    base_time = int(time.time())
+    monkeypatch.setattr("app.auth.services.time.time", lambda: base_time)
+
+    alice_client = app.test_client()
+    bob_client = app.test_client()
+
+    # Alice fails MFA up to the threshold from the shared source IP and is blocked.
+    alice_client.post(
+        "/auth/login",
+        json={"identifier": "alice01", "password": "correct horse battery staple"},
+    )
+    invalid_code = "000000"
+    for _attempt in range(10):
+        assert (
+            alice_client.post("/auth/mfa/verify", json={"totp_code": invalid_code}).status_code
+            == 401
+        )
+    assert (
+        alice_client.post("/auth/mfa/verify", json={"totp_code": invalid_code}).status_code == 429
+    )
+
+    # Bob, on the same source IP, still verifies his own valid code and logs in.
+    bob_client.post(
+        "/auth/login",
+        json={"identifier": "bob02", "password": "correct horse battery staple"},
+    )
+    bob_valid = pyotp.TOTP(bob_secret, digits=6, interval=30).at(base_time)
+    accepted = bob_client.post("/auth/mfa/verify", json={"totp_code": bob_valid})
+    assert accepted.status_code == 200
+
+    # The lockout stays scoped to Alice.
+    assert (
+        alice_client.post("/auth/mfa/verify", json={"totp_code": invalid_code}).status_code == 429
+    )
 
 
 def test_login_backoff_starts_after_three_failures(client):
@@ -1139,8 +1184,13 @@ def test_repeated_mfa_failures_freeze_account(app, client):
     register(client)
     user, _secret = enable_mfa_for_user()
 
+    # The MFA account-freeze backstop sits above the per-window wrong-code
+    # throttle (CUSTOMER_MFA_FAILURE_LIMIT of 10 -> freeze at 12), so a single
+    # throttled burst stays recoverable. Sustained abuse across windows -- six
+    # wrong codes per window with a fresh primary login clearing the throttle
+    # counter between windows -- still accumulates to the freeze threshold.
     for _window in range(2):
-        for _attempt in range(5):
+        for _attempt in range(6):
             with app.test_request_context(
                 "/auth/mfa/verify",
                 method="POST",

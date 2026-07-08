@@ -25,11 +25,14 @@ from app.auth.password_reset import (
 from app.auth.schemas import PHONE_RE as AUTH_PHONE_RE
 from app.auth.services import (
     AuthError,
+    TOTP_VERIFICATION_REPLAY,
+    TOTP_VERIFICATION_VALID,
     _clear_user_security_failures,
     _dummy_password_hash,
     _record_user_security_failure,
     _totp,
     _verify_totp_for_user,
+    _verify_totp_for_user_outcome,
 )
 from app.extensions import db
 from app.models import (
@@ -145,6 +148,7 @@ STAFF_INVITE_NOT_FOUND_ERROR = "Invite not found"
 INVALID_WORKPLACE_EMAIL_ERROR = "Invalid workplace email"
 GENERIC_INVITE_ERROR = "Invite link is invalid or expired"
 GENERIC_WORKPLACE_VERIFICATION_ERROR = "Workplace verification failed"
+INVITE_INVALID_AUTHENTICATION_CODE_ERROR = "Invalid authentication code."
 ADMIN_AUTH_BACKOFF_ERROR = "Too many attempts. Please try again later."
 INVITE_ACCEPTANCE_SESSION_KEY = "staff_invite_acceptance_session"
 STAFF_INVITE_MAX_ACCEPTANCE_STARTS = 3
@@ -1167,6 +1171,12 @@ def public_staff_account(user: User, actor: User) -> dict[str, Any]:
         "last_login_at": _utc_iso(user.last_login_at) if user.last_login_at else None,
         "last_login_at_display": _utc_display(user.last_login_at) if user.last_login_at else None,
         "can_manage": bool(is_root_admin(actor) and user.account_type in ADMIN_ACCOUNT_MANAGED_TYPES and user.id != actor.id),
+        "can_resend_setup": bool(
+            is_root_admin(actor)
+            and user.account_type in ADMIN_ACCOUNT_MANAGED_TYPES
+            and user.id != actor.id
+            and user.account_status == "setup_pending"
+        ),
     }
 
 
@@ -1905,12 +1915,24 @@ def complete_admin_mfa_login(totp_code: str) -> dict[str, Any]:
             429,
             retry_after=exc.retry_after,
         ) from exc
-    if not _verify_totp_for_user(
+    totp_outcome = _verify_totp_for_user_outcome(
         user,
         totp_code,
         "admin_mfa_login",
         track_failures=False,
-    ):
+    )
+    if totp_outcome == TOTP_VERIFICATION_REPLAY:
+        # A replayed but otherwise valid code is a stale resubmission, not a
+        # brute-force guess. Reject it with the generic error and safe audit
+        # reason without consuming the durable wrong-code budget.
+        audit_event(
+            "admin_mfa_login",
+            "failure",
+            user=user,
+            metadata={"reason": "totp_replay"},
+        )
+        raise AuthError(GENERIC_ADMIN_LOGIN_ERROR, 401)
+    if totp_outcome != TOTP_VERIFICATION_VALID:
         attempts = record_failure(
             "admin_mfa_login",
             principal,
@@ -2028,6 +2050,21 @@ def create_staff_invite(
         audit_event("staff_invite_create", "failure", user=actor, metadata={"reason": "integrity_error"})
         raise AuthError(INVITE_CREATE_ERROR, 400) from exc
 
+    _deliver_fresh_invite_email(invite, actor, token)
+    return {
+        "message": "Invite created",
+        "invite": public_invite(invite),
+    }
+
+
+def _deliver_fresh_invite_email(invite: StaffInvite, actor: User, token: str) -> None:
+    """Send the setup email for a freshly minted invite and record delivery status.
+
+    Shared by create_staff_invite() and resend_staff_setup_invite(): both mint a
+    brand-new invite row, so a delivery failure must fail closed by revoking the
+    row and marking delivery failed instead of leaving a live, undeliverable
+    invite. Raw tokens stay in the email URL only and never reach audit metadata.
+    """
     invite_url = url_for("admin.invite_accept_info", token=token, _external=True)
     try:
         _send_invite_email(invite, invite_url)
@@ -2048,8 +2085,89 @@ def create_staff_invite(
     invite.delivery_status = "queued"
     audit_event("staff_invite_email", "queued", user=actor, metadata=_invite_audit_metadata(invite))
     db.session.commit()
+
+
+def resend_staff_setup_invite(actor: User, target_user_id: int, totp_code: str | None) -> dict[str, Any]:
+    """Send a fresh setup invite to an existing setup_pending staff/admin user.
+
+    Covers the gap where the original invite has already reached a terminal
+    state (accepted/expired/revoked) but the linked user never finished
+    activation, so create_staff_invite's duplicate-identity guard would
+    otherwise permanently block re-onboarding that identity.
+    """
+    if not is_root_admin(actor):
+        audit_event("staff_invite_resend", "blocked", user=actor, metadata={"reason": "not_root_admin"})
+        raise AuthError("Forbidden", 403)
+    target = db.session.get(User, int(target_user_id))
+    if target is not None and target.id == actor.id:
+        audit_event(
+            "staff_invite_resend",
+            "blocked",
+            user=actor,
+            metadata={"reason": "self_management_denied"},
+        )
+        raise AuthError("Forbidden", 403)
+    if (
+        target is None
+        or target.account_type not in ADMIN_ACCOUNT_MANAGED_TYPES
+        or target.account_status != "setup_pending"
+    ):
+        audit_event(
+            "staff_invite_resend",
+            "blocked",
+            user=actor,
+            metadata={"reason": "target_not_resendable"},
+        )
+        raise AuthError("Staff account not found", 404)
+    try:
+        normalized_workplace = normalize_workplace_email(target.email)
+    except AuthError:
+        audit_event("staff_invite_resend", "blocked", user=actor, metadata={"reason": "email_policy"})
+        raise
+
+    _require_staff_invite_step_up(
+        actor,
+        totp_code,
+        scope="staff_invite_resend",
+        event_type="staff_invite_resend",
+    )
+    _reject_root_admin_allowlist_invite_target(normalized_workplace, actor, "staff_invite_resend")
+    _reject_active_invite(normalized_workplace)
+
+    token = secrets.token_urlsafe(32)
+    now = _utcnow()
+    invite = StaffInvite(
+        token_hash=invite_token_hash(token),
+        workplace_email_normalized=normalized_workplace,
+        role=target.account_type,
+        status="pending",
+        delivery_status="unconfirmed",
+        created_by_user_id=actor.id,
+        setup_user_id=target.id,
+        created_at=now,
+        expires_at=now + timedelta(seconds=int(current_app.config["STAFF_INVITE_TTL_SECONDS"])),
+    )
+    db.session.add(invite)
+    try:
+        db.session.flush()
+        audit_event_required(
+            "staff_invite_resent",
+            "success",
+            user=actor,
+            metadata={
+                **_invite_audit_metadata(invite),
+                "target_staff_ref": audit_reference("staff_user", target.id),
+            },
+        )
+        db.session.commit()
+    except IntegrityError as exc:
+        db.session.rollback()
+        audit_event("staff_invite_resend", "failure", user=actor, metadata={"reason": "integrity_error"})
+        raise AuthError(INVITE_CREATE_ERROR, 400) from exc
+
+    _deliver_fresh_invite_email(invite, actor, token)
     return {
-        "message": "Invite created",
+        "message": "Setup invite resent",
         "invite": public_invite(invite),
     }
 
@@ -3196,10 +3314,21 @@ def verify_invite_acceptance(
         raise AuthError(GENERIC_INVITE_ERROR, 401)
     if not TOTP_RE.fullmatch(str(totp_code or "")):
         _record_invite_acceptance_verify_failure(invite, user, "invalid_totp_format")
-        raise AuthError("Invalid authentication code.", 401)
-    if not _verify_totp_for_user(user, totp_code, "staff_totp_setup"):
+        raise AuthError(INVITE_INVALID_AUTHENTICATION_CODE_ERROR, 401)
+    totp_outcome = _verify_totp_for_user_outcome(user, totp_code, "staff_totp_setup")
+    if totp_outcome == TOTP_VERIFICATION_REPLAY:
+        # Reject a replayed setup code as stale input without counting it as a
+        # fresh invalid-code attempt against the acceptance throttle.
+        audit_event(
+            "staff_totp_setup",
+            "failure",
+            user=user,
+            metadata={"reason": "totp_replay"},
+        )
+        raise AuthError(INVITE_INVALID_AUTHENTICATION_CODE_ERROR, 401)
+    if totp_outcome != TOTP_VERIFICATION_VALID:
         _record_invite_acceptance_verify_failure(invite, user, "invalid_totp")
-        raise AuthError("Invalid authentication code.", 401)
+        raise AuthError(INVITE_INVALID_AUTHENTICATION_CODE_ERROR, 401)
     if not _verify_workplace_code(invite, workplace_verification_code):
         _record_invite_acceptance_verify_failure(invite, user, "invalid_workplace_code")
         raise AuthError(GENERIC_WORKPLACE_VERIFICATION_ERROR, 401)

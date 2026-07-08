@@ -97,3 +97,20 @@ above an unchanged template still fails validation.
 
 `Verification` must include at least one test command, manual verification step,
 CI check, or a short explanation of why verification was not run.
+
+## Authorship Attribution
+
+Commit and pull request text is the human contributor's own work. This is the
+canonical statement of the rule that `AGENTS.md` and `CLAUDE.md` reference.
+
+- Do not add Claude, Anthropic, or any AI tool as a commit author, co-author,
+  or trailer. Do not append `Co-Authored-By: Claude ...` or similar attribution
+  lines to commit messages.
+- Do not add AI tool attribution such as `Generated with Claude Code` to commit
+  messages or pull request bodies.
+- Write commit subjects, commit bodies, and pull request descriptions as the
+  contributor's own work, following the format rules above.
+
+This keeps repository authorship accurate for audit trails, release notes, and
+incident response, and it keeps the contributor list on the repository free of
+tool identities.
