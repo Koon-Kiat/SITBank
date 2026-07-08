@@ -217,9 +217,14 @@ before rerunning.
 The CI test job generates full-suite Python coverage once and passes
 `coverage.xml` as a short-lived artifact to its downstream reusable SonarQube
 job. That job reports maintainability, duplication, reliability, and security
-findings for the public repository without rerunning pytest. Its initial
-quality gate is reporting-only and does not participate in deployment.
-Successful trusted internal PR scans create or update one informational summary
+findings for the public repository without rerunning pytest. On trusted PRs,
+`main`, and other release-producing runs, the SonarQube quality gate is
+enforced rather than reporting-only: the `publish` job that builds and pushes
+the release image requires the `sonarqube` job to succeed first, so a failed
+quality gate blocks image publication and every downstream deployment step.
+Fork and Dependabot PRs never receive secret-backed SonarQube analysis or
+deployment credentials, matching the same untrusted-PR boundary as the rest of
+this pipeline. Successful trusted internal PR scans create or update one informational summary
 comment; fork and Dependabot PRs receive neither secret-backed analysis nor
 that comment, and inline review comments are not implemented. Setup,
 source-processing implications, token rotation, scan scope, triage, comment

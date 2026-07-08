@@ -28,6 +28,22 @@ def _table_rows(section: str) -> list[list[str]]:
     return rows
 
 
+def test_governance_docs_reflect_implemented_staff_business_routes():
+    design_text = DESIGN_REGISTER.read_text(encoding="utf-8")
+    gap_text = GAP_REGISTER.read_text(encoding="utf-8")
+
+    for stale_phrase in (
+        "beyond the transaction dispute queue are shown only as disabled placeholders",
+        "staff see the transaction dispute review queue (and staff business placeholders",
+    ):
+        assert stale_phrase not in design_text
+        assert stale_phrase not in gap_text
+
+    for current_marker in ("support ticket", "self-freeze unfreeze", "staff-initiated customer freeze"):
+        assert current_marker in design_text
+        assert current_marker in gap_text
+
+
 def test_security_governance_doc_defines_roles_cadence_and_tracking():
     assert GOVERNANCE.exists()
     text = GOVERNANCE.read_text(encoding="utf-8")
