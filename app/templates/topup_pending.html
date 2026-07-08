@@ -1,19 +1,11 @@
 {% extends "base.html" %}
+{% from "_topup_shared.html" import topup_hero, topup_amount_panel %}
 
 {% block title %}Top Up | SITBank{% endblock %}
 
 {% block content %}
 <section class="security-page">
-  <div class="dashboard-header">
-    <div class="page-heading">
-      <p class="eyebrow">Add funds</p>
-      <h1>Approve on your authenticator device</h1>
-      <p class="muted">Scan this code with a device where you're set up, then enter your authenticator code there to confirm.</p>
-    </div>
-    <div class="button-row">
-      <a class="button secondary" href="{{ url_for('banking.topup') }}">Cancel</a>
-    </div>
-  </div>
+  {{ topup_hero("Approve on your authenticator device", "Scan this code with a device where you're set up, then enter your authenticator code there to confirm.", url_for('banking.topup'), "Cancel") }}
 
   <div class="profile-grid is-single-column">
     <article
@@ -23,10 +15,7 @@
       data-dashboard-url="{{ url_for('web.dashboard') }}"
       data-restart-url="{{ url_for('banking.topup') }}"
     >
-      <div class="profile-panel-title">
-        <p class="eyebrow">Amount</p>
-        <h2>SGD {{ "%.2f"|format(amount) }}</h2>
-      </div>
+      {{ topup_amount_panel(amount) }}
       <div class="qr-wrap">
         <img class="qr" src="{{ qr_data_uri }}" alt="Top-up approval QR code">
       </div>

@@ -1,19 +1,11 @@
 {% extends "base.html" %}
+{% from "_topup_shared.html" import topup_hero %}
 
 {% block title %}Top Up | SITBank{% endblock %}
 
 {% block content %}
 <section class="security-page">
-  <div class="dashboard-header">
-    <div class="page-heading">
-      <p class="eyebrow">Add funds</p>
-      <h1>Top Up</h1>
-      <p class="muted">Choose an amount, then confirm from your authenticator device by scanning a QR code.</p>
-    </div>
-    <div class="button-row">
-      <a class="button secondary" href="{{ url_for('web.dashboard') }}">Back to dashboard</a>
-    </div>
-  </div>
+  {{ topup_hero("Top Up", "Choose an amount, then confirm from your authenticator device by scanning a QR code.", url_for('web.dashboard'), "Back to dashboard") }}
 
   <div class="profile-grid is-single-column">
     <article class="profile-panel profile-card">

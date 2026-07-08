@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_topup_shared.html" import topup_amount_panel, topup_notice %}
 
 {% block title %}Approve Top Up | SITBank{% endblock %}
 
@@ -13,35 +14,12 @@
 
   <div class="profile-grid is-single-column">
     {% if not valid %}
-    <article class="profile-panel profile-card">
-      <div class="notice">
-        <span class="notice-icon" aria-hidden="true">
-          <svg class="icon" focusable="false"><use href="#icon-alert"></use></svg>
-        </span>
-        <div>
-          <h2>Link no longer valid</h2>
-          <p class="muted">This approval link has expired, was already used, or is incorrect. Start a new top-up from your account to get a fresh link.</p>
-        </div>
-      </div>
-    </article>
+    {{ topup_notice("alert", "Link no longer valid", "This approval link has expired, was already used, or is incorrect. Start a new top-up from your account to get a fresh link.") }}
     {% elif approved %}
-    <article class="profile-panel profile-card">
-      <div class="notice">
-        <span class="notice-icon" aria-hidden="true">
-          <svg class="icon" focusable="false"><use href="#icon-check-circle"></use></svg>
-        </span>
-        <div>
-          <h2>Top-up approved</h2>
-          <p class="muted">SGD {{ "%.2f"|format(amount) }} has been added to the account. You can close this page.</p>
-        </div>
-      </div>
-    </article>
+    {{ topup_notice("check-circle", "Top-up approved", ("SGD %.2f"|format(amount)) ~ " has been added to the account. You can close this page.") }}
     {% else %}
     <article class="profile-panel profile-card">
-      <div class="profile-panel-title">
-        <p class="eyebrow">Amount</p>
-        <h2>SGD {{ "%.2f"|format(amount) }}</h2>
-      </div>
+      {{ topup_amount_panel(amount) }}
       <p class="muted">Enter the current 6-digit code from your authenticator app to approve this top-up.</p>
       <form method="post" novalidate>
         {{ form.hidden_tag() }}
