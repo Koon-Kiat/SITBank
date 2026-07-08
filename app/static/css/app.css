@@ -1061,7 +1061,8 @@ select:focus {
 .alerts {
   display: grid;
   gap: var(--space-3);
-  margin-bottom: var(--space-5);
+  width: min(560px, 100%);
+  margin: 0 auto var(--space-5);
 }
 
 .alerts .alert {
@@ -1098,34 +1099,17 @@ select:focus {
   box-shadow: var(--shadow-soft);
 }
 
-.alert-message {
+.alert span {
   flex: 1 1 auto;
 }
 
-.alert-icon {
-  display: inline-flex;
-  flex: 0 0 auto;
-  color: currentColor;
-}
-
-.alert-icon .icon {
-  width: 20px;
-  height: 20px;
-}
-
-.alert-close {
-  flex: 0 0 auto;
-  border: none;
-  background: none;
-  padding: 0 var(--space-1);
-  color: currentColor;
-  font-size: 1.25rem;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.alert-close:hover {
-  opacity: 0.7;
+.alert::before {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  border-radius: 50%;
+  background: currentColor;
+  content: "";
 }
 
 
@@ -2176,6 +2160,16 @@ th {
 }
 
 @media (max-width: 640px) {
+  .empty-state .button-row {
+    flex-direction: column;
+    align-items: stretch;
+    justify-self: stretch;
+  }
+
+  .empty-state .button-row .button {
+    width: 100%;
+  }
+
   .statement-flow {
     flex-direction: column;
     align-items: flex-start;
@@ -2897,6 +2891,7 @@ th {
   .nav .button,
   .nav button {
     width: 100%;
+    text-align: center;
   }
 
   .admin-form-grid,
