@@ -66,6 +66,26 @@ def verify_turnstile_token(token: str | None, *, expected_action: str | None = N
     action_matches = not expected_action or result.get("action") == expected_action
     if not action_matches and not _accepts_test_action(token_text, result):
         raise TurnstileError(_CHALLENGE_FAILED_MESSAGE)
+    _verify_turnstile_hostname(result)
+
+
+def _verify_turnstile_hostname(result: dict[str, object]) -> None:
+    """Fail closed unless the Siteverify response hostname is expected.
+
+    When ``TURNSTILE_ALLOWED_HOSTNAMES`` is configured, the provider-returned
+    hostname must match it in every environment. When it is not configured,
+    production-like deployments still fail closed rather than silently
+    accepting a token solved against an unexpected hostname; local/test
+    deployments are left permissive so fixtures do not need a hostname field.
+    """
+    allowed_hostnames = current_app.config.get("TURNSTILE_ALLOWED_HOSTNAMES") or frozenset()
+    if allowed_hostnames:
+        provided_hostname = str(result.get("hostname") or "").strip().casefold()
+        if provided_hostname not in allowed_hostnames:
+            raise TurnstileError(_CHALLENGE_FAILED_MESSAGE)
+        return
+    if _production_like():
+        raise TurnstileError(_CHALLENGE_FAILED_MESSAGE)
 
 
 def require_turnstile(action: str, token: str | None = None) -> None:

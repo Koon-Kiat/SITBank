@@ -254,9 +254,13 @@ for staff/admin/root-admin identities, so they cannot be used for customer
 registration or customer profile email changes. Registration canonicalizes
 configured plus aliases and dot-insensitive domains, maps configured equivalent
 domains, and rejects configured temporary-email domains before OTP issuance.
-The canonical value has a customer-only unique index. Public duplicate and
-ineligible outcomes are deliberately identical and minimal; redacted audit
-reason codes retain operational detail. Evidence:
+The canonical value has a customer-only unique index. This is a deliberate
+usability trade-off, not full anti-enumeration: the web registration-details
+step gives specific per-field feedback for duplicate username and duplicate
+phone number so a returning user can correct the form, while duplicate email
+and every JSON API duplicate-field response remain generic and identical to
+other ineligible outcomes; redacted audit reason codes retain operational
+detail regardless of which surface returned the response. Evidence:
 `app/auth/registration_otp.py`, `app/auth/services.py`,
 `app/auth/routes.py`, and `app/web/routes.py`.
 
@@ -268,7 +272,16 @@ defense in depth only; CSRF, rate limits, password screening, MFA, sessions,
 audit logging, and authorization remain enforced. In staging and production,
 the verifier requires the provider response `action` to exactly match the
 server-selected expected action for each protected route; missing, blank,
-malformed, or mismatched actions fail closed.
+malformed, or mismatched actions fail closed. When `TURNSTILE_ALLOWED_HOSTNAMES`
+is configured, the verifier also requires the Siteverify response `hostname`
+to match one of the approved customer hostnames in every environment;
+production-like deployments fail closed even when the allowlist is left
+unconfigured, so a token solved against an unexpected hostname cannot satisfy
+a protected route. Local and automated-test deployments remain permissive
+when the allowlist is unset so fixtures do not need a hostname field. Operators
+must still verify in Cloudflare that the configured Turnstile widget/site key
+pair is scoped to the expected production and staging hostnames; this control
+does not itself prove live Cloudflare-side domain binding.
 
 Customer browser routes use the same branded `Too many attempts` response when
 durable auth backoff, Flask-Limiter, or Nginx `limit_req` rejects a request.

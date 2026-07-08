@@ -245,10 +245,13 @@ runtimes and exposes only
 Production-like readiness fails closed unless Turnstile, the site and secret
 keys, `TURNSTILE_FAIL_CLOSED_IN_PRODUCTION`, and every runtime-relevant
 customer and admin route flag are enabled. This includes
-`TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED`. Private admin networking remains
-a separate boundary; it does not justify disabling bot protection. This wiring
-adds no public admin hostname and does not replace rate limits, CSRF, MFA,
-Cloudflare Access, or Tailscale.
+`TURNSTILE_CUSTOMER_MANUAL_RECOVERY_ENABLED`. Set `TURNSTILE_ALLOWED_HOSTNAMES`
+to the comma-separated production and staging customer hostnames so the
+verifier binds the Siteverify response to the expected hostname in every
+environment; production-like deployments fail closed even when this is left
+unset. Private admin networking remains a separate boundary; it does not
+justify disabling bot protection. This wiring adds no public admin hostname
+and does not replace rate limits, CSRF, MFA, Cloudflare Access, or Tailscale.
 
 Install the host-managed backup encryption recipients file before running
 database cutover or scheduled backups:

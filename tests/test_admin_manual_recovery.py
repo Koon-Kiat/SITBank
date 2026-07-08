@@ -378,6 +378,61 @@ def test_manual_recovery_detail_renders_safe_forms(admin_client):
     _assert_no_sensitive_recovery_material({"html": body, "json": json_response.get_json()})
 
 
+def test_manual_recovery_detail_read_records_required_context_audit(admin_client):
+    _root, root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    customer, _customer_secret = _create_customer("recover-audit-detail")
+    request_record = _create_manual_recovery_request(
+        customer,
+        status="under_review",
+        reason="Lost authenticator while travelling.",
+    )
+    _login_admin(admin_client, root_secret)
+
+    response = admin_client.get(f"/manual-recovery/requests/{request_record.id}")
+
+    assert response.status_code == 200
+    event = db.session.query(SecurityAuditEvent).filter_by(
+        event_type="manual_recovery_admin_context_read",
+        outcome="success",
+    ).one()
+    assert event.event_metadata.get("request_ref")
+    assert "reason" not in event.event_metadata
+
+
+def test_manual_recovery_detail_read_fails_closed_when_audit_write_fails(admin_client, monkeypatch):
+    from app.admin import services as admin_services
+    from app.security.audit import AuditWriteError
+
+    _root, root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    customer, _customer_secret = _create_customer("recover-audit-failure")
+    request_record = _create_manual_recovery_request(
+        customer,
+        status="under_review",
+        reason="Lost authenticator while travelling.",
+    )
+    _login_admin(admin_client, root_secret)
+
+    def _broken_audit_event_required(*_args, **_kwargs):
+        raise AuditWriteError("simulated required audit failure")
+
+    monkeypatch.setattr(admin_services, "audit_event_required", _broken_audit_event_required)
+
+    with pytest.raises(AuditWriteError):
+        admin_client.get(f"/manual-recovery/requests/{request_record.id}")
+
+    db.session.rollback()
+
+
 def test_manual_recovery_display_helpers_cover_safe_state_labels():
     assert _manual_recovery_transition_options({"status": "pending"}) == ["under_review", "denied"]
     assert _manual_recovery_transition_options({"status": "under_review"}) == ["approved", "denied"]

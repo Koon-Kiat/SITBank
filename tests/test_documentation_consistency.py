@@ -32,6 +32,38 @@ def test_turnstile_docs_match_deployment_wiring_without_secret_values():
     assert "Keep both\nadmin route flags false" not in docs
 
 
+def test_turnstile_docs_describe_hostname_binding():
+    docs = "\n".join(
+        Path(path).read_text(encoding="utf-8")
+        for path in (
+            "docs/DEPLOYMENT.md",
+            "docs/security/architecture/cryptography-and-authentication.md",
+        )
+    )
+
+    assert "TURNSTILE_ALLOWED_HOSTNAMES" in docs
+    assert "hostname" in docs.casefold()
+
+
+def test_registration_duplicate_feedback_docs_match_web_and_api_contract():
+    docs = Path("docs/security/architecture/cryptography-and-authentication.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "deliberately identical and minimal" not in docs
+    assert "duplicate username and duplicate\nphone number" in docs
+    assert "duplicate email\nand every JSON API duplicate-field response remain generic" in docs
+
+
+def test_manual_recovery_retention_docs_match_latest_submission_replacement():
+    docs = Path("docs/security/governance/data-retention-and-deactivation.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Preserve customer-provided free-text support/recovery context while the related" not in docs
+    assert "replaces the stored optional reviewer-context reason" in docs
+
+
 def test_root_admin_docs_match_environment_specific_counts():
     docs = "\n".join(
         Path(path).read_text(encoding="utf-8")

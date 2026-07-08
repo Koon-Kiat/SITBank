@@ -1655,6 +1655,11 @@ class Config:
         "TURNSTILE_ALLOW_TEST_ACTION",
         default=False,
     )
+    TURNSTILE_ALLOWED_HOSTNAMES = frozenset(
+        item.strip().casefold()
+        for item in os.getenv("TURNSTILE_ALLOWED_HOSTNAMES", "").split(",")
+        if item.strip()
+    )
     PROFILE_EMAIL_CHANGE_TTL_SECONDS = _int_env(
         "PROFILE_EMAIL_CHANGE_TTL_SECONDS",
         default="300",

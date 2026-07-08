@@ -147,6 +147,100 @@ def test_turnstile_verifier_accepts_exact_provider_action(app, monkeypatch):
         )
 
 
+def test_turnstile_verifier_accepts_configured_expected_hostname(app, monkeypatch):
+    app.config.update(
+        TURNSTILE_ENABLED=True,
+        TURNSTILE_SECRET_KEY="fake-turnstile-secret",
+        TURNSTILE_VERIFY_URL=turnstile.OFFICIAL_TURNSTILE_VERIFY_URL,
+        TURNSTILE_ALLOWED_HOSTNAMES=frozenset({"sitbank.example"}),
+    )
+    _install_turnstile_response(
+        monkeypatch,
+        {"success": True, "action": "customer_login", "hostname": "sitbank.example"},
+    )
+
+    with app.test_request_context("/auth/login", method="POST"):
+        turnstile.verify_turnstile_token(
+            "browser-token",
+            expected_action="customer_login",
+        )
+
+
+def test_turnstile_verifier_rejects_unexpected_hostname(app, monkeypatch):
+    app.config.update(
+        TURNSTILE_ENABLED=True,
+        TURNSTILE_SECRET_KEY="fake-turnstile-secret",
+        TURNSTILE_VERIFY_URL=turnstile.OFFICIAL_TURNSTILE_VERIFY_URL,
+        TURNSTILE_ALLOWED_HOSTNAMES=frozenset({"sitbank.example"}),
+    )
+    _install_turnstile_response(
+        monkeypatch,
+        {"success": True, "action": "customer_login", "hostname": "attacker.example"},
+    )
+
+    with app.test_request_context("/auth/login", method="POST"):
+        with pytest.raises(turnstile.TurnstileError):
+            turnstile.verify_turnstile_token(
+                "browser-token",
+                expected_action="customer_login",
+            )
+
+
+def test_turnstile_verifier_rejects_missing_hostname_when_allowlist_configured(app, monkeypatch):
+    app.config.update(
+        TURNSTILE_ENABLED=True,
+        TURNSTILE_SECRET_KEY="fake-turnstile-secret",
+        TURNSTILE_VERIFY_URL=turnstile.OFFICIAL_TURNSTILE_VERIFY_URL,
+        TURNSTILE_ALLOWED_HOSTNAMES=frozenset({"sitbank.example"}),
+    )
+    _install_turnstile_response(monkeypatch, {"success": True, "action": "customer_login"})
+
+    with app.test_request_context("/auth/login", method="POST"):
+        with pytest.raises(turnstile.TurnstileError):
+            turnstile.verify_turnstile_token(
+                "browser-token",
+                expected_action="customer_login",
+            )
+
+
+def test_turnstile_verifier_fails_closed_in_production_without_hostname_allowlist(app, monkeypatch):
+    app.config.update(
+        APP_ENV="production",
+        DEPLOYMENT_TARGET="production",
+        TURNSTILE_ENABLED=True,
+        TURNSTILE_SECRET_KEY="fake-turnstile-secret",
+        TURNSTILE_VERIFY_URL=turnstile.OFFICIAL_TURNSTILE_VERIFY_URL,
+        TURNSTILE_ALLOWED_HOSTNAMES=frozenset(),
+    )
+    _install_turnstile_response(
+        monkeypatch,
+        {"success": True, "action": "customer_login", "hostname": "sitbank.example"},
+    )
+
+    with app.test_request_context("/auth/login", method="POST"):
+        with pytest.raises(turnstile.TurnstileError):
+            turnstile.verify_turnstile_token(
+                "browser-token",
+                expected_action="customer_login",
+            )
+
+
+def test_turnstile_verifier_allows_missing_hostname_in_local_test_deployments(app, monkeypatch):
+    app.config.update(
+        TURNSTILE_ENABLED=True,
+        TURNSTILE_SECRET_KEY="fake-turnstile-secret",
+        TURNSTILE_VERIFY_URL=turnstile.OFFICIAL_TURNSTILE_VERIFY_URL,
+        TURNSTILE_ALLOWED_HOSTNAMES=frozenset(),
+    )
+    _install_turnstile_response(monkeypatch, {"success": True, "action": "customer_login"})
+
+    with app.test_request_context("/auth/login", method="POST"):
+        turnstile.verify_turnstile_token(
+            "browser-token",
+            expected_action="customer_login",
+        )
+
+
 def test_turnstile_verifier_accepts_test_action_only_for_explicit_test_keys(app, monkeypatch):
     app.config.update(
         TURNSTILE_ENABLED=True,
