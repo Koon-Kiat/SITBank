@@ -35,7 +35,7 @@
       </div>
       {% if g.current_user.account_number %}
       <p class="muted">
-        Account No: <span id="payup-acct-masked">•••-•••-{{ g.current_user.account_number[-3:] }}</span><span id="payup-acct-full" hidden>{{ g.current_user.account_number[:3] }}-{{ g.current_user.account_number[3:6] }}-{{ g.current_user.account_number[6:] }}</span>
+        Account No: <span id="payup-acct-masked">•••-•••-•••-{{ g.current_user.account_number[-3:] }}</span><span id="payup-acct-full" hidden>{{ g.current_user.account_number[:3] }}-{{ g.current_user.account_number[3:6] }}-{{ g.current_user.account_number[6:9] }}-{{ g.current_user.account_number[9:] }}</span>
         <button id="payup-acct-eye-btn" class="text-eye-btn" type="button" aria-label="Show account number" aria-pressed="false">
           <svg class="icon" focusable="false" aria-hidden="true"><use id="payup-acct-eye-icon" href="#icon-eye-off"></use></svg>
         </button>

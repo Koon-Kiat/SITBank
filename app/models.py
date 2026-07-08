@@ -1005,7 +1005,7 @@ class TransactionDispute(db.Model):
         return f"<TransactionDispute id={self.id!r} transaction_id={self.transaction_id!r} status={self.status!r}>"
 
 
-SUPPORT_TICKET_CATEGORIES = ("enquiry", "security_concern", "other")
+SUPPORT_TICKET_CATEGORIES = ("enquiry", "security_concern", "other", "account_recovery")
 SUPPORT_TICKET_STATUSES = ("open", "in_review", "resolved", "closed")
 
 
@@ -1047,7 +1047,7 @@ class SupportTicket(db.Model):
 
     __table_args__ = (
         db.CheckConstraint(
-            "category IN ('enquiry', 'security_concern', 'other')",
+            "category IN ('enquiry', 'security_concern', 'other', 'account_recovery')",
             name="ck_support_tickets_category",
         ),
         db.CheckConstraint(
