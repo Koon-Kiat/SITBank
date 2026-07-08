@@ -900,8 +900,11 @@ def test_successful_local_transfer_sends_withdrawal_deposit_and_limit_warning(
     ]
     assert deliveries[-3]["to"] == "alice@example.com"
     assert "withdrawal Local Transfer transaction was successful" in deliveries[-3]["body"]
+    assert "Recipient: Bob Recipient" in deliveries[-3]["body"]
     assert deliveries[-2]["to"] == "bob@example.com"
     assert "deposit Local Transfer transaction was successful" in deliveries[-2]["body"]
+    assert "Sender: Alice Sender" in deliveries[-2]["body"]
+    assert "Recipient:" not in deliveries[-2]["body"]
     assert deliveries[-1]["to"] == "alice@example.com"
     assert "80.00% of your limit" in deliveries[-1]["body"]
 

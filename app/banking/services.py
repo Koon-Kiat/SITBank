@@ -158,7 +158,8 @@ def send_transfer_notification(
     if amount is not None:
         lines.append(f"Amount: SGD {_format_money(amount)}")
     if counterparty_label:
-        lines.append(f"Recipient: {counterparty_label}")
+        counterparty_field = "Sender" if normalized_direction == "deposit" else "Recipient"
+        lines.append(f"{counterparty_field}: {counterparty_label}")
     if transaction_reference:
         lines.append(f"Reference: {transaction_reference[:8].upper()}")
     lines.append(
