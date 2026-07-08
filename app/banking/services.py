@@ -1033,6 +1033,14 @@ def credit_account_topup(user: User, amount: Decimal) -> TopUpCredit:
             "credit_ref": audit_reference("topup_credit", credit_ref),
         },
     )
+    send_transfer_notification(
+        locked_user,
+        direction="deposit",
+        outcome="success",
+        amount=amount,
+        channel="Top Up",
+        transaction_reference=credit_ref,
+    )
     return credit
 
 
