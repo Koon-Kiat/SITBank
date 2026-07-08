@@ -127,6 +127,14 @@ class PayupConfirmForm(FlaskForm):
     totp_code = _totp_code_field(required=False)
 
 
+class TopUpForm(FlaskForm):
+    amount = _amount_field()
+
+
+class TopUpApprovalForm(FlaskForm):
+    totp_code = _totp_code_field()
+
+
 class TransferLimitsForm(FlaskForm):
     payup_limit = SelectField("PayUp daily limit", choices=TRANSFER_LIMIT_CHOICES, validators=[InputRequired()])
     payup_limit_custom = StringField(

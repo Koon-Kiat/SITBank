@@ -969,6 +969,68 @@ ROUTE_SECURITY_INVENTORY = {
         "step_up": "required",
         "public_justification": "",
     },
+    "banking.topup": {
+        "endpoint": "banking.topup",
+        "rule": "/banking/topup",
+        "methods": {"GET"},
+        "access": "authenticated",
+        "classification": "topup",
+        "csrf": "not_applicable",
+        "rate_limit": "edge_app",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
+    "banking.topup_submit": {
+        "endpoint": "banking.topup_submit",
+        "rule": "/banking/topup",
+        "methods": {"POST"},
+        "access": "authenticated",
+        "classification": "topup",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
+    "banking.topup_status": {
+        "endpoint": "banking.topup_status",
+        "rule": "/banking/topup/status/<selector>",
+        "methods": {"GET"},
+        "access": "authenticated",
+        "classification": "topup",
+        "csrf": "not_applicable",
+        "rate_limit": "per_route",
+        "step_up": "not_required",
+        "public_justification": "",
+    },
+    "banking.topup_approve": {
+        "endpoint": "banking.topup_approve",
+        "rule": "/banking/topup/approve/<token>",
+        "methods": {"GET"},
+        "access": "public",
+        "classification": "topup_approval",
+        "csrf": "not_applicable",
+        "rate_limit": "edge_app",
+        "step_up": "not_required",
+        "public_justification": (
+            "Reached only via an unguessable single-use QR token generated for an "
+            "already-authenticated session; grants no access by itself, since TOTP "
+            "verification still happens on submission."
+        ),
+    },
+    "banking.topup_approve_submit": {
+        "endpoint": "banking.topup_approve_submit",
+        "rule": "/banking/topup/approve/<token>",
+        "methods": {"POST"},
+        "access": "public",
+        "classification": "topup_approval",
+        "csrf": "required",
+        "rate_limit": "per_route",
+        "step_up": "required",
+        "public_justification": (
+            "Scanning device has no SITBank login session; the selector/verifier token "
+            "plus a fresh TOTP code together stand in for login + step-up."
+        ),
+    },
     "banking.statement": {
         "endpoint": "banking.statement",
         "rule": "/banking/statement",
@@ -1100,6 +1162,7 @@ def test_route_inventory_has_complete_security_decisions(app):
                     "generate_mfa_replacement",
                     "regenerate_totp_recovery_codes",
                     "update_profile_details",
+                    "verify_totp_code_for_user",
                 }
                 assert (
                     "verify_high_risk_authorization" in source
