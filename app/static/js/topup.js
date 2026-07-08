@@ -25,7 +25,7 @@
     presetGroup.addEventListener("click", function (event) {
       const presetButton = event.target.closest("[data-topup-preset]");
       if (presetButton && amountInput) {
-        amountInput.value = presetButton.getAttribute("data-topup-preset");
+        amountInput.value = presetButton.dataset.topupPreset;
         form?.requestSubmit();
         return;
       }

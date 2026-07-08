@@ -31,6 +31,10 @@ from .time_display import sgt_datetime, utc_iso
 from .web.routes import web_bp
 
 
+INVITE_ACCEPT_START_ENDPOINT = "admin.invite_accept_start"
+INVITE_ACCEPT_VERIFY_ENDPOINT = "admin.invite_accept_verify"
+
+
 def create_app(config_object: type[Config] = Config, *, app_mode: str = "customer") -> Flask:
     app = Flask(__name__)
     app.logger.disabled = False
@@ -175,8 +179,8 @@ def register_error_handlers(app: Flask) -> None:
     @app.errorhandler(CSRFError)
     def csrf_error(error):
         if request.endpoint in {
-            "admin.invite_accept_start",
-            "admin.invite_accept_verify",
+            INVITE_ACCEPT_START_ENDPOINT,
+            INVITE_ACCEPT_VERIFY_ENDPOINT,
         }:
             from .admin.routes import invite_acceptance_csrf_error_response
             from .security.audit import audit_event
@@ -262,8 +266,8 @@ def register_invite_acceptance_response_headers(app: Flask) -> None:
     invite_acceptance_endpoints = frozenset(
         {
             "admin.invite_accept_info",
-            "admin.invite_accept_start",
-            "admin.invite_accept_verify",
+            INVITE_ACCEPT_START_ENDPOINT,
+            INVITE_ACCEPT_VERIFY_ENDPOINT,
         }
     )
 
@@ -278,7 +282,7 @@ def register_invite_acceptance_response_headers(app: Flask) -> None:
 
 
 def _invite_acceptance_phase_for_endpoint(endpoint: str | None) -> str:
-    if endpoint == "admin.invite_accept_verify":
+    if endpoint == INVITE_ACCEPT_VERIFY_ENDPOINT:
         return "verify"
     return "start"
 

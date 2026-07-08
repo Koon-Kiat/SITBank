@@ -150,6 +150,16 @@ INVITE_DUPLICATE_IDENTITY_ERROR = (
 INVITE_WORKPLACE_DELIVERY_ERROR = (
     "Setup could not send the workplace verification code. Ask a root admin to reissue the invite or retry later."
 )
+FORBIDDEN_STAFF_INVITE_ACCEPTANCE_FIELDS = frozenset(
+    {
+        "role",
+        "workplace_email",
+        "email",
+        "account_type",
+        "customer_user_id",
+        "is_admin",
+    }
+)
 STAFF_INVITE_NOT_FOUND_ERROR = "Invite not found"
 INVALID_WORKPLACE_EMAIL_ERROR = "Invalid workplace email"
 GENERIC_INVITE_ERROR = "Invite link is invalid or expired"
@@ -3436,24 +3446,12 @@ def start_invite_acceptance(
     _ensure_invite_acceptance_can_start(invite, session_hash)
     invite_id = int(invite.id)
     created_setup_user_id: int | None = None
-    try:
-        name = validate_full_name(full_name)
-    except AuthError:
-        audit_event("staff_invite_accept", "failure", metadata={"reason": "invalid_full_name"})
-        raise
-    try:
-        phone = validate_phone_number(phone_number)
-    except AuthError:
-        audit_event("staff_invite_accept", "failure", metadata={"reason": "invalid_phone"})
-        raise
-    if password != confirm_password:
-        audit_event("staff_invite_accept", "failure", metadata={"reason": "password_mismatch"})
-        raise AuthError("Passwords must match", 400)
-    try:
-        validate_password_policy(password)
-    except PasswordPolicyError as exc:
-        audit_event("staff_invite_accept", "failure", metadata={"reason": "password_policy"})
-        raise AuthError(str(exc), 400) from exc
+    name, phone = _validate_invite_acceptance_start_details(
+        full_name=full_name,
+        phone_number=phone_number,
+        password=password,
+        confirm_password=confirm_password,
+    )
 
     user = db.session.get(User, invite.setup_user_id) if invite.setup_user_id else None
     if user is None:
@@ -3614,6 +3612,50 @@ def _staff_invite_mfa_binding(invite_id: int) -> str:
     return active_hmac_hex(f"staff-invite-mfa:{int(invite_id)}", length=64)
 
 
+def _validate_invite_acceptance_start_details(
+    *,
+    full_name: str,
+    phone_number: str,
+    password: str,
+    confirm_password: str,
+) -> tuple[str, str]:
+    try:
+        name = validate_full_name(full_name)
+    except AuthError:
+        audit_event(
+            "staff_invite_accept",
+            "failure",
+            metadata={"reason": "invalid_full_name"},
+        )
+        raise
+    try:
+        phone = validate_phone_number(phone_number)
+    except AuthError:
+        audit_event(
+            "staff_invite_accept",
+            "failure",
+            metadata={"reason": "invalid_phone"},
+        )
+        raise
+    if password != confirm_password:
+        audit_event(
+            "staff_invite_accept",
+            "failure",
+            metadata={"reason": "password_mismatch"},
+        )
+        raise AuthError("Passwords must match", 400)
+    try:
+        validate_password_policy(password)
+    except PasswordPolicyError as exc:
+        audit_event(
+            "staff_invite_accept",
+            "failure",
+            metadata={"reason": "password_policy"},
+        )
+        raise AuthError(str(exc), 400) from exc
+    return name, phone
+
+
 def _invite_acceptance_is_locked(invite: StaffInvite) -> bool:
     return bool(invite.acceptance_locked_at or invite.acceptance_verify_locked_at)
 
@@ -3708,7 +3750,7 @@ def _clear_failed_invite_acceptance_start(invite_id: int, setup_user_id: int | N
     invite = db.session.get(StaffInvite, int(invite_id))
     if invite is None:
         return
-    if setup_user_id is not None and invite.setup_user_id == int(setup_user_id):
+    if invite.setup_user_id == int(setup_user_id):
         setup_user = db.session.get(User, int(setup_user_id))
         invite.setup_user_id = None
         if setup_user is not None and setup_user.account_status == "setup_pending":
@@ -4011,8 +4053,8 @@ def _workplace_code_hmac(invite: StaffInvite, code: str) -> str:
 
 
 def _reject_forged_invite_fields(request_fields: set[str]) -> None:
-    forbidden = {"role", "workplace_email", "email", "account_type", "customer_user_id", "is_admin"}
-    forged = sorted(forbidden & {field.strip() for field in request_fields})
+    submitted_fields = {field.strip() for field in request_fields}
+    forged = sorted(FORBIDDEN_STAFF_INVITE_ACCEPTANCE_FIELDS & submitted_fields)
     if forged:
         audit_event("staff_invite_accept", "failure", metadata={"reason": "forged_fields", "fields": forged})
         raise AuthError("Invalid request", 400)

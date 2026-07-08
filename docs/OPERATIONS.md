@@ -894,11 +894,17 @@ caps require step-up. Low-risk transfers within those caps do
 not require an additional code. These PayUp posts rely on the dedicated durable
 account/session/source/recipient limits plus the existing edge controls; they
 do not retain an older MFA-principal route limit that can undercut the
-configured PayUp policy. SITBank currently has no general successful-transfer
-notification channel to reuse, so successful PayUp execution is recorded by
-required transaction audit evidence and the authenticated browser result. A
-future email or push channel requires a separate reviewed delivery and privacy
-design.
+configured PayUp policy.
+
+The customer transfer activity email preference controls only routine
+withdrawal and deposit emails for Local Transfer and PayUp. Daily-limit,
+transfer-limit, account, security, MFA, recovery, password, session,
+staff/admin, and other high-risk notifications remain mandatory and cannot be
+disabled through this setting. `POST /profile/notification-preferences`
+intentionally does not require TOTP because this preference is not a high-risk
+account or security change; the route remains authenticated, CSRF-protected,
+current-user-scoped, frozen-account-blocked, edge/app rate-limited, and audits
+only the sanitized boolean preference state.
 
 Successful customer registration creates exactly one SGD 100.00 welcome credit
 inside the same transaction as the new customer row. The `registration_credits`

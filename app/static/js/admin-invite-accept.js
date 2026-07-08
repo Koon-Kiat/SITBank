@@ -10,13 +10,38 @@
     submitting: "Starting setup..."
   };
 
+  function turnstileMessage(required, hasFreshToken, state) {
+    if (hasFreshToken) {
+      return messages.ready;
+    }
+    const stateMessages = {
+      expired: messages.expired,
+      failed: messages.failed,
+      timeout: messages.timeout
+    };
+    return stateMessages[state] || (required ? messages.pending : "");
+  }
+
+  function setText(element, value) {
+    if (element) {
+      element.textContent = value;
+    }
+  }
+
+  function updateSubmitButton(button, form, required, hasFreshToken) {
+    if (button) {
+      button.disabled =
+        form.dataset.submitting === "true" || (required && !hasFreshToken);
+    }
+  }
+
   function updateForm(form, state, token, options) {
     const required = form.dataset.turnstileRequired === "true";
     const responseInput = form.querySelector("[data-turnstile-response]");
     const submitButton = form.querySelector("[data-invite-start-submit]");
     const status = form.querySelector("[data-turnstile-status]");
-    const shouldClearToken = Boolean(options && options.clearToken);
-    const storedToken = responseInput ? responseInput.value : "";
+    const shouldClearToken = Boolean(options?.clearToken);
+    const storedToken = responseInput?.value || "";
     const keepValidResponse =
       state === "pending" &&
       !shouldClearToken &&
@@ -31,17 +56,8 @@
     if (responseInput) {
       responseInput.value = hasFreshToken ? effectiveToken : "";
     }
-    if (status) {
-      if (hasFreshToken) status.textContent = messages.ready;
-      else if (effectiveState === "expired") status.textContent = messages.expired;
-      else if (effectiveState === "failed") status.textContent = messages.failed;
-      else if (effectiveState === "timeout") status.textContent = messages.timeout;
-      else status.textContent = required ? messages.pending : "";
-    }
-    if (submitButton) {
-      submitButton.disabled =
-        form.dataset.submitting === "true" || (required && !hasFreshToken);
-    }
+    setText(status, turnstileMessage(required, hasFreshToken, effectiveState));
+    updateSubmitButton(submitButton, form, required, hasFreshToken);
   }
 
   function setTurnstileState(state, token, options) {
@@ -55,11 +71,13 @@
     const responseInput = form.querySelector("[data-turnstile-response]");
     const submitButton = form.querySelector("[data-invite-start-submit]");
     const status = form.querySelector("[data-turnstile-status]");
-    const hasFreshToken = !required || Boolean(responseInput && responseInput.value);
+    const hasFreshToken = !required || Boolean(responseInput?.value);
 
     if (form.dataset.submitting === "true" || !hasFreshToken) {
       event.preventDefault();
-      if (status && !hasFreshToken) status.textContent = messages.required;
+      if (!hasFreshToken) {
+        setText(status, messages.required);
+      }
       return;
     }
 

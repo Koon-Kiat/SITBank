@@ -137,6 +137,7 @@ customer route inventory prevents silent addition of unclassified routes.
 | Admin/staff login requires active staff role, workplace email verification, and TOTP | `app/admin/services.py` |
 | Admin routes use a generated route inventory | `tests/test_admin_route_inventory_security.py` |
 | High-risk customer actions use TOTP step-up | `app/auth/services.py::verify_high_risk_authorization()` |
+| Optional transfer activity emails cannot suppress mandatory notifications; Daily-limit, transfer-limit, account, security, MFA, recovery, password, session, staff/admin, and other high-risk notifications remain mandatory | `app/banking/services.py`, `tests/test_local_transfer.py::test_disabled_transfer_activity_email_preference_keeps_daily_limit_alert`, `tests/test_payup.py::test_disabled_transfer_activity_email_preference_keeps_payup_daily_limit_alert`, `tests/test_transfer_limits.py` |
 | Payee routes filter by current user id | `app/banking/routes.py` |
 | PayUp requires a sender display nickname, reveals recipient phone plus PayUp nickname when set, applies multidimensional durable limits, avoids raw phone/nickname audit metadata, and recomputes a centralized fail-closed risk decision at confirmation and execution | `app/banking/routes.py`, `app/banking/services.py`, `tests/test_payup.py` |
 | Admin role permissions are exercised through one centralized positive and negative matrix, with mutation-side-effect assertions | `tests/test_admin_rbac_matrix.py` |
