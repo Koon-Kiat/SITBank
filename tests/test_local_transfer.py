@@ -850,3 +850,26 @@ def test_successful_local_transfer_sends_withdrawal_deposit_and_limit_warning(
     assert "deposit Local Transfer transaction was successful" in deliveries[-2]["body"]
     assert deliveries[-1]["to"] == "alice@example.com"
     assert "80.00% of your limit" in deliveries[-1]["body"]
+
+
+def test_disabled_transfer_activity_email_preference_skips_withdrawal_and_deposit_email(
+    app,
+    transfer_context,
+):
+    from app.security.email import password_reset_outbox
+
+    alice = transfer_context["alice"]
+    bob = transfer_context["bob"]
+    payee = transfer_context["payee"]
+    alice.transfer_activity_email_enabled = False
+    bob.transfer_activity_email_enabled = False
+    db.session.commit()
+    before_count = len(password_reset_outbox())
+
+    token = _make_pending_transfer(alice, payee, Decimal("50.00"))
+
+    with app.test_request_context("/banking/transfer/confirm", method="POST"):
+        txn_ref = execute_local_transfer(sender=alice, payee=payee, confirmation_token=token)
+
+    assert Transaction.query.filter_by(transaction_ref=txn_ref).count() == 1
+    assert len(password_reset_outbox()) == before_count

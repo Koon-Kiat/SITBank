@@ -940,6 +940,18 @@ form {
   display: none;
 }
 
+.checkbox-group label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 600;
+}
+
+.checkbox-group input {
+  width: 1rem;
+  height: 1rem;
+}
+
 input[data-limit-custom]::-webkit-outer-spin-button,
 input[data-limit-custom]::-webkit-inner-spin-button {
   margin: 0;
@@ -1171,6 +1183,11 @@ select:focus {
 .profile-grid {
   grid-template-columns: minmax(280px, 0.9fr) minmax(0, 1.1fr);
   align-items: stretch;
+}
+
+.profile-stack {
+  display: grid;
+  gap: var(--space-4);
 }
 
 .profile-grid.is-single-column {
