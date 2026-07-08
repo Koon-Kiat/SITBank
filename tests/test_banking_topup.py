@@ -91,6 +91,33 @@ def test_topup_happy_path_credits_balance_and_records_ledger(client):
     assert "Top Up" in history_html
     assert "+50.00" in history_html
 
+    from app.security.email import password_reset_outbox
+
+    deliveries = [item for item in password_reset_outbox() if item["to"] == user.email]
+    assert deliveries[-1]["subject"] == "SITBank Deposit successful"
+    assert "Top Up" in deliveries[-1]["body"]
+    assert "50.00" in deliveries[-1]["body"]
+
+
+def test_topup_email_suppressed_when_transfer_activity_email_disabled(client):
+    register(client)
+    login(client)
+    user, secret = enable_mfa_for_user()
+    user.transfer_activity_email_enabled = False
+    db.session.commit()
+
+    from app.security.email import password_reset_outbox
+
+    before_count = len(password_reset_outbox())
+
+    raw_token, _ = generate_topup_token(user.id, Decimal("25.00"))
+    approve_url = _topup_approve_url(raw_token)
+    code = pyotp.TOTP(secret, digits=6, interval=30).now()
+    approve_response = client.post(approve_url, data={"totp_code": code})
+    assert approve_response.status_code == 200
+
+    assert len(password_reset_outbox()) == before_count
+
 
 def test_topup_wrong_totp_rejected_without_crediting(client):
     register(client)
