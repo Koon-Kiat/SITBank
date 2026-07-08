@@ -1395,7 +1395,7 @@ def topup_approve_submit(token):
         flash("Top-up approval could not be completed. Try again later.", "error")
         return render_template(_TOPUP_APPROVE_TEMPLATE, valid=True, form=form, amount=request_row.amount), 500
 
-    send_topup_deposit_notification(user, request_row.amount, credit.credit_ref)
+    send_topup_deposit_notification(user, request_row.amount, credit.credit_ref, occurred_at=credit.created_at)
     return render_template(_TOPUP_APPROVE_TEMPLATE, valid=True, approved=True, amount=request_row.amount)
 
 
@@ -1470,6 +1470,8 @@ def transfer_limits_submit():
         flash(exc.message, "error")
         return render_template(_TRANSFER_LIMITS_TEMPLATE, form=form), exc.status_code
 
+    previous_payup_limit = Decimal(str(g.current_user.payup_daily_limit))
+    previous_local_transfer_limit = Decimal(str(g.current_user.local_transfer_daily_limit))
     g.current_user.payup_daily_limit = payup_limit
     g.current_user.local_transfer_daily_limit = local_transfer_limit
     db.session.commit()
@@ -1488,6 +1490,9 @@ def transfer_limits_submit():
         outcome="success",
         payup_limit=payup_limit,
         local_transfer_limit=local_transfer_limit,
+        previous_payup_limit=previous_payup_limit,
+        previous_local_transfer_limit=previous_local_transfer_limit,
+        changed_at=datetime.now(timezone.utc),
     )
     flash("Daily transfer limits updated.", "success")
     return redirect(url_for(_TRANSFER_LIMITS_ENDPOINT))

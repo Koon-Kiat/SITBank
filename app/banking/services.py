@@ -37,7 +37,13 @@ from app.models import (
     User,
 )
 from app.security.audit import AuditWriteError, audit_event, audit_event_required, audit_reference
-from app.security.email import send_security_email
+from app.security.email import (
+    EMAIL_CLOSING,
+    EMAIL_GREETING,
+    EMAIL_SIGN_OFF,
+    EMAIL_UNRECOGNIZED_ACTIVITY_NOTICE,
+    send_security_email,
+)
 from app.security.session_hmac import active_hmac_hex
 from app.security.sessions import (
     authenticated_session_age_seconds,
@@ -48,6 +54,7 @@ from app.security.transaction_integrity import (
     sign_transaction_integrity,
     transaction_integrity_status,
 )
+from app.time_display import sgt_date, sgt_time
 
 
 _SGT_OFFSET = timezone(timedelta(hours=8))
@@ -56,6 +63,11 @@ _PUBLIC_TRANSACTION_UNAVAILABLE_MESSAGE = "Transaction request cannot be process
 _PUBLIC_TRANSACTION_REPLAY_MESSAGE = "Transaction request has already been accepted."
 LOCAL_TRANSFER_CHANNEL = "Local Transfer"
 PAYUP_CHANNEL = "PayUp"
+TOPUP_CHANNEL = "Top Up"
+_EMAIL_GREETING = EMAIL_GREETING
+_EMAIL_CLOSING = EMAIL_CLOSING
+_EMAIL_SIGN_OFF = EMAIL_SIGN_OFF
+_EMAIL_UNRECOGNIZED_ACTIVITY_NOTICE = EMAIL_UNRECOGNIZED_ACTIVITY_NOTICE
 
 TRANSFER_RISK_NORMAL = "normal"
 TRANSFER_RISK_NEW_PAYEE = "new_payee"
@@ -127,7 +139,17 @@ def _amount_audit_band(amount: Decimal) -> str:
 
 
 def _format_money(amount: Decimal | object) -> str:
-    return str(Decimal(str(amount)).quantize(Decimal("0.01")))
+    return f"{Decimal(str(amount)).quantize(Decimal('0.01')):,}"
+
+
+def _masked_account_suffix(account_number: str | None) -> str:
+    digits = str(account_number or "")
+    return f"-{digits[-6:]}" if digits else "-000000"
+
+
+def _masked_phone_suffix(phone_number: str | None) -> str:
+    digits = str(phone_number or "")
+    return f"xxxx{digits[-4:]}" if digits else "xxxx0000"
 
 
 def send_transfer_notification(
@@ -139,6 +161,11 @@ def send_transfer_notification(
     amount: Decimal | None = None,
     transaction_reference: str | None = None,
     counterparty_label: str | None = None,
+    own_account_number: str | None = None,
+    counterparty_account_number: str | None = None,
+    counterparty_phone_number: str | None = None,
+    reference: str | None = None,
+    occurred_at: datetime | None = None,
 ) -> None:
     normalized_direction = str(direction or "").strip().casefold()
     normalized_outcome = str(outcome or "").strip().casefold()
@@ -152,23 +179,39 @@ def send_transfer_notification(
     direction_label = normalized_direction.title()
     status_label = "successful" if normalized_outcome == "success" else "unsuccessful"
     subject = f"SITBank {direction_label} {status_label}"
-    lines = [
-        f"A {direction_label.lower()} {channel} transaction was {status_label}.",
-    ]
-    if amount is not None:
-        lines.append(f"Amount: SGD {_format_money(amount)}")
-    if counterparty_label:
-        counterparty_field = "Sender" if normalized_direction == "deposit" else "Recipient"
-        lines.append(f"{counterparty_field}: {counterparty_label}")
-    if transaction_reference:
-        lines.append(f"Reference: {transaction_reference[:8].upper()}")
-    lines.append(
-        "If you did not request or expect this activity, contact SITBank support through the approved recovery path."
-    )
+    reference_number = transaction_reference[:8].upper() if transaction_reference else ""
+    when = occurred_at or datetime.now(timezone.utc)
+
+    if normalized_outcome != "success":
+        body = "\n".join(
+            [
+                _EMAIL_GREETING,
+                "",
+                f"We were unable to process your recent {channel} {normalized_direction} request.",
+                "",
+                _EMAIL_UNRECOGNIZED_ACTIVITY_NOTICE,
+                "",
+                _EMAIL_SIGN_OFF,
+            ]
+        )
+    else:
+        body = _build_transfer_success_email_body(
+            channel=channel,
+            direction=normalized_direction,
+            amount=amount,
+            counterparty_label=counterparty_label,
+            own_account_number=own_account_number,
+            counterparty_account_number=counterparty_account_number,
+            counterparty_phone_number=counterparty_phone_number,
+            reference=reference,
+            reference_number=reference_number,
+            when=when,
+        )
+
     _send_banking_email(
         user,
         subject,
-        "\n".join(lines),
+        body,
         event_type="banking_transfer_notification",
         metadata={
             "direction": normalized_direction,
@@ -176,6 +219,102 @@ def send_transfer_notification(
             "channel": channel,
         },
     )
+
+
+def _build_transfer_success_email_body(
+    *,
+    channel: str,
+    direction: str,
+    amount: Decimal | None,
+    counterparty_label: str | None,
+    own_account_number: str | None,
+    counterparty_account_number: str | None,
+    counterparty_phone_number: str | None,
+    reference: str | None,
+    reference_number: str,
+    when: datetime,
+) -> str:
+    amount_line = f"SGD {_format_money(amount)}" if amount is not None else "SGD 0.00"
+    description = reference.strip() if reference and reference.strip() else "—"
+
+    if channel == PAYUP_CHANNEL and direction == "withdrawal":
+        lines = [
+            _EMAIL_GREETING,
+            "",
+            f"The following PayUp transfer has been made to {counterparty_label or 'the recipient'} using their phone number.",
+            "",
+            f"Date: {sgt_date(when)}",
+            f"Time: {sgt_time(when)}",
+            f"Amount: {amount_line}",
+            f"From your account: Savings Account ({_masked_account_suffix(own_account_number)})",
+            f"Description: {description}",
+            f"Reference number: {reference_number}",
+            "",
+            _EMAIL_CLOSING,
+            "",
+            _EMAIL_SIGN_OFF,
+        ]
+    elif channel == PAYUP_CHANNEL and direction == "deposit":
+        lines = [
+            _EMAIL_GREETING,
+            "",
+            "A deposit was made in your account via PayUp. Here are the details:",
+            "",
+            f"Time of deposit: {sgt_time(when)}",
+            f"Amount: {amount_line}",
+            f"Phone number that money was deposited in: ({_masked_phone_suffix(counterparty_phone_number)})",
+            f"Reference number: {reference_number}",
+            "",
+            _EMAIL_SIGN_OFF,
+        ]
+    elif channel == LOCAL_TRANSFER_CHANNEL and direction == "withdrawal":
+        lines = [
+            _EMAIL_GREETING,
+            "",
+            "We have received your request to make the following transfer:",
+            "",
+            f"Date of Transfer: {sgt_date(when)}",
+            f"Time of Transfer: {sgt_time(when)}",
+            f"Amount: {amount_line}",
+            f"From your account: Savings Account ({_masked_account_suffix(own_account_number)})",
+            (
+                f"To account: {counterparty_label or 'the recipient'} savings account "
+                f"({_masked_account_suffix(counterparty_account_number)}) at SITBank"
+            ),
+            f"Description: {description}",
+            f"Reference number: {reference_number}",
+            "",
+            _EMAIL_CLOSING,
+            "",
+            _EMAIL_SIGN_OFF,
+        ]
+    elif channel == LOCAL_TRANSFER_CHANNEL and direction == "deposit":
+        lines = [
+            _EMAIL_GREETING,
+            "",
+            "A deposit was made in your account via Local Transfer. Here are the details:",
+            "",
+            f"Time of deposit: {sgt_time(when)}",
+            f"Amount: {amount_line}",
+            f"Account that money was deposited in: ({_masked_account_suffix(own_account_number)})",
+            f"Reference number: {reference_number}",
+            "",
+            _EMAIL_SIGN_OFF,
+        ]
+    else:
+        lines = [
+            _EMAIL_GREETING,
+            "",
+            f"A deposit was made in your account via {channel}. Here are the details:",
+            "",
+            f"Time of deposit: {sgt_time(when)}",
+            f"Amount: {amount_line}",
+            f"Reference number: {reference_number}",
+            "",
+            _EMAIL_SIGN_OFF,
+        ]
+
+    return "\n".join(lines)
 
 
 def maybe_send_daily_limit_warning(
@@ -219,23 +358,67 @@ def send_transfer_limit_change_notification(
     outcome: str,
     payup_limit: Decimal | None = None,
     local_transfer_limit: Decimal | None = None,
+    previous_payup_limit: Decimal | None = None,
+    previous_local_transfer_limit: Decimal | None = None,
+    changed_at: datetime | None = None,
 ) -> None:
     normalized_outcome = str(outcome or "").strip().casefold()
     if normalized_outcome not in {"success", "failure"}:
         raise ValueError("Unsupported transfer limit notification outcome")
 
     status_label = "successful" if normalized_outcome == "success" else "unsuccessful"
-    lines = [f"Your daily transfer limit change was {status_label}."]
-    if normalized_outcome == "success" and payup_limit is not None and local_transfer_limit is not None:
-        lines.append(f"PayUp daily limit: SGD {_format_money(payup_limit)}")
-        lines.append(f"Local Transfer daily limit: SGD {_format_money(local_transfer_limit)}")
-    lines.append(
-        "If you did not request this change, contact SITBank support through the approved recovery path."
-    )
+    subject = f"SITBank transfer limit change {status_label}"
+
+    if normalized_outcome != "success":
+        body = "\n".join(
+            [
+                _EMAIL_GREETING,
+                "",
+                "Your recent daily transfer limit change request was unsuccessful.",
+                "",
+                _EMAIL_UNRECOGNIZED_ACTIVITY_NOTICE,
+                "",
+                _EMAIL_SIGN_OFF,
+            ]
+        )
+    else:
+        when = changed_at or datetime.now(timezone.utc)
+        when_label = f"{sgt_time(when)} on {sgt_date(when)}"
+        changed_channels = []
+        if payup_limit is not None and payup_limit != previous_payup_limit:
+            changed_channels.append(("PayUp", previous_payup_limit, payup_limit))
+        if local_transfer_limit is not None and local_transfer_limit != previous_local_transfer_limit:
+            changed_channels.append(("Local Transfer", previous_local_transfer_limit, local_transfer_limit))
+
+        if changed_channels:
+            change_lines = [
+                (
+                    f"As you instructed, we updated your daily limit for {name} from "
+                    f"SGD {_format_money(old)} to SGD {_format_money(new)} at {when_label}."
+                )
+                for name, old, new in changed_channels
+            ]
+        else:
+            change_lines = [
+                f"As you instructed, we reviewed your daily transfer limit settings at {when_label}."
+            ]
+
+        body = "\n".join(
+            [
+                _EMAIL_GREETING,
+                "",
+                *change_lines,
+                "",
+                _EMAIL_CLOSING,
+                "",
+                _EMAIL_SIGN_OFF,
+            ]
+        )
+
     _send_banking_email(
         user,
-        f"SITBank transfer limit change {status_label}",
-        "\n".join(lines),
+        subject,
+        body,
         event_type="banking_transfer_limit_notification",
         metadata={"outcome": normalized_outcome},
     )
@@ -1134,7 +1317,12 @@ def credit_account_topup(user: User, amount: Decimal) -> TopUpCredit:
     return credit
 
 
-def send_topup_deposit_notification(user: User, amount: Decimal, credit_ref: str) -> None:
+def send_topup_deposit_notification(
+    user: User,
+    amount: Decimal,
+    credit_ref: str,
+    occurred_at: datetime | None = None,
+) -> None:
     safe_send_notification(
         "topup_deposit_notification",
         send_transfer_notification,
@@ -1142,9 +1330,9 @@ def send_topup_deposit_notification(user: User, amount: Decimal, credit_ref: str
         direction="deposit",
         outcome="success",
         amount=amount,
-        channel="Top Up",
+        channel=TOPUP_CHANNEL,
         transaction_reference=credit_ref,
-        counterparty_label="Top Up",
+        occurred_at=occurred_at,
     )
 
 
@@ -1270,6 +1458,10 @@ def execute_local_transfer(
         channel=LOCAL_TRANSFER_CHANNEL,
         transaction_reference=txn_ref,
         counterparty_label=payee.recipient_name,
+        own_account_number=sender.account_number,
+        counterparty_account_number=payee.account_number,
+        reference=reference,
+        occurred_at=txn_created_at,
     )
     safe_send_notification(
         "local_transfer_recipient_notification",
@@ -1281,6 +1473,8 @@ def execute_local_transfer(
         channel=LOCAL_TRANSFER_CHANNEL,
         transaction_reference=txn_ref,
         counterparty_label=sender.full_name or sender.username,
+        own_account_number=locked_recipient.account_number,
+        occurred_at=txn_created_at,
     )
     safe_send_notification(
         "local_transfer_daily_limit_notification",
@@ -1907,6 +2101,9 @@ def execute_payup_transfer(
         channel=PAYUP_CHANNEL,
         transaction_reference=txn_ref,
         counterparty_label=_payup_notification_label(locked_recipient),
+        own_account_number=sender.account_number,
+        reference=reference,
+        occurred_at=txn_created_at,
     )
     safe_send_notification(
         "payup_recipient_notification",
@@ -1918,6 +2115,8 @@ def execute_payup_transfer(
         channel=PAYUP_CHANNEL,
         transaction_reference=txn_ref,
         counterparty_label=_payup_notification_label(locked_sender),
+        counterparty_phone_number=locked_recipient.phone_number,
+        occurred_at=txn_created_at,
     )
     safe_send_notification(
         "payup_daily_limit_notification",

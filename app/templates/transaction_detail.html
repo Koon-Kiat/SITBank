@@ -40,7 +40,7 @@
         <dd>{{ "PayUp" if transaction.transaction_type == "payup" else ("Top Up" if transaction.transaction_type == "topup" else "Local Transfer") }}</dd>
       </div>
       <div>
-        <dt>Reference</dt>
+        <dt>Description</dt>
         <dd>{{ transaction.reference or "—" }}</dd>
       </div>
       <div>

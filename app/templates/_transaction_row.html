@@ -11,7 +11,7 @@
     <span class="badge">Received</span>
     {% endif %}
   </td>
-  <td data-label="Transaction ID" title="{{ txn.transaction_ref }}">{{ txn.transaction_ref[:8]|upper }}</td>
+  <td data-label="Reference No." title="{{ txn.transaction_ref }}">{{ txn.transaction_ref[:8]|upper }}</td>
   <td data-label="Recipient">
     {{ transaction_party(txn, user) }}
   </td>
@@ -24,7 +24,7 @@
     Local Transfer
     {% endif %}
   </td>
-  <td data-label="Reference">{{ txn.reference or "—" }}</td>
+  <td data-label="Description">{{ txn.reference or "—" }}</td>
   <td data-label="Amount (SGD)" class="cell-amount">
     {% if txn.transaction_type == 'topup' %}
     +{{ txn.amount }}

@@ -98,7 +98,29 @@ def test_transfer_limits_post_updates_with_valid_preset_and_totp(client, limits_
     ]
     delivery = deliveries[0]
     assert delivery["to"] == "alice@example.com"
-    assert "PayUp daily limit: SGD 1000.00" in delivery["body"]
+    assert "we updated your daily limit for PayUp from SGD 500.00 to SGD 1,000.00" in delivery["body"]
+    assert "Local Transfer" not in delivery["body"]
+
+
+def test_transfer_limits_post_updates_both_channels_lists_both_in_email(client, limits_context, monkeypatch):
+    from app.security.email import password_reset_outbox
+
+    alice = limits_context["alice"]
+    before_count = len(password_reset_outbox())
+    alice_secret = limits_context["alice_secret"]
+    code = _fresh_totp(alice_secret, monkeypatch)
+
+    response = client.post(
+        "/banking/settings/transfer-limits",
+        data={"payup_limit": "1000", "local_transfer_limit": "custom", "local_transfer_limit_custom": "750", "totp_code": code},
+    )
+
+    assert response.status_code == 302
+    deliveries = password_reset_outbox()[before_count:]
+    delivery = deliveries[-1]
+    assert delivery["subject"] == "SITBank transfer limit change successful"
+    assert "we updated your daily limit for PayUp from SGD 500.00 to SGD 1,000.00" in delivery["body"]
+    assert "we updated your daily limit for Local Transfer from SGD 500.00 to SGD 750.00" in delivery["body"]
 
 
 def test_transfer_limits_post_custom_amount_above_100_succeeds(client, limits_context, monkeypatch):

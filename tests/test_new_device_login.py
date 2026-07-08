@@ -55,7 +55,7 @@ def test_first_login_from_new_device_sends_mandatory_email_and_sets_cookie(clien
     new_device_email = deliveries[-1]
     assert new_device_email["to"] == user.email
     assert new_device_email["subject"] == "SITBank new device sign-in"
-    assert "Active Sessions" in new_device_email["body"]
+    assert "terminate the current session" in new_device_email["body"]
     assert "freeze" in new_device_email["body"].casefold()
 
     assert (

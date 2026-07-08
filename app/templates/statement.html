@@ -90,7 +90,7 @@
           <tr>
             <th>Type</th>
             <th>Counterparty</th>
-            <th>Reference</th>
+            <th>Description</th>
             <th>Amount (SGD)</th>
             <th>Status</th>
             <th>Date</th>
@@ -109,7 +109,7 @@
             <td data-label="Counterparty">
               {{ transaction_party(txn, user) }}
             </td>
-            <td data-label="Reference">{{ txn.reference or "—" }}</td>
+            <td data-label="Description">{{ txn.reference or "—" }}</td>
             <td data-label="Amount (SGD)" class="cell-amount">
               {% if txn.sender_id == user.id %}
               <span class="muted">−{{ txn.amount }}</span>

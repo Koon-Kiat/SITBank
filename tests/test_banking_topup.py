@@ -110,7 +110,7 @@ def test_topup_happy_path_credits_balance_and_records_ledger(client):
     assert deliveries[-1]["subject"] == "SITBank Deposit successful"
     assert "Top Up" in deliveries[-1]["body"]
     assert "50.00" in deliveries[-1]["body"]
-    assert "Sender: Top Up" in deliveries[-1]["body"]
+    assert "A deposit was made in your account via Top Up" in deliveries[-1]["body"]
 
 
 def test_topup_email_suppressed_when_transfer_activity_email_disabled(client):

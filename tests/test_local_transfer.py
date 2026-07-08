@@ -873,7 +873,7 @@ def test_unsuccessful_local_transfer_sends_withdrawal_failure_email(app, transfe
     delivery = password_reset_outbox()[-1]
     assert delivery["to"] == "alice@example.com"
     assert delivery["subject"] == "SITBank Withdrawal unsuccessful"
-    assert "withdrawal Local Transfer transaction was unsuccessful" in delivery["body"]
+    assert "unable to process your recent Local Transfer withdrawal request" in delivery["body"]
 
 
 def test_successful_local_transfer_sends_withdrawal_deposit_and_limit_warning(
@@ -899,11 +899,10 @@ def test_successful_local_transfer_sends_withdrawal_deposit_and_limit_warning(
         "SITBank Local Transfer daily limit 80% alert",
     ]
     assert deliveries[-3]["to"] == "alice@example.com"
-    assert "withdrawal Local Transfer transaction was successful" in deliveries[-3]["body"]
-    assert "Recipient: Bob Recipient" in deliveries[-3]["body"]
+    assert "We have received your request to make the following transfer" in deliveries[-3]["body"]
+    assert "To account: Bob Recipient savings account" in deliveries[-3]["body"]
     assert deliveries[-2]["to"] == "bob@example.com"
-    assert "deposit Local Transfer transaction was successful" in deliveries[-2]["body"]
-    assert "Sender: Alice Sender" in deliveries[-2]["body"]
+    assert "A deposit was made in your account via Local Transfer" in deliveries[-2]["body"]
     assert deliveries[-1]["to"] == "alice@example.com"
     assert "80.00% of your limit" in deliveries[-1]["body"]
 
