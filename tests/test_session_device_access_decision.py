@@ -76,3 +76,15 @@ def test_private_admin_workflows_use_one_protected_hostname_source():
     assert "environment:\n      name: admin-tailscale" in deployment
     assert "tag:github-ci-admin-verify" in manual
     assert "tag:github-ci-admin-verify" in deployment
+
+
+def test_session_management_does_not_understate_active_session_cap_status():
+    docs = "\n".join(path.read_text(encoding="utf-8") for path in DECISION_DOCS)
+    normalized = " ".join(docs.casefold().split())
+
+    # The single active customer/admin session cap is implemented; the docs
+    # must not describe it as still needs-triage/pending alongside the
+    # implemented-status evidence in the gap register and control matrix.
+    assert "active-session count caps are needs-triage" not in normalized
+    assert "single active customer/admin session cap" in normalized
+    assert "cryptographic device-bound proof" in normalized
