@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from flask_wtf import FlaskForm
-from wtforms import PasswordField, StringField
+from wtforms import BooleanField, PasswordField, StringField
 from wtforms.validators import Email, EqualTo, InputRequired, Length, Optional, Regexp, ValidationError
 
 from app.security.passwords import password_max_chars, password_min_length
@@ -166,6 +166,12 @@ class ProfileForm(FlaskForm):
             Optional(),
             Regexp(TOTP_RE, message=_MFA_CODE_ERROR),
         ],
+    )
+
+
+class ProfileNotificationPreferencesForm(FlaskForm):
+    transfer_activity_email_enabled = BooleanField(
+        "Email notifications for withdrawal and deposit"
     )
 
 
