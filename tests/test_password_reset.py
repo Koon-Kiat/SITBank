@@ -471,6 +471,70 @@ def test_manual_recovery_request_does_not_freeze_or_unlock_account(app, client):
         assert request_record.status == "pending"
 
 
+def test_manual_recovery_request_stores_optional_reason_without_leaking_to_audit(app, client):
+    with app.app_context():
+        user = _create_user("reason01", "reason01@example.com")
+        user_id = user.id
+
+    response = client.post(
+        "/auth/account-recovery",
+        json={
+            "identifier": "reason01@example.com",
+            "reason": "Lost my phone with my authenticator app on it.",
+        },
+    )
+
+    assert response.status_code == 200
+    with app.app_context():
+        request_record = db.session.execute(
+            db.select(ManualRecoveryRequest).where(ManualRecoveryRequest.user_id == user_id)
+        ).scalar_one()
+        assert request_record.reason == "Lost my phone with my authenticator app on it."
+
+        audit_row = db.session.execute(
+            db.select(SecurityAuditEvent).where(SecurityAuditEvent.event_type == "manual_recovery_requested")
+        ).scalar_one()
+        serialized_metadata = str(audit_row.event_metadata)
+        assert "Lost my phone" not in serialized_metadata
+        assert audit_row.event_metadata["reason_present"] is True
+        assert audit_row.event_metadata["reason_length"] == len(
+            "Lost my phone with my authenticator app on it."
+        )
+
+
+def test_manual_recovery_request_reason_is_optional(app, client):
+    response = client.post("/auth/account-recovery", json={"identifier": "no-reason@example.com"})
+
+    assert response.status_code == 200
+    with app.app_context():
+        request_record = db.session.execute(db.select(ManualRecoveryRequest)).scalar_one()
+        assert request_record.reason is None
+
+        audit_row = db.session.execute(
+            db.select(SecurityAuditEvent).where(SecurityAuditEvent.event_type == "manual_recovery_requested")
+        ).scalar_one()
+        assert audit_row.event_metadata["reason_present"] is False
+        assert audit_row.event_metadata["reason_length"] == 0
+
+
+def test_manual_recovery_request_generic_response_unaffected_by_reason(app, client):
+    with app.app_context():
+        _create_user("reason02", "reason02@example.com")
+
+    known = client.post(
+        "/auth/account-recovery",
+        json={"identifier": "reason02@example.com", "reason": "Some detailed context here."},
+    )
+    unknown = client.post(
+        "/auth/account-recovery",
+        json={"identifier": "missing-reason@example.com", "reason": "Some detailed context here."},
+    )
+
+    assert known.status_code == 200
+    assert unknown.status_code == 200
+    assert known.get_json() == unknown.get_json()
+
+
 def test_manual_recovery_dedupes_active_requests_and_keeps_public_response_generic(app, client):
     with app.app_context():
         user = _create_user("recover01", "recover01@example.com")

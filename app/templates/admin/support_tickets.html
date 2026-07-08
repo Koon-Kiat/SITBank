@@ -1,0 +1,119 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Support tickets - SITBank Admin{% endblock %}
+
+{% block content %}
+<section class="dashboard admin-dashboard">
+  <div class="dashboard-header">
+    <div class="page-heading">
+      <p class="eyebrow">Support review</p>
+      <h1 id="support-tickets-heading">Support tickets</h1>
+      <p class="muted">Review customer support requests and update their status.</p>
+    </div>
+  </div>
+
+  <section class="panel" aria-labelledby="support-tickets-heading">
+    <div class="admin-table-wrap">
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th scope="col">Ticket</th>
+            <th scope="col">Customer</th>
+            <th scope="col">Category</th>
+            <th scope="col">Subject</th>
+            <th scope="col">Status</th>
+            <th scope="col">Filed</th>
+            <th scope="col">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in support_tickets %}
+          <tr>
+            <td>#{{ item.id }}</td>
+            <td>{{ item.reporter_username or item.reporter_ref or "unavailable" }}</td>
+            <td>{{ item.category }}</td>
+            <td>{{ item.subject }}</td>
+            <td>{{ item.status }}</td>
+            <td><time datetime="{{ item.created_at or '' }}">{{ item.created_at_display or "n/a" }}</time></td>
+            <td><a class="button secondary small" href="{{ url_for('admin.support_ticket_detail', ticket_id=item.id) }}">Review</a></td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="7">No support tickets.</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  {% if selected_ticket %}
+  <section class="panel" aria-labelledby="support-ticket-detail-heading">
+    <div class="section-header">
+      <h2 id="support-ticket-detail-heading">Ticket #{{ selected_ticket.id }}</h2>
+    </div>
+    <dl class="detail-list">
+      <div>
+        <dt>Customer</dt>
+        <dd>{{ selected_ticket.reporter_username or selected_ticket.reporter_ref or "unavailable" }}</dd>
+      </div>
+      <div>
+        <dt>Category</dt>
+        <dd>{{ selected_ticket.category }}</dd>
+      </div>
+      <div>
+        <dt>Subject</dt>
+        <dd>{{ selected_ticket.subject }}</dd>
+      </div>
+      <div>
+        <dt>Description</dt>
+        <dd>{{ selected_ticket.description }}</dd>
+      </div>
+      <div>
+        <dt>Status</dt>
+        <dd>{{ selected_ticket.status }}</dd>
+      </div>
+      <div>
+        <dt>Filed</dt>
+        <dd><time datetime="{{ selected_ticket.created_at or '' }}">{{ selected_ticket.created_at_display or "n/a" }}</time></dd>
+      </div>
+      <div>
+        <dt>Resolved</dt>
+        <dd>{{ selected_ticket.resolved_at_display or "not resolved" }}</dd>
+      </div>
+      <div>
+        <dt>Resolution note</dt>
+        <dd>{{ selected_ticket.resolution_note or "not provided" }}</dd>
+      </div>
+    </dl>
+    {% if selected_ticket.status in ("open", "in_review") %}
+    <div class="action-grid">
+      {% if selected_ticket.status == "open" %}
+      <form method="post" action="{{ url_for('admin.support_ticket_transition', ticket_id=selected_ticket.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="status" value="in_review">
+        <label for="in-review-note">Note (optional)</label>
+        <input id="in-review-note" name="resolution_note" maxlength="1000">
+        <button class="button secondary" type="submit">Mark In Review</button>
+      </form>
+      {% endif %}
+      <form method="post" action="{{ url_for('admin.support_ticket_transition', ticket_id=selected_ticket.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="status" value="resolved">
+        <label for="resolve-note">Resolution note</label>
+        <input id="resolve-note" name="resolution_note" maxlength="1000">
+        <button class="button" type="submit">Resolve</button>
+      </form>
+      <form method="post" action="{{ url_for('admin.support_ticket_transition', ticket_id=selected_ticket.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="status" value="closed">
+        <label for="close-note">Closing note</label>
+        <input id="close-note" name="resolution_note" maxlength="1000">
+        <button class="button secondary" type="submit">Close</button>
+      </form>
+    </div>
+    {% endif %}
+  </section>
+  {% endif %}
+</section>
+{% endblock %}

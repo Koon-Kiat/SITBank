@@ -29,6 +29,7 @@ from app.auth.forms import (
     RegisterDetailsForm,
     RegistrationOtpCodeForm,
     RegistrationOtpRequestForm,
+    SupportTicketForm,
     TotpForm,
 )
 from app.admin.services import is_customer_user
@@ -80,7 +81,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.banking.forms import TransactionDisputeForm
 from app.extensions import db, limiter
-from app.models import DISPUTE_OPEN_STATUSES, Transaction, TransactionDispute
+from app.models import DISPUTE_OPEN_STATUSES, SupportTicket, Transaction, TransactionDispute
 from app.auth.recovery_codes import RECOVERY_CODE_LOW_THRESHOLD, unused_recovery_code_count
 from app.security.audit import AuditWriteError, audit_event, audit_event_required, audit_reference
 from app.security.rate_limits import (
@@ -575,7 +576,7 @@ def account_recovery_submit():
         return render_template(_ACCOUNT_RECOVERY_TEMPLATE, form=form), 400
     try:
         require_turnstile("customer_manual_recovery")
-        result = request_manual_recovery(form.identifier.data)
+        result = request_manual_recovery(form.identifier.data, form.reason.data)
     except TurnstileError:
         flash(_CHALLENGE_VERIFICATION_FAILED_MESSAGE, "error")
         return render_template(_ACCOUNT_RECOVERY_TEMPLATE, form=form), 400
@@ -849,6 +850,71 @@ def my_disputes():
         .all()
     )
     return render_template("my_disputes.html", disputes=disputes)
+
+
+_SUPPORT_CONTACT_TEMPLATE = "support_contact.html"
+
+
+@web_bp.get("/support/contact")
+@web_login_required
+def support_contact():
+    # Deliberately not @web_not_frozen_required: a frozen customer needs this
+    # channel too (e.g. to ask about the freeze itself).
+    return render_template(_SUPPORT_CONTACT_TEMPLATE, form=SupportTicketForm())
+
+
+@web_bp.post("/support/contact")
+@limiter.limit("10 per hour", key_func=mfa_principal)
+@web_login_required
+def support_contact_submit():
+    form = SupportTicketForm()
+    if not form.validate_on_submit():
+        return render_template(_SUPPORT_CONTACT_TEMPLATE, form=form), 400
+
+    try:
+        consume_durable_rate_limit(
+            "support_ticket_create",
+            f"user:{g.current_user.id}",
+            limit=5,
+            window_seconds=24 * 60 * 60,
+        )
+    except DurableRateLimitExceeded as exc:
+        audit_event(
+            "support_ticket_create",
+            "blocked",
+            user=g.current_user,
+            metadata={"reason": "durable_rate_limit", "retry_after": exc.retry_after},
+        )
+        flash("Too many support requests submitted today. Please try again tomorrow.", "error")
+        return render_template(_SUPPORT_CONTACT_TEMPLATE, form=form), 429
+
+    ticket = SupportTicket(
+        user_id=g.current_user.id,
+        category=form.category.data,
+        subject=form.subject.data.strip(),
+        description=form.description.data.strip(),
+        status="open",
+    )
+    try:
+        db.session.add(ticket)
+        db.session.flush([ticket])
+        audit_event_required(
+            "support_ticket_create",
+            "success",
+            user=g.current_user,
+            metadata={
+                "category": ticket.category,
+                "subject_length": len(ticket.subject),
+                "description_length": len(ticket.description),
+            },
+        )
+        db.session.commit()
+    except AuditWriteError:
+        db.session.rollback()
+        raise
+
+    flash("Support request submitted. Our staff will review it shortly.", "success")
+    return redirect(url_for(_DASHBOARD_ENDPOINT))
 
 
 def _profile_notification_preferences_form(user) -> ProfileNotificationPreferencesForm:

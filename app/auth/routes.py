@@ -287,7 +287,7 @@ def password_reset_complete():
 def manual_recovery_request():
     data = _load_payload(ManualRecoverySchema(), ManualRecoveryForm)
     require_turnstile("customer_manual_recovery")
-    return jsonify(request_manual_recovery(data["identifier"]))
+    return jsonify(request_manual_recovery(data["identifier"], data.get("reason")))
 
 
 @auth_bp.post("/logout")
