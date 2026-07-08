@@ -111,11 +111,12 @@ REGISTRATION_WELCOME_CREDIT_AMOUNT = Decimal("100.00")
 
 
 class AuthError(ValueError):
-    def __init__(self, message: str, status_code: int = 400, *, retry_after: int | None = None) -> None:
+    def __init__(self, message: str, status_code: int = 400, *, retry_after: int | None = None, field: str | None = None) -> None:
         super().__init__(message)
         self.message = message
         self.status_code = status_code
         self.retry_after = retry_after
+        self.field = field  # UI-only hint; never exposed in API responses
 
 
 class FrozenAccountError(AuthError):
@@ -208,29 +209,22 @@ def _find_user_by_username_or_email(username: str, email: str) -> User | None:
     ).scalar_one_or_none()
 
 
-def _registration_duplicate_reason(
-    username: str,
-    canonical_email: str,
-    phone_number: str,
-) -> str | None:
-    checks = (
-        (
-            "duplicate_username",
-            func.lower(User.username) == _normalize(username),
-        ),
-        (
-            "duplicate_email",
-            User.registration_email_canonical == canonical_email,
-        ),
-        (
-            "duplicate_phone",
-            User.phone_number == phone_number.strip(),
-        ),
-    )
-    for reason, condition in checks:
-        if db.session.execute(db.select(User.id).where(condition).limit(1)).scalar_one_or_none():
-            return reason
-    return None
+def _username_taken(username: str) -> bool:
+    return db.session.execute(
+        db.select(User).where(func.lower(User.username) == _normalize(username))
+    ).scalar_one_or_none() is not None
+
+
+def _phone_number_taken(phone_number: str) -> bool:
+    return db.session.execute(
+        db.select(User).where(User.phone_number == phone_number.strip())
+    ).scalar_one_or_none() is not None
+
+
+def _email_taken(canonical_email: str) -> bool:
+    return db.session.execute(
+        db.select(User).where(User.registration_email_canonical == canonical_email)
+    ).scalar_one_or_none() is not None
 
 
 def _generate_account_number() -> str:
@@ -262,14 +256,15 @@ def register_user(data: dict[str, Any]) -> tuple[User, list[str]]:
         audit_event("registration", "failure", metadata={"reason": "password_policy"})
         raise AuthError(str(exc), 400) from exc
 
-    duplicate_reason = _registration_duplicate_reason(
-        data["username"],
-        canonical_email,
-        data["phone_number"],
-    )
-    if duplicate_reason:
-        audit_event("registration", "failure", metadata={"reason": duplicate_reason})
-        raise AuthError("Registration could not be completed with those details", 400)
+    if _username_taken(data["username"]):
+        audit_event("registration", "failure", metadata={"reason": "duplicate_username"})
+        raise AuthError("Registration could not be completed with those details", 400, field="username")
+    if _phone_number_taken(data["phone_number"]):
+        audit_event("registration", "failure", metadata={"reason": "duplicate_phone"})
+        raise AuthError("Registration could not be completed with those details", 400, field="phone")
+    if _email_taken(canonical_email):
+        audit_event("registration", "failure", metadata={"reason": "duplicate_email"})
+        raise AuthError("Registration could not be completed with those details", 400, field="email")
 
     user = User(
         username=data["username"].strip(),
