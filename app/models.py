@@ -767,8 +767,8 @@ class Transaction(db.Model):
         return f"<Transaction id={self.id!r} ref={self.transaction_ref!r} amount={self.amount!r}>"
 
 
-class RegistrationCredit(db.Model):
-    __tablename__ = "registration_credits"
+class _CreditLedgerColumnsMixin:
+    """Columns shared by RegistrationCredit and TopUpCredit."""
 
     id = db.Column(db.Integer, primary_key=True)
     credit_ref = db.Column(db.String(36), nullable=False, unique=True, index=True)
@@ -785,6 +785,10 @@ class RegistrationCredit(db.Model):
         default=lambda: datetime.now(timezone.utc),
         index=True,
     )
+
+
+class RegistrationCredit(_CreditLedgerColumnsMixin, db.Model):
+    __tablename__ = "registration_credits"
 
     user = db.relationship("User", backref=db.backref("registration_credits", lazy="selectin"))
 
@@ -843,24 +847,8 @@ class TopUpApprovalRequest(db.Model):
         return f"<TopUpApprovalRequest id={self.id!r} user_id={self.user_id!r} status={self.status!r}>"
 
 
-class TopUpCredit(db.Model):
+class TopUpCredit(_CreditLedgerColumnsMixin, db.Model):
     __tablename__ = "topup_credits"
-
-    id = db.Column(db.Integer, primary_key=True)
-    credit_ref = db.Column(db.String(36), nullable=False, unique=True, index=True)
-    credit_hash = db.Column(db.String(64), nullable=False, unique=True, index=True)
-    credit_integrity_key_id = db.Column(db.String(32), nullable=False)
-    credit_integrity_algorithm = db.Column(db.String(32), nullable=False)
-    credit_integrity_version = db.Column(db.Integer, nullable=False)
-    user_id = db.Column(db.Integer, db.ForeignKey(_USER_ID_FOREIGN_KEY), nullable=False, index=True)
-    amount = db.Column(db.Numeric(12, 2), nullable=False)
-    status = db.Column(db.String(32), nullable=False, default="completed", server_default="completed")
-    created_at = db.Column(
-        db.DateTime(timezone=True),
-        nullable=False,
-        default=lambda: datetime.now(timezone.utc),
-        index=True,
-    )
 
     user = db.relationship("User", backref=db.backref("topup_credits", lazy="selectin"))
 
