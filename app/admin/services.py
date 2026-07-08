@@ -39,6 +39,7 @@ from app.extensions import db
 from app.models import (
     AdminActionRequest,
     AuthAttemptCounter,
+    DISPUTE_OPEN_STATUSES,
     ManualRecoveryRequest,
     SecurityAuditEvent,
     StaffInvite,
@@ -1014,14 +1015,6 @@ def admin_navigation_for(user: User) -> list[dict[str, str]]:
     if user.account_type == ACCOUNT_STAFF:
         items.append(
             {
-                "label": "Business operations",
-                "href": url_for(ADMIN_INDEX_ENDPOINT),
-                "endpoint": ADMIN_INDEX_ENDPOINT,
-                "group": "business",
-            }
-        )
-        items.append(
-            {
                 "label": "Disputes",
                 "href": url_for("admin.disputes"),
                 "endpoint": "admin.disputes",
@@ -1041,6 +1034,14 @@ def admin_navigation_for(user: User) -> list[dict[str, str]]:
                 "label": "Support tickets",
                 "href": url_for("admin.support_tickets"),
                 "endpoint": "admin.support_tickets",
+                "group": "business",
+            }
+        )
+        items.append(
+            {
+                "label": "Freeze customer account",
+                "href": url_for("admin.customer_freeze_lookup_form"),
+                "endpoint": "admin.customer_freeze_lookup_form",
                 "group": "business",
             }
         )
@@ -1112,7 +1113,7 @@ def admin_dashboard_context(actor: User) -> dict[str, Any]:
         "role_label": role_label(actor.account_type),
         "navigation": admin_navigation_for(actor),
         "responsibilities": _role_responsibilities(actor),
-        "business_operations": _staff_business_operations(actor),
+        "work_queue": staff_work_queue_summary(actor),
         "security_notices": _admin_security_notices(actor),
         "summary": _admin_dashboard_summary(actor),
         "recent_audit_events": recent_audit_events_for_dashboard(actor),
@@ -1347,6 +1348,141 @@ def unfreeze_customer_as_staff(
     db.session.commit()
     return {
         "message": "Customer account unfrozen",
+        "customer_ref": audit_reference("customer_user", target.id),
+        "revoked_sessions": revoked_sessions,
+    }
+
+
+def customer_lookup_for_staff_freeze(actor: User, identifier: str) -> dict[str, Any] | None:
+    """Look up an active, not-yet-frozen customer by username or email.
+
+    Staff already have legitimate need-to-know access to customer identity
+    when reviewing disputes/support tickets, so this lookup is a plain,
+    audited read rather than the anonymous public recovery form's
+    anti-enumeration-hardened design.
+    """
+    _require_plain_staff(actor, "customer_freeze_lookup")
+    normalized = str(identifier or "").strip().lower()
+    if not normalized:
+        return None
+    target = db.session.execute(
+        db.select(User).where(
+            or_(func.lower(User.username) == normalized, func.lower(User.email) == normalized),
+            User.account_type == ACCOUNT_CUSTOMER,
+            User.is_frozen.is_(False),
+            User.account_status == "active",
+        )
+    ).scalar_one_or_none()
+    audit_event(
+        "customer_freeze_lookup",
+        "success" if target is not None else "not_found",
+        user=actor,
+    )
+    if target is None:
+        return None
+    return {
+        "id": target.id,
+        "customer_ref": audit_reference("customer_user", target.id),
+        "username": target.username,
+    }
+
+
+def _active_customer_for_freeze_update(
+    target_user_id: int,
+    *,
+    actor: User,
+    event_type: str,
+) -> User:
+    target = db.session.execute(
+        db.select(User)
+        .where(User.id == int(target_user_id))
+        .with_for_update()
+    ).scalar_one_or_none()
+    valid = bool(
+        target is not None
+        and target.account_type == ACCOUNT_CUSTOMER
+        and not target.is_frozen
+        and target.account_status == "active"
+    )
+    if valid:
+        return target
+    audit_event(
+        event_type,
+        "blocked",
+        user=actor,
+        metadata={
+            "reason": "target_not_eligible",
+            "target_customer_ref": audit_reference("customer_user", target_user_id),
+        },
+    )
+    raise AuthError("Customer account is not eligible for this freeze action", 409)
+
+
+def _send_staff_freeze_notification(customer: User) -> None:
+    body = (
+        "SITBank staff froze your account as part of a security review, for example a "
+        "suspected fraudulent transaction or a compromised account. Contact SITBank "
+        "support through the approved recovery path to review and resolve this."
+    )
+    try:
+        send_security_email(customer.email, "SITBank account frozen by staff", body)
+    except Exception as exc:
+        current_app.logger.warning("staff_freeze_notification_failed error=%s", type(exc).__name__)
+        audit_event("staff_freeze_notification", "failure", user=customer, metadata={"reason": "email_delivery_failed"})
+        return
+    audit_event("staff_freeze_notification", "queued", user=customer)
+
+
+def freeze_customer_as_staff(
+    actor: User,
+    target_user_id: int,
+    reason: str,
+    totp_code: str | None,
+) -> dict[str, Any]:
+    """Bank staff freeze a customer's account directly, with a stated reason.
+
+    Single-approver by design (matches the sibling unfreeze feature) — every
+    write is still TOTP step-up gated, self-action-blocked, and fully
+    audited with the reason text retained for accountability. The customer
+    is notified by email so they know to contact support.
+    """
+    _require_plain_staff(actor, "customer_freeze_as_staff")
+    clean_reason = _require_manual_recovery_reason(reason, "customer_freeze_as_staff", actor)
+    target = _active_customer_for_freeze_update(
+        target_user_id,
+        actor=actor,
+        event_type="customer_freeze_as_staff",
+    )
+    _assert_not_self_customer_action(actor, target, "customer_freeze_as_staff")
+    if not totp_code or not _verify_totp_for_user(actor, totp_code, "customer_freeze_as_staff"):
+        audit_event(
+            "customer_freeze_as_staff",
+            "failure",
+            user=actor,
+            metadata={
+                "reason": "invalid_totp_step_up",
+                "target_customer_ref": audit_reference("customer_user", target.id),
+            },
+        )
+        raise AuthError(FRESH_MFA_REQUIRED_ERROR, 403)
+
+    target.is_frozen = True
+    revoked_sessions = revoke_all_sessions(target.id, ended_reason="customer_freeze_as_staff", component="customer")
+    _send_staff_freeze_notification(target)
+    audit_event_required(
+        "customer_freeze_as_staff",
+        "success",
+        user=actor,
+        metadata={
+            "target_customer_ref": audit_reference("customer_user", target.id),
+            "actor_role": actor.account_type,
+            "revoked_sessions": revoked_sessions,
+            "reason": clean_reason,
+        },
+    )
+    db.session.commit()
+    return {
+        "message": "Customer account frozen",
         "customer_ref": audit_reference("customer_user", target.id),
         "revoked_sessions": revoked_sessions,
     }
@@ -1672,20 +1808,58 @@ def _role_responsibilities(actor: User) -> list[str]:
     ]
 
 
-def _staff_business_operations(actor: User) -> list[dict[str, str]]:
+SUPPORT_TICKET_OPEN_STATUSES = ("open", "in_review")
+
+
+def staff_work_queue_summary(actor: User) -> list[dict[str, Any]]:
+    """Live counts of what's waiting across every staff-owned queue.
+
+    Read-only and best-effort audited (matches the dashboard-access event
+    already recorded for the page this feeds); the counts themselves are not
+    a decision point, just a shortcut into the same queues the staff nav
+    already links to.
+    """
     if actor.account_type != ACCOUNT_STAFF:
         return []
+    open_disputes = db.session.execute(
+        db.select(func.count())
+        .select_from(TransactionDispute)
+        .where(TransactionDispute.status.in_(DISPUTE_OPEN_STATUSES))
+    ).scalar_one()
+    awaiting_unfreeze = db.session.execute(
+        db.select(func.count())
+        .select_from(User)
+        .where(
+            User.account_type == ACCOUNT_CUSTOMER,
+            User.is_frozen.is_(True),
+            or_(
+                User.security_lock_reason.is_(None),
+                User.security_lock_reason.not_in(tuple(AUTOMATIC_CUSTOMER_LOCK_REASONS)),
+            ),
+        )
+    ).scalar_one()
+    open_tickets = db.session.execute(
+        db.select(func.count())
+        .select_from(SupportTicket)
+        .where(SupportTicket.status.in_(SUPPORT_TICKET_OPEN_STATUSES))
+    ).scalar_one()
     return [
         {
-            "label": "Unfreeze customer accounts",
-            "status": "Available",
-            "description": "Review customers who froze their own account and unfreeze them with a documented reason.",
+            "label": "Open disputes",
+            "count": int(open_disputes or 0),
+            "description": "Transaction disputes awaiting review or a decision.",
+            "href": url_for("admin.disputes"),
+        },
+        {
+            "label": "Customers awaiting unfreeze",
+            "count": int(awaiting_unfreeze or 0),
+            "description": "Customers who froze their own account and are waiting on a documented unfreeze.",
             "href": url_for(CUSTOMER_UNFREEZE_REQUESTS_ENDPOINT),
         },
         {
-            "label": "Support tickets",
-            "status": "Available",
-            "description": "Review customer support requests (enquiries, security concerns, other) and triage them to resolution.",
+            "label": "Open support tickets",
+            "count": int(open_tickets or 0),
+            "description": "Customer enquiries and concerns waiting on staff triage.",
             "href": url_for("admin.support_tickets"),
         },
     ]

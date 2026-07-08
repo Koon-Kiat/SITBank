@@ -66,6 +66,8 @@ from .services import (
     reset_staff_invite_acceptance,
     reissue_staff_invite,
     resend_staff_setup_invite,
+    customer_lookup_for_staff_freeze,
+    freeze_customer_as_staff,
     self_frozen_customers_for_staff,
     start_own_mfa_change,
     support_ticket_detail_for_staff,
@@ -1226,6 +1228,41 @@ def customer_unfreeze(user_id: int):
         return jsonify(result)
     flash("Customer account unfrozen.", "success")
     return redirect(url_for("admin.customer_unfreeze_requests")), 303
+
+
+@admin_bp.get("/customer-freeze")
+def customer_freeze_lookup_form():
+    actor = require_plain_staff_session()
+    identifier = str(request.args.get("identifier") or "").strip()
+    candidate = customer_lookup_for_staff_freeze(actor, identifier) if identifier else None
+    if _wants_json():
+        return jsonify({"candidate": candidate})
+    return render_template(
+        "admin/customer_freeze.html",
+        identifier=identifier,
+        candidate=candidate,
+        actor=actor,
+        user=public_admin_user(actor),
+        navigation=admin_navigation_for(actor),
+    )
+
+
+@admin_bp.post("/customers/<int:user_id>/freeze")
+@limiter.limit(_ADMIN_RATE_LIMIT_HOURLY, key_func=get_remote_address)
+@limiter.limit(_ADMIN_RATE_LIMIT_STEP_UP, key_func=request_principal)
+def customer_freeze(user_id: int):
+    actor = require_plain_staff_session()
+    data = _payload(CustomerSecurityUnlockSchema())
+    result = freeze_customer_as_staff(
+        actor,
+        user_id,
+        data["reason"],
+        data[_ADMIN_TOTP_CODE_FIELD],
+    )
+    if _wants_json():
+        return jsonify(result)
+    flash("Customer account frozen.", "success")
+    return redirect(url_for("admin.customer_freeze_lookup_form")), 303
 
 
 @admin_bp.get("/invites")

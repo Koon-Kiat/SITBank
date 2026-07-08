@@ -99,6 +99,8 @@ FOCUSED_RBAC_ENDPOINTS = {
     "admin.admin_action_request_detail",
     "admin.admin_action_request_reject",
     "admin.audit_log_detail",
+    "admin.customer_freeze",
+    "admin.customer_freeze_lookup_form",
     "admin.customer_unfreeze",
     "admin.customer_unfreeze_requests",
     "admin.dispute_detail",
