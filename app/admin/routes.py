@@ -13,7 +13,7 @@ from sqlalchemy import text
 from wtforms import PasswordField, StringField
 from wtforms.validators import Email, InputRequired, Length, Regexp
 
-from app.auth.schemas import PHONE_RE
+from app.auth.schemas import PHONE_RE, password_length
 from app.extensions import db, limiter
 from app.models import SecurityAuditEvent
 from app.security.alerts import AlertConfigurationError, build_security_alert_report
@@ -286,8 +286,8 @@ class CustomerSecurityUnlockSchema(Schema):
 
 class AdminPasswordChangeSchema(Schema):
     current_password = fields.Str(required=True, load_only=True, validate=validate.Length(min=1))
-    new_password = fields.Str(required=True, load_only=True, validate=validate.Length(min=8, max=256))
-    confirm_new_password = fields.Str(required=True, load_only=True, validate=validate.Length(min=8, max=256))
+    new_password = fields.Str(required=True, load_only=True, validate=password_length())
+    confirm_new_password = fields.Str(required=True, load_only=True, validate=password_length())
     totp_code = fields.Str(
         required=True,
         load_only=True,
@@ -298,8 +298,8 @@ class AdminPasswordChangeSchema(Schema):
 class StaffInviteStartSchema(Schema):
     full_name = fields.Str(required=True, validate=validate.Length(min=1, max=120))
     phone_number = fields.Str(required=True, validate=validate.Regexp(PHONE_RE))
-    password = fields.Str(required=True, load_only=True, validate=validate.Length(min=8, max=256))
-    confirm_password = fields.Str(required=True, load_only=True, validate=validate.Length(min=8, max=256))
+    password = fields.Str(required=True, load_only=True, validate=password_length())
+    confirm_password = fields.Str(required=True, load_only=True, validate=password_length())
     turnstile_token = fields.Str(required=False, load_only=True, allow_none=True)
     cf_turnstile_response = fields.Str(
         required=False,
@@ -1715,7 +1715,7 @@ def manual_recovery_requests():
 @admin_bp.get("/manual-recovery/requests/<int:request_id>")
 def manual_recovery_request_detail(request_id: int):
     actor = require_root_admin_session()
-    requests_payload = manual_recovery_requests_for_admin(actor)
+    requests_payload = manual_recovery_requests_for_admin(actor, include_reason_for=request_id)
     context = _manual_recovery_context(requests_payload, selected_id=request_id)
     if _wants_json():
         return jsonify({"request": context["selected_request"]})

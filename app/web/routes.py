@@ -6,6 +6,7 @@ from flask import (
     Blueprint,
     flash,
     g,
+    make_response,
     redirect,
     render_template,
     request,
@@ -389,7 +390,16 @@ def login_submit():
         return redirect(url_for("web.mfa_verify"))
     if result.get("mfa_setup_required"):
         flash("Set up authenticator MFA before continuing.", "warning")
-        return redirect(url_for(_MFA_SETUP_ENDPOINT))
+        response = redirect(url_for(_MFA_SETUP_ENDPOINT))
+        user = resolve_freshly_authenticated_user()
+        if user is not None:
+            token = handle_new_device_login(
+                user,
+                ip_address=request.remote_addr or "",
+                user_agent=request.user_agent.string or "",
+            )
+            response = apply_device_cookie(response, token)
+        return response
 
     flash("Login successful.", "success")
     response = redirect(url_for(_DASHBOARD_ENDPOINT))
@@ -1172,7 +1182,16 @@ def _handle_mfa_setup_verify(forms: dict[str, FlaskForm]):
         flash(exc.message, "error")
         return _render_mfa_management(forms, status_code=exc.status_code)
     flash("MFA is now enabled.", "success")
-    return _render_mfa_result(result)
+    response = make_response(_render_mfa_result(result))
+    user = resolve_freshly_authenticated_user()
+    if user is not None:
+        token = handle_new_device_login(
+            user,
+            ip_address=request.remote_addr or "",
+            user_agent=request.user_agent.string or "",
+        )
+        response = apply_device_cookie(response, token)
+    return response
 
 
 def _handle_mfa_replace_start(forms: dict[str, FlaskForm]):

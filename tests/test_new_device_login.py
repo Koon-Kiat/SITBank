@@ -37,7 +37,6 @@ def _login_with_totp(client, secret, *, identifier="alice01", step_offset=0):
 
 def test_first_login_from_new_device_sends_mandatory_email_and_sets_cookie(client):
     register(client)
-    login(client)
     user, secret = enable_mfa_for_user()
     client.post("/logout")
 
@@ -69,7 +68,6 @@ def test_first_login_from_new_device_sends_mandatory_email_and_sets_cookie(clien
 
 def test_known_device_reusing_cookie_does_not_send_second_email(client):
     register(client)
-    login(client)
     user, secret = enable_mfa_for_user()
     client.post("/logout")
     _login_with_totp(client, secret, step_offset=0)
@@ -90,14 +88,12 @@ def test_known_device_reusing_cookie_does_not_send_second_email(client):
 
 def test_cookie_from_different_user_is_treated_as_new_device(client):
     register(client, username="alice01", email="alice@example.com", phone_number="91234567")
-    login(client, identifier="alice01")
     alice, alice_secret = enable_mfa_for_user(username="alice01")
     client.post("/logout")
     _login_with_totp(client, alice_secret, identifier="alice01")
     client.post("/logout")
 
     register(client, username="bob02", email="bob@example.com", phone_number="98765432")
-    login(client, identifier="bob02")
     bob, bob_secret = enable_mfa_for_user(username="bob02")
     client.post("/logout")
 
@@ -113,7 +109,6 @@ def test_cookie_from_different_user_is_treated_as_new_device(client):
 
 def test_no_cookie_new_browser_is_treated_as_new_device(client):
     register(client)
-    login(client)
     user, secret = enable_mfa_for_user()
     client.post("/logout")
 
@@ -125,7 +120,6 @@ def test_no_cookie_new_browser_is_treated_as_new_device(client):
 
 def test_expired_known_device_is_treated_as_new_again(client):
     register(client)
-    login(client)
     user, secret = enable_mfa_for_user()
     client.post("/logout")
     _login_with_totp(client, secret, step_offset=0)
@@ -145,7 +139,6 @@ def test_expired_known_device_is_treated_as_new_again(client):
 
 def test_new_device_email_is_not_suppressed_by_transfer_activity_preference(client):
     register(client)
-    login(client)
     user, secret = enable_mfa_for_user()
     user.transfer_activity_email_enabled = False
     db.session.commit()
@@ -161,8 +154,9 @@ def test_new_device_email_is_not_suppressed_by_transfer_activity_preference(clie
 
 
 def test_email_delivery_failure_does_not_break_login(client, monkeypatch):
+    from app.security.email import send_security_email as original_send_security_email
+
     register(client)
-    login(client)
     user, secret = enable_mfa_for_user()
     client.post("/logout")
 
@@ -175,7 +169,7 @@ def test_email_delivery_failure_does_not_break_login(client, monkeypatch):
 
     assert login_response.status_code == 302
     assert mfa_response.status_code == 200
-    assert len(_known_devices(user.id)) == 1
+    assert len(_known_devices(user.id)) == 0
     assert (
         db.session.query(SecurityAuditEvent)
         .filter_by(event_type="new_device_login_notification", outcome="failure", user_id=user.id)
@@ -183,10 +177,39 @@ def test_email_delivery_failure_does_not_break_login(client, monkeypatch):
         == 1
     )
 
+    monkeypatch.setattr(
+        "app.security.device_recognition.send_security_email",
+        original_send_security_email,
+    )
+    client.post("/logout")
+    count_before_retry = len(password_reset_outbox())
+    _login_with_totp(client, secret, step_offset=1)
+
+    assert len(_known_devices(user.id)) == 1
+    assert len(password_reset_outbox()) == count_before_retry + 1
+    assert password_reset_outbox()[-1]["subject"] == "SITBank new device sign-in"
+
+
+def test_login_that_requires_mfa_setup_still_records_new_device(client):
+    register(client)
+    user = db.session.execute(db.select(User).where(User.username == "alice01")).scalar_one()
+    before_count = len(password_reset_outbox())
+
+    response = client.post(
+        "/auth/login",
+        json={"identifier": "alice01", "password": "correct horse battery staple"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["mfa_setup_required"] is True
+    assert "sitbank_device" in response.headers.get("Set-Cookie", "")
+    assert len(_known_devices(user.id)) == 1
+    assert len(password_reset_outbox()) == before_count + 1
+    assert password_reset_outbox()[-1]["subject"] == "SITBank new device sign-in"
+
 
 def test_new_device_email_body_has_no_links_or_raw_token(client):
     register(client)
-    login(client)
     user, secret = enable_mfa_for_user()
     client.post("/logout")
     _login_with_totp(client, secret)

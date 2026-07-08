@@ -105,12 +105,14 @@ def _create_manual_recovery_request(
     *,
     status: str = "pending",
     expired: bool = False,
+    reason: str | None = None,
 ) -> ManualRecoveryRequest:
     now = datetime.now(timezone.utc)
     request_record = ManualRecoveryRequest(
         identifier_ref=f"manual-request-ref-{user.id if user else 'unlinked'}",
         user_id=user.id if user else None,
         status=status,
+        reason=reason,
         requested_ip="203.0.113.10",
         requested_user_agent="unit-test",
         request_count=1,
@@ -337,9 +339,17 @@ def test_manual_recovery_detail_renders_safe_forms(admin_client):
         phone_number="91234567",
     )
     customer, _customer_secret = _create_customer("recover-browser-detail")
-    request_record = _create_manual_recovery_request(customer, status="under_review")
+    request_record = _create_manual_recovery_request(
+        customer,
+        status="under_review",
+        reason="Lost authenticator while travelling.",
+    )
     _login_admin(admin_client, root_secret)
 
+    list_json_response = admin_client.get(
+        "/manual-recovery/requests",
+        headers={"Accept": "application/json"},
+    )
     response = admin_client.get(f"/manual-recovery/requests/{request_record.id}")
     body = response.get_data(as_text=True)
     json_response = admin_client.get(
@@ -355,8 +365,16 @@ def test_manual_recovery_detail_renders_safe_forms(admin_client):
     assert 'maxlength="6"' in body
     assert "approved" in body
     assert "denied" in body
+    assert "Requester context" in body
+    assert "Lost authenticator while travelling." in body
+    assert list_json_response.status_code == 200
+    assert "reason" not in list_json_response.get_json()["requests"][0]
     assert json_response.status_code == 200
-    assert json_response.get_json()["request"]["id"] == request_record.id
+    detail_payload = json_response.get_json()["request"]
+    assert detail_payload["id"] == request_record.id
+    assert detail_payload["reason"] == "Lost authenticator while travelling."
+    assert detail_payload["reason_present"] is True
+    assert detail_payload["reason_length"] == len("Lost authenticator while travelling.")
     _assert_no_sensitive_recovery_material({"html": body, "json": json_response.get_json()})
 
 

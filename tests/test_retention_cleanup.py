@@ -32,6 +32,9 @@ def test_retention_cleanup_defaults_to_dry_run_and_preserves_categories(app, mon
         "expired_password_reset_tokens_without_transactions"
         in result["approved_categories"]
     )
+    assert "expired_public_transaction_idempotency" in result["approved_categories"]
+    assert "expired_known_devices" in result["approved_categories"]
+    assert "terminal_topup_approval_requests_past_retention" in result["approved_categories"]
     assert "security_audit_events" in result["preserved_categories"]
     assert "transactions" in result["preserved_categories"]
     for preserved_category in (
@@ -41,6 +44,8 @@ def test_retention_cleanup_defaults_to_dry_run_and_preserves_categories(app, mon
         "transactions",
         "security_audit_events",
         "manual_recovery_requests",
+        "manual_recovery_context",
+        "support_tickets",
         "staff_invites",
         "alert_reports",
         "encrypted_backup_archives",

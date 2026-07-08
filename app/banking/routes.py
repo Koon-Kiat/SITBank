@@ -55,6 +55,7 @@ from app.banking.services import (
     resolve_local_transfer_limit_choice,
     resolve_transfer_limit_choice,
     send_transfer_limit_change_notification,
+    send_topup_deposit_notification,
     send_transfer_notification,
     statement_for_period,
 )
@@ -92,6 +93,7 @@ _TRANSFER_TEMPLATE = "transfer.html"
 _ADD_PAYEE_TEMPLATE = "add_payee.html"
 _REMOVE_PAYEE_TEMPLATE = "remove_payee.html"
 _DUPLICATE_PAYEE_MESSAGE = "This payee is already in your list."
+_NO_PENDING_PAYEE_MESSAGE = "No pending payee. Please start again."
 
 _PAYUP_PENDING_RECIPIENT_TTL = 300  # seconds; time to complete amount entry after phone lookup
 _PAYUP_PENDING_TRANSFER_TTL = 300  # seconds; time to confirm after amount step
@@ -454,7 +456,7 @@ def payees_add_submit():
 def payees_confirm():
     pending = session.get("pending_payee")
     if not pending:
-        flash("No pending payee. Please start again.", "warning")
+        flash(_NO_PENDING_PAYEE_MESSAGE, "warning")
         return redirect(url_for(_PAYEES_ADD_ENDPOINT))
 
     if datetime.now(timezone.utc) > datetime.fromisoformat(pending["expires_at"]):
@@ -475,7 +477,7 @@ def payees_confirm_submit():
     # Consume pending payee now — prevents replay attacks
     pending = session.pop("pending_payee", None)
     if not pending:
-        flash("No pending payee. Please start again.", "warning")
+        flash(_NO_PENDING_PAYEE_MESSAGE, "warning")
         return redirect(url_for(_PAYEES_ADD_ENDPOINT))
 
     if datetime.now(timezone.utc) > datetime.fromisoformat(pending["expires_at"]):
@@ -1265,6 +1267,16 @@ def topup_approve_submit(token):
         ), 400
 
     user = db.session.get(User, request_row.user_id)
+    if not _topup_owner_is_eligible(user):
+        request_row.status = "failed"
+        audit_event(
+            "account_topup_approval",
+            "blocked",
+            user=user,
+            metadata={"reason": "owner_ineligible"},
+        )
+        db.session.commit()
+        return render_template(_TOPUP_APPROVE_TEMPLATE, valid=False), 403
 
     try:
         verified = verify_totp_code_for_user(user, form.totp_code.data, "account_topup_approval")
@@ -1293,21 +1305,46 @@ def topup_approve_submit(token):
             _TOPUP_APPROVE_TEMPLATE, valid=True, form=form, amount=request_row.amount
         ), 401
 
-    audit_event("account_topup_approval", "mfa_success", user=user)
+    request_row = load_topup_request_for_approval(token, lock=True)
+    if request_row is None:
+        return render_template(_TOPUP_APPROVE_TEMPLATE, valid=False), 404
 
     try:
+        audit_event_required("account_topup_approval", "mfa_success", user=user)
         credit = credit_account_topup(user, request_row.amount)
+        request_row.status = "completed"
+        request_row.approved_at = datetime.now(timezone.utc)
+        request_row.credit_ref = credit.credit_ref
+        db.session.commit()
     except AuthError as exc:
+        db.session.rollback()
         request_row.status = "failed"
         db.session.commit()
         flash(exc.message, "error")
         return render_template(_TOPUP_APPROVE_TEMPLATE, valid=False), exc.status_code
+    except AuditWriteError:
+        db.session.rollback()
+        current_app.logger.warning("topup_required_audit_failed")
+        flash("Top-up approval could not be completed. Try again later.", "error")
+        return render_template(_TOPUP_APPROVE_TEMPLATE, valid=True, form=form, amount=request_row.amount), 503
+    except Exception as exc:
+        db.session.rollback()
+        current_app.logger.warning("topup_completion_failed error=%s", type(exc).__name__)
+        flash("Top-up approval could not be completed. Try again later.", "error")
+        return render_template(_TOPUP_APPROVE_TEMPLATE, valid=True, form=form, amount=request_row.amount), 500
 
-    request_row.status = "completed"
-    request_row.approved_at = datetime.now(timezone.utc)
-    request_row.credit_ref = credit.credit_ref
-    db.session.commit()
+    send_topup_deposit_notification(user, request_row.amount, credit.credit_ref)
     return render_template(_TOPUP_APPROVE_TEMPLATE, valid=True, approved=True, amount=request_row.amount)
+
+
+def _topup_owner_is_eligible(user: User | None) -> bool:
+    return bool(
+        user is not None
+        and user.account_type == "customer"
+        and user.account_status == "active"
+        and not user.is_frozen
+        and not user.security_lock_reason
+    )
 
 
 # ── Settings: Daily Transfer Limit ──────────────────────────────────────────────

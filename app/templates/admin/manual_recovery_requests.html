@@ -121,6 +121,7 @@
       <div><dt>Active</dt><dd>{% if selected_request.active %}Yes{% else %}No{% endif %}</dd></div>
       <div><dt>Linked customer</dt><dd>{% if selected_request.linked_customer %}Linked{% else %}Unlinked or unknown{% endif %}</dd></div>
       <div><dt>Request count</dt><dd>{{ selected_request.request_count }}</dd></div>
+      <div><dt>Requester context</dt><dd>{% if selected_request.reason_present %}{{ selected_request.reason }}{% else %}not provided{% endif %}</dd></div>
       <div><dt>Created</dt><dd><time datetime="{{ selected_request.created_at }}">{{ selected_request.created_at_display }}</time></dd></div>
       <div><dt>Updated</dt><dd><time datetime="{{ selected_request.updated_at }}">{{ selected_request.updated_at_display }}</time></dd></div>
       <div><dt>Expires</dt><dd><time datetime="{{ selected_request.expires_at }}">{{ selected_request.expires_at_display }}</time></dd></div>
