@@ -62,6 +62,7 @@ from .services import (
     require_staff_session,
     reset_staff_invite_acceptance,
     reissue_staff_invite,
+    resend_staff_setup_invite,
     transition_dispute_status_for_staff,
     reject_admin_action_request_as_root_admin,
     request_customer_security_unlock,
@@ -1255,6 +1256,23 @@ def staff_account_reset_activation(user_id: int):
     if _wants_json():
         return jsonify(result)
     flash("Staff/admin activation reset request created for approval.", "success")
+    return redirect(url_for(_STAFF_ACCOUNTS_ENDPOINT)), 303
+
+
+@admin_bp.post("/staff/<int:user_id>/resend-setup")
+@limiter.limit(_ADMIN_RATE_LIMIT_HOURLY, key_func=get_remote_address)
+@limiter.limit(_ADMIN_RATE_LIMIT_STEP_UP, key_func=request_principal)
+def staff_account_resend_setup(user_id: int):
+    actor = require_root_admin_session()
+    data = _payload(StaffAccountActionSchema())
+    result = resend_staff_setup_invite(
+        actor,
+        user_id,
+        data[_ADMIN_TOTP_CODE_FIELD],
+    )
+    if _wants_json():
+        return jsonify(result), 201
+    flash("Staff/admin setup invite resent.", "success")
     return redirect(url_for(_STAFF_ACCOUNTS_ENDPOINT)), 303
 
 

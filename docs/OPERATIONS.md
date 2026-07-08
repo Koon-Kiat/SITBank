@@ -490,10 +490,10 @@ database rows directly.
 Stale or malformed browser invite links render a generic invite-unavailable page
 instead of the private admin error page; explicit JSON clients receive only the
 minimal generic error.
-Invite creation, revoke, reset, and reissue actions use strict high-risk TOTP:
-enter the code from the currently signed-in root admin, wait for a fresh
-authenticator code before retrying an invite action, and do not submit near code
-expiry or reuse the same code for repeated invite operations. The invite table shows
+Invite creation, revoke, reset, reissue, and setup-resend actions use strict
+high-risk TOTP: enter the code from the currently signed-in root admin, wait for
+a fresh authenticator code before retrying an invite action, and do not submit
+near code expiry or reuse the same code for repeated invite operations. The invite table shows
 the persisted allowlisted delivery states `unconfirmed`, `queued`, or `failed`.
 `queued` means SITBank handed the message to the configured email backend, not
 that the recipient inbox accepted it. `unconfirmed` means no reliable backend
@@ -501,8 +501,14 @@ handoff evidence is available, including migrated rows, and `failed` means the
 backend rejected the handoff; no provider response details are displayed. If the recipient
 cannot find a pending invite, check spam/junk/quarantine and SMTP backend
 configuration, then use the root-admin reissue action to rotate the token hash
-and send a new invite link. If email backend handoff fails during create, the
-invite is moved out of active pending state so it does not block safe retry.
+and send a new invite link. If a staff/admin account is already stuck in
+`setup_pending` because its original invite was accepted, revoked, or expired,
+use the root-admin Resend setup invite action on the staff accounts page: it
+mints and delivers a brand-new one-time setup link bound to the existing account
+without creating a second privileged identity for the same workplace email, and
+fails closed by revoking the fresh invite if email handoff fails. If email
+backend handoff fails during create, the invite is moved out of active pending
+state so it does not block safe retry.
 Migration `20260707_0032` adds only this bounded delivery state and stores no
 invite token, email body, provider response, credential, or mailbox assertion.
 The admin `production-check` command reports
