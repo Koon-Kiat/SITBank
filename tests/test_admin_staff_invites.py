@@ -78,6 +78,31 @@ def _stable_totp(secret: str) -> str:
     return pyotp.TOTP(secret, digits=6, interval=30).at(_FIXED_TOTP_TIME)
 
 
+def _root_with_setup_pending_target(
+    admin_client,
+    *,
+    username: str,
+    email: str,
+    phone_number: str,
+    role: str = "staff",
+) -> tuple[User, str, User]:
+    root, secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    target, _target_secret = _create_staff_identity(
+        username=username,
+        email=email,
+        account_type=role,
+        phone_number=phone_number,
+        active=False,
+    )
+    _login_admin(admin_client, secret)
+    return root, secret, target
+
+
 def _create_invite(client, secret: str, **overrides):
     payload = {
         "workplace_email": "staff.person@sit.singaporetech.edu.sg",
@@ -640,18 +665,11 @@ def test_reissue_delivery_failure_is_persisted_without_rotating_the_live_token(
 
 
 def test_root_admin_can_resend_setup_invite_for_stuck_setup_pending_account(admin_client):
-    _root, secret = _create_staff_identity(
-        username="root-admin",
-        email=ROOT_EMAIL,
-        account_type="root_admin",
-        phone_number="91234567",
-    )
-    target, _target_secret = _create_staff_identity(
+    _root, secret, target = _root_with_setup_pending_target(
+        admin_client,
         username="stuck-staff",
         email="stuck.staff@sit.singaporetech.edu.sg",
-        account_type="staff",
         phone_number="91234568",
-        active=False,
     )
     stale_invite = StaffInvite(
         token_hash="0" * 64,
@@ -667,7 +685,6 @@ def test_root_admin_can_resend_setup_invite_for_stuck_setup_pending_account(admi
     )
     db.session.add(stale_invite)
     db.session.commit()
-    _login_admin(admin_client, secret)
 
     still_blocked = _create_invite(
         admin_client,
@@ -810,20 +827,12 @@ def test_resend_setup_invite_rejects_non_root_admin_self_and_ineligible_targets(
 
 
 def test_resend_setup_invite_step_up_outcomes_are_safe(admin_client, monkeypatch):
-    _root, secret = _create_staff_identity(
-        username="root-admin",
-        email=ROOT_EMAIL,
-        account_type="root_admin",
-        phone_number="91234567",
-    )
-    target, _target_secret = _create_staff_identity(
+    _root, secret, target = _root_with_setup_pending_target(
+        admin_client,
         username="stuck-staff-3",
         email="stuck.staff.three@sit.singaporetech.edu.sg",
-        account_type="staff",
         phone_number="91234568",
-        active=False,
     )
-    _login_admin(admin_client, secret)
     fresh_time = _FIXED_TOTP_TIME + 31
     monkeypatch.setattr("app.auth.services.time.time", lambda: fresh_time)
     valid_code = pyotp.TOTP(secret, digits=6, interval=30).at(fresh_time)
@@ -846,20 +855,12 @@ def test_resend_setup_invite_step_up_outcomes_are_safe(admin_client, monkeypatch
 
 
 def test_resend_setup_invite_delivery_failure_revokes_invite_fail_closed(admin_client, monkeypatch):
-    _root, secret = _create_staff_identity(
-        username="root-admin",
-        email=ROOT_EMAIL,
-        account_type="root_admin",
-        phone_number="91234567",
-    )
-    target, _target_secret = _create_staff_identity(
+    _root, secret, target = _root_with_setup_pending_target(
+        admin_client,
         username="stuck-staff-4",
         email="stuck.staff.four@sit.singaporetech.edu.sg",
-        account_type="staff",
         phone_number="91234568",
-        active=False,
     )
-    _login_admin(admin_client, secret)
     monkeypatch.setattr(
         "app.admin.services.send_security_email",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("smtp down")),

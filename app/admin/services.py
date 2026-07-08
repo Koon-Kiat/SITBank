@@ -2038,26 +2038,7 @@ def create_staff_invite(
         audit_event("staff_invite_create", "failure", user=actor, metadata={"reason": "integrity_error"})
         raise AuthError(INVITE_CREATE_ERROR, 400) from exc
 
-    invite_url = url_for("admin.invite_accept_info", token=token, _external=True)
-    try:
-        _send_invite_email(invite, invite_url)
-    except Exception as exc:
-        current_app.logger.warning("staff_invite_email_failed error=%s", type(exc).__name__)
-        invite.status = "revoked"
-        invite.delivery_status = "failed"
-        invite.revoked_at = _utcnow()
-        invite.revoked_by_user_id = actor.id
-        audit_event(
-            "staff_invite_email",
-            "failure",
-            user=actor,
-            metadata={**_invite_audit_metadata(invite), "reason": "email_delivery_failed"},
-        )
-        db.session.commit()
-        raise AuthError("Invite could not be sent", 503) from exc
-    invite.delivery_status = "queued"
-    audit_event("staff_invite_email", "queued", user=actor, metadata=_invite_audit_metadata(invite))
-    db.session.commit()
+    _deliver_fresh_invite_email(invite, actor, token)
     return {
         "message": "Invite created",
         "invite": public_invite(invite),
@@ -2261,26 +2242,7 @@ def resend_staff_setup_invite(actor: User, target_user_id: int, totp_code: str |
         audit_event("staff_invite_resend", "failure", user=actor, metadata={"reason": "integrity_error"})
         raise AuthError(INVITE_CREATE_ERROR, 400) from exc
 
-    invite_url = url_for("admin.invite_accept_info", token=token, _external=True)
-    try:
-        _send_invite_email(invite, invite_url)
-    except Exception as exc:
-        current_app.logger.warning("staff_invite_email_failed error=%s", type(exc).__name__)
-        invite.status = "revoked"
-        invite.delivery_status = "failed"
-        invite.revoked_at = _utcnow()
-        invite.revoked_by_user_id = actor.id
-        audit_event(
-            "staff_invite_email",
-            "failure",
-            user=actor,
-            metadata={**_invite_audit_metadata(invite), "reason": "email_delivery_failed"},
-        )
-        db.session.commit()
-        raise AuthError("Invite could not be sent", 503) from exc
-    invite.delivery_status = "queued"
-    audit_event("staff_invite_email", "queued", user=actor, metadata=_invite_audit_metadata(invite))
-    db.session.commit()
+    _deliver_fresh_invite_email(invite, actor, token)
     return {
         "message": "Setup invite resent",
         "invite": public_invite(invite),
@@ -3688,6 +3650,36 @@ def _send_invite_email(invite: StaffInvite, invite_url: str) -> None:
             "This staff identity is separate from any customer banking account."
         ),
     )
+
+
+def _deliver_fresh_invite_email(invite: StaffInvite, actor: User, token: str) -> None:
+    """Send the setup email for a freshly minted invite and record delivery status.
+
+    Shared by create_staff_invite() and resend_staff_setup_invite(): both mint a
+    brand-new invite row, so a delivery failure must fail closed by revoking the
+    row and marking delivery failed instead of leaving a live, undeliverable
+    invite. Raw tokens stay in the email URL only and never reach audit metadata.
+    """
+    invite_url = url_for("admin.invite_accept_info", token=token, _external=True)
+    try:
+        _send_invite_email(invite, invite_url)
+    except Exception as exc:
+        current_app.logger.warning("staff_invite_email_failed error=%s", type(exc).__name__)
+        invite.status = "revoked"
+        invite.delivery_status = "failed"
+        invite.revoked_at = _utcnow()
+        invite.revoked_by_user_id = actor.id
+        audit_event(
+            "staff_invite_email",
+            "failure",
+            user=actor,
+            metadata={**_invite_audit_metadata(invite), "reason": "email_delivery_failed"},
+        )
+        db.session.commit()
+        raise AuthError("Invite could not be sent", 503) from exc
+    invite.delivery_status = "queued"
+    audit_event("staff_invite_email", "queued", user=actor, metadata=_invite_audit_metadata(invite))
+    db.session.commit()
 
 
 def _send_workplace_verification(invite: StaffInvite) -> None:
