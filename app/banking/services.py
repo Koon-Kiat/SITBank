@@ -264,6 +264,26 @@ def _send_banking_email(
     audit_event(event_type, "queued", user=user, metadata=dict(metadata or {}))
 
 
+def _safe_send_notification(description: str, func, *args, **kwargs) -> None:
+    """Run a best-effort post-transfer notification without letting it affect
+    an already-committed transfer's reported outcome.
+
+    ``send_transfer_notification``/``maybe_send_daily_limit_warning`` already
+    swallow email-delivery and best-effort-audit failures internally, but this
+    is a second, defense-in-depth guard: a completed, durably committed
+    transfer must never be reported as failed (or have its notification step
+    raise) because of a notification-path bug.
+    """
+    try:
+        func(*args, **kwargs)
+    except Exception as exc:
+        current_app.logger.warning(
+            "%s_failed error=%s",
+            description,
+            type(exc).__name__,
+        )
+
+
 def _transfer_activity_email_enabled(user: User) -> bool:
     return getattr(user, "transfer_activity_email_enabled", True) is not False
 
@@ -1140,7 +1160,15 @@ def execute_local_transfer(
     pending_tfr.consumed_transaction_ref = txn_ref
 
     _audit_local_transfer_success(sender, payee, amount, reference, txn_ref)
-    send_transfer_notification(
+    # Ledger commit boundary: the balance debit/credit, the Transaction row,
+    # the pending-transfer consumption, and the required success audit row
+    # above are all committed together here, as one durable unit, before any
+    # best-effort customer notification runs. A notification failure below
+    # can never roll back or otherwise affect this already-completed transfer.
+    db.session.commit()
+    _safe_send_notification(
+        "local_transfer_sender_notification",
+        send_transfer_notification,
         sender,
         direction="withdrawal",
         outcome="success",
@@ -1149,7 +1177,9 @@ def execute_local_transfer(
         transaction_reference=txn_ref,
         counterparty_label=payee.recipient_name,
     )
-    send_transfer_notification(
+    _safe_send_notification(
+        "local_transfer_recipient_notification",
+        send_transfer_notification,
         locked_recipient,
         direction="deposit",
         outcome="success",
@@ -1158,7 +1188,9 @@ def execute_local_transfer(
         transaction_reference=txn_ref,
         counterparty_label=sender.full_name or sender.username,
     )
-    maybe_send_daily_limit_warning(
+    _safe_send_notification(
+        "local_transfer_daily_limit_notification",
+        maybe_send_daily_limit_warning,
         sender,
         channel="Local Transfer",
         used_before=used_today,
@@ -1765,7 +1797,15 @@ def execute_payup_transfer(
     except AuditWriteError:
         db.session.rollback()
         raise
-    send_transfer_notification(
+    # Ledger commit boundary: the balance debit/credit, the Transaction row,
+    # the pending-transfer consumption, and the required success audit row
+    # above are all committed together here, as one durable unit, before any
+    # best-effort customer notification runs. A notification failure below
+    # can never roll back or otherwise affect this already-completed transfer.
+    db.session.commit()
+    _safe_send_notification(
+        "payup_sender_notification",
+        send_transfer_notification,
         sender,
         direction="withdrawal",
         outcome="success",
@@ -1774,7 +1814,9 @@ def execute_payup_transfer(
         transaction_reference=txn_ref,
         counterparty_label=_payup_notification_label(locked_recipient),
     )
-    send_transfer_notification(
+    _safe_send_notification(
+        "payup_recipient_notification",
+        send_transfer_notification,
         locked_recipient,
         direction="deposit",
         outcome="success",
@@ -1783,7 +1825,9 @@ def execute_payup_transfer(
         transaction_reference=txn_ref,
         counterparty_label=_payup_notification_label(locked_sender),
     )
-    maybe_send_daily_limit_warning(
+    _safe_send_notification(
+        "payup_daily_limit_notification",
+        maybe_send_daily_limit_warning,
         sender,
         channel="PayUp",
         used_before=used_today,
