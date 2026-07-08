@@ -925,7 +925,7 @@ def test_complete_payup_route_flow_below_threshold_no_mfa(client, payup_context)
     assert Transaction.query.filter_by(reference="Lunch", transaction_type="payup").count() == 1
 
     history = client.get("/transactions")
-    assert b"To: Bob PayUp" in history.data
+    assert b"To Bob PayUp" in history.data
     assert b"Phone: 81234567" in history.data
     assert b"Bob Recipient" not in history.data
 
