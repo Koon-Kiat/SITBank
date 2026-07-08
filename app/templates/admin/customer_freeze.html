@@ -1,0 +1,53 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Freeze Customer Accounts | SITBank Admin{% endblock %}
+
+{% block content %}
+<section class="dashboard admin-dashboard">
+  <div class="dashboard-header">
+    <div class="page-heading">
+      <p class="eyebrow">Customer support</p>
+      <h1 id="customer-freeze-heading">Freeze a customer account</h1>
+      <p class="muted">Look up a customer by username or email to freeze their account for suspected fraud or a compromised account. The customer is notified by email and must contact support to resolve it.</p>
+    </div>
+  </div>
+
+  <section class="panel" aria-labelledby="customer-freeze-heading">
+    <form class="admin-form" method="get" action="{{ url_for('admin.customer_freeze_lookup_form') }}">
+      <div class="form-field">
+        <label for="freeze-lookup-identifier">Username or email</label>
+        <input id="freeze-lookup-identifier" name="identifier" type="text" maxlength="255" value="{{ identifier }}" placeholder="e.g. alice01 or alice@example.com" required>
+      </div>
+      <button class="button small" type="submit">Look up customer</button>
+    </form>
+
+    {% if identifier %}
+      {% if candidate %}
+      <article class="unfreeze-card">
+        <div class="unfreeze-card-identity">
+          <p class="unfreeze-card-name">{{ candidate.username }}</p>
+          <details>
+            <summary>Technical details</summary>
+            <code>{{ candidate.customer_ref }}</code>
+          </details>
+        </div>
+        <form class="admin-form" method="post" action="{{ url_for('admin.customer_freeze', user_id=candidate.id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="form-field">
+            <label for="freeze-reason-{{ candidate.id }}">Reason for freezing</label>
+            <input id="freeze-reason-{{ candidate.id }}" name="reason" type="text" maxlength="512" placeholder="e.g. suspected fraudulent transaction, customer reported account compromise" required>
+          </div>
+          <div class="form-field">
+            <label for="freeze-totp-{{ candidate.id }}">Authenticator code</label>
+            <input id="freeze-totp-{{ candidate.id }}" name="totp_code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="6-digit code" required>
+          </div>
+          <button class="button small" type="submit">Freeze account</button>
+        </form>
+      </article>
+      {% else %}
+      <p class="muted">No matching active customer found, or the account is already frozen.</p>
+      {% endif %}
+    {% endif %}
+  </section>
+</section>
+{% endblock %}

@@ -111,25 +111,6 @@
     }());
   }
 
-  function removeDismissedBanner(event) {
-    event.currentTarget.remove();
-  }
-
-  function fadeOutBanner(banner) {
-    banner.classList.add("is-dismissing");
-    banner.addEventListener("transitionend", removeDismissedBanner, { once: true });
-  }
-
-  function scheduleBannerDismissal(banner) {
-    setTimeout(fadeOutBanner.bind(null, banner), 3000);
-  }
-
-  function dismissTransientFlashBanners() {
-    // Only success/info banners auto-dismiss. Warnings and errors carry
-    // security-relevant context and must stay until dismissed manually.
-    document.querySelectorAll(".alerts .alert-success, .alerts .alert-info").forEach(scheduleBannerDismissal);
-  }
-
   function wireTopupSuccessDialog() {
     const dialog = document.getElementById("topup-success-overlay");
     if (!dialog) {
@@ -146,7 +127,6 @@
   }
 
   globalThis.addEventListener("DOMContentLoaded", function () {
-    dismissTransientFlashBanners();
     wireTopupSuccessDialog();
 
     document.querySelectorAll("[data-otp-resend-countdown]").forEach(function (button) {
