@@ -322,6 +322,38 @@ def test_recovery_code_regeneration_with_valid_totp_revokes_old_unused_codes(cli
     assert unused_count == 10
 
 
+def test_recovery_code_regeneration_replay_does_not_lock_or_throttle(client):
+    from app.auth.recovery_codes import generate_recovery_codes_for_user
+    from app.models import AuthAttemptCounter
+
+    register(client)
+    login(client)
+    user, secret = enable_mfa_for_user()
+    generate_recovery_codes_for_user(user, count=3)
+    code = _totp(secret)
+
+    first = client.post(
+        "/auth/mfa/recovery-codes/regenerate",
+        json={"totp_code": code},
+    )
+    replay = client.post(
+        "/auth/mfa/recovery-codes/regenerate",
+        json={"totp_code": code},
+    )
+    db.session.refresh(user)
+
+    assert first.status_code == 200
+    assert replay.status_code == 401
+    assert user.security_locked_at is None
+    assert user.is_frozen is False
+    assert (
+        db.session.query(AuthAttemptCounter)
+        .filter(AuthAttemptCounter.scope.in_(("recovery_codes_regenerate", "user_security:mfa")))
+        .count()
+        == 0
+    )
+
+
 def test_web_recovery_code_regeneration_requires_totp(client):
     from app.auth.recovery_codes import generate_recovery_codes_for_user
 

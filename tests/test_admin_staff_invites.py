@@ -1630,6 +1630,7 @@ def test_invite_acceptance_verify_failures_lock_until_root_reset(admin_app, admi
         json=_staff_invite_start_payload(),
     )
     monkeypatch.setattr("app.admin.services._verify_totp_for_user", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr("app.admin.services._verify_totp_for_user_outcome", lambda *_args, **_kwargs: "valid")
 
     failures = []
     for expected_count in range(1, 6):

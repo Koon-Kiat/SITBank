@@ -100,6 +100,40 @@ def _create_manual_recovery_request(user: User, *, status: str = "pending") -> M
     return request_record
 
 
+def _create_admin_action_request(
+    requester: User,
+    *,
+    operation_type: str,
+    target_type: str,
+    target_id: str,
+    operation_payload: dict,
+    reason_present: bool = False,
+) -> AdminActionRequest:
+    from app.admin.services import _admin_action_request_hmac
+
+    now = datetime.now(timezone.utc)
+    request_record = AdminActionRequest(
+        operation_type=operation_type,
+        target_type=target_type,
+        target_id=str(target_id),
+        operation_payload=operation_payload,
+        requester_id=requester.id,
+        requester_role=requester.account_type,
+        status="pending",
+        reason_present=reason_present,
+        reason_length=12 if reason_present else 0,
+        metadata_hmac="pending",
+        created_at=now,
+        updated_at=now,
+        expires_at=now + timedelta(hours=24),
+    )
+    db.session.add(request_record)
+    db.session.flush()
+    request_record.metadata_hmac = _admin_action_request_hmac(request_record)
+    db.session.commit()
+    return request_record
+
+
 def _lock_customer_for_security_failures(
     customer: User,
     *,
@@ -196,18 +230,12 @@ def _assert_no_sensitive_action_material(payload: dict) -> None:
         assert forbidden not in body
 
 
-def test_staff_lifecycle_requires_maker_checker_before_execution(admin_client):
+def test_staff_lifecycle_executes_directly_for_root_admin(admin_client):
     _root1, root1_secret = _create_staff_identity(
         username="root-one",
         email=ROOT1_EMAIL,
         account_type="root_admin",
         phone_number="91234567",
-    )
-    _root2, root2_secret = _create_staff_identity(
-        username="root-two",
-        email=ROOT2_EMAIL,
-        account_type="root_admin",
-        phone_number="91234568",
     )
     target, _target_secret = _create_staff_identity(
         username="target-admin",
@@ -216,52 +244,28 @@ def test_staff_lifecycle_requires_maker_checker_before_execution(admin_client):
         phone_number="91234569",
     )
     _login_admin(admin_client, root1_secret, ROOT1_EMAIL)
-    approver_client = admin_client.application.test_client()
-    _login_admin(approver_client, root2_secret, ROOT2_EMAIL)
 
     requested = admin_client.post(
         f"/staff/{target.id}/deactivate",
         json={"totp_code": _totp(root1_secret)},
     )
     db.session.refresh(target)
-    assert target.account_status == "active"
-    action_request = db.session.execute(db.select(AdminActionRequest)).scalar_one()
-    self_approval = admin_client.post(
-        f"/admin-action-requests/{action_request.id}/approve",
-        json={"totp_code": _totp(root1_secret)},
-    )
-    approved = approver_client.post(
-        f"/admin-action-requests/{action_request.id}/approve",
-        json={"totp_code": _totp(root2_secret)},
-    )
 
     assert requested.status_code == 200
     requested_payload = requested.get_json()
-    assert requested_payload["message"] == "Admin action approval required"
-    assert requested_payload["request"]["operation_type"] == "staff_deactivate"
-    assert requested_payload["request"]["operation_label"] == "Deactivate staff account"
-    assert "root-one" in requested_payload["request"]["requester_summary"]
-    assert "target-admin" in requested_payload["request"]["target_summary"]
-    assert requested_payload["request"]["status"] == "pending"
-    assert self_approval.status_code == 403
-    assert approved.status_code == 200
+    assert requested_payload["message"] == "Staff account updated"
+    assert requested_payload["account"]["workplace_email"] == "target.admin@sit.singaporetech.edu.sg"
     db.session.refresh(target)
-    db.session.refresh(action_request)
     assert target.account_status == "revoked"
-    assert action_request.status == "executed"
-    assert action_request.approver_id != action_request.requester_id
-    _assert_no_sensitive_action_material(approved.get_json())
-    assert db.session.query(SecurityAuditEvent).filter_by(
-        event_type="admin_action_request_created",
-        outcome="success",
-    ).count() == 1
+    assert db.session.query(AdminActionRequest).count() == 0
+    _assert_no_sensitive_action_material(requested_payload)
     assert db.session.query(SecurityAuditEvent).filter_by(
         event_type="staff_account_deactivated",
         outcome="success",
     ).count() == 1
 
 
-def test_customer_security_unlock_requires_separate_root_and_clears_only_lock_state(
+def test_customer_security_unlock_executes_directly_and_clears_only_lock_state(
     admin_client,
 ):
     _root1, root1_secret = _create_staff_identity(
@@ -270,43 +274,21 @@ def test_customer_security_unlock_requires_separate_root_and_clears_only_lock_st
         account_type="root_admin",
         phone_number="91234567",
     )
-    root2, root2_secret = _create_staff_identity(
-        username="root-two",
-        email=ROOT2_EMAIL,
-        account_type="root_admin",
-        phone_number="91234568",
-    )
     customer = _create_customer("locked-customer")
     _lock_customer_for_security_failures(customer)
     _login_admin(admin_client, root1_secret, ROOT1_EMAIL)
-    approver_client = admin_client.application.test_client()
-    _login_admin(approver_client, root2_secret, ROOT2_EMAIL)
 
-    requested = admin_client.post(
+    unlocked = admin_client.post(
         f"/customers/{customer.id}/security-unlock-requests",
         json={
             "reason": "Customer completed the support identity review.",
             "totp_code": _totp(root1_secret),
         },
     )
-    request_id = requested.get_json()["request"]["id"]
     db.session.refresh(customer)
-    assert customer.is_frozen is True
 
-    self_approval = admin_client.post(
-        f"/admin-action-requests/{request_id}/approve",
-        json={"totp_code": _totp(root1_secret)},
-    )
-    approved = approver_client.post(
-        f"/admin-action-requests/{request_id}/approve",
-        json={"totp_code": _totp(root2_secret)},
-    )
-
-    assert requested.status_code == 202
-    assert self_approval.status_code == 403
-    assert approved.status_code == 200
+    assert unlocked.status_code == 200
     db.session.refresh(customer)
-    action_request = db.session.get(AdminActionRequest, request_id)
     customer_session = db.session.execute(
         db.select(ServerSideSession).where(ServerSideSession.user_id == customer.id)
     ).scalar_one()
@@ -324,8 +306,7 @@ def test_customer_security_unlock_requires_separate_root_and_clears_only_lock_st
     assert customer_session.revoked_at is not None
     assert customer_session.ended_reason == "security_unlock"
     assert remaining_scopes == {"password_reset"}
-    assert action_request.status == "executed"
-    assert action_request.requester_id != action_request.approver_id == root2.id
+    assert db.session.query(AdminActionRequest).count() == 0
     assert "SITBank account security lock cleared" in [
         item["subject"] for item in password_reset_outbox()
     ]
@@ -333,7 +314,7 @@ def test_customer_security_unlock_requires_separate_root_and_clears_only_lock_st
         event_type="customer_security_unlock_completed",
         outcome="success",
     ).count() == 1
-    _assert_no_sensitive_action_material(approved.get_json())
+    _assert_no_sensitive_action_material(unlocked.get_json())
 
 
 @pytest.mark.parametrize(
@@ -482,32 +463,35 @@ def test_customer_security_unlock_fails_closed_for_identity_overlap_and_stale_lo
             "totp_code": _totp(root1_secret),
         },
     )
-    requested = admin_client.post(
-        f"/customers/{stale_customer.id}/security-unlock-requests",
-        json={
-            "reason": "Valid request before lock state changes.",
-            "totp_code": _totp(root1_secret),
+    action_request = _create_admin_action_request(
+        root1,
+        operation_type="customer_security_unlock",
+        target_type="customer_user",
+        target_id=str(stale_customer.id),
+        operation_payload={
+            "action": "unlock",
+            "lock_reason": str(stale_customer.security_lock_reason),
+            "locked_at": stale_customer.security_locked_at.isoformat(),
         },
+        reason_present=True,
     )
-    request_id = requested.get_json()["request"]["id"]
     stale_customer.security_locked_at = stale_customer.security_locked_at + timedelta(
         seconds=1
     )
     db.session.commit()
     approved = approver_client.post(
-        f"/admin-action-requests/{request_id}/approve",
+        f"/admin-action-requests/{action_request.id}/approve",
         json={"totp_code": _totp(root2_secret)},
     )
 
     assert linked_response.status_code == 403
-    assert requested.status_code == 202
     assert approved.status_code == 409
     db.session.refresh(stale_customer)
     assert stale_customer.is_frozen is True
-    assert db.session.get(AdminActionRequest, request_id).status == "execution_failed"
+    assert db.session.get(AdminActionRequest, action_request.id).status == "execution_failed"
 
 
-def test_staff_lifecycle_audit_failure_rolls_back_target_and_marks_request_failed(
+def test_staff_lifecycle_audit_failure_rolls_back_direct_target(
     admin_client,
     monkeypatch,
 ):
@@ -519,12 +503,6 @@ def test_staff_lifecycle_audit_failure_rolls_back_target_and_marks_request_faile
         account_type="root_admin",
         phone_number="91234567",
     )
-    root2, root2_secret = _create_staff_identity(
-        username="root-two",
-        email=ROOT2_EMAIL,
-        account_type="root_admin",
-        phone_number="91234568",
-    )
     target, _target_secret = _create_staff_identity(
         username="target-admin",
         email="target.admin@sit.singaporetech.edu.sg",
@@ -532,14 +510,6 @@ def test_staff_lifecycle_audit_failure_rolls_back_target_and_marks_request_faile
         phone_number="91234569",
     )
     _login_admin(admin_client, root1_secret, ROOT1_EMAIL)
-    approver_client = admin_client.application.test_client()
-    _login_admin(approver_client, root2_secret, ROOT2_EMAIL)
-
-    requested = admin_client.post(
-        f"/staff/{target.id}/deactivate",
-        json={"totp_code": _totp(root1_secret)},
-    )
-    request_id = requested.get_json()["request"]["id"]
     original_required_audit = admin_services.audit_event_required
 
     def fail_staff_lifecycle_audit(event_type, outcome, **kwargs):
@@ -553,51 +523,34 @@ def test_staff_lifecycle_audit_failure_rolls_back_target_and_marks_request_faile
         fail_staff_lifecycle_audit,
     )
 
-    failed = approver_client.post(
-        f"/admin-action-requests/{request_id}/approve",
-        json={"totp_code": _totp(root2_secret)},
+    failed = admin_client.post(
+        f"/staff/{target.id}/deactivate",
+        json={"totp_code": _totp(root1_secret)},
     )
 
     db.session.expire_all()
     persisted_target = db.session.get(User, target.id)
-    action_request = db.session.get(AdminActionRequest, request_id)
 
     assert failed.status_code == 409
-    assert failed.get_json()["error"] == "Admin action request execution failed"
+    assert failed.get_json()["error"] == "Staff account update failed"
     assert persisted_target.account_status == "active"
-    assert action_request.status == "execution_failed"
-    assert action_request.approver_id == root2.id
-    assert action_request.executed_at is None
-    failure_event = db.session.query(SecurityAuditEvent).filter_by(
-        event_type="admin_action_request_execute",
-        outcome="failure",
-    ).one()
-    assert failure_event.event_metadata["reason"] == "execution_error"
-    assert failure_event.event_metadata["error_type"] == "AuditWriteError"
+    assert db.session.query(AdminActionRequest).count() == 0
     assert db.session.query(SecurityAuditEvent).filter_by(
         event_type="staff_account_deactivated",
         outcome="success",
     ).count() == 0
 
 
-def test_manual_recovery_approval_and_completion_use_different_approver(admin_client):
+def test_manual_recovery_approval_and_completion_execute_directly(admin_client):
     _root1, root1_secret = _create_staff_identity(
         username="root-one",
         email=ROOT1_EMAIL,
         account_type="root_admin",
         phone_number="91234567",
     )
-    _root2, root2_secret = _create_staff_identity(
-        username="root-two",
-        email=ROOT2_EMAIL,
-        account_type="root_admin",
-        phone_number="91234568",
-    )
     customer = _create_customer("maker-recover")
     recovery = _create_manual_recovery_request(customer)
     _login_admin(admin_client, root1_secret, ROOT1_EMAIL)
-    approver_client = admin_client.application.test_client()
-    _login_admin(approver_client, root2_secret, ROOT2_EMAIL)
 
     under_review = admin_client.post(
         f"/manual-recovery/requests/{recovery.id}/transition",
@@ -607,7 +560,7 @@ def test_manual_recovery_approval_and_completion_use_different_approver(admin_cl
             "totp_code": _totp(root1_secret),
         },
     )
-    requested_approval = admin_client.post(
+    approved = admin_client.post(
         f"/manual-recovery/requests/{recovery.id}/transition",
         json={
             "status": "approved",
@@ -616,24 +569,12 @@ def test_manual_recovery_approval_and_completion_use_different_approver(admin_cl
         },
     )
     assert under_review.status_code == 200
-    assert requested_approval.status_code == 200
-    approval_request_id = requested_approval.get_json()["request"]["id"]
-    approved = approver_client.post(
-        f"/admin-action-requests/{approval_request_id}/approve",
-        json={"totp_code": _totp(root2_secret)},
-    )
-    requested_completion = admin_client.post(
+    assert approved.status_code == 200
+    completed = admin_client.post(
         f"/manual-recovery/requests/{recovery.id}/complete",
         json={"reason": "complete recovery", "totp_code": _totp(root1_secret)},
     )
-    completion_request_id = requested_completion.get_json()["request"]["id"]
-    completed = approver_client.post(
-        f"/admin-action-requests/{completion_request_id}/approve",
-        json={"totp_code": _totp(root2_secret)},
-    )
 
-    assert requested_completion.status_code == 200
-    assert approved.status_code == 200
     assert completed.status_code == 200
     db.session.refresh(recovery)
     db.session.refresh(customer)
@@ -643,7 +584,7 @@ def test_manual_recovery_approval_and_completion_use_different_approver(admin_cl
         item["subject"] for item in password_reset_outbox()
     ]
     _assert_no_sensitive_action_material(completed.get_json())
-    assert db.session.query(AdminActionRequest).filter_by(status="executed").count() == 2
+    assert db.session.query(AdminActionRequest).count() == 0
     assert db.session.query(SecurityAuditEvent).filter_by(
         event_type="manual_recovery_admin_complete",
         outcome="success",
@@ -671,19 +612,20 @@ def test_admin_action_request_tampering_and_expiry_fail_closed(admin_client):
         phone_number="91234569",
     )
     _login_admin(admin_client, root1_secret, ROOT1_EMAIL)
-    requested = admin_client.post(
-        f"/staff/{target.id}/reset-activation",
-        json={"totp_code": _totp(root1_secret)},
+    action_request = _create_admin_action_request(
+        _root1,
+        operation_type="staff_reset_activation",
+        target_type="staff_user",
+        target_id=str(target.id),
+        operation_payload={"action": "reset_activation"},
     )
-    request_id = requested.get_json()["request"]["id"]
-    action_request = db.session.get(AdminActionRequest, request_id)
     action_request.operation_payload = {"action": "deactivate"}
     db.session.commit()
     _logout(admin_client)
     _login_admin(admin_client, root2_secret, ROOT2_EMAIL)
 
     tampered = admin_client.post(
-        f"/admin-action-requests/{request_id}/approve",
+        f"/admin-action-requests/{action_request.id}/approve",
         json={"totp_code": _totp(root2_secret)},
     )
     db.session.refresh(action_request)
@@ -695,7 +637,7 @@ def test_admin_action_request_tampering_and_expiry_fail_closed(admin_client):
     db.session.commit()
     _FIXED_TOTP_TIME += 30
     expired = admin_client.post(
-        f"/admin-action-requests/{request_id}/approve",
+        f"/admin-action-requests/{action_request.id}/approve",
         json={"totp_code": _totp(root2_secret)},
     )
 
@@ -733,11 +675,14 @@ def test_admin_action_request_reject_and_cancel_are_terminal(admin_client):
     _login_admin(admin_client, root1_secret, ROOT1_EMAIL)
     approver_client = admin_client.application.test_client()
     _login_admin(approver_client, root2_secret, ROOT2_EMAIL)
-    first = admin_client.post(
-        f"/staff/{target.id}/reactivate",
-        json={"totp_code": _totp(root1_secret)},
+    first = _create_admin_action_request(
+        _root1,
+        operation_type="staff_reactivate",
+        target_type="staff_user",
+        target_id=str(target.id),
+        operation_payload={"action": "reactivate"},
     )
-    first_request_id = first.get_json()["request"]["id"]
+    first_request_id = first.id
     self_reject = admin_client.post(
         f"/admin-action-requests/{first_request_id}/reject",
         json={"totp_code": _totp(root1_secret)},
@@ -750,11 +695,14 @@ def test_admin_action_request_reject_and_cancel_are_terminal(admin_client):
         f"/admin-action-requests/{first_request_id}/approve",
         json={"totp_code": _totp(root2_secret)},
     )
-    second = admin_client.post(
-        f"/staff/{target.id}/deactivate",
-        json={"totp_code": _totp(root1_secret)},
+    second = _create_admin_action_request(
+        _root1,
+        operation_type="staff_deactivate",
+        target_type="staff_user",
+        target_id=str(target.id),
+        operation_payload={"action": "deactivate"},
     )
-    second_request_id = second.get_json()["request"]["id"]
+    second_request_id = second.id
     non_requester_cancel = approver_client.post(
         f"/admin-action-requests/{second_request_id}/cancel",
         json={"totp_code": _totp(root2_secret)},
@@ -798,11 +746,13 @@ def test_admin_action_browser_views_and_form_redirects(admin_client):
     approver_client = admin_client.application.test_client()
     _login_admin(approver_client, root2_secret, ROOT2_EMAIL)
 
-    requested = admin_client.post(
-        f"/staff/{target.id}/deactivate",
-        data={"totp_code": _totp(root1_secret)},
+    action_request = _create_admin_action_request(
+        _root1,
+        operation_type="staff_deactivate",
+        target_type="staff_user",
+        target_id=str(target.id),
+        operation_payload={"action": "deactivate"},
     )
-    action_request = db.session.execute(db.select(AdminActionRequest)).scalar_one()
     list_page = admin_client.get("/admin-action-requests")
     detail_page = admin_client.get(f"/admin-action-requests/{action_request.id}")
     approved = approver_client.post(
@@ -810,7 +760,6 @@ def test_admin_action_browser_views_and_form_redirects(admin_client):
         data={"totp_code": _totp(root2_secret)},
     )
 
-    assert requested.status_code == 303
     assert list_page.status_code == 200
     assert b"Admin approvals" in list_page.data
     assert b"Deactivate staff account" in list_page.data
@@ -824,37 +773,31 @@ def test_admin_action_browser_views_and_form_redirects(admin_client):
     db.session.refresh(target)
     assert target.account_status == "revoked"
 
-    reactivate = admin_client.post(
-        f"/staff/{target.id}/reactivate",
-        data={"totp_code": _totp(root1_secret)},
+    reactivate_request = _create_admin_action_request(
+        _root1,
+        operation_type="staff_reactivate",
+        target_type="staff_user",
+        target_id=str(target.id),
+        operation_payload={"action": "reactivate"},
     )
-    reactivate_request_id = db.session.execute(
-        db.select(AdminActionRequest.id).where(
-            AdminActionRequest.operation_type == "staff_reactivate"
-        )
-    ).scalar_one()
     rejected = approver_client.post(
-        f"/admin-action-requests/{reactivate_request_id}/reject",
+        f"/admin-action-requests/{reactivate_request.id}/reject",
         data={"totp_code": _totp(root2_secret)},
     )
 
-    reset = admin_client.post(
-        f"/staff/{target.id}/reset-activation",
-        data={"totp_code": _totp(root1_secret)},
+    reset_request = _create_admin_action_request(
+        _root1,
+        operation_type="staff_reset_activation",
+        target_type="staff_user",
+        target_id=str(target.id),
+        operation_payload={"action": "reset_activation"},
     )
-    reset_request_id = db.session.execute(
-        db.select(AdminActionRequest.id).where(
-            AdminActionRequest.operation_type == "staff_reset_activation"
-        )
-    ).scalar_one()
     cancelled = admin_client.post(
-        f"/admin-action-requests/{reset_request_id}/cancel",
+        f"/admin-action-requests/{reset_request.id}/cancel",
         data={"totp_code": _totp(root1_secret)},
     )
 
-    assert reactivate.status_code == 303
     assert rejected.status_code == 303
-    assert reset.status_code == 303
     assert cancelled.status_code == 303
 
 
@@ -872,12 +815,13 @@ def test_admin_action_review_expires_stale_requests(admin_client):
         phone_number="91234569",
     )
     _login_admin(admin_client, root1_secret, ROOT1_EMAIL)
-    created = admin_client.post(
-        f"/staff/{target.id}/deactivate",
-        json={"totp_code": _totp(root1_secret)},
+    action_request = _create_admin_action_request(
+        _root1,
+        operation_type="staff_deactivate",
+        target_type="staff_user",
+        target_id=str(target.id),
+        operation_payload={"action": "deactivate"},
     )
-    request_id = created.get_json()["request"]["id"]
-    action_request = db.session.get(AdminActionRequest, request_id)
     action_request.expires_at = datetime.fromtimestamp(
         _FIXED_TOTP_TIME,
         timezone.utc,
@@ -918,29 +862,38 @@ def test_admin_action_invalid_totp_stepups_are_rejected(admin_client):
     approver_client = admin_client.application.test_client()
     _login_admin(approver_client, root2_secret, ROOT2_EMAIL)
 
-    deactivate = admin_client.post(
-        f"/staff/{target.id}/deactivate",
-        json={"totp_code": _totp(root1_secret)},
+    deactivate = _create_admin_action_request(
+        _root1,
+        operation_type="staff_deactivate",
+        target_type="staff_user",
+        target_id=str(target.id),
+        operation_payload={"action": "deactivate"},
     )
-    reactivate = admin_client.post(
-        f"/staff/{target.id}/reactivate",
-        json={"totp_code": _totp(root1_secret)},
+    reactivate = _create_admin_action_request(
+        _root1,
+        operation_type="staff_reactivate",
+        target_type="staff_user",
+        target_id=str(target.id),
+        operation_payload={"action": "reactivate"},
     )
-    reset = admin_client.post(
-        f"/staff/{target.id}/reset-activation",
-        json={"totp_code": _totp(root1_secret)},
+    reset = _create_admin_action_request(
+        _root1,
+        operation_type="staff_reset_activation",
+        target_type="staff_user",
+        target_id=str(target.id),
+        operation_payload={"action": "reset_activation"},
     )
 
     invalid_approval = approver_client.post(
-        f"/admin-action-requests/{deactivate.get_json()['request']['id']}/approve",
+        f"/admin-action-requests/{deactivate.id}/approve",
         json={"totp_code": _invalid_totp(root2_secret)},
     )
     invalid_reject = approver_client.post(
-        f"/admin-action-requests/{reactivate.get_json()['request']['id']}/reject",
+        f"/admin-action-requests/{reactivate.id}/reject",
         json={"totp_code": _invalid_totp(root2_secret)},
     )
     invalid_cancel = admin_client.post(
-        f"/admin-action-requests/{reset.get_json()['request']['id']}/cancel",
+        f"/admin-action-requests/{reset.id}/cancel",
         json={"totp_code": _invalid_totp(root1_secret)},
     )
 
@@ -971,16 +924,18 @@ def test_admin_action_approval_requires_requester_still_eligible(admin_client):
     _login_admin(admin_client, root1_secret, ROOT1_EMAIL)
     approver_client = admin_client.application.test_client()
     _login_admin(approver_client, root2_secret, ROOT2_EMAIL)
-    created = admin_client.post(
-        f"/staff/{target.id}/deactivate",
-        json={"totp_code": _totp(root1_secret)},
+    created = _create_admin_action_request(
+        root1,
+        operation_type="staff_deactivate",
+        target_type="staff_user",
+        target_id=str(target.id),
+        operation_payload={"action": "deactivate"},
     )
-    request_id = created.get_json()["request"]["id"]
     root1.account_status = "revoked"
     db.session.commit()
 
     blocked = approver_client.post(
-        f"/admin-action-requests/{request_id}/approve",
+        f"/admin-action-requests/{created.id}/approve",
         json={"totp_code": _totp(root2_secret)},
     )
 

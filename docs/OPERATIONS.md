@@ -112,13 +112,14 @@ returning the services to traffic.
 
 Only root admins in the private admin runtime can request an unlock, and only
 for customer locks created automatically by password or MFA failure thresholds.
-The requester supplies a support reason and current TOTP. A different active
-root admin must approve the HMAC-protected request with a separate current TOTP;
-self-approval, identity-linked customer accounts, manual freezes, stale lock
-state, and lower roles fail closed. Approval clears the matching password/MFA
-failure counters and lock fields, revokes customer sessions, writes required
-audit evidence, and queues a customer security notice. It does not disable MFA,
-change credentials, clear unrelated throttles, or expose a customer-app route.
+The root admin supplies a support reason and current TOTP, and the service
+executes the unlock directly after authorization, self-action, target-state,
+and required-audit checks pass. Identity-linked customer accounts, manual
+freezes, stale or ineligible lock state, and lower roles fail closed. The action
+clears the matching password/MFA failure counters and lock fields, revokes
+customer sessions, writes required audit evidence, and queues a customer
+security notice. It does not disable MFA, change credentials, clear unrelated
+throttles, or expose a customer-app route.
 
 ## Admin And Staging Access Operations
 
@@ -1333,11 +1334,12 @@ Manual recovery operator workflow:
   account.
 - Root admins move a request through `under_review`, `approved`, or `denied`
   using `POST /manual-recovery/requests/<id>/transition` with browser CSRF,
-  an operator reason, and a fresh TOTP code. Approval and denial create durable
-  maker-checker admin action requests when required by the service layer.
+  an operator reason, and a fresh TOTP code. Approval and denial execute
+  directly for the root admin after the service validates the current request
+  state and self-action boundary.
 - Completion uses `POST /manual-recovery/requests/<id>/complete` after
   approval, again with browser CSRF, an operator reason, and a fresh TOTP code;
-  the service queues the durable maker-checker completion request.
+  the service completes the approved request directly.
 - Completion forces customer MFA re-enrollment, revokes active customer
   sessions, sends the existing manual recovery completion notification, and
   records `manual_recovery_completed` plus admin actor audit events.
