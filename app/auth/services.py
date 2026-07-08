@@ -9,7 +9,7 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from cryptography.exceptions import InvalidTag
 import pyotp
@@ -123,6 +123,10 @@ class FrozenAccountError(AuthError):
 
 
 MFA_NOT_ENABLED_ERROR = "MFA is not enabled"
+TOTP_VERIFICATION_VALID = "valid"
+TOTP_VERIFICATION_INVALID = "invalid"
+TOTP_VERIFICATION_REPLAY = "replay"
+TotpVerificationOutcome = Literal["valid", "invalid", "replay"]
 
 
 def _normalize(value: str) -> str:
@@ -501,7 +505,10 @@ def pending_mfa_setup(user: User) -> dict[str, str] | None:
 
 def verify_mfa_setup(user: User, code: str) -> dict[str, Any]:
     _require_active_pending_mfa_setup(user)
-    if not _verify_totp_for_user(user, code, "mfa_setup"):
+    outcome = _verify_totp_for_user_outcome(user, code, "mfa_setup")
+    if outcome == TOTP_VERIFICATION_REPLAY:
+        _handle_mfa_verification_replay(user, "mfa_setup_verify")
+    if outcome != TOTP_VERIFICATION_VALID:
         _handle_mfa_verification_failure(user, "mfa_setup_verify")
 
     user.mfa_enabled = True
@@ -567,7 +574,15 @@ def verify_mfa_replacement(user: User, code: str) -> dict[str, Any]:
         audit_event("mfa_replace_verify", "failure", user=user, metadata={"reason": "missing_pending_secret"})
         raise AuthError("No pending MFA replacement", 401)
 
-    if not _verify_totp_secret_for_user(user, secret, code, "mfa_replace_verify"):
+    outcome = _verify_totp_secret_for_user_outcome(
+        user,
+        secret,
+        code,
+        "mfa_replace_verify",
+    )
+    if outcome == TOTP_VERIFICATION_REPLAY:
+        _handle_mfa_verification_replay(user, "mfa_replace_verify")
+    if outcome != TOTP_VERIFICATION_VALID:
         _handle_mfa_verification_failure(user, "mfa_replace_verify")
 
     user.mfa_secret_nonce = _b64decode(str(session[MFA_REPLACEMENT_NONCE_KEY]))
@@ -1213,7 +1228,10 @@ def verify_fresh_mfa_for_action(
         audit_event(action, "failure", user=user, metadata={"reason": "missing_mfa_code"})
         raise AuthError(GENERIC_MFA_ERROR, 401)
 
-    if not _verify_totp_for_user(user, code, action):
+    outcome = _verify_totp_for_user_outcome(user, code, action)
+    if outcome == TOTP_VERIFICATION_REPLAY:
+        _handle_mfa_verification_replay(user, action)
+    if outcome != TOTP_VERIFICATION_VALID:
         _handle_mfa_verification_failure(user, action)
     if rotate_session_on_success and session.get("user_id") == user.id:
         rotate_authenticated_session_after_mfa(user.id)
@@ -1237,7 +1255,10 @@ def verify_high_risk_authorization(
     if not user.mfa_enabled:
         audit_event(action, "failure", user=user, metadata={"reason": "totp_not_enabled"})
         raise AuthError("Authenticator MFA is required for this action", 403)
-    if not _verify_totp_for_user(user, code, action):
+    outcome = _verify_totp_for_user_outcome(user, code, action)
+    if outcome == TOTP_VERIFICATION_REPLAY:
+        _handle_mfa_verification_replay(user, action)
+    if outcome != TOTP_VERIFICATION_VALID:
         _handle_mfa_verification_failure(user, action)
     audit_event(action, "mfa_success", user=user)
     if rotate_session_on_success and session.get("user_id") == user.id:
@@ -1275,15 +1296,29 @@ def _handle_mfa_verification_failure(user: User, action: str) -> None:
     raise AuthError(GENERIC_MFA_ERROR, 401)
 
 
+def _handle_mfa_verification_replay(user: User, action: str) -> None:
+    audit_event(action, "failure", user=user, metadata={"reason": "totp_replay"})
+    raise AuthError(GENERIC_MFA_ERROR, 401)
+
+
 def _verify_pending_login_authentication_code(user: User, code: str) -> str:
     if _is_totp_code(code):
-        if _verify_totp_for_user(
+        outcome = _verify_totp_for_user_outcome(
             user,
             code,
             "mfa_login",
             track_failures=False,
-        ):
+        )
+        if outcome == TOTP_VERIFICATION_VALID:
             return "totp"
+        if outcome == TOTP_VERIFICATION_REPLAY:
+            audit_event(
+                "mfa_login_verify",
+                "failure",
+                user=user,
+                metadata={"reason": "totp_replay"},
+            )
+            raise AuthError(GENERIC_MFA_ERROR, 401)
         _record_customer_mfa_login_failure(
             user,
             reason="invalid_totp",
@@ -1394,6 +1429,18 @@ def _user_security_lock_threshold(user: User, scope: str) -> int:
         return PRIVILEGED_PASSWORD_LOCK_THRESHOLD
     if scope == "password":
         return CUSTOMER_PASSWORD_LOCK_THRESHOLD
+    if scope == "mfa":
+        # Keep the account freeze strictly above the per-window wrong-code
+        # throttle so the durable 429 stays the first-fired MFA-login control
+        # and the freeze remains a sustained-abuse backstop rather than a
+        # single-burst trip. A throttled window records at most
+        # CUSTOMER_MFA_FAILURE_LIMIT + 1 failures before it blocks without
+        # recording further, so two attempts of headroom keeps a single
+        # throttled burst recoverable while repeated bursts across windows
+        # still lock the account. At the default limit of 5 this preserves the
+        # historical threshold of 10.
+        wrong_code_limit = int(current_app.config.get("CUSTOMER_MFA_FAILURE_LIMIT", 5))
+        return max(AUTH_LOCK_THRESHOLD, wrong_code_limit + 2)
     return AUTH_LOCK_THRESHOLD
 
 
@@ -1416,7 +1463,27 @@ def _verify_totp_for_user(
     valid_window: int | None = None,
     track_failures: bool = True,
 ) -> bool:
-    return _verify_totp_secret_for_user(
+    return (
+        _verify_totp_for_user_outcome(
+            user,
+            code,
+            scope,
+            valid_window=valid_window,
+            track_failures=track_failures,
+        )
+        == TOTP_VERIFICATION_VALID
+    )
+
+
+def _verify_totp_for_user_outcome(
+    user: User,
+    code: str,
+    scope: str,
+    *,
+    valid_window: int | None = None,
+    track_failures: bool = True,
+) -> TotpVerificationOutcome:
+    return _verify_totp_secret_for_user_outcome(
         user,
         _mfa_secret_for_user(user),
         code,
@@ -1435,10 +1502,32 @@ def _verify_totp_secret_for_user(
     valid_window: int | None = None,
     track_failures: bool = True,
 ) -> bool:
+    return (
+        _verify_totp_secret_for_user_outcome(
+            user,
+            secret,
+            code,
+            scope,
+            valid_window=valid_window,
+            track_failures=track_failures,
+        )
+        == TOTP_VERIFICATION_VALID
+    )
+
+
+def _verify_totp_secret_for_user_outcome(
+    user: User,
+    secret: str,
+    code: str,
+    scope: str,
+    *,
+    valid_window: int | None = None,
+    track_failures: bool = True,
+) -> TotpVerificationOutcome:
     if not re.fullmatch(r"\d{6}", code or ""):
         if track_failures:
             record_failure(scope, str(user.id))
-        return False
+        return TOTP_VERIFICATION_INVALID
 
     if track_failures:
         try:
@@ -1451,7 +1540,7 @@ def _verify_totp_secret_for_user(
     if accepted_step is None:
         if track_failures:
             record_failure(scope, str(user.id))
-        return False
+        return TOTP_VERIFICATION_INVALID
 
     code_digest = active_hmac_hex(
         f"totp-replay:{user.id}:{scope}:{accepted_step}:{code}",
@@ -1470,15 +1559,13 @@ def _verify_totp_secret_for_user(
         db.session.commit()
     except IntegrityError:
         db.session.rollback()
-        if track_failures:
-            record_failure(scope, str(user.id))
-        return False
+        return TOTP_VERIFICATION_REPLAY
 
     if track_failures:
         clear_failures(scope, str(user.id))
     _clear_user_security_failures(user, "mfa")
     mark_fresh_mfa()
-    return True
+    return TOTP_VERIFICATION_VALID
 
 
 def _totp_valid_window(scope: str, valid_window: int | None) -> int:
