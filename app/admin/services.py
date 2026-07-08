@@ -25,14 +25,11 @@ from app.auth.password_reset import (
 from app.auth.schemas import PHONE_RE as AUTH_PHONE_RE
 from app.auth.services import (
     AuthError,
-    TOTP_VERIFICATION_REPLAY,
-    TOTP_VERIFICATION_VALID,
     _clear_user_security_failures,
     _dummy_password_hash,
     _record_user_security_failure,
     _totp,
     _verify_totp_for_user,
-    _verify_totp_for_user_outcome,
 )
 from app.extensions import db
 from app.models import (
@@ -114,8 +111,6 @@ MANUAL_RECOVERY_STATUS_OPERATION_TYPES = {
     MANUAL_RECOVERY_STATUS_APPROVED: "manual_recovery_approve",
     MANUAL_RECOVERY_STATUS_DENIED: "manual_recovery_deny",
 }
-MANUAL_RECOVERY_REQUEST_UPDATED_MESSAGE = "Manual recovery request updated"
-INVITE_INVALID_AUTHENTICATION_CODE_ERROR = "Invalid authentication code."
 ADMIN_ACTION_OPERATION_LABELS = {
     "staff_deactivate": "Deactivate staff account",
     "staff_reactivate": "Reactivate staff account",
@@ -126,7 +121,7 @@ ADMIN_ACTION_OPERATION_LABELS = {
     "customer_security_unlock": "Unlock customer security lock",
 }
 ADMIN_ACTION_EXECUTION_REASON = "maker_checker_approved"
-ROOT_ADMIN_DIRECT_EXECUTION_REASON = "root_admin_direct"
+ADMIN_ACTION_APPROVAL_REQUIRED_MESSAGE = "Admin action approval required"
 AUTOMATIC_CUSTOMER_LOCK_REASONS = frozenset(
     {"password_failed_attempts", "mfa_failed_attempts"}
 )
@@ -216,7 +211,7 @@ AUDIT_EVENT_DESCRIPTIONS = {
     ),
     "admin_action_request_created": (
         "Admin approval request created",
-        "A legacy privileged action approval record was created.",
+        "A high-risk root-admin operation was queued for maker-checker approval.",
         "Review the requester, target reference, operation type, and request integrity status.",
     ),
     "admin_action_request_executed": (
@@ -297,7 +292,7 @@ AUDIT_EVENT_DESCRIPTIONS = {
     "manual_recovery_admin_complete": (
         "Manual recovery completion requested",
         "A root admin requested completion of an approved manual recovery case.",
-        "Confirm approved state, TOTP step-up, operator reason, and target reference.",
+        "Confirm approval, maker-checker status, TOTP step-up, and target reference.",
     ),
     "manual_recovery_admin_review": (
         "Manual recovery queue reviewed",
@@ -307,7 +302,7 @@ AUDIT_EVENT_DESCRIPTIONS = {
     "manual_recovery_admin_transition": (
         "Manual recovery status transition",
         "A root admin attempted to move a manual recovery request through review.",
-        "Confirm the requested state, reason, TOTP step-up, and direct-execution outcome.",
+        "Confirm the requested state, reason, TOTP step-up, and maker-checker requirement.",
     ),
     "manual_recovery_completed": (
         "Manual recovery completed",
@@ -362,7 +357,7 @@ AUDIT_EVENT_DESCRIPTIONS = {
     "staff_account_lifecycle": (
         "Staff account lifecycle change",
         "A root admin requested a staff/admin account lifecycle operation.",
-        "Review target role/status, TOTP step-up, self-action checks, and direct-execution outcome.",
+        "Review target role/status, TOTP step-up, and maker-checker approval.",
     ),
     "staff_account_view": (
         "Staff accounts viewed",
@@ -895,27 +890,35 @@ def request_customer_security_unlock(
         )
         raise AuthError(FRESH_MFA_REQUIRED_ERROR, 403)
 
-    try:
-        result = _clear_customer_security_lock(
-            actor,
-            target,
-            metadata={
-                "execution_mode": ROOT_ADMIN_DIRECT_EXECUTION_REASON,
-                "reason_present": True,
-                "reason_length": len(clean_reason),
-            },
-        )
-        db.session.commit()
-    except RuntimeError as exc:
-        db.session.rollback()
-        raise AuthError("Customer security unlock failed", 409) from exc
-    except SQLAlchemyError:
-        db.session.rollback()
-        raise
-    notification_user_id = result.pop("_notification_user_id", None)
-    if notification_user_id is not None:
-        _send_customer_security_unlock_notification(int(notification_user_id))
-    return result
+    request_record = _create_admin_action_request(
+        actor,
+        operation_type="customer_security_unlock",
+        target_type="customer_user",
+        target_id=str(target.id),
+        operation_payload={
+            "action": "unlock",
+            "lock_reason": str(target.security_lock_reason),
+            "locked_at": _utc_iso(target.security_locked_at),
+        },
+        reason=clean_reason,
+    )
+    audit_event(
+        "customer_security_unlock_requested",
+        "success",
+        user=actor,
+        metadata={
+            "request_ref": audit_reference("admin_action_request", request_record.id),
+            "target_customer_ref": audit_reference("customer_user", target.id),
+            "previous_lock_reason": target.security_lock_reason,
+            "actor_role": actor.account_type,
+            "reason_present": True,
+            "reason_length": len(clean_reason),
+        },
+    )
+    return {
+        "message": ADMIN_ACTION_APPROVAL_REQUIRED_MESSAGE,
+        "request": public_admin_action_request(request_record),
+    }
 
 
 def transition_staff_account_as_root_admin(
@@ -942,16 +945,18 @@ def transition_staff_account_as_root_admin(
         )
         raise AuthError(FRESH_MFA_REQUIRED_ERROR, 403)
 
-    try:
-        result = _execute_staff_account_lifecycle(actor, target.id, normalized_action)
-        db.session.commit()
-    except RuntimeError as exc:
-        db.session.rollback()
-        raise AuthError("Staff account update failed", 409) from exc
-    except SQLAlchemyError:
-        db.session.rollback()
-        raise
-    return result
+    request_record = _create_admin_action_request(
+        actor,
+        operation_type=STAFF_ACTION_OPERATION_TYPES[normalized_action],
+        target_type="staff_user",
+        target_id=str(target.id),
+        operation_payload={"action": normalized_action},
+        reason=None,
+    )
+    return {
+        "message": ADMIN_ACTION_APPROVAL_REQUIRED_MESSAGE,
+        "request": public_admin_action_request(request_record),
+    }
 
 
 def _validate_staff_account_lifecycle_request(
@@ -1162,12 +1167,6 @@ def public_staff_account(user: User, actor: User) -> dict[str, Any]:
         "last_login_at": _utc_iso(user.last_login_at) if user.last_login_at else None,
         "last_login_at_display": _utc_display(user.last_login_at) if user.last_login_at else None,
         "can_manage": bool(is_root_admin(actor) and user.account_type in ADMIN_ACCOUNT_MANAGED_TYPES and user.id != actor.id),
-        "can_resend_setup": bool(
-            is_root_admin(actor)
-            and user.account_type in ADMIN_ACCOUNT_MANAGED_TYPES
-            and user.id != actor.id
-            and user.account_status == "setup_pending"
-        ),
     }
 
 
@@ -1906,21 +1905,12 @@ def complete_admin_mfa_login(totp_code: str) -> dict[str, Any]:
             429,
             retry_after=exc.retry_after,
         ) from exc
-    totp_outcome = _verify_totp_for_user_outcome(
+    if not _verify_totp_for_user(
         user,
         totp_code,
         "admin_mfa_login",
         track_failures=False,
-    )
-    if totp_outcome == TOTP_VERIFICATION_REPLAY:
-        audit_event(
-            "admin_mfa_login",
-            "failure",
-            user=user,
-            metadata={"reason": "totp_replay"},
-        )
-        raise AuthError(GENERIC_ADMIN_LOGIN_ERROR, 401)
-    if totp_outcome != TOTP_VERIFICATION_VALID:
+    ):
         attempts = record_failure(
             "admin_mfa_login",
             principal,
@@ -2038,7 +2028,26 @@ def create_staff_invite(
         audit_event("staff_invite_create", "failure", user=actor, metadata={"reason": "integrity_error"})
         raise AuthError(INVITE_CREATE_ERROR, 400) from exc
 
-    _deliver_fresh_invite_email(invite, actor, token)
+    invite_url = url_for("admin.invite_accept_info", token=token, _external=True)
+    try:
+        _send_invite_email(invite, invite_url)
+    except Exception as exc:
+        current_app.logger.warning("staff_invite_email_failed error=%s", type(exc).__name__)
+        invite.status = "revoked"
+        invite.delivery_status = "failed"
+        invite.revoked_at = _utcnow()
+        invite.revoked_by_user_id = actor.id
+        audit_event(
+            "staff_invite_email",
+            "failure",
+            user=actor,
+            metadata={**_invite_audit_metadata(invite), "reason": "email_delivery_failed"},
+        )
+        db.session.commit()
+        raise AuthError("Invite could not be sent", 503) from exc
+    invite.delivery_status = "queued"
+    audit_event("staff_invite_email", "queued", user=actor, metadata=_invite_audit_metadata(invite))
+    db.session.commit()
     return {
         "message": "Invite created",
         "invite": public_invite(invite),
@@ -2164,91 +2173,6 @@ def reset_staff_invite_acceptance(actor: User, invite_id: int, totp_code: str | 
     return {"message": "Invite acceptance reset", "invite": public_invite(invite)}
 
 
-def resend_staff_setup_invite(actor: User, target_user_id: int, totp_code: str | None) -> dict[str, Any]:
-    """Send a fresh setup invite to an existing setup_pending staff/admin user.
-
-    Covers the gap where the original invite has already reached a terminal
-    state (accepted/expired/revoked) but the linked user never finished
-    activation, so create_staff_invite's duplicate-identity guard would
-    otherwise permanently block re-onboarding that identity.
-    """
-    if not is_root_admin(actor):
-        audit_event("staff_invite_resend", "blocked", user=actor, metadata={"reason": "not_root_admin"})
-        raise AuthError("Forbidden", 403)
-    target = db.session.get(User, int(target_user_id))
-    if target is not None and target.id == actor.id:
-        audit_event(
-            "staff_invite_resend",
-            "blocked",
-            user=actor,
-            metadata={"reason": "self_management_denied"},
-        )
-        raise AuthError("Forbidden", 403)
-    if (
-        target is None
-        or target.account_type not in ADMIN_ACCOUNT_MANAGED_TYPES
-        or target.account_status != "setup_pending"
-    ):
-        audit_event(
-            "staff_invite_resend",
-            "blocked",
-            user=actor,
-            metadata={"reason": "target_not_resendable"},
-        )
-        raise AuthError("Staff account not found", 404)
-    try:
-        normalized_workplace = normalize_workplace_email(target.email)
-    except AuthError:
-        audit_event("staff_invite_resend", "blocked", user=actor, metadata={"reason": "email_policy"})
-        raise
-
-    _require_staff_invite_step_up(
-        actor,
-        totp_code,
-        scope="staff_invite_resend",
-        event_type="staff_invite_resend",
-    )
-    _reject_root_admin_allowlist_invite_target(normalized_workplace, actor, "staff_invite_resend")
-    _reject_active_invite(normalized_workplace)
-
-    token = secrets.token_urlsafe(32)
-    now = _utcnow()
-    invite = StaffInvite(
-        token_hash=invite_token_hash(token),
-        workplace_email_normalized=normalized_workplace,
-        role=target.account_type,
-        status="pending",
-        delivery_status="unconfirmed",
-        created_by_user_id=actor.id,
-        setup_user_id=target.id,
-        created_at=now,
-        expires_at=now + timedelta(seconds=int(current_app.config["STAFF_INVITE_TTL_SECONDS"])),
-    )
-    db.session.add(invite)
-    try:
-        db.session.flush()
-        audit_event_required(
-            "staff_invite_resent",
-            "success",
-            user=actor,
-            metadata={
-                **_invite_audit_metadata(invite),
-                "target_staff_ref": audit_reference("staff_user", target.id),
-            },
-        )
-        db.session.commit()
-    except IntegrityError as exc:
-        db.session.rollback()
-        audit_event("staff_invite_resend", "failure", user=actor, metadata={"reason": "integrity_error"})
-        raise AuthError(INVITE_CREATE_ERROR, 400) from exc
-
-    _deliver_fresh_invite_email(invite, actor, token)
-    return {
-        "message": "Setup invite resent",
-        "invite": public_invite(invite),
-    }
-
-
 def manual_recovery_requests_for_admin(actor: User) -> list[dict[str, Any]]:
     if not is_root_admin(actor):
         audit_event("manual_recovery_admin_review", "blocked", user=actor, metadata={"reason": "not_root_admin"})
@@ -2297,23 +2221,18 @@ def transition_manual_recovery_request_as_admin(
     _assert_not_self_manual_recovery_action(actor, request_id, "manual_recovery_transition")
     if normalized_status in MANUAL_RECOVERY_STATUS_OPERATION_TYPES:
         _validate_manual_recovery_transition_request(actor, request_id, normalized_status)
-        result = transition_manual_recovery_request(
-            request_id,
-            normalized_status,
+        request_record = _create_admin_action_request(
+            actor,
+            operation_type=MANUAL_RECOVERY_STATUS_OPERATION_TYPES[normalized_status],
+            target_type="manual_recovery_request",
+            target_id=str(int(request_id)),
+            operation_payload={"status": normalized_status},
             reason=clean_reason,
         )
-        audit_event(
-            "manual_recovery_admin_transition",
-            "success",
-            user=actor,
-            metadata={
-                "request_ref": audit_reference("manual_recovery_request", request_id),
-                "new_status": result["status"],
-                "reason_recorded": True,
-                "execution_mode": ROOT_ADMIN_DIRECT_EXECUTION_REASON,
-            },
-        )
-        return {"message": MANUAL_RECOVERY_REQUEST_UPDATED_MESSAGE, "request": result}
+        return {
+            "message": ADMIN_ACTION_APPROVAL_REQUIRED_MESSAGE,
+            "request": public_admin_action_request(request_record),
+        }
 
     result = transition_manual_recovery_request(request_id, normalized_status, reason=clean_reason)
     audit_event(
@@ -2326,7 +2245,7 @@ def transition_manual_recovery_request_as_admin(
             "reason_recorded": True,
         },
     )
-    return {"message": MANUAL_RECOVERY_REQUEST_UPDATED_MESSAGE, "request": result}
+    return {"message": "Manual recovery request updated", "request": result}
 
 
 def complete_manual_recovery_request_as_admin(
@@ -2350,24 +2269,17 @@ def complete_manual_recovery_request_as_admin(
 
     _assert_not_self_manual_recovery_action(actor, request_id, "manual_recovery_complete")
     _validate_manual_recovery_completion_request(actor, request_id)
-    result = complete_manual_recovery_request(
-        request_id,
+    request_record = _create_admin_action_request(
+        actor,
+        operation_type="manual_recovery_complete",
+        target_type="manual_recovery_request",
+        target_id=str(int(request_id)),
+        operation_payload={"action": "complete"},
         reason=clean_reason,
     )
-    audit_event(
-        "manual_recovery_admin_complete",
-        "success",
-        user=actor,
-        metadata={
-            "request_ref": audit_reference("manual_recovery_request", request_id),
-            "execution_mode": ROOT_ADMIN_DIRECT_EXECUTION_REASON,
-            "mfa_reenrollment_required": bool(result.get("mfa_reenrollment_required")),
-            "revoked_sessions": int(result.get("revoked_sessions") or 0),
-        },
-    )
     return {
-        "message": "Manual recovery request completed",
-        "request": result,
+        "message": ADMIN_ACTION_APPROVAL_REQUIRED_MESSAGE,
+        "request": public_admin_action_request(request_record),
     }
 
 
@@ -2658,6 +2570,53 @@ def _admin_action_manual_recovery_target_summary(target_id: int) -> str | None:
     return f"Manual recovery request #{request_record_target.id}{customer_label} ({request_record_target.status})"
 
 
+def _create_admin_action_request(
+    actor: User,
+    *,
+    operation_type: str,
+    target_type: str,
+    target_id: str,
+    operation_payload: dict[str, Any],
+    reason: str | None,
+) -> AdminActionRequest:
+    _require_active_root_admin(actor, "admin_action_request_create")
+    now = _utcnow()
+    reason_text = str(reason or "").strip()
+    request_record = AdminActionRequest(
+        operation_type=operation_type,
+        target_type=target_type,
+        target_id=str(target_id),
+        operation_payload=_safe_admin_action_payload(operation_payload),
+        requester_id=actor.id,
+        requester_role=actor.account_type,
+        status=ADMIN_ACTION_PENDING_STATUS,
+        reason_present=bool(reason_text),
+        reason_length=len(reason_text),
+        metadata_hmac="pending",
+        created_at=now,
+        updated_at=now,
+        expires_at=now + timedelta(seconds=ADMIN_ACTION_REQUEST_TTL_SECONDS),
+    )
+    db.session.add(request_record)
+    db.session.flush()
+    request_record.metadata_hmac = _admin_action_request_hmac(request_record)
+    audit_event_required(
+        "admin_action_request_created",
+        "success",
+        user=actor,
+        metadata={
+            "request_ref": audit_reference("admin_action_request", request_record.id),
+            "operation_type": operation_type,
+            "target_type": target_type,
+            "target_ref": _admin_action_target_ref(request_record),
+            "reason_present": bool(reason_text),
+            "reason_length": len(reason_text),
+        },
+    )
+    db.session.commit()
+    return request_record
+
+
 def _execute_admin_action_request(actor: User, request_record: AdminActionRequest) -> dict[str, Any]:
     if request_record.operation_type in STAFF_ACTION_OPERATION_TYPES.values():
         return _execute_staff_admin_action_request(actor, request_record)
@@ -2700,7 +2659,7 @@ def _execute_manual_recovery_transition_admin_action_request(
             "maker_checker_request_ref": audit_reference("admin_action_request", request_record.id),
         },
     )
-    return {"message": MANUAL_RECOVERY_REQUEST_UPDATED_MESSAGE, "request": result}
+    return {"message": "Manual recovery request updated", "request": result}
 
 
 def _execute_manual_recovery_complete_admin_action_request(
@@ -2760,19 +2719,6 @@ def _execute_customer_security_unlock_admin_action_request(
         )
         raise AuthError("Customer security lock state changed", 409)
 
-    return _clear_customer_security_lock(
-        actor,
-        target,
-        metadata={"request_ref": audit_reference("admin_action_request", request_record.id)},
-    )
-
-
-def _clear_customer_security_lock(
-    actor: User,
-    target: User,
-    *,
-    metadata: dict[str, Any],
-) -> dict[str, Any]:
     previous_lock_reason = str(target.security_lock_reason)
     relevant_counters = list(
         db.session.execute(
@@ -2801,7 +2747,7 @@ def _clear_customer_security_lock(
         "success",
         user=actor,
         metadata={
-            **metadata,
+            "request_ref": audit_reference("admin_action_request", request_record.id),
             "target_customer_ref": audit_reference("customer_user", target.id),
             "previous_lock_reason": previous_lock_reason,
             "actor_role": actor.account_type,
@@ -3250,19 +3196,10 @@ def verify_invite_acceptance(
         raise AuthError(GENERIC_INVITE_ERROR, 401)
     if not TOTP_RE.fullmatch(str(totp_code or "")):
         _record_invite_acceptance_verify_failure(invite, user, "invalid_totp_format")
-        raise AuthError(INVITE_INVALID_AUTHENTICATION_CODE_ERROR, 401)
-    totp_outcome = _verify_totp_for_user_outcome(user, totp_code, "staff_totp_setup")
-    if totp_outcome == TOTP_VERIFICATION_REPLAY:
-        audit_event(
-            "staff_totp_setup",
-            "failure",
-            user=user,
-            metadata={"reason": "totp_replay"},
-        )
-        raise AuthError(INVITE_INVALID_AUTHENTICATION_CODE_ERROR, 401)
-    if totp_outcome != TOTP_VERIFICATION_VALID:
+        raise AuthError("Invalid authentication code.", 401)
+    if not _verify_totp_for_user(user, totp_code, "staff_totp_setup"):
         _record_invite_acceptance_verify_failure(invite, user, "invalid_totp")
-        raise AuthError(INVITE_INVALID_AUTHENTICATION_CODE_ERROR, 401)
+        raise AuthError("Invalid authentication code.", 401)
     if not _verify_workplace_code(invite, workplace_verification_code):
         _record_invite_acceptance_verify_failure(invite, user, "invalid_workplace_code")
         raise AuthError(GENERIC_WORKPLACE_VERIFICATION_ERROR, 401)
@@ -3592,7 +3529,7 @@ def _require_staff_invite_step_up(
         audit_event(event_type, "failure", user=actor, metadata={"reason": "missing_totp_step_up"})
         raise AuthError(INVITE_FRESH_MFA_REQUIRED_ERROR, 403)
     try:
-        outcome = _verify_totp_for_user_outcome(actor, totp_code, scope)
+        valid = _verify_totp_for_user(actor, totp_code, scope)
     except AuthError as exc:
         audit_event(
             event_type,
@@ -3605,10 +3542,7 @@ def _require_staff_invite_step_up(
             exc.status_code,
             retry_after=exc.retry_after,
         ) from exc
-    if outcome == TOTP_VERIFICATION_REPLAY:
-        audit_event(event_type, "failure", user=actor, metadata={"reason": "totp_replay"})
-        raise AuthError(INVITE_FRESH_MFA_REQUIRED_ERROR, 403)
-    if outcome != TOTP_VERIFICATION_VALID:
+    if not valid:
         audit_event(event_type, "failure", user=actor, metadata={"reason": "invalid_totp_step_up"})
         raise AuthError(INVITE_FRESH_MFA_REQUIRED_ERROR, 403)
 
@@ -3650,36 +3584,6 @@ def _send_invite_email(invite: StaffInvite, invite_url: str) -> None:
             "This staff identity is separate from any customer banking account."
         ),
     )
-
-
-def _deliver_fresh_invite_email(invite: StaffInvite, actor: User, token: str) -> None:
-    """Send the setup email for a freshly minted invite and record delivery status.
-
-    Shared by create_staff_invite() and resend_staff_setup_invite(): both mint a
-    brand-new invite row, so a delivery failure must fail closed by revoking the
-    row and marking delivery failed instead of leaving a live, undeliverable
-    invite. Raw tokens stay in the email URL only and never reach audit metadata.
-    """
-    invite_url = url_for("admin.invite_accept_info", token=token, _external=True)
-    try:
-        _send_invite_email(invite, invite_url)
-    except Exception as exc:
-        current_app.logger.warning("staff_invite_email_failed error=%s", type(exc).__name__)
-        invite.status = "revoked"
-        invite.delivery_status = "failed"
-        invite.revoked_at = _utcnow()
-        invite.revoked_by_user_id = actor.id
-        audit_event(
-            "staff_invite_email",
-            "failure",
-            user=actor,
-            metadata={**_invite_audit_metadata(invite), "reason": "email_delivery_failed"},
-        )
-        db.session.commit()
-        raise AuthError("Invite could not be sent", 503) from exc
-    invite.delivery_status = "queued"
-    audit_event("staff_invite_email", "queued", user=actor, metadata=_invite_audit_metadata(invite))
-    db.session.commit()
 
 
 def _send_workplace_verification(invite: StaffInvite) -> None:

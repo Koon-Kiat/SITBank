@@ -401,29 +401,6 @@ def test_totp_user_must_verify_totp_before_password_reset(app, client, monkeypat
     assert completed.status_code == 200
 
 
-def test_password_reset_totp_replay_rejects_without_transaction_failure(app, client, monkeypatch):
-    with app.app_context():
-        _user, secret = _create_totp_user("resetreplay", "resetreplay@example.com")
-
-    code = _totp_code_at_frozen_time(monkeypatch, secret)
-    _request_reset(client, "resetreplay@example.com")
-    assert _exchange(client, _reset_token(app)).status_code == 200
-    verified = client.post("/auth/password-reset/mfa/totp", json={"totp_code": code})
-
-    replay_client = app.test_client()
-    _request_reset(replay_client, "resetreplay@example.com")
-    assert _exchange(replay_client, _latest_reset_token(app)).status_code == 200
-    replay = replay_client.post("/auth/password-reset/mfa/totp", json={"totp_code": code})
-
-    assert verified.status_code == 200
-    assert replay.status_code == 401
-    with app.app_context():
-        assert db.session.query(SecurityAuditEvent).filter_by(
-            event_type="password_reset_mfa_failed",
-            outcome="failure",
-        ).one().event_metadata == {"factor": "totp", "reason": "totp_replay"}
-
-
 def test_password_reset_totp_only_ui_shows_authenticator_recovery_code_method(app, client):
     with app.app_context():
         _user, _secret = _create_totp_user("resettotponly", "resettotponly@example.com")

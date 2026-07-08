@@ -43,12 +43,7 @@ from .recovery_codes import (
     send_recovery_code_used_notification,
     unused_recovery_code_count,
 )
-from .services import (
-    AuthError,
-    TOTP_VERIFICATION_REPLAY,
-    TOTP_VERIFICATION_VALID,
-    _verify_totp_for_user_outcome,
-)
+from .services import AuthError, _verify_totp_for_user
 
 
 GENERIC_FORGOT_PASSWORD_MESSAGE = "If an account is linked to that email, a reset link has been sent. Check your inbox."  # NOSONAR - user-facing status, not a credential
@@ -300,16 +295,7 @@ def _verify_reset_authentication_code(
             _record_transaction_failure(transaction, "totp_failed")
             audit_event("password_reset_mfa_failed", "failure", user=user, metadata={"factor": "totp"})
             raise AuthError(GENERIC_AUTHENTICATION_CODE_ERROR, 401)
-        outcome = _verify_totp_for_user_outcome(user, code, "password_reset_mfa")
-        if outcome == TOTP_VERIFICATION_REPLAY:
-            audit_event(
-                "password_reset_mfa_failed",
-                "failure",
-                user=user,
-                metadata={"factor": "totp", "reason": "totp_replay"},
-            )
-            raise AuthError(GENERIC_AUTHENTICATION_CODE_ERROR, 401)
-        if outcome != TOTP_VERIFICATION_VALID:
+        if not _verify_totp_for_user(user, code, "password_reset_mfa"):
             _record_transaction_failure(transaction, "totp_failed")
             audit_event("password_reset_mfa_failed", "failure", user=user, metadata={"factor": "totp"})
             raise AuthError(GENERIC_AUTHENTICATION_CODE_ERROR, 401)

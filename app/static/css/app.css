@@ -1158,6 +1158,8 @@ select:focus {
 
 .profile-grid.is-single-column {
   grid-template-columns: minmax(0, 1fr);
+  width: min(760px, 100%);
+  margin: 0 auto;
 }
 
 .mfa-steps {

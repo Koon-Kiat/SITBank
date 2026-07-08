@@ -313,9 +313,6 @@ The repository implements authenticator-app TOTP. TOTP secrets are generated
 with `pyotp.random_base32(length=32)` and stored through AES-GCM envelope
 encryption. Verification records a replay digest in `totp_replay_records`, so
 the same accepted TOTP step and code cannot be replayed for the same scope.
-Such a replay is rejected as stale input without consuming the durable
-wrong-code or account-lock budgets; only malformed or non-matching TOTP
-submissions advance those failure controls.
 Initial and replacement setup secrets are displayed only on their creation
 response. Pending setup is bound to the initiating session and expires under
 `PENDING_MFA_MAX_AGE_SECONDS`; expired material is cleared rather than

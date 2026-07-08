@@ -16,12 +16,6 @@ Use the imported files above as standing project rules for all SITBank work.
 - Do not expose authentication secrets or one-time values, including passwords, tokens, cookies, session IDs, CSRF values, TOTP/recovery codes, or WebAuthn challenges and assertions.
 - Keep cryptographic keys, database connection values, mail-provider credentials, infrastructure exports, SSH keys, and real customer data out of logs, commits, uploads, and responses.
 
-## Commit and pull request authorship
-
-- Do not add Claude, Anthropic, or any AI tool as a commit author, co-author, or trailer. Do not append `Co-Authored-By: Claude ...` or similar attribution lines to commit messages.
-- Do not add AI tool attribution such as `Generated with Claude Code` to commit messages or pull request bodies.
-- Write commit and pull request text as the human contributor's own work, following `docs/CONTRIBUTION_MESSAGE_POLICY.md`.
-
 ## GitHub issues
 
 When creating GitHub issues:
