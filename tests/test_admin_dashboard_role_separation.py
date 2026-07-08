@@ -111,7 +111,7 @@ def test_admin_dashboard_denies_unauthenticated_and_customer_sessions(admin_clie
     assert "csrf" not in str(denied_event.event_metadata).casefold()
 
 
-def test_staff_dashboard_gets_business_placeholder_and_no_technical_links(admin_client):
+def test_staff_dashboard_gets_business_operations_and_no_technical_links(admin_client):
     _staff, secret = _create_identity(
         username="bank-staff",
         email="bank.staff@sit.singaporetech.edu.sg",
@@ -128,8 +128,9 @@ def test_staff_dashboard_gets_business_placeholder_and_no_technical_links(admin_
 
     assert dashboard.status_code == 200
     assert "Business Operations" in body
-    assert "Customer support queues" in body
-    assert "Not implemented" in body
+    assert "Unfreeze customer accounts" in body
+    assert "Available" in body
+    assert "Customer support" in body
     assert "Audit logs" not in body
     assert "Staff/admin users" not in body
     assert "Staff invites" not in body

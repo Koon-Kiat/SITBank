@@ -33,6 +33,7 @@ from app.auth.services import (
     _totp,
     _verify_totp_for_user,
     _verify_totp_for_user_outcome,
+    _verify_totp_secret_for_user_outcome,
 )
 from app.extensions import db
 from app.models import (
@@ -62,7 +63,12 @@ from app.security.passwords import (
     validate_password_policy,
     verify_password,
 )
-from app.security.password_history import mark_password_changed, replace_user_password
+from app.security.password_history import (
+    PasswordReuseError,
+    assert_password_not_reused,
+    mark_password_changed,
+    replace_user_password,
+)
 from app.security.rate_limits import AuthBackoffRequired, apply_exponential_backoff, clear_failures, record_failure
 from app.security.session_hmac import active_hmac_hex
 from app.security.rate_limits import (
@@ -703,6 +709,127 @@ def verify_admin_totp_step_up(actor: User, totp_code: str | None, scope: str) ->
     return bool(totp_code) and _verify_totp_for_user(actor, totp_code, scope)
 
 
+ADMIN_MFA_CHANGE_SECRET_KEY = "admin_mfa_change_secret"
+ADMIN_MFA_CHANGE_STARTED_KEY = "admin_mfa_change_started_at"
+ADMIN_MFA_CHANGE_USER_KEY = "admin_mfa_change_user_id"
+ADMIN_MFA_CHANGE_TTL_SECONDS = 600
+
+
+def change_own_password(
+    actor: User,
+    current_password: str,
+    new_password: str,
+    confirm_new_password: str,
+    totp_code: str | None,
+) -> dict[str, Any]:
+    """Self-service password change for an already-active staff/admin/root_admin."""
+    if new_password != confirm_new_password:
+        audit_event("admin_password_change", "failure", user=actor, metadata={"reason": "password_mismatch"})
+        raise AuthError("Passwords must match", 400)
+    if not verify_password(current_password, actor.password_hash):
+        audit_event("admin_password_change", "failure", user=actor, metadata={"reason": "invalid_current_password"})
+        _record_user_security_failure(actor, "password_change", "password_change_failed_attempts")
+        raise AuthError("Current password is invalid", 401)
+    try:
+        assert_password_not_reused(actor, new_password)
+    except PasswordReuseError as exc:
+        audit_event("admin_password_change", "failure", user=actor, metadata={"reason": exc.reason})
+        raise AuthError("New password must not match your current or recent passwords", 400) from exc
+    try:
+        validate_password_policy(new_password)
+    except PasswordPolicyError as exc:
+        audit_event("admin_password_change", "failure", user=actor, metadata={"reason": "password_policy"})
+        raise AuthError(str(exc), 400) from exc
+    if not totp_code or not _verify_totp_for_user(actor, totp_code, "admin_password_change"):
+        audit_event("admin_password_change", "failure", user=actor, metadata={"reason": "invalid_totp_step_up"})
+        raise AuthError(FRESH_MFA_REQUIRED_ERROR, 403)
+
+    replace_user_password(actor, new_password)
+    actor.failed_login_count = 0
+    revoked = revoke_all_sessions(actor.id, ended_reason="admin_password_change", component="admin")
+    _clear_user_security_failures(actor, "password_change")
+    audit_event_required(
+        "admin_password_change",
+        "success",
+        user=actor,
+        metadata={"revoked_sessions": revoked, "actor_role": actor.account_type},
+    )
+    db.session.commit()
+    return {
+        "message": "Password changed. Please log in again.",
+        "revoked_sessions": revoked,
+    }
+
+
+def _clear_pending_mfa_change() -> None:
+    session.pop(ADMIN_MFA_CHANGE_SECRET_KEY, None)
+    session.pop(ADMIN_MFA_CHANGE_STARTED_KEY, None)
+    session.pop(ADMIN_MFA_CHANGE_USER_KEY, None)
+    session.modified = True
+
+
+def _pending_mfa_change_secret(actor: User) -> str | None:
+    if session.get(ADMIN_MFA_CHANGE_USER_KEY) != actor.id:
+        return None
+    started_at = int(session.get(ADMIN_MFA_CHANGE_STARTED_KEY) or 0)
+    if not started_at or (int(time.time()) - started_at) > ADMIN_MFA_CHANGE_TTL_SECONDS:
+        _clear_pending_mfa_change()
+        return None
+    secret = session.get(ADMIN_MFA_CHANGE_SECRET_KEY)
+    return str(secret) if secret else None
+
+
+def start_own_mfa_change(actor: User, totp_code: str | None) -> dict[str, Any]:
+    """Phase 1 of self-service MFA reset: step up with the current code, then
+    stage a new secret in the signed session only. The active secret is left
+    untouched until ``confirm_own_mfa_change`` verifies the new device, so a
+    user who abandons the flow keeps a fully working authenticator.
+    """
+    if not totp_code or not _verify_totp_for_user(actor, totp_code, "admin_mfa_change_start"):
+        audit_event("admin_mfa_change", "failure", user=actor, metadata={"reason": "invalid_totp_step_up"})
+        raise AuthError(FRESH_MFA_REQUIRED_ERROR, 403)
+
+    secret = pyotp.random_base32(length=32)
+    session[ADMIN_MFA_CHANGE_SECRET_KEY] = secret
+    session[ADMIN_MFA_CHANGE_STARTED_KEY] = int(time.time())
+    session[ADMIN_MFA_CHANGE_USER_KEY] = actor.id
+    session.modified = True
+    audit_event("admin_mfa_change", "started", user=actor)
+    return _mfa_setup_payload(actor, secret)
+
+
+def confirm_own_mfa_change(actor: User, totp_code: str | None) -> dict[str, Any]:
+    """Phase 2: verify a code from the newly staged secret, then activate it."""
+    secret = _pending_mfa_change_secret(actor)
+    if not secret:
+        audit_event("admin_mfa_change", "failure", user=actor, metadata={"reason": "no_pending_reset"})
+        raise AuthError("Start a new authenticator reset before confirming", 409)
+
+    outcome = _verify_totp_secret_for_user_outcome(actor, secret, str(totp_code or ""), "admin_mfa_change_confirm")
+    if outcome == TOTP_VERIFICATION_REPLAY:
+        audit_event("admin_mfa_change", "failure", user=actor, metadata={"reason": "totp_replay"})
+        raise AuthError("Authentication code already used", 401)
+    if outcome != TOTP_VERIFICATION_VALID:
+        audit_event("admin_mfa_change", "failure", user=actor, metadata={"reason": "invalid_totp"})
+        raise AuthError("Invalid authentication code", 401)
+
+    actor.mfa_secret_nonce, actor.mfa_secret_ciphertext = encrypt_mfa_secret(secret, actor.id)
+    actor.mfa_enabled = True
+    _clear_pending_mfa_change()
+    revoked = revoke_all_sessions(actor.id, ended_reason="admin_mfa_change", component="admin")
+    audit_event_required(
+        "admin_mfa_change",
+        "success",
+        user=actor,
+        metadata={"revoked_sessions": revoked, "actor_role": actor.account_type},
+    )
+    db.session.commit()
+    return {
+        "message": "Authenticator MFA reset. Please log in again.",
+        "revoked_sessions": revoked,
+    }
+
+
 def role_rank(role: str | None) -> int:
     return ROLE_HIERARCHY.get(str(role or ACCOUNT_CUSTOMER).strip().casefold(), -1)
 
@@ -734,6 +861,14 @@ def admin_navigation_for(user: User) -> list[dict[str, str]]:
                 "label": "Disputes",
                 "href": url_for("admin.disputes"),
                 "endpoint": "admin.disputes",
+                "group": "business",
+            }
+        )
+        items.append(
+            {
+                "label": "Customer support",
+                "href": url_for("admin.customer_unfreeze_requests"),
+                "endpoint": "admin.customer_unfreeze_requests",
                 "group": "business",
             }
         )
@@ -922,6 +1057,126 @@ def request_customer_security_unlock(
     return {
         "message": ADMIN_ACTION_APPROVAL_REQUIRED_MESSAGE,
         "request": public_admin_action_request(request_record),
+    }
+
+
+def self_frozen_customers_for_staff(actor: User) -> list[dict[str, Any]]:
+    """Customers who froze their own account (business-operations queue).
+
+    Excludes automatic password/authenticator lockouts, which remain a
+    root-admin-only, maker-checker action via ``locked_customers_for_admin``.
+    """
+    _require_plain_staff(actor, "customer_self_freeze_review")
+    customers = list(
+        db.session.execute(
+            db.select(User)
+            .where(
+                User.account_type == ACCOUNT_CUSTOMER,
+                User.is_frozen.is_(True),
+                or_(
+                    User.security_lock_reason.is_(None),
+                    User.security_lock_reason.not_in(tuple(AUTOMATIC_CUSTOMER_LOCK_REASONS)),
+                ),
+            )
+            .order_by(User.id.asc())
+        ).scalars()
+    )
+    audit_event("customer_self_freeze_review", "success", user=actor)
+    return [
+        {
+            "id": customer.id,
+            "customer_ref": audit_reference("customer_user", customer.id),
+            "username": customer.username,
+        }
+        for customer in customers
+    ]
+
+
+def _self_frozen_customer_for_update(
+    target_user_id: int,
+    *,
+    actor: User,
+    event_type: str,
+) -> User:
+    target = db.session.execute(
+        db.select(User)
+        .where(User.id == int(target_user_id))
+        .with_for_update()
+    ).scalar_one_or_none()
+    valid = bool(
+        target is not None
+        and target.account_type == ACCOUNT_CUSTOMER
+        and target.is_frozen
+        and (
+            target.security_lock_reason is None
+            or target.security_lock_reason not in AUTOMATIC_CUSTOMER_LOCK_REASONS
+        )
+    )
+    if valid:
+        return target
+    audit_event(
+        event_type,
+        "blocked",
+        user=actor,
+        metadata={
+            "reason": "target_not_eligible",
+            "target_customer_ref": audit_reference("customer_user", target_user_id),
+        },
+    )
+    raise AuthError("Customer account is not eligible for this unfreeze action", 409)
+
+
+def unfreeze_customer_as_staff(
+    actor: User,
+    target_user_id: int,
+    reason: str,
+    totp_code: str | None,
+) -> dict[str, Any]:
+    """Bank staff unfreeze a self-frozen customer directly, with a stated reason.
+
+    Single-approver by design (no maker-checker) — this only covers voluntary
+    customer self-freezes, never automatic security lockouts. Every write is
+    still TOTP step-up gated, self-action-blocked, and fully audited with the
+    reason text retained for accountability.
+    """
+    _require_plain_staff(actor, "customer_self_freeze_unlock")
+    clean_reason = _require_manual_recovery_reason(reason, "customer_self_freeze_unlock", actor)
+    target = _self_frozen_customer_for_update(
+        target_user_id,
+        actor=actor,
+        event_type="customer_self_freeze_unlock",
+    )
+    _assert_not_self_customer_action(actor, target, "customer_self_freeze_unlock")
+    if not totp_code or not _verify_totp_for_user(actor, totp_code, "customer_self_freeze_unlock"):
+        audit_event(
+            "customer_self_freeze_unlock",
+            "failure",
+            user=actor,
+            metadata={
+                "reason": "invalid_totp_step_up",
+                "target_customer_ref": audit_reference("customer_user", target.id),
+            },
+        )
+        raise AuthError(FRESH_MFA_REQUIRED_ERROR, 403)
+
+    target.is_frozen = False
+    revoked_sessions = revoke_all_sessions(target.id, ended_reason="customer_self_freeze_unlock", component="customer")
+    audit_event_required(
+        "customer_self_freeze_unlock",
+        "success",
+        user=actor,
+        metadata={
+            "target_customer_ref": audit_reference("customer_user", target.id),
+            "actor_role": actor.account_type,
+            "revoked_sessions": revoked_sessions,
+            "reason": clean_reason,
+        },
+    )
+    db.session.commit()
+    return {
+        "message": "Customer account unfrozen",
+        "customer_ref": audit_reference("customer_user", target.id),
+        "revoked_sessions": revoked_sessions,
     }
 
 
@@ -1250,9 +1505,10 @@ def _staff_business_operations(actor: User) -> list[dict[str, str]]:
         return []
     return [
         {
-            "label": "Customer support queues",
-            "status": "Not implemented",
-            "description": "No staff customer-support or review routes are registered yet.",
+            "label": "Unfreeze customer accounts",
+            "status": "Available",
+            "description": "Review customers who froze their own account and unfreeze them with a documented reason.",
+            "href": url_for("admin.customer_unfreeze_requests"),
         }
     ]
 

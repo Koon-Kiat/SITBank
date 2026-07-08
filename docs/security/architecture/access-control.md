@@ -197,12 +197,10 @@ existing role model rather than by adding new roles. Current mapping:
 
 - `staff`: bank-staff business-operation responsibility, including the
   transaction dispute review queue (`admin.disputes`, `admin.dispute_detail`,
-  `admin.dispute_transition`), gated by `require_plain_staff_session` so
-  `admin`/`root_admin` sessions are excluded from that queue and retain only
-  audit-log oversight of dispute events. No other customer support or fraud
-  review admin routes are registered yet, so the dashboard otherwise renders a
-  disabled staff business-operation placeholder instead of linking to fake
-  tools.
+  `admin.dispute_transition`) and the customer self-freeze unfreeze queue
+  (`admin.customer_unfreeze_requests`, `admin.customer_unfreeze`), both gated
+  by `require_plain_staff_session` so `admin`/`root_admin` sessions are
+  excluded and retain only audit-log oversight of those events.
 - `admin`: technical/security administration, including audit review, alert
   review, and safe staff/admin status visibility.
 - `root_admin`: privileged platform administration, including staff/admin
@@ -235,6 +233,9 @@ changes.
 | Customer security unlock is root-only, limited to automatic password/MFA lock reasons, TOTP-gated, identity-separated, and executed only by a different root admin; execution clears only relevant counters, revokes customer sessions, audits, and notifies | `app/admin/services.py::request_customer_security_unlock()` and `_execute_customer_security_unlock_admin_action_request()` | `tests/test_admin_maker_checker.py::test_customer_security_unlock_requires_separate_root_and_clears_only_lock_state`, `tests/test_admin_maker_checker.py::test_customer_security_unlock_fails_closed_for_identity_overlap_and_stale_lock` |
 | Staff/customer self-action guard | `app/admin/separation.py::assert_not_self_customer_action()` | `tests/test_admin_staff_invites.py::test_separation_guard_blocks_linked_staff_acting_on_own_customer`, `tests/test_admin_manual_recovery.py::test_root_admin_cannot_transition_own_customer_manual_recovery` |
 | Admin session context drift | Any detected coarse-network, browser-family, or detailed User-Agent drift revokes the admin session and requires full login | `app/security/sessions.py`, `tests/test_session_risk_binding.py::test_admin_context_change_revokes_session_under_stricter_policy` |
+| Bank staff can unfreeze a customer's voluntary self-freeze directly (single-approver, no maker-checker) with a required, retained reason and current TOTP step-up; the query is scoped to exclude automatic password/MFA lockouts, self-action is blocked, and every write is audited with the reason text | `app/admin/services.py::self_frozen_customers_for_staff()`, `unfreeze_customer_as_staff()`; `admin.customer_unfreeze_requests`/`admin.customer_unfreeze` in `app/admin/routes.py` | `tests/test_admin_self_service_account.py::test_customer_unfreeze_happy_path_records_reason_in_audit`, `test_customer_unfreeze_denied_for_admin_and_root_admin`, `test_customer_unfreeze_rejects_automatic_lock_target`, `test_customer_unfreeze_blocks_staff_own_linked_customer`, `test_customer_unfreeze_requires_valid_totp_step_up` |
+| Staff/admin/root-admin self-service password change requires current password, password-history/policy checks, and current TOTP step-up; success revokes every session for that account (including the one making the change) | `app/admin/services.py::change_own_password()`; `admin.password_change_form`/`admin.password_change_submit` in `app/admin/routes.py` | `tests/test_admin_self_service_account.py::test_password_change_happy_path_forces_relogin_and_audits`, `test_password_change_rejects_wrong_current_password`, `test_password_change_rejects_reused_current_password`, `test_password_change_requires_valid_totp_step_up` |
+| Staff/admin/root-admin self-service MFA reset is two-phase: the current TOTP code authorizes staging a new secret in the signed session only (the active secret is never touched until confirmed, so an abandoned reset never weakens login MFA), and a code from the new authenticator activates it and revokes every session | `app/admin/services.py::start_own_mfa_change()`, `confirm_own_mfa_change()`; `admin.mfa_change_form`/`admin.mfa_change_start`/`admin.mfa_change_confirm` in `app/admin/routes.py` | `tests/test_admin_self_service_account.py::test_mfa_change_start_stages_new_secret_without_disabling_old`, `test_mfa_change_confirm_activates_new_secret_and_forces_relogin`, `test_mfa_change_start_rejects_invalid_totp`, `test_mfa_change_confirm_without_start_is_rejected`, `test_mfa_change_confirm_rejects_wrong_new_code` |
 
 Root-admin allowlist validation rejects placeholder/demo/default identities
 including numeric shapes such as `root8`, `root-admin8`, `admin1`, and `demo1`

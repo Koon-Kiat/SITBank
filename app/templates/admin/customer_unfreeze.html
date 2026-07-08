@@ -1,0 +1,47 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Unfreeze Customer Accounts | SITBank Admin{% endblock %}
+
+{% block content %}
+<section class="dashboard admin-dashboard">
+  <div class="dashboard-header">
+    <div class="page-heading">
+      <p class="eyebrow">Customer support</p>
+      <h1 id="customer-unfreeze-heading">Unfreeze customer accounts</h1>
+      <p class="muted">Only customers who froze their own account are shown here. Automatic password or authenticator lockouts require root-admin review instead.</p>
+    </div>
+  </div>
+
+  <section class="panel" aria-labelledby="customer-unfreeze-heading">
+    {% if customers %}
+    <div class="unfreeze-list">
+      {% for customer in customers %}
+      <article class="unfreeze-card">
+        <div class="unfreeze-card-identity">
+          <p class="unfreeze-card-name">{{ customer.username }}</p>
+          <details>
+            <summary>Technical details</summary>
+            <code>{{ customer.customer_ref }}</code>
+          </details>
+        </div>
+        <form class="admin-form" method="post" action="{{ url_for('admin.customer_unfreeze', user_id=customer.id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="form-field">
+            <label for="unfreeze-reason-{{ customer.id }}">Reason for unfreezing</label>
+            <input id="unfreeze-reason-{{ customer.id }}" name="reason" type="text" maxlength="512" placeholder="e.g. verified customer identity by phone, confirmed no fraud" required>
+          </div>
+          <div class="form-field">
+            <label for="unfreeze-totp-{{ customer.id }}">Authenticator code</label>
+            <input id="unfreeze-totp-{{ customer.id }}" name="totp_code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="6-digit code" required>
+          </div>
+          <button class="button small" type="submit">Unfreeze account</button>
+        </form>
+      </article>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="muted">No customers are waiting for a self-freeze review.</p>
+    {% endif %}
+  </section>
+</section>
+{% endblock %}
