@@ -87,31 +87,24 @@
       </div>
     </dl>
     {% if selected_dispute.status in ("open", "under_review") %}
-    <div class="action-grid">
-      {% if selected_dispute.status == "open" %}
-      <form method="post" action="{{ url_for('admin.dispute_transition', dispute_id=selected_dispute.id) }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <input type="hidden" name="status" value="under_review">
-        <label for="under-review-note">Note (optional)</label>
-        <input id="under-review-note" name="resolution_note" maxlength="1000">
-        <button class="button secondary" type="submit">Mark Under Review</button>
-      </form>
-      {% endif %}
-      <form method="post" action="{{ url_for('admin.dispute_transition', dispute_id=selected_dispute.id) }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <input type="hidden" name="status" value="resolved">
-        <label for="resolve-note">Resolution note</label>
-        <input id="resolve-note" name="resolution_note" maxlength="1000">
-        <button class="button" type="submit">Resolve</button>
-      </form>
-      <form method="post" action="{{ url_for('admin.dispute_transition', dispute_id=selected_dispute.id) }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <input type="hidden" name="status" value="rejected">
-        <label for="reject-note">Rejection note</label>
-        <input id="reject-note" name="resolution_note" maxlength="1000">
-        <button class="button secondary" type="submit">Reject</button>
-      </form>
-    </div>
+    <form class="admin-form" method="post" action="{{ url_for('admin.dispute_transition', dispute_id=selected_dispute.id) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="form-field">
+        <label for="dispute-status-select">New status</label>
+        <select id="dispute-status-select" name="status" required>
+          {% if selected_dispute.status == "open" %}
+          <option value="under_review">Under review</option>
+          {% endif %}
+          <option value="resolved">Resolved</option>
+          <option value="rejected">Rejected</option>
+        </select>
+      </div>
+      <div class="form-field">
+        <label for="dispute-status-note">Note (optional)</label>
+        <input id="dispute-status-note" name="resolution_note" maxlength="1000">
+      </div>
+      <button class="button" type="submit">Update status</button>
+    </form>
     {% endif %}
   </section>
   {% endif %}

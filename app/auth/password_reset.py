@@ -11,7 +11,7 @@ from flask import current_app, has_request_context, request, session
 from sqlalchemy import func, or_
 
 from app.extensions import db
-from app.models import ManualRecoveryRequest, PasswordResetToken, PasswordResetTransaction, User
+from app.models import ManualRecoveryRequest, PasswordResetToken, PasswordResetTransaction, SupportTicket, User
 from app.security.audit import (
     audit_event,
     audit_event_required,
@@ -465,6 +465,7 @@ def request_manual_recovery(identifier: str, reason: str | None = None) -> dict[
     db.session.commit()
     if linked_user is not None:
         _send_manual_recovery_requested_notification(linked_user, request_record.expires_at)
+        _create_account_recovery_support_ticket(linked_user, clean_reason)
     return {"message": GENERIC_MANUAL_RECOVERY_MESSAGE}
 
 
@@ -712,6 +713,32 @@ def _send_manual_recovery_requested_notification(user: User, expires_at: datetim
     except Exception as exc:
         current_app.logger.warning("manual_recovery_request_notification_failed error=%s", type(exc).__name__)
         audit_event("manual_recovery_notification", "failure", user=user, metadata={"reason": "email_delivery_failed"})
+
+
+def _create_account_recovery_support_ticket(user: User, reason: str | None) -> None:
+    """Best-effort staff visibility for a manual recovery request.
+
+    Root-admin still owns the actual identity-verification decision through
+    the maker-checker `ManualRecoveryRequest` flow; this ticket only gives
+    staff a queue entry so they can see the request came in and, where
+    appropriate, assist the customer while it's reviewed. Failure to create
+    the ticket must never block the recovery request itself.
+    """
+    try:
+        description = reason or "Customer requested manual account recovery review. No reason was provided."
+        db.session.add(
+            SupportTicket(
+                user_id=user.id,
+                category="account_recovery",
+                subject="Account recovery requested",
+                description=description,
+                status="open",
+            )
+        )
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        current_app.logger.warning("account_recovery_support_ticket_failed error=%s", type(exc).__name__)
 
 
 def _send_manual_recovery_completed_notification(user: User) -> None:

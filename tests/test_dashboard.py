@@ -141,14 +141,14 @@ def test_dashboard_account_number_full_in_hidden_span(client):
     set_account_number(user, "123456789000")
     markup = client.get("/dashboard").data.decode("utf-8")
     assert 'id="card-acct-full" hidden' in markup
-    assert "123-456-789000" in markup
+    assert "123-456-789-000" in markup
 
 
 def test_dashboard_account_number_masked_format_uses_dashes(client):
     user = login_with_mfa(client)
     set_account_number(user, "123456789000")
     markup = client.get("/dashboard").data.decode("utf-8")
-    assert "•••-•••-000" in markup
+    assert "•••-•••-•••-000" in markup
 
 
 def test_dashboard_account_number_eye_toggle_button_present(client):

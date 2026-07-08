@@ -143,14 +143,17 @@ def test_dashboard_bank_card_masks_account_details_and_loads_toggle_script(clien
     user, _secret = enable_mfa_for_user()
     mark_recent_mfa(client, user)
     db.session.refresh(user)
-    formatted_account = f"{user.account_number[:3]}-{user.account_number[3:6]}-{user.account_number[6:]}"
+    formatted_account = (
+        f"{user.account_number[:3]}-{user.account_number[3:6]}-"
+        f"{user.account_number[6:9]}-{user.account_number[9:]}"
+    )
 
     response = client.get("/dashboard")
     markup = response.data.decode("utf-8")
 
     assert response.status_code == 200
     assert "Alice Test" in markup
-    assert f"•••-•••-{user.account_number[-3:]}" in markup
+    assert f"•••-•••-•••-{user.account_number[-3:]}" in markup
     assert f'id="card-acct-full" hidden>{formatted_account}</span>' in markup
     assert 'id="card-balance-full" hidden>100.00</span>' in markup
     assert 'aria-label="Show account number"' in markup
