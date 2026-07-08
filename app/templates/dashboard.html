@@ -95,6 +95,22 @@
       </a>
       {% endif %}
       {% if g.mfa_ready %}
+      <a class="bank-quick-btn" href="{{ url_for('banking.topup') }}">
+        <span class="bank-quick-icon" aria-hidden="true">
+          <svg class="icon" focusable="false"><use href="#icon-plus-circle"></use></svg>
+        </span>
+        <span>Top Up</span>
+      </a>
+      {% else %}
+      <a class="bank-quick-btn is-disabled" aria-disabled="true">
+        <span class="bank-quick-icon" aria-hidden="true">
+          <svg class="icon" focusable="false"><use href="#icon-plus-circle"></use></svg>
+        </span>
+        <span>Top Up</span>
+        <span class="badge neutral">Set up MFA first</span>
+      </a>
+      {% endif %}
+      {% if g.mfa_ready %}
       <a class="bank-quick-btn" href="{{ url_for('web.transactions') }}">
         <span class="bank-quick-icon" aria-hidden="true">
           <svg class="icon" focusable="false"><use href="#icon-session"></use></svg>

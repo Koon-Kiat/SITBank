@@ -110,11 +110,59 @@ def sign_registration_credit_integrity(
     created_at: datetime,
 ) -> tuple[str, str, str, int]:
     """Return a versioned ledger signature for a fixed registration credit."""
+    return _sign_credit_integrity(
+        domain="registration-credit",
+        credit_ref=credit_ref,
+        user_id=user_id,
+        amount=amount,
+        status=status,
+        created_at=created_at,
+    )
+
+
+def registration_credit_integrity_status(credit: Any) -> str:
+    return _credit_integrity_status(domain="registration-credit", credit=credit)
+
+
+def sign_topup_credit_integrity(
+    *,
+    credit_ref: str,
+    user_id: int,
+    amount: Decimal,
+    status: str,
+    created_at: datetime,
+) -> tuple[str, str, str, int]:
+    """Return a versioned ledger signature for a self-service top-up credit."""
+    return _sign_credit_integrity(
+        domain="topup-credit",
+        credit_ref=credit_ref,
+        user_id=user_id,
+        amount=amount,
+        status=status,
+        created_at=created_at,
+    )
+
+
+def topup_credit_integrity_status(credit: Any) -> str:
+    return _credit_integrity_status(domain="topup-credit", credit=credit)
+
+
+def _sign_credit_integrity(
+    *,
+    domain: str,
+    credit_ref: str,
+    user_id: int,
+    amount: Decimal,
+    status: str,
+    created_at: datetime,
+) -> tuple[str, str, str, int]:
+    """Sign a fixed-schema credit ledger row under a domain-separated key."""
     key_id = str(current_app.config["TRANSACTION_LEDGER_HMAC_ACTIVE_KEY_ID"])
     keyring = _validated_keyring()
-    digest = _registration_credit_digest(
+    digest = _credit_digest(
+        domain,
         keyring[key_id],
-        _canonical_registration_credit_payload(
+        _canonical_credit_payload(
             credit_ref=credit_ref,
             user_id=user_id,
             amount=amount,
@@ -130,7 +178,7 @@ def sign_registration_credit_integrity(
     )
 
 
-def registration_credit_integrity_status(credit: Any) -> str:
+def _credit_integrity_status(*, domain: str, credit: Any) -> str:
     metadata = (
         getattr(credit, "credit_integrity_key_id", None),
         getattr(credit, "credit_integrity_algorithm", None),
@@ -150,9 +198,10 @@ def registration_credit_integrity_status(credit: Any) -> str:
         return "invalid"
     if key_id not in keyring:
         return "invalid"
-    expected = _registration_credit_digest(
+    expected = _credit_digest(
+        domain,
         keyring[key_id],
-        _canonical_registration_credit_payload(
+        _canonical_credit_payload(
             credit_ref=credit.credit_ref,
             user_id=int(credit.user_id),
             amount=Decimal(str(credit.amount)),
@@ -214,7 +263,7 @@ def _canonical_transaction_payload(
     return json.dumps(payload, separators=(",", ":"), sort_keys=True)
 
 
-def _canonical_registration_credit_payload(
+def _canonical_credit_payload(
     *,
     credit_ref: str,
     user_id: int,
@@ -247,9 +296,9 @@ def _digest(key: bytes, canonical_payload: str) -> str:
     return hmac.new(key, signing_input, hashlib.sha256).hexdigest()
 
 
-def _registration_credit_digest(key: bytes, canonical_payload: str) -> str:
+def _credit_digest(domain: str, key: bytes, canonical_payload: str) -> str:
     signing_input = (
-        f"sitbank-registration-credit-integrity-v{TRANSACTION_INTEGRITY_VERSION}:"
+        f"sitbank-{domain}-integrity-v{TRANSACTION_INTEGRITY_VERSION}:"
         f"{canonical_payload}"
     ).encode("utf-8")
     return hmac.new(key, signing_input, hashlib.sha256).hexdigest()

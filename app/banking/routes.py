@@ -13,19 +13,21 @@ from flask import (
     current_app,
     flash,
     g,
+    jsonify,
     redirect,
     render_template,
     request,
     session,
     url_for,
 )
+from flask_limiter.util import get_remote_address
 from sqlalchemy.exc import IntegrityError
 
 from decimal import Decimal, InvalidOperation
 
 from app.auth.forms import CsrfOnlyForm, MfaOrStepUpForm
 from app.auth.mfa_policy import has_enrolled_mfa_method
-from app.auth.services import AuthError, verify_high_risk_authorization
+from app.auth.services import AuthError, verify_high_risk_authorization, verify_totp_code_for_user
 from app.banking.forms import (
     AddPayeeForm,
     LOCAL_TRANSFER_LIMIT_PRESETS,
@@ -34,21 +36,30 @@ from app.banking.forms import (
     PayupNicknameForm,
     PayupPhoneForm,
     TRANSFER_LIMIT_PRESETS,
+    TopUpApprovalForm,
+    TopUpForm,
     TransferForm,
     TransferLimitsForm,
 )
 from app.banking.schemas import MAX_TRANSACTION_AMOUNT, MIN_TRANSACTION_AMOUNT
 from app.banking.services import (
+    credit_account_topup,
     evaluate_payup_risk,
     execute_local_transfer,
     execute_payup_transfer,
     local_transfer_amount_used_today,
     local_transfer_token_verifier,
+    parse_topup_amount,
     payup_amount_used_today,
     payup_transfer_token_verifier,
     resolve_local_transfer_limit_choice,
     resolve_transfer_limit_choice,
     statement_for_period,
+)
+from app.banking.topup_tokens import (
+    generate_topup_token,
+    load_topup_request_for_approval,
+    load_topup_request_for_owner,
 )
 from app.extensions import db, limiter
 from app.models import Payee, PayupPendingTransfer, PendingTransfer, User
@@ -58,6 +69,7 @@ from app.security.audit import (
     audit_event_required,
     audit_reference,
 )
+from app.security.qr import qr_data_uri
 from app.security.rate_limits import DurableRateLimitExceeded, consume_durable_rate_limit
 from app.security.rate_limits import mfa_principal
 from app.security.sessions import current_session_id
@@ -94,6 +106,13 @@ _PAYUP_LOOKUP_FAILURE_WINDOW_SECONDS = 60 * 60
 
 _TRANSFER_LIMITS_TEMPLATE = "transfer_limits.html"
 _TRANSFER_LIMITS_ENDPOINT = "banking.transfer_limits"
+
+_TOPUP_TEMPLATE = "topup.html"
+_TOPUP_PENDING_TEMPLATE = "topup_pending.html"
+_TOPUP_APPROVE_TEMPLATE = "topup_approve.html"
+_TOPUP_ENDPOINT = "banking.topup"
+_TOPUP_INVALID_LINK_MESSAGE = "This approval link is no longer valid."
+_TOPUP_APPROVAL_MAX_FAILURES = 5
 
 
 @banking_bp.before_request
@@ -1165,6 +1184,122 @@ def payup_confirm_submit():
         "success",
     )
     return redirect(url_for("web.dashboard"))
+
+
+# ── Top Up: amount entry → QR scan-to-approve ───────────────────────────────────
+
+@banking_bp.get("/topup")
+@web_login_required
+@web_not_frozen_required
+def topup():
+    return render_template(_TOPUP_TEMPLATE, form=TopUpForm())
+
+
+@banking_bp.post("/topup")
+@limiter.limit("5 per 15 minutes", key_func=mfa_principal)
+@web_login_required
+@web_not_frozen_required
+def topup_submit():
+    form = TopUpForm()
+    if not form.validate_on_submit():
+        return render_template(_TOPUP_TEMPLATE, form=form), 400
+
+    try:
+        amount = parse_topup_amount(form.amount.data)
+    except AuthError as exc:
+        flash(exc.message, "error")
+        return render_template(_TOPUP_TEMPLATE, form=form), exc.status_code
+
+    raw_token, request_row = generate_topup_token(g.current_user.id, amount)
+    approval_url = url_for("banking.topup_approve", token=raw_token, _external=True)
+    return render_template(
+        _TOPUP_PENDING_TEMPLATE,
+        amount=amount,
+        selector=request_row.selector,
+        qr_data_uri=qr_data_uri(approval_url),
+    )
+
+
+@banking_bp.get("/topup/status/<selector>")
+@limiter.limit("60 per minute", key_func=get_remote_address)
+@web_login_required
+def topup_status(selector):
+    request_row = load_topup_request_for_owner(selector, g.current_user.id)
+    if request_row is None:
+        return jsonify({"error": "not_found"}), 404
+    return jsonify({"status": request_row.status})
+
+
+@banking_bp.get("/topup/approve/<token>")
+def topup_approve(token):
+    request_row = load_topup_request_for_approval(token)
+    if request_row is None:
+        return render_template(_TOPUP_APPROVE_TEMPLATE, valid=False), 404
+    return render_template(
+        _TOPUP_APPROVE_TEMPLATE,
+        valid=True,
+        form=TopUpApprovalForm(),
+        amount=request_row.amount,
+    )
+
+
+@banking_bp.post("/topup/approve/<token>")
+@limiter.limit("10 per 5 minutes", key_func=get_remote_address)
+def topup_approve_submit(token):
+    request_row = load_topup_request_for_approval(token, lock=True)
+    if request_row is None:
+        return render_template(_TOPUP_APPROVE_TEMPLATE, valid=False), 404
+
+    form = TopUpApprovalForm()
+    if not form.validate_on_submit():
+        return render_template(
+            _TOPUP_APPROVE_TEMPLATE, valid=True, form=form, amount=request_row.amount
+        ), 400
+
+    user = db.session.get(User, request_row.user_id)
+
+    try:
+        verified = verify_totp_code_for_user(user, form.totp_code.data, "account_topup_approval")
+    except AuthError as exc:
+        flash(exc.message, "error")
+        return render_template(
+            _TOPUP_APPROVE_TEMPLATE, valid=True, form=form, amount=request_row.amount
+        ), exc.status_code
+
+    if not verified:
+        request_row.failure_count += 1
+        if request_row.failure_count >= _TOPUP_APPROVAL_MAX_FAILURES:
+            request_row.status = "failed"
+            db.session.commit()
+            audit_event("account_topup_approval", "locked", user=user)
+            return render_template(_TOPUP_APPROVE_TEMPLATE, valid=False), 401
+        db.session.commit()
+        audit_event(
+            "account_topup_approval",
+            "failure",
+            user=user,
+            metadata={"failure_count": request_row.failure_count},
+        )
+        flash("Incorrect code. Try again.", "error")
+        return render_template(
+            _TOPUP_APPROVE_TEMPLATE, valid=True, form=form, amount=request_row.amount
+        ), 401
+
+    audit_event("account_topup_approval", "mfa_success", user=user)
+
+    try:
+        credit = credit_account_topup(user, request_row.amount)
+    except AuthError as exc:
+        request_row.status = "failed"
+        db.session.commit()
+        flash(exc.message, "error")
+        return render_template(_TOPUP_APPROVE_TEMPLATE, valid=False), exc.status_code
+
+    request_row.status = "completed"
+    request_row.approved_at = datetime.now(timezone.utc)
+    request_row.credit_ref = credit.credit_ref
+    db.session.commit()
+    return render_template(_TOPUP_APPROVE_TEMPLATE, valid=True, approved=True, amount=request_row.amount)
 
 
 # ── Settings: Daily Transfer Limit ──────────────────────────────────────────────
