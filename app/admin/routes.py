@@ -44,8 +44,10 @@ from .services import (
     authenticate_admin_primary,
     approve_admin_action_request_as_root_admin,
     cancel_admin_action_request_as_root_admin,
+    change_own_password,
     complete_manual_recovery_request_as_admin,
     complete_admin_mfa_login,
+    confirm_own_mfa_change,
     create_staff_invite,
     audit_event_detail_for_admin,
     query_audit_events_for_admin,
@@ -64,6 +66,8 @@ from .services import (
     reset_staff_invite_acceptance,
     reissue_staff_invite,
     resend_staff_setup_invite,
+    self_frozen_customers_for_staff,
+    start_own_mfa_change,
     transition_dispute_status_for_staff,
     reject_admin_action_request_as_root_admin,
     request_customer_security_unlock,
@@ -72,6 +76,7 @@ from .services import (
     start_invite_acceptance,
     transition_staff_account_as_root_admin,
     transition_manual_recovery_request_as_admin,
+    unfreeze_customer_as_staff,
     verify_admin_totp_step_up,
     verify_invite_acceptance,
 )
@@ -261,6 +266,17 @@ class DisputeStatusChangeSchema(Schema):
 
 class CustomerSecurityUnlockSchema(Schema):
     reason = fields.Str(required=True, validate=validate.Length(min=1, max=512))
+    totp_code = fields.Str(
+        required=True,
+        load_only=True,
+        validate=validate.Regexp(_TOTP_PATTERN, error=_MFA_CODE_ERROR),
+    )
+
+
+class AdminPasswordChangeSchema(Schema):
+    current_password = fields.Str(required=True, load_only=True, validate=validate.Length(min=1))
+    new_password = fields.Str(required=True, load_only=True, validate=validate.Length(min=8, max=256))
+    confirm_new_password = fields.Str(required=True, load_only=True, validate=validate.Length(min=8, max=256))
     totp_code = fields.Str(
         required=True,
         load_only=True,
@@ -851,6 +867,8 @@ def _render_invite_acceptance(
     totp_setup: dict[str, str] | None = None,
     start_form_data: dict[str, str] | None = None,
 ):
+    if g.current_user is not None and g.current_user not in db.session:
+        db.session.add(g.current_user)
     return (
         render_template(
             _STAFF_INVITE_ACCEPT_TEMPLATE,
@@ -1089,6 +1107,114 @@ def logout():
         flash("Logged out.", "success")
         return redirect(url_for(_ADMIN_LOGIN_FORM_ENDPOINT)), 303
     return jsonify({"message": "Logged out"})
+
+
+@admin_bp.get("/account/password")
+def password_change_form():
+    actor = require_staff_session()
+    return render_template(
+        "admin/password_change.html",
+        actor=actor,
+        user=public_admin_user(actor),
+        navigation=admin_navigation_for(actor),
+    )
+
+
+@admin_bp.post("/account/password")
+@limiter.limit(_ADMIN_RATE_LIMIT_HOURLY, key_func=get_remote_address)
+@limiter.limit(_ADMIN_RATE_LIMIT_STEP_UP, key_func=request_principal)
+def password_change_submit():
+    actor = require_staff_session()
+    data = _payload(AdminPasswordChangeSchema())
+    result = change_own_password(
+        actor,
+        data["current_password"],
+        data["new_password"],
+        data["confirm_new_password"],
+        data[_ADMIN_TOTP_CODE_FIELD],
+    )
+    session.clear()
+    if _wants_json():
+        return jsonify(result)
+    flash(result["message"], "success")
+    return redirect(url_for(_ADMIN_LOGIN_FORM_ENDPOINT)), 303
+
+
+@admin_bp.get("/account/mfa")
+def mfa_change_form():
+    actor = require_staff_session()
+    return render_template(
+        "admin/mfa_change.html",
+        actor=actor,
+        user=public_admin_user(actor),
+        navigation=admin_navigation_for(actor),
+        totp_setup=None,
+    )
+
+
+@admin_bp.post("/account/mfa/start")
+@limiter.limit(_ADMIN_RATE_LIMIT_HOURLY, key_func=get_remote_address)
+@limiter.limit(_ADMIN_RATE_LIMIT_STEP_UP, key_func=request_principal)
+def mfa_change_start():
+    actor = require_staff_session()
+    data = _payload(AdminTotpSchema())
+    totp_setup = start_own_mfa_change(actor, data[_ADMIN_TOTP_CODE_FIELD])
+    if _wants_json():
+        return jsonify({"totp_setup": totp_setup})
+    return render_template(
+        "admin/mfa_change.html",
+        actor=actor,
+        user=public_admin_user(actor),
+        navigation=admin_navigation_for(actor),
+        totp_setup=totp_setup,
+    )
+
+
+@admin_bp.post("/account/mfa/confirm")
+@limiter.limit(_ADMIN_RATE_LIMIT_HOURLY, key_func=get_remote_address)
+@limiter.limit(_ADMIN_MFA_COARSE_RATE_LIMIT, key_func=request_principal)
+def mfa_change_confirm():
+    actor = require_staff_session()
+    data = _payload(AdminTotpSchema())
+    result = confirm_own_mfa_change(actor, data[_ADMIN_TOTP_CODE_FIELD])
+    session.clear()
+    if _wants_json():
+        return jsonify(result)
+    flash(result["message"], "success")
+    return redirect(url_for(_ADMIN_LOGIN_FORM_ENDPOINT)), 303
+
+
+@admin_bp.get("/customer-unfreeze")
+def customer_unfreeze_requests():
+    actor = require_plain_staff_session()
+    customers = self_frozen_customers_for_staff(actor)
+    if _wants_json():
+        return jsonify({"customers": customers})
+    return render_template(
+        "admin/customer_unfreeze.html",
+        customers=customers,
+        actor=actor,
+        user=public_admin_user(actor),
+        navigation=admin_navigation_for(actor),
+    )
+
+
+@admin_bp.post("/customers/<int:user_id>/unfreeze")
+@limiter.limit(_ADMIN_RATE_LIMIT_HOURLY, key_func=get_remote_address)
+@limiter.limit(_ADMIN_RATE_LIMIT_STEP_UP, key_func=request_principal)
+def customer_unfreeze(user_id: int):
+    actor = require_plain_staff_session()
+    data = _payload(CustomerSecurityUnlockSchema())
+    result = unfreeze_customer_as_staff(
+        actor,
+        user_id,
+        data["reason"],
+        data[_ADMIN_TOTP_CODE_FIELD],
+    )
+    if _wants_json():
+        return jsonify(result)
+    flash("Customer account unfrozen.", "success")
+    return redirect(url_for("admin.customer_unfreeze_requests")), 303
 
 
 @admin_bp.get("/invites")
