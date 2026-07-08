@@ -111,6 +111,7 @@ MANUAL_RECOVERY_ADMIN_TRANSITION_STATUSES = frozenset(
 )
 ADMIN_ACTION_REQUEST_TTL_SECONDS = 24 * 60 * 60
 ADMIN_ACTION_PENDING_STATUS = "pending"
+CUSTOMER_UNFREEZE_REQUESTS_ENDPOINT = "admin.customer_unfreeze_requests"
 STAFF_ACTION_OPERATION_TYPES = {
     "deactivate": "staff_deactivate",
     "reactivate": "staff_reactivate",
@@ -877,8 +878,8 @@ def admin_navigation_for(user: User) -> list[dict[str, str]]:
         items.append(
             {
                 "label": "Customer support",
-                "href": url_for("admin.customer_unfreeze_requests"),
-                "endpoint": "admin.customer_unfreeze_requests",
+                "href": url_for(CUSTOMER_UNFREEZE_REQUESTS_ENDPOINT),
+                "endpoint": CUSTOMER_UNFREEZE_REQUESTS_ENDPOINT,
                 "group": "business",
             }
         )
@@ -1518,7 +1519,7 @@ def _staff_business_operations(actor: User) -> list[dict[str, str]]:
             "label": "Unfreeze customer accounts",
             "status": "Available",
             "description": "Review customers who froze their own account and unfreeze them with a documented reason.",
-            "href": url_for("admin.customer_unfreeze_requests"),
+            "href": url_for(CUSTOMER_UNFREEZE_REQUESTS_ENDPOINT),
         }
     ]
 
