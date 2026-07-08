@@ -184,6 +184,7 @@ def test_notification_preference_docs_match_optional_activity_boundary():
 
     for required in (
         "transfer activity email preference controls only routine withdrawal and deposit emails",
+        "deposit emails for Top Up",
         "Daily-limit, transfer-limit, account, security, MFA, recovery, password, session, staff/admin, and other high-risk notifications remain mandatory",
         "`POST /profile/notification-preferences` intentionally does not require TOTP",
         "authenticated, CSRF-protected, current-user-scoped, frozen-account-blocked",
@@ -199,6 +200,7 @@ def test_notification_preference_docs_match_optional_activity_boundary():
         "transfer-limit notifications can be disabled",
         "general successful-transfer notification channel to reuse",
         "future email or push channel requires a separate reviewed delivery",
+        "deposit emails for Local Transfer and PayUp. Daily-limit",
     ):
         assert stale not in docs
 

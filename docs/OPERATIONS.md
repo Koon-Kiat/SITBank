@@ -897,7 +897,8 @@ do not retain an older MFA-principal route limit that can undercut the
 configured PayUp policy.
 
 The customer transfer activity email preference controls only routine
-withdrawal and deposit emails for Local Transfer and PayUp. Daily-limit,
+withdrawal and deposit emails for Local Transfer and PayUp, and deposit
+emails for Top Up. Daily-limit,
 transfer-limit, account, security, MFA, recovery, password, session,
 staff/admin, and other high-risk notifications remain mandatory and cannot be
 disabled through this setting. `POST /profile/notification-preferences`
