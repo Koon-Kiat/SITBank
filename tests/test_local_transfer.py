@@ -906,7 +906,7 @@ def test_successful_local_transfer_sends_withdrawal_deposit_and_limit_warning(
     assert "80.00% of your limit" in deliveries[-1]["body"]
 
 
-def test_disabled_transfer_activity_email_preference_skips_withdrawal_and_deposit_email(
+def test_disabled_transfer_activity_email_preference_keeps_daily_limit_alert(
     app,
     transfer_context,
 ):
@@ -920,10 +920,16 @@ def test_disabled_transfer_activity_email_preference_skips_withdrawal_and_deposi
     db.session.commit()
     before_count = len(password_reset_outbox())
 
+    _make_local_transfer_transaction(alice, bob, Decimal("350.00"))
     token = _make_pending_transfer(alice, payee, Decimal("50.00"))
 
     with app.test_request_context("/banking/transfer/confirm", method="POST"):
         txn_ref = execute_local_transfer(sender=alice, payee=payee, confirmation_token=token)
 
     assert Transaction.query.filter_by(transaction_ref=txn_ref).count() == 1
-    assert len(password_reset_outbox()) == before_count
+    deliveries = password_reset_outbox()[before_count:]
+    assert [item["subject"] for item in deliveries] == [
+        "SITBank Local Transfer daily limit 80% alert",
+    ]
+    assert deliveries[0]["to"] == "alice@example.com"
+    assert "80.00% of your limit" in deliveries[0]["body"]
