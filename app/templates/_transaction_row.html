@@ -3,7 +3,9 @@
 {% macro transaction_row(txn, user, show_actions=False) -%}
 <tr>
   <td data-label="Type">
-    {% if txn.sender_id == user.id %}
+    {% if txn.transaction_type == 'topup' %}
+    <span class="badge">Top Up</span>
+    {% elif txn.sender_id == user.id %}
     <span class="badge neutral">Sent</span>
     {% else %}
     <span class="badge">Received</span>
@@ -16,13 +18,17 @@
   <td data-label="Method">
     {% if txn.transaction_type == 'payup' %}
     PayUp
+    {% elif txn.transaction_type == 'topup' %}
+    Top Up
     {% else %}
     Local Transfer
     {% endif %}
   </td>
   <td data-label="Reference">{{ txn.reference or "—" }}</td>
   <td data-label="Amount (SGD)" class="cell-amount">
-    {% if txn.sender_id == user.id %}
+    {% if txn.transaction_type == 'topup' %}
+    +{{ txn.amount }}
+    {% elif txn.sender_id == user.id %}
     <span class="muted">−{{ txn.amount }}</span>
     {% else %}
     +{{ txn.amount }}

@@ -8,7 +8,7 @@ import pyotp
 from _auth_flow_helpers import enable_mfa_for_user, login, register
 from app.banking.topup_tokens import generate_topup_token
 from app.extensions import db
-from app.models import SecurityAuditEvent, TopUpApprovalRequest, TopUpCredit, User
+from app.models import SecurityAuditEvent, Transaction, TopUpApprovalRequest, TopUpCredit, User
 
 
 def _topup_approve_url(raw_token: str) -> str:
@@ -77,6 +77,20 @@ def test_topup_happy_path_credits_balance_and_records_ledger(client):
         == 1
     )
 
+    txn = db.session.execute(
+        db.select(Transaction).where(Transaction.transaction_type == "topup", Transaction.sender_id == user.id)
+    ).scalar_one()
+    assert txn.recipient_id == user.id
+    assert Decimal(str(txn.amount)) == Decimal("50.00")
+    assert txn.status == "completed"
+    assert txn.transaction_ref == credit.credit_ref
+
+    history_response = client.get("/transactions")
+    assert history_response.status_code == 200
+    history_html = history_response.data.decode("utf-8")
+    assert "Top Up" in history_html
+    assert "+50.00" in history_html
+
 
 def test_topup_wrong_totp_rejected_without_crediting(client):
     register(client)
@@ -96,6 +110,19 @@ def test_topup_wrong_totp_rejected_without_crediting(client):
     assert request_row.failure_count == 1
     assert request_row.status == "pending"
     assert db.session.query(TopUpCredit).filter_by(user_id=user.id).count() == 0
+    assert db.session.query(Transaction).filter_by(sender_id=user.id, transaction_type="topup").count() == 0
+
+
+def test_topup_success_flash_shown_on_dashboard(client):
+    register(client)
+    login(client)
+    enable_mfa_for_user()
+
+    response = client.get("/dashboard?topup=success", follow_redirects=True)
+    assert response.status_code == 200
+    assert "Your top-up was added to your account." in response.data.decode("utf-8")
+    assert "alert-success" in response.data.decode("utf-8")
+    assert "data-alert-close" in response.data.decode("utf-8")
 
 
 def test_topup_approval_locks_after_max_failures(client):

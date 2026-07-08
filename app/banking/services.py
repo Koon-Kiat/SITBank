@@ -969,6 +969,22 @@ def credit_account_topup(user: User, amount: Decimal) -> TopUpCredit:
         status="completed",
         created_at=created_at,
     )
+    (
+        txn_hash,
+        txn_integrity_key_id,
+        txn_integrity_algorithm,
+        txn_integrity_version,
+    ) = sign_transaction_integrity(
+        transaction_ref=credit_ref,
+        sender_id=locked_user.id,
+        recipient_id=locked_user.id,
+        payee_id=None,
+        amount=amount,
+        reference="",
+        status="completed",
+        transaction_type="topup",
+        created_at=created_at,
+    )
     locked_user.balance = Decimal(str(locked_user.balance)) + amount
     credit = TopUpCredit(
         credit_ref=credit_ref,
@@ -982,6 +998,23 @@ def credit_account_topup(user: User, amount: Decimal) -> TopUpCredit:
         created_at=created_at,
     )
     db.session.add(credit)
+    db.session.add(
+        Transaction(
+            transaction_ref=credit_ref,
+            transaction_hash=txn_hash,
+            transaction_integrity_key_id=txn_integrity_key_id,
+            transaction_integrity_algorithm=txn_integrity_algorithm,
+            transaction_integrity_version=txn_integrity_version,
+            sender_id=locked_user.id,
+            recipient_id=locked_user.id,
+            payee_id=None,
+            amount=amount,
+            reference="",
+            status="completed",
+            transaction_type="topup",
+            created_at=created_at,
+        )
+    )
     db.session.commit()
     audit_event(
         "account_topup",
