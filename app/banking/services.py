@@ -54,6 +54,8 @@ _SGT_OFFSET = timezone(timedelta(hours=8))
 _TRANSFER_CONFIRMATION_EXPIRED_MESSAGE = "Transfer confirmation has expired or was already used."
 _PUBLIC_TRANSACTION_UNAVAILABLE_MESSAGE = "Transaction request cannot be processed."
 _PUBLIC_TRANSACTION_REPLAY_MESSAGE = "Transaction request has already been accepted."
+LOCAL_TRANSFER_CHANNEL = "Local Transfer"
+PAYUP_CHANNEL = "PayUp"
 
 TRANSFER_RISK_NORMAL = "normal"
 TRANSFER_RISK_NEW_PAYEE = "new_payee"
@@ -822,7 +824,7 @@ def _reject_local_transfer(
         sender,
         direction="withdrawal",
         outcome="failure",
-        channel="Local Transfer",
+        channel=LOCAL_TRANSFER_CHANNEL,
     )
     raise AuthError(message, status_code)
 
@@ -1145,7 +1147,7 @@ def execute_local_transfer(
         direction="withdrawal",
         outcome="success",
         amount=amount,
-        channel="Local Transfer",
+        channel=LOCAL_TRANSFER_CHANNEL,
         transaction_reference=txn_ref,
         counterparty_label=payee.recipient_name,
     )
@@ -1154,13 +1156,13 @@ def execute_local_transfer(
         direction="deposit",
         outcome="success",
         amount=amount,
-        channel="Local Transfer",
+        channel=LOCAL_TRANSFER_CHANNEL,
         transaction_reference=txn_ref,
         counterparty_label=sender.full_name or sender.username,
     )
     maybe_send_daily_limit_warning(
         sender,
-        channel="Local Transfer",
+        channel=LOCAL_TRANSFER_CHANNEL,
         used_before=used_today,
         amount=amount,
         daily_limit=daily_limit,
@@ -1770,7 +1772,7 @@ def execute_payup_transfer(
         direction="withdrawal",
         outcome="success",
         amount=amount,
-        channel="PayUp",
+        channel=PAYUP_CHANNEL,
         transaction_reference=txn_ref,
         counterparty_label=_payup_notification_label(locked_recipient),
     )
@@ -1779,13 +1781,13 @@ def execute_payup_transfer(
         direction="deposit",
         outcome="success",
         amount=amount,
-        channel="PayUp",
+        channel=PAYUP_CHANNEL,
         transaction_reference=txn_ref,
         counterparty_label=_payup_notification_label(locked_sender),
     )
     maybe_send_daily_limit_warning(
         sender,
-        channel="PayUp",
+        channel=PAYUP_CHANNEL,
         used_before=used_today,
         amount=amount,
         daily_limit=daily_limit,

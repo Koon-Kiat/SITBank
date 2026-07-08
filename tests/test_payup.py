@@ -392,6 +392,33 @@ def test_successful_payup_sends_withdrawal_deposit_and_limit_warning(app, payup_
     assert "80.00% of your limit" in deliveries[-1]["body"]
 
 
+def test_disabled_transfer_activity_email_preference_keeps_payup_daily_limit_alert(
+    app,
+    payup_context,
+):
+    from app.security.email import password_reset_outbox
+
+    alice = payup_context["alice"]
+    bob = payup_context["bob"]
+    alice.transfer_activity_email_enabled = False
+    bob.transfer_activity_email_enabled = False
+    db.session.commit()
+    before_count = len(password_reset_outbox())
+
+    _make_payup_transaction(alice, bob, Decimal("350.00"))
+    token = _make_payup_pending(alice, bob, Decimal("50.00"))
+
+    with _payup_service_context(app, alice):
+        execute_payup_transfer(sender=alice, confirmation_token=token, authorized=True)
+
+    deliveries = password_reset_outbox()[before_count:]
+    assert [item["subject"] for item in deliveries] == [
+        "SITBank PayUp daily limit 80% alert",
+    ]
+    assert deliveries[0]["to"] == "alice@example.com"
+    assert "80.00% of your limit" in deliveries[0]["body"]
+
+
 def test_execute_payup_transfer_self_transfer_blocked(app, payup_context):
     alice = payup_context["alice"]
     token = _make_payup_pending(alice, alice, Decimal("10.00"))

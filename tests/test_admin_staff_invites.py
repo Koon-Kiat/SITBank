@@ -1316,6 +1316,67 @@ def test_browser_invite_start_validation_failures_are_safe_and_audited(
     assert "turnstile_token" not in json.dumps(event.event_metadata, default=str)
 
 
+@pytest.mark.parametrize(
+    ("payload_overrides", "expected_reason"),
+    [
+        ({"full_name": "<Bad Name>"}, "invalid_full_name"),
+        ({"phone_number": "+65 9123 4568"}, "invalid_phone"),
+        ({"confirm_password": f"{STAFF_PASSWORD} different"}, "password_mismatch"),
+        ({"password": "short", "confirm_password": "short"}, "password_policy"),
+    ],
+)
+def test_invite_start_service_rejects_invalid_details_before_setup_user_creation(
+    admin_app,
+    admin_client,
+    monkeypatch,
+    payload_overrides,
+    expected_reason,
+):
+    from app.admin.services import start_invite_acceptance
+    from app.auth.services import AuthError
+
+    _root, root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    _login_admin(admin_client, root_secret)
+    assert _create_invite(admin_client, root_secret).status_code == 201
+    token = _latest_invite_token()
+    invite = db.session.execute(db.select(StaffInvite)).scalar_one()
+    payload = _staff_invite_start_payload(**payload_overrides)
+    before_event_id = db.session.query(func.max(SecurityAuditEvent.id)).scalar() or 0
+    monkeypatch.setattr("app.admin.services.require_turnstile", lambda *_args, **_kwargs: None)
+
+    with admin_app.test_request_context(f"/invites/accept/{token}/start", method="POST"):
+        with pytest.raises(AuthError):
+            start_invite_acceptance(
+                token,
+                full_name=payload["full_name"],
+                phone_number=payload["phone_number"],
+                password=payload["password"],
+                confirm_password=payload["confirm_password"],
+                turnstile_token="browser-token",
+                request_fields=set(payload),
+            )
+
+    db.session.refresh(invite)
+    event = (
+        db.session.query(SecurityAuditEvent)
+        .filter(
+            SecurityAuditEvent.id > before_event_id,
+            SecurityAuditEvent.event_type == "staff_invite_accept",
+            SecurityAuditEvent.outcome == "failure",
+        )
+        .one()
+    )
+    assert invite.status == "pending"
+    assert invite.setup_user_id is None
+    assert db.session.query(User).count() == 1
+    assert event.event_metadata == {"reason": expected_reason}
+
+
 def test_browser_invite_turnstile_failure_preserves_only_safe_fields(
     admin_client,
     monkeypatch,
