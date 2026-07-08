@@ -115,7 +115,7 @@
       {% if messages %}
         {% for category, message in messages %}
           <div class="alert alert-{{ category }} alert-inline">
-            <span>{{ message }}</span>
+            <span class="alert-message">{{ message }}</span>
           </div>
         {% endfor %}
       {% endif %}
@@ -143,7 +143,7 @@
       {% if messages %}
         {% for category, message in messages %}
           <div class="alert alert-{{ category }} alert-inline">
-            <span>{{ message }}</span>
+            <span class="alert-message">{{ message }}</span>
           </div>
         {% endfor %}
       {% endif %}

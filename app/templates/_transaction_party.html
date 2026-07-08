@@ -1,5 +1,7 @@
 {% macro transaction_party(txn, user) -%}
-{% if txn.transaction_type == "payup" %}
+{% if txn.transaction_type == "topup" %}
+  Self top-up
+{% elif txn.transaction_type == "payup" %}
   {% if txn.sender_id == user.id %}
     {% set recipient_label = (txn.recipient.payup_nickname if txn.recipient else "") or (txn.recipient.phone_number if txn.recipient else "") or "PayUp recipient" %}
     To: {{ recipient_label }}

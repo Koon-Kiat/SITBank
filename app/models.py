@@ -750,7 +750,7 @@ class Transaction(db.Model):
         ),
         db.CheckConstraint("amount > 0", name="ck_transactions_amount_positive"),
         db.CheckConstraint(
-            "transaction_type IN ('local_transfer', 'payup')",
+            "transaction_type IN ('local_transfer', 'payup', 'topup')",
             name="ck_transactions_transaction_type",
         ),
         db.CheckConstraint(

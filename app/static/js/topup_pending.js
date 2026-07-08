@@ -31,7 +31,8 @@
         .then(function (data) {
           if (data.status === "completed") {
             statusMessage.textContent = "Approved. Redirecting…";
-            globalThis.location.href = dashboardUrl;
+            const separator = dashboardUrl.includes("?") ? "&" : "?";
+            globalThis.location.href = dashboardUrl + separator + "topup=success";
             return;
           }
           if (data.status === "expired" || data.status === "failed") {

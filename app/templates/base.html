@@ -228,8 +228,13 @@
         {% if messages %}
           <section class="alerts" aria-label="Status messages">
             {% for category, message in messages %}
+              {% set icon_name = "check-circle" if category == "success" else ("alert" if category in ("warning", "error") else "info") %}
               <div class="alert alert-{{ category }}">
-                <span>{{ message }}</span>
+                <span class="alert-icon" aria-hidden="true">
+                  <svg class="icon" focusable="false"><use href="#icon-{{ icon_name }}"></use></svg>
+                </span>
+                <span class="alert-message">{{ message }}</span>
+                <button type="button" class="alert-close" data-alert-close aria-label="Dismiss message">&times;</button>
               </div>
             {% endfor %}
           </section>
