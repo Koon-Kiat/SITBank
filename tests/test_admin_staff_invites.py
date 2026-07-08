@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 import pyotp
 import pytest
+from sqlalchemy import func
 
 from app.extensions import db
 from app.models import PersonIdentityLink, SecurityAuditEvent, StaffInvite, User
@@ -636,6 +637,271 @@ def test_reissue_delivery_failure_is_persisted_without_rotating_the_live_token(
     assert invite.delivery_status == "failed"
     assert _invite_info_json(admin_client, original_token).status_code == 200
     assert "Backend handoff failed" in admin_client.get("/invites").get_data(as_text=True)
+
+
+def test_root_admin_can_resend_setup_invite_for_stuck_setup_pending_account(admin_client):
+    _root, secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    target, _target_secret = _create_staff_identity(
+        username="stuck-staff",
+        email="stuck.staff@sit.singaporetech.edu.sg",
+        account_type="staff",
+        phone_number="91234568",
+        active=False,
+    )
+    stale_invite = StaffInvite(
+        token_hash="0" * 64,
+        workplace_email_normalized="stuck.staff@sit.singaporetech.edu.sg",
+        role="staff",
+        status="revoked",
+        delivery_status="unconfirmed",
+        created_by_user_id=_root.id,
+        created_at=datetime.now(timezone.utc) - timedelta(days=2),
+        expires_at=datetime.now(timezone.utc) - timedelta(days=1),
+        revoked_at=datetime.now(timezone.utc) - timedelta(days=1),
+        revoked_by_user_id=_root.id,
+    )
+    db.session.add(stale_invite)
+    db.session.commit()
+    _login_admin(admin_client, secret)
+
+    still_blocked = _create_invite(
+        admin_client,
+        secret,
+        workplace_email="stuck.staff@sit.singaporetech.edu.sg",
+    )
+
+    response = admin_client.post(
+        f"/staff/{target.id}/resend-setup",
+        json={"totp_code": _stable_totp(secret)},
+    )
+    body = response.get_json()
+    new_token = _latest_invite_token()
+    new_invite = (
+        db.session.query(StaffInvite)
+        .filter_by(workplace_email_normalized="stuck.staff@sit.singaporetech.edu.sg")
+        .filter(StaffInvite.id != stale_invite.id)
+        .one()
+    )
+    resend_event = db.session.query(SecurityAuditEvent).filter_by(
+        event_type="staff_invite_resent",
+        outcome="success",
+    ).one()
+    identity_count = (
+        db.session.query(User)
+        .filter(func.lower(User.email) == "stuck.staff@sit.singaporetech.edu.sg")
+        .count()
+    )
+
+    assert still_blocked.status_code == 400
+    assert response.status_code == 201
+    assert new_invite.setup_user_id == target.id
+    assert new_invite.status == "pending"
+    assert new_invite.delivery_status == "queued"
+    assert new_invite.token_hash != stale_invite.token_hash
+    assert identity_count == 1
+    assert _invite_info_json(admin_client, new_token).status_code == 200
+    assert new_token not in json.dumps(body, default=str)
+    assert new_token not in json.dumps(resend_event.event_metadata, default=str)
+    assert "stuck.staff@sit.singaporetech.edu.sg" not in json.dumps(resend_event.event_metadata, default=str)
+
+
+def test_reset_setup_alone_does_not_resend_email_and_resend_requires_explicit_action(
+    admin_client,
+    monkeypatch,
+):
+    _root, secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    target, _target_secret = _create_staff_identity(
+        username="target-staff",
+        email="target.staff@sit.singaporetech.edu.sg",
+        account_type="staff",
+        phone_number="91234568",
+        active=True,
+    )
+    _login_admin(admin_client, secret)
+    outbox_before = len(password_reset_outbox())
+    invites_before = db.session.query(StaffInvite).count()
+
+    reset = admin_client.post(
+        f"/staff/{target.id}/reset-activation",
+        json={"totp_code": _stable_totp(secret)},
+    )
+    db.session.refresh(target)
+
+    assert reset.status_code == 200
+    assert target.account_status == "setup_pending"
+    assert len(password_reset_outbox()) == outbox_before
+    assert db.session.query(StaffInvite).count() == invites_before
+
+    fresh_time = _FIXED_TOTP_TIME + 31
+    monkeypatch.setattr("app.auth.services.time.time", lambda: fresh_time)
+    resend = admin_client.post(
+        f"/staff/{target.id}/resend-setup",
+        json={"totp_code": pyotp.TOTP(secret, digits=6, interval=30).at(fresh_time)},
+    )
+
+    assert resend.status_code == 201
+    assert len(password_reset_outbox()) == outbox_before + 1
+    assert db.session.query(StaffInvite).count() == invites_before + 1
+
+
+def test_resend_setup_invite_rejects_non_root_admin_self_and_ineligible_targets(admin_app, admin_client):
+    root, root_secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    plain_admin, admin_secret = _create_staff_identity(
+        username="plain-admin",
+        email="plain.admin@sit.singaporetech.edu.sg",
+        account_type="admin",
+        phone_number="91234568",
+    )
+    active_target, _active_secret = _create_staff_identity(
+        username="active-staff",
+        email="active.staff@sit.singaporetech.edu.sg",
+        account_type="staff",
+        phone_number="91234569",
+        active=True,
+    )
+    stuck_target, _stuck_secret = _create_staff_identity(
+        username="stuck-staff-2",
+        email="stuck.staff.two@sit.singaporetech.edu.sg",
+        account_type="staff",
+        phone_number="91234570",
+        active=False,
+    )
+    admin_client_2 = admin_app.test_client()
+    _login_admin(admin_client_2, admin_secret, email="plain.admin@sit.singaporetech.edu.sg")
+    _login_admin(admin_client, root_secret)
+
+    non_root = admin_client_2.post(
+        f"/staff/{stuck_target.id}/resend-setup",
+        json={"totp_code": _stable_totp(admin_secret)},
+    )
+    self_action = admin_client.post(
+        f"/staff/{root.id}/resend-setup",
+        json={"totp_code": _stable_totp(root_secret)},
+    )
+    ineligible = admin_client.post(
+        f"/staff/{active_target.id}/resend-setup",
+        json={"totp_code": _stable_totp(root_secret)},
+    )
+    missing_target = admin_client.post(
+        "/staff/999999/resend-setup",
+        json={"totp_code": _stable_totp(root_secret)},
+    )
+
+    assert non_root.status_code == 403
+    assert self_action.status_code == 403
+    assert ineligible.status_code == 404
+    assert missing_target.status_code == 404
+    assert db.session.query(StaffInvite).count() == 0
+
+
+def test_resend_setup_invite_step_up_outcomes_are_safe(admin_client, monkeypatch):
+    _root, secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    target, _target_secret = _create_staff_identity(
+        username="stuck-staff-3",
+        email="stuck.staff.three@sit.singaporetech.edu.sg",
+        account_type="staff",
+        phone_number="91234568",
+        active=False,
+    )
+    _login_admin(admin_client, secret)
+    fresh_time = _FIXED_TOTP_TIME + 31
+    monkeypatch.setattr("app.auth.services.time.time", lambda: fresh_time)
+    valid_code = pyotp.TOTP(secret, digits=6, interval=30).at(fresh_time)
+
+    missing = admin_client.post(f"/staff/{target.id}/resend-setup", json={})
+    malformed = admin_client.post(f"/staff/{target.id}/resend-setup", json={"totp_code": "not-a-code"})
+    assert db.session.query(StaffInvite).count() == 0
+
+    valid = admin_client.post(f"/staff/{target.id}/resend-setup", json={"totp_code": valid_code})
+    replayed = admin_client.post(f"/staff/{target.id}/resend-setup", json={"totp_code": valid_code})
+    replayed_body = replayed.get_data(as_text=True)
+
+    assert missing.status_code == 400
+    assert malformed.status_code == 400
+    assert valid.status_code == 201
+    assert replayed.status_code == 403
+    assert "Fresh MFA verification is required" in replayed_body
+    assert valid_code not in replayed_body
+    assert db.session.query(StaffInvite).count() == 1
+
+
+def test_resend_setup_invite_delivery_failure_revokes_invite_fail_closed(admin_client, monkeypatch):
+    _root, secret = _create_staff_identity(
+        username="root-admin",
+        email=ROOT_EMAIL,
+        account_type="root_admin",
+        phone_number="91234567",
+    )
+    target, _target_secret = _create_staff_identity(
+        username="stuck-staff-4",
+        email="stuck.staff.four@sit.singaporetech.edu.sg",
+        account_type="staff",
+        phone_number="91234568",
+        active=False,
+    )
+    _login_admin(admin_client, secret)
+    monkeypatch.setattr(
+        "app.admin.services.send_security_email",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("smtp down")),
+    )
+
+    response = admin_client.post(
+        f"/staff/{target.id}/resend-setup",
+        json={"totp_code": _stable_totp(secret)},
+    )
+    invite = db.session.execute(db.select(StaffInvite)).scalar_one()
+    db.session.refresh(target)
+
+    assert response.status_code == 503
+    assert invite.status == "revoked"
+    assert invite.delivery_status == "failed"
+    assert invite.revoked_by_user_id == _root.id
+    assert target.account_status == "setup_pending"
+
+
+def test_resend_setup_invite_service_guard_rejects_non_root_actor(admin_app):
+    with admin_app.app_context():
+        from app.admin.services import AuthError, resend_staff_setup_invite
+
+        actor, _actor_secret = _create_staff_identity(
+            username="plain-admin-guard",
+            email="plain.admin.guard@sit.singaporetech.edu.sg",
+            account_type="admin",
+            phone_number="91234567",
+        )
+        target, _target_secret = _create_staff_identity(
+            username="stuck-staff-guard",
+            email="stuck.staff.guard@sit.singaporetech.edu.sg",
+            account_type="staff",
+            phone_number="91234568",
+            active=False,
+        )
+
+        with pytest.raises(AuthError) as excinfo:
+            resend_staff_setup_invite(actor, target.id, "000000")
+
+        assert excinfo.value.status_code == 403
+        assert db.session.query(StaffInvite).count() == 0
 
 
 def test_invite_acceptance_requires_turnstile_when_enabled(admin_app, admin_client, monkeypatch):

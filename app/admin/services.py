@@ -1162,6 +1162,12 @@ def public_staff_account(user: User, actor: User) -> dict[str, Any]:
         "last_login_at": _utc_iso(user.last_login_at) if user.last_login_at else None,
         "last_login_at_display": _utc_display(user.last_login_at) if user.last_login_at else None,
         "can_manage": bool(is_root_admin(actor) and user.account_type in ADMIN_ACCOUNT_MANAGED_TYPES and user.id != actor.id),
+        "can_resend_setup": bool(
+            is_root_admin(actor)
+            and user.account_type in ADMIN_ACCOUNT_MANAGED_TYPES
+            and user.id != actor.id
+            and user.account_status == "setup_pending"
+        ),
     }
 
 
@@ -2175,6 +2181,110 @@ def reset_staff_invite_acceptance(actor: User, invite_id: int, totp_code: str | 
     )
     db.session.commit()
     return {"message": "Invite acceptance reset", "invite": public_invite(invite)}
+
+
+def resend_staff_setup_invite(actor: User, target_user_id: int, totp_code: str | None) -> dict[str, Any]:
+    """Send a fresh setup invite to an existing setup_pending staff/admin user.
+
+    Covers the gap where the original invite has already reached a terminal
+    state (accepted/expired/revoked) but the linked user never finished
+    activation, so create_staff_invite's duplicate-identity guard would
+    otherwise permanently block re-onboarding that identity.
+    """
+    if not is_root_admin(actor):
+        audit_event("staff_invite_resend", "blocked", user=actor, metadata={"reason": "not_root_admin"})
+        raise AuthError("Forbidden", 403)
+    target = db.session.get(User, int(target_user_id))
+    if target is not None and target.id == actor.id:
+        audit_event(
+            "staff_invite_resend",
+            "blocked",
+            user=actor,
+            metadata={"reason": "self_management_denied"},
+        )
+        raise AuthError("Forbidden", 403)
+    if (
+        target is None
+        or target.account_type not in ADMIN_ACCOUNT_MANAGED_TYPES
+        or target.account_status != "setup_pending"
+    ):
+        audit_event(
+            "staff_invite_resend",
+            "blocked",
+            user=actor,
+            metadata={"reason": "target_not_resendable"},
+        )
+        raise AuthError("Staff account not found", 404)
+    try:
+        normalized_workplace = normalize_workplace_email(target.email)
+    except AuthError:
+        audit_event("staff_invite_resend", "blocked", user=actor, metadata={"reason": "email_policy"})
+        raise
+
+    _require_staff_invite_step_up(
+        actor,
+        totp_code,
+        scope="staff_invite_resend",
+        event_type="staff_invite_resend",
+    )
+    _reject_root_admin_allowlist_invite_target(normalized_workplace, actor, "staff_invite_resend")
+    _reject_active_invite(normalized_workplace)
+
+    token = secrets.token_urlsafe(32)
+    now = _utcnow()
+    invite = StaffInvite(
+        token_hash=invite_token_hash(token),
+        workplace_email_normalized=normalized_workplace,
+        role=target.account_type,
+        status="pending",
+        delivery_status="unconfirmed",
+        created_by_user_id=actor.id,
+        setup_user_id=target.id,
+        created_at=now,
+        expires_at=now + timedelta(seconds=int(current_app.config["STAFF_INVITE_TTL_SECONDS"])),
+    )
+    db.session.add(invite)
+    try:
+        db.session.flush()
+        audit_event_required(
+            "staff_invite_resent",
+            "success",
+            user=actor,
+            metadata={
+                **_invite_audit_metadata(invite),
+                "target_staff_ref": audit_reference("staff_user", target.id),
+            },
+        )
+        db.session.commit()
+    except IntegrityError as exc:
+        db.session.rollback()
+        audit_event("staff_invite_resend", "failure", user=actor, metadata={"reason": "integrity_error"})
+        raise AuthError(INVITE_CREATE_ERROR, 400) from exc
+
+    invite_url = url_for("admin.invite_accept_info", token=token, _external=True)
+    try:
+        _send_invite_email(invite, invite_url)
+    except Exception as exc:
+        current_app.logger.warning("staff_invite_email_failed error=%s", type(exc).__name__)
+        invite.status = "revoked"
+        invite.delivery_status = "failed"
+        invite.revoked_at = _utcnow()
+        invite.revoked_by_user_id = actor.id
+        audit_event(
+            "staff_invite_email",
+            "failure",
+            user=actor,
+            metadata={**_invite_audit_metadata(invite), "reason": "email_delivery_failed"},
+        )
+        db.session.commit()
+        raise AuthError("Invite could not be sent", 503) from exc
+    invite.delivery_status = "queued"
+    audit_event("staff_invite_email", "queued", user=actor, metadata=_invite_audit_metadata(invite))
+    db.session.commit()
+    return {
+        "message": "Setup invite resent",
+        "invite": public_invite(invite),
+    }
 
 
 def manual_recovery_requests_for_admin(actor: User) -> list[dict[str, Any]]:
