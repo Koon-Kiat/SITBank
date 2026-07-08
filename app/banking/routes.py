@@ -54,6 +54,8 @@ from app.banking.services import (
     payup_transfer_token_verifier,
     resolve_local_transfer_limit_choice,
     resolve_transfer_limit_choice,
+    send_transfer_limit_change_notification,
+    send_transfer_notification,
     statement_for_period,
 )
 from app.banking.topup_tokens import (
@@ -1165,6 +1167,12 @@ def payup_confirm_submit():
             user=g.current_user,
             metadata={"reason": "execution_policy"},
         )
+        send_transfer_notification(
+            g.current_user,
+            direction="withdrawal",
+            outcome="failure",
+            channel="PayUp",
+        )
         flash(exc.message, "error")
         return redirect(url_for(_PAYUP_ENDPOINT))
 
@@ -1339,6 +1347,7 @@ def transfer_limits():
 def transfer_limits_submit():
     form = TransferLimitsForm()
     if not form.validate_on_submit():
+        send_transfer_limit_change_notification(g.current_user, outcome="failure")
         return render_template(_TRANSFER_LIMITS_TEMPLATE, form=form), 400
 
     try:
@@ -1347,6 +1356,7 @@ def transfer_limits_submit():
             form.local_transfer_limit.data, form.local_transfer_limit_custom.data
         )
     except AuthError as exc:
+        send_transfer_limit_change_notification(g.current_user, outcome="failure")
         flash(exc.message, "error")
         return render_template(_TRANSFER_LIMITS_TEMPLATE, form=form), exc.status_code
 
@@ -1357,6 +1367,7 @@ def transfer_limits_submit():
             "transfer_limits_change",
         )
     except AuthError as exc:
+        send_transfer_limit_change_notification(g.current_user, outcome="failure")
         flash(exc.message, "error")
         return render_template(_TRANSFER_LIMITS_TEMPLATE, form=form), exc.status_code
 
@@ -1372,6 +1383,12 @@ def transfer_limits_submit():
             "payup_daily_limit": str(payup_limit),
             "local_transfer_daily_limit": str(local_transfer_limit),
         },
+    )
+    send_transfer_limit_change_notification(
+        g.current_user,
+        outcome="success",
+        payup_limit=payup_limit,
+        local_transfer_limit=local_transfer_limit,
     )
     flash("Daily transfer limits updated.", "success")
     return redirect(url_for(_TRANSFER_LIMITS_ENDPOINT))
